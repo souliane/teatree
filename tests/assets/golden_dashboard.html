@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="refresh" content="120">
+<title>t3-followup Dashboard</title>
+<style>
+  :root { --bg: #1a1b26; --card: #24283b; --text: #c0caf5; --muted: #565f89; --green: #9ece6a; --red: #f7768e; --yellow: #e0af68; --blue: #7aa2f7; --border: #3b4261; --purple: #bb9af7; }
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'SF Mono', 'Fira Code', monospace; background: var(--bg); color: var(--text); padding: 1.5rem; max-width: 1400px; margin: 0 auto; }
+h1 { font-size: 1.3rem; margin-bottom: 0.4rem; }
+.meta { color: var(--muted); font-size: 0.78rem; margin-bottom: 1.2rem; }
+h2 { font-size: 1.05rem; margin: 1.2rem 0 0.4rem; color: var(--blue); }
+table { width: 100%; border-collapse: collapse; margin-bottom: 0.8rem; }
+th { text-align: left; padding: 0.35rem 0.5rem; border-bottom: 2px solid var(--border); color: var(--muted); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; }
+td { padding: 0.35rem 0.5rem; border-bottom: 1px solid var(--border); font-size: 0.82rem; vertical-align: top; }
+td.ticket-cell { border-bottom: 2px solid var(--border); }
+a { color: var(--blue); text-decoration: none; }
+a:hover { text-decoration: underline; }
+.pill { display: inline-block; padding: 0.12rem 0.4rem; border-radius: 4px; font-size: 0.72rem; font-weight: 600; white-space: nowrap; }
+a.pill, .pill a { text-decoration: none; }
+a.pill:hover, .pill a:hover { text-decoration: none; filter: brightness(1.3); }
+.success { background: rgba(158,206,106,0.15); color: var(--green); }
+.failed { background: rgba(247,118,142,0.15); color: var(--red); }
+.running { background: rgba(224,175,104,0.15); color: var(--yellow); }
+.pending { background: rgba(224,175,104,0.1); color: var(--muted); }
+.skipped { background: rgba(86,95,137,0.2); color: var(--muted); }
+.approved { background: rgba(187,154,247,0.15); color: var(--purple); }
+.section { background: var(--card); border-radius: 8px; padding: 0.8rem 1rem; margin-bottom: 0.8rem; }
+code { background: rgba(122,162,247,0.1); padding: 0.1rem 0.3rem; border-radius: 3px; font-size: 0.78rem; }
+.ticket-title { font-weight: 500; font-size: 0.82rem; }
+.status-stack { display: flex; flex-direction: column; gap: 0.2rem; }
+</style>
+</head>
+<body>
+<h1>&#x1F680; t3-followup Dashboard</h1>
+<p class="meta">Generated: 2026-03-10 06:00 UTC (7h 21m ago)</p>
+
+<div class="section">
+<h2>&#x1F4CB; In-Flight Work</h2>
+<table>
+<tr><th>Ticket</th><th>Status</th><th>Feature Flag</th><th>MR</th><th>Pipeline</th><th>E2E</th><th>Review Request</th><th>Approved</th></tr>
+<tr>
+  <td class="ticket-cell">
+    <a href="https://example.com/issues/100">#100</a><br>
+    <span class="ticket-title">Add postal code validation</span>
+  </td>
+  <td class="ticket-cell">
+    <a href="https://example.com/issues/100" class="pill running">&#x1F527; Doing</a>
+  </td>
+  <td class="ticket-cell"><code>postal_code_v2</code></td>
+  <td><a href="https://example.com/merge_requests/101">backend !101</a></td>
+  <td><a href="https://example.com/pipelines/999" class="pill success">&#x2705; success</a></td>
+  <td>&mdash;</td>
+  <td><span class="pill success">&#x2705; <a href="https://chat.example.com/msg/123" style="color:var(--green)">#backend-review</a></span></td>
+  <td><span class="pill approved">&#x2705; 1/1</span></td>
+</tr>
+<tr>
+  <td class="ticket-cell" rowspan="2">
+    <a href="https://example.com/issues/200">#200</a><br>
+    <span class="ticket-title">Community property support</span>
+  </td>
+  <td class="ticket-cell" rowspan="2">
+    <div class="status-stack">
+      <a href="https://example.com/issues/200" class="pill success">&#x1F440; Technical Review</a>
+      <a href="https://example.com/issues/200" class="pill success">&#x2705; In Progress (dev/config)</a>
+    </div>
+  </td>
+  <td class="ticket-cell" rowspan="2"><code>community_prop</code></td>
+  <td><a href="https://example.com/merge_requests/201">backend !201</a></td>
+  <td><a href="https://example.com/pipelines/1001" class="pill running">&#x1F504; running</a></td>
+  <td><a href="https://example.com/merge_requests/201#note_55" class="pill success">&#x2705; test plan</a></td>
+  <td><span class="pill pending">&#x23F3; waiting pipeline</span></td>
+  <td><span class="pill pending">0/2</span></td>
+</tr>
+<tr>
+  <td><a href="https://example.com/merge_requests/202">frontend !202</a></td>
+  <td><a href="https://example.com/merge_requests/202/pipelines" class="pill failed">&#x274C; lint + sonarqube</a></td>
+  <td>&mdash;</td>
+  <td><span class="pill skipped">&#x23ED;&#xFE0F; skipped</span></td>
+  <td><span class="pill skipped">&mdash;</span></td>
+</tr>
+<tr>
+  <td class="ticket-cell">
+    misc<br>
+    <span class="ticket-title">Quick hotfix</span>
+  </td>
+  <td class="ticket-cell">
+    <span class="pill skipped">&mdash;</span>
+  </td>
+  <td class="ticket-cell">&mdash;</td>
+  <td><a href="https://example.com/merge_requests/301">backend !301</a></td>
+  <td><a href="https://example.com/merge_requests/301/pipelines" class="pill pending">&#x23F3; canceled</a></td>
+  <td>&mdash;</td>
+  <td><span class="pill pending">&#x23F3; not sent</span></td>
+  <td><span class="pill pending">0/1</span></td>
+</tr>
+</table>
+</div>
+
+<div class="section">
+<h2>&#x1F4DD; Review Comments</h2>
+<table>
+<tr><th>MR</th><th>Status</th><th>Details</th></tr>
+<tr>
+  <td><a href="https://example.com/merge_requests/50">old-repo !50</a></td>
+  <td><span class="pill pending">&#x23F3; Waiting reviewer</span></td>
+  <td>Waiting for reviewer decision.</td>
+</tr>
+<tr>
+  <td><a href="https://example.com/merge_requests/51">old-repo !51</a></td>
+  <td><span class="pill running">&#x270F;&#xFE0F; Needs reply</span></td>
+  <td>Author needs to respond.</td>
+</tr>
+<tr>
+  <td><a href="https://example.com/merge_requests/101">backend !101</a></td>
+  <td><span class="pill success">&#x2705; Addressed</span></td>
+  <td>All fixed</td>
+</tr>
+<tr>
+  <td><a href="https://example.com/merge_requests/202">frontend !202</a></td>
+  <td><span class="pill running">&#x270F;&#xFE0F; Needs reply</span></td>
+  <td>Waiting for author</td>
+</tr>
+</table>
+</div>
+
+<div class="section">
+<h2>&#x1F4DD; Draft MRs</h2>
+<table>
+<tr><th>Ticket</th><th>Status</th><th>Feature Flag</th><th>MR</th><th>Pipeline</th><th>E2E</th><th>Review Request</th><th>Approved</th></tr>
+<tr>
+  <td class="ticket-cell">&mdash;<br><span class="ticket-title">WIP: refactor auth module</span></td>
+  <td class="ticket-cell"><span class="pill skipped">&mdash;</span></td>
+  <td class="ticket-cell">&mdash;</td>
+  <td><a href="https://example.com/merge_requests/401">backend !401</a></td>
+  <td><a href="https://example.com/pipelines/2000" class="pill success">&#x2705; success</a></td>
+  <td>&mdash;</td>
+  <td>&mdash;</td>
+  <td>&mdash;</td>
+</tr>
+<tr>
+  <td class="ticket-cell">&mdash;<br><span class="ticket-title">WIP: new settings page</span></td>
+  <td class="ticket-cell"><span class="pill skipped">&mdash;</span></td>
+  <td class="ticket-cell">&mdash;</td>
+  <td><a href="https://example.com/merge_requests/402">frontend !402</a></td>
+  <td><a href="https://example.com/merge_requests/402/pipelines" class="pill pending">&#x23F3; pending</a></td>
+  <td>&mdash;</td>
+  <td>&mdash;</td>
+  <td>&mdash;</td>
+</tr>
+</table>
+</div>
+
+<div class="section">
+<h2>&#x1F527; Actions Taken This Session</h2>
+<ul style="list-style: none; font-size: 0.82rem; line-height: 1.7;">
+<li>&#x2705; Pushed fix for postal code</li>
+<li>&#x2705; Transitioned #200 to Technical Review</li>
+<li>&#x2705; Sent reminder for backend!101</li>
+</ul>
+</div>
+
+</body>
+</html>
