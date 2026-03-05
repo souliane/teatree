@@ -1,0 +1,7 @@
+config:
+  MD013: false # Long lines allowed for readability
+  MD024: false # Repeated headings allowed across sections
+  MD029: false # Explicit numbering (1. 2. 3.) is intentional
+  MD033: false # Inline HTML allowed for diagrams
+  MD036: false # Emphasis as sub-headings allowed
+  MD040: false # Code blocks without language specifier allowed

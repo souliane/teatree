@@ -1,0 +1,182 @@
+[project]
+name = "teatree"
+version = "0.0.1"
+description = "Multi-repo worktree lifecycle manager for AI-assisted development"
+license = "MIT"
+
+requires-python = ">=3.12"
+classifiers = [
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+]
+
+[dependency-groups]
+# --- Ruff ---
+# Strategy: enable ALL rules, then ignore specific ones with justification.
+# https://docs.astral.sh/ruff/rules/
+dev = [
+  "pre-commit>=4.5.1",
+  "pytest>=9.0.2",
+  "pytest-cov>=7",
+  "safety>=3",
+  "ty>=0.0.18",
+  "typer>=0.12",
+]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 120
+fix = true
+lint.select = [ "ALL" ]
+lint.ignore = [
+  "CPY001", # missing-copyright-notice — not applicable
+  # D1xx: missing docstrings — we prefer self-documenting code over docstrings
+  "D100",
+  "D101",
+  "D102",
+  "D103",
+  "D104",
+  "D105",
+  "D106",
+  "D107",
+  "D203", # one-blank-line-before-class — conflicts with D211
+  "D213", # multi-line-summary-second-line — conflicts with D212
+  # DOC: docstring content rules — disabled since we skip docstrings entirely
+  "DOC201",
+  "DOC402",
+  "DOC501",
+  "INP001", # implicit-namespace-package — scripts/ is not a package
+  "ISC002", # implicit-str-concat-in-sequence — interferes with multiline strings
+]
+# Rules that conflict with ruff's own formatter.
+# https://docs.astral.sh/ruff/formatter/#conflicting-lint-rules
+lint.extend-ignore = [
+  "COM812",
+  "COM819", # trailing comma rules
+  "D206",
+  "D300",   # docstring whitespace/triple-quote rules
+  "E111",
+  "E114",
+  "E117",   # indentation rules
+  "Q000",
+  "Q001",
+  "Q002",
+  "Q003",
+  "Q004",   # quote rules
+  "W191",   # tab indentation
+]
+# Scripts use typer (default args = B008), deferred imports (E402), boolean
+# params (FBT), subprocess (S4xx/S6xx), and print (T201).
+lint.per-file-ignores."scripts/**/*.py" = [
+  "B008",    # function-call-in-default-argument (typer.Argument/Option)
+  "E402",    # module-import-not-at-top (deferred after lib.init)
+  "FBT001",
+  "FBT003",  # boolean positional/default (CLI flags)
+  "PLC0415", # import-outside-top-level (deferred imports)
+  "PLC2701", # import-private-name (lib._internal)
+  "PLW1510", # subprocess-run-without-check (intentional)
+  "S404",
+  "S603",
+  "S607",    # subprocess security (trusted internal calls)
+  "T201",    # print (CLI output)
+]
+# Tests use assert, magic values, private access, etc.
+lint.per-file-ignores."tests/**/*.py" = [
+  "PLC1901", # compare-to-empty-string
+  "PLC2701", # import-private-name
+  "PLR0904", # too-many-public-methods (test classes)
+  "PLR2004", # magic-value-comparison
+  "PLR6301", # no-self-use (test methods)
+  "S101",    # assert (expected in tests)
+  "S108",    # hardcoded-temp-file (test fixtures)
+  "S404",    # subprocess-import
+  "SLF001",  # private-member-access (testing internals)
+]
+lint.fixable = [ "ALL" ]
+lint.flake8-implicit-str-concat.allow-multiline = false
+lint.flake8-tidy-imports.banned-api."__future__.annotations" = { msg = "Use native 3.10+ syntax (X | Y) instead of from __future__ import annotations" }
+# Complexity limits
+lint.pylint.max-args = 5
+lint.pylint.max-bool-expr = 5
+lint.pylint.max-branches = 12
+lint.pylint.max-locals = 15
+lint.pylint.max-nested-blocks = 5
+lint.pylint.max-returns = 6
+lint.pylint.max-statements = 50
+lint.preview = true
+
+[tool.codespell]
+
+# --- Pytest ---
+
+[tool.pytest.ini_options]
+addopts = """
+--color=yes --doctest-modules --exitfirst --failed-first
+--strict-config --strict-markers --verbose --log-cli-level=INFO
+--cov --cov-report=term-missing:skip-covered --cov-branch
+"""
+testpaths = [ "tests" ]
+pythonpath = [ "scripts", "scripts/hooks", "tests" ]
+filterwarnings = [ "error" ]
+xfail_strict = true
+
+# --- Coverage ---
+
+[tool.coverage.report]
+fail_under = 100
+precision = 1
+show_missing = true
+exclude_lines = [
+  "if __name__",
+  "if TYPE_CHECKING",
+  "def main\\(",
+  "pragma: no cover",
+  "_scripts_dir not in sys\\.path",
+]
+# Branches that are defensive / unreachable by design
+exclude_also = [
+  "if len\\(parts\\) > 1",
+]
+
+[tool.coverage.run]
+source = [ "scripts" ]
+omit = [ "scripts/bump-pyproject-deps-from-lock-file.py" ]
+
+# --- Tox ---
+
+[tool.tox]
+legacy_tox_ini = """
+[tox]
+envlist = py312,py313
+skip_missing_interpreters = true
+
+[testenv]
+runner = uv-venv-lock-runner
+commands = pytest {posargs}
+"""
+
+# --- Ty (static type checker) ---
+# https://github.com/astral-sh/ty
+
+[tool.ty]
+terminal = { error-on-warning = true }
+
+[tool.ty.environment]
+extra-paths = [ "scripts", "scripts/hooks", "tests" ]
+python-version = "3.13"
+
+[tool.ty.analysis]
+allowed-unresolved-imports = [
+  "playwright.sync_api",
+  "requests",
+  "typer",
+  "pytest",
+  "tomlkit",
+]
+
+[tool.ty.rules]
+division-by-zero = "error"
+possibly-unresolved-reference = "error"
+unused-ignore-comment = "error"
+no-matching-overload = "error"
