@@ -63,6 +63,23 @@ See your [issue tracker platform reference](platforms/) § "Known CLI Quirks" fo
 - **Fix:** After running pre-commit hooks, always check `git diff --cached --stat` before committing to verify only intended files are staged. Unstage anything unrelated with `git restore --staged <file>`.
 - **Prevention:** Commit or stash all unrelated changes before running pre-commit on the full repo. When using pre-commit as a verification step (not a commit step), review the staging area before any commit.
 
+## Integration Tests Corrupt `.git/config` When Run Under Pre-Commit Hooks
+
+- **Symptom:** `git status` fails with `fatal: Invalid path '/private/.../pytest-of-.../pytest-NNN'`, or `user.name`/`user.email` are silently overwritten to test values like "Test User".
+- **Cause:** Tests that spawn `git` subprocesses (e.g., `subprocess.run(["git", "init", ...])`) inherit `GIT_*` environment variables from the parent process. When pre-commit hooks run pytest, prek sets `GIT_INDEX_FILE`, `GIT_DIR`, etc. The test's git commands then operate on the **real repo's** config/index instead of the temp repo's — writing `core.worktree`, `user.name`, and other settings to the wrong `.git/config`.
+- **Fix:** Strip ALL `GIT_*` env vars from subprocess calls in tests:
+
+  ```python
+  import os
+  _GIT_ENV = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+
+  def _git(repo, *args):
+      return subprocess.run(["git", "-C", str(repo), *args], env=_GIT_ENV, ...)
+  ```
+
+- **Recovery:** If already corrupted, edit `.git/config` directly (git commands may fail). Remove the stale `core.worktree` line and any overwritten `[user]` section.
+- **Prevention:** Every test helper that calls git subprocesses must use a sanitized env. `GIT_CONFIG_GLOBAL=/dev/null` alone is insufficient — `GIT_INDEX_FILE` and `GIT_DIR` also leak.
+
 ## direnv Not Loading `.envrc`
 
 - **Cause:** direnv not hooked into the shell or `.envrc` not allowed.
