@@ -311,15 +311,19 @@ After completing any followup run (interactive or periodic), generate an HTML da
 
 **Extension point: `followup_enrich_data`** — project overlays can add project-specific fields to `followup.json` entries before dashboard generation (e.g., Notion status, customer/tenant info).
 
-### 13. Cache Cleanup (Automatic)
+### 13. Cache Cleanup (Non-Negotiable — First Action on Every Load)
 
-**Runs automatically** at the start of every followup invocation (both interactive and periodic). No manual trigger needed.
+**Execute immediately when the skill is loaded** — before responding to the user, before asking what they want, before anything else. This is the first thing followup does on every invocation (both interactive and periodic). The user should never have to ask for a cache refresh.
 
 1. For each ticket in `followup.json`, check if ALL associated MRs are merged (via issue tracker API).
 2. If the most recent merge date is older than `T3_FOLLOWUP_PURGE_DAYS` (default 14), remove the ticket and its MRs from the cache.
 3. Also remove entries from `review_comments_tracking` where the MR is merged.
 4. Remove entries from `$T3_DATA_DIR/mr_reminders.json` where the MR is merged.
-5. Log purged entries: `Purged ticket #<IID> (all MRs merged >14d ago)`.
+5. Refresh pipeline and approval statuses for remaining open MRs.
+6. Regenerate the dashboard.
+7. Log purged entries: `Purged ticket #<IID> (all MRs merged >14d ago)`.
+
+**During long sessions:** Also re-run cache cleanup after significant events (ticket completed, MR pushed, context switch) — don't wait for the next explicit `/t3-followup` invocation.
 
 ## `followup.json` Schema
 
