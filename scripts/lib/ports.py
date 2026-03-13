@@ -2,6 +2,7 @@
 
 import os
 import signal
+import socket
 import subprocess
 import sys
 import time
@@ -9,12 +10,20 @@ from contextlib import suppress
 
 
 def port_in_use(port: int) -> bool:
-    """Check if a TCP port is already listening."""
-    result = subprocess.run(
-        ["lsof", "-i", f":{port}", "-sTCP:LISTEN"],
-        capture_output=True,
-    )
-    return result.returncode == 0
+    """Check if a TCP port is already bound.
+
+    Uses socket binding as ground truth — lsof misses system-owned ports
+    (e.g. launchd on macOS) when running as a non-root user.
+    """
+    for family in (socket.AF_INET, socket.AF_INET6):
+        sock = socket.socket(family, socket.SOCK_STREAM)
+        try:
+            sock.bind(("localhost", port))
+        except OSError:
+            return True
+        finally:
+            sock.close()
+    return False
 
 
 def free_port(port: int) -> bool:
