@@ -1,27 +1,30 @@
 """Tests for _ports.py — port management helpers."""
 
+import socket
 from unittest.mock import MagicMock, patch
 
 from lib.ports import free_port, port_in_use
 
 
 class TestPortInUse:
-    def test_returns_true_when_listening(self) -> None:
-        with patch("lib.ports.subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(returncode=0)
-            assert port_in_use(8000) is True
+    def test_returns_true_when_bound(self) -> None:
+        """Bind a port then verify port_in_use detects it."""
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.bind(("localhost", 0))
+        port = sock.getsockname()[1]
+        try:
+            assert port_in_use(port) is True
+        finally:
+            sock.close()
 
-    def test_returns_false_when_not_listening(self) -> None:
-        with patch("lib.ports.subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(returncode=1)
-            assert port_in_use(8000) is False
-
-    def test_checks_correct_port(self) -> None:
-        with patch("lib.ports.subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(returncode=0)
-            port_in_use(9999)
-            args = mock_run.call_args.args[0]
-            assert ":9999" in args
+    def test_returns_false_when_free(self) -> None:
+        """Bind and release a port, then verify it's detected as free."""
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind(("localhost", 0))
+        port = sock.getsockname()[1]
+        sock.close()
+        assert port_in_use(port) is False
 
 
 class TestFreePort:
