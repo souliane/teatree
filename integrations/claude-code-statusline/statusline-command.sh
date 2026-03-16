@@ -272,7 +272,7 @@ for repo_name in $(for r in "${!repo_dir[@]}"; do echo "$r"; done | sort); do
     [ -n "${repo_on_default[$repo_name]+x}" ] && on_default=true
 
     session_dirty=""
-    if [ -n "$session_id" ]; then
+    if [ -n "$session_id" ] && [ -n "${initial_hash[$repo_name]+x}" ]; then
         current_hash=$(get_dirty_hash "$dir")
         if [ "${initial_hash[$repo_name]}" != "$current_hash" ]; then
             session_dirty="${RED}*${RESET}"
@@ -283,7 +283,8 @@ for repo_name in $(for r in "${!repo_dir[@]}"; do echo "$r"; done | sort); do
     active_marker=""
     [[ -n "${active_repos[$repo_name]+x}" ]] && is_active=true && active_marker="${GREEN}>${RESET}"
 
-    $on_default && [ -z "$session_dirty" ] && ! $is_active && continue
+    # Only show repos that are session-dirty or session-active
+    [ -z "$session_dirty" ] && ! $is_active && continue
 
     if $on_default; then
         items="${items}\n ${CYAN}${repo_name}${RESET}${session_dirty}${active_marker}"
@@ -315,10 +316,12 @@ for wt_branch in "${!branch_repos[@]}"; do
     ! $is_visible && [[ -n "${active_branches[$wt_branch]+x}" ]] && is_visible=true
 
     # Check if session-dirty (files changed since session start)
+    # Only compare repos that were captured in the session snapshot — entries
+    # not in the snapshot predate this session and should not be shown.
     if ! $is_visible && [ -n "$session_id" ]; then
         for rn in ${branch_repos[$wt_branch]}; do
             key="${wt_branch}/${rn}"
-            if [ -n "${wt_dir_of[$key]}" ]; then
+            if [ -n "${wt_dir_of[$key]}" ] && [ -n "${initial_hash[$key]+x}" ]; then
                 current_hash=$(get_dirty_hash "${wt_dir_of[$key]}")
                 if [ "${initial_hash[$key]}" != "$current_hash" ]; then
                     is_visible=true
@@ -394,7 +397,7 @@ for group_key in "${ticket_num_order[@]}"; do
             key="${wt_branch}/${rn}"
 
             repo_dirty=""
-            if [ -n "$session_id" ] && [ -n "${wt_dir_of[$key]}" ]; then
+            if [ -n "$session_id" ] && [ -n "${wt_dir_of[$key]}" ] && [ -n "${initial_hash[$key]+x}" ]; then
                 current_hash=$(get_dirty_hash "${wt_dir_of[$key]}")
                 if [ "${initial_hash[$key]}" != "$current_hash" ]; then
                     repo_dirty="${RED}*${RESET}"
