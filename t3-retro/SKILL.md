@@ -250,7 +250,7 @@ Retro can also modify core teatree skills in the user's fork:
 - **Never change `version:`** in YAML frontmatter — that's auto-managed.
 - **Respect content publication status.** Blog posts and articles with `draft: false` in frontmatter are published — never modify them. Draft content (`draft: true` or no frontmatter) may be improved.
 - **Defer structural changes to review skill.** When your fixes involve merging, splitting, or restructuring skills, suggest running the review skill first — retro is tactical; the review skill provides systematic analysis before structural changes.
-- **Skills over personal config (Non-Negotiable).** When fixing an issue, always prefer updating **skill files** (`SKILL.md`, `references/`) over writing to user-specific config (the agent's personal config and memory files). Skills benefit ALL users; personal config only helps one machine. Memory/config files are only for: user preferences (formatting, tone), environment-specific facts (paths, usernames, credentials), and user-specific workflow choices. Guardrails, troubleshooting, patterns, and "do this not that" rules belong in skills. **Checklist before writing to memory/config:** "Would another user of these skills need this too?" — if yes, put it in a skill.
+- **Skills over personal config (Non-Negotiable).** When fixing an issue, always prefer updating **skill files** (`SKILL.md`, `references/`) over writing to user-specific config (the agent's personal config and memory files). Skills benefit ALL users; personal config only helps one machine. Memory/config files are only for: user preferences (formatting, tone), environment-specific facts (paths, usernames, credentials), and user-specific workflow choices. Guardrails, troubleshooting, patterns, and "do this not that" rules belong in skills. **Checklist before writing to memory/config:** "Would another user of these skills need this too?" — if yes, put it in a skill. For the full decision table on where to persist what, see [`../references/agent-rules.md`](../references/agent-rules.md) § "Where to Persist Information".
 - **Scan personal config for promotable entries.** During every retro, read the agent's memory and personal config files. Any entry that encodes a guardrail, pattern, or "do this not that" rule (not a user preference or env-specific fact) should be **promoted to the appropriate skill file**. However, always-loaded agent config/memory files serve as a safety net — critical guardrails that are already in skills may still deserve a one-line reminder there, because skills are only available when loaded. When keeping a duplicate, mark it clearly as "Safety net — source: `<skill> § <section>`" to prevent drift. Only fully remove entries that are truly redundant (pure cross-references with no actionable content).
 - **Prefer deterministic helpers over repeated manual work.** If the same audit or extraction step is likely to recur, capture it in a shell/Python helper or reusable command snippet and document where it lives.
 
@@ -278,7 +278,7 @@ Retro can also modify core teatree skills in the user's fork:
 
 After applying all fixes:
 
-- Run `pre-commit run --all-files` (or the repo's equivalent) to validate
+- Run `prek run --all-files` to validate
 - **Smoke test changed scripts** — if shell scripts or hook scripts were modified, run them end-to-end (linting alone does not catch runtime failures like Bash version incompatibility or platform-specific commands)
 - Verify no duplicate guidance across skills
 - Confirm updated playbooks match current codebase reality
@@ -308,6 +308,16 @@ cd "$T3_REPO"
 git add <changed files>
 git commit -m "fix(<skill>): <what was learned>"
 ```
+
+### Squashing Retro Commits
+
+When multiple retro commits accumulate on a branch before pushing, squash related commits into clean, logical units. **But never rewrite commits already pushed to origin (Non-Negotiable).** Before squashing, check `git log origin/<branch>..HEAD` — only squash commits in that local-only range.
+
+**When `T3_AUTO_SQUASH=true`:** Automatically squash related unpushed commits without asking for confirmation. Group by topic (e.g., all retro fixes to the same skill become one commit). This keeps git history clean without manual intervention.
+
+**When `T3_AUTO_SQUASH=false` (default):** Suggest squashing and wait for user confirmation before rewriting history.
+
+**Squash integrity check:** Before any rewrite, save the tip: `OLD_TIP=$(git rev-parse HEAD)`. After rewrite, verify `git diff $OLD_TIP..HEAD` is empty. See `t3-ship` § "Squash integrity check" for the full rule.
 
 ### After Committing
 
