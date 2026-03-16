@@ -109,7 +109,7 @@ repos:
       - id: banned-terms
         name: banned-terms
         language: script
-        entry: scripts/hooks/check-banned-terms.sh
+        entry: scripts/hooks/check-banned-terms.sh --terms "oper,medirect,finporta,opercredits,hypoooe"
         types: [text]
         exclude: ^(\.pre-commit-config\.yaml|scripts/hooks/)$
 
