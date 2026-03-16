@@ -31,6 +31,10 @@ From "code is done" to "MR is merged."
 - Run in each repo that has changes.
 - Verify the commit message follows the project's format.
 
+**Auto-squash (`T3_AUTO_SQUASH=true`):** Before finalization, automatically squash related unpushed commits into clean, logical units without asking for confirmation. Only rewrites commits in `git log origin/<branch>..HEAD`. Group by topic — e.g., multiple fix commits for the same issue become one commit, retro improvements to the same skill merge together. When `false` (default), suggest squashing and wait for confirmation.
+
+**Squash integrity check (Non-Negotiable):** Before any squash or rebase that reorganizes commits, record the current branch tip: `OLD_TIP=$(git rev-parse HEAD)`. After the rewrite is complete, verify zero content loss: `git diff $OLD_TIP..HEAD` must produce empty output. If there is any diff, the rewrite lost or introduced changes — abort and investigate. This catches conflicts silently resolved during interactive rebase or reset-based regrouping.
+
 ### 3. Local Verification
 
 - Start servers and verify functionality.
@@ -91,9 +95,12 @@ After delivery is complete (MR created, pipeline green), run `/t3-retro` to capt
 ## Rules
 
 - **Never push untested code.** Local verification by the user is mandatory before pushing. If the project requires E2E tests for UI changes, those tests must be **written and green** before pushing — not "pending" or "will do after MR".
+- **Never rewrite pushed commits (Non-Negotiable).** Never rebase, amend, or force-push commits that are already on origin. This applies always — not just after review. Before any squash/fixup, check `git log origin/<branch>..HEAD` to confirm which commits are local-only. Only rewrite those.
 - **No rebase / force push after review.** Once an MR has been reviewed, the branch history is shared. Only merge the default branch and push new commits.
 - **Cancel stale pipelines** before every push to a branch with an existing MR.
+- **Cancel running pipelines when closing an MR/PR.** When an MR is closed (abandoned, superseded, or replaced), cancel any running or pending pipelines for that branch immediately — they waste CI resources on code that will never be merged.
 - **Clickable references:** Every MR, ticket, or note reference must be a markdown link — see [`../references/agent-rules.md`](../references/agent-rules.md) § "Clickable References".
+- **Respect commit trailer preferences.** Check the user's global agent config for rules about `Co-Authored-By` trailers before committing. Some users explicitly opt out. When in doubt, **do not add trailers** — the user can always configure their agent to add them.
 
 ## Script Reference
 
