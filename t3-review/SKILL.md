@@ -52,14 +52,27 @@ After the cleanup checklist, **actively verify each changed file against the rep
 
 This step catches the class of bugs where the rules exist but weren't applied during implementation — missed feature flags, wrong DI pattern, manual subscriptions where signals were required, etc.
 
-### Quality Gate Verification
+### Quality Gate Verification (Verify-Fix-Repeat)
 
-Before declaring review-ready:
+Before declaring review-ready, run all gates and **iterate until they pass**. Do not declare review-ready after a single pass — re-run gates after every fix, because fixes can introduce new failures.
 
-- Linting passes (zero errors)
-- Type checking passes (if applicable)
-- All tests pass
-- No regressions in existing functionality
+```text
+Run gates → Any failure? → Fix → Re-run gates → Repeat until clean
+```
+
+**Gates (run in order):**
+
+1. **Lint:** zero errors from the project linter
+2. **Type check:** passes (if the project uses it)
+3. **Tests:** full suite green (use `t3_tests` or project equivalent)
+4. **No uncommitted changes:** all fixes staged and committed
+5. **No regressions:** diff review confirms no unintended changes
+
+**Iteration limit:** After 3 fix-verify cycles without convergence, **stop and ask the user** — the issue may be systemic rather than incremental.
+
+**Stop hook integration:** If the repo has a Stop hook (`.claude/settings.json` § Stop), it enforces this loop automatically. Without a hook, run the gates manually before claiming done.
+
+**References:** [Ralph Loop](https://github.com/snarktank/ralph) (external verification over self-assessed completion), [Effective harnesses for long-running agents](https://www.anthropic.com/engineering/effective-harnesses-for-long-running-agents) (Anthropic, feature-list-driven incremental verification).
 
 ### Giving Code Review
 
