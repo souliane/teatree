@@ -188,6 +188,7 @@ Teatree stores its config in `~/.teatree` (created by `/t3-setup`):
 | `T3_REVIEW_SKILL` | No | None | External skill review tool name (e.g., `ac-reviewing-skills`) |
 | `T3_FOLLOWUP_PURGE_DAYS` | No | `14` | Auto-purge tickets from dashboard cache after all MRs merged for N days |
 | `T3_BRANCH_PREFIX` | No | Initials from `git config user.name` | Prefix for worktree branches |
+| `T3_AUTO_SQUASH` | No | `false` | Auto-squash related unpushed commits before push |
 
 ## Contributing & Self-Improvement
 

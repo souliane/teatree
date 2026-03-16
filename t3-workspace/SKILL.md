@@ -59,6 +59,7 @@ Key variables used by this skill (see `/t3-setup` for the full config reference)
 | `T3_WORKSPACE_DIR` | Yes | Root workspace directory |
 | `T3_OVERLAY` | No | Path to the project overlay skill (project-specific overrides) |
 | `T3_BRANCH_PREFIX` | No | Prefix for worktree branches (default: initials from `git config user.name`) |
+| `T3_AUTO_SQUASH` | No | Auto-squash related unpushed commits before push (default: `false`) |
 
 ### Data Directory (XDG-Compliant)
 

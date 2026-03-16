@@ -55,7 +55,7 @@ E2E and integration tests ideally live in the project repo they test (e.g., the 
 - Structure tests by app and feature: `tests/<app>/<feature-area>/<test-file>`
 - Store artifacts (screenshots, recordings) in a git-tracked `artifacts/<TICKET>/` directory for proof.
 
-**Prerequisites:** Always start dev servers via `t3_start` (see `/t3-workspace`) before running tests. Never start services manually. Before running E2E tests, verify that **translations are loaded** — the frontend i18n directory is gitignored and only populated by `run_frontend.py` (called by `t3_start`). If the frontend was started manually (e.g., `nx serve`), translations will be missing. Quick check: open any page and confirm labels show human-readable text, not raw keys like `ç.feature.xxx.label`.
+**Prerequisites:** Always start dev servers via `t3_start` (see `/t3-workspace`) before running tests. Never start services manually. Before running E2E tests, verify that **translations are loaded** — the frontend i18n directory is gitignored and only populated at startup (by `t3_start`). If the frontend was started manually, translations will be missing. Quick check: open any page and confirm labels show human-readable text, not raw keys like `app.feature.xxx.label`.
 
 **Test depth (Non-Negotiable):** Don't just verify "page loads with 200". Read the source code to understand what the feature does, then test specific behaviors: form fields, filters, CRUD operations, access control, edge cases.
 
@@ -235,7 +235,7 @@ When editing: check the verified boxes (`- [ ]` → `- [x]`), insert screenshot 
 
 Before claiming E2E success or posting screenshots as evidence, **visually inspect every screenshot** for environment issues. Reject and fix if any of these are present:
 
-- **Missing translations:** Labels show raw keys like `ç.feature.xxx.label` or `ç.question.xxx` instead of human-readable text. Cause: frontend started without the translation sync step (handled by `t3_frontend` / `t3_start`). Fix: restart via `t3_start`.
+- **Missing translations:** Labels show raw keys like `app.feature.xxx.label` or `app.question.xxx` instead of human-readable text. Cause: frontend started without the translation sync step (handled by `t3_frontend` / `t3_start`). Fix: restart via `t3_start`.
 - **Missing static files:** Broken image icons, unstyled pages, or 404s for assets. Cause: static asset build/collection not run. Fix: restart via `t3_start` (which handles asset preparation).
 - **Console errors:** Open browser devtools and check for blocking JS errors before taking screenshots.
 
