@@ -155,6 +155,34 @@ When a skill says "ask the user", use the agent platform's native question or co
 - Fall back to a direct written question when there is no dedicated question tool
 - Claude Code example: `AskUserQuestion("Which tenant should I target?", ["customer-a", "customer-b", "detect automatically"])`
 
+## Where to Persist Information (Non-Negotiable)
+
+Agents have several places to store information. Using the wrong one causes rules to silently not load, or private details to leak into public repos. **When unsure, ask the user.**
+
+### Decision Table
+
+| What you're storing | Where it goes | Why |
+|---|---|---|
+| **Rules that apply to ALL repos** (commit style, formatting, workflow) | Global agent config (e.g., `~/.claude/CLAUDE.md`) | Loaded in every conversation, every repo |
+| **Project-specific facts** (repo layout, secrets, tenant names, infra) | Agent memory (e.g., `~/.claude/projects/<project>/memory/`) | Scoped to conversations started from that directory |
+| **Guardrails, patterns, troubleshooting** that help other users too | Skill files (`SKILL.md`, `references/`) | Available to anyone who installs the skill |
+| **User preferences** (tone, tool choices, personal workflow) | Global agent config or memory | Depends on scope — global if it applies everywhere |
+
+### Key Differences
+
+- **Global config** (`~/.claude/CLAUDE.md`): loaded in EVERY conversation regardless of working directory. Use for universal rules. Agents treat these as top-priority instructions.
+- **Project memory** (`~/.claude/projects/<encoded-path>/memory/`): loaded only when the working directory matches the encoded path. Use for project-specific knowledge that shouldn't pollute other contexts.
+- **Skill files**: loaded only when the skill is explicitly loaded (via hook or user request). Use for reusable patterns and guardrails. Must be generic — no user-specific or project-specific details in public skills.
+
+### Common Mistakes
+
+- Putting a universal rule in project memory → it doesn't load in other projects.
+- Putting project-specific details in a public skill → leaks private information.
+- Putting a rule only in a skill → it's not enforced until the skill is loaded, which may be too late.
+- Duplicating between memory and skills without marking the source → entries drift apart silently.
+
+**When in doubt:** ask the user "Should this rule apply everywhere or just in this project?" and "Should other users of these skills benefit from this too?"
+
 ## Prefer Native Tool APIs Over Filesystem Heuristics (Non-Negotiable)
 
 When a tool provides a built-in command (e.g., `git worktree list`, `docker ps`, `glab auth status`), always use that instead of filesystem patterns, `compgen`, or `find` heuristics. Built-in commands are authoritative and handle edge cases (stale state, platform differences) that heuristic scans miss.

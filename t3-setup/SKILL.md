@@ -170,7 +170,12 @@ For question 5, explain the two levels:
 
    If the user provides terms, set `T3_BANNED_TERMS="term1,term2,term3"` in the config.
 
-8. **Skill ownership** → `~/.ac-reviewing-skills`:
+8. **Auto-squash** → `T3_AUTO_SQUASH`:
+   Ask: "Should the agent automatically squash related unpushed commits before pushing? This keeps git history clean without manual confirmation."
+   - `true` — automatically group and squash related unpushed commits by topic (e.g., retro fixes, same-issue fixes). Never rewrites commits already pushed to origin.
+   - `false` (default) — suggest squashing and wait for confirmation.
+
+9. **Skill ownership** → `~/.ac-reviewing-skills`:
    Generate the `~/.ac-reviewing-skills` config file with a `MAINTAINED_SKILLS` regex. This file is shared between teatree (`agent-rules.md § Skill Ownership Check`) and the review skill (configured via `T3_REVIEW_SKILL`). Both use it to decide whether a skill can be modified or requires user confirmation.
 
    **Auto-detection:**
@@ -228,11 +233,12 @@ For question 5, explain the two levels:
 
    **If `~/.ac-reviewing-skills` is not created**, both teatree and the review skill fall back to asking the user for any skill outside `$T3_REPO` and `$T3_OVERLAY`.
 
-9. **Companion skill installation:**
+10. **Companion skill installation:**
    Based on the project's framework (detected from overlay scaffolding or user answers), suggest relevant companion skills. These are NOT teatree core skills — they are optional framework/language skills from external repos (e.g., `souliane/skills`):
-   - **Django projects:** suggest `ac-django` and `ac-python`
-   - **Python (non-Django):** suggest `ac-python`
-   - **Angular/React/Vue:** suggest relevant frontend convention skills if available
+
+- **Django projects:** suggest `ac-django` and `ac-python`
+- **Python (non-Django):** suggest `ac-python`
+- **Angular/React/Vue:** suggest relevant frontend convention skills if available
 
    **Pre-install check (Non-Negotiable):** Before installing any companion skill, check whether it already exists:
 
@@ -607,6 +613,30 @@ On EVERY user prompt, BEFORE doing anything else:
 
 If missing or using old wording ("Follow Hook Skill Suggestions"), show the corrected block and tell the user to replace it. Do NOT edit without consent.
 
+#### Step 6b: Commit Preferences
+
+Ask the user about commit message preferences that override agent defaults:
+
+1. **Co-Authored-By trailers:** "Do you want AI-generated commits to include a `Co-Authored-By` trailer? (most agents add one by default)"
+
+If the user says **no**, ensure the global agent config contains the rule. Check first:
+
+```bash
+grep -c "Co-Authored-By" ~/.claude/CLAUDE.md 2>/dev/null
+```
+
+If missing, show the block and ask to add it:
+
+```markdown
+## No Co-Authored-By in Commits (Non-Negotiable)
+
+**NEVER** add `Co-Authored-By` trailers to git commit messages. This applies to ALL repos, ALL commits.
+```
+
+If the user says **yes** (or wants to keep the default), no action needed — agents add it by default.
+
+**Do NOT edit without explicit user consent.** Show the proposed change and let the user approve.
+
 ### Step 7: Smoke Test
 
 ```bash
@@ -643,7 +673,8 @@ When the user chooses "Option B — Scaffold a new overlay" in Step 2b, run the 
    - `T3_SKILL_OWNERSHIP_FILE` missing → agent will ask before modifying any skill outside `$T3_REPO`/`$T3_OVERLAY`; run Step 8 to generate the ownership file
 2. **Check for broken symlinks** — run Step 5b
 3. **Verify CLAUDE.md wording** — run Step 6 (check for "BLOCKING REQUIREMENT", not stale wording)
-4. **Run smoke test** — Step 7
+4. **Check commit preferences** — run Step 6b (verify Co-Authored-By preference is configured)
+5. **Run smoke test** — Step 7
 
 Report a summary: `N checks passed, M warnings, K failures`. Fix what can be auto-fixed, report the rest.
 
