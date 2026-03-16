@@ -1,26 +1,27 @@
 #!/usr/bin/env bash
 # Pre-commit hook: reject files containing banned terms.
 #
-# Usage:
-#   check-banned-terms.sh --terms "term1,term2" [files...]
-#   check-banned-terms.sh [files...]   # falls back to T3_BANNED_TERMS in ~/.teatree
+# Reads terms from a user-local config file:
+#   --config <path>  Shell KEY=VALUE file. Reads *BANNED_TERMS= variable.
 #
-# Exits 0 if clean, 1 if any banned term is found.
+# Example .pre-commit-config.yaml entry:
+#   entry: scripts/hooks/check-banned-terms.sh --config ~/.teatree
+#
+# The config file (e.g., ~/.teatree) should contain:
+#   T3_BANNED_TERMS="term1,term2,term3"
+#
+# If no config or no BANNED_TERMS variable, exits 0 (no-op).
 
 set -euo pipefail
 
-# Parse --terms argument if provided
 terms=""
-if [[ "${1:-}" == "--terms" ]]; then
-  terms="${2:-}"
-  shift 2
-fi
 
-# Fallback: read from ~/.teatree
-if [ -z "$terms" ]; then
-  config="$HOME/.teatree"
-  if [ -f "$config" ]; then
-    terms="$(grep -E '^T3_BANNED_TERMS=' "$config" 2>/dev/null | head -1 | sed 's/^T3_BANNED_TERMS=//' | sed 's/^["'"'"']//;s/["'"'"']$//')"
+# Parse --config argument
+if [[ "${1:-}" == "--config" ]]; then
+  config="${2:-}"
+  shift 2
+  if [ -n "$config" ] && [ -f "$config" ]; then
+    terms="$(grep -E '_?BANNED_TERMS=' "$config" 2>/dev/null | head -1 | sed 's/^.*BANNED_TERMS=//' | sed 's/^["'"'"']//;s/["'"'"']$//')"
   fi
 fi
 
