@@ -160,15 +160,17 @@ For question 5, explain the two levels:
 - Verify the fork is public: `gh repo view <fork> --json isPrivate -q '.isPrivate'` → `false`
 - If the fork is private, warn: "Your fork must be public for the upstream repo to see your changes. Set it to public on GitHub or leave `T3_UPSTREAM` empty."
 
-7. **Banned terms** → `T3_BANNED_TERMS`:
-   Ask the user if there are terms that should never appear in the teatree repo (e.g., internal project codenames, client names). These are enforced by a pre-commit hook.
+7. **Banned terms** → `T3_BANNED_TERMS` in `~/.teatree`:
+   Ask the user if there are terms that should never appear in public repos (e.g., internal project codenames, client names). These are enforced by a pre-commit hook that reads from a user-local config file.
 
    **Important guidance for the user:** banned terms use word-boundary matching (`\b`), so short terms can cause false positives. For example, banning `proj` would also flag `project`. Prefer full, distinctive terms:
    - `my-internal-tool` instead of `internal`
    - `t3-acme` instead of `acme` (if `acme` appears in common words)
    - `client-name-corp` instead of `corp`
 
-   If the user provides terms, set `T3_BANNED_TERMS="term1,term2,term3"` in the config.
+   If the user provides terms, set `T3_BANNED_TERMS="term1,term2,term3"` in `~/.teatree`. Other repos that use the same hook point to their own config file (e.g., `~/.skills` with `BANNED_TERMS=`). The hook's `--config` argument in `.pre-commit-config.yaml` specifies which file to read.
+
+   **Never put banned terms in a repo file** — that defeats the purpose by publishing the exact terms you're trying to hide.
 
 8. **Auto-squash** → `T3_AUTO_SQUASH`:
    Ask: "Should the agent automatically squash related unpushed commits before pushing? This keeps git history clean without manual confirmation."
