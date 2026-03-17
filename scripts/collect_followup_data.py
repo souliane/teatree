@@ -31,11 +31,11 @@ if _scripts_dir not in sys.path:
 
 from lib.gitlab import (
     current_user,
+    discover_mrs,
     get_issue,
     get_mr_approvals,
     get_mr_notes,
     get_mr_pipeline,
-    list_open_mrs,
     resolve_project,
 )
 
@@ -112,22 +112,7 @@ def _api_get_mr(project_id: int, mr_iid: int, token: str = "") -> dict | None:
 
 def _discover_mrs(repos: list[str], username: str, token: str, *, verbose: bool) -> list[dict]:
     """Phase 1: discover all open MRs across repos."""
-    all_mrs: list[dict] = []
-    for repo_path in repos:
-        proj = resolve_project(repo_path, token)
-        if not proj:
-            if verbose:
-                print(f"  SKIP {repo_path} (could not resolve project)", file=sys.stderr)
-            continue
-        mrs = list_open_mrs(repo_path, username, token=token)
-        for mr in mrs:
-            mr["_repo_path"] = repo_path
-            mr["_repo_short"] = proj.short_name
-            mr["_project_id"] = proj.project_id
-        all_mrs.extend(mrs)
-        if verbose:
-            print(f"  {repo_path}: {len(mrs)} open MRs")
-    return all_mrs
+    return discover_mrs(repos, username, token=token, verbose=verbose)
 
 
 def _enrich_mr(

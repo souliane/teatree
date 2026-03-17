@@ -70,11 +70,12 @@ def wt_post_db(project_dir: str) -> None:
     )
 
 
-def wt_run_backend(*args: str) -> None:
+def wt_run_backend(*_args: str) -> None:
     """Start Django dev server + Docker services."""
-    from lib.env import resolve_context
+    from lib.env import load_env_worktree, resolve_context
 
-    port = args[0] if args else os.environ.get("BACKEND_PORT", "8000")
+    load_env_worktree()
+    port = os.environ.get("BACKEND_PORT", "8000")
 
     try:
         ctx = resolve_context()

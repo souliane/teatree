@@ -45,6 +45,8 @@ Running tests, analyzing failures, quality checks, CI interaction, test plans, a
 
 **`storageState` in Playwright:** `test.use({ storageState: undefined })` means "use default" (inherits global setup state). For truly unauthenticated tests, use `test.use({ storageState: { cookies: [], origins: [] } })`.
 
+**Establish baseline before attributing failures (Non-Negotiable):** When running E2E tests to validate a change, first run the same test on the **default branch** (or the unmodified code) to confirm it passes without your changes. If the test already fails on the default branch, it is a pre-existing failure — do not waste time debugging it as if your changes caused it. Report it as pre-existing and move on.
+
 ### Private Test Suite
 
 E2E and integration tests ideally live in the project repo they test (e.g., the frontend repo's `e2e/` directory). But sometimes a **separate test repo** reduces friction — no conflicts with the QA team's tests, no build pipeline overhead, freedom to use different tooling or test data. This is especially useful for personal verification tests that complement (not replace) the project's official suite.
@@ -104,7 +106,7 @@ When reviewing open MRs, test all MRs that change visible behavior — not just 
 
 ### SonarQube Quality Check
 
-- `t3 ci quality-check-check` — quality analysis (extension point: `wt_quality_check`).
+- `t3 ci quality-check` — quality analysis (extension point: `wt_quality_check`).
 - Run before finalizing to catch quality issues early.
 
 ### CI Interaction
@@ -215,7 +217,7 @@ When editing: check the verified boxes (`- [ ]` → `- [x]`), insert screenshot 
 | `t3 run tests` | Run project tests (ext: `wt_run_tests`) |
 | `t3 ci fetch-failed-tests` | Extract failed test IDs from CI (ext: `wt_fetch_failed_tests`) |
 | `t3 ci fetch-errors` | Extract error logs from CI (ext: `wt_fetch_ci_errors`) |
-| `t3 ci quality-check-check` | Quality analysis (ext: `wt_quality_check`) |
+| `t3 ci quality-check` | Quality analysis (ext: `wt_quality_check`) |
 | `t3 ci trigger-e2e` | Trigger E2E tests on CI (ext: `wt_trigger_e2e`) |
 
 ## Verification Before Claims

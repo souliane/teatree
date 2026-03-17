@@ -19,39 +19,21 @@ From "MRs exist" to "reviewers are notified." Operates across all user's open MR
 
 ## Workflow
 
-### 1. Discover Open MRs
+### 1-4. Discover, Validate, and Fix MRs
 
-List all user's open MRs across all repos in scope. See your [issue tracker platform reference](../references/platforms/) § "List MRs" for the CLI recipe.
+Run the review request script to discover all open non-draft MRs, check CI, and validate metadata in one step:
 
-Run this for **every repo** the user works in. Collect: MR number, title, source branch, web URL, updated timestamp.
+```bash
+$T3_REPO/scripts/review_request.py
+```
 
-Sort by `updated_at` descending (newest first).
+Uses `T3_FOLLOWUP_REPOS` (same as `t3-followup`) for repo list. Use `--json` for machine-readable output. The script reuses `lib/gitlab.py` (shared with `collect_followup_data.py`).
 
-### 2. Check CI Pipeline Status
+The script outputs a summary table with CI status, validation results, and readiness. For MRs that fail validation:
 
-For each MR, check the pipeline status via the CI CLI. Classify each pipeline as: `green` (success), `red` (failed), `running` (in progress), or `unknown`.
-
-### 3. Validate MR Metadata
-
-Each repo may have a validation script (e.g., `release-notes-scripts/validate_mr.sh`). Read the script to understand the validation rules, then check each MR against them.
-
-Common validation rules:
-
-- **Title format:** `type(optional-scope): description` where type is one of the project's allowed types
-- **Description first line:** must match the title format, typically including a ticket URL
-- **Ticket URL:** full URL to the issue tracker
-- **Feature flags:** some types (e.g., `feat`) may require a feature flag tag like `[flag_name]`
-- **Title = description first line:** many projects require these to match (squash-before-merge makes the title the final commit message)
-
-**Read the actual validation script** for the repo — do not assume rules. Different repos may have different rules (e.g., feature flags required in one repo but not another).
-
-### 4. Fix Validation Issues
-
-For each MR that fails validation, fix the title and/or description using the issue tracker CLI. See your [issue tracker platform reference](../references/platforms/) § "Update MR" for the recipe.
-
-When fixing descriptions, **preserve the full body** — only prepend/fix the first line. Read the current description before updating.
-
-If a ticket URL is missing, ask the user. If the type needs changing (e.g., `feat` without a feature flag → `improvement`), ask the user or make a reasonable decision.
+- Fix title/description using the issue tracker CLI. See your [issue tracker platform reference](../references/platforms/) § "Update MR" for the recipe.
+- When fixing descriptions, **preserve the full body** — only prepend/fix the first line.
+- If a ticket URL is missing, ask the user.
 
 ### 5. Check Team Chat for Existing Requests
 
@@ -138,7 +120,7 @@ Project skills can override these behaviors:
 
 | Extension Point | Default | Override Example |
 |---|---|---|
-| `review_channel_routing` | Single channel for all MRs | Route backend → #tech_backend, frontend → #tech_frontend_review |
+| `review_channel_routing` | Single channel for all MRs | Route by repo (e.g., microservice X → #team-x-reviews) |
 | `review_message_batching` | One message per MR | Batch backend MRs into one message |
 | `mr_validation_script` | None (skip validation) | `release-notes-scripts/validate_mr.sh` |
 | `mr_repos` | Current repo only | All repos in ticket workspace |

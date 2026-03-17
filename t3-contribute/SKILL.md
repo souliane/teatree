@@ -126,28 +126,13 @@ After pushing, check if an upstream issue should be created:
 
 #### 5a. Divergence Analysis (Non-Negotiable)
 
-Before creating an issue, analyze how much the fork has diverged from upstream:
+Before creating an issue, run the divergence check script:
 
 ```bash
-cd "$T3_REPO"
-BRANCH=$(git rev-parse --abbrev-ref HEAD)
-
-# Ensure upstream remote exists
-git remote get-url upstream 2>/dev/null || git remote add upstream "https://github.com/$T3_UPSTREAM.git"
-git fetch upstream
-
-# Detect upstream default branch
-UPSTREAM_DEFAULT=$(git remote show upstream | sed -n 's/.*HEAD branch: //p')
-
-# Common ancestor
-MERGE_BASE=$(git merge-base "origin/$BRANCH" "upstream/$UPSTREAM_DEFAULT")
-
-# Commits on fork but not upstream
-FORK_ONLY=$(git log --oneline "upstream/$UPSTREAM_DEFAULT..origin/$BRANCH" | wc -l)
-
-# Commits on upstream but not fork
-UPSTREAM_ONLY=$(git log --oneline "origin/$BRANCH..upstream/$UPSTREAM_DEFAULT" | wc -l)
+$T3_REPO/scripts/divergence_check.py "$T3_REPO" --upstream "$T3_UPSTREAM"
 ```
+
+Exit code 1 = blocked (too diverged). Use `--json` for machine-readable output.
 
 **If divergence is excessive (>50 fork-only commits or >20 upstream-only commits):**
 

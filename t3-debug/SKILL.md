@@ -27,6 +27,10 @@ Before attempting ANY fix, read the relevant troubleshooting documentation. This
 
 When the user gives a debugging hint, **investigate that hint FIRST** before other theories. User hints are based on deep project knowledge — treat as most likely root cause.
 
+### Phase 0b: Visual Evidence
+
+When the bug report includes screenshots or videos, **analyze ALL visual evidence before writing any code.** Use `t3 util decompose-video` for videos. Each frame may reveal additional issues beyond what the text description mentions.
+
 ### Phase 1: Root Cause Investigation
 
 - Read **full** error output, stack traces, logs. Do not skim.

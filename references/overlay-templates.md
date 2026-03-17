@@ -300,27 +300,39 @@ cwd_patterns:
 companion_skills:
   # Uncomment and adjust based on your stack:
   #
-  # Python backend — pick ONE framework skill + ac-python:
-  # ac-django:                              # souliane/skills
-  #   - "<backend-repo>"
-  # ac-python:                              # souliane/skills
-  #   - "<backend-repo>"
+  # --- Language & framework skills (souliane/skills) ---
   #
-  # Angular frontend:
-  # angular-skills:                         # analogjs/angular-skills
+  # ac-python:                              # Python guidelines (style, typing, testing)
+  #   - "<backend-repo>"
+  # ac-django:                              # Django bible (models, DRF, migrations)
+  #   - "<backend-repo>"
+  # ac-adopting-ruff:                       # Progressive ruff adoption
+  #   - "<backend-repo>"
   #   - "<frontend-repo>"
   #
-  # FastAPI backend:
+  # --- Tooling skills (souliane/skills) ---
+  #
+  # ac-auditing-repos:                      # Cross-repo infrastructure audit
+  #   - "<skills-repo>"
+  # ac-reviewing-skills:                    # Skill quality review
+  #   - "<skills-repo>"
+  #
+  # --- Third-party framework skills ---
+  #
+  # angular-skills:                         # analogjs/angular-skills
+  #   - "<frontend-repo>"
   # fastapi-expert:                         # Jeffallan/claude-skills
   #   - "<backend-repo>"
 ```
 
-Generate the `cwd_patterns` list from the repo names (question 3). Generate `companion_skills` based on the stack (question 4):
+Generate the `cwd_patterns` list from the repo names (question 3). Generate `companion_skills` based on the stack (questions 4-5):
 
 - **Django backend**: add `ac-django` + `ac-python` mapped to backend repo patterns (`souliane/skills`)
 - **FastAPI backend**: add `fastapi-expert` mapped to backend repo patterns (`Jeffallan/claude-skills`) + optionally `ac-python`
 - **Other Python backend**: add `ac-python` mapped to backend repo patterns
 - **Angular frontend**: add `angular-skills` mapped to frontend repo patterns (`analogjs/angular-skills`)
+- **Any Python project**: add `ac-adopting-ruff` mapped to all Python repo patterns (for ruff migration)
+- **Skills repo**: add `ac-auditing-repos` + `ac-reviewing-skills` mapped to the skills repo pattern
 
 ### Template: `hook-config/reference-injections.yml`
 

@@ -87,6 +87,7 @@ class WorktreeLifecycle:
 
     @transition(source="provisioned", target="services_up")
     def start_services(self) -> None:
+        registry.validate_overrides("services")
         wt_dir = self.facts.get("wt_dir", "")
         registry.call("wt_run_backend", wt_dir)
         registry.call("wt_run_frontend", wt_dir)

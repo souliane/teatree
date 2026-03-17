@@ -58,7 +58,7 @@ Store in `$T3_DATA_DIR/tickets/<ticket_iid>/mr_review_messages.json`:
 {
   "<mr_web_url>": {
     "permalink": "https://slack.com/archives/...",
-    "channel": "#tech_backend",
+    "channel": "#code-review",
     "ts": "2026-03-05T14:30:00Z"
   }
 }
@@ -77,7 +77,7 @@ Store in `$T3_DATA_DIR/mr_reminders.json`:
     "project": "backend-repo",
     "title": "fix(scope): description",
     "original_review_permalink": "https://slack.com/archives/...",
-    "channel": "#tech_backend",
+    "channel": "#code-review",
     "last_reminded": "2026-03-05",
     "approved": false
   }

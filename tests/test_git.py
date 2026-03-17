@@ -1,10 +1,10 @@
-"""Tests for _git.py — git branch detection."""
+"""Tests for lib.git — git helpers."""
 
 from subprocess import CalledProcessError
 from unittest.mock import MagicMock, patch
 
 import pytest
-from lib.git import default_branch
+from lib.git import check, default_branch, run
 
 
 class TestDefaultBranch:
@@ -70,3 +70,27 @@ class TestDefaultBranch:
             mock_run.side_effect = side_effect
             with pytest.raises(RuntimeError, match="Could not detect"):
                 default_branch("/repo")
+
+
+class TestRun:
+    def test_returns_stripped_stdout(self) -> None:
+        with patch("lib.git.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(stdout="  main  \n")
+            assert run(repo="/tmp", args=["branch"]) == "main"
+
+    def test_returns_empty_on_failure(self) -> None:
+        with patch("lib.git.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(stdout="")
+            assert run(repo="/tmp", args=["bad-cmd"]) == ""
+
+
+class TestCheck:
+    def test_returns_true_on_success(self) -> None:
+        with patch("lib.git.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            assert check(repo="/tmp", args=["status"]) is True
+
+    def test_returns_false_on_failure(self) -> None:
+        with patch("lib.git.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=1)
+            assert check(repo="/tmp", args=["status"]) is False

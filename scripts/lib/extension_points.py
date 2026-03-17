@@ -248,6 +248,52 @@ def ticket_get_mrs(branch: str, repos: list[str]) -> list[dict]:
     return mrs
 
 
+def fetch_issue_context(issue_url: str, *_args: str) -> dict:
+    """Fetch issue/ticket context from the tracker. Project skill provides."""
+    print(f"Define fetch_issue_context in your project skill (url: {issue_url})")
+    return {}
+
+
+def ws_create_ticket_worktree(issue_url: str, variant: str = "", *_args: str) -> str:
+    """Create ticket worktree from issue URL. Project skill provides."""
+    print(f"Define ws_create_ticket_worktree in your project skill (url: {issue_url}, variant: {variant})")
+    return ""
+
+
+def wt_cancel_stale_pipelines(*_args: str) -> list[int]:
+    """Cancel running/pending pipelines for the current branch. Project skill provides."""
+    print("Define wt_cancel_stale_pipelines in your project skill")
+    return []
+
+
+def wt_push(*_args: str) -> bool:
+    """Push current branch to remote. Project skill provides."""
+    print("Define wt_push in your project skill")
+    return False
+
+
+def wt_post_mr_evidence(paths: list[str], mr_url: str = "", title: str = "", *_args: str) -> None:  # noqa: ARG001
+    """Upload files and post as MR comment. Project skill provides."""
+    print(f"Define wt_post_mr_evidence in your project skill (paths: {paths})")
+
+
+def followup_collect(*_args: str) -> dict:
+    """Collect followup data. Project skill provides."""
+    print("Define followup_collect in your project skill")
+    return {}
+
+
+def followup_check_gates(*_args: str) -> dict:
+    """Check ticket transition gates. Project skill provides."""
+    print("Define followup_check_gates in your project skill")
+    return {}
+
+
+def followup_remind_reviewers(*_args: str) -> None:
+    """Send review reminders. Project skill provides."""
+    print("Define followup_remind_reviewers in your project skill")
+
+
 def register_defaults() -> None:
     from lib.registry import register
 
@@ -274,3 +320,11 @@ def register_defaults() -> None:
     register("ticket_check_deployed", ticket_check_deployed, "default")
     register("ticket_update_external_tracker", ticket_update_external_tracker, "default")
     register("ticket_get_mrs", ticket_get_mrs, "default")
+    register("fetch_issue_context", fetch_issue_context, "default")
+    register("ws_create_ticket_worktree", ws_create_ticket_worktree, "default")
+    register("wt_cancel_stale_pipelines", wt_cancel_stale_pipelines, "default")
+    register("wt_push", wt_push, "default")
+    register("wt_post_mr_evidence", wt_post_mr_evidence, "default")
+    register("followup_collect", followup_collect, "default")
+    register("followup_check_gates", followup_check_gates, "default")
+    register("followup_remind_reviewers", followup_remind_reviewers, "default")

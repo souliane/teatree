@@ -6,11 +6,17 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from lib.extension_points import (
+    fetch_issue_context,
+    followup_check_gates,
+    followup_collect,
+    followup_remind_reviewers,
     register_defaults,
     ticket_check_deployed,
     ticket_get_mrs,
     ticket_update_external_tracker,
+    ws_create_ticket_worktree,
     wt_build_frontend,
+    wt_cancel_stale_pipelines,
     wt_create_mr,
     wt_db_import,
     wt_detect_variant,
@@ -19,6 +25,8 @@ from lib.extension_points import (
     wt_fetch_failed_tests,
     wt_monitor_pipeline,
     wt_post_db,
+    wt_post_mr_evidence,
+    wt_push,
     wt_quality_check,
     wt_reset_passwords,
     wt_restore_ci_db,
@@ -178,6 +186,44 @@ class TestNoOpDefaults:
             return_value=MagicMock(returncode=1, stdout=""),
         ):
             assert ticket_get_mrs("branch", ["repo1"]) == []
+
+    def test_fetch_issue_context_returns_empty(self, capsys: pytest.CaptureFixture[str]) -> None:
+        result = fetch_issue_context("https://example.com/issue/1")
+        assert result == {}
+        assert "fetch_issue_context" in capsys.readouterr().out
+
+    def test_ws_create_ticket_worktree_returns_empty(self, capsys: pytest.CaptureFixture[str]) -> None:
+        result = ws_create_ticket_worktree("https://example.com/issue/1", "variant")
+        assert result == ""
+        assert "ws_create_ticket_worktree" in capsys.readouterr().out
+
+    def test_wt_cancel_stale_pipelines_returns_empty(self, capsys: pytest.CaptureFixture[str]) -> None:
+        result = wt_cancel_stale_pipelines()
+        assert result == []
+        assert "wt_cancel_stale_pipelines" in capsys.readouterr().out
+
+    def test_wt_push_returns_false(self, capsys: pytest.CaptureFixture[str]) -> None:
+        result = wt_push()
+        assert result is False
+        assert "wt_push" in capsys.readouterr().out
+
+    def test_wt_post_mr_evidence_prints(self, capsys: pytest.CaptureFixture[str]) -> None:
+        wt_post_mr_evidence(["a.png"])
+        assert "wt_post_mr_evidence" in capsys.readouterr().out
+
+    def test_followup_collect_returns_empty(self, capsys: pytest.CaptureFixture[str]) -> None:
+        result = followup_collect()
+        assert result == {}
+        assert "followup_collect" in capsys.readouterr().out
+
+    def test_followup_check_gates_returns_empty(self, capsys: pytest.CaptureFixture[str]) -> None:
+        result = followup_check_gates()
+        assert result == {}
+        assert "followup_check_gates" in capsys.readouterr().out
+
+    def test_followup_remind_reviewers_prints(self, capsys: pytest.CaptureFixture[str]) -> None:
+        followup_remind_reviewers()
+        assert "followup_remind_reviewers" in capsys.readouterr().out
 
     def test_ticket_get_mrs_skips_empty(self) -> None:
         with patch(

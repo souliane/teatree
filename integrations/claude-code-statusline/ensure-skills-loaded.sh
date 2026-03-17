@@ -305,6 +305,40 @@ detect_intent() {
 
 intent=$(detect_intent "$prompt")
 
+# --- Supplementary skill detection (non-lifecycle, keyword-triggered) ---
+# Domain/specialty skills loaded ALONGSIDE the lifecycle skill when the
+# prompt contains keyword triggers. Mappings are read from a user config
+# file so the hook stays generic (no private skill names in the public repo).
+#
+# Config file: $T3_SUPPLEMENTARY_SKILLS or ~/.teatree-skills.yml
+# Format (simple YAML — one skill per top-level key, regex pattern as value):
+#   my-ruff-skill: '\b(ruff|lint(er)? adopt)\b'
+#   my-pdf-skill: '\b(acroform|pdf template)\b'
+#
+# Multiple skills can share patterns. Patterns are matched against the
+# lowercase prompt via grep -qE.
+_SUPP_CONFIG="${T3_SUPPLEMENTARY_SKILLS:-$HOME/.teatree-skills.yml}"
+supplementary_skills=()
+if [ -f "$_SUPP_CONFIG" ]; then
+    lp_supp=$(echo "$prompt" | tr '[:upper:]' '[:lower:]')
+    while IFS= read -r line; do
+        # Skip comments and empty lines
+        [[ "$line" =~ ^[[:space:]]*# ]] && continue
+        [[ "$line" =~ ^[[:space:]]*$ ]] && continue
+        # Parse "skill-name: 'pattern'" or "skill-name: pattern"
+        if [[ "$line" =~ ^([a-zA-Z][a-zA-Z0-9_-]+):[[:space:]]+(.*) ]]; then
+            supp_skill="${BASH_REMATCH[1]}"
+            supp_pattern="${BASH_REMATCH[2]}"
+            # Strip surrounding quotes
+            supp_pattern="${supp_pattern#\'}"; supp_pattern="${supp_pattern%\'}"
+            supp_pattern="${supp_pattern#\"}"; supp_pattern="${supp_pattern%\"}"
+            if echo "$lp_supp" | grep -qE "$supp_pattern" 2>/dev/null; then
+                supplementary_skills+=("$supp_skill")
+            fi
+        fi
+    done < "$_SUPP_CONFIG"
+fi
+
 # --- End-of-session detection: suggest t3-retro ---
 # If no specific intent was detected, check for end-of-session patterns.
 # Only suggest if: (a) at least one non-retro skill was loaded this session,
@@ -398,7 +432,7 @@ if [ -n "$intent" ]; then
         [ -z "$dep" ] && continue
         if ! is_loaded "$dep"; then
             # Avoid duplicates in suggest list
-            local already=false
+            already=false
             for existing in "${suggest[@]}"; do
                 if [ "$existing" = "$dep" ]; then already=true; break; fi
             done
@@ -456,6 +490,19 @@ if $project_context && [ -n "$overlay_skill_dir" ]; then
         done < "$match_file"
     fi
 fi
+
+# Append supplementary (non-lifecycle) skills detected by keyword
+for supp in "${supplementary_skills[@]}"; do
+    [ -z "$supp" ] && continue
+    if ! is_loaded "$supp"; then
+        # Avoid duplicates in suggest list
+        already=false
+        for existing in "${suggest[@]}"; do
+            if [ "$existing" = "$supp" ]; then already=true; break; fi
+        done
+        $already || suggest+=("$supp")
+    fi
+done
 
 # Nothing to suggest → exit
 [ ${#suggest[@]} -eq 0 ] && exit 0
@@ -530,6 +577,82 @@ if $project_context && [ -n "$overlay_skill_dir" ]; then
             overlay_label=$(echo "$project_overlay" | sed 's/^ac-//' | tr '[:lower:]' '[:upper:]')
             msg="${msg} ${overlay_label} references to read: ${refs}"
         fi
+    fi
+fi
+
+# --- Session FSM transition ---
+# Map the detected skill to a session phase and attempt a transition.
+# This is advisory — a blocked gate just prints a warning, it doesn't
+# prevent skill loading (the LLM still needs the skill to do its work).
+_SESSION_DIR="${T3_SESSION_DIR:-/tmp/t3-sessions}"
+mkdir -p "$_SESSION_DIR"
+# Scope session to ticket dir (quality gates are per-ticket, not per-conversation)
+_ticket_dir=""
+_search_dir="$PWD"
+while [ "$_search_dir" != "/" ]; do
+    [ -f "$_search_dir/.env.worktree" ] && { _ticket_dir="$_search_dir"; break; }
+    _search_dir=$(dirname "$_search_dir")
+done
+if [ -n "$_ticket_dir" ]; then
+    _session_hash=$(echo -n "$_ticket_dir" | shasum -a 256 | cut -c1-12)
+    _session_file="$_SESSION_DIR/${_session_hash}.session.json"
+else
+    _session_file="$_SESSION_DIR/global.session.json"
+fi
+
+_skill_to_phase() {
+    case "$1" in
+        t3-ticket)   echo "scoping" ;;
+        t3-code)     echo "coding" ;;
+        t3-test)     echo "testing" ;;
+        t3-debug)    echo "debugging" ;;
+        t3-review)   echo "reviewing" ;;
+        t3-ship)     echo "shipping" ;;
+        t3-review-request) echo "requesting_review" ;;
+        t3-retro)    echo "retrospecting" ;;
+        *)           echo "" ;;
+    esac
+}
+
+target_phase=$(_skill_to_phase "$intent")
+if [ -n "$target_phase" ]; then
+    # Read current session state (lightweight — just parse JSON)
+    current_phase="idle"
+    visited="idle"
+    if [ -f "$_session_file" ]; then
+        current_phase=$(python3 -c "import json; d=json.load(open('$_session_file')); print(d.get('state','idle'))" 2>/dev/null || echo "idle")
+        visited=$(python3 -c "import json; d=json.load(open('$_session_file')); print(' '.join(d.get('visited',[])))" 2>/dev/null || echo "idle")
+    fi
+
+    # Check quality gates (advisory warnings)
+    gate_warning=""
+    case "$target_phase" in
+        reviewing)
+            echo "$visited" | grep -q "testing" || gate_warning="⚠ Reviewing without testing first. Run /t3-test first, or use --force in t3 ship."
+            ;;
+        shipping)
+            echo "$visited" | grep -q "testing" || gate_warning="⚠ Shipping without testing. Run /t3-test first."
+            echo "$visited" | grep -q "reviewing" || gate_warning="⚠ Shipping without reviewing. Run /t3-review first."
+            ;;
+        requesting_review)
+            echo "$visited" | grep -q "shipping" || gate_warning="⚠ Requesting review without shipping. Run /t3-ship first."
+            ;;
+    esac
+
+    # Update session state (always — gates are advisory in the hook)
+    python3 -c "
+import json
+from pathlib import Path
+sf = Path('$_session_file')
+data = json.loads(sf.read_text()) if sf.is_file() else {'state': 'idle', 'visited': ['idle']}
+data['state'] = '$target_phase'
+if '$target_phase' not in data['visited']:
+    data['visited'].append('$target_phase')
+sf.write_text(json.dumps(data, indent=2) + '\n')
+" 2>/dev/null
+
+    if [ -n "$gate_warning" ]; then
+        msg="$msg\n$gate_warning"
     fi
 fi
 

@@ -11,6 +11,103 @@ from lib.ports import port_in_use
 
 _MAX_SCAN_DEPTH = 2
 _SHARED_REDIS_PORT = 6379
+_DEFAULT_POSTGRES_PORT = 5432
+
+
+_TRUTHY_VALUES = {"true", "1", "yes"}
+
+
+def share_db_server() -> bool:
+    """Return True when worktrees should share a single postgres server.
+
+    Controlled by T3_SHARE_DB_SERVER (default: true). When enabled,
+    ``find_free_ports`` reuses the postgres port from the first existing
+    worktree (or the default 5432) instead of allocating a new one per
+    worktree. Each worktree still gets its own database name.
+    """
+    return os.environ.get("T3_SHARE_DB_SERVER", "true").lower() in _TRUTHY_VALUES
+
+
+def _detect_shared_postgres_port(exclude_dir: str = "") -> int:
+    """Find the postgres port already in use by another worktree.
+
+    Scans .env.worktree files for POSTGRES_PORT. Returns the first found,
+    or _DEFAULT_POSTGRES_PORT if none exist (first worktree scenario).
+    """
+    ws = workspace_dir()
+    for root, dirs, files in os.walk(ws):
+        depth = root[len(ws) :].count(os.sep)
+        if depth > _MAX_SCAN_DEPTH:
+            dirs.clear()
+            continue
+        if ".env.worktree" not in files:
+            continue
+        envwt = Path(root) / ".env.worktree"
+        if envwt.is_symlink():
+            continue
+        if exclude_dir and str(envwt).startswith(exclude_dir + "/"):
+            continue
+        try:
+            port = read_env_key(str(envwt), "POSTGRES_PORT")
+        except OSError:
+            continue
+        try:
+            parsed = int(port) if port else 0
+        except ValueError:
+            parsed = 0
+        if parsed:
+            return parsed
+    return _DEFAULT_POSTGRES_PORT
+
+
+def load_env_worktree() -> None:
+    """Load .env.worktree into os.environ (KEY=VALUE lines, no shell expansion).
+
+    Searches upward from CWD for .env.worktree, then loads all KEY=VALUE lines
+    into the process environment. Existing env vars are NOT overwritten.
+    """
+    cwd = Path(_effective_cwd())
+    for parent in [cwd, *cwd.parents]:
+        envfile = parent / ".env.worktree"
+        if envfile.is_file():
+            with envfile.open(encoding="utf-8") as f:
+                for raw_line in f:
+                    stripped = raw_line.strip()
+                    if not stripped or stripped.startswith("#") or "=" not in stripped:
+                        continue
+                    key, _, value = stripped.partition("=")
+                    os.environ.setdefault(key.strip(), value.strip())
+            return
+
+
+_SKILL_ROOTS = (
+    "~/.agents/skills",
+    "~/.claude/skills",
+    "~/.codex/skills",
+    "~/.cursor/skills",
+    "~/.copilot/skills",
+)
+
+
+def skill_dirs() -> list[tuple[Path, str]]:
+    """Yield (resolved_path, skill_name) for every installed skill directory."""
+    results: list[tuple[Path, str]] = []
+    seen: set[str] = set()
+    for root_pattern in _SKILL_ROOTS:
+        root = Path(root_pattern).expanduser()
+        if not root.is_dir():
+            continue
+        for entry in sorted(root.iterdir()):
+            if not entry.is_dir() and not entry.is_symlink():
+                continue
+            name = entry.name
+            if name in seen:
+                continue
+            seen.add(name)
+            resolved = entry.resolve()
+            if resolved.is_dir():
+                results.append((resolved, name))
+    return results
 
 
 def _effective_cwd() -> str:
@@ -219,7 +316,11 @@ def _find_free_ports_unlocked(
 
     backend_port = _next_free_port(8001, used_be, check_system=check_system)
     frontend_port = _next_free_port(4201, used_fe, check_system=check_system)
-    postgres_port = _next_free_port(5433, used_pg, check_system=check_system)
+
+    if share_db_server():
+        postgres_port = _detect_shared_postgres_port(exclude_dir)
+    else:
+        postgres_port = _next_free_port(5433, used_pg, check_system=check_system)
 
     return backend_port, frontend_port, postgres_port, _SHARED_REDIS_PORT
 
@@ -256,11 +357,50 @@ def find_free_ports(
         fd.close()
 
 
+def _port_held_by_worktree(port: int) -> bool:
+    """Return True if the process listening on *port* belongs to this worktree.
+
+    A "worktree process" is one whose command line contains the ticket dir path
+    or is a known service (postgres, redis, node/nx) started for this worktree.
+    When the port is held by our own process, ``revalidate_ports`` should NOT
+    reallocate — the service is intentionally running.
+    """
+    ticket_dir = os.environ.get("TICKET_DIR", "")
+    if not ticket_dir:
+        return False
+    result = subprocess.run(
+        ["lsof", "-ti", f":{port}", "-sTCP:LISTEN"],
+        capture_output=True,
+        text=True,
+    )
+    if not result.stdout.strip():
+        return False
+    for pid in result.stdout.strip().split("\n"):
+        # Read the command line of the process
+        ps_result = subprocess.run(
+            ["ps", "-p", pid, "-o", "command="],
+            capture_output=True,
+            text=True,
+        )
+        cmdline = ps_result.stdout.strip()
+        if ticket_dir in cmdline:
+            return True
+        # Also match postgres/redis containers that serve this worktree
+        wt_dir = os.environ.get("WT_DIR", "")
+        if wt_dir and wt_dir in cmdline:
+            return True
+    return False
+
+
 def revalidate_ports() -> dict[str, int] | None:
     """Check if the ports in the current env are actually free on the system.
 
-    If any port is in use, reallocate ALL ports via ``find_free_ports`` and
-    rewrite ``$TICKET_DIR/.env.worktree`` (preserving non-port lines).
+    If any port is in use **by a foreign process**, reallocate ALL ports via
+    ``find_free_ports`` and rewrite ``$TICKET_DIR/.env.worktree``.
+
+    Ports held by the current worktree's own processes (backend, frontend,
+    postgres) are considered expected and are NOT reallocated.
+
     Returns a dict of updated env-var names → new values, or *None* if no
     changes were needed.
     """
@@ -270,7 +410,7 @@ def revalidate_ports() -> dict[str, int] | None:
         "POSTGRES_PORT": int(os.environ.get("POSTGRES_PORT") or "0"),
     }
 
-    conflicts = {k: v for k, v in port_keys.items() if v and port_in_use(v)}
+    conflicts = {k: v for k, v in port_keys.items() if v and port_in_use(v) and not _port_held_by_worktree(v)}
     if not conflicts:
         return None
 

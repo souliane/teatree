@@ -71,5 +71,52 @@ def info() -> list[dict[str, Any]]:
     return result
 
 
+class MissingOverrideError(RuntimeError):
+    """Raised when a mandatory extension point has no project-layer override."""
+
+
+# Extension points that MUST be overridden by a project overlay for the
+# lifecycle workflow to function. The default handlers are no-ops.
+_MANDATORY_FOR_SERVICES = ("wt_run_backend", "wt_run_frontend")
+_MANDATORY_FOR_DB = ("wt_db_import", "wt_post_db")
+
+
+def validate_overrides(phase: str = "services") -> None:
+    """Verify that mandatory extension points have project-layer overrides.
+
+    Raises MissingOverrideError with a detailed message if any mandatory EP
+    is still at default/framework layer when it should be at project layer.
+
+    Phases:
+    - "services": checks wt_run_backend, wt_run_frontend
+    - "db": checks wt_db_import, wt_post_db
+    """
+    required = {
+        "services": _MANDATORY_FOR_SERVICES,
+        "db": _MANDATORY_FOR_DB,
+    }.get(phase, _MANDATORY_FOR_SERVICES)
+
+    missing = []
+    for ep in required:
+        layer = active_layer(ep)
+        if layer != "project":
+            missing.append(f"  - {ep} (current layer: {layer or 'not registered'})")
+
+    if missing:
+        import os
+
+        overlay = os.environ.get("T3_OVERLAY", "")
+        pythonpath = os.environ.get("PYTHONPATH", "")
+        msg = (
+            "Mandatory extension points not overridden by project overlay:\n" + "\n".join(missing) + "\n\n"
+            f"This usually means the project overlay's scripts/ directory is not on PYTHONPATH.\n"
+            f"  T3_OVERLAY={overlay}\n"
+            f"  PYTHONPATH={pythonpath}\n\n"
+            f"Fix: ensure T3_OVERLAY is set in ~/.teatree and its scripts/ dir is on PYTHONPATH.\n"
+            f'  export PYTHONPATH="$T3_REPO/scripts:$T3_OVERLAY/scripts"'
+        )
+        raise MissingOverrideError(msg)
+
+
 def clear() -> None:
     _registry.clear()

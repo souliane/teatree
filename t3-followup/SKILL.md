@@ -229,8 +229,8 @@ Group remaining MRs by their review channel. Present a dry-run table:
 
 | # | Channel | MRs | Last reminded |
 |---|---------|-----|---------------|
-| 1 | #tech_backend | !123, !456 | 2 days ago |
-| 2 | #tech_frontend | !789 | never |
+| 1 | #code-review | !123, !456 | 2 days ago |
+| 2 | #code-review | !789 | never |
 
 **Then confirm each MR individually** — present them one by one and ask "include this MR? [yes/no]". Remove declined MRs from the batch. This lets the user cherry-pick which MRs to nudge about.
 

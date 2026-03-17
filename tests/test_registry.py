@@ -1,7 +1,16 @@
 """Tests for _registry.py — extension point registry."""
 
 import pytest
-from lib.registry import call, clear, get, info, register, registered_points
+from lib.registry import (
+    MissingOverrideError,
+    call,
+    clear,
+    get,
+    info,
+    register,
+    registered_points,
+    validate_overrides,
+)
 
 
 def _noop(**_kwargs: object) -> str:
@@ -105,3 +114,39 @@ class TestClearAndPoints:
     def test_info_empty_registry(self) -> None:
         clear()
         assert info() == []
+
+
+class TestValidateOverrides:
+    def test_passes_when_project_layer_registered(self) -> None:
+        register("wt_run_backend", _project, "project")
+        register("wt_run_frontend", _project, "project")
+        validate_overrides("services")  # should not raise
+
+    def test_raises_when_only_default_layer(self) -> None:
+        register("wt_run_backend", _noop, "default")
+        register("wt_run_frontend", _noop, "default")
+        with pytest.raises(MissingOverrideError, match="wt_run_backend"):
+            validate_overrides("services")
+
+    def test_raises_when_framework_but_not_project(self) -> None:
+        register("wt_run_backend", _framework, "framework")
+        register("wt_run_frontend", _project, "project")
+        with pytest.raises(MissingOverrideError, match="wt_run_backend"):
+            validate_overrides("services")
+
+    def test_message_includes_pythonpath_hint(self) -> None:
+        register("wt_run_backend", _noop, "default")
+        register("wt_run_frontend", _noop, "default")
+        with pytest.raises(MissingOverrideError, match="PYTHONPATH"):
+            validate_overrides("services")
+
+    def test_db_phase_checks_db_points(self) -> None:
+        register("wt_db_import", _noop, "default")
+        register("wt_post_db", _noop, "default")
+        with pytest.raises(MissingOverrideError, match="wt_db_import"):
+            validate_overrides("db")
+
+    def test_raises_when_point_not_registered_at_all(self) -> None:
+        # wt_run_backend/frontend not registered at all
+        with pytest.raises(MissingOverrideError, match="not registered"):
+            validate_overrides("services")

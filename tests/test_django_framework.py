@@ -100,9 +100,10 @@ class TestWtRunBackend:
         # Create docker-compose.yml in main repo
         (workspace / "my-project" / "docker-compose.yml").touch()
 
+        monkeypatch.setenv("BACKEND_PORT", "8042")
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0)
-            wt_run_backend("8042")
+            wt_run_backend()
 
         calls = mock_run.call_args_list
         # First call: docker compose up
