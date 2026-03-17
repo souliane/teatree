@@ -148,6 +148,7 @@ def main(
     description: str = typer.Argument(..., help="Short description for the branch name"),
     repos: list[str] = typer.Argument(..., help="Repository names to create worktrees for"),
 ) -> None:
+    """Create ticket workspace with git worktrees for each repo."""
     sys.exit(ws_ticket(ticket_number, description, repos))
 
 

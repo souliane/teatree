@@ -79,13 +79,13 @@ If the environment seems incomplete (missing shell functions, hooks not firing, 
 
 ### Worktree Creation
 
-- `t3_ticket` — creates a ticket directory with git worktrees for each affected repo.
+- `t3 workspace ticket` — creates a ticket directory with git worktrees for each affected repo.
 - Convention: one directory per ticket, one worktree per repo.
-- **NEVER use raw `git worktree add`, `git checkout -b`, or `git branch` directly.** Always use `t3_ticket` — it creates the correct directory structure (`<ticket>/<repo>/`) and handles branch naming. Raw git commands produce flat worktrees that break the ticket-directory convention and confuse subsequent tooling.
+- **NEVER use raw `git worktree add`, `git checkout -b`, or `git branch` directly.** Always use `t3 workspace ticket` — it creates the correct directory structure (`<ticket>/<repo>/`) and handles branch naming. Raw git commands produce flat worktrees that break the ticket-directory convention and confuse subsequent tooling.
 
 ### Worktree Setup
 
-- `t3_setup` — full environment provisioning for a worktree:
+- `t3 lifecycle setup` — full environment provisioning for a worktree:
   - Symlinks (`.venv`, `node_modules`, `.python-version`, `.data`, project-specific)
   - Environment files (`.env`, `.env.worktree`, `.env.local.*`)
   - DB provisioning (create DB, import from DSLR/dump, run migrations)
@@ -94,32 +94,32 @@ If the environment seems incomplete (missing shell functions, hooks not firing, 
 
 ### Database Management
 
-- `t3_db_refresh` — refresh worktree DB from DSLR snapshots or dump files.
-- `t3_restore_ci_db` — restore from the latest CI dump (extension point: `wt_restore_ci_db`).
-- `t3_reset_passwords` — reset all user passwords to a known value (extension point: `wt_reset_passwords`).
+- `t3 db refresh` — refresh worktree DB from DSLR snapshots or dump files.
+- `t3 db restore-ci` — restore from the latest CI dump (extension point: `wt_restore_ci_db`).
+- `t3 db reset-passwords` — reset all user passwords to a known value (extension point: `wt_reset_passwords`).
 
 ### Dev Servers
 
-- `t3_start` — full-stack startup (Docker services + migrations + backend + frontend).
-- `t3_backend` — start backend dev server only.
-- `t3_frontend` — start frontend dev server only.
-- `t3_build_frontend` — build frontend app for production/testing.
+- `t3 lifecycle start` — full-stack startup (Docker services + migrations + backend + frontend).
+- `t3 run backend` — start backend dev server only.
+- `t3 run frontend` — start frontend dev server only.
+- `t3 run build-frontend` — build frontend app for production/testing.
 
 ### Cleanup
 
-- `t3_clean` — prune merged worktrees, drop orphan DBs, remove stale directories.
+- `t3 workspace clean-all` — prune merged worktrees, drop orphan DBs, remove stale directories.
 
 ## Rules
 
 ### Never Hand-Edit Generated Files (Non-Negotiable)
 
-Setup tools (`t3_setup`, etc.) generate configuration files (`.env.worktree`, docker overrides, port allocations). **Manual edits create drift** and are overwritten on the next setup run.
+Setup tools (`t3 lifecycle setup`, etc.) generate configuration files (`.env.worktree`, docker overrides, port allocations). **Manual edits create drift** and are overwritten on the next setup run.
 
 When a generated file is wrong or incomplete, **re-run the setup tool** — don't manually patch the file. If setup fails, diagnose the root cause in the setup script (see `/t3-debug`), don't work around it.
 
 ### Never Run Infrastructure Commands Directly (Non-Negotiable)
 
-Use the provided shell functions (`t3_start`, `t3_backend`, `t3_frontend`, etc.) instead of running `docker compose`, language-specific dev servers, or build tools directly. The shell functions handle:
+Use the `t3` CLI (`t3 lifecycle start`, `t3 run backend`, `t3 run frontend`, etc.) instead of running `docker compose`, language-specific dev servers, or build tools directly. The CLI commands handle:
 
 - Environment variable loading from generated files
 - Service ordering (data store → migrations → application)
@@ -134,9 +134,9 @@ Each worktree gets its own **isolated environment** — dedicated database, port
 
 - Never point one worktree's frontend at another worktree's backend
 - Never use the main repo's database for worktree work
-- Never manually set ports — let `t3_setup` allocate them via `find_free_ports()`
+- Never manually set ports — let `t3 lifecycle setup` allocate them via `find_free_ports()`
 
-When testing an MR, create a full worktree (`t3_ticket` + `t3_setup` + `t3_start`).
+When testing an MR, create a full worktree (`t3 workspace ticket` + `t3 lifecycle setup` + `t3 lifecycle start`).
 
 ### Validate After Provisioning (Non-Negotiable)
 
@@ -148,7 +148,7 @@ After importing a database or downloading an artifact, always validate it:
 
 ### Service Startup Ordering (Non-Negotiable)
 
-Setup tools enforce ordering: **data store → migrations → application server**. Starting the application before migrations causes "relation does not exist" errors. Always use the orchestration functions (`t3_start`) rather than starting services individually.
+Setup tools enforce ordering: **data store → migrations → application server**. Starting the application before migrations causes "relation does not exist" errors. Always use the orchestration functions (`t3 lifecycle start`) rather than starting services individually.
 
 ### Never Delegate Skill-Dependent Work to Sub-Agents (Non-Negotiable)
 
@@ -166,20 +166,83 @@ For the full extension points table, override chain, and project skill creation 
 
 Summary: 23 extension points with 3-layer priority (**default** < **framework** < **project**). Key points: `wt_db_import`, `wt_post_db`, `wt_env_extra`, `wt_run_backend`, `wt_run_frontend`, `wt_create_mr`, `wt_monitor_pipeline`, `wt_send_review_request`.
 
-## Script Reference
+## `t3` CLI (Unified Entry Point)
 
-| Script | Purpose |
-|--------|---------|
-| `t3_ticket` | Create ticket worktrees |
-| `t3_setup` | Full worktree environment setup |
-| `t3_db_refresh` | Refresh DB from DSLR/dumps |
-| `t3_restore_ci_db` | Restore from CI dump (ext: `wt_restore_ci_db`) |
-| `t3_reset_passwords` | Reset all user passwords (ext: `wt_reset_passwords`) |
-| `t3_start` | Full-stack startup |
-| `t3_backend` | Backend dev server |
-| `t3_frontend` | Frontend dev server |
-| `t3_build_frontend` | Build frontend app |
-| `t3_clean` | Prune stale worktrees |
+All worktree operations go through the `t3` command. It wraps the state machine, extension points, and utility scripts behind a single entry point. Available after sourcing `bootstrap.sh`. State is persisted in `.state.json` within the ticket directory.
+
+```mermaid
+stateDiagram-v2
+    provisioned --> provisioned : db_refresh
+    services_up --> provisioned : db_refresh
+    ready --> provisioned : db_refresh
+    created --> provisioned : provision
+    provisioned --> services_up : start_services
+    created --> created : teardown
+    provisioned --> created : teardown
+    ready --> created : teardown
+    services_up --> created : teardown
+    services_up --> ready : verify
+```
+
+### `t3 lifecycle` — Lifecycle state machine
+
+| Command | Purpose |
+|---------|---------|
+| `t3 lifecycle status [--json]` | Show current state, ports, DB, available transitions |
+| `t3 lifecycle setup [VARIANT]` | Provision worktree: ports, env, symlinks, DB |
+| `t3 lifecycle start` | Start dev servers (backend + frontend), then verify |
+| `t3 lifecycle clean` | Teardown worktree — stop services, drop DB, clean state |
+| `t3 lifecycle diagram` | Print state diagram as Mermaid |
+
+### `t3 workspace` — Workspace management
+
+| Command | Purpose |
+|---------|---------|
+| `t3 workspace ticket <NUM> <DESC> <REPO...>` | Create ticket workspace with git worktrees |
+| `t3 workspace finalize [MSG]` | Squash worktree commits + rebase on default branch |
+| `t3 workspace clean-all` | Prune merged/gone worktrees and branches across all repos |
+
+### `t3 run` — Dev servers and test runners
+
+| Command | Purpose |
+|---------|---------|
+| `t3 run backend` | Start backend dev server |
+| `t3 run frontend` | Start frontend dev server |
+| `t3 run build-frontend` | Build frontend app |
+| `t3 run tests` | Run project tests |
+| `t3 run verify` | Verify dev services respond via HTTP |
+
+### `t3 ci` — CI pipeline interaction
+
+| Command | Purpose |
+|---------|---------|
+| `t3 ci cancel` | Cancel stale CI pipelines |
+| `t3 ci trigger-e2e` | Trigger E2E tests on CI |
+| `t3 ci fetch-errors` | Fetch error logs from CI |
+| `t3 ci fetch-failed-tests` | Extract failed test IDs from CI |
+| `t3 ci quality-check` | Run quality analysis (SonarQube, etc.) |
+
+### `t3 db` — Database operations
+
+| Command | Purpose |
+|---------|---------|
+| `t3 db refresh` | Re-import database from dump/DSLR |
+| `t3 db restore-ci` | Restore database from CI dump |
+| `t3 db reset-passwords` | Reset all user passwords to a known value |
+
+### `t3 mr` — Merge request and ticket workflow
+
+| Command | Purpose |
+|---------|---------|
+| `t3 mr create` | Create merge request |
+| `t3 mr check-gates` | Check transition gates for ticket status |
+| `t3 mr fetch-issue` | Fetch issue context from tracker |
+| `t3 mr detect-tenant` | Detect tenant variant |
+| `t3 mr followup` | Collect followup dashboard data |
+
+### Project overlay commands
+
+Project overlays can register additional `t3` subcommand groups by implementing `create_cli_group()` in their `lib/project_hooks.py`. The function returns `(name, help_text, typer.Typer)` — the group appears as `t3 <name> ...`. Extension point commands overridden by the overlay are tagged with `[<name>]` in the help output.
 
 ## Troubleshooting
 

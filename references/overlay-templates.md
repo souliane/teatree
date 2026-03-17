@@ -156,25 +156,25 @@ function _<project>_py {
 }
 
 # ============================================================
-# User-facing wrappers
+# Convenience wrapper: re-source + start dev session
 # ============================================================
 
-function t3_start      { _ensure_env; _<project>_py start_session.py "$@"; }
-function t3_backend    { _ensure_env; _<project>_py run_backend.py "$@"; }
-function t3_frontend   { _ensure_env; _<project>_py run_frontend.py "$@"; }
-
-# Re-source all scripts + start dev session
 function <project>_start {
   source "$_T3_SCRIPTS_DIR/lib/bootstrap.sh"
   source "$_<PROJECT>_SCRIPTS_DIR/lib/bootstrap.sh"
 
-  # Auto-run t3_setup if .env.worktree is missing (fresh worktree)
+  # Auto-run setup if .env.worktree is missing (fresh worktree)
   if [[ ! -f .env.worktree && ! -f ../.env.worktree ]]; then
-    echo "No .env.worktree found — running t3_setup first..."
-    t3_setup "$@" || return $?
+    echo "No .env.worktree found — running t3 lifecycle setup first..."
+    t3 lifecycle setup "$@" || return $?
   fi
-  t3_start "$@"
+  t3 lifecycle start "$@"
 }
+
+# NOTE: Individual commands (run backend, run frontend, etc.) are registered
+# via create_cli_group() in lib/project_hooks.py — no shell wrappers needed.
+# Extension points (wt_run_backend, wt_run_frontend, etc.) are registered
+# via register_<project>() in lib/<project>_hooks.py.
 ```
 
 Replace `<PROJECT>` with the uppercase project name (e.g., `ACME`) and `<project>` with the lowercase name throughout.
@@ -270,7 +270,7 @@ def register_<project>() -> None:
 
     # --- wt_start_session: full dev session entrypoint ---
     # def wt_start_session(*args: str) -> int:
-    #     # Self-heal: run t3_setup if needed, then start everything
+    #     # Self-heal: run t3 lifecycle setup if needed, then start everything
     #     return 0
     # register("wt_start_session", wt_start_session, "project")
 

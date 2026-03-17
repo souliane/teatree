@@ -47,7 +47,7 @@ graph TB
 | `wt_trigger_e2e` | Print "not configured" | — | Trigger E2E tests on CI |
 | `wt_quality_check` | Print "not configured" | — | Quality analysis (SonarQube, CodeClimate, etc.) |
 | `wt_fetch_ci_errors` | Print "not configured" | — | Fetch error logs from CI (distinct from failed test IDs) |
-| `wt_start_session` | Print "not configured" | — | Full dev session entrypoint: self-heal (`t3_setup` if needed) + start everything |
+| `wt_start_session` | Print "not configured" | — | Full dev session entrypoint: self-heal (`t3 lifecycle setup` if needed) + start everything |
 | `ticket_check_deployed` | Return False | — | Check if merged code is deployed to target env (CI pipeline, GCP, k8s) |
 | `ticket_update_external_tracker` | No-op (log warning) | — | Update ticket status in Notion/Jira/external tracker |
 | `ticket_get_mrs` | List MRs by branch name via issue tracker CLI | — | Custom MR discovery for multi-repo tickets |
@@ -59,12 +59,12 @@ graph TB
 ```bash
 # Sourcing order in .zshrc:
 source $T3_REPO/scripts/lib/bootstrap.sh
-# ↑ defines thin bash wrappers: t3_ticket, t3_setup, etc.
-# ↑ each wrapper calls: PYTHONPATH=<scripts_dir> python3 <script>.py
+# ↑ defines the `t3` shell function (delegates to t3_cli.py)
+# ↑ all commands (t3 workspace ticket, t3 lifecycle setup, etc.) run in-process
 
 source <agent-skills-dir>/<project-skill>/scripts/lib/bootstrap.sh  # project overrides
-# ↑ overrides: t3_start, t3_backend, etc. (project-specific)
-# ↑ each wrapper calls _ensure_env first, then Python
+# ↑ registers extension point overrides (wt_run_backend, etc.) via lib.init
+# ↑ registers CLI group via create_cli_group() in lib/project_hooks.py
 ```
 
 Inside each Python script:

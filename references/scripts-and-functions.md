@@ -70,26 +70,65 @@ export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-my-backend}"
 
 Main repo keeps its default name. Worktrees get unique names → parallel containers.
 
-## User-Facing Functions
+## `t3` CLI (Unified Entry Point)
 
-| Function | Description |
+All operations go through the `t3` command. Commands are grouped by concern. The individual `t3_*` shell functions have been consolidated into nested CLI subcommands.
+
+### `t3 lifecycle` — Lifecycle state machine
+
+| Command | Description |
 |---|---|
-| `t3_ticket <ticket> <description> <repo1> [...]` | Create ticket workspace with git worktrees |
-| `t3_setup [variant]` | Full worktree setup: symlinks + env + DB + DSLR |
-| `t3_db_refresh [variant]` | Refresh worktree DB (DSLR or full reimport) |
-| `t3_finalize [msg]` | Squash worktree commits + rebase on default branch |
-| `t3_clean` | Prune merged/gone worktrees and branches |
-| `t3_backend` | Start backend (delegates to `wt_run_backend`) |
-| `t3_frontend` | Start frontend (delegates to `wt_run_frontend`) |
-| `t3_build_frontend` | Build frontend (delegates to `wt_build_frontend`) |
-| `t3_tests` | Run tests (delegates to `wt_run_tests`) |
-| `t3_restore_ci_db` | Restore DB from CI dump (delegates to `wt_restore_ci_db`) |
-| `t3_reset_passwords` | Reset all user passwords (delegates to `wt_reset_passwords`) |
-| `t3_trigger_e2e` | Trigger E2E tests on CI (delegates to `wt_trigger_e2e`) |
-| `t3_quality_check` | Quality analysis — SonarQube, etc. (delegates to `wt_quality_check`) |
-| `t3_fetch_ci_errors` | Fetch error logs from CI (delegates to `wt_fetch_ci_errors`) |
-| `t3_fetch_failed_tests` | Extract failed test IDs from CI (delegates to `wt_fetch_failed_tests`) |
-| `t3_start` | Orchestrate: detect variant → build → run frontend bg → run backend fg |
+| `t3 lifecycle status [--json]` | Show current worktree state, ports, DB, and available transitions |
+| `t3 lifecycle setup [VARIANT]` | Provision worktree: ports, env, symlinks, DB |
+| `t3 lifecycle start` | Start dev servers (backend + frontend), then verify |
+| `t3 lifecycle clean` | Teardown worktree — stop services, drop DB, clean state |
+| `t3 lifecycle diagram` | Print the lifecycle state diagram as Mermaid |
+
+### `t3 workspace` — Workspace management
+
+| Command | Description |
+|---|---|
+| `t3 workspace ticket <NUM> <DESC> <REPO...>` | Create ticket workspace with git worktrees |
+| `t3 workspace finalize [MSG]` | Squash worktree commits + rebase on default branch |
+| `t3 workspace clean-all` | Prune merged/gone worktrees and branches across all repos |
+
+### `t3 run` — Dev servers and test runners
+
+| Command | Description |
+|---|---|
+| `t3 run backend` | Start backend dev server |
+| `t3 run frontend` | Start frontend dev server |
+| `t3 run build-frontend` | Build frontend app |
+| `t3 run tests` | Run project tests |
+| `t3 run verify` | Verify dev services respond via HTTP |
+
+### `t3 ci` — CI pipeline interaction
+
+| Command | Description |
+|---|---|
+| `t3 ci cancel` | Cancel stale CI pipelines |
+| `t3 ci trigger-e2e` | Trigger E2E tests on CI |
+| `t3 ci fetch-errors` | Fetch error logs from CI |
+| `t3 ci fetch-failed-tests` | Extract failed test IDs from CI |
+| `t3 ci quality-check-check` | Run quality analysis (SonarQube, etc.) |
+
+### `t3 db` — Database operations
+
+| Command | Description |
+|---|---|
+| `t3 db refresh` | Re-import database from dump/DSLR |
+| `t3 db restore-ci` | Restore database from CI dump |
+| `t3 db reset-passwords` | Reset all user passwords to a known value |
+
+### `t3 mr` — Merge request and ticket workflow
+
+| Command | Description |
+|---|---|
+| `t3 mr create` | Create merge request |
+| `t3 mr check-gates` | Check transition gates for ticket status |
+| `t3 mr fetch-issue` | Fetch issue context from tracker |
+| `t3 mr detect-tenant` | Detect tenant variant |
+| `t3 mr followup` | Collect followup dashboard data |
 
 ## Examples
 
@@ -97,9 +136,9 @@ Main repo keeps its default name. Worktrees get unique names → parallel contai
 
 User says: "Set up ticket 1234 for my-backend and my-frontend"
 
-1. `t3_ticket 1234 fix-address-fields my-backend my-frontend`
-2. `cd $T3_WORKSPACE_DIR/<prefix>-my-backend-1234-fix-address-fields/my-backend && t3_setup`
-3. `cd $T3_WORKSPACE_DIR/<prefix>-my-backend-1234-fix-address-fields/my-frontend && t3_setup`
+1. `t3 workspace ticket 1234 fix-address-fields my-backend my-frontend`
+2. `cd $T3_WORKSPACE_DIR/<prefix>-my-backend-1234-fix-address-fields/my-backend && t3 lifecycle setup`
+3. `cd $T3_WORKSPACE_DIR/<prefix>-my-backend-1234-fix-address-fields/my-frontend && t3 lifecycle setup`
 
 Result: Two worktrees with isolated DBs, services, and env files ready.
 
@@ -107,7 +146,7 @@ Result: Two worktrees with isolated DBs, services, and env files ready.
 
 User says: "My DB is outdated, refresh it"
 
-1. `t3_db_refresh my-variant`
+1. `t3 db refresh`
 
 Result: DSLR snapshot or fresh dump imported, migrations applied, superuser recreated.
 
@@ -115,6 +154,6 @@ Result: DSLR snapshot or fresh dump imported, migrations applied, superuser recr
 
 User says: "Squash my commits and rebase"
 
-1. `t3_finalize "feat(addresses): add postal code validation"`
+1. `t3 workspace finalize "feat(addresses): add postal code validation"`
 
 Result: All worktree commits squashed into one, rebased on the default branch.

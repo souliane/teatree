@@ -157,6 +157,7 @@ app = typer.Typer(add_completion=False)
 def main(
     msg: list[str] | None = typer.Argument(None, help="Commit message words (joined with spaces)"),
 ) -> None:
+    """Squash worktree commits and rebase on default branch."""
     sys.exit(wt_finalize(" ".join(msg) if msg else ""))
 
 

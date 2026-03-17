@@ -21,9 +21,9 @@ Running tests, analyzing failures, quality checks, CI interaction, test plans, a
 
 ### Backend Tests
 
-**Prerequisites:** Docker services (Postgres, Redis) must be running. Start them via `t3_start` (or the project's equivalent `t3_*` wrapper from `/t3-workspace`) rather than raw `docker compose`. Read the project's test reference (e.g. `references/running-tests-and-lint.md`) for the full setup steps.
+**Prerequisites:** Docker services (Postgres, Redis) must be running. Start them via `t3 lifecycle start` (see `/t3-workspace`) rather than raw `docker compose`. Read the project's test reference (e.g. `references/running-tests-and-lint.md`) for the full setup steps.
 
-- `t3_tests` — run the project test suite (extension point: `wt_run_tests`).
+- `t3 run tests` — run the project test suite (extension point: `wt_run_tests`).
 - Flags: `--reuse-db`, `--failed-first`, optional `--parallel`.
 - Always run with `--reuse-db` for speed unless schema changed.
 - Use `--failed-first` to quickly re-verify fixes.
@@ -37,9 +37,9 @@ Running tests, analyzing failures, quality checks, CI interaction, test plans, a
 
 - Playwright-based E2E tests.
 - **Always run headless** with `CI=1`.
-- `t3_trigger_e2e` — trigger E2E tests on CI (extension point: `wt_trigger_e2e`).
+- `t3 ci trigger-e2e` — trigger E2E tests on CI (extension point: `wt_trigger_e2e`).
 
-**Full worktree per MR (Non-Negotiable):** Each MR under test MUST have its own full worktree setup (backend + frontend via `t3_setup` + `t3_start`). Never mix backends from one worktree with frontends from another. Never patch an incomplete worktree by hand — if it's missing repos, env files, or DB, delete it and start over with `t3_ticket`. Anti-pattern: manually adding repos with `git worktree add`, copying env files, editing `.env.worktree` by hand.
+**Full worktree per MR (Non-Negotiable):** Each MR under test MUST have its own full worktree setup (backend + frontend via `t3 lifecycle setup` + `t3 lifecycle start`). Never mix backends from one worktree with frontends from another. Never patch an incomplete worktree by hand — if it's missing repos, env files, or DB, delete it and start over with `t3 workspace ticket`. Anti-pattern: manually adding repos with `git worktree add`, copying env files, editing `.env.worktree` by hand.
 
 **E2E for backend/API changes (Non-Negotiable):** When backend or microservice changes affect data visible in the frontend (e.g., webhook payload fields, API serializer fields, new model fields exposed via API), E2E tests are still required even if there is no frontend MR. The frontend form already has the fields — E2E proves the end-to-end data flow. Do NOT skip E2E just because the change is "backend-only."
 
@@ -55,7 +55,7 @@ E2E and integration tests ideally live in the project repo they test (e.g., the 
 - Structure tests by app and feature: `tests/<app>/<feature-area>/<test-file>`
 - Store artifacts (screenshots, recordings) in a git-tracked `artifacts/<TICKET>/` directory for proof.
 
-**Prerequisites:** Always start dev servers via `t3_start` (see `/t3-workspace`) before running tests. Never start services manually. Before running E2E tests, verify that **translations are loaded** — the frontend i18n directory is gitignored and only populated at startup (by `t3_start`). If the frontend was started manually, translations will be missing. Quick check: open any page and confirm labels show human-readable text, not raw keys like `app.feature.xxx.label`.
+**Prerequisites:** Always start dev servers via `t3 lifecycle start` (see `/t3-workspace`) before running tests. Never start services manually. Before running E2E tests, verify that **translations are loaded** — the frontend i18n directory is gitignored and only populated at startup (by `t3 lifecycle start`). If the frontend was started manually, translations will be missing. Quick check: open any page and confirm labels show human-readable text, not raw keys like `app.feature.xxx.label`.
 
 **Test depth (Non-Negotiable):** Don't just verify "page loads with 200". Read the source code to understand what the feature does, then test specific behaviors: form fields, filters, CRUD operations, access control, edge cases.
 
@@ -104,13 +104,13 @@ When reviewing open MRs, test all MRs that change visible behavior — not just 
 
 ### SonarQube Quality Check
 
-- `t3_quality_check` — quality analysis (extension point: `wt_quality_check`).
+- `t3 ci quality-check-check` — quality analysis (extension point: `wt_quality_check`).
 - Run before finalizing to catch quality issues early.
 
 ### CI Interaction
 
-- `t3_fetch_failed_tests` — extract failed test node IDs from CI (extension point: `wt_fetch_failed_tests`).
-- `t3_fetch_ci_errors` — extract error logs from CI (extension point: `wt_fetch_ci_errors`).
+- `t3 ci fetch-failed-tests` — extract failed test node IDs from CI (extension point: `wt_fetch_failed_tests`).
+- `t3 ci fetch-errors` — extract error logs from CI (extension point: `wt_fetch_ci_errors`).
 - Run failed tests locally to reproduce before fixing.
 
 ### CI Pipeline Monitoring
@@ -122,7 +122,7 @@ When reviewing open MRs, test all MRs that change visible behavior — not just 
 
 When CI fails:
 
-1. Fetch failures (`t3_fetch_failed_tests`)
+1. Fetch failures (`t3 ci fetch-failed-tests`)
 2. **Check if the failure is pre-existing** (file never touched by branch) → if so, delegate to `/t3-ship` § "Isolate Unrelated Fixes"
 3. Run failed tests locally to reproduce
 4. Fix the issue
@@ -212,11 +212,11 @@ When editing: check the verified boxes (`- [ ]` → `- [x]`), insert screenshot 
 
 | Script | Purpose |
 |--------|---------|
-| `t3_tests` | Run project tests (ext: `wt_run_tests`) |
-| `t3_fetch_failed_tests` | Extract failed test IDs from CI (ext: `wt_fetch_failed_tests`) |
-| `t3_fetch_ci_errors` | Extract error logs from CI (ext: `wt_fetch_ci_errors`) |
-| `t3_quality_check` | Quality analysis (ext: `wt_quality_check`) |
-| `t3_trigger_e2e` | Trigger E2E tests on CI (ext: `wt_trigger_e2e`) |
+| `t3 run tests` | Run project tests (ext: `wt_run_tests`) |
+| `t3 ci fetch-failed-tests` | Extract failed test IDs from CI (ext: `wt_fetch_failed_tests`) |
+| `t3 ci fetch-errors` | Extract error logs from CI (ext: `wt_fetch_ci_errors`) |
+| `t3 ci quality-check-check` | Quality analysis (ext: `wt_quality_check`) |
+| `t3 ci trigger-e2e` | Trigger E2E tests on CI (ext: `wt_trigger_e2e`) |
 
 ## Verification Before Claims
 
@@ -235,8 +235,16 @@ When editing: check the verified boxes (`- [ ]` → `- [x]`), insert screenshot 
 
 Before claiming E2E success or posting screenshots as evidence, **visually inspect every screenshot** for environment issues. Reject and fix if any of these are present:
 
-- **Missing translations:** Labels show raw keys like `app.feature.xxx.label` or `app.question.xxx` instead of human-readable text. Cause: frontend started without the translation sync step (handled by `t3_frontend` / `t3_start`). Fix: restart via `t3_start`.
-- **Missing static files:** Broken image icons, unstyled pages, or 404s for assets. Cause: static asset build/collection not run. Fix: restart via `t3_start` (which handles asset preparation).
+- **Missing translations:** Labels show raw keys like `app.feature.xxx.label` or `app.question.xxx` instead of human-readable text. Cause: frontend started without the translation sync step (handled by `t3 run frontend` / `t3 lifecycle start`). Fix: restart via `t3 lifecycle start`.
+- **Missing static files:** Broken image icons, unstyled pages, or 404s for assets. Cause: static asset build/collection not run. Fix: restart via `t3 lifecycle start` (which handles asset preparation).
 - **Console errors:** Open browser devtools and check for blocking JS errors before taking screenshots.
 
 A screenshot with raw translation keys is **not valid evidence** — it proves the environment was broken, not that the feature works.
+
+### Store Contamination Check (Non-Negotiable)
+
+E2E tests for features that load data via store dispatches (e.g., NgRx `loadResources`) must verify the data is loaded **from the tested page**, not from a prior navigation. If you visit page A (which loads resources into the store) and then navigate to page B (which reads from the store but never dispatches the load), page B will appear to work — but only because page A pre-populated the store.
+
+- **Each test must start from a clean state** — navigate directly to the page under test without visiting other pages first.
+- **Verify the page dispatches its own data load** — check the component source for the relevant dispatch call. If missing, the feature has a bug (empty dropdown, missing data), regardless of what the screenshot shows.
+- **Empty dropdowns/lists are a red flag** — if a modal or form shows "No items found", do NOT mark the test as passing. Investigate whether the data load is missing.

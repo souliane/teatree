@@ -580,6 +580,7 @@ def git_clean_them_all() -> int:
 
 
 def main() -> None:
+    """Prune merged/gone worktrees and branches across all repos."""
     sys.exit(git_clean_them_all())
 
 
