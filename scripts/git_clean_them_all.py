@@ -30,11 +30,32 @@ from lib.git import default_branch
 # Branches that must never be removed, even if they appear "merged into themselves".
 _PROTECTED_BRANCHES = frozenset({"main", "master", "development"})
 
-# Untracked paths that are safe to ignore during dirty checks.
-# Checked against the first path component of each untracked file.
-_IGNORED_UNTRACKED = frozenset(
-    {*os.environ.get("T3_SHARED_DIRS", ".data").split(","), "uv.lock"},
-)
+# Untracked paths safe to ignore during dirty checks.
+# Built from T3_SHARED_DIRS (always) + T3_CLEAN_IGNORE (user/overlay config).
+#
+# T3_CLEAN_IGNORE is a comma-separated list of patterns:
+#   - "dirname/"  → ignore any file whose first path component matches dirname
+#   - "filename"  → ignore any file whose basename matches exactly
+# Example: T3_CLEAN_IGNORE=staticfiles/,e2e/,max_migration.txt,.env
+_IGNORED_UNTRACKED_DIRS: frozenset[str] = frozenset()
+_IGNORED_UNTRACKED_FILES: frozenset[str] = frozenset()
+
+
+def _build_ignore_sets() -> tuple[frozenset[str], frozenset[str]]:
+    """Parse T3_SHARED_DIRS and T3_CLEAN_IGNORE into dir/file ignore sets."""
+    dirs: set[str] = set(os.environ.get("T3_SHARED_DIRS", ".data").split(","))
+    files: set[str] = {"uv.lock"}  # always safe to ignore
+
+    for raw in os.environ.get("T3_CLEAN_IGNORE", "").split(","):
+        entry = raw.strip()
+        if not entry:
+            continue
+        if entry.endswith("/"):
+            dirs.add(entry.rstrip("/"))
+        else:
+            files.add(entry)
+
+    return frozenset(dirs), frozenset(files)
 
 
 @dataclass
@@ -144,10 +165,21 @@ def _dirty_reason(wt_path: str) -> str:
         capture_output=True,
         text=True,
     )
-    significant = [
-        f for f in untracked.stdout.strip().splitlines() if f and f.split("/", 1)[0] not in _IGNORED_UNTRACKED
-    ]
+    significant = [f for f in untracked.stdout.strip().splitlines() if f and _is_significant_untracked(f)]
     return "untracked files" if significant else ""
+
+
+def _is_significant_untracked(path: str) -> bool:
+    """Return True if an untracked file represents real work, not an artifact."""
+    global _IGNORED_UNTRACKED_DIRS, _IGNORED_UNTRACKED_FILES
+    if not _IGNORED_UNTRACKED_DIRS and not _IGNORED_UNTRACKED_FILES:
+        _IGNORED_UNTRACKED_DIRS, _IGNORED_UNTRACKED_FILES = _build_ignore_sets()
+
+    first_component = path.split("/", 1)[0]
+    if first_component in _IGNORED_UNTRACKED_DIRS:
+        return False
+    basename = path.rsplit("/", 1)[-1]
+    return basename not in _IGNORED_UNTRACKED_FILES
 
 
 def _all_local_branches(repo: str, default: str) -> list[str]:
@@ -233,12 +265,11 @@ def _inventory(
             if not ticket_dir:
                 continue
 
-            is_removable = _is_branch_merged(
-                repo,
-                wt_branch,
-                default,
-            ) or _is_branch_gone(repo, wt_branch)
-            dirty = _dirty_reason(wt_path) if is_removable else ""
+            gone = _is_branch_gone(repo, wt_branch)
+            merged = _is_branch_merged(repo, wt_branch, default)
+            is_removable = merged or gone
+            # Skip dirty check if remote branch is gone (MR merged/closed on server)
+            dirty = "" if gone else (_dirty_reason(wt_path) if is_removable else "")
 
             ticket_map.setdefault(ticket_dir, []).append(
                 WorktreeInfo(repo, wt_path, wt_branch, is_removable, dirty),
@@ -478,11 +509,13 @@ def _remove_ticket_dir(ticket_dir: str) -> None:
     if not td.is_dir():
         return
 
-    # Remove known generated files
-    for name in (".env.worktree", "frontend.log"):
-        f = td / name
-        if f.is_file() or f.is_symlink():
-            f.unlink()
+    # Remove known generated files and their backup variants
+    for item in td.iterdir():
+        if not item.is_file() and not item.is_symlink():
+            continue
+        name = item.name
+        if name in {".env.worktree", "frontend.log", ".state.json"} or name.endswith("~"):
+            item.unlink()
 
     # Remove .direnv cache
     direnv = td / ".direnv"
@@ -528,31 +561,35 @@ def _process_ticket(ticket_dir: str, worktrees: list[WorktreeInfo]) -> None:
     td_name = Path(ticket_dir).name
     ticket_number = _extract_ticket_number(td_name)
 
+    removable = [wt for wt in worktrees if wt.is_removable and not wt.dirty_reason]
     not_merged = [wt for wt in worktrees if not wt.is_removable]
     dirty = [wt for wt in worktrees if wt.is_removable and wt.dirty_reason]
 
+    all_removable = not not_merged and not dirty
+
+    if all_removable:
+        # All worktrees merged/gone and clean — full cleanup
+        repos_str = ", ".join(Path(wt.wt_path).name for wt in worktrees)
+        print(f"  {td_name}: all merged ({repos_str}) — cleaning up")
+        _cleanup_docker_and_db(ticket_dir, worktrees, ticket_number)
+        for wt in worktrees:
+            _remove_worktree(wt.repo, wt.wt_path, wt.wt_branch)
+        _remove_ticket_dir(ticket_dir)
+        return
+
+    # Partial cleanup: remove individual merged/gone worktrees, keep the rest
+    if removable:
+        for wt in removable:
+            print(f"  {td_name}: removing merged worktree: {Path(wt.wt_path).name}")
+            _remove_worktree(wt.repo, wt.wt_path, wt.wt_branch)
+
     if not_merged:
         repos_str = ", ".join(Path(wt.wt_path).name for wt in not_merged)
-        print(f"  {td_name}: SKIP — not merged: {repos_str}")
-        return
+        print(f"  {td_name}: KEEP — not merged: {repos_str}")
 
     if dirty:
         for wt in dirty:
-            print(
-                f"  {td_name}: SKIP — {Path(wt.wt_path).name} has {wt.dirty_reason}",
-            )
-        return
-
-    # All worktrees merged/gone and clean — full cleanup
-    repos_str = ", ".join(Path(wt.wt_path).name for wt in worktrees)
-    print(f"  {td_name}: all merged ({repos_str}) — cleaning up")
-
-    _cleanup_docker_and_db(ticket_dir, worktrees, ticket_number)
-
-    for wt in worktrees:
-        _remove_worktree(wt.repo, wt.wt_path, wt.wt_branch)
-
-    _remove_ticket_dir(ticket_dir)
+            print(f"  {td_name}: KEEP — {Path(wt.wt_path).name} has {wt.dirty_reason}")
 
 
 def git_clean_them_all() -> int:
