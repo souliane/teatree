@@ -140,11 +140,11 @@ class TestGitCleanThemAll:
             result = mod.git_clean_them_all()
         assert result == 0
 
-    def test_skips_ticket_when_one_repo_not_merged(
+    def test_partial_cleanup_when_one_repo_not_merged(
         self,
         tmp_path: Path,
     ) -> None:
-        """Two repos in a ticket: one merged, one not → skip entire ticket."""
+        """Two repos in a ticket: one merged, one not → remove the merged one, keep the other."""
         mod = load_script("git_clean_them_all")
         ws = tmp_path / "workspace"
 
@@ -183,7 +183,7 @@ class TestGitCleanThemAll:
                 return wt
             if "fetch" in cmd:
                 return run_ok(stderr="")
-            # BE merged, FE not merged
+            # my-project (repo_fe) is merged, my-frontend (repo_be) is NOT merged
             if "--merged" in cmd:
                 return run_ok(stdout="  feat\n") if cwd == str(repo_fe) else run_ok(stdout="")
             return (
@@ -202,7 +202,9 @@ class TestGitCleanThemAll:
             result = mod.git_clean_them_all()
 
         assert result == 0
-        assert removed == []
+        # The merged worktree should be removed, the non-merged one kept
+        assert len(removed) == 1
+        assert str(wt_be) in removed
 
     def test_skips_ticket_when_dirty(self, tmp_path: Path) -> None:
         mod = load_script("git_clean_them_all")
@@ -517,13 +519,32 @@ class TestDirtyReason:
             ]
             assert mod._dirty_reason("/fake") == "uncommitted changes"
 
-    def test_ignores_data_dir_and_uv_lock(self) -> None:
+    def test_ignores_shared_dirs_and_uv_lock(self) -> None:
         mod = load_script("git_clean_them_all")
         with patch.object(mod, "subprocess") as mock_sp:
             mock_sp.run.side_effect = [
                 run_ok(returncode=0),  # git diff --quiet → clean
                 run_ok(returncode=0),  # git diff --cached --quiet → clean
-                run_ok(stdout=".data/dump.pgsql\nuv.lock\n"),  # untracked
+                run_ok(stdout=".data/dump.pgsql\nuv.lock\n"),
+            ]
+            assert mod._dirty_reason("/fake") == ""
+
+    def test_ignores_t3_clean_ignore_patterns(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        mod = load_script("git_clean_them_all")
+        monkeypatch.setenv("T3_CLEAN_IGNORE", "staticfiles/,e2e/,max_migration.txt,.env")
+        # Force re-build of ignore sets by providing empty cached sets
+        monkeypatch.setattr(mod, "_IGNORED_UNTRACKED_DIRS", frozenset())
+        monkeypatch.setattr(mod, "_IGNORED_UNTRACKED_FILES", frozenset())
+        with patch.object(mod, "subprocess") as mock_sp:
+            mock_sp.run.side_effect = [
+                run_ok(returncode=0),
+                run_ok(returncode=0),
+                run_ok(
+                    stdout="staticfiles/i18n/de-AT.json\n"
+                    "advisormodule/migrations/max_migration.txt\n"
+                    "e2e/node_modules/.package-lock.json\n"
+                    ".env\n"
+                ),
             ]
             assert mod._dirty_reason("/fake") == ""
 
