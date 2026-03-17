@@ -577,3 +577,33 @@ class TestCurrentBranch:
         with patch("lib.gitlab.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=1, stdout="")
             assert current_branch("/repo") == ""
+
+
+class TestDiscoverMrs:
+    def test_discovers_across_repos(self) -> None:
+        proj = ProjectInfo(project_id=1, path_with_namespace="org/repo", short_name="repo")
+        mr = {"iid": 10, "title": "fix"}
+        with (
+            patch("lib.gitlab.resolve_project", return_value=proj),
+            patch("lib.gitlab.list_open_mrs", return_value=[mr]),
+        ):
+            result = gl.discover_mrs(["org/repo"], "alice")
+        assert len(result) == 1
+        assert result[0]["_repo_short"] == "repo"
+        assert result[0]["_project_id"] == 1
+
+    def test_skips_unresolvable_repo(self) -> None:
+        with patch("lib.gitlab.resolve_project", return_value=None):
+            assert gl.discover_mrs(["org/bad"], "alice") == []
+
+    def test_skips_unresolvable_repo_verbose(self) -> None:
+        with patch("lib.gitlab.resolve_project", return_value=None):
+            assert gl.discover_mrs(["org/bad"], "alice", verbose=True) == []
+
+    def test_verbose_prints_count(self) -> None:
+        proj = ProjectInfo(project_id=1, path_with_namespace="org/repo", short_name="repo")
+        with (
+            patch("lib.gitlab.resolve_project", return_value=proj),
+            patch("lib.gitlab.list_open_mrs", return_value=[]),
+        ):
+            gl.discover_mrs(["org/repo"], "alice", verbose=True)

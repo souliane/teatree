@@ -150,37 +150,22 @@ class TestReviewChannels:
 
 class TestDiscoverMrs:
     def test_discovers_mrs(self) -> None:
-        proj = ProjectInfo(project_id=1, path_with_namespace="org/repo", short_name="repo")
-        mr = {"iid": 10, "title": "fix"}
-        with (
-            patch("collect_followup_data.resolve_project", return_value=proj),
-            patch("collect_followup_data.list_open_mrs", return_value=[mr]),
-        ):
+        annotated_mr = {"iid": 10, "title": "fix", "_repo_path": "org/repo", "_repo_short": "repo", "_project_id": 1}
+        with patch("collect_followup_data.discover_mrs", return_value=[annotated_mr]):
             result = _discover_mrs(["org/repo"], "alice", "", verbose=False)
         assert len(result) == 1
         assert result[0]["_repo_short"] == "repo"
         assert result[0]["_project_id"] == 1
 
-    def test_skip_unresolved_project_verbose(self) -> None:
-        with patch("collect_followup_data.resolve_project", return_value=None):
+    def test_skip_unresolved_project(self) -> None:
+        with patch("collect_followup_data.discover_mrs", return_value=[]):
             result = _discover_mrs(["org/bad"], "alice", "", verbose=True)
         assert result == []
 
-    def test_skip_unresolved_project_quiet(self) -> None:
-        with patch("collect_followup_data.resolve_project", return_value=None):
-            result = _discover_mrs(["org/bad"], "alice", "", verbose=False)
-        assert result == []
-
-    def test_verbose_prints_count(self, capsys: pytest.CaptureFixture[str]) -> None:
-        proj = ProjectInfo(project_id=1, path_with_namespace="org/repo", short_name="repo")
-        with (
-            patch("collect_followup_data.resolve_project", return_value=proj),
-            patch("collect_followup_data.list_open_mrs", return_value=[]),
-        ):
+    def test_verbose_delegates(self) -> None:
+        with patch("collect_followup_data.discover_mrs", return_value=[]) as mock:
             _discover_mrs(["org/repo"], "alice", "", verbose=True)
-        # This print goes to stdout (no file=sys.stderr on this line)
-        out = capsys.readouterr().out
-        assert "org/repo: 0 open MRs" in out
+        mock.assert_called_once()
 
 
 class TestEnrichMr:

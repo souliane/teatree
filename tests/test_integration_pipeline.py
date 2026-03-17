@@ -77,9 +77,6 @@ def pipeline_workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
     monkeypatch.setenv("T3_WORKSPACE_DIR", str(ws))
     monkeypatch.setenv("T3_BRANCH_PREFIX", "ac")
-    # Clear git env vars inherited from pre-commit hooks (GIT_DIR, GIT_INDEX_FILE, etc.)
-    for var in ("GIT_DIR", "GIT_INDEX_FILE", "GIT_WORK_TREE", "GIT_AUTHOR_DATE", "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL"):
-        monkeypatch.delenv(var, raising=False)
     return ws
 
 

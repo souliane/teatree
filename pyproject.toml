@@ -138,6 +138,9 @@ exclude_lines = [
 exclude_also = [
   "if len\\(parts\\) > 1",
 ]
+partial_branches = [
+  "pragma: no branch",
+]
 
 [tool.coverage.run]
 source = [ "scripts" ]

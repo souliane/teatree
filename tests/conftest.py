@@ -20,6 +20,23 @@ os.environ.setdefault("HOME", str(_IMPORT_HOME))
 os.environ.setdefault("T3_WORKSPACE_DIR", str(_IMPORT_WORKSPACE))
 
 
+def _strip_git_hook_env() -> None:
+    """Strip GIT_* env vars inherited from pre-commit hooks.
+
+    When pytest runs as a prek/pre-commit hook via ``git commit -a``, git sets
+    ``GIT_INDEX_FILE`` to ``.git/index.lock``. Hook subprocesses inherit this,
+    so any git operation in a test (e.g. ``git init`` in a temp dir) corrupts
+    the parent repo's index. Stripping all ``GIT_*`` vars at session start
+    prevents this. See https://github.com/j178/prek/issues/1786.
+    """
+    for var in list(os.environ):
+        if var.startswith("GIT_"):
+            del os.environ[var]
+
+
+_strip_git_hook_env()
+
+
 def load_script(name: str) -> types.ModuleType:
     """Dynamically load a teatree script as a module for testing."""
     p = Path(__file__).resolve().parent.parent / "scripts" / f"{name}.py"
@@ -56,6 +73,14 @@ def workspace(tmp_path: Path) -> Path:
     (repo / "manage.py").touch()
 
     return ws
+
+
+@pytest.fixture
+def project_info():  # noqa: ANN201
+    """Shared ProjectInfo for tests that mock GitLab API calls."""
+    from lib.gitlab import ProjectInfo  # noqa: PLC0415
+
+    return ProjectInfo(project_id=42, path_with_namespace="org/repo", short_name="repo")
 
 
 @pytest.fixture
@@ -98,6 +123,8 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / ".cache"))
+    # Default to per-worktree postgres for test isolation (override in specific tests)
+    monkeypatch.setenv("T3_SHARE_DB_SERVER", "false")
     monkeypatch.delenv("T3_WORKSPACE_DIR", raising=False)
     monkeypatch.delenv("T3_BRANCH_PREFIX", raising=False)
     monkeypatch.delenv("TICKET_DIR", raising=False)

@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
 import pytest
+import typer
 from conftest import load_script
 from lib.registry import clear as ep_clear
 from lib.registry import register as ep_register
@@ -14,8 +15,6 @@ from typer.testing import CliRunner
 
 if TYPE_CHECKING:
     import types
-
-    import typer
 
 runner = CliRunner()
 
@@ -234,6 +233,288 @@ class TestInfoCommand:
         result = runner.invoke(cli_app, ["--help"])
         assert result.exit_code == 0
         assert "info" in result.stdout
+
+
+class TestConfigAutoload:
+    def test_no_context_match_files(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+        (skills_dir / "my-skill").mkdir()
+        monkeypatch.setattr("lib.env._SKILL_ROOTS", (str(skills_dir),))
+        mod = load_script("t3_cli")
+        result = runner.invoke(mod.app, ["config", "autoload"])
+        assert result.exit_code == 0
+        assert "No context-match.yml" in result.stdout
+
+    def test_empty_context_match_no_table(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        skills_dir = tmp_path / "skills"
+        skill = skills_dir / "empty-overlay"
+        (skill / "hook-config").mkdir(parents=True)
+        (skill / "hook-config" / "context-match.yml").write_text("# only comments\n")
+        monkeypatch.setattr("lib.env._SKILL_ROOTS", (str(skills_dir),))
+        mod = load_script("t3_cli")
+        result = runner.invoke(mod.app, ["config", "autoload"])
+        assert result.exit_code == 0
+        assert "empty-overlay" in result.stdout
+        # No table rendered (no rows)
+        assert "Type" not in result.stdout
+
+    def test_displays_rules_from_context_match(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        skills_dir = tmp_path / "skills"
+        skill = skills_dir / "my-overlay"
+        (skill / "hook-config").mkdir(parents=True)
+        (skill / "hook-config" / "context-match.yml").write_text(
+            '# A comment\n\ncwd_patterns:\n  - "my-repo"\n'
+            'companion_skills:\n  ac-python:\n    - "my-repo"\n'
+            "unknown_section:\n  ignored: true\n"
+        )
+        monkeypatch.setattr("lib.env._SKILL_ROOTS", (str(skills_dir),))
+        mod = load_script("t3_cli")
+        result = runner.invoke(mod.app, ["config", "autoload"])
+        assert result.exit_code == 0
+        assert "my-overlay" in result.stdout
+        assert "my-repo" in result.stdout
+        assert "ac-python" in result.stdout
+
+
+class TestFullStatusCommand:
+    @pytest.mark.usefixtures("ticket_env")
+    def test_full_status_human_output(self, cli_app: "typer.Typer") -> None:
+        result = runner.invoke(cli_app, ["full-status"])
+        assert result.exit_code == 0
+        assert "worktree:" in result.stdout
+        assert "ticket:" in result.stdout
+        assert "session:" in result.stdout
+
+    @pytest.mark.usefixtures("ticket_env")
+    def test_full_status_json_output(self, cli_app: "typer.Typer") -> None:
+        result = runner.invoke(cli_app, ["full-status", "--json"])
+        assert result.exit_code == 0
+        data = json.loads(result.stdout)
+        assert "worktree" in data
+        assert "ticket" in data
+        assert "session" in data
+
+    def test_full_status_no_ticket_dir(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cli_app: "typer.Typer"
+    ) -> None:
+        monkeypatch.setenv("T3_WORKSPACE_DIR", str(tmp_path))
+        monkeypatch.delenv("TICKET_DIR", raising=False)
+        monkeypatch.setenv("_T3_ORIG_CWD", str(tmp_path))
+        result = runner.invoke(cli_app, ["full-status", "--json"])
+        assert result.exit_code == 0
+        data = json.loads(result.stdout)
+        assert data["worktree"] is None
+        assert data["ticket"] is None
+
+
+class TestStartTicketCommand:
+    @pytest.mark.usefixtures("ticket_env")
+    def test_start_ticket_chains_steps(self) -> None:
+        mod = load_script("t3_cli")
+        calls: list[str] = []
+        original_ep_call = mod.ep_call
+
+        def fake_ep_call(name: str, *_args: object, **_kwargs: object) -> None:
+            calls.append(name)
+
+        mod.ep_call = fake_ep_call  # type: ignore[attr-defined]
+        try:
+            with (
+                patch("lib.lifecycle.db_exists", return_value=True),
+                patch("lib.lifecycle.find_free_ports", return_value=(8001, 4201, 5433, 6379)),
+                patch("lib.lifecycle.registry") as mock_reg,
+            ):
+                mock_reg.call.return_value = True
+                result = runner.invoke(mod.app, ["start-ticket", "https://example.com/issue/1"])
+        finally:
+            mod.ep_call = original_ep_call  # type: ignore[attr-defined]
+        assert result.exit_code == 0
+        assert "fetch_issue_context" in calls
+        assert "ws_create_ticket_worktree" in calls
+
+    def test_start_ticket_skips_already_ready(self, ticket_env: Path) -> None:
+        """When lifecycle is already ready and ticket already started, skip transitions."""
+        # Set lifecycle to ready state
+        state_file = ticket_env / ".state.json"
+        state_file.write_text(
+            json.dumps(
+                {
+                    "state": "ready",
+                    "facts": {
+                        "wt_dir": "/wt",
+                        "main_repo": "/repo",
+                        "ports": {"backend": 8001, "frontend": 4201, "postgres": 5433, "redis": 6379},
+                    },
+                }
+            )
+        )
+        # Set ticket to started state
+        ticket_file = ticket_env / "ticket.json"
+        ticket_file.write_text(json.dumps({"state": "started", "facts": {"issue_url": "x", "worktree_dirs": ["/wt"]}}))
+
+        mod = load_script("t3_cli")
+        calls: list[str] = []
+        original_ep_call = mod.ep_call
+
+        def fake_ep_call(name: str, *_args: object, **_kwargs: object) -> None:
+            calls.append(name)
+
+        mod.ep_call = fake_ep_call  # type: ignore[attr-defined]
+        try:
+            result = runner.invoke(mod.app, ["start-ticket", "https://example.com/issue/1"])
+        finally:
+            mod.ep_call = original_ep_call  # type: ignore[attr-defined]
+        assert result.exit_code == 0
+        # Lifecycle and ticket transitions were skipped — verify via persisted state
+        lc_data = json.loads(state_file.read_text())
+        assert lc_data["state"] == "ready"
+        tk_data = json.loads(ticket_file.read_text())
+        assert tk_data["state"] == "started"
+
+
+class TestShipCommand:
+    @pytest.mark.usefixtures("ticket_env")
+    def test_ship_blocked_without_testing(self, cli_app: "typer.Typer") -> None:
+        result = runner.invoke(cli_app, ["ship"])
+        assert result.exit_code == 1
+        assert "testing" in result.stdout
+
+    @pytest.mark.usefixtures("ticket_env")
+    def test_ship_blocked_without_reviewing(self) -> None:
+        mod = load_script("t3_cli")
+        # Simulate a session that has visited testing but not reviewing
+        with patch.object(mod, "_get_session") as mock_session:
+            session = MagicMock()
+            session.has_visited.side_effect = lambda p: p == "testing"
+            mock_session.return_value = session
+            result = runner.invoke(mod.app, ["ship"])
+        assert result.exit_code == 1
+        assert "reviewing" in result.stdout
+
+    @pytest.mark.usefixtures("ticket_env")
+    def test_ship_force_bypasses_gates(self) -> None:
+        mod = load_script("t3_cli")
+        calls: list[str] = []
+        original_ep_call = mod.ep_call
+
+        def fake_ep_call(name: str, *_args: object, **_kwargs: object) -> None:
+            calls.append(name)
+
+        mod.ep_call = fake_ep_call  # type: ignore[attr-defined]
+        try:
+            result = runner.invoke(mod.app, ["ship", "--force"])
+        finally:
+            mod.ep_call = original_ep_call  # type: ignore[attr-defined]
+        assert result.exit_code == 0
+        assert "wt_cancel_stale_pipelines" in calls
+        assert "wt_push" in calls
+        assert "wt_create_mr" in calls
+
+
+class TestDailyCommand:
+    @pytest.mark.usefixtures("ticket_env")
+    def test_daily_chains_steps(self) -> None:
+        mod = load_script("t3_cli")
+        calls: list[str] = []
+        original_ep_call = mod.ep_call
+
+        def fake_ep_call(name: str, *_args: object, **_kwargs: object) -> None:
+            calls.append(name)
+
+        mod.ep_call = fake_ep_call  # type: ignore[attr-defined]
+        try:
+            result = runner.invoke(mod.app, ["daily"])
+        finally:
+            mod.ep_call = original_ep_call  # type: ignore[attr-defined]
+        assert result.exit_code == 0
+        assert "followup_collect" in calls
+        assert "followup_check_gates" in calls
+        assert "followup_remind_reviewers" in calls
+
+
+class TestPostEvidenceCommand:
+    @pytest.mark.usefixtures("ticket_env")
+    def test_post_evidence_delegates(self) -> None:
+        mod = load_script("t3_cli")
+        calls: list[tuple[str, tuple[object, ...], dict[str, object]]] = []
+        original_ep_call = mod.ep_call
+
+        def fake_ep_call(name: str, *_args: object, **_kwargs: object) -> None:
+            calls.append((name, _args, _kwargs))
+
+        mod.ep_call = fake_ep_call  # type: ignore[attr-defined]
+        try:
+            result = runner.invoke(mod.app, ["mr", "post-evidence", "img.png"])
+        finally:
+            mod.ep_call = original_ep_call  # type: ignore[attr-defined]
+        assert result.exit_code == 0
+        assert calls[0][0] == "wt_post_mr_evidence"
+
+
+class TestGetTicketErrorPath:
+    def test_get_ticket_no_ticket_dir(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        mod = load_script("t3_cli")
+        monkeypatch.setenv("T3_WORKSPACE_DIR", str(tmp_path))
+        monkeypatch.delenv("TICKET_DIR", raising=False)
+        monkeypatch.setenv("_T3_ORIG_CWD", str(tmp_path))
+        with pytest.raises(typer.Exit):
+            mod._get_ticket()
+
+
+class TestSetupWithStart:
+    @pytest.mark.usefixtures("ticket_env")
+    def test_setup_start_provisions_and_starts(self, cli_app: "typer.Typer") -> None:
+        with (
+            patch("lib.lifecycle.db_exists", return_value=True),
+            patch("lib.lifecycle.find_free_ports", return_value=(8001, 4201, 5433, 6379)),
+            patch("lib.lifecycle.registry") as mock_reg,
+        ):
+            mock_reg.call.return_value = True
+            result = runner.invoke(cli_app, ["lifecycle", "setup", "--start"])
+            assert result.exit_code == 0
+            data = json.loads(result.stdout)
+            assert data["state"] == "ready"
+
+
+class TestShipWithReviewedTicket:
+    def test_ship_transitions_reviewed_ticket(self, ticket_env: Path) -> None:
+        # Set ticket to reviewed state
+        ticket_file = ticket_env / "ticket.json"
+        ticket_file.write_text(json.dumps({"state": "reviewed", "facts": {"issue_url": "x"}}))
+
+        mod = load_script("t3_cli")
+        calls: list[str] = []
+        original_ep_call = mod.ep_call
+
+        def fake_ep_call(name: str, *_args: object, **_kwargs: object) -> None:
+            calls.append(name)
+
+        mod.ep_call = fake_ep_call  # type: ignore[attr-defined]
+        try:
+            result = runner.invoke(mod.app, ["ship", "--force"])
+        finally:
+            mod.ep_call = original_ep_call  # type: ignore[attr-defined]
+        assert result.exit_code == 0
+        # Verify ticket state was updated
+        data = json.loads(ticket_file.read_text())
+        assert data["state"] == "shipped"
+
+
+class TestStartAutoProvision:
+    @pytest.mark.usefixtures("ticket_env")
+    def test_start_auto_provisions_from_created(self, cli_app: "typer.Typer") -> None:
+        """When state is 'created', start should auto-provision first."""
+        with (
+            patch("lib.lifecycle.db_exists", return_value=True),
+            patch("lib.lifecycle.find_free_ports", return_value=(8001, 4201, 5433, 6379)),
+            patch("lib.lifecycle.registry") as mock_reg,
+        ):
+            mock_reg.call.return_value = True
+            result = runner.invoke(cli_app, ["lifecycle", "start"])
+            assert result.exit_code == 0
+            data = json.loads(result.stdout)
+            assert data["state"] == "ready"
 
 
 class TestExtensionPointDelegates:

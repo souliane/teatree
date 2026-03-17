@@ -406,6 +406,39 @@ def download_file(url: str, dest: str, token: str = "") -> bool:
     return result.returncode == 0
 
 
+def discover_mrs(
+    repos: list[str],
+    username: str,
+    *,
+    token: str = "",
+    include_draft: bool = True,
+    verbose: bool = False,
+) -> list[dict]:
+    """Discover all open MRs across repos, annotated with project metadata.
+
+    Each returned dict has extra keys: _repo_path, _repo_short, _project_id.
+    Shared by: collect_followup_data.py, review_request.py.
+    """
+    import sys
+
+    all_mrs: list[dict] = []
+    for repo_path in repos:
+        proj = resolve_project(repo_path, token)
+        if not proj:
+            if verbose:
+                print(f"  SKIP {repo_path} (could not resolve project)", file=sys.stderr)
+            continue
+        mrs = list_open_mrs(repo_path, username, token=token, include_draft=include_draft)
+        for mr in mrs:
+            mr["_repo_path"] = repo_path
+            mr["_repo_short"] = proj.short_name
+            mr["_project_id"] = proj.project_id
+        all_mrs.extend(mrs)
+        if verbose:
+            print(f"  {repo_path}: {len(mrs)} open MRs")
+    return all_mrs
+
+
 def current_branch(repo_dir: str = ".") -> str:
     """Get current git branch name."""
     result = subprocess.run(

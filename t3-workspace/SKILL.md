@@ -60,6 +60,7 @@ Key variables used by this skill (see `/t3-setup` for the full config reference)
 | `T3_OVERLAY` | No | Path to the project overlay skill (project-specific overrides) |
 | `T3_BRANCH_PREFIX` | No | Prefix for worktree branches (default: initials from `git config user.name`) |
 | `T3_AUTO_SQUASH` | No | Auto-squash related unpushed commits before push (default: `false`) |
+| `T3_SHARE_DB_SERVER` | No | Share one Postgres server across worktrees (default: `true`). Each worktree gets its own DB name but connects to the same server. When `false`, each worktree starts its own Postgres container. |
 
 ### Data Directory (XDG-Compliant)
 

@@ -342,29 +342,20 @@ When multiple retro commits accumulate on a branch before pushing, squash relate
 
 ## Privacy Scan
 
-Before committing to the fork or creating an upstream issue, scan all changed content for personal information.
+Before committing to the fork or creating an upstream issue, scan all changed content using the privacy scan script:
 
-### What to scan
+```bash
+git -C "$T3_REPO" diff @{upstream}..HEAD | $T3_REPO/scripts/privacy_scan.py -
+```
 
-1. **Git diff** of all changes about to be committed
-2. **Issue body** (if creating an upstream issue)
-3. **Branch name** (should not contain personal identifiers)
+Use `--no-strict` for relaxed mode (warn instead of block). Use `--json` for machine-readable output. The script reads `T3_BANNED_TERMS` from the environment automatically.
 
-### What to flag
-
-| Pattern | Examples | Action |
-|---|---|---|
-| Email addresses | `user@company.com` | Block — replace with `user@example.com` or remove |
-| Home directory paths | `/Users/jane/`, `/home/bob/` | Block — replace with `$HOME/` or `~/` |
-| Internal hostnames/IPs | `10.0.0.5`, `gitlab.internal.corp` | Block — replace with `example.com` or remove |
-| API keys / tokens | `glpat-...`, `sk-...`, `ghp_...` | Block — remove entirely |
-| Company / project names | Anything in `$T3_BANNED_TERMS` | Block — replace with generic terms |
-| Usernames / personal names | Git author info, Slack handles | Block in issue body (OK in git commits on fork) |
+**Scans for:** emails, home directory paths (`/Users/`, `/home/`), private IPs, API keys (`glpat-`, `sk-`, `ghp_`), internal hostnames, and banned terms.
 
 ### `T3_PRIVACY` levels
 
-- **`strict`** (default): Block on ANY flagged pattern. Require user to manually resolve each one before proceeding.
-- **`relaxed`**: Warn on flagged patterns but allow the user to proceed after confirmation. Git author info and home paths are auto-replaced silently.
+- **`strict`** (default): Exit 1 on ANY finding. Require user to manually resolve before proceeding.
+- **`relaxed`**: Warn on findings but exit 0. Pass `--no-strict` to the script.
 
 When `T3_PRIVACY` is not set, default to `strict`.
 

@@ -70,7 +70,7 @@ Run gates → Any failure? → Fix → Re-run gates → Repeat until clean
 
 **Iteration limit:** After 3 fix-verify cycles without convergence, **stop and ask the user** — the issue may be systemic rather than incremental.
 
-**Stop hook integration:** If the repo has a Stop hook (`.claude/settings.json` § Stop), it enforces this loop automatically. Without a hook, run the gates manually before claiming done.
+**Stop hook integration:** If the repo has a Stop hook (in the agent's settings), it enforces this loop automatically. Without a hook, run the gates manually before claiming done.
 
 **References:** [Ralph Loop](https://github.com/snarktank/ralph) (external verification over self-assessed completion), [Effective harnesses for long-running agents](https://www.anthropic.com/engineering/effective-harnesses-for-long-running-agents) (Anthropic, feature-list-driven incremental verification).
 
@@ -188,5 +188,5 @@ See your [issue tracker platform reference](../references/platforms/) § "Reply 
 
 | Script | When to use |
 |--------|-------------|
-| `t3 ci quality-check-check` | Quality analysis for self-review (ext: `wt_quality_check`) |
+| `t3 ci quality-check` | Quality analysis for self-review (ext: `wt_quality_check`) |
 | `t3 run tests` | Verification after review changes (ext: `wt_run_tests`) |

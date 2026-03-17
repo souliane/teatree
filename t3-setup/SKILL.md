@@ -289,17 +289,15 @@ For question 5, explain the two levels:
    npx skills add Jeffallan/claude-skills --skill fastapi-expert -g -y
    ```
 
-   **After installation**, configure the overlay's `hook-config/context-match.yml` `companion_skills` section so teatree auto-loads them when relevant:
+   **After installation**, configure the overlay's `hook-config/context-match.yml` `companion_skills` section so teatree auto-loads them when relevant. The full template is in [`references/overlay-templates.md`](../references/overlay-templates.md) § `hook-config/context-match.yml`.
 
-   ```yaml
-   companion_skills:
-     ac-django:
-       - "<backend-repo>"
-     ac-python:
-       - "<backend-repo>"
-     angular-skills:
-       - "<frontend-repo>"
-   ```
+   **Ask the user one question at a time:**
+   1. "Does your project use a Python backend?" → if yes, suggest `ac-python` + `ac-django` (or `fastapi-expert` for FastAPI)
+   2. "Do you want ruff linting migration support?" → if yes, add `ac-adopting-ruff`
+   3. "Do you maintain skills in this repo?" → if yes, add `ac-auditing-repos` + `ac-reviewing-skills`
+   4. "Are there team-shared skills that should always load?" → if yes, add them as companions with broad patterns
+
+   If the overlay already has a `hook-config/context-match.yml`, show its current rules (`t3 config autoload`) and ask what to add rather than overwriting.
 
    This is how teatree "remembers" companion skills — not through installation state, but through the overlay config. The `companion_skills` config controls **auto-loading** (the hook suggests these skills when the user works in matching directories). Installation state lives in the agent runtime skill directories. Both are needed: the skill must be installed AND configured in `companion_skills` for seamless auto-loading.
 
@@ -641,21 +639,10 @@ If the user says **yes** (or wants to keep the default), no action needed — ag
 ### Step 7: Smoke Test
 
 ```bash
-# 1. Hook script parses
-bash -n "$T3_REPO/integrations/claude-code-statusline/ensure-skills-loaded.sh" && echo "OK  Hook parses"
-
-# 2. Statusline runs
-"$T3_REPO/integrations/claude-code-statusline/statusline-command.sh" && echo "OK  Statusline runs"
-
-# 3. Python imports work
-python3 -c "
-import sys; sys.path.insert(0, '$T3_REPO/scripts')
-from lib import registry; print('OK  lib.registry')
-from lib import env; print('OK  lib.env')
-"
+$T3_REPO/scripts/smoke_test.py
 ```
 
-Report results and flag failures.
+Checks: hook script parsing, statusline execution, Python imports, t3 CLI, git repo validity, shallow clone detection. Reports a pass/fail table. Exit code 1 on any failure.
 
 ## Scaffold a Project Overlay
 

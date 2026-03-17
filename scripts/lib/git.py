@@ -3,6 +3,29 @@
 import subprocess
 
 
+def run(*, repo: str = ".", args: list[str]) -> str:
+    """Run a git command and return stripped stdout."""
+    result = subprocess.run(
+        ["git", "-C", repo, *args],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.stdout.strip()
+
+
+def check(*, repo: str = ".", args: list[str]) -> bool:
+    """Run a git command and return True if it succeeds."""
+    return (
+        subprocess.run(
+            ["git", "-C", repo, *args],
+            capture_output=True,
+            check=False,
+        ).returncode
+        == 0
+    )
+
+
 def default_branch(repo: str = ".") -> str:
     """Detect the default remote branch for a repo.
 

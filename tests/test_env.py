@@ -7,13 +7,17 @@ from unittest.mock import patch
 
 import pytest
 from lib.env import (
+    _DEFAULT_POSTGRES_PORT,
+    _port_held_by_worktree,
     _rewrite_env_worktree,
     branch_prefix,
     detect_ticket_dir,
     find_free_ports,
+    load_env_worktree,
     read_env_key,
     resolve_context,
     revalidate_ports,
+    skill_dirs,
     workspace_dir,
 )
 
@@ -288,11 +292,111 @@ class TestFindFreePorts:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setenv("T3_WORKSPACE_DIR", str(workspace))
+        monkeypatch.setenv("T3_SHARE_DB_SERVER", "true")
         be, fe, pg, rd = find_free_ports()
         assert be == 8001
         assert fe == 4201
-        assert pg == 5433
+        # T3_SHARE_DB_SERVER=true: reuses default postgres port
+        assert pg == 5432
         assert rd == 6379  # Redis is shared, always 6379
+
+    def test_allocates_per_worktree_postgres_when_share_disabled(
+        self,
+        workspace: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("T3_WORKSPACE_DIR", str(workspace))
+        monkeypatch.setenv("T3_SHARE_DB_SERVER", "false")
+        _be, _fe, pg, _rd = find_free_ports()
+        assert pg == 5433
+
+    def test_shared_postgres_reuses_existing_port(
+        self,
+        workspace: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("T3_WORKSPACE_DIR", str(workspace))
+        monkeypatch.setenv("T3_SHARE_DB_SERVER", "true")
+        # Create a ticket dir with postgres on port 5435
+        td = workspace / "ticket-100" / "my-project"
+        td.mkdir(parents=True)
+        (td / ".env.worktree").write_text("POSTGRES_PORT=5435\n")
+        _be, _fe, pg, _rd = find_free_ports()
+        assert pg == 5435  # reuses existing port, doesn't allocate new
+
+    def test_shared_postgres_skips_symlinks(
+        self,
+        workspace: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("T3_WORKSPACE_DIR", str(workspace))
+        monkeypatch.setenv("T3_SHARE_DB_SERVER", "true")
+        td = workspace / "ticket-200" / "my-project"
+        td.mkdir(parents=True)
+        real = workspace / "real-env"
+        real.write_text("POSTGRES_PORT=5555\n")
+        (td / ".env.worktree").symlink_to(real)
+        _be, _fe, pg, _rd = find_free_ports()
+        assert pg == _DEFAULT_POSTGRES_PORT  # symlink skipped, falls back to default
+
+    def test_shared_postgres_skips_unreadable(
+        self,
+        workspace: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("T3_WORKSPACE_DIR", str(workspace))
+        monkeypatch.setenv("T3_SHARE_DB_SERVER", "true")
+        td = workspace / "ticket-300" / "my-project"
+        td.mkdir(parents=True)
+        envwt = td / ".env.worktree"
+        envwt.write_text("POSTGRES_PORT=5555\n")
+        envwt.chmod(0o000)
+        try:
+            _be, _fe, pg, _rd = find_free_ports()
+            assert pg == _DEFAULT_POSTGRES_PORT  # OSError skipped
+        finally:
+            envwt.chmod(0o644)
+
+    def test_shared_postgres_skips_invalid_port(
+        self,
+        workspace: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("T3_WORKSPACE_DIR", str(workspace))
+        monkeypatch.setenv("T3_SHARE_DB_SERVER", "true")
+        td = workspace / "ticket-400" / "my-project"
+        td.mkdir(parents=True)
+        (td / ".env.worktree").write_text("POSTGRES_PORT=not_a_number\n")
+        _be, _fe, pg, _rd = find_free_ports()
+        assert pg == _DEFAULT_POSTGRES_PORT  # ValueError skipped, falls back
+
+    def test_shared_postgres_skips_deep_dirs(
+        self,
+        workspace: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("T3_WORKSPACE_DIR", str(workspace))
+        monkeypatch.setenv("T3_SHARE_DB_SERVER", "true")
+        # Create a .env.worktree deeper than _MAX_SCAN_DEPTH (2)
+        deep = workspace / "a" / "b" / "c" / "d"
+        deep.mkdir(parents=True)
+        (deep / ".env.worktree").write_text("POSTGRES_PORT=9999\n")
+        _be, _fe, pg, _rd = find_free_ports()
+        assert pg == _DEFAULT_POSTGRES_PORT  # too deep, skipped
+
+    def test_shared_postgres_excludes_current_dir(
+        self,
+        workspace: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("T3_WORKSPACE_DIR", str(workspace))
+        monkeypatch.setenv("T3_SHARE_DB_SERVER", "true")
+        td = workspace / "ticket-500" / "my-project"
+        td.mkdir(parents=True)
+        (td / ".env.worktree").write_text("POSTGRES_PORT=5555\n")
+        # Exclude the dir we just created
+        _be, _fe, pg, _rd = find_free_ports(exclude_dir=str(td.parent))
+        assert pg == _DEFAULT_POSTGRES_PORT  # excluded, falls back
 
     def test_skips_already_used_ports(
         self,
@@ -365,6 +469,7 @@ class TestFindFreePorts:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setenv("T3_WORKSPACE_DIR", str(workspace))
+        monkeypatch.setenv("T3_SHARE_DB_SERVER", "false")
         td = workspace / "ticket-100"
         td.mkdir()
         (td / ".env.worktree").write_text(
@@ -395,6 +500,7 @@ class TestFindFreePorts:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setenv("T3_WORKSPACE_DIR", str(workspace))
+        monkeypatch.setenv("T3_SHARE_DB_SERVER", "false")
         for i, ticket in enumerate(["ticket-100", "ticket-200"], start=1):
             td = workspace / ticket
             td.mkdir()
@@ -477,6 +583,63 @@ class TestRewriteEnvWorktree:
         _rewrite_env_worktree(str(tmp_path / "nonexistent"), {"X": 1})  # no error
 
 
+class TestPortHeldByWorktree:
+    def test_returns_false_without_ticket_dir(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("TICKET_DIR", raising=False)
+        assert _port_held_by_worktree(8001) is False
+
+    def test_returns_false_when_no_process(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("TICKET_DIR", "/tmp/test-ticket")
+        with patch("lib.env.subprocess.run") as mock_run:
+            mock_run.return_value.stdout = ""
+            assert _port_held_by_worktree(8001) is False
+
+    def test_returns_true_when_process_matches_ticket_dir(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        ticket_dir = "/tmp/ac-my-project-1234-test"
+        monkeypatch.setenv("TICKET_DIR", ticket_dir)
+        with patch("lib.env.subprocess.run") as mock_run:
+            # First call: lsof returns PID
+            # Second call: ps returns command with ticket_dir
+            mock_run.side_effect = [
+                type("R", (), {"stdout": "12345\n"})(),
+                type("R", (), {"stdout": f"python manage.py runserver --cwd {ticket_dir}/my-project"})(),
+            ]
+            assert _port_held_by_worktree(8001) is True
+
+    def test_returns_false_when_process_is_foreign(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("TICKET_DIR", "/tmp/ac-my-project-1234-test")
+        monkeypatch.delenv("WT_DIR", raising=False)
+        with patch("lib.env.subprocess.run") as mock_run:
+            mock_run.side_effect = [
+                type("R", (), {"stdout": "12345\n"})(),
+                type("R", (), {"stdout": "python manage.py runserver --cwd /other/dir"})(),
+            ]
+            assert _port_held_by_worktree(8001) is False
+
+    def test_returns_true_when_process_matches_wt_dir(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # TICKET_DIR doesn't match, but WT_DIR does
+        monkeypatch.setenv("TICKET_DIR", "/tmp/different-ticket")
+        monkeypatch.setenv("WT_DIR", "/tmp/worktree-path")
+        with patch("lib.env.subprocess.run") as mock_run:
+            mock_run.side_effect = [
+                type("R", (), {"stdout": "12345"})(),
+                type("R", (), {"stdout": "postgres -D /tmp/worktree-path/pgdata"})(),
+            ]
+            assert _port_held_by_worktree(8001) is True
+
+    def test_returns_false_for_empty_lsof_pids(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("TICKET_DIR", "/tmp/test")
+        monkeypatch.delenv("WT_DIR", raising=False)
+        with patch("lib.env.subprocess.run") as mock_run:
+            # lsof returns PID, but ps shows foreign process — falls through loop
+            mock_run.side_effect = [
+                type("R", (), {"stdout": "999\n888"})(),
+                type("R", (), {"stdout": "/usr/bin/other"})(),
+                type("R", (), {"stdout": "/usr/bin/other2"})(),
+            ]
+            assert _port_held_by_worktree(8001) is False
+
+
 class TestRevalidatePorts:
     def test_returns_none_when_no_conflicts(
         self,
@@ -512,16 +675,26 @@ class TestRevalidatePorts:
         monkeypatch.setenv("FRONTEND_PORT", "4201")
         monkeypatch.setenv("POSTGRES_PORT", "5433")
         monkeypatch.setenv("WT_DB_NAME", "testdb")
-        # Simulate port 8001 in use
-        monkeypatch.setattr(
-            "lib.env.port_in_use",
-            lambda port: port == 8001,
-        )
+        # Simulate port 8001 in use by a FOREIGN process
+        monkeypatch.setattr("lib.env.port_in_use", lambda port: port == 8001)
+        monkeypatch.setattr("lib.env._port_held_by_worktree", lambda _port: False)
         result = revalidate_ports()
         assert result is not None
         assert result["BACKEND_PORT"] != 8001
         # Env was updated
         assert os.environ["BACKEND_PORT"] == str(result["BACKEND_PORT"])
+
+    def test_skips_own_process_ports(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Port in use by our own worktree should NOT trigger reallocation."""
+        monkeypatch.setenv("BACKEND_PORT", "8001")
+        monkeypatch.setenv("FRONTEND_PORT", "4201")
+        monkeypatch.setenv("POSTGRES_PORT", "5433")
+        monkeypatch.setattr("lib.env.port_in_use", lambda port: port == 8001)
+        monkeypatch.setattr("lib.env._port_held_by_worktree", lambda port: port == 8001)
+        assert revalidate_ports() is None
 
     def test_reallocates_without_db_name_and_envfile(
         self,
@@ -541,6 +714,7 @@ class TestRevalidatePorts:
         monkeypatch.delenv("WT_DB_NAME", raising=False)
         monkeypatch.delenv("POSTGRES_DB", raising=False)
         monkeypatch.setattr("lib.env.port_in_use", lambda port: port == 8001)
+        monkeypatch.setattr("lib.env._port_held_by_worktree", lambda _port: False)
         result = revalidate_ports()
         assert result is not None
         assert "DATABASE_URL" not in result
@@ -555,4 +729,104 @@ class TestRevalidatePorts:
         monkeypatch.delenv("TICKET_DIR", raising=False)
         # Simulate conflict but no ticket dir
         monkeypatch.setattr("lib.env.port_in_use", lambda port: port == 8001)
+        monkeypatch.setattr("lib.env._port_held_by_worktree", lambda _port: False)
         assert revalidate_ports() is None
+
+
+class TestLoadEnvWorktree:
+    def test_loads_env_from_cwd(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        envfile = tmp_path / ".env.worktree"
+        envfile.write_text("MY_VAR=hello\nOTHER_VAR=world\n")
+        monkeypatch.setattr("lib.env._effective_cwd", lambda: str(tmp_path))
+        monkeypatch.delenv("MY_VAR", raising=False)
+        monkeypatch.delenv("OTHER_VAR", raising=False)
+        load_env_worktree()
+        assert os.environ["MY_VAR"] == "hello"
+        assert os.environ["OTHER_VAR"] == "world"
+
+    def test_skips_comments_and_blanks(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        envfile = tmp_path / ".env.worktree"
+        envfile.write_text("# comment\n\nKEY=val\n")
+        monkeypatch.setattr("lib.env._effective_cwd", lambda: str(tmp_path))
+        monkeypatch.delenv("KEY", raising=False)
+        load_env_worktree()
+        assert os.environ["KEY"] == "val"
+
+    def test_does_not_overwrite_existing(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        envfile = tmp_path / ".env.worktree"
+        envfile.write_text("EXISTING=new\n")
+        monkeypatch.setattr("lib.env._effective_cwd", lambda: str(tmp_path))
+        monkeypatch.setenv("EXISTING", "old")
+        load_env_worktree()
+        assert os.environ["EXISTING"] == "old"
+
+    def test_searches_parent_dirs(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        envfile = tmp_path / ".env.worktree"
+        envfile.write_text("PARENT_VAR=found\n")
+        child = tmp_path / "sub" / "deep"
+        child.mkdir(parents=True)
+        monkeypatch.setattr("lib.env._effective_cwd", lambda: str(child))
+        monkeypatch.delenv("PARENT_VAR", raising=False)
+        load_env_worktree()
+        assert os.environ["PARENT_VAR"] == "found"
+
+    def test_noop_when_no_envfile(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("lib.env._effective_cwd", lambda: str(tmp_path))
+        # Should not raise
+        load_env_worktree()
+
+
+class TestSkillDirs:
+    def test_returns_skills_from_directory(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        root = tmp_path / "skills"
+        (root / "my-skill").mkdir(parents=True)
+        (root / "other-skill").mkdir()
+        monkeypatch.setattr("lib.env._SKILL_ROOTS", (str(root),))
+        result = skill_dirs()
+        names = [name for _, name in result]
+        assert "my-skill" in names
+        assert "other-skill" in names
+
+    def test_deduplicates_across_roots(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        root1 = tmp_path / "root1"
+        root2 = tmp_path / "root2"
+        (root1 / "shared-skill").mkdir(parents=True)
+        (root2 / "shared-skill").mkdir(parents=True)
+        monkeypatch.setattr("lib.env._SKILL_ROOTS", (str(root1), str(root2)))
+        result = skill_dirs()
+        names = [name for _, name in result]
+        assert names.count("shared-skill") == 1
+
+    def test_skips_nonexistent_roots(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("lib.env._SKILL_ROOTS", (str(tmp_path / "nope"),))
+        assert skill_dirs() == []
+
+    def test_skips_regular_files(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        root = tmp_path / "skills"
+        root.mkdir()
+        (root / "not-a-dir").write_text("I am a file")
+        (root / "real-skill").mkdir()
+        monkeypatch.setattr("lib.env._SKILL_ROOTS", (str(root),))
+        result = skill_dirs()
+        names = [name for _, name in result]
+        assert "real-skill" in names
+        assert "not-a-dir" not in names
+
+    def test_skips_broken_symlinks(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        root = tmp_path / "skills"
+        root.mkdir()
+        (root / "broken-link").symlink_to(tmp_path / "nonexistent")
+        monkeypatch.setattr("lib.env._SKILL_ROOTS", (str(root),))
+        assert skill_dirs() == []
+
+    def test_follows_symlinks(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        root = tmp_path / "skills"
+        root.mkdir()
+        target = tmp_path / "real-skill"
+        target.mkdir()
+        (root / "my-link").symlink_to(target)
+        monkeypatch.setattr("lib.env._SKILL_ROOTS", (str(root),))
+        result = skill_dirs()
+        assert len(result) == 1
+        assert result[0][1] == "my-link"
+        assert result[0][0] == target
