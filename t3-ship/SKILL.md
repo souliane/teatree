@@ -27,7 +27,7 @@ From "code is done" to "MR is merged."
 
 ### 2. Finalize Branch
 
-- `t3_finalize [msg]` — squash commits + rebase on default branch.
+- `t3 workspace finalize [msg]` — squash commits + rebase on default branch.
 - Run in each repo that has changes.
 - Verify the commit message follows the project's format.
 
@@ -106,7 +106,7 @@ After delivery is complete (MR created, pipeline green), run `/t3-retro` to capt
 
 | Script | Purpose |
 |--------|---------|
-| `t3_finalize` | Squash + rebase on default branch |
+| `t3 workspace finalize` | Squash + rebase on default branch |
 | Issue tracker CLI (`glab mr create` / `gh pr create`) | MR/PR creation |
-| `t3_trigger_e2e` | Trigger E2E tests on CI (ext: `wt_trigger_e2e`) |
-| `t3_fetch_failed_tests` | CI failure analysis (ext: `wt_fetch_failed_tests`) |
+| `t3 ci trigger-e2e` | Trigger E2E tests on CI (ext: `wt_trigger_e2e`) |
+| `t3 ci fetch-failed-tests` | CI failure analysis (ext: `wt_fetch_failed_tests`) |

@@ -37,8 +37,38 @@ def call(point: str, *args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
     return fn(*args, **kwargs)
 
 
+def active_layer(point: str) -> str | None:
+    entries = _registry.get(point)
+    if not entries:
+        return None
+    return entries[-1][0]
+
+
 def registered_points() -> list[str]:
     return list(_registry.keys())
+
+
+def _handler_label(fn: Callable) -> str:
+    mod = getattr(fn, "__module__", "?")
+    name = getattr(fn, "__qualname__", getattr(fn, "__name__", repr(fn)))
+    return f"{mod}.{name}"
+
+
+def info() -> list[dict[str, Any]]:
+    """Return full registry state: each EP with all registered layers and the active one."""
+    result: list[dict[str, Any]] = []
+    for point in sorted(_registry):
+        entries = _registry[point]
+        layers = {lyr: _handler_label(fn) for lyr, fn in entries}
+        result.append(
+            {
+                "point": point,
+                "active_layer": entries[-1][0],
+                "active_handler": _handler_label(entries[-1][1]),
+                "layers": layers,
+            }
+        )
+    return result
 
 
 def clear() -> None:

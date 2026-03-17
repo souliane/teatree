@@ -109,7 +109,7 @@ If not found in the external tracker, log a warning but continue — not all tic
 
 **b. Run the full lifecycle** using the loaded skills — each phase uses the corresponding t3- skill:
 
-1. **Intake** (`/t3-ticket`): Fetch issue, create worktree (`t3_ticket`), run `t3_setup`, verify environment.
+1. **Intake** (`/t3-ticket`): Fetch issue, create worktree (`t3 workspace ticket`), run `t3 lifecycle setup`, verify environment.
 2. **Implementation** (`/t3-code`): Implement with TDD. Check ALL repos in scope.
 3. **Testing** (`/t3-test`): Run tests, fix failures, ensure lint passes.
 4. **Delivery** (`/t3-ship`): Commit, push, create MRs for ALL repos with changes.
@@ -391,7 +391,7 @@ Project overlays can add extra fields to ticket and MR entries (e.g., `notion_st
 - **Never start without user approval.** Always show the confirmation table first.
 - **Always pre-fetch external context.** Read all specs before starting implementation.
 - **Always run scope analysis.** The issue tracker project ≠ the implementation repo.
-- **`t3_setup` is mandatory for every ticket.** Never skip it, never hand-edit `.env.worktree`.
+- **`t3 lifecycle setup` is mandatory for every ticket.** Never skip it (see `/t3-workspace` § Never Hand-Edit Generated Files).
 - **Confirm before transitioning.** In status check mode, always present the table and wait for user approval before executing transitions.
 - **Never post reminders without approval.** Always show the dry-run table first.
 

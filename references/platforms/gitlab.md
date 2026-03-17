@@ -206,6 +206,40 @@ curl -s -X POST "https://gitlab.com/api/v4/projects/<URL-ENCODED-PROJECT>/merge_
 
 Never target a context line (an unchanged line in `@@` hunk headers). GitLab renders the comment in **every hunk** that references that context line, causing massive duplication. Always target an **added (`+`) line** within the diff.
 
+**Pre-flight validation (Non-Negotiable):** Before posting each inline note, extract the set of added lines from the diff and verify the target is among them. Use this snippet:
+
+```bash
+# Extract added line numbers for a specific file from a unified diff
+glab mr diff <IID> -R <repo> 2>/dev/null \
+  | python3 -c "
+import sys, re
+target_file = '<file_path>'  # relative to repo root
+in_target = False
+new_line = 0
+added_lines = []
+for line in sys.stdin:
+    if line.startswith('+++ b/'):
+        in_target = line.strip() == f'+++ b/{target_file}'
+    elif in_target and line.startswith('@@'):
+        m = re.search(r'\+(\d+)', line)
+        new_line = int(m.group(1)) if m else 0
+    elif in_target:
+        if line.startswith('+'):
+            added_lines.append(new_line)
+            new_line += 1
+        elif not line.startswith('-'):
+            new_line += 1
+for n in added_lines:
+    print(n)
+"
+```
+
+If the target `new_line` does not appear in the output, pick the nearest added line instead.
+
+### JSON Escaping for Draft Notes
+
+When the note body contains backticks, single quotes, or other special characters, prefer **direct shell JSON** (single-quoted `--data '{...}'`) over Python `json.dumps` with embedded strings. Python's nested quoting layers (shell → Python string → JSON) are fragile and commonly mangle backticks into `""` or drop them entirely.
+
 ### Suggestion Blocks
 
 ```suggestion:-0+0

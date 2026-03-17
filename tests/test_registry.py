@@ -1,7 +1,7 @@
 """Tests for _registry.py — extension point registry."""
 
 import pytest
-from lib.registry import call, clear, get, register, registered_points
+from lib.registry import call, clear, get, info, register, registered_points
 
 
 def _noop(**_kwargs: object) -> str:
@@ -83,3 +83,25 @@ class TestClearAndPoints:
         points = registered_points()
         assert "alpha" in points
         assert "beta" in points
+
+    def test_info_returns_sorted_entries(self) -> None:
+        clear()
+        register("zz_point", _noop, "default")
+        register("aa_point", _framework, "framework")
+        result = info()
+        assert result[0]["point"] == "aa_point"
+        assert result[1]["point"] == "zz_point"
+
+    def test_info_shows_all_layers(self) -> None:
+        clear()
+        register("multi", _noop, "default")
+        register("multi", _project, "project")
+        result = info()
+        assert len(result) == 1
+        assert result[0]["active_layer"] == "project"
+        assert "default" in result[0]["layers"]
+        assert "project" in result[0]["layers"]
+
+    def test_info_empty_registry(self) -> None:
+        clear()
+        assert info() == []

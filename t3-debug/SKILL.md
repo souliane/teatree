@@ -66,10 +66,10 @@ Common failure categories:
 
 | Script | When to use |
 |--------|-------------|
-| `t3_backend` | Restart backend after a fix |
-| `t3_frontend` | Restart frontend after a fix |
-| `t3_start` | Full restart when multiple services affected |
-| `t3_fetch_ci_errors` | Analyze CI error logs (ext: `wt_fetch_ci_errors`) |
+| `t3 run backend` | Restart backend after a fix |
+| `t3 run frontend` | Restart frontend after a fix |
+| `t3 lifecycle start` | Full restart when multiple services affected |
+| `t3 ci fetch-errors` | Analyze CI error logs (ext: `wt_fetch_ci_errors`) |
 
 ## Error Log Analysis
 

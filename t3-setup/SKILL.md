@@ -421,12 +421,11 @@ source "$T3_REPO/scripts/lib/bootstrap.sh"           # teatree core functions
 
 If missing, tell the user exactly what to add. After adding, they need `source ~/.zshrc` (or `~/.bashrc`) or a new terminal.
 
-**Verify functions are available:**
+**Verify the `t3` CLI is available:**
 
 ```bash
-type t3_ticket 2>/dev/null && echo "OK  t3_ticket" || echo "MISSING  t3_ticket"
-type t3_setup 2>/dev/null && echo "OK  t3_setup" || echo "MISSING  t3_setup"
-type t3_finalize 2>/dev/null && echo "OK  t3_finalize" || echo "MISSING  t3_finalize"
+type t3 2>/dev/null && echo "OK  t3" || echo "MISSING  t3"
+t3 --help >/dev/null 2>&1 && echo "OK  t3 CLI responds" || echo "BROKEN  t3 CLI"
 ```
 
 ### Step 4: Skill Symlinks

@@ -6,13 +6,13 @@
 
 ## "Database Already Exists"
 
-- **Cause:** Previous `t3_setup` created the DB but was interrupted before completing.
-- **Fix:** Run `t3_db_refresh` to drop and reimport cleanly.
+- **Cause:** Previous `t3 lifecycle setup` created the DB but was interrupted before completing.
+- **Fix:** Run `t3 db refresh` to drop and reimport cleanly.
 
 ## Port Already in Use
 
 - **Cause:** Stale process from a previous session holds the port.
-- **Fix:** `lsof -i :<port>` to identify the process, then kill it. Or run `t3_setup` again — it allocates free ports automatically.
+- **Fix:** `lsof -i :<port>` to identify the process, then kill it. Or run `t3 lifecycle setup` again — it allocates free ports automatically.
 - **Docker variants:** If using Docker-based services, port conflicts can also come from stale containers or compose project name collisions. Check `docker ps -a` for conflicting containers. Project overlays may document additional Docker-specific failure modes in their own troubleshooting references.
 
 ## "Worktree Is Already Checked Out"
@@ -23,7 +23,7 @@
 ## DSLR Restore Fails Silently
 
 - **Cause:** `dslr` not installed or the snapshot is from an incompatible Postgres version.
-- **Fix:** Run `uv tool install dslr` to install. If version mismatch, delete the snapshot (`dslr delete <name>`) and let `t3_db_refresh` reimport from dump.
+- **Fix:** Run `uv tool install dslr` to install. If version mismatch, delete the snapshot (`dslr delete <name>`) and let `t3 db refresh` reimport from dump.
 
 ## Remote `pg_dump` Times Out or Produces Truncated Dump
 
