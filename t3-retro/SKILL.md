@@ -311,7 +311,7 @@ git commit -m "fix(<skill>): <what was learned>"
 
 ### Squashing Retro Commits
 
-When multiple retro commits accumulate on a branch before pushing, squash related commits into clean, logical units. **But never rewrite commits already pushed to origin (Non-Negotiable).** Before squashing, check `git log origin/<branch>..HEAD` — only squash commits in that local-only range.
+When multiple retro commits accumulate on a branch before pushing, squash related commits into clean, logical units. **But never rewrite settled commits (Non-Negotiable).** This means: (1) never rewrite commits already pushed to origin, and (2) even on local-only branches, only squash commits from the current work session — older commits are settled history. Before squashing, check `git log origin/<branch>..HEAD` and confirm the squash range with the user.
 
 **When `T3_AUTO_SQUASH=true`:** Automatically squash related unpushed commits without asking for confirmation. Group by topic (e.g., all retro fixes to the same skill become one commit). This keeps git history clean without manual intervention.
 
