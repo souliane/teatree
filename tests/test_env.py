@@ -86,6 +86,21 @@ class TestDetectTicketDir:
         monkeypatch.setenv("TICKET_DIR", str(td))
         assert detect_ticket_dir() == str(td)
 
+    def test_ignores_stale_ticket_dir_inside_t3_python(
+        self,
+        workspace: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        stale_td = workspace / "stale-ticket-9999"
+        stale_td.mkdir()
+        current_td = workspace / "current-ticket-1234"
+        repo = current_td / "my-project"
+        repo.mkdir(parents=True)
+        monkeypatch.setenv("TICKET_DIR", str(stale_td))
+        monkeypatch.setenv("T3_WORKSPACE_DIR", str(workspace))
+        monkeypatch.setenv("_T3_ORIG_CWD", str(repo))
+        assert detect_ticket_dir() == str(current_td)
+
     def test_returns_empty_when_env_dir_missing(
         self,
         monkeypatch: pytest.MonkeyPatch,

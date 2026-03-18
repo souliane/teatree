@@ -146,12 +146,17 @@ def detect_ticket_dir() -> str:
     """Detect the ticket directory.
 
     Priority: $TICKET_DIR env > $PWD heuristic.
+
+    Inside _t3_python ($_T3_ORIG_CWD is set), direnv may re-inject a stale
+    TICKET_DIR.  Only trust it when the effective CWD is under it.
     """
+    cwd = _effective_cwd()
+
     td = os.environ.get("TICKET_DIR", "")
     if td and Path(td).is_dir():
-        return td
-
-    cwd = _effective_cwd()
+        orig_cwd = os.environ.get("_T3_ORIG_CWD", "")
+        if not orig_cwd or cwd.startswith(td + "/") or cwd == td:
+            return td
     ws = workspace_dir()
     if not cwd.startswith(ws + "/"):
         return ""
