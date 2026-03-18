@@ -294,7 +294,7 @@ For question 5, explain the two levels:
    **Ask the user one question at a time:**
    1. "Does your project use a Python backend?" → if yes, suggest `ac-python` + `ac-django` (or `fastapi-expert` for FastAPI)
    2. "Do you want ruff linting migration support?" → if yes, add `ac-adopting-ruff`
-   3. "Do you maintain skills in this repo?" → if yes, add `ac-auditing-repos` + `ac-reviewing-skills`
+   3. "Do you maintain skills in this repo?" → if yes, add `ac-managing-repos` + `ac-reviewing-skills`
    4. "Are there team-shared skills that should always load?" → if yes, add them as companions with broad patterns
 
    If the overlay already has a `hook-config/context-match.yml`, show its current rules (`t3 config autoload`) and ask what to add rather than overwriting.

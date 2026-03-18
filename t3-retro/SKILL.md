@@ -311,13 +311,13 @@ git commit -m "fix(<skill>): <what was learned>"
 
 ### Squashing Retro Commits
 
-When multiple retro commits accumulate on a branch before pushing, squash related commits into clean, logical units. **But never rewrite settled commits (Non-Negotiable).** This means: (1) never rewrite commits already pushed to origin, and (2) even on local-only branches, only squash commits from the current work session — older commits are settled history. Before squashing, check `git log origin/<branch>..HEAD` and confirm the squash range with the user.
+Squash retro commits into clean, human-sized units **before chaining to the review skill**. Follow the canonical squash rules from `ac-managing-repos` § Workflow 2 — Squash & Prepare:
 
-**When `T3_AUTO_SQUASH=true`:** Automatically squash related unpushed commits without asking for confirmation. Group by topic (e.g., all retro fixes to the same skill become one commit). This keeps git history clean without manual intervention.
-
-**When `T3_AUTO_SQUASH=false` (default):** Suggest squashing and wait for user confirmation before rewriting history.
-
-**Squash integrity check:** Before any rewrite, save the tip: `OLD_TIP=$(git rev-parse HEAD)`. After rewrite, verify `git diff $OLD_TIP..HEAD` is empty. See `t3-ship` § "Squash integrity check" for the full rule.
+- Never rewrite pushed history (`git log origin/<branch>..HEAD` to identify safe range).
+- Group by topic (e.g., all retro fixes to the same skill become one commit).
+- Keep human-sized commits.
+- Squash integrity check: save `OLD_TIP=$(git rev-parse HEAD)`, verify `git diff $OLD_TIP..HEAD` is empty after rewrite.
+- Respect `T3_AUTO_SQUASH` (`true` = auto, `false` = ask first).
 
 ### After Committing
 
@@ -336,9 +336,19 @@ When multiple retro commits accumulate on a branch before pushing, squash relate
 ════════════════════════════════════════════════════════════════
 ```
 
-**If `T3_PUSH=false` (default):** stop here, do not ask about pushing.
+**If `T3_PUSH=false` (default):** do not ask about pushing.
 
 **If `T3_PUSH=true`:** ask the user if they'd like to push now. If they say yes, load `/t3-contribute` and run it. If they decline, remind them to run `/t3-contribute` later.
+
+### Chain to Review Skill
+
+After committing and squashing, if `T3_REVIEW_SKILL` is configured in `~/.teatree`, offer to chain into the review skill:
+
+```text
+Retro complete. Chain to cross-repo review? (T3_REVIEW_SKILL=ac-reviewing-skills)
+```
+
+The review skill will then squash its own commits and chain into its `DELIVERY_SKILL` (e.g., `ac-managing-repos`) for infrastructure audit and final delivery status.
 
 ## Privacy Scan
 

@@ -52,25 +52,7 @@ Show the commit log to the user.
 
 ### 1b. Squash Option
 
-If there are **more than one** unpushed commit, ask the user:
-
-```text
-N unpushed commits on <branch>:
-  <hash1> fix(skill-a): first improvement
-  <hash2> fix(skill-b): second improvement
-
-→ Squash into a single commit? [yes/no]
-```
-
-If yes, squash:
-
-```bash
-cd "$T3_REPO"
-git reset --soft @{upstream}
-git commit -m "fix(<skills>): <combined description>"
-```
-
-If no, push as-is (multiple commits).
+If there are **more than one** unpushed commit, offer to squash following the canonical squash rules from `ac-managing-repos` § Workflow 2 — Squash & Prepare. Key points: group by topic, keep human-sized, never rewrite pushed history, squash integrity check. Respect `T3_AUTO_SQUASH`.
 
 ### 2. Pre-Flight Checks (all must pass)
 

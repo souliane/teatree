@@ -111,9 +111,16 @@ repos:
         pass_filenames: false
         always_run: true
 
-  # Phase 8 - Slow
+  # Phase 8 - Slow (safety, pytest)
   - repo: local
     hooks:
+      - id: pytest
+        name: pytest
+        language: system
+        entry: uv run pytest --no-header -q
+        pass_filenames: false
+        always_run: true
+        stages: [commit]
       - id: safety
         name: safety
         language: system

@@ -31,9 +31,7 @@ From "code is done" to "MR is merged."
 - Run in each repo that has changes.
 - Verify the commit message follows the project's format.
 
-**Auto-squash (`T3_AUTO_SQUASH=true`):** Before finalization, automatically squash related unpushed commits into clean, logical units without asking for confirmation. Only rewrites commits in `git log origin/<branch>..HEAD`. Group by topic — e.g., multiple fix commits for the same issue become one commit, retro improvements to the same skill merge together. When `false` (default), suggest squashing and wait for confirmation.
-
-**Squash integrity check (Non-Negotiable):** Before any squash or rebase that reorganizes commits, record the current branch tip: `OLD_TIP=$(git rev-parse HEAD)`. After the rewrite is complete, verify zero content loss: `git diff $OLD_TIP..HEAD` must produce empty output. If there is any diff, the rewrite lost or introduced changes — abort and investigate. This catches conflicts silently resolved during interactive rebase or reset-based regrouping.
+**Squash rules:** Follow the canonical squash rules from `ac-managing-repos` § Workflow 2 — Squash & Prepare. Key points: never rewrite pushed history, group by topic, keep human-sized, squash integrity check (`OLD_TIP` before/after diff), respect `T3_AUTO_SQUASH`.
 
 ### 3. Local Verification
 
