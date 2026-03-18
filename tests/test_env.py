@@ -350,12 +350,17 @@ class TestFindFreePorts:
         td.mkdir(parents=True)
         envwt = td / ".env.worktree"
         envwt.write_text("POSTGRES_PORT=5555\n")
-        envwt.chmod(0o000)
-        try:
+        # Intercept Path.open() to simulate PermissionError (chmod(0) fails as root)
+        real_open = Path.open
+
+        def guarded(self_path: Path, *a: object, **kw: object) -> object:
+            if self_path.resolve() == envwt.resolve():
+                raise PermissionError
+            return real_open(self_path, *a, **kw)  # type: ignore[arg-type]
+
+        with patch.object(Path, "open", guarded):
             _be, _fe, pg, _rd = find_free_ports()
-            assert pg == _DEFAULT_POSTGRES_PORT  # OSError skipped
-        finally:
-            envwt.chmod(0o644)
+        assert pg == _DEFAULT_POSTGRES_PORT  # PermissionError skipped
 
     def test_shared_postgres_skips_invalid_port(
         self,
@@ -531,14 +536,18 @@ class TestFindFreePorts:
         td.mkdir()
         envwt = td / ".env.worktree"
         envwt.write_text("BACKEND_PORT=8001\n")
-        # Make file unreadable
-        envwt.chmod(0o000)
-        try:
+        # Intercept Path.open() to simulate PermissionError (chmod(0) fails as root)
+        real_open2 = Path.open
+
+        def guarded2(self_path: Path, *a: object, **kw: object) -> object:
+            if self_path.resolve() == envwt.resolve():
+                raise PermissionError
+            return real_open2(self_path, *a, **kw)  # type: ignore[arg-type]
+
+        with patch.object(Path, "open", guarded2):
             be, _fe, _pg, _rd = find_free_ports()
-            # Should handle OSError gracefully
-            assert be == 8001
-        finally:
-            envwt.chmod(0o644)
+        # Port 8001 was not collected due to OSError — first available starting port
+        assert be == 8001
 
 
 class TestReadEnvKey:
