@@ -34,6 +34,7 @@ from lib.gitlab import (
     discover_mrs,
     get_issue,
     get_mr_approvals,
+    get_mr_closing_issues,
     get_mr_notes,
     get_mr_pipeline,
     resolve_project,
@@ -64,18 +65,31 @@ def _review_channels() -> dict[str, str]:
     return _REVIEW_CHANNELS
 
 
-def _extract_ticket_from_branch(branch: str) -> str | None:
-    match = re.search(r"(\d+)", branch)
-    return match.group(1) if match else None
+def _extract_ticket_from_text(mr: dict) -> str | None:
+    """Extract ticket ID from MR title or description URLs (no API call)."""
+    for text in [
+        (mr.get("description", "") or "").split("\n")[0],
+        mr.get("title", ""),
+    ]:
+        url_match = re.search(r"/-/(?:issues|work_items)/(\d+)", text)
+        if url_match:
+            return url_match.group(1)
+    return None
 
 
-def _extract_ticket_from_mr(mr: dict) -> str | None:
-    desc = mr.get("description", "") or ""
-    first_line = desc.split("\n")[0] if desc else ""
-    url_match = re.search(r"/-/(?:issues|work_items)/(\d+)", first_line)
-    if url_match:
-        return url_match.group(1)
-    return _extract_ticket_from_branch(mr.get("source_branch", ""))
+def _extract_ticket_from_mr(mr: dict, token: str = "") -> str | None:
+    """Extract ticket ID: text URLs → GitLab closing issues API."""
+    text_ticket = _extract_ticket_from_text(mr)
+    if text_ticket:
+        return text_ticket
+    # Fallback: query GitLab for linked closing issues
+    project_id = mr.get("_project_id")
+    iid = mr.get("iid")
+    if project_id and iid:
+        issues = get_mr_closing_issues(project_id, iid, token)
+        if issues:
+            return str(issues[0].get("iid", ""))
+    return None
 
 
 def _extract_ticket_url_from_mr(mr: dict) -> str | None:
@@ -128,6 +142,9 @@ def _enrich_mr(
     mr_key = f"{repo_short}!{iid}"
     is_draft = mr.get("draft", False)
 
+    # Resolve ticket ID once and inject into mr dict for downstream use
+    mr["_ticket"] = _extract_ticket_from_mr(mr, token)
+
     if not is_draft:
         pipeline_info = get_mr_pipeline(project_id, iid, token)
         approvals = get_mr_approvals(project_id, iid, token)
@@ -168,7 +185,7 @@ def _build_active_mr_entry(
         "project_id": mr["_project_id"],
         "title": mr.get("title", ""),
         "branch": mr.get("source_branch", ""),
-        "ticket": _extract_ticket_from_mr(mr),
+        "ticket": mr.get("_ticket"),
         "pipeline_status": pipeline_info["status"],
         "pipeline_url": pipeline_info["url"],
         "review_requested": prev.get("review_requested", False),
@@ -317,7 +334,7 @@ def collect(*, verbose: bool = False) -> dict:  # noqa: C901, PLR0912, PLR0914, 
             mrs_data[mr_key] = entry
 
         # Build ticket entries for non-draft MRs
-        ticket_iid = _extract_ticket_from_mr(mr)
+        ticket_iid = mr.get("_ticket")
         if ticket_iid and not is_draft:
             if ticket_iid not in tickets:
                 tickets[ticket_iid] = _build_ticket_entry(

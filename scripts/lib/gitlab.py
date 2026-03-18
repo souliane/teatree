@@ -346,6 +346,14 @@ def cancel_pipelines(
 # ---------------------------------------------------------------------------
 
 
+def get_mr_closing_issues(project_id: int, mr_iid: int, token: str = "") -> list[dict]:
+    """Get issues that will be closed when the MR is merged."""
+    data = _api_get(f"projects/{project_id}/merge_requests/{mr_iid}/closes_issues", token)
+    if not data or not isinstance(data, list):
+        return []
+    return data
+
+
 def get_issue(project_id: int | str, issue_iid: int, token: str = "") -> dict | None:
     """Get full issue data."""
     data = _api_get(f"projects/{project_id}/issues/{issue_iid}", token)

@@ -2,9 +2,9 @@
 
 import json
 import os
+from contextlib import AbstractContextManager
 from pathlib import Path
-from typing import Any
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from collect_followup_data import (
@@ -17,8 +17,8 @@ from collect_followup_data import (
     _discover_mrs,
     _enrich_mr,
     _extract_feature_flag,
-    _extract_ticket_from_branch,
     _extract_ticket_from_mr,
+    _extract_ticket_from_text,
     _extract_ticket_url_from_mr,
     _fetch_issue_labels,
     _process_label,
@@ -29,37 +29,56 @@ from collect_followup_data import (
 from lib.gitlab import ProjectInfo
 
 
-class TestExtractTicketFromBranch:
-    def test_extracts_number(self) -> None:
-        assert _extract_ticket_from_branch("ac/1234-fix-bug") == "1234"
+class TestExtractTicketFromText:
+    def test_from_description_url(self) -> None:
+        mr = {"description": "https://gitlab.com/org/repo/-/issues/42\nmore text", "title": "fix"}
+        assert _extract_ticket_from_text(mr) == "42"
 
-    def test_no_number(self) -> None:
-        assert _extract_ticket_from_branch("main") is None
+    def test_from_work_items_url(self) -> None:
+        mr = {"description": "https://gitlab.com/org/repo/-/work_items/55\n", "title": "fix"}
+        assert _extract_ticket_from_text(mr) == "55"
 
-    def test_empty(self) -> None:
-        assert _extract_ticket_from_branch("") is None
+    def test_from_title_url(self) -> None:
+        mr = {
+            "title": "techdebt: ruff batch 5 (https://gitlab.com/org/repo/-/work_items/1615)",
+            "description": "## Summary",
+        }
+        assert _extract_ticket_from_text(mr) == "1615"
+
+    def test_no_url(self) -> None:
+        mr = {"description": "no url here", "title": "fix something"}
+        assert _extract_ticket_from_text(mr) is None
+
+    def test_none_description(self) -> None:
+        mr = {"description": None, "title": "fix"}
+        assert _extract_ticket_from_text(mr) is None
 
 
 class TestExtractTicketFromMr:
-    def test_from_description_url(self) -> None:
-        mr = {"description": "https://gitlab.com/org/repo/-/issues/42\nmore text", "source_branch": "b"}
+    def test_from_text_url(self) -> None:
+        mr = {"description": "https://gitlab.com/org/repo/-/issues/42\nmore", "title": "fix", "source_branch": "b"}
         assert _extract_ticket_from_mr(mr) == "42"
 
-    def test_from_work_items_url(self) -> None:
-        mr = {"description": "https://gitlab.com/org/repo/-/work_items/55\n", "source_branch": "b"}
-        assert _extract_ticket_from_mr(mr) == "55"
+    @patch("collect_followup_data.get_mr_closing_issues")
+    def test_falls_back_to_closing_issues(self, mock_closing: MagicMock) -> None:
+        mock_closing.return_value = [{"iid": 1615}]
+        mr = {"description": "## Summary", "title": "ruff batch 9", "source_branch": "x", "_project_id": 1, "iid": 99}
+        tok = "test-tok"
+        assert _extract_ticket_from_mr(mr, token=tok) == "1615"
+        mock_closing.assert_called_once_with(1, 99, tok)
 
-    def test_falls_back_to_branch(self) -> None:
-        mr = {"description": "no url here", "source_branch": "ac/99-fix"}
-        assert _extract_ticket_from_mr(mr) == "99"
+    @patch("collect_followup_data.get_mr_closing_issues")
+    def test_no_closing_issues(self, mock_closing: MagicMock) -> None:
+        mock_closing.return_value = []
+        mr = {"description": "no url", "title": "fix", "source_branch": "x", "_project_id": 1, "iid": 99}
+        tok = "test-tok"
+        assert _extract_ticket_from_mr(mr, token=tok) is None
 
-    def test_empty_description(self) -> None:
-        mr = {"description": None, "source_branch": "ac/77-test"}
-        assert _extract_ticket_from_mr(mr) == "77"
-
-    def test_no_description_key(self) -> None:
-        mr = {"source_branch": "ac/33-thing"}
-        assert _extract_ticket_from_mr(mr) == "33"
+    @patch("collect_followup_data.get_mr_closing_issues")
+    def test_no_project_id_skips_api(self, mock_closing: MagicMock) -> None:
+        mr = {"description": "no url", "title": "fix", "source_branch": "x"}
+        assert _extract_ticket_from_mr(mr) is None
+        mock_closing.assert_not_called()
 
 
 class TestExtractTicketUrlFromMr:
@@ -452,7 +471,7 @@ class TestApiGetMr:
 
 
 class TestCollect:
-    def _mock_discover(self, mrs: list[dict]) -> Any:  # noqa: ANN401
+    def _mock_discover(self, mrs: list[dict]) -> AbstractContextManager[MagicMock]:
         return patch("collect_followup_data._discover_mrs", return_value=mrs)
 
     def test_no_username_exits(self) -> None:
