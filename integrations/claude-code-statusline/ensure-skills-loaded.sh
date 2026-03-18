@@ -216,8 +216,8 @@ detect_intent() {
         echo "$url_intent"; return
     fi
 
-    # t3-ship: delivery actions
-    if echo "$lp" | grep -qE '\b(merge request|pull request|create an? (mr|pr)|\bmr\b|push\b|finalize|deliver|ship it|create mr|create pr)\b'; then
+    # t3-ship: delivery actions (but not "review this MR" — that's t3-review)
+    if echo "$lp" | grep -qE '\b(merge request|pull request|create an? (mr|pr)|\bmr\b|push\b|finalize|deliver|ship it|create mr|create pr)\b' && ! echo "$lp" | grep -qE '\breview\b'; then
         echo "t3-ship"; return
     fi
     # t3-ship: commit (but not "review comment")
