@@ -312,7 +312,7 @@ companion_skills:
   #
   # --- Tooling skills (souliane/skills) ---
   #
-  # ac-auditing-repos:                      # Cross-repo infrastructure audit
+  # ac-managing-repos:                      # Cross-repo infrastructure audit
   #   - "<skills-repo>"
   # ac-reviewing-skills:                    # Skill quality review
   #   - "<skills-repo>"
@@ -332,7 +332,7 @@ Generate the `cwd_patterns` list from the repo names (question 3). Generate `com
 - **Other Python backend**: add `ac-python` mapped to backend repo patterns
 - **Angular frontend**: add `angular-skills` mapped to frontend repo patterns (`analogjs/angular-skills`)
 - **Any Python project**: add `ac-adopting-ruff` mapped to all Python repo patterns (for ruff migration)
-- **Skills repo**: add `ac-auditing-repos` + `ac-reviewing-skills` mapped to the skills repo pattern
+- **Skills repo**: add `ac-managing-repos` + `ac-reviewing-skills` mapped to the skills repo pattern
 
 ### Template: `hook-config/reference-injections.yml`
 
