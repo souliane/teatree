@@ -15,6 +15,15 @@
 - **Fix:** `lsof -i :<port>` to identify the process, then kill it. Or run `t3 lifecycle setup` again — it allocates free ports automatically.
 - **Docker variants:** If using Docker-based services, port conflicts can also come from stale containers or compose project name collisions. Check `docker ps -a` for conflicting containers. Project overlays may document additional Docker-specific failure modes in their own troubleshooting references.
 
+## Setup Reports "provisioned" But DB Is Missing or Empty
+
+- **Symptom:** `t3 lifecycle setup` completes with state "provisioned" and `db_name` in facts, but `psql` shows the database does not exist. Or DB exists but `shared_userrole` count is 0 (empty seed tables).
+- **Cause:** Two known scenarios:
+  1. `.env.worktree` was stale from a previous worktree (different ticket/variant). The setup used the old `DATABASE_URL` for migrations — connecting to an existing DB instead of creating a new one. Fixed in `lifecycle.py` (adds `_force_load_env_worktree` after env generation).
+  2. `T3_OVERLAY` not exported to Python subprocesses — oper hooks didn't register, so `wt_db_import` used the default no-op handler. Fixed in `init.py` (loads `~/.teatree` directly in Python).
+- **Verification after setup:** Always check: `psql -h localhost -p 5432 -U local_superuser -d <db_name> -c "SELECT count(*) FROM shared_userrole"` — must be > 0.
+- **Fix:** Delete `.env.worktree` (both ticket-dir and repo-level) + `.state.json`, drop the DB if it exists, and re-run `t3 lifecycle setup`.
+
 ## "Worktree Is Already Checked Out"
 
 - **Cause:** A worktree for this branch already exists elsewhere.
@@ -37,6 +46,7 @@
   4. Always verify network/VPN connectivity before remote DB operations.
   5. Monitor `pg_dump` progress — if file hasn't grown in several minutes, connection is stalled.
 - **Diagnostic checklist:** check dump file size (`ls -lh .data/*.dump`), check VPN, check `pg_restore -l <dump>` stderr, spot-check a known seed table (`SELECT COUNT(*) FROM <table>`).
+  6. **Compare sizes across dates** for the same variant — a dump that is drastically smaller than a known-good one (e.g. 90MB vs 704MB) is almost certainly broken. Flag it immediately.
 
 ## Statusline Blank or Missing Repo/Worktree Data
 

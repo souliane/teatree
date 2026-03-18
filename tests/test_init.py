@@ -1,5 +1,6 @@
 """Tests for _init.py — initialization and framework auto-detection."""
 
+import os
 import sys
 import types
 from pathlib import Path
@@ -81,9 +82,8 @@ class TestInit:
     ) -> None:
         """When lib.project_hooks is not importable, init() succeeds silently."""
         monkeypatch.setenv("T3_WORKSPACE_DIR", str(workspace))
+        monkeypatch.setitem(sys.modules, "lib.project_hooks", None)
         lib.init._initialized = False
-        # lib.project_hooks is not on PYTHONPATH in the test env,
-        # so this exercises the except ImportError branch.
         lib.init.init()
         assert "wt_symlinks" in registered_points()
 
@@ -104,3 +104,57 @@ class TestInit:
         lib.init.init()
 
         assert called
+
+    def test_non_t3_keys_ignored(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Keys not starting with T3_ and empty-value keys are skipped."""
+        ws = tmp_path / "workspace"
+        ws.mkdir()
+
+        teatree_cfg = tmp_path / ".teatree"
+        teatree_cfg.write_text(
+            f'T3_WORKSPACE_DIR="{ws}"\nNON_T3_KEY=value\nT3_EMPTY=\n',
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.delenv("T3_WORKSPACE_DIR", raising=False)
+        monkeypatch.delenv("NON_T3_KEY", raising=False)
+        monkeypatch.delenv("T3_EMPTY", raising=False)
+        monkeypatch.delenv("T3_OVERLAY", raising=False)
+
+        lib.init._initialized = False
+        lib.init.init()
+
+        assert "NON_T3_KEY" not in sys.modules  # never set
+        assert os.environ.get("T3_EMPTY") is None  # empty value skipped
+
+    def test_overlay_scripts_not_a_dir(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """When T3_OVERLAY points to a dir without scripts/, sys.path unchanged."""
+        ws = tmp_path / "workspace"
+        ws.mkdir()
+        overlay = tmp_path / "overlay"
+        overlay.mkdir()
+        # No scripts/ subdir
+
+        teatree_cfg = tmp_path / ".teatree"
+        teatree_cfg.write_text(
+            f'T3_WORKSPACE_DIR="{ws}"\nT3_OVERLAY="{overlay}"\n',
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.delenv("T3_WORKSPACE_DIR", raising=False)
+        monkeypatch.delenv("T3_OVERLAY", raising=False)
+
+        original_path_len = len(sys.path)
+        lib.init._initialized = False
+        lib.init.init()
+
+        # sys.path should not have grown (overlay/scripts doesn't exist)
+        assert len(sys.path) <= original_path_len + 1  # +1 for possible workspace

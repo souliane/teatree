@@ -1,12 +1,13 @@
 """Tests for worktree lifecycle state machine."""
 
 import json
+import os
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 from lib.fsm import InvalidTransitionError
-from lib.lifecycle import WorktreeLifecycle
+from lib.lifecycle import WorktreeLifecycle, _force_load_env_worktree, _link_repo_env_worktree
 
 
 @pytest.fixture
@@ -74,6 +75,7 @@ class TestTransitions:
             patch("lib.lifecycle.db_exists", return_value=False),
             patch("lib.lifecycle.find_free_ports", return_value=(8001, 4201, 5433, 6379)),
             patch("lib.lifecycle.registry") as mock_registry,
+            patch("lib.lifecycle.subprocess.run"),
         ):
             mock_registry.call.return_value = True
             wt = str(state_dir / "my-project")
@@ -84,7 +86,27 @@ class TestTransitions:
             assert lifecycle.facts["ports"]["backend"] == 8001
             assert lifecycle.facts["variant"] == "acme"
             assert lifecycle.facts["db_name"] == "wt_1234_acme"
-            assert mock_registry.call.call_count >= 4  # symlinks, services, db_import, post_db
+
+            # .env.worktree created at ticket dir level
+            envwt = state_dir / ".env.worktree"
+            assert envwt.is_file()
+            content = envwt.read_text()
+            assert "WT_VARIANT=acme" in content
+            assert "WT_DB_NAME=wt_1234_acme" in content
+            assert "BACKEND_PORT=8001" in content
+
+            # repo-level .env.worktree symlinks to ticket-dir
+            repo_envwt = state_dir / "my-project" / ".env.worktree"
+            assert repo_envwt.is_symlink()
+            assert repo_envwt.resolve() == envwt.resolve()
+
+            # extension points called: symlinks, env_extra, services, db_import, post_db
+            ext_names = [c[0][0] for c in mock_registry.call.call_args_list]
+            assert "wt_symlinks" in ext_names
+            assert "wt_env_extra" in ext_names
+            assert "wt_services" in ext_names
+            assert "wt_db_import" in ext_names
+            assert "wt_post_db" in ext_names
 
     @pytest.mark.usefixtures("_worktree_dirs")
     def test_provision_skips_import_when_db_exists(
@@ -96,6 +118,7 @@ class TestTransitions:
             patch("lib.lifecycle.db_exists", return_value=True),
             patch("lib.lifecycle.find_free_ports", return_value=(8001, 4201, 5433, 6379)),
             patch("lib.lifecycle.registry") as mock_registry,
+            patch("lib.lifecycle.subprocess.run"),
         ):
             mock_registry.call.return_value = True
             wt = str(state_dir / "my-project")
@@ -109,8 +132,28 @@ class TestTransitions:
         with pytest.raises(InvalidTransitionError, match="Cannot start_services from created"):
             lifecycle.start_services()
 
-    def test_start_services_from_provisioned(self, lifecycle: WorktreeLifecycle) -> None:
-        with patch("lib.lifecycle.registry"):
+    def test_start_services_delegates_to_start_session(self, lifecycle: WorktreeLifecycle) -> None:
+        with patch("lib.lifecycle.registry") as mock_registry:
+            lifecycle.state = "provisioned"
+            lifecycle.facts = {"wt_dir": "/some/dir", "ports": {"backend": 8001, "frontend": 4201}}
+            lifecycle.start_services()
+            assert lifecycle.state == "services_up"
+            session_calls = [c for c in mock_registry.call.call_args_list if c[0][0] == "wt_start_session"]
+            assert len(session_calls) == 1
+
+    def test_start_services_fallback_when_no_session_handler(
+        self, lifecycle: WorktreeLifecycle, state_dir: Path
+    ) -> None:
+        (state_dir / ".env.worktree").write_text("WT_VARIANT=test\n")
+
+        def side_effect(point: str, *args: object, **kwargs: object) -> object:  # noqa: ARG001
+            if point == "wt_start_session":
+                raise KeyError(point)
+            return None
+
+        with patch("lib.lifecycle.registry") as mock_registry:
+            mock_registry.call.side_effect = side_effect
+            mock_registry.validate_overrides.return_value = None
             lifecycle.state = "provisioned"
             lifecycle.facts = {"wt_dir": "/some/dir", "ports": {"backend": 8001, "frontend": 4201}}
             lifecycle.start_services()
@@ -178,3 +221,54 @@ class TestStatus:
         assert "db_refresh" in names
         assert "teardown" in names
         assert "provision" not in names
+
+
+class TestLinkRepoEnvWorktree:
+    def test_replaces_existing_symlink(self, tmp_path: Path) -> None:
+        wt_dir = tmp_path / "wt"
+        wt_dir.mkdir()
+        ticket_dir = tmp_path / "ticket"
+        ticket_dir.mkdir()
+        (ticket_dir / ".env.worktree").write_text("X=1\n", encoding="utf-8")
+        (wt_dir / ".env.worktree").symlink_to(tmp_path / "nonexistent")
+
+        _link_repo_env_worktree(str(wt_dir), str(ticket_dir))
+
+        result = wt_dir / ".env.worktree"
+        assert result.is_symlink()
+        assert result.resolve() == (ticket_dir / ".env.worktree").resolve()
+
+    def test_replaces_existing_file(self, tmp_path: Path) -> None:
+        wt_dir = tmp_path / "wt"
+        wt_dir.mkdir()
+        ticket_dir = tmp_path / "ticket"
+        ticket_dir.mkdir()
+        (ticket_dir / ".env.worktree").write_text("X=1\n", encoding="utf-8")
+        (wt_dir / ".env.worktree").write_text("old\n", encoding="utf-8")
+
+        _link_repo_env_worktree(str(wt_dir), str(ticket_dir))
+
+        result = wt_dir / ".env.worktree"
+        assert result.is_symlink()
+
+
+class TestForceLoadEnvWorktree:
+    def test_loads_all_keys(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        envfile = tmp_path / ".env.worktree"
+        envfile.write_text("MY_KEY=hello\nOTHER=world\n", encoding="utf-8")
+        monkeypatch.delenv("MY_KEY", raising=False)
+        monkeypatch.delenv("OTHER", raising=False)
+
+        _force_load_env_worktree(str(envfile))
+
+        assert os.environ["MY_KEY"] == "hello"
+        assert os.environ["OTHER"] == "world"
+
+    def test_skips_comments_and_blanks(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        envfile = tmp_path / ".env.worktree"
+        envfile.write_text("# comment\n\nKEY=val\n", encoding="utf-8")
+        monkeypatch.delenv("KEY", raising=False)
+
+        _force_load_env_worktree(str(envfile))
+
+        assert os.environ["KEY"] == "val"

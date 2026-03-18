@@ -325,98 +325,20 @@ class TestFindFreePorts:
         _be, _fe, pg, _rd = find_free_ports()
         assert pg == 5433
 
-    def test_shared_postgres_reuses_existing_port(
+    def test_shared_postgres_always_uses_default_port(
         self,
         workspace: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setenv("T3_WORKSPACE_DIR", str(workspace))
         monkeypatch.setenv("T3_SHARE_DB_SERVER", "true")
-        # Create a ticket dir with postgres on port 5435
+        # Even when other worktrees have different ports, shared mode
+        # always uses the default (main repo's Postgres).
         td = workspace / "ticket-100" / "my-project"
         td.mkdir(parents=True)
         (td / ".env.worktree").write_text("POSTGRES_PORT=5435\n")
         _be, _fe, pg, _rd = find_free_ports()
-        assert pg == 5435  # reuses existing port, doesn't allocate new
-
-    def test_shared_postgres_skips_symlinks(
-        self,
-        workspace: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        monkeypatch.setenv("T3_WORKSPACE_DIR", str(workspace))
-        monkeypatch.setenv("T3_SHARE_DB_SERVER", "true")
-        td = workspace / "ticket-200" / "my-project"
-        td.mkdir(parents=True)
-        real = workspace / "real-env"
-        real.write_text("POSTGRES_PORT=5555\n")
-        (td / ".env.worktree").symlink_to(real)
-        _be, _fe, pg, _rd = find_free_ports()
-        assert pg == _DEFAULT_POSTGRES_PORT  # symlink skipped, falls back to default
-
-    def test_shared_postgres_skips_unreadable(
-        self,
-        workspace: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        monkeypatch.setenv("T3_WORKSPACE_DIR", str(workspace))
-        monkeypatch.setenv("T3_SHARE_DB_SERVER", "true")
-        td = workspace / "ticket-300" / "my-project"
-        td.mkdir(parents=True)
-        envwt = td / ".env.worktree"
-        envwt.write_text("POSTGRES_PORT=5555\n")
-        # Intercept Path.open() to simulate PermissionError (chmod(0) fails as root)
-        real_open = Path.open
-
-        def guarded(self_path: Path, *a: object, **kw: object) -> object:
-            if self_path.resolve() == envwt.resolve():
-                raise PermissionError
-            return real_open(self_path, *a, **kw)  # type: ignore[arg-type]
-
-        with patch.object(Path, "open", guarded):
-            _be, _fe, pg, _rd = find_free_ports()
-        assert pg == _DEFAULT_POSTGRES_PORT  # PermissionError skipped
-
-    def test_shared_postgres_skips_invalid_port(
-        self,
-        workspace: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        monkeypatch.setenv("T3_WORKSPACE_DIR", str(workspace))
-        monkeypatch.setenv("T3_SHARE_DB_SERVER", "true")
-        td = workspace / "ticket-400" / "my-project"
-        td.mkdir(parents=True)
-        (td / ".env.worktree").write_text("POSTGRES_PORT=not_a_number\n")
-        _be, _fe, pg, _rd = find_free_ports()
-        assert pg == _DEFAULT_POSTGRES_PORT  # ValueError skipped, falls back
-
-    def test_shared_postgres_skips_deep_dirs(
-        self,
-        workspace: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        monkeypatch.setenv("T3_WORKSPACE_DIR", str(workspace))
-        monkeypatch.setenv("T3_SHARE_DB_SERVER", "true")
-        # Create a .env.worktree deeper than _MAX_SCAN_DEPTH (2)
-        deep = workspace / "a" / "b" / "c" / "d"
-        deep.mkdir(parents=True)
-        (deep / ".env.worktree").write_text("POSTGRES_PORT=9999\n")
-        _be, _fe, pg, _rd = find_free_ports()
-        assert pg == _DEFAULT_POSTGRES_PORT  # too deep, skipped
-
-    def test_shared_postgres_excludes_current_dir(
-        self,
-        workspace: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        monkeypatch.setenv("T3_WORKSPACE_DIR", str(workspace))
-        monkeypatch.setenv("T3_SHARE_DB_SERVER", "true")
-        td = workspace / "ticket-500" / "my-project"
-        td.mkdir(parents=True)
-        (td / ".env.worktree").write_text("POSTGRES_PORT=5555\n")
-        # Exclude the dir we just created
-        _be, _fe, pg, _rd = find_free_ports(exclude_dir=str(td.parent))
-        assert pg == _DEFAULT_POSTGRES_PORT  # excluded, falls back
+        assert pg == _DEFAULT_POSTGRES_PORT
 
     def test_skips_already_used_ports(
         self,

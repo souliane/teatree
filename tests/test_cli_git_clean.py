@@ -775,3 +775,14 @@ class TestCleanupDockerAndDb:
         # Should have called docker compose down
         down_cmds = [c for c in compose_cmds if "down" in c]
         assert len(down_cmds) == 1
+
+
+class TestBuildIgnoreSets:
+    def test_empty_entries_skipped(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Empty entries from trailing commas are ignored (line 48 coverage)."""
+        mod = load_script("git_clean_them_all")
+        monkeypatch.setenv("T3_CLEAN_IGNORE", "foo/,,bar,,")
+        monkeypatch.setenv("T3_SHARED_DIRS", ".data")
+        dirs, files = mod._build_ignore_sets()
+        assert "foo" in dirs
+        assert "bar" in files

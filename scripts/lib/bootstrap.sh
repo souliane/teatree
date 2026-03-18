@@ -8,6 +8,10 @@
 
 export _T3_SCRIPTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-${(%):-%x}}")/.." && pwd)"
 
+# Source user config.  Shell vars are available to _t3_python for PYTHONPATH
+# construction.  Python code loads the file independently via lib/init.py.
+[[ -f "$HOME/.teatree" ]] && source "$HOME/.teatree"
+
 # XDG-compliant data directory for runtime state (ticket cache, MR reminders, dashboard)
 export T3_DATA_DIR="${T3_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/teatree}"
 [[ -d "$T3_DATA_DIR" ]] || mkdir -p "$T3_DATA_DIR"

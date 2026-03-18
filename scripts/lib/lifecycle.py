@@ -5,7 +5,9 @@ Persists to .state.json in the ticket directory.
 """
 
 import json
+import os
 import re
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +17,52 @@ from lib.env import find_free_ports
 from lib.fsm import get_available_transitions, transition
 
 _STATE_FILENAME = ".state.json"
+
+
+def _write_env_worktree(facts: dict, ticket_dir: str) -> str:
+    """Write the ticket-level .env.worktree from lifecycle facts."""
+    ports = facts.get("ports", {})
+    envfile = str(Path(ticket_dir) / ".env.worktree")
+    with Path(envfile).open("w", encoding="utf-8") as f:
+        f.write(f"WT_VARIANT={facts.get('variant', '')}\n")
+        f.write(f"TICKET_DIR={ticket_dir}\n")
+        f.write(f"WT_DB_NAME={facts.get('db_name', '')}\n")
+        f.write(f"BACKEND_PORT={ports.get('backend', 0)}\n")
+        f.write(f"FRONTEND_PORT={ports.get('frontend', 0)}\n")
+        f.write(f"POSTGRES_PORT={ports.get('postgres', 0)}\n")
+        f.write(f"REDIS_PORT={ports.get('redis', 0)}\n")
+        f.write(f"BACK_END_URL=http://localhost:{ports.get('backend', 0)}\n")
+        f.write(f"FRONT_END_URL=http://localhost:{ports.get('frontend', 0)}\n")
+        f.write(f"COMPOSE_PROJECT_NAME={facts.get('compose_name', '')}\n")
+    return envfile
+
+
+def _link_repo_env_worktree(wt_dir: str, ticket_dir: str) -> None:
+    """Symlink repo-level .env.worktree → ticket-level .env.worktree.
+
+    Docker compose and direnv in the repo directory need .env.worktree
+    to be present. The real file lives at the ticket directory level.
+    """
+    wt_envwt = Path(wt_dir) / ".env.worktree"
+    ticket_envwt = Path(ticket_dir) / ".env.worktree"
+    if wt_envwt.is_symlink() or wt_envwt.is_file():
+        wt_envwt.unlink()
+    wt_envwt.symlink_to(ticket_envwt)
+
+
+def _force_load_env_worktree(envfile: str) -> None:
+    """Load .env.worktree into os.environ, overwriting existing values.
+
+    Unlike load_env_worktree() (which uses setdefault), this forces all values
+    so the running process picks up the newly generated DB name, ports, etc.
+    """
+    with Path(envfile).open(encoding="utf-8") as f:
+        for raw_line in f:
+            stripped = raw_line.strip()
+            if not stripped or stripped.startswith("#") or "=" not in stripped:
+                continue
+            key, _, value = stripped.partition("=")
+            os.environ[key.strip()] = value.strip()
 
 
 class WorktreeLifecycle:
@@ -72,14 +120,37 @@ class WorktreeLifecycle:
         self.facts["main_repo"] = main_repo
         self.facts["variant"] = variant
 
-        # Delegate to extension points (same as wt_setup.py)
-        registry.call("wt_symlinks", wt_dir, main_repo, variant)
-        registry.call("wt_services", main_repo, wt_dir)
-
         match = re.search(r"\d+", Path(self.ticket_dir).name)
         ticket_number = match.group() if match else "0"
         db_name = worktree_db_name(ticket_number, variant)
         self.facts["db_name"] = db_name
+
+        compose_name = f"oper-product-wt{ticket_number}"
+        self.facts["compose_name"] = compose_name
+
+        # Set env vars for subprocess (Docker compose, pg CLI)
+        os.environ["COMPOSE_PROJECT_NAME"] = compose_name
+        os.environ["POSTGRES_PORT"] = str(pg)
+        os.environ.setdefault("POSTGRES_HOST", "localhost")
+        os.environ.setdefault("POSTGRES_USER", "local_superuser")
+        os.environ.setdefault("POSTGRES_PASSWORD", "local_superpassword")
+
+        # Phase 1: Symlinks
+        registry.call("wt_symlinks", wt_dir, main_repo, variant)
+
+        # Phase 2: .env.worktree
+        envfile = _write_env_worktree(self.facts, self.ticket_dir)
+        registry.call("wt_env_extra", envfile)
+        _link_repo_env_worktree(wt_dir, self.ticket_dir)
+        subprocess.run(["direnv", "allow", wt_dir], capture_output=True, check=False)
+
+        # Force-load the new env into the running process.
+        # load_env_worktree uses setdefault (no overwrite), so we must
+        # explicitly set vars that may already exist from an earlier direnv load.
+        _force_load_env_worktree(envfile)
+
+        # Phase 3: Services + DB
+        registry.call("wt_services", main_repo, wt_dir)
 
         if not db_exists(db_name):
             registry.call("wt_db_import", db_name, variant, main_repo)
@@ -88,9 +159,19 @@ class WorktreeLifecycle:
     @transition(source="provisioned", target="services_up")
     def start_services(self) -> None:
         registry.validate_overrides("services")
-        wt_dir = self.facts.get("wt_dir", "")
-        registry.call("wt_run_backend", wt_dir)
-        registry.call("wt_run_frontend", wt_dir)
+        # Force-load env so backend/frontend scripts see the correct
+        # CLIENT_NAME, DATABASE_URL, ports, etc. — not stale direnv values.
+        envfile = str(Path(self.ticket_dir) / ".env.worktree")
+        if Path(envfile).is_file():
+            _force_load_env_worktree(envfile)
+        # Delegate to project overlay's start_session (handles backend fg +
+        # frontend bg in parallel).  Fall back to sequential calls.
+        try:
+            registry.call("wt_start_session")
+        except KeyError:
+            wt_dir = self.facts.get("wt_dir", "")
+            registry.call("wt_run_backend", wt_dir)
+            registry.call("wt_run_frontend", wt_dir)
 
     @transition(source="services_up", target="ready")
     def verify(self) -> None:
