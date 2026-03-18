@@ -203,6 +203,7 @@ class TestEnrichMr:
             patch("collect_followup_data.get_mr_pipeline", return_value={"status": "success", "url": "http://pipe"}),
             patch("collect_followup_data.get_mr_approvals", return_value={"count": 1, "required": 1}),
             patch("collect_followup_data.get_mr_notes", return_value=[]),
+            patch("collect_followup_data.get_mr_closing_issues", return_value=[]),
         ):
             key, entry, is_draft = _enrich_mr(mr, "alice", "", {})
         assert key == "repo!10"
@@ -218,7 +219,8 @@ class TestEnrichMr:
             "web_url": "https://gitlab.com/mr/20",
             "title": "Draft: wip thing",
         }
-        key, entry, is_draft = _enrich_mr(mr, "alice", "", {})
+        with patch("collect_followup_data.get_mr_closing_issues", return_value=[]):
+            key, entry, is_draft = _enrich_mr(mr, "alice", "", {})
         assert key == "repo!20"
         assert is_draft
         assert entry["title"] == "wip thing"
@@ -553,6 +555,7 @@ class TestCollect:
             with (
                 patch("collect_followup_data.current_user", return_value="alice"),
                 self._mock_discover([mr]),
+                patch("collect_followup_data.get_mr_closing_issues", return_value=[]),
                 patch("collect_followup_data._fetch_issue_labels"),
                 patch("collect_followup_data._detect_merged", return_value=[]),
                 patch("collect_followup_data._clean_review_tracking", return_value={}),
@@ -613,6 +616,7 @@ class TestCollect:
                 patch("collect_followup_data.get_mr_pipeline", return_value={"status": "success", "url": "u"}),
                 patch("collect_followup_data.get_mr_approvals", return_value={"count": 0, "required": 0}),
                 patch("collect_followup_data.get_mr_notes", return_value=[]),
+                patch("collect_followup_data.get_mr_closing_issues", return_value=[]),
                 patch("collect_followup_data._fetch_issue_labels"),
                 patch("collect_followup_data._detect_merged", return_value=[]),
                 patch("collect_followup_data._clean_review_tracking", return_value={}),
@@ -837,6 +841,7 @@ class TestCollect:
             with (
                 patch("collect_followup_data.current_user", return_value="alice"),
                 patch("collect_followup_data._discover_mrs", return_value=[mr]),
+                patch("collect_followup_data.get_mr_closing_issues", return_value=[]),
                 patch("collect_followup_data._fetch_issue_labels"),
                 patch("collect_followup_data._detect_merged", return_value=[]),
                 patch("collect_followup_data._clean_review_tracking", return_value={}),
