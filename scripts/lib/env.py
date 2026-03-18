@@ -28,38 +28,6 @@ def share_db_server() -> bool:
     return os.environ.get("T3_SHARE_DB_SERVER", "true").lower() in _TRUTHY_VALUES
 
 
-def _detect_shared_postgres_port(exclude_dir: str = "") -> int:
-    """Find the postgres port already in use by another worktree.
-
-    Scans .env.worktree files for POSTGRES_PORT. Returns the first found,
-    or _DEFAULT_POSTGRES_PORT if none exist (first worktree scenario).
-    """
-    ws = workspace_dir()
-    for root, dirs, files in os.walk(ws):
-        depth = root[len(ws) :].count(os.sep)
-        if depth > _MAX_SCAN_DEPTH:
-            dirs.clear()
-            continue
-        if ".env.worktree" not in files:
-            continue
-        envwt = Path(root) / ".env.worktree"
-        if envwt.is_symlink():
-            continue
-        if exclude_dir and str(envwt).startswith(exclude_dir + "/"):
-            continue
-        try:
-            port = read_env_key(str(envwt), "POSTGRES_PORT")
-        except OSError:
-            continue
-        try:
-            parsed = int(port) if port else 0
-        except ValueError:
-            parsed = 0
-        if parsed:
-            return parsed
-    return _DEFAULT_POSTGRES_PORT
-
-
 def load_env_worktree() -> None:
     """Load .env.worktree into os.environ (KEY=VALUE lines, no shell expansion).
 
@@ -323,7 +291,9 @@ def _find_free_ports_unlocked(
     frontend_port = _next_free_port(4201, used_fe, check_system=check_system)
 
     if share_db_server():
-        postgres_port = _detect_shared_postgres_port(exclude_dir)
+        # When sharing, all worktrees use the main repo's Postgres at the
+        # default port. No per-worktree Docker Postgres is started.
+        postgres_port = _DEFAULT_POSTGRES_PORT
     else:
         postgres_port = _next_free_port(5433, used_pg, check_system=check_system)
 

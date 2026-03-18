@@ -577,3 +577,9 @@ class TestOverlayRegistration:
             resolved = cmd.name or (getattr(cmd.callback, "__name__", "").replace("_", "-") if cmd.callback else "")
             if resolved == "backend":
                 assert "[myproject]" in (cmd.help or "")
+
+    def test_overlay_import_error_is_silent(self) -> None:
+        """When lib.project_hooks is not importable, no overlay group is added."""
+        mod = load_script("t3_cli")
+        with patch.dict("sys.modules", {"lib.project_hooks": None}):
+            mod._register_overlay_commands()  # should not raise

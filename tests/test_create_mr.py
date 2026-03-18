@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from create_mr import (
+    _auto_labels,
     _build_mr_description,
     _build_mr_title,
     _last_commit_message,
@@ -55,6 +56,31 @@ class TestBuildMrDescription:
         assert "## Summary" in desc
 
 
+class TestAutoLabels:
+    @pytest.mark.parametrize(
+        ("env_value", "expected"),
+        [
+            ("Label A, Label B", ["Label A", "Label B"]),
+            ("Single", ["Single"]),
+            ("", None),
+            (None, None),
+            (", , ,", None),
+        ],
+        ids=["two-labels", "single", "empty", "unset", "only-commas"],
+    )
+    def test_auto_labels(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        env_value: str | None,
+        expected: list[str] | None,
+    ) -> None:
+        if env_value is None:
+            monkeypatch.delenv("T3_MR_AUTO_LABELS", raising=False)
+        else:
+            monkeypatch.setenv("T3_MR_AUTO_LABELS", env_value)
+        assert _auto_labels() == expected
+
+
 class TestTryValidate:
     def test_valid(self) -> None:
         mock_result = SimpleNamespace(ok=True, errors=[], warnings=[])
@@ -73,8 +99,8 @@ class TestTryValidate:
 
     def test_import_error(self) -> None:
         """When lib.validate_mr is not available, validation passes."""
-        # Default behavior: no module in sys.modules, ImportError
-        assert _try_validate("title", "desc")
+        with patch.dict("sys.modules", {"lib.validate_mr": None}):
+            assert _try_validate("title", "desc")
 
 
 class TestMain:

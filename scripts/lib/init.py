@@ -1,6 +1,7 @@
 """Initialization module — called once per script invocation.
 
-Loads defaults, auto-detects frameworks, and registers them.
+Loads user config (~/.teatree), sets up sys.path, auto-detects frameworks,
+and registers extension point overrides.
 Project overrides are registered separately (e.g. by a project skill's hooks module).
 """
 
@@ -17,6 +18,9 @@ def init() -> None:
         return
     _initialized = True
 
+    # 0. Load user config and ensure overlay is on sys.path
+    _load_teatree_config()
+
     # Ensure the scripts dir is on PYTHONPATH
     scripts_dir = str(Path(__file__).resolve().parent.parent)
     if scripts_dir not in sys.path:  # pragma: no cover
@@ -32,6 +36,39 @@ def init() -> None:
 
     # 3. Auto-detect project hooks (registered at 'project' layer, overrides frameworks)
     _detect_project_hooks()
+
+
+def _load_teatree_config() -> None:
+    """Load ~/.teatree config into os.environ and sys.path.
+
+    Reads KEY=VALUE lines (supports ``"`` quoting and ``$HOME`` expansion).
+    Only T3_* vars with non-empty values are loaded, using setdefault so
+    env vars already set by the shell or CI are not overwritten.
+
+    Also ensures the project overlay's scripts/ directory is on sys.path
+    so _detect_project_hooks() can import it.
+    """
+    config = Path.home() / ".teatree"
+    if not config.is_file():
+        return
+    home = str(Path.home())
+    with config.open(encoding="utf-8") as f:
+        for raw_line in f:
+            stripped = raw_line.strip()
+            if not stripped or stripped.startswith("#") or "=" not in stripped:
+                continue
+            key, _, value = stripped.partition("=")
+            key = key.strip()
+            value = value.strip().strip('"').strip("'")
+            value = value.replace("$HOME", home)
+            if key.startswith("T3_") and value:
+                os.environ.setdefault(key, value)
+
+    overlay = os.environ.get("T3_OVERLAY", "")
+    if overlay:
+        overlay_scripts = str(Path(overlay) / "scripts")
+        if Path(overlay_scripts).is_dir() and overlay_scripts not in sys.path:
+            sys.path.insert(0, overlay_scripts)
 
 
 def _detect_project_hooks() -> None:
