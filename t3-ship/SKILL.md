@@ -100,6 +100,8 @@ After delivery is complete (MR created, pipeline green), run `/t3-retro` to capt
 - **Cancel stale pipelines** before every push to a branch with an existing MR.
 - **Cancel running pipelines when closing an MR/PR.** When an MR is closed (abandoned, superseded, or replaced), cancel any running or pending pipelines for that branch immediately — they waste CI resources on code that will never be merged.
 - **Clickable references:** Every MR, ticket, or note reference must be a markdown link — see [`../references/agent-rules.md`](../references/agent-rules.md) § "Clickable References".
+- **Never push without explicit approval (Non-Negotiable).** Squash approval ≠ push approval. "All done" ≠ push approval. Always present the final state and ask "Push?" before running `git push`. This applies to ALL repos, ALL contexts.
+- **Squash with `git reset --soft`, not interactive rebase.** `git rebase -i` with custom editors is fragile when pre-commit hooks run on each commit. Use `git reset --soft HEAD~N && git commit` for adjacent commits, or cherry-pick for non-adjacent ones.
 - **Respect commit trailer preferences.** Check the user's global agent config for rules about `Co-Authored-By` trailers before committing. Some users explicitly opt out. When in doubt, **do not add trailers** — the user can always configure their agent to add them.
 
 ## Script Reference
