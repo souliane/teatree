@@ -131,6 +131,63 @@ class TestInit:
         assert "NON_T3_KEY" not in sys.modules  # never set
         assert os.environ.get("T3_EMPTY") is None  # empty value skipped
 
+    def test_load_worktree_env_from_orig_cwd(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """_load_worktree_env reads .env.worktree from _T3_ORIG_CWD."""
+        ws = tmp_path / "workspace"
+        ws.mkdir()
+        ticket = ws / "ticket-123" / "my-project"
+        ticket.mkdir(parents=True)
+        envwt = ticket / ".env.worktree"
+        envwt.write_text("# comment\n\nCLIENT_NAME=acme\nWT_VARIANT=acme\n")
+
+        monkeypatch.setenv("T3_WORKSPACE_DIR", str(ws))
+        monkeypatch.setenv("_T3_ORIG_CWD", str(ticket))
+        monkeypatch.setenv("CLIENT_NAME", "wrong_tenant")
+
+        lib.init._initialized = False
+        lib.init.init()
+
+        assert os.environ["CLIENT_NAME"] == "acme"
+
+    def test_load_worktree_env_noop_when_no_envfile(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """When _T3_ORIG_CWD points to a dir with no .env.worktree, env unchanged."""
+        ws = tmp_path / "workspace"
+        ws.mkdir()
+        empty_dir = ws / "no-worktree"
+        empty_dir.mkdir()
+
+        monkeypatch.setenv("T3_WORKSPACE_DIR", str(ws))
+        monkeypatch.setenv("_T3_ORIG_CWD", str(empty_dir))
+        monkeypatch.setenv("CLIENT_NAME", "original")
+
+        lib.init._initialized = False
+        lib.init.init()
+
+        assert os.environ["CLIENT_NAME"] == "original"
+
+    def test_load_worktree_env_noop_without_orig_cwd(
+        self,
+        workspace: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Without _T3_ORIG_CWD, worktree env loading is skipped."""
+        monkeypatch.setenv("T3_WORKSPACE_DIR", str(workspace))
+        monkeypatch.delenv("_T3_ORIG_CWD", raising=False)
+        monkeypatch.setenv("CLIENT_NAME", "original")
+
+        lib.init._initialized = False
+        lib.init.init()
+
+        assert os.environ["CLIENT_NAME"] == "original"
+
     def test_overlay_scripts_not_a_dir(
         self,
         tmp_path: Path,
