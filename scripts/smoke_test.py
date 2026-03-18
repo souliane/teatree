@@ -1,11 +1,3 @@
-#!/usr/bin/env -S uv run --script
-# /// script
-# requires-python = ">=3.12"
-# dependencies = [
-#   "typer>=0.12",
-#   "rich>=13",
-# ]
-# ///
 """Smoke test for teatree installation.
 
 Used by: t3-setup (Step 7).
@@ -94,7 +86,3 @@ def main(
 
     if failures:
         raise SystemExit(1)
-
-
-if __name__ == "__main__":
-    app()

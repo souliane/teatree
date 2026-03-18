@@ -1,9 +1,3 @@
-#!/usr/bin/env -S uv run --script
-# /// script
-# dependencies = [
-#   "typer>=0.12",
-# ]
-# ///
 """Refresh worktree DB from DSLR snapshot or dump.
 
 Usage: wt_db_refresh [--force] [variant]
@@ -106,7 +100,3 @@ def main(
     force: bool = typer.Option(False, "--force", help="Drop existing DB before reimport"),
 ) -> None:
     sys.exit(wt_db_refresh(variant, force=force))
-
-
-if __name__ == "__main__":
-    app()

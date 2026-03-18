@@ -1,11 +1,3 @@
-#!/usr/bin/env -S uv run --script
-# /// script
-# requires-python = ">=3.12"
-# dependencies = [
-#   "typer>=0.12",
-#   "rich>=13",
-# ]
-# ///
 """Discover open MRs, validate metadata, and prepare review request summary.
 
 Used by: t3-review-request (§§1-6).
@@ -159,7 +151,3 @@ def main(
 
     console.print(table)
     console.print(f"\n{ready_count} MR(s) ready for review request")
-
-
-if __name__ == "__main__":
-    app()

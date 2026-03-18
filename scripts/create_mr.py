@@ -1,9 +1,3 @@
-#!/usr/bin/env -S uv run --script
-# /// script
-# dependencies = [
-#   "typer>=0.12",
-# ]
-# ///
 """Create a merge request from the current branch.
 
 Parses commit message, reads ticket URL from .env.worktree, validates via
@@ -162,7 +156,3 @@ def main(
     mr_url = result.get("web_url", "")
     mr_iid = result.get("iid", "?")
     print(f"Created !{mr_iid}: {mr_url}")
-
-
-if __name__ == "__main__":
-    typer.run(main)

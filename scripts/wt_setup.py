@@ -1,9 +1,3 @@
-#!/usr/bin/env -S uv run --script
-# /// script
-# dependencies = [
-#   "typer>=0.12",
-# ]
-# ///
 """Full worktree setup: symlinks + .env.worktree + DB provisioning + DSLR snapshot.
 
 Usage: wt_setup [variant] [ticket_url]
@@ -194,7 +188,3 @@ def main(
 ) -> None:
     ticket_url = ticket_url or os.environ.get("TICKET_URL", "")
     sys.exit(wt_setup(variant, ticket_url))
-
-
-if __name__ == "__main__":
-    app()

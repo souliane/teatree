@@ -1,9 +1,3 @@
-#!/usr/bin/env -S uv run --script
-# /// script
-# dependencies = [
-#   "typer>=0.12",
-# ]
-# ///
 """Check ticket transition gates from followup.json.
 
 Gates:
@@ -191,7 +185,3 @@ def main(
         symbol = "YES" if ready else "NO"
         reason = info["gate"]["reason"]
         print(f"  #{tid}: {info['current']} → {info['target']}  [{symbol}] {reason}", file=sys.stderr)
-
-
-if __name__ == "__main__":
-    typer.run(main)

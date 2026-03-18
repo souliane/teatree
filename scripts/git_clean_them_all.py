@@ -1,7 +1,3 @@
-#!/usr/bin/env -S uv run --script
-# /// script
-# dependencies = []
-# ///
 """Prune merged/gone worktrees, branches, Docker services, and databases.
 
 Ticket-atomic: ALL worktrees in a ticket directory must be merged/gone and
@@ -619,7 +615,3 @@ def git_clean_them_all() -> int:
 def main() -> None:
     """Prune merged/gone worktrees and branches across all repos."""
     sys.exit(git_clean_them_all())
-
-
-if __name__ == "__main__":
-    main()

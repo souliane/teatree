@@ -1,9 +1,3 @@
-#!/usr/bin/env -S uv run --script
-# /// script
-# dependencies = [
-#   "typer>=0.12",
-# ]
-# ///
 """Collect followup data from GitLab into followup.json.
 
 Replaces ~15 manual API calls with a single script invocation.
@@ -421,7 +415,3 @@ def main(
             print(f"  - {action}")
 
     print(f"Written to {out_path}")
-
-
-if __name__ == "__main__":
-    typer.run(main)

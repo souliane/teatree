@@ -1,9 +1,3 @@
-#!/usr/bin/env -S uv run --script
-# /// script
-# dependencies = [
-#   "typer>=0.12",
-# ]
-# ///
 """Auto-detect tenant/customer from issue labels, description, or external tracker.
 
 Priority chain:
@@ -118,7 +112,3 @@ def main(
     else:
         print(f"No tenant detected (source: {result['source']})", file=sys.stderr)
         raise SystemExit(1)
-
-
-if __name__ == "__main__":
-    typer.run(main)
