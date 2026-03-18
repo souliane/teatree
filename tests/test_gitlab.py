@@ -20,6 +20,7 @@ from lib.gitlab import (
     get_issue_labels,
     get_mr,
     get_mr_approvals,
+    get_mr_closing_issues,
     get_mr_notes,
     get_mr_pipeline,
     get_mr_state,
@@ -473,6 +474,21 @@ class TestCancelPipelines:
 # ---------------------------------------------------------------------------
 # Issue operations
 # ---------------------------------------------------------------------------
+
+
+class TestGetMrClosingIssues:
+    def test_success(self) -> None:
+        with patch("lib.gitlab._api_get", return_value=[{"iid": 42, "title": "Bug"}]):
+            result = get_mr_closing_issues(1, 10, token=_TOK)
+        assert result == [{"iid": 42, "title": "Bug"}]
+
+    def test_none_response(self) -> None:
+        with patch("lib.gitlab._api_get", return_value=None):
+            assert get_mr_closing_issues(1, 10, token=_TOK) == []
+
+    def test_dict_response(self) -> None:
+        with patch("lib.gitlab._api_get", return_value={"error": "not found"}):
+            assert get_mr_closing_issues(1, 10, token=_TOK) == []
 
 
 class TestGetIssue:
