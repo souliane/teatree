@@ -12,6 +12,7 @@ the wt_validate_mr extension point, and creates the MR via GitLab API.
 Used by: t3-ship.
 """
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -63,6 +64,21 @@ def _build_mr_description(title: str, commit_body: str) -> str:
     return "\n".join(parts)
 
 
+def _split_commit_message(msg: str) -> tuple[str, str]:
+    """Split commit message into (first_line, body)."""
+    first_line, _, body = msg.partition("\n")
+    return first_line, body.strip()
+
+
+def _auto_labels() -> list[str] | None:
+    """Read T3_MR_AUTO_LABELS env var and return parsed labels or None."""
+    env = os.environ.get("T3_MR_AUTO_LABELS", "")
+    if not env:
+        return None
+    labels = [lbl.strip() for lbl in env.split(",") if lbl.strip()]
+    return labels or None
+
+
 def _try_validate(title: str, description: str) -> bool:
     """Try to validate MR via project's validate_mr module. Returns True if valid."""
     try:
@@ -99,17 +115,14 @@ def main(
     target = default_branch(repo_dir)
     username = current_user()
 
-    # Get commit message
-    commit_msg = _last_commit_message(repo_dir)
-    lines = commit_msg.split("\n", 1)
-    first_line = lines[0]
-    body = lines[1].strip() if len(lines) > 1 else ""
+    # Get commit message — split into first line and body
+    first_line, body = _split_commit_message(_last_commit_message(repo_dir))
 
     # Get ticket URL from .env.worktree
     ticket_url = ""
-    td = detect_ticket_dir()
-    if td:
-        ticket_url = read_env_key(str(Path(td) / ".env.worktree"), "TICKET_URL")
+    ticket_dir = detect_ticket_dir()
+    if ticket_dir:
+        ticket_url = read_env_key(str(Path(ticket_dir) / ".env.worktree"), "TICKET_URL")
 
     title = _build_mr_title(first_line, ticket_url)
     description = _build_mr_description(title, body)
@@ -119,11 +132,15 @@ def main(
         print("MR validation failed. Fix the issues or use --skip-validation.", file=sys.stderr)
         raise SystemExit(1)
 
+    auto_labels = _auto_labels()
+
     if dry_run:
         print(f"Project: {proj.path_with_namespace} (ID: {proj.project_id})")
         print(f"Branch:  {branch} → {target}")
         print(f"Title:   {title}")
         print(f"Assign:  {username}")
+        if auto_labels:
+            print(f"Labels:  {', '.join(auto_labels)}")
         print(f"Description:\n{description}")
         return
 
@@ -134,6 +151,7 @@ def main(
         title,
         description,
         assignee_username=username,
+        labels=auto_labels,
         squash=True,
     )
 

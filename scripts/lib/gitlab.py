@@ -291,6 +291,7 @@ def create_mr(  # noqa: PLR0913
     description: str = "",
     *,
     assignee_username: str = "",
+    labels: list[str] | None = None,
     squash: bool = True,
     token: str = "",
 ) -> dict | None:
@@ -303,6 +304,8 @@ def create_mr(  # noqa: PLR0913
     }
     if description:
         payload["description"] = description
+    if labels:
+        payload["labels"] = ",".join(labels)
     if assignee_username:
         # Resolve username to user ID
         users = _api_get(f"users?username={assignee_username}", token)

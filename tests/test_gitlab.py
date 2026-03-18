@@ -441,6 +441,26 @@ class TestCreateMr:
         payload = mock_post.call_args[0][1]
         assert "assignee_id" not in payload
 
+    def test_with_labels(self) -> None:
+        with patch("lib.gitlab._api_post", return_value={"iid": 4}) as mock_post:
+            result = create_mr(
+                42,
+                "feat",
+                "main",
+                "title",
+                labels=["Process::Technical review", "backend"],
+                token=_TOK,
+            )
+        assert result is not None
+        payload = mock_post.call_args[0][1]
+        assert payload["labels"] == "Process::Technical review,backend"
+
+    def test_no_labels(self) -> None:
+        with patch("lib.gitlab._api_post", return_value={"iid": 5}) as mock_post:
+            create_mr(42, "feat", "main", "title", token=_TOK)
+        payload = mock_post.call_args[0][1]
+        assert "labels" not in payload
+
 
 # ---------------------------------------------------------------------------
 # Pipeline operations
