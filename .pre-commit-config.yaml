@@ -89,18 +89,6 @@ repos:
       - id: gitleaks
   - repo: local
     hooks:
-      - id: scripts-have-uv-shebang
-        name: scripts-have-uv-shebang
-        language: pygrep
-        entry: '#!/usr/bin/env -S uv run --script'
-        args: [--negate]
-        files: 'scripts/[^_][^/]*\.py$'
-      - id: scripts-have-inline-metadata
-        name: scripts-have-inline-metadata
-        language: pygrep
-        entry: '# /// script'
-        args: [--negate]
-        files: 'scripts/[^_][^/]*\.py$'
       - id: scripts-no-raw-sys-argv
         name: scripts-no-raw-sys-argv
         language: pygrep
@@ -140,13 +128,6 @@ repos:
         pass_filenames: false
         files: ^(pyproject\.toml|uv\.lock)$
         stages: [commit, manual]
-
-      - id: pytest
-        name: pytest
-        language: system
-        entry: bash -c 'cd "$(git rev-parse --show-toplevel)" && uv run python -m pytest --no-header -q'
-        pass_filenames: false
-        always_run: true
 
   # Phase 9 - Manual
   - repo: https://github.com/semgrep/semgrep

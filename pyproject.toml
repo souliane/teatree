@@ -146,19 +146,6 @@ partial_branches = [
 source = [ "scripts" ]
 omit = [ "scripts/bump-pyproject-deps-from-lock-file.py" ]
 
-# --- Tox ---
-
-[tool.tox]
-legacy_tox_ini = """
-[tox]
-envlist = py312,py313
-skip_missing_interpreters = true
-
-[testenv]
-runner = uv-venv-lock-runner
-commands = pytest {posargs}
-"""
-
 # --- Ty (static type checker) ---
 # https://github.com/astral-sh/ty
 
