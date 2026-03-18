@@ -314,7 +314,9 @@ def setup(
 
 
 @lc_app.command()
-def start() -> None:
+def start(
+    variant: str = typer.Option("", "--variant", "-v", help="Tenant variant (for auto-provisioning)"),
+) -> None:
     """Start dev servers (backend + frontend), then verify.
 
     Auto-provisions first if worktree is in 'created' state.
@@ -322,7 +324,7 @@ def start() -> None:
     lc = _get_lifecycle()
     if lc.state == "created":
         ctx = resolve_context()
-        lc.provision(wt_dir=ctx.wt_dir, main_repo=ctx.main_repo, variant="")
+        lc.provision(wt_dir=ctx.wt_dir, main_repo=ctx.main_repo, variant=variant)
     lc.start_services()
     lc.verify()
     print(json.dumps(lc.status(), indent=2, default=str))
