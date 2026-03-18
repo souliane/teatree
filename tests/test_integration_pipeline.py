@@ -275,3 +275,31 @@ class TestFullPipeline:
 
         out = capsys.readouterr().out
         assert "https://gitlab.com/org/repo/-/issues/1001" in out
+
+    def test_create_mr_dry_run_shows_auto_labels(
+        self,
+        setup_tickets: tuple[Path, Path],
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        t1, _ = setup_tickets
+        wt = t1 / "backend"
+
+        (wt / "feature2.py").write_text("print('hi')\n")
+        _git(wt, "add", "feature2.py")
+        _git(wt, "commit", "-m", "feat: new thing")
+
+        monkeypatch.chdir(wt)
+        monkeypatch.setenv("TICKET_DIR", str(t1))
+        monkeypatch.setenv("T3_MR_AUTO_LABELS", "Process::Technical review,backend")
+
+        proj = ProjectInfo(project_id=42, path_with_namespace="org/backend", short_name="backend")
+        with (
+            patch("create_mr.resolve_project_from_remote", return_value=proj),
+            patch("create_mr.current_user", return_value="testuser"),
+        ):
+            create_mr_main(str(wt), dry_run=True, skip_validation=True)
+
+        out = capsys.readouterr().out
+        assert "Process::Technical review" in out
+        assert "backend" in out

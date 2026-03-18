@@ -61,6 +61,8 @@ Key variables used by this skill (see `/t3-setup` for the full config reference)
 | `T3_BRANCH_PREFIX` | No | Prefix for worktree branches (default: initials from `git config user.name`) |
 | `T3_AUTO_SQUASH` | No | Auto-squash related unpushed commits before push (default: `false`) |
 | `T3_SHARE_DB_SERVER` | No | Share one Postgres server across worktrees (default: `true`). Each worktree gets its own DB name but connects to the same server. When `false`, each worktree starts its own Postgres container. |
+| `T3_FOLLOWUP_REPOS` | No | Comma-separated GitLab paths for `t3 mr followup` to scan (e.g., `org/repo1,org/repo2`). If unset, no MRs are discovered. |
+| `T3_MR_AUTO_LABELS` | No | Comma-separated labels to add to every new MR (e.g., `Process::Technical review`). |
 
 ### Data Directory (XDG-Compliant)
 

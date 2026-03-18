@@ -221,20 +221,20 @@ Also check for colleague comments (exclude system notes and author's own) via th
 
 Populate `original_review_permalink` from `$T3_DATA_DIR/tickets/<iid>/mr_review_messages.json`. If not cached there, search the team chat for the MR URL and cache the result.
 
-**Skip MRs that:** have no original review message (never sent for review), were already reminded today (`last_reminded` == today), are already approved, or **already have colleague comments** (being actively reviewed).
+**Skip MRs that:** have no original review message (never sent for review), were already reminded today (`last_reminded` == today), are already approved, **already have colleague comments** (being actively reviewed), or **have a non-success pipeline** (failed, running, pending — only send review requests for green pipelines).
 
 #### 11b. Group by Channel and Present
 
-Group remaining MRs by their review channel. Present a dry-run table:
+Group remaining MRs by their review channel. Present the filtered list:
 
-| # | Channel | MRs | Last reminded |
-|---|---------|-----|---------------|
-| 1 | #code-review | !123, !456 | 2 days ago |
-| 2 | #code-review | !789 | never |
+| # | Channel | MR | Pipeline | Title |
+|---|---------|-----|----------|-------|
+| 1 | #code-review | !123 | success | feat: add login |
+| 2 | #code-review | !456 | success | fix: resolve timeout |
 
-**Then confirm each MR individually** — present them one by one and ask "include this MR? [yes/no]". Remove declined MRs from the batch. This lets the user cherry-pick which MRs to nudge about.
+Do **not** ask for confirmation on each MR individually — the auto-filtering already removed ineligible MRs. Present the full list once and ask the user to confirm or exclude specific MRs. Then post all confirmed MRs as **draft messages** (one per MR or grouped per ticket if multiple MRs belong to the same ticket).
 
-**Never post without explicit approval.**
+**Never post without explicit approval of the batch.**
 
 #### 11c. Post Reminders
 
@@ -315,13 +315,18 @@ After completing any followup run (interactive or periodic), generate an HTML da
 
 **Execute immediately when the skill is loaded** — before responding to the user, before asking what they want, before anything else. This is the first thing followup does on every invocation (both interactive and periodic). The user should never have to ask for a cache refresh.
 
-1. For each ticket in `followup.json`, check if ALL associated MRs are merged (via issue tracker API).
-2. If the most recent merge date is older than `T3_FOLLOWUP_PURGE_DAYS` (default 14), remove the ticket and its MRs from the cache.
-3. Also remove entries from `review_comments_tracking` where the MR is merged.
-4. Remove entries from `$T3_DATA_DIR/mr_reminders.json` where the MR is merged.
-5. Refresh pipeline and approval statuses for remaining open MRs.
-6. Regenerate the dashboard.
-7. Log purged entries: `Purged ticket #<IID> (all MRs merged >14d ago)`.
+**Always use `t3 mr followup -v`** to collect data. This command handles MR discovery, pipeline status, approvals, merge detection, and cache cleanup in one deterministic pass. Never manually call GitLab APIs to build `followup.json` — the script is the single entry point. After the script runs, use `generate_dashboard.py` to render the HTML dashboard.
+
+The script reads `T3_FOLLOWUP_REPOS` (comma-separated GitLab paths, e.g. `org/repo1,org/repo2`) to discover open MRs. If this var is not set, no MRs will be found.
+
+Internally the script:
+
+1. Discovers open MRs across all configured repos.
+2. Enriches each MR with pipeline status, approvals, and colleague comments.
+3. Fetches issue labels for linked tickets.
+4. Detects MRs merged since the last run and logs them.
+5. Cleans review tracking entries for merged MRs.
+6. Writes the result to `$T3_DATA_DIR/followup.json`.
 
 **During long sessions:** Also re-run cache cleanup after significant events (ticket completed, MR pushed, context switch) — don't wait for the next explicit `/t3-followup` invocation.
 
