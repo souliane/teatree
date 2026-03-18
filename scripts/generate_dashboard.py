@@ -1,9 +1,3 @@
-#!/usr/bin/env -S uv run --script
-# /// script
-# dependencies = [
-#   "typer>=0.12",
-# ]
-# ///
 """Generate an HTML dashboard from followup.json.
 
 Usage: generate_dashboard.py [INPUT] [OUTPUT]
@@ -40,7 +34,3 @@ def main(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(html, encoding="utf-8")
     print(f"Dashboard written to {output_path}")
-
-
-if __name__ == "__main__":
-    typer.run(main)

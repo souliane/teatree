@@ -1,9 +1,3 @@
-#!/usr/bin/env -S uv run --script
-# /// script
-# dependencies = [
-#   "typer>=0.12",
-# ]
-# ///
 """Cancel running/pending pipelines for a branch before pushing.
 
 Used by: t3-ship (before git push).
@@ -42,7 +36,3 @@ def main(
         print(f"Cancelled {len(cancelled)} pipeline(s) for {branch}")
     else:
         print(f"No running/pending pipelines for {branch}")
-
-
-if __name__ == "__main__":
-    typer.run(main)

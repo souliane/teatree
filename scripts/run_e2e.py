@@ -1,11 +1,3 @@
-#!/usr/bin/env -S uv run --script
-# /// script
-# requires-python = ">=3.12"
-# dependencies = [
-#   "typer>=0.12",
-#   "rich>=13",
-# ]
-# ///
 """Run E2E tests with automatic environment setup.
 
 Eliminates all manual steps: ensures worktree is ready, servers are running,
@@ -207,7 +199,3 @@ def main(
     else:
         console.print(f"\n[bold red]E2E tests failed (exit {result.returncode})[/]")
         raise SystemExit(result.returncode)
-
-
-if __name__ == "__main__":
-    app()

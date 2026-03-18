@@ -1,9 +1,3 @@
-#!/usr/bin/env -S uv run --script
-# /// script
-# dependencies = [
-#   "typer>=0.12",
-# ]
-# ///
 """Fetch issue context: issue data + comments + embedded images.
 
 Used by: t3-ticket (intake), t3-review (fetch ticket before review),
@@ -143,7 +137,3 @@ def main(
         f"{n_comments} comments, {n_images} images, {n_links} external links",
         file=sys.stderr,
     )
-
-
-if __name__ == "__main__":
-    typer.run(main)

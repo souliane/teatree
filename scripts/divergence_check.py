@@ -1,11 +1,3 @@
-#!/usr/bin/env -S uv run --script
-# /// script
-# requires-python = ">=3.12"
-# dependencies = [
-#   "typer>=0.12",
-#   "rich>=13",
-# ]
-# ///
 """Check fork divergence from upstream before contributing.
 
 Used by: t3-contribute (§5a Divergence Analysis).
@@ -97,7 +89,3 @@ def main(  # noqa: PLR0913
 
     if data["blocked"]:
         raise SystemExit(1)
-
-
-if __name__ == "__main__":
-    app()

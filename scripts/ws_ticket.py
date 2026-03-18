@@ -1,9 +1,3 @@
-#!/usr/bin/env -S uv run --script
-# /// script
-# dependencies = [
-#   "typer>=0.12",
-# ]
-# ///
 """Create ticket-specific workspace with git worktrees.
 
 Usage: ws_ticket <ticket-number> <description> <repo1> [repo2 ...]
@@ -150,7 +144,3 @@ def main(
 ) -> None:
     """Create ticket workspace with git worktrees for each repo."""
     sys.exit(ws_ticket(ticket_number, description, repos))
-
-
-if __name__ == "__main__":
-    app()

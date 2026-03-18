@@ -1,9 +1,3 @@
-#!/usr/bin/env -S uv run --script
-# /// script
-# dependencies = [
-#   "typer>=0.12",
-# ]
-# ///
 """Verify dev services are running via HTTP health checks.
 
 Checks backend, frontend, and API endpoints. Uses ports from .env.worktree
@@ -125,7 +119,3 @@ def main(
     else:
         print("Some services failed health check", file=sys.stderr)
         raise SystemExit(1)
-
-
-if __name__ == "__main__":
-    typer.run(main)

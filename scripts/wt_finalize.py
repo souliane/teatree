@@ -1,9 +1,3 @@
-#!/usr/bin/env -S uv run --script
-# /// script
-# dependencies = [
-#   "typer>=0.12",
-# ]
-# ///
 """Squash all worktree commits into one and rebase on origin/<default_branch>.
 
 Usage: wt_finalize [commit message]
@@ -159,7 +153,3 @@ def main(
 ) -> None:
     """Squash worktree commits and rebase on default branch."""
     sys.exit(wt_finalize(" ".join(msg) if msg else ""))
-
-
-if __name__ == "__main__":
-    app()

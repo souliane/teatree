@@ -1,11 +1,3 @@
-#!/usr/bin/env -S uv run --script
-# /// script
-# requires-python = ">=3.12"
-# dependencies = [
-#   "typer>=0.12",
-#   "rich>=13",
-# ]
-# ///
 """Scan text (typically a git diff) for privacy-sensitive patterns.
 
 Used by: t3-retro (§ Privacy Scan), t3-contribute (§2 Pre-Flight).
@@ -89,7 +81,3 @@ def main(
 
     if all_findings and strict:
         raise SystemExit(1)
-
-
-if __name__ == "__main__":
-    app()

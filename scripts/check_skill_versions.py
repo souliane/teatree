@@ -1,8 +1,3 @@
-#!/usr/bin/env -S uv run --script
-# /// script
-# dependencies = []
-# requires-python = ">=3.12"
-# ///
 """Ensure every SKILL.md version matches the project version in pyproject.toml."""
 
 import re
@@ -64,7 +59,3 @@ def main() -> int:
     if issues:
         print(f"{issues} skill(s) had wrong versions")
     return 1 if issues else 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())
