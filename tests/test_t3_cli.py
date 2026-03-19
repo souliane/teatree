@@ -116,6 +116,7 @@ class TestSetupCommand:
         with (
             patch("lib.lifecycle.db_exists", return_value=True),
             patch("lib.lifecycle.find_free_ports", return_value=(8001, 4201, 5433, 6379)),
+            patch("lib.lifecycle.subprocess"),
             patch("lib.lifecycle.registry") as mock_reg,
         ):
             mock_reg.call.return_value = True
