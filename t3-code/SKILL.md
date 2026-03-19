@@ -56,6 +56,11 @@ Write failing test → Implement → Green → Refactor
 - Repository-specific patterns take precedence over generic guidance.
 - Feature flag rules for new features (see [`references/multi-tenant-development.md`](../references/multi-tenant-development.md)).
 
+### 3b. Tooling Decisions
+
+- **Prefer existing battle-tested packages** over custom scripts. Only write custom code when no viable alternative exists. Custom scripts introduce untested code that often fails in CI.
+- **When migrating state** (databases, APIs, config), fetch current data from the live API rather than trusting local files or config. Local files may be stale.
+
 ### 4. Update Task Tracking (Non-Negotiable)
 
 When tasks exist (via the agent's task tracking tools), mark each task `completed` **immediately after finishing it** — before moving to the next task. Never batch-update at the end. Never claim "all done" while the task list is stale.

@@ -102,6 +102,32 @@ After delivery is complete (MR created, pipeline green), run `/t3-retro` to capt
 - **Squash with `git reset --soft`, not interactive rebase.** `git rebase -i` with custom editors is fragile when pre-commit hooks run on each commit. Use `git reset --soft HEAD~N && git commit` for adjacent commits, or cherry-pick for non-adjacent ones.
 - **Respect commit trailer preferences.** Check the user's global agent config for rules about `Co-Authored-By` trailers before committing. Some users explicitly opt out. When in doubt, **do not add trailers** — the user can always configure their agent to add them.
 
+### Git History Rewriting Recipes
+
+When rewriting commit messages, use `filter-branch --msg-filter` — it reliably matches commits by full hash. Do NOT use `git rebase -i` with `GIT_SEQUENCE_EDITOR="sed"` — the short hash in the rebase todo may differ from `git log --oneline`, causing a silent no-op.
+
+```bash
+# Rewrite one commit's message:
+FILTER_BRANCH_SQUELCH_WARNING=1 git filter-branch -f --msg-filter '
+if [ "$GIT_COMMIT" = "'"$(git rev-parse <short-hash>)"'" ]; then
+  cat << "NEWMSG"
+<new message here>
+NEWMSG
+else
+  cat
+fi
+' <short-hash>^..HEAD
+git update-ref -d refs/original/refs/heads/main
+
+# Drop a commit:
+git rebase --onto <commit>^ <commit>
+
+# Remove a trailer from all commits in a range:
+FILTER_BRANCH_SQUELCH_WARNING=1 git filter-branch -f --msg-filter 'sed "/^Co-Authored-By:/d"' <oldest-commit>^..HEAD
+```
+
+**Post-rewrite verification (Non-Negotiable):** After ANY rebase or filter-branch, verify the hash changed. Same hash = no-op.
+
 ## Script Reference
 
 | Script | Purpose |

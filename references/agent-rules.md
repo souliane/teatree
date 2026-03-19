@@ -87,9 +87,31 @@ This applies to: `~/.gitconfig`, `~/.zshrc`, `~/.config/`, agent-specific config
 
 **Never** use `rm` + recreate, `cp`, `rsync`, or any operation that would **replace a symlink with a real file/directory**. If unsure whether a path is a symlink, run `ls -la` first. This is critical for skill directories and worktree structures where symlinks are the intended mechanism.
 
+### `ln -sfn` vs `ln -sf` (Critical Difference)
+
+When the target path already exists as a symlink pointing to a directory, `ln -sf` creates the symlink INSIDE the directory. Use `ln -sfn` (no-dereference) to replace the symlink itself:
+
+```bash
+# WRONG — creates symlink INSIDE the directory
+ln -sf /new/target ~/.agents/skills/ac-multitask
+
+# RIGHT — replaces the symlink itself
+ln -sfn /new/target ~/.agents/skills/ac-multitask
+```
+
+Recovery when a symlink was replaced by a real directory: `rm -rf <path> && ln -sfn <target> <path>`, then verify with `file <path>` and `readlink <path>`.
+
 ## Shell Alias Safety (Non-Negotiable)
 
 In zsh, common commands like `rm`, `cp`, and `mv` are often aliased to interactive variants (`rm -i`, `cp -i`, `mv -i`). These aliases cause shell commands to **hang indefinitely** waiting for confirmation the user can't provide. Always use `command rm`, `command cp`, `command mv` to bypass shell aliases when the operation is non-interactive.
+
+## Edit Tool `replace_all` Safety (Non-Negotiable)
+
+Never use `replace_all: true` when the target string is an inline comment (e.g., `# noqa: S603`) at the end of a code line. The replacement deletes across ALL occurrences, which can merge code with the next line if the comment was the only separator — causing silent syntax corruption. Always use targeted (non-replace-all) edits for inline comments, including surrounding code context.
+
+## External Service Access Priority (Non-Negotiable)
+
+Before claiming "I don't have access to X", check available integrations. Priority chain: **CLI tools > platform integrations (Slack, Notion, Sentry MCP) > user-configured MCP servers > workarounds**. Search for the service name in the deferred tools list with ToolSearch. If it needs authentication, tell the user to connect it rather than skipping.
 
 ## Intellectual Consistency (Non-Negotiable)
 

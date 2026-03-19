@@ -274,6 +274,16 @@ Retro can also modify core teatree skills in the user's fork:
 
 **Playbook staleness check:** Before following any playbook, verify instructions against current code. If the codebase has moved to a config-driven approach or the referenced pattern no longer exists, the playbook is stale — fix it immediately.
 
+### 5b. Unpushed Commits Check
+
+After completing all retro changes, check for unpushed commits across ALL repos touched during the session:
+
+1. `git log --oneline @{u}..HEAD` in each touched repo
+2. Flag any commits with `Co-Authored-By` trailers (should be removed per user's global config)
+3. Flag merge commits that could be rebased away
+4. Suggest consolidating multiple commits targeting the same skill into one
+5. Present a concrete consolidation proposal and ask before acting
+
 ### 6. Verification
 
 After applying all fixes:
