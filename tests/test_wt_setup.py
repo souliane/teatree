@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-from wt_setup import wt_setup
+from wt_setup import _ensure_hooks_installed, wt_setup
 
 
 class TestWtSetup:
@@ -146,3 +146,39 @@ class TestWtSetup:
         ext_calls = [c.args[0] for c in mock_externals["ext"].call_args_list]
         assert "wt_db_import" in ext_calls
         assert "wt_post_db" not in ext_calls
+
+
+class TestEnsureHooksInstalled:
+    def test_installs_hooks_when_config_exists(self, tmp_path: Path) -> None:
+        (tmp_path / ".pre-commit-config.yaml").write_text("repos: []")
+        with (
+            patch("wt_setup.shutil.which", return_value="/usr/local/bin/prek"),
+            patch("wt_setup.subprocess.run", return_value=MagicMock(returncode=0)) as mock_run,
+        ):
+            _ensure_hooks_installed(str(tmp_path))
+        mock_run.assert_called_once_with(
+            ["/usr/local/bin/prek", "install", "-f"],
+            cwd=str(tmp_path),
+            capture_output=True,
+            text=True,
+        )
+
+    def test_skips_when_no_config(self, tmp_path: Path) -> None:
+        with patch("wt_setup.subprocess.run") as mock_run:
+            _ensure_hooks_installed(str(tmp_path))
+        mock_run.assert_not_called()
+
+    def test_skips_when_prek_not_found(self, tmp_path: Path) -> None:
+        (tmp_path / ".pre-commit-config.yaml").write_text("repos: []")
+        with patch("wt_setup.shutil.which", return_value=None), patch("wt_setup.subprocess.run") as mock_run:
+            _ensure_hooks_installed(str(tmp_path))
+        mock_run.assert_not_called()
+
+    def test_warns_on_install_failure(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        (tmp_path / ".pre-commit-config.yaml").write_text("repos: []")
+        with (
+            patch("wt_setup.shutil.which", return_value="/usr/local/bin/prek"),
+            patch("wt_setup.subprocess.run", return_value=MagicMock(returncode=1, stderr="permission denied")),
+        ):
+            _ensure_hooks_installed(str(tmp_path))
+        assert "permission denied" in capsys.readouterr().out

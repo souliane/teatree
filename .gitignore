@@ -10,3 +10,5 @@ dist/
 build/
 node_modules/
 .claude/settings.local.json
+docs/plan
+docs/design

@@ -5,6 +5,7 @@ Run from inside a worktree ($T3_WORKSPACE_DIR/<branch-name>/<repo>).
 """
 
 import os
+import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -86,6 +87,26 @@ def _link_repo_env_worktree(ctx: WorktreeContext) -> None:
     wt_envwt.symlink_to(ticket_envwt)
 
 
+def _ensure_hooks_installed(wt_dir: str) -> None:
+    """Install prek hooks if the repo has a .pre-commit-config.yaml."""
+    if not (Path(wt_dir) / ".pre-commit-config.yaml").is_file():
+        return
+    prek_bin = shutil.which("prek")
+    if not prek_bin:
+        print("  prek not found on PATH — skipping hook installation")
+        return
+    result = subprocess.run(
+        [prek_bin, "install", "-f"],
+        cwd=wt_dir,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode == 0:
+        print("  Pre-commit hooks installed (prek)")
+    else:
+        print(f"  Warning: prek install failed: {result.stderr.strip()}")
+
+
 def _provision_database(ctx: WorktreeContext, db_name: str, variant: str) -> bool:
     ext("wt_services", ctx.main_repo, ctx.wt_dir)
     if db_exists(db_name):
@@ -139,6 +160,9 @@ def wt_setup(variant: str = "", ticket_url: str = "") -> int:
     # --- Phase 1: Symlinks ---
     print("--- Phase 1: Symlinks ---")
     ext("wt_symlinks", ctx.wt_dir, ctx.main_repo, variant)
+
+    # --- Phase 1b: Git hooks ---
+    _ensure_hooks_installed(ctx.wt_dir)
 
     # --- Phase 2: .env.worktree ---
     print("--- Phase 2: Environment ---")
