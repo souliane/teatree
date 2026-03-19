@@ -17,6 +17,8 @@ jobs:
           python-version: "3.13"
       - run: uv sync
       - uses: j178/prek-action@v1
+        env:
+          SKIP: pytest,safety
 
   test:
     runs-on: ubuntu-latest
