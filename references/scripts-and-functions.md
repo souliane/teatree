@@ -110,7 +110,7 @@ All operations go through the `t3` command. Commands are grouped by concern. The
 | `t3 ci trigger-e2e` | Trigger E2E tests on CI |
 | `t3 ci fetch-errors` | Fetch error logs from CI |
 | `t3 ci fetch-failed-tests` | Extract failed test IDs from CI |
-| `t3 ci quality-check-check` | Run quality analysis (SonarQube, etc.) |
+| `t3 ci quality-check` | Run quality analysis (SonarQube, etc.) |
 
 ### `t3 db` — Database operations
 
