@@ -595,6 +595,18 @@ def _print_autoload_rules(skill_name: str, match_file: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Group: util — Utility commands
+# ---------------------------------------------------------------------------
+
+util_app = typer.Typer(help="Utility commands (video decomposition, etc.)", no_args_is_help=True)
+app.add_typer(util_app, name="util")
+
+from analyze_video import main as _analyze_video_main
+
+util_app.command(name="decompose-video")(_analyze_video_main)
+
+
+# ---------------------------------------------------------------------------
 # Project overlay commands (registered dynamically by project_hooks module)
 # ---------------------------------------------------------------------------
 
