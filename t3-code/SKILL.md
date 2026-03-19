@@ -35,8 +35,10 @@ The implementation phase. Follow test-driven development and project conventions
 
 **Scaling the plan to the task:**
 
-- **Simple/clear tasks:** State the plan in a short bullet list, then start implementing immediately. No need for a dedicated plan mode or user confirmation.
-- **Complex/ambiguous tasks:** Use the agent's planning workflow if it has one, explore the codebase, present the plan, and wait for approval before writing code.
+- **Simple/clear tasks** (single file, obvious change): State the plan in a short bullet list, then start implementing immediately. No need for plan mode or user confirmation.
+- **Complex/ambiguous tasks** (multi-file, architectural decisions, unclear scope): Use the agent's plan mode (if available) to block edits while planning. Explore the codebase, write the plan, present it for user approval. Only start coding after approval.
+
+**How to decide:** If you would normally ask the user "is this approach okay?" before coding, that's a complex task — use plan mode.
 
 ### 2. TDD Cycle
 
@@ -72,6 +74,7 @@ Any frontend change that affects UI behavior (new fields, form logic, visibility
 - Run type checking if the project uses it.
 - Run the relevant test suite frequently — don't batch test runs.
 - **Run the language convention skill's review checklist** (if loaded) before declaring implementation complete.
+- **100% test coverage is part of the implementation (Non-Negotiable).** New code ships with tests in the same commit. Never lower coverage thresholds, add files to coverage omit lists, or exclude code from coverage measurement without **explicit user approval**. If you can't reach 100% coverage, the implementation scope is too large — break it into smaller pieces.
 
 ## Agent Rules
 
