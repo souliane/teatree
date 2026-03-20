@@ -1,0 +1,15 @@
+[Unit]
+Description=TeaTree Dashboard ({overlay_name})
+After=network.target
+
+[Service]
+Type=simple
+ExecStartPre={python} {manage_py} migrate --no-input
+ExecStart={python} -m uvicorn {asgi_module} --host {host} --port {port}
+WorkingDirectory={project_path}
+Environment=DJANGO_SETTINGS_MODULE={settings_module}
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

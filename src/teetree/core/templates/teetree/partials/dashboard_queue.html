@@ -1,0 +1,72 @@
+{% if queue %}
+  <div class="grid gap-3">
+    {% for task in queue %}
+      <article class="rounded-2xl border border-bark/10 bg-white/80 px-4 py-4">
+        <div class="flex items-center justify-between">
+          <div class="font-sans text-[11px] font-semibold uppercase tracking-[0.2em] text-bark/55">
+            <button onclick="openTaskModal({{ task.task_id }})" class="underline decoration-bark/20 hover:decoration-bark/50 transition cursor-pointer">Task {{ task.task_id }}</button> · Ticket {{ task.ticket_id }}{% if task.phase %} · {{ task.phase }}{% endif %}
+          </div>
+          <span class="rounded-full px-2 py-0.5 font-sans text-[10px] font-bold uppercase tracking-wider
+            {% if task.status == 'Claimed' %}bg-amber-100 text-amber-700
+            {% elif task.status == 'Pending' %}bg-sky-100 text-sky-700
+            {% else %}bg-bark/10 text-bark/60{% endif %}">
+            {{ task.status }}
+          </span>
+        </div>
+        <p class="mt-2 font-display text-lg">{{ task.execution_reason|default:"Awaiting interactive handoff" }}</p>
+        {% if task.result_summary %}
+          <p class="mt-1 rounded-lg bg-moss/5 px-3 py-2 font-sans text-xs text-moss">{{ task.result_summary }}</p>
+        {% endif %}
+        {% if task.last_error %}
+          <p class="mt-1 rounded-lg bg-red-50 px-3 py-2 font-sans text-xs text-red-700">{{ task.last_error }}</p>
+        {% endif %}
+        <div class="mt-2 flex items-center justify-between">
+          <p class="font-sans text-sm leading-6 text-bark/65">
+            {% if task.claimed_by %}
+              Claimed by {{ task.claimed_by }}.
+            {% elif task.session_agent_id %}
+              Agent: {{ task.session_agent_id }}
+            {% else %}
+              Unclaimed and ready for interactive launch.
+            {% endif %}
+          </p>
+          <div class="flex items-center gap-2">
+            <span class="hidden font-sans text-xs text-red-600" data-error-msg></span>
+            {% if task.claimed_by %}
+              <button
+                class="rounded-full border border-red-300 bg-red-50 px-4 py-1.5 font-sans text-xs font-semibold uppercase tracking-[0.18em] text-red-600 transition hover:bg-red-100"
+                hx-post="/tasks/{{ task.task_id }}/cancel/"
+                hx-swap="none"
+                hx-on::after-request="handleActionResponse(event)"
+                hx-disable-elt="this"
+              >
+                Cancel
+              </button>
+            {% else %}
+              <button
+                class="rounded-full border border-red-300/50 bg-red-50/50 px-3 py-1.5 font-sans text-[10px] font-semibold uppercase tracking-[0.18em] text-red-400 transition hover:bg-red-100"
+                hx-post="/tasks/{{ task.task_id }}/cancel/"
+                hx-swap="none"
+                hx-on::after-request="handleActionResponse(event)"
+                hx-disable-elt="this"
+              >
+                Dismiss
+              </button>
+              <button
+                class="rounded-full border border-clay/30 bg-clay/10 px-4 py-1.5 font-sans text-xs font-semibold uppercase tracking-[0.18em] text-clay transition hover:bg-clay/20"
+                hx-post="/tasks/{{ task.task_id }}/launch/"
+                hx-swap="none"
+                hx-on::after-request="handleActionResponse(event)"
+                hx-disable-elt="this"
+              >
+                Launch
+              </button>
+            {% endif %}
+          </div>
+        </div>
+      </article>
+    {% endfor %}
+  </div>
+{% else %}
+  <p class="font-sans text-sm italic text-bark/60">No interactive tasks are waiting.</p>
+{% endif %}

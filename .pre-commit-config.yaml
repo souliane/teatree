@@ -117,7 +117,7 @@ repos:
       - id: pytest
         name: pytest
         language: system
-        entry: uv run pytest --no-header -q
+        entry: env -u DJANGO_SETTINGS_MODULE uv run pytest --no-header -q
         pass_filenames: false
         always_run: true
         stages: [commit]

@@ -1,6 +1,6 @@
 FROM ubuntu:latest
 RUN apt-get update -qq && \
-    apt-get install -y -qq curl git >/dev/null 2>&1 && \
+    apt-get install -y -qq curl direnv git jq >/dev/null 2>&1 && \
     rm -rf /var/lib/apt/lists/* && \
     useradd -m testuser
 USER testuser

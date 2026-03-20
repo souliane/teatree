@@ -1,0 +1,319 @@
+import json
+from subprocess import CompletedProcess
+
+import pytest
+from django.test import override_settings
+
+from teetree.agents.headless import (
+    _get_resume_session_id,
+    _parse_cli_envelope,
+    _parse_result,
+    _validate_result,
+    get_result_json_schema,
+    run_headless,
+)
+from teetree.core.models import Session, Task, TaskAttempt, Ticket
+
+
+@override_settings(TEATREE_HEADLESS_RUNTIME="claude-code")
+@pytest.mark.django_db
+def test_run_headless_captures_structured_result(monkeypatch: pytest.MonkeyPatch) -> None:
+    result_json = json.dumps({"summary": "Done", "tests_passed": 5, "tests_failed": 0})
+    monkeypatch.setattr("teetree.agents.headless.shutil.which", lambda _name: "/usr/bin/claude-code")
+    monkeypatch.setattr(
+        "teetree.agents.headless.subprocess.run",
+        lambda *_args, **_kwargs: CompletedProcess([], 0, f"Progress...\n{result_json}\n", ""),
+    )
+
+    ticket = Ticket.objects.create()
+    session = Session.objects.create(ticket=ticket, agent_id="agent-1")
+    task = Task.objects.create(ticket=ticket, session=session)
+
+    attempt = run_headless(task, phase="coding", overlay_skill_metadata={})
+
+    task.refresh_from_db()
+    assert attempt.exit_code == 0
+    assert attempt.result["summary"] == "Done"
+    assert attempt.result["tests_passed"] == 5
+    assert task.status == Task.Status.COMPLETED
+
+
+@override_settings(TEATREE_HEADLESS_RUNTIME="claude-code")
+@pytest.mark.django_db
+def test_run_headless_records_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("teetree.agents.headless.shutil.which", lambda _name: "/usr/bin/claude-code")
+    monkeypatch.setattr(
+        "teetree.agents.headless.subprocess.run",
+        lambda *_args, **_kwargs: CompletedProcess([], 1, "", "segfault"),
+    )
+
+    ticket = Ticket.objects.create()
+    session = Session.objects.create(ticket=ticket)
+    task = Task.objects.create(ticket=ticket, session=session)
+
+    attempt = run_headless(task, phase="coding", overlay_skill_metadata={})
+
+    task.refresh_from_db()
+    assert attempt.exit_code == 1
+    assert attempt.error == "segfault"
+    assert task.status == Task.Status.FAILED
+
+
+@override_settings(TEATREE_HEADLESS_RUNTIME="missing-agent")
+@pytest.mark.django_db
+def test_run_headless_fails_when_binary_not_found(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("teetree.agents.headless.shutil.which", lambda _name: None)
+
+    ticket = Ticket.objects.create()
+    session = Session.objects.create(ticket=ticket)
+    task = Task.objects.create(ticket=ticket, session=session)
+
+    attempt = run_headless(task, phase="coding", overlay_skill_metadata={})
+
+    task.refresh_from_db()
+    assert attempt.exit_code == 1
+    assert "not installed" in attempt.error
+    assert task.status == Task.Status.FAILED
+
+
+@override_settings(TEATREE_HEADLESS_RUNTIME="claude-code")
+@pytest.mark.django_db
+def test_run_headless_fails_when_no_json_in_successful_exit(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("teetree.agents.headless.shutil.which", lambda _name: "/usr/bin/claude-code")
+    monkeypatch.setattr(
+        "teetree.agents.headless.subprocess.run",
+        lambda *_args, **_kwargs: CompletedProcess([], 0, "no structured output\n", ""),
+    )
+
+    ticket = Ticket.objects.create()
+    session = Session.objects.create(ticket=ticket)
+    task = Task.objects.create(ticket=ticket, session=session)
+
+    attempt = run_headless(task, phase="coding", overlay_skill_metadata={})
+
+    task.refresh_from_db()
+    assert attempt.exit_code == 0
+    assert "no structured output" in attempt.result["summary"]
+    assert task.status == Task.Status.COMPLETED
+
+
+@override_settings(TEATREE_HEADLESS_RUNTIME="claude-code")
+@pytest.mark.django_db
+def test_run_headless_fails_when_result_violates_schema(monkeypatch: pytest.MonkeyPatch) -> None:
+    bad_json = json.dumps({"summary": "OK", "rogue_field": True})
+    monkeypatch.setattr("teetree.agents.headless.shutil.which", lambda _name: "/usr/bin/claude-code")
+    monkeypatch.setattr(
+        "teetree.agents.headless.subprocess.run",
+        lambda *_args, **_kwargs: CompletedProcess([], 0, f"{bad_json}\n", ""),
+    )
+
+    ticket = Ticket.objects.create()
+    session = Session.objects.create(ticket=ticket)
+    task = Task.objects.create(ticket=ticket, session=session)
+
+    attempt = run_headless(task, phase="coding", overlay_skill_metadata={})
+
+    task.refresh_from_db()
+    assert "unexpected keys" in attempt.error
+    assert "rogue_field" in attempt.error
+    assert task.status == Task.Status.FAILED
+
+
+def test_validate_result_accepts_valid_keys() -> None:
+    assert _validate_result({"summary": "OK", "tests_passed": 5}) == ""
+
+
+def test_validate_result_rejects_unknown_keys() -> None:
+    error = _validate_result({"summary": "OK", "bogus": True})
+    assert "bogus" in error
+
+
+def test_parse_result_extracts_last_json_line() -> None:
+    stdout = "Loading skills...\nRunning task...\n" + json.dumps({"summary": "OK"}) + "\n"
+    assert _parse_result(stdout) == {"summary": "OK"}
+
+
+def test_parse_result_returns_empty_dict_for_no_json() -> None:
+    assert _parse_result("no json here\n") == {}
+
+
+def test_parse_result_skips_malformed_json() -> None:
+    assert _parse_result("{bad json\n") == {}
+
+
+def test_get_result_json_schema_returns_valid_schema() -> None:
+    schema = get_result_json_schema()
+    assert schema["type"] == "object"
+    properties = schema["properties"]
+    assert isinstance(properties, dict)
+    assert "summary" in properties
+
+
+@override_settings(TEATREE_HEADLESS_RUNTIME="claude-code")
+@pytest.mark.django_db
+def test_run_headless_routes_to_interactive_when_needs_user_input(monkeypatch: pytest.MonkeyPatch) -> None:
+    result_json = json.dumps(
+        {
+            "summary": "Blocked on design",
+            "needs_user_input": True,
+            "user_input_reason": "Need design decision",
+        }
+    )
+    monkeypatch.setattr("teetree.agents.headless.shutil.which", lambda _name: "/usr/bin/claude-code")
+    monkeypatch.setattr(
+        "teetree.agents.headless.subprocess.run",
+        lambda *_args, **_kwargs: CompletedProcess([], 0, f"{result_json}\n", ""),
+    )
+
+    ticket = Ticket.objects.create()
+    session = Session.objects.create(ticket=ticket, agent_id="agent-1")
+    task = Task.objects.create(ticket=ticket, session=session, execution_target=Task.ExecutionTarget.HEADLESS)
+
+    attempt = run_headless(task, phase="coding", overlay_skill_metadata={})
+
+    task.refresh_from_db()
+    assert attempt.exit_code == 0
+    assert attempt.result["needs_user_input"] is True
+    # Task completes normally; a new interactive task is created for follow-up
+    assert task.status == Task.Status.COMPLETED
+    followup = Task.objects.filter(
+        ticket=ticket,
+        execution_target=Task.ExecutionTarget.INTERACTIVE,
+        status=Task.Status.PENDING,
+    ).first()
+    assert followup is not None
+    assert "Need design decision" in followup.execution_reason
+
+
+# --- Session resume tests ---
+
+FAKE_SESSION_UUID = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+
+
+@pytest.mark.django_db
+def test_get_resume_session_id_from_parent_attempt() -> None:
+    """Parent task's attempt has an agent_session_id — headless should resume it."""
+    ticket = Ticket.objects.create()
+    parent_session = Session.objects.create(ticket=ticket, agent_id="interactive-followup")
+    parent_task = Task.objects.create(ticket=ticket, session=parent_session)
+    TaskAttempt.objects.create(task=parent_task, agent_session_id=FAKE_SESSION_UUID)
+
+    child_session = Session.objects.create(ticket=ticket, agent_id="coding")
+    child_task = Task.objects.create(ticket=ticket, session=child_session, parent_task=parent_task)
+
+    assert _get_resume_session_id(child_task) == FAKE_SESSION_UUID
+
+
+@pytest.mark.django_db
+def test_get_resume_session_id_from_parent_session_agent_id() -> None:
+    """Parent task's session.agent_id is a UUID — headless should resume it.
+
+    This is the case when headless→interactive carried the session_id on
+    Session.agent_id but the interactive TaskAttempt has no agent_session_id.
+    """
+    ticket = Ticket.objects.create()
+    parent_session = Session.objects.create(ticket=ticket, agent_id=FAKE_SESSION_UUID)
+    parent_task = Task.objects.create(ticket=ticket, session=parent_session)
+
+    child_session = Session.objects.create(ticket=ticket, agent_id="review")
+    child_task = Task.objects.create(ticket=ticket, session=child_session, parent_task=parent_task)
+
+    assert _get_resume_session_id(child_task) == FAKE_SESSION_UUID
+
+
+@pytest.mark.django_db
+def test_get_resume_session_id_returns_empty_without_parent() -> None:
+    """No parent task — nothing to resume."""
+    ticket = Ticket.objects.create()
+    session = Session.objects.create(ticket=ticket)
+    task = Task.objects.create(ticket=ticket, session=session)
+
+    assert _get_resume_session_id(task) == ""
+
+
+@pytest.mark.django_db
+def test_get_resume_session_id_skips_non_uuid_agent_ids() -> None:
+    """Parent exists but agent_id is not a UUID — don't resume."""
+    ticket = Ticket.objects.create()
+    parent_session = Session.objects.create(ticket=ticket, agent_id="not-a-uuid")
+    parent_task = Task.objects.create(ticket=ticket, session=parent_session)
+
+    child_session = Session.objects.create(ticket=ticket, agent_id="coding")
+    child_task = Task.objects.create(ticket=ticket, session=child_session, parent_task=parent_task)
+
+    assert _get_resume_session_id(child_task) == ""
+
+
+@override_settings(TEATREE_HEADLESS_RUNTIME="claude-code", TEATREE_SDK_USE_CLI=True)
+@pytest.mark.django_db
+def test_run_headless_resumes_parent_session(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When a parent task has a session_id, run_headless passes --resume to the CLI."""
+    captured_commands: list[list[str]] = []
+    result_json = json.dumps({"summary": "Continued work"})
+
+    def fake_run(*args: object, **_kwargs: object) -> CompletedProcess[str]:
+        captured_commands.append(list(args[0]))
+        return CompletedProcess([], 0, f"{result_json}\n", "")
+
+    monkeypatch.setattr("teetree.agents.headless.shutil.which", lambda _name: "/usr/bin/claude")
+    monkeypatch.setattr("teetree.agents.headless.subprocess.run", fake_run)
+
+    ticket = Ticket.objects.create()
+    parent_session = Session.objects.create(ticket=ticket, agent_id=FAKE_SESSION_UUID)
+    parent_task = Task.objects.create(ticket=ticket, session=parent_session)
+
+    child_session = Session.objects.create(ticket=ticket, agent_id="coding")
+    child_task = Task.objects.create(ticket=ticket, session=child_session, parent_task=parent_task)
+
+    run_headless(child_task, phase="coding", overlay_skill_metadata={})
+
+    cmd = captured_commands[0]
+    assert "--resume" in cmd
+    resume_idx = cmd.index("--resume")
+    assert cmd[resume_idx + 1] == FAKE_SESSION_UUID
+
+
+# --- _parse_cli_envelope ---
+
+
+def test_parse_cli_envelope_extracts_session_id_and_result() -> None:
+    envelope = json.dumps({"session_id": "abc-123", "result": "Agent output text"})
+    parsed = _parse_cli_envelope(envelope)
+    assert parsed["session_id"] == "abc-123"
+    assert parsed["agent_text"] == "Agent output text"
+
+
+def test_parse_cli_envelope_falls_back_for_non_envelope_json() -> None:
+    parsed = _parse_cli_envelope('{"summary": "OK"}')
+    assert parsed["agent_text"] == '{"summary": "OK"}'
+    assert parsed["session_id"] == ""
+
+
+def test_parse_cli_envelope_falls_back_for_invalid_json() -> None:
+    parsed = _parse_cli_envelope("not json at all")
+    assert parsed["agent_text"] == "not json at all"
+    assert parsed["session_id"] == ""
+
+
+@override_settings(TEATREE_HEADLESS_RUNTIME="claude-code", TEATREE_SDK_USE_CLI=True)
+@pytest.mark.django_db
+def test_run_headless_parses_cli_envelope_with_session_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When the CLI returns a JSON envelope, session_id is extracted and stored."""
+    result_json = json.dumps({"summary": "Work done"})
+    cli_envelope = json.dumps({"session_id": "sess-abc-123", "result": result_json})
+
+    monkeypatch.setattr("teetree.agents.headless.shutil.which", lambda _name: "/usr/bin/claude")
+    monkeypatch.setattr(
+        "teetree.agents.headless.subprocess.run",
+        lambda *_args, **_kwargs: CompletedProcess([], 0, cli_envelope, ""),
+    )
+
+    ticket = Ticket.objects.create()
+    session = Session.objects.create(ticket=ticket)
+    task = Task.objects.create(ticket=ticket, session=session)
+
+    attempt = run_headless(task, phase="coding", overlay_skill_metadata={})
+
+    assert attempt.exit_code == 0
+    assert attempt.agent_session_id == "sess-abc-123"
+    assert attempt.result["summary"] == "Work done"

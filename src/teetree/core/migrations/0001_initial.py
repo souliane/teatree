@@ -1,0 +1,154 @@
+import django.db.models.deletion
+import django_fsm
+from django.db import migrations, models
+
+
+class Migration(migrations.Migration):
+    initial = True
+
+    dependencies = []
+
+    operations = [
+        migrations.CreateModel(
+            name="Ticket",
+            fields=[
+                ("id", models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name="ID")),
+                ("issue_url", models.URLField(blank=True, max_length=500)),
+                ("variant", models.CharField(blank=True, max_length=100)),
+                ("repos", models.JSONField(blank=True, default=list)),
+                (
+                    "state",
+                    django_fsm.FSMField(
+                        choices=[
+                            ("not_started", "Not started"),
+                            ("scoped", "Scoped"),
+                            ("started", "Started"),
+                            ("coded", "Coded"),
+                            ("tested", "Tested"),
+                            ("reviewed", "Reviewed"),
+                            ("shipped", "Shipped"),
+                            ("in_review", "In review"),
+                            ("merged", "Merged"),
+                            ("delivered", "Delivered"),
+                        ],
+                        default="not_started",
+                        max_length=32,
+                    ),
+                ),
+                ("extra", models.JSONField(blank=True, default=dict)),
+            ],
+        ),
+        migrations.CreateModel(
+            name="Session",
+            fields=[
+                ("id", models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name="ID")),
+                ("visited_phases", models.JSONField(blank=True, default=list)),
+                ("started_at", models.DateTimeField(auto_now_add=True)),
+                ("ended_at", models.DateTimeField(blank=True, null=True)),
+                ("agent_id", models.CharField(blank=True, max_length=255)),
+                (
+                    "ticket",
+                    models.ForeignKey(
+                        on_delete=django.db.models.deletion.CASCADE, related_name="sessions", to="core.ticket"
+                    ),
+                ),
+            ],
+        ),
+        migrations.CreateModel(
+            name="Task",
+            fields=[
+                ("id", models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name="ID")),
+                ("phase", models.CharField(blank=True, max_length=64)),
+                (
+                    "execution_target",
+                    models.CharField(
+                        choices=[("sdk", "SDK"), ("user_input", "User input")], default="sdk", max_length=32
+                    ),
+                ),
+                ("execution_reason", models.TextField(blank=True)),
+                (
+                    "status",
+                    django_fsm.FSMField(
+                        choices=[
+                            ("pending", "Pending"),
+                            ("claimed", "Claimed"),
+                            ("completed", "Completed"),
+                            ("failed", "Failed"),
+                        ],
+                        default="pending",
+                        max_length=32,
+                    ),
+                ),
+                ("claimed_at", models.DateTimeField(blank=True, null=True)),
+                ("claimed_by", models.CharField(blank=True, max_length=255)),
+                ("lease_expires_at", models.DateTimeField(blank=True, null=True)),
+                ("heartbeat_at", models.DateTimeField(blank=True, null=True)),
+                ("result_artifact_path", models.CharField(blank=True, max_length=500)),
+                (
+                    "session",
+                    models.ForeignKey(
+                        on_delete=django.db.models.deletion.CASCADE, related_name="tasks", to="core.session"
+                    ),
+                ),
+                (
+                    "ticket",
+                    models.ForeignKey(
+                        on_delete=django.db.models.deletion.CASCADE, related_name="tasks", to="core.ticket"
+                    ),
+                ),
+            ],
+        ),
+        migrations.CreateModel(
+            name="TaskAttempt",
+            fields=[
+                ("id", models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name="ID")),
+                ("started_at", models.DateTimeField(auto_now_add=True)),
+                ("ended_at", models.DateTimeField(blank=True, null=True)),
+                (
+                    "execution_target",
+                    models.CharField(choices=[("sdk", "SDK"), ("user_input", "User input")], max_length=32),
+                ),
+                ("error", models.TextField(blank=True)),
+                ("exit_code", models.IntegerField(blank=True, null=True)),
+                ("artifact_path", models.CharField(blank=True, max_length=500)),
+                ("result", models.JSONField(blank=True, default=dict)),
+                ("launch_url", models.URLField(blank=True, max_length=500)),
+                (
+                    "task",
+                    models.ForeignKey(
+                        on_delete=django.db.models.deletion.CASCADE, related_name="attempts", to="core.task"
+                    ),
+                ),
+            ],
+        ),
+        migrations.CreateModel(
+            name="Worktree",
+            fields=[
+                ("id", models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name="ID")),
+                ("repo_path", models.CharField(max_length=500)),
+                ("branch", models.CharField(max_length=255)),
+                (
+                    "state",
+                    django_fsm.FSMField(
+                        choices=[
+                            ("created", "Created"),
+                            ("provisioned", "Provisioned"),
+                            ("services_up", "Services up"),
+                            ("ready", "Ready"),
+                        ],
+                        default="created",
+                        max_length=32,
+                    ),
+                ),
+                ("ports", models.JSONField(blank=True, default=dict)),
+                ("db_name", models.CharField(blank=True, max_length=255)),
+                ("extra", models.JSONField(blank=True, default=dict)),
+                (
+                    "ticket",
+                    models.ForeignKey(
+                        on_delete=django.db.models.deletion.CASCADE, related_name="worktrees", to="core.ticket"
+                    ),
+                ),
+            ],
+        ),
+    ]

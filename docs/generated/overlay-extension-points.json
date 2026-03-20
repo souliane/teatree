@@ -1,0 +1,109 @@
+{
+  "commands": [
+    "lifecycle setup",
+    "lifecycle start",
+    "lifecycle status",
+    "lifecycle teardown",
+    "tasks work-next-sdk",
+    "tasks work-next-user-input",
+    "followup refresh",
+    "followup remind"
+  ],
+  "hooks": [
+    {
+      "description": "Declare the repositories that TeaTree should provision for this overlay.",
+      "name": "get_repos",
+      "required": true,
+      "signature": "() -> list[str]"
+    },
+    {
+      "description": "Return the ordered setup steps for a newly created worktree.",
+      "name": "get_provision_steps",
+      "required": true,
+      "signature": "(worktree: 'Worktree') -> list[teetree.core.overlay.ProvisionStep]"
+    },
+    {
+      "description": "Add overlay-specific environment variables to the generated worktree env file.",
+      "name": "get_env_extra",
+      "required": false,
+      "signature": "(_worktree: 'Worktree') -> dict[str, str]"
+    },
+    {
+      "description": "Expose named service commands for lifecycle start and operator discovery.",
+      "name": "get_run_commands",
+      "required": false,
+      "signature": "(_worktree: 'Worktree') -> RunCommands"
+    },
+    {
+      "description": "Describe how a worktree database should be provisioned or restored.",
+      "name": "get_db_import_strategy",
+      "required": false,
+      "signature": "(_worktree: 'Worktree') -> DbImportStrategy"
+    },
+    {
+      "description": "Return callbacks to run after database setup completes.",
+      "name": "get_post_db_steps",
+      "required": false,
+      "signature": "(_worktree: 'Worktree') -> list[HookValue]"
+    },
+    {
+      "description": "Declare extra symlinks that should exist inside the worktree.",
+      "name": "get_symlinks",
+      "required": false,
+      "signature": "(_worktree: 'Worktree') -> list[HookValue]"
+    },
+    {
+      "description": "Return additional service metadata for lifecycle orchestration.",
+      "name": "get_services_config",
+      "required": false,
+      "signature": "(_worktree: 'Worktree') -> dict[str, HookValue]"
+    },
+    {
+      "description": "Return merge-request validation problems for this overlay.",
+      "name": "validate_mr",
+      "required": false,
+      "signature": "(_title: str, _description: str) -> list[str]"
+    },
+    {
+      "description": "Return the active overlay skill path and any companion skills.",
+      "name": "get_skill_metadata",
+      "required": false,
+      "signature": "() -> dict[str, HookValue]"
+    }
+  ],
+  "overlay_base": "teetree.core.overlay.OverlayBase",
+  "settings": [
+    {
+      "description": "Import path for the active OverlayBase subclass.",
+      "name": "TEATREE_OVERLAY_CLASS",
+      "required": true
+    },
+    {
+      "description": "Runtime key for unattended SDK execution.",
+      "name": "TEATREE_SDK_RUNTIME",
+      "required": true
+    },
+    {
+      "description": "Runtime key for interactive user-input work.",
+      "name": "TEATREE_INTERACTIVE_RUNTIME",
+      "required": true
+    },
+    {
+      "description": "Terminal strategy used by the interactive runtime.",
+      "name": "TEATREE_TERMINAL_MODE",
+      "required": true
+    }
+  ],
+  "skill_metadata_fields": [
+    {
+      "description": "Primary overlay skill file path.",
+      "name": "skill_path",
+      "required": false
+    },
+    {
+      "description": "Additional skills loaded alongside the primary overlay skill.",
+      "name": "companion_skills",
+      "required": false
+    }
+  ]
+}

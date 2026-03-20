@@ -58,8 +58,8 @@ class TestMain:
     def test_returns_zero_when_all_match(self, tmp_path: Path) -> None:
         pyproject = tmp_path / "pyproject.toml"
         pyproject.write_text('[project]\nversion = "0.1.0"\n')
-        skill_dir = tmp_path / "t3-demo"
-        skill_dir.mkdir()
+        skill_dir = tmp_path / "skills" / "t3-demo"
+        skill_dir.mkdir(parents=True)
         (skill_dir / "SKILL.md").write_text("---\nname: t3-demo\nmetadata:\n  version: 0.1.0\n---\n")
         with (
             patch.object(check_skill_versions, "PYPROJECT_PATH", pyproject),
@@ -70,8 +70,8 @@ class TestMain:
     def test_fixes_mismatch_and_returns_one(self, tmp_path: Path) -> None:
         pyproject = tmp_path / "pyproject.toml"
         pyproject.write_text('[project]\nversion = "1.0.0"\n')
-        skill_dir = tmp_path / "t3-bad"
-        skill_dir.mkdir()
+        skill_dir = tmp_path / "skills" / "t3-bad"
+        skill_dir.mkdir(parents=True)
         (skill_dir / "SKILL.md").write_text("---\nname: t3-bad\nmetadata:\n  version: 0.0.1\n---\n")
         with (
             patch.object(check_skill_versions, "PYPROJECT_PATH", pyproject),
@@ -84,8 +84,8 @@ class TestMain:
     def test_reports_unfixable_mismatch(self, tmp_path: Path) -> None:
         pyproject = tmp_path / "pyproject.toml"
         pyproject.write_text('[project]\nversion = "1.0.0"\n')
-        skill_dir = tmp_path / "t3-nover"
-        skill_dir.mkdir()
+        skill_dir = tmp_path / "skills" / "t3-nover"
+        skill_dir.mkdir(parents=True)
         # No version line at all — _skill_version returns None, _fix_version returns False
         (skill_dir / "SKILL.md").write_text("---\nname: t3-nover\n---\n# Body\n")
         with (

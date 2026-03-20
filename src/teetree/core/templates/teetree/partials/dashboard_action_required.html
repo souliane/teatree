@@ -1,0 +1,25 @@
+{% if action_items %}
+  <div class="flex flex-col gap-2">
+    {% for item in action_items %}
+      <div class="flex items-center gap-3 rounded-lg border border-bark/10 bg-cream px-4 py-3">
+        {% if item.kind == "interactive_task" %}
+          <span class="pill pill-xs bg-clay/10 text-clay">Interactive</span>
+        {% elif item.kind == "needs_review_request" %}
+          <span class="pill pill-xs bg-moss/10 text-moss">Review</span>
+        {% elif item.kind == "needs_reply" %}
+          <span class="pill pill-xs bg-red-100 text-red-700">Reply</span>
+        {% elif item.kind == "needs_approval" %}
+          <span class="pill pill-xs bg-purple-100 text-purple-700">Approval</span>
+        {% endif %}
+        {% if item.url %}
+          <a href="{{ item.url }}" class="font-sans text-sm text-moss hover:underline" target="_blank">{{ item.label }}</a>
+        {% else %}
+          <span class="font-sans text-sm text-bark">{{ item.label }}</span>
+        {% endif %}
+        <span class="font-sans text-xs text-bark/40">{{ item.detail }}</span>
+      </div>
+    {% endfor %}
+  </div>
+{% else %}
+  <p class="font-sans text-sm text-bark/40">Nothing needs your attention right now.</p>
+{% endif %}

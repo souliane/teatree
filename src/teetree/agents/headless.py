@@ -1,0 +1,193 @@
+"""Headless SDK runner — executes agent tasks without a terminal.
+
+Runs the SDK runtime as a subprocess, captures structured output,
+and stores the result in TaskAttempt.result for the dashboard to display.
+"""
+
+import json
+import re
+import shutil
+import subprocess  # noqa: S404
+
+from django.utils import timezone
+
+from teetree.agents.result_schema import RESULT_JSON_SCHEMA
+from teetree.agents.services import get_headless_runtime_name
+from teetree.agents.skill_bundle import resolve_skill_bundle
+from teetree.core.models import Task, TaskAttempt
+from teetree.core.overlay import SkillMetadata
+
+_RUNTIME_BINARIES: dict[str, str] = {
+    "claude-code": "claude",
+}
+
+_UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+
+
+def _use_cli_fallback() -> bool:
+    """Check if headless tasks should use ``claude -p`` instead of the real SDK."""
+    from django.conf import settings  # noqa: PLC0415
+
+    return getattr(settings, "TEATREE_SDK_USE_CLI", False)
+
+
+def run_headless(
+    task: Task,
+    *,
+    phase: str,
+    overlay_skill_metadata: SkillMetadata,
+) -> TaskAttempt:
+    """Run a headless task.
+
+    When ``TEATREE_SDK_USE_CLI`` is ``True``, uses ``claude -p`` (Claude Code
+    CLI in print mode) instead of the Anthropic SDK.  This allows headless tasks
+    to run without an API key — authentication goes through Claude Code's
+    existing session.
+    """
+    from teetree.agents.prompt import build_system_context, build_task_prompt  # noqa: PLC0415
+
+    runtime_name = get_headless_runtime_name()
+    skills = resolve_skill_bundle(phase=phase, overlay_skill_metadata=overlay_skill_metadata)
+
+    binary_name = "claude" if _use_cli_fallback() else _RUNTIME_BINARIES.get(runtime_name, runtime_name)
+    binary = shutil.which(binary_name)
+    if binary is None:
+        return _record_failure(task, error=f"{binary_name} is not installed")
+
+    prompt = build_task_prompt(task)
+    system_context = build_system_context(task, skills=skills)
+    resume_session_id = _get_resume_session_id(task)
+    command = _build_headless_command(binary, prompt, system_context, resume_session_id=resume_session_id)
+
+    proc = subprocess.run(  # noqa: S603
+        command,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    if proc.returncode != 0:
+        return _record_failure(task, exit_code=proc.returncode, error=proc.stderr[:2000])
+
+    envelope = _parse_cli_envelope(proc.stdout)
+    agent_text = envelope.get("agent_text", proc.stdout)
+    session_id = envelope.get("session_id", "")
+
+    result = _parse_result(agent_text)
+    if not result:
+        result = {"summary": agent_text[:1000]}
+
+    schema_error = _validate_result(result)
+    if schema_error:
+        return _record_failure(task, exit_code=0, error=schema_error)
+
+    attempt = TaskAttempt.objects.create(
+        task=task,
+        execution_target=task.execution_target,
+        ended_at=timezone.now(),
+        exit_code=0,
+        result=result,
+        agent_session_id=session_id,
+    )
+    # Always complete — _advance_ticket() handles follow-ups:
+    # - needs_user_input → schedules a new interactive task
+    # - reviewing phase → advances ticket to REVIEWED
+    # - shipping phase → advances ticket to SHIPPED
+    task.complete(result_artifact_path="")
+    return attempt
+
+
+def _build_headless_command(binary: str, prompt: str, system_context: str, *, resume_session_id: str = "") -> list[str]:
+    cmd = [binary]
+    if resume_session_id:
+        cmd.extend(["--resume", resume_session_id])
+    cmd.extend(["-p", prompt, "--append-system-prompt", system_context, "--output-format", "json"])
+    return cmd
+
+
+def _get_resume_session_id(task: Task) -> str:
+    """Walk the parent_task chain to find a resumable Claude session.
+
+    When a headless task follows an interactive one (or vice versa),
+    the session_id from the previous run lets us resume with full context.
+    """
+    current = task.parent_task
+    while current is not None:
+        last_attempt = current.attempts.order_by("-pk").first()
+        if last_attempt and last_attempt.agent_session_id and _UUID_RE.match(last_attempt.agent_session_id):
+            return last_attempt.agent_session_id
+        agent_id = current.session.agent_id if current.session_id else ""
+        if agent_id and _UUID_RE.match(agent_id):
+            return agent_id
+        current = current.parent_task
+    return ""
+
+
+def _parse_cli_envelope(stdout: str) -> dict[str, str]:
+    """Parse the Claude CLI JSON envelope to extract session_id and agent text.
+
+    When ``--output-format json`` is used, stdout is a single JSON object
+    with ``session_id`` and ``result`` (the agent's text output) at the top level.
+    Falls back gracefully if stdout is not a CLI envelope.
+    """
+    try:
+        envelope = json.loads(stdout)
+        if isinstance(envelope, dict) and "session_id" in envelope:
+            return {
+                "session_id": str(envelope.get("session_id", "")),
+                "agent_text": str(envelope.get("result", "")),
+            }
+    except (json.JSONDecodeError, ValueError):
+        pass
+    return {"agent_text": stdout, "session_id": ""}
+
+
+def _parse_result(agent_text: str) -> dict[str, object]:
+    """Extract structured result from the agent's text output.
+
+    Tries to parse the last JSON object in the text (agents may print
+    progress text before the final JSON result).
+    """
+    for raw_line in reversed(agent_text.strip().splitlines()):
+        stripped = raw_line.strip()
+        if stripped.startswith("{"):
+            try:
+                return json.loads(stripped)
+            except json.JSONDecodeError:
+                continue
+    return {}
+
+
+def _validate_result(result: dict[str, object]) -> str:
+    """Check that *result* only contains keys declared in the schema.
+
+    Returns an error message if validation fails, or an empty string on success.
+    Full JSON Schema validation is intentionally avoided to keep the dependency
+    footprint minimal — we only enforce the ``additionalProperties: false`` rule.
+    """
+    allowed = set(RESULT_JSON_SCHEMA.get("properties", {}).keys())  # type: ignore[union-attr]
+    unexpected = set(result) - allowed
+    if unexpected:
+        return f"Agent result contains unexpected keys: {', '.join(sorted(unexpected))}"
+    return ""
+
+
+def _record_failure(task: Task, *, exit_code: int = 1, error: str = "") -> TaskAttempt:
+    attempt = TaskAttempt.objects.create(
+        task=task,
+        execution_target=task.execution_target,
+        ended_at=timezone.now(),
+        exit_code=exit_code,
+        error=error,
+    )
+    task.fail()
+    return attempt
+
+
+def get_result_json_schema() -> dict[str, object]:
+    """Return the JSON schema for structured agent output.
+
+    Agents should produce output matching this schema when invoked with
+    ``--output-format json``.
+    """
+    return RESULT_JSON_SCHEMA

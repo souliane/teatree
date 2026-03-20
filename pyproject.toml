@@ -1,27 +1,55 @@
+[build-system]
+build-backend = "uv_build"
+requires = [ "uv-build>=0.7,<0.11" ]
+
 [project]
 name = "teatree"
 version = "0.0.1"
 description = "Multi-repo worktree lifecycle manager for AI-assisted development"
+readme = "README.md"
 license = "MIT"
-
-requires-python = ">=3.12"
+requires-python = ">=3.13"
 classifiers = [
   "Programming Language :: Python :: 3 :: Only",
-  "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
 ]
+dependencies = [
+  "django>=5.2,<6.1",
+  "django-fsm-2>=4",
+  "django-htmx>=1.27",
+  "django-rich>=2.2",
+  "django-tasks>=0.9",
+  "django-tasks-db>=0.12",
+  "django-typer>=3.3",
+  "httpx>=0.27",
+]
+scripts = { t3 = "teetree.cli:main" }
 
 [dependency-groups]
 # --- Ruff ---
 # Strategy: enable ALL rules, then ignore specific ones with justification.
 # https://docs.astral.sh/ruff/rules/
 dev = [
-  "pre-commit>=4.5.1",
+  "django-rich>=2.2",
+  "django-types>=0.23",
+  "import-linter>=2.5.2",
+  "prek>=0.2.12",
   "pytest>=9.0.2",
   "pytest-cov>=7",
+  "pytest-django>=4.11.1",
+  "ruff>=0.14.2",
   "safety>=3",
   "ty>=0.0.18",
   "typer>=0.12",
+]
+docs = [
+  "mkdocs>=1.6",
+  "mkdocs-material>=9",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = [
+  "src/teetree",
 ]
 
 [tool.ruff]
@@ -66,34 +94,97 @@ lint.extend-ignore = [
   "Q004",   # quote rules
   "W191",   # tab indentation
 ]
+lint.per-file-ignores."e2e/**/*.py" = [
+  "ANN",     # E2E test/fixture annotations not enforced
+  "ARG001",
+  "ARG002",  # overlay method signatures
+  "PLC0415", # deferred Django imports (setup not yet called)
+  "PLR6301", # overlay methods
+  "S101",    # assert in tests
+  "S105",    # hardcoded secret key (test only)
+  "S108",    # /tmp paths (test fixtures)
+  "S404",    # subprocess
+  "TRY300",  # try/return in server wait loop
+]
 # Scripts use typer (default args = B008), deferred imports (E402), boolean
 # params (FBT), subprocess (S4xx/S6xx), and print (T201).
 lint.per-file-ignores."scripts/**/*.py" = [
   "B008",    # function-call-in-default-argument (typer.Argument/Option)
+  "C901",    # too-complex (intent detection is inherently branchy)
   "E402",    # module-import-not-at-top (deferred after lib.init)
   "FBT001",
   "FBT003",  # boolean positional/default (CLI flags)
   "PLC0415", # import-outside-top-level (deferred imports)
   "PLC2701", # import-private-name (lib._internal)
+  "PLR0911", # too-many-return-statements (intent detection)
+  "PLR0912", # too-many-branches (intent detection)
+  "PLR6201", # use-set-literal (readability preference)
   "PLW1510", # subprocess-run-without-check (intentional)
+  "PLW2901", # redefined-loop-variable (intentional strip pattern)
   "S404",
   "S603",
   "S607",    # subprocess security (trusted internal calls)
+  "SIM102",  # collapsible-if (readability preference)
   "T201",    # print (CLI output)
+  "TRY300",  # try-consider-else (readability preference)
+]
+lint.per-file-ignores."src/teetree/cli.py" = [
+  "C901",
+  "FBT003",
+  "PLR0912",
+  "PLR0915", # _build_overlay_app registers many commands in a single builder
+  "PLR2004",
+  "RSE102",
+]
+lint.per-file-ignores."src/teetree/core/management/commands/*.py" = [
+  "C901",    # lifecycle setup complexity is inherent to the provisioning chain
+  "PLR6301", # django-typer command methods intentionally live on Command classes
+  "S607",    # partial executable paths (git, dropdb, direnv, prek) are trusted internal tools
+]
+lint.per-file-ignores."src/teetree/core/migrations/*.py" = [
+  "E501",   # Django-generated migrations are left in generated form
+  "RUF012", # Django migrations intentionally use mutable class attributes
+]
+lint.per-file-ignores."src/teetree/core/overlay.py" = [
+  "ARG002",
+  "PLR6301", # overlay hook defaults are instance methods by contract
+]
+lint.per-file-ignores."src/teetree/core/sync.py" = [
+  "C901",
+  "F821",
+  "PLR0912",
+  "S112",
+]
+lint.per-file-ignores."src/teetree/core/views/*.py" = [
+  "PLR6301", # Django class-based views intentionally implement HTTP verb methods on the class
+]
+lint.per-file-ignores."src/teetree/utils/*.py" = [
+  "S404",
+  "S603",
+  "S607", # trusted internal subprocess wrappers around git and postgres CLIs
 ]
 # Tests use assert, magic values, private access, etc.
 lint.per-file-ignores."tests/**/*.py" = [
+  "ANN",     # type annotations not enforced in tests
+  "ARG001",
+  "ARG002",  # unused method arguments (overlay stubs)
+  "ARG005",
+  "FLY002",
   "PLC1901", # compare-to-empty-string
   "PLC2701", # import-private-name
   "PLR0904", # too-many-public-methods (test classes)
   "PLR2004", # magic-value-comparison
   "PLR6301", # no-self-use (test methods)
+  "PYI034",
   "S101",    # assert (expected in tests)
+  "S105",
+  "S106",
   "S108",    # hardcoded-temp-file (test fixtures)
   "S404",    # subprocess-import
   "SLF001",  # private-member-access (testing internals)
 ]
 lint.fixable = [ "ALL" ]
+lint.unfixable = [ "F401", "F811" ] # Never auto-delete imports — ruff misjudges usage in some patterns
 lint.flake8-implicit-str-concat.allow-multiline = false
 lint.flake8-tidy-imports.banned-api."__future__.annotations" = { msg = "Use native 3.10+ syntax (X | Y) instead of from __future__ import annotations" }
 # Complexity limits
@@ -116,9 +207,14 @@ addopts = """
 --strict-config --strict-markers --verbose --log-cli-level=INFO
 --cov --cov-report=term-missing:skip-covered --cov-branch
 """
+DJANGO_SETTINGS_MODULE = "tests.django_settings"
+django_find_project = false
 testpaths = [ "tests" ]
-pythonpath = [ "scripts", "scripts/hooks", "tests" ]
-filterwarnings = [ "error" ]
+pythonpath = [ ".", "src", "scripts", "scripts/hooks", "tests" ]
+filterwarnings = [
+  "error",
+  "ignore:In Typer, only the parameter 'autocompletion' is supported.*:DeprecationWarning",
+]
 xfail_strict = true
 
 # --- Coverage ---
@@ -143,8 +239,19 @@ partial_branches = [
 ]
 
 [tool.coverage.run]
-source = [ "scripts" ]
-omit = [ "scripts/bump-pyproject-deps-from-lock-file.py" ]
+branch = true
+source = [
+  "src/teetree",
+]
+omit = [ "src/teetree/core/migrations/*.py" ]
+
+[tool.uv.build-backend]
+module-name = "teetree"
+
+[tool.importlinter]
+root_packages = [ "teetree", "tests" ]
+include_external_packages = true
+exclude_type_checking_imports = false
 
 # --- Ty (static type checker) ---
 # https://github.com/astral-sh/ty
@@ -153,11 +260,16 @@ omit = [ "scripts/bump-pyproject-deps-from-lock-file.py" ]
 terminal = { error-on-warning = true }
 
 [tool.ty.environment]
-extra-paths = [ "scripts", "scripts/hooks", "tests" ]
+extra-paths = [ ".", "src", "scripts", "scripts/hooks", "tests" ]
 python-version = "3.13"
 
 [tool.ty.analysis]
 allowed-unresolved-imports = [
+  "django.tasks",        # Django 6 exposes this dynamically and ty cannot resolve it yet, even with django-types
+  "mkdocs",              # Optional dependency, guarded by try/except ImportError
+  "lib.env",             # Legacy scripts — guarded by try/except ImportError
+  "lib.gitlab",          # Legacy scripts — guarded by try/except ImportError
+  "lib.registry",        # Legacy scripts — guarded by try/except ImportError
   "playwright.sync_api",
   "requests",
   "typer",
@@ -170,3 +282,16 @@ division-by-zero = "error"
 possibly-unresolved-reference = "error"
 unused-ignore-comment = "error"
 no-matching-overload = "error"
+
+[[tool.ty.overrides]]
+include = [ "tests" ]
+# Tests use tmp_path / "file" (ty can't resolve Path.__truediv__) and
+# intentionally use broad *args/**kwargs for monkey-patching
+[tool.ty.overrides.rules]
+unsupported-operator = "ignore"
+invalid-argument-type = "ignore"
+unresolved-attribute = "ignore"
+
+[tool.uv]
+managed = true
+package = true

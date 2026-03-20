@@ -1,0 +1,12 @@
+.DS_Store
+__pycache__/
+*.pyc
+.venv/
+.ruff_cache/
+.pytest_cache/
+.coverage
+*.egg-info/
+db.sqlite3
+dist/
+build/
+site/

@@ -1,0 +1,12 @@
+<div id="sync-status" class="flex items-center gap-3 font-sans text-xs text-bark/60">
+  {% if result.errors %}
+    <span class="inline-flex items-center gap-1 rounded-full bg-red-100 px-3 py-1 font-semibold text-red-700">
+      Sync error: {{ result.errors.0 }}
+    </span>
+  {% else %}
+    <span class="inline-flex items-center gap-1 rounded-full bg-moss/10 px-3 py-1 font-semibold text-moss">
+      Synced {{ result.mrs_found }} MR{{ result.mrs_found|pluralize }} across {{ result.repos_scanned }} repo{{ result.repos_scanned|pluralize }}
+      &middot; {{ result.tickets_created }} new &middot; {{ result.tickets_updated }} updated
+    </span>
+  {% endif %}
+</div>

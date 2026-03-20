@@ -5,13 +5,15 @@
 
 Multi-repo worktree lifecycle manager for AI-assisted development — with distributed self-improvement.
 
+Teatree is now a Django-first extension package. Runtime code lives under `teetree/`, generated host projects are created with `t3 startproject`, and the legacy script workflow remains only as a migration bridge.
+
 Teatree turns development automation into composable AI skills. Instead of shell scripts, CI configs, and tribal knowledge scattered across wikis, each workflow phase — from ticket intake to delivery — is a skill that any AI agent can learn, follow, and improve. Skills are plain markdown and scripts — any AI agent that can read files and run commands can use them. It has been tested most with [Claude Code](https://docs.anthropic.com/en/docs/claude-code).
 
 Four things make teatree different:
 
 1. **Multi-repo worktrees.** If your project spans several repos — backend, frontend, translations, configuration — starting work on a ticket means creating the same branch everywhere, setting up worktrees, remapping ports, provisioning databases, and wiring it all together. Teatree automates all of that and teaches your AI agent how to use it.
 
-2. **Multi-tenant aware.** Teatree's variant system (`wt_detect_variant`) auto-detects the target tenant from ticket labels, descriptions, or external trackers — then provisions tenant-specific databases, environment variables, and configuration. Feature flag checks during code review ensure changes are properly scoped per tenant. The project overlay wires in your tenant-to-variant mapping; teatree handles the rest.
+2. **Multi-tenant aware.** Teatree's variant system (`detect_variant()`) auto-detects the target tenant from ticket labels, descriptions, or external trackers — then provisions tenant-specific databases, environment variables, and configuration. Feature flag checks during code review ensure changes are properly scoped per tenant. The project overlay wires in your tenant-to-variant mapping; teatree handles the rest.
 
 3. **Automation as skills.** Every workflow — TDD, code review, MR creation, E2E testing, CI debugging — is a structured skill file that the agent reads and follows. Skills are composable, overridable (via project overlays), and version-controlled. This means your automation is transparent, auditable, and improvable — not buried in opaque scripts.
 
@@ -44,21 +46,21 @@ The result is a living, version-controlled repository of everything you know abo
 
 ## Get Started
 
-**Prerequisites:** An AI coding agent, Python 3.12+, [uv](https://docs.astral.sh/uv/).
+**Prerequisites:** An AI coding agent, Python 3.13+, [uv](https://docs.astral.sh/uv/).
 
 ### Install
 
-Teatree requires a local git clone — it has shared infrastructure (`scripts/`, `references/`, `integrations/`) that lives outside the individual skill directories, so `npx skills add` alone isn't enough.
+Teatree requires a local git clone — it has shared infrastructure (`src/teetree/`, `integrations/`, and the skill directories themselves) that lives outside any single installed skill, so `npx skills add` alone isn't enough.
 
 [Fork the repo on GitHub](https://github.com/souliane/teatree/fork) (or just clone it directly if you don't plan to contribute back), then:
 
 ```bash
 git clone git@github.com:YOUR_USERNAME/teatree.git ~/workspace/teatree
 cd ~/workspace/teatree
-./scripts/install_skills.sh
+uv sync
 ```
 
-The install script creates symlinks from your agent's skills directory to the clone. Then open your agent and run `/t3-setup` — it handles config, shell integration, hooks, and optionally scaffolds a project overlay for your repos.
+Then open your agent and run `/t3-setup` — it creates symlinks from your agent's skills directory to the clone, validates the local environment, creates `~/.teatree`, installs optional hooks, and walks you through `t3 startproject`.
 
 ### Self-improvement (optional)
 
@@ -88,15 +90,9 @@ The agent generates a test plan from the MR changes, runs E2E tests, and posts e
 
 The agent batch-processes your assigned tickets, checks CI statuses, nudges stale MRs, and starts work on anything that's ready.
 
-### Follow-Up Dashboard
+### Dashboard
 
-The `t3-followup` skill generates a live HTML dashboard at `$T3_DATA_DIR/followup.html` that gives you a visual overview of all in-flight work — tickets, merge requests, pipeline statuses, review states, and actions taken. It auto-refreshes every 2 minutes and uses a persistent `followup.json` cache so data isn't re-fetched unnecessarily.
-
-<p align="center">
-  <img src="docs/dashboard-screenshot.png" alt="t3-followup dashboard" width="700">
-</p>
-
-The dashboard is generated from cached state — ticket statuses, pipeline results, review request permalinks, and review comment tracking are all persisted in `followup.json`. Project overlays can inject extra columns (external tracker status, deployment state, test plan links) via the `followup_enrich_dashboard` extension point.
+Teatree includes a Django/HTMX dashboard served via uvicorn that gives you a live overview of all in-flight work — tickets, merge requests, pipeline statuses, review states, and actions taken. Launch it with `t3 <overlay> dashboard` (auto-finds a free port). It supports SSE-based live updates and project overlays can customise the dashboard via the overlay API.
 
 ## Skills
 
@@ -125,12 +121,16 @@ graph LR
 | `t3-contribute` | Push retro improvements to your fork and optionally open upstream issues |
 | `t3-debug` | Troubleshooting and fixing — something is broken, find and fix it |
 | `t3-followup` | Daily follow-up — batch process new tickets, check/advance ticket statuses, remind about MRs waiting for review |
+| `t3-handover` | Use when the user wants to transfer an in-flight TeaTree task from Claude to another runtime, or asks whether it is time to switch because Claude usage is getting high. |
+| `t3-next` | Wrap up the current session — retro, structured result, pipeline handoff. |
+| `t3-platforms` | Platform-specific API recipes for GitLab, GitHub, and Slack. Auto-loaded as a dependency by skills that interact with these platforms. |
 | `t3-retro` | Conversation retrospective and skill improvement |
 | `t3-review` | Code review — self-review before finalization, giving review, receiving review feedback |
-| `t3-review-request` | Batch review requests — discover open MRs, validate metadata, check team chat for duplicates, post to review channels |
-| `t3-setup` | Interactive setup wizard for teatree skills — prerequisites, config, symlinks, shell config, Claude Code hooks, statusline |
+| `t3-review-request` | Batch review requests — discover open MRs, validate metadata, check for duplicates, post to review channels |
+| `t3-rules` | Cross-cutting agent safety rules — clickable refs, temp files, sub-agent limits, UX preservation. Auto-loaded as a dependency by other skills. |
+| `t3-setup` | Bootstrap and validate teatree for local use — prerequisites, config, skill symlinks, optional agent hooks, and Django project scaffolding |
 | `t3-ship` | Delivery — committing, pushing, creating MR/PR, pipeline monitoring, review requests |
-| `t3-test` | Testing, QA, and CI — running tests, analyzing failures, quality checks, CI interaction, test plans, manual QA, posting testing evidence |
+| `t3-test` | Testing, QA, and CI — running tests, analyzing failures, quality checks, CI interaction, test plans, and posting testing evidence |
 | `t3-ticket` | Ticket intake and kickoff — from zero to ready-to-code |
 | `t3-workspace` | Environment and workspace lifecycle — worktree creation, setup, DB provisioning, dev servers, cleanup |
 <!-- END SKILLS -->
@@ -157,19 +157,21 @@ Skills are already lean (most are 80–160 lines). The main token economy levers
 
 ## Project Overlay
 
-Teatree is generic — it doesn't know about your project's repos, your CI system, or your deploy targets. A **project overlay** is a skill that injects your project-specific behavior via a 3-layer extension point system:
+Teatree is generic — it doesn't know your repos, CI, or environment defaults. Project-specific behaviour now lives in a generated Django host project.
 
-When calling an extension point (e.g., `wt_run_backend`), the registry resolves the implementation using a 3-layer priority:
+Create one with:
 
-| Priority | Layer | Source |
-|----------|-------|--------|
-| Highest | Project overlay | Your project-specific skill |
-| Middle | Framework | Framework integration (e.g., Django) |
-| Lowest | Default | Teatree core fallback |
+```bash
+uv run t3 startproject t3-myproject ~/workspace/my-overlays --overlay-app myproject
+```
 
-A project overlay is **highly recommended** for any real project. Without it, teatree provides the lifecycle structure but can't know how to start your backend, import your database, or run your tests. The `/t3-setup` wizard can scaffold one for you — describe your project (repos, stack, CI system) and it generates the skeleton. From there, ask your AI agent to fill in the details and it will.
+The generated host project owns the real Django settings and points at one active overlay class:
 
-There are extension points covering workspace setup, dev servers, testing, CI, delivery, and ticket management. See [references/extension-points.md](references/extension-points.md) for the full API.
+```python
+TEATREE_OVERLAY_CLASS = "acme.overlay.AcmeOverlay"
+```
+
+That overlay subclasses `OverlayBase` and implements the narrow contract TeaTree needs: managed repos, provisioning steps, runtime metadata, and any project-specific service hooks. See [docs/generated/overlay-extension-points.md](docs/generated/overlay-extension-points.md) for the current contract.
 
 ## Configuration
 
@@ -179,7 +181,6 @@ Teatree stores its config in `~/.teatree` (created by `/t3-setup`):
 |----------|----------|---------|---------|
 | `T3_WORKSPACE_DIR` | Yes | — | Root workspace directory |
 | `T3_REPO` | For contributors | Auto-detected | Path to your teatree fork/clone |
-| `T3_OVERLAY` | No | None | Path to your project overlay skill |
 | `T3_CONTRIBUTE` | No | `false` | `false` or `true` — enable skill self-improvement |
 | `T3_PUSH` | No | `false` | When `true`, retro prompts about pushing after commits |
 | `T3_UPSTREAM` | No | None | Upstream GitHub repo (e.g., `souliane/teatree`). Enables upstream issue creation |
@@ -187,7 +188,7 @@ Teatree stores its config in `~/.teatree` (created by `/t3-setup`):
 | `T3_BANNED_TERMS` | No | None | Comma-separated terms that must never appear in committed code |
 | `T3_REVIEW_SKILL` | No | None | External skill review tool name (e.g., `ac-reviewing-skills`) |
 | `T3_FOLLOWUP_PURGE_DAYS` | No | `14` | Auto-purge tickets from dashboard cache after all MRs merged for N days |
-| `T3_BRANCH_PREFIX` | No | Initials from `git config user.name` | Prefix for worktree branches |
+| `T3_BRANCH_PREFIX` | No | `dev` | Prefix for worktree branches (e.g., your initials) |
 | `T3_AUTO_SQUASH` | No | `false` | Auto-squash related unpushed commits before push |
 
 ## Contributing & Self-Improvement
@@ -239,17 +240,19 @@ Teatree skills are prompt instructions — they control what your AI agent does.
 
 ## Project Structure
 
-```
+```text
 teatree/
-  scripts/           # Python CLI tools + lib/ modules
-    lib/             # Core library (env, ports, git, registry, DB)
-    hooks/           # Pre-commit hooks (update_readme_skills, banned-terms)
-    frameworks/      # Framework integrations (Django)
-    install_skills.sh # Symlink installer
-  t3-*/              # AI agent skills (SKILL.md files)
-  integrations/      # Claude Code hooks (statusline, skill loading)
-  references/        # Technical documentation
-  tests/             # Unit tests (100% coverage)
+  src/teetree/         # Django extension package (installed as `teetree`)
+    core/              #   Models, selectors, views, management commands, templates
+    agents/            #   Runtime adapters (Claude Code, Codex, etc.)
+    backends/          #   GitLab / Slack / Notion / Sentry integrations
+    utils/             #   Internal helpers (ports, git, DB, GitLab API)
+    scaffold/          #   `t3 startproject` templates
+  skills/t3-*/         # AI agent skills (SKILL.md files + references)
+  integrations/        # Agent platform hooks (Claude Code statusline)
+  scripts/             # Pre-commit hooks, utility scripts
+  tests/               # Unit tests (100% branch coverage)
+  docs/                # MkDocs documentation site
 ```
 
 ## FAQ
@@ -264,9 +267,9 @@ That said, not all guardrails are permanent. Teatree distinguishes between *doma
 
 Because real development work isn't standalone. Implementing a ticket touches intake, coding, testing, review, and delivery — often across multiple repos. The skills mirror this reality: `t3-ticket` hands off to `t3-code`, which hands off to `t3-test`, which hands off to `t3-ship`. They share infrastructure through `t3-workspace` and share cross-cutting rules through common reference files. Making them fully independent would mean duplicating domain knowledge across every skill — which always diverges over time.
 
-**Why scripts and a registry, not just markdown instructions?**
+**Why Django management commands instead of just markdown instructions?**
 
-Markdown instructions tell the agent *what to do*. Scripts *do it*. A 15-step procedure for setting up a worktree is fragile — the model might skip a step, reorder things, or improvise. A `t3_setup` script handles the complexity internally; the model just calls it. The extension point registry (`lib/registry.py`) adds composability: project overlays override specific behaviors (how to start the backend, how to import a DB) without forking the core scripts. This is closer to a framework than a documentation set.
+Markdown instructions tell the agent *what to do*. Management commands *do it*. A 15-step procedure for setting up a worktree is fragile — the model might skip a step, reorder things, or improvise. `t3 lifecycle setup` handles the complexity internally; the model just calls it. The overlay system (`OverlayBase`) adds composability: project overlays override specific behaviours (how to start the backend, how to import a DB) without forking the core code.
 
 **Is this overkill for my project?**
 
@@ -280,9 +283,9 @@ It works well for the author's workflow but hasn't been battle-tested by many us
 
 Ideally shared — it encodes project-specific knowledge that benefits everyone. In practice, there's no built-in sync mechanism yet, so each developer maintains their own copy. You can share it via a git repo and use the same fork-based model that teatree itself uses (see `t3-contribute`). This is an area that will improve over time.
 
-**Why do skills share `scripts/`, `references/`, and `integrations/` directories?**
+**Why do skills live in the same repo as the Django code?**
 
-These are not skills themselves — they are shared infrastructure that skills depend on. `scripts/` contains Python CLI tools and the `lib/` library (environment detection, port allocation, git helpers, the extension point registry). `references/` contains technical documentation that multiple skills cross-reference. `integrations/` contains agent platform hooks (currently Claude Code). Skills are lightweight markdown files; the heavy lifting lives in shared code. The `/t3-setup` wizard installs the repo root as a "container" symlink (`~/.agents/skills/teatree`) so that sub-skills can resolve these shared paths. If you only install individual skill directories, the shared infrastructure won't be accessible.
+Because the skills and the code are tightly coupled — skills call management commands, reference the overlay API, and depend on the CLI. Keeping them together means a single `git clone` gives you everything, and skill improvements can be tested against the actual code in the same PR. The `/t3-setup` skill creates symlinks from your agent's skills directory into the `skills/` subdirectory of the clone.
 
 **Does teatree work with bash or only zsh?**
 

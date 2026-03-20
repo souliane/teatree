@@ -1,0 +1,16 @@
+site_name: TeaTree
+site_description: Multi-repo worktree lifecycle manager for AI-assisted development
+repo_url: https://github.com/souliane/teatree
+
+theme:
+  name: material
+  palette:
+    scheme: slate
+
+nav:
+  - Home: index.md
+  - Installation: install.md
+  - Architecture: architecture.md
+  - CLI Reference: cli.md
+  - Overlay API: overlay-api.md
+  - Management Commands: management-commands.md
