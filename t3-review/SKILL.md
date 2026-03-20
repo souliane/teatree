@@ -76,6 +76,15 @@ Run gates → Any failure? → Fix → Re-run gates → Repeat until clean
 
 ### Giving Code Review
 
+**Pre-flight gate (Non-Negotiable) — complete BEFORE reading any diff:**
+
+1. Determine own vs external MR (Step -1)
+2. Fetch ticket context for every MR (Step 0) — without this you cannot judge correctness
+3. List all commits per MR (Step 0b)
+4. Read the repo's `AGENTS.md` / agent instructions file and `consolidated-guidelines.md`
+
+Do NOT skip these steps to "save time" when reviewing multiple MRs. Each step exists because skipping it caused missed findings in real reviews.
+
 **Step -1 — Own MR vs External MR (Non-Negotiable):**
 
 When the MR under review belongs to the **user themselves**, do NOT post review comments. Instead, **implement the fixes directly** on the branch — commit and push. Present findings to the user as a summary of what you fixed, not as review comments to post. The user is asking you to take over and improve their code, not to leave notes for themselves.
