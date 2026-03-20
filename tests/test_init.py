@@ -4,6 +4,7 @@ import os
 import sys
 import types
 from pathlib import Path
+from unittest.mock import patch
 
 import lib.init
 import pytest
@@ -116,7 +117,7 @@ class TestInit:
 
         teatree_cfg = tmp_path / ".teatree"
         teatree_cfg.write_text(
-            f'T3_WORKSPACE_DIR="{ws}"\nNON_T3_KEY=value\nT3_EMPTY=\n',
+            f'# a comment\n\nT3_WORKSPACE_DIR="{ws}"\nNON_T3_KEY=value\nT3_EMPTY=\n',
             encoding="utf-8",
         )
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
@@ -131,34 +132,41 @@ class TestInit:
         assert "NON_T3_KEY" not in sys.modules  # never set
         assert os.environ.get("T3_EMPTY") is None  # empty value skipped
 
-    def test_load_worktree_env_from_orig_cwd(
+    def test_reload_direnv_from_orig_cwd(
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """_load_worktree_env reads .env.worktree from _T3_ORIG_CWD."""
+        """_reload_direnv runs direnv export json from _T3_ORIG_CWD."""
         ws = tmp_path / "workspace"
         ws.mkdir()
         ticket = ws / "ticket-123" / "my-project"
         ticket.mkdir(parents=True)
-        envwt = ticket / ".env.worktree"
-        envwt.write_text("# comment\n\nCLIENT_NAME=acme\nWT_VARIANT=acme\n")
 
         monkeypatch.setenv("T3_WORKSPACE_DIR", str(ws))
         monkeypatch.setenv("_T3_ORIG_CWD", str(ticket))
         monkeypatch.setenv("CLIENT_NAME", "wrong_tenant")
 
-        lib.init._initialized = False
-        lib.init.init()
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = type(
+                "R",
+                (),
+                {
+                    "returncode": 0,
+                    "stdout": '{"CLIENT_NAME": "acme"}',
+                },
+            )()
+            lib.init._initialized = False
+            lib.init.init()
 
         assert os.environ["CLIENT_NAME"] == "acme"
 
-    def test_load_worktree_env_noop_when_no_envfile(
+    def test_reload_direnv_noop_when_direnv_returns_empty(
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """When _T3_ORIG_CWD points to a dir with no .env.worktree, env unchanged."""
+        """When direnv export returns empty output, env unchanged."""
         ws = tmp_path / "workspace"
         ws.mkdir()
         empty_dir = ws / "no-worktree"
@@ -168,17 +176,19 @@ class TestInit:
         monkeypatch.setenv("_T3_ORIG_CWD", str(empty_dir))
         monkeypatch.setenv("CLIENT_NAME", "original")
 
-        lib.init._initialized = False
-        lib.init.init()
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = type("R", (), {"returncode": 0, "stdout": ""})()
+            lib.init._initialized = False
+            lib.init.init()
 
         assert os.environ["CLIENT_NAME"] == "original"
 
-    def test_load_worktree_env_noop_without_orig_cwd(
+    def test_reload_direnv_noop_without_orig_cwd(
         self,
         workspace: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Without _T3_ORIG_CWD, worktree env loading is skipped."""
+        """Without _T3_ORIG_CWD, direnv reload is skipped."""
         monkeypatch.setenv("T3_WORKSPACE_DIR", str(workspace))
         monkeypatch.delenv("_T3_ORIG_CWD", raising=False)
         monkeypatch.setenv("CLIENT_NAME", "original")
@@ -187,6 +197,33 @@ class TestInit:
         lib.init.init()
 
         assert os.environ["CLIENT_NAME"] == "original"
+
+    def test_overlay_scripts_added_to_sys_path(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """When T3_OVERLAY has a scripts/ dir, it is added to sys.path."""
+        ws = tmp_path / "workspace"
+        ws.mkdir()
+        overlay = tmp_path / "overlay"
+        overlay.mkdir()
+        (overlay / "scripts").mkdir()
+
+        teatree_cfg = tmp_path / ".teatree"
+        teatree_cfg.write_text(
+            f'T3_WORKSPACE_DIR="{ws}"\nT3_OVERLAY="{overlay}"\n',
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.delenv("T3_WORKSPACE_DIR", raising=False)
+        monkeypatch.delenv("T3_OVERLAY", raising=False)
+
+        lib.init._initialized = False
+        lib.init.init()
+
+        assert str(overlay / "scripts") in sys.path
+        sys.path.remove(str(overlay / "scripts"))
 
     def test_overlay_scripts_not_a_dir(
         self,

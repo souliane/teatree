@@ -142,7 +142,7 @@ class TestStartCommand:
                 }
             )
         )
-        with patch("lib.lifecycle.registry"):
+        with patch("lib.lifecycle.registry"), patch("lib.lifecycle.subprocess.run"):
             result = runner.invoke(cli_app, ["lifecycle", "start"])
             assert result.exit_code == 0
             data = json.loads(result.stdout)

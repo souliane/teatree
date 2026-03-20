@@ -21,12 +21,11 @@ def init() -> None:
     # 0. Load user config and ensure overlay is on sys.path
     _load_teatree_config()
 
-    # 0b. Load worktree env from the caller's directory.
+    # 0b. Reload direnv env from the caller's original directory.
     # _t3_python cd's to the scripts dir (for pyenv), which triggers direnv
     # to reload with the main repo's env — overwriting worktree vars like
-    # CLIENT_NAME, DATABASE_URL, etc.  Restore them from the nearest
-    # .env.worktree relative to where the user actually ran the command.
-    _load_worktree_env()
+    # CLIENT_NAME, DATABASE_URL, etc.  Restore them via direnv export.
+    _reload_direnv()
 
     # Ensure the scripts dir is on PYTHONPATH
     scripts_dir = str(Path(__file__).resolve().parent.parent)
@@ -78,30 +77,32 @@ def _load_teatree_config() -> None:
             sys.path.insert(0, overlay_scripts)
 
 
-def _load_worktree_env() -> None:
-    """Load the nearest .env.worktree relative to the caller's original CWD.
+def _reload_direnv() -> None:
+    """Reload direnv env from the caller's original CWD.
 
     _t3_python sets _T3_ORIG_CWD before cd'ing to the scripts dir.  When
     direnv reloads in the scripts dir it overwrites worktree-specific vars
     (CLIENT_NAME, DATABASE_URL, etc.) with the main repo's values.
 
-    This function restores them by searching upward from _T3_ORIG_CWD for
-    .env.worktree and force-loading it (overwriting current os.environ).
+    This function restores them by running ``direnv export json`` from
+    the original CWD and merging the result into os.environ.
     """
+    import json
+    import subprocess
+
     orig_cwd = os.environ.get("_T3_ORIG_CWD", "")
     if not orig_cwd:
         return
-    for parent in [Path(orig_cwd), *Path(orig_cwd).parents]:
-        envfile = parent / ".env.worktree"
-        if envfile.is_file():
-            with envfile.open(encoding="utf-8") as f:
-                for raw_line in f:
-                    stripped = raw_line.strip()
-                    if not stripped or stripped.startswith("#") or "=" not in stripped:
-                        continue
-                    key, _, value = stripped.partition("=")
-                    os.environ[key.strip()] = value.strip()
-            return
+    result = subprocess.run(
+        ["direnv", "export", "json"],
+        capture_output=True,
+        text=True,
+        check=False,
+        cwd=orig_cwd,
+    )
+    if result.returncode == 0 and result.stdout.strip():
+        env = json.loads(result.stdout)
+        os.environ.update(env)
 
 
 def _detect_project_hooks() -> None:
