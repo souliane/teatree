@@ -27,10 +27,20 @@ jobs:
         python-version: ["3.13", "3.14"]
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v7
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
         with:
-          enable-cache: true
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
-      - run: uv run -p ${{ matrix.python-version }} pytest --no-header -q
+          context: .
+          file: dev/Dockerfile.test
+          load: true
+          tags: teatree-test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - run: >
+          docker run --rm
+          -v "$PWD":/app:ro
+          -e UV_PROJECT_ENVIRONMENT=/tmp/.venv
+          -e COVERAGE_FILE=/tmp/.coverage
+          teatree-test
+          uv run -p ${{ matrix.python-version }} pytest --no-header -q
+          -o cache_dir=/tmp/.pytest_cache
