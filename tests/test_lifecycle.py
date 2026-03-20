@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 import pytest
 from lib.fsm import InvalidTransitionError
-from lib.lifecycle import WorktreeLifecycle, _force_load_env_worktree, _link_repo_env_worktree
+from lib.lifecycle import WorktreeLifecycle, _direnv_load, _link_repo_env_worktree
 
 
 @pytest.fixture
@@ -133,7 +133,10 @@ class TestTransitions:
             lifecycle.start_services()
 
     def test_start_services_delegates_to_start_session(self, lifecycle: WorktreeLifecycle) -> None:
-        with patch("lib.lifecycle.registry") as mock_registry:
+        with (
+            patch("lib.lifecycle.registry") as mock_registry,
+            patch("lib.lifecycle.subprocess.run"),
+        ):
             lifecycle.state = "provisioned"
             lifecycle.facts = {"wt_dir": "/some/dir", "ports": {"backend": 8001, "frontend": 4201}}
             lifecycle.start_services()
@@ -151,13 +154,25 @@ class TestTransitions:
                 raise KeyError(point)
             return None
 
-        with patch("lib.lifecycle.registry") as mock_registry:
+        with (
+            patch("lib.lifecycle.registry") as mock_registry,
+            patch("lib.lifecycle.subprocess.run"),
+        ):
             mock_registry.call.side_effect = side_effect
             mock_registry.validate_overrides.return_value = None
             lifecycle.state = "provisioned"
             lifecycle.facts = {"wt_dir": "/some/dir", "ports": {"backend": 8001, "frontend": 4201}}
             lifecycle.start_services()
             assert lifecycle.state == "services_up"
+
+    def test_start_services_skips_direnv_when_no_wt_dir(self, lifecycle: WorktreeLifecycle) -> None:
+        with patch("lib.lifecycle.registry") as mock_registry:
+            lifecycle.state = "provisioned"
+            lifecycle.facts = {"ports": {"backend": 8001, "frontend": 4201}}
+            lifecycle.start_services()
+            assert lifecycle.state == "services_up"
+            session_calls = [c for c in mock_registry.call.call_args_list if c[0][0] == "wt_start_session"]
+            assert len(session_calls) == 1
 
     def test_verify_from_services_up(self, lifecycle: WorktreeLifecycle) -> None:
         lifecycle.state = "services_up"
@@ -252,23 +267,21 @@ class TestLinkRepoEnvWorktree:
         assert result.is_symlink()
 
 
-class TestForceLoadEnvWorktree:
-    def test_loads_all_keys(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        envfile = tmp_path / ".env.worktree"
-        envfile.write_text("MY_KEY=hello\nOTHER=world\n", encoding="utf-8")
+class TestDirenvLoad:
+    def test_loads_env_from_direnv(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("MY_KEY", raising=False)
-        monkeypatch.delenv("OTHER", raising=False)
-
-        _force_load_env_worktree(str(envfile))
+        with patch("lib.lifecycle.subprocess.run") as mock_run:
+            mock_run.return_value = type("R", (), {"returncode": 0, "stdout": '{"MY_KEY": "hello"}'})()
+            _direnv_load(str(tmp_path))
 
         assert os.environ["MY_KEY"] == "hello"
-        assert os.environ["OTHER"] == "world"
 
-    def test_skips_comments_and_blanks(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        envfile = tmp_path / ".env.worktree"
-        envfile.write_text("# comment\n\nKEY=val\n", encoding="utf-8")
-        monkeypatch.delenv("KEY", raising=False)
+    def test_noop_when_direnv_returns_empty(self, tmp_path: Path) -> None:
+        with patch("lib.lifecycle.subprocess.run") as mock_run:
+            mock_run.return_value = type("R", (), {"returncode": 0, "stdout": ""})()
+            _direnv_load(str(tmp_path))
 
-        _force_load_env_worktree(str(envfile))
-
-        assert os.environ["KEY"] == "val"
+    def test_noop_when_direnv_fails(self, tmp_path: Path) -> None:
+        with patch("lib.lifecycle.subprocess.run") as mock_run:
+            mock_run.return_value = type("R", (), {"returncode": 1, "stdout": "", "stderr": "error"})()
+            _direnv_load(str(tmp_path))

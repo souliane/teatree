@@ -50,19 +50,23 @@ def _link_repo_env_worktree(wt_dir: str, ticket_dir: str) -> None:
     wt_envwt.symlink_to(ticket_envwt)
 
 
-def _force_load_env_worktree(envfile: str) -> None:
-    """Load .env.worktree into os.environ, overwriting existing values.
+def _direnv_load(directory: str) -> None:
+    """Use direnv to load the environment for a directory into os.environ.
 
-    Unlike load_env_worktree() (which uses setdefault), this forces all values
-    so the running process picks up the newly generated DB name, ports, etc.
+    Runs ``direnv export json`` from the given directory and merges the
+    result into os.environ.  Raises FileNotFoundError if direnv is not
+    installed (mandatory dependency).
     """
-    with Path(envfile).open(encoding="utf-8") as f:
-        for raw_line in f:
-            stripped = raw_line.strip()
-            if not stripped or stripped.startswith("#") or "=" not in stripped:
-                continue
-            key, _, value = stripped.partition("=")
-            os.environ[key.strip()] = value.strip()
+    result = subprocess.run(
+        ["direnv", "export", "json"],
+        capture_output=True,
+        text=True,
+        check=False,
+        cwd=directory,
+    )
+    if result.returncode == 0 and result.stdout.strip():
+        env = json.loads(result.stdout)
+        os.environ.update(env)
 
 
 class WorktreeLifecycle:
@@ -143,11 +147,7 @@ class WorktreeLifecycle:
         registry.call("wt_env_extra", envfile)
         _link_repo_env_worktree(wt_dir, self.ticket_dir)
         subprocess.run(["direnv", "allow", wt_dir], capture_output=True, check=False)
-
-        # Force-load the new env into the running process.
-        # load_env_worktree uses setdefault (no overwrite), so we must
-        # explicitly set vars that may already exist from an earlier direnv load.
-        _force_load_env_worktree(envfile)
+        _direnv_load(wt_dir)
 
         # Phase 3: Services + DB
         registry.call("wt_services", main_repo, wt_dir)
@@ -159,11 +159,9 @@ class WorktreeLifecycle:
     @transition(source="provisioned", target="services_up")
     def start_services(self) -> None:
         registry.validate_overrides("services")
-        # Force-load env so backend/frontend scripts see the correct
-        # CLIENT_NAME, DATABASE_URL, ports, etc. — not stale direnv values.
-        envfile = str(Path(self.ticket_dir) / ".env.worktree")
-        if Path(envfile).is_file():
-            _force_load_env_worktree(envfile)
+        wt_dir = self.facts.get("wt_dir", "")
+        if wt_dir:
+            _direnv_load(wt_dir)
         # Delegate to project overlay's start_session (handles backend fg +
         # frontend bg in parallel).  Fall back to sequential calls.
         try:

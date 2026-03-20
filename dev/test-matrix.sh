@@ -1,29 +1,44 @@
 #!/usr/bin/env bash
 # Run tests in Docker across all supported Python versions (mirrors CI).
-# Uses ubuntu:latest + uv, same as GitHub Actions ubuntu-latest runner.
+# Uses a cached image with apt packages + uv pre-installed.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-IMAGE="ubuntu:latest"
+IMAGE="teatree-test"
 failed=0
+versions=(3.13 3.14)
+total=${#versions[@]}
+current=0
 
-for py in 3.12 3.13 3.14; do
-    echo "=== Python $py ==="
-    if docker run --rm -v "$PWD":/app -w /app "$IMAGE" \
-        bash -c "
-            set -e
-            apt-get update -qq >/dev/null
-            apt-get install -y -qq curl git >/dev/null 2>&1
-            curl -LsSf https://astral.sh/uv/install.sh | sh -s -- -q 2>/dev/null
-            export PATH=\$HOME/.local/bin:\$PATH
-            uv run -p $py pytest --no-header -q
-        "; then
-        echo "--- Python $py: OK ---"
+# Build (or reuse cached) test image
+if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
+    echo "=== Building test image (first run only) ==="
+    docker build -q -t "$IMAGE" -f dev/Dockerfile.test . >/dev/null
+    echo
+fi
+
+for py in "${versions[@]}"; do
+    current=$((current + 1))
+    echo "=== [$current/$total] Python $py ==="
+    if docker run --rm \
+        -v "$PWD":/app:ro \
+        -e UV_PROJECT_ENVIRONMENT=/tmp/.venv \
+        -e COVERAGE_FILE=/tmp/.coverage \
+        "$IMAGE" \
+        uv run -p "$py" pytest --no-header -q \
+            -o cache_dir=/tmp/.pytest_cache; then
+        echo "  -> Python $py: OK"
     else
-        echo "--- Python $py: FAILED ---"
+        echo "  -> Python $py: FAILED"
         failed=1
     fi
     echo
 done
+
+if [ "$failed" -eq 0 ]; then
+    echo "=== All $total versions passed ==="
+else
+    echo "=== Some versions failed ==="
+fi
 
 exit $failed
