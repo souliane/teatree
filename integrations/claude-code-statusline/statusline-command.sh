@@ -19,6 +19,8 @@ dir_name=$(basename "$cwd")
 model=$(echo "$input" | jq -r '.model.display_name // empty')
 session_id=$(echo "$input" | jq -r '.session_id // empty')
 ctx_pct=$(echo "$input" | jq -r '.context_window.used_percentage // 0' | cut -d. -f1)
+five_hour_pct=$(echo "$input" | jq -r '.rate_limits.five_hour.used_percentage // 0' | cut -d. -f1)
+five_hour_resets_at=$(echo "$input" | jq -r '.rate_limits.five_hour.resets_at // empty')
 
 WORKSPACE_ROOT="${T3_WORKSPACE_DIR:-$HOME/workspace}"
 
@@ -34,11 +36,39 @@ DIM='\033[0;37m'   # was \033[2m (dim/dark gray) — now plain light gray for re
 RESET='\033[0m'
 
 # --- State directories ---
-STATE_DIR="/tmp/claude-statusline"
+STATE_DIR="${TEATREE_CLAUDE_STATUSLINE_STATE_DIR:-/tmp/claude-statusline}"
 MR_CACHE_DIR="$STATE_DIR/mr_cache"
 mkdir -p "$STATE_DIR" "$MR_CACHE_DIR"
 find "$STATE_DIR" -maxdepth 1 -type f -mmin +1440 -delete 2>/dev/null
 find "$MR_CACHE_DIR" -maxdepth 1 -type f -mmin +1440 -delete 2>/dev/null
+
+persist_telemetry() {
+    local now_utc latest_file
+    now_utc=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+    latest_file="$STATE_DIR/latest-telemetry.json"
+    jq -n \
+        --arg session_id "$session_id" \
+        --arg cwd "$cwd" \
+        --arg model "$model" \
+        --arg five_hour_resets_at "$five_hour_resets_at" \
+        --arg updated_at "$now_utc" \
+        --argjson context_window_used_percentage "$ctx_pct" \
+        --argjson five_hour_used_percentage "$five_hour_pct" \
+        '{
+            session_id: $session_id,
+            cwd: $cwd,
+            model: $model,
+            context_window_used_percentage: $context_window_used_percentage,
+            five_hour_used_percentage: $five_hour_used_percentage,
+            five_hour_resets_at: $five_hour_resets_at,
+            updated_at: $updated_at
+        }' >| "$latest_file"
+    if [ -n "$session_id" ]; then
+        cp "$latest_file" "$STATE_DIR/${session_id}.telemetry.json"
+    fi
+}
+
+persist_telemetry
 
 get_dirty_hash() {
     local output
@@ -465,6 +495,15 @@ else
     printf "ctx=${DIM}%s%%${RESET} | " "$ctx_pct"
 fi
 
+# Five-hour Claude usage
+if (( five_hour_pct >= 95 )); then
+    printf "5h=${RED}%s%%${RESET} | " "$five_hour_pct"
+elif (( five_hour_pct >= 80 )); then
+    printf "5h=${YELLOW}%s%%${RESET} | " "$five_hour_pct"
+else
+    printf "5h=${DIM}%s%%${RESET} | " "$five_hour_pct"
+fi
+
 # CWD with ticket context when inside a worktree/ticket directory
 if [ -n "$cwd_ticket_branch" ]; then
     ticket_header=$(format_ticket_header "$cwd_ticket_branch")
@@ -490,3 +529,5 @@ fi
 
 # Items
 [ -n "$items" ] && printf " |%b" "$items"
+
+exit 0

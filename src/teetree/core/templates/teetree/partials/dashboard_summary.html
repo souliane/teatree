@@ -1,0 +1,18 @@
+<div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+  <article class="rounded-2xl border border-bark/10 bg-gradient-to-b from-moss/10 to-white px-5 py-4">
+    <span class="font-sans text-[11px] font-semibold uppercase tracking-[0.2em] text-bark/55">In Flight Tickets</span>
+    <div class="mt-3 font-display text-4xl leading-none">{{ summary.in_flight_tickets }}</div>
+  </article>
+  <article class="rounded-2xl border border-bark/10 bg-gradient-to-b from-clay/10 to-white px-5 py-4">
+    <span class="font-sans text-[11px] font-semibold uppercase tracking-[0.2em] text-bark/55">Active Worktrees</span>
+    <div class="mt-3 font-display text-4xl leading-none">{{ summary.active_worktrees }}</div>
+  </article>
+  <article class="rounded-2xl border border-bark/10 bg-gradient-to-b from-bark/5 to-white px-5 py-4">
+    <span class="font-sans text-[11px] font-semibold uppercase tracking-[0.2em] text-bark/55">Pending Headless</span>
+    <div class="mt-3 font-display text-4xl leading-none">{{ summary.pending_headless_tasks }}</div>
+  </article>
+  <article class="rounded-2xl border border-bark/10 bg-gradient-to-b from-moss/10 to-white px-5 py-4">
+    <span class="font-sans text-[11px] font-semibold uppercase tracking-[0.2em] text-bark/55">Pending Interactive</span>
+    <div class="mt-3 font-display text-4xl leading-none">{{ summary.pending_interactive_tasks }}</div>
+  </article>
+</div>

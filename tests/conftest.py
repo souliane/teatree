@@ -10,6 +10,12 @@ from unittest.mock import MagicMock
 
 import pytest
 
+# Ensure unit tests use the settings declared in pyproject.toml, not a stale
+# DJANGO_SETTINGS_MODULE from the shell (e.g. e2e.settings left over from
+# a dashboard session). pytest-django falls back to pyproject.toml when the
+# env var is absent.
+os.environ.pop("DJANGO_SETTINGS_MODULE", None)
+
 # Guard against import-time side effects in script modules that call _init.init()
 # at module import. Route HOME/T3_WORKSPACE_DIR to a disposable temp sandbox.
 _IMPORT_SANDBOX = tempfile.TemporaryDirectory(prefix="teatree-tests-import-")
@@ -76,7 +82,7 @@ def workspace(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def project_info():  # noqa: ANN201
+def project_info():
     """Shared ProjectInfo for tests that mock GitLab API calls."""
     from lib.gitlab import ProjectInfo  # noqa: PLC0415
 
@@ -99,9 +105,12 @@ def ticket_dir(workspace: Path) -> Path:
 
 @pytest.fixture(autouse=True)
 def _clean_registry() -> Iterator[None]:
-    """Clear the extension point registry between tests."""
-    from lib.registry import clear  # noqa: PLC0415
-
+    """Clear the extension point registry between tests (legacy scripts only)."""
+    try:
+        from lib.registry import clear  # noqa: PLC0415
+    except ImportError:
+        yield
+        return
     clear()
     yield
     clear()
@@ -109,7 +118,11 @@ def _clean_registry() -> Iterator[None]:
 
 @pytest.fixture(autouse=True)
 def _no_system_port_checks(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Prevent lsof calls from find_free_ports during tests."""
+    """Prevent lsof calls from find_free_ports during tests (legacy scripts only)."""
+    try:
+        import lib.env  # noqa: PLC0415, F401
+    except ImportError:
+        return
     monkeypatch.setattr("lib.env.port_in_use", lambda _port: False)
 
 

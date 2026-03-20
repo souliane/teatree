@@ -1,0 +1,1 @@
+"""TeaTree core Django app."""

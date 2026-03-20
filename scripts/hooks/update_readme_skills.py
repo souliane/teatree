@@ -33,7 +33,7 @@ def _parse_frontmatter(path: Path) -> dict[str, str]:
 def _build_table() -> str:
     skills: list[tuple[str, str]] = []  # (name, phase/description)
 
-    for skill_md in sorted(ROOT_DIR.glob("t3-*/SKILL.md")):
+    for skill_md in sorted(ROOT_DIR.glob("skills/t3-*/SKILL.md")):
         meta = _parse_frontmatter(skill_md)
         name = meta.get("name", skill_md.parent.name)
         desc = meta.get("description", "")

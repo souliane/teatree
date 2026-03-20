@@ -1,0 +1,261 @@
+{% if tickets %}
+  <div class="overflow-x-auto">
+  <table class="mx-auto border-collapse text-sm">
+    <thead>
+      <tr>
+        <th class="border-b border-bark/10 px-3 py-3 text-left font-sans text-[11px] font-semibold uppercase tracking-[0.2em] text-bark/55">Ticket</th>
+        <th class="border-b border-bark/10 px-3 py-3 text-left font-sans text-[11px] font-semibold uppercase tracking-[0.2em] text-bark/55">Status</th>
+        <th class="border-b border-bark/10 px-3 py-3 text-left font-sans text-[11px] font-semibold uppercase tracking-[0.2em] text-bark/55">MR</th>
+        <th class="border-b border-bark/10 px-3 py-3 text-left font-sans text-[11px] font-semibold uppercase tracking-[0.2em] text-bark/55">E2E</th>
+        <th class="border-b border-bark/10 px-3 py-3 text-left font-sans text-[11px] font-semibold uppercase tracking-[0.2em] text-bark/55">CI</th>
+        <th class="border-b border-bark/10 px-3 py-3 text-left font-sans text-[11px] font-semibold uppercase tracking-[0.2em] text-bark/55">Review</th>
+        <th class="border-b border-bark/10 px-3 py-3 text-left font-sans text-[11px] font-semibold uppercase tracking-[0.2em] text-bark/55">Approved</th>
+        <th class="border-b border-bark/10 px-3 py-3 text-left font-sans text-[11px] font-semibold uppercase tracking-[0.2em] text-bark/55">Transitions</th>
+        <th class="border-b border-bark/10 px-3 py-3 text-left font-sans text-[11px] font-semibold uppercase tracking-[0.2em] text-bark/55">Tasks</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for ticket in tickets %}
+        {% with mr_count=ticket.mrs|length %}
+        {% for mr in ticket.mrs %}
+          <tr>
+            {% if forloop.first %}
+              <td class="cell-wrap border-b border-bark/10 px-3 py-3 align-top" {% if mr_count > 1 %}rowspan="{{ mr_count }}"{% endif %}>
+                {% if ticket.has_issue %}
+                  <a class="font-sans font-semibold text-moss hover:underline" href="{{ ticket.issue_url }}">#{{ ticket.display_id }}</a>
+                  {% if ticket.variant and ticket.variant_url %}
+                    <a href="{{ ticket.variant_url }}" class="ml-1 pill pill-xs bg-clay/10 text-clay hover:brightness-95" target="_blank">{{ ticket.variant }}</a>
+                  {% elif ticket.variant %}
+                    <span class="ml-1 pill pill-xs bg-clay/10 text-clay">{{ ticket.variant }}</span>
+                  {% endif %}
+                  {% if ticket.issue_title %}
+                    <br><span class="font-sans text-xs text-bark/60">{{ ticket.issue_title }}</span>
+                  {% endif %}
+                {% else %}
+                  <span class="font-sans text-xs text-bark/50">{{ ticket.issue_title }}</span>
+                {% endif %}
+              </td>
+              <td class="border-b border-bark/10 px-3 py-3 align-top" {% if mr_count > 1 %}rowspan="{{ mr_count }}"{% endif %}>
+                <div class="flex flex-col gap-1">
+                  {% if ticket.has_issue %}
+                    {% if ticket.tracker_status %}
+                      <a href="{{ ticket.issue_url }}" class="pill pill-sm bg-moss/10 text-moss hover:brightness-110" target="_blank">{{ ticket.tracker_status }}</a>
+                    {% else %}
+                      <a href="{{ ticket.issue_url }}" class="pill pill-sm bg-clay/10 text-clay hover:brightness-95" target="_blank">{{ ticket.state }}</a>
+                    {% endif %}
+                  {% else %}
+                    <span class="pill pill-sm bg-bark/5 text-bark/40">{{ ticket.state }}</span>
+                  {% endif %}
+                  {% if ticket.notion_status and ticket.notion_url %}
+                    <a href="{{ ticket.notion_url }}" class="pill pill-xs bg-purple-100 text-purple-700 hover:brightness-110" target="_blank">{{ ticket.notion_status }}</a>
+                  {% elif ticket.notion_status %}
+                    <span class="pill pill-xs bg-purple-100 text-purple-700">{{ ticket.notion_status }}</span>
+                  {% endif %}
+                </div>
+              </td>
+            {% endif %}
+            <td class="border-b border-bark/10 px-3 py-3 align-top">
+              {% if mr.url %}
+                <a class="font-sans text-moss hover:underline" href="{{ mr.url }}" title="{{ mr.title }}">{{ mr.repo }}&nbsp;!{{ mr.iid }}</a>
+              {% else %}
+                {{ mr.repo }}
+              {% endif %}
+              {% if mr.draft %}
+                <span class="ml-1 pill pill-xs bg-bark/5 text-bark/40">Draft</span>
+              {% endif %}
+            </td>
+            <td class="border-b border-bark/10 px-3 py-3 align-top">
+              {% if mr.e2e_test_plan_url %}
+                <a href="{{ mr.e2e_test_plan_url }}" class="pill pill-sm bg-green-100 text-green-700 hover:brightness-110" target="_blank">test plan</a>
+              {% elif mr.is_frontend and not mr.draft %}
+                <button
+                  class="pill-btn pill-xs border border-moss/30 bg-moss/10 text-moss hover:bg-moss/20"
+                  hx-post="/tickets/{{ ticket.ticket_id }}/create-task/"
+                  hx-vals='{"target": "headless", "reason": "Add E2E tests for !{{ mr.iid }}"}'
+                  hx-swap="none"
+                  hx-on::after-request="htmx.trigger(document.body, 'refreshPanels')"
+                  hx-disable-elt="this"
+                  title="Start headless agent to add E2E tests"
+                >Add E2E</button>
+              {% else %}
+                <span class="text-bark/30">&mdash;</span>
+              {% endif %}
+            </td>
+            <td class="border-b border-bark/10 px-3 py-3 align-top">
+              {% if mr.pipeline_status and mr.pipeline_url %}
+                <a href="{{ mr.pipeline_url }}" class="pill pill-sm {{ mr.pipeline_css }} hover:brightness-110">{{ mr.pipeline_icon }}</a>
+              {% elif mr.pipeline_status %}
+                <span class="pill pill-sm {{ mr.pipeline_css }}">{{ mr.pipeline_icon }}</span>
+              {% else %}
+                <span class="text-bark/30">&mdash;</span>
+              {% endif %}
+            </td>
+            <td class="border-b border-bark/10 px-3 py-3 align-top">
+              {% if mr.review_permalink %}
+                <a href="{{ mr.review_permalink }}" class="pill pill-sm bg-green-100 text-green-700 hover:brightness-110" target="_blank" title="{{ mr.reviewer_names|join:', ' }}">&#x2705;</a>
+              {% elif mr.review_requested %}
+                <span class="pill pill-sm bg-purple-100 text-purple-700" title="{{ mr.reviewer_names|join:', ' }}">&#x23F3;</span>
+              {% elif mr.pipeline_status == "success" and not mr.draft %}
+                <button
+                  class="pill-btn pill-xs border border-moss/30 bg-moss/10 text-moss hover:bg-moss/20"
+                  hx-post="/tickets/{{ ticket.ticket_id }}/create-task/"
+                  hx-vals='{"target": "headless", "reason": "Request review for !{{ mr.iid }}"}'
+                  hx-swap="none"
+                  hx-on::after-request="htmx.trigger(document.body, 'refreshPanels')"
+                  hx-disable-elt="this"
+                  title="Post review request to Slack"
+                >Ask</button>
+              {% else %}
+                <span class="text-bark/30">&mdash;</span>
+              {% endif %}
+            </td>
+            <td class="border-b border-bark/10 px-3 py-3 align-top">
+              {% if mr.approval_count >= mr.approval_required and mr.approval_required > 0 %}
+                <a href="{{ mr.url }}" class="pill pill-sm bg-purple-100 text-purple-700 hover:brightness-110" target="_blank" title="{{ mr.approved_by|join:', ' }}">&#x2705; {{ mr.approval_count }}/{{ mr.approval_required }}</a>
+              {% else %}
+                <a href="{{ mr.url }}" class="pill pill-sm bg-clay/10 text-clay hover:brightness-95" target="_blank">{{ mr.approval_count }}/{{ mr.approval_required }}</a>
+              {% endif %}
+            </td>
+            {% if forloop.first %}
+              <td class="border-b border-bark/10 px-3 py-3 align-top" {% if mr_count > 1 %}rowspan="{{ mr_count }}"{% endif %}>
+                {% if ticket.transitions %}
+                  <div class="flex flex-wrap gap-1">
+                    {% for t_name, t_label in ticket.transitions %}
+                      <button
+                        class="pill-btn pill-xs border border-moss/30 bg-moss/10 text-moss hover:bg-moss/20"
+                        hx-post="/tickets/{{ ticket.ticket_id }}/transition/"
+                        hx-vals='{"transition": "{{ t_name }}"}'
+                        hx-swap="none"
+                        hx-on::after-request="htmx.trigger(document.body, 'refreshPanels')"
+                        hx-disable-elt="this"
+                        hx-confirm="Transition ticket #{{ ticket.display_id }} to '{{ t_label }}'?"
+                        title="{{ t_label }}"
+                      >{{ t_label }}</button>
+                    {% endfor %}
+                  </div>
+                {% else %}
+                  <span class="text-bark/30">&mdash;</span>
+                {% endif %}
+              </td>
+              <td class="border-b border-bark/10 px-3 py-3 align-top" {% if mr_count > 1 %}rowspan="{{ mr_count }}"{% endif %}>
+                <div class="flex flex-col gap-1">
+                  {% if ticket.total_tasks > 0 %}
+                    <span class="pill pill-xs bg-clay/10 text-clay">{{ ticket.ongoing_tasks }}/{{ ticket.total_tasks }}</span>
+                  {% endif %}
+                  <button
+                    class="pill-btn pill-xs border border-moss/30 bg-moss/10 uppercase tracking-[0.18em] text-moss hover:bg-moss/20"
+                    hx-post="/tickets/{{ ticket.ticket_id }}/create-task/"
+                    hx-vals='{"target": "headless"}'
+                    hx-swap="none"
+                    hx-on::after-request="htmx.trigger(document.body, 'refreshPanels')"
+                    hx-disable-elt="this"
+                    title="Start headless agent"
+                  >Auto</button>
+                  <button
+                    class="pill-btn pill-xs border border-clay/30 bg-clay/10 uppercase tracking-[0.18em] text-clay hover:bg-clay/20"
+                    hx-post="/tickets/{{ ticket.ticket_id }}/create-task/"
+                    hx-vals='{"target": "interactive"}'
+                    hx-swap="none"
+                    hx-on::after-request="handleActionResponse(event)"
+                    hx-disable-elt="this"
+                    title="Start interactive session"
+                  >Interactive</button>
+                </div>
+              </td>
+            {% endif %}
+          </tr>
+        {% empty %}
+          <tr>
+            <td class="cell-wrap border-b border-bark/10 px-3 py-3 align-top">
+              {% if ticket.has_issue %}
+                <a class="font-sans font-semibold text-moss hover:underline" href="{{ ticket.issue_url }}">#{{ ticket.display_id }}</a>
+                {% if ticket.variant and ticket.variant_url %}
+                  <a href="{{ ticket.variant_url }}" class="ml-1 pill pill-xs bg-clay/10 text-clay hover:brightness-95" target="_blank">{{ ticket.variant }}</a>
+                {% elif ticket.variant %}
+                  <span class="ml-1 pill pill-xs bg-clay/10 text-clay">{{ ticket.variant }}</span>
+                {% endif %}
+                {% if ticket.issue_title %}
+                  <br><span class="font-sans text-xs text-bark/60">{{ ticket.issue_title }}</span>
+                {% endif %}
+              {% else %}
+                <span class="font-sans text-xs text-bark/50">{{ ticket.issue_title }}</span>
+              {% endif %}
+            </td>
+            <td class="border-b border-bark/10 px-3 py-3 align-top">
+              <div class="flex flex-col gap-1">
+                {% if ticket.has_issue %}
+                  {% if ticket.tracker_status %}
+                    <a href="{{ ticket.issue_url }}" class="pill pill-sm bg-moss/10 text-moss hover:brightness-110" target="_blank">{{ ticket.tracker_status }}</a>
+                  {% else %}
+                    <a href="{{ ticket.issue_url }}" class="pill pill-sm bg-clay/10 text-clay hover:brightness-95" target="_blank">{{ ticket.state }}</a>
+                  {% endif %}
+                {% else %}
+                  <span class="pill pill-sm bg-bark/5 text-bark/40">{{ ticket.state }}</span>
+                {% endif %}
+                {% if ticket.notion_status and ticket.notion_url %}
+                  <a href="{{ ticket.notion_url }}" class="pill pill-xs bg-purple-100 text-purple-700 hover:brightness-110" target="_blank">{{ ticket.notion_status }}</a>
+                {% elif ticket.notion_status %}
+                  <span class="pill pill-xs bg-purple-100 text-purple-700">{{ ticket.notion_status }}</span>
+                {% endif %}
+              </div>
+            </td>
+            <td class="border-b border-bark/10 px-3 py-3 align-top text-bark/30">&mdash;</td>
+            <td class="border-b border-bark/10 px-3 py-3 align-top text-bark/30">&mdash;</td>
+            <td class="border-b border-bark/10 px-3 py-3 align-top text-bark/30">&mdash;</td>
+            <td class="border-b border-bark/10 px-3 py-3 align-top text-bark/30">&mdash;</td>
+            <td class="border-b border-bark/10 px-3 py-3 align-top text-bark/30">&mdash;</td>
+            <td class="border-b border-bark/10 px-3 py-3 align-top">
+              {% if ticket.transitions %}
+                <div class="flex flex-wrap gap-1">
+                  {% for t_name, t_label in ticket.transitions %}
+                    <button
+                      class="pill-btn pill-xs border border-moss/30 bg-moss/10 text-moss hover:bg-moss/20"
+                      hx-post="/tickets/{{ ticket.ticket_id }}/transition/"
+                      hx-vals='{"transition": "{{ t_name }}"}'
+                      hx-swap="none"
+                      hx-on::after-request="htmx.trigger(document.body, 'refreshPanels')"
+                      hx-disable-elt="this"
+                      hx-confirm="Transition ticket #{{ ticket.display_id }} to '{{ t_label }}'?"
+                      title="{{ t_label }}"
+                    >{{ t_label }}</button>
+                  {% endfor %}
+                </div>
+              {% else %}
+                <span class="text-bark/30">&mdash;</span>
+              {% endif %}
+            </td>
+            <td class="border-b border-bark/10 px-3 py-3 align-top">
+              <div class="flex flex-col gap-1">
+                {% if ticket.total_tasks > 0 %}
+                  <span class="pill pill-xs bg-clay/10 text-clay">{{ ticket.ongoing_tasks }}/{{ ticket.total_tasks }}</span>
+                {% endif %}
+                <button
+                  class="pill-btn pill-xs border border-moss/30 bg-moss/10 uppercase tracking-[0.18em] text-moss hover:bg-moss/20"
+                  hx-post="/tickets/{{ ticket.ticket_id }}/create-task/"
+                  hx-vals='{"target": "headless"}'
+                  hx-swap="none"
+                  hx-on::after-request="htmx.trigger(document.body, 'refreshPanels')"
+                  hx-disable-elt="this"
+                  title="Start headless agent"
+                >Auto</button>
+                <button
+                  class="pill-btn pill-xs border border-clay/30 bg-clay/10 uppercase tracking-[0.18em] text-clay hover:bg-clay/20"
+                  hx-post="/tickets/{{ ticket.ticket_id }}/create-task/"
+                  hx-vals='{"target": "interactive"}'
+                  hx-swap="none"
+                  hx-on::after-request="htmx.trigger(document.body, 'refreshPanels')"
+                  hx-disable-elt="this"
+                  title="Start interactive session"
+                >Interactive</button>
+              </div>
+            </td>
+          </tr>
+        {% endfor %}
+        {% endwith %}
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+{% else %}
+  <p class="font-sans text-sm italic text-bark/60">No in-flight tickets yet.</p>
+{% endif %}

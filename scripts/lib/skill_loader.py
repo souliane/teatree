@@ -1,525 +1,431 @@
-"""Skill suggestion engine — intent detection, overlay discovery, dependency resolution.
+"""Skill suggestion engine for the UserPromptSubmit hook.
 
-Pure-Python replacement for the heavy-lifting portions of ensure-skills-loaded.sh.
-No external dependencies (stdlib only) so it can run before any venv is activated.
+Called by ensure-skills-loaded.sh to detect user intent, resolve companion
+and supplementary skills, and return a deduped suggestion list.
+
+Runs with PYTHONPATH=$T3_REPO/scripts — no teetree package imports.
 """
 
+from __future__ import annotations  # noqa: TID251 — standalone script, no teetree package imports
+
+import json
 import re
 from pathlib import Path
 
-# ---------------------------------------------------------------------------
-# Intent detection from prompt keywords (lines 206-304 of the bash script)
-# ---------------------------------------------------------------------------
+XDG_DATA_DIR = Path.home() / ".local" / "share" / "teatree"
+SKILL_METADATA_CACHE = XDG_DATA_DIR / "skill-metadata.json"
 
-# Each entry: (skill_name, pattern, negative_pattern_or_None)
-# Order matters — more specific patterns are checked first.
-_INTENT_PATTERNS: list[tuple[str, re.Pattern[str], re.Pattern[str] | None]] = [
-    # t3-ship: delivery actions (but not "review this MR" or "post mr" — those are review-request)
-    (
-        "t3-ship",
-        re.compile(
-            r"\b(merge request|pull request|create an? (mr|pr)"
-            r"|\bmr\b|push\b|finalize|deliver|ship it|create mr|create pr)\b"
-        ),
-        re.compile(r"\breview|\bpost mr\b|\bpush (improvements?|skills?)\b|\bmr reminder"),
-    ),
-    # t3-ship: commit (but not "review comment")
-    (
-        "t3-ship",
-        re.compile(r"\bcommit\b"),
-        re.compile(r"\breview"),
-    ),
-    # t3-test: testing and CI
-    (
-        "t3-test",
-        re.compile(
-            r"\b(run.*tests?|pytest|lint|sonar|e2e|ci fail|pipeline fail|what tests|tests? broke|test runner)\b"
-        ),
-        None,
-    ),
-    # t3-test: "pipeline failed/failure/is red" (either order)
-    (
-        "t3-test",
-        re.compile(r"\bpipeline\b.*(fail|red|broke)|(fail|red|broke).*\bpipeline\b"),
-        None,
-    ),
-    # t3-test: "CI failed/failure" (allow word suffixes)
-    (
-        "t3-test",
-        re.compile(r"\bci\b.*(fail|broke|red)"),
-        None,
-    ),
-    # t3-review-request: request human review (more specific than t3-review)
-    (
-        "t3-review-request",
-        re.compile(r"\b(request review|ask for review|send.* review|notify reviewer|post mr|review request)\b"),
-        None,
-    ),
-    # t3-review: code review
-    (
-        "t3-review",
-        re.compile(r"\b(review|check the code|check my code|feedback|quality check|code review)\b"),
-        None,
-    ),
-    # t3-debug: troubleshooting
-    (
-        "t3-debug",
-        re.compile(
-            r"\b(broken|error|not working|crash|blank page|can.t connect"
-            r"|debug|fix this|won.t start|500|traceback|exception)\b"
-        ),
-        None,
-    ),
-    # t3-ticket: ticket intake (check before t3-code)
-    (
-        "t3-ticket",
-        re.compile(r"(new ticket|start working|what should i do)"),
-        None,
-    ),
-    # t3-ticket: generic ticket/issue patterns (PROJ-1234, ticket #123, issue 456)
-    (
-        "t3-ticket",
-        re.compile(r"([a-z]+-[0-9]+|\b(ticket|issue) #?[0-9]+)"),
-        None,
-    ),
-    # t3-code: implementation keywords
-    (
-        "t3-code",
-        re.compile(r"\b(implement|code it|feature|refactor|rework|restructure|rewrite|redesign)\b"),
-        None,
-    ),
-    # t3-code: verb + article/pronoun patterns (exclude workspace/retro/setup triggers)
-    (
-        "t3-code",
-        re.compile(
-            r"\b(fix|change|update|modify|adjust|add|remove|delete|write|create|build|move|rename|extract|split|merge"
-            r"|convert|migrate|optimize|improve|replace|swap|introduce|drop|deprecate|wire|hook up|integrate|extend"
-            r"|override|wrap|unwrap|inline|deduplicate|dedup|simplify|generalize|normalize|transform|adapt|port"
-            r"|backport|scaffold|stub|mock|patch|hotfix|tweak|rework|clean)"
-            r" (the|a|an|this|that|my|our|its|some|all|each|every)\b"
-        ),
-        re.compile(r"\b(worktree|retro|retrospective)"),
-    ),
-    # t3-code: bare imperative verbs at start of prompt (exclude workspace/retro triggers)
-    (
-        "t3-code",
-        re.compile(
-            r"^(fix|change|update|modify|adjust|add|remove|delete|write|create|build|move|rename|extract|refactor"
-            r"|replace|introduce|extend|override|simplify|optimize|improve|implement|convert|migrate|integrate|wire"
-            r"|hook|patch|hotfix|tweak|rework|clean up|scaffold|stub|mock|deduplicate|dedup) "
-        ),
-        re.compile(r"\b(worktree|retro|retrospective)"),
-    ),
-    # t3-setup: first-time installation (check BEFORE t3-workspace)
-    (
-        "t3-setup",
-        re.compile(r"\b(setup skills|configure claude|install skills|bootstrap skills|configure hooks)\b"),
-        None,
-    ),
-    # t3-contribute: push improvements to fork / upstream issues
-    (
-        "t3-contribute",
-        re.compile(r"\b(t3.?contribute|push improvements?|push skills?|contribute upstream)\b"),
-        None,
-    ),
-    # t3-retro: retrospective and skill improvement
-    (
-        "t3-retro",
-        re.compile(r"\b(retro|retrospective|lessons learned|improve skills?|auto.?improve|what went wrong)\b"),
-        None,
-    ),
-    # t3-followup: daily follow-up, batch tickets, status checks
-    (
-        "t3-followup",
-        re.compile(
-            r"\b(follow.?up|autopilot|batch tickets?|process all tickets|not started issues?"
-            r"|work on all my tickets|check (ticket )?status|advance tickets?"
-            r"|remind reviewers?|mr reminders?|nudge)\b"
-        ),
-        None,
-    ),
-    # t3-workspace: environment/infrastructure
-    (
-        "t3-workspace",
-        re.compile(
-            r"\b(worktree|setup|servers?|start session|refresh db|cleanup|clean up|reset passwords?"
-            r"|t3_setup|t3_ticket|wt_setup|ws_ticket|restore.*(db|database))\b"
-        ),
-        None,
-    ),
-    (
-        "t3-workspace",
-        re.compile(r"\b(database|start (the )?backend|start (the )?frontend)\b"),
-        None,
-    ),
-]
+
+# ── Intent detection ─────────────────────────────────────────────────
+
+
+def _detect_url_intent(prompt: str) -> str:
+    """Detect intent from URLs in the prompt."""
+    lp = prompt.lower()
+
+    # GitLab issue/MR/job URLs (/-/issues/123, /-/merge_requests/456)
+    if re.search(r"https?://gitlab\.[^\s]+/-/(issues|merge_requests|jobs)/\d+", lp):
+        return "t3-ticket"
+    # GitHub issue/PR URLs
+    if re.search(r"https?://github\.com/[^\s]+/(issues|pull)/\d+", lp):
+        return "t3-ticket"
+    # Notion
+    if re.search(r"https?://(www\.)?notion\.(so|site)/", lp):
+        return "t3-ticket"
+    # Confluence
+    if re.search(r"https?://[^\s]*\.atlassian\.net/wiki/", lp):
+        return "t3-ticket"
+    # Linear
+    if re.search(r"https?://linear\.app/[^\s]+/issue/", lp):
+        return "t3-ticket"
+    # Sentry
+    if re.search(r"https?://[^\s]*sentry\.[^\s]+/issues/", lp):
+        return "t3-debug"
+
+    return ""
+
+
+def _detect_keyword_intent(prompt: str) -> str:
+    """Detect intent from prompt keywords. Order: specific → generic."""
+    lp = prompt.lower()
+
+    # t3-ship (but not "review this MR")
+    if re.search(
+        r"\b(merge request|pull request|create an? (mr|pr)|\bmr\b|push\b"
+        r"|finalize|deliver|ship it|create mr|create pr)\b",
+        lp,
+    ) and not re.search(r"\breview\b", lp):
+        return "t3-ship"
+    if re.search(r"\bcommit\b", lp) and not re.search(r"\breview\b", lp):
+        return "t3-ship"
+
+    # t3-test
+    if re.search(
+        r"\b(run.*tests?|pytest|lint|sonar|e2e|ci fail|pipeline fail"
+        r"|what tests|tests? broke|test runner)\b",
+        lp,
+    ):
+        return "t3-test"
+    if re.search(r"\bpipeline\b.*(fail|red|broke)", lp):
+        return "t3-test"
+
+    # t3-review-request (before t3-review — more specific)
+    if re.search(
+        r"\b(request review|ask for review|send.* review"
+        r"|notify reviewer|post mr|review request)\b",
+        lp,
+    ):
+        return "t3-review-request"
+
+    # t3-review
+    if re.search(
+        r"\b(review|check the code|check my code|feedback"
+        r"|quality check|code review)\b",
+        lp,
+    ):
+        return "t3-review"
+
+    # t3-debug
+    if re.search(
+        r"\b(broken|error|not working|crash|blank page|can.t connect"
+        r"|debug|fix this|won.t start|500|traceback|exception)\b",
+        lp,
+    ):
+        return "t3-debug"
+
+    # t3-ticket (before t3-code — "implement TICKET-1234" is intake)
+    if re.search(r"(new ticket|start working|what should i do)", lp):
+        return "t3-ticket"
+    if re.search(r"([a-z]+-\d+|\b(ticket|issue) #?\d+)", lp):
+        return "t3-ticket"
+
+    # t3-code
+    if re.search(
+        r"\b(implement|code it|feature|refactor|rework"
+        r"|restructure|rewrite|redesign)\b",
+        lp,
+    ):
+        return "t3-code"
+    if re.search(
+        r"\b(fix|change|update|modify|adjust|add|remove|delete|write|create"
+        r"|build|move|rename|extract|split|merge|convert|migrate|optimize"
+        r"|improve|replace|swap|introduce|drop|deprecate|wire|hook up"
+        r"|integrate|extend|override|wrap|unwrap|inline|deduplicate|dedup"
+        r"|simplify|generalize|normalize|transform|adapt|port|backport"
+        r"|scaffold|stub|mock|patch|hotfix|tweak|rework|clean)"
+        r" (the|a|an|this|that|my|our|its|some|all|each|every)\b",
+        lp,
+    ):
+        return "t3-code"
+    if re.match(
+        r"^(fix|change|update|modify|adjust|add|remove|delete|write|create"
+        r"|build|move|rename|extract|refactor|replace|introduce|extend"
+        r"|override|simplify|optimize|improve|implement|convert|migrate"
+        r"|integrate|wire|hook|patch|hotfix|tweak|rework|clean up"
+        r"|scaffold|stub|mock|deduplicate|dedup) ",
+        lp,
+    ):
+        return "t3-code"
+
+    # t3-setup
+    if re.search(
+        r"\b(setup skills|configure claude|install skills"
+        r"|bootstrap skills|configure hooks)\b",
+        lp,
+    ):
+        return "t3-setup"
+
+    # t3-contribute
+    if re.search(
+        r"\b(t3.?contribute|push improvements?|push skills?"
+        r"|contribute upstream)\b",
+        lp,
+    ):
+        return "t3-contribute"
+
+    # t3-retro
+    if re.search(
+        r"\b(retro|retrospective|lessons learned|improve skills?"
+        r"|auto.?improve|what went wrong)\b",
+        lp,
+    ):
+        return "t3-retro"
+
+    # t3-followup
+    if re.search(
+        r"\b(follow.?up|autopilot|batch tickets?|process all tickets"
+        r"|not started issues?|work on all my tickets"
+        r"|check (ticket )?status|advance tickets?"
+        r"|remind reviewers?|mr reminders?|nudge)\b",
+        lp,
+    ):
+        return "t3-followup"
+
+    # t3-workspace
+    if re.search(
+        r"\b(worktree|setup|servers?|start session|refresh db|cleanup"
+        r"|clean up|reset passwords?|restore.*(db|database))\b",
+        lp,
+    ):
+        return "t3-workspace"
+    if re.search(r"\b(database|start (the )?backend|start (the )?frontend)\b", lp):
+        return "t3-workspace"
+
+    return ""
+
+
+def _detect_end_of_session(prompt: str) -> bool:
+    """Detect standalone end-of-session phrases."""
+    lp = prompt.strip().lower()
+    return bool(
+        re.match(
+            r"(done|all set|finished|all done|wrap up|that.s it|that.s all"
+            r"|ship it|we.re done|i.m done|looks good|lgtm)\s*[.!]?\s*$",
+            lp,
+        )
+    )
 
 
 def detect_intent(prompt: str) -> str:
-    """Detect lifecycle skill intent from prompt keywords.
-
-    Returns skill name (e.g. "t3-code") or empty string if no match.
-    """
-    lp = prompt.lower()
-    for skill, pattern, negative in _INTENT_PATTERNS:
-        if pattern.search(lp) and (negative is None or not negative.search(lp)):
-            return skill
-    return ""
+    """Detect the primary skill intent from a user prompt."""
+    url_intent = _detect_url_intent(prompt)
+    if url_intent:
+        return url_intent
+    return _detect_keyword_intent(prompt)
 
 
-# ---------------------------------------------------------------------------
-# URL-based intent detection (lines 148-201)
-# ---------------------------------------------------------------------------
-
-_URL_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
-    # GitLab issue/MR/job URLs
-    ("t3-ticket", re.compile(r"https?://gitlab\.\S+/-/(issues|merge_requests|jobs)/[0-9]+")),
-    # GitHub issue/PR URLs
-    ("t3-ticket", re.compile(r"https?://github\.com/[^\s]+/(issues|pull)/[0-9]+")),
-    # Notion
-    ("t3-ticket", re.compile(r"https?://(www\.)?notion\.(so|site)/")),
-    # Confluence
-    ("t3-ticket", re.compile(r"https?://[^\s]*\.atlassian\.net/wiki/")),
-    # Linear
-    ("t3-ticket", re.compile(r"https?://linear\.app/[^\s]+/issue/")),
-    # Sentry
-    ("t3-debug", re.compile(r"https?://[^\s]*sentry\.[^\s]+/issues/")),
-]
+# ── Companion skills (XDG cache) ────────────────────────────────────
 
 
-def _check_overlay_url_patterns(lp: str, overlay_skill_dir: str) -> str:
-    """Check overlay-provided URL patterns from hook-config/url-patterns.yml."""
-    url_patterns_file = Path(overlay_skill_dir) / "hook-config" / "url-patterns.yml"
-    if not url_patterns_file.is_file():
-        return ""
-    current_intent = ""
-    for line in url_patterns_file.read_text(encoding="utf-8").splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        m = re.match(r"^([a-z0-9-]+):", line)
-        if m:
-            current_intent = m.group(1)
-            continue
-        if current_intent:  # pragma: no branch
-            m = re.match(r"^\s+-\s+(.*)", line)
-            if m and re.search(m.group(1).strip("\"'"), lp):
-                return current_intent
-    return ""
-
-
-def detect_url_intent(prompt: str, overlay_skill_dir: str = "") -> str:
-    """Detect intent from URLs in the prompt.
-
-    Checks built-in URL patterns first, then overlay-provided patterns
-    from hook-config/url-patterns.yml.
-
-    Returns skill name or empty string.
-    """
-    lp = prompt.lower()
-
-    for skill, pattern in _URL_PATTERNS:
-        if pattern.search(lp):
-            return skill
-
-    # Overlay-provided URL patterns
-    if overlay_skill_dir:
-        result = _check_overlay_url_patterns(lp, overlay_skill_dir)
-        if result:
-            return result
-
-    return ""
-
-
-# ---------------------------------------------------------------------------
-# Overlay detection from context-match.yml (lines 66-102)
-# ---------------------------------------------------------------------------
-
-
-def _parse_cwd_patterns(match_file: Path) -> list[str]:
-    """Parse cwd_patterns list from a context-match.yml file."""
-    patterns: list[str] = []
-    in_patterns = False
-    for line in match_file.read_text(encoding="utf-8").splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        if line.startswith("cwd_patterns:"):
-            in_patterns = True
-            continue
-        # Any other top-level key ends the patterns section
-        if re.match(r"^[a-z]", line):
-            in_patterns = False
-            continue
-        if in_patterns:
-            m = re.match(r"^\s+-\s+(.*)", line)
-            if m:  # pragma: no branch
-                pat = m.group(1).strip("\"'")
-                patterns.append(pat)
-    return patterns
-
-
-def detect_overlay(cwd: str, active_repos: list[str], skill_search_dirs: list[str] | None = None) -> str:
-    """Detect project overlay by matching cwd/active_repos against context-match.yml patterns.
-
-    *skill_search_dirs* lists directories that contain skill subdirectories
-    (e.g. ``["~/teatree", "~/.agents/skills"]``).
-
-    Returns the overlay skill name, or empty string if no match.
-    """
-    if skill_search_dirs is None:
-        skill_search_dirs = []
-
-    for skills_root in skill_search_dirs:
-        root = Path(skills_root)
-        if not root.is_dir():
-            continue
-        for candidate_dir in sorted(root.iterdir()):
-            if not candidate_dir.is_dir():
-                continue
-            match_file = candidate_dir / "hook-config" / "context-match.yml"
-            if not match_file.is_file():
-                continue
-            for pat in _parse_cwd_patterns(match_file):
-                if pat in cwd:
-                    return candidate_dir.name
-                if any(pat in repo for repo in active_repos):
-                    return candidate_dir.name
-    return ""
-
-
-# ---------------------------------------------------------------------------
-# Skill dependency resolution (lines 378-413)
-# ---------------------------------------------------------------------------
-
-
-def get_skill_deps(skill_name: str, skill_search_dirs: list[str] | None = None) -> list[str]:  # noqa: C901
-    """Parse ``requires:`` from SKILL.md YAML frontmatter.
-
-    Returns list of dependency skill names (one level deep, no transitive resolution).
-    """
-    if skill_search_dirs is None:
-        skill_search_dirs = []
-
-    skill_md: Path | None = None
-    for root in skill_search_dirs:
-        candidate = Path(root) / skill_name / "SKILL.md"
-        if candidate.is_file():
-            skill_md = candidate
-            break
-
-    if skill_md is None:
+def read_companion_skills() -> list[str]:
+    """Read companion skills from the XDG skill-metadata cache."""
+    if not SKILL_METADATA_CACHE.is_file():
+        return []
+    try:
+        metadata = json.loads(SKILL_METADATA_CACHE.read_text(encoding="utf-8"))
+        companions = metadata.get("companion_skills", [])
+        return companions if isinstance(companions, list) else []
+    except (json.JSONDecodeError, OSError):
         return []
 
-    deps: list[str] = []
-    in_frontmatter = False
+
+# ── Supplementary skills (config file) ──────────────────────────────
+
+
+def read_supplementary_skills(config_path: str, prompt: str) -> list[str]:
+    """Read keyword-triggered supplementary skills from config."""
+    if not config_path or not Path(config_path).is_file():
+        return []
+
+    lp = prompt.lower()
+    matched: list[str] = []
+
+    try:
+        for line in Path(config_path).read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            m = re.match(r"^([a-zA-Z][a-zA-Z0-9_-]+):\s+(.*)", line)
+            if not m:
+                continue
+            skill_name = m.group(1)
+            pattern = m.group(2).strip("'\"")
+            try:
+                if re.search(pattern, lp):
+                    matched.append(skill_name)
+            except re.error:
+                continue
+    except OSError:
+        pass
+
+    return matched
+
+
+# ── Dependency resolution ────────────────────────────────────────────
+
+
+def _parse_skill_requires(skill_md_text: str) -> list[str]:
+    """Extract the requires: list from SKILL.md YAML frontmatter."""
+    if not skill_md_text.startswith("---"):
+        return []
+    try:
+        end = skill_md_text.index("---", 3)
+    except ValueError:
+        return []
+    frontmatter = skill_md_text[3:end]
     in_requires = False
-    for line in skill_md.read_text(encoding="utf-8").splitlines():  # pragma: no branch
-        if line == "---":
-            if in_frontmatter:
-                break
-            in_frontmatter = True
-            continue
-        if not in_frontmatter:
-            continue
-        if line.startswith("requires:"):
+    requires: list[str] = []
+    for line in frontmatter.splitlines():
+        stripped = line.strip()
+        if stripped == "requires:":
             in_requires = True
             continue
-        if re.match(r"^[a-z]", line):
-            in_requires = False
-            continue
         if in_requires:
-            m = re.match(r"^\s+-\s+(.*)", line)
-            if m:  # pragma: no branch
-                dep = m.group(1).strip("\"'")
-                deps.append(dep)
-    return deps
+            if stripped.startswith("- "):
+                requires.append(stripped.removeprefix("- ").strip())
+            else:
+                break
+    return requires
 
 
-# ---------------------------------------------------------------------------
-# Companion skill resolution (lines 451-492)
-# ---------------------------------------------------------------------------
+def _find_skill_md(name: str, search_dirs: list[Path]) -> Path | None:
+    """Find SKILL.md for a skill name across search directories."""
+    for d in search_dirs:
+        candidate = d / name / "SKILL.md"
+        if candidate.is_file():
+            return candidate
+    return None
 
 
-def resolve_companion_skills(
-    overlay_skill_dir: str,
-    cwd: str,
-    active_repos: list[str],
-) -> list[str]:
-    """Parse companion_skills from context-match.yml and return matching skill names."""
-    match_file = Path(overlay_skill_dir) / "hook-config" / "context-match.yml"
-    if not match_file.is_file():
-        return []
+def resolve_dependencies(skills: list[str], search_dirs: list[Path]) -> list[str]:
+    """Recursively resolve requires: from SKILL.md frontmatter.
 
-    companions: list[str] = []
-    in_companion = False
-    current_skill = ""
-
-    for line in match_file.read_text(encoding="utf-8").splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        # Top-level key
-        if re.match(r"^[a-z]", line):
-            in_companion = bool(line.startswith("companion_skills:"))
-            current_skill = ""
-            continue
-        if not in_companion:
-            continue
-        # Skill name key (2-space indent): "  ac-django:"
-        m = re.match(r"^\s{2}([a-z][a-z0-9_-]+):", line)
-        if m:
-            current_skill = m.group(1)
-            continue
-        # Pattern list item (4-space indent): "    - my-backend"
-        if current_skill:  # pragma: no branch
-            m = re.match(r"^\s+-\s+(.*)", line)
-            if m:  # pragma: no branch
-                pat = m.group(1).strip("\"'")
-                matched = pat in cwd or any(pat in repo for repo in active_repos)
-                if matched:
-                    companions.append(current_skill)
-                    current_skill = ""  # don't add same skill twice
-    return companions
-
-
-# ---------------------------------------------------------------------------
-# Supplementary skills from user config (lines 308-340)
-# ---------------------------------------------------------------------------
-
-
-def detect_supplementary_skills(prompt: str, config_path: str) -> list[str]:
-    r"""Detect keyword-triggered supplementary skills from user config file.
-
-    Config format (simple YAML):
-        my-ruff-skill: '\\b(ruff|lint(er)? adopt)\\b'
-        my-pdf-skill: '\\b(acroform|pdf template)\\b'
+    Returns dependencies in topological order (deps before dependents).
     """
-    path = Path(config_path)
-    if not path.is_file():
-        return []
+    resolved: list[str] = []
+    seen: set[str] = set()
 
-    lp = prompt.lower()
+    def _walk(name: str) -> None:
+        if name in seen:
+            return
+        seen.add(name)
+        skill_md = _find_skill_md(name, search_dirs)
+        if skill_md is not None:
+            try:
+                text = skill_md.read_text(encoding="utf-8")
+            except OSError:
+                text = ""
+            for dep in _parse_skill_requires(text):
+                _walk(dep)
+        if name not in resolved:
+            resolved.append(name)
+
+    for skill in skills:
+        _walk(skill)
+    return resolved
+
+
+# ── Overlay discovery (lightweight) ──────────────────────────────────
+
+
+def _find_overlay_skill_dir(search_dirs: list[Path]) -> tuple[str, str]:
+    """Find the overlay skill directory and project name from skill metadata cache.
+
+    Returns (overlay_skill_dir, project_overlay) or ("", "").
+    """
+    if not SKILL_METADATA_CACHE.is_file():
+        return "", ""
+    try:
+        metadata = json.loads(SKILL_METADATA_CACHE.read_text(encoding="utf-8"))
+        skill_path = metadata.get("skill_path", "")
+        if not skill_path:
+            return "", ""
+        # skill_path is relative to the host project (e.g., "overlay/SKILL.md")
+        # We need to find the actual directory — check search_dirs
+        for d in search_dirs:
+            candidate = d / Path(skill_path).parent
+            if candidate.is_dir():
+                project_name = candidate.parent.name
+                return str(candidate), project_name
+        return "", ""
+    except (json.JSONDecodeError, OSError):
+        return "", ""
+
+
+# ── Project-type detection ───────────────────────────────────────────
+
+
+def _detect_framework_skills(cwd: str) -> list[str]:
+    """Detect framework skills from project indicators in cwd or ancestors."""
     skills: list[str] = []
-
-    for line in path.read_text(encoding="utf-8").splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        m = re.match(r"^([a-zA-Z][a-zA-Z0-9_-]+):\s+(.*)", line)
-        if m:  # pragma: no branch
-            skill_name = m.group(1)
-            pattern = m.group(2).strip("\"'")
-            if re.search(pattern, lp):
-                skills.append(skill_name)
+    search = Path(cwd)
+    for directory in [search, *search.parents]:
+        # Django project (has manage.py) or Django library (django in deps)
+        if (directory / "manage.py").is_file():
+            skills.append("ac-django")
+            break
+        pyproject = directory / "pyproject.toml"
+        if pyproject.is_file():
+            try:
+                content = pyproject.read_text(encoding="utf-8")
+                if re.search(r'["\']django[>=<]', content, re.IGNORECASE):
+                    skills.append("ac-django")
+            except OSError:
+                pass
+            break  # Stop at pyproject.toml regardless
+        if directory == directory.parent:
+            break
     return skills
 
 
-# ---------------------------------------------------------------------------
-# Main orchestrator (lines 416-508)
-# ---------------------------------------------------------------------------
+# ── Main entry point ─────────────────────────────────────────────────
 
 
-def build_suggestion(  # noqa: PLR0913, PLR0917, C901
-    intent: str,
-    project_context: bool,
-    project_overlay: str,
-    overlay_skill_dir: str,
-    loaded_skills: list[str],
-    supplementary_skills: list[str],
-    skill_search_dirs: list[str] | None = None,
-) -> list[str]:
-    """Assemble the list of skills to suggest.
+def suggest_skills(data: dict) -> dict:
+    """Suggest skills based on user prompt and project context.
 
-    Returns an ordered list of skill names that should be loaded.
+    Args:
+        data: Hook input with keys: prompt, cwd, active_repos,
+            loaded_skills, skill_search_dirs, supplementary_config.
+
+    Returns:
+        Dict with keys: suggestions, intent, overlay_skill_dir, project_overlay.
+
     """
-    if skill_search_dirs is None:
-        skill_search_dirs = []
+    prompt = data.get("prompt", "")
+    cwd = data.get("cwd", "")
+    loaded = set(data.get("loaded_skills", []))
+    search_dirs = [Path(d) for d in data.get("skill_search_dirs", [])]
+    supplementary_config = data.get("supplementary_config", "")
 
-    loaded = set(loaded_skills)
-    suggest: list[str] = []
+    # 1. Detect intent
+    intent = detect_intent(prompt)
 
-    def _add(name: str) -> None:
-        if name not in loaded and name not in suggest:
-            suggest.append(name)
+    # End-of-session → t3-retro (only if other skills were loaded)
+    if not intent and _detect_end_of_session(prompt):
+        if loaded and "t3-retro" not in loaded:
+            has_lifecycle = any(s.startswith("t3-") and s != "t3-retro" for s in loaded)
+            if has_lifecycle:
+                intent = "t3-retro"
 
-    # No intent and no project context → nothing to suggest
-    if not intent and not project_context:
-        return suggest
+    if not intent:
+        return {"suggestions": [], "intent": "", "overlay_skill_dir": "", "project_overlay": ""}
 
-    # Always suggest t3-workspace as foundation (except for standalone skills)
-    if intent not in {"", "t3-setup", "t3-retro"} and "t3-workspace" not in loaded:
-        _add("t3-workspace")
+    # 2. Build skill list: intent + companions + supplementary
+    skills: list[str] = []
 
-    # Suggest the detected intent skill
-    if intent and intent != "t3-workspace":
-        _add(intent)
+    # Always include t3-workspace as foundation (except t3-setup and t3-retro)
+    if intent not in ("t3-setup", "t3-retro"):
+        skills.append("t3-workspace")
 
-    # Resolve dependencies (one level deep)
-    if intent:  # pragma: no branch
-        for dep in get_skill_deps(intent, skill_search_dirs=skill_search_dirs):
-            _add(dep)
+    if intent != "t3-workspace":
+        skills.append(intent)
 
-    # In project context, suggest the overlay
-    if project_context and project_overlay:
-        _add(project_overlay)
+    # Companion skills from overlay (XDG cache)
+    skills.extend(read_companion_skills())
 
-    # In project context, suggest companion skills
-    if project_context and overlay_skill_dir:
-        for comp in resolve_companion_skills(overlay_skill_dir, "", []):
-            _add(comp)
+    # Supplementary skills from config
+    skills.extend(read_supplementary_skills(supplementary_config, prompt))
 
-    # Append supplementary skills
-    for supp in supplementary_skills:
-        _add(supp)
+    # Framework skills from project-type detection
+    if cwd:
+        skills.extend(_detect_framework_skills(cwd))
 
-    return suggest
+    # 3. Resolve dependencies (topological sort)
+    resolved = resolve_dependencies(skills, search_dirs)
 
+    # 4. Filter already-loaded and dedupe
+    suggestions = []
+    for skill in resolved:
+        if skill not in loaded and skill not in suggestions:
+            suggestions.append(skill)
 
-# ---------------------------------------------------------------------------
-# JSON entry point for bash integration
-# ---------------------------------------------------------------------------
-
-
-def suggest_skills(data: dict[str, object]) -> dict[str, object]:
-    """Entry point called from bash via ``python3 -c "from lib.skill_loader import suggest_skills"``.
-
-    Accepts a dict with keys:
-        prompt, cwd, active_repos, overlay_skill_dir, loaded_skills,
-        project_context, project_overlay, skill_search_dirs,
-        supplementary_config
-
-    Returns dict with: intent, url_intent, suggestions
-    """
-    prompt = str(data.get("prompt", ""))
-    overlay_skill_dir = str(data.get("overlay_skill_dir", ""))
-    loaded_skills: list[str] = list(data.get("loaded_skills", []))  # type: ignore[arg-type]
-    project_context = bool(data.get("project_context"))
-    project_overlay = str(data.get("project_overlay", ""))
-    skill_search_dirs: list[str] = list(data.get("skill_search_dirs", []))  # type: ignore[arg-type]
-    supp_config = str(data.get("supplementary_config", ""))
-
-    # URL intent first, then keyword intent
-    url_intent = detect_url_intent(prompt, overlay_skill_dir=overlay_skill_dir)
-    intent = url_intent or detect_intent(prompt)
-
-    # Default to t3-code in project context with no intent
-    if project_context and not intent:
-        intent = "t3-code"
-
-    supplementary = detect_supplementary_skills(prompt, supp_config) if supp_config else []
-
-    suggestions = build_suggestion(
-        intent=intent,
-        project_context=project_context,
-        project_overlay=project_overlay,
-        overlay_skill_dir=overlay_skill_dir,
-        loaded_skills=loaded_skills,
-        supplementary_skills=supplementary,
-        skill_search_dirs=skill_search_dirs,
-    )
+    # 5. Overlay info for reference injections
+    overlay_skill_dir, project_overlay = _find_overlay_skill_dir(search_dirs)
 
     return {
-        "intent": intent,
         "suggestions": suggestions,
+        "intent": intent,
+        "overlay_skill_dir": overlay_skill_dir,
+        "project_overlay": project_overlay,
     }

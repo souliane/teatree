@@ -1,0 +1,23 @@
+name: Investigation
+description: Research or explore a topic before committing to implementation
+labels: ["investigation"]
+body:
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: What prompted this investigation?
+    validations:
+      required: true
+  - type: textarea
+    id: questions
+    attributes:
+      label: Questions to answer
+      description: What specific questions should this investigation resolve?
+    validations:
+      required: true
+  - type: textarea
+    id: deliverable
+    attributes:
+      label: Expected deliverable
+      description: What does "done" look like? (e.g., a write-up, a proof of concept, a decision)
