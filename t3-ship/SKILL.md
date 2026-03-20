@@ -21,6 +21,7 @@ From "code is done" to "MR is merged."
 
 ### 1. Commit
 
+- **Verify branch matches ticket:** Run `git branch --show-current` and confirm the branch name relates to the ticket you're working on. If on the wrong branch (e.g., a stale branch from a previous task), create a clean branch from the default branch and cherry-pick your commit before pushing.
 - Check for unstaged changes: `git status --short` in **every** repo of the ticket directory.
 - Format commit message following the project's commit format reference.
 - Read `TICKET_URL` from `.env.worktree` — never construct it from the branch name.
