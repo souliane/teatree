@@ -325,6 +325,7 @@ class TestStartTicketCommand:
                 patch("lib.lifecycle.db_exists", return_value=True),
                 patch("lib.lifecycle.find_free_ports", return_value=(8001, 4201, 5433, 6379)),
                 patch("lib.lifecycle.registry") as mock_reg,
+                patch("lib.lifecycle.subprocess.run"),
             ):
                 mock_reg.call.return_value = True
                 result = runner.invoke(mod.app, ["start-ticket", "https://example.com/issue/1"])
@@ -470,6 +471,7 @@ class TestSetupWithStart:
             patch("lib.lifecycle.db_exists", return_value=True),
             patch("lib.lifecycle.find_free_ports", return_value=(8001, 4201, 5433, 6379)),
             patch("lib.lifecycle.registry") as mock_reg,
+            patch("lib.lifecycle.subprocess.run"),
         ):
             mock_reg.call.return_value = True
             result = runner.invoke(cli_app, ["lifecycle", "setup", "--start"])
@@ -510,6 +512,7 @@ class TestStartAutoProvision:
             patch("lib.lifecycle.db_exists", return_value=True),
             patch("lib.lifecycle.find_free_ports", return_value=(8001, 4201, 5433, 6379)),
             patch("lib.lifecycle.registry") as mock_reg,
+            patch("lib.lifecycle.subprocess.run"),
         ):
             mock_reg.call.return_value = True
             result = runner.invoke(cli_app, ["lifecycle", "start"])

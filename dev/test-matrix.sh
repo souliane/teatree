@@ -25,7 +25,7 @@ for py in "${versions[@]}"; do
         -e UV_PROJECT_ENVIRONMENT=/tmp/.venv \
         -e COVERAGE_FILE=/tmp/.coverage \
         "$IMAGE" \
-        uv run -p "$py" pytest --no-header -q \
+        uv run -p "$py" pytest --no-header -v \
             -o cache_dir=/tmp/.pytest_cache; then
         echo "  -> Python $py: OK"
     else
