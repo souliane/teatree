@@ -1,14 +1,22 @@
 """Shared startup/sync logic called by both dashboard init and sync-now button."""
 
-import contextlib
 import json
+import sys
 from pathlib import Path
 
 from teetree.config import DATA_DIR
 from teetree.core.overlay_loader import get_overlay
 from teetree.core.sync import SyncResult, sync_followup
 
+# Allow importing the shared trigger parser from scripts/lib/.
+_SCRIPTS_LIB = Path(__file__).resolve().parents[4] / "scripts" / "lib"
+if str(_SCRIPTS_LIB) not in sys.path:  # pragma: no branch
+    sys.path.insert(0, str(_SCRIPTS_LIB))
+
+from trigger_parser import parse_triggers as _parse_triggers  # noqa: E402  # ty: ignore[unresolved-import]
+
 # Default skill directory where Claude Code discovers skills.
+# When supporting other agent platforms, make this configurable via settings.
 _CLAUDE_SKILLS_DIR = Path.home() / ".claude" / "skills"
 
 
@@ -75,71 +83,4 @@ def _build_trigger_index() -> list[dict]:
     return index
 
 
-def _parse_triggers(skill_md_text: str) -> dict | None:
-    """Extract the ``triggers:`` block from SKILL.md YAML frontmatter.
-
-    Mirrors ``skill_loader.parse_triggers_from_frontmatter`` but lives in
-    the Django package so the startup cache builder has no dependency on
-    ``scripts/lib/``.
-    """
-    if not skill_md_text.startswith("---"):
-        return None
-    try:
-        end = skill_md_text.index("---", 3)
-    except ValueError:
-        return None
-
-    frontmatter = skill_md_text[3:end]
-    in_triggers = False
-    current_key = ""
-    triggers: dict = {
-        "priority": 50,
-        "keywords": [],
-        "urls": [],
-        "exclude": "",
-        "end_of_session": False,
-    }
-    found = False
-
-    for line in frontmatter.splitlines():
-        stripped = line.strip()
-
-        if not line.startswith((" ", "\t")) and ":" in stripped:
-            key = stripped.split(":")[0].strip()
-            if key == "triggers":
-                in_triggers = True
-                found = True
-                current_key = ""
-                continue
-            if in_triggers:
-                break
-            continue
-
-        if not in_triggers:
-            continue
-
-        current_key = _parse_trigger_line(stripped, triggers, current_key)
-
-    return triggers if found else None
-
-
-def _parse_trigger_line(stripped: str, triggers: dict, current_key: str) -> str:
-    """Parse a single line inside the ``triggers:`` block, returning the updated current_key."""
-    if stripped.startswith("priority:"):
-        with contextlib.suppress(ValueError, IndexError):
-            triggers["priority"] = int(stripped.split(":", 1)[1].strip())
-        return ""
-    if stripped.startswith("exclude:"):
-        triggers["exclude"] = stripped.split(":", 1)[1].strip().strip("'\"")
-        return ""
-    if stripped.startswith("end_of_session:"):
-        val = stripped.split(":", 1)[1].strip().lower()
-        triggers["end_of_session"] = val in {"true", "yes", "1"}
-        return ""
-    if stripped.startswith("keywords:"):
-        return "keywords"
-    if stripped.startswith("urls:"):
-        return "urls"
-    if stripped.startswith("- ") and current_key in {"keywords", "urls"}:
-        triggers[current_key].append(stripped.removeprefix("- ").strip().strip("'\""))
-    return current_key
+# _parse_triggers is imported from scripts/lib/trigger_parser.py (single source of truth).
