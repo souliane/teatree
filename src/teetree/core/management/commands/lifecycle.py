@@ -13,6 +13,15 @@ from teetree.core.resolve import resolve_worktree
 from teetree.core.worktree_env import write_env_worktree
 
 
+def _append_envrc_lines(wt_path: str, lines: list[str]) -> None:
+    """Append missing lines to the worktree .envrc (idempotent)."""
+    envrc = Path(wt_path) / ".envrc"
+    existing = envrc.read_text() if envrc.is_file() else ""
+    missing = [ln for ln in lines if ln not in existing]
+    if missing:
+        envrc.write_text(existing.rstrip() + "\n" + "\n".join(missing) + "\n")
+
+
 def _write_skill_metadata_cache() -> None:
     """Write overlay skill metadata to XDG cache for hook consumption."""
     metadata = get_overlay().get_skill_metadata()
@@ -39,9 +48,10 @@ class Command(TyperCommand):
         if envfile:
             self.stdout.write(f"  Written: {envfile}")
 
-        # direnv allow + prek hooks
+        # direnv: append overlay .envrc lines + allow
         wt_path = (worktree.extra or {}).get("worktree_path")
         if wt_path and Path(wt_path).is_dir():
+            _append_envrc_lines(wt_path, overlay.get_envrc_lines(worktree))
             subprocess.run(  # noqa: S603
                 ["direnv", "allow", wt_path],
                 capture_output=True,
