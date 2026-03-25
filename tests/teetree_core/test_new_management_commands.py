@@ -129,10 +129,26 @@ class FailingImportOverlay(FullOverlay):
         return False
 
 
+class PreRunOverlay(FullOverlay):
+    """Overlay with pre-run steps — tests the pre-run loop in lifecycle setup."""
+
+    def get_pre_run_steps(self, worktree: Worktree, service: str) -> list[ProvisionStep]:
+        def _log_step() -> None:
+            extra = dict(worktree.extra or {})
+            log = extra.get("pre_run_log", [])
+            log.append(service)
+            extra["pre_run_log"] = log
+            worktree.extra = extra
+            worktree.save(update_fields=["extra"])
+
+        return [ProvisionStep(name=f"prep-{service}", callable=_log_step)]
+
+
 FULL_OVERLAY = "tests.teetree_core.test_new_management_commands.FullOverlay"
 MINIMAL_OVERLAY = "tests.teetree_core.test_new_management_commands.MinimalOverlay"
 SERVICES_OVERLAY = "tests.teetree_core.test_new_management_commands.ServicesOverlay"
 POST_DB_OVERLAY = "tests.teetree_core.test_new_management_commands.PostDbStepsOverlay"
+PRE_RUN_OVERLAY = "tests.teetree_core.test_new_management_commands.PreRunOverlay"
 
 SETTINGS = {
     "TEATREE_OVERLAY_CLASS": FULL_OVERLAY,
@@ -641,6 +657,27 @@ def test_lifecycle_setup_runs_post_db_steps_with_commands() -> None:
     # PostDbStepsOverlay returns 3 steps: 2 with commands + 1 without command
     # Plus 1 password reset call = 3 total subprocess.run calls
     assert mock_sp.run.call_count == 3
+
+
+@override_settings(
+    TEATREE_OVERLAY_CLASS=PRE_RUN_OVERLAY,
+    TEATREE_HEADLESS_RUNTIME="claude-code",
+    TEATREE_INTERACTIVE_RUNTIME="codex",
+    TEATREE_TERMINAL_MODE="same-terminal",
+)
+@pytest.mark.django_db
+def test_lifecycle_setup_runs_pre_run_steps_for_all_services() -> None:
+    """Setup calls get_pre_run_steps for every service from get_run_commands."""
+    ticket = Ticket.objects.create(issue_url="https://example.com/issues/73")
+    wt = Worktree.objects.create(ticket=ticket, repo_path="/tmp/backend", branch="feature")
+
+    with patch("teetree.core.management.commands.lifecycle.subprocess") as mock_sp:
+        mock_sp.run.return_value = MagicMock(returncode=0)
+        call_command("lifecycle", "setup", str(wt.id))
+
+    # PreRunOverlay.get_run_commands returns backend, frontend, build-frontend
+    wt.refresh_from_db()
+    assert sorted((wt.extra or {}).get("pre_run_log", [])) == ["backend", "build-frontend", "frontend"]
 
 
 # ── Lifecycle: clean command ───────────────────────────────────────

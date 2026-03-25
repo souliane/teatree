@@ -6,6 +6,10 @@ requires:
   - t3-workspace
   - t3-platforms
   - t3-code
+triggers:
+  priority: 40
+  keywords:
+    - '\b(review|check the code|check my code|feedback|quality check|code review)\b'
 metadata:
   version: 0.0.1
   subagent_safe: false

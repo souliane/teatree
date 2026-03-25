@@ -35,6 +35,15 @@ class CommandOverlay(OverlayBase):
             "frontend": f"run-frontend {worktree.repo_path}",
         }
 
+    def get_pre_run_steps(self, worktree: Worktree, service: str) -> list[ProvisionStep]:
+        def remember_pre_run() -> None:
+            extra = cast("dict[str, str]", worktree.extra or {})
+            extra[f"pre_run_{service}"] = "ran"
+            worktree.extra = extra
+            worktree.save(update_fields=["extra"])
+
+        return [ProvisionStep(name=f"pre-run-{service}", callable=remember_pre_run)]
+
 
 COMMAND_OVERLAY = "tests.teetree_core.conftest.CommandOverlay"
 

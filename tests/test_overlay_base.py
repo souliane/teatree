@@ -106,6 +106,11 @@ def test_get_workspace_repos_delegates_to_get_repos():
     assert overlay.get_workspace_repos() == ["org/repo-a"]
 
 
+def test_get_pre_run_steps_returns_empty_list():
+    overlay = _MinimalOverlay()
+    assert overlay.get_pre_run_steps(_make_worktree(), "frontend") == []
+
+
 def test_get_tool_commands_returns_empty_list():
     overlay = _MinimalOverlay()
     assert overlay.get_tool_commands() == []
