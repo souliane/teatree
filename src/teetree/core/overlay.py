@@ -98,6 +98,14 @@ class OverlayBase(ABC):
         """Return the shell command to reset all user passwords to a dev default."""
         return ""
 
+    def get_envrc_lines(self, worktree: "Worktree") -> list[str]:
+        """Return extra lines to append to .envrc in the worktree.
+
+        Typical use: ``["[[ -f .venv/bin/activate ]] && source .venv/bin/activate"]``
+        to auto-activate the Python venv when entering the worktree directory.
+        """
+        return []
+
     def get_symlinks(self, worktree: "Worktree") -> list[SymlinkSpec]:
         return []
 

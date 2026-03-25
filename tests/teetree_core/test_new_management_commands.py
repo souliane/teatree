@@ -1092,6 +1092,54 @@ def test_lifecycle_setup_runs_prek_install_when_config_exists(tmp_path: "pytest.
 
 @override_settings(**SETTINGS)
 @pytest.mark.django_db
+def test_lifecycle_setup_appends_envrc_lines_from_overlay(tmp_path: "pytest.TempPathFactory") -> None:
+    """Setup appends overlay .envrc lines (e.g. venv activation) to worktree .envrc."""
+    wt_path = tmp_path / "worktree"
+    wt_path.mkdir()
+    (wt_path / ".envrc").write_text("# existing\n", encoding="utf-8")
+
+    ticket = Ticket.objects.create(issue_url="https://example.com/issues/200")
+    wt = Worktree.objects.create(
+        ticket=ticket,
+        repo_path="/tmp/backend",
+        branch="feature",
+        extra={"worktree_path": str(wt_path)},
+    )
+
+    mock_overlay = MagicMock()
+    mock_overlay.get_envrc_lines.return_value = ["source .venv/bin/activate"]
+    mock_overlay.get_db_import_strategy.return_value = None
+    mock_overlay.get_provision_steps.return_value = []
+    mock_overlay.get_post_db_steps.return_value = []
+    mock_overlay.get_reset_passwords_command.return_value = ""
+    mock_overlay.get_env_extra.return_value = {}
+    mock_overlay.get_skill_metadata.return_value = {}
+
+    with (
+        patch("teetree.core.management.commands.lifecycle.get_overlay", return_value=mock_overlay),
+        patch("teetree.core.management.commands.lifecycle.subprocess") as mock_sp,
+    ):
+        mock_sp.run.return_value = MagicMock(returncode=0)
+        call_command("lifecycle", "setup", str(wt.id))
+
+    envrc = (wt_path / ".envrc").read_text()
+    assert "source .venv/bin/activate" in envrc
+    assert "# existing" in envrc  # original content preserved
+
+    # Run again — should not duplicate
+    with (
+        patch("teetree.core.management.commands.lifecycle.get_overlay", return_value=mock_overlay),
+        patch("teetree.core.management.commands.lifecycle.subprocess") as mock_sp,
+    ):
+        mock_sp.run.return_value = MagicMock(returncode=0)
+        call_command("lifecycle", "setup", str(wt.id))
+
+    envrc2 = (wt_path / ".envrc").read_text()
+    assert envrc2.count("source .venv/bin/activate") == 1
+
+
+@override_settings(**SETTINGS)
+@pytest.mark.django_db
 def test_pr_post_evidence_without_body() -> None:
     mock_host = MagicMock()
     mock_host.post_mr_note.return_value = {"id": 43}
