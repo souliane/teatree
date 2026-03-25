@@ -131,7 +131,7 @@ class Command(TyperCommand):
                 step.callable()
 
         # 3. Build env and launch app services as background processes
-        worktree.refresh_ports_if_needed()
+        # Ports were assigned during setup — don't reallocate here
         write_env_worktree(worktree)
         env = {**os.environ, **overlay.get_env_extra(worktree)}
         env.pop("VIRTUAL_ENV", None)
