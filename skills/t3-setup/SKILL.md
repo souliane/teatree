@@ -135,14 +135,80 @@ Do not overwrite existing contributor-mode symlinks for third-party companion sk
 
 ## Step 4: Optional Claude Code Hooks
 
-If the user uses Claude Code, validate `~/.claude/settings.json` for:
+If the user uses Claude Code, validate `~/.claude/settings.json` for the hooks below.
+Show the JSON patch the user should apply, but **do not edit the file without consent**.
 
-- `ensure-skills-loaded.sh`
-- `track-active-repo.sh`
-- `track-skill-usage.sh`
-- `statusline-command.sh`
+Required hooks (all paths relative to `$T3_REPO/integrations/claude-code-statusline/`):
 
-Show the JSON patch the user should apply, but do not edit the file without consent.
+| Hook | Event | Matcher | Script | Purpose |
+| --- | --- | --- | --- | --- |
+| Skill suggestion | `UserPromptSubmit` | *(none)* | `ensure-skills-loaded.sh` | Detect intent from prompt keywords and suggest skills to load |
+| Active repo tracking | `PostToolUse` | `Read\|Edit\|Write\|Grep\|Glob\|Bash` | `track-active-repo.sh` | Track which repos are touched |
+| Skill usage (PostToolUse) | `PostToolUse` | `Skill` | `track-skill-usage.sh` | Track loaded skills via tool call |
+| Skill usage (InstructionsLoaded) | `InstructionsLoaded` | `skills` | `track-skill-usage.sh` | Track loaded skills via instructions (belt-and-suspenders fallback) |
+| Status line | `statusLine` | — | `statusline-command.sh` | Render the status bar |
+
+JSON patch to merge into `~/.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/path/to/teatree/integrations/claude-code-statusline/ensure-skills-loaded.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Read|Edit|Write|Grep|Glob|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/path/to/teatree/integrations/claude-code-statusline/track-active-repo.sh",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Skill",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/path/to/teatree/integrations/claude-code-statusline/track-skill-usage.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "InstructionsLoaded": [
+      {
+        "matcher": "skills",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/path/to/teatree/integrations/claude-code-statusline/track-skill-usage.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "~/path/to/teatree/integrations/claude-code-statusline/statusline-command.sh"
+  }
+}
+```
+
+Replace `~/path/to/teatree` with the actual `$T3_REPO` value from `~/.teatree`.
+
+When validating an existing installation, check that **all five hooks** are present. The `InstructionsLoaded` hook was added as a fallback because the `PostToolUse` `Skill` matcher is intermittently unreliable in some Claude Code sessions.
 
 ## Step 5: Generate a Django Host Project
 
