@@ -76,6 +76,7 @@ Write failing test → Implement → Green → Refactor
 
 - **Prefer existing battle-tested packages** over custom scripts. Only write custom code when no viable alternative exists. Custom scripts introduce untested code that often fails in CI.
 - **When migrating state** (databases, APIs, config), fetch current data from the live API rather than trusting local files or config. Local files may be stale.
+- **When porting old code**, don't blindly copy the approach. Read the actual data format (JSON files, API responses, configs) and choose the robust technique. Old scripts often used quick hacks (regex on JSON, string splitting) that break on edge cases — use proper parsing in the new code.
 
 ### 4. Update Task Tracking
 
