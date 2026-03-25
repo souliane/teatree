@@ -3,11 +3,17 @@
 Called by ensure-skills-loaded.sh to detect user intent, resolve companion
 and supplementary skills, and return a deduped suggestion list.
 
+Trigger patterns are read from SKILL.md frontmatter (``triggers:`` field),
+not hardcoded.  A cached trigger index in the XDG data directory is used
+when available; otherwise skills are scanned on the fly from
+``skill_search_dirs``.
+
 Runs with PYTHONPATH=$T3_REPO/scripts — no teetree package imports.
 """
 
 from __future__ import annotations  # noqa: TID251 — standalone script, no teetree package imports
 
+import contextlib
 import json
 import re
 from pathlib import Path
@@ -15,183 +21,199 @@ from pathlib import Path
 XDG_DATA_DIR = Path.home() / ".local" / "share" / "teatree"
 SKILL_METADATA_CACHE = XDG_DATA_DIR / "skill-metadata.json"
 
+# Default priority when a skill has triggers but no explicit priority.
+_DEFAULT_PRIORITY = 50
 
-# ── Intent detection ─────────────────────────────────────────────────
+# End-of-session phrases (matched when no keyword/URL intent fires and a
+# skill declares ``end_of_session: true``).
+_END_OF_SESSION_RE = re.compile(
+    r"^(done|all set|finished|all done|wrap up|that.s it|that.s all"
+    r"|ship it|we.re done|i.m done|looks good|lgtm)\s*[.!]?\s*$",
+)
 
 
-def _detect_url_intent(prompt: str) -> str:
-    """Detect intent from URLs in the prompt."""
+# ── Trigger index ────────────────────────────────────────────────────
+
+
+def parse_triggers_from_frontmatter(skill_md_text: str) -> dict | None:
+    """Extract the ``triggers:`` block from SKILL.md YAML frontmatter.
+
+    Returns a dict with keys ``priority``, ``keywords``, ``urls``,
+    ``exclude``, ``end_of_session`` — or ``None`` if no triggers are defined.
+    """
+    if not skill_md_text.startswith("---"):
+        return None
+    try:
+        end = skill_md_text.index("---", 3)
+    except ValueError:
+        return None
+
+    frontmatter = skill_md_text[3:end]
+
+    # Find the triggers: block
+    in_triggers = False
+    current_key = ""
+    triggers: dict = {
+        "priority": _DEFAULT_PRIORITY,
+        "keywords": [],
+        "urls": [],
+        "exclude": "",
+        "end_of_session": False,
+    }
+    found = False
+
+    for line in frontmatter.splitlines():
+        stripped = line.strip()
+
+        # Top-level key detection (not indented or zero indent)
+        if not line.startswith(" ") and not line.startswith("\t") and ":" in stripped:
+            key = stripped.split(":")[0].strip()
+            if key == "triggers":
+                in_triggers = True
+                found = True
+                current_key = ""
+                continue
+            if in_triggers:
+                break  # Left the triggers block
+            continue
+
+        if not in_triggers:
+            continue
+
+        # Inside triggers block — parse nested keys and list items
+        if stripped.startswith("priority:"):
+            with contextlib.suppress(ValueError, IndexError):
+                triggers["priority"] = int(stripped.split(":", 1)[1].strip())
+            current_key = ""
+        elif stripped.startswith("exclude:"):
+            val = stripped.split(":", 1)[1].strip().strip("'\"")
+            triggers["exclude"] = val
+            current_key = ""
+        elif stripped.startswith("end_of_session:"):
+            val = stripped.split(":", 1)[1].strip().lower()
+            triggers["end_of_session"] = val in {"true", "yes", "1"}
+            current_key = ""
+        elif stripped.startswith("keywords:"):
+            current_key = "keywords"
+        elif stripped.startswith("urls:"):
+            current_key = "urls"
+        elif stripped.startswith("- ") and current_key in {"keywords", "urls"}:
+            pattern = stripped.removeprefix("- ").strip().strip("'\"")
+            triggers[current_key].append(pattern)
+
+    return triggers if found else None
+
+
+def build_trigger_index(skill_search_dirs: list[Path]) -> list[dict]:
+    """Scan skill directories and build a trigger index from SKILL.md frontmatter.
+
+    Returns a list of dicts sorted by priority, each with keys:
+    ``skill``, ``priority``, ``keywords``, ``urls``, ``exclude``, ``end_of_session``.
+    """
+    seen: set[str] = set()
+    index: list[dict] = []
+
+    for search_dir in skill_search_dirs:
+        if not search_dir.is_dir():
+            continue
+        for skill_dir in sorted(search_dir.iterdir()):
+            if not skill_dir.is_dir():
+                continue
+            skill_name = skill_dir.name
+            if skill_name in seen:
+                continue
+            skill_md = skill_dir / "SKILL.md"
+            if not skill_md.is_file():
+                continue
+            try:
+                text = skill_md.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            triggers = parse_triggers_from_frontmatter(text)
+            if triggers is None:
+                continue
+            seen.add(skill_name)
+            index.append({"skill": skill_name, **triggers})
+
+    import operator
+
+    index.sort(key=operator.itemgetter("priority"))
+    return index
+
+
+def _read_trigger_index() -> list[dict]:
+    """Read the cached trigger index from the XDG data directory."""
+    if not SKILL_METADATA_CACHE.is_file():
+        return []
+    try:
+        metadata = json.loads(SKILL_METADATA_CACHE.read_text(encoding="utf-8"))
+        index = metadata.get("trigger_index", [])
+        return index if isinstance(index, list) else []
+    except (json.JSONDecodeError, OSError):
+        return []
+
+
+# ── Intent detection (data-driven) ──────────────────────────────────
+
+
+def detect_intent(
+    prompt: str,
+    *,
+    trigger_index: list[dict] | None = None,
+    skill_search_dirs: list[Path] | None = None,
+    loaded_skills: set[str] | None = None,
+) -> str:
+    """Detect the primary skill intent from a user prompt.
+
+    Uses the trigger index (from cache or built on the fly) to match
+    URL and keyword patterns.  Returns the matching skill name or ``""``.
+    """
+    if trigger_index is None:
+        trigger_index = _read_trigger_index()
+        if not trigger_index and skill_search_dirs:
+            trigger_index = build_trigger_index(skill_search_dirs)
+
+    if not trigger_index:
+        return ""
+
     lp = prompt.lower()
 
-    # GitLab issue/MR/job URLs (/-/issues/123, /-/merge_requests/456)
-    if re.search(r"https?://gitlab\.[^\s]+/-/(issues|merge_requests|jobs)/\d+", lp):
-        return "t3-ticket"
-    # GitHub issue/PR URLs
-    if re.search(r"https?://github\.com/[^\s]+/(issues|pull)/\d+", lp):
-        return "t3-ticket"
-    # Notion
-    if re.search(r"https?://(www\.)?notion\.(so|site)/", lp):
-        return "t3-ticket"
-    # Confluence
-    if re.search(r"https?://[^\s]*\.atlassian\.net/wiki/", lp):
-        return "t3-ticket"
-    # Linear
-    if re.search(r"https?://linear\.app/[^\s]+/issue/", lp):
-        return "t3-ticket"
-    # Sentry
-    if re.search(r"https?://[^\s]*sentry\.[^\s]+/issues/", lp):
-        return "t3-debug"
+    # Pass 1: URL patterns (checked first, across all skills by priority)
+    for entry in trigger_index:
+        for url_pattern in entry.get("urls", []):
+            try:
+                if re.search(url_pattern, lp):
+                    return entry["skill"]
+            except re.error:
+                continue
+
+    # Pass 2: Keyword patterns (by priority, with exclude support)
+    for entry in trigger_index:
+        exclude = entry.get("exclude", "")
+        if exclude:
+            try:
+                if re.search(exclude, lp):
+                    continue
+            except re.error:
+                pass
+
+        for kw_pattern in entry.get("keywords", []):
+            try:
+                if re.search(kw_pattern, lp):
+                    return entry["skill"]
+            except re.error:
+                continue
+
+    # Pass 3: End-of-session detection for skills with end_of_session: true
+    if _END_OF_SESSION_RE.match(prompt.strip().lower()):
+        loaded = loaded_skills or set()
+        has_lifecycle = any(s.startswith("t3-") for s in loaded)
+        if has_lifecycle:
+            for entry in trigger_index:
+                if entry.get("end_of_session") and entry["skill"] not in loaded:
+                    return entry["skill"]
 
     return ""
-
-
-def _detect_keyword_intent(prompt: str) -> str:
-    """Detect intent from prompt keywords. Order: specific → generic."""
-    lp = prompt.lower()
-
-    # t3-ship (but not "review this MR")
-    if re.search(
-        r"\b(merge request|pull request|create an? (mr|pr)|\bmr\b|push\b"
-        r"|finalize|deliver|ship it|create mr|create pr)\b",
-        lp,
-    ) and not re.search(r"\breview\b", lp):
-        return "t3-ship"
-    if re.search(r"\bcommit\b", lp) and not re.search(r"\breview\b", lp):
-        return "t3-ship"
-
-    # t3-test
-    if re.search(
-        r"\b(run.*tests?|pytest|lint|sonar|e2e|ci fail|pipeline fail"
-        r"|what tests|tests? broke|test runner)\b",
-        lp,
-    ):
-        return "t3-test"
-    if re.search(r"\bpipeline\b.*(fail|red|broke)", lp):
-        return "t3-test"
-
-    # t3-review-request (before t3-review — more specific)
-    if re.search(
-        r"\b(request review|ask for review|send.* review"
-        r"|notify reviewer|post mr|review request)\b",
-        lp,
-    ):
-        return "t3-review-request"
-
-    # t3-review
-    if re.search(
-        r"\b(review|check the code|check my code|feedback"
-        r"|quality check|code review)\b",
-        lp,
-    ):
-        return "t3-review"
-
-    # t3-debug
-    if re.search(
-        r"\b(broken|error|not working|crash|blank page|can.t connect"
-        r"|debug|fix this|won.t start|500|traceback|exception)\b",
-        lp,
-    ):
-        return "t3-debug"
-
-    # t3-ticket (before t3-code — "implement TICKET-1234" is intake)
-    if re.search(r"(new ticket|start working|what should i do)", lp):
-        return "t3-ticket"
-    if re.search(r"([a-z]+-\d+|\b(ticket|issue) #?\d+)", lp):
-        return "t3-ticket"
-
-    # t3-code
-    if re.search(
-        r"\b(implement|code it|feature|refactor|rework"
-        r"|restructure|rewrite|redesign)\b",
-        lp,
-    ):
-        return "t3-code"
-    if re.search(
-        r"\b(fix|change|update|modify|adjust|add|remove|delete|write|create"
-        r"|build|move|rename|extract|split|merge|convert|migrate|optimize"
-        r"|improve|replace|swap|introduce|drop|deprecate|wire|hook up"
-        r"|integrate|extend|override|wrap|unwrap|inline|deduplicate|dedup"
-        r"|simplify|generalize|normalize|transform|adapt|port|backport"
-        r"|scaffold|stub|mock|patch|hotfix|tweak|rework|clean)"
-        r" (the|a|an|this|that|my|our|its|some|all|each|every)\b",
-        lp,
-    ):
-        return "t3-code"
-    if re.match(
-        r"^(fix|change|update|modify|adjust|add|remove|delete|write|create"
-        r"|build|move|rename|extract|refactor|replace|introduce|extend"
-        r"|override|simplify|optimize|improve|implement|convert|migrate"
-        r"|integrate|wire|hook|patch|hotfix|tweak|rework|clean up"
-        r"|scaffold|stub|mock|deduplicate|dedup) ",
-        lp,
-    ):
-        return "t3-code"
-
-    # t3-setup
-    if re.search(
-        r"\b(setup skills|configure claude|install skills"
-        r"|bootstrap skills|configure hooks)\b",
-        lp,
-    ):
-        return "t3-setup"
-
-    # t3-contribute
-    if re.search(
-        r"\b(t3.?contribute|push improvements?|push skills?"
-        r"|contribute upstream)\b",
-        lp,
-    ):
-        return "t3-contribute"
-
-    # t3-retro
-    if re.search(
-        r"\b(retro|retrospective|lessons learned|improve skills?"
-        r"|auto.?improve|what went wrong)\b",
-        lp,
-    ):
-        return "t3-retro"
-
-    # t3-followup
-    if re.search(
-        r"\b(follow.?up|autopilot|batch tickets?|process all tickets"
-        r"|not started issues?|work on all my tickets"
-        r"|check (ticket )?status|advance tickets?"
-        r"|remind reviewers?|mr reminders?|nudge)\b",
-        lp,
-    ):
-        return "t3-followup"
-
-    # t3-workspace
-    if re.search(
-        r"\b(worktree|setup|servers?|start session|refresh db|cleanup"
-        r"|clean up|reset passwords?|restore.*(db|database))\b",
-        lp,
-    ):
-        return "t3-workspace"
-    if re.search(r"\b(database|start (the )?backend|start (the )?frontend)\b", lp):
-        return "t3-workspace"
-
-    return ""
-
-
-def _detect_end_of_session(prompt: str) -> bool:
-    """Detect standalone end-of-session phrases."""
-    lp = prompt.strip().lower()
-    return bool(
-        re.match(
-            r"(done|all set|finished|all done|wrap up|that.s it|that.s all"
-            r"|ship it|we.re done|i.m done|looks good|lgtm)\s*[.!]?\s*$",
-            lp,
-        )
-    )
-
-
-def detect_intent(prompt: str) -> str:
-    """Detect the primary skill intent from a user prompt."""
-    url_intent = _detect_url_intent(prompt)
-    if url_intent:
-        return url_intent
-    return _detect_keyword_intent(prompt)
 
 
 # ── Companion skills (XDG cache) ────────────────────────────────────
@@ -378,15 +400,12 @@ def suggest_skills(data: dict) -> dict:
     search_dirs = [Path(d) for d in data.get("skill_search_dirs", [])]
     supplementary_config = data.get("supplementary_config", "")
 
-    # 1. Detect intent
-    intent = detect_intent(prompt)
-
-    # End-of-session → t3-retro (only if other skills were loaded)
-    if not intent and _detect_end_of_session(prompt):
-        if loaded and "t3-retro" not in loaded:
-            has_lifecycle = any(s.startswith("t3-") and s != "t3-retro" for s in loaded)
-            if has_lifecycle:
-                intent = "t3-retro"
+    # 1. Detect intent from trigger index
+    intent = detect_intent(
+        prompt,
+        skill_search_dirs=search_dirs,
+        loaded_skills=loaded,
+    )
 
     if not intent:
         return {"suggestions": [], "intent": "", "overlay_skill_dir": "", "project_overlay": ""}

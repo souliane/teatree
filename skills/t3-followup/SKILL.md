@@ -6,6 +6,10 @@ requires:
   - t3-workspace
   - t3-rules
   - t3-platforms
+triggers:
+  priority: 110
+  keywords:
+    - '\b(follow.?up|autopilot|batch tickets?|process all tickets|not started issues?|work on all my tickets|check (ticket )?status|advance tickets?|remind reviewers?|mr reminders?|nudge)\b'
 metadata:
   version: 0.0.1
   subagent_safe: false

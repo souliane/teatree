@@ -4,6 +4,17 @@ description: Ticket intake and kickoff — from zero to ready-to-code. Use when 
 compatibility: macOS/Linux, zsh or bash, git, glab or gh CLI for issue fetching.
 requires:
   - t3-workspace
+triggers:
+  priority: 60
+  keywords:
+    - '(new ticket|start working|what should i do)'
+    - '([a-z]+-\d+|\b(ticket|issue) #?\d+)'
+  urls:
+    - 'https?://gitlab\.[^\s]+/-/(issues|merge_requests|jobs)/\d+'
+    - 'https?://github\.com/[^\s]+/(issues|pull)/\d+'
+    - 'https?://(www\.)?notion\.(so|site)/'
+    - 'https?://[^\s]*\.atlassian\.net/wiki/'
+    - 'https?://linear\.app/[^\s]+/issue/'
 metadata:
   version: 0.0.1
   subagent_safe: false

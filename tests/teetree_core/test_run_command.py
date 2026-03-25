@@ -231,3 +231,24 @@ def test_run_backend_reassigns_unavailable_ports_before_launch(tmp_path: Path, m
     assert "BACKEND_PORT=8002" in env_text
     assert "POSTGRES_PORT=5434" in env_text
     assert commands[-1][1]["check"] is True
+
+
+@override_settings(**COMMAND_SETTINGS)
+@pytest.mark.django_db
+@pytest.mark.parametrize("service", ["frontend", "backend", "build-frontend"])
+def test_run_executes_pre_run_steps(monkeypatch: pytest.MonkeyPatch, service: str) -> None:
+    """Pre-run steps are executed before each service command."""
+    ticket = Ticket.objects.create(issue_url=f"https://example.com/issues/{service}", variant="acme")
+    wt = Worktree.objects.create(ticket=ticket, repo_path="/tmp/backend", branch="feature")
+    worktree_id = cast("int", call_command("lifecycle", "setup", str(wt.id)))
+    call_command("lifecycle", "start", str(worktree_id))
+
+    monkeypatch.setattr(
+        "teetree.core.management.commands.run.subprocess.run",
+        lambda *a, **kw: CompletedProcess(a[0], 0, "", ""),
+    )
+
+    call_command("run", service, str(worktree_id))
+
+    worktree = Worktree.objects.get(pk=worktree_id)
+    assert (worktree.extra or {}).get(f"pre_run_{service}") == "ran"

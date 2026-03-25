@@ -76,11 +76,18 @@ class Command(TyperCommand):
         worktree = resolve_worktree(worktree_id)
         return get_overlay().get_run_commands(worktree)
 
+    def _run_pre_steps(self, worktree: Worktree, service: str) -> None:
+        """Execute overlay pre-run steps for *service*."""
+        for step in get_overlay().get_pre_run_steps(worktree, service):
+            self.stdout.write(f"  Preparing: {step.name}")
+            step.callable()
+
     @command()
     def backend(self, worktree_id: int = typer.Argument(0, help="Worktree ID (auto-detects from PWD if 0)")) -> str:
         """Start the backend dev server."""
         worktree = resolve_worktree(worktree_id)
         self._start_services(worktree)
+        self._run_pre_steps(worktree, "backend")
         commands = get_overlay().get_run_commands(worktree)
         cmd = commands.get("backend", "")
         if not cmd:
@@ -94,6 +101,7 @@ class Command(TyperCommand):
         """Start the frontend dev server."""
         worktree = resolve_worktree(worktree_id)
         self._start_services(worktree)
+        self._run_pre_steps(worktree, "frontend")
         commands = get_overlay().get_run_commands(worktree)
         cmd = commands.get("frontend", "")
         if not cmd:
@@ -108,6 +116,7 @@ class Command(TyperCommand):
     ) -> str:
         """Build the frontend app for production/testing."""
         worktree = resolve_worktree(worktree_id)
+        self._run_pre_steps(worktree, "build-frontend")
         commands = get_overlay().get_run_commands(worktree)
         cmd = commands.get("build-frontend", "")
         if not cmd:

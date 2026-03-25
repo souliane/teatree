@@ -5,6 +5,12 @@ compatibility: macOS/Linux, git, glab or gh CLI, CI system.
 requires:
   - t3-workspace
   - t3-rules
+triggers:
+  priority: 10
+  exclude: '\breview\b'
+  keywords:
+    - '\b(merge request|pull request|create an? (mr|pr)|\bmr\b|push\b|finalize|deliver|ship it|create mr|create pr)\b'
+    - '\bcommit\b'
 metadata:
   version: 0.0.1
   subagent_safe: false

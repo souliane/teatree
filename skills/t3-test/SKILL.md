@@ -6,6 +6,11 @@ requires:
   - t3-workspace
   - t3-rules
   - t3-platforms
+triggers:
+  priority: 20
+  keywords:
+    - '\b(run.*tests?|pytest|lint|sonar|e2e|ci fail|pipeline fail|what tests|tests? broke|test runner)\b'
+    - '\bpipeline\b.*(fail|red|broke)'
 metadata:
   version: 0.0.1
   subagent_safe: false

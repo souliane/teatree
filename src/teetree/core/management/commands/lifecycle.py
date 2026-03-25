@@ -2,6 +2,10 @@ import json
 import os
 import subprocess  # noqa: S404
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from django.core.management.base import OutputWrapper
 
 import typer
 from django_typer.management import TyperCommand, command
@@ -11,6 +15,9 @@ from teetree.core.models import Ticket, Worktree
 from teetree.core.overlay_loader import get_overlay
 from teetree.core.resolve import resolve_worktree
 from teetree.core.worktree_env import write_env_worktree
+
+if TYPE_CHECKING:
+    from teetree.core.overlay import OverlayBase
 
 
 def _append_envrc_lines(wt_path: str, lines: list[str]) -> None:
@@ -30,6 +37,26 @@ def _write_skill_metadata_cache() -> None:
     cache_path.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
 
 
+def _setup_worktree_dir(wt_path: str, worktree: "Worktree", overlay: "OverlayBase", stdout: "OutputWrapper") -> None:
+    """Configure direnv and pre-commit for the worktree directory."""
+    if not wt_path or not Path(wt_path).is_dir():
+        return
+    _append_envrc_lines(wt_path, overlay.get_envrc_lines(worktree))
+    subprocess.run(  # noqa: S603
+        ["direnv", "allow", wt_path],
+        capture_output=True,
+        check=False,
+    )
+    if (Path(wt_path) / ".pre-commit-config.yaml").is_file():
+        stdout.write("  Running: prek install")
+        subprocess.run(
+            ["prek", "install", "-f"],
+            cwd=wt_path,
+            capture_output=True,
+            check=False,
+        )
+
+
 class Command(TyperCommand):
     @command()
     def setup(self, worktree_id: int = typer.Argument(0, help="Worktree ID (auto-detects from PWD if 0)")) -> int:
@@ -43,36 +70,18 @@ class Command(TyperCommand):
 
         overlay = get_overlay()
 
-        # Write .env.worktree to ticket directory + symlink into repo worktrees
         envfile = write_env_worktree(worktree)
         if envfile:
             self.stdout.write(f"  Written: {envfile}")
 
-        # direnv: append overlay .envrc lines + allow
-        wt_path = (worktree.extra or {}).get("worktree_path")
-        if wt_path and Path(wt_path).is_dir():
-            _append_envrc_lines(wt_path, overlay.get_envrc_lines(worktree))
-            subprocess.run(  # noqa: S603
-                ["direnv", "allow", wt_path],
-                capture_output=True,
-                check=False,
-            )
-            if (Path(wt_path) / ".pre-commit-config.yaml").is_file():
-                self.stdout.write("  Running: prek install")
-                subprocess.run(
-                    ["prek", "install", "-f"],
-                    cwd=wt_path,
-                    capture_output=True,
-                    check=False,
-                )
+        _setup_worktree_dir((worktree.extra or {}).get("worktree_path", ""), worktree, overlay, self.stdout)
 
         # Import database (DSLR/dump fallback chain) before running provision steps
         if overlay.get_db_import_strategy(worktree) is not None:
             self.stdout.write("  Running: db-import")
             env = {**os.environ, **overlay.get_env_extra(worktree)}
             env.pop("VIRTUAL_ENV", None)
-            # Set env so pg tools can connect
-            os.environ.update(env)
+            os.environ.update(env)  # pg tools need these to connect
             if not overlay.db_import(worktree):
                 self.stderr.write("  WARNING: DB import failed. Continuing with provision steps...")
 
@@ -93,6 +102,12 @@ class Command(TyperCommand):
         if reset_cmd:
             self.stdout.write("  Running: reset-passwords")
             subprocess.run(reset_cmd, shell=True, check=False, env=env)  # noqa: S602
+
+        # Run pre-run steps for all services (e.g. frontend translation sync)
+        for service_name in overlay.get_run_commands(worktree):
+            for step in overlay.get_pre_run_steps(worktree, service_name):
+                self.stdout.write(f"  Running: {step.name}")
+                step.callable()
 
         _write_skill_metadata_cache()
 

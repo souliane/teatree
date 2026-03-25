@@ -6,6 +6,10 @@ requires:
   - t3-workspace
   - t3-platforms
   - t3-followup
+triggers:
+  priority: 30
+  keywords:
+    - '\b(request review|ask for review|send.* review|notify reviewer|post mr|review request)\b'
 metadata:
   version: 0.0.1
   subagent_safe: false

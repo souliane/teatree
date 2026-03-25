@@ -2,6 +2,10 @@
 name: t3-setup
 description: Bootstrap and validate teatree for local use — prerequisites, config, skill symlinks, optional agent hooks, and Django project scaffolding. Use when user says "setup skills", "install skills", "bootstrap skills", or needs first-time teatree installation.
 compatibility: macOS/Linux, git, python3.13+, uv.
+triggers:
+  priority: 80
+  keywords:
+    - '\b(setup skills|configure claude|install skills|bootstrap skills|configure hooks)\b'
 metadata:
   version: 0.0.1
   subagent_safe: false

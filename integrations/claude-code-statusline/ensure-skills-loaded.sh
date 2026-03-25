@@ -4,11 +4,10 @@
 #
 # Behavior:
 # 1. Ask the Python skill loader to detect intent and project context.
+#    Intent is determined by matching the prompt against triggers: patterns
+#    defined in each skill's SKILL.md frontmatter (no hardcoded patterns).
 # 2. Suggest the matching skill(s) if not already loaded.
 # 3. In project context, also list any overlay reference injections.
-#
-# The bash fallback remains for generic lifecycle intent only. Overlay
-# discovery and companion-skill resolution are handled by the Python loader.
 
 input=$(cat)
 session_id=$(echo "$input" | jq -r '.session_id // empty')

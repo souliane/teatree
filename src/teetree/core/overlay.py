@@ -43,6 +43,7 @@ class DbImportStrategy(TypedDict, total=False):
 class SkillMetadata(TypedDict, total=False):
     skill_path: str
     companion_skills: list[str]
+    trigger_index: list[dict[str, object]]
 
 
 class ToolCommand(TypedDict, total=False):
@@ -65,7 +66,27 @@ class ProvisionStep:
     description: str = ""
 
 
-class OverlayBase(ABC):
+class OverlayRunMixin:
+    """Hooks for service execution: run commands, pre-run preparation, tests."""
+
+    def get_run_commands(self, worktree: "Worktree") -> RunCommands:
+        return {}
+
+    def get_pre_run_steps(self, worktree: "Worktree", service: str) -> list[ProvisionStep]:
+        """Return preparation steps to execute before starting *service*.
+
+        Called by ``run frontend``, ``run build-frontend``, ``run backend``,
+        and by ``lifecycle setup`` for every service returned by
+        ``get_run_commands``.
+        """
+        return []
+
+    def get_test_command(self, worktree: "Worktree") -> str:
+        """Return the shell command to run the project test suite."""
+        return ""
+
+
+class OverlayBase(OverlayRunMixin, ABC):
     @abstractmethod
     def get_repos(self) -> list[str]:
         raise NotImplementedError
@@ -76,13 +97,6 @@ class OverlayBase(ABC):
 
     def get_env_extra(self, worktree: "Worktree") -> dict[str, str]:
         return {}
-
-    def get_run_commands(self, worktree: "Worktree") -> RunCommands:
-        return {}
-
-    def get_test_command(self, worktree: "Worktree") -> str:
-        """Return the shell command to run the project test suite."""
-        return ""
 
     def get_db_import_strategy(self, worktree: "Worktree") -> DbImportStrategy | None:
         return None

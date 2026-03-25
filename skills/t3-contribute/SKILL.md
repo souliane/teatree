@@ -4,6 +4,10 @@ description: Push retro improvements to your fork and optionally open upstream i
 compatibility: macOS/Linux, git, gh CLI (for upstream issues).
 requires:
   - t3-retro
+triggers:
+  priority: 90
+  keywords:
+    - '\b(t3.?contribute|push improvements?|push skills?|contribute upstream)\b'
 metadata:
   version: 0.0.1
   subagent_safe: false

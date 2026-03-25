@@ -4,6 +4,12 @@ description: Troubleshooting and fixing — something is broken, find and fix it
 compatibility: macOS/Linux, any language/framework supported by the project.
 requires:
   - t3-workspace
+triggers:
+  priority: 50
+  keywords:
+    - '\b(broken|error|not working|crash|blank page|can.t connect|debug|fix this|won.t start|500|traceback|exception)\b'
+  urls:
+    - 'https?://[^\s]*sentry\.[^\s]+/issues/'
 metadata:
   version: 0.0.1
   subagent_safe: false
