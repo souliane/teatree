@@ -4,6 +4,12 @@ description: Writing code with TDD methodology. Use when user says "implement", 
 compatibility: macOS/Linux, any language/framework supported by the project.
 requires:
   - t3-workspace
+triggers:
+  priority: 70
+  keywords:
+    - '\b(implement|code it|feature|refactor|rework|restructure|rewrite|redesign)\b'
+    - '\b(fix|change|update|modify|adjust|add|remove|delete|write|create|build|move|rename|extract|split|merge|convert|migrate|optimize|improve|replace|swap|introduce|drop|deprecate|wire|hook up|integrate|extend|override|wrap|unwrap|inline|deduplicate|dedup|simplify|generalize|normalize|transform|adapt|port|backport|scaffold|stub|mock|patch|hotfix|tweak|rework|clean) (the|a|an|this|that|my|our|its|some|all|each|every)\b'
+    - '^(fix|change|update|modify|adjust|add|remove|delete|write|create|build|move|rename|extract|refactor|replace|introduce|extend|override|simplify|optimize|improve|implement|convert|migrate|integrate|wire|hook|patch|hotfix|tweak|rework|clean up|scaffold|stub|mock|deduplicate|dedup) '
 metadata:
   version: 0.0.1
   subagent_safe: false
@@ -29,7 +35,7 @@ The implementation phase. Follow test-driven development and project conventions
 ## Dependencies
 
 - **t3-workspace** (required) — provides dev servers for live reload. **Load `/t3-workspace` now** if not already loaded.
-- **Framework/language convention skills** (when backend is in scope) — e.g., Django conventions, Python style guides. Resolved by the hook from the overlay's `companion_skills` config and optional `$T3_SUPPLEMENTARY_SKILLS` file.
+- **Framework/language convention skills** (when backend is in scope) — e.g., Django conventions, Python style guides. Resolved by the hook from the overlay's `companion_skills` config and optional `$T3_SUPPLEMENTARY_SKILLS` file. **If the hook didn't fire**, self-load the appropriate coding skill: `/ac-python` for Python code, `/ac-django` for Django projects. Load these **before writing any code**, not after.
 
 ## Workflow
 
