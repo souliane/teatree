@@ -189,7 +189,7 @@ def test_trigger_index_resolves_symlinks(monkeypatch: pytest.MonkeyPatch, tmp_pa
     assert index[0]["priority"] == 7
 
 
-# ── _parse_triggers edge cases ───────────────────────────────────────
+# ── _build_trigger_index edge cases ───────────────────────────────────
 
 
 @override_settings(TEATREE_OVERLAY_CLASS="tests.teetree_core.conftest.CommandOverlay")
@@ -204,69 +204,4 @@ def test_trigger_index_returns_empty_when_skills_dir_missing(
     assert _build_trigger_index() == []
 
 
-def test_parse_triggers_no_frontmatter() -> None:
-    from teetree.core.views._startup import _parse_triggers  # noqa: PLC0415
-
-    assert _parse_triggers("# No frontmatter") is None
-
-
-def test_parse_triggers_no_closing_fence() -> None:
-    from teetree.core.views._startup import _parse_triggers  # noqa: PLC0415
-
-    assert _parse_triggers("---\nname: test\ntriggers:\n  keywords:\n") is None
-
-
-def test_parse_triggers_all_fields() -> None:
-    from teetree.core.views._startup import _parse_triggers  # noqa: PLC0415
-
-    md = (
-        "---\nname: test\ntriggers:\n  priority: 5\n  exclude: '\\bno\\b'\n"
-        "  end_of_session: true\n  keywords:\n    - '\\bfoo\\b'\n"
-        "  urls:\n    - 'https://example.com'\nmetadata:\n  version: 1\n---\n"
-    )
-    result = _parse_triggers(md)
-    assert result is not None
-    assert result["priority"] == 5
-    assert result["exclude"] == r"\bno\b"
-    assert result["end_of_session"] is True
-    assert result["keywords"] == [r"\bfoo\b"]
-    assert result["urls"] == ["https://example.com"]
-
-
-def test_parse_triggers_terminated_by_next_top_level_key() -> None:
-    from teetree.core.views._startup import _parse_triggers  # noqa: PLC0415
-
-    md = "---\nname: test\ntriggers:\n  keywords:\n    - '\\bbar\\b'\nrequires:\n  - dep\n---\n"
-    result = _parse_triggers(md)
-    assert result is not None
-    assert result["keywords"] == [r"\bbar\b"]
-
-
-# ── _parse_trigger_line coverage ─────────────────────────────────────
-
-
-def test_parse_trigger_line_all_branches() -> None:
-    from teetree.core.views._startup import _parse_trigger_line  # noqa: PLC0415
-
-    triggers: dict = {"priority": 50, "keywords": [], "urls": [], "exclude": "", "end_of_session": False}
-
-    assert _parse_trigger_line("priority: 10", triggers, "") == ""
-    assert triggers["priority"] == 10
-
-    assert _parse_trigger_line("exclude: '\\bx\\b'", triggers, "") == ""
-    assert triggers["exclude"] == r"\bx\b"
-
-    assert _parse_trigger_line("end_of_session: true", triggers, "") == ""
-    assert triggers["end_of_session"] is True
-
-    assert _parse_trigger_line("keywords:", triggers, "") == "keywords"
-    assert _parse_trigger_line("urls:", triggers, "") == "urls"
-
-    assert _parse_trigger_line("- '\\bfoo\\b'", triggers, "keywords") == "keywords"
-    assert triggers["keywords"] == [r"\bfoo\b"]
-
-    assert _parse_trigger_line("- 'https://x'", triggers, "urls") == "urls"
-    assert triggers["urls"] == ["https://x"]
-
-    # Non-matching line returns current_key unchanged
-    assert _parse_trigger_line("something_else", triggers, "keywords") == "keywords"
+# Parser unit tests live in tests/test_trigger_parser.py (single source of truth).

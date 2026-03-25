@@ -13,16 +13,14 @@ Runs with PYTHONPATH=$T3_REPO/scripts — no teetree package imports.
 
 from __future__ import annotations  # noqa: TID251 — standalone script, no teetree package imports
 
-import contextlib
 import json
 import re
 from pathlib import Path
 
+from lib.trigger_parser import parse_triggers as parse_triggers_from_frontmatter
+
 XDG_DATA_DIR = Path.home() / ".local" / "share" / "teatree"
 SKILL_METADATA_CACHE = XDG_DATA_DIR / "skill-metadata.json"
-
-# Default priority when a skill has triggers but no explicit priority.
-_DEFAULT_PRIORITY = 50
 
 # End-of-session phrases (matched when no keyword/URL intent fires and a
 # skill declares ``end_of_session: true``).
@@ -30,78 +28,6 @@ _END_OF_SESSION_RE = re.compile(
     r"^(done|all set|finished|all done|wrap up|that.s it|that.s all"
     r"|ship it|we.re done|i.m done|looks good|lgtm)\s*[.!]?\s*$",
 )
-
-
-# ── Trigger index ────────────────────────────────────────────────────
-
-
-def parse_triggers_from_frontmatter(skill_md_text: str) -> dict | None:
-    """Extract the ``triggers:`` block from SKILL.md YAML frontmatter.
-
-    Returns a dict with keys ``priority``, ``keywords``, ``urls``,
-    ``exclude``, ``end_of_session`` — or ``None`` if no triggers are defined.
-    """
-    if not skill_md_text.startswith("---"):
-        return None
-    try:
-        end = skill_md_text.index("---", 3)
-    except ValueError:
-        return None
-
-    frontmatter = skill_md_text[3:end]
-
-    # Find the triggers: block
-    in_triggers = False
-    current_key = ""
-    triggers: dict = {
-        "priority": _DEFAULT_PRIORITY,
-        "keywords": [],
-        "urls": [],
-        "exclude": "",
-        "end_of_session": False,
-    }
-    found = False
-
-    for line in frontmatter.splitlines():
-        stripped = line.strip()
-
-        # Top-level key detection (not indented or zero indent)
-        if not line.startswith(" ") and not line.startswith("\t") and ":" in stripped:
-            key = stripped.split(":")[0].strip()
-            if key == "triggers":
-                in_triggers = True
-                found = True
-                current_key = ""
-                continue
-            if in_triggers:
-                break  # Left the triggers block
-            continue
-
-        if not in_triggers:
-            continue
-
-        # Inside triggers block — parse nested keys and list items
-        if stripped.startswith("priority:"):
-            with contextlib.suppress(ValueError, IndexError):
-                triggers["priority"] = int(stripped.split(":", 1)[1].strip())
-            current_key = ""
-        elif stripped.startswith("exclude:"):
-            val = stripped.split(":", 1)[1].strip().strip("'\"")
-            triggers["exclude"] = val
-            current_key = ""
-        elif stripped.startswith("end_of_session:"):
-            val = stripped.split(":", 1)[1].strip().lower()
-            triggers["end_of_session"] = val in {"true", "yes", "1"}
-            current_key = ""
-        elif stripped.startswith("keywords:"):
-            current_key = "keywords"
-        elif stripped.startswith("urls:"):
-            current_key = "urls"
-        elif stripped.startswith("- ") and current_key in {"keywords", "urls"}:
-            pattern = stripped.removeprefix("- ").strip().strip("'\"")
-            triggers[current_key].append(pattern)
-
-    return triggers if found else None
 
 
 def build_trigger_index(skill_search_dirs: list[Path]) -> list[dict]:

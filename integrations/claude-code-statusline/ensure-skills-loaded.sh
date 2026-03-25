@@ -104,21 +104,10 @@ if [ -f "$_T3_SCRIPTS/lib/skill_loader.py" ]; then
         PYTHONPATH="$_T3_SCRIPTS" python3 -c "
 import json
 from pathlib import Path
-from lib.trigger_parser import parse_triggers
+from lib.skill_loader import build_trigger_index
 
 skills_dir = Path.home() / '.claude' / 'skills'
-index = []
-if skills_dir.is_dir():
-    for d in sorted(skills_dir.iterdir()):
-        resolved = d.resolve() if d.is_symlink() else d
-        if not resolved.is_dir(): continue
-        md = resolved / 'SKILL.md'
-        if not md.is_file(): continue
-        try: text = md.read_text(encoding='utf-8')
-        except OSError: continue
-        triggers = parse_triggers(text)
-        if triggers: index.append({'skill': d.name, **triggers})
-index.sort(key=lambda e: e.get('priority', 50))
+index = build_trigger_index([skills_dir])
 cache = Path('$_cache_file')
 cache.parent.mkdir(parents=True, exist_ok=True)
 cache.write_text(json.dumps({'trigger_index': index}, indent=2) + '\n', encoding='utf-8')
