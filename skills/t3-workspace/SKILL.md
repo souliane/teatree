@@ -115,6 +115,15 @@ If the environment seems incomplete (missing `uv`, hooks not firing, generated h
 
 ## Rules
 
+### Fix the CLI, Never Work Around It (Non-Negotiable)
+
+When a `t3` command fails, **fix the CLI code first** — never manually run the underlying commands (`docker compose`, `manage.py runserver`, `npm run`, `createdb`, `cp`, `ln -s`, etc.) as a workaround. Manual workarounds invariably miss steps (translations, symlinks, settings files, CORS, SSL flags) and create a broken environment that wastes more time than fixing the CLI would have.
+
+1. **Stop** — do not run the underlying command manually.
+2. **Investigate** the overlay or core code to find why the command failed.
+3. **Fix** the code, add a test, and commit.
+4. **Re-run** the `t3` command to verify the fix.
+
 ### Never Hand-Edit Generated Files (Non-Negotiable)
 
 Setup tools (`t3 lifecycle setup`, etc.) generate configuration files (`.env.worktree`, docker overrides, port allocations). **Manual edits create drift** and are overwritten on the next setup run.
