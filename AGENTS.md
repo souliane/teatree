@@ -8,6 +8,14 @@ This is the teatree repo — both the Python package (`src/teetree/`) and the wo
 - This includes files under paths such as `docs/plans/`, ad-hoc notes, repo-local memory artifacts, and new instruction/config files meant only for the agent.
 - If a workflow or skill says to write such a file, stop and ask the user before doing it. Repo policy wins.
 
+## Issue Creation (Non-Negotiable)
+
+- **Never create issues without explicit user approval.** Always ask first — present the title and a summary, let the user decide.
+- **Teatree is a public repository.** Only generic, project-agnostic issues belong here. Never mention downstream project names, tenant names, customer names, internal architecture, feature flags, or any proprietary information.
+- **Overlay-specific issues go on the overlay repository.** If an issue involves both core teatree and an overlay, create it on the overlay repo and reference the core component — not the other way around.
+- **When in doubt, ask.** If you're unsure whether an issue is generic or overlay-specific, ask the user before creating it anywhere.
+- **Link commits to issues.** When fixing a tracked issue, use `Fixes #<number>` or `Closes #<number>` in the commit message body (not the first line) to auto-close it on merge. Use `Relates-to #<number>` for partial progress.
+
 ## What TeaTree Is
 
 A multi-repo worktree lifecycle manager for AI-assisted development. Target: service-oriented projects with databases and CI pipelines (any language). Not for docs-only repos or CLI tools.
