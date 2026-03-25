@@ -1177,6 +1177,140 @@ def test_lifecycle_setup_appends_envrc_lines_from_overlay(tmp_path: "pytest.Temp
 
 @override_settings(**SETTINGS)
 @pytest.mark.django_db
+def test_lifecycle_start_launches_services_and_transitions(
+    tmp_path: "pytest.TempPathFactory",
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Lifecycle start should start Docker + app services, run pre-run steps, and transition FSM."""
+    wt_path = tmp_path / "worktree"
+    wt_path.mkdir()
+
+    ticket = Ticket.objects.create(issue_url="https://example.com/issues/300", variant="acme")
+    wt = Worktree.objects.create(
+        ticket=ticket,
+        repo_path="/tmp/backend",
+        branch="feature",
+        extra={"worktree_path": str(wt_path)},
+    )
+    worktree_id = cast("int", call_command("lifecycle", "setup", str(wt.id)))
+
+    launched: list[str] = []
+
+    mock_overlay = MagicMock()
+    mock_overlay.get_run_commands.return_value = {"backend": "run-backend", "frontend": "run-frontend"}
+    mock_overlay.get_services_config.return_value = {
+        "db": {"start_command": "docker compose up -d db"},
+    }
+    mock_overlay.get_pre_run_steps.return_value = []
+    mock_overlay.get_env_extra.return_value = {}
+
+    def _mock_popen(cmd, **kwargs):
+        launched.append(cmd)
+        mock_proc = MagicMock()
+        mock_proc.pid = 12345
+        mock_proc.poll.return_value = None  # still running
+        return mock_proc
+
+    with (
+        patch("teetree.core.management.commands.lifecycle.get_overlay", return_value=mock_overlay),
+        patch("teetree.core.management.commands.lifecycle.subprocess") as mock_sp,
+        patch("teetree.core.management.commands.lifecycle.Popen", _mock_popen),
+    ):
+        mock_sp.run.return_value = MagicMock(returncode=0)
+        call_command("lifecycle", "start", str(worktree_id))
+
+    worktree = Worktree.objects.get(pk=worktree_id)
+    assert worktree.state == Worktree.State.SERVICES_UP
+    # Docker service was started
+    docker_calls = [c for c in mock_sp.run.call_args_list if c[0] and "docker" in str(c[0][0])]
+    assert len(docker_calls) >= 1
+    # App services were launched as background processes
+    assert any("run-backend" in cmd for cmd in launched)
+    assert any("run-frontend" in cmd for cmd in launched)
+    # PIDs stored in extra
+    assert "pids" in (worktree.extra or {})
+
+
+@override_settings(**SETTINGS)
+@pytest.mark.django_db
+def test_lifecycle_start_skips_service_without_start_command(
+    tmp_path: "pytest.TempPathFactory",
+) -> None:
+    """Docker services without a start_command are silently skipped."""
+    wt_path = tmp_path / "worktree"
+    wt_path.mkdir()
+    ticket = Ticket.objects.create(issue_url="https://example.com/issues/302", variant="acme")
+    wt = Worktree.objects.create(
+        ticket=ticket,
+        repo_path="/tmp/backend",
+        branch="feature",
+        extra={"worktree_path": str(wt_path)},
+    )
+    worktree_id = cast("int", call_command("lifecycle", "setup", str(wt.id)))
+
+    mock_overlay = MagicMock()
+    mock_overlay.get_run_commands.return_value = {}
+    mock_overlay.get_services_config.return_value = {"rd": {"start_command": ""}}
+    mock_overlay.get_env_extra.return_value = {}
+
+    with (
+        patch("teetree.core.management.commands.lifecycle.get_overlay", return_value=mock_overlay),
+        patch("teetree.core.management.commands.lifecycle.subprocess") as mock_sp,
+    ):
+        mock_sp.run.return_value = MagicMock(returncode=0)
+        call_command("lifecycle", "start", str(worktree_id))
+
+    docker_calls = [c for c in mock_sp.run.call_args_list if c[0] and "docker" in str(c[0][0])]
+    assert len(docker_calls) == 0
+
+
+@override_settings(**SETTINGS)
+@pytest.mark.django_db
+def test_lifecycle_start_reports_crashed_process(
+    tmp_path: "pytest.TempPathFactory",
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If a launched service exits immediately, start reports the failure."""
+    wt_path = tmp_path / "worktree"
+    wt_path.mkdir()
+
+    ticket = Ticket.objects.create(issue_url="https://example.com/issues/301", variant="acme")
+    wt = Worktree.objects.create(
+        ticket=ticket,
+        repo_path="/tmp/backend",
+        branch="feature",
+        extra={"worktree_path": str(wt_path)},
+    )
+    worktree_id = cast("int", call_command("lifecycle", "setup", str(wt.id)))
+
+    mock_overlay = MagicMock()
+    mock_overlay.get_run_commands.return_value = {"backend": "run-backend"}
+    mock_overlay.get_services_config.return_value = {}
+    mock_overlay.get_pre_run_steps.return_value = []
+    mock_overlay.get_env_extra.return_value = {}
+
+    def _mock_popen_crash(cmd, **kwargs):
+        mock_proc = MagicMock()
+        mock_proc.pid = 99999
+        mock_proc.poll.return_value = 1  # crashed immediately
+        return mock_proc
+
+    with (
+        patch("teetree.core.management.commands.lifecycle.get_overlay", return_value=mock_overlay),
+        patch("teetree.core.management.commands.lifecycle.subprocess") as mock_sp,
+        patch("teetree.core.management.commands.lifecycle.Popen", _mock_popen_crash),
+    ):
+        mock_sp.run.return_value = MagicMock(returncode=0)
+        call_command("lifecycle", "start", str(worktree_id))
+
+    # Should still transition (services were attempted) but report failure
+    worktree = Worktree.objects.get(pk=worktree_id)
+    assert worktree.state == Worktree.State.SERVICES_UP
+    assert "backend" in str(worktree.extra.get("failed_services", []))
+
+
+@override_settings(**SETTINGS)
+@pytest.mark.django_db
 def test_pr_post_evidence_without_body() -> None:
     mock_host = MagicMock()
     mock_host.post_mr_note.return_value = {"id": 43}

@@ -1,23 +1,20 @@
 import json
 import os
 import subprocess  # noqa: S404
+import time
 from pathlib import Path
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from django.core.management.base import OutputWrapper
+from subprocess import Popen  # noqa: S404
 
 import typer
+from django.core.management.base import OutputWrapper
 from django_typer.management import TyperCommand, command
 
 from teetree.config import DATA_DIR
 from teetree.core.models import Ticket, Worktree
+from teetree.core.overlay import OverlayBase
 from teetree.core.overlay_loader import get_overlay
 from teetree.core.resolve import resolve_worktree
 from teetree.core.worktree_env import write_env_worktree
-
-if TYPE_CHECKING:
-    from teetree.core.overlay import OverlayBase
 
 
 def _append_envrc_lines(wt_path: str, lines: list[str]) -> None:
@@ -37,7 +34,7 @@ def _write_skill_metadata_cache() -> None:
     cache_path.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
 
 
-def _setup_worktree_dir(wt_path: str, worktree: "Worktree", overlay: "OverlayBase", stdout: "OutputWrapper") -> None:
+def _setup_worktree_dir(wt_path: str, worktree: Worktree, overlay: OverlayBase, stdout: OutputWrapper) -> None:
     """Configure direnv and pre-commit for the worktree directory."""
     if not wt_path or not Path(wt_path).is_dir():
         return
@@ -115,10 +112,59 @@ class Command(TyperCommand):
 
     @command()
     def start(self, worktree_id: int = typer.Argument(0, help="Worktree ID (auto-detects from PWD if 0)")) -> str:
+        """Start Docker services + app servers (background), then transition FSM."""
         worktree = resolve_worktree(worktree_id)
-        commands = get_overlay().get_run_commands(worktree)
+        overlay = get_overlay()
+
+        # 1. Start Docker services (DB, Redis)
+        for name, spec in overlay.get_services_config(worktree).items():
+            start_cmd = spec.get("start_command", "")
+            if start_cmd:
+                self.stdout.write(f"  Starting {name}...")
+                subprocess.run(start_cmd, shell=True, check=False, capture_output=True)  # noqa: S602
+
+        # 2. Run pre-run steps for each service
+        commands = overlay.get_run_commands(worktree)
+        for service_name in commands:
+            for step in overlay.get_pre_run_steps(worktree, service_name):
+                self.stdout.write(f"  Preparing: {step.name}")
+                step.callable()
+
+        # 3. Build env and launch app services as background processes
+        worktree.refresh_ports_if_needed()
+        write_env_worktree(worktree)
+        env = {**os.environ, **overlay.get_env_extra(worktree)}
+        env.pop("VIRTUAL_ENV", None)
+
+        ticket_dir = (worktree.extra or {}).get("worktree_path", "")
+        log_dir = Path(ticket_dir).parent / "logs" if ticket_dir else Path("/tmp")  # noqa: S108
+        log_dir.mkdir(parents=True, exist_ok=True)
+
+        pids: dict[str, int] = {}
+        failed: list[str] = []
+        for service_name, cmd in commands.items():
+            log_path = log_dir / f"{service_name}.log"
+            self.stdout.write(f"  Launching {service_name} (log: {log_path})")
+            with log_path.open("w") as log_file:
+                proc = Popen(cmd, shell=True, env=env, stdout=log_file, stderr=log_file)  # noqa: S602
+            pids[service_name] = proc.pid
+            time.sleep(1)
+            if proc.poll() is not None:
+                self.stderr.write(f"  ERROR: {service_name} exited immediately (code {proc.returncode})")
+                failed.append(service_name)
+
+        # 4. Transition FSM and store PIDs
         worktree.start_services(services=list(commands))
+        extra = dict(worktree.extra or {})
+        extra["pids"] = pids
+        if failed:
+            extra["failed_services"] = failed
+        worktree.extra = extra
         worktree.save()
+
+        if failed:
+            self.stderr.write(f"  WARNING: {len(failed)} service(s) failed: {', '.join(failed)}")
+
         return worktree.state
 
     @command()
