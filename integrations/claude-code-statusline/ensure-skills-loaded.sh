@@ -85,11 +85,46 @@ fi
 # --- Python fast path (testable, maintainable) ---
 # Try delegating intent detection + suggestion building to Python.
 # Falls back to the bash logic below if Python is unavailable.
+
+# Ensure T3_REPO is available (hooks don't source .zshrc/.teatree)
+if [ -z "$T3_REPO" ] && [ -f "$HOME/.teatree" ]; then
+    source "$HOME/.teatree"
+fi
+
 _SCRIPT_DIR_EARLY="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
-_SOURCE_ROOT_EARLY="$(cd "$_SCRIPT_DIR_EARLY/../../.." 2>/dev/null && pwd -P)"
-_T3_SCRIPTS="${T3_REPO:-$_SOURCE_ROOT_EARLY}/scripts"
+_T3_ROOT="$(cd "$_SCRIPT_DIR_EARLY/../.." 2>/dev/null && pwd -P)"
+_T3_SCRIPTS="${T3_REPO:-$_T3_ROOT}/scripts"
+# Parent of teatree — may contain sibling skill repos for search
+_SOURCE_ROOT_EARLY="$(cd "$_T3_ROOT/.." 2>/dev/null && pwd -P)"
 
 if [ -f "$_T3_SCRIPTS/lib/skill_loader.py" ]; then
+    # Auto-populate skill metadata cache if empty or missing
+    _cache_file="${XDG_DATA_HOME:-$HOME/.local/share}/teatree/skill-metadata.json"
+    if [ ! -s "$_cache_file" ] || [ "$(cat "$_cache_file" 2>/dev/null)" = "{}" ]; then
+        PYTHONPATH="$_T3_SCRIPTS" python3 -c "
+import json
+from pathlib import Path
+from lib.trigger_parser import parse_triggers
+
+skills_dir = Path.home() / '.claude' / 'skills'
+index = []
+if skills_dir.is_dir():
+    for d in sorted(skills_dir.iterdir()):
+        resolved = d.resolve() if d.is_symlink() else d
+        if not resolved.is_dir(): continue
+        md = resolved / 'SKILL.md'
+        if not md.is_file(): continue
+        try: text = md.read_text(encoding='utf-8')
+        except OSError: continue
+        triggers = parse_triggers(text)
+        if triggers: index.append({'skill': d.name, **triggers})
+index.sort(key=lambda e: e.get('priority', 50))
+cache = Path('$_cache_file')
+cache.parent.mkdir(parents=True, exist_ok=True)
+cache.write_text(json.dumps({'trigger_index': index}, indent=2) + '\n', encoding='utf-8')
+" 2>/dev/null
+    fi
+
     # Build active repos list from tracker file
     _active_repos=""
     [ -f "$active_file" ] && _active_repos=$(cat "$active_file" | tr '\n' ',' | sed 's/,$//')
