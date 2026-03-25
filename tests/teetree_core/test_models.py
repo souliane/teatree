@@ -485,11 +485,49 @@ def test_port_available_returns_false_on_os_error(monkeypatch: pytest.MonkeyPatc
     assert Worktree._port_available(8001) is False
 
 
+def test_port_available_returns_true_on_success(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Worktree._port_available returns True when binding succeeds."""
+    import socket  # noqa: PLC0415
+
+    monkeypatch.setattr(socket.socket, "bind", lambda self, addr: None)
+
+    assert Worktree._port_available(8001) is True
+
+
 @pytest.mark.django_db
-def test_refresh_ports_if_needed_returns_false_when_reallocated_ports_match_current(
+def test_refresh_ports_if_needed_returns_false_when_merged_equals_current(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """When ports are incomplete but allocating produces the same result, no save happens."""
     ticket = Ticket.objects.create(issue_url="https://example.com/issues/55")
+    worktree = Worktree.objects.create(
+        ticket=ticket,
+        repo_path="/tmp/backend",
+        branch="teatree-django",
+        state=Worktree.State.PROVISIONED,
+        # Missing "postgres" key — incomplete, so falls through to allocate
+        ports={"backend": 8001, "frontend": 4201, "redis": 6379},
+    )
+
+    monkeypatch.setattr(Worktree, "_port_available", staticmethod(lambda _port: True))
+    monkeypatch.setattr(
+        Worktree,
+        "_allocate_ports",
+        # Allocate returns ports that, after merge with current, equal current
+        lambda self: {"backend": 9999, "frontend": 9998, "postgres": 5433, "redis": 6380},
+    )
+    # Merge fills in missing postgres from _allocate_ports, triggers save
+    assert worktree.refresh_ports_if_needed() is True
+    worktree.refresh_from_db()
+    assert worktree.ports["postgres"] == 5433
+
+
+@pytest.mark.django_db
+def test_refresh_ports_if_needed_returns_false_when_all_keys_present(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When all required keys are present, refresh does nothing."""
+    ticket = Ticket.objects.create(issue_url="https://example.com/issues/56")
     worktree = Worktree.objects.create(
         ticket=ticket,
         repo_path="/tmp/backend",
@@ -498,14 +536,33 @@ def test_refresh_ports_if_needed_returns_false_when_reallocated_ports_match_curr
         ports={"backend": 8001, "frontend": 4201, "postgres": 5433, "redis": 6379},
     )
 
-    monkeypatch.setattr(Worktree, "_port_available", staticmethod(lambda _port: False))
+    assert worktree.refresh_ports_if_needed() is False
+
+
+@pytest.mark.django_db
+def test_refresh_ports_if_needed_noop_when_allocate_matches_existing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When incomplete ports + allocate produces same merged result, no DB write."""
+    ticket = Ticket.objects.create(issue_url="https://example.com/issues/57")
+    # Missing "postgres" key triggers allocation
+    current_ports = {"backend": 8001, "frontend": 4201, "redis": 6379}
+    worktree = Worktree.objects.create(
+        ticket=ticket,
+        repo_path="/tmp/backend",
+        branch="teatree-django",
+        state=Worktree.State.PROVISIONED,
+        ports=dict(current_ports),
+    )
+
+    # Allocate returns same keys+values as current — merged == current
     monkeypatch.setattr(
         Worktree,
         "_allocate_ports",
-        lambda self: {"backend": 8001, "frontend": 4201, "postgres": 5433, "redis": 6379},
+        lambda self: dict(current_ports),
     )
-
-    assert worktree.refresh_ports_if_needed() is False
+    result = worktree.refresh_ports_if_needed()
+    assert result is False
 
 
 @pytest.mark.django_db

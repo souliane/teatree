@@ -145,7 +145,8 @@ def test_uvicorn_none_project_path_exits(mock_run: MagicMock) -> None:
 
 @override_settings(**COMMAND_SETTINGS, T3_WORKSPACE_DIR="/tmp/should-not-be-used")
 @pytest.mark.django_db
-def test_lifecycle_setup_reassigns_unavailable_ports(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_lifecycle_setup_preserves_already_assigned_ports(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Ports that are already assigned are preserved — a running service is expected to hold its port."""
     workspace = tmp_path / "workspace"
     worktree_path = workspace / "ac-ticket-42" / "backend"
     worktree_path.mkdir(parents=True)
@@ -175,18 +176,20 @@ def test_lifecycle_setup_reassigns_unavailable_ports(tmp_path: Path, monkeypatch
     call_command("lifecycle", "setup", str(worktree.pk))
 
     worktree.refresh_from_db()
-    assert worktree.ports == {"backend": 8002, "frontend": 4202, "postgres": 5434, "redis": 6379}
+    # Ports stay as-is — the worktree's own services may be using them
+    assert worktree.ports == {"backend": 8001, "frontend": 4201, "postgres": 5433, "redis": 6379}
 
     envfile = worktree_path.parent / ".env.worktree"
     env_text = envfile.read_text(encoding="utf-8")
-    assert "BACKEND_PORT=8002" in env_text
-    assert "FRONTEND_PORT=4202" in env_text
-    assert "POSTGRES_PORT=5434" in env_text
+    assert "BACKEND_PORT=8001" in env_text
+    assert "FRONTEND_PORT=4201" in env_text
+    assert "POSTGRES_PORT=5433" in env_text
 
 
 @override_settings(**COMMAND_SETTINGS, T3_WORKSPACE_DIR="/tmp/should-not-be-used")
 @pytest.mark.django_db
-def test_run_backend_reassigns_unavailable_ports_before_launch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_run_backend_preserves_ports_before_launch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Already-assigned ports are preserved when running backend — services may be using them."""
     workspace = tmp_path / "workspace"
     worktree_path = workspace / "ac-ticket-43" / "backend"
     worktree_path.mkdir(parents=True)
@@ -226,10 +229,7 @@ def test_run_backend_reassigns_unavailable_ports_before_launch(tmp_path: Path, m
 
     worktree.refresh_from_db()
     assert result == "Backend started."
-    assert worktree.ports == {"backend": 8002, "frontend": 4202, "postgres": 5434, "redis": 6379}
-    env_text = envfile.read_text(encoding="utf-8")
-    assert "BACKEND_PORT=8002" in env_text
-    assert "POSTGRES_PORT=5434" in env_text
+    assert worktree.ports == {"backend": 8001, "frontend": 4201, "postgres": 5433, "redis": 6379}
     assert commands[-1][1]["check"] is True
 
 

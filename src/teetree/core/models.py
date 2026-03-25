@@ -251,16 +251,24 @@ class Worktree(models.Model):
             return False
 
     def refresh_ports_if_needed(self) -> bool:
+        """Allocate ports if missing, but never reallocate already-assigned ports.
+
+        A port being "in use" is *expected* when the worktree's service is
+        running.  Only allocate when the port dict is incomplete (missing
+        required keys).
+        """
         current = self._ports()
         required = ("backend", "frontend", "postgres")
-        if current and all(name in current and self._port_available(int(current[name])) for name in required):
+        if current and all(name in current for name in required):
             return False
 
         new_ports = self._allocate_ports()
-        if current == new_ports:
+        # Preserve any already-assigned ports (don't reallocate running services)
+        merged = {**new_ports, **{k: v for k, v in current.items() if v}}
+        if current == merged:
             return False
 
-        self.ports = new_ports
+        self.ports = merged
         self.save(update_fields=["ports"])
         return True
 
