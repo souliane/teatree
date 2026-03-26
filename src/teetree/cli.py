@@ -1061,7 +1061,8 @@ def sonar_check(
         cmd.append("--remote")
     if remote_status:
         cmd.append("--remote-status")
-    subprocess.run(cmd, check=True)  # noqa: S603
+    result = subprocess.run(cmd, check=False)  # noqa: S603
+    raise typer.Exit(code=result.returncode)
 
 
 @tool_app.command("claude-handover")
