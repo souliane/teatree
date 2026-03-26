@@ -58,6 +58,16 @@ From "code is done" to "MR is merged."
 - **E2E gate:** If the project requires E2E tests for the type of changes made (UI, forms, user flows), those tests must be written and passing BEFORE proceeding. E2E is part of implementation, not a post-push activity.
 - **Wait for user feedback.** Do NOT proceed to push without user approval.
 
+### 3b. Self-Review Against Repo Rules (Non-Negotiable)
+
+**Before every push**, run the self-review gate from [`../t3-review/SKILL.md`](../t3-review/SKILL.md) § "Active Verification Against Repo Rules":
+
+1. **Read** the repo's `AGENTS.md` (or equivalent agent instructions file).
+2. **For each changed file**, verify compliance against every applicable rule — commit message format, architectural patterns, banned patterns, feature flags.
+3. Fix any violations **before** pushing. This prevents multi-round CI/review-bot failures (e.g., 5 rounds of MR police fixes because rules were not read upfront).
+
+Skipping this step is the #1 cause of wasted push-fix-push cycles. The rules exist in `t3-review` — this step ensures they are applied even when the agent goes directly from code to ship without a formal review phase.
+
 ### 4. Push
 
 - Cancel stale pipelines before pushing (if branch has an existing MR).
@@ -117,7 +127,7 @@ After delivery is complete (MR created, pipeline green), run `/t3-retro` to capt
 - **Cancel stale pipelines** before every push to a branch with an existing MR.
 - **Cancel running pipelines when closing an MR/PR.** When an MR is closed (abandoned, superseded, or replaced), cancel any running or pending pipelines for that branch immediately — they waste CI resources on code that will never be merged.
 - **Clickable references:** Every MR, ticket, or note reference must be a markdown link — see [`../t3-rules/SKILL.md`](../t3-rules/SKILL.md) § "Clickable References".
-- **Never push without explicit approval (Non-Negotiable).** Squash approval ≠ push approval. "All done" ≠ push approval. Always present the final state and ask "Push?" before running `git push`. This applies to ALL repos, ALL contexts.
+- **Never push without explicit approval (Non-Negotiable).** Squash approval ≠ push approval. "All done" ≠ push approval. Rebase approval ≠ force-push approval. Always present the final state and ask "Push?" before running `git push`. For force-push (`--force-with-lease`), get **separate explicit confirmation** even if the user already approved the rebase — force-push is destructive and warrants its own approval step. This applies to ALL repos, ALL contexts.
 - **Squash with `git reset --soft`, not interactive rebase.** `git rebase -i` with custom editors is fragile when pre-commit hooks run on each commit. Use `git reset --soft HEAD~N && git commit` for adjacent commits, or cherry-pick for non-adjacent ones.
 - **Respect commit trailer preferences.** Check the user's global agent config for rules about `Co-Authored-By` trailers before committing. Some users explicitly opt out. When in doubt, **do not add trailers** — the user can always configure their agent to add them.
 
