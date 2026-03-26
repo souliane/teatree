@@ -5,6 +5,7 @@ dependencies (subprocess, filesystem, network, Django).
 """
 
 import json
+import subprocess
 import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -2035,7 +2036,7 @@ def test_tool_sonar_check(tmp_path):
         patch("teetree.cli._find_overlay_project", return_value=tmp_path),
         patch("teetree.cli.subprocess") as mock_sub,
     ):
-        mock_sub.run.return_value = None
+        mock_sub.run.return_value = subprocess.CompletedProcess([], 0)
         result = runner.invoke(app, ["tool", "sonar-check", "/tmp/repo"])
         assert result.exit_code == 0
         args = mock_sub.run.call_args[0][0]
@@ -2053,7 +2054,7 @@ def test_tool_sonar_check_with_flags(tmp_path):
         patch("teetree.cli._find_overlay_project", return_value=tmp_path),
         patch("teetree.cli.subprocess") as mock_sub,
     ):
-        mock_sub.run.return_value = None
+        mock_sub.run.return_value = subprocess.CompletedProcess([], 0)
         result = runner.invoke(app, ["tool", "sonar-check", "--skip-baseline", "--remote", "--remote-status"])
         assert result.exit_code == 0
         args = mock_sub.run.call_args[0][0]
@@ -2072,7 +2073,7 @@ def test_tool_sonar_check_uses_pwd_env(tmp_path, monkeypatch):
         patch("teetree.cli._find_overlay_project", return_value=tmp_path),
         patch("teetree.cli.subprocess") as mock_sub,
     ):
-        mock_sub.run.return_value = None
+        mock_sub.run.return_value = subprocess.CompletedProcess([], 0)
         result = runner.invoke(app, ["tool", "sonar-check", "--remote"])
         assert result.exit_code == 0
         args = mock_sub.run.call_args[0][0]
