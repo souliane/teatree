@@ -152,33 +152,15 @@ glab ci status --branch <source_branch> -R <repo>
 
 **Always use draft notes**, not direct discussions. Draft notes are only visible to the reviewer until explicitly submitted — this lets the user review, edit, and submit as a batch.
 
-### Post Draft Notes via CLI (Preferred)
+### Post Draft Notes via CLI (Planned — Not Yet Implemented)
 
-Use the `t3 review` commands — they handle token extraction, diff refs, and position serialization:
+> **Status:** The `t3 review` management command group does not exist yet. Use the API recipes below until it is implemented.
 
-```bash
-# Inline note (on a specific file + line)
+<!-- When implemented, the CLI will handle token extraction, diff refs, and position serialization:
 uv run t3 review post-draft-note <REPO> <MR_IID> "Comment text" --file <path/to/file> --line <line_number>
-
-# General note (not tied to a specific line)
-uv run t3 review post-draft-note <REPO> <MR_IID> "Comment text"
-
-# List draft notes
 uv run t3 review list-draft-notes <REPO> <MR_IID>
-
-# Delete a draft note
 uv run t3 review delete-draft-note <REPO> <MR_IID> <NOTE_ID>
-```
-
-Example:
-
-```bash
-uv run t3 review post-draft-note my-org/my-repo 7090 \
-  "Nit: this variable name could be clearer." \
-  --file shared/models.py --line 42
-```
-
-The CLI warns if `line_code` is null in the response (meaning the line won't render inline — likely a context line, not an added line).
+-->
 
 ### Key Differences from `/discussions`
 

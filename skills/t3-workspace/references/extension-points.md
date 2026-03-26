@@ -1,8 +1,8 @@
 # Extension Points
 
-> **Note:** This document describes the legacy `wt_*` function-based extension system. The current system uses `OverlayBase` methods (e.g., `get_repos()`, `get_provision_steps()`, `get_env_extra()`, `get_run_commands()`). See `teetree.core.overlay.OverlayBase` for the current API. The overlay resolution model below still applies conceptually.
+> **Current system:** Project overlays subclass `OverlayBase` (see `teetree.core.overlay`) and override methods like `get_repos()`, `get_provision_steps()`, `get_env_extra()`, `get_run_commands()`. The `wt_*` names below are the **conceptual extension point names** used in skill documentation — they map to `OverlayBase` methods, not to a function registry.
 
-Project-specific behavior now lives in the generated TeaTree Django host project. The active overlay class subclasses `OverlayBase`, and runtime code resolves hooks from that overlay rather than from `lib/project_hooks.py` modules on `PYTHONPATH`.
+Project-specific behavior lives in the generated TeaTree Django host project. The active overlay class subclasses `OverlayBase`, and runtime code calls overlay methods directly.
 
 Priority: **default** (no-op) < **framework** (Django) < **project** (project-specific).
 
@@ -10,7 +10,7 @@ Priority: **default** (no-op) < **framework** (Django) < **project** (project-sp
 graph TB
   subgraph "Extension Point Resolution"
     direction TB
-    call["registry.call('wt_run_backend')"] --> resolve["Resolve highest priority"]
+    call["overlay.run_backend()"] --> resolve["Resolve via MRO"]
     resolve --> project["Project Layer<br/>(your overlay)<br/>Priority: highest"]
     resolve --> framework["Framework Layer<br/>(e.g., Django plugin)<br/>Priority: middle"]
     resolve --> default["Default Layer<br/>(teatree core)<br/>Priority: lowest"]
@@ -72,4 +72,4 @@ Use `uv run t3 startproject ...` to create the host project, set `TEATREE_OVERLA
 
 ## Legacy Note
 
-The old `scripts/lib/registry.py` bridge still exists for migration purposes, but new project integrations should not add `project_hooks.py`, shell bootstraps, or custom `t3` subcommand groups on top of it.
+The old `scripts/lib/registry.py` bridge has been removed. New project integrations use `OverlayBase` subclasses exclusively — do not add `project_hooks.py`, shell bootstraps, or custom `t3` subcommand groups.
