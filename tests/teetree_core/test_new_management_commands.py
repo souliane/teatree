@@ -1665,6 +1665,22 @@ def test_tool_run_no_management_command() -> None:
 
 @override_settings(**SETTINGS)
 @pytest.mark.django_db
+def test_tool_run_forwards_extra_args() -> None:
+    """Extra args after the tool name are appended to the management_command."""
+    with (
+        patch("teetree.core.management.commands.tool.subprocess.run") as mock_run,
+        patch("teetree.core.management.commands.tool.sys") as mock_sys,
+    ):
+        mock_sys.argv = ["manage.py", "tool", "run", "migrate", "--verbose", "--dry-run"]
+        result = cast("str", call_command("tool", "run", "migrate"))
+
+    assert "completed" in result.lower()
+    cmd = mock_run.call_args[0][0]
+    assert cmd == "echo migrate --verbose --dry-run"
+
+
+@override_settings(**SETTINGS)
+@pytest.mark.django_db
 def test_tool_list_tools_without_help() -> None:
     """Tools without a help string show just the name."""
     helpless_overlay = "tests.teetree_core.test_new_management_commands.HelplessToolOverlay"

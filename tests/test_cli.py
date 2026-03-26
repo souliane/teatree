@@ -2018,29 +2018,65 @@ def test_doctor_info():
 # ── tool sonar-check command (lines 1038-1048) ───────────────────────
 
 
-def test_tool_sonar_check():
-    """Tool sonar-check forwards to managepy."""
+def test_tool_sonar_check_script_not_found(tmp_path):
+    """Sonar-check exits with error when script is missing."""
+    with patch("teetree.cli._find_overlay_project", return_value=tmp_path):
+        result = runner.invoke(app, ["tool", "sonar-check"])
+        assert result.exit_code == 1
+        assert "sonar_check.sh not found" in result.output
+
+
+def test_tool_sonar_check(tmp_path):
+    """Tool sonar-check calls the overlay script directly."""
+    script = tmp_path / "scripts" / "sonar_check.sh"
+    script.parent.mkdir()
+    script.touch()
     with (
-        patch("teetree.cli._find_overlay_project", return_value=Path("/tmp/project")),
-        patch("teetree.cli._managepy") as mock_manage,
+        patch("teetree.cli._find_overlay_project", return_value=tmp_path),
+        patch("teetree.cli.subprocess") as mock_sub,
     ):
+        mock_sub.run.return_value = None
         result = runner.invoke(app, ["tool", "sonar-check", "/tmp/repo"])
         assert result.exit_code == 0
-        mock_manage.assert_called_once_with(Path("/tmp/project"), "tool", "sonar-check", "/tmp/repo")
+        args = mock_sub.run.call_args[0][0]
+        assert args[0] == "bash"
+        assert args[1] == str(script)
+        assert "/tmp/repo" in args
 
 
-def test_tool_sonar_check_with_flags():
+def test_tool_sonar_check_with_flags(tmp_path):
     """Tool sonar-check passes skip-baseline and remote flags."""
+    script = tmp_path / "scripts" / "sonar_check.sh"
+    script.parent.mkdir()
+    script.touch()
     with (
-        patch("teetree.cli._find_overlay_project", return_value=Path("/tmp/project")),
-        patch("teetree.cli._managepy") as mock_manage,
+        patch("teetree.cli._find_overlay_project", return_value=tmp_path),
+        patch("teetree.cli.subprocess") as mock_sub,
     ):
+        mock_sub.run.return_value = None
         result = runner.invoke(app, ["tool", "sonar-check", "--skip-baseline", "--remote", "--remote-status"])
         assert result.exit_code == 0
-        args = mock_manage.call_args[0]
+        args = mock_sub.run.call_args[0][0]
         assert "--skip-baseline" in args
         assert "--remote" in args
         assert "--remote-status" in args
+
+
+def test_tool_sonar_check_uses_pwd_env(tmp_path, monkeypatch):
+    """When no repo_path given, sonar-check uses $PWD (not os.getcwd())."""
+    script = tmp_path / "scripts" / "sonar_check.sh"
+    script.parent.mkdir()
+    script.touch()
+    monkeypatch.setenv("PWD", "/original/worktree")
+    with (
+        patch("teetree.cli._find_overlay_project", return_value=tmp_path),
+        patch("teetree.cli.subprocess") as mock_sub,
+    ):
+        mock_sub.run.return_value = None
+        result = runner.invoke(app, ["tool", "sonar-check", "--remote"])
+        assert result.exit_code == 0
+        args = mock_sub.run.call_args[0][0]
+        assert "/original/worktree" in args
 
 
 # ── Overlay config subcommands (lines 1549-1594) ─────────────────────
