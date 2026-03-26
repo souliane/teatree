@@ -210,6 +210,27 @@ Replace `~/path/to/teatree` with the actual `$T3_REPO` value from `~/.teatree`.
 
 When validating an existing installation, check that **all five hooks** are present. The `InstructionsLoaded` hook was added as a fallback because the `PostToolUse` `Skill` matcher is intermittently unreliable in some Claude Code sessions.
 
+## Step 4b: Recommended Global Agent Config
+
+**Strongly recommend** the user adds the following rule to their global agent instructions file (e.g., `~/.claude/CLAUDE.md`). AI agents consistently bypass the `t3` CLI to run underlying commands directly (e.g., `manage.py runserver`, `docker compose`, `ln -s`, `pipenv install`) when `t3` fails. This invariably produces a broken environment because the CLI handles env vars, symlinks, port allocation, translations, and SSL config that manual commands miss.
+
+Suggest this snippet:
+
+```markdown
+## BLOCKING REQUIREMENT: Fix Tooling, Never Work Around It
+
+When a `t3` CLI command fails (setup, start, run, or any other):
+1. **STOP.** Do NOT manually run the underlying commands (docker compose, manage.py runserver, npm run, createdb, cp, ln -s, etc.).
+2. **Investigate the t3 overlay/core code** to find WHY the command failed.
+3. **Fix the t3 code** (overlay or core).
+4. **Re-run the t3 command** to verify the fix.
+5. Only THEN continue with the original task.
+
+**Manual workarounds are NEVER acceptable** — not even "just this once", not even "to save time", not even "while I fix it later."
+```
+
+This rule exists in `t3-workspace/SKILL.md` but skills are only loaded on demand. The global agent config is **always loaded**, catching the agent before it has a chance to improvise.
+
 ## Step 5: Generate a Django Host Project
 
 Use the TeaTree bootstrap CLI, not shell overlay scaffolding.
