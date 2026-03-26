@@ -120,6 +120,14 @@ If the environment seems incomplete (missing `uv`, hooks not firing, generated h
 
 ## Rules
 
+### Plan Before Executing (Non-Negotiable)
+
+Before starting any multi-step task, **create a TODO list** using the task tracking tools. This applies to all phases (setup, coding, testing, shipping) — not just coding. Never tackle work without a visible plan. The plan keeps the user informed and prevents forgetting steps.
+
+- **Simple tasks** (1-2 steps): a brief bullet list in the response is sufficient.
+- **Complex tasks** (3+ steps): use `TaskCreate` for each step, update status as you go.
+- **Never skip this.** If you find yourself doing 3+ things without a plan, stop and create one.
+
 ### Fix the CLI, Never Work Around It (Non-Negotiable)
 
 When a `t3` command fails, **fix the CLI code first** — never manually run the underlying commands (`docker compose`, `manage.py runserver`, `npm run`, `createdb`, `cp`, `ln -s`, etc.) as a workaround. Manual workarounds invariably miss steps (translations, symlinks, settings files, CORS, SSL flags) and create a broken environment that wastes more time than fixing the CLI would have.

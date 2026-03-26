@@ -194,11 +194,15 @@ See your [issue tracker platform reference](../t3-platforms/references/) § "MR 
 
 ## Post Testing Evidence on MR
 
-After confirming a feature works (via E2E or manual verification), embed screenshot(s) **directly in the test plan comment** — not as a separate comment. Each verified checkbox gets checked, and a screenshot goes below the relevant section.
+**Use `t3 pr post-evidence` first.** If the CLI command handles uploading and posting, use it instead of manual API calls. Only fall back to manual posting if the CLI doesn't support the required operation.
 
-### 1. Upload Screenshot(s)
+After confirming a feature works (via E2E or manual verification), embed screenshot(s) and video(s) **directly in the test plan comment** — not as a separate comment. Each verified checkbox gets checked, and a screenshot goes below the relevant section.
 
-Upload the screenshot via the platform's file upload API and get the markdown embed syntax. See your [issue tracker platform reference](../t3-platforms/references/) § "File Uploads" for the recipe.
+### 1. Upload Screenshot(s) and Video(s)
+
+Upload via the platform's file upload API and get the markdown embed syntax. See your [issue tracker platform reference](../t3-platforms/references/) § "File Uploads" for the recipe.
+
+**Video embedding:** Use the same `![alt](url)` markdown syntax as images. GitLab auto-detects video formats (.webm, .mov, .mp4) and renders an inline player. Do NOT use `<video>` HTML tags — they don't work in GitLab markdown.
 
 ### 2. Post or Update Comment — Always Use Python (Non-Negotiable)
 
