@@ -414,6 +414,22 @@ Can be overridden via a markdown file at `references/skill-delegation.md` with `
 
 An overlay is a downstream Django project that customizes teatree for a specific project/organization.
 
+### 6.0 Overlay Thinness Principle (Non-Negotiable)
+
+**Overlays must be as thin as possible.** Generic workflow logic belongs in teatree core, not in overlays.
+
+Before adding logic to an overlay, ask: "Would a different project using the same framework (Django, Node, etc.) need the same logic?" If yes, it belongs in core — parameterized and configurable. The overlay should only provide:
+
+1. **Configuration values** — repo names, env vars, credentials, file paths, naming conventions
+2. **Project-specific glue** — connecting to a proprietary API, custom tenant detection, product-specific feature flags
+3. **Truly unique workflows** — steps that no other project would ever need
+
+Everything else — DB provisioning strategies, migration runners, symlink management, service orchestration, dump fallback chains — must be implemented as configurable engines in core. The overlay configures the engine; the overlay does not reimplement the engine.
+
+**Why this matters:** When logic lives in an overlay, it is tested only by that overlay's test suite, invisible to other overlays, and duplicated when a second project needs the same workflow. Core code has 100% branch coverage, is reviewed against the BLUEPRINT, and benefits all overlays.
+
+**Refactoring signal:** If an overlay method exceeds ~30 lines of non-configuration code, it likely contains generic logic that should be extracted to core.
+
 ### 6.1 OverlayBase ABC
 
 Defined in `teetree.core.overlay`. All methods receive the `worktree` instance for context.
@@ -811,7 +827,265 @@ Playwright tests in `e2e/` with separate settings (`e2e.settings`) using file-ba
 
 ---
 
-## 15. Dependencies
+## 15. Django Project Workflows
+
+Teatree provides a generic Django database provisioning engine in `teetree.utils.django_db`. This engine handles the full lifecycle of creating, importing, and maintaining per-worktree databases for Django projects. Overlays configure the engine; they do not reimplement it.
+
+### 15.1 Reference DB Architecture
+
+Teatree uses a **two-tier database pattern** for Django projects:
+
+1. **Reference DB** — a long-lived local database (e.g., `development-acme`) that mirrors the dev/staging environment. Shared across all worktrees for the same variant. Updated infrequently (when a fresh dump is fetched or DSLR snapshot is taken).
+2. **Ticket DB** — a per-worktree database (e.g., `wt_1234_acme`) created as a **Postgres template copy** (`createdb -T`) of the reference DB. Instant creation, full isolation.
+
+```mermaid
+flowchart LR
+    subgraph "Reference DB (shared)"
+        ref["development-acme"]
+    end
+    subgraph "Ticket DBs (per-worktree)"
+        wt1["wt_1234_acme"]
+        wt2["wt_5678_acme"]
+    end
+    ref -->|"createdb -T"| wt1
+    ref -->|"createdb -T"| wt2
+```
+
+**Why template copy:** `createdb -T` is a filesystem-level copy inside Postgres — it takes seconds regardless of DB size, versus minutes for a full dump-and-restore. Branch-specific migrations then run only on the ticket DB.
+
+### 15.2 Import Fallback Chain
+
+All operations are **scoped to a single variant** (e.g., `development-acme`). Each variant has its own reference DB, DSLR snapshots, and dump files. Different variants never share database artifacts.
+
+The engine tries multiple sources to populate the reference DB, stopping at the first success:
+
+```mermaid
+flowchart TD
+    A["db_import(variant) called"] --> B{"DSLR snapshots exist\nfor ref DB of this variant?"}
+    B -- Yes --> C{"Restore snapshot\n(newest first)"}
+    C -- Yes --> H{"Run migrations on ref DB\n(main repo, default branch)\nsucceeds?"}
+    H -- Yes --> I["Take DSLR snapshot\n(YYYYMMDD_ref_db_name)"]
+    I --> D["createdb ticket_db -T ref_db"]
+    D --> E["Ticket DB ready"]
+    H -- No --> W["Mark artifact as bad\nin bad_artifacts.json"]
+    W --> B
+    C -- "All failed" --> F
+    B -- No --> F{"Valid local dumps\nfor this variant in dump_dir?"}
+    F -- Yes --> G{"Restore dump\n(newest first)"}
+    G -- Yes --> H
+    G -- "All failed" --> J
+    F -- No --> J{"User approved\nremote dump?"}
+    J -- Yes --> K["pg_dump from remote → dump_dir"]
+    K --> F
+    J -- No --> L{"CI dump\nexists?"}
+    L -- Yes --> M{"Restore CI dump → ref DB"}
+    M -- Yes --> H
+    M -- No --> N
+    L -- No --> N["FAIL: no source"]
+```
+
+**Uniform post-restore pipeline:** Every successful restore — whether from DSLR snapshot, local dump, remote dump, or CI dump — goes through the same pipeline: run `manage.py migrate` on the ref DB (bringing it to the current default branch level). If migrations fail, the engine warns the user to delete the bad artifact, then loops back to try the next available source. On success: take a fresh DSLR snapshot (capturing the migrated state), then `createdb -T` template copy to the ticket DB.
+
+**Retry within strategy:** When a snapshot or dump fails (restore error or migration failure), the engine tries older ones for the same variant before falling through to the next strategy. This avoids expensive remote dumps when an older local artifact is still usable.
+
+**Bad artifact tracking:** When an artifact fails (restore or migration), the engine marks it in `~/.local/share/teatree/bad_artifacts.json` and skips it on future runs. DSLR snapshots are keyed as `dslr:<name>`, dump files by absolute path. The engine prints the deletion command for each bad artifact. Cleanup of the actual files is deferred to an interactive task (see GitHub issue).
+
+**Remote dump requires approval:** Fetching a fresh dump from a remote database (strategy 3) is slow and network-dependent. The engine only attempts this when the caller explicitly enables it (e.g., via `--force` or an interactive confirmation). Automated provisioning skips this strategy.
+
+**Strategy details:**
+
+| # | Strategy | Source | Speed | When used |
+|---|----------|--------|-------|-----------|
+| 1 | DSLR snapshot | Local DSLR store | ~5s + migrate | Default — fastest path after first import |
+| 2 | Local dump | `{dump_dir}/*{ref_db}*.pgsql` | ~2min + migrate | After a manual dump download or previous remote fetch |
+| 3 | Remote dump | `pg_dump` from dev/staging DB | ~5-15min + migrate | Requires explicit user approval (`allow_remote_dump=True`) |
+| 4 | CI dump | `{ci_dump_glob}` in repo | ~2min + migrate | Last resort — often outdated but always available |
+
+After **every** successful restore (including DSLR snapshots), the engine runs the same pipeline:
+
+1. Runs `manage.py migrate` on the reference DB using the **main repo** (default branch) — bringing it to the latest master migration level
+2. Takes a fresh DSLR snapshot — capturing the migrated state for instant restores next time
+3. Creates the ticket DB via template copy
+
+DSLR snapshots are not exempt from migrations — they may be days old while master has moved forward. Treating snapshots as "just a faster kind of dump" keeps the pipeline uniform and prevents stale-schema bugs.
+
+### 15.3 Migration Retry with Selective Faking
+
+Dev environment dumps often have schema ahead of the recorded `django_migrations` state (migrations applied directly on dev that the branch hasn't caught up with). The engine handles this:
+
+1. Run `manage.py migrate --no-input`
+2. If it fails with "already exists" or "does not exist" → extract the failing migration name → `migrate <app> <migration> --fake` → retry
+3. If it fails with config errors (`ModuleNotFoundError`, `ImproperlyConfigured`) → abort (environment problem, not data problem)
+4. Retry up to 20 times (handles cascading fake-then-retry chains)
+5. `--fake` is **never** used for other failure types — those fail loudly
+
+### 15.4 Post-Import Steps
+
+After the ticket DB is created, the overlay's `get_post_db_steps()` run in order. Typical Django post-import steps:
+
+1. **Branch migrations** — `manage.py migrate` on the ticket DB (applies branch-specific migrations on top of the master-level snapshot)
+2. **Collectstatic** — `manage.py collectstatic --noinput` for admin assets
+3. **Password reset** — reset all user passwords to a known dev value (so you can log in)
+4. **Superuser** — ensure a local superuser exists
+5. **Seed data** — project-specific feature flags, reference data, etc.
+
+### 15.5 DjangoDbImportConfig (Configuration)
+
+The engine is configured via a `DjangoDbImportConfig` dataclass. Overlays construct this in their `db_import()` method:
+
+```python
+@dataclass(frozen=True)
+class DjangoDbImportConfig:
+    ref_db_name: str                      # e.g., "development-acme"
+    ticket_db_name: str                   # e.g., "wt_1234_acme"
+    main_repo_path: str                   # path to main repo clone (for migrations)
+    dump_dir: str                         # directory containing local dumps
+    dump_glob: str                        # glob pattern for dump files, e.g., "*development-acme*.pgsql"
+    ci_dump_glob: str                     # glob pattern for CI dumps, e.g., ".gitlab/dump_after_migration.*.sql.gz"
+    snapshot_tool: str = "dslr"           # snapshot tool ("dslr" or "")
+    remote_db_url: str = ""               # pg_dump source URL (empty = skip remote strategy)
+    migrate_env_extra: dict[str, str] = field(default_factory=dict)  # extra env for migrate
+    dump_timeout: int = 1800              # pg_dump timeout in seconds
+```
+
+**Calling convention:**
+
+```python
+django_db_import(cfg, skip_dslr=False, allow_remote_dump=False)
+```
+
+- `skip_dslr=True` — skip DSLR snapshots (used with `--force` to get a fresh dump)
+- `allow_remote_dump=True` — enable the remote pg_dump strategy (requires explicit user approval)
+
+**Overlay responsibility:** Provide the config values and decide when to set `allow_remote_dump=True` (typically gated behind `--force` or an interactive prompt).
+
+### 15.6 DSLR Integration
+
+[DSLR](https://github.com/mixxorz/DSLR) is a Postgres snapshot tool that creates/restores instant snapshots using filesystem-level copies. The engine uses it as an acceleration layer:
+
+- **After every dump restore + migrate:** take a DSLR snapshot (keyed by date + ref DB name)
+- **On subsequent imports:** restore from the latest matching snapshot (skips the slow restore + migrate cycle)
+- **Snapshot naming:** `YYYYMMDD_{ref_db_name}` (e.g., `20260326_development-acme`)
+- **Discovery:** `dslr list` → parse Rich table output → match by suffix → sort descending → take first
+
+DSLR is optional. If not installed, the engine skips snapshot strategies and always does full restores.
+
+### 15.7 Validation
+
+Validation happens at two levels:
+
+**Pre-checks (fast, before restore):**
+
+- **Dump file size** — 0-byte files are skipped with a warning (failed downloads, VPN issues)
+- **Dump integrity** — `pg_restore -l` detects truncated files before attempting a full restore
+
+**Real validation (during restore):**
+
+- **`manage.py migrate`** — this is the definitive check. A snapshot or dump that looks valid at the file level may contain incompatible schema, missing tables, or corrupt data that only surfaces when Django tries to apply migrations. When migrations fail (after exhausting the retry/fake loop), the engine tries the next older snapshot or dump for the same variant.
+- **Template copy success** — verify `createdb -T` exit code
+
+Invalid artifacts are reported with actionable messages ("delete and re-fetch"). On failure, the engine tries older artifacts before falling through to the next strategy.
+
+### 15.8 Worktree Setup Workflow (`lifecycle setup`)
+
+The `lifecycle setup` command provisions a worktree from scratch — allocating ports, writing env files, importing the database, and running overlay-specific preparation steps. This is the full pipeline from `created` to `provisioned`:
+
+```mermaid
+flowchart TD
+    A["lifecycle setup(worktree_id)"] --> B{"State == created?"}
+    B -- Yes --> C["worktree.provision()\n→ allocate ports, build db_name"]
+    B -- No --> D["refresh_ports_if_needed()\n(fill missing keys only)"]
+    C --> E["write_env_worktree()\n→ ticket_dir/.env.worktree\n→ symlink into repo worktree"]
+    D --> E
+    E --> F["_setup_worktree_dir()\n→ direnv allow\n→ prek install"]
+    F --> G{"Overlay has\ndb_import_strategy?"}
+    G -- Yes --> H["overlay.db_import()\n(see §15.2 fallback chain)"]
+    G -- No --> I["Skip DB import"]
+    H --> J["Overlay provision steps\n(symlinks, docker services,\nmigrations, collectstatic)"]
+    I --> J
+    J --> K["Overlay post-DB steps\n(custom requirements, migrate,\ncollectstatic, superuser, flags)"]
+    K --> L{"Overlay has\nreset_passwords_command?"}
+    L -- Yes --> M["Reset all user passwords\nto dev default"]
+    L -- No --> N["Skip password reset"]
+    M --> O["Pre-run steps for all services\n(translations, customer.json, etc.)"]
+    N --> O
+    O --> P["Write skill metadata cache"]
+    P --> Q["Return worktree.pk"]
+```
+
+**Port allocation** uses a file lock (`$T3_WORKSPACE_DIR/.port-allocation.lock`) to prevent races when multiple worktrees provision simultaneously. The allocator scans `.env.worktree` files in the workspace AND queries other worktrees' ports from the database, then finds the next available port starting from each base (backend: 8001, frontend: 4201, postgres: 5433, redis: 6379 shared).
+
+**`.env.worktree` contents** (generated by `write_env_worktree()`):
+
+```
+WT_VARIANT=<variant>
+TICKET_DIR=<ticket_dir>
+TICKET_URL=<issue_url>
+WT_DB_NAME=<db_name>
+BACKEND_PORT=<port>
+FRONTEND_PORT=<port>
+POSTGRES_PORT=<port>
+REDIS_PORT=<port>
+DJANGO_RUNSERVER_PORT=<port>
+BACK_END_URL=http://localhost:<backend_port>
+FRONT_END_URL=http://localhost:<frontend_port>
+COMPOSE_PROJECT_NAME=<repo_path>-wt<ticket_number>
+# + overlay.get_env_extra() entries
+```
+
+The file is written to the **ticket directory** (parent of the repo worktree) and **symlinked** into the repo worktree. This way, sibling worktrees for different repos in the same ticket share the same env file.
+
+### 15.9 Server Startup Workflow (`lifecycle start`)
+
+The `lifecycle start` command brings up Docker infrastructure and application servers, transitioning the worktree from `provisioned` to `services_up`:
+
+```mermaid
+flowchart TD
+    A["lifecycle start(worktree_id)"] --> B["Start Docker services\n(overlay.get_services_config)"]
+    B --> C["For each service:\nrun start_command\n(e.g. docker compose up -d db rd)"]
+    C --> D["Pre-run steps per service\n(overlay.get_pre_run_steps)"]
+    D --> E["Refresh .env.worktree\n(write_env_worktree)"]
+    E --> F["Build subprocess env\n(os.environ + overlay.get_env_extra\n- VIRTUAL_ENV)"]
+    F --> G["Create log directory\n(ticket_dir/../logs/)"]
+    G --> H["For each run command:\nlaunch as background Popen"]
+    H --> I["Sleep 1s per process\nthen check for immediate exit"]
+    I --> J{"Any process\nexited immediately?"}
+    J -- Yes --> K["Log failure\nadd to failed_services"]
+    J -- No --> L["Record PID in extra"]
+    K --> L
+    L --> M["worktree.start_services()\n→ provisioned → services_up"]
+    M --> N["Save PIDs + failed_services\nto worktree.extra"]
+```
+
+**Docker services** are started first (typically Postgres and Redis) — these are long-lived shared containers identified by the overlay's `get_services_config()`. Each spec includes a `start_command` (e.g., `docker compose up -d --no-build db`).
+
+**Application servers** (backend, frontend) are launched as background processes via `Popen`, with stdout/stderr redirected to per-service log files. The overlay's `get_run_commands()` provides the shell commands (e.g., `manage.py runserver`, `npx nx serve`).
+
+**Verification** is a separate step (`run verify`):
+
+```mermaid
+flowchart TD
+    A["run verify(worktree_id)"] --> B["Build endpoint URLs from ports\n(exclude postgres, redis)"]
+    B --> C["HTTP GET each endpoint\n(5s timeout)"]
+    C --> D{"All endpoints\nreturn 2xx/3xx?"}
+    D -- Yes --> E["worktree.verify()\n→ services_up → ready"]
+    D -- No --> F["Report failures\n(state unchanged)"]
+    E --> G["Store URL map in\nworktree.extra['urls']"]
+```
+
+### 15.10 Module Location
+
+```
+teetree/utils/django_db.py      # DjangoDbImportConfig + import engine
+teetree/utils/db.py             # Low-level pg helpers (db_restore, db_exists, pg_env)
+teetree/utils/bad_artifacts.py  # Bad artifact cache (~/.local/share/teatree/bad_artifacts.json)
+```
+
+The `django_db` module depends only on `utils/db` and stdlib. It has no Django imports — it shells out to `manage.py` as a subprocess, so it works regardless of the overlay's Django settings.
+
+---
+
+## 16. Dependencies
 
 ```toml
 django>=5.2,<6.1
@@ -828,7 +1102,7 @@ Dev dependencies: ruff, pytest, pytest-cov, pytest-django, ty, import-linter, pr
 
 ---
 
-## 16. Key Conventions
+## 17. Key Conventions
 
 - Python 3.13+. Use `X | Y` union syntax, never `Optional`.
 - `from __future__ import annotations` is banned.
