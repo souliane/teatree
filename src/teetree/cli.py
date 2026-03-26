@@ -1044,16 +1044,24 @@ def sonar_check(
 ) -> None:
     """Run local SonarQube analysis via Docker."""
     project = _find_overlay_project()
-    args = ["sonar-check"]
-    if repo_path:
-        args.append(repo_path)
+    script = project / "scripts" / "sonar_check.sh"
+    if not script.is_file():
+        typer.echo(f"sonar_check.sh not found in {project / 'scripts'}")
+        raise typer.Exit(code=1)
+    cmd = ["bash", str(script)]
+    if not repo_path:
+        # Recover the user's original shell CWD — os.getcwd() may differ when
+        # invoked via ``uv --directory`` which calls os.chdir() but leaves the
+        # inherited $PWD env var untouched.
+        repo_path = os.environ.get("PWD", str(Path.cwd()))
+    cmd.append(repo_path)
     if skip_baseline:
-        args.append("--skip-baseline")
+        cmd.append("--skip-baseline")
     if remote:
-        args.append("--remote")
+        cmd.append("--remote")
     if remote_status:
-        args.append("--remote-status")
-    _managepy(project, "tool", *args)
+        cmd.append("--remote-status")
+    subprocess.run(cmd, check=True)  # noqa: S603
 
 
 @tool_app.command("claude-handover")

@@ -1,7 +1,9 @@
 """Overlay-specific tool commands dispatched via ``t3 <overlay> tool``."""
 
 import os
+import shlex
 import subprocess  # noqa: S404
+import sys
 
 from django_typer.management import TyperCommand, command
 
@@ -11,13 +13,26 @@ from teetree.core.overlay_loader import get_overlay
 class Command(TyperCommand):
     @command()
     def run(self, name: str) -> str:
-        """Run an overlay tool command by name."""
+        """Run an overlay tool command by name.
+
+        Extra arguments after the tool name are forwarded to the command.
+        """
+        extra: list[str] = []
+        argv = sys.argv
+        try:
+            idx = argv.index(name)
+            extra = argv[idx + 1 :]
+        except ValueError:
+            pass
+
         overlay = get_overlay()
         for tool_cmd in overlay.get_tool_commands():
             if tool_cmd.get("name") == name:
                 mgmt_cmd = tool_cmd.get("management_command", "")
                 if not mgmt_cmd:
                     return f"Tool '{name}' has no management_command defined."
+                if extra:
+                    mgmt_cmd = f"{mgmt_cmd} {shlex.join(extra)}"
                 env = {**os.environ}
                 env.pop("VIRTUAL_ENV", None)
                 subprocess.run(mgmt_cmd, shell=True, check=True, env=env)  # noqa: S602
