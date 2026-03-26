@@ -227,6 +227,8 @@ When editing: check the verified boxes (`- [ ]` → `- [x]`), insert screenshot 
 | Command | Purpose |
 |---------|---------|
 | `t3 <overlay> run tests` | Run project tests |
+| `t3 <overlay> run e2e` | Run E2E tests |
+| `t3 <overlay> pr post-evidence` | Post test evidence as MR comment |
 | `t3 ci fetch-failed-tests` | Extract failed test IDs from CI |
 | `t3 ci fetch-errors` | Extract error logs from CI |
 | `t3 ci quality-check` | Quality analysis |
