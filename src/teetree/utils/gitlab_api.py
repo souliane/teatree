@@ -2,6 +2,7 @@ import os
 import re
 import subprocess
 from dataclasses import dataclass
+from pathlib import Path
 from typing import SupportsInt, cast
 
 import httpx
@@ -62,6 +63,31 @@ class GitLabAPI:
             json=payload or {},
             timeout=10.0,
         )
+        response.raise_for_status()
+        return cast("dict[str, object]", response.json())
+
+    def put_json(self, endpoint: str, payload: dict[str, object] | None = None) -> dict[str, object] | None:
+        if not self.token:
+            return None
+        response = httpx.put(
+            f"{self.base_url}/{endpoint.lstrip('/')}",
+            headers={"PRIVATE-TOKEN": self.token},
+            json=payload or {},
+            timeout=10.0,
+        )
+        response.raise_for_status()
+        return cast("dict[str, object]", response.json())
+
+    def upload_file(self, project_id: int, filepath: str) -> dict[str, object] | None:
+        if not self.token:
+            return None
+        with Path(filepath).open("rb") as f:
+            response = httpx.post(
+                f"{self.base_url}/projects/{project_id}/uploads",
+                headers={"PRIVATE-TOKEN": self.token},
+                files={"file": (Path(filepath).name, f)},
+                timeout=30.0,
+            )
         response.raise_for_status()
         return cast("dict[str, object]", response.json())
 

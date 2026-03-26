@@ -74,16 +74,49 @@ class Command(TyperCommand):
         self,
         mr_iid: int,
         repo: str = "",
-        title: str = "Test Evidence",
+        title: str = "Test Plan",
         body: str = "",
+        files: list[str] | None = None,
     ) -> dict[str, object]:
-        """Post test evidence (screenshots, results) as an MR comment."""
+        """Post test evidence as an MR comment. Uploads files and updates existing notes.
+
+        Files (screenshots, videos) are uploaded and embedded as ``![name](url)`` in the body.
+        If an existing note contains ``## Test Plan``, it is updated instead of creating a new one.
+        """
         host = get_code_host()
         if host is None:
             return {"error": "No code host configured (TEATREE_CODE_HOST)"}
 
         repo_path = repo or get_overlay().get_ci_project_path()
-        note_body = f"### {title}\n\n{body}" if body else f"### {title}\n\n_No details provided._"
+
+        # Upload files and build markdown embeds
+        embeds: list[str] = []
+        for filepath in files or []:
+            result = host.upload_file(repo=repo_path, filepath=filepath)
+            md = result.get("markdown", "")
+            if md:
+                embeds.append(str(md))
+                self.stdout.write(f"  Uploaded: {filepath}")
+
+        # Build note body
+        embed_section = "\n\n".join(embeds)
+        note_body = f"## {title}\n\n{body}" if body else f"## {title}\n\n_No details provided._"
+        if embed_section:
+            note_body += f"\n\n{embed_section}"
+
+        # Find existing test plan note to update
+        existing_notes = host.list_mr_notes(repo=repo_path, mr_iid=mr_iid)
+        marker = "## Test Plan"
+        existing_note = next(
+            (n for n in existing_notes if marker in str(n.get("body", "")) and not n.get("system")),
+            None,
+        )
+
+        if existing_note:
+            note_id = int(str(existing_note["id"]))
+            self.stdout.write(f"  Updating existing note {note_id}")
+            return host.update_mr_note(repo=repo_path, mr_iid=mr_iid, note_id=note_id, body=note_body)
+
         return host.post_mr_note(repo=repo_path, mr_iid=mr_iid, body=note_body)
 
 
