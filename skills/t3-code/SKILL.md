@@ -53,6 +53,7 @@ The implementation phase. Follow test-driven development and project conventions
 - **Simple/clear tasks** (single file, obvious change): State the plan in a short bullet list, then start implementing immediately. No need for plan mode or user confirmation.
 - **Complex/ambiguous tasks** (multi-file, architectural decisions, unclear scope): Use the agent's plan mode (if available) to block edits while planning. Explore the codebase, write the plan, present it for user approval. Only start coding after approval.
 - **Config/discovery with multiple fallback sources** (settings resolution, env detection, overlay discovery): Map ALL user workflows in a table (who, how they install, what they need) BEFORE coding. One clean implementation beats 6 iterative patches.
+- **Extracting overlay code to core** (generalization, refactoring): Write the BLUEPRINT spec first, then have the user review it before coding. Existing overlay code evolved organically — extracting it as-is copies its shortcuts. Design the clean-slate API from the spec, not from the existing implementation.
 
 **How to decide:** If you would normally ask the user "is this approach okay?" before coding, that's a complex task — use plan mode.
 
