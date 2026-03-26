@@ -967,6 +967,7 @@ def test_pr_post_evidence_without_code_host_returns_error() -> None:
 def test_pr_post_evidence_with_code_host() -> None:
     mock_host = MagicMock()
     mock_host.post_mr_note.return_value = {"id": 42}
+    mock_host.list_mr_notes.return_value = []  # no existing note
 
     with patch("teetree.core.management.commands.pr.get_code_host", return_value=mock_host):
         result = cast(
@@ -984,8 +985,82 @@ def test_pr_post_evidence_with_code_host() -> None:
     assert result == {"id": 42}
     call_kwargs = mock_host.post_mr_note.call_args[1]
     assert call_kwargs["mr_iid"] == 100
-    assert "### Evidence" in call_kwargs["body"]
+    assert "## Evidence" in call_kwargs["body"]
     assert "Test passed" in call_kwargs["body"]
+
+
+@override_settings(**SETTINGS)
+@pytest.mark.django_db
+def test_pr_post_evidence_updates_existing_note() -> None:
+    mock_host = MagicMock()
+    mock_host.list_mr_notes.return_value = [
+        {"id": 999, "body": "## Test Plan\n\nOld content", "system": False},
+    ]
+    mock_host.update_mr_note.return_value = {"id": 999}
+
+    with patch("teetree.core.management.commands.pr.get_code_host", return_value=mock_host):
+        result = cast(
+            "dict[str, object]",
+            call_command(
+                "pr",
+                "post-evidence",
+                "100",
+                repo="my/repo",
+                body="Updated content",
+            ),
+        )
+
+    assert result == {"id": 999}
+    mock_host.update_mr_note.assert_called_once()
+    call_kwargs = mock_host.update_mr_note.call_args[1]
+    assert call_kwargs["note_id"] == 999
+    assert "Updated content" in call_kwargs["body"]
+    mock_host.post_mr_note.assert_not_called()
+
+
+@override_settings(**SETTINGS)
+@pytest.mark.django_db
+def test_pr_post_evidence_uploads_files() -> None:
+    mock_host = MagicMock()
+    mock_host.upload_file.return_value = {"markdown": "![screenshot](/uploads/abc/img.png)"}
+    mock_host.list_mr_notes.return_value = []
+    mock_host.post_mr_note.return_value = {"id": 55}
+
+    with patch("teetree.core.management.commands.pr.get_code_host", return_value=mock_host):
+        cast(
+            "dict[str, object]",
+            call_command(
+                "pr",
+                "post-evidence",
+                "100",
+                repo="my/repo",
+                body="Evidence",
+                files=["/tmp/img.png"],
+            ),
+        )
+
+    mock_host.upload_file.assert_called_once_with(repo="my/repo", filepath="/tmp/img.png")
+    body = mock_host.post_mr_note.call_args[1]["body"]
+    assert "![screenshot](/uploads/abc/img.png)" in body
+
+
+@override_settings(**SETTINGS)
+@pytest.mark.django_db
+def test_pr_post_evidence_skips_empty_upload_markdown() -> None:
+    """When upload returns no markdown key, the embed is skipped."""
+    mock_host = MagicMock()
+    mock_host.upload_file.return_value = {}  # no markdown
+    mock_host.list_mr_notes.return_value = []
+    mock_host.post_mr_note.return_value = {"id": 56}
+
+    with patch("teetree.core.management.commands.pr.get_code_host", return_value=mock_host):
+        cast(
+            "dict[str, object]",
+            call_command("pr", "post-evidence", "100", repo="my/repo", body="x", files=["/tmp/bad.png"]),
+        )
+
+    body = mock_host.post_mr_note.call_args[1]["body"]
+    assert "![" not in body  # no embed added
 
 
 # ── Workspace: clean-all git worktree remove + branch -D (lines 172-181) ──
@@ -1314,6 +1389,7 @@ def test_lifecycle_start_reports_crashed_process(
 def test_pr_post_evidence_without_body() -> None:
     mock_host = MagicMock()
     mock_host.post_mr_note.return_value = {"id": 43}
+    mock_host.list_mr_notes.return_value = []
 
     with patch("teetree.core.management.commands.pr.get_code_host", return_value=mock_host):
         cast(
@@ -1336,6 +1412,7 @@ def test_pr_post_evidence_uses_overlay_ci_project_path() -> None:
     """When no repo is given, falls back to overlay.get_ci_project_path()."""
     mock_host = MagicMock()
     mock_host.post_mr_note.return_value = {"id": 44}
+    mock_host.list_mr_notes.return_value = []
 
     with patch("teetree.core.management.commands.pr.get_code_host", return_value=mock_host):
         call_command("pr", "post-evidence", "102", title="T")

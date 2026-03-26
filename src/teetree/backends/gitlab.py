@@ -59,6 +59,31 @@ class GitLabCodeHost:
         payload = {"body": body}
         return self._client.post_json(f"projects/{project.project_id}/merge_requests/{mr_iid}/notes", payload) or {}
 
+    def update_mr_note(self, *, repo: str, mr_iid: int, note_id: int, body: str) -> dict[str, object]:
+        project = self._resolve_project(repo)
+        if project is None:
+            return {"error": f"Could not resolve project: {repo}"}
+        return (
+            self._client.put_json(
+                f"projects/{project.project_id}/merge_requests/{mr_iid}/notes/{note_id}",
+                {"body": body},
+            )
+            or {}
+        )
+
+    def list_mr_notes(self, *, repo: str, mr_iid: int) -> list[dict[str, object]]:
+        project = self._resolve_project(repo)
+        if project is None:
+            return []
+        data = self._client.get_json(f"projects/{project.project_id}/merge_requests/{mr_iid}/notes?per_page=100")
+        return data if isinstance(data, list) else []
+
+    def upload_file(self, *, repo: str, filepath: str) -> dict[str, object]:
+        project = self._resolve_project(repo)
+        if project is None:
+            return {"error": f"Could not resolve project: {repo}"}
+        return self._client.upload_file(project.project_id, filepath) or {}
+
     def _resolve_project(self, repo: str) -> ProjectInfo | None:
         if Path(repo).exists():
             return self._client.resolve_project_from_remote(repo)

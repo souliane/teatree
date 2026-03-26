@@ -48,6 +48,15 @@ def test_code_host_protocol_is_structural() -> None:
         def post_mr_note(self, *, repo: str, mr_iid: int, body: str) -> dict[str, object]:
             return {}
 
+        def update_mr_note(self, *, repo: str, mr_iid: int, note_id: int, body: str) -> dict[str, object]:
+            return {}
+
+        def list_mr_notes(self, *, repo: str, mr_iid: int) -> list[dict[str, object]]:
+            return []
+
+        def upload_file(self, *, repo: str, filepath: str) -> dict[str, object]:
+            return {}
+
     assert isinstance(MyCodeHost(), CodeHost)
 
 
