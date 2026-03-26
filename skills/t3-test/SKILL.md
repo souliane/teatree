@@ -220,6 +220,7 @@ When editing: check the verified boxes (`- [ ]` → `- [x]`), insert screenshot 
 - **Never mention automation, E2E, Playwright, or scripts** — must read as manual testing
 - Prefer editing the existing test plan over posting a second comment
 - If a separate evidence comment already exists, delete it after merging evidence into the test plan
+- **Don't post code findings as bugs without asking the user first.** Behavior that looks like a bug may be intentional. Ask "Is this expected?" before posting a finding on the MR.
 
 ## Command Reference
 
