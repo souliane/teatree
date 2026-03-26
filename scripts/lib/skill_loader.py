@@ -104,6 +104,16 @@ def detect_intent(
 
     lp = prompt.lower()
 
+    # Pass 0: Explicit /t3-<skill> slash commands (highest priority).
+    # When the prompt starts with a known skill name, use it directly
+    # instead of falling through to URL/keyword matching.
+    slash_match = re.match(r"^/?([a-z][a-z0-9_-]+)", lp.strip())
+    if slash_match:
+        candidate = slash_match.group(1)
+        indexed = {e["skill"] for e in trigger_index}
+        if candidate in indexed:
+            return candidate
+
     # Pass 1: URL patterns (checked first, across all skills by priority)
     for entry in trigger_index:
         for url_pattern in entry.get("urls", []):

@@ -171,6 +171,19 @@ class TestDetectIntent:
             },
         ]
 
+    def test_explicit_slash_command_overrides_url(self, trigger_index):
+        result = detect_intent(
+            "/t3-review https://gitlab.com/org/repo/-/merge_requests/190",
+            trigger_index=trigger_index,
+        )
+        assert result == "t3-review"
+
+    def test_explicit_slash_command_without_leading_slash(self, trigger_index):
+        assert detect_intent("t3-ship some args", trigger_index=trigger_index) == "t3-ship"
+
+    def test_explicit_slash_command_unknown_skill(self, trigger_index):
+        assert detect_intent("/unknown-skill do something", trigger_index=trigger_index) != "unknown-skill"
+
     def test_keyword_match(self, trigger_index):
         assert detect_intent("commit and push", trigger_index=trigger_index) == "t3-ship"
 
