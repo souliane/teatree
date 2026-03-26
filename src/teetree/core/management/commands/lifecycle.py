@@ -4,6 +4,7 @@ import subprocess  # noqa: S404
 import time
 from pathlib import Path
 from subprocess import Popen  # noqa: S404
+from typing import IO
 
 import typer
 from django.core.management.base import OutputWrapper
@@ -137,16 +138,18 @@ class Command(TyperCommand):
         env.pop("VIRTUAL_ENV", None)
 
         ticket_dir = (worktree.extra or {}).get("worktree_path", "")
-        log_dir = Path(ticket_dir).parent / "logs" if ticket_dir else Path("/tmp")  # noqa: S108
+        log_dir = Path(ticket_dir) / "logs" if ticket_dir else Path("/tmp")  # noqa: S108
         log_dir.mkdir(parents=True, exist_ok=True)
 
         pids: dict[str, int] = {}
         failed: list[str] = []
+        log_files: list[IO] = []  # keep file handles alive until after FSM save
         for service_name, cmd in commands.items():
             log_path = log_dir / f"{service_name}.log"
             self.stdout.write(f"  Launching {service_name} (log: {log_path})")
-            with log_path.open("w") as log_file:
-                proc = Popen(cmd, shell=True, env=env, stdout=log_file, stderr=log_file)  # noqa: S602
+            log_file = log_path.open("w")
+            log_files.append(log_file)
+            proc = Popen(cmd, shell=True, env=env, stdout=log_file, stderr=log_file, start_new_session=True)  # noqa: S602
             pids[service_name] = proc.pid
             time.sleep(1)
             if proc.poll() is not None:
@@ -161,6 +164,10 @@ class Command(TyperCommand):
             extra["failed_services"] = failed
         worktree.extra = extra
         worktree.save()
+
+        # Close log file handles now that processes have their own copies
+        for f in log_files:
+            f.close()
 
         if failed:
             self.stderr.write(f"  WARNING: {len(failed)} service(s) failed: {', '.join(failed)}")
