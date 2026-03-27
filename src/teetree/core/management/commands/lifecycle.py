@@ -96,7 +96,19 @@ class Command(TyperCommand):
             self.stdout.write(f"  Running: {step.name}")
             step.callable()
 
-        # Run post-DB steps (max_migration refresh, additional migrations, collectstatic)
+        self._run_post_db_steps(overlay, worktree)
+
+        # Run pre-run steps for all services (e.g. frontend translation sync)
+        for service_name in overlay.get_run_commands(worktree):
+            for step in overlay.get_pre_run_steps(worktree, service_name):
+                self.stdout.write(f"  Running: {step.name}")
+                step.callable()
+
+        _write_skill_metadata_cache()
+
+        return int(worktree.pk)
+
+    def _run_post_db_steps(self, overlay: OverlayBase, worktree: Worktree) -> None:
         env = {**os.environ, **overlay.get_env_extra(worktree)}
         env.pop("VIRTUAL_ENV", None)
         for post_step in overlay.get_post_db_steps(worktree):
@@ -109,16 +121,6 @@ class Command(TyperCommand):
         if reset_cmd:
             self.stdout.write("  Running: reset-passwords")
             subprocess.run(reset_cmd, shell=True, check=False, env=env)  # noqa: S602
-
-        # Run pre-run steps for all services (e.g. frontend translation sync)
-        for service_name in overlay.get_run_commands(worktree):
-            for step in overlay.get_pre_run_steps(worktree, service_name):
-                self.stdout.write(f"  Running: {step.name}")
-                step.callable()
-
-        _write_skill_metadata_cache()
-
-        return int(worktree.pk)
 
     @command()
     def start(self, worktree_id: int = typer.Argument(0, help="Worktree ID (auto-detects from PWD if 0)")) -> str:

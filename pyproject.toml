@@ -129,19 +129,17 @@ lint.per-file-ignores."scripts/**/*.py" = [
   "TRY300",  # try-consider-else (readability preference)
 ]
 lint.per-file-ignores."src/teetree/cli.py" = [
-  "C901",
   "FBT003",
-  "PLR0912",
-  "PLR0915", # _build_overlay_app registers many commands in a single builder
   "PLR2004",
   "RSE102",
 ]
 lint.per-file-ignores."src/teetree/core/management/commands/*.py" = [
-  "C901",    # lifecycle setup complexity is inherent to the provisioning chain
   "PLR6301", # django-typer command methods intentionally live on Command classes
   "S607",    # partial executable paths (git, dropdb, direnv, prek) are trusted internal tools
 ]
 lint.per-file-ignores."src/teetree/core/migrations/*.py" = [
+  "ANN",    # Django migrations don't need type annotations
+  "ARG001", # Django migration functions receive apps/schema_editor by convention
   "E501",   # Django-generated migrations are left in generated form
   "RUF012", # Django migrations intentionally use mutable class attributes
 ]
@@ -150,9 +148,7 @@ lint.per-file-ignores."src/teetree/core/overlay.py" = [
   "PLR6301", # overlay hook defaults are instance methods by contract
 ]
 lint.per-file-ignores."src/teetree/core/sync.py" = [
-  "C901",
   "F821",
-  "PLR0912",
   "S112",
 ]
 lint.per-file-ignores."src/teetree/core/views/*.py" = [

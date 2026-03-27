@@ -52,6 +52,15 @@ class Ticket(models.Model):
 
     objects = TicketManager()
 
+    class Meta:
+        constraints: ClassVar = [
+            models.UniqueConstraint(
+                fields=["issue_url"],
+                name="unique_nonempty_issue_url",
+                condition=~models.Q(issue_url=""),
+            ),
+        ]
+
     def __str__(self) -> str:
         return str(self.issue_url or f"ticket-{self.pk}")
 

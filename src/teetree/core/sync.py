@@ -131,13 +131,20 @@ def _upsert_ticket_from_mr(  # noqa: PLR0913, PLR0914
 
     lookup_url = issue_url or web_url
     inferred_state = _infer_state_from_mrs({web_url: mr_entry})
-    ticket, created = Ticket.objects.get_or_create(
-        issue_url=lookup_url,
-        defaults={"repos": [repo_short], "extra": {"mrs": {web_url: mr_entry}}, "state": inferred_state},
-    )
-    if created:
+    tickets = list(Ticket.objects.filter(issue_url=lookup_url).order_by("pk"))
+    if not tickets:
+        ticket = Ticket.objects.create(
+            issue_url=lookup_url,
+            repos=[repo_short],
+            extra={"mrs": {web_url: mr_entry}},
+            state=inferred_state,
+        )
         result.tickets_created += 1
     else:
+        ticket = tickets[0]
+        for dup in tickets[1:]:
+            _merge_ticket_extras(ticket, dup)
+            dup.delete()
         _update_ticket(ticket, mr_entry, web_url, repo_short, inferred_state)
         result.tickets_updated += 1
 
@@ -179,6 +186,29 @@ def _classify_discussions(
 _SKILL_WRITTEN_FIELDS = ("review_channel", "review_permalink", "e2e_test_plan_url", "notion_status", "notion_url")
 
 
+def _merge_ticket_extras(target: Ticket, source: Ticket) -> None:
+    """Merge MR data and repos from a duplicate ticket into the target."""
+    src_extra = source.extra if isinstance(source.extra, dict) else {}
+    tgt_extra = target.extra if isinstance(target.extra, dict) else {}
+
+    src_mrs = src_extra.get("mrs", {})
+    tgt_mrs = tgt_extra.get("mrs", {})
+    if isinstance(src_mrs, dict) and isinstance(tgt_mrs, dict):
+        for url, entry in src_mrs.items():
+            if url not in tgt_mrs:
+                tgt_mrs[url] = entry
+        tgt_extra["mrs"] = tgt_mrs
+        target.extra = tgt_extra
+
+    src_repos = source.repos if isinstance(source.repos, list) else []
+    tgt_repos = target.repos if isinstance(target.repos, list) else []
+    for repo in src_repos:
+        if repo not in tgt_repos:
+            tgt_repos.append(repo)
+    target.repos = tgt_repos
+    target.save(update_fields=["extra", "repos"])
+
+
 def _update_ticket(
     ticket: Ticket,
     mr_entry: dict[str, object],
@@ -217,18 +247,44 @@ def _update_ticket(
     ticket.save(update_fields=update_fields)
 
 
+def _apply_merged_status(ticket: Ticket, merged_urls: set[str], result: SyncResult) -> None:
+    """Clean stale discussion data and advance ticket state when all MRs are merged."""
+    extra = ticket.extra if isinstance(ticket.extra, dict) else {}
+    mrs = extra.get("mrs", {})
+    if not isinstance(mrs, dict) or not mrs:
+        return
+
+    changed = False
+    all_merged = True
+    for mr_url, mr_entry in mrs.items():
+        if not isinstance(mr_entry, dict):
+            continue
+        if mr_url in merged_urls:
+            if mr_entry.pop("discussions", None) is not None:
+                changed = True
+            result.mrs_merged += 1
+        else:
+            all_merged = False
+
+    if not changed:
+        return
+
+    extra["mrs"] = mrs
+    ticket.extra = extra
+    update_fields = ["extra"]
+    if all_merged and _STATE_ORDER.index(Ticket.State.MERGED) > _STATE_ORDER.index(ticket.state):
+        ticket.state = Ticket.State.MERGED
+        update_fields.append("state")
+    ticket.save(update_fields=update_fields)
+
+
 def _detect_merged_mrs(
     client: GitLabAPI,
     username: str,
     result: SyncResult,
     last_sync: str | None,
 ) -> None:
-    """Detect MRs merged since last sync and clean up their ticket data.
-
-    Fetches recently merged MRs, cross-references with in-flight tickets,
-    removes stale discussion data, and advances ticket state to MERGED when
-    all of a ticket's MRs have been merged.
-    """
+    """Detect MRs merged since last sync and clean up their ticket data."""
     try:
         merged_mrs = client.list_recently_merged_mrs(username, updated_after=last_sync)
     except Exception as exc:  # noqa: BLE001
@@ -239,95 +295,72 @@ def _detect_merged_mrs(
         return
 
     merged_urls = {str(mr.get("web_url", "")) for mr in merged_mrs}
-
     for ticket in Ticket.objects.in_flight():
-        extra = ticket.extra if isinstance(ticket.extra, dict) else {}
-        mrs = extra.get("mrs", {})
-        if not isinstance(mrs, dict) or not mrs:
-            continue
+        _apply_merged_status(ticket, merged_urls, result)
 
-        changed = False
-        all_merged = True
 
-        for mr_url, mr_entry in mrs.items():
-            if not isinstance(mr_entry, dict):
-                continue
-            if mr_url in merged_urls:
-                if mr_entry.pop("discussions", None) is not None:
-                    changed = True
-                result.mrs_merged += 1
-            else:
-                all_merged = False
+_ISSUE_PARTS_RE = re.compile(r"gitlab\.com/(.+?)/-/(?:issues|work_items)/(\d+)")
 
-        if not changed:
-            continue
 
-        extra["mrs"] = mrs
+def _resolve_issue(client: GitLabAPI, issue_url: str) -> tuple[dict, str, int] | None:
+    """Parse a GitLab issue/work-item URL and fetch the issue. Returns (issue, project_path, iid) or None."""
+    match = _ISSUE_PARTS_RE.search(issue_url)
+    if not match:
+        return None
+    project_path, iid_str = match.group(1), match.group(2)
+    iid = int(iid_str)
+    if iid == 0:
+        return None
+    project = client.resolve_project(project_path)
+    if not project:
+        return None
+    issue = client.get_issue(project.project_id, iid)
+    return (issue, project_path, iid) if issue else None
+
+
+def _apply_issue_data(client: GitLabAPI, ticket: Ticket, issue: dict, project_path: str, iid: int) -> bool:
+    """Update a ticket with labels, title, variant, and tracker status from an issue. Returns True if saved."""
+    labels = issue.get("labels", [])
+    tracker_status = _process_label(labels) if isinstance(labels, list) else None
+
+    if not tracker_status and "/work_items/" in ticket.issue_url:
+        tracker_status = client.get_work_item_status(project_path, iid) or tracker_status
+
+    extra = ticket.extra if isinstance(ticket.extra, dict) else {}
+    update_fields: list[str] = []
+
+    if tracker_status and extra.get("tracker_status") != tracker_status:
+        extra["tracker_status"] = tracker_status
+        update_fields.append("extra")
+
+    issue_title = str(issue.get("title", ""))
+    if issue_title and extra.get("issue_title") != issue_title:
+        extra["issue_title"] = issue_title
+        if "extra" not in update_fields:
+            update_fields.append("extra")
+
+    variant = _extract_variant(list(labels)) if isinstance(labels, list) else ""
+    if variant and ticket.variant != variant:
+        ticket.variant = variant
+        update_fields.append("variant")
+
+    if update_fields:
         ticket.extra = extra
-        update_fields = ["extra"]
-
-        if all_merged and _STATE_ORDER.index(Ticket.State.MERGED) > _STATE_ORDER.index(ticket.state):
-            ticket.state = Ticket.State.MERGED
-            update_fields.append("state")
-
         ticket.save(update_fields=update_fields)
+        return True
+    return False
 
 
 def _fetch_issue_labels(client: GitLabAPI, result: SyncResult) -> None:
     """Fetch GitLab issue labels and work item status for tickets with issue URLs."""
-    issue_tickets = Ticket.objects.exclude(issue_url="").filter(
+    for ticket in Ticket.objects.exclude(issue_url="").filter(
         issue_url__regex=r"/-/(issues|work_items)/\d+$",
-    )
-    for ticket in issue_tickets:
-        match = re.search(r"gitlab\.com/(.+?)/-/(?:issues|work_items)/(\d+)", ticket.issue_url)
-        if not match:
+    ):
+        resolved = _resolve_issue(client, ticket.issue_url)
+        if not resolved:
             continue
-
-        project_path = match.group(1)
-        iid = int(match.group(2))
-        if iid == 0:
-            continue
-
-        is_work_item = "/work_items/" in ticket.issue_url
-
-        project = client.resolve_project(project_path)
-        if not project:
-            continue
-
-        issue = client.get_issue(project.project_id, iid)
-        if not issue:
-            continue
-
-        labels = issue.get("labels", [])
-        tracker_status = _process_label(labels) if isinstance(labels, list) else None  # type: ignore[arg-type]
-
-        # For work items without Process:: labels, fetch the Status widget via GraphQL
-        if not tracker_status and is_work_item:
-            wi_status = client.get_work_item_status(project_path, iid)
-            if wi_status:
-                tracker_status = wi_status
-
-        extra = ticket.extra if isinstance(ticket.extra, dict) else {}
-        update_fields: list[str] = []
-
-        if tracker_status and extra.get("tracker_status") != tracker_status:
-            extra["tracker_status"] = tracker_status
-            update_fields.append("extra")
-
-        issue_title = str(issue.get("title", ""))
-        if issue_title and extra.get("issue_title") != issue_title:
-            extra["issue_title"] = issue_title
-            if "extra" not in update_fields:
-                update_fields.append("extra")
-
-        variant = _extract_variant(list(labels)) if isinstance(labels, list) else ""
-        if variant and ticket.variant != variant:
-            ticket.variant = variant
-            update_fields.append("variant")
-
-        if update_fields:
-            ticket.extra = extra
-            ticket.save(update_fields=update_fields)
+        issue, project_path, iid = resolved
+        if _apply_issue_data(client, ticket, issue, project_path, iid):
             result.labels_fetched += 1
 
 
@@ -345,12 +378,26 @@ def fetch_notion_statuses() -> None:
     raise NotImplementedError(msg)
 
 
-def _fetch_review_permalinks(result: SyncResult) -> None:
-    """Fetch Slack review permalinks for in-flight non-draft MRs.
+def _collect_reviewable_mr_urls() -> tuple[list[str], dict[str, tuple[Ticket, str]]]:
+    """Collect non-draft MR URLs without review permalinks from in-flight tickets."""
+    mr_urls: list[str] = []
+    url_to_ticket: dict[str, tuple[Ticket, str]] = {}
+    for ticket in Ticket.objects.in_flight():
+        extra = ticket.extra if isinstance(ticket.extra, dict) else {}
+        mrs = extra.get("mrs", {})
+        if not isinstance(mrs, dict):
+            continue
+        for mr_url, mr in mrs.items():
+            if not isinstance(mr, dict) or mr.get("draft") or mr.get("review_permalink"):
+                continue
+            clean_url = mr_url.rstrip("/").split("#")[0]
+            mr_urls.append(clean_url)
+            url_to_ticket[clean_url] = (ticket, mr_url)
+    return mr_urls, url_to_ticket
 
-    Searches the configured review channel for messages containing MR URLs.
-    Matching is deterministic: exact MR URL substring match, no AI.
-    """
+
+def _fetch_review_permalinks(result: SyncResult) -> None:
+    """Fetch Slack review permalinks for in-flight non-draft MRs."""
     from teetree.backends.slack import search_review_permalinks  # noqa: PLC0415
 
     token = getattr(settings, "TEATREE_SLACK_TOKEN", "")
@@ -359,26 +406,7 @@ def _fetch_review_permalinks(result: SyncResult) -> None:
     if not token or not channel_id:
         return
 
-    # Collect non-draft MR URLs that don't already have a review permalink
-    mr_urls: list[str] = []
-    url_to_ticket: dict[str, tuple[Ticket, str]] = {}
-
-    for ticket in Ticket.objects.in_flight():
-        extra = ticket.extra if isinstance(ticket.extra, dict) else {}
-        mrs = extra.get("mrs", {})
-        if not isinstance(mrs, dict):
-            continue
-        for mr_url, mr in mrs.items():
-            if not isinstance(mr, dict):
-                continue
-            if mr.get("draft"):
-                continue
-            if mr.get("review_permalink"):
-                continue
-            clean_url = mr_url.rstrip("/").split("#")[0]
-            mr_urls.append(clean_url)
-            url_to_ticket[clean_url] = (ticket, mr_url)
-
+    mr_urls, url_to_ticket = _collect_reviewable_mr_urls()
     if not mr_urls:
         return
 

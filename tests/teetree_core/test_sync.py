@@ -14,6 +14,7 @@ from teetree.core.sync import (
     _extract_variant,
     _fetch_review_permalinks,
     _infer_state_from_mrs,
+    _merge_ticket_extras,
     _update_ticket,
     sync_followup,
 )
@@ -1301,3 +1302,112 @@ def test_sync_updates_ticket_variant_from_issue_labels(monkeypatch: pytest.Monke
 
     ticket = Ticket.objects.get(issue_url="https://gitlab.com/org/repo/-/issues/600")
     assert ticket.variant == "Acme"
+
+
+@pytest.mark.django_db
+def test_merge_ticket_extras_combines_mrs_and_repos() -> None:
+    """_merge_ticket_extras merges MR entries and repos from source into target."""
+    target = Ticket.objects.create(
+        issue_url="https://gitlab.com/org/repo/-/issues/900",
+        repos=["repo-a"],
+        extra={"mrs": {"https://mr/1": {"title": "MR 1"}}},
+    )
+    source = Ticket.objects.create(
+        issue_url="https://gitlab.com/org/repo/-/issues/901",
+        repos=["repo-b"],
+        extra={"mrs": {"https://mr/2": {"title": "MR 2"}}},
+    )
+    _merge_ticket_extras(target, source)
+    target.refresh_from_db()
+
+    assert "https://mr/1" in target.extra["mrs"]
+    assert "https://mr/2" in target.extra["mrs"]
+    assert "repo-a" in target.repos
+    assert "repo-b" in target.repos
+
+
+@pytest.mark.django_db
+def test_merge_ticket_extras_handles_non_dict_mrs() -> None:
+    """Non-dict mrs in extras are treated as empty — repos still merge."""
+    target = Ticket.objects.create(
+        issue_url="https://gitlab.com/org/repo/-/issues/960",
+        repos=["repo-a"],
+        extra={"mrs": "corrupt"},
+    )
+    source = Ticket.objects.create(
+        issue_url="https://gitlab.com/org/repo/-/issues/961",
+        repos=["repo-b"],
+        extra={"mrs": ["also-corrupt"]},
+    )
+    _merge_ticket_extras(target, source)
+    target.refresh_from_db()
+    assert target.repos == ["repo-a", "repo-b"]
+
+
+@pytest.mark.django_db
+def test_merge_ticket_extras_skips_overlapping_mrs_and_repos() -> None:
+    """Overlapping MR URLs and repos are not duplicated."""
+    target = Ticket.objects.create(
+        issue_url="https://gitlab.com/org/repo/-/issues/950",
+        repos=["repo-a", "repo-b"],
+        extra={"mrs": {"https://mr/1": {"title": "MR 1"}}},
+    )
+    source = Ticket.objects.create(
+        issue_url="https://gitlab.com/org/repo/-/issues/951",
+        repos=["repo-b", "repo-c"],
+        extra={"mrs": {"https://mr/1": {"title": "MR 1 dup"}, "https://mr/3": {"title": "MR 3"}}},
+    )
+    _merge_ticket_extras(target, source)
+    target.refresh_from_db()
+
+    assert target.extra["mrs"]["https://mr/1"]["title"] == "MR 1"
+    assert "https://mr/3" in target.extra["mrs"]
+    assert target.repos == ["repo-a", "repo-b", "repo-c"]
+
+
+@override_settings(
+    TEATREE_OVERLAY_CLASS="tests.teetree_core.conftest.CommandOverlay",
+    TEATREE_GITLAB_TOKEN="test-token",
+    TEATREE_GITLAB_USERNAME="testuser",
+)
+@pytest.mark.django_db
+def test_sync_deduplicates_tickets_on_upsert(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When duplicate tickets exist for the same issue_url, sync merges and deletes extras."""
+    ticket_a = Ticket.objects.create(
+        issue_url="https://gitlab.com/org/repo/-/issues/100",
+        repos=["repo"],
+        extra={"mrs": {"https://mr/old": {"title": "old"}}},
+        state=Ticket.State.STARTED,
+    )
+    dup_b = Ticket.objects.create(
+        issue_url="https://gitlab.com/org/repo/-/issues/101",
+        repos=["other-repo"],
+        extra={"mrs": {"https://mr/dup": {"title": "dup"}}},
+    )
+    dup_c = Ticket.objects.create(
+        issue_url="https://gitlab.com/org/repo/-/issues/102",
+        repos=[],
+        extra={},
+    )
+
+    original_filter = Ticket.objects.filter
+
+    def patched_filter(**kwargs):
+        qs = original_filter(**kwargs)
+        if kwargs.get("issue_url") == "https://gitlab.com/org/repo/-/issues/100":
+            return Ticket.objects.filter(pk__in=[ticket_a.pk, dup_b.pk, dup_c.pk]).order_by("pk")
+        return qs
+
+    monkeypatch.setattr(Ticket.objects, "filter", patched_filter)
+
+    mock_client = _make_mock_client([_MR_WITH_ISSUE])
+    monkeypatch.setattr("teetree.core.sync.GitLabAPI", lambda **_kw: mock_client)
+
+    result = sync_followup()
+
+    assert result.tickets_updated >= 1
+    assert not Ticket.objects.filter(pk=dup_b.pk).exists()
+    assert not Ticket.objects.filter(pk=dup_c.pk).exists()
+    ticket_a.refresh_from_db()
+    assert "https://mr/dup" in ticket_a.extra["mrs"]
+    assert "other-repo" in ticket_a.repos
