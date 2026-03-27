@@ -316,6 +316,8 @@ class SkillLoadingPolicy:
     def _resolve_and_dedupe(self, skills: list[str]) -> list[str]:
         ordered: list[str] = []
         for skill in resolve_dependencies(skills, skills_dir=self.skills_dir):
+            # ac-adopting-ruff is a one-shot migration skill (ruff adoption),
+            # not a session companion — skip it during automatic resolution.
             if skill == "ac-adopting-ruff":
                 continue
             if skill not in ordered:
