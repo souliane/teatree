@@ -366,12 +366,12 @@ class TestSupplementarySkills:
 
 
 class TestSuggestSkills:
-    def test_review_includes_companions(self, tmp_path):
+    def test_review_includes_framework_and_dependencies(self, tmp_path):
+        (tmp_path / "manage.py").write_text("# django project\n", encoding="utf-8")
         cache = tmp_path / "skill-metadata.json"
         cache.write_text(
             json.dumps(
                 {
-                    "companion_skills": ["ac-django"],
                     "trigger_index": [
                         {
                             "skill": "t3-review",
@@ -389,22 +389,23 @@ class TestSuggestSkills:
             result = suggest_skills(
                 {
                     "prompt": "review these MRs",
-                    "cwd": ".",
+                    "cwd": str(tmp_path),
                     "loaded_skills": [],
                     "skill_search_dirs": [str(SKILLS_DIR)],
                     "supplementary_config": "",
                 }
             )
-        assert "t3-review" in result["suggestions"]
         assert "ac-django" in result["suggestions"]
+        assert "t3-review" in result["suggestions"]
+        assert "t3-workspace" in result["suggestions"]
         assert result["intent"] == "t3-review"
 
     def test_filters_loaded(self, tmp_path):
+        (tmp_path / "manage.py").write_text("# django project\n", encoding="utf-8")
         cache = tmp_path / "skill-metadata.json"
         cache.write_text(
             json.dumps(
                 {
-                    "companion_skills": ["ac-django"],
                     "trigger_index": [
                         {
                             "skill": "t3-review",
@@ -422,14 +423,75 @@ class TestSuggestSkills:
             result = suggest_skills(
                 {
                     "prompt": "review code",
-                    "cwd": ".",
-                    "loaded_skills": ["t3-review", "ac-django"],
+                    "cwd": str(tmp_path),
+                    "loaded_skills": ["t3-review", "ac-django", "t3-workspace", "t3-platforms", "t3-code"],
                     "skill_search_dirs": [str(SKILLS_DIR)],
                     "supplementary_config": "",
                 }
             )
         assert "t3-review" not in result["suggestions"]
         assert "ac-django" not in result["suggestions"]
+
+    def test_overlay_skill_requires_remote_match(self, tmp_path):
+        cache = tmp_path / "skill-metadata.json"
+        cache.write_text(
+            json.dumps(
+                {
+                    "skill_path": "skills/t3-acme/SKILL.md",
+                    "remote_patterns": ["git@gitlab.com:acme-engineering/*"],
+                    "trigger_index": [
+                        {
+                            "skill": "t3-code",
+                            "priority": 70,
+                            "keywords": [r"\bimplement\b"],
+                            "urls": [],
+                            "exclude": "",
+                            "end_of_session": False,
+                        },
+                    ],
+                }
+            )
+        )
+        with (
+            mock.patch("lib.skill_loader.SKILL_METADATA_CACHE", cache),
+            mock.patch(
+                "teetree.skill_loading.subprocess.run",
+                return_value=mock.Mock(returncode=0, stdout="git@gitlab.com:acme-engineering/platform-product\n"),
+            ),
+        ):
+            result = suggest_skills(
+                {
+                    "prompt": "implement the change",
+                    "cwd": str(tmp_path),
+                    "loaded_skills": [],
+                    "skill_search_dirs": [str(SKILLS_DIR)],
+                    "supplementary_config": "",
+                }
+            )
+        assert "skills/t3-acme/SKILL.md" in result["suggestions"]
+
+    def test_vague_prompt_does_not_load_overlay_skill(self, tmp_path):
+        cache = tmp_path / "skill-metadata.json"
+        cache.write_text(
+            json.dumps(
+                {
+                    "skill_path": "skills/t3-acme/SKILL.md",
+                    "remote_patterns": ["git@gitlab.com:acme-engineering/*"],
+                    "trigger_index": [],
+                }
+            )
+        )
+        with mock.patch("lib.skill_loader.SKILL_METADATA_CACHE", cache):
+            result = suggest_skills(
+                {
+                    "prompt": "hello",
+                    "cwd": str(tmp_path),
+                    "loaded_skills": [],
+                    "skill_search_dirs": [str(SKILLS_DIR)],
+                    "supplementary_config": "",
+                }
+            )
+        assert result["suggestions"] == []
 
     def test_no_intent(self):
         result = suggest_skills(

@@ -15,9 +15,16 @@ from __future__ import annotations  # noqa: TID251 — standalone script, no tee
 
 import json
 import re
+import sys
 from pathlib import Path
 
 from lib.trigger_parser import parse_triggers as parse_triggers_from_frontmatter
+
+_SRC_DIR = Path(__file__).resolve().parents[2] / "src"
+if str(_SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(_SRC_DIR))
+
+from teetree.skill_loading import DEFAULT_SKILL_SEARCH_DIRS, SkillLoadingPolicy
 
 XDG_DATA_DIR = Path.home() / ".local" / "share" / "teatree"
 SKILL_METADATA_CACHE = XDG_DATA_DIR / "skill-metadata.json"
@@ -165,6 +172,22 @@ def read_companion_skills() -> list[str]:
         return companions if isinstance(companions, list) else []
     except (json.JSONDecodeError, OSError):
         return []
+
+
+def read_overlay_skill_metadata() -> dict[str, object]:
+    """Read overlay skill metadata from the XDG cache."""
+    if not SKILL_METADATA_CACHE.is_file():
+        return {}
+    try:
+        metadata = json.loads(SKILL_METADATA_CACHE.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+    if not isinstance(metadata, dict):
+        return {}
+    return {
+        "skill_path": metadata.get("skill_path", ""),
+        "remote_patterns": metadata.get("remote_patterns", []),
+    }
 
 
 # ── Supplementary skills (config file) ──────────────────────────────
@@ -344,43 +367,18 @@ def suggest_skills(data: dict) -> dict:
     )
 
     if not intent:
-        return {"suggestions": [], "intent": "", "overlay_skill_dir": "", "project_overlay": ""}
+        return {"suggestions": [], "intent": ""}
 
-    # 2. Build skill list: intent + companions + supplementary
-    skills: list[str] = []
-
-    # Always include t3-workspace as foundation (except t3-setup and t3-retro)
-    if intent not in ("t3-setup", "t3-retro"):
-        skills.append("t3-workspace")
-
-    if intent != "t3-workspace":
-        skills.append(intent)
-
-    # Companion skills from overlay (XDG cache)
-    skills.extend(read_companion_skills())
-
-    # Supplementary skills from config
-    skills.extend(read_supplementary_skills(supplementary_config, prompt))
-
-    # Framework skills from project-type detection
-    if cwd:
-        skills.extend(_detect_framework_skills(cwd))
-
-    # 3. Resolve dependencies (topological sort)
-    resolved = resolve_dependencies(skills, search_dirs)
-
-    # 4. Filter already-loaded and dedupe
-    suggestions = []
-    for skill in resolved:
-        if skill not in loaded and skill not in suggestions:
-            suggestions.append(skill)
-
-    # 5. Overlay info for reference injections
-    overlay_skill_dir, project_overlay = _find_overlay_skill_dir(search_dirs)
-
-    return {
-        "suggestions": suggestions,
-        "intent": intent,
-        "overlay_skill_dir": overlay_skill_dir,
-        "project_overlay": project_overlay,
-    }
+    combined_search_dirs: list[Path] = []
+    for directory in [*search_dirs, *DEFAULT_SKILL_SEARCH_DIRS]:
+        if directory not in combined_search_dirs:
+            combined_search_dirs.append(directory)
+    policy = SkillLoadingPolicy(skills_dir=combined_search_dirs)
+    selection = policy.select_for_prompt_hook(
+        cwd=Path(cwd) if cwd else Path.cwd(),
+        intent=intent,
+        overlay_skill_metadata=read_overlay_skill_metadata(),
+        loaded_skills=loaded,
+        supplementary_skills=read_supplementary_skills(supplementary_config, prompt),
+    )
+    return {"suggestions": selection.skills, "intent": intent}

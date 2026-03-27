@@ -16,9 +16,18 @@ from textwrap import dedent
 
 import typer
 
+from teetree.skill_loading import DEFAULT_SKILLS_DIR
+
 logger = logging.getLogger(__name__)
 
 app = typer.Typer(name="t3", no_args_is_help=True, add_completion=False)
+
+AGENT_PHASE_OPTION = typer.Option("", "--phase", help="Explicit TeaTree phase override.")
+AGENT_SKILL_OPTION = typer.Option(
+    None,
+    "--skill",
+    help="Explicit skill override. Repeat to load multiple skills.",
+)
 
 # ── Always-available commands (no Django) ──────────────────────────────
 
@@ -107,54 +116,58 @@ def docs(
     )
 
 
-_TASK_PHASE_KEYWORDS: dict[str, list[str]] = {
-    "t3-debug": ["debug", "fix", "error", "broken", "crash", "not working", "bug", "trace"],
-    "t3-test": ["test", "pytest", "e2e", "lint", "ci", "pipeline", "qa"],
-    "t3-ship": ["commit", "push", "ship", "deliver", "mr", "merge request", "pull request"],
-    "t3-review": ["review", "feedback", "check the code"],
-    "t3-ticket": ["ticket", "issue", "start working on"],
-    "t3-retro": ["retro", "retrospective", "lessons learned"],
-    "t3-workspace": ["setup", "worktree", "create worktree", "servers", "cleanup"],
-}
-
-_DEFAULT_SKILLS = ["t3-code", "t3-debug"]
+def _project_python(project_root: Path) -> str:
+    project_python = project_root / ".venv" / "bin" / "python"
+    return str(project_python) if project_python.is_file() else sys.executable
 
 
-def _resolve_agent_skills(
+def _detect_agent_ticket_status(project_root: Path) -> str:
+    manage_py = project_root / "manage.py"
+    if not manage_py.is_file():
+        return ""
+    command = [
+        _project_python(project_root),
+        str(manage_py),
+        "shell",
+        "-c",
+        (
+            "from teetree.core.resolve import WorktreeNotFoundError, resolve_worktree\n"
+            "try:\n"
+            "    print(resolve_worktree().ticket.state)\n"
+            "except Exception:\n"
+            "    print('')\n"
+        ),
+    ]
+    env = {key: value for key, value in os.environ.items() if key != "DJANGO_SETTINGS_MODULE"}
+    proc = subprocess.run(  # noqa: S603
+        command,
+        cwd=project_root,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        return ""
+    return proc.stdout.strip()
+
+
+def _agent_search_dirs(project_root: Path) -> list[Path]:
+    search_dirs = [DEFAULT_SKILLS_DIR, Path.home() / ".agents" / "skills", Path.home() / ".claude" / "skills"]
+    project_skills_dir = project_root / "skills"
+    if project_skills_dir.is_dir():
+        search_dirs.insert(0, project_skills_dir)
+    return search_dirs
+
+
+def _launch_claude(
+    *,
     task: str,
     project_root: Path,
-) -> list[str]:
-    """Build the skills list for ``t3 agent`` based on context.
-
-    1. Discover overlay-specific skills from ``skills/`` directory.
-    2. Pick t3 lifecycle skills from task keywords (or defaults).
-    3. Deduplicate while preserving order.
-    """
-    skills: list[str] = []
-
-    # Overlay skills from project's skills/ directory
-    skills_dir = project_root / "skills"
-    if skills_dir.is_dir():
-        skills.extend(skill_md.parent.name for skill_md in sorted(skills_dir.glob("*/SKILL.md")))
-
-    # Task-based lifecycle skill selection
-    task_lower = task.lower()
-    matched: list[str] = []
-    if task_lower:
-        for skill_name, keywords in _TASK_PHASE_KEYWORDS.items():
-            if any(kw in task_lower for kw in keywords):
-                matched.append(skill_name)
-
-    lifecycle_skills = matched or list(_DEFAULT_SKILLS)
-
-    for skill in lifecycle_skills:
-        if skill not in skills:
-            skills.append(skill)
-
-    return skills
-
-
-def _launch_claude(*, task: str, project_root: Path, context_lines: list[str]) -> None:
+    context_lines: list[str],
+    skills: list[str],
+    ask_user_which_skill: bool,
+) -> None:
     """Shared logic: resolve skills, build prompt, exec into claude."""
     import shutil  # noqa: PLC0415
 
@@ -163,26 +176,24 @@ def _launch_claude(*, task: str, project_root: Path, context_lines: list[str]) -
         typer.echo("claude CLI not found on PATH. Install Claude Code first.")
         raise typer.Exit(code=1)
 
-    skills = _resolve_agent_skills(task, project_root)
-
     teatree_editable, teatree_url = _editable_info("teatree")
     if teatree_editable and teatree_url:
         context_lines.append(f"TeaTree source (editable): {teatree_url.removeprefix('file://')}")
     context_lines.append("")
-
-    from teetree.agents.skill_bundle import DEFAULT_SKILLS_DIR, resolve_dependencies  # noqa: PLC0415
-
-    resolved = resolve_dependencies(skills, skills_dir=DEFAULT_SKILLS_DIR)
-    context_lines.extend(
-        (
-            "BLOCKING REQUIREMENT: Read ALL skill files below BEFORE doing anything else.",
-            "Do NOT skip. Do NOT start working until every file is read.",
+    if skills:
+        context_lines.extend(
+            (
+                "Load only these skills before starting work:",
+                *(f"  - /{skill}" for skill in skills),
+            )
         )
-    )
-    for skill_name in resolved:
-        skill_md = DEFAULT_SKILLS_DIR / skill_name / "SKILL.md"
-        if skill_md.is_file():  # pragma: no branch
-            context_lines.append(f"  - {skill_md}")
+    if ask_user_which_skill:
+        context_lines.extend(
+            (
+                "TeaTree could not infer the lifecycle skill for this session.",
+                "Before doing any work, ask the user which lifecycle skill to load.",
+            )
+        )
     context_lines.extend(("", "Run `uv run t3 --help` to see available commands.", "Run `uv run pytest` to run tests."))
     if task:
         context_lines.extend(("", f"Task: {task}"))
@@ -199,12 +210,19 @@ def _launch_claude(*, task: str, project_root: Path, context_lines: list[str]) -
 @app.command()
 def agent(
     task: str = typer.Argument("", help="What to work on (e.g. 'fix the sync bug', 'add a new command')"),
+    phase: str = AGENT_PHASE_OPTION,
+    skill: list[str] = AGENT_SKILL_OPTION,
 ) -> None:
     """Launch Claude Code with auto-detected project context."""
     from teetree.config import discover_active_overlay  # noqa: PLC0415
+    from teetree.core.overlay_loader import get_overlay  # noqa: PLC0415
+    from teetree.skill_loading import SkillLoadingPolicy  # noqa: PLC0415
 
     project_root = _find_project_root()
     active = discover_active_overlay()
+    if phase and skill:
+        typer.echo("--phase and --skill cannot be used together.")
+        raise typer.Exit(code=1)
 
     lines = ["You are working on a TeaTree project.", ""]
     if active:
@@ -217,7 +235,29 @@ def agent(
     else:
         lines.append("No overlay active — working on teatree itself.")
 
-    _launch_claude(task=task, project_root=project_root, context_lines=lines)
+    overlay_skill_metadata = get_overlay().get_skill_metadata() if active else {}
+    policy = SkillLoadingPolicy(skills_dir=_agent_search_dirs(project_root))
+    try:
+        selection = policy.select_for_agent_launch(
+            cwd=Path.cwd(),
+            overlay_skill_metadata=overlay_skill_metadata,
+            task=task,
+            ticket_status=_detect_agent_ticket_status(project_root) if active else "",
+            explicit_phase=phase,
+            explicit_skills=skill or [],
+            overlay_active=bool(active),
+        )
+    except ValueError as exc:
+        typer.echo(str(exc))
+        raise typer.Exit(code=1) from exc
+
+    _launch_claude(
+        task=task,
+        project_root=project_root,
+        context_lines=lines,
+        skills=selection.skills,
+        ask_user_which_skill=selection.ask_user,
+    )
 
 
 @app.command()
@@ -1206,8 +1246,6 @@ def _write_skill_md(skill_path: Path, project_name: str, skill_name: str) -> Non
             ---
             name: {skill_name}
             description: Project overlay skill for {project_name}.
-            requires:
-                - t3-workspace
             metadata:
                 version: 0.0.1
             ---
@@ -1505,13 +1543,36 @@ def _build_overlay_app(overlay_name: str, project_path: Path | None, settings_mo
     @overlay_app.command(name="agent")
     def overlay_agent(
         task: str = typer.Argument("", help="What to work on"),
+        phase: str = AGENT_PHASE_OPTION,
+        skill: list[str] = AGENT_SKILL_OPTION,
     ) -> None:
         """Launch Claude Code with overlay context and auto-detected skills."""
+        from teetree.core.overlay_loader import get_overlay  # noqa: PLC0415
+        from teetree.skill_loading import SkillLoadingPolicy  # noqa: PLC0415
+
         overlay_root = project_path or _find_project_root()
+        if phase and skill:
+            typer.echo("--phase and --skill cannot be used together.")
+            raise typer.Exit(code=1)
         lines = [f"You are working on the {overlay_name} TeaTree overlay project.", ""]
         if project_path:
             lines.append(f"Overlay source: {project_path}")
-        _launch_claude(task=task, project_root=overlay_root, context_lines=lines)
+        selection = SkillLoadingPolicy(skills_dir=_agent_search_dirs(overlay_root)).select_for_agent_launch(
+            cwd=Path.cwd(),
+            overlay_skill_metadata=get_overlay().get_skill_metadata(),
+            task=task,
+            ticket_status=_detect_agent_ticket_status(overlay_root),
+            explicit_phase=phase,
+            explicit_skills=skill or [],
+            overlay_active=True,
+        )
+        _launch_claude(
+            task=task,
+            project_root=overlay_root,
+            context_lines=lines,
+            skills=selection.skills,
+            ask_user_which_skill=selection.ask_user,
+        )
 
     # Config and autostart commands
     _register_config_commands(overlay_app, overlay_name, project_path)

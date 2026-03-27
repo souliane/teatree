@@ -603,6 +603,20 @@ def test_lifecycle_setup_already_provisioned_skips_provision() -> None:
     assert worktree.state == Worktree.State.PROVISIONED
 
 
+@override_settings(**SETTINGS)
+@pytest.mark.django_db
+def test_lifecycle_setup_variant_option_updates_ticket() -> None:
+    """The --variant option updates the ticket variant before provisioning."""
+    ticket = Ticket.objects.create(issue_url="https://example.com/issues/90", variant="")
+    wt = Worktree.objects.create(ticket=ticket, repo_path="/tmp/backend", branch="feature")
+
+    with patch("teetree.core.management.commands.lifecycle.subprocess.run"):
+        call_command("lifecycle", "setup", str(wt.id), "--variant", "testcustomer")
+
+    ticket.refresh_from_db()
+    assert ticket.variant == "testcustomer"
+
+
 @override_settings(
     TEATREE_OVERLAY_CLASS="tests.teetree_core.test_new_management_commands.FailingImportOverlay",
     TEATREE_HEADLESS_RUNTIME="claude-code",
@@ -1248,6 +1262,40 @@ def test_lifecycle_setup_appends_envrc_lines_from_overlay(tmp_path: "pytest.Temp
 
     envrc2 = (wt_path / ".envrc").read_text()
     assert envrc2.count("source .venv/bin/activate") == 1
+
+
+@override_settings(**SETTINGS)
+@pytest.mark.django_db
+def test_lifecycle_setup_updates_ticket_variant_when_requested(tmp_path: "pytest.TempPathFactory") -> None:
+    wt_path = tmp_path / "worktree"
+    wt_path.mkdir()
+
+    ticket = Ticket.objects.create(issue_url="https://example.com/issues/201", variant="alpha")
+    wt = Worktree.objects.create(
+        ticket=ticket,
+        repo_path="/tmp/backend",
+        branch="feature",
+        extra={"worktree_path": str(wt_path)},
+    )
+
+    mock_overlay = MagicMock()
+    mock_overlay.get_envrc_lines.return_value = []
+    mock_overlay.get_db_import_strategy.return_value = None
+    mock_overlay.get_provision_steps.return_value = []
+    mock_overlay.get_post_db_steps.return_value = []
+    mock_overlay.get_reset_passwords_command.return_value = ""
+    mock_overlay.get_env_extra.return_value = {}
+    mock_overlay.get_skill_metadata.return_value = {}
+
+    with (
+        patch("teetree.core.management.commands.lifecycle.get_overlay", return_value=mock_overlay),
+        patch("teetree.core.management.commands.lifecycle.subprocess") as mock_sp,
+    ):
+        mock_sp.run.return_value = MagicMock(returncode=0)
+        call_command("lifecycle", "setup", str(wt.id), variant="beta")
+
+    ticket.refresh_from_db()
+    assert ticket.variant == "beta"
 
 
 @override_settings(**SETTINGS)

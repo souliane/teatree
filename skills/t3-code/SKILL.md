@@ -35,7 +35,7 @@ The implementation phase. Follow test-driven development and project conventions
 ## Dependencies
 
 - **t3-workspace** (required) — provides dev servers for live reload. **Load `/t3-workspace` now** if not already loaded.
-- **Framework/language convention skills** (when backend is in scope) — e.g., Django conventions, Python style guides. Resolved by the hook from the overlay's `companion_skills` config and optional `$T3_SUPPLEMENTARY_SKILLS` file. **If the hook didn't fire**, self-load the appropriate coding skill: `/ac-python` for Python code, `/ac-django` for Django projects. Load these **before writing any code**, not after.
+- **Framework/language convention skills** (when backend is in scope) — e.g., Django conventions, Python style guides. TeaTree auto-detects the relevant `ac-*` skill from the repo shape. **If the loader didn't fire**, self-load the appropriate coding skill: `/ac-python` for Python code, `/ac-django` for Django projects. Load these **before writing any code**, not after.
 
 ## Workflow
 
@@ -89,7 +89,14 @@ Any frontend change that affects UI behavior (new fields, form logic, visibility
 
 - **When required:** new UI fields, changed form behavior, conditional visibility, new pages/routes
 - **When NOT required:** pure CSS, translation-only changes, backend-only changes, internal refactoring
+- **Backend/API changes with frontend-visible impact still require E2E.** If the frontend displays the changed data, prove the end-to-end path works.
+- **Establish a baseline before blaming your branch.** If E2E fails, run the same scenario on the default branch or unmodified code before treating it as your regression.
 - **Blocked by environment?** Flag it explicitly — don't silently skip E2E and declare done
+
+### 5b. When to Switch to `t3-test`
+
+- Stay in `t3-code` for TDD, implementation-time tests, and feature-building.
+- Switch to `/t3-test` when the work becomes broader verification, E2E orchestration, CI failure analysis, test-plan writing, or MR evidence posting.
 
 ### 6. Quality Gates During Development
 

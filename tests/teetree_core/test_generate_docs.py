@@ -39,7 +39,8 @@ def test_skill_doc_payload_and_markdown_include_runtime_fields() -> None:
 
     assert payload["delegation"]["coding"] == ["test-driven-development", "verification-before-completion"]
     assert "Task claiming, leasing, and execution routing" in markdown
-    assert "`delegated_skills`" in markdown
+    assert "`framework_skills`" in markdown
+    assert "`lifecycle_skill`" in markdown
 
 
 def test_skill_doc_payload_uses_builtin_default_when_cwd_has_no_references(
