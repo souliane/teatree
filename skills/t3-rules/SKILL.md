@@ -97,6 +97,10 @@ When an MR targets a non-default branch, that is intentional — it means the MR
 
 Destroying MR dependency chains wastes hours of carefully organized work.
 
+## Never Push Without Separate Explicit Approval (Non-Negotiable)
+
+Commit approval ≠ push approval. Always ask "Push?" as a **separate question** after committing. This applies to all repos, all contexts — even when the user said "yes" to committing. (Safety net — source: `t3-ship § Never push without explicit approval`)
+
 ## Run Retro Before Ending Non-Trivial Sessions (Non-Negotiable)
 
 Before ending any session that involved multi-file edits, debugging, or implementation work, run `/t3-next` (which includes `/t3-retro`). Do NOT wait for the user to ask — self-trigger this. A session without retro loses compound learning.
