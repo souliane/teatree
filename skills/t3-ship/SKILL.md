@@ -63,11 +63,12 @@ From "code is done" to "MR is merged."
 
 **Before every push**, run the self-review gate from [`../t3-review/SKILL.md`](../t3-review/SKILL.md) § "Active Verification Against Repo Rules":
 
-1. **Read** the repo's `AGENTS.md` (or equivalent agent instructions file).
-2. **For each changed file**, verify compliance against every applicable rule — commit message format, architectural patterns, banned patterns, feature flags.
-3. Fix any violations **before** pushing. This prevents multi-round CI/review-bot failures (e.g., 5 rounds of MR police fixes because rules were not read upfront).
+1. **Load the project's code-review skill** (e.g., `/code-review`) if available. This skill contains the exact rules enforced by automated review bots — loading it prevents multi-round push-fix-push cycles.
+2. **Read** the repo's `AGENTS.md` (or equivalent agent instructions file).
+3. **For each changed file**, verify compliance against every applicable rule — commit message format, architectural patterns, banned patterns, feature flags.
+4. Fix any violations **before** pushing.
 
-Skipping this step is the #1 cause of wasted push-fix-push cycles. The rules exist in `t3-review` — this step ensures they are applied even when the agent goes directly from code to ship without a formal review phase.
+Skipping this step is the #1 cause of wasted push-fix-push cycles. The rules exist in `t3-review` and the project's code-review skill — this step ensures they are applied even when the agent goes directly from code to ship without a formal review phase.
 
 ### 4. Push
 
