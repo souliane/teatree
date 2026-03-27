@@ -42,7 +42,7 @@ class DbImportStrategy(TypedDict, total=False):
 
 class SkillMetadata(TypedDict, total=False):
     skill_path: str
-    companion_skills: list[str]
+    remote_patterns: list[str]
     trigger_index: list[dict[str, object]]
 
 

@@ -20,6 +20,11 @@ STATE_DIR="/tmp/claude-statusline"
 mkdir -p "$STATE_DIR"
 skills_file="$STATE_DIR/${session_id}.skills"
 active_file="$STATE_DIR/${session_id}.active"
+pending_file="$STATE_DIR/${session_id}.pending"
+
+# Clear pending suggestions from previous prompt (overwritten below if new
+# suggestions are found; cleared here for the no-suggestion case).
+> "$pending_file"
 
 # --- Symlink health check (once per session) ---
 symcheck_file="$STATE_DIR/${session_id}.symcheck"
@@ -161,38 +166,8 @@ EOF
 
             msg="LOAD THESE SKILLS NOW (call the Skill tool for each, before doing anything else): ${skill_list}."
 
-            # Reference injections (still bash — overlay-specific YAML)
-            _py_overlay_dir=$(echo "$suggest_json" | jq -r '.overlay_skill_dir // empty' 2>/dev/null)
-            _py_project=$(echo "$suggest_json" | jq -r '.project_overlay // empty' 2>/dev/null)
-            if [ -n "$_py_overlay_dir" ] && [ -n "$py_intent" ]; then
-                injections_file="$_py_overlay_dir/hook-config/reference-injections.yml"
-                if [ -f "$injections_file" ]; then
-                    refs=""
-                    in_skill=false
-                    in_always=false
-                    while IFS= read -r line; do
-                        [[ "$line" =~ ^[[:space:]]*# ]] && continue
-                        [[ "$line" =~ ^[[:space:]]*$ ]] && continue
-                        if [[ "$line" =~ ^[a-z] ]]; then
-                            skill_key="${line%%:*}"
-                            if [ "$skill_key" = "$py_intent" ]; then in_skill=true; else in_skill=false; fi
-                            in_always=false; continue
-                        fi
-                        $in_skill || continue
-                        if [[ "$line" =~ ^[[:space:]]+(always|on-demand): ]]; then
-                            [ "${BASH_REMATCH[1]}" = "always" ] && in_always=true || in_always=false; continue
-                        fi
-                        if $in_always && [[ "$line" =~ ^[[:space:]]+-[[:space:]]+(.*) ]]; then
-                            ref="${BASH_REMATCH[1]}"; ref="${ref#\"}"; ref="${ref%\"}"
-                            [ -n "$refs" ] && refs="${refs}, ${ref}" || refs="${ref}"
-                        fi
-                    done < "$injections_file"
-                    if [ -n "$refs" ]; then
-                        overlay_label=$(echo "$_py_project" | sed 's/^ac-//' | tr '[:lower:]' '[:upper:]')
-                        msg="${msg} ${overlay_label} references to read: ${refs}"
-                    fi
-                fi
-            fi
+            # Persist pending suggestions for PreToolUse enforcement hook
+            echo "$py_suggest" > "$pending_file"
 
             # Session FSM (keep in bash — lightweight)
             _SESSION_DIR="${T3_SESSION_DIR:-/tmp/t3-sessions}"

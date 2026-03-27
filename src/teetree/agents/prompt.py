@@ -2,11 +2,11 @@
 
 from pathlib import Path
 
-from teetree.agents.skill_bundle import DEFAULT_SKILLS_DIR, find_skill_md
 from teetree.core.models import Task, Ticket
+from teetree.skill_loading import DEFAULT_SKILL_SEARCH_DIRS, find_skill_md
 
 
-def _read_skill_contents(skills: list[str], *, skills_dir: Path = DEFAULT_SKILLS_DIR) -> str:
+def _read_skill_contents(skills: list[str], *, skills_dir: Path | list[Path] = DEFAULT_SKILL_SEARCH_DIRS) -> str:
     """Read and concatenate SKILL.md content for each resolved skill."""
     sections: list[str] = []
     for name in skills:

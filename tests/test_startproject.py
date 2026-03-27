@@ -50,8 +50,8 @@ def test_startproject_with_defaults_uses_t3_overlay_app(tmp_path: Path) -> None:
 
     skill_text = (project_root / "skills" / "t3-overlay" / "SKILL.md").read_text()
     assert "name: t3-overlay" in skill_text
-    assert "requires:" in skill_text
-    assert "- t3-workspace" in skill_text
+    assert "requires:" not in skill_text
+    assert "- t3-workspace" not in skill_text
 
     env = {k: v for k, v in os.environ.items() if k != "DJANGO_SETTINGS_MODULE"}
     check = subprocess.run(  # noqa: S603

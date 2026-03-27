@@ -57,9 +57,18 @@ def _setup_worktree_dir(wt_path: str, worktree: Worktree, overlay: OverlayBase, 
 
 class Command(TyperCommand):
     @command()
-    def setup(self, worktree_id: int = typer.Argument(0, help="Worktree ID (auto-detects from PWD if 0)")) -> int:
+    def setup(
+        self,
+        worktree_id: int = typer.Argument(0, help="Worktree ID (auto-detects from PWD if 0)"),
+        variant: str = typer.Option("", help="Tenant variant. Updates ticket if provided."),
+    ) -> int:
         """Provision a worktree (allocate ports, DB name, run overlay steps)."""
         worktree = resolve_worktree(worktree_id)
+
+        if variant and worktree.ticket and worktree.ticket.variant != variant:
+            worktree.ticket.variant = variant
+            worktree.ticket.save(update_fields=["variant"])
+
         if worktree.state == Worktree.State.CREATED:
             worktree.provision()
             worktree.save()

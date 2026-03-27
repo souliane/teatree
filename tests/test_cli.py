@@ -14,12 +14,14 @@ import typer
 from typer.testing import CliRunner
 
 from teetree.cli import (
+    _agent_search_dirs,
     _bridge_subcommand,
     _build_overlay_app,
     _camelize,
     _check_editable_sanity,
     _collect_overlay_skills,
     _current_git_branch,
+    _detect_agent_ticket_status,
     _editable_info,
     _find_overlay_project,
     _find_project_root,
@@ -31,6 +33,7 @@ from teetree.cli import (
     _patch_settings,
     _patch_urls,
     _print_package_info,
+    _project_python,
     _register_overlay_commands,
     _repair_symlinks,
     _run_script,
@@ -123,14 +126,22 @@ def test_agent_with_active_overlay(tmp_path, monkeypatch):
     (tmp_path / "pyproject.toml").write_text("[project]\n")
 
     from teetree.config import OverlayEntry  # noqa: PLC0415
+    from teetree.skill_loading import SkillSelectionResult  # noqa: PLC0415
 
     mock_overlay = OverlayEntry(name="test-overlay", settings_module="test.settings")
+    overlay_obj = MagicMock()
+    overlay_obj.get_skill_metadata.return_value = {"skill_path": "skills/t3-test/SKILL.md"}
 
     with (
         patch("teetree.config.discover_active_overlay", return_value=mock_overlay),
+        patch("teetree.core.overlay_loader.get_overlay", return_value=overlay_obj),
         patch("shutil.which", return_value="/usr/bin/claude"),
         patch("teetree.cli._editable_info", return_value=(False, "")),
-        patch("teetree.agents.skill_bundle.resolve_dependencies", return_value=["t3-code"]),
+        patch("teetree.cli._detect_agent_ticket_status", return_value="started"),
+        patch(
+            "teetree.skill_loading.SkillLoadingPolicy.select_for_agent_launch",
+            return_value=SkillSelectionResult(skills=["t3-code"]),
+        ),
         patch("teetree.cli.os.execvp") as mock_exec,
     ):
         runner.invoke(app, ["agent", "fix bug"])
@@ -145,15 +156,47 @@ def test_agent_no_overlay(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     (tmp_path / "pyproject.toml").write_text("[project]\n")
 
+    from teetree.skill_loading import SkillSelectionResult  # noqa: PLC0415
+
     with (
         patch("teetree.config.discover_active_overlay", return_value=None),
         patch("shutil.which", return_value="/usr/bin/claude"),
         patch("teetree.cli._editable_info", return_value=(False, "")),
-        patch("teetree.agents.skill_bundle.resolve_dependencies", return_value=["t3-code"]),
+        patch(
+            "teetree.skill_loading.SkillLoadingPolicy.select_for_agent_launch",
+            return_value=SkillSelectionResult(skills=["t3-code"]),
+        ),
         patch("teetree.cli.os.execvp") as mock_exec,
     ):
         runner.invoke(app, ["agent"])
         mock_exec.assert_called_once()
+
+
+def test_agent_rejects_phase_and_skill_together(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "pyproject.toml").write_text("[project]\n")
+
+    result = runner.invoke(app, ["agent", "--phase", "coding", "--skill", "t3-code"])
+
+    assert result.exit_code == 1
+    assert "--phase and --skill cannot be used together." in result.output
+
+
+def test_agent_reports_policy_value_error(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "pyproject.toml").write_text("[project]\n")
+
+    with (
+        patch("teetree.config.discover_active_overlay", return_value=None),
+        patch(
+            "teetree.skill_loading.SkillLoadingPolicy.select_for_agent_launch",
+            side_effect=ValueError("Unknown phase: bad-phase"),
+        ),
+    ):
+        result = runner.invoke(app, ["agent", "--phase", "bad-phase"])
+
+    assert result.exit_code == 1
+    assert "Unknown phase: bad-phase" in result.output
 
 
 # ── sessions command ──────────────────────────────────────────────────
@@ -1034,7 +1077,7 @@ def test_write_skill_md(tmp_path):
     _write_skill_md(skill_path, "t3-acme", "t3-acme")
     text = skill_path.read_text()
     assert "name: t3-acme" in text
-    assert "t3-workspace" in text
+    assert "t3-workspace" not in text
 
 
 # ── _editable_info ───────────────────────────────────────────────────
@@ -1749,11 +1792,20 @@ def test_overlay_agent(tmp_path, monkeypatch):
     (tmp_path / "pyproject.toml").write_text("[project]\n")
     overlay_app = _build_overlay_app("test", tmp_path, "test.settings")
     test_runner = CliRunner()
+    from teetree.skill_loading import SkillSelectionResult  # noqa: PLC0415
+
+    overlay_obj = MagicMock()
+    overlay_obj.get_skill_metadata.return_value = {"skill_path": "skills/t3-test/SKILL.md"}
 
     with (
         patch("shutil.which", return_value="/usr/bin/claude"),
         patch("teetree.cli._editable_info", return_value=(False, "")),
-        patch("teetree.agents.skill_bundle.resolve_dependencies", return_value=["t3-code"]),
+        patch("teetree.core.overlay_loader.get_overlay", return_value=overlay_obj),
+        patch("teetree.cli._detect_agent_ticket_status", return_value="started"),
+        patch(
+            "teetree.skill_loading.SkillLoadingPolicy.select_for_agent_launch",
+            return_value=SkillSelectionResult(skills=["t3-code"]),
+        ),
         patch("teetree.cli.os.execvp") as mock_exec,
     ):
         test_runner.invoke(overlay_app, ["agent", "fix something"])
@@ -1766,15 +1818,35 @@ def test_overlay_agent_no_project_path(tmp_path, monkeypatch):
     (tmp_path / "pyproject.toml").write_text("[project]\n")
     overlay_app = _build_overlay_app("test", None, "test.settings")
     test_runner = CliRunner()
+    from teetree.skill_loading import SkillSelectionResult  # noqa: PLC0415
+
+    overlay_obj = MagicMock()
+    overlay_obj.get_skill_metadata.return_value = {}
 
     with (
         patch("shutil.which", return_value="/usr/bin/claude"),
         patch("teetree.cli._editable_info", return_value=(False, "")),
-        patch("teetree.agents.skill_bundle.resolve_dependencies", return_value=["t3-code"]),
+        patch("teetree.core.overlay_loader.get_overlay", return_value=overlay_obj),
+        patch("teetree.cli._detect_agent_ticket_status", return_value=""),
+        patch(
+            "teetree.skill_loading.SkillLoadingPolicy.select_for_agent_launch",
+            return_value=SkillSelectionResult(skills=["t3-code"]),
+        ),
         patch("teetree.cli.os.execvp") as mock_exec,
     ):
         test_runner.invoke(overlay_app, ["agent"])
         mock_exec.assert_called_once()
+
+
+def test_overlay_agent_rejects_phase_and_skill_together(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    overlay_app = _build_overlay_app("test", tmp_path, "test.settings")
+    test_runner = CliRunner()
+
+    result = test_runner.invoke(overlay_app, ["agent", "--phase", "coding", "--skill", "t3-code"])
+
+    assert result.exit_code == 1
+    assert "--phase and --skill cannot be used together." in result.output
 
 
 def test_overlay_lifecycle_subcommand(tmp_path):
@@ -1804,10 +1876,73 @@ def test_launch_claude_with_editable_teatree(tmp_path, monkeypatch):
     ):
         from teetree.cli import _launch_claude  # noqa: PLC0415
 
-        _launch_claude(task="test", project_root=tmp_path, context_lines=["test"])
+        _launch_claude(
+            task="test",
+            project_root=tmp_path,
+            context_lines=["test"],
+            skills=["t3-code"],
+            ask_user_which_skill=False,
+        )
         cmd = mock_exec.call_args[0][1]
         context_arg = cmd[cmd.index("--append-system-prompt") + 1]
         assert "/src/teatree" in context_arg
+
+
+def test_launch_claude_asks_user_when_skill_is_unknown(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "pyproject.toml").write_text("[project]\n")
+
+    with (
+        patch("shutil.which", return_value="/usr/bin/claude"),
+        patch("teetree.cli._editable_info", return_value=(False, "")),
+        patch("teetree.cli.os.execvp") as mock_exec,
+    ):
+        from teetree.cli import _launch_claude  # noqa: PLC0415
+
+        _launch_claude(
+            task="",
+            project_root=tmp_path,
+            context_lines=["test"],
+            skills=[],
+            ask_user_which_skill=True,
+        )
+        cmd = mock_exec.call_args[0][1]
+        context_arg = cmd[cmd.index("--append-system-prompt") + 1]
+        assert "ask the user which lifecycle skill to load" in context_arg
+
+
+def test_project_python_prefers_project_venv(tmp_path):
+    python_bin = tmp_path / ".venv" / "bin" / "python"
+    python_bin.parent.mkdir(parents=True)
+    python_bin.write_text("", encoding="utf-8")
+
+    assert _project_python(tmp_path) == str(python_bin)
+
+
+def test_detect_agent_ticket_status_returns_empty_without_manage_py(tmp_path):
+    assert _detect_agent_ticket_status(tmp_path) == ""
+
+
+def test_detect_agent_ticket_status_returns_empty_on_subprocess_failure(tmp_path):
+    (tmp_path / "manage.py").write_text("print('hi')\n", encoding="utf-8")
+
+    with patch("teetree.cli.subprocess.run", return_value=MagicMock(returncode=1, stdout="broken")):
+        assert _detect_agent_ticket_status(tmp_path) == ""
+
+
+def test_detect_agent_ticket_status_returns_stripped_stdout(tmp_path):
+    (tmp_path / "manage.py").write_text("print('hi')\n", encoding="utf-8")
+
+    with patch("teetree.cli.subprocess.run", return_value=MagicMock(returncode=0, stdout="started\n")):
+        assert _detect_agent_ticket_status(tmp_path) == "started"
+
+
+def test_agent_search_dirs_includes_project_skills(tmp_path):
+    (tmp_path / "skills").mkdir()
+
+    search_dirs = _agent_search_dirs(tmp_path)
+
+    assert search_dirs[0] == tmp_path / "skills"
 
 
 # ── doctor check import failure branch ────────────────────────────────

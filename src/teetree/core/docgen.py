@@ -30,7 +30,7 @@ _OVERLAY_HOOK_DESCRIPTIONS = {
     "get_symlinks": "Declare extra symlinks that should exist inside the worktree.",
     "get_services_config": "Return additional service metadata for lifecycle orchestration.",
     "validate_mr": "Return merge-request validation problems for this overlay.",
-    "get_skill_metadata": "Return the active overlay skill path and any companion skills.",
+    "get_skill_metadata": "Return the active overlay skill path and remote match patterns.",
 }
 
 _OVERLAY_SETTINGS: tuple["SettingRecord", ...] = (
@@ -87,9 +87,9 @@ _OVERLAY_COMMANDS = (
 _SKILL_METADATA_FIELDS: tuple["SkillFieldRecord", ...] = (
     {"name": "skill_path", "required": False, "description": "Primary overlay skill file path."},
     {
-        "name": "companion_skills",
+        "name": "remote_patterns",
         "required": False,
-        "description": "Additional skills loaded alongside the primary overlay skill.",
+        "description": "Git remote patterns that activate the overlay skill outside the host project.",
     },
 )
 
@@ -103,8 +103,8 @@ _TEATREE_RESPONSIBILITIES = (
 _AGENT_LAUNCH_FIELDS = (
     "phase",
     "overlay_skill_path",
-    "companion_skills",
-    "delegated_skills",
+    "framework_skills",
+    "lifecycle_skill",
 )
 
 

@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 from django.test import override_settings
 
+from teetree import skill_loading as skill_loading_module
 from teetree.agents.sdk import run_headless_task
 from teetree.agents.services import (
     RuntimeExecution,
@@ -42,36 +43,54 @@ def reset_runtimes() -> Iterator[None]:
     reset_runtime_registry()
 
 
+@pytest.fixture(autouse=True)
+def install_framework_skill_fixtures(tmp_path: Path) -> Iterator[None]:
+    for name, body in {
+        "ac-python": "---\nname: ac-python\n---\n",
+        "ac-django": "---\nname: ac-django\nrequires:\n  - ac-python\n---\n",
+    }.items():
+        skill_dir = tmp_path / name
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text(body, encoding="utf-8")
+
+    original = list(skill_loading_module.DEFAULT_SKILL_SEARCH_DIRS)
+    skill_loading_module.DEFAULT_SKILL_SEARCH_DIRS[:] = [tmp_path, *original]
+    try:
+        yield
+    finally:
+        skill_loading_module.DEFAULT_SKILL_SEARCH_DIRS[:] = original
+
+
 def test_resolve_skill_bundle_merges_overlay_and_phase_skills() -> None:
     bundle = resolve_skill_bundle(
         phase="coding",
         overlay_skill_metadata={
             "skill_path": "/skills/acme/SKILL.md",
-            "companion_skills": ["/skills/ac-django/SKILL.md"],
         },
         delegation_map_path=Path("references/skill-delegation.md"),
     )
 
     assert bundle == [
         "/skills/acme/SKILL.md",
-        "/skills/ac-django/SKILL.md",
-        "test-driven-development",
-        "verification-before-completion",
+        "ac-python",
+        "ac-django",
+        "t3-rules",
+        "t3-workspace",
+        "t3-code",
     ]
 
 
-def test_resolve_skill_bundle_ignores_non_list_companions_and_deduplicates() -> None:
+def test_resolve_skill_bundle_ignores_unknown_phase() -> None:
     bad_metadata: dict[str, object] = {
-        "skill_path": "test-driven-development",
-        "companion_skills": "not-a-list",  # intentionally wrong type
+        "skill_path": "t3-code",
     }
     bundle = resolve_skill_bundle(
-        phase="coding",
+        phase="unknown-phase",
         overlay_skill_metadata=bad_metadata,
         delegation_map_path=Path("references/skill-delegation.md"),
     )
 
-    assert bundle == ["test-driven-development", "verification-before-completion"]
+    assert bundle == ["t3-rules", "t3-workspace", "t3-code", "ac-python", "ac-django"]
 
 
 def test_resolve_skill_bundle_uses_builtin_default_when_local_map_missing(
@@ -79,10 +98,11 @@ def test_resolve_skill_bundle_uses_builtin_default_when_local_map_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.chdir(tmp_path)
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='tmp'\n", encoding="utf-8")
 
     bundle = resolve_skill_bundle(phase="debugging", overlay_skill_metadata={})
 
-    assert bundle == ["systematic-debugging", "verification-before-completion"]
+    assert bundle == ["ac-python", "t3-rules", "t3-workspace", "t3-debug"]
 
 
 @override_settings(TEATREE_HEADLESS_RUNTIME="test-sdk")
@@ -106,8 +126,11 @@ def test_run_headless_task_records_attempt_and_completes_work() -> None:
     assert result.artifact_path == f"artifacts/task-{task.pk}-test-sdk.json"
     assert runtime.calls[0][1] == [
         "/skills/acme/SKILL.md",
-        "test-driven-development",
-        "verification-before-completion",
+        "ac-python",
+        "ac-django",
+        "t3-rules",
+        "t3-workspace",
+        "t3-code",
     ]
     assert task.status == Task.Status.COMPLETED
     assert TaskAttempt.objects.count() == 1

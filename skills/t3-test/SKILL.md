@@ -234,6 +234,10 @@ When editing: check the verified boxes (`- [ ]` → `- [x]`), insert screenshot 
 | `t3 ci quality-check` | Quality analysis |
 | `t3 ci trigger-e2e` | Trigger E2E tests on CI |
 
+## Re-Read Before Debugging (Non-Negotiable)
+
+When an E2E test fails or the environment misbehaves, **re-read this skill's verification sections** (Screenshot Sanity Check, Store Contamination Check, Establish Baseline) before spending more than 2 minutes on ad-hoc debugging. Skill guidance loaded at the start of a long session gets compressed out of active context — re-reading takes 10 seconds and prevents 30-minute debugging detours.
+
 ## Verification Before Claims
 
 **Iron law:** No completion claims without fresh verification evidence.

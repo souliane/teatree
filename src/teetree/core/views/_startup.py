@@ -38,7 +38,7 @@ def perform_sync() -> SyncResult:
 def _write_skill_metadata_cache() -> None:
     """Write the active overlay's skill metadata to the XDG data directory.
 
-    The UserPromptSubmit hook reads this cache to resolve companion skills
+    The UserPromptSubmit hook reads this cache to resolve overlay matching
     and the trigger index without needing Django at hook time.
     """
     metadata = get_overlay().get_skill_metadata()
