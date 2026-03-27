@@ -5,12 +5,15 @@ from django.utils import timezone
 
 from teetree.core.models import Session, Task, TaskAttempt, Ticket, Worktree
 from teetree.core.selectors import (
+    _cached,
+    _panel_cache,
     build_active_sessions,
     build_dashboard_snapshot,
     build_dashboard_summary,
     build_dashboard_ticket_rows,
     build_headless_queue,
     build_interactive_queue,
+    invalidate_panel_cache,
 )
 
 pytestmark = pytest.mark.django_db
@@ -1155,3 +1158,28 @@ def test_build_active_sessions_no_sessions_dir(monkeypatch: pytest.MonkeyPatch, 
     result = build_active_sessions()
 
     assert result == []
+
+
+def test_cached_returns_stored_value_within_ttl() -> None:
+    _panel_cache.clear()
+    calls: list[int] = []
+
+    def builder() -> str:
+        calls.append(1)
+        return "fresh"
+
+    assert _cached("test_key", builder, ttl=60.0) == "fresh"
+    assert _cached("test_key", builder, ttl=60.0) == "fresh"
+    assert len(calls) == 1
+    _panel_cache.clear()
+
+
+def test_invalidate_panel_cache_by_name() -> None:
+    _panel_cache["a"] = (0.0, "val_a")
+    _panel_cache["b"] = (0.0, "val_b")
+
+    invalidate_panel_cache("a")
+
+    assert "a" not in _panel_cache
+    assert "b" in _panel_cache
+    _panel_cache.clear()

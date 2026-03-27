@@ -790,3 +790,93 @@ def test_gitlab_api_explicit_token_overrides_env(monkeypatch: pytest.MonkeyPatch
     client = gitlab_api.GitLabAPI(token="explicit-token")
 
     assert client.token == "explicit-token"
+
+
+class TestGitLabAPICacheHits:
+    """Verify cache-hit branches for all cached methods."""
+
+    def test_get_work_item_status_returns_cached(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        client = gitlab_api.GitLabAPI(token="t")
+        graphql_calls: list[int] = []
+        monkeypatch.setattr(
+            client,
+            "graphql",
+            lambda q, v: (
+                graphql_calls.append(1)
+                or {
+                    "data": {
+                        "project": {
+                            "workItems": {
+                                "nodes": [{"widgets": [{"type": "STATUS", "status": {"name": "In progress"}}]}]
+                            }
+                        }
+                    }
+                }
+            ),
+        )
+        assert client.get_work_item_status("org/repo", 1) == "In progress"
+        assert client.get_work_item_status("org/repo", 1) == "In progress"
+        assert len(graphql_calls) == 1
+
+    def test_get_mr_pipeline_returns_cached(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        client = gitlab_api.GitLabAPI(token="t")
+        calls = []
+        monkeypatch.setattr(
+            client,
+            "get_json",
+            lambda ep: calls.append(1) or [{"status": "success", "web_url": "https://ci/1"}],
+        )
+        client.get_mr_pipeline(1, 1)
+        result = client.get_mr_pipeline(1, 1)
+        assert result["status"] == "success"
+        assert len(calls) == 1
+
+    def test_get_mr_approvals_returns_cached(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        client = gitlab_api.GitLabAPI(token="t")
+        calls = []
+        monkeypatch.setattr(
+            client,
+            "get_json",
+            lambda ep: calls.append(1) or {"approved_by": [], "approvals_required": 1},
+        )
+        client.get_mr_approvals(1, 1)
+        result = client.get_mr_approvals(1, 1)
+        assert result["count"] == 0
+        assert len(calls) == 1
+
+    def test_get_issue_returns_cached(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        client = gitlab_api.GitLabAPI(token="t")
+        calls = []
+        monkeypatch.setattr(client, "get_json", lambda ep: calls.append(1) or {"iid": 5, "title": "Bug"})
+        client.get_issue(1, 5)
+        result = client.get_issue(1, 5)
+        assert result is not None
+        assert result["title"] == "Bug"
+        assert len(calls) == 1
+
+    def test_get_mr_discussions_returns_cached(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        client = gitlab_api.GitLabAPI(token="t")
+        calls = []
+        monkeypatch.setattr(client, "get_json", lambda ep: calls.append(1) or [{"id": "d1"}])
+        client.get_mr_discussions(1, 1)
+        result = client.get_mr_discussions(1, 1)
+        assert result == [{"id": "d1"}]
+        assert len(calls) == 1
+
+    def test_current_username_returns_cached(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        client = gitlab_api.GitLabAPI(token="t")
+        calls = []
+        monkeypatch.setattr(client, "get_json", lambda ep: calls.append(1) or {"username": "dev"})
+        client.current_username()
+        result = client.current_username()
+        assert result == "dev"
+        assert len(calls) == 1
+
+    def test_clear_response_cache(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        client = gitlab_api.GitLabAPI(token="t")
+        calls = []
+        monkeypatch.setattr(client, "get_json", lambda ep: calls.append(1) or {"username": "dev"})
+        client.current_username()
+        client.clear_response_cache()
+        client.current_username()
+        assert len(calls) == 2

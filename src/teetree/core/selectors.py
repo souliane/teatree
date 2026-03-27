@@ -1,4 +1,6 @@
 import re
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -7,6 +9,34 @@ from django.utils import timezone
 from django_fsm import can_proceed
 
 from teetree.core.models import Task, TaskAttempt, Ticket, Worktree
+
+# ── Panel cache ──────────────────────────────────────────────────────
+
+_panel_cache: dict[str, tuple[float, object]] = {}
+_DEFAULT_PANEL_TTL = 5.0  # seconds
+_SESSIONS_PANEL_TTL = 3.0  # shorter for filesystem I/O heavy panel
+
+
+def _cached[T](key: str, builder: Callable[[], T], *, ttl: float = _DEFAULT_PANEL_TTL) -> T:
+    """Return cached panel result if within TTL, otherwise rebuild."""
+    now = time.monotonic()
+    entry = _panel_cache.get(key)
+    if entry is not None:
+        cached_at, value = entry
+        if now - cached_at < ttl:
+            return value  # type: ignore[return-value]
+    value = builder()
+    _panel_cache[key] = (now, value)
+    return value
+
+
+def invalidate_panel_cache(panel: str | None = None) -> None:
+    """Clear cached panel data. If *panel* is ``None``, clear everything."""
+    if panel is None:
+        _panel_cache.clear()
+    else:
+        _panel_cache.pop(panel, None)
+
 
 _ACTIVE_WORKTREE_STATES = (
     Worktree.State.PROVISIONED,
@@ -570,15 +600,15 @@ def build_active_sessions() -> list[ActiveSessionRow]:
 
 def build_dashboard_snapshot() -> DashboardSnapshot:
     return DashboardSnapshot(
-        summary=build_dashboard_summary(),
-        action_required=build_action_required(),
-        tickets=build_dashboard_ticket_rows(),
-        worktrees=build_worktree_rows(),
-        headless_queue=build_headless_queue(),
-        interactive_queue=build_interactive_queue(pending_only=True),
-        active_sessions=build_active_sessions(),
-        review_comments=build_review_comments(),
-        recent_activity=build_recent_activity(),
+        summary=_cached("summary", build_dashboard_summary),
+        action_required=_cached("action_required", build_action_required),
+        tickets=_cached("tickets", build_dashboard_ticket_rows),
+        worktrees=_cached("worktrees", build_worktree_rows),
+        headless_queue=_cached("headless_queue", build_headless_queue),
+        interactive_queue=_cached("queue", lambda: build_interactive_queue(pending_only=True)),
+        active_sessions=_cached("sessions", build_active_sessions, ttl=_SESSIONS_PANEL_TTL),
+        review_comments=_cached("review_comments", build_review_comments),
+        recent_activity=_cached("activity", build_recent_activity),
     )
 
 
