@@ -31,7 +31,7 @@ Both self-review and external review cycles.
 ## Dependencies
 
 - **t3-workspace** (required) — provides environment context. **Load `/t3-workspace` now** if not already loaded.
-- **Framework/language convention skills** (when reviewing backend code) — e.g., Django conventions, Python style guides. Resolved by the hook from the overlay's `companion_skills` config and optional `$T3_SUPPLEMENTARY_SKILLS` file.
+- **Framework/language convention skills** (when reviewing backend code) — e.g., Django conventions, Python style guides. TeaTree auto-detects the relevant `ac-*` skill from the repo shape. **If the loader didn't fire**, self-load the appropriate coding skill: `/ac-python` for Python code, `/ac-django` for Django projects.
 
 ## Workflows
 

@@ -1,3 +1,4 @@
+import time
 from pathlib import Path
 
 import pytest
@@ -1170,6 +1171,22 @@ def test_cached_returns_stored_value_within_ttl() -> None:
 
     assert _cached("test_key", builder, ttl=60.0) == "fresh"
     assert _cached("test_key", builder, ttl=60.0) == "fresh"
+    assert len(calls) == 1
+    _panel_cache.clear()
+
+
+def test_cached_rebuilds_after_ttl_expires() -> None:
+    _panel_cache.clear()
+    calls: list[int] = []
+
+    def builder() -> str:
+        calls.append(1)
+        return f"v{len(calls)}"
+
+    # Populate cache with a stale entry (timestamp far in the past)
+    _panel_cache["stale_key"] = (time.monotonic() - 100, "old")
+    result = _cached("stale_key", builder, ttl=1.0)
+    assert result == "v1"
     assert len(calls) == 1
     _panel_cache.clear()
 
