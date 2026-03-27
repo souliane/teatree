@@ -252,6 +252,23 @@ def agent(
     )
 
 
+def _format_session_age(raw_ts: float | str, now: float) -> str:
+    if isinstance(raw_ts, str):
+        try:
+            raw_ts = float(raw_ts)
+        except (ValueError, TypeError):
+            raw_ts = 0
+    ts = raw_ts / 1000 if raw_ts > 1e12 else raw_ts
+    if not ts:
+        return "?"
+    age_s = now - ts
+    if age_s < 3600:
+        return f"{int(age_s / 60)}m ago"
+    if age_s < 86400:
+        return f"{int(age_s / 3600)}h ago"
+    return f"{int(age_s / 86400)}d ago"
+
+
 @app.command()
 def sessions(
     project: str = typer.Option("", help="Filter by project dir substring"),
@@ -282,24 +299,7 @@ def sessions(
 
     now = datetime.now(tz=UTC).timestamp()
     for r in results:
-        raw_ts = r.timestamp
-        if isinstance(raw_ts, str):
-            try:
-                raw_ts = float(raw_ts)
-            except (ValueError, TypeError):
-                raw_ts = 0
-        ts = raw_ts / 1000 if raw_ts > 1e12 else raw_ts
-        if ts:
-            age_s = now - ts
-            if age_s < 3600:
-                age = f"{int(age_s / 60)}m ago"
-            elif age_s < 86400:
-                age = f"{int(age_s / 3600)}h ago"
-            else:
-                age = f"{int(age_s / 86400)}d ago"
-        else:
-            age = "?"
-
+        age = _format_session_age(r.timestamp, now)
         prompt = r.first_prompt.replace("\n", " ").strip()
         if len(prompt) > 80:
             prompt = prompt[:77] + "..."
@@ -310,10 +310,8 @@ def sessions(
         if prompt:
             typer.echo(f"           {prompt}")
         if r.status != "finished":
-            if r.cwd:
-                typer.echo(f"           cd {r.cwd} && claude --resume {r.session_id}")
-            else:
-                typer.echo(f"           claude --resume {r.session_id}")
+            resume = f"claude --resume {r.session_id}"
+            typer.echo(f"           {f'cd {r.cwd} && {resume}' if r.cwd else resume}")
 
     typer.echo("")
 
@@ -1429,9 +1427,13 @@ def _uvicorn(project_path: Path | None, host: str, port: int, settings_module: s
     )
 
 
-def _build_overlay_app(overlay_name: str, project_path: Path | None, settings_module: str = "") -> typer.Typer:
-    """Build a Typer app with overlay commands that delegate to manage.py."""
-    overlay_app = typer.Typer(no_args_is_help=True, help=f"Commands for the {overlay_name} overlay.")
+def _register_server_commands(
+    overlay_app: typer.Typer,
+    overlay_name: str,
+    project_path: Path | None,
+    settings_module: str,
+) -> None:
+    """Register dashboard, resetdb, and worker commands."""
 
     @overlay_app.command()
     def dashboard(
@@ -1445,7 +1447,6 @@ def _build_overlay_app(overlay_name: str, project_path: Path | None, settings_mo
         actual_port = port
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             if s.connect_ex((host, port)) == 0:
-                # Port in use — find a free one
                 s2 = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 s2.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                 s2.bind((host, 0))
@@ -1465,6 +1466,10 @@ def _build_overlay_app(overlay_name: str, project_path: Path | None, settings_mo
             typer.echo(f"Deleted {db_path}")
         _managepy(project_path, "migrate", "--no-input")
         typer.echo("Database recreated.")
+
+
+def _register_worker_command(overlay_app: typer.Typer, project_path: Path | None) -> None:
+    """Register the background worker command."""
 
     @overlay_app.command()
     def worker(
@@ -1504,7 +1509,13 @@ def _build_overlay_app(overlay_name: str, project_path: Path | None, settings_mo
             for p in processes:  # pragma: no branch
                 p.wait(timeout=5)
 
-    # ── Overlay-scoped shortcuts ──────────────────────────────────────
+
+def _register_shortcut_commands(
+    overlay_app: typer.Typer,
+    overlay_name: str,
+    project_path: Path | None,
+) -> None:
+    """Register overlay-scoped workflow shortcuts."""
 
     @overlay_app.command(name="full-status")
     def full_status() -> None:
@@ -1572,17 +1583,22 @@ def _build_overlay_app(overlay_name: str, project_path: Path | None, settings_mo
             ask_user_which_skill=selection.ask_user,
         )
 
-    # Config and autostart commands
+
+def _build_overlay_app(overlay_name: str, project_path: Path | None, settings_module: str = "") -> typer.Typer:
+    """Build a Typer app with overlay commands that delegate to manage.py."""
+    overlay_app = typer.Typer(no_args_is_help=True, help=f"Commands for the {overlay_name} overlay.")
+
+    _register_server_commands(overlay_app, overlay_name, project_path, settings_module)
+    _register_worker_command(overlay_app, project_path)
+    _register_shortcut_commands(overlay_app, overlay_name, project_path)
     _register_config_commands(overlay_app, overlay_name, project_path)
 
-    # Register overlay command groups with individual subcommands
     for group_name, (help_text, subcommands) in _DJANGO_GROUPS.items():
         group = typer.Typer(no_args_is_help=True, help=help_text)
         for sub_name, sub_help in subcommands:
             _bridge_subcommand(group, group_name, sub_name, sub_help, project_path)
         overlay_app.add_typer(group, name=group_name)
 
-    # Register overlay-specific tool commands
     _register_overlay_tools(overlay_app, project_path)
 
     return overlay_app
