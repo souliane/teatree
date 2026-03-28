@@ -408,11 +408,42 @@ Default mapping from phase to companion skills loaded alongside overlay skills:
 
 Can be overridden via a markdown file at `references/skill-delegation.md` with `## phase` sections and `- skill-name` lists.
 
+### 5.7 Architecture Decision: Claude-Only Agent Support
+
+**Decision (2026-03-27):** TeaTree commits to Claude as the sole agent backend. The multi-agent abstraction (generic agent registry, Codex runtime stubs) is removed in favor of direct Claude integration.
+
+**Rationale:**
+
+1. Only Claude has ever been tested or used in production. The Codex/generic agent abstractions added complexity without delivering value.
+2. The `agent_id` field on `Session` is repurposed: it stores the Claude session ID for resume functionality, not an agent backend identifier.
+3. Removing the abstraction layer reduces indirection in the execution path (headless.py, web_terminal.py, services.py).
+4. If a second agent backend becomes relevant in the future, the clean separation between prompt building and process spawning makes it straightforward to add back.
+
+**What stays:** `Session.agent_id` (now explicitly a Claude session ID), `EchoRuntime` (for tests only).
+**What goes:** Generic agent registry concepts, Codex-as-real-backend pretense.
+
 ---
 
 ## 6. Overlay System
 
 An overlay is a downstream Django project that customizes teatree for a specific project/organization.
+
+### 6.0a Architecture Decision: Invert to TeaTree-as-Project (Target State)
+
+**Decision (2026-03-27):** The overlay architecture will be inverted so that teatree IS the Django project and overlays become lightweight configuration extensions — not full Django projects.
+
+**Current state:** Each overlay is a full Django project (`manage.py`, `settings.py`, `urls.py`, etc.). The overlay's project wrapper is mostly boilerplate — ~90 lines of generic Django config, ~25 lines of shared teatree defaults, ~15 overlay-specific lines.
+
+**Target state:**
+
+1. TeaTree ships `manage.py`, `settings.py`, `urls.py`, `wsgi.py`, `asgi.py`.
+2. Overlays reduce to: one Python module subclassing `OverlayBase` + one `overlay.toml` for flat config.
+3. `t3 dashboard <overlay>` loads the overlay's config into teatree's Django project (no separate `manage.py`).
+4. Overlay discovery via `~/.teatree.toml` or `pyproject.toml` entry points (already partially supported).
+
+**Migration path:** Incremental. Existing full-project overlays continue to work. New overlays can use the thin format. Eventually the full-project format is deprecated.
+
+**Blocked by:** #63 (extract overlay config to standalone file), #36 (move config to Django settings).
 
 ### 6.0 Overlay Thinness Principle (Non-Negotiable)
 
