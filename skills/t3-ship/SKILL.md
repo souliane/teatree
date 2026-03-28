@@ -20,6 +20,8 @@ metadata:
 
 ## Delegation
 
+> **Source:** Delegated skills originate from [obra/superpowers](https://github.com/obra/superpowers): finishing-a-development-branch
+
 This skill delegates the generic branch-finalization doctrine to:
 
 - `finishing-a-development-branch` — decide how to wrap up a ready branch

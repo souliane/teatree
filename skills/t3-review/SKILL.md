@@ -19,6 +19,8 @@ metadata:
 
 ## Delegation
 
+> **Source:** Delegated skills originate from [obra/superpowers](https://github.com/obra/superpowers): requesting-code-review
+
 This skill delegates the generic review doctrine to:
 
 - `requesting-code-review` — when to request an independent review pass

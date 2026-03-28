@@ -37,7 +37,6 @@ Running tests, analyzing failures, quality checks, CI interaction, test plans, a
 
 ### Frontend Lint
 
-- `nx run-many --target=lint` — lint all frontend projects.
 - Fix lint errors before pushing.
 
 ### E2E Testing
@@ -262,8 +261,6 @@ Before claiming E2E success or posting screenshots as evidence, **visually inspe
 A screenshot with raw translation keys is **not valid evidence** — it proves the environment was broken, not that the feature works.
 
 ### Store Contamination Check (Non-Negotiable)
-
-E2E tests for features that load data via store dispatches (e.g., NgRx `loadResources`) must verify the data is loaded **from the tested page**, not from a prior navigation. If you visit page A (which loads resources into the store) and then navigate to page B (which reads from the store but never dispatches the load), page B will appear to work — but only because page A pre-populated the store.
 
 - **Each test must start from a clean state** — navigate directly to the page under test without visiting other pages first.
 - **Verify the page dispatches its own data load** — check the component source for the relevant dispatch call. If missing, the feature has a bug (empty dropdown, missing data), regardless of what the screenshot shows.

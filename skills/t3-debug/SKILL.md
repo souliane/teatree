@@ -19,6 +19,8 @@ metadata:
 
 ## Delegation
 
+> **Source:** Delegated skills originate from [obra/superpowers](https://github.com/obra/superpowers): systematic-debugging, verification-before-completion
+
 This skill delegates the generic debugging doctrine to:
 
 - `systematic-debugging` — root-cause-first investigation

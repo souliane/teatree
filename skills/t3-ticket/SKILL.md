@@ -24,6 +24,8 @@ metadata:
 
 ## Delegation
 
+> **Source:** Delegated skills originate from [obra/superpowers](https://github.com/obra/superpowers): writing-plans
+
 This skill delegates the generic planning doctrine to:
 
 - `writing-plans` — turn requirements into an execution plan before implementation starts

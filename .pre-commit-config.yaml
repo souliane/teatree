@@ -162,4 +162,14 @@ repos:
     hooks:
       - id: conventional-pre-commit
         stages: [commit-msg]
+
+  # Phase 12 - Docs generation
+  - repo: local
+    hooks:
+      - id: generate-cli-docs
+        name: Generate CLI reference docs
+        entry: scripts/generate-cli-reference.sh
+        language: script
+        files: ^src/teetree/cli
+        pass_filenames: false
         args: [--verbose]

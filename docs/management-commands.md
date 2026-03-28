@@ -2,71 +2,66 @@
 
 Teatree's Django management commands handle all database-touching operations. They use [django-typer](https://github.com/bckohan/django-typer) so each command exposes typed subcommands.
 
-These are also accessible through the `t3` CLI (see [CLI Reference](cli.md)), but you can call them directly with `manage.py` if you prefer.
+## lifecycle
 
-## `lifecycle`
+| Subcommand | Description |
+|-----------|-------------|
+| `setup` | Create worktree, provision, run overlay steps |
+| `start` | Start backend/frontend services |
+| `status` | Show worktree state |
+| `teardown` | Tear down worktree |
+| `clean` | Full teardown + state cleanup |
+| `diagram` | Render Mermaid state diagram from FSM |
 
-Manages worktree state transitions.
+## workspace
 
-| Subcommand | Arguments | Returns | Description |
-|------------|-----------|---------|-------------|
-| `setup` | `ticket_id`, `repo_path`, `branch` | worktree ID | Creates a worktree, provisions it (port allocation, DB name), then runs overlay provision steps |
-| `start` | `worktree_id` | state string | Fetches run commands from the overlay, records services, transitions to `services_up` |
-| `status` | `worktree_id` | dict | Returns current state, repo path, and branch |
-| `teardown` | `worktree_id` | state string | Clears ports, DB name, and facts; resets to `created` |
+| Subcommand | Description |
+|-----------|-------------|
+| `ticket` | Create ticket + worktrees for all repos |
+| `inspect` | Show ticket/worktree details |
 
-## `workspace`
+## db
 
-Ticket and workspace management.
+| Subcommand | Description |
+|-----------|-------------|
+| `create` | Create database |
+| `refresh` | Re-import from snapshot/dump |
+| `export` | Export database |
+| `import` | Import database |
+| `restore-ci` | Restore from CI artifact |
 
-| Subcommand | Arguments | Returns | Description |
-|------------|-----------|---------|-------------|
-| `ticket` | `issue_url`, `variant`, `repos` | ticket ID | Creates a ticket, scopes it, and transitions to `started` |
-| `finalize` | `ticket_id` | state string | Transitions the ticket to `coded` |
-| `clean-all` | -- | count | Deletes all worktrees in `created` state |
+## run
 
-## `db`
+| Subcommand | Description |
+|-----------|-------------|
+| `backend` | Start backend service |
+| `frontend` | Start frontend service |
+| `build-frontend` | Build frontend |
+| `tests` | Run test suite |
+| `e2e` | Run E2E tests |
 
-Database operations on worktrees.
+## tasks
 
-| Subcommand | Arguments | Returns | Description |
-|------------|-----------|---------|-------------|
-| `refresh` | `worktree_id` | state string | Transitions to `provisioned` and records refresh timestamp |
-| `status` | `worktree_id` | dict | Returns DB name, state, and last refresh time |
+| Subcommand | Description |
+|-----------|-------------|
+| `claim` | Claim next pending task |
+| `work-next-sdk` | Execute headless task |
+| `work-next-user-input` | Create interactive session |
 
-## `run`
+## followup
 
-Service management.
+| Subcommand | Description |
+|-----------|-------------|
+| `refresh` | Count pending work |
+| `sync` | Sync from GitLab |
+| `discover-mrs` | Discover open MRs |
+| `remind` | Send reminders |
 
-| Subcommand | Arguments | Returns | Description |
-|------------|-----------|---------|-------------|
-| `verify` | `worktree_id` | dict | Transitions to `ready`, records backend/frontend URLs |
-| `services` | `worktree_id` | dict | Returns the overlay's run commands for this worktree |
+## pr
 
-## `mr`
-
-Merge request operations.
-
-| Subcommand | Arguments | Returns | Description |
-|------------|-----------|---------|-------------|
-| `validate` | `title`, `description` | `ValidationResult` | Runs the overlay's MR validation rules |
-| `check-gates` | `ticket_id` | bool | Verifies the most recent session has passed all required quality gates for shipping |
-
-## `tasks`
-
-Task queue for multi-agent coordination.
-
-| Subcommand | Arguments | Returns | Description |
-|------------|-----------|---------|-------------|
-| `claim` | `execution_target`, `claimed_by` | task ID or None | Claims the next pending task of the given target type |
-| `work-next-sdk` | `claimed_by` | dict or None | Claims and completes the next SDK task using the configured runtime |
-| `work-next-user-input` | `claimed_by` | dict or None | Claims and completes the next user-input task |
-
-## `followup`
-
-Monitoring and reminders.
-
-| Subcommand | Arguments | Returns | Description |
-|------------|-----------|---------|-------------|
-| `refresh` | -- | dict | Returns counts of tickets, tasks, and open tasks |
-| `remind` | -- | list of IDs | Returns IDs of pending user-input tasks |
+| Subcommand | Description |
+|-----------|-------------|
+| `create` | Create MR/PR |
+| `fetch-issue` | Fetch issue details |
+| `detect-tenant` | Detect tenant variant |
+| `post-evidence` | Post evidence to MR |

@@ -295,6 +295,29 @@ Both. All scripts use `#!/usr/bin/env bash` and the shell helpers detect `$ZSH_V
 
 **TEA**'s **E**xtensible **A**rchitecture for work**tree** management. Also: teatree oil cuts through grime, and that's what this does to multi-repo worktree friction.
 
+## Installation
+
+**System-wide (recommended):**
+
+```bash
+# Using pipx (isolated, available from any directory)
+pipx install git+https://github.com/souliane/teatree.git
+
+# Using uv tool
+uv tool install git+https://github.com/souliane/teatree.git
+```
+
+**Development setup:**
+
+```bash
+git clone https://github.com/souliane/teatree.git
+cd teatree
+uv sync
+uv run t3 --help
+```
+
+After installation, `t3` is available from any directory.
+
 ## License
 
 MIT
