@@ -1,0 +1,56 @@
+{% if detail %}
+<div class="space-y-3">
+  <h3 class="font-display text-lg">Task #{{ detail.task_id }} — {{ detail.phase }}</h3>
+  <div class="rounded-lg border border-bark/10 bg-white/80 px-4 py-3 font-sans text-sm">
+    <div class="flex items-center gap-2 text-bark/55 text-[11px] font-semibold uppercase tracking-[0.2em]">
+      Status: {{ detail.status }} · Target: {{ detail.execution_target }}
+    </div>
+    <p class="mt-1 text-bark/65">{{ detail.execution_reason }}</p>
+  </div>
+
+  {% if detail.parent %}
+  <div class="ml-2">
+    <span class="font-sans text-[11px] font-semibold uppercase tracking-[0.2em] text-bark/55">Parent</span>
+    <div class="mt-1 rounded-lg border border-bark/10 bg-bark/5 px-3 py-2 font-sans text-sm">
+      <button onclick="openTaskModal({{ detail.parent.task_id }})" class="text-moss underline">Task #{{ detail.parent.task_id }}</button>
+      · {{ detail.parent.phase }} · {{ detail.parent.status }}
+    </div>
+  </div>
+  {% endif %}
+
+  {% if detail.children %}
+  <div class="ml-2">
+    <span class="font-sans text-[11px] font-semibold uppercase tracking-[0.2em] text-bark/55">Child Tasks</span>
+    <div class="mt-1 space-y-1">
+      {% for child in detail.children %}
+      <div class="rounded-lg border border-bark/10 bg-bark/5 px-3 py-2 font-sans text-sm">
+        <button onclick="openTaskModal({{ child.task_id }})" class="text-moss underline">Task #{{ child.task_id }}</button>
+        · {{ child.phase }} · {{ child.status }}
+        <span class="text-bark/50 text-xs">{{ child.execution_reason }}</span>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
+  {% if detail.attempts %}
+  <div class="ml-2">
+    <span class="font-sans text-[11px] font-semibold uppercase tracking-[0.2em] text-bark/55">Execution History</span>
+    <div class="mt-1 space-y-1">
+      {% for attempt in detail.attempts %}
+      <div class="rounded-lg border border-bark/10 px-3 py-2 font-sans text-xs
+        {% if attempt.exit_code == 0 %}bg-green-50{% elif attempt.exit_code %}bg-red-50{% else %}bg-white/80{% endif %}">
+        <div class="flex items-center justify-between">
+          <span>{{ attempt.execution_target }} · exit={{ attempt.exit_code|default:"—" }}</span>
+          <span class="text-bark/40">{{ attempt.ended_at|default:"running" }}</span>
+        </div>
+        {% if attempt.error %}<p class="mt-1 text-red-600">{{ attempt.error|truncatechars:200 }}</p>{% endif %}
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+</div>
+{% else %}
+<p class="font-sans text-sm italic text-bark/60">Task not found.</p>
+{% endif %}

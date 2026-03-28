@@ -36,9 +36,8 @@ class DashboardView(View):
     _synced = False
 
     def get(self, request: HttpRequest) -> HttpResponse:
-        if not DashboardView._synced:  # pragma: no branch
-            perform_sync()
-            DashboardView._synced = True
+        # Serve immediately with cached data — hx-post sync on page load
+        # handles the background refresh, so we don't block the initial render.
         logo_url = getattr(settings, "TEATREE_DASHBOARD_LOGO", None) or static("teetree/img/teatree-logo.svg")
         return TemplateResponse(
             request,
