@@ -95,10 +95,8 @@ def startproject(
 def start() -> None:
     """Detect context, setup if needed, and start services.
 
-    Filesystem-first single command replacing the multi-step workflow:
-      1. Detect overlay from cwd (manage.py or ~/.teatree.toml)
-      2. If worktree not provisioned, run lifecycle setup
-      3. Start backend/frontend services
+    Filesystem-first single command: detect overlay from cwd, run lifecycle
+    setup if needed, then start backend/frontend services.
     """
     from teetree.config import discover_active_overlay  # noqa: PLC0415
 
