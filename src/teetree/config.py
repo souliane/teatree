@@ -1,4 +1,15 @@
-"""TeaTree configuration — overlay discovery from ~/.teatree.toml."""
+"""TeaTree configuration — overlay discovery from ~/.teatree.toml.
+
+Config resolution convention:
+
+- Django-backed flows (management commands, views) → use Django settings,
+  with ``load_config()`` as fallback for values not yet in settings.
+- Non-Django flows (bash hooks, CLI pre-bootstrap) → read from
+  ``~/.teatree.toml`` or ``overlay.toml`` directly.
+
+The goal is to migrate all runtime config to Django settings over time,
+leaving ``~/.teatree.toml`` only for overlay discovery and bootstrap.
+"""
 
 import tomllib
 from dataclasses import dataclass, field
