@@ -367,8 +367,7 @@ def build_dashboard_ticket_rows() -> list[DashboardTicketRow]:
 
 def _ticket_sort_key(row: DashboardTicketRow) -> tuple[bool, str, int]:
     has_mr = bool(row.mrs)
-    latest_url = max((mr.url for mr in row.mrs), default="") if has_mr else ""
-    return (has_mr, latest_url, row.ticket_id)
+    return (has_mr, max((mr.url for mr in row.mrs), default=""), row.ticket_id)
 
 
 def _last_error_for_tasks(task_ids: list[int]) -> dict[int, str]:

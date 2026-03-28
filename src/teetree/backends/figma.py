@@ -35,8 +35,7 @@ class FigmaBackend:
             timeout=30.0,
         )
         resp.raise_for_status()
-        images = resp.json().get("images", {})
-        image_url = images.get(node_id, "")
+        image_url = resp.json().get("images", {}).get(node_id, "")
         if not image_url:
             return b""
         img_resp = httpx.get(image_url, timeout=30.0)
