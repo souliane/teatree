@@ -72,9 +72,22 @@ STATIC_URL = "static/"
 
 LOGGING = default_logging("dev")
 
+# Worktree storage: when set, worktrees are created under this directory
+# instead of as subdirectories of the workspace. Keeps the workspace clean.
+TEATREE_WORKTREE_DIR = ""  # e.g. "~/.teatree/worktrees"
+
+# Single-repo mode: skip multi-repo workflows when only one repo is configured.
+TEATREE_SINGLE_REPO_MODE = False
+
+# Terminal mode for interactive sessions:
+#   "ttyd"          — browser-based terminal (default)
+#   "new-window"    — open a native OS terminal window
+#   "new-tab"       — open a tab in the current terminal emulator (best-effort)
+#   "same-terminal" — run in the current terminal
+TEATREE_TERMINAL_MODE = "same-terminal"
+
 TEATREE_HEADLESS_RUNTIME = "claude-code"
 TEATREE_INTERACTIVE_RUNTIME = "codex"
-TEATREE_TERMINAL_MODE = "same-terminal"
 TEATREE_CLAUDE_STATUSLINE_STATE_DIR = "/tmp/claude-statusline"  # noqa: S108
 TEATREE_AGENT_HANDOVER = [
     {
