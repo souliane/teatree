@@ -513,13 +513,25 @@ else
     printf "ctx=${DIM}%s%%${RESET} | " "$ctx_pct"
 fi
 
-# Five-hour Claude usage
+# Five-hour Claude usage — show human-readable reset time in local timezone
+_reset_display=""
+if [ -n "$five_hour_resets_at" ] && [ "$five_hour_resets_at" != "null" ]; then
+    if command -v date >/dev/null 2>&1; then
+        if [[ "$OSTYPE" == "darwin"* ]]; then
+            _reset_time=$(date -j -f "%Y-%m-%dT%H:%M:%S" "${five_hour_resets_at%%.*}" "+%H:%M" 2>/dev/null)
+        else
+            _reset_time=$(date -d "$five_hour_resets_at" "+%H:%M" 2>/dev/null)
+        fi
+        _tz_name="${TZ:-$(date +%Z 2>/dev/null)}"
+        [ -n "$_reset_time" ] && _reset_display=" until ${_reset_time} ${_tz_name}"
+    fi
+fi
 if (( five_hour_pct >= 95 )); then
-    printf "5h=${RED}%s%%${RESET} | " "$five_hour_pct"
+    printf "${RED}%s%%${RESET}${DIM}%s${RESET} | " "$five_hour_pct" "$_reset_display"
 elif (( five_hour_pct >= 80 )); then
-    printf "5h=${YELLOW}%s%%${RESET} | " "$five_hour_pct"
+    printf "${YELLOW}%s%%${RESET}${DIM}%s${RESET} | " "$five_hour_pct" "$_reset_display"
 else
-    printf "5h=${DIM}%s%%${RESET} | " "$five_hour_pct"
+    printf "${DIM}%s%%%s${RESET} | " "$five_hour_pct" "$_reset_display"
 fi
 
 # CWD with ticket context when inside a worktree/ticket directory

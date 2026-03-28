@@ -33,6 +33,16 @@ From "code is done" to "MR is merged."
 
 - **t3-workspace** (required) — provides environment context. **Load `/t3-workspace` now** if not already loaded.
 
+## Pre-shipping Gate: Mandatory Self-Review
+
+**Before any shipping action**, verify that a dedicated self-review was performed:
+
+1. Check if `/t3-review` was loaded and executed during this session
+2. If NOT: **STOP** and run `/t3-review` first — shipping without review is blocked by the quality gate (`Session.check_gate("shipping")` requires the "reviewing" phase to be visited)
+3. The review must be a **dedicated pass** — not just a quick glance. It should cover the full diff, architectural alignment, and edge cases
+
+This is enforced both in the skill workflow (this instruction) and in the Django quality gate (raises `QualityGateError` if reviewing phase was not visited).
+
 ## Workflow
 
 ### 1. Commit

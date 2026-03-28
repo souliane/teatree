@@ -89,6 +89,27 @@ Run gates → Any failure? → Fix → Re-run gates → Repeat until clean
 
 **References:** [Ralph Loop](https://github.com/snarktank/ralph) (external verification over self-assessed completion), [Effective harnesses for long-running agents](https://www.anthropic.com/engineering/effective-harnesses-for-long-running-agents) (Anthropic, feature-list-driven incremental verification).
 
+### Module-Level Architectural Check
+
+After the diff review, examine the **full modules** touched by the diff — not just the changed lines. This catches architectural drift that looks fine per-diff but violates module-level design rules.
+
+For each file modified in the changeset:
+
+1. **Read the full file** (not just the diff) and check for:
+   - God-module symptoms: too many responsibilities, excessive length (>400 lines), many unrelated functions
+   - Module-level function sprawl: functions that should be methods on a class
+   - Missing encapsulation: internal state accessed directly instead of through methods
+   - Locality of behavior violations: related logic scattered across distant parts of the file
+
+2. **Check loaded coding skills** (e.g., `ac-python`, `ac-django`) for project-specific architectural rules:
+   - OOP patterns required by the project (Fat Model, service layer, etc.)
+   - Framework-specific conventions (Django: no logic in views, use managers/selectors)
+   - Import structure rules (no circular imports, layered architecture)
+
+3. **If a module already violated these rules before your change**, don't silently perpetuate it. Flag it as a pre-existing issue and suggest a follow-up ticket.
+
+This step exists because Ruff/linting cannot enforce design rules — only human (or agent) review can catch architectural drift.
+
 ### Giving Code Review
 
 **Pre-flight gate (Non-Negotiable) — complete BEFORE reading any diff:**
