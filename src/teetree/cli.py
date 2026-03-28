@@ -571,9 +571,10 @@ def delete_draft_note(
         typer.echo("No GitLab token found.")
         raise typer.Exit(code=1)
 
+    base_url = os.environ.get("TEATREE_GITLAB_URL", "https://gitlab.com/api/v4")
     encoded = repo.replace("/", "%2F")
     response = _httpx.delete(
-        f"https://gitlab.com/api/v4/projects/{encoded}/merge_requests/{mr}/draft_notes/{note_id}",
+        f"{base_url}/projects/{encoded}/merge_requests/{mr}/draft_notes/{note_id}",
         headers={"PRIVATE-TOKEN": token},
         timeout=10.0,
     )
