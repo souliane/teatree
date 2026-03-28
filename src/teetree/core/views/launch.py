@@ -15,12 +15,9 @@ logger = logging.getLogger(__name__)
 
 
 def _find_free_port() -> int:
-    import socket  # noqa: PLC0415
+    from teetree.utils.ports import find_free_port  # noqa: PLC0415
 
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        s.bind(("", 0))
-        return s.getsockname()[1]
+    return find_free_port()
 
 
 @method_decorator(csrf_exempt, name="dispatch")

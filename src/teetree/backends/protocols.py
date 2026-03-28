@@ -78,3 +78,10 @@ class ErrorTracker(Protocol):
     """Fetch error/issue data from an error tracking service."""
 
     def get_top_issues(self, *, project: str, limit: int = 10) -> list[dict[str, object]]: ...  # pragma: no branch
+
+
+@runtime_checkable
+class TimeTracker(Protocol):
+    """Fetch time tracking data for dashboard display."""
+
+    def hours_this_week(self) -> float: ...  # pragma: no branch

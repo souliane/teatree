@@ -1327,7 +1327,9 @@ def _write_pyproject(project_root: Path, project_name: str, overlay_app: str, pa
 
 
 def _camelize(name: str) -> str:
-    return "".join(part.capitalize() for part in name.split("_"))
+    from teetree.utils.text import camelize  # noqa: PLC0415
+
+    return camelize(name)
 
 
 # ── Django bootstrap ──────────────────────────────────────────────────

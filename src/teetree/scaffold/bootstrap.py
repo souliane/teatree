@@ -81,4 +81,6 @@ def _render_template(template: str, context: dict[str, str]) -> str:
 
 
 def _camelize(name: str) -> str:
-    return "".join(part.capitalize() for part in name.split("_"))
+    from teetree.utils.text import camelize  # noqa: PLC0415
+
+    return camelize(name)

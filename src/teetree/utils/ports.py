@@ -10,6 +10,13 @@ _DEFAULT_REDIS_PORT = 6379
 type ReservedPorts = dict[str, set[int]]
 
 
+def find_free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        s.bind(("", 0))
+        return s.getsockname()[1]
+
+
 def port_in_use(port: int) -> bool:
     for family in (socket.AF_INET, socket.AF_INET6):
         sock = socket.socket(family, socket.SOCK_STREAM)
