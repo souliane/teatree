@@ -20,6 +20,7 @@
 ## Debugging
 
 Capture server stdout/stderr to a log file instead of DEVNULL:
+
 ```python
 server = subprocess.Popen(..., stdout=log_file, stderr=log_file)
 ```

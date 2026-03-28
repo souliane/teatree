@@ -340,7 +340,7 @@ def build_dashboard_ticket_rows() -> list[DashboardTicketRow]:
         )
         .order_by("pk")
     )
-    return [
+    rows = [
         DashboardTicketRow(
             ticket_id=ticket.pk,
             display_id=_display_id(ticket),

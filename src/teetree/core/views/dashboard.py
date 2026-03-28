@@ -17,7 +17,6 @@ from teetree.core.selectors import (
     build_task_detail,
     build_worktree_rows,
 )
-from teetree.core.views._startup import perform_sync
 
 _PANEL_TEMPLATES = {
     "summary": "teetree/partials/dashboard_summary.html",

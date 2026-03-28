@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 
 from django.db import models
 from django.db.models import Q
@@ -16,7 +17,7 @@ class WorktreeQuerySet(models.QuerySet):
 
     def for_cwd(self, cwd: str | None = None) -> models.QuerySet:
         if cwd is None:
-            cwd = os.environ.get("T3_ORIG_CWD", os.getcwd())
+            cwd = os.environ.get("T3_ORIG_CWD", str(Path.cwd()))
         # Python-side filter: SQL has no portable "cwd starts with repo_path"
         # operator. Worktree count is always small (< 50), so this is fine.
         matches = [wt.pk for wt in self.all() if cwd.startswith(wt.repo_path)]

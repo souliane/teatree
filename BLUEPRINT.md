@@ -1175,11 +1175,13 @@ Overlay-supplied commands (from `get_run_commands()`, `get_post_db_steps()`,
 `tool.py`).  This is intentional and documented:
 
 **Trust model:**
+
 - Overlay authors control these strings — they write the overlay code
 - Overlays are installed by the project operator (not end users)
 - The strings are configuration, not user input
 
 **Mitigations:**
+
 - `# noqa: S602` comments acknowledge the `shell=True` usage
 - Overlay commands are logged before execution
 - No user-controlled input is interpolated into shell strings

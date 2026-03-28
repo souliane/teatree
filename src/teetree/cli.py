@@ -3,20 +3,22 @@
 DB-touching commands are django-typer management commands, exposed here after
 ``django.setup()``.  Django-free commands live as plain Typer groups.
 
-Module sections (future split targets — see #41):
-  1. Bootstrap (app, main, _find_project_root)
-  2. Config commands (startproject, docs, start)
-  3. CI commands (ci_app: trigger, cancel, errors)
-  4. Review commands (review_app: draft notes)
-  5. Doctor commands (doctor_app: connectivity checks)
-  6. Tool commands (tool_app: custom overlay tools)
-  7. Overlay registration (_register_overlay_commands)
-  8. Internal helpers (_get_gitlab_token, _camelize, etc.)
+Module sections (future split targets — see #41)::
 
-DB-free command migration candidates (#22):
-  - generate_skill_docs, generate_overlay_docs (introspection only)
-  - tool subcommands (overlay-provided, use subprocess)
-  - doctor checks (filesystem + network probes)
+    1. Bootstrap (app, main, _find_project_root)
+    2. Config commands (startproject, docs, start)
+    3. CI commands (ci_app: trigger, cancel, errors)
+    4. Review commands (review_app: draft notes)
+    5. Doctor commands (doctor_app: connectivity checks)
+    6. Tool commands (tool_app: custom overlay tools)
+    7. Overlay registration (_register_overlay_commands)
+    8. Internal helpers (_get_gitlab_token, _camelize, etc.)
+
+DB-free command migration candidates (#22)::
+
+    generate_skill_docs, generate_overlay_docs (introspection only),
+    tool subcommands (overlay-provided, use subprocess),
+    doctor checks (filesystem + network probes).
 """
 
 import contextlib
@@ -110,10 +112,8 @@ def startproject(
 def start() -> None:
     """Detect context, setup if needed, and start services.
 
-    Filesystem-first single command replacing the multi-step workflow:
-      1. Detect overlay from cwd (manage.py or ~/.teatree.toml)
-      2. If worktree not provisioned, run lifecycle setup
-      3. Start backend/frontend services
+    Filesystem-first single command: detect overlay from cwd, run lifecycle
+    setup if needed, then start backend/frontend services.
     """
     from teetree.config import discover_active_overlay  # noqa: PLC0415
 

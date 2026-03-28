@@ -1,6 +1,7 @@
 import logging
 import os
 from dataclasses import dataclass
+from typing import Any
 
 import httpx
 
@@ -22,7 +23,7 @@ class FigmaBackend:
     def _headers(self) -> dict[str, str]:
         return {"X-FIGMA-TOKEN": self.token}
 
-    def get_file(self, file_key: str) -> dict[str, object]:
+    def get_file(self, file_key: str) -> dict[str, Any]:
         resp = httpx.get(f"{_FIGMA_API}/files/{file_key}", headers=self._headers(), timeout=30.0)
         resp.raise_for_status()
         return resp.json()
@@ -49,13 +50,13 @@ class FigmaBackend:
             return []
         return [FigmaChildNode(id=c.get("id", ""), name=c.get("name", "")) for c in node.get("children", [])]
 
-    def get_comments(self, file_key: str) -> list[dict[str, object]]:
+    def get_comments(self, file_key: str) -> list[dict[str, Any]]:
         resp = httpx.get(f"{_FIGMA_API}/files/{file_key}/comments", headers=self._headers(), timeout=30.0)
         resp.raise_for_status()
         return resp.json().get("comments", [])
 
 
-def _find_node(tree: dict[str, object], node_id: str) -> dict[str, object] | None:
+def _find_node(tree: dict[str, Any], node_id: str) -> dict[str, Any] | None:
     if tree.get("id") == node_id:
         return tree
     for child in tree.get("children", []):
