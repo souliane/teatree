@@ -1,10 +1,12 @@
 """Tests for teetree.agents.web_terminal — ttyd session launching."""
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from teetree.agents.web_terminal import (
+    _build_ttyd_env,
+    _detect_host_timezone,
     _find_free_port,
     _get_resume_session_id,
     launch_web_session,
@@ -142,3 +144,47 @@ def test_launch_web_session_new_session_uses_system_context(monkeypatch: pytest.
     call_args = popen_mock.call_args[0][0]
     assert "--append-system-prompt" in call_args
     assert "--resume" not in call_args
+
+
+# --- _build_ttyd_env / _detect_host_timezone ---
+
+
+def test_build_ttyd_env_preserves_existing_tz(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TZ", "America/New_York")
+    env = _build_ttyd_env()
+    assert env["TZ"] == "America/New_York"
+
+
+def test_build_ttyd_env_injects_detected_tz(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("TZ", raising=False)
+    with patch("teetree.agents.web_terminal._detect_host_timezone", return_value="Europe/Vienna"):
+        env = _build_ttyd_env()
+    assert env["TZ"] == "Europe/Vienna"
+
+
+def test_build_ttyd_env_skips_tz_when_detection_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("TZ", raising=False)
+    with patch("teetree.agents.web_terminal._detect_host_timezone", return_value=""):
+        env = _build_ttyd_env()
+    assert "TZ" not in env
+
+
+def test_detect_host_timezone_reads_etc_timezone() -> None:
+    with patch("teetree.agents.web_terminal.Path.read_text", return_value="Europe/Paris\n"):
+        assert _detect_host_timezone() == "Europe/Paris"
+
+
+def test_detect_host_timezone_falls_back_to_localtime_symlink() -> None:
+    with (
+        patch("teetree.agents.web_terminal.Path.read_text", side_effect=OSError),
+        patch("os.path.realpath", return_value="/usr/share/zoneinfo/Europe/Berlin"),
+    ):
+        assert _detect_host_timezone() == "Europe/Berlin"
+
+
+def test_detect_host_timezone_returns_empty_on_failure() -> None:
+    with (
+        patch("teetree.agents.web_terminal.Path.read_text", side_effect=OSError),
+        patch("os.path.realpath", return_value="/some/other/path"),
+    ):
+        assert _detect_host_timezone() == ""

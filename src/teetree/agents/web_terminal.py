@@ -5,8 +5,10 @@ the terminal session accessible from a browser at ``http://host:port``.
 """
 
 import logging
+import os
 import shutil
 import subprocess  # noqa: S404
+from pathlib import Path
 
 from teetree.agents.prompt import build_interactive_context
 from teetree.agents.skill_bundle import resolve_skill_bundle
@@ -53,6 +55,7 @@ def launch_web_session(
         [ttyd_binary, "--writable", "--port", str(port), "--once", *agent_command],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
+        env=_build_ttyd_env(),
     )
     logger.info("Launched ttyd session for task %s (pid=%s, port=%s)", task.pk, proc.pid, port)
 
@@ -76,6 +79,29 @@ def _get_resume_session_id(task: Task) -> str:
     agent_id = task.session.agent_id if task.session else ""
     if agent_id and _UUID_RE.match(agent_id):
         return agent_id
+    return ""
+
+
+def _build_ttyd_env() -> dict[str, str]:
+    env = os.environ.copy()
+    if "TZ" not in env:
+        tz = _detect_host_timezone()
+        if tz:
+            env["TZ"] = tz
+    return env
+
+
+def _detect_host_timezone() -> str:
+    try:
+        return Path("/etc/timezone").read_text(encoding="utf-8").strip()
+    except OSError:
+        pass
+    try:
+        target = os.path.realpath("/etc/localtime")
+        if "zoneinfo/" in target:
+            return target.split("zoneinfo/", 1)[1]
+    except OSError:
+        pass
     return ""
 
 
