@@ -1152,6 +1152,19 @@ Dev dependencies: ruff, pytest, pytest-cov, pytest-django, ty, import-linter, pr
 
 ## 17. Appendix
 
+### 17.0 Codebase Reorganization (Incremental)
+
+The codebase reorganization is decomposed into individually-shippable subtasks:
+
+- [x] #46 — Add `db_table` to all models (reusable app compatibility)
+- [x] #39 — Remove hardcoded `gitlab.com` URLs
+- [ ] #42 — Add `__all__` exports to public `__init__.py` files
+- [ ] #40 — Deduplicate `_find_free_port()`, `_camelize()`, and skill cache
+- [ ] #41 — Split `cli.py` into focused submodules (document sections first)
+- [ ] #36 — Move config resolution to Django settings only
+
+Each item is a standalone PR. No big-bang refactor.
+
 ### 17.1 Shell Execution Security Contract
 
 **All `subprocess` calls in teatree core use `shell=False`** (the safe default).
