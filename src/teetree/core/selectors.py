@@ -51,6 +51,9 @@ class DashboardSummary:
     active_worktrees: int
     pending_headless_tasks: int
     pending_interactive_tasks: int
+    completed_headless_tasks: int = 0
+    failed_headless_tasks: int = 0
+    headless_success_rate: int = 0
 
 
 _PIPELINE_DISPLAY: dict[str, tuple[str, str]] = {
@@ -281,11 +284,21 @@ def build_task_detail(task_id: int) -> TaskDetail | None:
 
 
 def build_dashboard_summary() -> DashboardSummary:
+    automation = Task.objects.filter(
+        execution_target=Task.ExecutionTarget.HEADLESS,
+    ).aggregate(
+        completed=Count("pk", filter=Q(status=Task.Status.COMPLETED)),
+        failed=Count("pk", filter=Q(status=Task.Status.FAILED)),
+    )
+    total_finished = automation["completed"] + automation["failed"]
     return DashboardSummary(
         in_flight_tickets=Ticket.objects.in_flight().count(),
         active_worktrees=Worktree.objects.active().count(),
         pending_headless_tasks=Task.objects.claimable_for_headless().count(),
         pending_interactive_tasks=Task.objects.claimable_for_interactive().count(),
+        completed_headless_tasks=automation["completed"],
+        failed_headless_tasks=automation["failed"],
+        headless_success_rate=round(automation["completed"] * 100 / total_finished) if total_finished else 0,
     )
 
 

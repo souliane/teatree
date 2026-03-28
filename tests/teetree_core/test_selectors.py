@@ -51,12 +51,28 @@ def test_build_dashboard_summary_counts_in_flight_work() -> None:
         status=Task.Status.COMPLETED,
     )
 
+    Task.objects.create(
+        ticket=active_ticket,
+        session=active_session,
+        execution_target=Task.ExecutionTarget.HEADLESS,
+        status=Task.Status.COMPLETED,
+    )
+    Task.objects.create(
+        ticket=active_ticket,
+        session=active_session,
+        execution_target=Task.ExecutionTarget.HEADLESS,
+        status=Task.Status.FAILED,
+    )
+
     summary = build_dashboard_summary()
 
     assert summary.in_flight_tickets == 1
     assert summary.active_worktrees == 1
     assert summary.pending_headless_tasks == 1
     assert summary.pending_interactive_tasks == 1
+    assert summary.completed_headless_tasks == 1
+    assert summary.failed_headless_tasks == 1
+    assert summary.headless_success_rate == 50
 
 
 def test_build_dashboard_ticket_rows_annotates_related_counts() -> None:
