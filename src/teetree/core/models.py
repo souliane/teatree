@@ -52,6 +52,9 @@ class Ticket(models.Model):
 
     objects = TicketManager()
 
+    class Meta:
+        db_table = "teetree_ticket"
+
     def __str__(self) -> str:
         return str(self.issue_url or f"ticket-{self.pk}")
 
@@ -174,6 +177,9 @@ class Worktree(models.Model):
 
     objects = WorktreeManager()
 
+    class Meta:
+        db_table = "teetree_worktree"
+
     def __str__(self) -> str:
         return str(self.repo_path)
 
@@ -288,6 +294,9 @@ class Session(models.Model):
 
     objects = SessionManager()
 
+    class Meta:
+        db_table = "teetree_session"
+
     _REQUIRED_PHASES: ClassVar[dict[str, list[str]]] = {
         "reviewing": ["testing"],
         "shipping": ["testing", "reviewing"],
@@ -360,6 +369,9 @@ class Task(models.Model):
     result_artifact_path = models.CharField(max_length=500, blank=True)
 
     objects = TaskManager()
+
+    class Meta:
+        db_table = "teetree_task"
 
     def __str__(self) -> str:
         return f"task-{self.pk}-{self.execution_target!s}"
@@ -526,6 +538,9 @@ class TaskAttempt(models.Model):
     result = models.JSONField(default=dict, blank=True)
     launch_url = models.URLField(max_length=500, blank=True)
     agent_session_id = models.CharField(max_length=255, blank=True)
+
+    class Meta:
+        db_table = "teetree_taskattempt"
 
     def __str__(self) -> str:
         return f"attempt-{self.pk or 'new'!s}"
