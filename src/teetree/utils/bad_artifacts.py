@@ -6,6 +6,7 @@ fail restore or migration.
 """
 
 import json
+from pathlib import Path
 
 from teetree.config import DATA_DIR
 
@@ -52,3 +53,28 @@ def list_bad() -> list[str]:
 def clear_all() -> None:
     if _CACHE_FILE.is_file():
         _CACHE_FILE.unlink()
+
+
+class BadArtifactCleaner:
+    def __init__(self, data_dir: str = "") -> None:
+        self.bad_file = Path(data_dir) / "bad_artifacts.json" if data_dir else _CACHE_FILE
+
+    def list_bad_artifacts(self) -> list[str]:
+        if not self.bad_file.is_file():
+            return []
+        try:
+            data = json.loads(self.bad_file.read_text(encoding="utf-8"))
+            return data if isinstance(data, list) else []
+        except (json.JSONDecodeError, OSError):
+            return []
+
+    def remove_artifact(self, path: str) -> bool:
+        artifacts = self.list_bad_artifacts()
+        if path not in artifacts:
+            return False
+        artifacts.remove(path)
+        target = Path(path)
+        if target.is_file():
+            target.unlink()
+        self.bad_file.write_text(json.dumps(sorted(set(artifacts)), indent=2) + "\n", encoding="utf-8")
+        return True
