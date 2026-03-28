@@ -1,3 +1,5 @@
+"""TeaTree agent integration Django app."""
+
 __all__ = [
     "headless",
     "prompt",

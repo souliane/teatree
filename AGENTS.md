@@ -2,6 +2,14 @@
 
 This is the teatree repo — both the Python package (`src/teetree/`) and the workflow skills (`skills/t3-*/`). You are developing teatree itself, not using it on a downstream project.
 
+## Development Process (Non-Negotiable)
+
+All teatree development must go through a **GitHub issue** and the **t3-teatree overlay**, with one exception: improvements from `/t3-retro` (small, tactical, committed directly on the current branch).
+
+1. Before starting work: create or reference a GitHub issue in `souliane/teatree`
+2. Use the t3-teatree overlay to manage the work (worktree, task tracking, full lifecycle)
+3. Refuse non-retro changes without a ticket context — ask "Which ticket is this for?"
+
 ## Repo Change Safety
 
 - Never create a new plan file, memory file, journal file, or repo-instruction file in this repository without the user's explicit approval first.
