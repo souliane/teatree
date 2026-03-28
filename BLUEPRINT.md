@@ -1147,3 +1147,46 @@ Dev dependencies: ruff, pytest, pytest-cov, pytest-django, ty, import-linter, pr
 - `claude -p` is headless (exits immediately). Interactive sessions use `claude` without `-p`.
 - Dashboard requires uvicorn (ASGI) for SSE streaming — overlays must add `uvicorn[standard]` to their dependencies.
 - E2E tests use file-based SQLite (not `:memory:`) because Playwright spawns a separate server process.
+
+---
+
+## 17. Appendix
+
+### 17.1 Shell Execution Security Contract
+
+**All `subprocess` calls in teatree core use `shell=False`** (the safe default).
+
+Overlay-supplied commands (from `get_run_commands()`, `get_post_db_steps()`,
+`get_reset_passwords_command()`, `get_tool_commands()`) are executed with
+`shell=True` in the management commands (`db.py`, `lifecycle.py`, `run.py`,
+`tool.py`).  This is intentional and documented:
+
+**Trust model:**
+- Overlay authors control these strings — they write the overlay code
+- Overlays are installed by the project operator (not end users)
+- The strings are configuration, not user input
+
+**Mitigations:**
+- `# noqa: S602` comments acknowledge the `shell=True` usage
+- Overlay commands are logged before execution
+- No user-controlled input is interpolated into shell strings
+
+**Rule:** If you add a new `subprocess` call, default to `shell=False`.
+Only use `shell=True` for overlay-supplied command strings.  Any new
+`shell=True` must have a `# noqa: S602` comment explaining the trust model.
+
+### 17.2 BLUEPRINT Update Protocol
+
+Every code change that adds, removes, or modifies a feature documented in this
+file **must update BLUEPRINT.md in the same commit**. A CI check can enforce
+this:
+
+```yaml
+- name: Blueprint freshness
+  run: |
+    changed_src=$(git diff --name-only HEAD~1 -- src/ tests/)
+    if [ -n "$changed_src" ]; then
+      git diff --name-only HEAD~1 -- BLUEPRINT.md | grep -q BLUEPRINT.md \
+        || echo "::warning::src/ changed but BLUEPRINT.md was not updated"
+    fi
+```

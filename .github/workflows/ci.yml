@@ -2,6 +2,7 @@ name: CI
 
 on:
   push:
+    branches: [main]
   pull_request:
 
 jobs:
@@ -23,6 +24,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         python-version: ["3.13", "3.14"]
     steps:
@@ -33,7 +35,7 @@ jobs:
           context: .
           file: dev/Dockerfile.test
           load: true
-          tags: teatree-test
+          tags: teatree-test-${{ matrix.python-version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
       - run: >
@@ -41,6 +43,6 @@ jobs:
           -v "$PWD":/app:ro
           -e UV_PROJECT_ENVIRONMENT=/tmp/.venv
           -e COVERAGE_FILE=/tmp/.coverage
-          teatree-test
+          teatree-test-${{ matrix.python-version }}
           uv run -p ${{ matrix.python-version }} pytest --no-header -q
           -o cache_dir=/tmp/.pytest_cache
