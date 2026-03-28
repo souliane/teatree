@@ -266,6 +266,28 @@ def test_cancel_nonexistent_task_returns_404() -> None:
     assert response.status_code == 404
 
 
+@pytest.mark.parametrize(
+    ("force", "expected_status"),
+    [("", 409), ("1", 200)],
+    ids=["blocked", "forced"],
+)
+def test_cancel_active_interactive_session(force: str, expected_status: int) -> None:
+    ticket = Ticket.objects.create(state=Ticket.State.STARTED)
+    session = Session.objects.create(ticket=ticket, agent_id="agent")
+    task = Task.objects.create(
+        ticket=ticket,
+        session=session,
+        execution_target=Task.ExecutionTarget.INTERACTIVE,
+        status=Task.Status.CLAIMED,
+    )
+    with patch("teetree.core.views.actions._has_active_session", return_value=True):
+        data = {"force": force} if force else {}
+        response = Client().post(reverse("teetree:task-cancel", args=[task.pk]), data)
+    assert response.status_code == expected_status
+    if expected_status == 409:
+        assert "active interactive session" in response.json()["error"]
+
+
 # ---------------------------------------------------------------------------
 # TicketTransitionView
 # ---------------------------------------------------------------------------

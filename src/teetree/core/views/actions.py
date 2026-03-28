@@ -1,3 +1,7 @@
+import json
+import os
+from pathlib import Path
+
 from django.http import Http404, HttpRequest, HttpResponse, JsonResponse
 from django.template.response import TemplateResponse
 from django.utils.decorators import method_decorator
@@ -11,19 +15,52 @@ from teetree.core.views._startup import perform_sync
 
 @method_decorator(csrf_exempt, name="dispatch")
 class CancelTaskView(View):
-    def post(self, _request: HttpRequest, task_id: int) -> HttpResponse:
+    def post(self, request: HttpRequest, task_id: int) -> HttpResponse:
         from django.db import transaction  # noqa: PLC0415
+
+        force = request.POST.get("force") == "1"
 
         try:
             with transaction.atomic():
                 task = Task.objects.select_for_update().get(pk=task_id)
                 if task.status in {Task.Status.COMPLETED, Task.Status.FAILED}:
                     return JsonResponse({"error": "Task already finished"}, status=409)
+                if (
+                    not force
+                    and task.status == Task.Status.CLAIMED
+                    and task.execution_target == Task.ExecutionTarget.INTERACTIVE
+                    and _has_active_session(task)
+                ):
+                    return JsonResponse(
+                        {
+                            "error": "This task has an active interactive session. "
+                            "Close the terminal to end it, or pass force=1 to override."
+                        },
+                        status=409,
+                    )
                 task.fail()
         except Task.DoesNotExist:
             raise Http404 from None
 
         return JsonResponse({"task_id": task.pk, "status": task.status})
+
+
+def _has_active_session(task: Task) -> bool:
+    attempt = task.attempts.order_by("-pk").first()
+    if attempt is None or not attempt.agent_session_id:
+        return False
+    session_file = Path.home() / ".claude" / "sessions" / f"{attempt.agent_session_id}.json"
+    if not session_file.is_file():
+        return False
+    try:
+        data = json.loads(session_file.read_text(encoding="utf-8"))
+        pid = data.get("pid")
+        if isinstance(pid, int):
+            os.kill(pid, 0)
+            return True
+    except (json.JSONDecodeError, OSError):
+        pass
+    return False
 
 
 @method_decorator(csrf_exempt, name="dispatch")
