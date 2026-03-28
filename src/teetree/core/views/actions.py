@@ -46,7 +46,9 @@ class CancelTaskView(View):
 
 
 def _has_active_session(task: Task) -> bool:
-    attempt = task.attempts.order_by("-pk").first()
+    from teetree.core.models import TaskAttempt  # noqa: PLC0415
+
+    attempt = TaskAttempt.objects.filter(task=task).order_by("-pk").first()
     if attempt is None or not attempt.agent_session_id:
         return False
     session_file = Path.home() / ".claude" / "sessions" / f"{attempt.agent_session_id}.json"

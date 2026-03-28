@@ -1,5 +1,5 @@
 import json
-import subprocess  # noqa: S404
+import subprocess
 import time
 from pathlib import Path
 
@@ -16,23 +16,32 @@ def check_for_updates(repo_dir: str = "") -> str | None:
         if not repo_dir:
             repo_dir = str(Path(__file__).resolve().parents[3])
 
-        current = subprocess.run(  # noqa: S603, S607
+        current = subprocess.run(
             ["git", "-C", repo_dir, "rev-parse", "HEAD"],
-            capture_output=True, text=True, check=True, timeout=5,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=5,
         ).stdout.strip()
 
-        latest_tag = subprocess.run(  # noqa: S603, S607
+        latest_tag = subprocess.run(
             ["git", "-C", repo_dir, "describe", "--tags", "--abbrev=0"],
-            capture_output=True, text=True, check=False, timeout=5,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=5,
         ).stdout.strip()
 
         if not latest_tag:
             _write_cache("")
             return None
 
-        tag_sha = subprocess.run(  # noqa: S603, S607
+        tag_sha = subprocess.run(
             ["git", "-C", repo_dir, "rev-parse", latest_tag],
-            capture_output=True, text=True, check=True, timeout=5,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=5,
         ).stdout.strip()
 
         if current != tag_sha:
@@ -41,9 +50,10 @@ def check_for_updates(repo_dir: str = "") -> str | None:
             return msg
 
         _write_cache("")
-        return None
 
     except (subprocess.SubprocessError, OSError):
+        return None
+    else:
         return None
 
 
@@ -61,8 +71,6 @@ def _read_cache() -> str | None:
 def _write_cache(msg: str) -> None:
     try:
         _CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        _CACHE_FILE.write_text(
-            json.dumps({"ts": time.time(), "msg": msg}), encoding="utf-8"
-        )
+        _CACHE_FILE.write_text(json.dumps({"ts": time.time(), "msg": msg}), encoding="utf-8")
     except OSError:
         pass
