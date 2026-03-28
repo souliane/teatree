@@ -470,8 +470,26 @@ hidden_wt=$((total_wt - shown_wt))
 (( hidden_wt > 0 )) && items="${items}\n ${DIM}+${hidden_wt} other worktrees${RESET}"
 
 # --- Collect session-used skills ---
+# Read from the tracked skills file (populated by track-skill-usage.sh).
+# Also check Claude Code's native session data for loaded skills as a fallback.
 skills=""
-if [ -n "$session_id" ] && [ -f "$STATE_DIR/${session_id}.skills" ]; then
+_loaded_skill_names=""
+if [ -n "$session_id" ]; then
+    # Primary source: tracked skills file
+    if [ -f "$STATE_DIR/${session_id}.skills" ]; then
+        _loaded_skill_names=$(cat "$STATE_DIR/${session_id}.skills")
+    fi
+
+    # Fallback: extract skill names from the input JSON (Claude Code >= 2.x
+    # may include loaded skills in the statusline input payload).
+    if [ -z "$_loaded_skill_names" ]; then
+        _loaded_skill_names=$(echo "$input" | jq -r '.skills[]?.name // empty' 2>/dev/null)
+        # Persist discovered skills so subsequent renders pick them up
+        if [ -n "$_loaded_skill_names" ]; then
+            echo "$_loaded_skill_names" >> "$STATE_DIR/${session_id}.skills"
+        fi
+    fi
+
     while IFS= read -r skill_name; do
         [ -z "$skill_name" ] && continue
         if [ -n "$skills" ]; then
@@ -479,7 +497,7 @@ if [ -n "$session_id" ] && [ -f "$STATE_DIR/${session_id}.skills" ]; then
         else
             skills="${MAGENTA}${skill_name}${RESET}"
         fi
-    done < "$STATE_DIR/${session_id}.skills"
+    done <<< "$_loaded_skill_names"
 fi
 
 # --- Output ---
