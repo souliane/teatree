@@ -188,8 +188,13 @@ class Worktree(models.Model):
         self.ports = ports or self._allocate_ports()
         self.db_name = self._build_db_name()
 
+    def reallocate_ports(self) -> None:
+        self.ports = self._allocate_ports()
+
     @transition(field=state, source=State.PROVISIONED, target=State.SERVICES_UP)
-    def start_services(self, *, services: list[str] | None = None) -> None:
+    def start_services(self, *, services: list[str] | None = None, reallocate_ports: bool = False) -> None:
+        if reallocate_ports:
+            self.reallocate_ports()
         if services is not None:
             extra = self._extra()
             extra["services"] = services

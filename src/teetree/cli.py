@@ -4,6 +4,7 @@ DB-touching commands are django-typer management commands, exposed here after
 ``django.setup()``.  Django-free commands live as plain Typer groups.
 """
 
+import contextlib
 import json
 import logging
 import os
@@ -88,6 +89,39 @@ def startproject(
     (project_root / ".env").write_text(f"DJANGO_SETTINGS_MODULE={package_name}.settings\n", encoding="utf-8")
 
     typer.echo(str(project_root))
+
+
+@app.command()
+def start() -> None:
+    """Detect context, setup if needed, and start services.
+
+    Filesystem-first single command replacing the multi-step workflow:
+      1. Detect overlay from cwd (manage.py or ~/.teatree.toml)
+      2. If worktree not provisioned, run lifecycle setup
+      3. Start backend/frontend services
+    """
+    from teetree.config import discover_active_overlay  # noqa: PLC0415
+
+    overlay = discover_active_overlay()
+    if not overlay:
+        typer.echo("No overlay detected. Run from an overlay project directory or configure ~/.teatree.toml.")
+        raise typer.Exit(code=1)
+
+    settings_module = overlay.settings_module
+    os.environ.setdefault("DJANGO_SETTINGS_MODULE", settings_module)
+
+    import django  # noqa: PLC0415
+
+    django.setup()
+
+    from django.core.management import call_command  # noqa: PLC0415
+
+    typer.echo(f"Starting {overlay.name}...")
+    with contextlib.suppress(SystemExit):
+        call_command("lifecycle", "setup")
+    with contextlib.suppress(SystemExit):
+        call_command("lifecycle", "start")
+    typer.echo(f"{overlay.name} is running.")
 
 
 @app.command()

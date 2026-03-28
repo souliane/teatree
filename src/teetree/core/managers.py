@@ -1,3 +1,5 @@
+import os
+
 from django.db import models
 from django.db.models import Q
 from django.utils import timezone
@@ -11,6 +13,12 @@ class TicketQuerySet(models.QuerySet):
 class WorktreeQuerySet(models.QuerySet):
     def active(self) -> models.QuerySet:
         return self.exclude(state="created").order_by("pk")
+
+    def for_cwd(self, cwd: str | None = None) -> models.QuerySet:
+        if cwd is None:
+            cwd = os.environ.get("T3_ORIG_CWD", os.getcwd())
+        matches = [wt.pk for wt in self.all() if cwd.startswith(wt.repo_path)]
+        return self.filter(pk__in=matches)
 
 
 class SessionQuerySet(models.QuerySet):
