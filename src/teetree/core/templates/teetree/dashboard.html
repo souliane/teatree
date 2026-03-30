@@ -174,6 +174,24 @@
       </div>
     </div>
     <div class="grid gap-4">
+      <!-- Automation Summary -->
+      <section class="overflow-hidden rounded-[1.5rem] border border-bark/10 bg-cream/90 shadow-soft backdrop-blur">
+        <div class="flex flex-col gap-2 border-b border-bark/10 px-5 py-4 sm:flex-row sm:items-end sm:justify-between">
+          <div>
+            <h2 class="font-display text-2xl">Automation</h2>
+            <p class="font-sans text-sm text-bark/60">Headless task execution stats.</p>
+          </div>
+          <span class="font-sans text-xs uppercase tracking-[0.18em] text-moss">Last 24h</span>
+        </div>
+        <div
+          class="px-5 py-5"
+          hx-get="{% url 'teetree:dashboard-panel' 'automation' %}"
+          hx-trigger="load, every 120s, refreshPanels from:body, sse:automation"
+          hx-swap="innerHTML"
+        >
+          {% include "teetree/partials/dashboard_automation.html" with automation=snapshot.automation only %}
+        </div>
+      </section>
       <!-- Action Required -->
       <section class="overflow-hidden rounded-[1.5rem] border border-bark/10 bg-cream/90 shadow-soft backdrop-blur">
         <div class="flex flex-col gap-2 border-b border-bark/10 px-5 py-4 sm:flex-row sm:items-end sm:justify-between">

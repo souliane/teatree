@@ -151,6 +151,11 @@ class TestDashboardPanelView:
 
         assert response.status_code == 200
 
+    def test_automation(self) -> None:
+        response = Client().get(reverse("teetree:dashboard-panel", args=["automation"]), HTTP_HX_REQUEST="true")
+
+        assert response.status_code == 200
+
     def test_activity(self) -> None:
         """Cover the 'activity' branch of _panel_context."""
         response = Client().get(reverse("teetree:dashboard-panel", args=["activity"]), HTTP_HX_REQUEST="true")
