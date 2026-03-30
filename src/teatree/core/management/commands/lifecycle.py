@@ -29,7 +29,7 @@ def _append_envrc_lines(wt_path: str, lines: list[str]) -> None:
 
 def _write_skill_metadata_cache() -> None:
     """Write overlay skill metadata to XDG cache for hook consumption."""
-    metadata = get_overlay().get_skill_metadata()
+    metadata = get_overlay().metadata.get_skill_metadata()
     cache_path = DATA_DIR / "skill-metadata.json"
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     cache_path.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")

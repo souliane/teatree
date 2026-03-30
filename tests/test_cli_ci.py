@@ -16,13 +16,13 @@ runner = CliRunner()
 class TestGetCIService:
     def test_from_env(self, monkeypatch):
         """Creates service from env when Django fails."""
-        monkeypatch.setenv("TEATREE_GITLAB_TOKEN", "token")
+        monkeypatch.setenv("GITLAB_TOKEN", "token")
         with patch("teatree.backends.loader.get_ci_service", side_effect=Exception("no django")):
             service = CICommands.get_ci_service()
             assert service is not None
 
     def test_no_token(self, monkeypatch):
-        monkeypatch.delenv("TEATREE_GITLAB_TOKEN", raising=False)
+        monkeypatch.delenv("GITLAB_TOKEN", raising=False)
         monkeypatch.delenv("GITLAB_TOKEN", raising=False)
         with patch("teatree.backends.loader.get_ci_service", side_effect=Exception("no django")):
             assert CICommands.get_ci_service() is None
@@ -35,7 +35,7 @@ class TestGetCIProject:
     def test_from_overlay(self):
         """Returns overlay path when available."""
         mock_overlay = MagicMock()
-        mock_overlay.get_ci_project_path.return_value = "org/repo"
+        mock_overlay.metadata.get_ci_project_path.return_value = "org/repo"
         with (
             patch("django.setup"),
             patch("teatree.core.overlay_loader.get_overlay", return_value=mock_overlay),
@@ -67,7 +67,7 @@ class TestGetCIProject:
     def test_overlay_returns_empty(self):
         """Falls back to remote when overlay returns empty path."""
         mock_overlay = MagicMock()
-        mock_overlay.get_ci_project_path.return_value = ""
+        mock_overlay.metadata.get_ci_project_path.return_value = ""
         mock_project_info = MagicMock(path_with_namespace="org/fallback")
         with (
             patch("django.setup"),
@@ -100,7 +100,7 @@ class TestCurrentGitBranch:
 class TestRequireCI:
     def test_cancel_no_service(self, monkeypatch):
         """Cancel fails without CI service."""
-        monkeypatch.delenv("TEATREE_GITLAB_TOKEN", raising=False)
+        monkeypatch.delenv("GITLAB_TOKEN", raising=False)
         monkeypatch.delenv("GITLAB_TOKEN", raising=False)
         with patch("teatree.cli_ci.CICommands.get_ci_service", return_value=None):
             result = runner.invoke(app, ["ci", "cancel"])

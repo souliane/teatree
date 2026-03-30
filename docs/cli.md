@@ -7,12 +7,12 @@ Teatree provides a single `t3` entry point. Commands are split into two levels:
 
 ## Global Commands
 
-### `t3 startproject`
+### `t3 startoverlay`
 
-Scaffold a new TeaTree overlay project.
+Scaffold a new TeaTree overlay package.
 
 ```bash
-t3 startproject <project_name> <destination> \
+t3 startoverlay <project_name> <destination> \
     --overlay-app <app_name> \
     [--project-package <package_name>]
 ```

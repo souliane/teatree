@@ -22,7 +22,7 @@ class Command(TyperCommand):
         extra: list[str] = ctx.args
 
         overlay = get_overlay()
-        for tool_cmd in overlay.get_tool_commands():
+        for tool_cmd in overlay.metadata.get_tool_commands():
             if tool_cmd.get("name") == name:
                 mgmt_cmd = tool_cmd.get("command", "")
                 if not mgmt_cmd:
@@ -33,14 +33,14 @@ class Command(TyperCommand):
                 env.pop("VIRTUAL_ENV", None)
                 subprocess.run(mgmt_cmd, shell=True, check=True, env=env)  # noqa: S602
                 return f"Tool '{name}' completed."
-        available = [t.get("name", "?") for t in overlay.get_tool_commands()]
+        available = [t.get("name", "?") for t in overlay.metadata.get_tool_commands()]
         return f"Unknown tool: {name}. Available: {', '.join(available) or 'none'}"
 
     @command(name="list")
     def list_tools(self) -> str:
         """List available overlay tool commands."""
         overlay = get_overlay()
-        tools = overlay.get_tool_commands()
+        tools = overlay.metadata.get_tool_commands()
         if not tools:
             return "No tool commands configured in the overlay."
         lines = []

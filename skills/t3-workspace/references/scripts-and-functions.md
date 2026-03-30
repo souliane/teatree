@@ -15,7 +15,7 @@ uv run t3 <overlay> --help     # overlay-specific commands (from overlay project
 
 | Command | What it does |
 |---------|-------------|
-| `t3 startproject` | Scaffold a new overlay project |
+| `t3 startoverlay` | Scaffold a new overlay package |
 | `t3 start-ticket <URL>` | Zero to coding — create ticket, provision worktree, start services |
 | `t3 ship <TICKET_ID>` | Code to MR — create merge request |
 | `t3 daily` | Daily followup — sync MRs, check gates, remind reviewers |

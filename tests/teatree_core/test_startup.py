@@ -1,17 +1,21 @@
 """Tests for teatree.core.views._startup — perform_sync and _write_skill_metadata_cache."""
 
 import json
+from unittest.mock import patch
 
 import pytest
-from django.test import override_settings
 
 from teatree.core.sync import SyncResult
+from tests.teatree_core.conftest import CommandOverlay
 
-_OVERLAY = "tests.teatree_core.conftest.CommandOverlay"
+_MOCK_OVERLAY = {"test": CommandOverlay()}
+
+
+def _patch_overlay():
+    return patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY)
 
 
 class TestPerformSync:
-    @override_settings(TEATREE_OVERLAY_CLASS=_OVERLAY)
     def test_calls_sync_and_writes_cache(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: pytest.TempPathFactory
     ) -> None:
@@ -22,7 +26,8 @@ class TestPerformSync:
 
         from teatree.core.views._startup import perform_sync  # noqa: PLC0415
 
-        result = perform_sync()
+        with _patch_overlay():
+            result = perform_sync()
 
         assert result.mrs_found == 5
         assert result.tickets_created == 2
@@ -34,7 +39,6 @@ class TestPerformSync:
 
 
 class TestWriteSkillMetadataCache:
-    @override_settings(TEATREE_OVERLAY_CLASS=_OVERLAY)
     def test_creates_parent_dirs(self, monkeypatch: pytest.MonkeyPatch, tmp_path: pytest.TempPathFactory) -> None:
         """_write_skill_metadata_cache creates parent directories if missing."""
         nested = tmp_path / "deep" / "nested"
@@ -42,21 +46,22 @@ class TestWriteSkillMetadataCache:
 
         from teatree.core.views._startup import _write_skill_metadata_cache  # noqa: PLC0415
 
-        _write_skill_metadata_cache()
+        with _patch_overlay():
+            _write_skill_metadata_cache()
 
         cache_path = nested / "skill-metadata.json"
         assert cache_path.exists()
         data = json.loads(cache_path.read_text(encoding="utf-8"))
         assert isinstance(data, dict)
 
-    @override_settings(TEATREE_OVERLAY_CLASS=_OVERLAY)
     def test_content_matches_overlay(self, monkeypatch: pytest.MonkeyPatch, tmp_path: pytest.TempPathFactory) -> None:
         """Cache content matches the overlay's get_skill_metadata() output."""
         monkeypatch.setattr("teatree.core.views._startup.DATA_DIR", tmp_path)
 
         from teatree.core.views._startup import _write_skill_metadata_cache  # noqa: PLC0415
 
-        _write_skill_metadata_cache()
+        with _patch_overlay():
+            _write_skill_metadata_cache()
 
         cache_path = tmp_path / "skill-metadata.json"
         data = json.loads(cache_path.read_text(encoding="utf-8"))
@@ -67,7 +72,6 @@ class TestWriteSkillMetadataCache:
 
 
 class TestBuildTriggerIndex:
-    @override_settings(TEATREE_OVERLAY_CLASS=_OVERLAY)
     def test_built_from_skills(self, monkeypatch: pytest.MonkeyPatch, tmp_path: pytest.TempPathFactory) -> None:
         """Trigger index is built by scanning skill directories for triggers: frontmatter."""
         monkeypatch.setattr("teatree.core.views._startup.DATA_DIR", tmp_path)
@@ -83,7 +87,8 @@ class TestBuildTriggerIndex:
 
         from teatree.core.views._startup import _write_skill_metadata_cache  # noqa: PLC0415
 
-        _write_skill_metadata_cache()
+        with _patch_overlay():
+            _write_skill_metadata_cache()
 
         cache_path = tmp_path / "skill-metadata.json"
         data = json.loads(cache_path.read_text(encoding="utf-8"))
@@ -93,7 +98,6 @@ class TestBuildTriggerIndex:
         assert index[0]["priority"] == 42
         assert index[0]["keywords"] == [r"\btest\b"]
 
-    @override_settings(TEATREE_OVERLAY_CLASS=_OVERLAY)
     def test_skips_skills_without_triggers(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: pytest.TempPathFactory
     ) -> None:
@@ -108,13 +112,13 @@ class TestBuildTriggerIndex:
 
         from teatree.core.views._startup import _write_skill_metadata_cache  # noqa: PLC0415
 
-        _write_skill_metadata_cache()
+        with _patch_overlay():
+            _write_skill_metadata_cache()
 
         cache_path = tmp_path / "skill-metadata.json"
         data = json.loads(cache_path.read_text(encoding="utf-8"))
         assert data["trigger_index"] == []
 
-    @override_settings(TEATREE_OVERLAY_CLASS=_OVERLAY)
     def test_skips_non_directory_entries(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: pytest.TempPathFactory
     ) -> None:
@@ -128,7 +132,6 @@ class TestBuildTriggerIndex:
 
         assert _build_trigger_index() == []
 
-    @override_settings(TEATREE_OVERLAY_CLASS=_OVERLAY)
     def test_skips_dir_without_skill_md(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: pytest.TempPathFactory
     ) -> None:
@@ -141,7 +144,6 @@ class TestBuildTriggerIndex:
 
         assert _build_trigger_index() == []
 
-    @override_settings(TEATREE_OVERLAY_CLASS=_OVERLAY)
     def test_handles_unreadable_skill_md(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: pytest.TempPathFactory
     ) -> None:
@@ -160,7 +162,6 @@ class TestBuildTriggerIndex:
         skill_md.chmod(0o644)  # restore for cleanup
         assert result == []
 
-    @override_settings(TEATREE_OVERLAY_CLASS=_OVERLAY)
     def test_resolves_symlinks(self, monkeypatch: pytest.MonkeyPatch, tmp_path: pytest.TempPathFactory) -> None:
         """Symlinked skill directories are resolved and their SKILL.md is read."""
         skills_dir = tmp_path / "skills"
@@ -180,7 +181,6 @@ class TestBuildTriggerIndex:
         assert index[0]["skill"] == "linked"
         assert index[0]["priority"] == 7
 
-    @override_settings(TEATREE_OVERLAY_CLASS=_OVERLAY)
     def test_returns_empty_when_skills_dir_missing(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: pytest.TempPathFactory
     ) -> None:

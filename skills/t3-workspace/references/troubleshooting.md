@@ -20,7 +20,7 @@
 - **Symptom:** `t3 lifecycle setup` completes with state "provisioned" and `db_name` in facts, but `psql` shows the database does not exist. Or DB exists but seed tables are empty (row count is 0).
 - **Cause:** Two known scenarios:
   1. `.env.worktree` was stale from a previous worktree (different ticket/variant). The setup used the old `DATABASE_URL` for migrations — connecting to an existing DB instead of creating a new one. Fixed in `lifecycle.py` (adds `_force_load_env_worktree` after env generation).
-  2. The active project overlay was not configured in the generated TeaTree host project, so project-layer DB hooks never ran.
+  2. The active project overlay was not configured in the overlay package, so project-layer DB hooks never ran.
 - **Verification after setup:** Always check: `psql -h localhost -p <port> -U <db_user> -d <db_name> -c "SELECT count(*) FROM <seed_table>"` — must be > 0.
 - **Fix:** Delete `.env.worktree` (both ticket-dir and repo-level) + `.state.json`, drop the DB if it exists, and re-run `t3 lifecycle setup`.
 

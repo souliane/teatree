@@ -60,7 +60,7 @@ src/teatree/           Python package (the Django app + CLI)
     prompt.py          System context and task prompt builders
     result_schema.py   JSON schema for structured agent output
   utils/               Git helpers, port allocation, subprocess wrappers
-  scaffold/            `t3 startproject` templates (project + app)
+  overlay_init/        `t3 startoverlay` templates (overlay package + app)
 skills/t3-*/           Workflow skills (SKILL.md + references/)
 tests/                 Pytest suite (100% coverage required)
 e2e/                   Playwright E2E tests for dashboard
@@ -104,34 +104,32 @@ integrations/          Agent platform hooks (Claude Code ensure-skills-loaded, e
 | Tier | Tool | Examples | Needs Django? |
 |------|------|----------|---------------|
 | Runtime commands | Django management commands (django-typer) | `lifecycle setup`, `tasks work-next-sdk`, `followup refresh` | Yes |
-| Bootstrap commands | `t3` Typer CLI | `t3 startproject`, `t3 agent`, `t3 overlays` | No |
+| Bootstrap commands | `t3` Typer CLI | `t3 startoverlay`, `t3 agent`, `t3 overlays` | No |
 | Internal utilities | Python modules in `utils/` | Port allocation, git helpers, DB ops | Imported by commands |
 
 ## Overlay System
 
-An overlay is a downstream Django project that customizes teatree. It:
+An overlay is a lightweight Python package that customizes teatree. It:
 
 1. Subclasses `OverlayBase` (from `teatree.core.overlay`)
 2. Implements mandatory hooks: `get_repos()`, `get_provision_steps(worktree)`
 3. Optionally implements: `get_env_extra()`, `get_run_commands()`, `get_db_import_strategy()`, `get_post_db_steps()`, `get_symlinks()`, `get_services_config()`, `validate_mr()`, `get_skill_metadata()`, `get_followup_repos()`, `get_ci_project_path()`, `get_e2e_config()`, `detect_variant()`, `get_workspace_repos()`
-4. Registers via `~/.teatree.toml` under `[overlays.<name>]` with a `path` key
-5. Gets auto-discovered by `teatree.config.discover_overlays()` or `_discover_from_manage_py()`
-
-Setting: `TEATREE_OVERLAY_CLASS = "overlay.overlay.MyOverlay"`
+4. Registers via a `teatree.overlays` entry point in `pyproject.toml` (e.g., `my-overlay = "myapp.overlay:MyOverlay"`)
+5. Gets auto-discovered by the overlay loader from `importlib.metadata.entry_points(group="teatree.overlays")`
 
 ## Backend Protocols
 
 Each external concern is a `Protocol` in `teatree.backends.protocols`:
 
-| Protocol | Setting | Purpose |
-|---|---|---|
-| `CodeHost` | `TEATREE_CODE_HOST` | PR/MR creation, list open PRs |
-| `CIService` | `TEATREE_CI_SERVICE` | Pipeline cancel, errors, failed tests, trigger, quality check |
-| `IssueTracker` | `TEATREE_ISSUE_TRACKER` | Issue fetching |
-| `ChatNotifier` | `TEATREE_CHAT_NOTIFIER` | Team notifications |
-| `ErrorTracker` | `TEATREE_ERROR_TRACKER` | Sentry-like error tracking |
+| Protocol | Purpose |
+|---|---|
+| `CodeHost` | PR/MR creation, list open PRs |
+| `CIService` | Pipeline cancel, errors, failed tests, trigger, quality check |
+| `IssueTracker` | Issue fetching |
+| `ChatNotifier` | Team notifications |
+| `ErrorTracker` | Sentry-like error tracking |
 
-Backends loaded lazily via `teatree.backends.loader` using `import_string()`. Auto-configures GitLabCIService from `TEATREE_GITLAB_TOKEN` if no explicit CI service.
+Backends are auto-configured from overlay methods. For example, `get_gitlab_token()` and `get_gitlab_url()` on the overlay class drive the GitLab backend; `get_slack_token()` and `get_review_channel()` drive Slack. No individual `TEATREE_*` Django settings are needed -- each overlay carries its own configuration.
 
 ## Runtime Abstraction
 

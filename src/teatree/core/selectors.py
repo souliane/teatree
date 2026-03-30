@@ -699,9 +699,9 @@ def _extra_str(ticket: Ticket, key: str) -> str:
 def _variant_url(variant: str) -> str:
     if not variant:
         return ""
-    from django.conf import settings  # noqa: PLC0415
+    from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
 
-    url_template = getattr(settings, "TEATREE_DEV_ENV_URL", "")
+    url_template = get_overlay().config.get_dev_env_url()
     if not url_template:
         return ""
     try:
@@ -730,9 +730,9 @@ def _tracker_status_label(ticket: Ticket) -> str:
 
 
 def _build_mr_rows(ticket: Ticket) -> list[DashboardMRRow]:
-    from django.conf import settings  # noqa: PLC0415
+    from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
 
-    frontend_repos = getattr(settings, "TEATREE_FRONTEND_REPOS", [])
+    frontend_repos = get_overlay().config.get_frontend_repos()
     extra = ticket.extra if isinstance(ticket.extra, dict) else {}
     mrs_data = extra.get("mrs", {})
     if not isinstance(mrs_data, dict):

@@ -30,7 +30,7 @@ class DoctorService:
 
         active = discover_active_overlay()
         if active:
-            typer.echo(f"Active overlay:   {active.name} ({active.settings_module})")
+            typer.echo(f"Active overlay:   {active.name} ({active.overlay_class or '(cwd)'})")
         else:
             typer.echo("Active overlay:   (none)")
 
@@ -39,7 +39,7 @@ class DoctorService:
             typer.echo()
             typer.echo("Installed overlays:")
             for entry in installed:
-                typer.echo(f"  {entry.name:<20}{entry.settings_module}")
+                typer.echo(f"  {entry.name:<20}{entry.overlay_class or '(local)'}")
 
     @staticmethod
     def collect_overlay_skills() -> list[tuple[Path, str]]:
@@ -115,7 +115,7 @@ class DoctorService:
 
                 active = discover_active_overlay()
                 if active:
-                    os.environ["DJANGO_SETTINGS_MODULE"] = active.settings_module
+                    os.environ["DJANGO_SETTINGS_MODULE"] = "teatree.settings"
                 else:
                     return problems  # no overlay, no settings to check
 
@@ -144,10 +144,13 @@ class DoctorService:
                 "or remove the editable source."
             )
 
-        # Check overlay
-        overlay_class = getattr(django_settings, "TEATREE_OVERLAY_CLASS", "")
-        if overlay_class:
-            top_package = overlay_class.rsplit(".", 1)[0].split(".")[0]
+        # Check overlay discoverability via entry points
+        from teatree.core.overlay_loader import get_all_overlays  # noqa: PLC0415
+
+        overlays = get_all_overlays()
+        for overlay_inst in overlays.values():
+            overlay_module = type(overlay_inst).__module__
+            top_package = overlay_module.split(".", maxsplit=1)[0]
             from importlib.metadata import packages_distributions  # noqa: PLC0415
 
             dist_map = packages_distributions()
@@ -159,7 +162,7 @@ class DoctorService:
 
             if overlay_should_be_editable and not overlay_is_editable:
                 problems.append(
-                    "OVERLAY_EDITABLE=True but overlay is not editable. "
+                    f"OVERLAY_EDITABLE=True but overlay ({overlay_dist}) is not editable. "
                     "Agent changes to overlay code will be lost. "
                     "Fix: run `uv pip install -e .`"
                 )

@@ -8,13 +8,15 @@ from django.core.management import call_command
 from django.test import override_settings
 
 from teatree.core.models import Ticket, Worktree
+from tests.teatree_core.conftest import CommandOverlay
 
 COMMAND_SETTINGS = {
-    "TEATREE_OVERLAY_CLASS": "tests.teatree_core.conftest.CommandOverlay",
     "TEATREE_HEADLESS_RUNTIME": "claude-code",
     "TEATREE_INTERACTIVE_RUNTIME": "codex",
     "TEATREE_TERMINAL_MODE": "same-terminal",
 }
+
+_MOCK_OVERLAY = {"test": CommandOverlay()}
 
 
 @pytest.mark.django_db
@@ -26,21 +28,28 @@ class TestRunCommand:
         wt_dir = tmp_path / "backend"
         wt_dir.mkdir()
         wt_path = str(wt_dir)
-        ticket = Ticket.objects.create(issue_url="https://example.com/issues/20", variant="acme")
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/20", variant="acme")
         Worktree.objects.create(
-            ticket=ticket, repo_path="/tmp/backend", branch="feature", extra={"worktree_path": wt_path}
+            ticket=ticket,
+            overlay="test",
+            repo_path="/tmp/backend",
+            branch="feature",
+            extra={"worktree_path": wt_path},
         )
-        worktree_id = cast("int", call_command("lifecycle", "setup", path=wt_path))
-        call_command("lifecycle", "start", path=wt_path)
+        with patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY):
+            worktree_id = cast("int", call_command("lifecycle", "setup", path=wt_path))
+            call_command("lifecycle", "start", path=wt_path)
 
-        # Mock HTTP health checks to succeed
-        mock_resp = MagicMock()
-        mock_resp.status = 200
-        mock_resp.__enter__ = lambda s: s
-        mock_resp.__exit__ = MagicMock(return_value=False)
-        monkeypatch.setattr("teatree.core.management.commands.run.urllib.request.urlopen", lambda *a, **k: mock_resp)
+            # Mock HTTP health checks to succeed
+            mock_resp = MagicMock()
+            mock_resp.status = 200
+            mock_resp.__enter__ = lambda s: s
+            mock_resp.__exit__ = MagicMock(return_value=False)
+            monkeypatch.setattr(
+                "teatree.core.management.commands.run.urllib.request.urlopen", lambda *a, **k: mock_resp
+            )
 
-        result = cast("dict[str, object]", call_command("run", "verify", path=wt_path))
+            result = cast("dict[str, object]", call_command("run", "verify", path=wt_path))
 
         worktree = Worktree.objects.get(pk=worktree_id)
         assert result["state"] == Worktree.State.READY
@@ -51,25 +60,30 @@ class TestRunCommand:
     def test_verify_does_not_transition_when_endpoint_fails(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """When HTTP check raises an exception, verify logs the error and does NOT advance FSM (lines 53-56)."""
+        """When HTTP check raises an exception, verify logs the error and does NOT advance FSM."""
         wt_dir = tmp_path / "backend"
         wt_dir.mkdir()
         wt_path = str(wt_dir)
-        ticket = Ticket.objects.create(issue_url="https://example.com/issues/30", variant="acme")
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/30", variant="acme")
         wt = Worktree.objects.create(
-            ticket=ticket, repo_path="/tmp/backend", branch="feature", extra={"worktree_path": wt_path}
+            ticket=ticket,
+            overlay="test",
+            repo_path="/tmp/backend",
+            branch="feature",
+            extra={"worktree_path": wt_path},
         )
-        cast("int", call_command("lifecycle", "setup", path=wt_path))
-        call_command("lifecycle", "start", path=wt_path)
+        with patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY):
+            cast("int", call_command("lifecycle", "setup", path=wt_path))
+            call_command("lifecycle", "start", path=wt_path)
 
-        # Mock HTTP health checks to fail
-        def _fail_urlopen(*_args: object, **_kwargs: object) -> None:
-            msg = "Connection refused"
-            raise OSError(msg)
+            # Mock HTTP health checks to fail
+            def _fail_urlopen(*_args: object, **_kwargs: object) -> None:
+                msg = "Connection refused"
+                raise OSError(msg)
 
-        monkeypatch.setattr("teatree.core.management.commands.run.urllib.request.urlopen", _fail_urlopen)
+            monkeypatch.setattr("teatree.core.management.commands.run.urllib.request.urlopen", _fail_urlopen)
 
-        result = cast("dict[str, object]", call_command("run", "verify", path=wt_path))
+            result = cast("dict[str, object]", call_command("run", "verify", path=wt_path))
 
         worktree = Worktree.objects.get(pk=wt.pk)
         # State should remain SERVICES_UP — not advanced to READY
@@ -87,13 +101,18 @@ class TestRunCommand:
         wt_dir = tmp_path / "backend"
         wt_dir.mkdir()
         wt_path = str(wt_dir)
-        ticket = Ticket.objects.create(issue_url="https://example.com/issues/21", variant="acme")
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/21", variant="acme")
         Worktree.objects.create(
-            ticket=ticket, repo_path="/tmp/backend", branch="feature", extra={"worktree_path": wt_path}
+            ticket=ticket,
+            overlay="test",
+            repo_path="/tmp/backend",
+            branch="feature",
+            extra={"worktree_path": wt_path},
         )
-        cast("int", call_command("lifecycle", "setup", path=wt_path))
+        with patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY):
+            cast("int", call_command("lifecycle", "setup", path=wt_path))
 
-        result = cast("dict[str, str]", call_command("run", "services", path=wt_path))
+            result = cast("dict[str, str]", call_command("run", "services", path=wt_path))
 
         assert result == {
             "backend": "run-backend /tmp/backend",
@@ -107,19 +126,26 @@ class TestRunCommand:
         wt_dir = tmp_path / "backend"
         wt_dir.mkdir()
         wt_path = str(wt_dir)
-        ticket = Ticket.objects.create(issue_url=f"https://example.com/issues/{service}", variant="acme")
+        ticket = Ticket.objects.create(
+            overlay="test", issue_url=f"https://example.com/issues/{service}", variant="acme"
+        )
         wt = Worktree.objects.create(
-            ticket=ticket, repo_path="/tmp/backend", branch="feature", extra={"worktree_path": wt_path}
+            ticket=ticket,
+            overlay="test",
+            repo_path="/tmp/backend",
+            branch="feature",
+            extra={"worktree_path": wt_path},
         )
-        cast("int", call_command("lifecycle", "setup", path=wt_path))
-        call_command("lifecycle", "start", path=wt_path)
+        with patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY):
+            cast("int", call_command("lifecycle", "setup", path=wt_path))
+            call_command("lifecycle", "start", path=wt_path)
 
-        monkeypatch.setattr(
-            "teatree.core.management.commands.run.subprocess.run",
-            lambda *a, **kw: CompletedProcess(a[0], 0, "", ""),
-        )
+            monkeypatch.setattr(
+                "teatree.core.management.commands.run.subprocess.run",
+                lambda *a, **kw: CompletedProcess(a[0], 0, "", ""),
+            )
 
-        call_command("run", service, path=wt_path)
+            call_command("run", service, path=wt_path)
 
         worktree = Worktree.objects.get(pk=wt.pk)
         assert (worktree.extra or {}).get(f"pre_run_{service}") == "ran"
@@ -144,6 +170,7 @@ class TestCliOverlay:
     def test_uvicorn_launches_asgi_with_reload(self, mock_run: MagicMock, tmp_path: Path) -> None:
         from teatree.cli_overlay import _uvicorn  # noqa: PLC0415
 
+        (tmp_path / "manage.py").write_text("pass\n")
         _uvicorn(tmp_path, "127.0.0.1", 8000)
 
         assert mock_run.call_count == 1
@@ -151,23 +178,24 @@ class TestCliOverlay:
         assert cmd[0].endswith("/uv")
         assert cmd[1:3] == ["--directory", str(tmp_path)]
         assert "uvicorn" in cmd
-        assert "acme.asgi:application" in cmd
+        assert "teatree.asgi:application" in cmd
         assert "--host" in cmd
         assert "--reload" in cmd
         assert cmd[cmd.index("--port") + 1] == "8000"
-        # DJANGO_SETTINGS_MODULE should be stripped from env
+        # _uvicorn sets DJANGO_SETTINGS_MODULE for the subprocess
         call_env = mock_run.call_args[1]["env"]
-        assert "DJANGO_SETTINGS_MODULE" not in call_env
+        assert call_env["DJANGO_SETTINGS_MODULE"] == "teatree.settings"
 
-    @patch("teatree.cli.subprocess.run")
-    def test_uvicorn_none_project_path_exits(self, mock_run: MagicMock) -> None:
-        import click  # noqa: PLC0415
-
+    @patch("teatree.cli_overlay.subprocess.run")
+    def test_uvicorn_none_project_path_falls_back(self, mock_run: MagicMock) -> None:
         from teatree.cli_overlay import _uvicorn  # noqa: PLC0415
 
-        with pytest.raises(click.exceptions.Exit):
-            _uvicorn(None, "127.0.0.1", 8000)
-        mock_run.assert_not_called()
+        mock_run.return_value = MagicMock(returncode=0)
+        _uvicorn(None, "127.0.0.1", 8000)
+        mock_run.assert_called_once()
+        cmd = mock_run.call_args[0][0]
+        assert "-m" in cmd
+        assert "uvicorn" in cmd
 
 
 @pytest.mark.django_db
@@ -181,9 +209,10 @@ class TestPortPreservation:
         worktree_path = workspace / "ac-ticket-42" / "backend"
         worktree_path.mkdir(parents=True)
 
-        ticket = Ticket.objects.create(issue_url="https://example.com/issues/42", variant="acme")
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/42", variant="acme")
         worktree = Worktree.objects.create(
             ticket=ticket,
+            overlay="test",
             repo_path="backend",
             branch="feature",
             extra={"worktree_path": str(worktree_path)},
@@ -203,7 +232,8 @@ class TestPortPreservation:
             lambda *a, **kw: CompletedProcess(a[0], 0, "", ""),
         )
 
-        call_command("lifecycle", "setup", path=str(worktree_path))
+        with patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY):
+            call_command("lifecycle", "setup", path=str(worktree_path))
 
         worktree.refresh_from_db()
         # Ports stay as-is — the worktree's own services may be using them
@@ -222,9 +252,10 @@ class TestPortPreservation:
         worktree_path = workspace / "ac-ticket-43" / "backend"
         worktree_path.mkdir(parents=True)
 
-        ticket = Ticket.objects.create(issue_url="https://example.com/issues/43", variant="acme")
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/43", variant="acme")
         worktree = Worktree.objects.create(
             ticket=ticket,
+            overlay="test",
             repo_path="/tmp/backend",
             branch="feature",
             extra={"worktree_path": str(worktree_path)},
@@ -253,7 +284,8 @@ class TestPortPreservation:
 
         monkeypatch.setattr("teatree.core.management.commands.run.subprocess.run", fake_run)
 
-        result = cast("str", call_command("run", "backend", path=str(worktree_path)))
+        with patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY):
+            result = cast("str", call_command("run", "backend", path=str(worktree_path)))
 
         worktree.refresh_from_db()
         assert result == "Backend started."
@@ -271,9 +303,10 @@ class TestPortPreservation:
         venv_dir = worktree_path / ".venv"
         venv_dir.mkdir()
 
-        ticket = Ticket.objects.create(issue_url="https://example.com/issues/44", variant="acme")
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/44", variant="acme")
         Worktree.objects.create(
             ticket=ticket,
+            overlay="test",
             repo_path="/tmp/backend",
             branch="feature",
             extra={"worktree_path": str(worktree_path)},
@@ -303,7 +336,8 @@ class TestPortPreservation:
 
         monkeypatch.setattr("teatree.core.management.commands.run.subprocess.run", fake_run)
 
-        call_command("run", "backend", path=str(worktree_path))
+        with patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY):
+            call_command("run", "backend", path=str(worktree_path))
 
         assert captured_envs
         assert captured_envs[-1]["VIRTUAL_ENV"] == str(venv_dir)

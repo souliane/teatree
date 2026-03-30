@@ -29,7 +29,7 @@ def execute_headless_task(task_id: int, phase: str) -> dict[str, object]:
         attempt = run_headless(
             task_obj,
             phase=phase,
-            overlay_skill_metadata=overlay.get_skill_metadata(),
+            overlay_skill_metadata=overlay.metadata.get_skill_metadata(),
         )
     except Exception:
         task_obj.complete_with_attempt(exit_code=1, error=traceback.format_exc())

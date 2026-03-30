@@ -42,8 +42,25 @@ path = "{project}"
     result = discover_overlays(config_path=config_path)
     by_name = {e.name: e for e in result}
     assert "my-overlay" in by_name
-    assert by_name["my-overlay"].settings_module == "myoverlay.settings"
+    assert by_name["my-overlay"].overlay_class == "myoverlay.settings"
     assert by_name["my-overlay"].project_path == project
+
+
+def test_discover_overlays_with_explicit_class(tmp_path):
+    config_path = tmp_path / ".teatree.toml"
+    _write_toml(
+        config_path,
+        """
+[overlays.my-overlay]
+class = "my_overlay.overlay:MyOverlay"
+""",
+    )
+
+    result = discover_overlays(config_path=config_path)
+    by_name = {e.name: e for e in result}
+    assert "my-overlay" in by_name
+    assert by_name["my-overlay"].overlay_class == "my_overlay.overlay:MyOverlay"
+    assert by_name["my-overlay"].project_path is None
 
 
 def test_discover_overlays_empty_toml(tmp_path):
@@ -81,7 +98,7 @@ path = "{project}"
     result = discover_overlays(config_path=config_path)
     by_name = {e.name: e for e in result}
     assert "empty-overlay" in by_name
-    assert by_name["empty-overlay"].settings_module == ""
+    assert by_name["empty-overlay"].overlay_class == ""
 
 
 def test_discover_overlays_multiple(tmp_path):
@@ -123,7 +140,7 @@ path = "~/workspace/my-project"
     by_name = {e.name: e for e in result}
     assert "my-project" in by_name
     assert by_name["my-project"].project_path == project
-    assert by_name["my-project"].settings_module == "myproj.settings"
+    assert by_name["my-project"].overlay_class == "myproj.settings"
 
 
 # ── load_config ───────────────────────────────────────────────────────
@@ -208,7 +225,6 @@ def test_discover_active_overlay_from_manage_py(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     result = discover_active_overlay()
     assert result is not None
-    assert result.settings_module == "active.settings"
     assert result.project_path == tmp_path
 
 
@@ -220,7 +236,7 @@ def test_discover_active_overlay_single_installed(tmp_path, monkeypatch):
     monkeypatch.chdir(sub)
     from teatree.config import OverlayEntry  # noqa: PLC0415
 
-    single = [OverlayEntry(name="acme", settings_module="acme.settings")]
+    single = [OverlayEntry(name="acme", overlay_class="acme.settings")]
     with patch("teatree.config.discover_overlays", return_value=single):
         result = discover_active_overlay()
         assert result is not None
@@ -235,8 +251,8 @@ def test_discover_active_overlay_none_when_multiple(tmp_path, monkeypatch):
     from teatree.config import OverlayEntry  # noqa: PLC0415
 
     multiple = [
-        OverlayEntry(name="a", settings_module="a.settings"),
-        OverlayEntry(name="b", settings_module="b.settings"),
+        OverlayEntry(name="a", overlay_class="a.settings"),
+        OverlayEntry(name="b", overlay_class="b.settings"),
     ]
     with patch("teatree.config.discover_overlays", return_value=multiple):
         assert discover_active_overlay() is None
@@ -268,7 +284,7 @@ def test_discover_overlays_entry_points(tmp_path, monkeypatch):
         result = discover_overlays(config_path=config_path)
         assert len(result) == 1
         assert result[0].name == "ep-overlay"
-        assert result[0].settings_module == "ep_overlay.settings"
+        assert result[0].overlay_class == "ep_overlay.settings"
 
 
 def test_discover_overlays_toml_wins_over_entry_point(tmp_path):
@@ -288,7 +304,7 @@ def test_discover_overlays_toml_wins_over_entry_point(tmp_path):
     with patch("importlib.metadata.entry_points", return_value=[mock_ep]):
         result = discover_overlays(config_path=config_path)
         assert len(result) == 1
-        assert result[0].settings_module == "myoverlay.settings"
+        assert result[0].overlay_class == "myoverlay.settings"
 
 
 def test_discover_from_manage_py_no_settings(tmp_path, monkeypatch):

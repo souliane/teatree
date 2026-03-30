@@ -4,11 +4,49 @@ The overlay is the integration point between teatree (generic) and your project 
 
 ## Setup
 
-1. Generate a host project: `t3 startproject myproject ~/workspace/myproject --overlay-app myapp`
-2. Implement your overlay class in the generated app
-3. Point `TEATREE_OVERLAY_CLASS` in settings to your class (e.g., `"myapp.overlay.MyOverlay"`)
+1. Create a Python package with an `OverlayBase` subclass:
 
-The overlay is loaded once and cached. Teatree calls its methods from management commands when it needs project-specific information.
+   ```python
+   # myapp/overlay.py
+   from teatree.core.overlay import OverlayBase
+
+   class MyOverlay(OverlayBase):
+       def get_repos(self) -> list[str]:
+           return ["backend", "frontend"]
+
+       def get_provision_steps(self, worktree):
+           return []
+   ```
+
+2. Register it as a `teatree.overlays` entry point in your `pyproject.toml`:
+
+   ```toml
+   [project.entry-points."teatree.overlays"]
+   my-overlay = "myapp.overlay:MyOverlay"
+   ```
+
+3. Install your package alongside teatree (`pip install -e .` during development).
+
+The overlay loader discovers all installed overlays from entry points at startup, instantiates each class once, and caches them. Teatree calls overlay methods from management commands when it needs project-specific information. If multiple overlays are installed, commands accept an overlay name to disambiguate.
+
+## Configuration methods
+
+Overlay-specific configuration (tokens, URLs, service credentials) lives on `OverlayBase` methods rather than Django settings. Override these in your subclass:
+
+| Method | Default | Purpose |
+|--------|---------|---------|
+| `get_gitlab_token()` | `""` | GitLab API token |
+| `get_gitlab_url()` | `"https://gitlab.com/api/v4"` | GitLab API base URL |
+| `get_gitlab_username()` | `""` | GitLab username for MR assignment |
+| `get_slack_token()` | `""` | Slack bot token for notifications |
+| `get_review_channel()` | `("", "")` | `(channel_name, channel_id)` for review notifications |
+| `get_known_variants()` | `[]` | Tenant variant identifiers |
+| `get_mr_auto_labels()` | `[]` | Labels auto-applied to merge requests |
+| `get_frontend_repos()` | `[]` | Frontend repo names (for build steps) |
+| `get_dev_env_url()` | `""` | Development environment base URL |
+| `get_dashboard_logo()` | `""` | Path or URL for the dashboard logo |
+
+These replace the old `TEATREE_*` Django settings. Each overlay carries its own configuration, so multi-overlay setups can point to different GitLab instances or Slack workspaces.
 
 ## `OverlayBase`
 

@@ -41,7 +41,7 @@ def _write_skill_metadata_cache() -> None:
     The UserPromptSubmit hook reads this cache to resolve overlay matching
     and the trigger index without needing Django at hook time.
     """
-    metadata = get_overlay().get_skill_metadata()
+    metadata = get_overlay().metadata.get_skill_metadata()
     metadata["trigger_index"] = _build_trigger_index()
     cache_path = DATA_DIR / "skill-metadata.json"
     cache_path.parent.mkdir(parents=True, exist_ok=True)

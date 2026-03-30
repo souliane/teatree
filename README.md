@@ -5,7 +5,7 @@
 
 Multi-repo worktree lifecycle manager for AI-assisted development — with distributed self-improvement.
 
-Teatree is now a Django-first extension package. Runtime code lives under `teatree/`, generated host projects are created with `t3 startproject`, and the legacy script workflow remains only as a migration bridge.
+Teatree is a Django project that ships its own `settings.py`, `__main__.py`, and `asgi.py`. Overlays are lightweight Python packages registered via `teatree.overlays` entry points -- no host project or settings-based configuration needed.
 
 Teatree turns development automation into composable AI skills. Instead of shell scripts, CI configs, and tribal knowledge scattered across wikis, each workflow phase — from ticket intake to delivery — is a skill that any AI agent can learn, follow, and improve. Skills are plain markdown and scripts — any AI agent that can read files and run commands can use them. It has been tested most with [Claude Code](https://docs.anthropic.com/en/docs/claude-code).
 
@@ -60,7 +60,7 @@ cd ~/workspace/teatree
 uv sync
 ```
 
-Then open your agent and run `/t3-setup` — it creates symlinks from your agent's skills directory to the clone, validates the local environment, creates `~/.teatree`, installs optional hooks, and walks you through `t3 startproject`.
+Then open your agent and run `/t3-setup` — it creates symlinks from your agent's skills directory to the clone, validates the local environment, creates `~/.teatree`, installs optional hooks, and walks you through `t3 startoverlay`.
 
 ### Self-improvement (optional)
 
@@ -157,21 +157,22 @@ Skills are already lean (most are 80–160 lines). The main token economy levers
 
 ## Project Overlay
 
-Teatree is generic — it doesn't know your repos, CI, or environment defaults. Project-specific behaviour now lives in a generated Django host project.
+Teatree is generic -- it doesn't know your repos, CI, or environment defaults. Project-specific behaviour lives in a lightweight overlay package that subclasses `OverlayBase`.
 
 Create one with:
 
 ```bash
-uv run t3 startproject t3-myproject ~/workspace/my-overlays --overlay-app myproject
+uv run t3 startoverlay my-overlay ~/workspace/my-overlay
 ```
 
-The generated host project owns the real Django settings and points at one active overlay class:
+The overlay registers via a `teatree.overlays` entry point in its `pyproject.toml`:
 
-```python
-TEATREE_OVERLAY_CLASS = "acme.overlay.AcmeOverlay"
+```toml
+[project.entry-points."teatree.overlays"]
+my-overlay = "myapp.overlay:MyOverlay"
 ```
 
-That overlay subclasses `OverlayBase` and implements the narrow contract TeaTree needs: managed repos, provisioning steps, runtime metadata, and any project-specific service hooks. See [docs/generated/overlay-extension-points.md](docs/generated/overlay-extension-points.md) for the current contract.
+Once installed alongside teatree (`pip install -e .`), the overlay is auto-discovered at startup -- no Django settings to configure. The overlay subclasses `OverlayBase` and implements the narrow contract teatree needs: managed repos, provisioning steps, runtime metadata, and any project-specific service hooks. Overlay-specific config (GitLab token, Slack credentials, etc.) lives on overlay methods like `get_gitlab_token()` rather than Django settings. See [docs/overlay-api.md](docs/overlay-api.md) for the current contract.
 
 ## Configuration
 
@@ -247,7 +248,7 @@ teatree/
     agents/            #   Runtime adapters (Claude Code, Codex, etc.)
     backends/          #   GitLab / Slack / Notion / Sentry integrations
     utils/             #   Internal helpers (ports, git, DB, GitLab API)
-    scaffold/          #   `t3 startproject` templates
+    overlay_init/      #   `t3 startoverlay` templates
   skills/t3-*/         # AI agent skills (SKILL.md files + references)
   integrations/        # Agent platform hooks (Claude Code statusline)
   scripts/             # Pre-commit hooks, utility scripts

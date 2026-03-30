@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import override
 
 from teatree.core.models import Worktree
-from teatree.core.overlay import OverlayBase, ProvisionStep, SkillMetadata
+from teatree.core.overlay import OverlayBase, OverlayMetadata, ProvisionStep, SkillMetadata
 
 
 def _repo_root() -> Path:
@@ -21,8 +21,27 @@ def _repo_root() -> Path:
     raise FileNotFoundError(msg)
 
 
+class TeatreeMetadata(OverlayMetadata):
+    """Metadata for the bundled teatree overlay."""
+
+    @override
+    def get_followup_repos(self) -> list[str]:
+        return ["souliane/teatree"]
+
+    @override
+    def get_skill_metadata(self) -> SkillMetadata:
+        root = _repo_root()
+        return {
+            "skill_path": str(root / "skills"),
+            "remote_patterns": ["souliane/teatree"],
+        }
+
+
 class TeatreeOverlay(OverlayBase):
     """Overlay for developing teatree itself."""
+
+    django_app: str | None = "teatree.contrib.t3_teatree"
+    metadata = TeatreeMetadata()
 
     @override
     def get_repos(self) -> list[str]:
@@ -59,15 +78,3 @@ class TeatreeOverlay(OverlayBase):
     @override
     def get_workspace_repos(self) -> list[str]:
         return ["teatree"]
-
-    @override
-    def get_followup_repos(self) -> list[str]:
-        return ["souliane/teatree"]
-
-    @override
-    def get_skill_metadata(self) -> SkillMetadata:
-        root = _repo_root()
-        return {
-            "skill_path": str(root / "skills"),
-            "remote_patterns": ["souliane/teatree"],
-        }

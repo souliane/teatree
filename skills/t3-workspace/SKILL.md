@@ -80,7 +80,7 @@ $T3_DATA_DIR  (default: ${XDG_DATA_HOME:-$HOME/.local/share}/teatree)
 
 ## Setup Verification
 
-If the environment seems incomplete (missing `uv`, hooks not firing, generated host project absent), load `/t3-setup` to run the bootstrap validator.
+If the environment seems incomplete (missing `uv`, hooks not firing, overlay absent), load `/t3-setup` to run the bootstrap validator.
 
 ## Workflows
 
@@ -308,7 +308,7 @@ stateDiagram-v2
 
 ### Project-specific Commands
 
-Project-specific command surfaces belong in the generated TeaTree host project as Django management commands or overlay methods, not as dynamically injected `t3` subcommand groups.
+Project-specific command surfaces belong in the overlay package as Django management commands or overlay methods, not as dynamically injected `t3` subcommand groups.
 
 ## Troubleshooting
 

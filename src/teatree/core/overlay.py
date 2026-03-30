@@ -66,27 +66,90 @@ class ProvisionStep:
     description: str = ""
 
 
-class OverlayRunMixin:
-    """Hooks for service execution: run commands, pre-run preparation, tests."""
+# ── Overlay configuration ────────────────────────────────────────────
 
-    def get_run_commands(self, worktree: "Worktree") -> RunCommands:
-        return {}
 
-    def get_pre_run_steps(self, worktree: "Worktree", service: str) -> list[ProvisionStep]:
-        """Return preparation steps to execute before starting *service*.
+class OverlayConfig:
+    """Overlay-specific configuration — credentials, project settings, URLs.
 
-        Called by ``run frontend``, ``run build-frontend``, ``run backend``,
-        and by ``lifecycle setup`` for every service returned by
-        ``get_run_commands``.
-        """
+    Subclass and assign to ``OverlayBase.config`` to provide project-specific
+    values.  Consumers access config via ``overlay.config.get_gitlab_token()``.
+    """
+
+    def get_gitlab_token(self) -> str:
+        return ""
+
+    def get_gitlab_url(self) -> str:
+        return "https://gitlab.com/api/v4"
+
+    def get_gitlab_username(self) -> str:
+        return ""
+
+    def get_slack_token(self) -> str:
+        return ""
+
+    def get_review_channel(self) -> tuple[str, str]:
+        """Return (channel_name, channel_id) for review notifications."""
+        return ("", "")
+
+    def get_known_variants(self) -> list[str]:
         return []
 
-    def get_test_command(self, worktree: "Worktree") -> str:
-        """Return the shell command to run the project test suite."""
+    def get_mr_auto_labels(self) -> list[str]:
+        return []
+
+    def get_frontend_repos(self) -> list[str]:
+        return []
+
+    def get_dev_env_url(self) -> str:
+        return ""
+
+    def get_dashboard_logo(self) -> str:
         return ""
 
 
-class OverlayBase(OverlayRunMixin, ABC):
+# ── Overlay metadata ─────────────────────────────────────────────────
+
+
+class OverlayMetadata:
+    """Project metadata, CI integration, MR validation, and skill registration.
+
+    Subclass and assign to ``OverlayBase.metadata`` for project-specific values.
+    Consumers access via ``overlay.metadata.get_skill_metadata()``.
+    """
+
+    def validate_mr(self, title: str, description: str) -> ValidationResult:
+        return {"errors": [], "warnings": []}
+
+    def get_followup_repos(self) -> list[str]:
+        return []
+
+    def get_skill_metadata(self) -> SkillMetadata:
+        return {}
+
+    def get_ci_project_path(self) -> str:
+        return ""
+
+    def get_e2e_config(self) -> dict[str, str]:
+        return {}
+
+    def detect_variant(self) -> str:
+        return ""
+
+    def get_tool_commands(self) -> list[ToolCommand]:
+        return []
+
+
+# ── Overlay base class ───────────────────────────────────────────────
+
+
+class OverlayBase(ABC):
+    django_app: str | None = None
+    config: OverlayConfig = OverlayConfig()
+    metadata: OverlayMetadata = OverlayMetadata()
+
+    # ── Required hooks ───────────────────────────────────────────────
+
     @abstractmethod
     def get_repos(self) -> list[str]:
         raise NotImplementedError
@@ -95,6 +158,8 @@ class OverlayBase(OverlayRunMixin, ABC):
     def get_provision_steps(self, worktree: "Worktree") -> list[ProvisionStep]:
         raise NotImplementedError
 
+    # ── Provisioning hooks ───────────────────────────────────────────
+
     def get_env_extra(self, worktree: "Worktree") -> dict[str, str]:
         return {}
 
@@ -102,18 +167,15 @@ class OverlayBase(OverlayRunMixin, ABC):
         return None
 
     def db_import(self, worktree: "Worktree", *, force: bool = False) -> bool:
-        """Import a database for the worktree. Return True on success."""
         return False
 
     def get_post_db_steps(self, worktree: "Worktree") -> list[PostDbStep]:
         return []
 
     def get_reset_passwords_command(self, worktree: "Worktree") -> str:
-        """Return the shell command to reset all user passwords to a dev default."""
         return ""
 
     def get_envrc_lines(self, worktree: "Worktree") -> list[str]:
-        """Return extra lines to append to .envrc in the worktree."""
         return []
 
     def get_symlinks(self, worktree: "Worktree") -> list[SymlinkSpec]:
@@ -122,35 +184,16 @@ class OverlayBase(OverlayRunMixin, ABC):
     def get_services_config(self, worktree: "Worktree") -> dict[str, ServiceSpec]:
         return {}
 
-    def validate_mr(self, title: str, description: str) -> ValidationResult:
-        return {"errors": [], "warnings": []}
+    # ── Run hooks ────────────────────────────────────────────────────
 
-    def get_followup_repos(self) -> list[str]:
-        """Return GitLab project paths (e.g. ``org/repo``) to sync MRs from."""
+    def get_run_commands(self, worktree: "Worktree") -> RunCommands:
+        return {}
+
+    def get_pre_run_steps(self, worktree: "Worktree", service: str) -> list[ProvisionStep]:
         return []
 
-    def get_skill_metadata(self) -> SkillMetadata:
-        return {}
-
-    def get_ci_project_path(self) -> str:
-        """Return the GitLab project path for CI operations (e.g. ``org/repo``)."""
-        return ""
-
-    def get_e2e_config(self) -> dict[str, str]:
-        """Return E2E trigger configuration.
-
-        Keys: ``project_path``, ``ref`` (branch/tag), ``variables`` (JSON).
-        """
-        return {}
-
-    def detect_variant(self) -> str:
-        """Detect the current tenant variant from environment."""
+    def get_test_command(self, worktree: "Worktree") -> str:
         return ""
 
     def get_workspace_repos(self) -> list[str]:
-        """Return repo names for workspace ticket creation."""
         return self.get_repos()
-
-    def get_tool_commands(self) -> list[ToolCommand]:
-        """Return overlay-specific tool commands for ``t3 <overlay> tool``."""
-        return []

@@ -2,7 +2,6 @@ import time
 from pathlib import Path
 
 import pytest
-from django.test import override_settings as override_settings_dj
 from django.utils import timezone
 
 from teatree.core.models import Session, Task, TaskAttempt, Ticket, Worktree
@@ -760,20 +759,41 @@ class TestBuildActionRequired:
 
 
 class TestVariantUrl:
-    @override_settings_dj(TEATREE_DEV_ENV_URL="https://{variant}.dev.example.com")
     def test_formats_correctly(self) -> None:
-        assert _variant_url("OPS") == "https://ops.dev.example.com"
+        from unittest.mock import MagicMock, patch  # noqa: PLC0415
 
-    @override_settings_dj(TEATREE_DEV_ENV_URL="")
+        mock_overlay = MagicMock()
+        mock_overlay.config.get_dev_env_url.return_value = "https://{variant}.dev.example.com"
+        with patch(
+            "teatree.core.overlay_loader._discover_overlays",
+            return_value={"test": mock_overlay},
+        ):
+            assert _variant_url("OPS") == "https://ops.dev.example.com"
+
     def test_empty_template(self) -> None:
-        assert _variant_url("ops") == ""
+        from unittest.mock import MagicMock, patch  # noqa: PLC0415
+
+        mock_overlay = MagicMock()
+        mock_overlay.config.get_dev_env_url.return_value = ""
+        with patch(
+            "teatree.core.overlay_loader._discover_overlays",
+            return_value={"test": mock_overlay},
+        ):
+            assert _variant_url("ops") == ""
 
     def test_empty_variant(self) -> None:
         assert _variant_url("") == ""
 
-    @override_settings_dj(TEATREE_DEV_ENV_URL="{missing_key}")
     def test_bad_template(self) -> None:
-        assert _variant_url("ops") == ""
+        from unittest.mock import MagicMock, patch  # noqa: PLC0415
+
+        mock_overlay = MagicMock()
+        mock_overlay.config.get_dev_env_url.return_value = "{missing_key}"
+        with patch(
+            "teatree.core.overlay_loader._discover_overlays",
+            return_value={"test": mock_overlay},
+        ):
+            assert _variant_url("ops") == ""
 
 
 class TestBuildMrRows:

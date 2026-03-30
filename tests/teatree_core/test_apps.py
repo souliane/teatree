@@ -120,8 +120,6 @@ class TestStartPeriodicSync:
                 "BACKEND": "django_tasks.backends.immediate.ImmediateBackend",
             },
         },
-        TEATREE_OVERLAY_CLASS="tests.teatree_core.conftest.CommandOverlay",
-        TEATREE_GITLAB_TOKEN="",
     )
     @pytest.mark.django_db
     def test_loop_enqueues_and_handles_exception(self, monkeypatch: pytest.MonkeyPatch) -> None:

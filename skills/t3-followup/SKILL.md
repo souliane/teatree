@@ -260,7 +260,7 @@ After posting (or during any follow-up invocation), remove entries from `mr_remi
 
 ### 12. Dashboard
 
-The dashboard is a Django view served by the generated TeaTree host project. Start it with `t3 <overlay> dashboard` (e.g., `t3 acme dashboard`). It provides a live overview of all in-flight work, reading from the DB populated by `t3 <overlay> followup sync`.
+The dashboard is a Django view served by teatree. Start it with `t3 <overlay> dashboard` (e.g., `t3 acme dashboard`). It provides a live overview of all in-flight work, reading from the DB populated by `t3 <overlay> followup sync`.
 
 **Extension point: `followup_enrich_data`** — project overlays can add project-specific fields to followup entries (e.g., Notion status, tenant info).
 

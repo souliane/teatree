@@ -48,14 +48,12 @@ def _cleanup_workers() -> None:
 def _start_workers() -> None:
     """Spawn taskrunner subprocesses for background task execution."""
     count = getattr(settings, "TEATREE_WORKER_COUNT", 3)
-    manage_py = str(settings.BASE_DIR / "manage.py")
     env = {**os.environ, "_TEETREE_WORKER": "1"}
 
     for _ in range(count):
         p = _subprocess.Popen(  # noqa: S603
-            [sys.executable, manage_py, "db_worker", "--interval", "1", "--no-startup-delay", "--no-reload"],
+            [sys.executable, "-m", "teatree", "db_worker", "--interval", "1", "--no-startup-delay", "--no-reload"],
             env=env,
-            cwd=settings.BASE_DIR,
         )
         _worker_processes.append(p)
         logger.info("Spawned db_worker pid=%d", p.pid)

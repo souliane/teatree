@@ -20,6 +20,14 @@ def _make_worktree():
     return MagicMock()
 
 
+def test_overlay_config_defaults():
+    overlay = _MinimalOverlay()
+    assert overlay.config.get_gitlab_username() == ""
+    assert overlay.config.get_slack_token() == ""
+    assert overlay.config.get_review_channel() == ("", "")
+    assert overlay.config.get_known_variants() == []
+
+
 def test_get_env_extra_returns_empty_dict():
     overlay = _MinimalOverlay()
     assert overlay.get_env_extra(_make_worktree()) == {}
@@ -72,33 +80,33 @@ def test_get_services_config_returns_empty_dict():
 
 def test_validate_mr_returns_empty_errors_and_warnings():
     overlay = _MinimalOverlay()
-    result = overlay.validate_mr("title", "desc")
+    result = overlay.metadata.validate_mr("title", "desc")
     assert result == {"errors": [], "warnings": []}
 
 
 def test_get_followup_repos_returns_empty_list():
     overlay = _MinimalOverlay()
-    assert overlay.get_followup_repos() == []
+    assert overlay.metadata.get_followup_repos() == []
 
 
 def test_get_skill_metadata_returns_empty_dict():
     overlay = _MinimalOverlay()
-    assert overlay.get_skill_metadata() == {}
+    assert overlay.metadata.get_skill_metadata() == {}
 
 
 def test_get_ci_project_path_returns_empty_string():
     overlay = _MinimalOverlay()
-    assert overlay.get_ci_project_path() == ""
+    assert overlay.metadata.get_ci_project_path() == ""
 
 
 def test_get_e2e_config_returns_empty_dict():
     overlay = _MinimalOverlay()
-    assert overlay.get_e2e_config() == {}
+    assert overlay.metadata.get_e2e_config() == {}
 
 
 def test_detect_variant_returns_empty_string():
     overlay = _MinimalOverlay()
-    assert overlay.detect_variant() == ""
+    assert overlay.metadata.detect_variant() == ""
 
 
 def test_get_workspace_repos_delegates_to_get_repos():
@@ -113,7 +121,7 @@ def test_get_pre_run_steps_returns_empty_list():
 
 def test_get_tool_commands_returns_empty_list():
     overlay = _MinimalOverlay()
-    assert overlay.get_tool_commands() == []
+    assert overlay.metadata.get_tool_commands() == []
 
 
 def test_abstract_methods_implemented():

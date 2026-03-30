@@ -1,11 +1,13 @@
-#!/usr/bin/env python3
+"""Allow ``python -m teatree <command>`` as a manage.py equivalent.
+
+Works for pip-installed teatree without a repo checkout or ``uv``.
+"""
+
 import os
 import sys
-from pathlib import Path
 
 
 def main() -> None:
-    sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
     os.environ.setdefault("DJANGO_SETTINGS_MODULE", "teatree.settings")
     from django.core.management import execute_from_command_line  # noqa: PLC0415
 

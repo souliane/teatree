@@ -1,18 +1,18 @@
 import json
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 from django.test import Client, override_settings
 
 from teatree.core.models import Session, Task, TaskAttempt, Ticket
+from tests.teatree_core.conftest import CommandOverlay
 
-_OVERLAY = "tests.teatree_core.conftest.CommandOverlay"
+_MOCK_OVERLAY = {"test": CommandOverlay()}
 
 
 @pytest.mark.django_db
 class TestLaunchTaskView:
     @override_settings(
-        TEATREE_OVERLAY_CLASS=_OVERLAY,
         TEATREE_INTERACTIVE_RUNTIME="claude-code",
         TEATREE_TERMINAL_MODE="same-terminal",
     )
@@ -21,8 +21,8 @@ class TestLaunchTaskView:
         monkeypatch.setattr("teatree.agents.web_terminal._find_free_port", lambda: 9999)
         monkeypatch.setattr("teatree.agents.web_terminal.subprocess.Popen", MagicMock())
 
-        ticket = Ticket.objects.create()
-        session = Session.objects.create(ticket=ticket, agent_id="agent-1")
+        ticket = Ticket.objects.create(overlay="test")
+        session = Session.objects.create(ticket=ticket, overlay="test", agent_id="agent-1")
         task = Task.objects.create(
             ticket=ticket,
             session=session,
@@ -30,7 +30,8 @@ class TestLaunchTaskView:
             phase="coding",
         )
 
-        response = Client().post(f"/tasks/{task.pk}/launch/")
+        with patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY):
+            response = Client().post(f"/tasks/{task.pk}/launch/")
         data = json.loads(response.content)
 
         assert response.status_code == 200
@@ -38,7 +39,6 @@ class TestLaunchTaskView:
         assert TaskAttempt.objects.count() == 1
 
     @override_settings(
-        TEATREE_OVERLAY_CLASS=_OVERLAY,
         TEATREE_HEADLESS_RUNTIME="claude-code",
         TASKS={
             "default": {
@@ -53,8 +53,8 @@ class TestLaunchTaskView:
             lambda *_args, **_kwargs: __import__("subprocess").CompletedProcess([], 0, '{"summary": "OK"}', ""),
         )
 
-        ticket = Ticket.objects.create()
-        session = Session.objects.create(ticket=ticket, agent_id="agent-1")
+        ticket = Ticket.objects.create(overlay="test")
+        session = Session.objects.create(ticket=ticket, overlay="test", agent_id="agent-1")
         task = Task.objects.create(
             ticket=ticket,
             session=session,
@@ -62,7 +62,8 @@ class TestLaunchTaskView:
             phase="coding",
         )
 
-        response = Client().post(f"/tasks/{task.pk}/launch/")
+        with patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY):
+            response = Client().post(f"/tasks/{task.pk}/launch/")
         data = json.loads(response.content)
 
         assert response.status_code == 200
@@ -73,10 +74,9 @@ class TestLaunchTaskView:
 
         assert response.status_code == 404
 
-    @override_settings(TEATREE_OVERLAY_CLASS=_OVERLAY)
     def test_returns_409_when_task_already_claimed(self) -> None:
-        ticket = Ticket.objects.create()
-        session = Session.objects.create(ticket=ticket, agent_id="agent-1")
+        ticket = Ticket.objects.create(overlay="test")
+        session = Session.objects.create(ticket=ticket, overlay="test", agent_id="agent-1")
         task = Task.objects.create(ticket=ticket, session=session)
         task.claim(claimed_by="other-worker")
 
@@ -86,10 +86,9 @@ class TestLaunchTaskView:
         assert response.status_code == 409
         assert data["error"] == "Task already claimed"
 
-    @override_settings(TEATREE_OVERLAY_CLASS=_OVERLAY)
     def test_returns_409_when_task_already_finished(self) -> None:
-        ticket = Ticket.objects.create()
-        session = Session.objects.create(ticket=ticket, agent_id="agent-1")
+        ticket = Ticket.objects.create(overlay="test")
+        session = Session.objects.create(ticket=ticket, overlay="test", agent_id="agent-1")
         task = Task.objects.create(ticket=ticket, session=session, status=Task.Status.COMPLETED)
 
         response = Client().post(f"/tasks/{task.pk}/launch/")
@@ -98,7 +97,6 @@ class TestLaunchTaskView:
         assert response.status_code == 409
         assert data["error"] == "Task already finished"
 
-    @override_settings(TEATREE_OVERLAY_CLASS=_OVERLAY)
     def test_fails_task_when_overlay_lookup_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
         def _raise() -> None:
             msg = "overlay unavailable"
@@ -106,8 +104,8 @@ class TestLaunchTaskView:
 
         monkeypatch.setattr("teatree.core.views.launch.get_overlay", _raise)
 
-        ticket = Ticket.objects.create()
-        session = Session.objects.create(ticket=ticket, agent_id="agent-1")
+        ticket = Ticket.objects.create(overlay="test")
+        session = Session.objects.create(ticket=ticket, overlay="test", agent_id="agent-1")
         task = Task.objects.create(ticket=ticket, session=session)
 
         response = Client().post(f"/tasks/{task.pk}/launch/")
@@ -122,7 +120,6 @@ class TestLaunchTaskView:
         assert attempt.exit_code == 1
 
     @override_settings(
-        TEATREE_OVERLAY_CLASS=_OVERLAY,
         TEATREE_INTERACTIVE_RUNTIME="claude-code",
         TEATREE_TERMINAL_MODE="same-terminal",
     )
@@ -133,8 +130,8 @@ class TestLaunchTaskView:
 
         monkeypatch.setattr("teatree.agents.web_terminal.launch_web_session", _raise)
 
-        ticket = Ticket.objects.create()
-        session = Session.objects.create(ticket=ticket, agent_id="agent-1")
+        ticket = Ticket.objects.create(overlay="test")
+        session = Session.objects.create(ticket=ticket, overlay="test", agent_id="agent-1")
         task = Task.objects.create(
             ticket=ticket,
             session=session,
@@ -142,7 +139,8 @@ class TestLaunchTaskView:
             phase="coding",
         )
 
-        response = Client().post(f"/tasks/{task.pk}/launch/")
+        with patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY):
+            response = Client().post(f"/tasks/{task.pk}/launch/")
         data = json.loads(response.content)
 
         assert response.status_code == 500

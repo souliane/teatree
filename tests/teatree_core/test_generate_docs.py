@@ -22,8 +22,8 @@ class TestOverlayDocs:
         assert payload["hooks"][0]["name"] == "get_repos"
         assert payload["hooks"][0]["required"] is True
         assert "Overlay Extension Points" in markdown
-        assert "`get_skill_metadata`" in markdown
-        assert "`TEATREE_OVERLAY_CLASS`" in markdown
+        assert "`metadata.get_skill_metadata`" in markdown
+        assert "## Settings" in markdown
 
 
 class TestSkillDelegationMap:
@@ -117,7 +117,7 @@ class TestGenerateDocCommands:
         assert skill_markdown.startswith("# Skill Delegation Matrix")
         assert first_overlay_json == (output_dir / "overlay-extension-points.json").read_text(encoding="utf-8")
         assert first_skill_json == (output_dir / "skill-delegation-matrix.json").read_text(encoding="utf-8")
-        assert overlay_payload["hooks"][-1]["name"] == "get_skill_metadata"
+        assert overlay_payload["hooks"][-1]["name"] == "metadata.get_followup_repos"
         assert skill_payload["delegation"]["reviewing"] == [
             "requesting-code-review",
             "verification-before-completion",
