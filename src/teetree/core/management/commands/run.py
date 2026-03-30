@@ -36,10 +36,10 @@ class Command(TyperCommand):
 
     @command()
     def verify(
-        self, worktree_id: int = typer.Argument(0, help="Worktree ID (auto-detects from PWD if 0)")
+        self, path: str = typer.Option("", help="Worktree path (auto-detects from PWD if empty).")
     ) -> dict[str, object]:
         """Check that dev services respond via HTTP, then advance FSM."""
-        worktree = resolve_worktree(worktree_id)
+        worktree = resolve_worktree(path)
         ports = worktree.ports or {}
         results: dict[str, dict[str, object]] = {}
 
@@ -71,9 +71,9 @@ class Command(TyperCommand):
 
     @command()
     def services(
-        self, worktree_id: int = typer.Argument(0, help="Worktree ID (auto-detects from PWD if 0)")
+        self, path: str = typer.Option("", help="Worktree path (auto-detects from PWD if empty).")
     ) -> dict[str, str]:
-        worktree = resolve_worktree(worktree_id)
+        worktree = resolve_worktree(path)
         return get_overlay().get_run_commands(worktree)
 
     def _run_pre_steps(self, worktree: Worktree, service: str) -> None:
@@ -83,9 +83,9 @@ class Command(TyperCommand):
             step.callable()
 
     @command()
-    def backend(self, worktree_id: int = typer.Argument(0, help="Worktree ID (auto-detects from PWD if 0)")) -> str:
+    def backend(self, path: str = typer.Option("", help="Worktree path (auto-detects from PWD if empty).")) -> str:
         """Start the backend dev server."""
-        worktree = resolve_worktree(worktree_id)
+        worktree = resolve_worktree(path)
         self._start_services(worktree)
         self._run_pre_steps(worktree, "backend")
         commands = get_overlay().get_run_commands(worktree)
@@ -97,9 +97,9 @@ class Command(TyperCommand):
         return "Backend started."
 
     @command()
-    def frontend(self, worktree_id: int = typer.Argument(0, help="Worktree ID (auto-detects from PWD if 0)")) -> str:
+    def frontend(self, path: str = typer.Option("", help="Worktree path (auto-detects from PWD if empty).")) -> str:
         """Start the frontend dev server."""
-        worktree = resolve_worktree(worktree_id)
+        worktree = resolve_worktree(path)
         self._start_services(worktree)
         self._run_pre_steps(worktree, "frontend")
         commands = get_overlay().get_run_commands(worktree)
@@ -112,10 +112,10 @@ class Command(TyperCommand):
 
     @command(name="build-frontend")
     def build_frontend(
-        self, worktree_id: int = typer.Argument(0, help="Worktree ID (auto-detects from PWD if 0)")
+        self, path: str = typer.Option("", help="Worktree path (auto-detects from PWD if empty).")
     ) -> str:
         """Build the frontend app for production/testing."""
-        worktree = resolve_worktree(worktree_id)
+        worktree = resolve_worktree(path)
         self._run_pre_steps(worktree, "build-frontend")
         commands = get_overlay().get_run_commands(worktree)
         cmd = commands.get("build-frontend", "")
@@ -125,9 +125,9 @@ class Command(TyperCommand):
         return "Frontend built."
 
     @command()
-    def tests(self, worktree_id: int = typer.Argument(0, help="Worktree ID (auto-detects from PWD if 0)")) -> str:
+    def tests(self, path: str = typer.Option("", help="Worktree path (auto-detects from PWD if empty).")) -> str:
         """Run the project test suite."""
-        worktree = resolve_worktree(worktree_id)
+        worktree = resolve_worktree(path)
         cmd = get_overlay().get_test_command(worktree)
         if not cmd:
             return "No test command configured in the overlay."

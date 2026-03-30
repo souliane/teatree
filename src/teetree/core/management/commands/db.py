@@ -14,7 +14,7 @@ class Command(TyperCommand):
     @command()
     def refresh(
         self,
-        worktree_id: int = typer.Argument(0, help="Worktree ID (auto-detects from PWD if 0)"),
+        path: str = typer.Option("", help="Worktree path (auto-detects from PWD if empty)."),
         *,
         force: bool = False,
     ) -> str:
@@ -23,7 +23,7 @@ class Command(TyperCommand):
         Without --force: tries DSLR restore first (fast), then full reimport.
         With --force: drops existing DB first, then reimports from scratch.
         """
-        worktree = resolve_worktree(worktree_id)
+        worktree = resolve_worktree(path)
         overlay = get_overlay()
         strategy = overlay.get_db_import_strategy(worktree)
         if strategy is None:
@@ -60,9 +60,9 @@ class Command(TyperCommand):
         return f"DB refreshed for {worktree.db_name}"
 
     @command(name="restore-ci")
-    def restore_ci(self, worktree_id: int = typer.Argument(0, help="Worktree ID (auto-detects from PWD if 0)")) -> str:
+    def restore_ci(self, path: str = typer.Option("", help="Worktree path (auto-detects from PWD if empty).")) -> str:
         """Restore the worktree database from the latest CI dump."""
-        worktree = resolve_worktree(worktree_id)
+        worktree = resolve_worktree(path)
         overlay = get_overlay()
         strategy = overlay.get_db_import_strategy(worktree)
         if strategy is None:
@@ -78,10 +78,10 @@ class Command(TyperCommand):
 
     @command(name="reset-passwords")
     def reset_passwords(
-        self, worktree_id: int = typer.Argument(0, help="Worktree ID (auto-detects from PWD if 0)")
+        self, path: str = typer.Option("", help="Worktree path (auto-detects from PWD if empty).")
     ) -> str:
         """Reset all user passwords to a known dev value."""
-        worktree = resolve_worktree(worktree_id)
+        worktree = resolve_worktree(path)
         overlay = get_overlay()
         cmd = overlay.get_reset_passwords_command(worktree)
         if not cmd:

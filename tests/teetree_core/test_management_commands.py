@@ -1,4 +1,5 @@
 from collections.abc import Iterator
+from pathlib import Path
 from typing import cast
 
 import pytest
@@ -48,17 +49,26 @@ def clear_overlay_cache() -> Iterator[None]:
     TEATREE_TERMINAL_MODE="same-terminal",
 )
 @pytest.mark.django_db
-def test_lifecycle_commands_create_start_report_and_teardown_worktrees() -> None:
+def test_lifecycle_commands_create_start_report_and_teardown_worktrees(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    wt_path = str(tmp_path / "test-worktree-backend")
+    Path(wt_path).mkdir()
     ticket = Ticket.objects.create(issue_url="https://example.com/issues/55", variant="acme")
-    wt = Worktree.objects.create(ticket=ticket, repo_path="/tmp/backend", branch="feature")
+    wt = Worktree.objects.create(
+        ticket=ticket, repo_path="/tmp/backend", branch="feature", extra={"worktree_path": wt_path}
+    )
+    monkeypatch.setenv("T3_ORIG_CWD", wt_path)
 
-    worktree_id = cast("int", call_command("lifecycle", "setup", str(wt.id)))
-    status = cast("dict[str, str]", call_command("lifecycle", "status", str(worktree_id)))
-    call_command("lifecycle", "start", str(worktree_id))
-    call_command("lifecycle", "teardown", str(worktree_id))
+    worktree_id = cast("int", call_command("lifecycle", "setup"))
+    status = cast("dict[str, str]", call_command("lifecycle", "status"))
+    call_command("lifecycle", "start")
+    call_command("lifecycle", "teardown")
 
     worktree = Worktree.objects.get(pk=worktree_id)
 
+    assert worktree_id == wt.id
     assert status["state"] == Worktree.State.PROVISIONED
     assert status["repo_path"] == "/tmp/backend"
     assert worktree.state == Worktree.State.CREATED

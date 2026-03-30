@@ -1,5 +1,6 @@
-"""Tests for teetree.core.resolve — worktree resolution from PWD, env var, or explicit ID."""
+"""Tests for teetree.core.resolve — worktree resolution from CWD."""
 
+import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
@@ -8,7 +9,8 @@ import pytest
 from teetree.core.models import Ticket, Worktree
 from teetree.core.resolve import (
     WorktreeNotFoundError,
-    _find_env_worktree_from_cwd,
+    _auto_register_from_git,
+    _find_env_worktree,
     _match_worktree_by_path,
     _parse_env_file,
     resolve_worktree,
@@ -63,15 +65,14 @@ def test_parse_env_file_value_with_equals(tmp_path: Path) -> None:
     assert result == {"URL": "http://host?a=b"}
 
 
-# ── _find_env_worktree_from_cwd ─────────────────────────────────────
+# ── _find_env_worktree ──────────────────────────────────────────────
 
 
 def test_find_env_worktree_found_in_cwd(tmp_path: Path) -> None:
     envfile = tmp_path / ".env.worktree"
     envfile.write_text("TICKET_DIR=/some/path\n", encoding="utf-8")
 
-    with patch("teetree.core.resolve.Path.cwd", return_value=tmp_path):
-        result = _find_env_worktree_from_cwd()
+    result = _find_env_worktree(str(tmp_path))
 
     assert result == envfile
 
@@ -82,19 +83,16 @@ def test_find_env_worktree_found_in_parent(tmp_path: Path) -> None:
     child = tmp_path / "sub" / "deep"
     child.mkdir(parents=True)
 
-    with patch("teetree.core.resolve.Path.cwd", return_value=child):
-        result = _find_env_worktree_from_cwd()
+    result = _find_env_worktree(str(child))
 
     assert result == envfile
 
 
 def test_find_env_worktree_not_found(tmp_path: Path) -> None:
-    # tmp_path has no .env.worktree anywhere in the hierarchy up to tmp root
     child = tmp_path / "a" / "b"
     child.mkdir(parents=True)
 
-    with patch("teetree.core.resolve.Path.cwd", return_value=child):
-        result = _find_env_worktree_from_cwd()
+    result = _find_env_worktree(str(child))
 
     assert result is None
 
@@ -163,27 +161,6 @@ def test_match_worktree_by_path_skips_empty_extra() -> None:
 
 
 @pytest.mark.django_db
-def test_resolve_worktree_explicit_id() -> None:
-    ticket = Ticket.objects.create()
-    wt = Worktree.objects.create(ticket=ticket, repo_path="backend", branch="feature")
-
-    result = resolve_worktree(worktree_id=wt.pk)
-
-    assert result.pk == wt.pk
-
-
-@pytest.mark.django_db
-def test_resolve_worktree_from_env_var(monkeypatch: pytest.MonkeyPatch) -> None:
-    ticket = Ticket.objects.create()
-    wt = Worktree.objects.create(ticket=ticket, repo_path="backend", branch="feature")
-    monkeypatch.setenv("WT_ID", str(wt.pk))
-
-    result = resolve_worktree()
-
-    assert result.pk == wt.pk
-
-
-@pytest.mark.django_db
 def test_resolve_worktree_from_env_worktree_file(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     ticket = Ticket.objects.create()
     wt = Worktree.objects.create(
@@ -192,13 +169,12 @@ def test_resolve_worktree_from_env_worktree_file(monkeypatch: pytest.MonkeyPatch
         branch="feature",
         extra={"worktree_path": str(tmp_path / "ticket-dir")},
     )
-    monkeypatch.delenv("WT_ID", raising=False)
 
     envfile = tmp_path / ".env.worktree"
     envfile.write_text(f"TICKET_DIR={tmp_path / 'ticket-dir'}\n", encoding="utf-8")
+    monkeypatch.setenv("T3_ORIG_CWD", str(tmp_path))
 
-    with patch("teetree.core.resolve._find_env_worktree_from_cwd", return_value=envfile):
-        result = resolve_worktree()
+    result = resolve_worktree()
 
     assert result.pk == wt.pk
 
@@ -213,65 +189,90 @@ def test_resolve_worktree_from_cwd_path(monkeypatch: pytest.MonkeyPatch, tmp_pat
         branch="feature",
         extra={"worktree_path": wt_path},
     )
-    monkeypatch.delenv("WT_ID", raising=False)
+    monkeypatch.setenv("T3_ORIG_CWD", wt_path)
 
-    with (
-        patch("teetree.core.resolve._find_env_worktree_from_cwd", return_value=None),
-        patch("teetree.core.resolve.Path.cwd", return_value=Path(wt_path)),
-    ):
-        result = resolve_worktree()
+    result = resolve_worktree()
 
     assert result.pk == wt.pk
 
 
 @pytest.mark.django_db
+def test_resolve_worktree_auto_registers_git_worktree(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Step 3: auto-register when .git is a file (git worktree marker)."""
+    wt_dir = tmp_path / "my-repo"
+    wt_dir.mkdir()
+    (wt_dir / ".git").write_text("gitdir: /some/main/.git/worktrees/my-repo\n")
+    monkeypatch.setenv("T3_ORIG_CWD", str(wt_dir))
+
+    with patch("teetree.core.resolve.subprocess.check_output", return_value="feat/branch\n"):
+        result = resolve_worktree()
+
+    assert result.branch == "feat/branch"
+    assert result.repo_path == "my-repo"
+    assert result.extra["worktree_path"] == str(wt_dir)
+
+
+@pytest.mark.django_db
 def test_resolve_worktree_raises_when_nothing_found(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.delenv("WT_ID", raising=False)
+    monkeypatch.setenv("T3_ORIG_CWD", str(tmp_path))
 
-    with (
-        patch("teetree.core.resolve._find_env_worktree_from_cwd", return_value=None),
-        patch("teetree.core.resolve.Path.cwd", return_value=tmp_path),
-        pytest.raises(WorktreeNotFoundError, match="Cannot auto-detect worktree"),
-    ):
+    with pytest.raises(WorktreeNotFoundError, match="Cannot auto-detect worktree"):
         resolve_worktree()
 
 
 @pytest.mark.django_db
-def test_resolve_worktree_env_var_ignored_when_zero(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """WT_ID=0 or non-digit should be ignored, falling through to PWD resolution."""
-    monkeypatch.setenv("WT_ID", "0")
+def test_resolve_worktree_t3_orig_cwd_takes_precedence(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """T3_ORIG_CWD should be used instead of actual CWD."""
+    ticket = Ticket.objects.create()
+    wt_path = str(tmp_path / "correct")
+    Worktree.objects.create(
+        ticket=ticket,
+        repo_path="backend",
+        branch="feature",
+        extra={"worktree_path": wt_path},
+    )
+    monkeypatch.setenv("T3_ORIG_CWD", wt_path)
 
-    with (
-        patch("teetree.core.resolve._find_env_worktree_from_cwd", return_value=None),
-        patch("teetree.core.resolve.Path.cwd", return_value=tmp_path),
-        pytest.raises(WorktreeNotFoundError),
+    result = resolve_worktree()
+
+    assert result.extra["worktree_path"] == wt_path
+
+
+# ── _auto_register_from_git ───────────────────────────────────────────
+
+
+def test_auto_register_returns_none_when_git_fails(tmp_path: Path) -> None:
+    """Git command failure should return None, not raise."""
+    wt_dir = tmp_path / "my-repo"
+    wt_dir.mkdir()
+    (wt_dir / ".git").write_text("gitdir: /some/.git/worktrees/my-repo\n")
+
+    with patch(
+        "teetree.core.resolve.subprocess.check_output",
+        side_effect=subprocess.CalledProcessError(1, "git"),
     ):
-        resolve_worktree()
+        assert _auto_register_from_git(str(wt_dir)) is None
 
 
-@pytest.mark.django_db
-def test_resolve_worktree_env_var_non_digit_ignored(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("WT_ID", "abc")
+def test_auto_register_returns_none_when_branch_empty(tmp_path: Path) -> None:
+    """Detached HEAD (empty branch) should return None."""
+    wt_dir = tmp_path / "my-repo"
+    wt_dir.mkdir()
+    (wt_dir / ".git").write_text("gitdir: /some/.git/worktrees/my-repo\n")
 
-    with (
-        patch("teetree.core.resolve._find_env_worktree_from_cwd", return_value=None),
-        patch("teetree.core.resolve.Path.cwd", return_value=tmp_path),
-        pytest.raises(WorktreeNotFoundError),
-    ):
-        resolve_worktree()
+    with patch("teetree.core.resolve.subprocess.check_output", return_value="\n"):
+        assert _auto_register_from_git(str(wt_dir)) is None
+
+
+# ── resolve_worktree edge cases ──────────────────────────────────────
 
 
 @pytest.mark.django_db
 def test_resolve_worktree_env_file_without_ticket_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """When .env.worktree exists but has no TICKET_DIR, fall through to PWD match."""
-    monkeypatch.delenv("WT_ID", raising=False)
-
+    """When .env.worktree exists but has no TICKET_DIR, fall through to CWD match."""
     envfile = tmp_path / ".env.worktree"
     envfile.write_text("SOME_OTHER_KEY=value\n", encoding="utf-8")
+    monkeypatch.setenv("T3_ORIG_CWD", str(tmp_path))
 
-    with (
-        patch("teetree.core.resolve._find_env_worktree_from_cwd", return_value=envfile),
-        patch("teetree.core.resolve.Path.cwd", return_value=tmp_path),
-        pytest.raises(WorktreeNotFoundError),
-    ):
+    with pytest.raises(WorktreeNotFoundError):
         resolve_worktree()

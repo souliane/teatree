@@ -19,11 +19,14 @@ COMMAND_SETTINGS = {
 
 @override_settings(**COMMAND_SETTINGS)
 @pytest.mark.django_db
-def test_verify_transitions_to_ready_and_returns_urls(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_verify_transitions_to_ready_and_returns_urls(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    wt_dir = tmp_path / "backend"
+    wt_dir.mkdir()
+    wt_path = str(wt_dir)
     ticket = Ticket.objects.create(issue_url="https://example.com/issues/20", variant="acme")
-    wt = Worktree.objects.create(ticket=ticket, repo_path="/tmp/backend", branch="feature")
-    worktree_id = cast("int", call_command("lifecycle", "setup", str(wt.id)))
-    call_command("lifecycle", "start", str(worktree_id))
+    Worktree.objects.create(ticket=ticket, repo_path="/tmp/backend", branch="feature", extra={"worktree_path": wt_path})
+    worktree_id = cast("int", call_command("lifecycle", "setup", path=wt_path))
+    call_command("lifecycle", "start", path=wt_path)
 
     # Mock HTTP health checks to succeed
     mock_resp = MagicMock()
@@ -32,7 +35,7 @@ def test_verify_transitions_to_ready_and_returns_urls(monkeypatch: pytest.Monkey
     mock_resp.__exit__ = MagicMock(return_value=False)
     monkeypatch.setattr("teetree.core.management.commands.run.urllib.request.urlopen", lambda *a, **k: mock_resp)
 
-    result = cast("dict[str, object]", call_command("run", "verify", str(worktree_id)))
+    result = cast("dict[str, object]", call_command("run", "verify", path=wt_path))
 
     worktree = Worktree.objects.get(pk=worktree_id)
     assert result["state"] == Worktree.State.READY
@@ -42,12 +45,17 @@ def test_verify_transitions_to_ready_and_returns_urls(monkeypatch: pytest.Monkey
 
 @override_settings(**COMMAND_SETTINGS)
 @pytest.mark.django_db
-def test_verify_does_not_transition_when_endpoint_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_verify_does_not_transition_when_endpoint_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """When HTTP check raises an exception, verify logs the error and does NOT advance FSM (lines 53-56)."""
+    wt_dir = tmp_path / "backend"
+    wt_dir.mkdir()
+    wt_path = str(wt_dir)
     ticket = Ticket.objects.create(issue_url="https://example.com/issues/30", variant="acme")
-    wt = Worktree.objects.create(ticket=ticket, repo_path="/tmp/backend", branch="feature")
-    worktree_id = cast("int", call_command("lifecycle", "setup", str(wt.id)))
-    call_command("lifecycle", "start", str(worktree_id))
+    wt = Worktree.objects.create(
+        ticket=ticket, repo_path="/tmp/backend", branch="feature", extra={"worktree_path": wt_path}
+    )
+    cast("int", call_command("lifecycle", "setup", path=wt_path))
+    call_command("lifecycle", "start", path=wt_path)
 
     # Mock HTTP health checks to fail
     def _fail_urlopen(*_args: object, **_kwargs: object) -> None:
@@ -56,9 +64,9 @@ def test_verify_does_not_transition_when_endpoint_fails(monkeypatch: pytest.Monk
 
     monkeypatch.setattr("teetree.core.management.commands.run.urllib.request.urlopen", _fail_urlopen)
 
-    result = cast("dict[str, object]", call_command("run", "verify", str(worktree_id)))
+    result = cast("dict[str, object]", call_command("run", "verify", path=wt_path))
 
-    worktree = Worktree.objects.get(pk=worktree_id)
+    worktree = Worktree.objects.get(pk=wt.pk)
     # State should remain SERVICES_UP — not advanced to READY
     assert worktree.state == Worktree.State.SERVICES_UP
     assert result["state"] == Worktree.State.SERVICES_UP
@@ -72,12 +80,15 @@ def test_verify_does_not_transition_when_endpoint_fails(monkeypatch: pytest.Monk
 
 @override_settings(**COMMAND_SETTINGS)
 @pytest.mark.django_db
-def test_services_returns_run_commands_from_overlay() -> None:
+def test_services_returns_run_commands_from_overlay(tmp_path: Path) -> None:
+    wt_dir = tmp_path / "backend"
+    wt_dir.mkdir()
+    wt_path = str(wt_dir)
     ticket = Ticket.objects.create(issue_url="https://example.com/issues/21", variant="acme")
-    wt = Worktree.objects.create(ticket=ticket, repo_path="/tmp/backend", branch="feature")
-    worktree_id = cast("int", call_command("lifecycle", "setup", str(wt.id)))
+    Worktree.objects.create(ticket=ticket, repo_path="/tmp/backend", branch="feature", extra={"worktree_path": wt_path})
+    cast("int", call_command("lifecycle", "setup", path=wt_path))
 
-    result = cast("dict[str, str]", call_command("run", "services", str(worktree_id)))
+    result = cast("dict[str, str]", call_command("run", "services", path=wt_path))
 
     assert result == {
         "backend": "run-backend /tmp/backend",
@@ -161,7 +172,7 @@ def test_lifecycle_setup_preserves_already_assigned_ports(tmp_path: Path, monkey
         lambda *a, **kw: CompletedProcess(a[0], 0, "", ""),
     )
 
-    call_command("lifecycle", "setup", str(worktree.pk))
+    call_command("lifecycle", "setup", path=str(worktree_path))
 
     worktree.refresh_from_db()
     # Ports stay as-is — the worktree's own services may be using them
@@ -213,7 +224,7 @@ def test_run_backend_preserves_ports_before_launch(tmp_path: Path, monkeypatch: 
 
     monkeypatch.setattr("teetree.core.management.commands.run.subprocess.run", fake_run)
 
-    result = cast("str", call_command("run", "backend", str(worktree.pk)))
+    result = cast("str", call_command("run", "backend", path=str(worktree_path)))
 
     worktree.refresh_from_db()
     assert result == "Backend started."
@@ -224,19 +235,24 @@ def test_run_backend_preserves_ports_before_launch(tmp_path: Path, monkeypatch: 
 @override_settings(**COMMAND_SETTINGS)
 @pytest.mark.django_db
 @pytest.mark.parametrize("service", ["frontend", "backend", "build-frontend"])
-def test_run_executes_pre_run_steps(monkeypatch: pytest.MonkeyPatch, service: str) -> None:
+def test_run_executes_pre_run_steps(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, service: str) -> None:
     """Pre-run steps are executed before each service command."""
+    wt_dir = tmp_path / "backend"
+    wt_dir.mkdir()
+    wt_path = str(wt_dir)
     ticket = Ticket.objects.create(issue_url=f"https://example.com/issues/{service}", variant="acme")
-    wt = Worktree.objects.create(ticket=ticket, repo_path="/tmp/backend", branch="feature")
-    worktree_id = cast("int", call_command("lifecycle", "setup", str(wt.id)))
-    call_command("lifecycle", "start", str(worktree_id))
+    wt = Worktree.objects.create(
+        ticket=ticket, repo_path="/tmp/backend", branch="feature", extra={"worktree_path": wt_path}
+    )
+    cast("int", call_command("lifecycle", "setup", path=wt_path))
+    call_command("lifecycle", "start", path=wt_path)
 
     monkeypatch.setattr(
         "teetree.core.management.commands.run.subprocess.run",
         lambda *a, **kw: CompletedProcess(a[0], 0, "", ""),
     )
 
-    call_command("run", service, str(worktree_id))
+    call_command("run", service, path=wt_path)
 
-    worktree = Worktree.objects.get(pk=worktree_id)
+    worktree = Worktree.objects.get(pk=wt.pk)
     assert (worktree.extra or {}).get(f"pre_run_{service}") == "ran"
