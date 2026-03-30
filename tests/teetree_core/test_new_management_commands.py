@@ -1300,6 +1300,74 @@ def test_lifecycle_setup_updates_ticket_variant_when_requested(tmp_path: "pytest
 
 @override_settings(**SETTINGS)
 @pytest.mark.django_db
+def test_setup_worktree_dir_skips_nonexistent_path() -> None:
+    """_setup_worktree_dir returns early when path doesn't exist."""
+    from io import StringIO  # noqa: PLC0415
+
+    from django.core.management.base import OutputWrapper  # noqa: PLC0415
+
+    from teetree.core.management.commands.lifecycle import _setup_worktree_dir  # noqa: PLC0415
+
+    mock_overlay = MagicMock()
+    stdout = OutputWrapper(StringIO())
+    # Empty path — should return early without calling anything
+    _setup_worktree_dir("", MagicMock(), mock_overlay, stdout)
+    mock_overlay.get_envrc_lines.assert_not_called()
+    # Non-existent path
+    _setup_worktree_dir("/tmp/does-not-exist-xyz", MagicMock(), mock_overlay, stdout)
+    mock_overlay.get_envrc_lines.assert_not_called()
+
+
+@pytest.mark.django_db
+def test_write_env_worktree_returns_none_without_path() -> None:
+    """write_env_worktree returns None when worktree has no worktree_path."""
+    from teetree.core.worktree_env import write_env_worktree  # noqa: PLC0415
+
+    ticket = Ticket.objects.create(issue_url="https://example.com/issues/250")
+    wt = Worktree.objects.create(
+        ticket=ticket,
+        repo_path="/tmp/backend",
+        branch="feature",
+        extra={},  # no worktree_path
+    )
+    assert write_env_worktree(wt) is None
+
+
+@override_settings(**SETTINGS)
+@pytest.mark.django_db
+def test_lifecycle_setup_skips_envfile_message_when_no_path(tmp_path: "pytest.TempPathFactory") -> None:
+    """Setup skips 'Written:' message when write_env_worktree returns None."""
+    wt_path = tmp_path / "worktree"
+    wt_path.mkdir()
+
+    ticket = Ticket.objects.create(issue_url="https://example.com/issues/251")
+    Worktree.objects.create(
+        ticket=ticket,
+        repo_path="/tmp/backend",
+        branch="feature",
+        extra={"worktree_path": str(wt_path)},
+    )
+
+    mock_overlay = MagicMock()
+    mock_overlay.get_db_import_strategy.return_value = None
+    mock_overlay.get_provision_steps.return_value = []
+    mock_overlay.get_post_db_steps.return_value = []
+    mock_overlay.get_reset_passwords_command.return_value = ""
+    mock_overlay.get_env_extra.return_value = {}
+    mock_overlay.get_envrc_lines.return_value = []
+    mock_overlay.get_skill_metadata.return_value = {}
+
+    with (
+        patch("teetree.core.management.commands.lifecycle.get_overlay", return_value=mock_overlay),
+        patch("teetree.core.management.commands.lifecycle.subprocess") as mock_sp,
+        patch("teetree.core.management.commands.lifecycle.write_env_worktree", return_value=None),
+    ):
+        mock_sp.run.return_value = MagicMock(returncode=0)
+        call_command("lifecycle", "setup", path=str(wt_path))
+
+
+@override_settings(**SETTINGS)
+@pytest.mark.django_db
 def test_lifecycle_start_launches_services_and_transitions(
     tmp_path: "pytest.TempPathFactory",
     monkeypatch: pytest.MonkeyPatch,

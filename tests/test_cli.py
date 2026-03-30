@@ -15,33 +15,19 @@ from typer.testing import CliRunner
 
 from teetree.cli import (
     _agent_search_dirs,
-    _bridge_subcommand,
-    _build_overlay_app,
-    _camelize,
-    _check_editable_sanity,
-    _collect_overlay_skills,
-    _current_git_branch,
     _detect_agent_ticket_status,
-    _editable_info,
     _find_overlay_project,
     _find_project_root,
-    _get_ci_project,
-    _get_ci_service,
-    _get_gitlab_token,
-    _managepy,
-    _patch_manage_py,
-    _patch_settings,
-    _patch_urls,
-    _print_package_info,
     _register_overlay_commands,
-    _repair_symlinks,
-    _run_script,
-    _show_info,
-    _uvicorn,
-    _write_overlay,
-    _write_skill_md,
     app,
 )
+from teetree.cli_ci import CICommands
+from teetree.cli_doctor import DoctorService, IntrospectionHelpers
+from teetree.cli_overlay import OverlayAppBuilder, managepy
+from teetree.cli_overlay import _uvicorn as _uvicorn_fn
+from teetree.cli_review import ReviewService
+from teetree.cli_tools import ToolRunner
+from teetree.overlay_init.generator import ProjectScaffolder, camelize
 
 runner = CliRunner()
 
@@ -93,7 +79,7 @@ def test_docs_runs_mkdocs_serve(tmp_path, monkeypatch):
     fake_mkdocs = types.ModuleType("mkdocs")
     monkeypatch.setitem(sys.modules, "mkdocs", fake_mkdocs)
 
-    with patch("teetree.cli.subprocess.run") as mock_run:
+    with patch("teetree.cli_review.subprocess.run") as mock_run:
         mock_run.return_value = MagicMock(returncode=0)
         result = runner.invoke(app, ["docs"])
         assert result.exit_code == 0
@@ -135,7 +121,7 @@ def test_agent_with_active_overlay(tmp_path, monkeypatch):
         patch("teetree.config.discover_active_overlay", return_value=mock_overlay),
         patch("teetree.core.overlay_loader.get_overlay", return_value=overlay_obj),
         patch("shutil.which", return_value="/usr/bin/claude"),
-        patch("teetree.cli._editable_info", return_value=(False, "")),
+        patch("teetree.cli_doctor.IntrospectionHelpers.editable_info", return_value=(False, "")),
         patch("teetree.cli._detect_agent_ticket_status", return_value="started"),
         patch(
             "teetree.skill_loading.SkillLoadingPolicy.select_for_agent_launch",
@@ -160,7 +146,7 @@ def test_agent_no_overlay(tmp_path, monkeypatch):
     with (
         patch("teetree.config.discover_active_overlay", return_value=None),
         patch("shutil.which", return_value="/usr/bin/claude"),
-        patch("teetree.cli._editable_info", return_value=(False, "")),
+        patch("teetree.cli_doctor.IntrospectionHelpers.editable_info", return_value=(False, "")),
         patch(
             "teetree.skill_loading.SkillLoadingPolicy.select_for_agent_launch",
             return_value=SkillSelectionResult(skills=["t3-code"]),
@@ -310,8 +296,8 @@ def test_info_command():
     """Info command shows installation details."""
     with (
         patch("shutil.which", return_value="/usr/local/bin/t3"),
-        patch("teetree.cli._editable_info", return_value=(True, "file:///home/src")),
-        patch("teetree.cli._print_package_info"),
+        patch("teetree.cli_doctor.IntrospectionHelpers.editable_info", return_value=(True, "file:///home/src")),
+        patch("teetree.cli_doctor.IntrospectionHelpers.print_package_info"),
         patch("teetree.config.discover_active_overlay", return_value=None),
         patch("teetree.config.discover_overlays", return_value=[]),
     ):
@@ -353,7 +339,7 @@ def test_ci_cancel_no_service(monkeypatch):
     """Ci cancel fails without CI service."""
     monkeypatch.delenv("TEATREE_GITLAB_TOKEN", raising=False)
     monkeypatch.delenv("GITLAB_TOKEN", raising=False)
-    with patch("teetree.cli._get_ci_service", return_value=None):
+    with patch("teetree.cli_ci.CICommands.get_ci_service", return_value=None):
         result = runner.invoke(app, ["ci", "cancel"])
         assert result.exit_code == 1
         assert "No CI service" in result.output
@@ -363,9 +349,9 @@ def test_ci_cancel_no_branch(monkeypatch):
     """Ci cancel fails when branch cannot be detected."""
     mock_ci = MagicMock()
     with (
-        patch("teetree.cli._get_ci_service", return_value=mock_ci),
-        patch("teetree.cli._get_ci_project", return_value="org/repo"),
-        patch("teetree.cli._current_git_branch", return_value=""),
+        patch("teetree.cli_ci.CICommands.get_ci_service", return_value=mock_ci),
+        patch("teetree.cli_ci.CICommands.get_ci_project", return_value="org/repo"),
+        patch("teetree.cli_ci.CICommands.current_git_branch", return_value=""),
     ):
         result = runner.invoke(app, ["ci", "cancel"])
         assert result.exit_code == 1
@@ -377,9 +363,9 @@ def test_ci_cancel_with_results():
     mock_ci = MagicMock()
     mock_ci.cancel_pipelines.return_value = [123, 456]
     with (
-        patch("teetree.cli._get_ci_service", return_value=mock_ci),
-        patch("teetree.cli._get_ci_project", return_value="org/repo"),
-        patch("teetree.cli._current_git_branch", return_value="main"),
+        patch("teetree.cli_ci.CICommands.get_ci_service", return_value=mock_ci),
+        patch("teetree.cli_ci.CICommands.get_ci_project", return_value="org/repo"),
+        patch("teetree.cli_ci.CICommands.current_git_branch", return_value="main"),
     ):
         result = runner.invoke(app, ["ci", "cancel"])
         assert result.exit_code == 0
@@ -391,9 +377,9 @@ def test_ci_cancel_no_pipelines():
     mock_ci = MagicMock()
     mock_ci.cancel_pipelines.return_value = []
     with (
-        patch("teetree.cli._get_ci_service", return_value=mock_ci),
-        patch("teetree.cli._get_ci_project", return_value="org/repo"),
-        patch("teetree.cli._current_git_branch", return_value="main"),
+        patch("teetree.cli_ci.CICommands.get_ci_service", return_value=mock_ci),
+        patch("teetree.cli_ci.CICommands.get_ci_project", return_value="org/repo"),
+        patch("teetree.cli_ci.CICommands.current_git_branch", return_value="main"),
     ):
         result = runner.invoke(app, ["ci", "cancel"])
         assert result.exit_code == 0
@@ -429,9 +415,9 @@ def test_ci_fetch_errors_with_errors():
     mock_ci = MagicMock()
     mock_ci.fetch_pipeline_errors.return_value = ["Error in job build", "Error in job test"]
     with (
-        patch("teetree.cli._get_ci_service", return_value=mock_ci),
-        patch("teetree.cli._get_ci_project", return_value="org/repo"),
-        patch("teetree.cli._current_git_branch", return_value="main"),
+        patch("teetree.cli_ci.CICommands.get_ci_service", return_value=mock_ci),
+        patch("teetree.cli_ci.CICommands.get_ci_project", return_value="org/repo"),
+        patch("teetree.cli_ci.CICommands.current_git_branch", return_value="main"),
     ):
         result = runner.invoke(app, ["ci", "fetch-errors"])
         assert result.exit_code == 0
@@ -443,9 +429,9 @@ def test_ci_fetch_errors_no_errors():
     mock_ci = MagicMock()
     mock_ci.fetch_pipeline_errors.return_value = []
     with (
-        patch("teetree.cli._get_ci_service", return_value=mock_ci),
-        patch("teetree.cli._get_ci_project", return_value="org/repo"),
-        patch("teetree.cli._current_git_branch", return_value="main"),
+        patch("teetree.cli_ci.CICommands.get_ci_service", return_value=mock_ci),
+        patch("teetree.cli_ci.CICommands.get_ci_project", return_value="org/repo"),
+        patch("teetree.cli_ci.CICommands.current_git_branch", return_value="main"),
     ):
         result = runner.invoke(app, ["ci", "fetch-errors"])
         assert result.exit_code == 0
@@ -453,7 +439,7 @@ def test_ci_fetch_errors_no_errors():
 
 
 def test_ci_fetch_errors_no_service():
-    with patch("teetree.cli._get_ci_service", return_value=None):
+    with patch("teetree.cli_ci.CICommands.get_ci_service", return_value=None):
         result = runner.invoke(app, ["ci", "fetch-errors"])
         assert result.exit_code == 1
 
@@ -463,9 +449,9 @@ def test_ci_fetch_failed_tests_with_failures():
     mock_ci = MagicMock()
     mock_ci.fetch_failed_tests.return_value = ["test_foo", "test_bar"]
     with (
-        patch("teetree.cli._get_ci_service", return_value=mock_ci),
-        patch("teetree.cli._get_ci_project", return_value="org/repo"),
-        patch("teetree.cli._current_git_branch", return_value="main"),
+        patch("teetree.cli_ci.CICommands.get_ci_service", return_value=mock_ci),
+        patch("teetree.cli_ci.CICommands.get_ci_project", return_value="org/repo"),
+        patch("teetree.cli_ci.CICommands.current_git_branch", return_value="main"),
     ):
         result = runner.invoke(app, ["ci", "fetch-failed-tests"])
         assert result.exit_code == 0
@@ -477,9 +463,9 @@ def test_ci_fetch_failed_tests_none():
     mock_ci = MagicMock()
     mock_ci.fetch_failed_tests.return_value = []
     with (
-        patch("teetree.cli._get_ci_service", return_value=mock_ci),
-        patch("teetree.cli._get_ci_project", return_value="org/repo"),
-        patch("teetree.cli._current_git_branch", return_value="main"),
+        patch("teetree.cli_ci.CICommands.get_ci_service", return_value=mock_ci),
+        patch("teetree.cli_ci.CICommands.get_ci_project", return_value="org/repo"),
+        patch("teetree.cli_ci.CICommands.current_git_branch", return_value="main"),
     ):
         result = runner.invoke(app, ["ci", "fetch-failed-tests"])
         assert result.exit_code == 0
@@ -487,7 +473,7 @@ def test_ci_fetch_failed_tests_none():
 
 
 def test_ci_fetch_failed_tests_no_service():
-    with patch("teetree.cli._get_ci_service", return_value=None):
+    with patch("teetree.cli_ci.CICommands.get_ci_service", return_value=None):
         result = runner.invoke(app, ["ci", "fetch-failed-tests"])
         assert result.exit_code == 1
 
@@ -497,9 +483,9 @@ def test_ci_trigger_e2e_success():
     mock_ci = MagicMock()
     mock_ci.trigger_pipeline.return_value = {"web_url": "https://ci/pipeline/1"}
     with (
-        patch("teetree.cli._get_ci_service", return_value=mock_ci),
-        patch("teetree.cli._get_ci_project", return_value="org/repo"),
-        patch("teetree.cli._current_git_branch", return_value="main"),
+        patch("teetree.cli_ci.CICommands.get_ci_service", return_value=mock_ci),
+        patch("teetree.cli_ci.CICommands.get_ci_project", return_value="org/repo"),
+        patch("teetree.cli_ci.CICommands.current_git_branch", return_value="main"),
     ):
         result = runner.invoke(app, ["ci", "trigger-e2e"])
         assert result.exit_code == 0
@@ -510,9 +496,9 @@ def test_ci_trigger_e2e_error():
     mock_ci = MagicMock()
     mock_ci.trigger_pipeline.return_value = {"error": "forbidden"}
     with (
-        patch("teetree.cli._get_ci_service", return_value=mock_ci),
-        patch("teetree.cli._get_ci_project", return_value="org/repo"),
-        patch("teetree.cli._current_git_branch", return_value="main"),
+        patch("teetree.cli_ci.CICommands.get_ci_service", return_value=mock_ci),
+        patch("teetree.cli_ci.CICommands.get_ci_project", return_value="org/repo"),
+        patch("teetree.cli_ci.CICommands.current_git_branch", return_value="main"),
     ):
         result = runner.invoke(app, ["ci", "trigger-e2e"])
         assert result.exit_code == 1
@@ -520,7 +506,7 @@ def test_ci_trigger_e2e_error():
 
 
 def test_ci_trigger_e2e_no_service():
-    with patch("teetree.cli._get_ci_service", return_value=None):
+    with patch("teetree.cli_ci.CICommands.get_ci_service", return_value=None):
         result = runner.invoke(app, ["ci", "trigger-e2e"])
         assert result.exit_code == 1
 
@@ -535,9 +521,9 @@ def test_ci_quality_check_success():
         "failed_count": 2,
     }
     with (
-        patch("teetree.cli._get_ci_service", return_value=mock_ci),
-        patch("teetree.cli._get_ci_project", return_value="org/repo"),
-        patch("teetree.cli._current_git_branch", return_value="main"),
+        patch("teetree.cli_ci.CICommands.get_ci_service", return_value=mock_ci),
+        patch("teetree.cli_ci.CICommands.get_ci_project", return_value="org/repo"),
+        patch("teetree.cli_ci.CICommands.current_git_branch", return_value="main"),
     ):
         result = runner.invoke(app, ["ci", "quality-check"])
         assert result.exit_code == 0
@@ -549,16 +535,16 @@ def test_ci_quality_check_error():
     mock_ci = MagicMock()
     mock_ci.quality_check.return_value = {"error": "no pipeline"}
     with (
-        patch("teetree.cli._get_ci_service", return_value=mock_ci),
-        patch("teetree.cli._get_ci_project", return_value="org/repo"),
-        patch("teetree.cli._current_git_branch", return_value="main"),
+        patch("teetree.cli_ci.CICommands.get_ci_service", return_value=mock_ci),
+        patch("teetree.cli_ci.CICommands.get_ci_project", return_value="org/repo"),
+        patch("teetree.cli_ci.CICommands.current_git_branch", return_value="main"),
     ):
         result = runner.invoke(app, ["ci", "quality-check"])
         assert result.exit_code == 1
 
 
 def test_ci_quality_check_no_service():
-    with patch("teetree.cli._get_ci_service", return_value=None):
+    with patch("teetree.cli_ci.CICommands.get_ci_service", return_value=None):
         result = runner.invoke(app, ["ci", "quality-check"])
         assert result.exit_code == 1
 
@@ -625,7 +611,7 @@ def test_post_draft_note_inline_no_line_code(monkeypatch):
 def test_post_draft_note_no_token(monkeypatch):
     monkeypatch.delenv("GITLAB_TOKEN", raising=False)
     monkeypatch.delenv("TEATREE_GITLAB_TOKEN", raising=False)
-    with patch("teetree.cli.subprocess.run") as mock_run:
+    with patch("teetree.cli_review.subprocess.run") as mock_run:
         mock_run.return_value = MagicMock(stderr="", returncode=1)
         result = runner.invoke(app, ["review", "post-draft-note", "org/repo", "1", "note"])
         assert result.exit_code == 1
@@ -695,7 +681,7 @@ def test_delete_draft_note_failure(monkeypatch):
 def test_delete_draft_note_no_token(monkeypatch):
     monkeypatch.delenv("GITLAB_TOKEN", raising=False)
     monkeypatch.delenv("TEATREE_GITLAB_TOKEN", raising=False)
-    with patch("teetree.cli.subprocess.run") as mock_run:
+    with patch("teetree.cli_review.subprocess.run") as mock_run:
         mock_run.return_value = MagicMock(stderr="", returncode=1)
         result = runner.invoke(app, ["review", "delete-draft-note", "org/repo", "1", "42"])
         assert result.exit_code == 1
@@ -729,7 +715,7 @@ def test_list_draft_notes_none_found(monkeypatch):
 def test_list_draft_notes_no_token(monkeypatch):
     monkeypatch.delenv("GITLAB_TOKEN", raising=False)
     monkeypatch.delenv("TEATREE_GITLAB_TOKEN", raising=False)
-    with patch("teetree.cli.subprocess.run") as mock_run:
+    with patch("teetree.cli_review.subprocess.run") as mock_run:
         mock_run.return_value = MagicMock(stderr="", returncode=1)
         result = runner.invoke(app, ["review", "list-draft-notes", "org/repo", "1"])
         assert result.exit_code == 1
@@ -755,7 +741,7 @@ def test_doctor_repair(tmp_path, monkeypatch):
     with (
         patch("teetree.agents.skill_bundle.DEFAULT_SKILLS_DIR", skills_dir),
         patch("pathlib.Path.home", return_value=tmp_path),
-        patch("teetree.cli._collect_overlay_skills", return_value=[]),
+        patch("teetree.cli_doctor.DoctorService.collect_overlay_skills", return_value=[]),
     ):
         # Create the .claude/skills dir where the command expects it
         real_claude_skills = tmp_path / ".claude" / "skills"
@@ -780,7 +766,7 @@ def test_doctor_repair_no_skills_dir(tmp_path):
 def test_doctor_check_ok():
     """Doctor check passes when all checks pass."""
     with (
-        patch("teetree.cli._check_editable_sanity", return_value=[]),
+        patch("teetree.cli_doctor.DoctorService.check_editable_sanity", return_value=[]),
     ):
         result = runner.invoke(app, ["doctor", "check"])
         assert result.exit_code == 0
@@ -789,7 +775,9 @@ def test_doctor_check_ok():
 
 def test_doctor_check_with_warnings():
     """Doctor check shows warnings."""
-    with patch("teetree.cli._check_editable_sanity", return_value=["teatree is editable but not declared"]):
+    with patch(
+        "teetree.cli_doctor.DoctorService.check_editable_sanity", return_value=["teatree is editable but not declared"]
+    ):
         result = runner.invoke(app, ["doctor", "check"])
         assert result.exit_code == 0
         assert "WARN" in result.output
@@ -798,8 +786,8 @@ def test_doctor_check_with_warnings():
 def test_doctor_check_fails_when_required_tool_missing():
     """Doctor check fails when a required tool is not on PATH."""
     with (
-        patch("teetree.cli.shutil.which", side_effect=lambda t: None if t == "direnv" else f"/usr/bin/{t}"),
-        patch("teetree.cli._check_editable_sanity", return_value=[]),
+        patch("teetree.cli_doctor.shutil.which", side_effect=lambda t: None if t == "direnv" else f"/usr/bin/{t}"),
+        patch("teetree.cli_doctor.DoctorService.check_editable_sanity", return_value=[]),
     ):
         result = runner.invoke(app, ["doctor", "check"])
         assert result.exit_code == 0  # typer returns 0; check() returns bool
@@ -814,7 +802,7 @@ def test_review_request_discover(tmp_path, monkeypatch):
     (tmp_path / "pyproject.toml").write_text("[project]\n")
     with (
         patch("teetree.cli._find_overlay_project", return_value=tmp_path),
-        patch("teetree.cli._managepy") as mock_manage,
+        patch("teetree.cli.managepy") as mock_manage,
     ):
         result = runner.invoke(app, ["review-request", "discover"])
         assert result.exit_code == 0
@@ -825,21 +813,21 @@ def test_review_request_discover(tmp_path, monkeypatch):
 
 
 def test_tool_privacy_scan():
-    with patch("teetree.cli._run_script") as mock:
+    with patch("teetree.cli_tools.ToolRunner.run_script") as mock:
         result = runner.invoke(app, ["tool", "privacy-scan", "myfile.txt"])
         assert result.exit_code == 0
         mock.assert_called_once_with("privacy_scan", "myfile.txt")
 
 
 def test_tool_analyze_video():
-    with patch("teetree.cli._run_script") as mock:
+    with patch("teetree.cli_tools.ToolRunner.run_script") as mock:
         result = runner.invoke(app, ["tool", "analyze-video", "/path/to/video.mp4"])
         assert result.exit_code == 0
         mock.assert_called_once_with("analyze_video", "/path/to/video.mp4")
 
 
 def test_tool_bump_deps():
-    with patch("teetree.cli._run_script") as mock:
+    with patch("teetree.cli_tools.ToolRunner.run_script") as mock:
         result = runner.invoke(app, ["tool", "bump-deps"])
         assert result.exit_code == 0
         mock.assert_called_once_with("bump-pyproject-deps-from-lock-file")
@@ -880,26 +868,24 @@ def test_find_overlay_project_without_active(tmp_path, monkeypatch):
 
 
 def test_camelize():
-    assert _camelize("hello_world") == "HelloWorld"
-    assert _camelize("single") == "Single"
-    assert _camelize("a_b_c") == "ABC"
+    assert camelize("hello_world") == "HelloWorld"
+    assert camelize("single") == "Single"
+    assert camelize("a_b_c") == "ABC"
 
 
 def test_scripts_dir_returns_path():
-    from teetree.cli import _scripts_dir  # noqa: PLC0415
-
-    result = _scripts_dir()
+    result = ToolRunner.scripts_dir()
     assert isinstance(result, Path)
     assert result.name == "scripts"
 
 
 def test_run_script_not_found(tmp_path):
-    """_run_script raises Exit when script not found."""
+    """ToolRunner.run_script raises Exit when script not found."""
     import click  # noqa: PLC0415
 
-    with patch("teetree.cli._scripts_dir", return_value=tmp_path):
+    with patch("teetree.cli_tools.ToolRunner.scripts_dir", return_value=tmp_path):
         try:
-            _run_script("nonexistent_script")
+            ToolRunner.run_script("nonexistent_script")
             msg = "Expected Exit"
             raise AssertionError(msg)
         except (SystemExit, click.exceptions.Exit) as e:
@@ -907,14 +893,14 @@ def test_run_script_not_found(tmp_path):
 
 
 def test_run_script_failure(tmp_path):
-    """_run_script raises Exit on non-zero returncode."""
+    """ToolRunner.run_script raises Exit on non-zero returncode."""
     import click  # noqa: PLC0415
 
     script = tmp_path / "test_script.py"
     script.write_text("import sys; sys.exit(2)")
-    with patch("teetree.cli._scripts_dir", return_value=tmp_path):
+    with patch("teetree.cli_tools.ToolRunner.scripts_dir", return_value=tmp_path):
         try:
-            _run_script("test_script")
+            ToolRunner.run_script("test_script")
             msg = "Expected Exit"
             raise AssertionError(msg)
         except (SystemExit, click.exceptions.Exit) as e:
@@ -922,60 +908,60 @@ def test_run_script_failure(tmp_path):
 
 
 def test_run_script_success(tmp_path):
-    """_run_script succeeds for a passing script."""
+    """ToolRunner.run_script succeeds for a passing script."""
     script = tmp_path / "ok_script.py"
     script.write_text("pass")
-    with patch("teetree.cli._scripts_dir", return_value=tmp_path):
-        _run_script("ok_script")
+    with patch("teetree.cli_tools.ToolRunner.scripts_dir", return_value=tmp_path):
+        ToolRunner.run_script("ok_script")
 
 
 def test_current_git_branch_success():
-    with patch("teetree.cli.subprocess.run") as mock_run:
+    with patch("teetree.cli_ci.subprocess.run") as mock_run:
         mock_run.return_value = MagicMock(stdout="feature-branch\n", returncode=0)
-        assert _current_git_branch() == "feature-branch"
+        assert CICommands.current_git_branch() == "feature-branch"
 
 
 def test_current_git_branch_failure():
-    with patch("teetree.cli.subprocess.run") as mock_run:
+    with patch("teetree.cli_ci.subprocess.run") as mock_run:
         mock_run.return_value = MagicMock(stdout="", returncode=128)
-        assert _current_git_branch() == ""
+        assert CICommands.current_git_branch() == ""
 
 
 def test_get_gitlab_token_from_env(monkeypatch):
     monkeypatch.setenv("GITLAB_TOKEN", "gl-token-123")
-    assert _get_gitlab_token() == "gl-token-123"
+    assert ReviewService.get_gitlab_token() == "gl-token-123"
 
 
 def test_get_gitlab_token_from_teatree_env(monkeypatch):
     monkeypatch.delenv("GITLAB_TOKEN", raising=False)
     monkeypatch.setenv("TEATREE_GITLAB_TOKEN", "tt-token-456")
-    assert _get_gitlab_token() == "tt-token-456"
+    assert ReviewService.get_gitlab_token() == "tt-token-456"
 
 
 def test_get_gitlab_token_from_glab(monkeypatch):
     monkeypatch.delenv("GITLAB_TOKEN", raising=False)
     monkeypatch.delenv("TEATREE_GITLAB_TOKEN", raising=False)
-    with patch("teetree.cli.subprocess.run") as mock_run:
+    with patch("teetree.cli_review.subprocess.run") as mock_run:
         mock_run.return_value = MagicMock(
             stderr="  Token: glpat-ABCDEF\n  User: test\n",
             returncode=0,
         )
-        assert _get_gitlab_token() == "glpat-ABCDEF"
+        assert ReviewService.get_gitlab_token() == "glpat-ABCDEF"
 
 
 def test_get_gitlab_token_not_found(monkeypatch):
     monkeypatch.delenv("GITLAB_TOKEN", raising=False)
     monkeypatch.delenv("TEATREE_GITLAB_TOKEN", raising=False)
-    with patch("teetree.cli.subprocess.run") as mock_run:
+    with patch("teetree.cli_review.subprocess.run") as mock_run:
         mock_run.return_value = MagicMock(stderr="", returncode=1)
-        assert _get_gitlab_token() == ""
+        assert ReviewService.get_gitlab_token() == ""
 
 
 def test_get_ci_service_from_env(monkeypatch):
     """_get_ci_service creates service from env when Django fails."""
     monkeypatch.setenv("TEATREE_GITLAB_TOKEN", "token")
     with patch("teetree.backends.loader.get_ci_service", side_effect=Exception("no django")):
-        service = _get_ci_service()
+        service = CICommands.get_ci_service()
         assert service is not None
 
 
@@ -983,7 +969,7 @@ def test_get_ci_service_no_token(monkeypatch):
     monkeypatch.delenv("TEATREE_GITLAB_TOKEN", raising=False)
     monkeypatch.delenv("GITLAB_TOKEN", raising=False)
     with patch("teetree.backends.loader.get_ci_service", side_effect=Exception("no django")):
-        assert _get_ci_service() is None
+        assert CICommands.get_ci_service() is None
 
 
 def test_get_ci_project_from_overlay():
@@ -994,7 +980,7 @@ def test_get_ci_project_from_overlay():
         patch("django.setup"),
         patch("teetree.core.overlay_loader.get_overlay", return_value=mock_overlay),
     ):
-        result = _get_ci_project()
+        result = CICommands.get_ci_project()
         assert result == "org/repo"
 
 
@@ -1006,7 +992,7 @@ def test_get_ci_project_fallback_to_remote():
         patch("teetree.utils.gitlab_api.GitLabAPI") as mock_api_cls,
     ):
         mock_api_cls.return_value.resolve_project_from_remote.return_value = mock_project_info
-        result = _get_ci_project()
+        result = CICommands.get_ci_project()
         assert result == "org/repo-from-remote"
 
 
@@ -1017,7 +1003,7 @@ def test_get_ci_project_no_remote():
         patch("teetree.utils.gitlab_api.GitLabAPI") as mock_api_cls,
     ):
         mock_api_cls.return_value.resolve_project_from_remote.return_value = None
-        result = _get_ci_project()
+        result = CICommands.get_ci_project()
         assert result == ""
 
 
@@ -1025,12 +1011,14 @@ def test_get_ci_project_no_remote():
 
 
 def test_patch_settings(tmp_path):
-    settings_path = tmp_path / "settings.py"
+    settings_path = tmp_path / "src" / "pkg" / "settings.py"
+    settings_path.parent.mkdir(parents=True)
     settings_path.write_text(
         "INSTALLED_APPS = [\n    'django.contrib.staticfiles',\n]\n",
         encoding="utf-8",
     )
-    _patch_settings(settings_path, "my_overlay", "MyOverlay")
+    s = ProjectScaffolder(tmp_path, "my_overlay", "pkg")
+    s.patch_settings()
     text = settings_path.read_text()
     assert "'teetree.core'" in text
     assert "'my_overlay'" in text
@@ -1038,12 +1026,14 @@ def test_patch_settings(tmp_path):
 
 
 def test_patch_urls(tmp_path):
-    urls_path = tmp_path / "urls.py"
+    urls_path = tmp_path / "src" / "pkg" / "urls.py"
+    urls_path.parent.mkdir(parents=True)
     urls_path.write_text(
         "from django.urls import path\nurlpatterns = [path('admin/', admin.site.urls),]\n",
         encoding="utf-8",
     )
-    _patch_urls(urls_path)
+    s = ProjectScaffolder(tmp_path, "my_overlay", "pkg")
+    s.patch_urls()
     text = urls_path.read_text()
     assert "include" in text
     assert "teetree.core.urls" in text
@@ -1056,25 +1046,29 @@ def test_patch_manage_py(tmp_path):
         'os.environ.setdefault("DJANGO_SETTINGS_MODULE", "my.settings")\n',
         encoding="utf-8",
     )
-    _patch_manage_py(manage_py)
+    s = ProjectScaffolder(tmp_path, "my_overlay", "pkg")
+    s.patch_manage_py()
     text = manage_py.read_text()
     assert "from pathlib import Path" in text
     assert 'sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))' in text
 
 
 def test_write_overlay(tmp_path):
-    overlay_path = tmp_path / "overlay.py"
-    _write_overlay(overlay_path, "test_overlay", "TestOverlay", "t3-test")
-    text = overlay_path.read_text()
+    overlay_dir = tmp_path / "src" / "test_overlay"
+    overlay_dir.mkdir(parents=True)
+    s = ProjectScaffolder(tmp_path, "test_overlay", "pkg")
+    s.write_overlay("t3-test")
+    text = (overlay_dir / "overlay.py").read_text()
     assert "class TestOverlayOverlay" in text
     assert "OverlayBase" in text
     assert '"skill_path": "skills/t3-test/SKILL.md"' in text
 
 
 def test_write_skill_md(tmp_path):
-    skill_path = tmp_path / "SKILL.md"
-    _write_skill_md(skill_path, "t3-acme", "t3-acme")
-    text = skill_path.read_text()
+    skill_dir = tmp_path / "skills" / "t3-acme"
+    s = ProjectScaffolder(tmp_path, "t3_overlay", "pkg")
+    s.write_skill_md(skill_dir, "t3-acme", "t3-acme")
+    text = (skill_dir / "SKILL.md").read_text()
     assert "name: t3-acme" in text
     assert "t3-workspace" not in text
 
@@ -1086,14 +1080,14 @@ def test_editable_info_not_installed():
     from importlib.metadata import PackageNotFoundError  # noqa: PLC0415
 
     with patch("importlib.metadata.distribution", side_effect=PackageNotFoundError("x")):
-        assert _editable_info("nonexistent") == (False, "")
+        assert IntrospectionHelpers.editable_info("nonexistent") == (False, "")
 
 
 def test_editable_info_no_direct_url():
     mock_dist = MagicMock()
     mock_dist.read_text.return_value = None
     with patch("importlib.metadata.distribution", return_value=mock_dist):
-        assert _editable_info("some-pkg") == (False, "")
+        assert IntrospectionHelpers.editable_info("some-pkg") == (False, "")
 
 
 def test_editable_info_editable():
@@ -1105,7 +1099,7 @@ def test_editable_info_editable():
         }
     )
     with patch("importlib.metadata.distribution", return_value=mock_dist):
-        editable, url = _editable_info("some-pkg")
+        editable, url = IntrospectionHelpers.editable_info("some-pkg")
         assert editable is True
         assert url == "file:///home/user/project"
 
@@ -1114,7 +1108,7 @@ def test_editable_info_invalid_json():
     mock_dist = MagicMock()
     mock_dist.read_text.return_value = "not json"
     with patch("importlib.metadata.distribution", return_value=mock_dist):
-        assert _editable_info("some-pkg") == (False, "")
+        assert IntrospectionHelpers.editable_info("some-pkg") == (False, "")
 
 
 # ── _print_package_info ──────────────────────────────────────────────
@@ -1123,42 +1117,42 @@ def test_editable_info_invalid_json():
 def test_print_package_info_installed(capsys):
     with (
         patch("importlib.import_module") as mock_import,
-        patch("teetree.cli._editable_info", return_value=(False, "")),
+        patch("teetree.cli_doctor.IntrospectionHelpers.editable_info", return_value=(False, "")),
     ):
         mock_mod = MagicMock()
         mock_mod.__file__ = "/usr/lib/python/teetree/__init__.py"
         mock_import.return_value = mock_mod
-        _print_package_info("teatree", "teetree")
+        IntrospectionHelpers.print_package_info("teatree", "teetree")
         # Just verifying it runs without error; output goes through typer.echo
 
 
 def test_print_package_info_not_installed(capsys):
     with patch("importlib.import_module", side_effect=ImportError("nope")):
-        _print_package_info("teatree", "teetree")
+        IntrospectionHelpers.print_package_info("teatree", "teetree")
         # Verifying it handles ImportError gracefully
 
 
 def test_print_package_info_editable(capsys):
     with (
         patch("importlib.import_module") as mock_import,
-        patch("teetree.cli._editable_info", return_value=(True, "file:///src")),
+        patch("teetree.cli_doctor.IntrospectionHelpers.editable_info", return_value=(True, "file:///src")),
     ):
         mock_mod = MagicMock()
         mock_mod.__file__ = "/src/teetree/__init__.py"
         mock_import.return_value = mock_mod
-        _print_package_info("teatree", "teetree")
+        IntrospectionHelpers.print_package_info("teatree", "teetree")
 
 
 def test_print_package_info_editable_no_url(capsys):
     """_print_package_info doesn't print URL when editable but no url."""
     with (
         patch("importlib.import_module") as mock_import,
-        patch("teetree.cli._editable_info", return_value=(True, "")),
+        patch("teetree.cli_doctor.IntrospectionHelpers.editable_info", return_value=(True, "")),
     ):
         mock_mod = MagicMock()
         mock_mod.__file__ = "/src/teetree/__init__.py"
         mock_import.return_value = mock_mod
-        _print_package_info("teatree", "teetree")
+        IntrospectionHelpers.print_package_info("teatree", "teetree")
 
 
 # ── _show_info ───────────────────────────────────────────────────────
@@ -1172,23 +1166,23 @@ def test_show_info_with_overlay(capsys):
 
     with (
         patch("shutil.which", return_value="/usr/bin/t3"),
-        patch("teetree.cli._editable_info", return_value=(False, "")),
-        patch("teetree.cli._print_package_info"),
+        patch("teetree.cli_doctor.IntrospectionHelpers.editable_info", return_value=(False, "")),
+        patch("teetree.cli_doctor.IntrospectionHelpers.print_package_info"),
         patch("teetree.config.discover_active_overlay", return_value=active),
         patch("teetree.config.discover_overlays", return_value=entries),
     ):
-        _show_info()
+        DoctorService.show_info()
 
 
 def test_show_info_no_overlay(capsys):
     with (
         patch("shutil.which", return_value=None),
-        patch("teetree.cli._editable_info", return_value=(False, "")),
-        patch("teetree.cli._print_package_info"),
+        patch("teetree.cli_doctor.IntrospectionHelpers.editable_info", return_value=(False, "")),
+        patch("teetree.cli_doctor.IntrospectionHelpers.print_package_info"),
         patch("teetree.config.discover_active_overlay", return_value=None),
         patch("teetree.config.discover_overlays", return_value=[]),
     ):
-        _show_info()
+        DoctorService.show_info()
 
 
 # ── _collect_overlay_skills ──────────────────────────────────────────
@@ -1205,7 +1199,7 @@ def test_collect_overlay_skills_from_skills_dir(tmp_path):
 
     entry = OverlayEntry(name="t3-test", settings_module="test.settings", project_path=project)
     with patch("teetree.config.discover_overlays", return_value=[entry]):
-        results = _collect_overlay_skills()
+        results = DoctorService.collect_overlay_skills()
         assert len(results) == 1
         assert results[0][1] == "t3-custom"
 
@@ -1222,7 +1216,7 @@ def test_collect_overlay_skills_legacy(tmp_path):
 
     entry = OverlayEntry(name="my-overlay", settings_module="test.settings", project_path=project)
     with patch("teetree.config.discover_overlays", return_value=[entry]):
-        results = _collect_overlay_skills()
+        results = DoctorService.collect_overlay_skills()
         assert len(results) == 1
         assert results[0][1] == "t3-my-overlay"
 
@@ -1232,7 +1226,7 @@ def test_collect_overlay_skills_no_project_path():
 
     entry = OverlayEntry(name="test", settings_module="test.settings", project_path=None)
     with patch("teetree.config.discover_overlays", return_value=[entry]):
-        results = _collect_overlay_skills()
+        results = DoctorService.collect_overlay_skills()
         assert results == []
 
 
@@ -1248,8 +1242,8 @@ def test_repair_symlinks_creates_links(tmp_path):
     claude_skills = tmp_path / "claude_skills"
     claude_skills.mkdir()
 
-    with patch("teetree.cli._collect_overlay_skills", return_value=[]):
-        created, fixed = _repair_symlinks(skills_dir, claude_skills)
+    with patch("teetree.cli_doctor.DoctorService.collect_overlay_skills", return_value=[]):
+        created, fixed = DoctorService.repair_symlinks(skills_dir, claude_skills)
         assert created == 1
         assert fixed == 0
         assert (claude_skills / "t3-code").is_symlink()
@@ -1265,8 +1259,8 @@ def test_repair_symlinks_empty_skills_dir(tmp_path):
     claude_skills = tmp_path / "claude_skills"
     claude_skills.mkdir()
 
-    with patch("teetree.cli._collect_overlay_skills", return_value=[]):
-        created, fixed = _repair_symlinks(skills_dir, claude_skills)
+    with patch("teetree.cli_doctor.DoctorService.collect_overlay_skills", return_value=[]):
+        created, fixed = DoctorService.repair_symlinks(skills_dir, claude_skills)
         assert created == 0
         assert fixed == 0
 
@@ -1285,8 +1279,8 @@ def test_repair_symlinks_fixes_wrong_target(tmp_path):
     wrong_target.mkdir()
     (claude_skills / "t3-code").symlink_to(wrong_target)
 
-    with patch("teetree.cli._collect_overlay_skills", return_value=[]):
-        created, fixed = _repair_symlinks(skills_dir, claude_skills)
+    with patch("teetree.cli_doctor.DoctorService.collect_overlay_skills", return_value=[]):
+        created, fixed = DoctorService.repair_symlinks(skills_dir, claude_skills)
         assert created == 1  # re-created after unlinking
         assert fixed == 1
 
@@ -1303,8 +1297,8 @@ def test_repair_symlinks_skips_real_dir(tmp_path):
     # A real directory, not a symlink
     (claude_skills / "t3-code").mkdir()
 
-    with patch("teetree.cli._collect_overlay_skills", return_value=[]):
-        created, fixed = _repair_symlinks(skills_dir, claude_skills)
+    with patch("teetree.cli_doctor.DoctorService.collect_overlay_skills", return_value=[]):
+        created, fixed = DoctorService.repair_symlinks(skills_dir, claude_skills)
         assert created == 0
         assert fixed == 0
 
@@ -1320,8 +1314,8 @@ def test_repair_symlinks_correct_link_unchanged(tmp_path):
     claude_skills.mkdir()
     (claude_skills / "t3-code").symlink_to(skill)
 
-    with patch("teetree.cli._collect_overlay_skills", return_value=[]):
-        created, fixed = _repair_symlinks(skills_dir, claude_skills)
+    with patch("teetree.cli_doctor.DoctorService.collect_overlay_skills", return_value=[]):
+        created, fixed = DoctorService.repair_symlinks(skills_dir, claude_skills)
         assert created == 0
         assert fixed == 0
 
@@ -1333,7 +1327,7 @@ def test_managepy_none_path():
     import click  # noqa: PLC0415
 
     try:
-        _managepy(None)
+        managepy(None)
         msg = "Expected Exit"
         raise AssertionError(msg)
     except (SystemExit, click.exceptions.Exit) as e:
@@ -1344,7 +1338,7 @@ def test_managepy_no_manage_py(tmp_path):
     import click  # noqa: PLC0415
 
     try:
-        _managepy(tmp_path)
+        managepy(tmp_path)
         msg = "Expected Exit"
         raise AssertionError(msg)
     except (SystemExit, click.exceptions.Exit) as e:
@@ -1353,9 +1347,9 @@ def test_managepy_no_manage_py(tmp_path):
 
 def test_managepy_runs_subprocess(tmp_path):
     (tmp_path / "manage.py").write_text("pass\n")
-    with patch("teetree.cli.subprocess.run") as mock_run:
+    with patch("teetree.cli_review.subprocess.run") as mock_run:
         mock_run.return_value = MagicMock(returncode=0)
-        _managepy(tmp_path, "migrate")
+        managepy(tmp_path, "migrate")
         mock_run.assert_called_once()
 
 
@@ -1366,7 +1360,7 @@ def test_uvicorn_none_path():
     import click  # noqa: PLC0415
 
     try:
-        _uvicorn(None, "127.0.0.1", 8000)
+        _uvicorn_fn(None, "127.0.0.1", 8000)
         msg = "Expected Exit"
         raise AssertionError(msg)
     except (SystemExit, click.exceptions.Exit) as e:
@@ -1374,9 +1368,9 @@ def test_uvicorn_none_path():
 
 
 def test_uvicorn_runs_subprocess(tmp_path):
-    with patch("teetree.cli.subprocess.run") as mock_run:
+    with patch("teetree.cli_overlay.subprocess.run") as mock_run:
         mock_run.return_value = MagicMock(returncode=0)
-        _uvicorn(tmp_path, "127.0.0.1", 8000, "myapp.settings")
+        _uvicorn_fn(tmp_path, "127.0.0.1", 8000, "myapp.settings")
         mock_run.assert_called_once()
         call_args = mock_run.call_args[0][0]
         assert call_args[0].endswith("/uv")
@@ -1389,7 +1383,7 @@ def test_uvicorn_runs_subprocess(tmp_path):
 
 
 def test_build_overlay_app_creates_typer_app():
-    overlay_app = _build_overlay_app("test", Path("/tmp/project"), "test.settings")
+    overlay_app = OverlayAppBuilder("test", Path("/tmp/project"), "test.settings").build()
     assert isinstance(overlay_app, typer.Typer)
 
 
@@ -1397,8 +1391,9 @@ def test_build_overlay_app_creates_typer_app():
 
 
 def test_bridge_subcommand_registers_command():
+    builder = OverlayAppBuilder("test", Path("/tmp"), "test.settings")
     group = typer.Typer()
-    _bridge_subcommand(group, "lifecycle", "setup", "Create worktree", Path("/tmp"))
+    builder._bridge_subcommand(group, "lifecycle", "setup", "Create worktree")
     # Verify command was registered (Typer stores registered commands internally)
     assert len(group.registered_commands) == 1
 
@@ -1434,7 +1429,7 @@ def test_check_editable_sanity_no_settings(monkeypatch):
     """Returns empty when no settings module configured."""
     monkeypatch.delenv("DJANGO_SETTINGS_MODULE", raising=False)
     with patch("teetree.config.discover_active_overlay", return_value=None):
-        result = _check_editable_sanity()
+        result = DoctorService.check_editable_sanity()
         assert result == []
 
 
@@ -1446,9 +1441,9 @@ def test_check_editable_sanity_with_active_overlay(monkeypatch):
     active = OverlayEntry(name="test", settings_module="tests.django_settings")
     with (
         patch("teetree.config.discover_active_overlay", return_value=active),
-        patch("teetree.cli._editable_info", return_value=(False, "")),
+        patch("teetree.cli_doctor.IntrospectionHelpers.editable_info", return_value=(False, "")),
     ):
-        result = _check_editable_sanity()
+        result = DoctorService.check_editable_sanity()
         assert isinstance(result, list)
 
 
@@ -1456,7 +1451,7 @@ def test_check_editable_sanity_django_fails(monkeypatch):
     """Returns empty when Django setup fails."""
     monkeypatch.setenv("DJANGO_SETTINGS_MODULE", "nonexistent.settings")
     with patch("django.setup", side_effect=Exception("bad setup")):
-        result = _check_editable_sanity()
+        result = DoctorService.check_editable_sanity()
         assert result == []
 
 
@@ -1470,9 +1465,9 @@ def test_check_editable_sanity_teatree_should_be_editable(monkeypatch):
     with (
         patch("django.setup"),
         patch("django.conf.settings", mock_settings),
-        patch("teetree.cli._editable_info", return_value=(False, "")),
+        patch("teetree.cli_doctor.IntrospectionHelpers.editable_info", return_value=(False, "")),
     ):
-        result = _check_editable_sanity()
+        result = DoctorService.check_editable_sanity()
         assert any("TEATREE_EDITABLE=True" in p for p in result)
 
 
@@ -1486,9 +1481,9 @@ def test_check_editable_sanity_teatree_unexpectedly_editable(monkeypatch):
     with (
         patch("django.setup"),
         patch("django.conf.settings", mock_settings),
-        patch("teetree.cli._editable_info", return_value=(True, "file:///src")),
+        patch("teetree.cli_doctor.IntrospectionHelpers.editable_info", return_value=(True, "file:///src")),
     ):
-        result = _check_editable_sanity()
+        result = DoctorService.check_editable_sanity()
         assert any("TEATREE_EDITABLE is not set" in p for p in result)
 
 
@@ -1508,10 +1503,10 @@ def test_check_editable_sanity_overlay_should_be_editable(monkeypatch):
     with (
         patch("django.setup"),
         patch("django.conf.settings", mock_settings),
-        patch("teetree.cli._editable_info", side_effect=editable_info),
+        patch("teetree.cli_doctor.IntrospectionHelpers.editable_info", side_effect=editable_info),
         patch("importlib.metadata.packages_distributions", return_value={"my_overlay": ["my-overlay"]}),
     ):
-        result = _check_editable_sanity()
+        result = DoctorService.check_editable_sanity()
         assert any("OVERLAY_EDITABLE=True" in p for p in result)
 
 
@@ -1531,10 +1526,10 @@ def test_check_editable_sanity_overlay_unexpectedly_editable(monkeypatch):
     with (
         patch("django.setup"),
         patch("django.conf.settings", mock_settings),
-        patch("teetree.cli._editable_info", side_effect=editable_info),
+        patch("teetree.cli_doctor.IntrospectionHelpers.editable_info", side_effect=editable_info),
         patch("importlib.metadata.packages_distributions", return_value={"my_overlay": ["my-overlay"]}),
     ):
-        result = _check_editable_sanity()
+        result = DoctorService.check_editable_sanity()
         assert any("OVERLAY_EDITABLE is not set" in p for p in result)
 
 
@@ -1542,9 +1537,8 @@ def test_check_editable_sanity_overlay_unexpectedly_editable(monkeypatch):
 
 
 def test_copy_config_templates(tmp_path):
-    from teetree.cli import _copy_config_templates  # noqa: PLC0415
-
-    _copy_config_templates(tmp_path)
+    s = ProjectScaffolder(tmp_path, "t3_overlay", "pkg")
+    s.copy_config_templates()
     assert (tmp_path / ".editorconfig").is_file()
     assert (tmp_path / ".gitignore").is_file()
     assert (tmp_path / ".markdownlint-cli2.yaml").is_file()
@@ -1552,13 +1546,9 @@ def test_copy_config_templates(tmp_path):
     assert (tmp_path / ".python-version").is_file()
 
 
-# ── _write_pyproject ──────────────────────────────────────────────────
-
-
 def test_write_pyproject(tmp_path):
-    from teetree.cli import _write_pyproject  # noqa: PLC0415
-
-    _write_pyproject(tmp_path, "t3-demo", "demo_overlay", "demo")
+    s = ProjectScaffolder(tmp_path, "demo_overlay", "demo")
+    s.write_pyproject("t3-demo")
     pyproject = tmp_path / "pyproject.toml"
     assert pyproject.is_file()
     text = pyproject.read_text()
@@ -1571,13 +1561,13 @@ def test_write_pyproject(tmp_path):
 
 def test_overlay_dashboard_command(tmp_path):
     """Dashboard command migrates and starts uvicorn."""
-    overlay_app = _build_overlay_app("test", tmp_path, "test.settings")
+    overlay_app = OverlayAppBuilder("test", tmp_path, "test.settings").build()
     test_runner = CliRunner()
     (tmp_path / "manage.py").write_text("pass\n")
 
     with (
-        patch("teetree.cli._managepy") as mock_manage,
-        patch("teetree.cli._uvicorn") as mock_uvicorn,
+        patch("teetree.cli_overlay.managepy") as mock_manage,
+        patch("teetree.cli_overlay._uvicorn") as mock_uvicorn,
         patch("socket.socket") as mock_socket_cls,
     ):
         # Port is free (connect_ex returns non-zero)
@@ -1596,7 +1586,7 @@ def test_overlay_dashboard_port_in_use(tmp_path):
     """Dashboard falls back to a free port when default is in use."""
     import socket as _socket  # noqa: PLC0415
 
-    overlay_app = _build_overlay_app("test", tmp_path, "test.settings")
+    overlay_app = OverlayAppBuilder("test", tmp_path, "test.settings").build()
     test_runner = CliRunner()
     (tmp_path / "manage.py").write_text("pass\n")
 
@@ -1623,8 +1613,8 @@ def test_overlay_dashboard_port_in_use(tmp_path):
         return ephemeral_sock
 
     with (
-        patch("teetree.cli._managepy"),
-        patch("teetree.cli._uvicorn") as mock_uvicorn,
+        patch("teetree.cli_overlay.managepy"),
+        patch("teetree.cli_overlay._uvicorn") as mock_uvicorn,
         patch("socket.socket", side_effect=socket_factory),
     ):
         result = test_runner.invoke(overlay_app, ["dashboard"])
@@ -1637,7 +1627,7 @@ def test_overlay_dashboard_port_in_use(tmp_path):
 def test_overlay_resetdb(tmp_path, monkeypatch):
     """Resetdb deletes DB and migrates."""
     monkeypatch.setattr("teetree.config.DATA_DIR", tmp_path / "data")
-    overlay_app = _build_overlay_app("test", tmp_path, "test.settings")
+    overlay_app = OverlayAppBuilder("test", tmp_path, "test.settings").build()
     test_runner = CliRunner()
 
     # Create fake db
@@ -1646,7 +1636,7 @@ def test_overlay_resetdb(tmp_path, monkeypatch):
     db_path = db_dir / "db.sqlite3"
     db_path.write_text("fake db")
 
-    with patch("teetree.cli._managepy"):
+    with patch("teetree.cli_overlay.managepy"):
         result = test_runner.invoke(overlay_app, ["resetdb"])
         assert result.exit_code == 0
         assert "Deleted" in result.output
@@ -1657,10 +1647,10 @@ def test_overlay_resetdb(tmp_path, monkeypatch):
 def test_overlay_resetdb_no_existing_db(tmp_path, monkeypatch):
     """Resetdb works even if DB doesn't exist yet."""
     monkeypatch.setattr("teetree.config.DATA_DIR", tmp_path / "data")
-    overlay_app = _build_overlay_app("test", tmp_path, "test.settings")
+    overlay_app = OverlayAppBuilder("test", tmp_path, "test.settings").build()
     test_runner = CliRunner()
 
-    with patch("teetree.cli._managepy"):
+    with patch("teetree.cli_overlay.managepy"):
         result = test_runner.invoke(overlay_app, ["resetdb"])
         assert result.exit_code == 0
         assert "Database recreated" in result.output
@@ -1668,7 +1658,7 @@ def test_overlay_resetdb_no_existing_db(tmp_path, monkeypatch):
 
 def test_overlay_worker_no_project():
     """Worker fails when project_path is None."""
-    overlay_app = _build_overlay_app("test", None, "test.settings")
+    overlay_app = OverlayAppBuilder("test", None, "test.settings").build()
     test_runner = CliRunner()
     result = test_runner.invoke(overlay_app, ["worker"])
     assert result.exit_code == 1
@@ -1677,14 +1667,14 @@ def test_overlay_worker_no_project():
 
 def test_overlay_worker_starts_processes(tmp_path):
     """Worker starts background processes."""
-    overlay_app = _build_overlay_app("test", tmp_path, "test.settings")
+    overlay_app = OverlayAppBuilder("test", tmp_path, "test.settings").build()
     test_runner = CliRunner()
     (tmp_path / "manage.py").write_text("pass\n")
 
     mock_proc = MagicMock()
     mock_proc.wait.return_value = 0
 
-    with patch("teetree.cli.subprocess.Popen", return_value=mock_proc) as mock_popen:
+    with patch("teetree.cli_overlay.subprocess.Popen", return_value=mock_proc) as mock_popen:
         result = test_runner.invoke(overlay_app, ["worker", "--count", "2"])
         assert result.exit_code == 0
         assert mock_popen.call_count == 2
@@ -1693,14 +1683,14 @@ def test_overlay_worker_starts_processes(tmp_path):
 
 def test_overlay_worker_keyboard_interrupt(tmp_path):
     """Worker handles KeyboardInterrupt gracefully."""
-    overlay_app = _build_overlay_app("test", tmp_path, "test.settings")
+    overlay_app = OverlayAppBuilder("test", tmp_path, "test.settings").build()
     test_runner = CliRunner()
     (tmp_path / "manage.py").write_text("pass\n")
 
     mock_proc = MagicMock()
     mock_proc.wait.side_effect = KeyboardInterrupt
 
-    with patch("teetree.cli.subprocess.Popen", return_value=mock_proc):
+    with patch("teetree.cli_overlay.subprocess.Popen", return_value=mock_proc):
         result = test_runner.invoke(overlay_app, ["worker", "--count", "1"])
         assert "Shutting down" in result.output
         mock_proc.terminate.assert_called_once()
@@ -1708,10 +1698,10 @@ def test_overlay_worker_keyboard_interrupt(tmp_path):
 
 def test_overlay_full_status(tmp_path):
     """full-status delegates to followup refresh."""
-    overlay_app = _build_overlay_app("test", tmp_path, "test.settings")
+    overlay_app = OverlayAppBuilder("test", tmp_path, "test.settings").build()
     test_runner = CliRunner()
 
-    with patch("teetree.cli._managepy") as mock_manage:
+    with patch("teetree.cli_overlay.managepy") as mock_manage:
         result = test_runner.invoke(overlay_app, ["full-status"])
         assert result.exit_code == 0
         mock_manage.assert_called_once_with(tmp_path, "followup", "refresh")
@@ -1719,10 +1709,10 @@ def test_overlay_full_status(tmp_path):
 
 def test_overlay_start_ticket(tmp_path):
     """start-ticket delegates to workspace ticket."""
-    overlay_app = _build_overlay_app("test", tmp_path, "test.settings")
+    overlay_app = OverlayAppBuilder("test", tmp_path, "test.settings").build()
     test_runner = CliRunner()
 
-    with patch("teetree.cli._managepy") as mock_manage:
+    with patch("teetree.cli_overlay.managepy") as mock_manage:
         result = test_runner.invoke(overlay_app, ["start-ticket", "https://issue/123"])
         assert result.exit_code == 0
         mock_manage.assert_called_once_with(tmp_path, "workspace", "ticket", "https://issue/123")
@@ -1730,10 +1720,10 @@ def test_overlay_start_ticket(tmp_path):
 
 def test_overlay_start_ticket_with_variant(tmp_path):
     """start-ticket passes variant when specified."""
-    overlay_app = _build_overlay_app("test", tmp_path, "test.settings")
+    overlay_app = OverlayAppBuilder("test", tmp_path, "test.settings").build()
     test_runner = CliRunner()
 
-    with patch("teetree.cli._managepy") as mock_manage:
+    with patch("teetree.cli_overlay.managepy") as mock_manage:
         result = test_runner.invoke(overlay_app, ["start-ticket", "https://issue/123", "--variant", "tenant-a"])
         assert result.exit_code == 0
         mock_manage.assert_called_once_with(
@@ -1743,10 +1733,10 @@ def test_overlay_start_ticket_with_variant(tmp_path):
 
 def test_overlay_ship(tmp_path):
     """Ship delegates to pr create."""
-    overlay_app = _build_overlay_app("test", tmp_path, "test.settings")
+    overlay_app = OverlayAppBuilder("test", tmp_path, "test.settings").build()
     test_runner = CliRunner()
 
-    with patch("teetree.cli._managepy") as mock_manage:
+    with patch("teetree.cli_overlay.managepy") as mock_manage:
         result = test_runner.invoke(overlay_app, ["ship", "TICKET-123"])
         assert result.exit_code == 0
         mock_manage.assert_called_once_with(tmp_path, "pr", "create", "TICKET-123")
@@ -1754,10 +1744,10 @@ def test_overlay_ship(tmp_path):
 
 def test_overlay_ship_with_title(tmp_path):
     """Ship passes title when specified."""
-    overlay_app = _build_overlay_app("test", tmp_path, "test.settings")
+    overlay_app = OverlayAppBuilder("test", tmp_path, "test.settings").build()
     test_runner = CliRunner()
 
-    with patch("teetree.cli._managepy") as mock_manage:
+    with patch("teetree.cli_overlay.managepy") as mock_manage:
         result = test_runner.invoke(overlay_app, ["ship", "TICKET-123", "--title", "Fix bug"])
         assert result.exit_code == 0
         mock_manage.assert_called_once_with(tmp_path, "pr", "create", "TICKET-123", "--title", "Fix bug")
@@ -1765,10 +1755,10 @@ def test_overlay_ship_with_title(tmp_path):
 
 def test_overlay_daily(tmp_path):
     """Daily delegates to followup sync."""
-    overlay_app = _build_overlay_app("test", tmp_path, "test.settings")
+    overlay_app = OverlayAppBuilder("test", tmp_path, "test.settings").build()
     test_runner = CliRunner()
 
-    with patch("teetree.cli._managepy") as mock_manage:
+    with patch("teetree.cli_overlay.managepy") as mock_manage:
         result = test_runner.invoke(overlay_app, ["daily"])
         assert result.exit_code == 0
         mock_manage.assert_called_once_with(tmp_path, "followup", "sync")
@@ -1778,7 +1768,7 @@ def test_overlay_agent(tmp_path, monkeypatch):
     """Overlay agent launches claude with overlay context."""
     monkeypatch.chdir(tmp_path)
     (tmp_path / "pyproject.toml").write_text("[project]\n")
-    overlay_app = _build_overlay_app("test", tmp_path, "test.settings")
+    overlay_app = OverlayAppBuilder("test", tmp_path, "test.settings").build()
     test_runner = CliRunner()
     from teetree.skill_loading import SkillSelectionResult  # noqa: PLC0415
 
@@ -1787,7 +1777,7 @@ def test_overlay_agent(tmp_path, monkeypatch):
 
     with (
         patch("shutil.which", return_value="/usr/bin/claude"),
-        patch("teetree.cli._editable_info", return_value=(False, "")),
+        patch("teetree.cli_doctor.IntrospectionHelpers.editable_info", return_value=(False, "")),
         patch("teetree.core.overlay_loader.get_overlay", return_value=overlay_obj),
         patch("teetree.cli._detect_agent_ticket_status", return_value="started"),
         patch(
@@ -1804,7 +1794,7 @@ def test_overlay_agent_no_project_path(tmp_path, monkeypatch):
     """Overlay agent works even with no project_path by falling back to _find_project_root."""
     monkeypatch.chdir(tmp_path)
     (tmp_path / "pyproject.toml").write_text("[project]\n")
-    overlay_app = _build_overlay_app("test", None, "test.settings")
+    overlay_app = OverlayAppBuilder("test", None, "test.settings").build()
     test_runner = CliRunner()
     from teetree.skill_loading import SkillSelectionResult  # noqa: PLC0415
 
@@ -1813,7 +1803,7 @@ def test_overlay_agent_no_project_path(tmp_path, monkeypatch):
 
     with (
         patch("shutil.which", return_value="/usr/bin/claude"),
-        patch("teetree.cli._editable_info", return_value=(False, "")),
+        patch("teetree.cli_doctor.IntrospectionHelpers.editable_info", return_value=(False, "")),
         patch("teetree.core.overlay_loader.get_overlay", return_value=overlay_obj),
         patch("teetree.cli._detect_agent_ticket_status", return_value=""),
         patch(
@@ -1828,7 +1818,7 @@ def test_overlay_agent_no_project_path(tmp_path, monkeypatch):
 
 def test_overlay_agent_rejects_phase_and_skill_together(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    overlay_app = _build_overlay_app("test", tmp_path, "test.settings")
+    overlay_app = OverlayAppBuilder("test", tmp_path, "test.settings").build()
     test_runner = CliRunner()
 
     result = test_runner.invoke(overlay_app, ["agent", "--phase", "coding", "--skill", "t3-code"])
@@ -1839,10 +1829,10 @@ def test_overlay_agent_rejects_phase_and_skill_together(tmp_path, monkeypatch):
 
 def test_overlay_lifecycle_subcommand(tmp_path):
     """Overlay command groups forward to manage.py."""
-    overlay_app = _build_overlay_app("test", tmp_path, "test.settings")
+    overlay_app = OverlayAppBuilder("test", tmp_path, "test.settings").build()
     test_runner = CliRunner()
 
-    with patch("teetree.cli._managepy") as mock_manage:
+    with patch("teetree.cli_overlay.managepy") as mock_manage:
         result = test_runner.invoke(overlay_app, ["lifecycle", "setup"])
         assert result.exit_code == 0
         mock_manage.assert_called_once_with(tmp_path, "lifecycle", "setup")
@@ -1858,7 +1848,7 @@ def test_launch_claude_with_editable_teatree(tmp_path, monkeypatch):
 
     with (
         patch("shutil.which", return_value="/usr/bin/claude"),
-        patch("teetree.cli._editable_info", return_value=(True, "file:///src/teatree")),
+        patch("teetree.cli_doctor.IntrospectionHelpers.editable_info", return_value=(True, "file:///src/teatree")),
         patch("teetree.agents.skill_bundle.resolve_dependencies", return_value=["t3-code"]),
         patch("teetree.cli.os.execvp") as mock_exec,
     ):
@@ -1882,7 +1872,7 @@ def test_launch_claude_asks_user_when_skill_is_unknown(tmp_path, monkeypatch):
 
     with (
         patch("shutil.which", return_value="/usr/bin/claude"),
-        patch("teetree.cli._editable_info", return_value=(False, "")),
+        patch("teetree.cli_doctor.IntrospectionHelpers.editable_info", return_value=(False, "")),
         patch("teetree.cli.os.execvp") as mock_exec,
     ):
         from teetree.cli import _launch_claude  # noqa: PLC0415
@@ -1961,7 +1951,7 @@ def test_doctor_repair_with_overlay_skills(tmp_path):
     with (
         patch("teetree.agents.skill_bundle.DEFAULT_SKILLS_DIR", skills_dir),
         patch("pathlib.Path.home", return_value=tmp_path),
-        patch("teetree.cli._collect_overlay_skills", return_value=[(overlay_skill, "t3-overlay")]),
+        patch("teetree.cli_doctor.DoctorService.collect_overlay_skills", return_value=[(overlay_skill, "t3-overlay")]),
     ):
         claude_skills = tmp_path / ".claude" / "skills"
         claude_skills.mkdir(parents=True)
@@ -1979,8 +1969,8 @@ def test_ci_cancel_with_explicit_branch():
     mock_ci = MagicMock()
     mock_ci.cancel_pipelines.return_value = [1]
     with (
-        patch("teetree.cli._get_ci_service", return_value=mock_ci),
-        patch("teetree.cli._get_ci_project", return_value="org/repo"),
+        patch("teetree.cli_ci.CICommands.get_ci_service", return_value=mock_ci),
+        patch("teetree.cli_ci.CICommands.get_ci_project", return_value="org/repo"),
     ):
         result = runner.invoke(app, ["ci", "cancel", "my-branch"])
         assert result.exit_code == 0
@@ -2017,7 +2007,7 @@ def test_get_ci_project_overlay_returns_empty():
         patch("teetree.utils.gitlab_api.GitLabAPI") as mock_api_cls,
     ):
         mock_api_cls.return_value.resolve_project_from_remote.return_value = mock_project_info
-        result = _get_ci_project()
+        result = CICommands.get_ci_project()
         assert result == "org/fallback"
 
 
@@ -2032,10 +2022,10 @@ def test_check_editable_sanity_both_ok(monkeypatch):
     with (
         patch("django.setup"),
         patch("django.conf.settings", mock_settings),
-        patch("teetree.cli._editable_info", return_value=(False, "")),
+        patch("teetree.cli_doctor.IntrospectionHelpers.editable_info", return_value=(False, "")),
         patch("importlib.metadata.packages_distributions", return_value={"my_overlay": ["my-overlay"]}),
     ):
-        result = _check_editable_sanity()
+        result = DoctorService.check_editable_sanity()
         assert result == []
 
 
@@ -2043,12 +2033,12 @@ def test_get_gitlab_token_glab_no_token_line(monkeypatch):
     """_get_gitlab_token returns empty when glab output has no Token line."""
     monkeypatch.delenv("GITLAB_TOKEN", raising=False)
     monkeypatch.delenv("TEATREE_GITLAB_TOKEN", raising=False)
-    with patch("teetree.cli.subprocess.run") as mock_run:
+    with patch("teetree.cli_review.subprocess.run") as mock_run:
         mock_run.return_value = MagicMock(
             stderr="  User: test\n  Scopes: api\n",
             returncode=0,
         )
-        assert _get_gitlab_token() == ""
+        assert ReviewService.get_gitlab_token() == ""
 
 
 # ── config autoload command (lines 350-367) ───────────────────────────
@@ -2122,8 +2112,8 @@ def test_doctor_info():
     """Doctor info delegates to _show_info."""
     with (
         patch("shutil.which", return_value="/usr/local/bin/t3"),
-        patch("teetree.cli._editable_info", return_value=(False, "")),
-        patch("teetree.cli._print_package_info"),
+        patch("teetree.cli_doctor.IntrospectionHelpers.editable_info", return_value=(False, "")),
+        patch("teetree.cli_doctor.IntrospectionHelpers.print_package_info"),
         patch("teetree.config.discover_active_overlay", return_value=None),
         patch("teetree.config.discover_overlays", return_value=[]),
     ):
@@ -2149,7 +2139,7 @@ def test_tool_sonar_check(tmp_path):
     script.touch()
     with (
         patch("teetree.cli._find_overlay_project", return_value=tmp_path),
-        patch("teetree.cli.subprocess") as mock_sub,
+        patch("teetree.cli_tools.subprocess") as mock_sub,
     ):
         mock_sub.run.return_value = subprocess.CompletedProcess([], 0)
         result = runner.invoke(app, ["tool", "sonar-check", "/tmp/repo"])
@@ -2167,7 +2157,7 @@ def test_tool_sonar_check_with_flags(tmp_path):
     script.touch()
     with (
         patch("teetree.cli._find_overlay_project", return_value=tmp_path),
-        patch("teetree.cli.subprocess") as mock_sub,
+        patch("teetree.cli_tools.subprocess") as mock_sub,
     ):
         mock_sub.run.return_value = subprocess.CompletedProcess([], 0)
         result = runner.invoke(app, ["tool", "sonar-check", "--skip-baseline", "--remote", "--remote-status"])
@@ -2186,7 +2176,7 @@ def test_tool_sonar_check_uses_pwd_env(tmp_path, monkeypatch):
     monkeypatch.setenv("PWD", "/original/worktree")
     with (
         patch("teetree.cli._find_overlay_project", return_value=tmp_path),
-        patch("teetree.cli.subprocess") as mock_sub,
+        patch("teetree.cli_tools.subprocess") as mock_sub,
     ):
         mock_sub.run.return_value = subprocess.CompletedProcess([], 0)
         result = runner.invoke(app, ["tool", "sonar-check", "--remote"])
@@ -2200,7 +2190,7 @@ def test_tool_sonar_check_uses_pwd_env(tmp_path, monkeypatch):
 
 def test_overlay_enable_autostart(tmp_path):
     """enable-autostart delegates to teetree.autostart.enable."""
-    overlay_app = _build_overlay_app("test", tmp_path, "test.settings")
+    overlay_app = OverlayAppBuilder("test", tmp_path, "test.settings").build()
     test_runner = CliRunner()
 
     with (
@@ -2215,7 +2205,7 @@ def test_overlay_enable_autostart(tmp_path):
 
 def test_overlay_disable_autostart(tmp_path):
     """disable-autostart delegates to teetree.autostart.disable."""
-    overlay_app = _build_overlay_app("test", tmp_path, "test.settings")
+    overlay_app = OverlayAppBuilder("test", tmp_path, "test.settings").build()
     test_runner = CliRunner()
 
     with patch("teetree.autostart.disable", return_value="Service removed") as mock_disable:
@@ -2227,7 +2217,7 @@ def test_overlay_disable_autostart(tmp_path):
 
 def test_overlay_show_logs_stdout(tmp_path):
     """Show logs shows stdout log output."""
-    overlay_app = _build_overlay_app("test", tmp_path, "test.settings")
+    overlay_app = OverlayAppBuilder("test", tmp_path, "test.settings").build()
     test_runner = CliRunner()
 
     stdout_log = tmp_path / "stdout.log"
@@ -2238,7 +2228,7 @@ def test_overlay_show_logs_stdout(tmp_path):
             "teetree.autostart.log_paths",
             return_value={"stdout": stdout_log, "stderr": tmp_path / "stderr.log"},
         ),
-        patch("teetree.cli.subprocess.run") as mock_run,
+        patch("teetree.cli_review.subprocess.run") as mock_run,
     ):
         mock_run.return_value = MagicMock(returncode=0)
         result = test_runner.invoke(overlay_app, ["config", "logs"])
@@ -2250,7 +2240,7 @@ def test_overlay_show_logs_stdout(tmp_path):
 
 def test_overlay_show_logs_follow(tmp_path):
     """Show logs --follow uses tail -f."""
-    overlay_app = _build_overlay_app("test", tmp_path, "test.settings")
+    overlay_app = OverlayAppBuilder("test", tmp_path, "test.settings").build()
     test_runner = CliRunner()
 
     stdout_log = tmp_path / "stdout.log"
@@ -2261,7 +2251,7 @@ def test_overlay_show_logs_follow(tmp_path):
             "teetree.autostart.log_paths",
             return_value={"stdout": stdout_log, "stderr": tmp_path / "stderr.log"},
         ),
-        patch("teetree.cli.subprocess.run") as mock_run,
+        patch("teetree.cli_review.subprocess.run") as mock_run,
     ):
         mock_run.return_value = MagicMock(returncode=0)
         result = test_runner.invoke(overlay_app, ["config", "logs", "--follow"])
@@ -2272,7 +2262,7 @@ def test_overlay_show_logs_follow(tmp_path):
 
 def test_overlay_show_logs_no_file(tmp_path):
     """Show logs fails when log file doesn't exist."""
-    overlay_app = _build_overlay_app("test", tmp_path, "test.settings")
+    overlay_app = OverlayAppBuilder("test", tmp_path, "test.settings").build()
     test_runner = CliRunner()
 
     with patch(
@@ -2286,7 +2276,7 @@ def test_overlay_show_logs_no_file(tmp_path):
 
 def test_overlay_show_logs_stderr(tmp_path):
     """Show logs --stderr reads the stderr log file."""
-    overlay_app = _build_overlay_app("test", tmp_path, "test.settings")
+    overlay_app = OverlayAppBuilder("test", tmp_path, "test.settings").build()
     test_runner = CliRunner()
 
     stderr_log = tmp_path / "stderr.log"
@@ -2297,7 +2287,7 @@ def test_overlay_show_logs_stderr(tmp_path):
             "teetree.autostart.log_paths",
             return_value={"stdout": tmp_path / "stdout.log", "stderr": stderr_log},
         ),
-        patch("teetree.cli.subprocess.run") as mock_run,
+        patch("teetree.cli_review.subprocess.run") as mock_run,
     ):
         mock_run.return_value = MagicMock(returncode=0)
         result = test_runner.invoke(overlay_app, ["config", "logs", "--stderr"])
@@ -2311,8 +2301,6 @@ def test_overlay_show_logs_stderr(tmp_path):
 
 def test_register_overlay_tools_from_json(tmp_path):
     """Overlay app registers tool commands from hook-config/tool-commands.json."""
-    from teetree.cli import _register_overlay_tools  # noqa: PLC0415
-
     hook_dir = tmp_path / "skills" / "my-skill" / "hook-config"
     hook_dir.mkdir(parents=True)
     (hook_dir / "tool-commands.json").write_text(
@@ -2324,17 +2312,15 @@ def test_register_overlay_tools_from_json(tmp_path):
         )
     )
 
-    overlay_app = typer.Typer()
-    _register_overlay_tools(overlay_app, tmp_path)
+    builder = OverlayAppBuilder("test", tmp_path, "test.settings")
+    builder._register_overlay_tools()
 
     # The tool group should have been registered
-    assert len(overlay_app.registered_groups) == 1
+    assert len(builder.overlay_app.registered_groups) == 1
 
 
 def test_register_overlay_tools_skips_entries_without_name(tmp_path):
-    """_register_overlay_tools skips tool specs without name or management_command."""
-    from teetree.cli import _register_overlay_tools  # noqa: PLC0415
-
+    """OverlayAppBuilder._register_overlay_tools skips specs without name or management_command."""
     hook_dir = tmp_path / "skills" / "my-skill" / "hook-config"
     hook_dir.mkdir(parents=True)
     (hook_dir / "tool-commands.json").write_text(
@@ -2346,53 +2332,46 @@ def test_register_overlay_tools_skips_entries_without_name(tmp_path):
         )
     )
 
-    overlay_app = typer.Typer()
-    _register_overlay_tools(overlay_app, tmp_path)
+    builder = OverlayAppBuilder("test", tmp_path, "test.settings")
+    builder._register_overlay_tools()
 
 
 def test_register_overlay_tools_handles_invalid_json(tmp_path):
-    """_register_overlay_tools skips files with invalid JSON (line 1615-1616)."""
-    from teetree.cli import _register_overlay_tools  # noqa: PLC0415
-
+    """OverlayAppBuilder._register_overlay_tools skips files with invalid JSON."""
     hook_dir = tmp_path / "skills" / "my-skill" / "hook-config"
     hook_dir.mkdir(parents=True)
     (hook_dir / "tool-commands.json").write_text("not valid json {{{")
 
-    overlay_app = typer.Typer()
-    _register_overlay_tools(overlay_app, tmp_path)
+    builder = OverlayAppBuilder("test", tmp_path, "test.settings")
+    builder._register_overlay_tools()
 
     # Should not crash, just skip the file
-    assert len(overlay_app.registered_groups) == 0
+    assert len(builder.overlay_app.registered_groups) == 0
 
 
 def test_register_overlay_tools_none_path():
-    """_register_overlay_tools returns early when project_path is None."""
-    from teetree.cli import _register_overlay_tools  # noqa: PLC0415
-
-    overlay_app = typer.Typer()
-    _register_overlay_tools(overlay_app, None)
-    assert len(overlay_app.registered_groups) == 0
+    """OverlayAppBuilder._register_overlay_tools returns early when project_path is None."""
+    builder = OverlayAppBuilder("test", None, "test.settings")
+    builder._register_overlay_tools()
+    assert len(builder.overlay_app.registered_groups) == 0
 
 
 def test_register_overlay_tools_no_tool_commands(tmp_path):
-    """_register_overlay_tools returns early when no tool-commands.json found."""
-    from teetree.cli import _register_overlay_tools  # noqa: PLC0415
-
-    overlay_app = typer.Typer()
-    _register_overlay_tools(overlay_app, tmp_path)
-    assert len(overlay_app.registered_groups) == 0
+    """OverlayAppBuilder._register_overlay_tools returns early when no tool-commands.json found."""
+    builder = OverlayAppBuilder("test", tmp_path, "test.settings")
+    builder._register_overlay_tools()
+    assert len(builder.overlay_app.registered_groups) == 0
 
 
-def test_bridge_tool_command_runs_managepy(tmp_path):
-    """_bridge_tool_command creates a command that delegates to _managepy."""
-    from teetree.cli import _bridge_tool_command  # noqa: PLC0415
-
+def test_bridge_tool_command_runsmanagepy(tmp_path):
+    """OverlayAppBuilder._bridge_tool_command creates a command that delegates to managepy."""
+    builder = OverlayAppBuilder("test", tmp_path, "test.settings")
     group = typer.Typer()
     (tmp_path / "manage.py").write_text("pass\n")
-    _bridge_tool_command(group, "my-tool", "Run my tool", "tool my-tool", tmp_path)
+    builder._bridge_tool_command(group, "my-tool", "Run my tool", "tool my-tool")
 
     test_runner = CliRunner()
-    with patch("teetree.cli._managepy") as mock_manage:
+    with patch("teetree.cli_overlay.managepy") as mock_manage:
         result = test_runner.invoke(group, ["my-tool", "extra-arg"])
         assert result.exit_code == 0
         mock_manage.assert_called_once()

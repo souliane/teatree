@@ -68,7 +68,7 @@ def startproject(
 
 
 def _write_template(template_name: str, destination: Path, context: dict[str, str]) -> None:
-    template = files("teetree.scaffold").joinpath(template_name).read_text(encoding="utf-8")
+    template = files("teetree.overlay_init").joinpath(template_name).read_text(encoding="utf-8")
     rendered = _render_template(template, context)
     destination.write_text(rendered, encoding="utf-8")
 
