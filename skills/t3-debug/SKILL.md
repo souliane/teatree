@@ -52,6 +52,11 @@ When the bug report includes screenshots or videos, **analyze ALL visual evidenc
 - Identify the exact failure point (file, line, function).
 - Check if the error is environment-specific: **test with the user's real env, not a sanitized one.** Do not use `unset VAR` or `env -i` to mask env issues — if the command fails in the user's shell, that's the bug. Find the source of the stale env var (`.zshrc`, direnv, `.env`) and fix it.
 - **CI failures on feature branches:** always `git diff master...HEAD` first to confirm what the branch introduced. Do not speculate about pre-existing causes without checking the base branch. Symlinks, config files, and generated artifacts can sneak into commits.
+- **CI fails but local passes:** follow this checklist in order:
+  1. **Is the latest commit pushed?** Compare local HEAD with remote HEAD (`git log origin/<branch> --oneline -1`). Unpushed fixes are the most common cause.
+  2. **Check ALL failed jobs**, not just the primary one. Large builds (e.g., full frontend apps) can swallow errors in output buffers; smaller builds of the same codebase often show errors more clearly.
+  3. **Check the merge ref.** CI may test a merge of your branch with the target branch. Merge locally (`git merge --no-commit origin/master`) and rebuild to reproduce.
+  4. **Check node/package versions.** CI does `npm ci` (clean install from lockfile); local `node_modules` may have drifted.
 - Check if the error message matches a known pattern in troubleshooting docs.
 
 ### Phase 2: Pattern Analysis
@@ -65,6 +70,7 @@ Common failure categories:
 | Frontend | Blank page, XHR cache, translation sync, build error |
 | Worktree-specific | DB exists, port in use, direnv not loaded, DSLR failure |
 | Network | Connection refused, timeout (check VPN first) |
+| CI-specific | Build fails in CI but passes locally (see Phase 1 checklist) |
 
 ### Phase 3: Hypothesis Testing
 
