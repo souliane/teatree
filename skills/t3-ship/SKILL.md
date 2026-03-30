@@ -41,6 +41,7 @@ From "code is done" to "MR is merged."
 - Check for unstaged changes: `git status --short` in **every** repo of the ticket directory.
 - **Check for pre-existing changes before staging.** Run `git diff <file>` for each file you intend to stage. If the diff includes changes you did not make in this session, **warn the user** — `git add <file>` will sweep in all changes, not just yours. Either stage only your hunks (via a patch file) or ask the user how to proceed.
 - Format commit message following the project's commit format reference.
+- **Link commits to issues (Non-Negotiable).** Check whether the work relates to a tracked issue (GitHub issue, GitLab issue, ticket). If it does, include `Fixes #<number>` or `Closes #<number>` in the commit message body (not the first line) to auto-close it on merge. Use `Relates-to #<number>` for partial progress. This applies to ALL repos — including the teatree repo itself when working on its own issues.
 - Read `TICKET_URL` from `.env.worktree` — never construct it from the branch name.
 
 ### 2. Finalize Branch
