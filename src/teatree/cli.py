@@ -1,0 +1,465 @@
+"""TeaTree CLI — single ``t3`` entry point for all commands.
+
+DB-touching commands are django-typer management commands, exposed here after
+``django.setup()``.  Django-free commands live as plain Typer groups.
+"""
+
+import logging
+import os
+import subprocess  # noqa: S404
+import sys
+from datetime import UTC
+from pathlib import Path
+
+import typer
+
+from teatree.cli_ci import ci_app
+from teatree.cli_doctor import DoctorService, IntrospectionHelpers, doctor_app
+from teatree.cli_overlay import OverlayAppBuilder, managepy, uv_cmd
+from teatree.cli_review import review_app
+from teatree.cli_tools import tool_app
+from teatree.skill_loading import DEFAULT_SKILLS_DIR
+
+logger = logging.getLogger(__name__)
+
+app = typer.Typer(name="t3", no_args_is_help=True, add_completion=False)
+
+AGENT_PHASE_OPTION = typer.Option("", "--phase", help="Explicit TeaTree phase override.")
+AGENT_SKILL_OPTION = typer.Option(
+    None,
+    "--skill",
+    help="Explicit skill override. Repeat to load multiple skills.",
+)
+
+# ── Always-available commands (no Django) ──────────────────────────────
+
+
+@app.callback()
+def _root_callback(ctx: typer.Context) -> None:
+    ctx.ensure_object(dict)
+
+
+@app.command()
+def startproject(
+    project_name: str,
+    destination: Path,
+    *,
+    overlay_app: str = typer.Option(
+        "t3_overlay", "--overlay-app", help="Name of the overlay Django app (t3_ prefix recommended)"
+    ),
+    project_package: str | None = typer.Option(
+        None, "--project-package", help="Project package name (default: derived from project name)"
+    ),
+) -> None:
+    """Create a new TeaTree overlay project."""
+    from teatree.overlay_init.generator import ProjectScaffolder  # noqa: PLC0415
+
+    project_root = destination / project_name
+    if project_root.exists():
+        typer.echo(f"Destination already exists: {project_root}")
+        raise typer.Exit(code=1)
+
+    package_name = project_package or project_name.replace("-", "_").replace("t3_", "")
+    scaffolder = ProjectScaffolder(project_root, overlay_app, package_name)
+    scaffolder.scaffold(project_name)
+    typer.echo(str(project_root))
+
+
+@app.command()
+def docs(
+    host: str = typer.Option("127.0.0.1", help="Host to bind to"),
+    port: int = typer.Option(8888, help="Port to serve on"),
+) -> None:
+    """Serve the project documentation with mkdocs.
+
+    Requires the ``docs`` dependency group: ``uv sync --group docs``
+    """
+    project_root = _find_project_root()
+    mkdocs_yml = project_root / "mkdocs.yml"
+    if not mkdocs_yml.exists():
+        typer.echo(f"No mkdocs.yml found in {project_root}")
+        raise typer.Exit(code=1)
+    try:
+        import mkdocs  # noqa: F401, PLC0415
+    except ImportError:
+        typer.echo("mkdocs is not installed. Run: uv sync --group docs")
+        raise typer.Exit(code=1) from None
+    subprocess.run(  # noqa: S603
+        [sys.executable, "-m", "mkdocs", "serve", "-a", f"{host}:{port}"],
+        cwd=project_root,
+        check=True,
+    )
+
+
+def _detect_agent_ticket_status(project_root: Path) -> str:
+    manage_py = project_root / "manage.py"
+    if not manage_py.is_file():
+        return ""
+    command = [
+        *uv_cmd(project_root, "python", str(manage_py), "shell", "-c"),
+        (
+            "from teatree.core.resolve import WorktreeNotFoundError, resolve_worktree\n"
+            "try:\n"
+            "    print(resolve_worktree().ticket.state)\n"
+            "except Exception:\n"
+            "    print('')\n"
+        ),
+    ]
+    env = {key: value for key, value in os.environ.items() if key != "DJANGO_SETTINGS_MODULE"}
+    proc = subprocess.run(  # noqa: S603
+        command,
+        cwd=project_root,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        return ""
+    return proc.stdout.strip()
+
+
+def _agent_search_dirs(project_root: Path) -> list[Path]:
+    search_dirs = [DEFAULT_SKILLS_DIR, Path.home() / ".agents" / "skills", Path.home() / ".claude" / "skills"]
+    project_skills_dir = project_root / "skills"
+    if project_skills_dir.is_dir():
+        search_dirs.insert(0, project_skills_dir)
+    return search_dirs
+
+
+def _launch_claude(
+    *,
+    task: str,
+    project_root: Path,
+    context_lines: list[str],
+    skills: list[str],
+    ask_user_which_skill: bool,
+) -> None:
+    """Shared logic: resolve skills, build prompt, exec into claude."""
+    import shutil  # noqa: PLC0415
+
+    claude_bin = shutil.which("claude")
+    if not claude_bin:
+        typer.echo("claude CLI not found on PATH. Install Claude Code first.")
+        raise typer.Exit(code=1)
+
+    teatree_editable, teatree_url = IntrospectionHelpers.editable_info("teatree")
+    if teatree_editable and teatree_url:
+        context_lines.append(f"TeaTree source (editable): {teatree_url.removeprefix('file://')}")
+    context_lines.append("")
+    if skills:
+        context_lines.extend(
+            (
+                "Load only these skills before starting work:",
+                *(f"  - /{skill}" for skill in skills),
+            )
+        )
+    if ask_user_which_skill:
+        context_lines.extend(
+            (
+                "TeaTree could not infer the lifecycle skill for this session.",
+                "Before doing any work, ask the user which lifecycle skill to load.",
+            )
+        )
+    context_lines.extend(("", "Run `uv run t3 --help` to see available commands.", "Run `uv run pytest` to run tests."))
+    if task:
+        context_lines.extend(("", f"Task: {task}"))
+
+    context = "\n".join(context_lines)
+    cmd = [claude_bin, "--append-system-prompt", context]
+    if task:
+        cmd.extend(["-p", task])
+
+    typer.echo(f"Launching Claude Code in {project_root}...")
+    os.execvp(claude_bin, cmd)  # noqa: S606
+
+
+@app.command()
+def agent(
+    task: str = typer.Argument("", help="What to work on (e.g. 'fix the sync bug', 'add a new command')"),
+    phase: str = AGENT_PHASE_OPTION,
+    skill: list[str] = AGENT_SKILL_OPTION,
+) -> None:
+    """Launch Claude Code with auto-detected project context."""
+    from teatree.config import discover_active_overlay  # noqa: PLC0415
+    from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
+    from teatree.skill_loading import SkillLoadingPolicy  # noqa: PLC0415
+
+    project_root = _find_project_root()
+    active = discover_active_overlay()
+    if phase and skill:
+        typer.echo("--phase and --skill cannot be used together.")
+        raise typer.Exit(code=1)
+
+    lines = ["You are working on a TeaTree project.", ""]
+    if active:
+        lines.extend(
+            (
+                f"Active overlay: {active.name} (settings: {active.settings_module})",
+                f"Overlay source: {project_root}",
+            )
+        )
+    else:
+        lines.append("No overlay active — working on teatree itself.")
+
+    overlay_skill_metadata = get_overlay().get_skill_metadata() if active else {}
+    policy = SkillLoadingPolicy(skills_dir=_agent_search_dirs(project_root))
+    try:
+        selection = policy.select_for_agent_launch(
+            cwd=Path.cwd(),
+            overlay_skill_metadata=overlay_skill_metadata,
+            task=task,
+            ticket_status=_detect_agent_ticket_status(project_root) if active else "",
+            explicit_phase=phase,
+            explicit_skills=skill or [],
+            overlay_active=bool(active),
+        )
+    except ValueError as exc:
+        typer.echo(str(exc))
+        raise typer.Exit(code=1) from exc
+
+    _launch_claude(
+        task=task,
+        project_root=project_root,
+        context_lines=lines,
+        skills=selection.skills,
+        ask_user_which_skill=selection.ask_user,
+    )
+
+
+def _format_session_age(raw_ts: float | str, now: float) -> str:
+    if isinstance(raw_ts, str):
+        try:
+            raw_ts = float(raw_ts)
+        except (ValueError, TypeError):
+            raw_ts = 0
+    ts = raw_ts / 1000 if raw_ts > 1e12 else raw_ts
+    if not ts:
+        return "?"
+    age_s = now - ts
+    if age_s < 3600:
+        return f"{int(age_s / 60)}m ago"
+    if age_s < 86400:
+        return f"{int(age_s / 3600)}h ago"
+    return f"{int(age_s / 86400)}d ago"
+
+
+@app.command()
+def sessions(
+    project: str = typer.Option("", help="Filter by project dir substring"),
+    limit: int = typer.Option(20, "--limit", "-n", help="Max sessions to show"),
+    *,
+    all_projects: bool = typer.Option(False, "--all", "-a", help="Show sessions from all projects"),
+) -> None:
+    """List recent Claude conversation sessions with resume commands.
+
+    By default shows sessions for the current working directory.
+    Use --all to show sessions across all projects.
+    """
+    from datetime import datetime  # noqa: PLC0415
+
+    from teatree.claude_sessions import SessionQuery, list_sessions  # noqa: PLC0415
+
+    results = list_sessions(
+        SessionQuery(
+            project_filter=project,
+            all_projects=all_projects,
+            limit=limit,
+        )
+    )
+
+    if not results:
+        typer.echo("No sessions found.")
+        raise typer.Exit()
+
+    now = datetime.now(tz=UTC).timestamp()
+    for r in results:
+        age = _format_session_age(r.timestamp, now)
+        prompt = r.first_prompt.replace("\n", " ").strip()
+        if len(prompt) > 80:
+            prompt = prompt[:77] + "..."
+
+        status_label = "done" if r.status == "finished" else r.status
+
+        typer.echo(f"\n  {age:<8} [{status_label}] {r.project}")
+        if prompt:
+            typer.echo(f"           {prompt}")
+        if r.status != "finished":
+            resume = f"claude --resume {r.session_id}"
+            typer.echo(f"           {f'cd {r.cwd} && {resume}' if r.cwd else resume}")
+
+    typer.echo("")
+
+
+@app.command()
+def overlays() -> None:
+    """List overlays (from ~/.teatree.toml and installed entry points)."""
+    from teatree.config import discover_active_overlay, discover_overlays  # noqa: PLC0415
+
+    installed = discover_overlays()
+    active = discover_active_overlay()
+
+    if not installed:
+        typer.echo("No overlays found.")
+        typer.echo("Add one to ~/.teatree.toml:")
+        typer.echo("")
+        typer.echo("  [overlays.my-project]")
+        typer.echo('  path = "~/workspace/my-project"')
+        return
+
+    typer.echo("Installed overlays:")
+    for entry in installed:
+        marker = " (active)" if active and entry.name == active.name else ""
+        typer.echo(f"  {entry.name:<20}{entry.settings_module}{marker}")
+
+
+# ── Top-level info ─────────────────────────────────────────────────────
+
+
+@app.command()
+def info() -> None:
+    """Show t3 installation, teatree/overlay sources, and editable status."""
+    DoctorService.show_info()
+
+
+config_app = typer.Typer(no_args_is_help=True, help="Configuration and autoloading.")
+app.add_typer(config_app, name="config")
+
+
+@config_app.command(name="write-skill-cache")
+def write_skill_cache() -> None:
+    """Write overlay skill metadata to XDG cache for hook consumption."""
+    import json as _json  # noqa: PLC0415
+
+    import django  # noqa: PLC0415
+
+    from teatree.config import DATA_DIR, discover_active_overlay  # noqa: PLC0415
+
+    active = discover_active_overlay()
+    if active and "DJANGO_SETTINGS_MODULE" not in os.environ:
+        os.environ["DJANGO_SETTINGS_MODULE"] = active.settings_module
+    django.setup()
+
+    from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
+
+    overlay = get_overlay()
+    metadata = overlay.get_skill_metadata()
+    cache_path = DATA_DIR / "skill-metadata.json"
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cache_path.write_text(_json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
+    typer.echo(f"Wrote skill metadata to {cache_path}")
+
+
+@config_app.command()
+def autoload() -> None:
+    """List skill auto-loading rules from context-match.yml files."""
+    from teatree.agents.skill_bundle import DEFAULT_SKILLS_DIR  # noqa: PLC0415
+
+    skills_dir = DEFAULT_SKILLS_DIR
+    if not skills_dir.is_dir():
+        typer.echo(f"Skills directory not found: {skills_dir}")
+        raise typer.Exit(code=1)
+
+    found = False
+    for skill in sorted(skills_dir.iterdir()):
+        match_file = skill / "hook-config" / "context-match.yml"
+        if not match_file.is_file():
+            continue
+        found = True
+        typer.echo(f"\n{skill.name}:")
+        typer.echo(match_file.read_text(encoding="utf-8").rstrip())
+
+    if not found:
+        typer.echo("No context-match.yml files found in any skill directory.")
+
+
+@config_app.command()
+def cache() -> None:
+    """Show the XDG skill-metadata cache content."""
+    import json as _json  # noqa: PLC0415
+
+    from teatree.config import DATA_DIR  # noqa: PLC0415
+
+    cache_path = DATA_DIR / "skill-metadata.json"
+    if not cache_path.is_file():
+        typer.echo(f"No cache found at {cache_path}")
+        typer.echo("Run: uv run t3 config write-skill-cache")
+        raise typer.Exit(code=1)
+
+    data = _json.loads(cache_path.read_text(encoding="utf-8"))
+    typer.echo(f"Cache: {cache_path}")
+    typer.echo(_json.dumps(data, indent=2))
+
+
+def _find_overlay_project() -> Path:
+    """Find the active overlay project root."""
+    from teatree.config import discover_active_overlay  # noqa: PLC0415
+
+    active = discover_active_overlay()
+    if active and active.project_path:
+        return active.project_path
+    return _find_project_root()
+
+
+# dashboard and resetdb are registered per-overlay in _register_overlay_commands()
+
+
+def _find_project_root() -> Path:
+    """Walk up from cwd to find the project root (contains pyproject.toml)."""
+    for directory in [Path.cwd(), *Path.cwd().parents]:
+        if (directory / "pyproject.toml").is_file():
+            return directory
+    return Path.cwd()
+
+
+# ── Non-Django command groups ──────────────────────────────────────────
+
+app.add_typer(ci_app, name="ci")
+
+app.add_typer(review_app, name="review")
+
+review_request_app = typer.Typer(no_args_is_help=True, help="Batch review requests.")
+app.add_typer(review_request_app, name="review-request")
+
+app.add_typer(doctor_app, name="doctor")
+
+app.add_typer(tool_app, name="tool")
+
+
+# ── Review-request commands ──────────────────────────────────────────
+
+
+@review_request_app.command()
+def discover() -> None:
+    """Discover open merge requests awaiting review."""
+    project = _find_overlay_project()
+    managepy(project, "followup", "discover-mrs")
+
+
+# ── Django-dependent command groups ───────────────────────────────────
+
+
+def _register_overlay_commands() -> None:
+    """Register all installed overlays as subcommand groups.
+
+    No Django bootstrap needed — commands delegate to manage.py via subprocess.
+    """
+    from teatree.config import discover_active_overlay, discover_overlays  # noqa: PLC0415
+
+    active = discover_active_overlay()
+    installed = discover_overlays()
+
+    for entry in installed:
+        short_name = entry.settings_module.split(".")[0]
+        project_path = entry.project_path or (active.project_path if active and active.name == entry.name else None)
+        overlay_app = OverlayAppBuilder(entry.name, project_path, entry.settings_module).build()
+        app.add_typer(overlay_app, name=short_name)
+
+
+# ── Entry point ──────────────────────────────────────────────────────
+
+
+def main() -> None:
+    """Entry point for the ``t3`` console script."""
+    _register_overlay_commands()
+    app(standalone_mode=True)

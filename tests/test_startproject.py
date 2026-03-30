@@ -5,7 +5,7 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
-from teetree.cli import app
+from teatree.cli import app
 
 runner = CliRunner()
 
@@ -39,11 +39,11 @@ def test_startproject_with_defaults_uses_t3_overlay_app(tmp_path: Path) -> None:
 
     settings_text = (project_root / "src" / "acme" / "settings.py").read_text()
     assert 'TEATREE_OVERLAY_CLASS = "t3_overlay.overlay.T3OverlayOverlay"' in settings_text
-    assert "'teetree.core'" in settings_text
+    assert "'teatree.core'" in settings_text
     assert "'t3_overlay'" in settings_text
 
     urls_text = (project_root / "src" / "acme" / "urls.py").read_text()
-    assert "include('teetree.core.urls')" in urls_text
+    assert "include('teatree.core.urls')" in urls_text
 
     overlay_text = (project_root / "src" / "t3_overlay" / "overlay.py").read_text()
     assert '"skill_path": "skills/t3-overlay/SKILL.md"' in overlay_text

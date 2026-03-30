@@ -1,7 +1,7 @@
 """Dummy overlay for E2E testing."""
 
-from teetree.core.models import Worktree
-from teetree.core.overlay import (
+from teatree.core.models import Worktree
+from teatree.core.overlay import (
     OverlayBase,
     ProvisionStep,
     RunCommands,

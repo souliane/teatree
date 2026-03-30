@@ -1,10 +1,10 @@
-"""Tests for teetree.utils.bad_artifacts — bad artifact cache."""
+"""Tests for teatree.utils.bad_artifacts — bad artifact cache."""
 
 from pathlib import Path
 
 import pytest
 
-from teetree.utils import bad_artifacts as mod
+from teatree.utils import bad_artifacts as mod
 
 
 @pytest.fixture(autouse=True)

@@ -1,4 +1,4 @@
-"""Tests for teetree.utils.django_db — generic Django DB import engine."""
+"""Tests for teatree.utils.django_db — generic Django DB import engine."""
 
 import subprocess
 from pathlib import Path
@@ -6,9 +6,9 @@ from subprocess import CompletedProcess
 
 import pytest
 
-from teetree.utils import bad_artifacts
-from teetree.utils import django_db as mod
-from teetree.utils.django_db import (
+from teatree.utils import bad_artifacts
+from teatree.utils import django_db as mod
+from teatree.utils.django_db import (
     DjangoDbImportConfig,
     _copy_ref_to_ticket,
     _dslr_env,
@@ -394,31 +394,31 @@ class TestMigrateReferenceDb:
 class TestRestoreRefAndCopy:
     def test_success_with_dslr(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(mod.subprocess, "run", _ok_run)
-        monkeypatch.setattr("teetree.utils.db.db_restore", lambda *a, **kw: None)
+        monkeypatch.setattr("teatree.utils.db.db_restore", lambda *a, **kw: None)
         (tmp_path / "manage.py").write_text("", encoding="utf-8")
         ctx = _make_ctx(tmp_path)
         assert _restore_ref_and_copy(ctx, "/tmp/dump.pgsql", "test") is True
 
     def test_failure_on_restore(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr("teetree.utils.db.db_restore", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("boom")))
+        monkeypatch.setattr("teatree.utils.db.db_restore", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("boom")))
         ctx = _make_ctx(tmp_path)
         assert _restore_ref_and_copy(ctx, "/tmp/dump.pgsql", "test") is False
 
     def test_success_without_dslr(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(mod.subprocess, "run", _ok_run)
-        monkeypatch.setattr("teetree.utils.db.db_restore", lambda *a, **kw: None)
+        monkeypatch.setattr("teatree.utils.db.db_restore", lambda *a, **kw: None)
         (tmp_path / "manage.py").write_text("", encoding="utf-8")
         ctx = _make_ctx(tmp_path, dslr_cmd="")
         assert _restore_ref_and_copy(ctx, "/tmp/dump.pgsql", "test") is True
 
     def test_returns_false_when_migration_fails(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr("teetree.utils.db.db_restore", lambda *a, **kw: None)
+        monkeypatch.setattr("teatree.utils.db.db_restore", lambda *a, **kw: None)
         monkeypatch.setattr(mod, "_migrate_reference_db", lambda *a: False)
         ctx = _make_ctx(tmp_path)
         assert _restore_ref_and_copy(ctx, "/tmp/dump.pgsql", "test") is False
 
     def test_returns_false_when_template_copy_fails(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr("teetree.utils.db.db_restore", lambda *a, **kw: None)
+        monkeypatch.setattr("teatree.utils.db.db_restore", lambda *a, **kw: None)
         (tmp_path / "manage.py").write_text("", encoding="utf-8")
         monkeypatch.setattr(mod, "_migrate_reference_db", lambda *a: True)
         monkeypatch.setattr(mod, "_take_dslr_snapshot", lambda *a: None)

@@ -5,8 +5,8 @@ from unittest.mock import MagicMock, patch
 
 from typer.testing import CliRunner
 
-from teetree.cli import app
-from teetree.cli_doctor import DoctorService, IntrospectionHelpers
+from teatree.cli import app
+from teatree.cli_doctor import DoctorService, IntrospectionHelpers
 
 runner = CliRunner()
 
@@ -17,27 +17,27 @@ class TestDoctorService:
     # ── show_info ────────────────────────────────────────────────────
 
     def test_show_info_with_overlay(self, capsys):
-        from teetree.config import OverlayEntry  # noqa: PLC0415
+        from teatree.config import OverlayEntry  # noqa: PLC0415
 
         active = OverlayEntry(name="acme", settings_module="acme.settings")
         entries = [OverlayEntry(name="acme", settings_module="acme.settings")]
 
         with (
             patch("shutil.which", return_value="/usr/bin/t3"),
-            patch("teetree.cli_doctor.IntrospectionHelpers.editable_info", return_value=(False, "")),
-            patch("teetree.cli_doctor.IntrospectionHelpers.print_package_info"),
-            patch("teetree.config.discover_active_overlay", return_value=active),
-            patch("teetree.config.discover_overlays", return_value=entries),
+            patch("teatree.cli_doctor.IntrospectionHelpers.editable_info", return_value=(False, "")),
+            patch("teatree.cli_doctor.IntrospectionHelpers.print_package_info"),
+            patch("teatree.config.discover_active_overlay", return_value=active),
+            patch("teatree.config.discover_overlays", return_value=entries),
         ):
             DoctorService.show_info()
 
     def test_show_info_no_overlay(self, capsys):
         with (
             patch("shutil.which", return_value=None),
-            patch("teetree.cli_doctor.IntrospectionHelpers.editable_info", return_value=(False, "")),
-            patch("teetree.cli_doctor.IntrospectionHelpers.print_package_info"),
-            patch("teetree.config.discover_active_overlay", return_value=None),
-            patch("teetree.config.discover_overlays", return_value=[]),
+            patch("teatree.cli_doctor.IntrospectionHelpers.editable_info", return_value=(False, "")),
+            patch("teatree.cli_doctor.IntrospectionHelpers.print_package_info"),
+            patch("teatree.config.discover_active_overlay", return_value=None),
+            patch("teatree.config.discover_overlays", return_value=[]),
         ):
             DoctorService.show_info()
 
@@ -45,7 +45,7 @@ class TestDoctorService:
 
     def test_returns_overlay_skills_from_skills_dir(self, tmp_path):
         """Overlay skills are collected from projects' skills/ dirs."""
-        from teetree.config import OverlayEntry  # noqa: PLC0415
+        from teatree.config import OverlayEntry  # noqa: PLC0415
 
         project = tmp_path / "my-project"
         skill = project / "skills" / "t3-custom"
@@ -53,14 +53,14 @@ class TestDoctorService:
         (skill / "SKILL.md").touch()
 
         entry = OverlayEntry(name="t3-test", settings_module="test.settings", project_path=project)
-        with patch("teetree.config.discover_overlays", return_value=[entry]):
+        with patch("teatree.config.discover_overlays", return_value=[entry]):
             results = DoctorService.collect_overlay_skills()
             assert len(results) == 1
             assert results[0][1] == "t3-custom"
 
     def test_returns_legacy_overlay_skills(self, tmp_path):
         """Overlay skills from legacy convention (subdir with SKILL.md)."""
-        from teetree.config import OverlayEntry  # noqa: PLC0415
+        from teatree.config import OverlayEntry  # noqa: PLC0415
 
         project = tmp_path / "my-overlay"
         project.mkdir()
@@ -69,16 +69,16 @@ class TestDoctorService:
         (overlay_subdir / "SKILL.md").touch()
 
         entry = OverlayEntry(name="my-overlay", settings_module="test.settings", project_path=project)
-        with patch("teetree.config.discover_overlays", return_value=[entry]):
+        with patch("teatree.config.discover_overlays", return_value=[entry]):
             results = DoctorService.collect_overlay_skills()
             assert len(results) == 1
             assert results[0][1] == "t3-my-overlay"
 
     def test_returns_empty_when_no_project_path(self):
-        from teetree.config import OverlayEntry  # noqa: PLC0415
+        from teatree.config import OverlayEntry  # noqa: PLC0415
 
         entry = OverlayEntry(name="test", settings_module="test.settings", project_path=None)
-        with patch("teetree.config.discover_overlays", return_value=[entry]):
+        with patch("teatree.config.discover_overlays", return_value=[entry]):
             results = DoctorService.collect_overlay_skills()
             assert results == []
 
@@ -93,7 +93,7 @@ class TestDoctorService:
         claude_skills = tmp_path / "claude_skills"
         claude_skills.mkdir()
 
-        with patch("teetree.cli_doctor.DoctorService.collect_overlay_skills", return_value=[]):
+        with patch("teatree.cli_doctor.DoctorService.collect_overlay_skills", return_value=[]):
             created, fixed = DoctorService.repair_symlinks(skills_dir, claude_skills)
             assert created == 1
             assert fixed == 0
@@ -109,7 +109,7 @@ class TestDoctorService:
         claude_skills = tmp_path / "claude_skills"
         claude_skills.mkdir()
 
-        with patch("teetree.cli_doctor.DoctorService.collect_overlay_skills", return_value=[]):
+        with patch("teatree.cli_doctor.DoctorService.collect_overlay_skills", return_value=[]):
             created, fixed = DoctorService.repair_symlinks(skills_dir, claude_skills)
             assert created == 0
             assert fixed == 0
@@ -128,7 +128,7 @@ class TestDoctorService:
         wrong_target.mkdir()
         (claude_skills / "t3-code").symlink_to(wrong_target)
 
-        with patch("teetree.cli_doctor.DoctorService.collect_overlay_skills", return_value=[]):
+        with patch("teatree.cli_doctor.DoctorService.collect_overlay_skills", return_value=[]):
             created, fixed = DoctorService.repair_symlinks(skills_dir, claude_skills)
             assert created == 1  # re-created after unlinking
             assert fixed == 1
@@ -145,7 +145,7 @@ class TestDoctorService:
         # A real directory, not a symlink
         (claude_skills / "t3-code").mkdir()
 
-        with patch("teetree.cli_doctor.DoctorService.collect_overlay_skills", return_value=[]):
+        with patch("teatree.cli_doctor.DoctorService.collect_overlay_skills", return_value=[]):
             created, fixed = DoctorService.repair_symlinks(skills_dir, claude_skills)
             assert created == 0
             assert fixed == 0
@@ -161,7 +161,7 @@ class TestDoctorService:
         claude_skills.mkdir()
         (claude_skills / "t3-code").symlink_to(skill)
 
-        with patch("teetree.cli_doctor.DoctorService.collect_overlay_skills", return_value=[]):
+        with patch("teatree.cli_doctor.DoctorService.collect_overlay_skills", return_value=[]):
             created, fixed = DoctorService.repair_symlinks(skills_dir, claude_skills)
             assert created == 0
             assert fixed == 0
@@ -171,19 +171,19 @@ class TestDoctorService:
     def test_returns_empty_when_no_settings(self, monkeypatch):
         """Returns empty when no settings module configured."""
         monkeypatch.delenv("DJANGO_SETTINGS_MODULE", raising=False)
-        with patch("teetree.config.discover_active_overlay", return_value=None):
+        with patch("teatree.config.discover_active_overlay", return_value=None):
             result = DoctorService.check_editable_sanity()
             assert result == []
 
     def test_sets_dsm_from_active_overlay(self, monkeypatch):
         """Sets DJANGO_SETTINGS_MODULE from active overlay when not in env."""
-        from teetree.config import OverlayEntry  # noqa: PLC0415
+        from teatree.config import OverlayEntry  # noqa: PLC0415
 
         monkeypatch.delenv("DJANGO_SETTINGS_MODULE", raising=False)
         active = OverlayEntry(name="test", settings_module="tests.django_settings")
         with (
-            patch("teetree.config.discover_active_overlay", return_value=active),
-            patch("teetree.cli_doctor.IntrospectionHelpers.editable_info", return_value=(False, "")),
+            patch("teatree.config.discover_active_overlay", return_value=active),
+            patch("teatree.cli_doctor.IntrospectionHelpers.editable_info", return_value=(False, "")),
         ):
             result = DoctorService.check_editable_sanity()
             assert isinstance(result, list)
@@ -205,7 +205,7 @@ class TestDoctorService:
         with (
             patch("django.setup"),
             patch("django.conf.settings", mock_settings),
-            patch("teetree.cli_doctor.IntrospectionHelpers.editable_info", return_value=(False, "")),
+            patch("teatree.cli_doctor.IntrospectionHelpers.editable_info", return_value=(False, "")),
         ):
             result = DoctorService.check_editable_sanity()
             assert any("TEATREE_EDITABLE=True" in p for p in result)
@@ -220,7 +220,7 @@ class TestDoctorService:
         with (
             patch("django.setup"),
             patch("django.conf.settings", mock_settings),
-            patch("teetree.cli_doctor.IntrospectionHelpers.editable_info", return_value=(True, "file:///src")),
+            patch("teatree.cli_doctor.IntrospectionHelpers.editable_info", return_value=(True, "file:///src")),
         ):
             result = DoctorService.check_editable_sanity()
             assert any("TEATREE_EDITABLE is not set" in p for p in result)
@@ -241,7 +241,7 @@ class TestDoctorService:
         with (
             patch("django.setup"),
             patch("django.conf.settings", mock_settings),
-            patch("teetree.cli_doctor.IntrospectionHelpers.editable_info", side_effect=editable_info),
+            patch("teatree.cli_doctor.IntrospectionHelpers.editable_info", side_effect=editable_info),
             patch("importlib.metadata.packages_distributions", return_value={"my_overlay": ["my-overlay"]}),
         ):
             result = DoctorService.check_editable_sanity()
@@ -263,7 +263,7 @@ class TestDoctorService:
         with (
             patch("django.setup"),
             patch("django.conf.settings", mock_settings),
-            patch("teetree.cli_doctor.IntrospectionHelpers.editable_info", side_effect=editable_info),
+            patch("teatree.cli_doctor.IntrospectionHelpers.editable_info", side_effect=editable_info),
             patch("importlib.metadata.packages_distributions", return_value={"my_overlay": ["my-overlay"]}),
         ):
             result = DoctorService.check_editable_sanity()
@@ -280,7 +280,7 @@ class TestDoctorService:
         with (
             patch("django.setup"),
             patch("django.conf.settings", mock_settings),
-            patch("teetree.cli_doctor.IntrospectionHelpers.editable_info", return_value=(False, "")),
+            patch("teatree.cli_doctor.IntrospectionHelpers.editable_info", return_value=(False, "")),
             patch("importlib.metadata.packages_distributions", return_value={"my_overlay": ["my-overlay"]}),
         ):
             result = DoctorService.check_editable_sanity()
@@ -328,39 +328,39 @@ class TestIntrospectionHelpers:
     def test_installed(self, capsys):
         with (
             patch("importlib.import_module") as mock_import,
-            patch("teetree.cli_doctor.IntrospectionHelpers.editable_info", return_value=(False, "")),
+            patch("teatree.cli_doctor.IntrospectionHelpers.editable_info", return_value=(False, "")),
         ):
             mock_mod = MagicMock()
-            mock_mod.__file__ = "/usr/lib/python/teetree/__init__.py"
+            mock_mod.__file__ = "/usr/lib/python/teatree/__init__.py"
             mock_import.return_value = mock_mod
-            IntrospectionHelpers.print_package_info("teatree", "teetree")
+            IntrospectionHelpers.print_package_info("teatree", "teatree")
             # Just verifying it runs without error; output goes through typer.echo
 
     def test_not_installed_package(self, capsys):
         with patch("importlib.import_module", side_effect=ImportError("nope")):
-            IntrospectionHelpers.print_package_info("teatree", "teetree")
+            IntrospectionHelpers.print_package_info("teatree", "teatree")
             # Verifying it handles ImportError gracefully
 
     def test_editable_with_url(self, capsys):
         with (
             patch("importlib.import_module") as mock_import,
-            patch("teetree.cli_doctor.IntrospectionHelpers.editable_info", return_value=(True, "file:///src")),
+            patch("teatree.cli_doctor.IntrospectionHelpers.editable_info", return_value=(True, "file:///src")),
         ):
             mock_mod = MagicMock()
-            mock_mod.__file__ = "/src/teetree/__init__.py"
+            mock_mod.__file__ = "/src/teatree/__init__.py"
             mock_import.return_value = mock_mod
-            IntrospectionHelpers.print_package_info("teatree", "teetree")
+            IntrospectionHelpers.print_package_info("teatree", "teatree")
 
     def test_editable_no_url(self, capsys):
         """_print_package_info doesn't print URL when editable but no url."""
         with (
             patch("importlib.import_module") as mock_import,
-            patch("teetree.cli_doctor.IntrospectionHelpers.editable_info", return_value=(True, "")),
+            patch("teatree.cli_doctor.IntrospectionHelpers.editable_info", return_value=(True, "")),
         ):
             mock_mod = MagicMock()
-            mock_mod.__file__ = "/src/teetree/__init__.py"
+            mock_mod.__file__ = "/src/teatree/__init__.py"
             mock_import.return_value = mock_mod
-            IntrospectionHelpers.print_package_info("teatree", "teetree")
+            IntrospectionHelpers.print_package_info("teatree", "teatree")
 
 
 class TestDoctorCommands:
@@ -382,9 +382,9 @@ class TestDoctorCommands:
         broken.symlink_to(tmp_path / "nonexistent")
 
         with (
-            patch("teetree.agents.skill_bundle.DEFAULT_SKILLS_DIR", skills_dir),
+            patch("teatree.agents.skill_bundle.DEFAULT_SKILLS_DIR", skills_dir),
             patch("pathlib.Path.home", return_value=tmp_path),
-            patch("teetree.cli_doctor.DoctorService.collect_overlay_skills", return_value=[]),
+            patch("teatree.cli_doctor.DoctorService.collect_overlay_skills", return_value=[]),
         ):
             # Create the .claude/skills dir where the command expects it
             real_claude_skills = tmp_path / ".claude" / "skills"
@@ -399,7 +399,7 @@ class TestDoctorCommands:
 
     def test_repair_no_skills_dir(self, tmp_path):
         """Doctor repair fails when skills dir not found."""
-        with patch("teetree.agents.skill_bundle.DEFAULT_SKILLS_DIR", tmp_path / "nonexistent"):
+        with patch("teatree.agents.skill_bundle.DEFAULT_SKILLS_DIR", tmp_path / "nonexistent"):
             result = runner.invoke(app, ["doctor", "repair"])
             assert result.exit_code == 1
             assert "Skills directory not found" in result.output
@@ -416,10 +416,10 @@ class TestDoctorCommands:
         (overlay_skill / "SKILL.md").touch()
 
         with (
-            patch("teetree.agents.skill_bundle.DEFAULT_SKILLS_DIR", skills_dir),
+            patch("teatree.agents.skill_bundle.DEFAULT_SKILLS_DIR", skills_dir),
             patch("pathlib.Path.home", return_value=tmp_path),
             patch(
-                "teetree.cli_doctor.DoctorService.collect_overlay_skills", return_value=[(overlay_skill, "t3-overlay")]
+                "teatree.cli_doctor.DoctorService.collect_overlay_skills", return_value=[(overlay_skill, "t3-overlay")]
             ),
         ):
             claude_skills = tmp_path / ".claude" / "skills"
@@ -434,7 +434,7 @@ class TestDoctorCommands:
     def test_check_ok(self):
         """Doctor check passes when all checks pass."""
         with (
-            patch("teetree.cli_doctor.DoctorService.check_editable_sanity", return_value=[]),
+            patch("teatree.cli_doctor.DoctorService.check_editable_sanity", return_value=[]),
         ):
             result = runner.invoke(app, ["doctor", "check"])
             assert result.exit_code == 0
@@ -443,7 +443,7 @@ class TestDoctorCommands:
     def test_check_with_warnings(self):
         """Doctor check shows warnings."""
         with patch(
-            "teetree.cli_doctor.DoctorService.check_editable_sanity",
+            "teatree.cli_doctor.DoctorService.check_editable_sanity",
             return_value=["teatree is editable but not declared"],
         ):
             result = runner.invoke(app, ["doctor", "check"])
@@ -453,8 +453,8 @@ class TestDoctorCommands:
     def test_check_fails_when_required_tool_missing(self):
         """Doctor check fails when a required tool is not on PATH."""
         with (
-            patch("teetree.cli_doctor.shutil.which", side_effect=lambda t: None if t == "direnv" else f"/usr/bin/{t}"),
-            patch("teetree.cli_doctor.DoctorService.check_editable_sanity", return_value=[]),
+            patch("teatree.cli_doctor.shutil.which", side_effect=lambda t: None if t == "direnv" else f"/usr/bin/{t}"),
+            patch("teatree.cli_doctor.DoctorService.check_editable_sanity", return_value=[]),
         ):
             result = runner.invoke(app, ["doctor", "check"])
             assert result.exit_code == 0  # typer returns 0; check() returns bool
@@ -467,7 +467,7 @@ class TestDoctorCommands:
         real_import = builtins.__import__
 
         def fail_import(name, *args, **kwargs):
-            if name == "teetree.core":
+            if name == "teatree.core":
                 raise ImportError(name)
             return real_import(name, *args, **kwargs)
 
@@ -481,10 +481,10 @@ class TestDoctorCommands:
         """Doctor info delegates to _show_info."""
         with (
             patch("shutil.which", return_value="/usr/local/bin/t3"),
-            patch("teetree.cli_doctor.IntrospectionHelpers.editable_info", return_value=(False, "")),
-            patch("teetree.cli_doctor.IntrospectionHelpers.print_package_info"),
-            patch("teetree.config.discover_active_overlay", return_value=None),
-            patch("teetree.config.discover_overlays", return_value=[]),
+            patch("teatree.cli_doctor.IntrospectionHelpers.editable_info", return_value=(False, "")),
+            patch("teatree.cli_doctor.IntrospectionHelpers.print_package_info"),
+            patch("teatree.config.discover_active_overlay", return_value=None),
+            patch("teatree.config.discover_overlays", return_value=[]),
         ):
             result = runner.invoke(app, ["doctor", "info"])
             assert result.exit_code == 0

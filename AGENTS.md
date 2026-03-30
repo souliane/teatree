@@ -1,6 +1,6 @@
 # TeaTree — Agent Instructions
 
-This is the teatree repo — both the Python package (`src/teetree/`) and the workflow skills (`skills/t3-*/`). You are developing teatree itself, not using it on a downstream project.
+This is the teatree repo — both the Python package (`src/teatree/`) and the workflow skills (`skills/t3-*/`). You are developing teatree itself, not using it on a downstream project.
 
 ## Repo Change Safety
 
@@ -23,7 +23,7 @@ A multi-repo worktree lifecycle manager for AI-assisted development. Target: ser
 It provides:
 
 - A unified CLI (`uv run t3`) for worktree creation, provisioning, dev servers, CI, and delivery
-- A Django app (`teetree.core`) with 5 models driven by `django-fsm` state machines
+- A Django app (`teatree.core`) with 5 models driven by `django-fsm` state machines
 - An overlay system for downstream project customization (`OverlayBase`)
 - Backend protocols for pluggable external integrations
 - Agent workflow skills (`skills/t3-*`) for the full development lifecycle
@@ -32,7 +32,7 @@ It provides:
 ## Repo Layout
 
 ```
-src/teetree/           Python package (the Django app + CLI)
+src/teatree/           Python package (the Django app + CLI)
   cli.py               Typer CLI — the `t3` entry point
   config.py            ~/.teatree.toml parsing, overlay discovery
   skill_map.py         Skill delegation map (phase → companion skills)
@@ -111,17 +111,17 @@ integrations/          Agent platform hooks (Claude Code ensure-skills-loaded, e
 
 An overlay is a downstream Django project that customizes teatree. It:
 
-1. Subclasses `OverlayBase` (from `teetree.core.overlay`)
+1. Subclasses `OverlayBase` (from `teatree.core.overlay`)
 2. Implements mandatory hooks: `get_repos()`, `get_provision_steps(worktree)`
 3. Optionally implements: `get_env_extra()`, `get_run_commands()`, `get_db_import_strategy()`, `get_post_db_steps()`, `get_symlinks()`, `get_services_config()`, `validate_mr()`, `get_skill_metadata()`, `get_followup_repos()`, `get_ci_project_path()`, `get_e2e_config()`, `detect_variant()`, `get_workspace_repos()`
 4. Registers via `~/.teatree.toml` under `[overlays.<name>]` with a `path` key
-5. Gets auto-discovered by `teetree.config.discover_overlays()` or `_discover_from_manage_py()`
+5. Gets auto-discovered by `teatree.config.discover_overlays()` or `_discover_from_manage_py()`
 
 Setting: `TEATREE_OVERLAY_CLASS = "overlay.overlay.MyOverlay"`
 
 ## Backend Protocols
 
-Each external concern is a `Protocol` in `teetree.backends.protocols`:
+Each external concern is a `Protocol` in `teatree.backends.protocols`:
 
 | Protocol | Setting | Purpose |
 |---|---|---|
@@ -131,7 +131,7 @@ Each external concern is a `Protocol` in `teetree.backends.protocols`:
 | `ChatNotifier` | `TEATREE_CHAT_NOTIFIER` | Team notifications |
 | `ErrorTracker` | `TEATREE_ERROR_TRACKER` | Sentry-like error tracking |
 
-Backends loaded lazily via `teetree.backends.loader` using `import_string()`. Auto-configures GitLabCIService from `TEATREE_GITLAB_TOKEN` if no explicit CI service.
+Backends loaded lazily via `teatree.backends.loader` using `import_string()`. Auto-configures GitLabCIService from `TEATREE_GITLAB_TOKEN` if no explicit CI service.
 
 ## Runtime Abstraction
 
@@ -255,10 +255,10 @@ After any dashboard fix, verify the full flow before declaring done:
 
 ## Things That Catch People
 
-- The package is `teetree` (double-e) but the repo/CLI is `teatree`/`t3`.
+- The package is `teatree` (double-e) but the repo/CLI is `teatree`/`t3`.
 - `DJANGO_SETTINGS_MODULE` is stripped from env when running `_managepy()` so the overlay's own settings win.
 - **Running unit tests from another repo's working directory** (e.g., an overlay project) may fail with "No module named" errors because `DJANGO_SETTINGS_MODULE` from the outer shell leaks in before conftest can strip it. Fix: pass `--ds=tests.django_settings` to pytest, or `unset DJANGO_SETTINGS_MODULE` before invoking.
-- Port allocation uses file-level locking (`teetree.utils.ports`) — never hardcode ports.
+- Port allocation uses file-level locking (`teatree.utils.ports`) — never hardcode ports.
 - The `t3 agent` command builds a system prompt from overlay detection + skill resolution, then `os.execvp`s into `claude`.
 - Coverage omits only migrations. Everything else must be covered.
 - ttyd without `--writable` = read-only terminal = claude can't work.

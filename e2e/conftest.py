@@ -61,7 +61,7 @@ def e2e_server(django_db_setup) -> Iterator[str]:
 @pytest.fixture(autouse=True)
 def _seed_data(e2e_server: str, django_db_blocker) -> Iterator[None]:
     """Seed DB before each test, flush after."""
-    from teetree.core.models import Session, Task, Ticket, Worktree
+    from teatree.core.models import Session, Task, Ticket, Worktree
 
     with django_db_blocker.unblock():
         # Ticket with MR data

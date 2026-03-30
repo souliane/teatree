@@ -23,7 +23,9 @@ dependencies = [
   "django-typer>=3.3",
   "httpx>=0.27",
 ]
-scripts = { t3 = "teetree.cli:main" }
+scripts = { t3 = "teatree.cli:main" }
+
+entry-points."teatree.overlays".t3-teatree = "teatree.contrib.t3_teatree.settings"
 
 [dependency-groups]
 # --- Ruff ---
@@ -49,7 +51,7 @@ docs = [
 
 [tool.hatch.build.targets.wheel]
 packages = [
-  "src/teetree",
+  "src/teatree",
 ]
 
 [tool.ruff]
@@ -128,36 +130,36 @@ lint.per-file-ignores."scripts/**/*.py" = [
   "T201",    # print (CLI output)
   "TRY300",  # try-consider-else (readability preference)
 ]
-lint.per-file-ignores."src/teetree/cli.py" = [
+lint.per-file-ignores."src/teatree/cli.py" = [
   "FBT003",
   "PLR2004",
   "RSE102",
 ]
-lint.per-file-ignores."src/teetree/cli_*.py" = [
+lint.per-file-ignores."src/teatree/cli_*.py" = [
   "FBT003", # boolean positional/default (typer CLI flags)
 ]
-lint.per-file-ignores."src/teetree/core/management/commands/*.py" = [
+lint.per-file-ignores."src/teatree/core/management/commands/*.py" = [
   "PLR6301", # django-typer command methods intentionally live on Command classes
   "S607",    # partial executable paths (git, dropdb, direnv, prek) are trusted internal tools
 ]
-lint.per-file-ignores."src/teetree/core/migrations/*.py" = [
+lint.per-file-ignores."src/teatree/core/migrations/*.py" = [
   "ANN",    # Django migrations don't need type annotations
   "ARG001", # Django migration functions receive apps/schema_editor by convention
   "E501",   # Django-generated migrations are left in generated form
   "RUF012", # Django migrations intentionally use mutable class attributes
 ]
-lint.per-file-ignores."src/teetree/core/overlay.py" = [
+lint.per-file-ignores."src/teatree/core/overlay.py" = [
   "ARG002",
   "PLR6301", # overlay hook defaults are instance methods by contract
 ]
-lint.per-file-ignores."src/teetree/core/sync.py" = [
+lint.per-file-ignores."src/teatree/core/sync.py" = [
   "F821",
   "S112",
 ]
-lint.per-file-ignores."src/teetree/core/views/*.py" = [
+lint.per-file-ignores."src/teatree/core/views/*.py" = [
   "PLR6301", # Django class-based views intentionally implement HTTP verb methods on the class
 ]
-lint.per-file-ignores."src/teetree/utils/*.py" = [
+lint.per-file-ignores."src/teatree/utils/*.py" = [
   "S404",
   "S603",
   "S607", # trusted internal subprocess wrappers around git and postgres CLIs
@@ -197,6 +199,7 @@ lint.pylint.max-statements = 50
 lint.preview = true
 
 [tool.codespell]
+dictionary = ".codespell-dictionary.txt,-"
 
 # --- Pytest ---
 
@@ -240,15 +243,15 @@ partial_branches = [
 [tool.coverage.run]
 branch = true
 source = [
-  "src/teetree",
+  "src/teatree",
 ]
-omit = [ "src/teetree/core/migrations/*.py" ]
+omit = [ "src/teatree/core/migrations/*.py" ]
 
 [tool.uv.build-backend]
-module-name = "teetree"
+module-name = "teatree"
 
 [tool.importlinter]
-root_packages = [ "teetree", "tests" ]
+root_packages = [ "teatree", "tests" ]
 include_external_packages = true
 exclude_type_checking_imports = false
 

@@ -1,13 +1,13 @@
 # Overlay Extension Points
 
-Base class: `teetree.core.overlay.OverlayBase`
+Base class: `teatree.core.overlay.OverlayBase`
 
 ## Hooks
 
 | Hook | Required | Signature | Description |
 | --- | --- | --- | --- |
 | `get_repos` | Yes | `() -> list[str]` | Declare the repositories that TeaTree should provision for this overlay. |
-| `get_provision_steps` | Yes | `(worktree: 'Worktree') -> list[teetree.core.overlay.ProvisionStep]` | Return the ordered setup steps for a newly created worktree. |
+| `get_provision_steps` | Yes | `(worktree: 'Worktree') -> list[teatree.core.overlay.ProvisionStep]` | Return the ordered setup steps for a newly created worktree. |
 | `get_env_extra` | No | `(_worktree: 'Worktree') -> dict[str, str]` | Add overlay-specific environment variables to the generated worktree env file. |
 | `get_run_commands` | No | `(_worktree: 'Worktree') -> RunCommands` | Expose named service commands for lifecycle start and operator discovery. |
 | `get_db_import_strategy` | No | `(_worktree: 'Worktree') -> DbImportStrategy` | Describe how a worktree database should be provisioned or restored. |

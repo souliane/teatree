@@ -1,10 +1,10 @@
-"""Tests for teetree.overlay_init.bootstrap — the standalone scaffold CLI."""
+"""Tests for teatree.overlay_init.bootstrap — the standalone scaffold CLI."""
 
 from pathlib import Path
 
 from typer.testing import CliRunner
 
-from teetree.overlay_init.bootstrap import _camelize, _render_template, app
+from teatree.overlay_init.bootstrap import _camelize, _render_template, app
 
 runner = CliRunner()
 
@@ -94,6 +94,6 @@ def test_startproject_rejects_existing_destination(tmp_path: Path):
 
 def test_bootstrap_callback():
     """The callback returns None (no-op)."""
-    from teetree.overlay_init.bootstrap import bootstrap  # noqa: PLC0415
+    from teatree.overlay_init.bootstrap import bootstrap  # noqa: PLC0415
 
     assert bootstrap() is None

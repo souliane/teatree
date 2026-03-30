@@ -5,7 +5,7 @@
 
 Multi-repo worktree lifecycle manager for AI-assisted development — with distributed self-improvement.
 
-Teatree is now a Django-first extension package. Runtime code lives under `teetree/`, generated host projects are created with `t3 startproject`, and the legacy script workflow remains only as a migration bridge.
+Teatree is now a Django-first extension package. Runtime code lives under `teatree/`, generated host projects are created with `t3 startproject`, and the legacy script workflow remains only as a migration bridge.
 
 Teatree turns development automation into composable AI skills. Instead of shell scripts, CI configs, and tribal knowledge scattered across wikis, each workflow phase — from ticket intake to delivery — is a skill that any AI agent can learn, follow, and improve. Skills are plain markdown and scripts — any AI agent that can read files and run commands can use them. It has been tested most with [Claude Code](https://docs.anthropic.com/en/docs/claude-code).
 
@@ -50,7 +50,7 @@ The result is a living, version-controlled repository of everything you know abo
 
 ### Install
 
-Teatree requires a local git clone — it has shared infrastructure (`src/teetree/`, `integrations/`, and the skill directories themselves) that lives outside any single installed skill, so `npx skills add` alone isn't enough.
+Teatree requires a local git clone — it has shared infrastructure (`src/teatree/`, `integrations/`, and the skill directories themselves) that lives outside any single installed skill, so `npx skills add` alone isn't enough.
 
 [Fork the repo on GitHub](https://github.com/souliane/teatree/fork) (or just clone it directly if you don't plan to contribute back), then:
 
@@ -242,7 +242,7 @@ Teatree skills are prompt instructions — they control what your AI agent does.
 
 ```text
 teatree/
-  src/teetree/         # Django extension package (installed as `teetree`)
+  src/teatree/         # Django extension package (installed as `teatree`)
     core/              #   Models, selectors, views, management commands, templates
     agents/            #   Runtime adapters (Claude Code, Codex, etc.)
     backends/          #   GitLab / Slack / Notion / Sentry integrations

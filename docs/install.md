@@ -96,7 +96,7 @@ The `t3` CLI uses this to auto-detect which Django settings module to use.
 1. `--settings` CLI flag
 2. `manage.py` in current directory ancestors (developer in project dir)
 3. Single installed overlay entry point (end-user install)
-4. `teetree.dev_settings` fallback (teatree contributor, no overlay)
+4. `teatree.dev_settings` fallback (teatree contributor, no overlay)
 
 ## Sanity checks
 

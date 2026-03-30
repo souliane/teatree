@@ -4,7 +4,7 @@ from pathlib import Path
 from django.test import override_settings
 from typer.testing import CliRunner
 
-from teetree.agents.handover import (
+from teatree.agents.handover import (
     build_claude_handover_status,
     get_agent_handover_config,
     get_claude_statusline_state_dir,
@@ -13,7 +13,7 @@ from teetree.agents.handover import (
     load_claude_telemetry,
     should_suggest_handover,
 )
-from teetree.cli import app
+from teatree.cli import app
 
 runner = CliRunner()
 

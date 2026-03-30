@@ -27,9 +27,9 @@
 
 ## prek Discovers Template Directory as Sub-Project
 
-- **Symptom:** `uv run prek run pytest` collects 0 tests and exits with code 5, blocking all commits. Output shows `Running hooks for src/teetree/templates/overlay:`.
+- **Symptom:** `uv run prek run pytest` collects 0 tests and exits with code 5, blocking all commits. Output shows `Running hooks for src/teatree/templates/overlay:`.
 - **Cause:** prek auto-discovers sub-projects by scanning for `.pre-commit-config.yaml`. The scaffold template directory had a real `.pre-commit-config.yaml` that prek treated as a project root. The `always_run: true` pytest hook then ran in the template scope (0 tests → fail), and `fail_fast: true` prevented the root scope from ever running.
-- **Fix:** Rename `src/teetree/templates/overlay/.pre-commit-config.yaml` to `.pre-commit-config.yaml.tmpl`. Update `_copy_config_templates()` in `cli.py` to map `.tmpl` → `.yaml` when scaffolding.
+- **Fix:** Rename `src/teatree/templates/overlay/.pre-commit-config.yaml` to `.pre-commit-config.yaml.tmpl`. Update `_copy_config_templates()` in `cli.py` to map `.tmpl` → `.yaml` when scaffolding.
 - **Prevention:** Never put real config files (`.pre-commit-config.yaml`, `pyproject.toml`) in template directories. Use `.tmpl` suffix for all template files that prek or other tools might auto-discover.
 
 ## Complexity Suppressions Are Not Fixes

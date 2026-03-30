@@ -23,7 +23,7 @@ None. This is the entry point for getting teatree running.
 
 Teatree now has two layers:
 
-- The **skill repo** you are in now. It provides the `t3-*` workflow skills, references, hooks, and the `teetree` Django extension package.
+- The **skill repo** you are in now. It provides the `t3-*` workflow skills, references, hooks, and the `teatree` Django extension package.
 - A **generated Django host project** created with `t3 startproject`. That project owns the real Django settings, declares `TEATREE_OVERLAY_CLASS`, and installs the overlay app that customizes TeaTree for one workspace.
 
 Do not scaffold `scripts/lib/bootstrap.sh`, `project_hooks.py`, or shell overlays. Those are legacy migration artifacts.

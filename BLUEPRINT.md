@@ -37,16 +37,16 @@ TeaTree was originally built as a skills-first system where SKILL.md files drove
 ## 3. Package Structure
 
 ```
-Package name: teetree (double-e)
+Package name: teatree (double-e)
 Repo/CLI name: teatree / t3
 Python: >=3.13
 License: MIT
 Build: uv
-Entry point: t3 = teetree.cli:main
+Entry point: t3 = teatree.cli:main
 ```
 
 ```
-src/teetree/
+src/teatree/
   __init__.py
   cli.py               # Typer CLI — bootstrap commands (no Django needed)
   config.py             # ~/.teatree.toml parsing, overlay discovery
@@ -80,7 +80,7 @@ src/teetree/
       launch.py         # Task launch (headless execute / interactive ttyd)
       actions.py        # Task cancel, ticket task creation
       history.py        # Session history endpoint
-    templates/teetree/  # HTMX dashboard templates
+    templates/teatree/  # HTMX dashboard templates
       dashboard.html
       partials/         # One partial per dashboard panel
 
@@ -120,7 +120,7 @@ integrations/           # Agent platform hooks
 
 ## 4. Domain Models
 
-Five models in `teetree.core.models`, all using `django-fsm` for state machines.
+Five models in `teatree.core.models`, all using `django-fsm` for state machines.
 
 **No FSM signals for external sync.** django-fsm-2 provides `post_transition` signals that could auto-update external systems (GitLab labels, Notion statuses) on every state change. We deliberately don't use them — external sync is the caller's responsibility, not the state machine's. This keeps FSM transitions fast, testable, and free of side-channel I/O.
 
@@ -432,7 +432,7 @@ Everything else — DB provisioning strategies, migration runners, symlink manag
 
 ### 6.1 OverlayBase ABC
 
-Defined in `teetree.core.overlay`. All methods receive the `worktree` instance for context.
+Defined in `teatree.core.overlay`. All methods receive the `worktree` instance for context.
 
 **Abstract methods (must implement):**
 
@@ -515,7 +515,7 @@ Generated structure:
 
 ## 7. Backend Protocols
 
-Each external concern is a `@runtime_checkable Protocol` in `teetree.backends.protocols`.
+Each external concern is a `@runtime_checkable Protocol` in `teatree.backends.protocols`.
 
 | Protocol | Setting | Methods |
 |----------|---------|---------|
@@ -793,9 +793,9 @@ Skills declare dependencies via `requires:` in YAML frontmatter. The skill bundl
 
 ```
 tests/
-  teetree_core/       # Core model, view, command tests
-  teetree_agents/     # Agent execution tests
-  teetree_backends/   # Backend integration tests
+  teatree_core/       # Core model, view, command tests
+  teatree_agents/     # Agent execution tests
+  teatree_backends/   # Backend integration tests
   test_config.py      # Config/overlay discovery
   test_cli_agent_skills.py  # CLI + skill bundle tests
   test_startproject.py      # Scaffold tests
@@ -830,7 +830,7 @@ Playwright tests in `e2e/` with separate settings (`e2e.settings`) using file-ba
 
 ## 15. Django Project Workflows
 
-Teatree provides a generic Django database provisioning engine in `teetree.utils.django_db`. This engine handles the full lifecycle of creating, importing, and maintaining per-worktree databases for Django projects. Overlays configure the engine; they do not reimplement it.
+Teatree provides a generic Django database provisioning engine in `teatree.utils.django_db`. This engine handles the full lifecycle of creating, importing, and maintaining per-worktree databases for Django projects. Overlays configure the engine; they do not reimplement it.
 
 ### 15.1 Reference DB Architecture
 
@@ -1077,9 +1077,9 @@ flowchart TD
 ### 15.10 Module Location
 
 ```
-teetree/utils/django_db.py      # DjangoDbImportConfig + import engine
-teetree/utils/db.py             # Low-level pg helpers (db_restore, db_exists, pg_env)
-teetree/utils/bad_artifacts.py  # Bad artifact cache (~/.local/share/teatree/bad_artifacts.json)
+teatree/utils/django_db.py      # DjangoDbImportConfig + import engine
+teatree/utils/db.py             # Low-level pg helpers (db_restore, db_exists, pg_env)
+teatree/utils/bad_artifacts.py  # Bad artifact cache (~/.local/share/teatree/bad_artifacts.json)
 ```
 
 The `django_db` module depends only on `utils/db` and stdlib. It has no Django imports — it shells out to `manage.py` as a subprocess, so it works regardless of the overlay's Django settings.
@@ -1109,9 +1109,9 @@ Dev dependencies: ruff, pytest, pytest-cov, pytest-django, ty, import-linter, pr
 - `from __future__ import annotations` is banned.
 - No docstrings on classes/methods by policy. Self-documenting code.
 - Management commands use `django-typer`, not `BaseCommand`.
-- Package is `teetree` (double-e), repo/CLI is `teatree`/`t3`.
+- Package is `teatree` (double-e), repo/CLI is `teatree`/`t3`.
 - `DJANGO_SETTINGS_MODULE` is stripped from env when running `_managepy()` so the overlay's own settings win.
-- Port allocation uses file-level locking (`teetree.utils.ports`) — never hardcode ports.
+- Port allocation uses file-level locking (`teatree.utils.ports`) — never hardcode ports.
 - Coverage omits only migrations. Everything else must be covered.
 - ttyd without `--writable` = read-only terminal = agent can't work.
 - `claude -p` is headless (exits immediately). Interactive sessions use `claude` without `-p`.

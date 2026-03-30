@@ -8,10 +8,10 @@ not hardcoded.  A cached trigger index in the XDG data directory is used
 when available; otherwise skills are scanned on the fly from
 ``skill_search_dirs``.
 
-Runs with PYTHONPATH=$T3_REPO/scripts — no teetree package imports.
+Runs with PYTHONPATH=$T3_REPO/scripts — no teatree package imports.
 """
 
-from __future__ import annotations  # noqa: TID251 — standalone script, no teetree package imports
+from __future__ import annotations  # noqa: TID251 — standalone script, no teatree package imports
 
 import json
 import re
@@ -24,7 +24,7 @@ _SRC_DIR = Path(__file__).resolve().parents[2] / "src"
 if str(_SRC_DIR) not in sys.path:
     sys.path.insert(0, str(_SRC_DIR))
 
-from teetree.skill_loading import DEFAULT_SKILL_SEARCH_DIRS, SkillLoadingPolicy
+from teatree.skill_loading import DEFAULT_SKILL_SEARCH_DIRS, SkillLoadingPolicy
 
 XDG_DATA_DIR = Path.home() / ".local" / "share" / "teatree"
 SKILL_METADATA_CACHE = XDG_DATA_DIR / "skill-metadata.json"

@@ -62,7 +62,7 @@ Return metadata about the overlay's companion skills (skill path, related skill 
 
 ## Supporting types
 
-These are `TypedDict` classes defined in `teetree/core/overlay.py`:
+These are `TypedDict` classes defined in `teatree/core/overlay.py`:
 
 | Type | Fields |
 |------|--------|

@@ -33,8 +33,8 @@ INSTALLED_APPS = [
     "django_htmx",
     "django_tasks",
     "django_tasks_db",
-    "teetree.core",
-    "teetree.agents",
+    "teatree.core",
+    "teatree.agents",
 ]
 
 MIDDLEWARE = [

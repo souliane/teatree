@@ -1,8 +1,8 @@
-"""Tests for teetree.core.overlay — OverlayBase default method coverage."""
+"""Tests for teatree.core.overlay — OverlayBase default method coverage."""
 
 from unittest.mock import MagicMock
 
-from teetree.core.overlay import OverlayBase, ProvisionStep
+from teatree.core.overlay import OverlayBase, ProvisionStep
 
 
 class _MinimalOverlay(OverlayBase):

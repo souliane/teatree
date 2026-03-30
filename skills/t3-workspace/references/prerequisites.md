@@ -67,4 +67,4 @@ Environment variables with auto-detected defaults:
 ## Built-in Framework Support
 
 **Django** — auto-detected when `manage.py` is found in a workspace repo.
-See `teetree.core.management.commands.run` for the reference implementation.
+See `teatree.core.management.commands.run` for the reference implementation.
