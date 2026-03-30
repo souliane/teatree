@@ -177,6 +177,40 @@ class TestDashboardPanelView:
 # ---------------------------------------------------------------------------
 
 
+class TestOverlaySelector:
+    @pytest.mark.usefixtures("_mock_perform_sync")
+    def test_dashboard_passes_overlay_list_to_template(self) -> None:
+        response = Client().get(reverse("teatree:dashboard"))
+
+        assert response.status_code == 200
+        assert "overlays" in response.context
+        assert "selected_overlay" in response.context
+
+    @pytest.mark.usefixtures("_mock_perform_sync")
+    def test_dashboard_with_overlay_param_filters_snapshot(self) -> None:
+        Ticket.objects.create(overlay="alpha", state=Ticket.State.STARTED)
+        Ticket.objects.create(overlay="beta", state=Ticket.State.STARTED)
+
+        response = Client().get(reverse("teatree:dashboard"), {"overlay": "alpha"})
+
+        assert response.status_code == 200
+        assert response.context["selected_overlay"] == "alpha"
+        assert response.context["snapshot"].summary.in_flight_tickets == 1
+
+    def test_panel_view_passes_overlay_to_builders(self) -> None:
+        Ticket.objects.create(overlay="alpha", state=Ticket.State.STARTED)
+        Ticket.objects.create(overlay="beta", state=Ticket.State.STARTED)
+
+        response = Client().get(
+            reverse("teatree:dashboard-panel", args=["tickets"]),
+            {"overlay": "alpha"},
+            HTTP_HX_REQUEST="true",
+        )
+
+        assert response.status_code == 200
+        assert len(response.context["tickets"]) == 1
+
+
 class TestPanelContext:
     def test_raises_for_unknown_panel(self) -> None:
         with pytest.raises(ValueError, match="Unsupported panel"):

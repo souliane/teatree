@@ -55,12 +55,44 @@
   <script src="https://unpkg.com/htmx.org@2.0.4"></script>
   <script src="https://unpkg.com/htmx-ext-sse@2.3.0/sse.js"></script>
   <script>
+    var _selectedOverlay = localStorage.getItem('teatree_overlay') || '{{ selected_overlay }}';
+
+    function getOverlayParam() {
+      return _selectedOverlay ? 'overlay=' + encodeURIComponent(_selectedOverlay) : '';
+    }
+
+    function appendOverlay(url) {
+      var base = url.split('?')[0];
+      var params = [];
+      var qs = url.split('?')[1];
+      if (qs) {
+        qs.split('&').forEach(function(p) { if (p && !p.startsWith('overlay=')) params.push(p); });
+      }
+      var op = getOverlayParam();
+      if (op) params.push(op);
+      return params.length ? base + '?' + params.join('&') : base;
+    }
+
+    function selectOverlay(value) {
+      _selectedOverlay = value;
+      if (value) { localStorage.setItem('teatree_overlay', value); }
+      else { localStorage.removeItem('teatree_overlay'); }
+      document.querySelectorAll('[hx-get]').forEach(function(el) {
+        el.setAttribute('hx-get', appendOverlay(el.getAttribute('hx-get')));
+      });
+      htmx.trigger(document.body, 'refreshPanels');
+    }
+
     function toggleDismissed(checkbox, panelName) {
       var panel = document.getElementById('panel-' + panelName);
       if (!panel) return;
       var url = panel.getAttribute('hx-get');
       var baseUrl = url.split('?')[0];
-      panel.setAttribute('hx-get', checkbox.checked ? baseUrl + '?show_dismissed=1' : baseUrl);
+      var params = [];
+      if (checkbox.checked) params.push('show_dismissed=1');
+      var op = getOverlayParam();
+      if (op) params.push(op);
+      panel.setAttribute('hx-get', params.length ? baseUrl + '?' + params.join('&') : baseUrl);
       htmx.trigger(panel, 'refreshPanels');
     }
 
@@ -135,7 +167,32 @@
     <header class="mb-4 flex items-center gap-4">
       <img src="{{ logo_url }}" alt="Logo" class="h-8">
       <span class="font-sans text-xs font-semibold uppercase tracking-[0.24em] text-moss">TeaTree Runtime <span id="sse-status" class="inline-block h-2 w-2 rounded-full bg-bark/40" title="SSE disconnected"></span></span>
+      {% if overlays|length > 1 %}
+      <select
+        id="overlay-selector"
+        class="ml-auto rounded-lg border border-bark/15 bg-cream/80 px-3 py-1 font-sans text-xs text-bark/70 focus:border-moss focus:outline-none"
+        onchange="selectOverlay(this.value)"
+      >
+        <option value="">All overlays</option>
+        {% for name in overlays %}
+        <option value="{{ name }}" {% if name == selected_overlay %}selected{% endif %}>{{ name }}</option>
+        {% endfor %}
+      </select>
+      {% endif %}
     </header>
+    <script>
+      // Restore overlay selection from localStorage on load
+      (function() {
+        var sel = document.getElementById('overlay-selector');
+        if (sel && _selectedOverlay) { sel.value = _selectedOverlay; }
+        // Apply overlay param to all hx-get URLs on initial load
+        if (_selectedOverlay) {
+          document.querySelectorAll('[hx-get]').forEach(function(el) {
+            el.setAttribute('hx-get', appendOverlay(el.getAttribute('hx-get')));
+          });
+        }
+      })();
+    </script>
     <!-- Compact status bar -->
     <div class="mb-4 flex flex-wrap items-center gap-3 rounded-[1rem] border border-bark/10 bg-cream/90 px-5 py-3 shadow-soft backdrop-blur">
       <div

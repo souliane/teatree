@@ -5,7 +5,7 @@ from django.template.response import TemplateResponse
 from django.templatetags.static import static
 from django.views import View
 
-from teatree.core.overlay_loader import get_overlay
+from teatree.core.overlay_loader import get_all_overlays, get_overlay
 from teatree.core.selectors import (
     build_action_required,
     build_active_sessions,
@@ -36,6 +36,12 @@ _PANEL_TEMPLATES = {
 }
 
 
+def _extract_overlay(request: HttpRequest) -> str | None:
+    """Extract overlay name from ``?overlay=`` query parameter."""
+    overlay = request.GET.get("overlay", "").strip()
+    return overlay or None
+
+
 class DashboardView(View):
     _synced = False
 
@@ -43,11 +49,18 @@ class DashboardView(View):
         if not DashboardView._synced:  # pragma: no branch
             perform_sync()
             DashboardView._synced = True
+        overlay = _extract_overlay(request)
+        overlays = sorted(get_all_overlays())
         logo_url = get_overlay().config.get_dashboard_logo() or static("teatree/img/teatree-logo.svg")
         return TemplateResponse(
             request,
             "teatree/dashboard.html",
-            {"snapshot": build_dashboard_snapshot(), "logo_url": logo_url},
+            {
+                "snapshot": build_dashboard_snapshot(overlay=overlay),
+                "logo_url": logo_url,
+                "overlays": overlays,
+                "selected_overlay": overlay or "",
+            },
         )
 
 
@@ -58,11 +71,12 @@ class DashboardPanelView(View):
         template_name = _PANEL_TEMPLATES.get(panel)
         if template_name is None:
             raise Http404
+        overlay = _extract_overlay(request)
         show_dismissed = request.GET.get("show_dismissed") == "1"
         return TemplateResponse(
             request,
             template_name,
-            _panel_context(panel, show_dismissed=show_dismissed),
+            _panel_context(panel, show_dismissed=show_dismissed, overlay=overlay),
         )
 
 
@@ -78,25 +92,31 @@ class TaskDetailView(View):
         )
 
 
-type _PanelBuilder = Callable[[bool], dict[str, object]]
+type _PanelBuilder = Callable[[bool, str | None], dict[str, object]]
 
 _PANEL_BUILDERS: dict[str, _PanelBuilder] = {
-    "summary": lambda _d: {"summary": build_dashboard_summary()},
-    "automation": lambda _d: {"automation": build_automation_summary()},
-    "action_required": lambda _d: {"action_items": build_action_required()},
-    "tickets": lambda _d: {"tickets": build_dashboard_ticket_rows()},
-    "worktrees": lambda _d: {"worktrees": build_worktree_rows()},
-    "headless_queue": lambda d: {"headless_queue": build_headless_queue(include_dismissed=d), "show_dismissed": d},
-    "queue": lambda d: {"queue": build_interactive_queue(include_dismissed=d), "show_dismissed": d},
-    "sessions": lambda _d: {"sessions": build_active_sessions()},
-    "review_comments": lambda _d: {"review_comments": build_review_comments()},
-    "activity": lambda _d: {"activity": build_recent_activity()},
+    "summary": lambda _d, o: {"summary": build_dashboard_summary(overlay=o)},
+    "automation": lambda _d, o: {"automation": build_automation_summary(overlay=o)},
+    "action_required": lambda _d, o: {"action_items": build_action_required(overlay=o)},
+    "tickets": lambda _d, o: {"tickets": build_dashboard_ticket_rows(overlay=o)},
+    "worktrees": lambda _d, o: {"worktrees": build_worktree_rows(overlay=o)},
+    "headless_queue": lambda d, o: {
+        "headless_queue": build_headless_queue(include_dismissed=d, overlay=o),
+        "show_dismissed": d,
+    },
+    "queue": lambda d, o: {
+        "queue": build_interactive_queue(include_dismissed=d, overlay=o),
+        "show_dismissed": d,
+    },
+    "sessions": lambda _d, _o: {"sessions": build_active_sessions()},
+    "review_comments": lambda _d, o: {"review_comments": build_review_comments(overlay=o)},
+    "activity": lambda _d, o: {"activity": build_recent_activity(overlay=o)},
 }
 
 
-def _panel_context(panel: str, *, show_dismissed: bool = False) -> dict[str, object]:
+def _panel_context(panel: str, *, show_dismissed: bool = False, overlay: str | None = None) -> dict[str, object]:
     builder = _PANEL_BUILDERS.get(panel)
     if builder is None:
         msg = f"Unsupported panel: {panel}"
         raise ValueError(msg)
-    return builder(show_dismissed)
+    return builder(show_dismissed, overlay)

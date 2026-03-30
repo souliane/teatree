@@ -295,16 +295,27 @@ def build_task_detail(task_id: int) -> TaskDetail | None:
 _AUTOMATION_WINDOW_HOURS = 24
 
 
-def build_automation_summary() -> AutomationSummary:
+def _task_overlay_q(overlay: str | None) -> Q:
+    """Return a Q filter for task's ticket/session overlay."""
+    if not overlay:
+        return Q()
+    return Q(task__ticket__overlay=overlay) | Q(task__session__overlay=overlay)
+
+
+def build_automation_summary(overlay: str | None = None) -> AutomationSummary:
     cutoff = timezone.now() - timezone.timedelta(hours=_AUTOMATION_WINDOW_HOURS)
-    running = Task.objects.filter(
+    task_filter = Q(
         execution_target=Task.ExecutionTarget.HEADLESS,
         status=Task.Status.CLAIMED,
-    ).count()
-    recent_attempts = TaskAttempt.objects.filter(
+    )
+    if overlay:
+        task_filter &= Q(ticket__overlay=overlay) | Q(session__overlay=overlay)
+    running = Task.objects.filter(task_filter).count()
+    attempt_filter = Q(
         task__execution_target=Task.ExecutionTarget.HEADLESS,
         ended_at__gte=cutoff,
-    )
+    ) & _task_overlay_q(overlay)
+    recent_attempts = TaskAttempt.objects.filter(attempt_filter)
     completed_24h = recent_attempts.count()
     succeeded_24h = recent_attempts.filter(exit_code=0).count()
     failed_24h = completed_24h - succeeded_24h
@@ -317,8 +328,7 @@ def build_automation_summary() -> AutomationSummary:
     total_cost_24h = token_stats["total_cost"] or 0.0
     last_attempt = (
         TaskAttempt.objects.filter(
-            task__execution_target=Task.ExecutionTarget.HEADLESS,
-            ended_at__isnull=False,
+            Q(task__execution_target=Task.ExecutionTarget.HEADLESS, ended_at__isnull=False) & _task_overlay_q(overlay),
         )
         .order_by("-ended_at")
         .first()
@@ -335,21 +345,20 @@ def build_automation_summary() -> AutomationSummary:
     )
 
 
-def build_dashboard_summary() -> DashboardSummary:
+def build_dashboard_summary(overlay: str | None = None) -> DashboardSummary:
     return DashboardSummary(
-        in_flight_tickets=Ticket.objects.in_flight().count(),
-        active_worktrees=Worktree.objects.active().count(),
-        pending_headless_tasks=Task.objects.claimable_for_headless().count(),
-        pending_interactive_tasks=Task.objects.claimable_for_interactive().count(),
+        in_flight_tickets=Ticket.objects.in_flight(overlay=overlay).count(),
+        active_worktrees=Worktree.objects.active(overlay=overlay).count(),
+        pending_headless_tasks=Task.objects.claimable_for_headless(overlay=overlay).count(),
+        pending_interactive_tasks=Task.objects.claimable_for_interactive(overlay=overlay).count(),
     )
 
 
-def build_worktree_rows() -> list[DashboardWorktreeRow]:
-    worktrees = (
-        Worktree.objects.select_related("ticket")
-        .exclude(ticket__state=Ticket.State.DELIVERED)
-        .order_by("ticket__pk", "pk")
-    )
+def build_worktree_rows(overlay: str | None = None) -> list[DashboardWorktreeRow]:
+    qs = Worktree.objects.select_related("ticket").exclude(ticket__state=Ticket.State.DELIVERED)
+    if overlay:
+        qs = qs.filter(overlay=overlay)
+    worktrees = qs.order_by("ticket__pk", "pk")
     return [
         DashboardWorktreeRow(
             worktree_id=wt.pk,
@@ -365,9 +374,9 @@ def build_worktree_rows() -> list[DashboardWorktreeRow]:
     ]
 
 
-def build_dashboard_ticket_rows() -> list[DashboardTicketRow]:
+def build_dashboard_ticket_rows(overlay: str | None = None) -> list[DashboardTicketRow]:
     tickets = (
-        Ticket.objects.in_flight()
+        Ticket.objects.in_flight(overlay=overlay)
         .annotate(
             ongoing_tasks=Count(
                 "tasks",
@@ -446,8 +455,12 @@ def _build_task_queue(
     *,
     include_dismissed: bool = False,
     pending_only: bool = False,
+    overlay: str | None = None,
 ) -> list[DashboardTaskRow]:
-    qs = Task.objects.filter(execution_target=target).select_related("ticket", "session").order_by("pk")
+    qs = Task.objects.filter(execution_target=target).select_related("ticket", "session")
+    if overlay:
+        qs = qs.filter(Q(ticket__overlay=overlay) | Q(session__overlay=overlay))
+    qs = qs.order_by("pk")
     if pending_only:
         qs = qs.filter(status=Task.Status.PENDING)
     elif not include_dismissed:
@@ -475,18 +488,29 @@ def _build_task_queue(
     ]
 
 
-def build_headless_queue(*, include_dismissed: bool = False) -> list[DashboardTaskRow]:
-    return _build_task_queue(Task.ExecutionTarget.HEADLESS, include_dismissed=include_dismissed)
+def build_headless_queue(*, include_dismissed: bool = False, overlay: str | None = None) -> list[DashboardTaskRow]:
+    return _build_task_queue(Task.ExecutionTarget.HEADLESS, include_dismissed=include_dismissed, overlay=overlay)
 
 
-def build_interactive_queue(*, include_dismissed: bool = False, pending_only: bool = False) -> list[DashboardTaskRow]:
+def build_interactive_queue(
+    *, include_dismissed: bool = False, pending_only: bool = False, overlay: str | None = None
+) -> list[DashboardTaskRow]:
     return _build_task_queue(
-        Task.ExecutionTarget.INTERACTIVE, include_dismissed=include_dismissed, pending_only=pending_only
+        Task.ExecutionTarget.INTERACTIVE,
+        include_dismissed=include_dismissed,
+        pending_only=pending_only,
+        overlay=overlay,
     )
 
 
-def build_action_required() -> list[ActionRequiredItem]:
+def build_action_required(overlay: str | None = None) -> list[ActionRequiredItem]:
     """Aggregate all items that need human attention."""
+    task_qs = Task.objects.filter(
+        execution_target=Task.ExecutionTarget.INTERACTIVE,
+        status=Task.Status.PENDING,
+    ).select_related("ticket")
+    if overlay:
+        task_qs = task_qs.filter(Q(ticket__overlay=overlay) | Q(session__overlay=overlay))
     items: list[ActionRequiredItem] = [
         ActionRequiredItem(
             kind="interactive_task",
@@ -495,20 +519,17 @@ def build_action_required() -> list[ActionRequiredItem]:
             ticket_id=task.ticket_id,
             detail=task.execution_reason[:120],
         )
-        for task in Task.objects.filter(
-            execution_target=Task.ExecutionTarget.INTERACTIVE,
-            status=Task.Status.PENDING,
-        ).select_related("ticket")
+        for task in task_qs
     ]
 
-    items.extend(_action_items_from_mrs())
+    items.extend(_action_items_from_mrs(overlay))
     return items
 
 
-def _action_items_from_mrs() -> list[ActionRequiredItem]:
+def _action_items_from_mrs(overlay: str | None = None) -> list[ActionRequiredItem]:
     """Scan in-flight MRs for review/approval needs."""
     items: list[ActionRequiredItem] = []
-    for ticket in Ticket.objects.in_flight():
+    for ticket in Ticket.objects.in_flight(overlay=overlay):
         extra = ticket.extra if isinstance(ticket.extra, dict) else {}
         mrs = extra.get("mrs", {})
         if not isinstance(mrs, dict):
@@ -653,18 +674,19 @@ def build_active_sessions() -> list[ActiveSessionRow]:
     return sessions
 
 
-def build_dashboard_snapshot() -> DashboardSnapshot:
+def build_dashboard_snapshot(overlay: str | None = None) -> DashboardSnapshot:
+    sfx = f":{overlay}" if overlay else ""
     return DashboardSnapshot(
-        summary=_cached("summary", build_dashboard_summary),
-        automation=_cached("automation", build_automation_summary),
-        action_required=_cached("action_required", build_action_required),
-        tickets=_cached("tickets", build_dashboard_ticket_rows),
-        worktrees=_cached("worktrees", build_worktree_rows),
-        headless_queue=_cached("headless_queue", build_headless_queue),
-        interactive_queue=_cached("queue", lambda: build_interactive_queue(pending_only=True)),
+        summary=_cached(f"summary{sfx}", lambda: build_dashboard_summary(overlay)),
+        automation=_cached(f"automation{sfx}", lambda: build_automation_summary(overlay)),
+        action_required=_cached(f"action_required{sfx}", lambda: build_action_required(overlay)),
+        tickets=_cached(f"tickets{sfx}", lambda: build_dashboard_ticket_rows(overlay)),
+        worktrees=_cached(f"worktrees{sfx}", lambda: build_worktree_rows(overlay)),
+        headless_queue=_cached(f"headless_queue{sfx}", lambda: build_headless_queue(overlay=overlay)),
+        interactive_queue=_cached(f"queue{sfx}", lambda: build_interactive_queue(pending_only=True, overlay=overlay)),
         active_sessions=_cached("sessions", build_active_sessions, ttl=_SESSIONS_PANEL_TTL),
-        review_comments=_cached("review_comments", build_review_comments),
-        recent_activity=_cached("activity", build_recent_activity),
+        review_comments=_cached(f"review_comments{sfx}", lambda: build_review_comments(overlay)),
+        recent_activity=_cached(f"activity{sfx}", lambda: build_recent_activity(overlay)),
     )
 
 
@@ -789,9 +811,9 @@ _DISCUSSION_STATUS_DISPLAY = {
 }
 
 
-def build_review_comments() -> list[DashboardReviewCommentRow]:
+def build_review_comments(overlay: str | None = None) -> list[DashboardReviewCommentRow]:
     rows: list[DashboardReviewCommentRow] = []
-    for ticket in Ticket.objects.in_flight():
+    for ticket in Ticket.objects.in_flight(overlay=overlay):
         extra = ticket.extra if isinstance(ticket.extra, dict) else {}
         mrs_data = extra.get("mrs", {})
         if not isinstance(mrs_data, dict):
@@ -825,12 +847,11 @@ def build_review_comments() -> list[DashboardReviewCommentRow]:
 _RECENT_ACTIVITY_LIMIT = 10
 
 
-def build_recent_activity() -> list[RecentActivityRow]:
-    attempts = (
-        TaskAttempt.objects.filter(ended_at__isnull=False)
-        .select_related("task__ticket")
-        .order_by("-ended_at")[:_RECENT_ACTIVITY_LIMIT]
-    )
+def build_recent_activity(overlay: str | None = None) -> list[RecentActivityRow]:
+    qs = TaskAttempt.objects.filter(ended_at__isnull=False).select_related("task__ticket")
+    if overlay:
+        qs = qs.filter(_task_overlay_q(overlay))
+    attempts = qs.order_by("-ended_at")[:_RECENT_ACTIVITY_LIMIT]
     rows: list[RecentActivityRow] = []
     for attempt in attempts:
         result_data = attempt.result if isinstance(attempt.result, dict) else {}
