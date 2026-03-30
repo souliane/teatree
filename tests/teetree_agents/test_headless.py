@@ -8,6 +8,8 @@ from teetree.agents.headless import (
     _get_resume_session_id,
     _parse_cli_envelope,
     _parse_result,
+    _safe_float,
+    _safe_int,
     _validate_result,
     get_result_json_schema,
     run_headless,
@@ -273,6 +275,28 @@ def test_run_headless_resumes_parent_session(monkeypatch: pytest.MonkeyPatch) ->
     assert cmd[resume_idx + 1] == FAKE_SESSION_UUID
 
 
+# --- _safe_int / _safe_float ---
+
+
+def test_safe_int_converts_string() -> None:
+    assert _safe_int("42") == 42
+    assert _safe_int("3.7") == 3  # truncates
+
+
+def test_safe_int_returns_none_for_invalid() -> None:
+    assert _safe_int(None) is None
+    assert _safe_int("abc") is None
+
+
+def test_safe_float_converts_string() -> None:
+    assert _safe_float("0.042") == pytest.approx(0.042)
+
+
+def test_safe_float_returns_none_for_invalid() -> None:
+    assert _safe_float(None) is None
+    assert _safe_float("abc") is None
+
+
 # --- _parse_cli_envelope ---
 
 
@@ -281,6 +305,31 @@ def test_parse_cli_envelope_extracts_session_id_and_result() -> None:
     parsed = _parse_cli_envelope(envelope)
     assert parsed["session_id"] == "abc-123"
     assert parsed["agent_text"] == "Agent output text"
+
+
+def test_parse_cli_envelope_extracts_usage_stats() -> None:
+    envelope = json.dumps(
+        {
+            "session_id": "abc-123",
+            "result": "Done",
+            "input_tokens": 5000,
+            "output_tokens": 1200,
+            "cost_usd": 0.042,
+            "num_turns": 3,
+        }
+    )
+    parsed = _parse_cli_envelope(envelope)
+    assert parsed["input_tokens"] == "5000"
+    assert parsed["output_tokens"] == "1200"
+    assert parsed["cost_usd"] == "0.042"
+    assert parsed["num_turns"] == "3"
+
+
+def test_parse_cli_envelope_omits_missing_usage_stats() -> None:
+    envelope = json.dumps({"session_id": "abc-123", "result": "Done"})
+    parsed = _parse_cli_envelope(envelope)
+    assert "input_tokens" not in parsed
+    assert "cost_usd" not in parsed
 
 
 def test_parse_cli_envelope_falls_back_for_non_envelope_json() -> None:

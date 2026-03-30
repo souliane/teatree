@@ -4,7 +4,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from django.db.models import Count, Q
+from django.db.models import Count, Q, Sum
 from django.utils import timezone
 from django_fsm import can_proceed
 
@@ -52,6 +52,8 @@ class AutomationSummary:
     succeeded_24h: int
     failed_24h: int
     last_completed_at: str
+    total_tokens_24h: int
+    total_cost_24h: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -306,6 +308,13 @@ def build_automation_summary() -> AutomationSummary:
     completed_24h = recent_attempts.count()
     succeeded_24h = recent_attempts.filter(exit_code=0).count()
     failed_24h = completed_24h - succeeded_24h
+    token_stats = recent_attempts.aggregate(
+        total_input=Sum("input_tokens"),
+        total_output=Sum("output_tokens"),
+        total_cost=Sum("cost_usd"),
+    )
+    total_tokens_24h = (token_stats["total_input"] or 0) + (token_stats["total_output"] or 0)
+    total_cost_24h = token_stats["total_cost"] or 0.0
     last_attempt = (
         TaskAttempt.objects.filter(
             task__execution_target=Task.ExecutionTarget.HEADLESS,
@@ -321,6 +330,8 @@ def build_automation_summary() -> AutomationSummary:
         succeeded_24h=succeeded_24h,
         failed_24h=failed_24h,
         last_completed_at=last_completed_at,
+        total_tokens_24h=total_tokens_24h,
+        total_cost_24h=total_cost_24h,
     )
 
 

@@ -5,7 +5,9 @@ from pathlib import Path
 import pytest
 
 from teetree.agents.prompt import (
+    _is_primary,
     _read_skill_contents,
+    _read_skill_contents_scoped,
     build_interactive_context,
     build_system_context,
     build_task_prompt,
@@ -39,6 +41,75 @@ def test_read_skill_contents_multiple_skills(tmp_path: Path) -> None:
     result = _read_skill_contents(["skill-a", "skill-b"], skills_dir=tmp_path)
     assert "--- SKILL: skill-a ---" in result
     assert "--- SKILL: skill-b ---" in result
+
+
+# --- _is_primary ---
+
+
+def test_is_primary_matches_short_name() -> None:
+    assert _is_primary("t3-test", {"t3-test"})
+    assert not _is_primary("t3-code", {"t3-test"})
+
+
+def test_is_primary_matches_always_full() -> None:
+    assert _is_primary("t3-rules", set())
+
+
+def test_is_primary_matches_absolute_path() -> None:
+    assert _is_primary("/tmp/skills/t3-test/SKILL.md", {"t3-test"})
+    assert _is_primary("/tmp/skills/t3-rules/SKILL.md", set())
+    assert not _is_primary("/tmp/skills/ac-django/SKILL.md", {"t3-test"})
+
+
+# --- _read_skill_contents_scoped ---
+
+
+def test_read_scoped_embeds_primary_and_summarizes_companions(tmp_path: Path) -> None:
+    for name in ("t3-rules", "t3-test", "ac-django", "t3-workspace"):
+        d = tmp_path / name
+        d.mkdir()
+        (d / "SKILL.md").write_text(f"# {name} full content", encoding="utf-8")
+
+    result = _read_skill_contents_scoped(
+        ["ac-django", "t3-workspace", "t3-rules", "t3-test"],
+        primary_skills={"t3-test"},
+        skills_dir=tmp_path,
+    )
+    # Primary skills get full content
+    assert "--- SKILL: t3-test ---" in result
+    assert "# t3-test full content" in result
+    # t3-rules is always fully loaded
+    assert "--- SKILL: t3-rules ---" in result
+    assert "# t3-rules full content" in result
+    # Companion skills get summary only
+    assert "COMPANION SKILLS" in result
+    assert "- ac-django:" in result
+    assert "- t3-workspace:" in result
+    assert "# ac-django full content" not in result
+    assert "# t3-workspace full content" not in result
+
+
+def test_read_scoped_all_primary(tmp_path: Path) -> None:
+    d = tmp_path / "only-skill"
+    d.mkdir()
+    (d / "SKILL.md").write_text("# Only", encoding="utf-8")
+
+    result = _read_skill_contents_scoped(
+        ["only-skill"],
+        primary_skills={"only-skill"},
+        skills_dir=tmp_path,
+    )
+    assert "--- SKILL: only-skill ---" in result
+    assert "COMPANION" not in result
+
+
+def test_read_scoped_missing_skill(tmp_path: Path) -> None:
+    result = _read_skill_contents_scoped(
+        ["nonexistent"],
+        primary_skills={"nonexistent"},
+        skills_dir=tmp_path,
+    )
+    assert result == ""
 
 
 # --- build_task_prompt ---
@@ -212,6 +283,29 @@ def test_build_system_context_skills_with_content(tmp_path: Path) -> None:
     ctx = build_system_context(task, skills=[str(skill_file)])
     assert "# Loaded Skills" in ctx
     assert "# Loaded Skill" in ctx
+
+
+@pytest.mark.django_db
+def test_build_system_context_with_lifecycle_skill_scopes_loading(tmp_path: Path) -> None:
+    """When lifecycle_skill is set, only that skill + t3-rules get full content."""
+    for name in ("t3-rules", "t3-test", "ac-django"):
+        d = tmp_path / name
+        d.mkdir()
+        (d / "SKILL.md").write_text(f"# {name} instructions", encoding="utf-8")
+
+    ticket = Ticket.objects.create()
+    session = Session.objects.create(ticket=ticket)
+    task = Task.objects.create(ticket=ticket, session=session, phase="testing")
+
+    # Use absolute SKILL.md paths so find_skill_md resolves them directly
+    skills = [str(tmp_path / n / "SKILL.md") for n in ("ac-django", "t3-rules", "t3-test")]
+    lifecycle = str(tmp_path / "t3-test" / "SKILL.md")
+    ctx = build_system_context(task, skills=skills, lifecycle_skill=lifecycle)
+
+    assert "# t3-test instructions" in ctx
+    assert "# t3-rules instructions" in ctx
+    assert "# ac-django instructions" not in ctx
+    assert "COMPANION SKILLS" in ctx
 
 
 @pytest.mark.django_db
