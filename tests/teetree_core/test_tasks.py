@@ -25,90 +25,82 @@ def reset_runtimes() -> Iterator[None]:
     reset_runtime_registry()
 
 
-@override_settings(
-    TASKS={
+IMMEDIATE_BACKEND = {
+    "TASKS": {
         "default": {
             "BACKEND": "django_tasks.backends.immediate.ImmediateBackend",
         },
     },
-    TEATREE_HEADLESS_RUNTIME="queued-sdk",
-)
-@pytest.mark.django_db
-def test_execute_sdk_task_enqueue_runs_immediately() -> None:
-    register_runtime("queued-sdk", TaskRuntime())
-    ticket = Ticket.objects.create()
-    session = Session.objects.create(ticket=ticket, agent_id="agent-1")
-    task = Task.objects.create(ticket=ticket, session=session)
-
-    result = execute_sdk_task.enqueue(int(task.pk), "coding")
-    task.refresh_from_db()
-
-    assert result.status == TaskResultStatus.SUCCESSFUL
-    assert result.return_value == f"artifacts/task-{task.pk}-queued-sdk.json"
-    assert task.status == Task.Status.COMPLETED
-    assert TaskAttempt.objects.count() == 1
+}
 
 
-@override_settings(
-    TASKS={
-        "default": {
-            "BACKEND": "django_tasks.backends.immediate.ImmediateBackend",
-        },
-    },
-)
-@pytest.mark.django_db
-def test_refresh_followup_snapshot_reports_current_counts() -> None:
-    ticket = Ticket.objects.create()
-    session = Session.objects.create(ticket=ticket)
-    Task.objects.create(ticket=ticket, session=session)
+class TestExecuteSdkTask:
+    @override_settings(**IMMEDIATE_BACKEND, TEATREE_HEADLESS_RUNTIME="queued-sdk")
+    @pytest.mark.django_db
+    def test_enqueue_runs_immediately(self) -> None:
+        register_runtime("queued-sdk", TaskRuntime())
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket, agent_id="agent-1")
+        task = Task.objects.create(ticket=ticket, session=session)
 
-    result = refresh_followup_snapshot.enqueue()
+        result = execute_sdk_task.enqueue(int(task.pk), "coding")
+        task.refresh_from_db()
 
-    assert result.return_value == {"tickets": 1, "tasks": 1, "open_tasks": 1}
-
-
-@override_settings(
-    TASKS={
-        "default": {
-            "BACKEND": "django_tasks.backends.immediate.ImmediateBackend",
-        },
-    },
-    TEATREE_OVERLAY_CLASS="tests.teetree_core.conftest.CommandOverlay",
-    TEATREE_GITLAB_TOKEN="",
-)
-@pytest.mark.django_db
-def test_sync_followup_task_returns_error_without_token(monkeypatch: pytest.MonkeyPatch) -> None:
-    result = sync_followup.enqueue()
-
-    assert "TEATREE_GITLAB_TOKEN is not set" in result.return_value["errors"]
+        assert result.status == TaskResultStatus.SUCCESSFUL
+        assert result.return_value == f"artifacts/task-{task.pk}-queued-sdk.json"
+        assert task.status == Task.Status.COMPLETED
+        assert TaskAttempt.objects.count() == 1
 
 
-@override_settings(
-    TASKS={
-        "default": {
-            "BACKEND": "django_tasks.backends.immediate.ImmediateBackend",
-        },
-    },
-    TEATREE_OVERLAY_CLASS="tests.teetree_core.conftest.CommandOverlay",
-)
-@pytest.mark.django_db
-def test_execute_headless_task_records_failure_on_exception(monkeypatch: pytest.MonkeyPatch) -> None:
-    """When run_headless raises, execute_headless_task marks the task as failed and re-raises."""
-    ticket = Ticket.objects.create()
-    session = Session.objects.create(ticket=ticket, agent_id="agent-1")
-    task = Task.objects.create(ticket=ticket, session=session, phase="coding")
+class TestRefreshFollowupSnapshot:
+    @override_settings(**IMMEDIATE_BACKEND)
+    @pytest.mark.django_db
+    def test_reports_current_counts(self) -> None:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        Task.objects.create(ticket=ticket, session=session)
 
-    def _raise(*_args: object, **_kwargs: object) -> None:
-        msg = "headless runtime crashed"
-        raise RuntimeError(msg)
+        result = refresh_followup_snapshot.enqueue()
 
-    monkeypatch.setattr("teetree.agents.headless.run_headless", _raise)
+        assert result.return_value == {"tickets": 1, "tasks": 1, "open_tasks": 1}
 
-    execute_headless_task.enqueue(int(task.pk), "coding")
 
-    task.refresh_from_db()
-    assert task.status == Task.Status.FAILED
-    attempt = TaskAttempt.objects.filter(task=task).first()
-    assert attempt is not None
-    assert attempt.exit_code == 1
-    assert "headless runtime crashed" in attempt.error
+class TestSyncFollowup:
+    @override_settings(
+        **IMMEDIATE_BACKEND,
+        TEATREE_OVERLAY_CLASS="tests.teetree_core.conftest.CommandOverlay",
+        TEATREE_GITLAB_TOKEN="",
+    )
+    @pytest.mark.django_db
+    def test_returns_error_without_token(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        result = sync_followup.enqueue()
+
+        assert "TEATREE_GITLAB_TOKEN is not set" in result.return_value["errors"]
+
+
+class TestExecuteHeadlessTask:
+    @override_settings(
+        **IMMEDIATE_BACKEND,
+        TEATREE_OVERLAY_CLASS="tests.teetree_core.conftest.CommandOverlay",
+    )
+    @pytest.mark.django_db
+    def test_records_failure_on_exception(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """When run_headless raises, execute_headless_task marks the task as failed and re-raises."""
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket, agent_id="agent-1")
+        task = Task.objects.create(ticket=ticket, session=session, phase="coding")
+
+        def _raise(*_args: object, **_kwargs: object) -> None:
+            msg = "headless runtime crashed"
+            raise RuntimeError(msg)
+
+        monkeypatch.setattr("teetree.agents.headless.run_headless", _raise)
+
+        execute_headless_task.enqueue(int(task.pk), "coding")
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+        attempt = TaskAttempt.objects.filter(task=task).first()
+        assert attempt is not None
+        assert attempt.exit_code == 1
+        assert "headless runtime crashed" in attempt.error
