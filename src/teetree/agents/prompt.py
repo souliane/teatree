@@ -52,6 +52,28 @@ def _read_skill_contents_scoped(
     return "\n\n".join(sections)
 
 
+_MAX_PARENT_SUMMARY_LEN = 2000
+
+
+def _parent_result_summary(task: Task) -> str:
+    """Return a compact summary from the parent task's last attempt result."""
+    parent = task.parent_task
+    if parent is None:
+        return ""
+    last_attempt = parent.attempts.order_by("-pk").first()
+    if last_attempt is None:
+        return ""
+    result = last_attempt.result if isinstance(last_attempt.result, dict) else {}
+    parts: list[str] = []
+    if summary := str(result.get("summary", "")):
+        parts.append(f"Summary: {summary[:_MAX_PARENT_SUMMARY_LEN]}")
+    if files := result.get("files_modified"):
+        parts.append(f"Files modified: {', '.join(str(f) for f in files[:20])}")
+    if steps := result.get("next_steps"):
+        parts.append(f"Next steps: {', '.join(str(s) for s in steps[:10])}")
+    return "\n".join(parts)
+
+
 def build_task_prompt(task: Task) -> str:
     """Build a work prompt for a headless agent."""
     ticket: Ticket = task.ticket
@@ -114,6 +136,12 @@ def build_system_context(task: Task, *, skills: list[str], lifecycle_skill: str 
     lines = ["You are a TeaTree headless agent executing a task."]
     lines.extend((f"Task ID: {task.pk}", f"Ticket: {task.ticket.ticket_number}"))
 
+    # Context bridge: include parent task result so follow-up tasks
+    # don't need full session resume to understand prior work.
+    parent_summary = _parent_result_summary(task)
+    if parent_summary:
+        lines.extend(("", "# Prior Task Result", "", parent_summary))
+
     if skills:
         if lifecycle_skill:
             skill_content = _read_skill_contents_scoped(skills, primary_skills={lifecycle_skill})
@@ -134,6 +162,11 @@ def build_system_context(task: Task, *, skills: list[str], lifecycle_skill: str 
 
     lines.extend(
         (
+            "",
+            "# Context Budget",
+            "- Truncate file reads to the relevant section — avoid reading entire large files.",
+            "- Limit git diff output to 200 lines; use --stat for overview first.",
+            "- Summarize test output instead of pasting full logs.",
             "",
             "When done, run /t3-next to wrap up. It will:",
             "- Run /t3-retro (captures lessons while context is fresh)",
