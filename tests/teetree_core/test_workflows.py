@@ -79,7 +79,7 @@ class WorkflowOverlay(OverlayBase):
 
     def get_tool_commands(self) -> list[ToolCommand]:
         return [
-            {"name": "check-translations", "help": "Check translations", "management_command": "check_translations"},
+            {"name": "check-translations", "help": "Check translations", "command": "check_translations"},
         ]
 
     def get_workspace_repos(self) -> list[str]:

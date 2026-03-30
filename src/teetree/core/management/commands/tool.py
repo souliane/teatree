@@ -3,34 +3,30 @@
 import os
 import shlex
 import subprocess  # noqa: S404
-import sys
 
+import typer
 from django_typer.management import TyperCommand, command
 
 from teetree.core.overlay_loader import get_overlay
 
 
 class Command(TyperCommand):
-    @command()
-    def run(self, name: str) -> str:
+    @command(
+        context_settings={"allow_extra_args": True, "allow_interspersed_args": False},
+    )
+    def run(self, ctx: typer.Context, name: str) -> str:
         """Run an overlay tool command by name.
 
         Extra arguments after the tool name are forwarded to the command.
         """
-        extra: list[str] = []
-        argv = sys.argv
-        try:
-            idx = argv.index(name)
-            extra = argv[idx + 1 :]
-        except ValueError:
-            pass
+        extra: list[str] = ctx.args
 
         overlay = get_overlay()
         for tool_cmd in overlay.get_tool_commands():
             if tool_cmd.get("name") == name:
-                mgmt_cmd = tool_cmd.get("management_command", "")
+                mgmt_cmd = tool_cmd.get("command", "")
                 if not mgmt_cmd:
-                    return f"Tool '{name}' has no management_command defined."
+                    return f"Tool '{name}' has no command defined."
                 if extra:
                     mgmt_cmd = f"{mgmt_cmd} {shlex.join(extra)}"
                 env = {**os.environ}
