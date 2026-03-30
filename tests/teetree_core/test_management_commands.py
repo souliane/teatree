@@ -42,102 +42,100 @@ def clear_overlay_cache() -> Iterator[None]:
     reset_overlay_cache()
 
 
-@override_settings(
-    TEATREE_OVERLAY_CLASS="tests.teetree_core.test_management_commands.CommandOverlay",
-    TEATREE_HEADLESS_RUNTIME="claude-code",
-    TEATREE_INTERACTIVE_RUNTIME="codex",
-    TEATREE_TERMINAL_MODE="same-terminal",
-)
-@pytest.mark.django_db
-def test_lifecycle_commands_create_start_report_and_teardown_worktrees(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    wt_path = str(tmp_path / "test-worktree-backend")
-    Path(wt_path).mkdir()
-    ticket = Ticket.objects.create(issue_url="https://example.com/issues/55", variant="acme")
-    wt = Worktree.objects.create(
-        ticket=ticket, repo_path="/tmp/backend", branch="feature", extra={"worktree_path": wt_path}
+COMMAND_SETTINGS = {
+    "TEATREE_OVERLAY_CLASS": "tests.teetree_core.test_management_commands.CommandOverlay",
+    "TEATREE_HEADLESS_RUNTIME": "claude-code",
+    "TEATREE_INTERACTIVE_RUNTIME": "codex",
+    "TEATREE_TERMINAL_MODE": "same-terminal",
+}
+
+
+class TestLifecycleCommands:
+    @override_settings(**COMMAND_SETTINGS)
+    @pytest.mark.django_db
+    def test_create_start_report_and_teardown_worktrees(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        wt_path = str(tmp_path / "test-worktree-backend")
+        Path(wt_path).mkdir()
+        ticket = Ticket.objects.create(issue_url="https://example.com/issues/55", variant="acme")
+        wt = Worktree.objects.create(
+            ticket=ticket, repo_path="/tmp/backend", branch="feature", extra={"worktree_path": wt_path}
+        )
+        monkeypatch.setenv("T3_ORIG_CWD", wt_path)
+
+        worktree_id = cast("int", call_command("lifecycle", "setup"))
+        status = cast("dict[str, str]", call_command("lifecycle", "status"))
+        call_command("lifecycle", "start")
+        call_command("lifecycle", "teardown")
+
+        worktree = Worktree.objects.get(pk=worktree_id)
+
+        assert worktree_id == wt.id
+        assert status["state"] == Worktree.State.PROVISIONED
+        assert status["repo_path"] == "/tmp/backend"
+        assert worktree.state == Worktree.State.CREATED
+        assert worktree.extra == {}
+
+
+class TestTaskCommands:
+    @override_settings(**COMMAND_SETTINGS)
+    @pytest.mark.django_db
+    def test_claim_and_complete_work(self) -> None:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket, agent_id="agent-1")
+        sdk_task = Task.objects.create(ticket=ticket, session=session)
+        sdk_followup_task = Task.objects.create(ticket=ticket, session=session)
+        user_task = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            execution_target=Task.ExecutionTarget.INTERACTIVE,
+        )
+
+        claimed_task_id = cast(
+            "int", call_command("tasks", "claim", execution_target="headless", claimed_by="worker-1")
+        )
+        sdk_result = cast(
+            "dict[str, str]",
+            call_command("tasks", "work-next-sdk", claimed_by="worker-1"),
+        )
+        user_result = cast(
+            "dict[str, str]",
+            call_command("tasks", "work-next-user-input", claimed_by="worker-2"),
+        )
+        refresh_summary = cast("dict[str, int]", call_command("followup", "refresh"))
+        reminders = cast("list[int]", call_command("followup", "remind"))
+
+        sdk_task.refresh_from_db()
+        sdk_followup_task.refresh_from_db()
+        user_task.refresh_from_db()
+
+        assert claimed_task_id == sdk_task.id
+        assert sdk_result["runtime"] == "claude-code"
+        assert user_result["runtime"] == "codex"
+        assert sdk_task.status == Task.Status.CLAIMED
+        assert sdk_followup_task.status == Task.Status.COMPLETED
+        assert user_task.status == Task.Status.COMPLETED
+        assert TaskAttempt.objects.count() == 2
+        assert refresh_summary == {"tickets": 1, "tasks": 3, "open_tasks": 1}
+        assert reminders == []
+
+    @override_settings(**COMMAND_SETTINGS)
+    @pytest.mark.django_db
+    def test_return_none_when_no_work_available(self) -> None:
+        assert call_command("tasks", "work-next-sdk", claimed_by="worker-1") is None
+        assert call_command("tasks", "work-next-user-input", claimed_by="worker-2") is None
+
+
+class TestFollowupCommands:
+    @override_settings(
+        TEATREE_OVERLAY_CLASS="tests.teetree_core.test_management_commands.CommandOverlay",
+        TEATREE_GITLAB_TOKEN="",
+        TEATREE_GITLAB_USERNAME="testuser",
     )
-    monkeypatch.setenv("T3_ORIG_CWD", wt_path)
+    def test_sync_reports_no_repos_from_default_overlay(self) -> None:
+        result = cast("dict[str, int | list[str]]", call_command("followup", "sync"))
 
-    worktree_id = cast("int", call_command("lifecycle", "setup"))
-    status = cast("dict[str, str]", call_command("lifecycle", "status"))
-    call_command("lifecycle", "start")
-    call_command("lifecycle", "teardown")
-
-    worktree = Worktree.objects.get(pk=worktree_id)
-
-    assert worktree_id == wt.id
-    assert status["state"] == Worktree.State.PROVISIONED
-    assert status["repo_path"] == "/tmp/backend"
-    assert worktree.state == Worktree.State.CREATED
-    assert worktree.extra == {}
-
-
-@override_settings(
-    TEATREE_OVERLAY_CLASS="tests.teetree_core.test_management_commands.CommandOverlay",
-    TEATREE_HEADLESS_RUNTIME="claude-code",
-    TEATREE_INTERACTIVE_RUNTIME="codex",
-    TEATREE_TERMINAL_MODE="same-terminal",
-)
-@pytest.mark.django_db
-def test_task_and_followup_commands_claim_and_complete_work() -> None:
-    ticket = Ticket.objects.create()
-    session = Session.objects.create(ticket=ticket, agent_id="agent-1")
-    sdk_task = Task.objects.create(ticket=ticket, session=session)
-    sdk_followup_task = Task.objects.create(ticket=ticket, session=session)
-    user_task = Task.objects.create(
-        ticket=ticket,
-        session=session,
-        execution_target=Task.ExecutionTarget.INTERACTIVE,
-    )
-
-    claimed_task_id = cast("int", call_command("tasks", "claim", execution_target="headless", claimed_by="worker-1"))
-    sdk_result = cast(
-        "dict[str, str]",
-        call_command("tasks", "work-next-sdk", claimed_by="worker-1"),
-    )
-    user_result = cast(
-        "dict[str, str]",
-        call_command("tasks", "work-next-user-input", claimed_by="worker-2"),
-    )
-    refresh_summary = cast("dict[str, int]", call_command("followup", "refresh"))
-    reminders = cast("list[int]", call_command("followup", "remind"))
-
-    sdk_task.refresh_from_db()
-    sdk_followup_task.refresh_from_db()
-    user_task.refresh_from_db()
-
-    assert claimed_task_id == sdk_task.id
-    assert sdk_result["runtime"] == "claude-code"
-    assert user_result["runtime"] == "codex"
-    assert sdk_task.status == Task.Status.CLAIMED
-    assert sdk_followup_task.status == Task.Status.COMPLETED
-    assert user_task.status == Task.Status.COMPLETED
-    assert TaskAttempt.objects.count() == 2
-    assert refresh_summary == {"tickets": 1, "tasks": 3, "open_tasks": 1}
-    assert reminders == []
-
-
-@override_settings(
-    TEATREE_OVERLAY_CLASS="tests.teetree_core.test_management_commands.CommandOverlay",
-    TEATREE_HEADLESS_RUNTIME="claude-code",
-    TEATREE_INTERACTIVE_RUNTIME="codex",
-    TEATREE_TERMINAL_MODE="same-terminal",
-)
-@pytest.mark.django_db
-def test_task_commands_return_none_when_no_work_is_available() -> None:
-    assert call_command("tasks", "work-next-sdk", claimed_by="worker-1") is None
-    assert call_command("tasks", "work-next-user-input", claimed_by="worker-2") is None
-
-
-@override_settings(
-    TEATREE_OVERLAY_CLASS="tests.teetree_core.test_management_commands.CommandOverlay",
-    TEATREE_GITLAB_TOKEN="",
-    TEATREE_GITLAB_USERNAME="testuser",
-)
-def test_followup_sync_reports_no_repos_from_default_overlay() -> None:
-    result = cast("dict[str, int | list[str]]", call_command("followup", "sync"))
-
-    assert result["errors"] == ["TEATREE_GITLAB_TOKEN is not set"]
+        assert result["errors"] == ["TEATREE_GITLAB_TOKEN is not set"]

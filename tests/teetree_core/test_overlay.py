@@ -43,58 +43,56 @@ def clear_overlay_cache() -> Iterator[None]:
     reset_overlay_cache()
 
 
-@override_settings(TEATREE_OVERLAY_CLASS="tests.teetree_core.test_overlay.DummyOverlay")
-@pytest.mark.django_db
-def test_get_overlay_loads_and_caches_configured_overlay() -> None:
-    first = get_overlay()
-    second = get_overlay()
+class TestGetOverlay:
+    @override_settings(TEATREE_OVERLAY_CLASS="tests.teetree_core.test_overlay.DummyOverlay")
+    @pytest.mark.django_db
+    def test_loads_and_caches_configured_overlay(self) -> None:
+        first = get_overlay()
+        second = get_overlay()
 
-    assert first is second
-    assert first.get_repos() == ["backend", "frontend"]
+        assert first is second
+        assert first.get_repos() == ["backend", "frontend"]
 
+    @override_settings(TEATREE_OVERLAY_CLASS="")
+    def test_requires_explicit_setting(self) -> None:
+        with pytest.raises(ImproperlyConfigured, match="TEATREE_OVERLAY_CLASS"):
+            get_overlay()
 
-@override_settings(TEATREE_OVERLAY_CLASS="tests.teetree_core.test_overlay.DummyOverlay")
-@pytest.mark.django_db
-def test_overlay_optional_hooks_default_to_empty_values() -> None:
-    ticket = Ticket.objects.create()
-    worktree = Worktree.objects.create(ticket=ticket, repo_path="/tmp/backend", branch="feature")
-    overlay = get_overlay()
+    @override_settings(TEATREE_OVERLAY_CLASS="tests.teetree_core.test_overlay.InvalidOverlay")
+    def test_rejects_non_overlay_classes(self) -> None:
+        with pytest.raises(ImproperlyConfigured, match="must subclass OverlayBase"):
+            get_overlay()
 
-    assert overlay.get_env_extra(worktree) == {}
-    assert overlay.get_run_commands(worktree) == {}
-    assert overlay.get_db_import_strategy(worktree) is None
-    assert overlay.get_post_db_steps(worktree) == []
-    assert overlay.get_symlinks(worktree) == []
-    assert overlay.get_services_config(worktree) == {}
-    assert overlay.validate_mr("title", "description") == {"errors": [], "warnings": []}
-    assert overlay.get_skill_metadata() == {}
-
-
-@override_settings(TEATREE_OVERLAY_CLASS="")
-def test_get_overlay_requires_explicit_setting() -> None:
-    with pytest.raises(ImproperlyConfigured, match="TEATREE_OVERLAY_CLASS"):
-        get_overlay()
+    @override_settings(TEATREE_OVERLAY_CLASS="tests.teetree_core.test_overlay.MissingOverlay")
+    def test_reports_bad_import_paths(self) -> None:
+        with pytest.raises(ImproperlyConfigured, match="Could not import overlay"):
+            get_overlay()
 
 
-@override_settings(TEATREE_OVERLAY_CLASS="tests.teetree_core.test_overlay.InvalidOverlay")
-def test_get_overlay_rejects_non_overlay_classes() -> None:
-    with pytest.raises(ImproperlyConfigured, match="must subclass OverlayBase"):
-        get_overlay()
+class TestOverlayBase:
+    @override_settings(TEATREE_OVERLAY_CLASS="tests.teetree_core.test_overlay.DummyOverlay")
+    @pytest.mark.django_db
+    def test_optional_hooks_default_to_empty_values(self) -> None:
+        ticket = Ticket.objects.create()
+        worktree = Worktree.objects.create(ticket=ticket, repo_path="/tmp/backend", branch="feature")
+        overlay = get_overlay()
 
+        assert overlay.get_env_extra(worktree) == {}
+        assert overlay.get_run_commands(worktree) == {}
+        assert overlay.get_db_import_strategy(worktree) is None
+        assert overlay.get_post_db_steps(worktree) == []
+        assert overlay.get_symlinks(worktree) == []
+        assert overlay.get_services_config(worktree) == {}
+        assert overlay.validate_mr("title", "description") == {"errors": [], "warnings": []}
+        assert overlay.get_skill_metadata() == {}
 
-@override_settings(TEATREE_OVERLAY_CLASS="tests.teetree_core.test_overlay.MissingOverlay")
-def test_get_overlay_reports_bad_import_paths() -> None:
-    with pytest.raises(ImproperlyConfigured, match="Could not import overlay"):
-        get_overlay()
+    @pytest.mark.django_db
+    def test_abstract_fallthroughs_raise_not_implemented(self) -> None:
+        overlay = SuperCallingOverlay()
+        worktree = Worktree.objects.create(ticket=Ticket.objects.create(), repo_path="/tmp/backend", branch="feature")
 
+        with pytest.raises(NotImplementedError):
+            overlay.get_repos()
 
-@pytest.mark.django_db
-def test_overlay_base_abstract_fallthroughs_raise_not_implemented() -> None:
-    overlay = SuperCallingOverlay()
-    worktree = Worktree.objects.create(ticket=Ticket.objects.create(), repo_path="/tmp/backend", branch="feature")
-
-    with pytest.raises(NotImplementedError):
-        overlay.get_repos()
-
-    with pytest.raises(NotImplementedError):
-        overlay.get_provision_steps(worktree)
+        with pytest.raises(NotImplementedError):
+            overlay.get_provision_steps(worktree)
