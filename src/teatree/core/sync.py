@@ -7,7 +7,6 @@ and upserts them as Tickets.
 import re
 from dataclasses import dataclass, field
 
-from django.conf import settings
 from django.core.cache import cache
 from django.utils import timezone
 
@@ -37,14 +36,17 @@ def sync_followup() -> SyncResult:
     is needed.  On subsequent runs, only fetches MRs updated since the last
     successful sync (using GitLab's ``updated_after`` filter).
     """
-    token = getattr(settings, "TEATREE_GITLAB_TOKEN", "")
+    from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
+
+    overlay = get_overlay()
+    token = overlay.config.get_gitlab_token()
     if not token:
-        return SyncResult(errors=["TEATREE_GITLAB_TOKEN is not set"])
+        return SyncResult(errors=["GitLab token is not configured in overlay"])
 
     client = GitLabAPI(token=token)
-    username = getattr(settings, "TEATREE_GITLAB_USERNAME", "") or client.current_username()
+    username = overlay.config.get_gitlab_username() or client.current_username()
     if not username:
-        return SyncResult(errors=["TEATREE_GITLAB_USERNAME is not set"])
+        return SyncResult(errors=["GitLab username is not configured in overlay"])
     result = SyncResult()
 
     last_sync: str | None = cache.get(LAST_SYNC_CACHE_KEY)
@@ -399,10 +401,11 @@ def _collect_reviewable_mr_urls() -> tuple[list[str], dict[str, tuple[Ticket, st
 def _fetch_review_permalinks(result: SyncResult) -> None:
     """Fetch Slack review permalinks for in-flight non-draft MRs."""
     from teatree.backends.slack import search_review_permalinks  # noqa: PLC0415
+    from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
 
-    token = getattr(settings, "TEATREE_SLACK_TOKEN", "")
-    channel_name = getattr(settings, "TEATREE_REVIEW_CHANNEL", "")
-    channel_id = getattr(settings, "TEATREE_REVIEW_CHANNEL_ID", "")
+    overlay = get_overlay()
+    token = overlay.config.get_slack_token()
+    channel_name, channel_id = overlay.config.get_review_channel()
     if not token or not channel_id:
         return
 
@@ -441,9 +444,11 @@ def _fetch_review_permalinks(result: SyncResult) -> None:
 def _extract_variant(labels: list[object]) -> str:
     """Extract a customer/variant name from GitLab issue labels.
 
-    Only returns labels that match TEATREE_KNOWN_VARIANTS (case-insensitive).
+    Only returns labels that match overlay known variants (case-insensitive).
     """
-    known = getattr(settings, "TEATREE_KNOWN_VARIANTS", [])
+    from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
+
+    known = get_overlay().config.get_known_variants()
     known_lower = {v.lower(): v for v in known}
     for label in labels:
         text = str(label)

@@ -1,9 +1,9 @@
 from collections.abc import Iterator
 from typing import cast
+from unittest.mock import patch
 
 import pytest
 from django.core.exceptions import ImproperlyConfigured
-from django.test import override_settings
 
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay import OverlayBase, ProvisionStep
@@ -24,10 +24,6 @@ class DummyOverlay(OverlayBase):
         return [ProvisionStep(name="mark-ready", callable=mark_ready)]
 
 
-class InvalidOverlay:
-    pass
-
-
 class SuperCallingOverlay(OverlayBase):
     def get_repos(self) -> list[str]:
         return super().get_repos()
@@ -44,52 +40,87 @@ def clear_overlay_cache() -> Iterator[None]:
 
 
 class TestGetOverlay:
-    @override_settings(TEATREE_OVERLAY_CLASS="tests.teatree_core.test_overlay.DummyOverlay")
     @pytest.mark.django_db
     def test_loads_and_caches_configured_overlay(self) -> None:
-        first = get_overlay()
-        second = get_overlay()
+        with patch(
+            "teatree.core.overlay_loader._discover_overlays",
+            return_value={"test": DummyOverlay()},
+        ):
+            first = get_overlay()
+            second = get_overlay()
 
-        assert first is second
-        assert first.get_repos() == ["backend", "frontend"]
+            assert first is second
+            assert first.get_repos() == ["backend", "frontend"]
 
-    @override_settings(TEATREE_OVERLAY_CLASS="")
-    def test_requires_explicit_setting(self) -> None:
-        with pytest.raises(ImproperlyConfigured, match="TEATREE_OVERLAY_CLASS"):
+    def test_requires_at_least_one_overlay(self) -> None:
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value={}),
+            pytest.raises(ImproperlyConfigured, match="No teatree overlays found"),
+        ):
             get_overlay()
 
-    @override_settings(TEATREE_OVERLAY_CLASS="tests.teatree_core.test_overlay.InvalidOverlay")
-    def test_rejects_non_overlay_classes(self) -> None:
-        with pytest.raises(ImproperlyConfigured, match="must subclass OverlayBase"):
+    def test_raises_for_unknown_name(self) -> None:
+        with (
+            patch(
+                "teatree.core.overlay_loader._discover_overlays",
+                return_value={"test": DummyOverlay()},
+            ),
+            pytest.raises(ImproperlyConfigured, match="Overlay 'unknown' not found"),
+        ):
+            get_overlay("unknown")
+
+    def test_raises_when_multiple_without_name(self) -> None:
+        with (
+            patch(
+                "teatree.core.overlay_loader._discover_overlays",
+                return_value={"a": DummyOverlay(), "b": DummyOverlay()},
+            ),
+            pytest.raises(ImproperlyConfigured, match="Multiple overlays found"),
+        ):
             get_overlay()
 
-    @override_settings(TEATREE_OVERLAY_CLASS="tests.teatree_core.test_overlay.MissingOverlay")
-    def test_reports_bad_import_paths(self) -> None:
-        with pytest.raises(ImproperlyConfigured, match="Could not import overlay"):
-            get_overlay()
+
+class TestDiscoverOverlaysValidation:
+    def test_rejects_entry_point_not_subclassing_overlay_base(self) -> None:
+        from teatree.core.overlay_loader import _discover_overlays  # noqa: PLC0415
+
+        fake_ep = type("FakeEP", (), {"name": "bad", "value": "some.module:NotOverlay", "load": lambda self: str})()
+        with (
+            patch("importlib.metadata.entry_points", return_value=[fake_ep]),
+            pytest.raises(ImproperlyConfigured, match="does not subclass OverlayBase"),
+        ):
+            _discover_overlays.__wrapped__()
 
 
 class TestOverlayBase:
-    @override_settings(TEATREE_OVERLAY_CLASS="tests.teatree_core.test_overlay.DummyOverlay")
     @pytest.mark.django_db
     def test_optional_hooks_default_to_empty_values(self) -> None:
-        ticket = Ticket.objects.create()
-        worktree = Worktree.objects.create(ticket=ticket, repo_path="/tmp/backend", branch="feature")
-        overlay = get_overlay()
+        ticket = Ticket.objects.create(overlay="test")
+        worktree = Worktree.objects.create(ticket=ticket, overlay="test", repo_path="/tmp/backend", branch="feature")
+        with patch(
+            "teatree.core.overlay_loader._discover_overlays",
+            return_value={"test": DummyOverlay()},
+        ):
+            overlay = get_overlay()
 
-        assert overlay.get_env_extra(worktree) == {}
-        assert overlay.get_run_commands(worktree) == {}
-        assert overlay.get_db_import_strategy(worktree) is None
-        assert overlay.get_post_db_steps(worktree) == []
-        assert overlay.get_symlinks(worktree) == []
-        assert overlay.get_services_config(worktree) == {}
-        assert overlay.validate_mr("title", "description") == {"errors": [], "warnings": []}
-        assert overlay.get_skill_metadata() == {}
+            assert overlay.get_env_extra(worktree) == {}
+            assert overlay.get_run_commands(worktree) == {}
+            assert overlay.get_db_import_strategy(worktree) is None
+            assert overlay.get_post_db_steps(worktree) == []
+            assert overlay.get_symlinks(worktree) == []
+            assert overlay.get_services_config(worktree) == {}
+            assert overlay.metadata.validate_mr("title", "description") == {"errors": [], "warnings": []}
+            assert overlay.metadata.get_skill_metadata() == {}
 
     @pytest.mark.django_db
     def test_abstract_fallthroughs_raise_not_implemented(self) -> None:
         overlay = SuperCallingOverlay()
-        worktree = Worktree.objects.create(ticket=Ticket.objects.create(), repo_path="/tmp/backend", branch="feature")
+        worktree = Worktree.objects.create(
+            ticket=Ticket.objects.create(overlay="test"),
+            overlay="test",
+            repo_path="/tmp/backend",
+            branch="feature",
+        )
 
         with pytest.raises(NotImplementedError):
             overlay.get_repos()

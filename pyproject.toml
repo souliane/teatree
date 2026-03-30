@@ -25,7 +25,7 @@ dependencies = [
 ]
 scripts = { t3 = "teatree.cli:main" }
 
-entry-points."teatree.overlays".t3-teatree = "teatree.contrib.t3_teatree.settings"
+entry-points."teatree.overlays".t3-teatree = "teatree.contrib.t3_teatree.overlay:TeatreeOverlay"
 
 [dependency-groups]
 # --- Ruff ---

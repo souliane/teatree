@@ -24,8 +24,6 @@ INSTALLED_APPS = [
     "teatree.contrib.t3_teatree",
 ]
 
-TEATREE_OVERLAY_CLASS = "teatree.contrib.t3_teatree.overlay.TeatreeOverlay"
-
 MIDDLEWARE = [
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",

@@ -30,9 +30,9 @@ Optional: If `T3_REVIEW_SKILL` is configured (e.g., `ac-reviewing-skills`), retr
 
 ## Configuration
 
-Retro's behavior depends on these `~/.teatree` variables and on whether the current repo contains a generated TeaTree host project:
+Retro's behavior depends on these `~/.teatree` variables and on whether the current repo contains an overlay package:
 
-- **Active host project / overlay app** — when the current repo contains a generated TeaTree host project, retro writes project-specific improvements there. If no host project is detectable, retro writes to the nearest repo-level agent instructions or user memory/config fallback.
+- **Active overlay / overlay app** — when the current repo contains an overlay package, retro writes project-specific improvements there. If no overlay is detectable, retro writes to the nearest repo-level agent instructions or user memory/config fallback.
 - **`T3_CONTRIBUTE`** — `false` (default) or `true`:
   - `false`: only improve the active project overlay. Core skill gaps are noted in conversation but not acted on.
   - `true`: also improve core skills in the user's fork at `$T3_REPO`. Retro creates a local commit but **never pushes automatically**. Use `/t3-contribute` to review and push when ready.
@@ -223,13 +223,13 @@ For each issue, determine **why** it happened:
 git -C "$T3_REPO" rev-parse --git-dir >/dev/null 2>&1 || echo "STOP: T3_REPO is not a git repo"
 ```
 
-If a skill is not editable (no local git repo), write improvements to the best fallback location — repo-level agent instructions, user config, or memory files. See § Scope & Editability for the full decision table. In standalone mode with no generated host project, skip the overlay check.
+If a skill is not editable (no local git repo), write improvements to the best fallback location — repo-level agent instructions, user config, or memory files. See § Scope & Editability for the full decision table. In standalone mode with no overlay project, skip the overlay check.
 
 **Load coding skills before implementing (Non-Negotiable):** Retro fixes often involve writing code (Python, Django, shell). Load the appropriate coding skill (`/ac-django`, `/ac-python`, etc.) before implementing — not just for model/view work but for any code: settings, logging, CLI commands, hook scripts. Retro is not exempt from coding standards.
 
 **Determine the target** based on `T3_CONTRIBUTE` and the nature of the fix:
 
-#### Always: project overlay improvements (active host project)
+#### Always: project overlay improvements (active overlay)
 
 These go to the overlay regardless of contribution level:
 

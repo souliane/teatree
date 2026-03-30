@@ -26,74 +26,83 @@
       "description": "Add overlay-specific environment variables to the generated worktree env file.",
       "name": "get_env_extra",
       "required": false,
-      "signature": "(_worktree: 'Worktree') -> dict[str, str]"
+      "signature": "(worktree: 'Worktree') -> dict[str, str]"
     },
     {
       "description": "Expose named service commands for lifecycle start and operator discovery.",
       "name": "get_run_commands",
       "required": false,
-      "signature": "(_worktree: 'Worktree') -> RunCommands"
+      "signature": "(worktree: 'Worktree') -> RunCommands"
     },
     {
       "description": "Describe how a worktree database should be provisioned or restored.",
       "name": "get_db_import_strategy",
       "required": false,
-      "signature": "(_worktree: 'Worktree') -> DbImportStrategy"
+      "signature": "(worktree: 'Worktree') -> teatree.core.overlay.DbImportStrategy | None"
     },
     {
       "description": "Return callbacks to run after database setup completes.",
       "name": "get_post_db_steps",
       "required": false,
-      "signature": "(_worktree: 'Worktree') -> list[HookValue]"
+      "signature": "(worktree: 'Worktree') -> list[teatree.core.overlay.PostDbStep]"
     },
     {
       "description": "Declare extra symlinks that should exist inside the worktree.",
       "name": "get_symlinks",
       "required": false,
-      "signature": "(_worktree: 'Worktree') -> list[HookValue]"
+      "signature": "(worktree: 'Worktree') -> list[teatree.core.overlay.SymlinkSpec]"
     },
     {
       "description": "Return additional service metadata for lifecycle orchestration.",
       "name": "get_services_config",
       "required": false,
-      "signature": "(_worktree: 'Worktree') -> dict[str, HookValue]"
+      "signature": "(worktree: 'Worktree') -> dict[str, teatree.core.overlay.ServiceSpec]"
     },
     {
       "description": "Return merge-request validation problems for this overlay.",
-      "name": "validate_mr",
+      "name": "metadata.validate_mr",
       "required": false,
-      "signature": "(_title: str, _description: str) -> list[str]"
+      "signature": "(title: str, description: str) -> teatree.core.overlay.ValidationResult"
     },
     {
-      "description": "Return the active overlay skill path and any companion skills.",
-      "name": "get_skill_metadata",
+      "description": "Return the active overlay skill path and remote match patterns.",
+      "name": "metadata.get_skill_metadata",
       "required": false,
-      "signature": "() -> dict[str, HookValue]"
+      "signature": "() -> teatree.core.overlay.SkillMetadata"
+    },
+    {
+      "description": "Return the GitLab project path for CI operations.",
+      "name": "metadata.get_ci_project_path",
+      "required": false,
+      "signature": "() -> str"
+    },
+    {
+      "description": "Return E2E trigger configuration (project_path, ref).",
+      "name": "metadata.get_e2e_config",
+      "required": false,
+      "signature": "() -> dict[str, str]"
+    },
+    {
+      "description": "Detect the current tenant variant from environment.",
+      "name": "metadata.detect_variant",
+      "required": false,
+      "signature": "() -> str"
+    },
+    {
+      "description": "Return overlay-specific tool commands for t3 <overlay> tool.",
+      "name": "metadata.get_tool_commands",
+      "required": false,
+      "signature": "() -> list[teatree.core.overlay.ToolCommand]"
+    },
+    {
+      "description": "Return GitLab project paths to sync MRs from.",
+      "name": "metadata.get_followup_repos",
+      "required": false,
+      "signature": "() -> list[str]"
     }
   ],
   "overlay_base": "teatree.core.overlay.OverlayBase",
-  "settings": [
-    {
-      "description": "Import path for the active OverlayBase subclass.",
-      "name": "TEATREE_OVERLAY_CLASS",
-      "required": true
-    },
-    {
-      "description": "Runtime key for unattended SDK execution.",
-      "name": "TEATREE_SDK_RUNTIME",
-      "required": true
-    },
-    {
-      "description": "Runtime key for interactive user-input work.",
-      "name": "TEATREE_INTERACTIVE_RUNTIME",
-      "required": true
-    },
-    {
-      "description": "Terminal strategy used by the interactive runtime.",
-      "name": "TEATREE_TERMINAL_MODE",
-      "required": true
-    }
-  ],
+  "settings": [],
   "skill_metadata_fields": [
     {
       "description": "Primary overlay skill file path.",
@@ -101,8 +110,8 @@
       "required": false
     },
     {
-      "description": "Additional skills loaded alongside the primary overlay skill.",
-      "name": "companion_skills",
+      "description": "Git remote patterns that activate the overlay skill outside the host project.",
+      "name": "remote_patterns",
       "required": false
     }
   ]

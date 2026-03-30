@@ -38,7 +38,7 @@ class LaunchAgentView(View):
 
         try:
             overlay = get_overlay()
-            skill_metadata = overlay.get_skill_metadata()
+            skill_metadata = overlay.metadata.get_skill_metadata()
             if task.execution_target == Task.ExecutionTarget.INTERACTIVE:
                 return self._launch_interactive(task, skill_metadata)
             return self._launch_headless(task)

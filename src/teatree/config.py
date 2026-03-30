@@ -62,7 +62,7 @@ def default_logging(namespace: str) -> dict:
 @dataclass
 class OverlayEntry:
     name: str
-    settings_module: str
+    overlay_class: str
     project_path: Path | None = None
 
 
@@ -106,17 +106,23 @@ def discover_overlays(config_path: Path = CONFIG_PATH) -> list[OverlayEntry]:
     # 1. Toml config
     config = load_config(config_path)
     for name, overlay_cfg in config.raw.get("overlays", {}).items():
-        path = Path(overlay_cfg.get("path", "")).expanduser()
-        manage_py = path / "manage.py"
-        settings_module = _extract_settings_module(manage_py) if manage_py.is_file() else ""
-        seen[name] = OverlayEntry(name=name, settings_module=settings_module, project_path=path)
+        overlay_class = overlay_cfg.get("class", "")
+        path_str = overlay_cfg.get("path", "")
+        project_path = Path(path_str).expanduser() if path_str else None
+        if not overlay_class and project_path:
+            # Backward compat: derive settings module from manage.py for TOML overlays
+            manage_py = project_path / "manage.py"
+            settings_module = _extract_settings_module(manage_py) if manage_py.is_file() else ""
+            # Store settings module as overlay_class fallback so callers can still use it
+            overlay_class = settings_module
+        seen[name] = OverlayEntry(name=name, overlay_class=overlay_class, project_path=project_path)
 
     # 2. Entry points (skip if already found via toml)
     for ep in entry_points(group="teatree.overlays"):
         if ep.name not in seen:
             seen[ep.name] = OverlayEntry(
                 name=ep.name,
-                settings_module=ep.value,
+                overlay_class=ep.value,
                 project_path=_resolve_ep_project_path(ep.value),
             )
 
@@ -148,17 +154,20 @@ def _discover_from_manage_py() -> OverlayEntry | None:
         if manage_py.is_file():
             settings_module = _extract_settings_module(manage_py)
             if settings_module:
-                return OverlayEntry(name=directory.name, settings_module=settings_module, project_path=directory)
+                return OverlayEntry(name=directory.name, overlay_class="", project_path=directory)
     return None
 
 
-def _resolve_ep_project_path(settings_module: str) -> Path | None:
-    """Resolve the project root for an entry-point overlay from its settings module.
+def _resolve_ep_project_path(overlay_class: str) -> Path | None:
+    """Resolve the project root for an entry-point overlay from its class path.
 
-    Locates the top-level package on disk, then walks up to find a ``manage.py``
-    — the same marker used by TOML and cwd-based discovery.
+    ``overlay_class`` is e.g. ``"teatree.contrib.t3_teatree.overlay:TeatreeOverlay"``.
+    Parses the module part (before the ``:``) to find the top-level package on disk,
+    then walks up to find a ``manage.py`` — the same marker used by TOML and cwd-based
+    discovery.
     """
-    top_package = settings_module.split(".", maxsplit=1)[0]
+    module_path = overlay_class.split(":", maxsplit=1)[0]
+    top_package = module_path.split(".", maxsplit=1)[0]
     spec = importlib.util.find_spec(top_package)
     if spec is None or not spec.submodule_search_locations:
         return None

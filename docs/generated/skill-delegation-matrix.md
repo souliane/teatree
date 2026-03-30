@@ -23,5 +23,5 @@ Source: `teatree.skill_map.DEFAULT_SKILL_DELEGATION`
 
 - `phase`
 - `overlay_skill_path`
-- `companion_skills`
-- `delegated_skills`
+- `framework_skills`
+- `lifecycle_skill`

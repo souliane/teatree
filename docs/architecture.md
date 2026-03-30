@@ -6,7 +6,7 @@ Teatree splits its commands into three layers:
 
 1. **Management commands** (`teatree/core/management/commands/`) -- Django management commands that touch the database. These handle lifecycle transitions, workspace operations, DB refresh, MR validation, task queue processing, and follow-up. They use [django-typer](https://github.com/bckohan/django-typer) for a typed CLI interface.
 
-2. **CLI commands** (`teatree/cli.py`) -- the `t3` entry point. Commands that don't need Django (like `startproject`, `ci`, `doctor`, `review-request`) live here as plain Typer groups. Commands that need the database are bridged to management commands after Django bootstrap.
+2. **CLI commands** (`teatree/cli.py`) -- the `t3` entry point. Commands that don't need Django (like `startoverlay`, `ci`, `doctor`, `review-request`) live here as plain Typer groups. Commands that need the database are bridged to management commands after Django bootstrap.
 
 3. **Internal utilities** (`teatree/utils/`) -- helper modules for git operations, postgres interaction, and other low-level work. These are not exposed as commands; they're used by the layers above.
 
@@ -24,16 +24,16 @@ Five models in `teatree/core/models.py` track the state of ongoing work:
 
 ## The overlay pattern
 
-Teatree is generic -- it doesn't know your repos, CI setup, or environment. Project-specific behaviour lives in a separate Django project (the "host project") that you generate with `t3 startproject`.
+Teatree is generic -- it doesn't know your repos, CI setup, or environment. Project-specific behaviour lives in a separate Python package (the "overlay") that subclasses `OverlayBase`.
 
-The host project defines one overlay class that subclasses `OverlayBase` and implements the hooks teatree needs:
+Overlays register via `teatree.overlays` entry points in their `pyproject.toml`:
 
-```python
-# In your host project
-TEATREE_OVERLAY_CLASS = "myoverlay.overlay.MyOverlay"
+```toml
+[project.entry-points."teatree.overlays"]
+my-overlay = "myapp.overlay:MyOverlay"
 ```
 
-The overlay loader (`teatree/core/overlay_loader.py`) imports and caches this class at runtime. Management commands call overlay hooks when they need project-specific information -- which repos to manage, how to provision a worktree, what services to start, how to validate an MR.
+The overlay loader (`teatree/core/overlay_loader.py`) discovers all installed overlays from entry points at startup, instantiates each class, and caches them. Multi-overlay is supported -- models carry an overlay field and the dashboard offers a selector when more than one overlay is present. Management commands call overlay hooks when they need project-specific information -- which repos to manage, how to provision a worktree, what services to start, how to validate an MR.
 
 See [Overlay API](overlay-api.md) for the full contract.
 
@@ -44,7 +44,7 @@ teatree/
   core/           # Models, managers, selectors, views, management commands, templates
   agents/         # Runtime adapters for AI agent platforms
   backends/       # Integration backends (GitLab, Slack, Notion)
-  scaffold/       # Templates for `t3 startproject`
+  overlay_init/   # Templates for `t3 startoverlay`
   utils/          # Git, postgres, and other internal helpers
   cli.py          # The `t3` entry point
   skill_map.py    # Skill metadata registry

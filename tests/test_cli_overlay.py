@@ -36,46 +36,47 @@ class TestUvCmd:
 
 
 class TestManagepy:
-    def test_none_path(self):
-        import click  # noqa: PLC0415
+    def test_none_path_falls_back_to_python_m_teatree(self):
+        """managepy(None) falls back to ``python -m teatree``."""
+        with patch("teatree.cli_overlay.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            managepy(None, "migrate")
+            mock_run.assert_called_once()
+            cmd = mock_run.call_args[0][0]
+            assert "-m" in cmd
+            assert "teatree" in cmd
 
-        try:
-            managepy(None)
-            msg = "Expected Exit"
-            raise AssertionError(msg)
-        except (SystemExit, click.exceptions.Exit) as e:
-            assert e.exit_code == 1  # noqa: PT017
-
-    def test_no_manage_py(self, tmp_path):
-        import click  # noqa: PLC0415
-
-        try:
-            managepy(tmp_path)
-            msg = "Expected Exit"
-            raise AssertionError(msg)
-        except (SystemExit, click.exceptions.Exit) as e:
-            assert e.exit_code == 1  # noqa: PT017
+    def test_no_manage_py_falls_back_to_python_m_teatree(self, tmp_path):
+        """Managepy with no manage.py falls back to ``python -m teatree``."""
+        with patch("teatree.cli_overlay.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            managepy(tmp_path, "migrate")
+            mock_run.assert_called_once()
+            cmd = mock_run.call_args[0][0]
+            assert "-m" in cmd
+            assert "teatree" in cmd
 
     def test_runs_subprocess(self, tmp_path):
         (tmp_path / "manage.py").write_text("pass\n")
-        with patch("teatree.cli_review.subprocess.run") as mock_run:
+        with patch("teatree.cli_overlay.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0)
             managepy(tmp_path, "migrate")
             mock_run.assert_called_once()
 
 
 class TestUvicorn:
-    def test_none_path(self):
-        import click  # noqa: PLC0415
-
-        try:
+    def test_none_path_falls_back_to_python_m_uvicorn(self):
+        """_uvicorn(None, ...) falls back to ``python -m uvicorn``."""
+        with patch("teatree.cli_overlay.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
             _uvicorn_fn(None, "127.0.0.1", 8000)
-            msg = "Expected Exit"
-            raise AssertionError(msg)
-        except (SystemExit, click.exceptions.Exit) as e:
-            assert e.exit_code == 1  # noqa: PT017
+            mock_run.assert_called_once()
+            cmd = mock_run.call_args[0][0]
+            assert "-m" in cmd
+            assert "uvicorn" in cmd
 
-    def test_runs_subprocess(self, tmp_path):
+    def test_runs_subprocess_with_project_path(self, tmp_path):
+        (tmp_path / "manage.py").write_text("pass\n")
         with patch("teatree.cli_overlay.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0)
             _uvicorn_fn(tmp_path, "127.0.0.1", 8000, "myapp.settings")
@@ -84,7 +85,7 @@ class TestUvicorn:
             assert call_args[0].endswith("/uv")
             assert call_args[1:3] == ["--directory", str(tmp_path)]
             assert "uvicorn" in str(call_args)
-            assert "myapp.asgi:application" in str(call_args)
+            assert "teatree.asgi:application" in str(call_args)
 
 
 class TestOverlayAppBuilder:
@@ -102,14 +103,29 @@ class TestOverlayAppBuilder:
     def test_register_commands_with_overlays(self):
         from teatree.config import OverlayEntry  # noqa: PLC0415
 
-        entries = [OverlayEntry(name="test", settings_module="test.settings", project_path=Path("/tmp/test"))]
-        active = OverlayEntry(name="test", settings_module="test.settings", project_path=Path("/tmp/test"))
+        entries = [OverlayEntry(name="test", overlay_class="test.overlay.TestOverlay", project_path=Path("/tmp/test"))]
+        active = OverlayEntry(name="test", overlay_class="test.overlay.TestOverlay", project_path=Path("/tmp/test"))
 
         with (
             patch("teatree.config.discover_active_overlay", return_value=active),
             patch("teatree.config.discover_overlays", return_value=entries),
         ):
             _register_overlay_commands()
+
+    def test_register_commands_entry_point_overlay_uses_teatree_settings(self):
+        from teatree.config import OverlayEntry  # noqa: PLC0415
+
+        entries = [OverlayEntry(name="t3-acme", overlay_class="acme.overlay:AcmeOverlay", project_path=None)]
+
+        with (
+            patch("teatree.config.discover_active_overlay", return_value=None),
+            patch("teatree.config.discover_overlays", return_value=entries),
+            patch("teatree.cli.OverlayAppBuilder") as mock_builder,
+        ):
+            mock_builder.return_value.build.return_value = typer.Typer()
+            _register_overlay_commands()
+
+        mock_builder.assert_called_once_with("t3-acme", None, "teatree.settings")
 
     def test_register_commands_no_overlays(self):
         with (
@@ -338,7 +354,7 @@ class TestOverlayCommands:
         from teatree.skill_loading import SkillSelectionResult  # noqa: PLC0415
 
         overlay_obj = MagicMock()
-        overlay_obj.get_skill_metadata.return_value = {"skill_path": "skills/t3-test/SKILL.md"}
+        overlay_obj.metadata.get_skill_metadata.return_value = {"skill_path": "skills/t3-test/SKILL.md"}
 
         with (
             patch("shutil.which", return_value="/usr/bin/claude"),
@@ -363,7 +379,7 @@ class TestOverlayCommands:
         from teatree.skill_loading import SkillSelectionResult  # noqa: PLC0415
 
         overlay_obj = MagicMock()
-        overlay_obj.get_skill_metadata.return_value = {}
+        overlay_obj.metadata.get_skill_metadata.return_value = {}
 
         with (
             patch("shutil.which", return_value="/usr/bin/claude"),

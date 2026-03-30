@@ -2,7 +2,7 @@
 
 > **Current system:** Project overlays subclass `OverlayBase` (see `teatree.core.overlay`) and override methods like `get_repos()`, `get_provision_steps()`, `get_env_extra()`, `get_run_commands()`. The `wt_*` names below are the **conceptual extension point names** used in skill documentation — they map to `OverlayBase` methods, not to a function registry.
 
-Project-specific behavior lives in the generated TeaTree Django host project. The active overlay class subclasses `OverlayBase`, and runtime code calls overlay methods directly.
+Project-specific behavior lives in the overlay package. The active overlay class subclasses `OverlayBase`, and runtime code calls overlay methods directly.
 
 Priority: **default** (no-op) < **framework** (Django) < **project** (project-specific).
 
@@ -57,7 +57,7 @@ graph TB
 
 ## How the Override Chain Works
 
-TeaTree packages the generic runtime. The generated host project owns the project layer:
+TeaTree packages the generic runtime. The overlay package owns the project layer:
 
 Inside each Python script:
 
@@ -68,7 +68,7 @@ overlay = get_overlay()
 overlay.post_db_setup(project_dir)  # example project-layer hook
 ```
 
-Use `uv run t3 startproject ...` to create the host project, set `TEATREE_OVERLAY_CLASS` in settings, and implement the required hooks on the generated overlay app.
+Use `uv run t3 startoverlay ...` to create the overlay package, register the entry point in pyproject.toml, and implement the required hooks on the overlay class.
 
 ## Legacy Note
 

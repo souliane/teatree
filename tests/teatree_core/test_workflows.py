@@ -15,7 +15,7 @@ from django.core.management import call_command
 from django.test import Client, override_settings
 
 from teatree.core.models import Session, Task, Ticket, Worktree
-from teatree.core.overlay import OverlayBase, ProvisionStep, RunCommands, ServiceSpec, ToolCommand
+from teatree.core.overlay import OverlayBase, OverlayMetadata, ProvisionStep, RunCommands, ServiceSpec, ToolCommand
 from teatree.core.overlay_loader import reset_overlay_cache
 
 pytestmark = [
@@ -26,8 +26,17 @@ pytestmark = [
 ]
 
 
+class _WorkflowMetadata(OverlayMetadata):
+    def get_tool_commands(self) -> list[ToolCommand]:
+        return [
+            {"name": "check-translations", "help": "Check translations", "command": "check_translations"},
+        ]
+
+
 class WorkflowOverlay(OverlayBase):
     """Rich overlay that supports the full lifecycle for workflow tests."""
+
+    metadata = _WorkflowMetadata()
 
     def get_repos(self) -> list[str]:
         return ["backend", "frontend"]
@@ -77,23 +86,21 @@ class WorkflowOverlay(OverlayBase):
     def get_reset_passwords_command(self, worktree: Worktree) -> str:
         return f"cd {worktree.repo_path} && python manage.py reset_passwords"
 
-    def get_tool_commands(self) -> list[ToolCommand]:
-        return [
-            {"name": "check-translations", "help": "Check translations", "command": "check_translations"},
-        ]
-
     def get_workspace_repos(self) -> list[str]:
         return ["backend", "frontend"]
 
 
-WORKFLOW_OVERLAY = "tests.teatree_core.test_workflows.WorkflowOverlay"
+_MOCK_OVERLAY = {"test": WorkflowOverlay()}
 
 WORKFLOW_SETTINGS = {
-    "TEATREE_OVERLAY_CLASS": WORKFLOW_OVERLAY,
     "TEATREE_HEADLESS_RUNTIME": "claude-code",
     "TEATREE_INTERACTIVE_RUNTIME": "codex",
     "TEATREE_TERMINAL_MODE": "same-terminal",
 }
+
+
+def _patch_overlay():
+    return patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY)
 
 
 @pytest.fixture(autouse=True)
@@ -118,6 +125,7 @@ class TestLifecycleProvision:
         (ticket_dir / "frontend").mkdir()
 
         ticket = Ticket.objects.create(
+            overlay="test",
             issue_url="https://gitlab.com/org/repo/-/issues/42",
             variant="testclient",
         )
@@ -130,12 +138,14 @@ class TestLifecycleProvision:
 
         wt_backend = Worktree.objects.create(
             ticket=ticket,
+            overlay="test",
             repo_path="backend",
             branch="ac-backend-42-ticket",
             extra={"worktree_path": str(ticket_dir / "backend")},
         )
         wt_frontend = Worktree.objects.create(
             ticket=ticket,
+            overlay="test",
             repo_path="frontend",
             branch="ac-backend-42-ticket",
             extra={"worktree_path": str(ticket_dir / "frontend")},
@@ -143,7 +153,10 @@ class TestLifecycleProvision:
 
         backend_path = str(ticket_dir / "backend")
         frontend_path = str(ticket_dir / "frontend")
-        with patch("teatree.core.management.commands.lifecycle.subprocess") as mock_sp:
+        with (
+            _patch_overlay(),
+            patch("teatree.core.management.commands.lifecycle.subprocess") as mock_sp,
+        ):
             mock_sp.run.return_value = MagicMock(returncode=0)
             backend_id = cast("int", call_command("lifecycle", "setup", path=backend_path))
             frontend_id = cast("int", call_command("lifecycle", "setup", path=frontend_path))
@@ -170,7 +183,8 @@ class TestLifecycleProvision:
         assert (ticket_dir / "backend" / ".env.worktree").is_symlink()
         assert (ticket_dir / "frontend" / ".env.worktree").is_symlink()
 
-        call_command("lifecycle", "start", path=backend_path)
+        with _patch_overlay():
+            call_command("lifecycle", "start", path=backend_path)
         wt_backend.refresh_from_db()
         assert wt_backend.state == Worktree.State.SERVICES_UP
 
@@ -193,17 +207,28 @@ class TestLifecycleProvision:
         wt1_dir.mkdir()
         wt2_dir.mkdir()
 
-        ticket1 = Ticket.objects.create(issue_url="https://example.com/issues/100", variant="alpha")
-        ticket2 = Ticket.objects.create(issue_url="https://example.com/issues/200", variant="beta")
+        ticket1 = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/100", variant="alpha")
+        ticket2 = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/200", variant="beta")
 
         wt1 = Worktree.objects.create(
-            ticket=ticket1, repo_path="backend", branch="br-100", extra={"worktree_path": str(wt1_dir)}
+            ticket=ticket1,
+            overlay="test",
+            repo_path="backend",
+            branch="br-100",
+            extra={"worktree_path": str(wt1_dir)},
         )
         wt2 = Worktree.objects.create(
-            ticket=ticket2, repo_path="backend", branch="br-200", extra={"worktree_path": str(wt2_dir)}
+            ticket=ticket2,
+            overlay="test",
+            repo_path="backend",
+            branch="br-200",
+            extra={"worktree_path": str(wt2_dir)},
         )
 
-        with patch("teatree.core.management.commands.lifecycle.subprocess") as mock_sp:
+        with (
+            _patch_overlay(),
+            patch("teatree.core.management.commands.lifecycle.subprocess") as mock_sp,
+        ):
             mock_sp.run.return_value = MagicMock(returncode=0)
             call_command("lifecycle", "setup", path=str(wt1_dir))
             call_command("lifecycle", "setup", path=str(wt2_dir))
@@ -222,18 +247,50 @@ class TestLifecycleProvision:
         wt_dir = tmp_path / "backend"
         wt_dir.mkdir()
 
-        ticket = Ticket.objects.create(issue_url="https://example.com/issues/60")
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/60")
         Worktree.objects.create(
-            ticket=ticket, repo_path="backend", branch="feature", extra={"worktree_path": str(wt_dir)}
+            ticket=ticket,
+            overlay="test",
+            repo_path="backend",
+            branch="feature",
+            extra={"worktree_path": str(wt_dir)},
         )
 
-        with patch("teatree.core.management.commands.lifecycle.subprocess") as mock_sp:
+        with (
+            _patch_overlay(),
+            patch("teatree.core.management.commands.lifecycle.subprocess") as mock_sp,
+        ):
             mock_sp.run.return_value = MagicMock(returncode=0)
             call_command("lifecycle", "setup", path=str(wt_dir))
 
         calls = mock_sp.run.call_args_list
         reset_call = calls[-1]
         assert "reset_passwords" in reset_call.args[0]
+
+
+# ---------------------------------------------------------------------------
+# Overlay filtering (managers)
+# ---------------------------------------------------------------------------
+
+
+class TestOverlayFiltering:
+    def test_ticket_for_overlay_filters_by_name(self) -> None:
+        Ticket.objects.create(overlay="alpha")
+        Ticket.objects.create(overlay="beta")
+
+        assert Ticket.objects.for_overlay("alpha").count() == 1
+        assert Ticket.objects.for_overlay(None).count() == 2
+
+    def test_task_claimable_filters_by_overlay(self) -> None:
+        ticket_a = Ticket.objects.create(overlay="alpha")
+        ticket_b = Ticket.objects.create(overlay="beta")
+        session_a = Session.objects.create(ticket=ticket_a, overlay="alpha", agent_id="a")
+        session_b = Session.objects.create(ticket=ticket_b, overlay="beta", agent_id="b")
+        Task.objects.create(ticket=ticket_a, session=session_a, execution_target="headless")
+        Task.objects.create(ticket=ticket_b, session=session_b, execution_target="headless")
+
+        assert Task.objects.claimable_for_headless(overlay="alpha").count() == 1
+        assert Task.objects.claimable_for_headless(overlay=None).count() == 2
 
 
 # ---------------------------------------------------------------------------
@@ -245,7 +302,7 @@ class TestTaskWorkflow:
     @override_settings(**WORKFLOW_SETTINGS)
     def test_claim_work_complete_advances_ticket(self) -> None:
         """Test the full task lifecycle: create -> claim -> complete -> ticket advances."""
-        ticket = Ticket.objects.create(issue_url="https://example.com/issues/99")
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/99")
         ticket.scope(issue_url="https://example.com/issues/99", repos=["backend"])
         ticket.save()
         ticket.start()
@@ -283,7 +340,7 @@ class TestTaskWorkflow:
     @override_settings(**WORKFLOW_SETTINGS)
     def test_rework_cancels_pending_tasks_and_resets_ticket(self) -> None:
         """Test the rework flow: ticket is sent back, pending tasks are cancelled."""
-        ticket = Ticket.objects.create(issue_url="https://example.com/issues/88")
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/88")
         ticket.scope(repos=["backend"])
         ticket.save()
         ticket.start()
@@ -291,7 +348,7 @@ class TestTaskWorkflow:
         ticket.code()
         ticket.save()
 
-        session = Session.objects.create(ticket=ticket, agent_id="agent-1")
+        session = Session.objects.create(ticket=ticket, overlay="test", agent_id="agent-1")
         pending_task = Task.objects.create(ticket=ticket, session=session, status=Task.Status.PENDING)
         claimed_task = Task.objects.create(
             ticket=ticket,
@@ -321,8 +378,8 @@ class TestTaskWorkflow:
     @override_settings(**WORKFLOW_SETTINGS)
     def test_headless_needing_user_input_schedules_interactive_followup(self) -> None:
         """When a headless task reports needs_user_input, an interactive followup is created."""
-        ticket = Ticket.objects.create(issue_url="https://example.com/issues/71")
-        session = Session.objects.create(ticket=ticket, agent_id="headless-agent")
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/71")
+        session = Session.objects.create(ticket=ticket, overlay="test", agent_id="headless-agent")
         task = Task.objects.create(
             ticket=ticket,
             session=session,
@@ -360,8 +417,8 @@ class TestDashboardAndViews:
         """Test the dashboard view workflow: create headless task -> cancel it."""
         client = Client()
 
-        ticket = Ticket.objects.create(issue_url="https://example.com/issues/77")
-        Session.objects.create(ticket=ticket, agent_id="dashboard")
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/77")
+        Session.objects.create(ticket=ticket, overlay="test", agent_id="dashboard")
 
         with patch("teatree.core.tasks.execute_headless_task") as mock_enqueue:
             mock_enqueue.enqueue = MagicMock()
@@ -387,7 +444,7 @@ class TestDashboardAndViews:
         """Test ticket state progression through the TicketTransitionView."""
         client = Client()
 
-        ticket = Ticket.objects.create(issue_url="https://example.com/issues/10")
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/10")
 
         def transition(name: str, expected_status: int = 200) -> dict:
             resp = client.post(f"/tickets/{ticket.pk}/transition/", {"transition": name})
@@ -422,17 +479,27 @@ class TestRunBackend:
         wt_dir = tmp_path / "backend"
         wt_dir.mkdir()
 
-        ticket = Ticket.objects.create(issue_url="https://example.com/issues/50")
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/50")
         wt = Worktree.objects.create(
-            ticket=ticket, repo_path="backend", branch="feature", extra={"worktree_path": str(wt_dir)}
+            ticket=ticket,
+            overlay="test",
+            repo_path="backend",
+            branch="feature",
+            extra={"worktree_path": str(wt_dir)},
         )
 
-        with patch("teatree.core.management.commands.lifecycle.subprocess"):
+        with (
+            _patch_overlay(),
+            patch("teatree.core.management.commands.lifecycle.subprocess"),
+        ):
             call_command("lifecycle", "setup", path=str(wt_dir))
 
         wt.refresh_from_db()
 
-        with patch("teatree.core.management.commands.run.subprocess") as mock_sp:
+        with (
+            _patch_overlay(),
+            patch("teatree.core.management.commands.run.subprocess") as mock_sp,
+        ):
             mock_sp.run.return_value = MagicMock(returncode=0)
             result = cast("str", call_command("run", "backend", path=str(wt_dir)))
 
@@ -479,6 +546,7 @@ class TestRunBackend:
 
         # --- Step 1: workspace ticket ---
         with (
+            _patch_overlay(),
             patch.dict("os.environ", {"T3_WORKSPACE_DIR": str(workspace), "T3_BRANCH_PREFIX": "ac"}),
             patch(
                 "teatree.core.management.commands.workspace.subprocess.run",
@@ -519,7 +587,10 @@ class TestRunBackend:
         backend_wt_path = (backend_wt.extra or {}).get("worktree_path", "")
         assert backend_wt.state == Worktree.State.CREATED
 
-        with patch("teatree.core.management.commands.lifecycle.subprocess") as mock_lc_sp:
+        with (
+            _patch_overlay(),
+            patch("teatree.core.management.commands.lifecycle.subprocess") as mock_lc_sp,
+        ):
             mock_lc_sp.run.return_value = MagicMock(returncode=0)
             setup_result = cast("int", call_command("lifecycle", "setup", path=backend_wt_path))
 
@@ -536,7 +607,10 @@ class TestRunBackend:
         assert len(reset_calls) == 2
 
         # --- Step 3: run backend ---
-        with patch("teatree.core.management.commands.run.subprocess") as mock_run_sp:
+        with (
+            _patch_overlay(),
+            patch("teatree.core.management.commands.run.subprocess") as mock_run_sp,
+        ):
             mock_run_sp.run.return_value = MagicMock(returncode=0)
             run_result = cast("str", call_command("run", "backend", path=backend_wt_path))
 
@@ -564,11 +638,15 @@ class TestToolAndCleanCommands:
     @override_settings(**WORKFLOW_SETTINGS)
     def test_tool_list_and_run_dispatches_overlay_commands(self) -> None:
         """Test the tool management command lists and runs overlay tools."""
-        result = cast("str", call_command("tool", "list"))
+        with _patch_overlay():
+            result = cast("str", call_command("tool", "list"))
         assert "check-translations" in result
         assert "Check translations" in result
 
-        with patch("teatree.core.management.commands.tool.subprocess") as mock_sp:
+        with (
+            _patch_overlay(),
+            patch("teatree.core.management.commands.tool.subprocess") as mock_sp,
+        ):
             mock_sp.run.return_value = MagicMock(returncode=0)
             result = cast("str", call_command("tool", "run", "check-translations"))
 
@@ -579,10 +657,10 @@ class TestToolAndCleanCommands:
     @override_settings(**WORKFLOW_SETTINGS)
     def test_clean_only_removes_created_worktrees(self) -> None:
         """Verify clean-all only removes worktrees in CREATED state."""
-        ticket = Ticket.objects.create(issue_url="https://example.com/issues/30")
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/30")
 
-        created_wt = Worktree.objects.create(ticket=ticket, repo_path="stale", branch="old")
-        active_wt = Worktree.objects.create(ticket=ticket, repo_path="active", branch="current")
+        created_wt = Worktree.objects.create(ticket=ticket, overlay="test", repo_path="stale", branch="old")
+        active_wt = Worktree.objects.create(ticket=ticket, overlay="test", repo_path="active", branch="current")
         active_wt.provision()
         active_wt.save()
 
@@ -603,8 +681,8 @@ class TestDbRefresh:
     @override_settings(**WORKFLOW_SETTINGS)
     def test_resets_services_up_to_provisioned(self) -> None:
         """Verify db_refresh transition takes worktree from services_up back to provisioned."""
-        ticket = Ticket.objects.create(issue_url="https://example.com/issues/33")
-        wt = Worktree.objects.create(ticket=ticket, repo_path="backend", branch="feature")
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/33")
+        wt = Worktree.objects.create(ticket=ticket, overlay="test", repo_path="backend", branch="feature")
 
         wt.provision()
         wt.save()

@@ -19,8 +19,8 @@ class TestDoctorService:
     def test_show_info_with_overlay(self, capsys):
         from teatree.config import OverlayEntry  # noqa: PLC0415
 
-        active = OverlayEntry(name="acme", settings_module="acme.settings")
-        entries = [OverlayEntry(name="acme", settings_module="acme.settings")]
+        active = OverlayEntry(name="acme", overlay_class="acme.overlay.AcmeOverlay")
+        entries = [OverlayEntry(name="acme", overlay_class="acme.overlay.AcmeOverlay")]
 
         with (
             patch("shutil.which", return_value="/usr/bin/t3"),
@@ -52,7 +52,7 @@ class TestDoctorService:
         skill.mkdir(parents=True)
         (skill / "SKILL.md").touch()
 
-        entry = OverlayEntry(name="t3-test", settings_module="test.settings", project_path=project)
+        entry = OverlayEntry(name="t3-test", overlay_class="test.overlay.TestOverlay", project_path=project)
         with patch("teatree.config.discover_overlays", return_value=[entry]):
             results = DoctorService.collect_overlay_skills()
             assert len(results) == 1
@@ -68,7 +68,7 @@ class TestDoctorService:
         overlay_subdir.mkdir()
         (overlay_subdir / "SKILL.md").touch()
 
-        entry = OverlayEntry(name="my-overlay", settings_module="test.settings", project_path=project)
+        entry = OverlayEntry(name="my-overlay", overlay_class="test.overlay.TestOverlay", project_path=project)
         with patch("teatree.config.discover_overlays", return_value=[entry]):
             results = DoctorService.collect_overlay_skills()
             assert len(results) == 1
@@ -77,7 +77,7 @@ class TestDoctorService:
     def test_returns_empty_when_no_project_path(self):
         from teatree.config import OverlayEntry  # noqa: PLC0415
 
-        entry = OverlayEntry(name="test", settings_module="test.settings", project_path=None)
+        entry = OverlayEntry(name="test", overlay_class="test.overlay.TestOverlay", project_path=None)
         with patch("teatree.config.discover_overlays", return_value=[entry]):
             results = DoctorService.collect_overlay_skills()
             assert results == []
@@ -180,7 +180,7 @@ class TestDoctorService:
         from teatree.config import OverlayEntry  # noqa: PLC0415
 
         monkeypatch.delenv("DJANGO_SETTINGS_MODULE", raising=False)
-        active = OverlayEntry(name="test", settings_module="tests.django_settings")
+        active = OverlayEntry(name="test", overlay_class="tests.teatree_core.conftest.CommandOverlay")
         with (
             patch("teatree.config.discover_active_overlay", return_value=active),
             patch("teatree.cli_doctor.IntrospectionHelpers.editable_info", return_value=(False, "")),
@@ -200,12 +200,12 @@ class TestDoctorService:
         monkeypatch.setenv("DJANGO_SETTINGS_MODULE", "tests.django_settings")
         mock_settings = MagicMock()
         mock_settings.TEATREE_EDITABLE = True
-        mock_settings.TEATREE_OVERLAY_CLASS = ""
 
         with (
             patch("django.setup"),
             patch("django.conf.settings", mock_settings),
             patch("teatree.cli_doctor.IntrospectionHelpers.editable_info", return_value=(False, "")),
+            patch("teatree.core.overlay_loader.get_all_overlays", return_value={}),
         ):
             result = DoctorService.check_editable_sanity()
             assert any("TEATREE_EDITABLE=True" in p for p in result)
@@ -215,12 +215,12 @@ class TestDoctorService:
         monkeypatch.setenv("DJANGO_SETTINGS_MODULE", "tests.django_settings")
         mock_settings = MagicMock()
         mock_settings.TEATREE_EDITABLE = False
-        mock_settings.TEATREE_OVERLAY_CLASS = ""
 
         with (
             patch("django.setup"),
             patch("django.conf.settings", mock_settings),
             patch("teatree.cli_doctor.IntrospectionHelpers.editable_info", return_value=(True, "file:///src")),
+            patch("teatree.core.overlay_loader.get_all_overlays", return_value={}),
         ):
             result = DoctorService.check_editable_sanity()
             assert any("TEATREE_EDITABLE is not set" in p for p in result)
@@ -230,8 +230,10 @@ class TestDoctorService:
         monkeypatch.setenv("DJANGO_SETTINGS_MODULE", "tests.django_settings")
         mock_settings = MagicMock()
         mock_settings.TEATREE_EDITABLE = False
-        mock_settings.TEATREE_OVERLAY_CLASS = "my_overlay.overlay.MyOverlay"
         mock_settings.OVERLAY_EDITABLE = True
+
+        mock_overlay = MagicMock()
+        mock_overlay.__module__ = "my_overlay.overlay"
 
         def editable_info(dist_name):
             if dist_name == "teatree":
@@ -242,6 +244,7 @@ class TestDoctorService:
             patch("django.setup"),
             patch("django.conf.settings", mock_settings),
             patch("teatree.cli_doctor.IntrospectionHelpers.editable_info", side_effect=editable_info),
+            patch("teatree.core.overlay_loader.get_all_overlays", return_value={"test": mock_overlay}),
             patch("importlib.metadata.packages_distributions", return_value={"my_overlay": ["my-overlay"]}),
         ):
             result = DoctorService.check_editable_sanity()
@@ -252,8 +255,10 @@ class TestDoctorService:
         monkeypatch.setenv("DJANGO_SETTINGS_MODULE", "tests.django_settings")
         mock_settings = MagicMock()
         mock_settings.TEATREE_EDITABLE = False
-        mock_settings.TEATREE_OVERLAY_CLASS = "my_overlay.overlay.MyOverlay"
         mock_settings.OVERLAY_EDITABLE = False
+
+        mock_overlay = MagicMock()
+        mock_overlay.__module__ = "my_overlay.overlay"
 
         def editable_info(dist_name):
             if dist_name == "teatree":
@@ -264,6 +269,7 @@ class TestDoctorService:
             patch("django.setup"),
             patch("django.conf.settings", mock_settings),
             patch("teatree.cli_doctor.IntrospectionHelpers.editable_info", side_effect=editable_info),
+            patch("teatree.core.overlay_loader.get_all_overlays", return_value={"test": mock_overlay}),
             patch("importlib.metadata.packages_distributions", return_value={"my_overlay": ["my-overlay"]}),
         ):
             result = DoctorService.check_editable_sanity()
@@ -274,13 +280,16 @@ class TestDoctorService:
         monkeypatch.setenv("DJANGO_SETTINGS_MODULE", "tests.django_settings")
         mock_settings = MagicMock()
         mock_settings.TEATREE_EDITABLE = False
-        mock_settings.TEATREE_OVERLAY_CLASS = "my_overlay.overlay.MyOverlay"
         mock_settings.OVERLAY_EDITABLE = False
+
+        mock_overlay = MagicMock()
+        mock_overlay.__module__ = "my_overlay.overlay"
 
         with (
             patch("django.setup"),
             patch("django.conf.settings", mock_settings),
             patch("teatree.cli_doctor.IntrospectionHelpers.editable_info", return_value=(False, "")),
+            patch("teatree.core.overlay_loader.get_all_overlays", return_value={"test": mock_overlay}),
             patch("importlib.metadata.packages_distributions", return_value={"my_overlay": ["my-overlay"]}),
         ):
             result = DoctorService.check_editable_sanity()

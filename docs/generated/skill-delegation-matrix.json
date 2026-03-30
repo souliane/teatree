@@ -2,8 +2,8 @@
   "agent_launch_fields": [
     "phase",
     "overlay_skill_path",
-    "companion_skills",
-    "delegated_skills"
+    "framework_skills",
+    "lifecycle_skill"
   ],
   "delegation": {
     "coding": [

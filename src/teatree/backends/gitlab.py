@@ -1,14 +1,17 @@
 from pathlib import Path
 
-from django.conf import settings
-
+from teatree.core.overlay import OverlayBase
 from teatree.utils.gitlab_api import GitLabAPI, ProjectInfo
 
 
-def get_client() -> GitLabAPI:
+def get_client(overlay: OverlayBase | None = None) -> GitLabAPI:
+    if overlay is None:
+        from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
+
+        overlay = get_overlay()
     return GitLabAPI(
-        token=getattr(settings, "TEATREE_GITLAB_TOKEN", ""),
-        base_url=getattr(settings, "TEATREE_GITLAB_URL", "https://gitlab.com/api/v4"),
+        token=overlay.config.get_gitlab_token(),
+        base_url=overlay.config.get_gitlab_url(),
     )
 
 

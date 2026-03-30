@@ -2,7 +2,6 @@
 
 from collections.abc import Iterable
 
-from django.conf import settings
 from django_typer.management import TyperCommand, command
 
 from teatree.backends.loader import get_code_host, get_issue_tracker
@@ -23,14 +22,14 @@ class Command(TyperCommand):
         ticket = Ticket.objects.get(pk=ticket_id)
         host = get_code_host()
         if host is None:
-            return {"error": "No code host configured (TEATREE_CODE_HOST)"}
+            return {"error": "No code host configured (check overlay GitLab token)"}
 
         worktree = ticket.worktrees.first()
         branch = worktree.branch if worktree else f"ticket-{ticket.ticket_number}"
         repo_path = repo or (worktree.repo_path if worktree else "")
 
         overlay = get_overlay()
-        validation = overlay.validate_mr(title, description)
+        validation = overlay.metadata.validate_mr(title, description)
         if validation["errors"]:
             return {"error": "MR validation failed", "details": validation["errors"]}
 
@@ -61,13 +60,13 @@ class Command(TyperCommand):
         """Fetch issue details from the configured tracker."""
         tracker = get_issue_tracker()
         if tracker is None:
-            return {"error": "No issue tracker configured (TEATREE_ISSUE_TRACKER)"}
+            return {"error": "No issue tracker configured"}
         return tracker.get_issue(issue_url)
 
     @command(name="detect-tenant")
     def detect_tenant(self) -> str:
         """Detect the current tenant variant from the overlay."""
-        return get_overlay().detect_variant()
+        return get_overlay().metadata.detect_variant()
 
     @command(name="post-evidence")
     def post_evidence(
@@ -85,9 +84,9 @@ class Command(TyperCommand):
         """
         host = get_code_host()
         if host is None:
-            return {"error": "No code host configured (TEATREE_CODE_HOST)"}
+            return {"error": "No code host configured (check overlay GitLab token)"}
 
-        repo_path = repo or get_overlay().get_ci_project_path()
+        repo_path = repo or get_overlay().metadata.get_ci_project_path()
 
         # Upload files and build markdown embeds
         embeds: list[str] = []
@@ -121,7 +120,7 @@ class Command(TyperCommand):
 
 
 def _mr_auto_labels() -> list[str]:
-    raw = getattr(settings, "TEATREE_MR_AUTO_LABELS", [])
+    raw = get_overlay().config.get_mr_auto_labels()
     if isinstance(raw, str):
         values = raw.split(",")
     elif isinstance(raw, Iterable):

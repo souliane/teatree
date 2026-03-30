@@ -106,8 +106,8 @@ src/teatree/
   utils/                # Pure utility modules
     (git helpers, port allocation, subprocess wrappers)
 
-  scaffold/             # t3 startproject helpers
-    bootstrap.py        # Scaffold generation logic (called from cli.py)
+  overlay_init/         # t3 startoverlay helpers
+    generator.py        # Scaffold generation logic (called from cli.py)
 
 skills/t3-*/            # Workflow skills (SKILL.md + references/)
 tests/                  # Pytest suite (100% branch coverage)
@@ -135,6 +135,7 @@ The central entity. One ticket per unit of work (maps to an issue/task in the tr
 | Field | Type | Purpose |
 |-------|------|---------|
 | `issue_url` | URLField(500) | Link to tracker issue (blank for manual tickets) |
+| `overlay` | CharField(255) | Overlay name (entry point name from `teatree.overlays`) |
 | `variant` | CharField(100) | Tenant/variant identifier (e.g., "acme") |
 | `repos` | JSONField(list) | Repository names involved |
 | `state` | FSMField | Current lifecycle state |
@@ -192,6 +193,7 @@ One worktree per repository per ticket.
 | Field | Type | Purpose |
 |-------|------|---------|
 | `ticket` | FK(Ticket) | Parent ticket |
+| `overlay` | CharField(255) | Overlay name (entry point name from `teatree.overlays`) |
 | `repo_path` | CharField(500) | Filesystem path to the worktree |
 | `branch` | CharField(255) | Git branch name |
 | `state` | FSMField | Current lifecycle state |
@@ -227,6 +229,7 @@ Tracks which workflow phases an agent visited within a conversation, to enforce 
 | Field | Type | Purpose |
 |-------|------|---------|
 | `ticket` | FK(Ticket) | Parent ticket |
+| `overlay` | CharField(255) | Overlay name (entry point name from `teatree.overlays`) |
 | `visited_phases` | JSONField(list) | Phases visited in order |
 | `started_at` | DateTimeField | Auto-set |
 | `ended_at` | DateTimeField | Set on manual handoff |
@@ -475,20 +478,20 @@ ValidationResult(errors: list[str], warnings: list[str])       # total=True
 ToolCommand(name: str, help: str, command: str)                # total=True
 ```
 
-### 6.3 Scaffold (`t3 startproject`)
+### 6.3 Scaffold (`t3 startoverlay`)
 
-`t3 startproject <name> <dest>` generates a complete overlay project. Default overlay app name is `t3_overlay` (the `t3_` prefix is a convention). The skill directory is derived: `t3_overlay` → skill `t3-overlay` (strip `t3_` prefix and `_overlay` suffix, then `t3-` prefix).
+`t3 startoverlay <name> <dest>` generates a lightweight overlay package. Default overlay app name is `t3_overlay` (the `t3_` prefix is a convention). The skill directory is derived: `t3_overlay` → skill `t3-overlay` (strip `t3_` prefix and `_overlay` suffix, then `t3-` prefix).
 
 Generated structure:
 
 ```
 <name>/
-  manage.py
-  src/<package>/settings.py, urls.py, ...
-  src/t3_overlay/overlay.py, apps.py, ...
+  src/t3_overlay/__init__.py, overlay.py, apps.py
   skills/t3-overlay/SKILL.md
-  pyproject.toml, .env, .editorconfig, .pre-commit-config.yaml, ...
+  pyproject.toml, .editorconfig, .pre-commit-config.yaml, ...
 ```
+
+No manage.py, settings.py, urls.py, or wsgi/asgi — teatree is the Django project.
 
 ### 6.4 Discovery & Loading
 
@@ -506,10 +509,12 @@ Generated structure:
 
 **Django-level loading** (`overlay_loader.py`):
 
-- Reads `TEATREE_OVERLAY_CLASS` setting (import path string)
-- Instantiates via `import_string()`
-- Validates subclass of `OverlayBase`
-- Cached via `lru_cache(maxsize=1)`, resettable via `reset_overlay_cache()`
+- Discovers overlays via `importlib.metadata.entry_points(group="teatree.overlays")`
+- Each entry point name is the overlay name; the value is an overlay class path (e.g., `"myapp.overlay:MyOverlay"`)
+- Validates each class is a subclass of `OverlayBase`, then instantiates it
+- Supports multiple overlays: `get_overlay(name)` returns one by name (or the sole overlay if only one exists), `get_all_overlays()` returns all as a `dict[str, OverlayBase]`
+- Cached via `lru_cache(maxsize=1)` on `_discover_overlays()`, resettable via `reset_overlay_cache()`
+- No Django settings involved — no `TEATREE_OVERLAY_CLASS`, no `import_string()`
 
 ---
 
@@ -517,17 +522,17 @@ Generated structure:
 
 Each external concern is a `@runtime_checkable Protocol` in `teatree.backends.protocols`.
 
-| Protocol | Setting | Methods |
-|----------|---------|---------|
-| `CodeHost` | `TEATREE_CODE_HOST` | `create_pr()`, `list_open_prs()`, `post_mr_note()` |
-| `CIService` | `TEATREE_CI_SERVICE` | `cancel_pipelines()`, `fetch_pipeline_errors()`, `fetch_failed_tests()`, `trigger_pipeline()`, `quality_check()` |
-| `IssueTracker` | `TEATREE_ISSUE_TRACKER` | `get_issue()` |
-| `ChatNotifier` | `TEATREE_CHAT_NOTIFIER` | `send()` |
-| `ErrorTracker` | `TEATREE_ERROR_TRACKER` | `get_top_issues()` |
+| Protocol | Methods |
+|----------|---------|
+| `CodeHost` | `create_pr()`, `list_open_prs()`, `post_mr_note()` |
+| `CIService` | `cancel_pipelines()`, `fetch_pipeline_errors()`, `fetch_failed_tests()`, `trigger_pipeline()`, `quality_check()` |
+| `IssueTracker` | `get_issue()` |
+| `ChatNotifier` | `send()` |
+| `ErrorTracker` | `get_top_issues()` |
 
-**Loading** (`loader.py`): Each backend has a `get_<concern>()` function decorated with `@lru_cache(maxsize=1)`. Reads import path from Django settings, instantiates via `import_string()`.
+**Loading** (`loader.py`): Each backend has a `get_<concern>()` function decorated with `@lru_cache(maxsize=1)`. These functions auto-configure from overlay methods — e.g., `get_code_host()` calls `get_overlay()` and checks `overlay.get_gitlab_token()` to decide whether to instantiate `GitLabCodeHost`. No `TEATREE_*` settings or `import_string()` involved.
 
-**Auto-fallback:** `get_ci_service()` auto-instantiates `GitLabCIService()` if `TEATREE_CI_SERVICE` is not set but `TEATREE_GITLAB_TOKEN` exists.
+**Auto-detection:** `get_code_host()` and `get_ci_service()` auto-instantiate the GitLab implementations when `overlay.get_gitlab_token()` returns a non-empty value.
 
 **Cache reset:** `reset_backend_caches()` clears all lru_cache entries (used in testing).
 
@@ -538,7 +543,7 @@ Each external concern is a `@runtime_checkable Protocol` in `teatree.backends.pr
 | Tier | Tool | Needs Django? | Examples |
 |------|------|---------------|----------|
 | Runtime commands | django-typer management commands | Yes | `lifecycle setup`, `tasks work-next-sdk`, `followup refresh` |
-| Bootstrap commands | Typer CLI (`t3`) | No | `t3 startproject`, `t3 info`, `t3 ci cancel` |
+| Bootstrap commands | Typer CLI (`t3`) | No | `t3 startoverlay`, `t3 info`, `t3 ci cancel` |
 | Overlay commands | Typer CLI delegating to manage.py | Via subprocess | `t3 acme start-ticket`, `t3 acme dashboard` |
 | Internal utilities | Python modules in `utils/` | No | Port allocation, git helpers, DB ops |
 
@@ -575,7 +580,7 @@ Each external concern is a `@runtime_checkable Protocol` in `teatree.backends.pr
 
 Typer-based, work without Django:
 
-- `t3 startproject` — scaffold a new overlay project (see §6.3)
+- `t3 startoverlay` — scaffold a new overlay package (see §6.3)
 - `t3 agent` — launch Claude Code with teatree context (for developing teatree itself)
 - `t3 info` — show entry point, sources, editable status
 - `t3 sessions` — list/resume Claude conversation sessions
@@ -665,7 +670,7 @@ The dashboard uses Server-Sent Events for push-based updates instead of blind po
 `sync_followup()` → `SyncResult`:
 
 1. Gets repos from `get_overlay().get_followup_repos()`
-2. Creates GitLab API client from `TEATREE_GITLAB_TOKEN`
+2. Creates GitLab API client from `overlay.get_gitlab_token()`
 3. For each repo: fetches open MRs (incremental via cached `updated_after` timestamp)
 4. For each MR: `_upsert_ticket_from_mr()`:
    - Extracts `issue_url` from MR description/title via regex
@@ -704,32 +709,35 @@ privacy = "strict"
 path = "~/workspace/myproject"
 ```
 
-### 11.2 Django Settings (provided by overlay)
+### 11.2 Django Settings (framework-level, in teatree's settings.py)
 
 | Setting | Type | Purpose |
 |---------|------|---------|
-| `TEATREE_OVERLAY_CLASS` | str | Import path to OverlayBase subclass |
-| `TEATREE_GITLAB_TOKEN` | str | GitLab API token |
-| `TEATREE_GITLAB_USERNAME` | str | GitLab username (optional, auto-detected) |
-| `TEATREE_CODE_HOST` | str | Import path to CodeHost implementation |
-| `TEATREE_CI_SERVICE` | str | Import path to CIService implementation |
-| `TEATREE_ISSUE_TRACKER` | str | Import path to IssueTracker implementation |
-| `TEATREE_CHAT_NOTIFIER` | str | Import path to ChatNotifier implementation |
-| `TEATREE_ERROR_TRACKER` | str | Import path to ErrorTracker implementation |
 | `TEATREE_HEADLESS_RUNTIME` | str | Runtime for headless tasks (default: "claude-code") |
 | `TEATREE_INTERACTIVE_RUNTIME` | str | Runtime for interactive tasks (default: "codex") |
 | `TEATREE_TERMINAL_MODE` | str | Terminal strategy (default: "same-terminal") |
 | `TEATREE_SDK_USE_CLI` | bool | Use `claude` binary instead of API (default: True) |
-| `TEATREE_MR_AUTO_LABELS` | list[str] | Labels to auto-apply when creating MRs |
-| `TEATREE_SLACK_TOKEN` | str | Slack user OAuth token for review notifications |
-| `TEATREE_REVIEW_CHANNEL` | str | Slack channel name for review requests |
-| `TEATREE_REVIEW_CHANNEL_ID` | str | Slack channel ID for review requests |
-| `TEATREE_KNOWN_VARIANTS` | list[str] | Valid tenant variant names |
-| `TEATREE_DEV_ENV_URL` | str | Template URL for dev environments (`{variant}` placeholder) |
-| `TEATREE_FRONTEND_REPOS` | list[str] | Frontend repo names (for E2E column in dashboard) |
-| `TEATREE_DASHBOARD_LOGO` | str | URL for dashboard logo |
+| `TEATREE_CLAUDE_STATUSLINE_STATE_DIR` | str | Directory for Claude statusline state files |
+| `TEATREE_AGENT_HANDOVER` | list | Agent handover configuration |
 | `TEATREE_EDITABLE` | bool | Declare teatree is editable (verified by `t3 doctor check`) |
 | `OVERLAY_EDITABLE` | bool | Declare overlay is editable (verified by `t3 doctor check`) |
+
+### 11.2.1 OverlayBase Config Methods (replaces per-overlay Django settings)
+
+Overlay-specific configuration that previously lived in `TEATREE_*` Django settings now lives on `OverlayBase` methods. Backends auto-configure from these methods (see section 7).
+
+| Method | Return type | Default | Replaces |
+|--------|-------------|---------|----------|
+| `get_gitlab_token()` | `str` | `""` | `TEATREE_GITLAB_TOKEN` |
+| `get_gitlab_url()` | `str` | `"https://gitlab.com/api/v4"` | — |
+| `get_gitlab_username()` | `str` | `""` | `TEATREE_GITLAB_USERNAME` |
+| `get_slack_token()` | `str` | `""` | `TEATREE_SLACK_TOKEN` |
+| `get_review_channel()` | `tuple[str, str]` | `("", "")` | `TEATREE_REVIEW_CHANNEL` + `TEATREE_REVIEW_CHANNEL_ID` |
+| `get_known_variants()` | `list[str]` | `[]` | `TEATREE_KNOWN_VARIANTS` |
+| `get_mr_auto_labels()` | `list[str]` | `[]` | `TEATREE_MR_AUTO_LABELS` |
+| `get_frontend_repos()` | `list[str]` | `[]` | `TEATREE_FRONTEND_REPOS` |
+| `get_dev_env_url()` | `str` | `""` | `TEATREE_DEV_ENV_URL` |
+| `get_dashboard_logo()` | `str` | `""` | `TEATREE_DASHBOARD_LOGO` |
 
 ### 11.3 Logging
 
@@ -798,7 +806,7 @@ tests/
   teatree_backends/   # Backend integration tests
   test_config.py      # Config/overlay discovery
   test_cli_agent_skills.py  # CLI + skill bundle tests
-  test_startproject.py      # Scaffold tests
+  test_startproject.py      # Overlay scaffold tests
   test_utils.py       # Utility module tests
 ```
 

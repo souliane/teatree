@@ -1,8 +1,31 @@
+"""Default Django settings for teatree.
+
+Used when teatree is the Django project (the standard case).
+Auto-discovers overlay Django apps via entry points and adds them to INSTALLED_APPS.
+"""
+
 from teatree.config import default_logging, get_data_dir
 
-_DATA_DIR = get_data_dir("{{ overlay_app }}")
+_DATA_DIR = get_data_dir("teatree")
 
-SECRET_KEY = "teetree-generated-project"  # noqa: S105
+
+def _discover_overlay_apps() -> list[str]:
+    """Scan ``teatree.overlays`` entry points for overlays that declare a Django app."""
+    from importlib.metadata import entry_points  # noqa: PLC0415
+
+    apps: list[str] = []
+    for ep in entry_points(group="teatree.overlays"):
+        try:
+            obj = ep.load()
+            app_label = getattr(obj, "django_app", None)
+            if app_label:
+                apps.append(app_label)
+        except Exception:  # noqa: BLE001, S112
+            continue
+    return apps
+
+
+SECRET_KEY = "teatree-dev-insecure"  # noqa: S105
 DEBUG = True
 ALLOWED_HOSTS = ["*"]
 
@@ -19,7 +42,7 @@ INSTALLED_APPS = [
     "django_tasks_db",
     "teatree.core",
     "teatree.agents",
-    "{{ overlay_app }}",
+    *_discover_overlay_apps(),
 ]
 
 MIDDLEWARE = [
@@ -33,7 +56,7 @@ MIDDLEWARE = [
     "django_htmx.middleware.HtmxMiddleware",
 ]
 
-ROOT_URLCONF = "{{ project_package }}.urls"
+ROOT_URLCONF = "teatree.core.urls"
 
 TEMPLATES = [
     {
@@ -50,9 +73,6 @@ TEMPLATES = [
     },
 ]
 
-WSGI_APPLICATION = "{{ project_package }}.wsgi.application"
-ASGI_APPLICATION = "{{ project_package }}.asgi.application"
-
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.sqlite3",
@@ -67,9 +87,9 @@ USE_TZ = True
 STATIC_URL = "static/"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
-LOGGING = default_logging("{{ overlay_app }}")
+LOGGING = default_logging("teatree")
 
-TEATREE_OVERLAY_CLASS = "{{ overlay_app }}.overlay.{{ overlay_class_name }}Overlay"
+# Framework-level config (not overlay-specific)
 TEATREE_HEADLESS_RUNTIME = "claude-code"
 TEATREE_INTERACTIVE_RUNTIME = "codex"
 TEATREE_TERMINAL_MODE = "same-terminal"

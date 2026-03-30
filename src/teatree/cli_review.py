@@ -20,7 +20,7 @@ class ReviewService:
         """Extract GitLab token from glab auth or GITLAB_TOKEN env var."""
         import os  # noqa: PLC0415
 
-        token = os.environ.get("GITLAB_TOKEN", "") or os.environ.get("TEATREE_GITLAB_TOKEN", "")
+        token = os.environ.get("GITLAB_TOKEN", "")
         if token:
             return token
         result = subprocess.run(

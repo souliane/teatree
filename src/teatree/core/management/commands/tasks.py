@@ -44,7 +44,7 @@ class Command(TyperCommand):
         result = run_headless_task(
             task,
             phase=task.phase,
-            overlay_skill_metadata=get_overlay().get_skill_metadata(),
+            overlay_skill_metadata=get_overlay().metadata.get_skill_metadata(),
         )
         return {"runtime": result.runtime, "artifact_path": result.artifact_path}
 
@@ -56,6 +56,6 @@ class Command(TyperCommand):
         result = run_interactive_task(
             task,
             phase=task.phase,
-            overlay_skill_metadata=get_overlay().get_skill_metadata(),
+            overlay_skill_metadata=get_overlay().metadata.get_skill_metadata(),
         )
         return {"runtime": result.runtime, "artifact_path": result.artifact_path}

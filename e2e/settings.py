@@ -66,9 +66,3 @@ TASKS = {
         "BACKEND": "django_tasks.backends.immediate.ImmediateBackend",
     },
 }
-
-TEATREE_OVERLAY_CLASS = "e2e.overlay.E2EOverlay"
-TEATREE_HEADLESS_RUNTIME = "claude-code"
-TEATREE_INTERACTIVE_RUNTIME = "codex"
-TEATREE_TERMINAL_MODE = "same-terminal"
-TEATREE_SDK_USE_CLI = True

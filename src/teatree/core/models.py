@@ -44,6 +44,7 @@ class Ticket(models.Model):
         MERGED = "merged", "Merged"
         DELIVERED = "delivered", "Delivered"
 
+    overlay = models.CharField(max_length=255)
     issue_url = models.URLField(max_length=500, blank=True)
     variant = models.CharField(max_length=100, blank=True)
     repos = models.JSONField(default=list, blank=True)
@@ -173,6 +174,7 @@ class Worktree(models.Model):
         SERVICES_UP = "services_up", "Services up"
         READY = "ready", "Ready"
 
+    overlay = models.CharField(max_length=255)
     ticket = models.ForeignKey(Ticket, on_delete=models.CASCADE, related_name="worktrees")
     repo_path = models.CharField(max_length=500)
     branch = models.CharField(max_length=255)
@@ -289,6 +291,7 @@ class Worktree(models.Model):
 
 
 class Session(models.Model):
+    overlay = models.CharField(max_length=255)
     ticket = models.ForeignKey(Ticket, on_delete=models.CASCADE, related_name="sessions")
     visited_phases = models.JSONField(default=list, blank=True)
     started_at = models.DateTimeField(auto_now_add=True)

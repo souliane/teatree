@@ -4,7 +4,7 @@ from inspect import signature
 from pathlib import Path
 from typing import TypedDict
 
-from teatree.core.overlay import OverlayBase
+from teatree.core.overlay import OverlayBase, OverlayMetadata
 from teatree.skill_map import load_skill_delegation
 
 _OVERLAY_HOOK_ORDER = (
@@ -16,8 +16,16 @@ _OVERLAY_HOOK_ORDER = (
     "get_post_db_steps",
     "get_symlinks",
     "get_services_config",
+)
+
+_METADATA_HOOK_ORDER = (
     "validate_mr",
     "get_skill_metadata",
+    "get_ci_project_path",
+    "get_e2e_config",
+    "detect_variant",
+    "get_tool_commands",
+    "get_followup_repos",
 )
 
 _OVERLAY_HOOK_DESCRIPTIONS = {
@@ -29,49 +37,19 @@ _OVERLAY_HOOK_DESCRIPTIONS = {
     "get_post_db_steps": "Return callbacks to run after database setup completes.",
     "get_symlinks": "Declare extra symlinks that should exist inside the worktree.",
     "get_services_config": "Return additional service metadata for lifecycle orchestration.",
-    "validate_mr": "Return merge-request validation problems for this overlay.",
-    "get_skill_metadata": "Return the active overlay skill path and remote match patterns.",
 }
 
-_OVERLAY_SETTINGS: tuple["SettingRecord", ...] = (
-    {
-        "name": "TEATREE_OVERLAY_CLASS",
-        "required": True,
-        "description": "Import path for the active OverlayBase subclass.",
-    },
-    {
-        "name": "TEATREE_HEADLESS_RUNTIME",
-        "required": True,
-        "description": "Runtime key for unattended SDK execution.",
-    },
-    {
-        "name": "TEATREE_INTERACTIVE_RUNTIME",
-        "required": True,
-        "description": "Runtime key for interactive user-input work.",
-    },
-    {
-        "name": "TEATREE_TERMINAL_MODE",
-        "required": True,
-        "description": "Terminal strategy used by the interactive runtime.",
-    },
-    {
-        "name": "TEATREE_SDK_USE_CLI",
-        "required": False,
-        "description": "Use 'claude -p' for headless tasks instead of the Anthropic API. "
-        "Set True when no API key is available.",
-    },
-    {
-        "name": "TEATREE_CLAUDE_STATUSLINE_STATE_DIR",
-        "required": False,
-        "description": "Directory where Claude Code statusline integrations persist telemetry and session state.",
-    },
-    {
-        "name": "TEATREE_AGENT_HANDOVER",
-        "required": False,
-        "description": "Ordered list of CLI runtimes used for handover priority, "
-        "with optional telemetry providers and switch thresholds.",
-    },
-)
+_METADATA_HOOK_DESCRIPTIONS = {
+    "validate_mr": "Return merge-request validation problems for this overlay.",
+    "get_skill_metadata": "Return the active overlay skill path and remote match patterns.",
+    "get_ci_project_path": "Return the GitLab project path for CI operations.",
+    "get_e2e_config": "Return E2E trigger configuration (project_path, ref).",
+    "detect_variant": "Detect the current tenant variant from environment.",
+    "get_tool_commands": "Return overlay-specific tool commands for t3 <overlay> tool.",
+    "get_followup_repos": "Return GitLab project paths to sync MRs from.",
+}
+
+_OVERLAY_SETTINGS: tuple["SettingRecord", ...] = ()
 
 _OVERLAY_COMMANDS = (
     "lifecycle setup",
@@ -154,6 +132,16 @@ def build_overlay_doc_payload() -> OverlayDocPayload:
                 "description": _OVERLAY_HOOK_DESCRIPTIONS[name],
             },
         )
+    for name in _METADATA_HOOK_ORDER:
+        method = getattr(OverlayMetadata, name)
+        hooks.append(
+            {
+                "name": f"metadata.{name}",
+                "required": False,
+                "signature": _signature_without_self(method),
+                "description": _METADATA_HOOK_DESCRIPTIONS[name],
+            },
+        )
     return {
         "overlay_base": "teatree.core.overlay.OverlayBase",
         "hooks": hooks,
@@ -174,10 +162,10 @@ def render_overlay_markdown(payload: OverlayDocPayload) -> str:
         "| Hook | Required | Signature | Description |",
         "| --- | --- | --- | --- |",
     ]
-    lines.extend(
-        f"| `{hook['name']}` | {'Yes' if hook['required'] else 'No'} | `{hook['signature']}` | {hook['description']} |"
-        for hook in payload["hooks"]
-    )
+    for hook in payload["hooks"]:
+        sig = hook["signature"].replace("|", "\\|")
+        required = "Yes" if hook["required"] else "No"
+        lines.append(f"| `{hook['name']}` | {required} | `{sig}` | {hook['description']} |")
     lines.extend(
         [
             "",

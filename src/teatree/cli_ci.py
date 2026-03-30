@@ -23,12 +23,12 @@ class CICommands:
         except Exception:  # noqa: BLE001, S110 — fallback to env-based config
             pass
 
-        token = os.environ.get("TEATREE_GITLAB_TOKEN", os.environ.get("GITLAB_TOKEN", ""))
+        token = os.environ.get("GITLAB_TOKEN", "")
         if token:
             from teatree.backends.gitlab_ci import GitLabCIService  # noqa: PLC0415
             from teatree.utils.gitlab_api import GitLabAPI  # noqa: PLC0415
 
-            base_url = os.environ.get("TEATREE_GITLAB_URL", "https://gitlab.com/api/v4")
+            base_url = os.environ.get("GITLAB_URL", "https://gitlab.com/api/v4")
             return GitLabCIService(client=GitLabAPI(token=token, base_url=base_url))
         return None
 
@@ -41,7 +41,7 @@ class CICommands:
             django.setup()
             from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
 
-            project = get_overlay().get_ci_project_path()
+            project = get_overlay().metadata.get_ci_project_path()
             if project:
                 return project
         except Exception:  # noqa: BLE001, S110 — Django may not be configured
@@ -67,7 +67,7 @@ def _require_ci() -> tuple[CIService, str]:
     """Resolve CI service and project."""
     ci = CICommands.get_ci_service()
     if ci is None:
-        typer.echo("No CI service configured (set TEATREE_GITLAB_TOKEN).")
+        typer.echo("No CI service configured (set GITLAB_TOKEN or configure overlay).")
         raise typer.Exit(code=1)
     project = CICommands.get_ci_project()
     return ci, project

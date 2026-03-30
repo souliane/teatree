@@ -1,12 +1,10 @@
 """Tests for the bundled t3-teatree overlay."""
 
-import importlib
 from importlib.metadata import entry_points
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-from django.test import override_settings
 
 import teatree.contrib.t3_teatree.overlay as overlay_mod
 from teatree.contrib.t3_teatree.apps import T3TeatreeConfig
@@ -15,17 +13,18 @@ from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay import OverlayBase
 from teatree.core.overlay_loader import get_overlay
 
-_OVERLAY_CLASS = "teatree.contrib.t3_teatree.overlay.TeatreeOverlay"
-
 
 class TestTeatreeOverlayIsValid:
     def test_subclasses_overlay_base(self) -> None:
         assert issubclass(TeatreeOverlay, OverlayBase)
 
-    @override_settings(TEATREE_OVERLAY_CLASS=_OVERLAY_CLASS)
     def test_loadable_via_overlay_loader(self) -> None:
-        overlay = get_overlay()
-        assert isinstance(overlay, TeatreeOverlay)
+        with patch(
+            "teatree.core.overlay_loader._discover_overlays",
+            return_value={"t3-teatree": TeatreeOverlay()},
+        ):
+            overlay = get_overlay()
+            assert isinstance(overlay, TeatreeOverlay)
 
 
 class TestGetRepos:
@@ -43,13 +42,13 @@ class TestGetWorkspaceRepos:
 class TestGetFollowupRepos:
     def test_returns_github_project(self) -> None:
         overlay = TeatreeOverlay()
-        assert overlay.get_followup_repos() == ["souliane/teatree"]
+        assert overlay.metadata.get_followup_repos() == ["souliane/teatree"]
 
 
 class TestGetSkillMetadata:
     def test_returns_skill_path_and_patterns(self) -> None:
         overlay = TeatreeOverlay()
-        metadata = overlay.get_skill_metadata()
+        metadata = overlay.metadata.get_skill_metadata()
 
         assert "skill_path" in metadata
         assert "remote_patterns" in metadata
@@ -57,7 +56,7 @@ class TestGetSkillMetadata:
 
     def test_skill_path_points_to_existing_directory(self) -> None:
         overlay = TeatreeOverlay()
-        metadata = overlay.get_skill_metadata()
+        metadata = overlay.metadata.get_skill_metadata()
         skill_path = Path(str(metadata["skill_path"]))
         assert skill_path.is_dir()
 
@@ -65,8 +64,8 @@ class TestGetSkillMetadata:
 class TestGetProvisionSteps:
     @pytest.mark.django_db
     def test_returns_sync_step(self) -> None:
-        ticket = Ticket.objects.create()
-        worktree = Worktree.objects.create(ticket=ticket, repo_path="/tmp/teatree", branch="main")
+        ticket = Ticket.objects.create(overlay="t3-teatree")
+        worktree = Worktree.objects.create(ticket=ticket, overlay="t3-teatree", repo_path="/tmp/teatree", branch="main")
         overlay = TeatreeOverlay()
         steps = overlay.get_provision_steps(worktree)
 
@@ -75,8 +74,8 @@ class TestGetProvisionSteps:
 
     @pytest.mark.django_db
     def test_sync_step_runs_uv_sync(self) -> None:
-        ticket = Ticket.objects.create()
-        worktree = Worktree.objects.create(ticket=ticket, repo_path="/tmp/teatree", branch="main")
+        ticket = Ticket.objects.create(overlay="t3-teatree")
+        worktree = Worktree.objects.create(ticket=ticket, overlay="t3-teatree", repo_path="/tmp/teatree", branch="main")
         overlay = TeatreeOverlay()
         steps = overlay.get_provision_steps(worktree)
 
@@ -88,8 +87,8 @@ class TestGetProvisionSteps:
 class TestGetRunCommands:
     @pytest.mark.django_db
     def test_returns_test_and_lint(self) -> None:
-        ticket = Ticket.objects.create()
-        worktree = Worktree.objects.create(ticket=ticket, repo_path="/tmp/teatree", branch="main")
+        ticket = Ticket.objects.create(overlay="t3-teatree")
+        worktree = Worktree.objects.create(ticket=ticket, overlay="t3-teatree", repo_path="/tmp/teatree", branch="main")
         overlay = TeatreeOverlay()
         commands = overlay.get_run_commands(worktree)
 
@@ -101,8 +100,8 @@ class TestGetRunCommands:
 class TestGetTestCommand:
     @pytest.mark.django_db
     def test_returns_pytest_command(self) -> None:
-        ticket = Ticket.objects.create()
-        worktree = Worktree.objects.create(ticket=ticket, repo_path="/tmp/teatree", branch="main")
+        ticket = Ticket.objects.create(overlay="t3-teatree")
+        worktree = Worktree.objects.create(ticket=ticket, overlay="t3-teatree", repo_path="/tmp/teatree", branch="main")
         overlay = TeatreeOverlay()
         assert overlay.get_test_command(worktree) == "uv run pytest"
 
@@ -129,21 +128,10 @@ class TestEntryPointDiscovery:
         names = [ep.name for ep in eps]
         assert "t3-teatree" in names
 
-    def test_entry_point_resolves_to_settings(self) -> None:
+    def test_entry_point_resolves_to_overlay_class(self) -> None:
         eps = entry_points(group="teatree.overlays")
         ep = next(ep for ep in eps if ep.name == "t3-teatree")
-        assert ep.value == "teatree.contrib.t3_teatree.settings"
-
-
-class TestSettingsModule:
-    def test_importable_and_configured(self) -> None:
-        mod = importlib.import_module("teatree.contrib.t3_teatree.settings")
-        assert mod.TEATREE_OVERLAY_CLASS == _OVERLAY_CLASS
-        assert "teatree.core" in mod.INSTALLED_APPS
-        assert "teatree.agents" in mod.INSTALLED_APPS
-        assert "teatree.contrib.t3_teatree" in mod.INSTALLED_APPS
-        assert mod.ROOT_URLCONF == "teatree.core.urls"
-        assert mod.DATABASES["default"]["ENGINE"] == "django.db.backends.sqlite3"
+        assert ep.value == "teatree.contrib.t3_teatree.overlay:TeatreeOverlay"
 
 
 class TestAppsConfig:
@@ -156,8 +144,8 @@ class TestOverlayDefaults:
 
     @pytest.mark.django_db
     def test_optional_hooks_return_defaults(self) -> None:
-        ticket = Ticket.objects.create()
-        worktree = Worktree.objects.create(ticket=ticket, repo_path="/tmp/teatree", branch="main")
+        ticket = Ticket.objects.create(overlay="t3-teatree")
+        worktree = Worktree.objects.create(ticket=ticket, overlay="t3-teatree", repo_path="/tmp/teatree", branch="main")
         overlay = TeatreeOverlay()
 
         assert overlay.get_env_extra(worktree) == {}
@@ -165,16 +153,18 @@ class TestOverlayDefaults:
         assert overlay.get_post_db_steps(worktree) == []
         assert overlay.get_symlinks(worktree) == []
         assert overlay.get_services_config(worktree) == {}
-        assert overlay.validate_mr("title", "desc") == {"errors": [], "warnings": []}
-        assert overlay.get_ci_project_path() == ""
-        assert overlay.get_e2e_config() == {}
-        assert overlay.detect_variant() == ""
-        assert overlay.get_tool_commands() == []
+        assert overlay.metadata.validate_mr("title", "desc") == {"errors": [], "warnings": []}
+        assert overlay.metadata.get_ci_project_path() == ""
+        assert overlay.metadata.get_e2e_config() == {}
+        assert overlay.metadata.detect_variant() == ""
+        assert overlay.metadata.get_tool_commands() == []
 
 
 class TestAsgiModule:
     def test_asgi_application_is_importable(self) -> None:
-        """The ASGI entry point for t3-teatree is importable and creates an application."""
-        mod = importlib.import_module("teatree.contrib.t3_teatree.asgi")
+        """The ASGI entry point for teatree is importable and creates an application."""
+        import importlib  # noqa: PLC0415
+
+        mod = importlib.import_module("teatree.asgi")
         assert hasattr(mod, "application")
         assert callable(mod.application)

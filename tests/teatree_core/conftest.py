@@ -2,6 +2,7 @@
 
 from collections.abc import Iterator
 from typing import cast
+from unittest.mock import patch
 
 import pytest
 
@@ -48,7 +49,6 @@ class CommandOverlay(OverlayBase):
 COMMAND_OVERLAY = "tests.teatree_core.conftest.CommandOverlay"
 
 COMMAND_SETTINGS = {
-    "TEATREE_OVERLAY_CLASS": COMMAND_OVERLAY,
     "TEATREE_HEADLESS_RUNTIME": "claude-code",
     "TEATREE_INTERACTIVE_RUNTIME": "codex",
     "TEATREE_TERMINAL_MODE": "same-terminal",
@@ -60,3 +60,13 @@ def _clear_overlay_cache() -> Iterator[None]:
     reset_overlay_cache()
     yield
     reset_overlay_cache()
+
+
+@pytest.fixture
+def mock_command_overlay() -> Iterator[None]:
+    """Patch _discover_overlays to return a CommandOverlay instance."""
+    with patch(
+        "teatree.core.overlay_loader._discover_overlays",
+        return_value={"test": CommandOverlay()},
+    ):
+        yield

@@ -3,6 +3,7 @@
 import os
 import shutil
 import subprocess  # noqa: S404
+import sys
 from pathlib import Path
 
 import typer
@@ -82,53 +83,67 @@ def uv_cmd(project_path: Path, *args: str) -> list[str]:
     return [uv, "--directory", str(project_path), "run", *args]
 
 
-def managepy(project_path: Path | None, *args: str) -> None:
-    """Run manage.py in the overlay project directory."""
-    if project_path is None:
-        typer.echo("Cannot find overlay project directory (no manage.py in cwd ancestors).")
-        raise typer.Exit(code=1)
-
-    manage_py = project_path / "manage.py"
-    if not manage_py.is_file():
-        typer.echo(f"No manage.py found in {project_path}")
-        raise typer.Exit(code=1)
-
+def _base_env() -> dict[str, str]:
+    """Build a clean environment dict, stripping DJANGO_SETTINGS_MODULE."""
     env = {k: v for k, v in os.environ.items() if k != "DJANGO_SETTINGS_MODULE"}
     # Preserve the user's original shell CWD so resolve_worktree() can
     # auto-detect the worktree even though manage.py runs from the overlay dir.
-    # uv --directory calls os.chdir() but leaves $PWD untouched.
     env["T3_ORIG_CWD"] = os.environ.get("PWD", str(Path.cwd()))
-    subprocess.run(  # noqa: S603
-        uv_cmd(project_path, "python", "manage.py", *args),
-        cwd=project_path,
-        env=env,
-        check=True,
-    )
+    return env
+
+
+def managepy(project_path: Path | None, *args: str) -> None:
+    """Run a Django management command for an overlay.
+
+    For overlays with their own project directory (TOML-configured), delegates
+    to ``uv --directory <path> run python manage.py``.  For entry-point overlays
+    (pip-installed, no project directory), uses ``python -m teatree``.
+    """
+    env = _base_env()
+
+    if project_path and (project_path / "manage.py").is_file():
+        cmd = uv_cmd(project_path, "python", "manage.py", *args)
+        subprocess.run(cmd, cwd=project_path, env=env, check=True)  # noqa: S603
+    else:
+        env.setdefault("DJANGO_SETTINGS_MODULE", "teatree.settings")
+        subprocess.run(  # noqa: S603
+            [sys.executable, "-m", "teatree", *args],
+            env=env,
+            check=True,
+        )
 
 
 def _uvicorn(project_path: Path | None, host: str, port: int, settings_module: str = "") -> None:
-    """Start uvicorn for the overlay project's ASGI application."""
-    if project_path is None:
-        typer.echo("Cannot find overlay project directory.")
-        raise typer.Exit(code=1)
+    """Start uvicorn for the teatree ASGI application."""
+    env = _base_env()
+    env["DJANGO_SETTINGS_MODULE"] = settings_module or "teatree.settings"
 
-    settings_module = settings_module or os.environ.get("DJANGO_SETTINGS_MODULE", "")
-    asgi_module = settings_module.rsplit(".", 1)[0] + ".asgi:application" if settings_module else "asgi:application"
-
-    env = {k: v for k, v in os.environ.items() if k != "DJANGO_SETTINGS_MODULE"}
-    subprocess.run(  # noqa: S603
-        [
-            *uv_cmd(project_path, "python", "-m", "uvicorn", asgi_module),
+    if project_path and (project_path / "manage.py").is_file():
+        cmd = [
+            *uv_cmd(project_path, "python", "-m", "uvicorn", "teatree.asgi:application"),
             "--host",
             host,
             "--port",
             str(port),
             "--reload",
-        ],
-        cwd=project_path,
-        env=env,
-        check=False,
-    )
+        ]
+        subprocess.run(cmd, cwd=project_path, env=env, check=False)  # noqa: S603
+    else:
+        subprocess.run(  # noqa: S603
+            [
+                sys.executable,
+                "-m",
+                "uvicorn",
+                "teatree.asgi:application",
+                "--host",
+                host,
+                "--port",
+                str(port),
+                "--reload",
+            ],
+            env=env,
+            check=False,
+        )
 
 
 class OverlayAppBuilder:
@@ -305,7 +320,7 @@ class OverlayAppBuilder:
                 lines.append(f"Overlay source: {project_path}")
             selection = SkillLoadingPolicy(skills_dir=_agent_search_dirs(overlay_root)).select_for_agent_launch(
                 cwd=Path.cwd(),
-                overlay_skill_metadata=get_overlay().get_skill_metadata(),
+                overlay_skill_metadata=get_overlay().metadata.get_skill_metadata(),
                 task=task,
                 ticket_status=_detect_agent_ticket_status(overlay_root),
                 explicit_phase=phase,
@@ -333,14 +348,11 @@ class OverlayAppBuilder:
         ) -> None:
             """Install a system daemon to start the dashboard on login."""
             from teatree.autostart import enable  # noqa: PLC0415
-            from teatree.config import discover_active_overlay  # noqa: PLC0415
 
-            active = discover_active_overlay()
-            sm = active.settings_module if active else ""
             msg = enable(
                 overlay_name=overlay_name,
                 project_path=project_path or Path.cwd(),
-                settings_module=sm,
+                settings_module="teatree.settings",
                 host=host,
                 port=port,
             )

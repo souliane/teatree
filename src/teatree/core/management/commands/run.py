@@ -151,7 +151,7 @@ class Command(TyperCommand):
         from teatree.backends.loader import get_ci_service  # noqa: PLC0415
 
         overlay = get_overlay()
-        config = overlay.get_e2e_config()
+        config = overlay.metadata.get_e2e_config()
         if not config:
             return {"error": "No E2E config in the overlay (get_e2e_config)."}
 
@@ -159,7 +159,7 @@ class Command(TyperCommand):
         if ci is None:
             return {"error": "No CI service configured."}
 
-        project = config.get("project_path", overlay.get_ci_project_path())
+        project = config.get("project_path", overlay.metadata.get_ci_project_path())
         ref = branch or config.get("ref", "main")
         variables = {"E2E": "true"}
         return ci.trigger_pipeline(project=project, ref=ref, variables=variables)

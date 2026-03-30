@@ -17,7 +17,7 @@ from teatree.cli import (
     _find_project_root,
     app,
 )
-from teatree.overlay_init.generator import ProjectScaffolder, camelize
+from teatree.overlay_init.generator import OverlayScaffolder, camelize
 
 runner = CliRunner()
 
@@ -102,9 +102,9 @@ class TestAgentCommand:
         from teatree.config import OverlayEntry  # noqa: PLC0415
         from teatree.skill_loading import SkillSelectionResult  # noqa: PLC0415
 
-        mock_overlay = OverlayEntry(name="test-overlay", settings_module="test.settings")
+        mock_overlay = OverlayEntry(name="test-overlay", overlay_class="test.overlay.TestOverlay")
         overlay_obj = MagicMock()
-        overlay_obj.get_skill_metadata.return_value = {"skill_path": "skills/t3-test/SKILL.md"}
+        overlay_obj.metadata.get_skill_metadata.return_value = {"skill_path": "skills/t3-test/SKILL.md"}
 
         with (
             patch("teatree.config.discover_active_overlay", return_value=mock_overlay),
@@ -261,10 +261,10 @@ class TestOverlaysCommand:
         from teatree.config import OverlayEntry  # noqa: PLC0415
 
         entries = [
-            OverlayEntry(name="acme", settings_module="acme.settings"),
-            OverlayEntry(name="demo", settings_module="demo.settings"),
+            OverlayEntry(name="acme", overlay_class="acme.overlay.AcmeOverlay"),
+            OverlayEntry(name="demo", overlay_class="demo.overlay.DemoOverlay"),
         ]
-        active = OverlayEntry(name="acme", settings_module="acme.settings")
+        active = OverlayEntry(name="acme", overlay_class="acme.overlay.AcmeOverlay")
         with (
             patch("teatree.config.discover_overlays", return_value=entries),
             patch("teatree.config.discover_active_overlay", return_value=active),
@@ -300,9 +300,9 @@ class TestConfigCommands:
         """write-skill-cache writes overlay metadata to cache."""
         from teatree.config import OverlayEntry  # noqa: PLC0415
 
-        active = OverlayEntry(name="test", settings_module="test.settings")
+        active = OverlayEntry(name="test", overlay_class="test.overlay.TestOverlay")
         mock_overlay = MagicMock()
-        mock_overlay.get_skill_metadata.return_value = {"skill_path": "skills/t3-test/SKILL.md"}
+        mock_overlay.metadata.get_skill_metadata.return_value = {"skill_path": "skills/t3-test/SKILL.md"}
 
         monkeypatch.setattr("teatree.config.DATA_DIR", tmp_path)
         monkeypatch.delenv("DJANGO_SETTINGS_MODULE", raising=False)
@@ -322,7 +322,7 @@ class TestConfigCommands:
     def test_write_skill_cache_no_active_overlay(self, monkeypatch):
         """write-skill-cache works when DJANGO_SETTINGS_MODULE is already set."""
         mock_overlay = MagicMock()
-        mock_overlay.get_skill_metadata.return_value = {}
+        mock_overlay.metadata.get_skill_metadata.return_value = {}
 
         monkeypatch.setenv("DJANGO_SETTINGS_MODULE", "tests.django_settings")
         with (
@@ -426,7 +426,7 @@ class TestFindOverlayProject:
     def test_with_active(self, tmp_path):
         from teatree.config import OverlayEntry  # noqa: PLC0415
 
-        active = OverlayEntry(name="test", settings_module="test.settings", project_path=tmp_path)
+        active = OverlayEntry(name="test", overlay_class="test.overlay.TestOverlay", project_path=tmp_path)
         with patch("teatree.config.discover_active_overlay", return_value=active):
             assert _find_overlay_project() == tmp_path
 
@@ -438,75 +438,36 @@ class TestFindOverlayProject:
             assert result == tmp_path
 
 
-# ── Startproject helpers ─────────────────────────────────────────────
+# ── Startoverlay helpers ─────────────────────────────────────────────
 
 
-class TestProjectScaffolder:
+class TestOverlayScaffolder:
     def test_camelize(self):
         assert camelize("hello_world") == "HelloWorld"
         assert camelize("single") == "Single"
         assert camelize("a_b_c") == "ABC"
 
-    def test_patch_settings(self, tmp_path):
-        settings_path = tmp_path / "src" / "pkg" / "settings.py"
-        settings_path.parent.mkdir(parents=True)
-        settings_path.write_text(
-            "INSTALLED_APPS = [\n    'django.contrib.staticfiles',\n]\n",
-            encoding="utf-8",
-        )
-        s = ProjectScaffolder(tmp_path, "my_overlay", "pkg")
-        s.patch_settings()
-        text = settings_path.read_text()
-        assert "'teatree.core'" in text
-        assert "'my_overlay'" in text
-        assert 'TEATREE_OVERLAY_CLASS = "my_overlay.overlay.MyOverlayOverlay"' in text
-
-    def test_patch_urls(self, tmp_path):
-        urls_path = tmp_path / "src" / "pkg" / "urls.py"
-        urls_path.parent.mkdir(parents=True)
-        urls_path.write_text(
-            "from django.urls import path\nurlpatterns = [path('admin/', admin.site.urls),]\n",
-            encoding="utf-8",
-        )
-        s = ProjectScaffolder(tmp_path, "my_overlay", "pkg")
-        s.patch_urls()
-        text = urls_path.read_text()
-        assert "include" in text
-        assert "teatree.core.urls" in text
-
-    def test_patch_manage_py(self, tmp_path):
-        manage_py = tmp_path / "manage.py"
-        manage_py.write_text(
-            "#!/usr/bin/env python\nimport sys\nimport os\n"
-            'os.environ.setdefault("DJANGO_SETTINGS_MODULE", "my.settings")\n',
-            encoding="utf-8",
-        )
-        s = ProjectScaffolder(tmp_path, "my_overlay", "pkg")
-        s.patch_manage_py()
-        text = manage_py.read_text()
-        assert "from pathlib import Path" in text
-        assert 'sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))' in text
-
     def test_write_overlay(self, tmp_path):
-        overlay_dir = tmp_path / "src" / "test_overlay"
-        overlay_dir.mkdir(parents=True)
-        s = ProjectScaffolder(tmp_path, "test_overlay", "pkg")
+        s = OverlayScaffolder(tmp_path, "test_overlay", "pkg")
         s.write_overlay("t3-test")
-        text = (overlay_dir / "overlay.py").read_text()
-        assert "class TestOverlayOverlay" in text
-        assert "OverlayBase" in text
+        pkg_dir = tmp_path / "src" / "test_overlay"
+        assert (pkg_dir / "__init__.py").is_file()
+        assert (pkg_dir / "apps.py").is_file()
+        text = (pkg_dir / "overlay.py").read_text()
+        assert "class TestOverlayOverlay(OverlayBase):" in text
+        assert 'django_app: str | None = "test_overlay"' in text
         assert '"skill_path": "skills/t3-test/SKILL.md"' in text
 
     def test_write_skill_md(self, tmp_path):
         skill_dir = tmp_path / "skills" / "t3-acme"
-        s = ProjectScaffolder(tmp_path, "t3_overlay", "pkg")
+        s = OverlayScaffolder(tmp_path, "t3_overlay", "pkg")
         s.write_skill_md(skill_dir, "t3-acme", "t3-acme")
         text = (skill_dir / "SKILL.md").read_text()
         assert "name: t3-acme" in text
         assert "t3-workspace" not in text
 
     def test_copy_config_templates(self, tmp_path):
-        s = ProjectScaffolder(tmp_path, "t3_overlay", "pkg")
+        s = OverlayScaffolder(tmp_path, "t3_overlay", "pkg")
         s.copy_config_templates()
         assert (tmp_path / ".editorconfig").is_file()
         assert (tmp_path / ".gitignore").is_file()
@@ -515,7 +476,7 @@ class TestProjectScaffolder:
         assert (tmp_path / ".python-version").is_file()
 
     def test_write_pyproject(self, tmp_path):
-        s = ProjectScaffolder(tmp_path, "demo_overlay", "demo")
+        s = OverlayScaffolder(tmp_path, "demo_overlay", "demo")
         s.write_pyproject("t3-demo")
         pyproject = tmp_path / "pyproject.toml"
         assert pyproject.is_file()

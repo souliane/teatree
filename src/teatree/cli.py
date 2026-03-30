@@ -40,19 +40,17 @@ def _root_callback(ctx: typer.Context) -> None:
 
 
 @app.command()
-def startproject(
+def startoverlay(
     project_name: str,
     destination: Path,
     *,
-    overlay_app: str = typer.Option(
-        "t3_overlay", "--overlay-app", help="Name of the overlay Django app (t3_ prefix recommended)"
-    ),
+    overlay_app: str = typer.Option("t3_overlay", "--overlay-app", help="Name of the overlay Django app"),
     project_package: str | None = typer.Option(
         None, "--project-package", help="Project package name (default: derived from project name)"
     ),
 ) -> None:
-    """Create a new TeaTree overlay project."""
-    from teatree.overlay_init.generator import ProjectScaffolder  # noqa: PLC0415
+    """Create a new TeaTree overlay package."""
+    from teatree.overlay_init.generator import OverlayScaffolder  # noqa: PLC0415
 
     project_root = destination / project_name
     if project_root.exists():
@@ -60,7 +58,7 @@ def startproject(
         raise typer.Exit(code=1)
 
     package_name = project_package or project_name.replace("-", "_").replace("t3_", "")
-    scaffolder = ProjectScaffolder(project_root, overlay_app, package_name)
+    scaffolder = OverlayScaffolder(project_root, overlay_app, package_name)
     scaffolder.scaffold(project_name)
     typer.echo(str(project_root))
 
@@ -195,14 +193,14 @@ def agent(
     if active:
         lines.extend(
             (
-                f"Active overlay: {active.name} (settings: {active.settings_module})",
+                f"Active overlay: {active.name} ({active.overlay_class or '(cwd)'})",
                 f"Overlay source: {project_root}",
             )
         )
     else:
         lines.append("No overlay active — working on teatree itself.")
 
-    overlay_skill_metadata = get_overlay().get_skill_metadata() if active else {}
+    overlay_skill_metadata = get_overlay().metadata.get_skill_metadata() if active else {}
     policy = SkillLoadingPolicy(skills_dir=_agent_search_dirs(project_root))
     try:
         selection = policy.select_for_agent_launch(
@@ -310,7 +308,7 @@ def overlays() -> None:
     typer.echo("Installed overlays:")
     for entry in installed:
         marker = " (active)" if active and entry.name == active.name else ""
-        typer.echo(f"  {entry.name:<20}{entry.settings_module}{marker}")
+        typer.echo(f"  {entry.name:<20}{entry.overlay_class or '(local)'}{marker}")
 
 
 # ── Top-level info ─────────────────────────────────────────────────────
@@ -337,13 +335,13 @@ def write_skill_cache() -> None:
 
     active = discover_active_overlay()
     if active and "DJANGO_SETTINGS_MODULE" not in os.environ:
-        os.environ["DJANGO_SETTINGS_MODULE"] = active.settings_module
+        os.environ["DJANGO_SETTINGS_MODULE"] = "teatree.settings"
     django.setup()
 
     from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
 
     overlay = get_overlay()
-    metadata = overlay.get_skill_metadata()
+    metadata = overlay.metadata.get_skill_metadata()
     cache_path = DATA_DIR / "skill-metadata.json"
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     cache_path.write_text(_json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
@@ -450,9 +448,17 @@ def _register_overlay_commands() -> None:
     installed = discover_overlays()
 
     for entry in installed:
-        short_name = entry.settings_module.split(".")[0]
+        # Derive short name from the entry name (e.g. "t3-teatree" -> "teatree")
+        short_name = entry.name.removeprefix("t3-")
         project_path = entry.project_path or (active.project_path if active and active.name == entry.name else None)
-        overlay_app = OverlayAppBuilder(entry.name, project_path, entry.settings_module).build()
+        # Entry-point overlays use teatree base settings; TOML overlays with their own
+        # project dir may have a settings module stored in overlay_class as fallback.
+        if project_path and ":" not in entry.overlay_class and entry.overlay_class:
+            # Backward compat: TOML overlay with settings module (no ":" means not a class path)
+            settings_module = entry.overlay_class
+        else:
+            settings_module = "teatree.settings"
+        overlay_app = OverlayAppBuilder(entry.name, project_path, settings_module).build()
         app.add_typer(overlay_app, name=short_name)
 
 

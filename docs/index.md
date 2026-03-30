@@ -12,23 +12,19 @@ The core idea: each workflow phase -- ticket intake, coding, testing, review, de
 
 - **`teatree/`** -- the Django extension package. Models, management commands, overlay loader, views, and the `t3` CLI.
 - **`skills/t3-*/`** -- skill directories. Each teaches the agent one phase of the development lifecycle.
-- **Overlay pattern** -- project-specific behaviour lives in a generated host project that subclasses `OverlayBase`. Teatree stays generic; the overlay wires in your repos, services, and provisioning steps.
+- **Overlay pattern** -- project-specific behaviour lives in a lightweight overlay package that subclasses `OverlayBase` and registers via a `teatree.overlays` entry point. Teatree stays generic; the overlay wires in your repos, services, and provisioning steps.
 
 ## Getting started
 
 ```bash
-# Clone and install
-git clone git@github.com:YOUR_USERNAME/teatree.git ~/workspace/teatree
-cd ~/workspace/teatree
-uv sync
+# Install teatree
+pip install teatree   # or: uv add teatree
 
-# Scaffold a host project
-uv run t3 startproject my-project ~/workspace/my-project \
-    --overlay-app myoverlay \
-    --project-package my_project
+# Create an overlay package for your project
+uv run t3 startoverlay my-overlay ~/workspace/my-overlay
 ```
 
-Then point `TEATREE_OVERLAY_CLASS` in your host project's settings to your overlay class.
+Your overlay is a lightweight Python package with an `OverlayBase` subclass and a `teatree.overlays` entry point. Once installed alongside teatree, `t3 teatree dashboard` picks it up automatically -- no settings to configure.
 
 ## Further reading
 

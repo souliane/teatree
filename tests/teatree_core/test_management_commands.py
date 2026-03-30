@@ -1,6 +1,7 @@
 from collections.abc import Iterator
 from pathlib import Path
 from typing import cast
+from unittest.mock import patch
 
 import pytest
 from django.core.management import call_command
@@ -42,8 +43,9 @@ def clear_overlay_cache() -> Iterator[None]:
     reset_overlay_cache()
 
 
+_MOCK_OVERLAY = {"test": CommandOverlay()}
+
 COMMAND_SETTINGS = {
-    "TEATREE_OVERLAY_CLASS": "tests.teatree_core.test_management_commands.CommandOverlay",
     "TEATREE_HEADLESS_RUNTIME": "claude-code",
     "TEATREE_INTERACTIVE_RUNTIME": "codex",
     "TEATREE_TERMINAL_MODE": "same-terminal",
@@ -60,16 +62,21 @@ class TestLifecycleCommands:
     ) -> None:
         wt_path = str(tmp_path / "test-worktree-backend")
         Path(wt_path).mkdir()
-        ticket = Ticket.objects.create(issue_url="https://example.com/issues/55", variant="acme")
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/55", variant="acme")
         wt = Worktree.objects.create(
-            ticket=ticket, repo_path="/tmp/backend", branch="feature", extra={"worktree_path": wt_path}
+            ticket=ticket,
+            overlay="test",
+            repo_path="/tmp/backend",
+            branch="feature",
+            extra={"worktree_path": wt_path},
         )
         monkeypatch.setenv("T3_ORIG_CWD", wt_path)
 
-        worktree_id = cast("int", call_command("lifecycle", "setup"))
-        status = cast("dict[str, str]", call_command("lifecycle", "status"))
-        call_command("lifecycle", "start")
-        call_command("lifecycle", "teardown")
+        with patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY):
+            worktree_id = cast("int", call_command("lifecycle", "setup"))
+            status = cast("dict[str, str]", call_command("lifecycle", "status"))
+            call_command("lifecycle", "start")
+            call_command("lifecycle", "teardown")
 
         worktree = Worktree.objects.get(pk=worktree_id)
 
@@ -84,8 +91,8 @@ class TestTaskCommands:
     @override_settings(**COMMAND_SETTINGS)
     @pytest.mark.django_db
     def test_claim_and_complete_work(self) -> None:
-        ticket = Ticket.objects.create()
-        session = Session.objects.create(ticket=ticket, agent_id="agent-1")
+        ticket = Ticket.objects.create(overlay="test")
+        session = Session.objects.create(ticket=ticket, overlay="test", agent_id="agent-1")
         sdk_task = Task.objects.create(ticket=ticket, session=session)
         sdk_followup_task = Task.objects.create(ticket=ticket, session=session)
         user_task = Task.objects.create(
@@ -130,12 +137,12 @@ class TestTaskCommands:
 
 
 class TestFollowupCommands:
-    @override_settings(
-        TEATREE_OVERLAY_CLASS="tests.teatree_core.test_management_commands.CommandOverlay",
-        TEATREE_GITLAB_TOKEN="",
-        TEATREE_GITLAB_USERNAME="testuser",
-    )
+    @pytest.mark.django_db
     def test_sync_reports_no_repos_from_default_overlay(self) -> None:
-        result = cast("dict[str, int | list[str]]", call_command("followup", "sync"))
+        with patch(
+            "teatree.core.overlay_loader._discover_overlays",
+            return_value=_MOCK_OVERLAY,
+        ):
+            result = cast("dict[str, int | list[str]]", call_command("followup", "sync"))
 
-        assert result["errors"] == ["TEATREE_GITLAB_TOKEN is not set"]
+        assert result["errors"] == ["GitLab token is not configured in overlay"]

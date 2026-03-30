@@ -24,7 +24,7 @@ None. This is the entry point for getting teatree running.
 Teatree now has two layers:
 
 - The **skill repo** you are in now. It provides the `t3-*` workflow skills, references, hooks, and the `teatree` Django extension package.
-- A **generated Django host project** created with `t3 startproject`. That project owns the real Django settings, declares `TEATREE_OVERLAY_CLASS`, and installs the overlay app that customizes TeaTree for one workspace.
+- An **overlay package** created with `t3 startoverlay`. The overlay subclasses `OverlayBase` and registers via entry points. Teatree itself owns the Django settings.
 
 Do not scaffold `scripts/lib/bootstrap.sh`, `project_hooks.py`, or shell overlays. Those are legacy migration artifacts.
 
@@ -34,8 +34,8 @@ Do not scaffold `scripts/lib/bootstrap.sh`, `project_hooks.py`, or shell overlay
 2. Create or validate `~/.teatree`.
 3. Install teatree skill symlinks for the current agent runtime.
 4. Optionally wire Claude Code hooks and statusline.
-5. Generate a Django host project with `t3 startproject`.
-6. Verify the generated project with `manage.py check`.
+5. Generate an overlay package with `t3 startoverlay`.
+6. Verify the overlay package installs correctly.
 
 ## Step 1: Prerequisites
 
@@ -88,7 +88,7 @@ Useful optional values:
 | `T3_CHAT_PLATFORM` | `slack`, `teams`, or `none` | `none` |
 | `T3_SKILL_OWNERSHIP_FILE` | Ownership config for skill editing | `$HOME/.ac-reviewing-skills` |
 
-Do not require `T3_OVERLAY`. The active overlay now lives in the generated Django host project, not in a shell-sourced overlay repo.
+Do not require `T3_OVERLAY`. The active overlay is discovered via entry points.
 
 Example:
 
@@ -231,33 +231,28 @@ When a `t3` CLI command fails (setup, start, run, or any other):
 
 This rule exists in `t3-workspace/SKILL.md` but skills are only loaded on demand. The global agent config is **always loaded**, catching the agent before it has a chance to improvise.
 
-## Step 5: Generate a Django Host Project
+## Step 5: Generate an Overlay Package
 
 Use the TeaTree bootstrap CLI, not shell overlay scaffolding.
 
 Basic form:
 
 ```bash
-uv run t3 startproject <project-root-name> <destination-dir> --overlay-app <overlay_app>
+uv run t3 startoverlay <overlay-name> <destination-dir>
 ```
 
-When the filesystem directory and Django package should differ, also pass:
+When the filesystem directory and Python package should differ, also pass:
 
 ```bash
-uv run t3 startproject my-project ~/workspace/my-org --project-package my_project --overlay-app myapp
+uv run t3 startoverlay my-overlay ~/workspace/my-org --overlay-package my_overlay
 ```
 
 Generated shape:
 
 ```text
-my-project/
-├── manage.py
-├── my_project/
-│   ├── settings.py
-│   ├── urls.py
-│   ├── asgi.py
-│   └── wsgi.py
-└── myapp/
+my-overlay/
+├── pyproject.toml
+└── my_overlay/
     ├── apps.py
     ├── overlay.py
     ├── models.py
@@ -267,8 +262,8 @@ my-project/
 Rules:
 
 - `overlay.py` must subclass `OverlayBase`.
-- `settings.py` must define `TEATREE_OVERLAY_CLASS`.
-- The generated project is the place where project-specific Django customisation lives.
+- The overlay must be registered as a `teatree.overlays` entry point in `pyproject.toml`.
+- The generated overlay package is the place where project-specific customisation lives.
 
 ## Step 6: Verify the Generated Project
 

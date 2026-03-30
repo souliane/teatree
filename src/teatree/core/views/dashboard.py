@@ -1,11 +1,11 @@
 from collections.abc import Callable
 
-from django.conf import settings
 from django.http import Http404, HttpRequest, HttpResponse
 from django.template.response import TemplateResponse
 from django.templatetags.static import static
 from django.views import View
 
+from teatree.core.overlay_loader import get_overlay
 from teatree.core.selectors import (
     build_action_required,
     build_active_sessions,
@@ -43,7 +43,7 @@ class DashboardView(View):
         if not DashboardView._synced:  # pragma: no branch
             perform_sync()
             DashboardView._synced = True
-        logo_url = getattr(settings, "TEATREE_DASHBOARD_LOGO", None) or static("teatree/img/teatree-logo.svg")
+        logo_url = get_overlay().config.get_dashboard_logo() or static("teatree/img/teatree-logo.svg")
         return TemplateResponse(
             request,
             "teatree/dashboard.html",
