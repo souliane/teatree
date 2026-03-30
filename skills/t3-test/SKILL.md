@@ -210,6 +210,32 @@ Shell variable interpolation and `jq --arg` both escape `!` to `\!`, breaking im
 
 When editing: check the verified boxes (`- [ ]` → `- [x]`), insert screenshot markdown below the relevant section, leave unchecked items as-is.
 
+### Visual Comparison Format (Non-Negotiable)
+
+Evidence screenshots must always use a **side-by-side comparison table**. Minimum 2 columns, up to 3 when a design mockup is available.
+
+**2-column format** (no design mockup available):
+
+```markdown
+| Before (current UI) | After (this MR) |
+|---|---|
+| ![before](url) | ![after](url) |
+```
+
+**3-column format** (design mockup available -- from Figma, ticket description, etc.):
+
+```markdown
+| Before (current UI) | Design mockup | After (this MR) |
+|---|---|---|
+| ![before](url) | ![mockup](url) | ![after](url) |
+```
+
+- **Always label columns explicitly** -- "Before", "After", "Design mockup" (or "Figma design").
+- **"Before" = default branch UI** for the same screen. Capture it before switching to the feature branch.
+- **"After" = feature branch UI** after the change.
+- **"Design mockup"** = Figma screenshot (via direct API), image from ticket description, or any reference design. Fetch Figma frames with the project's `figma_screenshot.py` script if available, or download from the ticket.
+- One comparison table per verified section, placed below the section heading.
+
 ### Rules
 
 - **One screenshot per verified section** — not per checkbox, not a flood. One image that proves the section works.

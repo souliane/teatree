@@ -102,9 +102,10 @@ When fixing review comments on an already-existing MR:
 
 1. **Fix the issues** as requested.
 2. **Merge the default branch** if needed: `git merge origin/main`. **Never rebase** — the branch has already been reviewed.
-3. **Push without squashing or rebasing** (regular commits on top).
-4. **Reply to the review comments on the MR.**
-5. **Do NOT send a review request notification** — reviewers are already watching.
+3. **Run lint/pre-commit** (`prek run --all-files` or equivalent) after merging — merges can expose new lint violations in your code even without conflicts.
+4. **Push without squashing or rebasing** (regular commits on top).
+5. **Reply to the review comments on the MR.**
+6. **Do NOT send a review request notification** — reviewers are already watching.
 
 ## Isolate Unrelated Fixes (Non-Negotiable)
 

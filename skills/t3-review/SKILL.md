@@ -67,6 +67,21 @@ After the cleanup checklist, **actively verify each changed file against the rep
 
 This step catches the class of bugs where the rules exist but weren't applied during implementation — missed feature flags, wrong DI pattern, manual subscriptions where signals were required, etc.
 
+#### Module-Level Architectural Check (Non-Negotiable)
+
+After verifying repo rules, **check the full file** (not just changed lines) of every file touched by the diff against the loaded coding skills' **"Architectural Health"** review checklist.
+
+1. **Identify loaded coding skills.** TeaTree auto-detects `ac-*` skills from the repo shape (e.g., `ac-python`, `ac-django`). If they have an "Architectural Health" review checklist section, apply it.
+2. **For each touched file**, evaluate the FULL file against those checklists. Key checks (skill-specific details are in the skill itself):
+   - Module size (LOC)
+   - Module-level function count and justification
+   - God-module detection (unrelated concerns in one file)
+   - Complexity rule suppressions in `pyproject.toml` — any `C901`/`PLR09xx` per-file-ignores beyond the project's boilerplate baseline are findings
+3. **When a threshold is crossed**, either refactor to comply or create a ticket for the debt — do not suppress the lint rule.
+4. **Check `pyproject.toml` per-file-ignores** for the touched files. If any suppress complexity rules that are not in the project's boilerplate baseline, flag them as findings.
+
+This step prevents architectural drift. Each diff looks fine in isolation — this check catches the cumulative effect by examining the full module.
+
 ### Quality Gate Verification (Verify-Fix-Repeat)
 
 Before declaring review-ready, run all gates and **iterate until they pass**. Do not declare review-ready after a single pass — re-run gates after every fix, because fixes can introduce new failures.
