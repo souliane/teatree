@@ -428,7 +428,7 @@ class OverlayAppBuilder:
         for tool_spec in tool_commands:
             name = tool_spec.get("name", "")
             help_text = tool_spec.get("help", "")
-            mgmt_cmd = tool_spec.get("management_command", "")
+            mgmt_cmd = tool_spec.get("command", "")
             if not name or not mgmt_cmd:
                 continue
             self._bridge_tool_command(tool_group, name, help_text, mgmt_cmd)
@@ -439,9 +439,9 @@ class OverlayAppBuilder:
         group: typer.Typer,
         name: str,
         help_text: str,
-        management_command: str,
+        command: str,
     ) -> None:
-        """Register a tool subcommand that forwards to a management command."""
+        """Register a tool subcommand that forwards to a shell command."""
         project_path = self.project_path
 
         @group.command(
@@ -450,6 +450,6 @@ class OverlayAppBuilder:
             help=help_text,
         )
         def _run(ctx: typer.Context) -> None:
-            managepy(project_path, *management_command.split(), *ctx.args)
+            managepy(project_path, *command.split(), *ctx.args)
 
         _run.__name__ = f"_run_tool_{name.replace('-', '_')}"

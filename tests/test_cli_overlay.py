@@ -508,8 +508,8 @@ class TestOverlayCommands:
         (hook_dir / "tool-commands.json").write_text(
             json.dumps(
                 [
-                    {"name": "lint", "help": "Run linter", "management_command": "tool lint"},
-                    {"name": "format", "help": "Auto-format code", "management_command": "tool format"},
+                    {"name": "lint", "help": "Run linter", "command": "tool lint"},
+                    {"name": "format", "help": "Auto-format code", "command": "tool format"},
                 ]
             )
         )
@@ -521,14 +521,14 @@ class TestOverlayCommands:
         assert len(builder.overlay_app.registered_groups) == 1
 
     def test_register_tools_skips_entries_without_name(self, tmp_path):
-        """_register_overlay_tools skips specs without name or management_command."""
+        """_register_overlay_tools skips specs without name or command."""
         hook_dir = tmp_path / "skills" / "my-skill" / "hook-config"
         hook_dir.mkdir(parents=True)
         (hook_dir / "tool-commands.json").write_text(
             json.dumps(
                 [
                     {"help": "No name defined"},
-                    {"name": "valid", "management_command": "tool valid", "help": "Works"},
+                    {"name": "valid", "command": "tool valid", "help": "Works"},
                 ]
             )
         )

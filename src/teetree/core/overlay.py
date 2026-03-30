@@ -49,7 +49,7 @@ class SkillMetadata(TypedDict, total=False):
 class ToolCommand(TypedDict, total=False):
     name: str
     help: str
-    management_command: str
+    command: str
     arguments: list[str]
 
 

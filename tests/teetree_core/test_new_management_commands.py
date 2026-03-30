@@ -64,8 +64,8 @@ class FullOverlay(OverlayBase):
 
     def get_tool_commands(self) -> list[ToolCommand]:
         return [
-            {"name": "migrate", "help": "Run DB migrations", "management_command": "echo migrate"},
-            {"name": "seed", "help": "Seed test data", "management_command": "echo seed"},
+            {"name": "migrate", "help": "Run DB migrations", "command": "echo migrate"},
+            {"name": "seed", "help": "Seed test data", "command": "echo seed"},
             {"name": "broken", "help": "No command defined"},
         ]
 
@@ -1753,21 +1753,20 @@ class TestToolRun:
         assert "migrate" in result
 
     @override_settings(**SETTINGS)
-    def test_no_management_command(self) -> None:
-        """Tool 'broken' has no management_command defined."""
+    def test_no_command(self) -> None:
+        """Tool 'broken' has no command defined."""
         result = cast("str", call_command("tool", "run", "broken"))
 
-        assert "no management_command" in result.lower()
+        assert "no command defined" in result.lower()
 
     @override_settings(**SETTINGS)
     def test_forwards_extra_args(self) -> None:
-        """Extra args after the tool name are appended to the management_command."""
-        with (
-            patch("teetree.core.management.commands.tool.subprocess.run") as mock_run,
-            patch("teetree.core.management.commands.tool.sys") as mock_sys,
-        ):
-            mock_sys.argv = ["manage.py", "tool", "run", "migrate", "--verbose", "--dry-run"]
-            result = cast("str", call_command("tool", "run", "migrate"))
+        """Extra args after the tool name are appended to the command."""
+        with patch("teetree.core.management.commands.tool.subprocess.run") as mock_run:
+            result = cast(
+                "str",
+                call_command("tool", "run", "migrate", "--verbose", "--dry-run"),
+            )
 
         assert "completed" in result.lower()
         cmd = mock_run.call_args[0][0]
