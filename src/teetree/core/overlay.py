@@ -113,11 +113,7 @@ class OverlayBase(OverlayRunMixin, ABC):
         return ""
 
     def get_envrc_lines(self, worktree: "Worktree") -> list[str]:
-        """Return extra lines to append to .envrc in the worktree.
-
-        Typical use: ``["[[ -f .venv/bin/activate ]] && source .venv/bin/activate"]``
-        to auto-activate the Python venv when entering the worktree directory.
-        """
+        """Return extra lines to append to .envrc in the worktree."""
         return []
 
     def get_symlinks(self, worktree: "Worktree") -> list[SymlinkSpec]:
