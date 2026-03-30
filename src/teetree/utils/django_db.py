@@ -231,7 +231,7 @@ def _migrate_reference_db(main_repo: str, ref_db: str, extra_env: dict[str, str]
     manage_py = Path(main_repo) / "manage.py"
     if not manage_py.is_file():
         print(f"  Skipping reference DB migration (no manage.py in {main_repo})")  # noqa: T201
-        return False
+        return True
 
     print(f"  Migrating reference DB ({ref_db}) using main repo...")  # noqa: T201
     for _attempt in range(_MAX_MIGRATE_RETRIES):
