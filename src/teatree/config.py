@@ -1,5 +1,6 @@
 """TeaTree configuration — overlay discovery from ~/.teatree.toml."""
 
+import importlib.util
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -113,7 +114,11 @@ def discover_overlays(config_path: Path = CONFIG_PATH) -> list[OverlayEntry]:
     # 2. Entry points (skip if already found via toml)
     for ep in entry_points(group="teatree.overlays"):
         if ep.name not in seen:
-            seen[ep.name] = OverlayEntry(name=ep.name, settings_module=ep.value)
+            seen[ep.name] = OverlayEntry(
+                name=ep.name,
+                settings_module=ep.value,
+                project_path=_resolve_ep_project_path(ep.value),
+            )
 
     return list(seen.values())
 
@@ -144,6 +149,23 @@ def _discover_from_manage_py() -> OverlayEntry | None:
             settings_module = _extract_settings_module(manage_py)
             if settings_module:
                 return OverlayEntry(name=directory.name, settings_module=settings_module, project_path=directory)
+    return None
+
+
+def _resolve_ep_project_path(settings_module: str) -> Path | None:
+    """Resolve the project root for an entry-point overlay from its settings module.
+
+    Locates the top-level package on disk, then walks up to find a ``manage.py``
+    — the same marker used by TOML and cwd-based discovery.
+    """
+    top_package = settings_module.split(".", maxsplit=1)[0]
+    spec = importlib.util.find_spec(top_package)
+    if spec is None or not spec.submodule_search_locations:
+        return None
+    pkg_dir = Path(spec.submodule_search_locations[0])
+    for parent in [pkg_dir, *pkg_dir.parents]:
+        if (parent / "manage.py").is_file():
+            return parent
     return None
 
 

@@ -253,6 +253,22 @@ class TestWorktree:
         assert worktree.db_name == ""
         assert worktree.extra == {}
 
+    def test_start_services_allows_restart(self) -> None:
+        """Calling start_services when already in SERVICES_UP should work (restart)."""
+        ticket = Ticket.objects.create(issue_url="https://example.com/restart", variant="acme")
+        worktree = Worktree.objects.create(ticket=ticket, repo_path="/tmp/backend", branch="restart")
+        worktree.provision()
+        worktree.save()
+        worktree.start_services(services=["backend"])
+        worktree.save()
+        assert worktree.state == Worktree.State.SERVICES_UP
+
+        # Restart — should not raise TransitionNotAllowed
+        worktree.start_services(services=["backend", "frontend"])
+        worktree.save()
+        assert worktree.state == Worktree.State.SERVICES_UP
+        assert worktree.extra["services"] == ["backend", "frontend"]
+
     def test_rejects_invalid_transition(self) -> None:
         worktree = Worktree.objects.create(
             ticket=Ticket.objects.create(),

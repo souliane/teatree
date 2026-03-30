@@ -191,7 +191,7 @@ class Worktree(models.Model):
         self.ports = ports or self._allocate_ports()
         self.db_name = self._build_db_name()
 
-    @transition(field=state, source=State.PROVISIONED, target=State.SERVICES_UP)
+    @transition(field=state, source=[State.PROVISIONED, State.SERVICES_UP], target=State.SERVICES_UP)
     def start_services(self, *, services: list[str] | None = None) -> None:
         if services is not None:
             extra = self._extra()

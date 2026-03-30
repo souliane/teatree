@@ -391,13 +391,23 @@ class OverlayAppBuilder:
         sub_name: str,
         sub_help: str,
     ) -> None:
-        """Register a single subcommand that forwards to ``manage.py <group> <sub>``."""
+        """Register a single subcommand that forwards to ``manage.py <group> <sub>``.
+
+        Uses ``invoke_without_command=True`` and disables the default typer help
+        so that ``--help`` is forwarded to the Django management command, which
+        shows the real options (``--path``, ``--variant``, etc.).
+        """
         project_path = self.project_path
 
         @group.command(
             name=sub_name,
-            context_settings={"allow_extra_args": True, "allow_interspersed_args": False},
+            context_settings={
+                "allow_extra_args": True,
+                "allow_interspersed_args": False,
+                "ignore_unknown_options": True,
+            },
             help=sub_help,
+            add_help_option=False,
         )
         def _run(ctx: typer.Context) -> None:
             managepy(project_path, group_name, sub_name, *ctx.args)

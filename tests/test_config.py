@@ -1,10 +1,13 @@
 """Tests for overlay discovery from ~/.teatree.toml and entry points."""
 
+import importlib.util
+import types
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from teatree.config import (
     _extract_settings_module,
+    _resolve_ep_project_path,
     default_logging,
     discover_active_overlay,
     discover_overlays,
@@ -48,16 +51,18 @@ def test_discover_overlays_empty_toml(tmp_path):
     _write_toml(config_path, "[teatree]\n")
 
     result = discover_overlays(config_path=config_path)
-    # Only entry-point overlays (like the bundled t3-teatree) may appear
-    toml_overlays = [e for e in result if e.project_path is not None]
-    assert toml_overlays == []
+    # No TOML-configured overlays; entry-point overlays (like t3-teatree) may
+    # appear with a resolved project_path if a manage.py exists in the repo.
+    toml_names = {e.name for e in result if e.project_path is not None}
+    assert "my-overlay" not in toml_names  # no TOML overlay was configured
 
 
 def test_discover_overlays_missing_toml(tmp_path):
     config_path = tmp_path / "nonexistent.toml"
     result = discover_overlays(config_path=config_path)
-    toml_overlays = [e for e in result if e.project_path is not None]
-    assert toml_overlays == []
+    # No TOML file at all — only entry-point overlays may appear.
+    toml_names = {e.name for e in result}
+    assert "my-overlay" not in toml_names
 
 
 def test_discover_overlays_path_without_manage_py(tmp_path):
@@ -256,7 +261,10 @@ def test_discover_overlays_entry_points(tmp_path, monkeypatch):
     mock_ep.name = "ep-overlay"
     mock_ep.value = "ep_overlay.settings"
 
-    with patch("importlib.metadata.entry_points", return_value=[mock_ep]):
+    with (
+        patch("importlib.metadata.entry_points", return_value=[mock_ep]),
+        patch("teatree.config._resolve_ep_project_path", return_value=None),
+    ):
         result = discover_overlays(config_path=config_path)
         assert len(result) == 1
         assert result[0].name == "ep-overlay"
@@ -292,3 +300,55 @@ def test_discover_from_manage_py_no_settings(tmp_path, monkeypatch):
     with patch("teatree.config.discover_overlays", return_value=[]):
         result = discover_active_overlay()
     assert result is None
+
+
+# ── _resolve_ep_project_path ─────────────────────────────────────────
+
+
+def test_resolve_ep_project_path_finds_manage_py(tmp_path):
+    """Resolves project root by walking up from the package to manage.py."""
+    project_root = tmp_path / "myproject"
+    pkg_dir = project_root / "src" / "mypkg"
+    pkg_dir.mkdir(parents=True)
+    _write_manage_py(project_root, "mypkg.settings")
+
+    mock_spec = types.SimpleNamespace(submodule_search_locations=[str(pkg_dir)])
+    with patch.object(importlib.util, "find_spec", return_value=mock_spec):
+        result = _resolve_ep_project_path("mypkg.settings")
+    assert result == project_root
+
+
+def test_resolve_ep_project_path_no_manage_py(tmp_path):
+    """Returns None when no manage.py exists in any ancestor."""
+    pkg_dir = tmp_path / "site-packages" / "mypkg"
+    pkg_dir.mkdir(parents=True)
+
+    mock_spec = types.SimpleNamespace(submodule_search_locations=[str(pkg_dir)])
+    with patch.object(importlib.util, "find_spec", return_value=mock_spec):
+        assert _resolve_ep_project_path("mypkg.settings") is None
+
+
+def test_resolve_ep_project_path_unknown_package():
+    """Returns None for a package that cannot be found."""
+    assert _resolve_ep_project_path("nonexistent_pkg_xyz.settings") is None
+
+
+def test_discover_overlays_entry_point_with_project_path(tmp_path):
+    """Entry-point overlay gets project_path resolved from package location."""
+    config_path = tmp_path / ".teatree.toml"
+    _write_toml(config_path, "[teatree]\n")
+
+    project_root = tmp_path / "myproject"
+    _write_manage_py(project_root, "mypkg.contrib.settings")
+
+    mock_ep = MagicMock()
+    mock_ep.name = "my-overlay"
+    mock_ep.value = "mypkg.contrib.settings"
+
+    with (
+        patch("importlib.metadata.entry_points", return_value=[mock_ep]),
+        patch("teatree.config._resolve_ep_project_path", return_value=project_root),
+    ):
+        result = discover_overlays(config_path=config_path)
+        assert len(result) == 1
+        assert result[0].project_path == project_root

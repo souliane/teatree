@@ -55,6 +55,50 @@ def _setup_worktree_dir(wt_path: str, worktree: Worktree, overlay: OverlayBase, 
         )
 
 
+def _register_new_repos(worktree: Worktree, stdout: OutputWrapper) -> None:
+    """Discover git worktrees in the ticket directory that aren't in the DB yet.
+
+    When a user manually runs ``git worktree add`` inside a ticket directory,
+    the new repo has no Worktree record.  This function scans the ticket
+    directory for subdirectories that look like git worktrees (``.git`` is a
+    file, not a directory) and creates missing records under the same ticket.
+    """
+    ticket_or_none = worktree.ticket
+    if ticket_or_none is None:
+        return
+    ticket_dir = (worktree.extra or {}).get("worktree_path", "")
+    if not ticket_dir:
+        return
+    # The ticket directory is the parent of the repo worktree path
+    ticket_path = Path(ticket_dir).parent
+    if not ticket_path.is_dir():
+        return
+
+    ticket = Ticket.objects.get(pk=ticket_or_none.pk)
+    known_paths = {(wt.extra or {}).get("worktree_path", "") for wt in ticket.worktrees.all()}
+
+    for entry in sorted(ticket_path.iterdir()):
+        if not entry.is_dir():
+            continue
+        git_marker = entry / ".git"
+        if not git_marker.exists():
+            continue
+        # .git as a file = git worktree; .git as a dir = main clone (skip)
+        if git_marker.is_dir():
+            continue
+        entry_str = str(entry)
+        if entry_str in known_paths:
+            continue
+        # New repo discovered — create a Worktree record
+        Worktree.objects.create(
+            ticket=ticket,
+            repo_path=entry.name,
+            branch=worktree.branch,
+            extra={"worktree_path": entry_str},
+        )
+        stdout.write(f"  Discovered new repo: {entry.name}")
+
+
 class Command(TyperCommand):
     @command()
     def setup(
@@ -62,20 +106,39 @@ class Command(TyperCommand):
         path: str = typer.Option("", help="Worktree path (auto-detects from PWD if empty)."),
         variant: str = typer.Option("", help="Tenant variant. Updates ticket if provided."),
     ) -> int:
-        """Provision a worktree (allocate ports, DB name, run overlay steps)."""
-        worktree = resolve_worktree(path)
+        """Provision a worktree (allocate ports, DB name, run overlay steps).
 
-        if variant and worktree.ticket and worktree.ticket.variant != variant:
-            worktree.ticket.variant = variant
-            worktree.ticket.save(update_fields=["variant"])
+        Discovers repos added to the ticket directory since initial creation
+        and provisions all worktrees for the ticket, not just the resolved one.
+        """
+        worktree = resolve_worktree(path)
+        ticket = Ticket.objects.get(pk=worktree.ticket.pk)
+
+        if variant and ticket.variant != variant:
+            ticket.variant = variant
+            ticket.save(update_fields=["variant"])
+
+        # Discover repos added to the ticket directory since initial creation
+        _register_new_repos(worktree, self.stdout)
+
+        overlay = get_overlay()
+
+        # Provision ALL worktrees for the ticket
+        for wt in ticket.worktrees.all():
+            self._provision_worktree(wt, overlay)
+
+        _write_skill_metadata_cache()
+
+        return int(worktree.pk)
+
+    def _provision_worktree(self, worktree: Worktree, overlay: "OverlayBase") -> None:
+        self.stdout.write(f"  Provisioning: {worktree.repo_path}")
 
         if worktree.state == Worktree.State.CREATED:
             worktree.provision()
             worktree.save()
         else:
             worktree.refresh_ports_if_needed()
-
-        overlay = get_overlay()
 
         envfile = write_env_worktree(worktree)
         if envfile:
@@ -103,10 +166,6 @@ class Command(TyperCommand):
             for step in overlay.get_pre_run_steps(worktree, service_name):
                 self.stdout.write(f"  Running: {step.name}")
                 step.callable()
-
-        _write_skill_metadata_cache()
-
-        return int(worktree.pk)
 
     def _run_post_db_steps(self, overlay: OverlayBase, worktree: Worktree) -> None:
         env = {**os.environ, **overlay.get_env_extra(worktree)}

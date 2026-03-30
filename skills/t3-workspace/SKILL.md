@@ -249,7 +249,7 @@ stateDiagram-v2
 | `t3 <overlay> ship <TICKET_ID>` | Code to MR — create merge request for the ticket |
 | `t3 <overlay> daily` | Daily followup — sync MRs, check gates, remind reviewers |
 | `t3 <overlay> full-status` | Show ticket, worktree, and session state summary |
-| `t3 <overlay> agent [TASK]` | Launch Claude Code with overlay context |
+| `t3 <overlay> agent [TASK]` | Launch headless agent with overlay context |
 | `t3 <overlay> dashboard` | Start the dashboard dev server |
 
 #### `lifecycle` — Lifecycle state machine

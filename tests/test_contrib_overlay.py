@@ -170,3 +170,11 @@ class TestOverlayDefaults:
         assert overlay.get_e2e_config() == {}
         assert overlay.detect_variant() == ""
         assert overlay.get_tool_commands() == []
+
+
+class TestAsgiModule:
+    def test_asgi_application_is_importable(self) -> None:
+        """The ASGI entry point for t3-teatree is importable and creates an application."""
+        mod = importlib.import_module("teatree.contrib.t3_teatree.asgi")
+        assert hasattr(mod, "application")
+        assert callable(mod.application)

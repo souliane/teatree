@@ -1,14 +1,17 @@
 """Tests for workspace, db, pr, and extended run management commands."""
 
 from collections.abc import Iterator
+from io import StringIO
 from pathlib import Path
 from typing import cast
 from unittest.mock import MagicMock, patch
 
 import pytest
 from django.core.management import call_command
+from django.core.management.base import OutputWrapper
 from django.test import override_settings
 
+from teatree.core.management.commands.lifecycle import _register_new_repos
 from teatree.core.models import Session, Ticket, Worktree
 from teatree.core.overlay import (
     DbImportStrategy,
@@ -1771,3 +1774,172 @@ class TestToolRun:
         assert "completed" in result.lower()
         cmd = mock_run.call_args[0][0]
         assert cmd == "echo migrate --verbose --dry-run"
+
+
+# ── Repo discovery in lifecycle setup ──────────────────────────────
+
+
+@pytest.mark.django_db
+class TestLifecycleRepoDiscovery:
+    @override_settings(**SETTINGS)
+    def test_discovers_new_repo_in_ticket_dir(self, tmp_path: Path) -> None:
+        """A git worktree added manually to the ticket dir gets auto-registered."""
+        ticket_dir = tmp_path / "ticket-123"
+        ticket_dir.mkdir()
+
+        # Existing repo
+        existing = ticket_dir / "backend"
+        existing.mkdir()
+
+        # New repo added manually (git worktrees have .git as a file, not dir)
+        new_repo = ticket_dir / "frontend"
+        new_repo.mkdir()
+        (new_repo / ".git").write_text("gitdir: /some/path")
+
+        ticket = Ticket.objects.create(issue_url="https://example.com/issues/95")
+        Worktree.objects.create(
+            ticket=ticket,
+            repo_path="backend",
+            branch="feature",
+            extra={"worktree_path": str(existing)},
+        )
+
+        with patch("teatree.core.management.commands.lifecycle.subprocess.run"):
+            call_command("lifecycle", "setup", path=str(existing))
+
+        # Should have created a new Worktree record for frontend
+        assert ticket.worktrees.count() == 2
+        frontend_wt = ticket.worktrees.get(repo_path="frontend")
+        assert frontend_wt.extra["worktree_path"] == str(new_repo)
+        assert frontend_wt.branch == "feature"
+
+    @override_settings(**SETTINGS)
+    def test_skips_main_clones(self, tmp_path: Path) -> None:
+        """Directories with .git as a directory (main clones) are not registered."""
+        ticket_dir = tmp_path / "ticket-456"
+        ticket_dir.mkdir()
+
+        existing = ticket_dir / "backend"
+        existing.mkdir()
+
+        main_clone = ticket_dir / "main-repo"
+        main_clone.mkdir()
+        (main_clone / ".git").mkdir()  # directory, not file = main clone
+
+        ticket = Ticket.objects.create(issue_url="https://example.com/issues/96")
+        Worktree.objects.create(
+            ticket=ticket,
+            repo_path="backend",
+            branch="feature",
+            extra={"worktree_path": str(existing)},
+        )
+
+        with patch("teatree.core.management.commands.lifecycle.subprocess.run"):
+            call_command("lifecycle", "setup", path=str(existing))
+
+        assert ticket.worktrees.count() == 1
+
+    @override_settings(**SETTINGS)
+    def test_skips_non_git_directories(self, tmp_path: Path) -> None:
+        """Non-git subdirectories (logs, etc.) are not registered."""
+        ticket_dir = tmp_path / "ticket-789"
+        ticket_dir.mkdir()
+
+        existing = ticket_dir / "backend"
+        existing.mkdir()
+
+        (ticket_dir / "logs").mkdir()
+        (ticket_dir / "notes.txt").touch()
+
+        ticket = Ticket.objects.create(issue_url="https://example.com/issues/97")
+        Worktree.objects.create(
+            ticket=ticket,
+            repo_path="backend",
+            branch="feature",
+            extra={"worktree_path": str(existing)},
+        )
+
+        with patch("teatree.core.management.commands.lifecycle.subprocess.run"):
+            call_command("lifecycle", "setup", path=str(existing))
+
+        assert ticket.worktrees.count() == 1
+
+    @override_settings(**SETTINGS)
+    def test_idempotent_does_not_duplicate(self, tmp_path: Path) -> None:
+        """Running setup twice doesn't create duplicate Worktree records."""
+        ticket_dir = tmp_path / "ticket-idem"
+        ticket_dir.mkdir()
+
+        existing = ticket_dir / "backend"
+        existing.mkdir()
+
+        new_repo = ticket_dir / "frontend"
+        new_repo.mkdir()
+        (new_repo / ".git").write_text("gitdir: /some/path")
+
+        ticket = Ticket.objects.create(issue_url="https://example.com/issues/98")
+        Worktree.objects.create(
+            ticket=ticket,
+            repo_path="backend",
+            branch="feature",
+            extra={"worktree_path": str(existing)},
+        )
+
+        with patch("teatree.core.management.commands.lifecycle.subprocess.run"):
+            call_command("lifecycle", "setup", path=str(existing))
+            call_command("lifecycle", "setup", path=str(existing))
+
+        assert ticket.worktrees.count() == 2
+
+    @override_settings(**SETTINGS)
+    def test_provisions_all_ticket_worktrees(self, tmp_path: Path) -> None:
+        """Setup provisions all worktrees for the ticket, not just the resolved one."""
+        ticket_dir = tmp_path / "ticket-all"
+        ticket_dir.mkdir()
+
+        backend = ticket_dir / "backend"
+        backend.mkdir()
+        frontend = ticket_dir / "frontend"
+        frontend.mkdir()
+
+        ticket = Ticket.objects.create(issue_url="https://example.com/issues/99")
+        Worktree.objects.create(
+            ticket=ticket,
+            repo_path="backend",
+            branch="feature",
+            extra={"worktree_path": str(backend)},
+        )
+        Worktree.objects.create(
+            ticket=ticket,
+            repo_path="frontend",
+            branch="feature",
+            extra={"worktree_path": str(frontend)},
+        )
+
+        with patch("teatree.core.management.commands.lifecycle.subprocess.run"):
+            call_command("lifecycle", "setup", path=str(backend))
+
+        # Both worktrees should be provisioned
+        for wt in ticket.worktrees.all():
+            wt.refresh_from_db()
+            assert wt.state == Worktree.State.PROVISIONED
+
+    def test_register_skips_when_no_ticket(self) -> None:
+        """_register_new_repos returns early when worktree has no ticket."""
+        wt = MagicMock()
+        wt.ticket = None
+        _register_new_repos(wt, OutputWrapper(StringIO()))
+
+    def test_register_skips_when_no_worktree_path(self) -> None:
+        """_register_new_repos returns early when extra has no worktree_path."""
+        wt = MagicMock()
+        wt.ticket = MagicMock()
+        wt.extra = {}
+        _register_new_repos(wt, OutputWrapper(StringIO()))
+
+    def test_register_skips_when_ticket_dir_missing(self, tmp_path: Path) -> None:
+        """_register_new_repos returns early when ticket directory doesn't exist."""
+        wt = MagicMock()
+        wt.ticket = MagicMock()
+        wt.extra = {"worktree_path": str(tmp_path / "nonexistent" / "backend")}
+        _register_new_repos(wt, OutputWrapper(StringIO()))
