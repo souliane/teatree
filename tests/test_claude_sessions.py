@@ -1,4 +1,4 @@
-"""Tests for ``teetree.claude_sessions`` — session listing and status detection."""
+"""Tests for ``teatree.claude_sessions`` — session listing and status detection."""
 
 import json
 import time
@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from teetree.claude_sessions import (
+from teatree.claude_sessions import (
     _build_session_index,
     _extract_first_user_message,
     _session_end_status,
@@ -372,13 +372,13 @@ def _jsonl(*entries: dict) -> str:
 
 # ── _is_session_running ──────────────────────────────────────────────
 
-from teetree.claude_sessions import _is_session_running, _parse_user_content, _safe_json  # noqa: E402
+from teatree.claude_sessions import _is_session_running, _parse_user_content, _safe_json  # noqa: E402
 
 
 class TestIsSessionRunning:
     def test_returns_false_when_no_sessions_dir(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         # Point Path.home() to a dir without .claude/sessions
-        monkeypatch.setattr("teetree.claude_sessions.Path.home", lambda: tmp_path)
+        monkeypatch.setattr("teatree.claude_sessions.Path.home", lambda: tmp_path)
         assert _is_session_running("any-id") is False
 
     def test_returns_true_for_matching_alive_process(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -386,7 +386,7 @@ class TestIsSessionRunning:
 
         sessions_dir = tmp_path / ".claude" / "sessions"
         sessions_dir.mkdir(parents=True)
-        monkeypatch.setattr("teetree.claude_sessions.Path.home", lambda: tmp_path)
+        monkeypatch.setattr("teatree.claude_sessions.Path.home", lambda: tmp_path)
 
         current_pid = os.getpid()
         session_data = {"pid": current_pid, "sessionId": "target-session"}
@@ -397,7 +397,7 @@ class TestIsSessionRunning:
     def test_returns_false_for_dead_process(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         sessions_dir = tmp_path / ".claude" / "sessions"
         sessions_dir.mkdir(parents=True)
-        monkeypatch.setattr("teetree.claude_sessions.Path.home", lambda: tmp_path)
+        monkeypatch.setattr("teatree.claude_sessions.Path.home", lambda: tmp_path)
 
         session_data = {"pid": 999_999_999, "sessionId": "dead-session"}
         (sessions_dir / "session.json").write_text(json.dumps(session_data), encoding="utf-8")
@@ -409,7 +409,7 @@ class TestIsSessionRunning:
 
         sessions_dir = tmp_path / ".claude" / "sessions"
         sessions_dir.mkdir(parents=True)
-        monkeypatch.setattr("teetree.claude_sessions.Path.home", lambda: tmp_path)
+        monkeypatch.setattr("teatree.claude_sessions.Path.home", lambda: tmp_path)
 
         current_pid = os.getpid()
         session_data = {"pid": current_pid, "sessionId": "other-session"}
@@ -420,7 +420,7 @@ class TestIsSessionRunning:
     def test_skips_invalid_json_files(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         sessions_dir = tmp_path / ".claude" / "sessions"
         sessions_dir.mkdir(parents=True)
-        monkeypatch.setattr("teetree.claude_sessions.Path.home", lambda: tmp_path)
+        monkeypatch.setattr("teatree.claude_sessions.Path.home", lambda: tmp_path)
 
         (sessions_dir / "bad.json").write_text("not json", encoding="utf-8")
 
@@ -429,7 +429,7 @@ class TestIsSessionRunning:
     def test_returns_false_for_missing_pid_key(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         sessions_dir = tmp_path / ".claude" / "sessions"
         sessions_dir.mkdir(parents=True)
-        monkeypatch.setattr("teetree.claude_sessions.Path.home", lambda: tmp_path)
+        monkeypatch.setattr("teatree.claude_sessions.Path.home", lambda: tmp_path)
 
         session_data = {"sessionId": "target"}  # No "pid" key
         (sessions_dir / "session.json").write_text(json.dumps(session_data), encoding="utf-8")
@@ -447,7 +447,7 @@ class TestSessionEndStatusActive:
         # Set up the sessions dir
         sessions_dir = tmp_path / ".claude" / "sessions"
         sessions_dir.mkdir(parents=True)
-        monkeypatch.setattr("teetree.claude_sessions.Path.home", lambda: tmp_path)
+        monkeypatch.setattr("teatree.claude_sessions.Path.home", lambda: tmp_path)
 
         current_pid = os.getpid()
         session_data = {"pid": current_pid, "sessionId": "active-conv"}
@@ -663,7 +663,7 @@ class TestParseUserContentNonStrNonList:
 
 # ── list_sessions with explicit SessionQuery ─────────────────────────
 
-from teetree.claude_sessions import SessionQuery  # noqa: E402
+from teatree.claude_sessions import SessionQuery  # noqa: E402
 
 
 class TestListSessionsWithQuery:

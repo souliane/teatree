@@ -20,7 +20,7 @@
       "description": "Return the ordered setup steps for a newly created worktree.",
       "name": "get_provision_steps",
       "required": true,
-      "signature": "(worktree: 'Worktree') -> list[teetree.core.overlay.ProvisionStep]"
+      "signature": "(worktree: 'Worktree') -> list[teatree.core.overlay.ProvisionStep]"
     },
     {
       "description": "Add overlay-specific environment variables to the generated worktree env file.",
@@ -71,7 +71,7 @@
       "signature": "() -> dict[str, HookValue]"
     }
   ],
-  "overlay_base": "teetree.core.overlay.OverlayBase",
+  "overlay_base": "teatree.core.overlay.OverlayBase",
   "settings": [
     {
       "description": "Import path for the active OverlayBase subclass.",

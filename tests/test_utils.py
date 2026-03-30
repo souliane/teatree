@@ -4,7 +4,7 @@ from subprocess import CompletedProcess
 
 import pytest
 
-from teetree.utils import db, git, gitlab_api, ports
+from teatree.utils import db, git, gitlab_api, ports
 
 
 def test_find_free_ports_scans_existing_env_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

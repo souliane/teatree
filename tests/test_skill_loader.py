@@ -455,7 +455,7 @@ class TestSuggestSkills:
         with (
             mock.patch("lib.skill_loader.SKILL_METADATA_CACHE", cache),
             mock.patch(
-                "teetree.skill_loading.subprocess.run",
+                "teatree.skill_loading.subprocess.run",
                 return_value=mock.Mock(returncode=0, stdout="git@gitlab.com:acme-engineering/platform-product\n"),
             ),
         ):

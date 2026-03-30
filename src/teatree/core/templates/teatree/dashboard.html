@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TeaTree Dashboard</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            bark: "#1f2a24",
+            moss: "#426855",
+            clay: "#af6835",
+            parchment: "#f5ecdd",
+            cream: "#fffaf1"
+          },
+          fontFamily: {
+            display: ["Iowan Old Style", "Palatino Linotype", "Book Antiqua", "serif"],
+            sans: ["Avenir Next", "Segoe UI", "sans-serif"]
+          },
+          boxShadow: {
+            soft: "0 20px 45px rgba(37, 49, 42, 0.12)"
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    /* All table cells default to no-wrap; use .cell-wrap to opt in */
+    table td, table th { white-space: nowrap; }
+    .cell-wrap { white-space: normal; }
+    /* Shared pill / badge base — prevents wrapping, sets font, shape */
+    .pill {
+      display: inline-flex;
+      white-space: nowrap;
+      border-radius: 9999px;
+      font-family: "Avenir Next", "Segoe UI", sans-serif;
+      font-weight: 600;
+    }
+    /* Size variants */
+    .pill-sm { font-size: 0.75rem; padding: 0.25rem 0.75rem; }
+    .pill-xs { font-size: 10px; padding: 0.125rem 0.5rem; }
+    /* Action button base — extends pill */
+    .pill-btn {
+      display: inline-flex;
+      white-space: nowrap;
+      border-radius: 9999px;
+      font-family: "Avenir Next", "Segoe UI", sans-serif;
+      font-weight: 600;
+      transition: all 150ms;
+    }
+  </style>
+  <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+  <script src="https://unpkg.com/htmx-ext-sse@2.3.0/sse.js"></script>
+  <script>
+    function toggleDismissed(checkbox, panelName) {
+      var panel = document.getElementById('panel-' + panelName);
+      if (!panel) return;
+      var url = panel.getAttribute('hx-get');
+      var baseUrl = url.split('?')[0];
+      panel.setAttribute('hx-get', checkbox.checked ? baseUrl + '?show_dismissed=1' : baseUrl);
+      htmx.trigger(panel, 'refreshPanels');
+    }
+
+    function openTaskModal(taskId) {
+      var modal = document.getElementById('task-modal');
+      var body = document.getElementById('task-modal-body');
+      body.innerHTML = '<p class="font-sans text-sm text-bark/50 animate-pulse">Loading…</p>';
+      modal.classList.remove('hidden');
+      document.body.classList.add('overflow-hidden');
+      htmx.ajax('GET', '/tasks/' + taskId + '/detail/', {target: '#task-modal-body', swap: 'innerHTML'});
+    }
+    function closeTaskModal() {
+      document.getElementById('task-modal').classList.add('hidden');
+      document.body.classList.remove('overflow-hidden');
+    }
+    document.addEventListener('keydown', function(e) {
+      if (e.key === 'Escape') closeTaskModal();
+    });
+
+    function handleActionResponse(event) {
+      var xhr = event.detail.xhr;
+      var btn = event.detail.elt;
+      var errorSpan = btn.closest('.flex').querySelector('[data-error-msg]');
+      if (!xhr.responseText) {
+        if (errorSpan) { errorSpan.textContent = 'Empty response'; errorSpan.classList.remove('hidden'); }
+        htmx.trigger(document.body, 'refreshPanels');
+        return;
+      }
+      if (xhr.status >= 400) {
+        try {
+          var data = JSON.parse(xhr.responseText);
+          if (errorSpan && data.error) {
+            errorSpan.textContent = data.error;
+            errorSpan.classList.remove('hidden');
+          }
+        } catch(e) { console.warn('Failed to parse error response:', e); }
+      } else {
+        if (errorSpan) { errorSpan.classList.add('hidden'); errorSpan.textContent = ''; }
+        try {
+          var data = JSON.parse(xhr.responseText);
+          if (data.launch_url) { window.open(data.launch_url, '_blank'); }
+        } catch(e) { console.warn('Failed to parse success response:', e); }
+      }
+      htmx.trigger(document.body, 'refreshPanels');
+    }
+
+    document.body.addEventListener('htmx:sseOpen', function() {
+      var dot = document.getElementById('sse-status');
+      if (dot) { dot.className = 'inline-block h-2 w-2 rounded-full bg-emerald-500'; dot.title = 'SSE connected'; }
+    });
+    document.body.addEventListener('htmx:sseError', function() {
+      var dot = document.getElementById('sse-status');
+      if (dot) { dot.className = 'inline-block h-2 w-2 rounded-full bg-red-400 animate-pulse'; dot.title = 'SSE reconnecting'; }
+    });
+    document.body.addEventListener('htmx:sseClose', function() {
+      var dot = document.getElementById('sse-status');
+      if (dot) { dot.className = 'inline-block h-2 w-2 rounded-full bg-bark/40'; dot.title = 'SSE disconnected'; }
+    });
+  </script>
+</head>
+<body class="min-h-screen bg-[radial-gradient(circle_at_top_left,_rgba(66,104,85,0.18),_transparent_30%),linear-gradient(180deg,_#fbf4e8_0%,_#f5ecdd_55%,_#eadbc6_100%)] text-bark">
+  <div hx-ext="sse" sse-connect="{% url 'teatree:dashboard-events' %}">
+  <!-- Auto-sync on page load: same as "Sync Now" button -->
+  <div
+    hx-post="{% url 'teatree:dashboard-sync' %}"
+    hx-trigger="load"
+    hx-target="#sync-status"
+    hx-swap="outerHTML"
+    hx-on::after-request="htmx.trigger(document.body, 'refreshPanels')"
+  ></div>
+  <main class="px-4 py-10 sm:px-6 lg:px-8">
+    <header class="mb-4 flex items-center gap-4">
+      <img src="{{ logo_url }}" alt="Logo" class="h-8">
+      <span class="font-sans text-xs font-semibold uppercase tracking-[0.24em] text-moss">TeaTree Runtime <span id="sse-status" class="inline-block h-2 w-2 rounded-full bg-bark/40" title="SSE disconnected"></span></span>
+    </header>
+    <!-- Compact status bar -->
+    <div class="mb-4 flex flex-wrap items-center gap-3 rounded-[1rem] border border-bark/10 bg-cream/90 px-5 py-3 shadow-soft backdrop-blur">
+      <div
+        class="flex gap-3 font-sans text-sm text-bark/60"
+        hx-get="{% url 'teatree:dashboard-panel' 'summary' %}"
+        hx-trigger="load, every 120s, refreshPanels from:body, sse:summary"
+        hx-swap="innerHTML"
+      >
+        {% include "teatree/partials/dashboard_summary.html" with summary=snapshot.summary only %}
+      </div>
+      <div class="ml-auto flex items-center gap-3">
+        <div id="sync-status"></div>
+        <button
+          class="pill-btn pill-xs border border-clay/30 bg-clay/10 uppercase tracking-[0.18em] text-clay hover:bg-clay/20"
+          hx-post="{% url 'teatree:launch-terminal' %}"
+          hx-swap="none"
+          hx-on::after-request="handleActionResponse(event)"
+        >Terminal</button>
+        <button
+          class="pill-btn pill-xs border border-moss/30 bg-moss/10 uppercase tracking-[0.18em] text-moss hover:bg-moss/20"
+          hx-post="{% url 'teatree:launch-interactive-agent' %}"
+          hx-swap="none"
+          hx-on::after-request="handleActionResponse(event)"
+        >Agent</button>
+        <button
+          class="pill-btn pill-xs border border-moss/30 bg-moss/10 uppercase tracking-[0.18em] text-moss hover:bg-moss/20"
+          hx-post="{% url 'teatree:dashboard-sync' %}"
+          hx-target="#sync-status"
+          hx-swap="outerHTML"
+          hx-indicator="#sync-spinner"
+          hx-on::after-request="htmx.trigger(document.body, 'refreshPanels')"
+        >
+          <span id="sync-spinner" class="htmx-indicator mr-1">&#8635;</span>
+          Sync All
+        </button>
+      </div>
+    </div>
+    <div class="grid gap-4">
+      <!-- Automation Summary -->
+      <section class="overflow-hidden rounded-[1.5rem] border border-bark/10 bg-cream/90 shadow-soft backdrop-blur">
+        <div class="flex flex-col gap-2 border-b border-bark/10 px-5 py-4 sm:flex-row sm:items-end sm:justify-between">
+          <div>
+            <h2 class="font-display text-2xl">Automation</h2>
+            <p class="font-sans text-sm text-bark/60">Headless task execution stats.</p>
+          </div>
+          <span class="font-sans text-xs uppercase tracking-[0.18em] text-moss">Last 24h</span>
+        </div>
+        <div
+          class="px-5 py-5"
+          hx-get="{% url 'teatree:dashboard-panel' 'automation' %}"
+          hx-trigger="load, every 120s, refreshPanels from:body, sse:automation"
+          hx-swap="innerHTML"
+        >
+          {% include "teatree/partials/dashboard_automation.html" with automation=snapshot.automation only %}
+        </div>
+      </section>
+      <!-- Action Required -->
+      <section class="overflow-hidden rounded-[1.5rem] border border-bark/10 bg-cream/90 shadow-soft backdrop-blur">
+        <div class="flex flex-col gap-2 border-b border-bark/10 px-5 py-4 sm:flex-row sm:items-end sm:justify-between">
+          <div>
+            <h2 class="font-display text-2xl">Action Required</h2>
+            <p class="font-sans text-sm text-bark/60">Items that need your input or participation.</p>
+          </div>
+        </div>
+        <div
+          class="px-5 py-5"
+          hx-get="{% url 'teatree:dashboard-panel' 'action_required' %}"
+          hx-trigger="load, every 120s, refreshPanels from:body, sse:action_required"
+          hx-swap="innerHTML"
+        >
+          {% include "teatree/partials/dashboard_action_required.html" with action_items=snapshot.action_required only %}
+        </div>
+      </section>
+      <!-- Interactive Queue -->
+      <section class="overflow-hidden rounded-[1.5rem] border border-bark/10 bg-cream/90 shadow-soft backdrop-blur">
+        <div class="flex flex-col gap-2 border-b border-bark/10 px-5 py-4 sm:flex-row sm:items-end sm:justify-between">
+          <div>
+            <h2 class="font-display text-2xl">Interactive Queue</h2>
+            <p class="font-sans text-sm text-bark/60">Pending tasks waiting for pickup.</p>
+          </div>
+        </div>
+        <div
+          id="panel-queue"
+          class="px-5 py-5"
+          hx-get="{% url 'teatree:dashboard-panel' 'queue' %}"
+          hx-trigger="load, every 600s, refreshPanels from:body, sse:queue"
+          hx-swap="innerHTML"
+        >
+          {% include "teatree/partials/dashboard_queue.html" with queue=snapshot.interactive_queue only %}
+        </div>
+      </section>
+      <!-- In-Flight Tickets -->
+      <section class="overflow-hidden rounded-[1.5rem] border border-bark/10 bg-cream/90 shadow-soft backdrop-blur">
+        <div class="flex flex-col gap-2 border-b border-bark/10 px-5 py-4 sm:flex-row sm:items-end sm:justify-between">
+          <div>
+            <h2 class="font-display text-2xl">In-Flight Tickets</h2>
+            <p class="font-sans text-sm text-bark/60">All active tickets with MR status.</p>
+          </div>
+          <button
+            class="pill-btn pill-xs border border-moss/30 bg-moss/10 uppercase tracking-[0.18em] text-moss hover:bg-moss/20"
+            hx-post="{% url 'teatree:dashboard-sync' %}"
+            hx-target="#sync-status"
+            hx-swap="outerHTML"
+            hx-on::after-request="htmx.trigger(document.body, 'refreshPanels')"
+          >Sync</button>
+        </div>
+        <div
+          class="px-5 py-5"
+          hx-get="{% url 'teatree:dashboard-panel' 'tickets' %}"
+          hx-trigger="load, every 600s, refreshPanels from:body, sse:tickets"
+          hx-swap="innerHTML"
+        >
+          {% include "teatree/partials/dashboard_tickets.html" with tickets=snapshot.tickets only %}
+        </div>
+      </section>
+      <!-- Active Sessions -->
+      <section class="overflow-hidden rounded-[1.5rem] border border-bark/10 bg-cream/90 shadow-soft backdrop-blur">
+        <div class="flex flex-col gap-2 border-b border-bark/10 px-5 py-4 sm:flex-row sm:items-end sm:justify-between">
+          <div>
+            <h2 class="font-display text-2xl">Active Sessions</h2>
+            <p class="font-sans text-sm text-bark/60">Running Claude processes on this machine.</p>
+          </div>
+          <button
+            class="pill-btn pill-xs border border-bark/15 bg-bark/5 text-bark/40 hover:bg-bark/10 hover:text-bark"
+            onclick="var s=document.getElementById('section-activity');s.classList.toggle('hidden');this.classList.toggle('bg-moss/10');this.classList.toggle('text-moss');this.classList.toggle('bg-bark/5');this.classList.toggle('text-bark/40')"
+          >History</button>
+        </div>
+        <div
+          class="px-5 py-5"
+          hx-get="{% url 'teatree:dashboard-panel' 'sessions' %}"
+          hx-trigger="load, every 60s, refreshPanels from:body, sse:sessions"
+          hx-swap="innerHTML"
+        >
+          {% include "teatree/partials/dashboard_sessions.html" with sessions=snapshot.active_sessions only %}
+        </div>
+      </section>
+      <!-- Recent Activity (hidden, toggled by History button) -->
+      <section id="section-activity" class="hidden overflow-hidden rounded-[1.5rem] border border-bark/10 bg-cream/90 shadow-soft backdrop-blur">
+        <div class="border-b border-bark/10 px-5 py-4">
+          <h2 class="font-display text-2xl">Recent Activity</h2>
+          <p class="font-sans text-sm text-bark/60">Last completed task attempts.</p>
+        </div>
+        <div
+          class="px-5 py-5"
+          hx-get="{% url 'teatree:dashboard-panel' 'activity' %}"
+          hx-trigger="load, every 120s, refreshPanels from:body, sse:activity"
+          hx-swap="innerHTML"
+        >
+          {% include "teatree/partials/dashboard_activity.html" with activity=snapshot.recent_activity only %}
+        </div>
+      </section>
+      <!-- Automated (collapsed by default) -->
+      <details class="group">
+        <summary class="cursor-pointer list-none rounded-[1rem] border border-bark/10 bg-cream/90 px-5 py-3 font-sans text-sm font-semibold text-bark/50 shadow-soft backdrop-blur hover:text-bark">
+          <span class="group-open:hidden">&#9654;</span><span class="hidden group-open:inline">&#9660;</span>
+          Automated — Headless queue, Review comments
+        </summary>
+        <div class="mt-4 grid gap-4">
+          <section class="overflow-hidden rounded-[1.5rem] border border-bark/10 bg-cream/90 shadow-soft backdrop-blur">
+            <div class="flex flex-col gap-2 border-b border-bark/10 px-5 py-4 sm:flex-row sm:items-end sm:justify-between">
+              <div>
+                <h2 class="font-display text-2xl">Headless Queue</h2>
+                <p class="font-sans text-sm text-bark/60">Automated task execution.</p>
+              </div>
+              <div class="flex items-center gap-2">
+                <label class="flex cursor-pointer items-center gap-1 font-sans text-[10px] uppercase tracking-[0.18em] text-bark/40">
+                  <input type="checkbox" data-filter="headless_queue" onchange="toggleDismissed(this, 'headless_queue')" class="accent-bark/40">
+                  Show dismissed
+                </label>
+              </div>
+            </div>
+            <div
+              id="panel-headless_queue"
+              class="px-5 py-5"
+              hx-get="{% url 'teatree:dashboard-panel' 'headless_queue' %}"
+              hx-trigger="load, every 600s, refreshPanels from:body, sse:headless_queue"
+              hx-swap="innerHTML"
+            >
+              {% include "teatree/partials/dashboard_headless_queue.html" with headless_queue=snapshot.headless_queue only %}
+            </div>
+          </section>
+          <section class="overflow-hidden rounded-[1.5rem] border border-bark/10 bg-cream/90 shadow-soft backdrop-blur">
+            <div class="flex flex-col gap-2 border-b border-bark/10 px-5 py-4 sm:flex-row sm:items-end sm:justify-between">
+              <div>
+                <h2 class="font-display text-2xl">Review Comments</h2>
+                <p class="font-sans text-sm text-bark/60">Discussion thread status across open MRs.</p>
+              </div>
+            </div>
+            <div
+              class="px-5 py-5"
+              hx-get="{% url 'teatree:dashboard-panel' 'review_comments' %}"
+              hx-trigger="load, every 600s, refreshPanels from:body, sse:review_comments"
+              hx-swap="innerHTML"
+            >
+              {% include "teatree/partials/dashboard_review_comments.html" with review_comments=snapshot.review_comments only %}
+            </div>
+          </section>
+        </div>
+      </details>
+    </div>
+  </main>
+  </div><!-- /sse wrapper -->
+  <!-- Task detail modal -->
+  <div id="task-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center">
+    <div class="absolute inset-0 bg-bark/40 backdrop-blur-sm" onclick="closeTaskModal()"></div>
+    <div class="relative mx-4 max-h-[85vh] w-full max-w-2xl overflow-y-auto rounded-[1.5rem] border border-bark/10 bg-cream shadow-soft p-6" id="task-modal-body">
+    </div>
+  </div>
+</body>
+</html>

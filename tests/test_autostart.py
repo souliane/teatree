@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from teetree.autostart import (
+from teatree.autostart import (
     UnsupportedPlatformError,
     _launchd_plist_path,
     _render_template,
@@ -18,15 +18,15 @@ from teetree.autostart import (
 
 class TestDetectPlatform:
     def test_darwin_returns_launchd(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr("teetree.autostart.sys.platform", "darwin")
+        monkeypatch.setattr("teatree.autostart.sys.platform", "darwin")
         assert detect_platform() == "launchd"
 
     def test_linux_returns_systemd(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr("teetree.autostart.sys.platform", "linux")
+        monkeypatch.setattr("teatree.autostart.sys.platform", "linux")
         assert detect_platform() == "systemd"
 
     def test_unsupported_platform_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr("teetree.autostart.sys.platform", "win32")
+        monkeypatch.setattr("teatree.autostart.sys.platform", "win32")
         with pytest.raises(UnsupportedPlatformError, match="win32"):
             detect_platform()
 
@@ -110,7 +110,7 @@ class TestRenderTemplate:
 
 class TestEnable:
     def test_launchd_enable_writes_plist_and_loads(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr("teetree.autostart.sys.platform", "darwin")
+        monkeypatch.setattr("teatree.autostart.sys.platform", "darwin")
         project = tmp_path / "myproject"
         project.mkdir()
         (project / ".venv" / "bin").mkdir(parents=True)
@@ -119,7 +119,7 @@ class TestEnable:
 
         commands_run: list[list[str]] = []
         monkeypatch.setattr(
-            "teetree.autostart.subprocess.run",
+            "teatree.autostart.subprocess.run",
             lambda *a, **kw: commands_run.append(a[0]),
         )
 
@@ -134,7 +134,7 @@ class TestEnable:
     def test_launchd_enable_unloads_existing_before_reinstall(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr("teetree.autostart.sys.platform", "darwin")
+        monkeypatch.setattr("teatree.autostart.sys.platform", "darwin")
         project = tmp_path / "myproject"
         project.mkdir()
         (project / "manage.py").touch()
@@ -146,7 +146,7 @@ class TestEnable:
 
         commands_run: list[list[str]] = []
         monkeypatch.setattr(
-            "teetree.autostart.subprocess.run",
+            "teatree.autostart.subprocess.run",
             lambda *a, **kw: commands_run.append(a[0]),
         )
 
@@ -158,14 +158,14 @@ class TestEnable:
         assert commands_run[1][1] == "load"
 
     def test_systemd_enable_writes_unit_and_enables(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr("teetree.autostart.sys.platform", "linux")
+        monkeypatch.setattr("teatree.autostart.sys.platform", "linux")
         project = tmp_path / "myproject"
         project.mkdir()
         (project / "manage.py").touch()
 
         commands_run: list[list[str]] = []
         monkeypatch.setattr(
-            "teetree.autostart.subprocess.run",
+            "teatree.autostart.subprocess.run",
             lambda *a, **kw: commands_run.append(a[0]),
         )
 
@@ -180,14 +180,14 @@ class TestEnable:
 
 class TestDisable:
     def test_launchd_disable_unloads_and_removes(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr("teetree.autostart.sys.platform", "darwin")
+        monkeypatch.setattr("teatree.autostart.sys.platform", "darwin")
         plist_path = _launchd_plist_path("acme")
         plist_path.parent.mkdir(parents=True, exist_ok=True)
         plist_path.write_text("<plist/>")
 
         commands_run: list[list[str]] = []
         monkeypatch.setattr(
-            "teetree.autostart.subprocess.run",
+            "teatree.autostart.subprocess.run",
             lambda *a, **kw: commands_run.append(a[0]),
         )
 
@@ -198,14 +198,14 @@ class TestDisable:
         assert "removed" in msg.lower()
 
     def test_systemd_disable_stops_and_removes(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr("teetree.autostart.sys.platform", "linux")
+        monkeypatch.setattr("teatree.autostart.sys.platform", "linux")
         unit_path = _systemd_unit_path("acme")
         unit_path.parent.mkdir(parents=True, exist_ok=True)
         unit_path.write_text("[Service]")
 
         commands_run: list[list[str]] = []
         monkeypatch.setattr(
-            "teetree.autostart.subprocess.run",
+            "teatree.autostart.subprocess.run",
             lambda *a, **kw: commands_run.append(a[0]),
         )
 
@@ -216,14 +216,14 @@ class TestDisable:
         assert "removed" in msg.lower()
 
     def test_launchd_disable_noop_when_not_installed(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr("teetree.autostart.sys.platform", "darwin")
+        monkeypatch.setattr("teatree.autostart.sys.platform", "darwin")
 
         msg = disable("acme")
 
         assert "not installed" in msg.lower()
 
     def test_systemd_disable_noop_when_not_installed(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr("teetree.autostart.sys.platform", "linux")
+        monkeypatch.setattr("teatree.autostart.sys.platform", "linux")
 
         msg = disable("acme")
 

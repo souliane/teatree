@@ -1,4 +1,4 @@
-SECRET_KEY = "teetree-tests"
+SECRET_KEY = "teatree-tests"
 USE_TZ = True
 ROOT_URLCONF = "tests.urls"
 
@@ -19,9 +19,12 @@ INSTALLED_APPS = [
     "django_rich",
     "django_tasks",
     "django_tasks_db",
-    "teetree.core",
-    "teetree.agents",
+    "teatree.core",
+    "teatree.agents",
+    "teatree.contrib.t3_teatree",
 ]
+
+TEATREE_OVERLAY_CLASS = "teatree.contrib.t3_teatree.overlay.TeatreeOverlay"
 
 MIDDLEWARE = [
     "django.contrib.sessions.middleware.SessionMiddleware",

@@ -3,7 +3,7 @@
 from pathlib import Path
 from unittest.mock import patch
 
-from teetree.config import (
+from teatree.config import (
     _extract_settings_module,
     default_logging,
     discover_active_overlay,
@@ -37,10 +37,10 @@ path = "{project}"
     )
 
     result = discover_overlays(config_path=config_path)
-    assert len(result) == 1
-    assert result[0].name == "my-overlay"
-    assert result[0].settings_module == "myoverlay.settings"
-    assert result[0].project_path == project
+    by_name = {e.name: e for e in result}
+    assert "my-overlay" in by_name
+    assert by_name["my-overlay"].settings_module == "myoverlay.settings"
+    assert by_name["my-overlay"].project_path == project
 
 
 def test_discover_overlays_empty_toml(tmp_path):
@@ -48,13 +48,16 @@ def test_discover_overlays_empty_toml(tmp_path):
     _write_toml(config_path, "[teatree]\n")
 
     result = discover_overlays(config_path=config_path)
-    assert result == []
+    # Only entry-point overlays (like the bundled t3-teatree) may appear
+    toml_overlays = [e for e in result if e.project_path is not None]
+    assert toml_overlays == []
 
 
 def test_discover_overlays_missing_toml(tmp_path):
     config_path = tmp_path / "nonexistent.toml"
     result = discover_overlays(config_path=config_path)
-    assert result == []
+    toml_overlays = [e for e in result if e.project_path is not None]
+    assert toml_overlays == []
 
 
 def test_discover_overlays_path_without_manage_py(tmp_path):
@@ -71,9 +74,9 @@ path = "{project}"
     )
 
     result = discover_overlays(config_path=config_path)
-    assert len(result) == 1
-    assert result[0].name == "empty-overlay"
-    assert result[0].settings_module == ""
+    by_name = {e.name: e for e in result}
+    assert "empty-overlay" in by_name
+    assert by_name["empty-overlay"].settings_module == ""
 
 
 def test_discover_overlays_multiple(tmp_path):
@@ -94,7 +97,7 @@ path = "{tmp_path / "proj-b"}"
 
     result = discover_overlays(config_path=config_path)
     names = {e.name for e in result}
-    assert names == {"proj-a", "proj-b"}
+    assert {"proj-a", "proj-b"} <= names
 
 
 def test_discover_overlays_tilde_expansion(tmp_path, monkeypatch):
@@ -112,9 +115,10 @@ path = "~/workspace/my-project"
     )
 
     result = discover_overlays(config_path=config_path)
-    assert len(result) == 1
-    assert result[0].project_path == project
-    assert result[0].settings_module == "myproj.settings"
+    by_name = {e.name: e for e in result}
+    assert "my-project" in by_name
+    assert by_name["my-project"].project_path == project
+    assert by_name["my-project"].settings_module == "myproj.settings"
 
 
 # ── load_config ───────────────────────────────────────────────────────
@@ -156,7 +160,7 @@ def test_load_config_defaults_when_teatree_section_empty(tmp_path):
 
 
 def test_get_data_dir_creates_directory(tmp_path, monkeypatch):
-    monkeypatch.setattr("teetree.config.DATA_DIR", tmp_path / "data")
+    monkeypatch.setattr("teatree.config.DATA_DIR", tmp_path / "data")
     result = get_data_dir("test-namespace")
     assert result == tmp_path / "data" / "test-namespace"
     assert result.is_dir()
@@ -166,7 +170,7 @@ def test_get_data_dir_creates_directory(tmp_path, monkeypatch):
 
 
 def test_default_logging_returns_dict(tmp_path, monkeypatch):
-    monkeypatch.setattr("teetree.config.DATA_DIR", tmp_path / "data")
+    monkeypatch.setattr("teatree.config.DATA_DIR", tmp_path / "data")
     config = default_logging("test-ns")
     assert config["version"] == 1
     assert "file" in config["handlers"]
@@ -209,10 +213,10 @@ def test_discover_active_overlay_single_installed(tmp_path, monkeypatch):
     sub = tmp_path / "no_manage"
     sub.mkdir()
     monkeypatch.chdir(sub)
-    from teetree.config import OverlayEntry  # noqa: PLC0415
+    from teatree.config import OverlayEntry  # noqa: PLC0415
 
     single = [OverlayEntry(name="acme", settings_module="acme.settings")]
-    with patch("teetree.config.discover_overlays", return_value=single):
+    with patch("teatree.config.discover_overlays", return_value=single):
         result = discover_active_overlay()
         assert result is not None
         assert result.name == "acme"
@@ -223,13 +227,13 @@ def test_discover_active_overlay_none_when_multiple(tmp_path, monkeypatch):
     sub = tmp_path / "no_manage"
     sub.mkdir()
     monkeypatch.chdir(sub)
-    from teetree.config import OverlayEntry  # noqa: PLC0415
+    from teatree.config import OverlayEntry  # noqa: PLC0415
 
     multiple = [
         OverlayEntry(name="a", settings_module="a.settings"),
         OverlayEntry(name="b", settings_module="b.settings"),
     ]
-    with patch("teetree.config.discover_overlays", return_value=multiple):
+    with patch("teatree.config.discover_overlays", return_value=multiple):
         assert discover_active_overlay() is None
 
 
@@ -237,7 +241,7 @@ def test_discover_active_overlay_none_when_no_overlays(tmp_path, monkeypatch):
     sub = tmp_path / "no_manage"
     sub.mkdir()
     monkeypatch.chdir(sub)
-    with patch("teetree.config.discover_overlays", return_value=[]):
+    with patch("teatree.config.discover_overlays", return_value=[]):
         assert discover_active_overlay() is None
 
 
@@ -285,6 +289,6 @@ def test_discover_from_manage_py_no_settings(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     result = discover_active_overlay()
     # It finds manage.py but can't extract settings module, so returns None
-    with patch("teetree.config.discover_overlays", return_value=[]):
+    with patch("teatree.config.discover_overlays", return_value=[]):
         result = discover_active_overlay()
     assert result is None

@@ -1,6 +1,6 @@
 # Extension Points
 
-> **Current system:** Project overlays subclass `OverlayBase` (see `teetree.core.overlay`) and override methods like `get_repos()`, `get_provision_steps()`, `get_env_extra()`, `get_run_commands()`. The `wt_*` names below are the **conceptual extension point names** used in skill documentation — they map to `OverlayBase` methods, not to a function registry.
+> **Current system:** Project overlays subclass `OverlayBase` (see `teatree.core.overlay`) and override methods like `get_repos()`, `get_provision_steps()`, `get_env_extra()`, `get_run_commands()`. The `wt_*` names below are the **conceptual extension point names** used in skill documentation — they map to `OverlayBase` methods, not to a function registry.
 
 Project-specific behavior lives in the generated TeaTree Django host project. The active overlay class subclasses `OverlayBase`, and runtime code calls overlay methods directly.
 
@@ -62,7 +62,7 @@ TeaTree packages the generic runtime. The generated host project owns the projec
 Inside each Python script:
 
 ```python
-from teetree.core.overlay_loader import get_overlay
+from teatree.core.overlay_loader import get_overlay
 
 overlay = get_overlay()
 overlay.post_db_setup(project_dir)  # example project-layer hook

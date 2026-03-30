@@ -26,7 +26,7 @@
       "writing-plans"
     ]
   },
-  "skill_map_path": "teetree.skill_map.DEFAULT_SKILL_DELEGATION",
+  "skill_map_path": "teatree.skill_map.DEFAULT_SKILL_DELEGATION",
   "teatree_responsibilities": [
     "Worktree lifecycle orchestration",
     "Task claiming, leasing, and execution routing",

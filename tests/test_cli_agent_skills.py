@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from teetree.skill_loading import SkillLoadingPolicy
+from teatree.skill_loading import SkillLoadingPolicy
 
 
 def test_agent_without_status_or_task_asks_user(tmp_path: Path) -> None:

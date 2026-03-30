@@ -3,7 +3,7 @@ from subprocess import CompletedProcess
 
 import pytest
 
-from teetree.skill_loading import (
+from teatree.skill_loading import (
     SkillLoadingPolicy,
     SkillSelectionResult,
     find_skill_md,
@@ -547,7 +547,7 @@ def test_resolve_and_dedupe_empty_input(tmp_path: Path):
 
 def test_resolve_and_dedupe_deduplicates(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(
-        "teetree.skill_loading.resolve_dependencies",
+        "teatree.skill_loading.resolve_dependencies",
         lambda skills, **_kw: ["a", "a", "b"],
     )
     policy = _make_policy(tmp_path)
@@ -613,7 +613,7 @@ def test_git_remote_urls_fallback_to_remote_v(tmp_path: Path, monkeypatch):
         staticmethod(_mock_remote_url("")),
     )
     monkeypatch.setattr(
-        "teetree.skill_loading.subprocess.run",
+        "teatree.skill_loading.subprocess.run",
         lambda *_a, **_kw: CompletedProcess(
             args=[],
             returncode=0,
@@ -631,7 +631,7 @@ def test_git_remote_urls_fallback_multiple_remotes(tmp_path: Path, monkeypatch):
         staticmethod(_mock_remote_url("")),
     )
     monkeypatch.setattr(
-        "teetree.skill_loading.subprocess.run",
+        "teatree.skill_loading.subprocess.run",
         lambda *_a, **_kw: CompletedProcess(
             args=[],
             returncode=0,
@@ -649,7 +649,7 @@ def test_git_remote_urls_fallback_oserror(tmp_path: Path, monkeypatch):
         staticmethod(_mock_remote_url("")),
     )
     monkeypatch.setattr(
-        "teetree.skill_loading.subprocess.run",
+        "teatree.skill_loading.subprocess.run",
         _raise_oserror,
     )
     assert SkillLoadingPolicy._git_remote_urls(tmp_path) == []
@@ -662,7 +662,7 @@ def test_git_remote_urls_fallback_nonzero_returncode(tmp_path: Path, monkeypatch
         staticmethod(_mock_remote_url("")),
     )
     monkeypatch.setattr(
-        "teetree.skill_loading.subprocess.run",
+        "teatree.skill_loading.subprocess.run",
         lambda *_a, **_kw: CompletedProcess(args=[], returncode=128, stdout="", stderr="fatal"),
     )
     assert SkillLoadingPolicy._git_remote_urls(tmp_path) == []
@@ -673,7 +673,7 @@ def test_git_remote_urls_fallback_nonzero_returncode(tmp_path: Path, monkeypatch
 
 def test_git_remote_url_success(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(
-        "teetree.skill_loading.subprocess.run",
+        "teatree.skill_loading.subprocess.run",
         lambda *_a, **_kw: CompletedProcess(
             args=[],
             returncode=0,
@@ -685,7 +685,7 @@ def test_git_remote_url_success(tmp_path: Path, monkeypatch):
 
 def test_git_remote_url_oserror(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(
-        "teetree.skill_loading.subprocess.run",
+        "teatree.skill_loading.subprocess.run",
         _raise_oserror,
     )
     assert SkillLoadingPolicy._git_remote_url(tmp_path, "origin") == ""
@@ -693,7 +693,7 @@ def test_git_remote_url_oserror(tmp_path: Path, monkeypatch):
 
 def test_git_remote_url_nonzero_returncode(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(
-        "teetree.skill_loading.subprocess.run",
+        "teatree.skill_loading.subprocess.run",
         lambda *_a, **_kw: CompletedProcess(args=[], returncode=1, stdout="", stderr=""),
     )
     assert SkillLoadingPolicy._git_remote_url(tmp_path, "origin") == ""

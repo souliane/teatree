@@ -1,4 +1,4 @@
-"""Tests for teetree.cli — comprehensive CLI command coverage.
+"""Tests for teatree.cli — comprehensive CLI command coverage.
 
 Uses typer.testing.CliRunner to invoke commands and mocks external
 dependencies (subprocess, filesystem, network, Django).
@@ -10,14 +10,14 @@ from unittest.mock import MagicMock, patch
 
 from typer.testing import CliRunner
 
-from teetree.cli import (
+from teatree.cli import (
     _agent_search_dirs,
     _detect_agent_ticket_status,
     _find_overlay_project,
     _find_project_root,
     app,
 )
-from teetree.overlay_init.generator import ProjectScaffolder, camelize
+from teatree.overlay_init.generator import ProjectScaffolder, camelize
 
 runner = CliRunner()
 
@@ -68,7 +68,7 @@ class TestDocsCommand:
         fake_mkdocs = types.ModuleType("mkdocs")
         monkeypatch.setitem(sys.modules, "mkdocs", fake_mkdocs)
 
-        with patch("teetree.cli_review.subprocess.run") as mock_run:
+        with patch("teatree.cli_review.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0)
             result = runner.invoke(app, ["docs"])
             assert result.exit_code == 0
@@ -87,7 +87,7 @@ class TestAgentCommand:
         (tmp_path / "pyproject.toml").write_text("[project]\n")
 
         with (
-            patch("teetree.config.discover_active_overlay", return_value=None),
+            patch("teatree.config.discover_active_overlay", return_value=None),
             patch("shutil.which", return_value=None),
         ):
             result = runner.invoke(app, ["agent"])
@@ -99,24 +99,24 @@ class TestAgentCommand:
         monkeypatch.chdir(tmp_path)
         (tmp_path / "pyproject.toml").write_text("[project]\n")
 
-        from teetree.config import OverlayEntry  # noqa: PLC0415
-        from teetree.skill_loading import SkillSelectionResult  # noqa: PLC0415
+        from teatree.config import OverlayEntry  # noqa: PLC0415
+        from teatree.skill_loading import SkillSelectionResult  # noqa: PLC0415
 
         mock_overlay = OverlayEntry(name="test-overlay", settings_module="test.settings")
         overlay_obj = MagicMock()
         overlay_obj.get_skill_metadata.return_value = {"skill_path": "skills/t3-test/SKILL.md"}
 
         with (
-            patch("teetree.config.discover_active_overlay", return_value=mock_overlay),
-            patch("teetree.core.overlay_loader.get_overlay", return_value=overlay_obj),
+            patch("teatree.config.discover_active_overlay", return_value=mock_overlay),
+            patch("teatree.core.overlay_loader.get_overlay", return_value=overlay_obj),
             patch("shutil.which", return_value="/usr/bin/claude"),
-            patch("teetree.cli_doctor.IntrospectionHelpers.editable_info", return_value=(False, "")),
-            patch("teetree.cli._detect_agent_ticket_status", return_value="started"),
+            patch("teatree.cli_doctor.IntrospectionHelpers.editable_info", return_value=(False, "")),
+            patch("teatree.cli._detect_agent_ticket_status", return_value="started"),
             patch(
-                "teetree.skill_loading.SkillLoadingPolicy.select_for_agent_launch",
+                "teatree.skill_loading.SkillLoadingPolicy.select_for_agent_launch",
                 return_value=SkillSelectionResult(skills=["t3-code"]),
             ),
-            patch("teetree.cli.os.execvp") as mock_exec,
+            patch("teatree.cli.os.execvp") as mock_exec,
         ):
             runner.invoke(app, ["agent", "fix bug"])
             mock_exec.assert_called_once()
@@ -129,17 +129,17 @@ class TestAgentCommand:
         monkeypatch.chdir(tmp_path)
         (tmp_path / "pyproject.toml").write_text("[project]\n")
 
-        from teetree.skill_loading import SkillSelectionResult  # noqa: PLC0415
+        from teatree.skill_loading import SkillSelectionResult  # noqa: PLC0415
 
         with (
-            patch("teetree.config.discover_active_overlay", return_value=None),
+            patch("teatree.config.discover_active_overlay", return_value=None),
             patch("shutil.which", return_value="/usr/bin/claude"),
-            patch("teetree.cli_doctor.IntrospectionHelpers.editable_info", return_value=(False, "")),
+            patch("teatree.cli_doctor.IntrospectionHelpers.editable_info", return_value=(False, "")),
             patch(
-                "teetree.skill_loading.SkillLoadingPolicy.select_for_agent_launch",
+                "teatree.skill_loading.SkillLoadingPolicy.select_for_agent_launch",
                 return_value=SkillSelectionResult(skills=["t3-code"]),
             ),
-            patch("teetree.cli.os.execvp") as mock_exec,
+            patch("teatree.cli.os.execvp") as mock_exec,
         ):
             runner.invoke(app, ["agent"])
             mock_exec.assert_called_once()
@@ -158,9 +158,9 @@ class TestAgentCommand:
         (tmp_path / "pyproject.toml").write_text("[project]\n")
 
         with (
-            patch("teetree.config.discover_active_overlay", return_value=None),
+            patch("teatree.config.discover_active_overlay", return_value=None),
             patch(
-                "teetree.skill_loading.SkillLoadingPolicy.select_for_agent_launch",
+                "teatree.skill_loading.SkillLoadingPolicy.select_for_agent_launch",
                 side_effect=ValueError("Unknown phase: bad-phase"),
             ),
         ):
@@ -176,14 +176,14 @@ class TestAgentCommand:
 class TestSessionsCommand:
     def test_no_results(self, monkeypatch):
         """Sessions command shows message when no sessions found."""
-        with patch("teetree.claude_sessions.list_sessions", return_value=[]):
+        with patch("teatree.claude_sessions.list_sessions", return_value=[]):
             result = runner.invoke(app, ["sessions", "--all"])
             assert result.exit_code == 0
             assert "No sessions found" in result.output
 
     def test_shows_results(self, monkeypatch):
         """Sessions command renders session list."""
-        from teetree.claude_sessions import SessionInfo  # noqa: PLC0415
+        from teatree.claude_sessions import SessionInfo  # noqa: PLC0415
 
         now = time.time()
         sessions = [
@@ -233,7 +233,7 @@ class TestSessionsCommand:
                 status="interrupted",
             ),
         ]
-        with patch("teetree.claude_sessions.list_sessions", return_value=sessions):
+        with patch("teatree.claude_sessions.list_sessions", return_value=sessions):
             result = runner.invoke(app, ["sessions", "--all"])
             assert result.exit_code == 0
             assert "fix the bug" in result.output
@@ -249,8 +249,8 @@ class TestOverlaysCommand:
     def test_none_found(self):
         """Overlays command shows help when no overlays found."""
         with (
-            patch("teetree.config.discover_overlays", return_value=[]),
-            patch("teetree.config.discover_active_overlay", return_value=None),
+            patch("teatree.config.discover_overlays", return_value=[]),
+            patch("teatree.config.discover_active_overlay", return_value=None),
         ):
             result = runner.invoke(app, ["overlays"])
             assert result.exit_code == 0
@@ -258,7 +258,7 @@ class TestOverlaysCommand:
 
     def test_lists_installed(self):
         """Overlays command lists installed overlays."""
-        from teetree.config import OverlayEntry  # noqa: PLC0415
+        from teatree.config import OverlayEntry  # noqa: PLC0415
 
         entries = [
             OverlayEntry(name="acme", settings_module="acme.settings"),
@@ -266,8 +266,8 @@ class TestOverlaysCommand:
         ]
         active = OverlayEntry(name="acme", settings_module="acme.settings")
         with (
-            patch("teetree.config.discover_overlays", return_value=entries),
-            patch("teetree.config.discover_active_overlay", return_value=active),
+            patch("teatree.config.discover_overlays", return_value=entries),
+            patch("teatree.config.discover_active_overlay", return_value=active),
         ):
             result = runner.invoke(app, ["overlays"])
             assert result.exit_code == 0
@@ -283,10 +283,10 @@ class TestInfoCommand:
         """Info command shows installation details."""
         with (
             patch("shutil.which", return_value="/usr/local/bin/t3"),
-            patch("teetree.cli_doctor.IntrospectionHelpers.editable_info", return_value=(True, "file:///home/src")),
-            patch("teetree.cli_doctor.IntrospectionHelpers.print_package_info"),
-            patch("teetree.config.discover_active_overlay", return_value=None),
-            patch("teetree.config.discover_overlays", return_value=[]),
+            patch("teatree.cli_doctor.IntrospectionHelpers.editable_info", return_value=(True, "file:///home/src")),
+            patch("teatree.cli_doctor.IntrospectionHelpers.print_package_info"),
+            patch("teatree.config.discover_active_overlay", return_value=None),
+            patch("teatree.config.discover_overlays", return_value=[]),
         ):
             result = runner.invoke(app, ["info"])
             assert result.exit_code == 0
@@ -298,18 +298,18 @@ class TestInfoCommand:
 class TestConfigCommands:
     def test_write_skill_cache_writes_json(self, tmp_path, monkeypatch):
         """write-skill-cache writes overlay metadata to cache."""
-        from teetree.config import OverlayEntry  # noqa: PLC0415
+        from teatree.config import OverlayEntry  # noqa: PLC0415
 
         active = OverlayEntry(name="test", settings_module="test.settings")
         mock_overlay = MagicMock()
         mock_overlay.get_skill_metadata.return_value = {"skill_path": "skills/t3-test/SKILL.md"}
 
-        monkeypatch.setattr("teetree.config.DATA_DIR", tmp_path)
+        monkeypatch.setattr("teatree.config.DATA_DIR", tmp_path)
         monkeypatch.delenv("DJANGO_SETTINGS_MODULE", raising=False)
         with (
-            patch("teetree.config.discover_active_overlay", return_value=active),
+            patch("teatree.config.discover_active_overlay", return_value=active),
             patch("django.setup"),
-            patch("teetree.core.overlay_loader.get_overlay", return_value=mock_overlay),
+            patch("teatree.core.overlay_loader.get_overlay", return_value=mock_overlay),
         ):
             result = runner.invoke(app, ["config", "write-skill-cache"])
             assert result.exit_code == 0
@@ -326,9 +326,9 @@ class TestConfigCommands:
 
         monkeypatch.setenv("DJANGO_SETTINGS_MODULE", "tests.django_settings")
         with (
-            patch("teetree.config.discover_active_overlay", return_value=None),
+            patch("teatree.config.discover_active_overlay", return_value=None),
             patch("django.setup"),
-            patch("teetree.core.overlay_loader.get_overlay", return_value=mock_overlay),
+            patch("teatree.core.overlay_loader.get_overlay", return_value=mock_overlay),
         ):
             runner.invoke(app, ["config", "write-skill-cache"])
             # May fail at get_overlay since no overlay is configured,
@@ -344,7 +344,7 @@ class TestConfigCommands:
         # A skill without context-match.yml should be skipped
         (skills_dir / "t3-test").mkdir()
 
-        with patch("teetree.agents.skill_bundle.DEFAULT_SKILLS_DIR", skills_dir):
+        with patch("teatree.agents.skill_bundle.DEFAULT_SKILLS_DIR", skills_dir):
             result = runner.invoke(app, ["config", "autoload"])
             assert result.exit_code == 0
             assert "t3-code" in result.output
@@ -352,7 +352,7 @@ class TestConfigCommands:
 
     def test_autoload_no_skills_dir(self, tmp_path):
         """Config autoload fails when skills dir doesn't exist."""
-        with patch("teetree.agents.skill_bundle.DEFAULT_SKILLS_DIR", tmp_path / "nonexistent"):
+        with patch("teatree.agents.skill_bundle.DEFAULT_SKILLS_DIR", tmp_path / "nonexistent"):
             result = runner.invoke(app, ["config", "autoload"])
             assert result.exit_code == 1
             assert "Skills directory not found" in result.output
@@ -364,14 +364,14 @@ class TestConfigCommands:
         (skills_dir / "t3-code").mkdir()
         # No hook-config/context-match.yml
 
-        with patch("teetree.agents.skill_bundle.DEFAULT_SKILLS_DIR", skills_dir):
+        with patch("teatree.agents.skill_bundle.DEFAULT_SKILLS_DIR", skills_dir):
             result = runner.invoke(app, ["config", "autoload"])
             assert result.exit_code == 0
             assert "No context-match.yml files found" in result.output
 
     def test_cache_shows_content(self, tmp_path, monkeypatch):
         """Config cache displays skill-metadata.json content."""
-        monkeypatch.setattr("teetree.config.DATA_DIR", tmp_path)
+        monkeypatch.setattr("teatree.config.DATA_DIR", tmp_path)
         cache_path = tmp_path / "skill-metadata.json"
         cache_path.write_text('{"skill_path": "skills/t3-test/SKILL.md"}\n')
 
@@ -381,7 +381,7 @@ class TestConfigCommands:
 
     def test_cache_no_file(self, tmp_path, monkeypatch):
         """Config cache fails when no cache file exists."""
-        monkeypatch.setattr("teetree.config.DATA_DIR", tmp_path)
+        monkeypatch.setattr("teatree.config.DATA_DIR", tmp_path)
 
         result = runner.invoke(app, ["config", "cache"])
         assert result.exit_code == 1
@@ -396,8 +396,8 @@ class TestReviewRequestDiscover:
         monkeypatch.chdir(tmp_path)
         (tmp_path / "pyproject.toml").write_text("[project]\n")
         with (
-            patch("teetree.cli._find_overlay_project", return_value=tmp_path),
-            patch("teetree.cli.managepy") as mock_manage,
+            patch("teatree.cli._find_overlay_project", return_value=tmp_path),
+            patch("teatree.cli.managepy") as mock_manage,
         ):
             result = runner.invoke(app, ["review-request", "discover"])
             assert result.exit_code == 0
@@ -424,16 +424,16 @@ class TestFindProjectRoot:
 
 class TestFindOverlayProject:
     def test_with_active(self, tmp_path):
-        from teetree.config import OverlayEntry  # noqa: PLC0415
+        from teatree.config import OverlayEntry  # noqa: PLC0415
 
         active = OverlayEntry(name="test", settings_module="test.settings", project_path=tmp_path)
-        with patch("teetree.config.discover_active_overlay", return_value=active):
+        with patch("teatree.config.discover_active_overlay", return_value=active):
             assert _find_overlay_project() == tmp_path
 
     def test_without_active(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         (tmp_path / "pyproject.toml").write_text("[project]\n")
-        with patch("teetree.config.discover_active_overlay", return_value=None):
+        with patch("teatree.config.discover_active_overlay", return_value=None):
             result = _find_overlay_project()
             assert result == tmp_path
 
@@ -457,7 +457,7 @@ class TestProjectScaffolder:
         s = ProjectScaffolder(tmp_path, "my_overlay", "pkg")
         s.patch_settings()
         text = settings_path.read_text()
-        assert "'teetree.core'" in text
+        assert "'teatree.core'" in text
         assert "'my_overlay'" in text
         assert 'TEATREE_OVERLAY_CLASS = "my_overlay.overlay.MyOverlayOverlay"' in text
 
@@ -472,7 +472,7 @@ class TestProjectScaffolder:
         s.patch_urls()
         text = urls_path.read_text()
         assert "include" in text
-        assert "teetree.core.urls" in text
+        assert "teatree.core.urls" in text
 
     def test_patch_manage_py(self, tmp_path):
         manage_py = tmp_path / "manage.py"
@@ -535,11 +535,11 @@ class TestLaunchClaude:
 
         with (
             patch("shutil.which", return_value="/usr/bin/claude"),
-            patch("teetree.cli_doctor.IntrospectionHelpers.editable_info", return_value=(True, "file:///src/teatree")),
-            patch("teetree.agents.skill_bundle.resolve_dependencies", return_value=["t3-code"]),
-            patch("teetree.cli.os.execvp") as mock_exec,
+            patch("teatree.cli_doctor.IntrospectionHelpers.editable_info", return_value=(True, "file:///src/teatree")),
+            patch("teatree.agents.skill_bundle.resolve_dependencies", return_value=["t3-code"]),
+            patch("teatree.cli.os.execvp") as mock_exec,
         ):
-            from teetree.cli import _launch_claude  # noqa: PLC0415
+            from teatree.cli import _launch_claude  # noqa: PLC0415
 
             _launch_claude(
                 task="test",
@@ -558,10 +558,10 @@ class TestLaunchClaude:
 
         with (
             patch("shutil.which", return_value="/usr/bin/claude"),
-            patch("teetree.cli_doctor.IntrospectionHelpers.editable_info", return_value=(False, "")),
-            patch("teetree.cli.os.execvp") as mock_exec,
+            patch("teatree.cli_doctor.IntrospectionHelpers.editable_info", return_value=(False, "")),
+            patch("teatree.cli.os.execvp") as mock_exec,
         ):
-            from teetree.cli import _launch_claude  # noqa: PLC0415
+            from teatree.cli import _launch_claude  # noqa: PLC0415
 
             _launch_claude(
                 task="",
@@ -585,13 +585,13 @@ class TestDetectAgentTicketStatus:
     def test_returns_empty_on_subprocess_failure(self, tmp_path):
         (tmp_path / "manage.py").write_text("print('hi')\n", encoding="utf-8")
 
-        with patch("teetree.cli.subprocess.run", return_value=MagicMock(returncode=1, stdout="broken")):
+        with patch("teatree.cli.subprocess.run", return_value=MagicMock(returncode=1, stdout="broken")):
             assert _detect_agent_ticket_status(tmp_path) == ""
 
     def test_returns_stripped_stdout(self, tmp_path):
         (tmp_path / "manage.py").write_text("print('hi')\n", encoding="utf-8")
 
-        with patch("teetree.cli.subprocess.run", return_value=MagicMock(returncode=0, stdout="started\n")):
+        with patch("teatree.cli.subprocess.run", return_value=MagicMock(returncode=0, stdout="started\n")):
             assert _detect_agent_ticket_status(tmp_path) == "started"
 
 
