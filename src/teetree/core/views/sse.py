@@ -10,6 +10,7 @@ from django.views import View
 
 from teetree.core.selectors import (
     build_active_sessions,
+    build_automation_summary,
     build_dashboard_summary,
     build_dashboard_ticket_rows,
     build_headless_queue,
@@ -22,6 +23,7 @@ from teetree.core.selectors import (
 
 _PANEL_BUILDERS: dict[str, Callable[[], object]] = {
     "summary": build_dashboard_summary,
+    "automation": build_automation_summary,
     "tickets": build_dashboard_ticket_rows,
     "worktrees": build_worktree_rows,
     "headless_queue": build_headless_queue,

@@ -46,6 +46,15 @@ _ACTIVE_WORKTREE_STATES = (
 
 
 @dataclass(frozen=True, slots=True)
+class AutomationSummary:
+    running: int
+    completed_24h: int
+    succeeded_24h: int
+    failed_24h: int
+    last_completed_at: str
+
+
+@dataclass(frozen=True, slots=True)
 class DashboardSummary:
     in_flight_tickets: int
     active_worktrees: int
@@ -214,6 +223,7 @@ class TaskDetail:
 @dataclass(frozen=True, slots=True)
 class DashboardSnapshot:
     summary: DashboardSummary
+    automation: AutomationSummary
     action_required: list[ActionRequiredItem]
     tickets: list[DashboardTicketRow]
     worktrees: list[DashboardWorktreeRow]
@@ -277,6 +287,40 @@ def build_task_detail(task_id: int) -> TaskDetail | None:
         parent=parent,
         children=children,
         attempts=attempts,
+    )
+
+
+_AUTOMATION_WINDOW_HOURS = 24
+
+
+def build_automation_summary() -> AutomationSummary:
+    cutoff = timezone.now() - timezone.timedelta(hours=_AUTOMATION_WINDOW_HOURS)
+    running = Task.objects.filter(
+        execution_target=Task.ExecutionTarget.HEADLESS,
+        status=Task.Status.CLAIMED,
+    ).count()
+    recent_attempts = TaskAttempt.objects.filter(
+        task__execution_target=Task.ExecutionTarget.HEADLESS,
+        ended_at__gte=cutoff,
+    )
+    completed_24h = recent_attempts.count()
+    succeeded_24h = recent_attempts.filter(exit_code=0).count()
+    failed_24h = completed_24h - succeeded_24h
+    last_attempt = (
+        TaskAttempt.objects.filter(
+            task__execution_target=Task.ExecutionTarget.HEADLESS,
+            ended_at__isnull=False,
+        )
+        .order_by("-ended_at")
+        .first()
+    )
+    last_completed_at = last_attempt.ended_at.isoformat() if last_attempt else ""
+    return AutomationSummary(
+        running=running,
+        completed_24h=completed_24h,
+        succeeded_24h=succeeded_24h,
+        failed_24h=failed_24h,
+        last_completed_at=last_completed_at,
     )
 
 
@@ -601,6 +645,7 @@ def build_active_sessions() -> list[ActiveSessionRow]:
 def build_dashboard_snapshot() -> DashboardSnapshot:
     return DashboardSnapshot(
         summary=_cached("summary", build_dashboard_summary),
+        automation=_cached("automation", build_automation_summary),
         action_required=_cached("action_required", build_action_required),
         tickets=_cached("tickets", build_dashboard_ticket_rows),
         worktrees=_cached("worktrees", build_worktree_rows),

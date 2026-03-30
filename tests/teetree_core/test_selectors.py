@@ -18,6 +18,7 @@ from teetree.core.selectors import (
     _variant_url,
     build_action_required,
     build_active_sessions,
+    build_automation_summary,
     build_dashboard_snapshot,
     build_dashboard_summary,
     build_dashboard_ticket_rows,
@@ -1123,3 +1124,113 @@ class TestLastResultForTasks:
         result = _last_result_for_tasks([task.pk])
 
         assert task.pk not in result
+
+
+class TestBuildAutomationSummary:
+    def test_counts_headless_activity(self) -> None:
+        ticket = Ticket.objects.create(state=Ticket.State.STARTED)
+        session = Session.objects.create(ticket=ticket, agent_id="agent")
+        running_task = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            execution_target=Task.ExecutionTarget.HEADLESS,
+            status=Task.Status.CLAIMED,
+        )
+        completed_task = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            execution_target=Task.ExecutionTarget.HEADLESS,
+            status=Task.Status.COMPLETED,
+        )
+        failed_task = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            execution_target=Task.ExecutionTarget.HEADLESS,
+            status=Task.Status.FAILED,
+        )
+        # Successful attempt
+        TaskAttempt.objects.create(
+            task=completed_task,
+            execution_target="headless",
+            exit_code=0,
+            ended_at=timezone.now(),
+        )
+        # Failed attempt
+        TaskAttempt.objects.create(
+            task=failed_task,
+            execution_target="headless",
+            exit_code=1,
+            ended_at=timezone.now(),
+        )
+        # Running attempt (no ended_at)
+        TaskAttempt.objects.create(
+            task=running_task,
+            execution_target="headless",
+        )
+
+        summary = build_automation_summary()
+
+        assert summary.running == 1
+        assert summary.completed_24h == 2
+        assert summary.succeeded_24h == 1
+        assert summary.failed_24h == 1
+
+    def test_excludes_old_attempts(self) -> None:
+        ticket = Ticket.objects.create(state=Ticket.State.STARTED)
+        session = Session.objects.create(ticket=ticket, agent_id="agent")
+        task = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            execution_target=Task.ExecutionTarget.HEADLESS,
+            status=Task.Status.COMPLETED,
+        )
+        old_time = timezone.now() - timezone.timedelta(hours=25)
+        TaskAttempt.objects.create(
+            task=task,
+            execution_target="headless",
+            exit_code=0,
+            ended_at=old_time,
+        )
+
+        summary = build_automation_summary()
+
+        assert summary.completed_24h == 0
+        assert summary.succeeded_24h == 0
+
+    def test_last_completed_at(self) -> None:
+        ticket = Ticket.objects.create(state=Ticket.State.STARTED)
+        session = Session.objects.create(ticket=ticket, agent_id="agent")
+        task = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            execution_target=Task.ExecutionTarget.HEADLESS,
+            status=Task.Status.COMPLETED,
+        )
+        now = timezone.now()
+        TaskAttempt.objects.create(
+            task=task,
+            execution_target="headless",
+            exit_code=0,
+            ended_at=now,
+        )
+
+        summary = build_automation_summary()
+
+        assert summary.last_completed_at == now.isoformat()
+
+    def test_empty_state(self) -> None:
+        summary = build_automation_summary()
+
+        assert summary.running == 0
+        assert summary.completed_24h == 0
+        assert summary.succeeded_24h == 0
+        assert summary.failed_24h == 0
+        assert summary.last_completed_at == ""
+
+    def test_included_in_snapshot(self) -> None:
+        _panel_cache.clear()
+        snapshot = build_dashboard_snapshot()
+
+        assert snapshot.automation is not None
+        assert snapshot.automation.running == 0
+        _panel_cache.clear()

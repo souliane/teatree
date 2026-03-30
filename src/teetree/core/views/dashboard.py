@@ -1,3 +1,5 @@
+from collections.abc import Callable
+
 from django.conf import settings
 from django.http import Http404, HttpRequest, HttpResponse
 from django.template.response import TemplateResponse
@@ -7,6 +9,7 @@ from django.views import View
 from teetree.core.selectors import (
     build_action_required,
     build_active_sessions,
+    build_automation_summary,
     build_dashboard_snapshot,
     build_dashboard_summary,
     build_dashboard_ticket_rows,
@@ -21,6 +24,7 @@ from teetree.core.views._startup import perform_sync
 
 _PANEL_TEMPLATES = {
     "summary": "teetree/partials/dashboard_summary.html",
+    "automation": "teetree/partials/dashboard_automation.html",
     "action_required": "teetree/partials/dashboard_action_required.html",
     "tickets": "teetree/partials/dashboard_tickets.html",
     "worktrees": "teetree/partials/dashboard_worktrees.html",
@@ -74,27 +78,25 @@ class TaskDetailView(View):
         )
 
 
-def _panel_context(panel: str, *, show_dismissed: bool = False) -> dict[str, object]:  # noqa: PLR0911
-    if panel == "summary":
-        return {"summary": build_dashboard_summary()}
-    if panel == "action_required":
-        return {"action_items": build_action_required()}
-    if panel == "tickets":
-        return {"tickets": build_dashboard_ticket_rows()}
-    if panel == "worktrees":
-        return {"worktrees": build_worktree_rows()}
-    if panel == "headless_queue":
-        return {
-            "headless_queue": build_headless_queue(include_dismissed=show_dismissed),
-            "show_dismissed": show_dismissed,
-        }
-    if panel == "queue":
-        return {"queue": build_interactive_queue(include_dismissed=show_dismissed), "show_dismissed": show_dismissed}
-    if panel == "sessions":
-        return {"sessions": build_active_sessions()}
-    if panel == "review_comments":
-        return {"review_comments": build_review_comments()}
-    if panel == "activity":
-        return {"activity": build_recent_activity()}
-    msg = f"Unsupported panel: {panel}"
-    raise ValueError(msg)
+type _PanelBuilder = Callable[[bool], dict[str, object]]
+
+_PANEL_BUILDERS: dict[str, _PanelBuilder] = {
+    "summary": lambda _d: {"summary": build_dashboard_summary()},
+    "automation": lambda _d: {"automation": build_automation_summary()},
+    "action_required": lambda _d: {"action_items": build_action_required()},
+    "tickets": lambda _d: {"tickets": build_dashboard_ticket_rows()},
+    "worktrees": lambda _d: {"worktrees": build_worktree_rows()},
+    "headless_queue": lambda d: {"headless_queue": build_headless_queue(include_dismissed=d), "show_dismissed": d},
+    "queue": lambda d: {"queue": build_interactive_queue(include_dismissed=d), "show_dismissed": d},
+    "sessions": lambda _d: {"sessions": build_active_sessions()},
+    "review_comments": lambda _d: {"review_comments": build_review_comments()},
+    "activity": lambda _d: {"activity": build_recent_activity()},
+}
+
+
+def _panel_context(panel: str, *, show_dismissed: bool = False) -> dict[str, object]:
+    builder = _PANEL_BUILDERS.get(panel)
+    if builder is None:
+        msg = f"Unsupported panel: {panel}"
+        raise ValueError(msg)
+    return builder(show_dismissed)

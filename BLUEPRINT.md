@@ -472,7 +472,7 @@ ServiceSpec(shared: bool, service: str, compose_file: str, start_command: str, r
 DbImportStrategy(kind: str, source_database: str, shared_postgres: bool, snapshot_tool: str, restore_order: list[str], notes: list[str], worktree_repo_path: str)
 SkillMetadata(skill_path: str, companion_skills: list[str])
 ValidationResult(errors: list[str], warnings: list[str])       # total=True
-ToolCommand(name: str, help: str, management_command: str)     # total=True
+ToolCommand(name: str, help: str, command: str)                # total=True
 ```
 
 ### 6.3 Scaffold (`t3 startproject`)
@@ -649,6 +649,7 @@ The dashboard uses Server-Sent Events for push-based updates instead of blind po
 | Panel | Selector | Content | SSE Event | Fallback Interval |
 |-------|----------|---------|-----------|-------------------|
 | summary | `build_dashboard_summary()` | Counter cards | `summary` | 120s |
+| automation | `build_automation_summary()` | Headless task stats (running, completed/succeeded/failed 24h) | `automation` | 120s |
 | tickets | `build_dashboard_ticket_rows()` | In-flight tickets table | `tickets` | 600s |
 | worktrees | — | Active worktrees with state and ports | `worktrees` | 600s |
 | headless_queue | `build_headless_queue()` | Pending headless tasks | `headless_queue` | 600s |
