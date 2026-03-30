@@ -1,23 +1,33 @@
-"""Worktree resolution from PWD, env var, or explicit ID.
+"""Worktree resolution from the user's original CWD.
 
-Replicates the old ``resolve_context()`` behavior from ``scripts/lib/env.py``.
-The resolution order:
+Resolution order:
 
-1. Explicit ``worktree_id`` argument (if non-zero)
-2. ``WT_ID`` env var
-3. Walk up from PWD looking for ``.env.worktree`` → parse ``TICKET_DIR`` →
+1. Walk up from CWD looking for ``.env.worktree`` → parse ``TICKET_DIR`` →
     match against ``Worktree.extra["worktree_path"]`` in the DB
-4. Match PWD directly against ``Worktree.extra["worktree_path"]``
+2. Match CWD directly against ``Worktree.extra["worktree_path"]``
+3. Detect git worktree from filesystem and auto-register in DB
+
+``T3_ORIG_CWD`` env var (set by the CLI) preserves the user's shell CWD
+across the ``uv --directory`` subprocess chain.
 """
 
+import logging
 import os
+import subprocess  # noqa: S404
 from pathlib import Path
 
-from teetree.core.models import Worktree
+from teetree.core.models import Ticket, Worktree
+
+logger = logging.getLogger(__name__)
 
 
 class WorktreeNotFoundError(RuntimeError):
     """Raised when no worktree can be resolved from the current context."""
+
+
+def _get_user_cwd() -> str:
+    """Return the user's original CWD, surviving ``uv --directory`` and subprocess chains."""
+    return os.environ.get("T3_ORIG_CWD", os.environ.get("PWD", str(Path.cwd())))
 
 
 def _parse_env_file(path: Path) -> dict[str, str]:
@@ -32,10 +42,10 @@ def _parse_env_file(path: Path) -> dict[str, str]:
     return result
 
 
-def _find_env_worktree_from_cwd() -> Path | None:
-    """Walk up from PWD looking for ``.env.worktree``."""
-    cwd = Path.cwd()
-    for parent in [cwd, *cwd.parents]:
+def _find_env_worktree(cwd: str) -> Path | None:
+    """Walk up from *cwd* looking for ``.env.worktree``."""
+    cwd_path = Path(cwd)
+    for parent in [cwd_path, *cwd_path.parents]:
         candidate = parent / ".env.worktree"
         if candidate.is_file():
             return candidate
@@ -43,7 +53,7 @@ def _find_env_worktree_from_cwd() -> Path | None:
 
 
 def _match_worktree_by_path(path: str) -> Worktree | None:
-    """Find a Worktree whose ``extra["worktree_path"]`` matches or contains ``path``."""
+    """Find a Worktree whose ``extra["worktree_path"]`` matches or contains *path*."""
     for wt in Worktree.objects.exclude(extra={}).exclude(extra__isnull=True):
         wt_path = (wt.extra or {}).get("worktree_path", "")
         if wt_path and path.startswith(wt_path):
@@ -51,22 +61,51 @@ def _match_worktree_by_path(path: str) -> Worktree | None:
     return None
 
 
-def resolve_worktree(worktree_id: int = 0) -> Worktree:
-    """Resolve a worktree from explicit ID, env var, or PWD.
+def _auto_register_from_git(cwd: str) -> Worktree | None:
+    """Detect a git worktree from the filesystem and auto-register it in the DB."""
+    cwd_path = Path(cwd)
+    git_file = cwd_path / ".git"
+    if not git_file.is_file():
+        return None  # Not a git worktree (worktrees have .git as a file, not dir)
+
+    try:
+        branch = subprocess.check_output(
+            ["git", "branch", "--show-current"],  # noqa: S607
+            cwd=cwd,
+            text=True,
+            timeout=5,
+        ).strip()
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
+        return None
+
+    if not branch:
+        return None
+
+    repo_name = cwd_path.name
+    ticket, _created = Ticket.objects.get_or_create(
+        issue_url=f"auto:{branch}",
+        defaults={"variant": "", "repos": [repo_name]},
+    )
+    wt, _wt_created = Worktree.objects.get_or_create(
+        ticket=ticket,
+        repo_path=repo_name,
+        defaults={
+            "branch": branch,
+            "extra": {"worktree_path": cwd},
+        },
+    )
+    return wt
+
+
+def resolve_worktree(path: str = "") -> Worktree:
+    """Resolve a worktree from *path* or the user's CWD.
 
     Raises ``WorktreeNotFoundError`` if no worktree can be found.
     """
-    # 1. Explicit ID
-    if worktree_id:
-        return Worktree.objects.get(pk=worktree_id)
+    cwd = path or _get_user_cwd()
 
-    # 2. WT_ID env var
-    env_id = os.environ.get("WT_ID", "")
-    if env_id.isdigit() and int(env_id) > 0:
-        return Worktree.objects.get(pk=int(env_id))
-
-    # 3. Walk up from PWD to find .env.worktree
-    envfile = _find_env_worktree_from_cwd()
+    # 1. Walk up from CWD to find .env.worktree
+    envfile = _find_env_worktree(cwd)
     if envfile is not None:
         env = _parse_env_file(envfile)
         ticket_dir = env.get("TICKET_DIR", "")
@@ -75,17 +114,15 @@ def resolve_worktree(worktree_id: int = 0) -> Worktree:
             if wt is not None:  # pragma: no branch
                 return wt
 
-    # 4. Match PWD directly against stored worktree paths
-    cwd = str(Path.cwd())
+    # 2. Match CWD directly against stored worktree paths
     wt = _match_worktree_by_path(cwd)
     if wt is not None:
         return wt
 
-    msg = (
-        "Cannot auto-detect worktree from current directory.\n"
-        "Either:\n"
-        "  - cd into a worktree directory\n"
-        "  - pass the worktree ID as an argument\n"
-        "  - set WT_ID=<id> in your environment"
-    )
+    # 3. Detect git worktree from filesystem and auto-register
+    wt = _auto_register_from_git(cwd)
+    if wt is not None:
+        return wt
+
+    msg = f"Cannot auto-detect worktree from {cwd}.\nMake sure you are running t3 from inside a worktree directory."
     raise WorktreeNotFoundError(msg)

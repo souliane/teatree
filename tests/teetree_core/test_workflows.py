@@ -142,10 +142,12 @@ def test_full_ticket_lifecycle_create_provision_start_teardown(tmp_path: Path) -
     )
 
     # Step 2: Provision both worktrees (lifecycle setup runs overlay provision steps)
+    backend_path = str(ticket_dir / "backend")
+    frontend_path = str(ticket_dir / "frontend")
     with patch("teetree.core.management.commands.lifecycle.subprocess") as mock_sp:
         mock_sp.run.return_value = MagicMock(returncode=0)
-        backend_id = cast("int", call_command("lifecycle", "setup", str(wt_backend.id)))
-        frontend_id = cast("int", call_command("lifecycle", "setup", str(wt_frontend.id)))
+        backend_id = cast("int", call_command("lifecycle", "setup", path=backend_path))
+        frontend_id = cast("int", call_command("lifecycle", "setup", path=frontend_path))
 
     # Verify provisioning ran
     assert backend_id == wt_backend.id
@@ -173,18 +175,18 @@ def test_full_ticket_lifecycle_create_provision_start_teardown(tmp_path: Path) -
     assert (ticket_dir / "frontend" / ".env.worktree").is_symlink()
 
     # Step 3: Start services (lifecycle start transitions to services_up)
-    call_command("lifecycle", "start", str(wt_backend.id))
+    call_command("lifecycle", "start", path=backend_path)
     wt_backend.refresh_from_db()
     assert wt_backend.state == Worktree.State.SERVICES_UP
 
     # Step 4: Status check
-    status = cast("dict[str, str]", call_command("lifecycle", "status", str(wt_backend.id)))
+    status = cast("dict[str, str]", call_command("lifecycle", "status", path=backend_path))
     assert status["state"] == Worktree.State.SERVICES_UP
     assert status["repo_path"] == "backend"
     assert status["branch"] == "ac-backend-42-ticket"
 
     # Step 5: Teardown — resets to created
-    call_command("lifecycle", "teardown", str(wt_backend.id))
+    call_command("lifecycle", "teardown", path=backend_path)
     wt_backend.refresh_from_db()
     assert wt_backend.state == Worktree.State.CREATED
     assert wt_backend.ports == {}
@@ -197,18 +199,27 @@ def test_full_ticket_lifecycle_create_provision_start_teardown(tmp_path: Path) -
 
 
 @override_settings(**WORKFLOW_SETTINGS)
-def test_port_isolation_across_worktrees() -> None:
+def test_port_isolation_across_worktrees(tmp_path: Path) -> None:
     """Verify two worktrees get distinct ports and DB names."""
+    wt1_dir = tmp_path / "wt1"
+    wt2_dir = tmp_path / "wt2"
+    wt1_dir.mkdir()
+    wt2_dir.mkdir()
+
     ticket1 = Ticket.objects.create(issue_url="https://example.com/issues/100", variant="alpha")
     ticket2 = Ticket.objects.create(issue_url="https://example.com/issues/200", variant="beta")
 
-    wt1 = Worktree.objects.create(ticket=ticket1, repo_path="backend", branch="br-100")
-    wt2 = Worktree.objects.create(ticket=ticket2, repo_path="backend", branch="br-200")
+    wt1 = Worktree.objects.create(
+        ticket=ticket1, repo_path="backend", branch="br-100", extra={"worktree_path": str(wt1_dir)}
+    )
+    wt2 = Worktree.objects.create(
+        ticket=ticket2, repo_path="backend", branch="br-200", extra={"worktree_path": str(wt2_dir)}
+    )
 
     with patch("teetree.core.management.commands.lifecycle.subprocess") as mock_sp:
         mock_sp.run.return_value = MagicMock(returncode=0)
-        call_command("lifecycle", "setup", str(wt1.id))
-        call_command("lifecycle", "setup", str(wt2.id))
+        call_command("lifecycle", "setup", path=str(wt1_dir))
+        call_command("lifecycle", "setup", path=str(wt2_dir))
 
     wt1.refresh_from_db()
     wt2.refresh_from_db()
@@ -349,21 +360,26 @@ def test_ticket_state_progression_via_views() -> None:
 
 
 @override_settings(**WORKFLOW_SETTINGS)
-def test_run_backend_uses_overlay_env_and_starts_services() -> None:
+def test_run_backend_uses_overlay_env_and_starts_services(tmp_path: Path) -> None:
     """Test that run backend starts Docker services and passes overlay env to subprocess."""
+    wt_dir = tmp_path / "backend"
+    wt_dir.mkdir()
+
     ticket = Ticket.objects.create(issue_url="https://example.com/issues/50")
-    wt = Worktree.objects.create(ticket=ticket, repo_path="backend", branch="feature")
+    wt = Worktree.objects.create(
+        ticket=ticket, repo_path="backend", branch="feature", extra={"worktree_path": str(wt_dir)}
+    )
 
     # Provision first
     with patch("teetree.core.management.commands.lifecycle.subprocess"):
-        call_command("lifecycle", "setup", str(wt.id))
+        call_command("lifecycle", "setup", path=str(wt_dir))
 
     wt.refresh_from_db()
 
     # Now run backend — should start services and then run the backend command
     with patch("teetree.core.management.commands.run.subprocess") as mock_sp:
         mock_sp.run.return_value = MagicMock(returncode=0)
-        result = cast("str", call_command("run", "backend", str(wt.id)))
+        result = cast("str", call_command("run", "backend", path=str(wt_dir)))
 
     assert result == "Backend started."
 
@@ -392,14 +408,17 @@ def test_run_backend_uses_overlay_env_and_starts_services() -> None:
 
 
 @override_settings(**WORKFLOW_SETTINGS)
-def test_provision_runs_password_reset_automatically() -> None:
+def test_provision_runs_password_reset_automatically(tmp_path: Path) -> None:
     """Verify lifecycle setup calls get_reset_passwords_command and runs it."""
+    wt_dir = tmp_path / "backend"
+    wt_dir.mkdir()
+
     ticket = Ticket.objects.create(issue_url="https://example.com/issues/60")
-    wt = Worktree.objects.create(ticket=ticket, repo_path="backend", branch="feature")
+    Worktree.objects.create(ticket=ticket, repo_path="backend", branch="feature", extra={"worktree_path": str(wt_dir)})
 
     with patch("teetree.core.management.commands.lifecycle.subprocess") as mock_sp:
         mock_sp.run.return_value = MagicMock(returncode=0)
-        call_command("lifecycle", "setup", str(wt.id))
+        call_command("lifecycle", "setup", path=str(wt_dir))
 
     # The last subprocess.run call should be the password reset
     calls = mock_sp.run.call_args_list
@@ -640,11 +659,12 @@ def test_workspace_ticket_through_lifecycle_setup_to_run_backend(tmp_path: Path)
 
     # --- Step 2: lifecycle setup (provision) ---
     backend_wt = worktrees[0]
+    backend_wt_path = (backend_wt.extra or {}).get("worktree_path", "")
     assert backend_wt.state == Worktree.State.CREATED
 
     with patch("teetree.core.management.commands.lifecycle.subprocess") as mock_lc_sp:
         mock_lc_sp.run.return_value = MagicMock(returncode=0)
-        setup_result = cast("int", call_command("lifecycle", "setup", str(backend_wt.id)))
+        setup_result = cast("int", call_command("lifecycle", "setup", path=backend_wt_path))
 
     assert setup_result == backend_wt.id
 
@@ -661,7 +681,7 @@ def test_workspace_ticket_through_lifecycle_setup_to_run_backend(tmp_path: Path)
     # --- Step 3: run backend ---
     with patch("teetree.core.management.commands.run.subprocess") as mock_run_sp:
         mock_run_sp.run.return_value = MagicMock(returncode=0)
-        run_result = cast("str", call_command("run", "backend", str(backend_wt.id)))
+        run_result = cast("str", call_command("run", "backend", path=backend_wt_path))
 
     assert run_result == "Backend started."
 

@@ -1,6 +1,7 @@
 """Tests for workspace, db, pr, and extended run management commands."""
 
 from collections.abc import Iterator
+from pathlib import Path
 from typing import cast
 from unittest.mock import MagicMock, patch
 
@@ -220,13 +221,17 @@ def test_workspace_clean_all_removes_stale_worktrees() -> None:
 
 @override_settings(**SETTINGS)
 @pytest.mark.django_db
-def test_db_refresh_transitions_worktree() -> None:
+def test_db_refresh_transitions_worktree(tmp_path: Path) -> None:
+    wt_dir = tmp_path / "test"
+    wt_dir.mkdir()
     ticket = Ticket.objects.create()
-    worktree = Worktree.objects.create(ticket=ticket, repo_path="/tmp/test", branch="feature")
+    worktree = Worktree.objects.create(
+        ticket=ticket, repo_path="/tmp/test", branch="feature", extra={"worktree_path": str(wt_dir)}
+    )
     worktree.provision()
     worktree.save()
 
-    result = cast("str", call_command("db", "refresh", str(worktree.pk)))
+    result = cast("str", call_command("db", "refresh", path=str(wt_dir)))
 
     worktree.refresh_from_db()
     assert "refreshed" in result.lower()
@@ -235,16 +240,20 @@ def test_db_refresh_transitions_worktree() -> None:
 
 @override_settings(**SETTINGS)
 @pytest.mark.django_db
-def test_db_refresh_runs_post_db_steps_and_reset_passwords() -> None:
+def test_db_refresh_runs_post_db_steps_and_reset_passwords(tmp_path: Path) -> None:
     """Db refresh calls post-DB steps and password reset after successful import."""
+    wt_dir = tmp_path / "test"
+    wt_dir.mkdir()
     ticket = Ticket.objects.create()
-    worktree = Worktree.objects.create(ticket=ticket, repo_path="/tmp/test", branch="feature")
+    worktree = Worktree.objects.create(
+        ticket=ticket, repo_path="/tmp/test", branch="feature", extra={"worktree_path": str(wt_dir)}
+    )
     worktree.provision()
     worktree.save()
 
     with patch("teetree.core.management.commands.db.subprocess") as mock_sp:
         mock_sp.run.return_value = MagicMock(returncode=0)
-        result = cast("str", call_command("db", "refresh", str(worktree.pk)))
+        result = cast("str", call_command("db", "refresh", path=str(wt_dir)))
 
     assert "refreshed" in result.lower()
     # Post-DB steps and password reset should have been called
@@ -258,14 +267,18 @@ def test_db_refresh_runs_post_db_steps_and_reset_passwords() -> None:
     TEATREE_TERMINAL_MODE="same-terminal",
 )
 @pytest.mark.django_db
-def test_db_refresh_reports_failure_when_import_fails() -> None:
+def test_db_refresh_reports_failure_when_import_fails(tmp_path: Path) -> None:
     """Db refresh reports failure when overlay.db_import returns False."""
+    wt_dir = tmp_path / "test"
+    wt_dir.mkdir()
     ticket = Ticket.objects.create()
-    worktree = Worktree.objects.create(ticket=ticket, repo_path="/tmp/test", branch="feature")
+    worktree = Worktree.objects.create(
+        ticket=ticket, repo_path="/tmp/test", branch="feature", extra={"worktree_path": str(wt_dir)}
+    )
     worktree.provision()
     worktree.save()
 
-    result = cast("str", call_command("db", "refresh", str(worktree.pk)))
+    result = cast("str", call_command("db", "refresh", path=str(wt_dir)))
 
     assert "failed" in result.lower()
 
@@ -277,16 +290,20 @@ def test_db_refresh_reports_failure_when_import_fails() -> None:
     TEATREE_TERMINAL_MODE="same-terminal",
 )
 @pytest.mark.django_db
-def test_db_refresh_runs_post_db_steps_loop() -> None:
+def test_db_refresh_runs_post_db_steps_loop(tmp_path: Path) -> None:
     """Db refresh iterates over overlay.get_post_db_steps and runs commands (lines 37-40)."""
+    wt_dir = tmp_path / "test"
+    wt_dir.mkdir()
     ticket = Ticket.objects.create()
-    worktree = Worktree.objects.create(ticket=ticket, repo_path="/tmp/test", branch="feature")
+    worktree = Worktree.objects.create(
+        ticket=ticket, repo_path="/tmp/test", branch="feature", extra={"worktree_path": str(wt_dir)}
+    )
     worktree.provision()
     worktree.save()
 
     with patch("teetree.core.management.commands.db.subprocess") as mock_sp:
         mock_sp.run.return_value = MagicMock(returncode=0)
-        result = cast("str", call_command("db", "refresh", str(worktree.pk)))
+        result = cast("str", call_command("db", "refresh", path=str(wt_dir)))
 
     assert "refreshed" in result.lower()
     # 2 steps with commands + 1 password reset = 3 subprocess.run calls
@@ -301,28 +318,36 @@ def test_db_refresh_runs_post_db_steps_loop() -> None:
     TEATREE_TERMINAL_MODE="same-terminal",
 )
 @pytest.mark.django_db
-def test_db_restore_ci_reports_failure() -> None:
+def test_db_restore_ci_reports_failure(tmp_path: Path) -> None:
     """restore-ci returns failure message when db_import returns False (line 65)."""
+    wt_dir = tmp_path / "test"
+    wt_dir.mkdir()
     ticket = Ticket.objects.create()
-    worktree = Worktree.objects.create(ticket=ticket, repo_path="/tmp/test", branch="feature")
+    worktree = Worktree.objects.create(
+        ticket=ticket, repo_path="/tmp/test", branch="feature", extra={"worktree_path": str(wt_dir)}
+    )
     worktree.provision()
     worktree.save()
 
-    result = cast("str", call_command("db", "restore-ci", str(worktree.pk)))
+    result = cast("str", call_command("db", "restore-ci", path=str(wt_dir)))
 
     assert "failed" in result.lower()
 
 
 @override_settings(**SETTINGS)
 @pytest.mark.django_db
-def test_db_restore_ci_calls_db_import_with_force() -> None:
+def test_db_restore_ci_calls_db_import_with_force(tmp_path: Path) -> None:
     """restore-ci calls db_import with force=True."""
+    wt_dir = tmp_path / "test"
+    wt_dir.mkdir()
     ticket = Ticket.objects.create()
-    worktree = Worktree.objects.create(ticket=ticket, repo_path="/tmp/test", branch="feature")
+    worktree = Worktree.objects.create(
+        ticket=ticket, repo_path="/tmp/test", branch="feature", extra={"worktree_path": str(wt_dir)}
+    )
     worktree.provision()
     worktree.save()
 
-    result = cast("str", call_command("db", "restore-ci", str(worktree.pk)))
+    result = cast("str", call_command("db", "restore-ci", path=str(wt_dir)))
 
     worktree.refresh_from_db()
     assert "restored" in result.lower()
@@ -331,12 +356,16 @@ def test_db_restore_ci_calls_db_import_with_force() -> None:
 
 @override_settings(**SETTINGS)
 @pytest.mark.django_db
-def test_db_reset_passwords_calls_overlay_command() -> None:
+def test_db_reset_passwords_calls_overlay_command(tmp_path: Path) -> None:
+    wt_dir = tmp_path / "test"
+    wt_dir.mkdir()
     ticket = Ticket.objects.create()
-    worktree = Worktree.objects.create(ticket=ticket, repo_path="/tmp/test", branch="feature")
+    Worktree.objects.create(
+        ticket=ticket, repo_path="/tmp/test", branch="feature", extra={"worktree_path": str(wt_dir)}
+    )
 
     with patch("teetree.core.management.commands.db.subprocess.run") as mock_run:
-        result = cast("str", call_command("db", "reset-passwords", str(worktree.pk)))
+        result = cast("str", call_command("db", "reset-passwords", path=str(wt_dir)))
 
     assert "reset" in result.lower()
     mock_run.assert_called_once()
@@ -399,12 +428,16 @@ def test_pr_create_without_code_host_returns_error() -> None:
 
 @override_settings(**SETTINGS)
 @pytest.mark.django_db
-def test_run_backend_calls_overlay_command() -> None:
+def test_run_backend_calls_overlay_command(tmp_path: Path) -> None:
+    wt_dir = tmp_path / "backend"
+    wt_dir.mkdir()
     ticket = Ticket.objects.create()
-    worktree = Worktree.objects.create(ticket=ticket, repo_path="/tmp/backend", branch="feature")
+    Worktree.objects.create(
+        ticket=ticket, repo_path="/tmp/backend", branch="feature", extra={"worktree_path": str(wt_dir)}
+    )
 
     with patch("teetree.core.management.commands.run.subprocess.run") as mock_run:
-        result = cast("str", call_command("run", "backend", str(worktree.pk)))
+        result = cast("str", call_command("run", "backend", path=str(wt_dir)))
 
     mock_run.assert_called_once()
     assert "started" in result.lower()
@@ -412,12 +445,16 @@ def test_run_backend_calls_overlay_command() -> None:
 
 @override_settings(**SETTINGS)
 @pytest.mark.django_db
-def test_run_frontend_calls_overlay_command() -> None:
+def test_run_frontend_calls_overlay_command(tmp_path: Path) -> None:
+    wt_dir = tmp_path / "frontend"
+    wt_dir.mkdir()
     ticket = Ticket.objects.create()
-    worktree = Worktree.objects.create(ticket=ticket, repo_path="/tmp/frontend", branch="feature")
+    Worktree.objects.create(
+        ticket=ticket, repo_path="/tmp/frontend", branch="feature", extra={"worktree_path": str(wt_dir)}
+    )
 
     with patch("teetree.core.management.commands.run.subprocess.run") as mock_run:
-        result = cast("str", call_command("run", "frontend", str(worktree.pk)))
+        result = cast("str", call_command("run", "frontend", path=str(wt_dir)))
 
     mock_run.assert_called_once()
     assert "started" in result.lower()
@@ -425,12 +462,16 @@ def test_run_frontend_calls_overlay_command() -> None:
 
 @override_settings(**SETTINGS)
 @pytest.mark.django_db
-def test_run_build_frontend_calls_overlay_command() -> None:
+def test_run_build_frontend_calls_overlay_command(tmp_path: Path) -> None:
+    wt_dir = tmp_path / "frontend"
+    wt_dir.mkdir()
     ticket = Ticket.objects.create()
-    worktree = Worktree.objects.create(ticket=ticket, repo_path="/tmp/frontend", branch="feature")
+    Worktree.objects.create(
+        ticket=ticket, repo_path="/tmp/frontend", branch="feature", extra={"worktree_path": str(wt_dir)}
+    )
 
     with patch("teetree.core.management.commands.run.subprocess.run") as mock_run:
-        result = cast("str", call_command("run", "build-frontend", str(worktree.pk)))
+        result = cast("str", call_command("run", "build-frontend", path=str(wt_dir)))
 
     mock_run.assert_called_once()
     assert "built" in result.lower()
@@ -438,12 +479,16 @@ def test_run_build_frontend_calls_overlay_command() -> None:
 
 @override_settings(**SETTINGS)
 @pytest.mark.django_db
-def test_run_tests_calls_overlay_test_command() -> None:
+def test_run_tests_calls_overlay_test_command(tmp_path: Path) -> None:
+    wt_dir = tmp_path / "backend"
+    wt_dir.mkdir()
     ticket = Ticket.objects.create()
-    worktree = Worktree.objects.create(ticket=ticket, repo_path="/tmp/backend", branch="feature")
+    Worktree.objects.create(
+        ticket=ticket, repo_path="/tmp/backend", branch="feature", extra={"worktree_path": str(wt_dir)}
+    )
 
     with patch("teetree.core.management.commands.run.subprocess.run") as mock_run:
-        result = cast("str", call_command("run", "tests", str(worktree.pk)))
+        result = cast("str", call_command("run", "tests", path=str(wt_dir)))
 
     mock_run.assert_called_once()
     assert "completed" in result.lower()
@@ -454,44 +499,60 @@ def test_run_tests_calls_overlay_test_command() -> None:
 
 @override_settings(**MINIMAL_SETTINGS)
 @pytest.mark.django_db
-def test_run_backend_no_command_returns_message() -> None:
+def test_run_backend_no_command_returns_message(tmp_path: Path) -> None:
+    wt_dir = tmp_path / "backend"
+    wt_dir.mkdir()
     ticket = Ticket.objects.create()
-    worktree = Worktree.objects.create(ticket=ticket, repo_path="/tmp/backend", branch="feature")
+    Worktree.objects.create(
+        ticket=ticket, repo_path="/tmp/backend", branch="feature", extra={"worktree_path": str(wt_dir)}
+    )
 
-    result = cast("str", call_command("run", "backend", str(worktree.pk)))
+    result = cast("str", call_command("run", "backend", path=str(wt_dir)))
 
     assert "no backend command" in result.lower()
 
 
 @override_settings(**MINIMAL_SETTINGS)
 @pytest.mark.django_db
-def test_run_frontend_no_command_returns_message() -> None:
+def test_run_frontend_no_command_returns_message(tmp_path: Path) -> None:
+    wt_dir = tmp_path / "frontend"
+    wt_dir.mkdir()
     ticket = Ticket.objects.create()
-    worktree = Worktree.objects.create(ticket=ticket, repo_path="/tmp/frontend", branch="feature")
+    Worktree.objects.create(
+        ticket=ticket, repo_path="/tmp/frontend", branch="feature", extra={"worktree_path": str(wt_dir)}
+    )
 
-    result = cast("str", call_command("run", "frontend", str(worktree.pk)))
+    result = cast("str", call_command("run", "frontend", path=str(wt_dir)))
 
     assert "no frontend command" in result.lower()
 
 
 @override_settings(**MINIMAL_SETTINGS)
 @pytest.mark.django_db
-def test_run_build_frontend_no_command_returns_message() -> None:
+def test_run_build_frontend_no_command_returns_message(tmp_path: Path) -> None:
+    wt_dir = tmp_path / "frontend"
+    wt_dir.mkdir()
     ticket = Ticket.objects.create()
-    worktree = Worktree.objects.create(ticket=ticket, repo_path="/tmp/frontend", branch="feature")
+    Worktree.objects.create(
+        ticket=ticket, repo_path="/tmp/frontend", branch="feature", extra={"worktree_path": str(wt_dir)}
+    )
 
-    result = cast("str", call_command("run", "build-frontend", str(worktree.pk)))
+    result = cast("str", call_command("run", "build-frontend", path=str(wt_dir)))
 
     assert "no build-frontend command" in result.lower()
 
 
 @override_settings(**MINIMAL_SETTINGS)
 @pytest.mark.django_db
-def test_run_tests_no_command_returns_message() -> None:
+def test_run_tests_no_command_returns_message(tmp_path: Path) -> None:
+    wt_dir = tmp_path / "backend"
+    wt_dir.mkdir()
     ticket = Ticket.objects.create()
-    worktree = Worktree.objects.create(ticket=ticket, repo_path="/tmp/backend", branch="feature")
+    Worktree.objects.create(
+        ticket=ticket, repo_path="/tmp/backend", branch="feature", extra={"worktree_path": str(wt_dir)}
+    )
 
-    result = cast("str", call_command("run", "tests", str(worktree.pk)))
+    result = cast("str", call_command("run", "tests", path=str(wt_dir)))
 
     assert "no test command" in result.lower()
 
@@ -501,14 +562,18 @@ def test_run_tests_no_command_returns_message() -> None:
 
 @override_settings(**{**SETTINGS, "TEATREE_OVERLAY_CLASS": SERVICES_OVERLAY})
 @pytest.mark.django_db
-def test_run_backend_starts_services_before_command() -> None:
+def test_run_backend_starts_services_before_command(tmp_path: Path) -> None:
     """Backend command calls _start_services which runs start_command for each service."""
+    wt_dir = tmp_path / "backend"
+    wt_dir.mkdir()
     ticket = Ticket.objects.create()
-    worktree = Worktree.objects.create(ticket=ticket, repo_path="/tmp/backend", branch="feature")
+    Worktree.objects.create(
+        ticket=ticket, repo_path="/tmp/backend", branch="feature", extra={"worktree_path": str(wt_dir)}
+    )
 
     reset_overlay_cache()
     with patch("teetree.core.management.commands.run.subprocess.run") as mock_run:
-        call_command("run", "backend", str(worktree.pk))
+        call_command("run", "backend", path=str(wt_dir))
 
     # 2 calls: one for postgres start_command, one for the backend command itself.
     # Redis has no start_command so it's skipped.
@@ -573,31 +638,39 @@ def test_run_e2e_no_ci_service_returns_error() -> None:
 
 @override_settings(**SETTINGS)
 @pytest.mark.django_db
-def test_lifecycle_setup_runs_reset_passwords() -> None:
+def test_lifecycle_setup_runs_reset_passwords(tmp_path: Path) -> None:
+    wt_dir = tmp_path / "backend"
+    wt_dir.mkdir()
     ticket = Ticket.objects.create(issue_url="https://example.com/issues/60")
-    wt = Worktree.objects.create(ticket=ticket, repo_path="/tmp/backend", branch="feature")
+    Worktree.objects.create(
+        ticket=ticket, repo_path="/tmp/backend", branch="feature", extra={"worktree_path": str(wt_dir)}
+    )
 
     with patch("teetree.core.management.commands.lifecycle.subprocess.run") as mock_run:
-        call_command("lifecycle", "setup", str(wt.id))
+        call_command("lifecycle", "setup", path=str(wt_dir))
 
     # FullOverlay.get_reset_passwords_command returns "echo passwords_reset"
-    mock_run.assert_called_once()
-    call_args = mock_run.call_args
-    assert call_args[0][0] == "echo passwords_reset"
-    assert call_args[1]["shell"] is True
+    # Find the password reset call (direnv allow may also be called)
+    pw_calls = [c for c in mock_run.call_args_list if c[0] and c[0][0] == "echo passwords_reset"]
+    assert len(pw_calls) == 1
+    assert pw_calls[0][1]["shell"] is True
 
 
 @override_settings(**SETTINGS)
 @pytest.mark.django_db
-def test_lifecycle_setup_already_provisioned_skips_provision() -> None:
+def test_lifecycle_setup_already_provisioned_skips_provision(tmp_path: Path) -> None:
     """When worktree is already provisioned, setup skips the provision step."""
+    wt_dir = tmp_path / "backend"
+    wt_dir.mkdir()
     ticket = Ticket.objects.create(issue_url="https://example.com/issues/61")
-    wt = Worktree.objects.create(ticket=ticket, repo_path="/tmp/backend", branch="feature")
+    wt = Worktree.objects.create(
+        ticket=ticket, repo_path="/tmp/backend", branch="feature", extra={"worktree_path": str(wt_dir)}
+    )
     wt.provision()
     wt.save()
 
     with patch("teetree.core.management.commands.lifecycle.subprocess.run"):
-        worktree_id = cast("int", call_command("lifecycle", "setup", str(wt.id)))
+        worktree_id = cast("int", call_command("lifecycle", "setup", path=str(wt_dir)))
 
     worktree = Worktree.objects.get(pk=worktree_id)
     assert worktree.state == Worktree.State.PROVISIONED
@@ -605,13 +678,17 @@ def test_lifecycle_setup_already_provisioned_skips_provision() -> None:
 
 @override_settings(**SETTINGS)
 @pytest.mark.django_db
-def test_lifecycle_setup_variant_option_updates_ticket() -> None:
+def test_lifecycle_setup_variant_option_updates_ticket(tmp_path: Path) -> None:
     """The --variant option updates the ticket variant before provisioning."""
+    wt_dir = tmp_path / "backend"
+    wt_dir.mkdir()
     ticket = Ticket.objects.create(issue_url="https://example.com/issues/90", variant="")
-    wt = Worktree.objects.create(ticket=ticket, repo_path="/tmp/backend", branch="feature")
+    Worktree.objects.create(
+        ticket=ticket, repo_path="/tmp/backend", branch="feature", extra={"worktree_path": str(wt_dir)}
+    )
 
     with patch("teetree.core.management.commands.lifecycle.subprocess.run"):
-        call_command("lifecycle", "setup", str(wt.id), "--variant", "testcustomer")
+        call_command("lifecycle", "setup", path=str(wt_dir), variant="testcustomer")
 
     ticket.refresh_from_db()
     assert ticket.variant == "testcustomer"
@@ -624,14 +701,18 @@ def test_lifecycle_setup_variant_option_updates_ticket() -> None:
     TEATREE_TERMINAL_MODE="same-terminal",
 )
 @pytest.mark.django_db
-def test_lifecycle_setup_continues_on_db_import_failure() -> None:
+def test_lifecycle_setup_continues_on_db_import_failure(tmp_path: Path) -> None:
     """Setup continues with provision steps even when db_import fails."""
+    wt_dir = tmp_path / "backend"
+    wt_dir.mkdir()
     ticket = Ticket.objects.create(issue_url="https://example.com/issues/70")
-    wt = Worktree.objects.create(ticket=ticket, repo_path="/tmp/backend", branch="feature")
+    Worktree.objects.create(
+        ticket=ticket, repo_path="/tmp/backend", branch="feature", extra={"worktree_path": str(wt_dir)}
+    )
 
     with patch("teetree.core.management.commands.lifecycle.subprocess") as mock_sp:
         mock_sp.run.return_value = MagicMock(returncode=0)
-        worktree_id = cast("int", call_command("lifecycle", "setup", str(wt.id)))
+        worktree_id = cast("int", call_command("lifecycle", "setup", path=str(wt_dir)))
 
     worktree = Worktree.objects.get(pk=worktree_id)
     assert worktree.state == Worktree.State.PROVISIONED
@@ -639,14 +720,18 @@ def test_lifecycle_setup_continues_on_db_import_failure() -> None:
 
 @override_settings(**SETTINGS)
 @pytest.mark.django_db
-def test_lifecycle_setup_runs_post_db_steps() -> None:
+def test_lifecycle_setup_runs_post_db_steps(tmp_path: Path) -> None:
     """Setup runs post-DB steps from the overlay."""
+    wt_dir = tmp_path / "backend"
+    wt_dir.mkdir()
     ticket = Ticket.objects.create(issue_url="https://example.com/issues/71")
-    wt = Worktree.objects.create(ticket=ticket, repo_path="/tmp/backend", branch="feature")
+    Worktree.objects.create(
+        ticket=ticket, repo_path="/tmp/backend", branch="feature", extra={"worktree_path": str(wt_dir)}
+    )
 
     with patch("teetree.core.management.commands.lifecycle.subprocess") as mock_sp:
         mock_sp.run.return_value = MagicMock(returncode=0)
-        call_command("lifecycle", "setup", str(wt.id))
+        call_command("lifecycle", "setup", path=str(wt_dir))
 
     # Should have called subprocess.run for password reset at minimum
     assert mock_sp.run.call_count >= 1
@@ -659,18 +744,22 @@ def test_lifecycle_setup_runs_post_db_steps() -> None:
     TEATREE_TERMINAL_MODE="same-terminal",
 )
 @pytest.mark.django_db
-def test_lifecycle_setup_runs_post_db_steps_with_commands() -> None:
+def test_lifecycle_setup_runs_post_db_steps_with_commands(tmp_path: Path) -> None:
     """Setup iterates post-DB steps and runs commands via subprocess (lines 49-52)."""
+    wt_dir = tmp_path / "backend"
+    wt_dir.mkdir()
     ticket = Ticket.objects.create(issue_url="https://example.com/issues/72")
-    wt = Worktree.objects.create(ticket=ticket, repo_path="/tmp/backend", branch="feature")
+    Worktree.objects.create(
+        ticket=ticket, repo_path="/tmp/backend", branch="feature", extra={"worktree_path": str(wt_dir)}
+    )
 
     with patch("teetree.core.management.commands.lifecycle.subprocess") as mock_sp:
         mock_sp.run.return_value = MagicMock(returncode=0)
-        call_command("lifecycle", "setup", str(wt.id))
+        call_command("lifecycle", "setup", path=str(wt_dir))
 
     # PostDbStepsOverlay returns 3 steps: 2 with commands + 1 without command
-    # Plus 1 password reset call = 3 total subprocess.run calls
-    assert mock_sp.run.call_count == 3
+    # Plus 1 password reset call + 1 direnv allow call = 4 total subprocess.run calls
+    assert mock_sp.run.call_count == 4
 
 
 @override_settings(
@@ -680,14 +769,18 @@ def test_lifecycle_setup_runs_post_db_steps_with_commands() -> None:
     TEATREE_TERMINAL_MODE="same-terminal",
 )
 @pytest.mark.django_db
-def test_lifecycle_setup_runs_pre_run_steps_for_all_services() -> None:
+def test_lifecycle_setup_runs_pre_run_steps_for_all_services(tmp_path: Path) -> None:
     """Setup calls get_pre_run_steps for every service from get_run_commands."""
+    wt_dir = tmp_path / "backend"
+    wt_dir.mkdir()
     ticket = Ticket.objects.create(issue_url="https://example.com/issues/73")
-    wt = Worktree.objects.create(ticket=ticket, repo_path="/tmp/backend", branch="feature")
+    wt = Worktree.objects.create(
+        ticket=ticket, repo_path="/tmp/backend", branch="feature", extra={"worktree_path": str(wt_dir)}
+    )
 
     with patch("teetree.core.management.commands.lifecycle.subprocess") as mock_sp:
         mock_sp.run.return_value = MagicMock(returncode=0)
-        call_command("lifecycle", "setup", str(wt.id))
+        call_command("lifecycle", "setup", path=str(wt_dir))
 
     # PreRunOverlay.get_run_commands returns backend, frontend, build-frontend
     wt.refresh_from_db()
@@ -699,13 +792,17 @@ def test_lifecycle_setup_runs_pre_run_steps_for_all_services() -> None:
 
 @override_settings(**SETTINGS)
 @pytest.mark.django_db
-def test_lifecycle_clean_tears_down_worktree() -> None:
+def test_lifecycle_clean_tears_down_worktree(tmp_path: Path) -> None:
+    wt_dir = tmp_path / "backend"
+    wt_dir.mkdir()
     ticket = Ticket.objects.create(issue_url="https://example.com/issues/62")
-    wt = Worktree.objects.create(ticket=ticket, repo_path="/tmp/backend", branch="feature")
+    wt = Worktree.objects.create(
+        ticket=ticket, repo_path="/tmp/backend", branch="feature", extra={"worktree_path": str(wt_dir)}
+    )
     wt.provision()
     wt.save()
 
-    result = cast("str", call_command("lifecycle", "clean", str(wt.id)))
+    result = cast("str", call_command("lifecycle", "clean", path=str(wt_dir)))
 
     wt.refresh_from_db()
     assert wt.state == Worktree.State.CREATED
@@ -762,14 +859,18 @@ def test_lifecycle_diagram_unknown_model() -> None:
 @pytest.mark.django_db
 def test_lifecycle_setup_writes_skill_metadata_cache(tmp_path: "pytest.TempPathFactory") -> None:
     """Setup writes the overlay skill metadata to DATA_DIR/skill-metadata.json."""
+    wt_dir = tmp_path / "backend"
+    wt_dir.mkdir()
     ticket = Ticket.objects.create(issue_url="https://example.com/issues/63")
-    wt = Worktree.objects.create(ticket=ticket, repo_path="/tmp/backend", branch="feature")
+    Worktree.objects.create(
+        ticket=ticket, repo_path="/tmp/backend", branch="feature", extra={"worktree_path": str(wt_dir)}
+    )
 
     with (
         patch("teetree.core.management.commands.lifecycle.subprocess.run"),
         patch("teetree.core.management.commands.lifecycle.DATA_DIR", tmp_path),
     ):
-        call_command("lifecycle", "setup", str(wt.id))
+        call_command("lifecycle", "setup", path=str(wt_dir))
 
     cache_file = tmp_path / "skill-metadata.json"
     assert cache_file.exists()
@@ -780,13 +881,17 @@ def test_lifecycle_setup_writes_skill_metadata_cache(tmp_path: "pytest.TempPathF
 
 @override_settings(**MINIMAL_SETTINGS)
 @pytest.mark.django_db
-def test_db_refresh_no_strategy_returns_message() -> None:
+def test_db_refresh_no_strategy_returns_message(tmp_path: Path) -> None:
+    wt_dir = tmp_path / "test"
+    wt_dir.mkdir()
     ticket = Ticket.objects.create()
-    worktree = Worktree.objects.create(ticket=ticket, repo_path="/tmp/test", branch="feature")
+    worktree = Worktree.objects.create(
+        ticket=ticket, repo_path="/tmp/test", branch="feature", extra={"worktree_path": str(wt_dir)}
+    )
     worktree.provision()
     worktree.save()
 
-    result = cast("str", call_command("db", "refresh", str(worktree.pk)))
+    result = cast("str", call_command("db", "refresh", path=str(wt_dir)))
 
     assert "no db import strategy" in result.lower()
 
@@ -796,24 +901,32 @@ def test_db_refresh_no_strategy_returns_message() -> None:
 
 @override_settings(**SETTINGS)
 @pytest.mark.django_db
-def test_db_restore_ci_with_strategy() -> None:
+def test_db_restore_ci_with_strategy(tmp_path: Path) -> None:
+    wt_dir = tmp_path / "test"
+    wt_dir.mkdir()
     ticket = Ticket.objects.create()
-    worktree = Worktree.objects.create(ticket=ticket, repo_path="/tmp/test", branch="feature")
+    worktree = Worktree.objects.create(
+        ticket=ticket, repo_path="/tmp/test", branch="feature", extra={"worktree_path": str(wt_dir)}
+    )
     worktree.provision()
     worktree.save()
 
-    result = cast("str", call_command("db", "restore-ci", str(worktree.pk)))
+    result = cast("str", call_command("db", "restore-ci", path=str(wt_dir)))
 
     assert "restored" in result.lower() or "failed" in result.lower()
 
 
 @override_settings(**MINIMAL_SETTINGS)
 @pytest.mark.django_db
-def test_db_restore_ci_no_strategy_returns_message() -> None:
+def test_db_restore_ci_no_strategy_returns_message(tmp_path: Path) -> None:
+    wt_dir = tmp_path / "test"
+    wt_dir.mkdir()
     ticket = Ticket.objects.create()
-    worktree = Worktree.objects.create(ticket=ticket, repo_path="/tmp/test", branch="feature")
+    Worktree.objects.create(
+        ticket=ticket, repo_path="/tmp/test", branch="feature", extra={"worktree_path": str(wt_dir)}
+    )
 
-    result = cast("str", call_command("db", "restore-ci", str(worktree.pk)))
+    result = cast("str", call_command("db", "restore-ci", path=str(wt_dir)))
 
     assert "no db import strategy" in result.lower()
 
@@ -823,11 +936,15 @@ def test_db_restore_ci_no_strategy_returns_message() -> None:
 
 @override_settings(**MINIMAL_SETTINGS)
 @pytest.mark.django_db
-def test_db_reset_passwords_no_command_returns_message() -> None:
+def test_db_reset_passwords_no_command_returns_message(tmp_path: Path) -> None:
+    wt_dir = tmp_path / "test"
+    wt_dir.mkdir()
     ticket = Ticket.objects.create()
-    worktree = Worktree.objects.create(ticket=ticket, repo_path="/tmp/test", branch="feature")
+    Worktree.objects.create(
+        ticket=ticket, repo_path="/tmp/test", branch="feature", extra={"worktree_path": str(wt_dir)}
+    )
 
-    result = cast("str", call_command("db", "reset-passwords", str(worktree.pk)))
+    result = cast("str", call_command("db", "reset-passwords", path=str(wt_dir)))
 
     assert "no reset-passwords command" in result.lower()
 
@@ -1198,7 +1315,7 @@ def test_lifecycle_setup_runs_prek_install_when_config_exists(tmp_path: "pytest.
     (wt_path / ".pre-commit-config.yaml").write_text("repos: []\n", encoding="utf-8")
 
     ticket = Ticket.objects.create(issue_url="https://example.com/issues/100")
-    wt = Worktree.objects.create(
+    Worktree.objects.create(
         ticket=ticket,
         repo_path="/tmp/backend",
         branch="feature",
@@ -1207,7 +1324,7 @@ def test_lifecycle_setup_runs_prek_install_when_config_exists(tmp_path: "pytest.
 
     with patch("teetree.core.management.commands.lifecycle.subprocess") as mock_sp:
         mock_sp.run.return_value = MagicMock(returncode=0)
-        call_command("lifecycle", "setup", str(wt.id))
+        call_command("lifecycle", "setup", path=str(wt_path))
 
     # Find the prek install call among all subprocess.run calls
     prek_calls = [c for c in mock_sp.run.call_args_list if c[0] and isinstance(c[0][0], list) and "prek" in c[0][0]]
@@ -1225,7 +1342,7 @@ def test_lifecycle_setup_appends_envrc_lines_from_overlay(tmp_path: "pytest.Temp
     (wt_path / ".envrc").write_text("# existing\n", encoding="utf-8")
 
     ticket = Ticket.objects.create(issue_url="https://example.com/issues/200")
-    wt = Worktree.objects.create(
+    Worktree.objects.create(
         ticket=ticket,
         repo_path="/tmp/backend",
         branch="feature",
@@ -1246,7 +1363,7 @@ def test_lifecycle_setup_appends_envrc_lines_from_overlay(tmp_path: "pytest.Temp
         patch("teetree.core.management.commands.lifecycle.subprocess") as mock_sp,
     ):
         mock_sp.run.return_value = MagicMock(returncode=0)
-        call_command("lifecycle", "setup", str(wt.id))
+        call_command("lifecycle", "setup", path=str(wt_path))
 
     envrc = (wt_path / ".envrc").read_text()
     assert "export USE_UV=1" in envrc
@@ -1258,7 +1375,7 @@ def test_lifecycle_setup_appends_envrc_lines_from_overlay(tmp_path: "pytest.Temp
         patch("teetree.core.management.commands.lifecycle.subprocess") as mock_sp,
     ):
         mock_sp.run.return_value = MagicMock(returncode=0)
-        call_command("lifecycle", "setup", str(wt.id))
+        call_command("lifecycle", "setup", path=str(wt_path))
 
     envrc2 = (wt_path / ".envrc").read_text()
     assert envrc2.count("export USE_UV=1") == 1
@@ -1271,7 +1388,7 @@ def test_lifecycle_setup_updates_ticket_variant_when_requested(tmp_path: "pytest
     wt_path.mkdir()
 
     ticket = Ticket.objects.create(issue_url="https://example.com/issues/201", variant="alpha")
-    wt = Worktree.objects.create(
+    Worktree.objects.create(
         ticket=ticket,
         repo_path="/tmp/backend",
         branch="feature",
@@ -1292,7 +1409,7 @@ def test_lifecycle_setup_updates_ticket_variant_when_requested(tmp_path: "pytest
         patch("teetree.core.management.commands.lifecycle.subprocess") as mock_sp,
     ):
         mock_sp.run.return_value = MagicMock(returncode=0)
-        call_command("lifecycle", "setup", str(wt.id), variant="beta")
+        call_command("lifecycle", "setup", path=str(wt_path), variant="beta")
 
     ticket.refresh_from_db()
     assert ticket.variant == "beta"
@@ -1377,13 +1494,13 @@ def test_lifecycle_start_launches_services_and_transitions(
     wt_path.mkdir()
 
     ticket = Ticket.objects.create(issue_url="https://example.com/issues/300", variant="acme")
-    wt = Worktree.objects.create(
+    Worktree.objects.create(
         ticket=ticket,
         repo_path="/tmp/backend",
         branch="feature",
         extra={"worktree_path": str(wt_path)},
     )
-    worktree_id = cast("int", call_command("lifecycle", "setup", str(wt.id)))
+    worktree_id = cast("int", call_command("lifecycle", "setup", path=str(wt_path)))
 
     launched: list[str] = []
 
@@ -1408,7 +1525,7 @@ def test_lifecycle_start_launches_services_and_transitions(
         patch("teetree.core.management.commands.lifecycle.Popen", _mock_popen),
     ):
         mock_sp.run.return_value = MagicMock(returncode=0)
-        call_command("lifecycle", "start", str(worktree_id))
+        call_command("lifecycle", "start", path=str(wt_path))
 
     worktree = Worktree.objects.get(pk=worktree_id)
     assert worktree.state == Worktree.State.SERVICES_UP
@@ -1431,13 +1548,13 @@ def test_lifecycle_start_skips_service_without_start_command(
     wt_path = tmp_path / "worktree"
     wt_path.mkdir()
     ticket = Ticket.objects.create(issue_url="https://example.com/issues/302", variant="acme")
-    wt = Worktree.objects.create(
+    Worktree.objects.create(
         ticket=ticket,
         repo_path="/tmp/backend",
         branch="feature",
         extra={"worktree_path": str(wt_path)},
     )
-    worktree_id = cast("int", call_command("lifecycle", "setup", str(wt.id)))
+    call_command("lifecycle", "setup", path=str(wt_path))
 
     mock_overlay = MagicMock()
     mock_overlay.get_run_commands.return_value = {}
@@ -1449,7 +1566,7 @@ def test_lifecycle_start_skips_service_without_start_command(
         patch("teetree.core.management.commands.lifecycle.subprocess") as mock_sp,
     ):
         mock_sp.run.return_value = MagicMock(returncode=0)
-        call_command("lifecycle", "start", str(worktree_id))
+        call_command("lifecycle", "start", path=str(wt_path))
 
     docker_calls = [c for c in mock_sp.run.call_args_list if c[0] and "docker" in str(c[0][0])]
     assert len(docker_calls) == 0
@@ -1466,13 +1583,13 @@ def test_lifecycle_start_reports_crashed_process(
     wt_path.mkdir()
 
     ticket = Ticket.objects.create(issue_url="https://example.com/issues/301", variant="acme")
-    wt = Worktree.objects.create(
+    Worktree.objects.create(
         ticket=ticket,
         repo_path="/tmp/backend",
         branch="feature",
         extra={"worktree_path": str(wt_path)},
     )
-    worktree_id = cast("int", call_command("lifecycle", "setup", str(wt.id)))
+    worktree_id = cast("int", call_command("lifecycle", "setup", path=str(wt_path)))
 
     mock_overlay = MagicMock()
     mock_overlay.get_run_commands.return_value = {"backend": "run-backend"}
@@ -1492,7 +1609,7 @@ def test_lifecycle_start_reports_crashed_process(
         patch("teetree.core.management.commands.lifecycle.Popen", _mock_popen_crash),
     ):
         mock_sp.run.return_value = MagicMock(returncode=0)
-        call_command("lifecycle", "start", str(worktree_id))
+        call_command("lifecycle", "start", path=str(wt_path))
 
     # Should still transition (services were attempted) but report failure
     worktree = Worktree.objects.get(pk=worktree_id)

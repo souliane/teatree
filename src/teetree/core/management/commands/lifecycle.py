@@ -59,11 +59,11 @@ class Command(TyperCommand):
     @command()
     def setup(
         self,
-        worktree_id: int = typer.Argument(0, help="Worktree ID (auto-detects from PWD if 0)"),
+        path: str = typer.Option("", help="Worktree path (auto-detects from PWD if empty)."),
         variant: str = typer.Option("", help="Tenant variant. Updates ticket if provided."),
     ) -> int:
         """Provision a worktree (allocate ports, DB name, run overlay steps)."""
-        worktree = resolve_worktree(worktree_id)
+        worktree = resolve_worktree(path)
 
         if variant and worktree.ticket and worktree.ticket.variant != variant:
             worktree.ticket.variant = variant
@@ -123,9 +123,9 @@ class Command(TyperCommand):
             subprocess.run(reset_cmd, shell=True, check=False, env=env)  # noqa: S602
 
     @command()
-    def start(self, worktree_id: int = typer.Argument(0, help="Worktree ID (auto-detects from PWD if 0)")) -> str:
+    def start(self, path: str = typer.Option("", help="Worktree path (auto-detects from PWD if empty).")) -> str:
         """Start Docker services + app servers (background), then transition FSM."""
-        worktree = resolve_worktree(worktree_id)
+        worktree = resolve_worktree(path)
         overlay = get_overlay()
 
         # 1. Start Docker services (DB, Redis)
@@ -187,9 +187,9 @@ class Command(TyperCommand):
 
     @command()
     def status(
-        self, worktree_id: int = typer.Argument(0, help="Worktree ID (auto-detects from PWD if 0)")
+        self, path: str = typer.Option("", help="Worktree path (auto-detects from PWD if empty).")
     ) -> dict[str, str]:
-        worktree = resolve_worktree(worktree_id)
+        worktree = resolve_worktree(path)
         return {
             "state": worktree.state,
             "repo_path": worktree.repo_path,
@@ -197,16 +197,16 @@ class Command(TyperCommand):
         }
 
     @command()
-    def teardown(self, worktree_id: int = typer.Argument(0, help="Worktree ID (auto-detects from PWD if 0)")) -> str:
-        worktree = resolve_worktree(worktree_id)
+    def teardown(self, path: str = typer.Option("", help="Worktree path (auto-detects from PWD if empty).")) -> str:
+        worktree = resolve_worktree(path)
         worktree.teardown()
         worktree.save()
         return worktree.state
 
     @command()
-    def clean(self, worktree_id: int = typer.Argument(0, help="Worktree ID (auto-detects from PWD if 0)")) -> str:
+    def clean(self, path: str = typer.Option("", help="Worktree path (auto-detects from PWD if empty).")) -> str:
         """Teardown worktree — stop services, drop DB, clean state."""
-        worktree = resolve_worktree(worktree_id)
+        worktree = resolve_worktree(path)
         worktree.teardown()
         worktree.save()
         return f"Cleaned worktree {worktree.repo_path} ({worktree.state})"
