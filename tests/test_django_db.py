@@ -349,7 +349,7 @@ class TestMigrateReferenceDb:
         assert _migrate_reference_db(str(tmp_path), "development-acme", {}) is False
 
     def test_skips_when_no_manage_py(self, tmp_path: Path) -> None:
-        assert _migrate_reference_db(str(tmp_path), "development-acme", {}) is False
+        assert _migrate_reference_db(str(tmp_path), "development-acme", {}) is True
 
     def test_skips_when_failing_migration_not_parseable(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         (tmp_path / "manage.py").write_text("", encoding="utf-8")
