@@ -6,6 +6,7 @@ import pytest
 
 from teetree.agents.prompt import (
     _is_primary,
+    _parent_result_summary,
     _read_skill_contents,
     _read_skill_contents_scoped,
     build_interactive_context,
@@ -441,3 +442,95 @@ def test_build_interactive_context_non_dict_extra() -> None:
 
     ctx = build_interactive_context(task, skills=[])
     assert "interactive TeaTree session" in ctx
+
+
+# --- _parent_result_summary ---
+
+
+@pytest.mark.django_db
+def test_parent_result_summary_includes_prior_result() -> None:
+    from teetree.core.models import TaskAttempt  # noqa: PLC0415
+
+    ticket = Ticket.objects.create()
+    session = Session.objects.create(ticket=ticket)
+    parent = Task.objects.create(ticket=ticket, session=session)
+    TaskAttempt.objects.create(
+        task=parent,
+        execution_target="headless",
+        result={
+            "summary": "Implemented feature X",
+            "files_modified": ["src/a.py", "src/b.py"],
+            "next_steps": ["Run tests", "Deploy"],
+        },
+    )
+    child = Task.objects.create(ticket=ticket, session=session, parent_task=parent)
+
+    summary = _parent_result_summary(child)
+
+    assert "Implemented feature X" in summary
+    assert "src/a.py" in summary
+    assert "Run tests" in summary
+
+
+@pytest.mark.django_db
+def test_parent_result_summary_empty_without_parent() -> None:
+    ticket = Ticket.objects.create()
+    session = Session.objects.create(ticket=ticket)
+    task = Task.objects.create(ticket=ticket, session=session)
+
+    assert _parent_result_summary(task) == ""
+
+
+@pytest.mark.django_db
+def test_parent_result_summary_empty_without_attempts() -> None:
+    ticket = Ticket.objects.create()
+    session = Session.objects.create(ticket=ticket)
+    parent = Task.objects.create(ticket=ticket, session=session)
+    child = Task.objects.create(ticket=ticket, session=session, parent_task=parent)
+
+    assert _parent_result_summary(child) == ""
+
+
+@pytest.mark.django_db
+def test_parent_result_summary_handles_non_dict_result() -> None:
+    from teetree.core.models import TaskAttempt  # noqa: PLC0415
+
+    ticket = Ticket.objects.create()
+    session = Session.objects.create(ticket=ticket)
+    parent = Task.objects.create(ticket=ticket, session=session)
+    TaskAttempt.objects.create(task=parent, execution_target="headless", result="not-a-dict")
+    child = Task.objects.create(ticket=ticket, session=session, parent_task=parent)
+
+    assert _parent_result_summary(child) == ""
+
+
+@pytest.mark.django_db
+def test_build_system_context_includes_parent_result() -> None:
+    from teetree.core.models import TaskAttempt  # noqa: PLC0415
+
+    ticket = Ticket.objects.create()
+    session = Session.objects.create(ticket=ticket)
+    parent = Task.objects.create(ticket=ticket, session=session)
+    TaskAttempt.objects.create(
+        task=parent,
+        execution_target="headless",
+        result={"summary": "Prior work done"},
+    )
+    child = Task.objects.create(ticket=ticket, session=session, parent_task=parent)
+
+    ctx = build_system_context(child, skills=[])
+
+    assert "Prior Task Result" in ctx
+    assert "Prior work done" in ctx
+
+
+@pytest.mark.django_db
+def test_build_system_context_includes_context_budget() -> None:
+    ticket = Ticket.objects.create()
+    session = Session.objects.create(ticket=ticket)
+    task = Task.objects.create(ticket=ticket, session=session)
+
+    ctx = build_system_context(task, skills=[])
+
+    assert "Context Budget" in ctx
+    assert "Truncate file reads" in ctx
