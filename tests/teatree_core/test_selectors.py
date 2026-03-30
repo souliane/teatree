@@ -1281,3 +1281,77 @@ class TestBuildAutomationSummary:
         assert snapshot.automation is not None
         assert snapshot.automation.running == 0
         _panel_cache.clear()
+
+
+class TestOverlayFiltering:
+    """Verify that overlay= parameter filters all selector functions."""
+
+    def setup_method(self) -> None:
+        _panel_cache.clear()
+
+    def test_summary_filters_by_overlay(self) -> None:
+        Ticket.objects.create(overlay="alpha", state=Ticket.State.STARTED)
+        Ticket.objects.create(overlay="beta", state=Ticket.State.STARTED)
+
+        all_summary = build_dashboard_summary()
+        alpha_summary = build_dashboard_summary(overlay="alpha")
+
+        assert all_summary.in_flight_tickets == 2
+        assert alpha_summary.in_flight_tickets == 1
+
+    def test_ticket_rows_filter_by_overlay(self) -> None:
+        Ticket.objects.create(overlay="alpha", state=Ticket.State.STARTED)
+        Ticket.objects.create(overlay="beta", state=Ticket.State.STARTED)
+
+        all_rows = build_dashboard_ticket_rows()
+        alpha_rows = build_dashboard_ticket_rows(overlay="alpha")
+
+        assert len(all_rows) == 2
+        assert len(alpha_rows) == 1
+
+    def test_worktree_rows_filter_by_overlay(self) -> None:
+        t1 = Ticket.objects.create(overlay="alpha", state=Ticket.State.STARTED)
+        t2 = Ticket.objects.create(overlay="beta", state=Ticket.State.STARTED)
+        Worktree.objects.create(ticket=t1, overlay="alpha", repo_path="be", branch="a")
+        Worktree.objects.create(ticket=t2, overlay="beta", repo_path="be", branch="b")
+
+        assert len(build_worktree_rows()) == 2
+        assert len(build_worktree_rows(overlay="alpha")) == 1
+
+    def test_headless_queue_filters_by_overlay(self) -> None:
+        t1 = Ticket.objects.create(overlay="alpha")
+        t2 = Ticket.objects.create(overlay="beta")
+        s1 = Session.objects.create(ticket=t1, overlay="alpha")
+        s2 = Session.objects.create(ticket=t2, overlay="beta")
+        Task.objects.create(ticket=t1, session=s1, execution_target="headless")
+        Task.objects.create(ticket=t2, session=s2, execution_target="headless")
+
+        assert len(build_headless_queue()) == 2
+        assert len(build_headless_queue(overlay="alpha")) == 1
+
+    def test_automation_summary_filters_by_overlay(self) -> None:
+        t1 = Ticket.objects.create(overlay="alpha")
+        t2 = Ticket.objects.create(overlay="beta")
+        s1 = Session.objects.create(ticket=t1, overlay="alpha")
+        s2 = Session.objects.create(ticket=t2, overlay="beta")
+        task1 = Task.objects.create(ticket=t1, session=s1, execution_target="headless", status=Task.Status.CLAIMED)
+        Task.objects.create(ticket=t2, session=s2, execution_target="headless", status=Task.Status.CLAIMED)
+        TaskAttempt.objects.create(task=task1, execution_target="headless", exit_code=0, ended_at=timezone.now())
+
+        all_summary = build_automation_summary()
+        alpha_summary = build_automation_summary(overlay="alpha")
+
+        assert all_summary.running == 2
+        assert alpha_summary.running == 1
+        assert alpha_summary.completed_24h == 1
+
+    def test_snapshot_uses_overlay_in_cache_keys(self) -> None:
+        Ticket.objects.create(overlay="alpha", state=Ticket.State.STARTED)
+        Ticket.objects.create(overlay="beta", state=Ticket.State.STARTED)
+
+        all_snap = build_dashboard_snapshot()
+        alpha_snap = build_dashboard_snapshot(overlay="alpha")
+
+        assert all_snap.summary.in_flight_tickets == 2
+        assert alpha_snap.summary.in_flight_tickets == 1
+        _panel_cache.clear()
