@@ -99,10 +99,10 @@ See your [issue tracker platform reference](../../t3-platforms/references/) § "
 
 ## `No module named uvicorn` When Running `t3 <overlay> dashboard`
 
-- **Symptom:** `t3 acme dashboard` fails with `/path/to/teatree/.venv/bin/python3: No module named uvicorn`.
+- **Symptom:** `t3 acme dashboard` fails with `No module named uvicorn`.
 - **Cause:** `_uvicorn()` used `sys.executable` — the teatree venv's Python. But `uvicorn` is a dependency of the overlay project (e.g., t3-acme), not of teatree itself. The teatree venv has no `uvicorn` installed.
-- **Fix:** `_uvicorn()` now checks for `project_path/.venv/bin/python` and uses it when present, falling back to `sys.executable` otherwise.
-- **Prevention:** When spawning overlay project commands from the `t3` CLI, always consider whether the command needs project-specific dependencies. If so, use the project's `.venv/bin/python`, not `sys.executable`.
+- **Fix:** `_uvicorn()` now uses `uv --directory <project_path> run uvicorn` to run in the project's environment, falling back to `sys.executable` otherwise.
+- **Prevention:** When spawning overlay project commands from the `t3` CLI, always consider whether the command needs project-specific dependencies. If so, use `uv --directory <project_path>` to run in the correct environment.
 
 ## `Could not import module "asgi"` When Running `t3 <overlay> dashboard`
 

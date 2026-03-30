@@ -94,6 +94,8 @@ def test_dashboard_calls_migrate_then_runserver(mock_run: MagicMock, tmp_path: P
 
     assert mock_run.call_count == 1
     cmd = mock_run.call_args[0][0]
+    assert cmd[0].endswith("/uv")
+    assert cmd[1:3] == ["--directory", str(tmp_path)]
     assert cmd[-2:] == ["migrate", "--no-input"]
 
 
@@ -106,7 +108,9 @@ def test_uvicorn_launches_asgi_with_reload(mock_run: MagicMock, tmp_path: Path) 
 
     assert mock_run.call_count == 1
     cmd = mock_run.call_args[0][0]
-    assert cmd[1:3] == ["-m", "uvicorn"]
+    assert cmd[0].endswith("/uv")
+    assert cmd[1:3] == ["--directory", str(tmp_path)]
+    assert "uvicorn" in cmd
     assert "acme.asgi:application" in cmd
     assert "--host" in cmd
     assert "--reload" in cmd
@@ -114,22 +118,6 @@ def test_uvicorn_launches_asgi_with_reload(mock_run: MagicMock, tmp_path: Path) 
     # DJANGO_SETTINGS_MODULE should be stripped from env
     call_env = mock_run.call_args[1]["env"]
     assert "DJANGO_SETTINGS_MODULE" not in call_env
-
-
-@patch("teetree.cli.subprocess.run")
-@patch.dict("os.environ", {"DJANGO_SETTINGS_MODULE": "acme.settings"})
-def test_uvicorn_uses_project_venv_python(mock_run: MagicMock, tmp_path: Path) -> None:
-    from teetree.cli import _uvicorn  # noqa: PLC0415
-
-    venv_python = tmp_path / ".venv" / "bin" / "python"
-    venv_python.parent.mkdir(parents=True)
-    venv_python.touch(mode=0o755)
-
-    _uvicorn(tmp_path, "127.0.0.1", 8000)
-
-    cmd = mock_run.call_args[0][0]
-    assert cmd[0] == str(venv_python)
-    assert cmd[1:3] == ["-m", "uvicorn"]
 
 
 @patch("teetree.cli.subprocess.run")

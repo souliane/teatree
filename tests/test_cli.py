@@ -33,7 +33,6 @@ from teetree.cli import (
     _patch_settings,
     _patch_urls,
     _print_package_info,
-    _project_python,
     _register_overlay_commands,
     _repair_symlinks,
     _run_script,
@@ -1380,21 +1379,10 @@ def test_uvicorn_runs_subprocess(tmp_path):
         _uvicorn(tmp_path, "127.0.0.1", 8000, "myapp.settings")
         mock_run.assert_called_once()
         call_args = mock_run.call_args[0][0]
+        assert call_args[0].endswith("/uv")
+        assert call_args[1:3] == ["--directory", str(tmp_path)]
         assert "uvicorn" in str(call_args)
         assert "myapp.asgi:application" in str(call_args)
-
-
-def test_uvicorn_uses_project_venv(tmp_path):
-    """Uvicorn uses the project's venv Python if available."""
-    venv_python = tmp_path / ".venv" / "bin" / "python"
-    venv_python.parent.mkdir(parents=True)
-    venv_python.write_text("#!/usr/bin/env python\n")
-
-    with patch("teetree.cli.subprocess.run") as mock_run:
-        mock_run.return_value = MagicMock(returncode=0)
-        _uvicorn(tmp_path, "127.0.0.1", 8000, "myapp.settings")
-        call_args = mock_run.call_args[0][0]
-        assert str(venv_python) == call_args[0]
 
 
 # ── _build_overlay_app ────────────────────────────────────────────────
@@ -1909,14 +1897,6 @@ def test_launch_claude_asks_user_when_skill_is_unknown(tmp_path, monkeypatch):
         cmd = mock_exec.call_args[0][1]
         context_arg = cmd[cmd.index("--append-system-prompt") + 1]
         assert "ask the user which lifecycle skill to load" in context_arg
-
-
-def test_project_python_prefers_project_venv(tmp_path):
-    python_bin = tmp_path / ".venv" / "bin" / "python"
-    python_bin.parent.mkdir(parents=True)
-    python_bin.write_text("", encoding="utf-8")
-
-    assert _project_python(tmp_path) == str(python_bin)
 
 
 def test_detect_agent_ticket_status_returns_empty_without_manage_py(tmp_path):

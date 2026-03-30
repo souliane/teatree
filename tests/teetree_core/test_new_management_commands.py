@@ -1233,7 +1233,7 @@ def test_lifecycle_setup_appends_envrc_lines_from_overlay(tmp_path: "pytest.Temp
     )
 
     mock_overlay = MagicMock()
-    mock_overlay.get_envrc_lines.return_value = ["source .venv/bin/activate"]
+    mock_overlay.get_envrc_lines.return_value = ["export USE_UV=1"]
     mock_overlay.get_db_import_strategy.return_value = None
     mock_overlay.get_provision_steps.return_value = []
     mock_overlay.get_post_db_steps.return_value = []
@@ -1249,7 +1249,7 @@ def test_lifecycle_setup_appends_envrc_lines_from_overlay(tmp_path: "pytest.Temp
         call_command("lifecycle", "setup", str(wt.id))
 
     envrc = (wt_path / ".envrc").read_text()
-    assert "source .venv/bin/activate" in envrc
+    assert "export USE_UV=1" in envrc
     assert "# existing" in envrc  # original content preserved
 
     # Run again — should not duplicate
@@ -1261,7 +1261,7 @@ def test_lifecycle_setup_appends_envrc_lines_from_overlay(tmp_path: "pytest.Temp
         call_command("lifecycle", "setup", str(wt.id))
 
     envrc2 = (wt_path / ".envrc").read_text()
-    assert envrc2.count("source .venv/bin/activate") == 1
+    assert envrc2.count("export USE_UV=1") == 1
 
 
 @override_settings(**SETTINGS)

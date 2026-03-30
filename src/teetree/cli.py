@@ -116,20 +116,12 @@ def docs(
     )
 
 
-def _project_python(project_root: Path) -> str:
-    project_python = project_root / ".venv" / "bin" / "python"
-    return str(project_python) if project_python.is_file() else sys.executable
-
-
 def _detect_agent_ticket_status(project_root: Path) -> str:
     manage_py = project_root / "manage.py"
     if not manage_py.is_file():
         return ""
     command = [
-        _project_python(project_root),
-        str(manage_py),
-        "shell",
-        "-c",
+        *_uv_cmd(project_root, "python", str(manage_py), "shell", "-c"),
         (
             "from teetree.core.resolve import WorktreeNotFoundError, resolve_worktree\n"
             "try:\n"
@@ -1387,6 +1379,11 @@ def _register_overlay_commands() -> None:
         app.add_typer(overlay_app, name=short_name)
 
 
+def _uv_cmd(project_path: Path, *args: str) -> list[str]:
+    uv = shutil.which("uv") or "uv"
+    return [uv, "--directory", str(project_path), "run", *args]
+
+
 def _managepy(project_path: Path | None, *args: str) -> None:
     """Run manage.py in the overlay project directory."""
     if project_path is None:
@@ -1400,7 +1397,7 @@ def _managepy(project_path: Path | None, *args: str) -> None:
 
     env = {k: v for k, v in os.environ.items() if k != "DJANGO_SETTINGS_MODULE"}
     subprocess.run(  # noqa: S603
-        [sys.executable, str(manage_py), *args],
+        _uv_cmd(project_path, "python", "manage.py", *args),
         cwd=project_path,
         env=env,
         check=True,
@@ -1416,13 +1413,16 @@ def _uvicorn(project_path: Path | None, host: str, port: int, settings_module: s
     settings_module = settings_module or os.environ.get("DJANGO_SETTINGS_MODULE", "")
     asgi_module = settings_module.rsplit(".", 1)[0] + ".asgi:application" if settings_module else "asgi:application"
 
-    # Use the project's venv Python so uvicorn (a project dependency) is importable.
-    project_python = project_path / ".venv" / "bin" / "python"
-    python = str(project_python) if project_python.is_file() else sys.executable
-
     env = {k: v for k, v in os.environ.items() if k != "DJANGO_SETTINGS_MODULE"}
     subprocess.run(  # noqa: S603
-        [python, "-m", "uvicorn", asgi_module, "--host", host, "--port", str(port), "--reload"],
+        [
+            *_uv_cmd(project_path, "python", "-m", "uvicorn", asgi_module),
+            "--host",
+            host,
+            "--port",
+            str(port),
+            "--reload",
+        ],
         cwd=project_path,
         env=env,
         check=False,
@@ -1482,9 +1482,7 @@ def _build_overlay_app(overlay_name: str, project_path: Path | None, settings_mo
         for _ in range(count):
             p = subprocess.Popen(  # noqa: S603
                 [
-                    sys.executable,
-                    manage_py,
-                    "db_worker",
+                    *_uv_cmd(project_path, "python", manage_py, "db_worker"),
                     "--interval",
                     str(interval),
                     "--no-startup-delay",
