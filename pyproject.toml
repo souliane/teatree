@@ -133,6 +133,9 @@ lint.per-file-ignores."src/teetree/cli.py" = [
   "PLR2004",
   "RSE102",
 ]
+lint.per-file-ignores."src/teetree/cli_*.py" = [
+  "FBT003", # boolean positional/default (typer CLI flags)
+]
 lint.per-file-ignores."src/teetree/core/management/commands/*.py" = [
   "PLR6301", # django-typer command methods intentionally live on Command classes
   "S607",    # partial executable paths (git, dropdb, direnv, prek) are trusted internal tools

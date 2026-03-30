@@ -85,12 +85,12 @@ def test_services_returns_run_commands_from_overlay() -> None:
     }
 
 
-@patch("teetree.cli.subprocess.run")
+@patch("teetree.cli_overlay.subprocess.run")
 def test_dashboard_calls_migrate_then_runserver(mock_run: MagicMock, tmp_path: Path) -> None:
-    from teetree.cli import _managepy  # noqa: PLC0415
+    from teetree.cli_overlay import managepy  # noqa: PLC0415
 
     (tmp_path / "manage.py").write_text("# stub", encoding="utf-8")
-    _managepy(tmp_path, "migrate", "--no-input")
+    managepy(tmp_path, "migrate", "--no-input")
 
     assert mock_run.call_count == 1
     cmd = mock_run.call_args[0][0]
@@ -99,10 +99,10 @@ def test_dashboard_calls_migrate_then_runserver(mock_run: MagicMock, tmp_path: P
     assert cmd[-2:] == ["migrate", "--no-input"]
 
 
-@patch("teetree.cli.subprocess.run")
+@patch("teetree.cli_overlay.subprocess.run")
 @patch.dict("os.environ", {"DJANGO_SETTINGS_MODULE": "acme.settings"})
 def test_uvicorn_launches_asgi_with_reload(mock_run: MagicMock, tmp_path: Path) -> None:
-    from teetree.cli import _uvicorn  # noqa: PLC0415
+    from teetree.cli_overlay import _uvicorn  # noqa: PLC0415
 
     _uvicorn(tmp_path, "127.0.0.1", 8000)
 
@@ -124,7 +124,7 @@ def test_uvicorn_launches_asgi_with_reload(mock_run: MagicMock, tmp_path: Path) 
 def test_uvicorn_none_project_path_exits(mock_run: MagicMock) -> None:
     import click  # noqa: PLC0415
 
-    from teetree.cli import _uvicorn  # noqa: PLC0415
+    from teetree.cli_overlay import _uvicorn  # noqa: PLC0415
 
     with pytest.raises(click.exceptions.Exit):
         _uvicorn(None, "127.0.0.1", 8000)
