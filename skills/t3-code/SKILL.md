@@ -43,6 +43,7 @@ The implementation phase. Follow test-driven development and project conventions
 
 **Always make a plan before writing code.** Never jump straight to coding.
 
+- **Check for prior work:** Search git history (`git log --grep`, PR list) for previous attempts at this task. Existing research, rejected approaches, and partial implementations save hours.
 - Identify scope: which files, modules, and repos are affected.
 - Review existing patterns in the codebase before writing new code.
 - If the task matches a playbook, follow playbook-specific patterns.

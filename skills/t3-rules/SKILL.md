@@ -112,6 +112,19 @@ Before ending any session that involved multi-file edits, debugging, or implemen
 
 When cherry-picking code from orphan commits, stashes, snapshots, or other branches, verify every import and function call exists in the target codebase before applying. Snapshot code assumes a different state — modules, classes, and function signatures may not exist in HEAD. Apply each change surgically and run the type checker (`ty-check`) before moving on.
 
+## Context Longevity
+
+Long sessions lose context to automatic compaction. Proactively manage session length:
+
+- **After 15+ tool calls**, suggest `/t3-next` or `/t3-retro` to preserve findings before compaction.
+- **Before switching phases** (coding → testing, testing → reviewing), suggest wrapping up the current phase — phase transitions are natural breakpoints.
+- **Re-reading a file you already read earlier** is a sign of context pressure. Consider wrapping up.
+- **When context gets compacted**, critical state must survive — see the user's global agent config § Compact Instructions for what to preserve.
+
+## Concurrent Agent Safety (Non-Negotiable)
+
+Assume another agent may be modifying the same repo concurrently. Never `git stash`, `git checkout --`, or `git restore` files you didn't change — this destroys the other agent's in-progress work. Only stage and commit files you explicitly modified.
+
 ## GitLab Inline Comments
 
 When posting inline MR comments, target **added lines only** — not context or unchanged lines.

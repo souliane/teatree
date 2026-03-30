@@ -1218,6 +1218,31 @@ class TestBuildAutomationSummary:
 
         assert summary.last_completed_at == now.isoformat()
 
+    def test_aggregates_token_usage(self) -> None:
+        ticket = Ticket.objects.create(state=Ticket.State.STARTED)
+        session = Session.objects.create(ticket=ticket, agent_id="agent")
+        for input_t, output_t, cost in [(1000, 500, 0.01), (2000, 800, 0.02)]:
+            task = Task.objects.create(
+                ticket=ticket,
+                session=session,
+                execution_target=Task.ExecutionTarget.HEADLESS,
+                status=Task.Status.COMPLETED,
+            )
+            TaskAttempt.objects.create(
+                task=task,
+                execution_target="headless",
+                exit_code=0,
+                ended_at=timezone.now(),
+                input_tokens=input_t,
+                output_tokens=output_t,
+                cost_usd=cost,
+            )
+
+        summary = build_automation_summary()
+
+        assert summary.total_tokens_24h == 4300
+        assert summary.total_cost_24h == pytest.approx(0.03)
+
     def test_empty_state(self) -> None:
         summary = build_automation_summary()
 
@@ -1226,6 +1251,8 @@ class TestBuildAutomationSummary:
         assert summary.succeeded_24h == 0
         assert summary.failed_24h == 0
         assert summary.last_completed_at == ""
+        assert summary.total_tokens_24h == 0
+        assert summary.total_cost_24h == pytest.approx(0.0)
 
     def test_included_in_snapshot(self) -> None:
         _panel_cache.clear()

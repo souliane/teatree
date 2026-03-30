@@ -533,6 +533,10 @@ class TaskAttempt(models.Model):
     exit_code = models.IntegerField(null=True, blank=True)
     artifact_path = models.CharField(max_length=500, blank=True)
     result = models.JSONField(default=dict, blank=True)
+    input_tokens = models.IntegerField(null=True, blank=True)
+    output_tokens = models.IntegerField(null=True, blank=True)
+    cost_usd = models.FloatField(null=True, blank=True)
+    num_turns = models.IntegerField(null=True, blank=True)
     launch_url = models.URLField(max_length=500, blank=True)
     agent_session_id = models.CharField(max_length=255, blank=True)
 

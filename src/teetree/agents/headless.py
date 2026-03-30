@@ -16,10 +16,30 @@ from teetree.agents.services import get_headless_runtime_name
 from teetree.agents.skill_bundle import resolve_skill_bundle
 from teetree.core.models import Task, TaskAttempt
 from teetree.core.overlay import SkillMetadata
+from teetree.skill_loading import SkillLoadingPolicy
 
 _RUNTIME_BINARIES: dict[str, str] = {
     "claude-code": "claude",
 }
+
+
+def _safe_int(value: str | None) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(float(value))
+    except (ValueError, TypeError):
+        return None
+
+
+def _safe_float(value: str | None) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (ValueError, TypeError):
+        return None
+
 
 _UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 
@@ -55,7 +75,8 @@ def run_headless(
         return _record_failure(task, error=f"{binary_name} is not installed")
 
     prompt = build_task_prompt(task)
-    system_context = build_system_context(task, skills=skills)
+    lifecycle_skill = SkillLoadingPolicy.lifecycle_for_phase(phase)
+    system_context = build_system_context(task, skills=skills, lifecycle_skill=lifecycle_skill)
     resume_session_id = _get_resume_session_id(task)
     command = _build_headless_command(binary, prompt, system_context, resume_session_id=resume_session_id)
 
@@ -70,9 +91,11 @@ def run_headless(
         return _record_failure(task, exit_code=proc.returncode, error=proc.stderr[:2000])
 
     envelope = _parse_cli_envelope(proc.stdout)
-    agent_text = envelope.get("agent_text", proc.stdout)
-    session_id = envelope.get("session_id", "")
+    return _record_success(task, envelope)
 
+
+def _record_success(task: Task, envelope: dict[str, str]) -> TaskAttempt:
+    agent_text = envelope.get("agent_text", "")
     result = _parse_result(agent_text)
     if not result:
         result = {"summary": agent_text[:1000]}
@@ -87,12 +110,12 @@ def run_headless(
         ended_at=timezone.now(),
         exit_code=0,
         result=result,
-        agent_session_id=session_id,
+        agent_session_id=envelope.get("session_id", ""),
+        input_tokens=_safe_int(envelope.get("input_tokens")),
+        output_tokens=_safe_int(envelope.get("output_tokens")),
+        cost_usd=_safe_float(envelope.get("cost_usd")),
+        num_turns=_safe_int(envelope.get("num_turns")),
     )
-    # Always complete — _advance_ticket() handles follow-ups:
-    # - needs_user_input → schedules a new interactive task
-    # - reviewing phase → advances ticket to REVIEWED
-    # - shipping phase → advances ticket to SHIPPED
     task.complete(result_artifact_path="")
     return attempt
 
@@ -124,19 +147,24 @@ def _get_resume_session_id(task: Task) -> str:
 
 
 def _parse_cli_envelope(stdout: str) -> dict[str, str]:
-    """Parse the Claude CLI JSON envelope to extract session_id and agent text.
+    """Parse the Claude CLI JSON envelope to extract session_id, text, and usage.
 
     When ``--output-format json`` is used, stdout is a single JSON object
     with ``session_id`` and ``result`` (the agent's text output) at the top level.
-    Falls back gracefully if stdout is not a CLI envelope.
+    Usage stats (``cost_usd``, ``num_turns``, ``input_tokens``, ``output_tokens``)
+    are extracted when present.  Falls back gracefully if stdout is not a CLI envelope.
     """
     try:
         envelope = json.loads(stdout)
         if isinstance(envelope, dict) and "session_id" in envelope:
-            return {
+            parsed: dict[str, str] = {
                 "session_id": str(envelope.get("session_id", "")),
                 "agent_text": str(envelope.get("result", "")),
             }
+            for key in ("cost_usd", "num_turns", "input_tokens", "output_tokens"):
+                if key in envelope:
+                    parsed[key] = str(envelope[key])
+            return parsed
     except (json.JSONDecodeError, ValueError):
         pass
     return {"agent_text": stdout, "session_id": ""}
