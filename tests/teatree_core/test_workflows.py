@@ -531,8 +531,9 @@ class TestRunBackend:
         assert backend_wt.ports["frontend"] >= 4201
         assert backend_wt.db_name == "wt_999_testclient"
 
+        # Setup now provisions ALL ticket worktrees (backend + frontend)
         reset_calls = [c for c in mock_lc_sp.run.call_args_list if "reset_passwords" in str(c)]
-        assert len(reset_calls) == 1
+        assert len(reset_calls) == 2
 
         # --- Step 3: run backend ---
         with patch("teatree.core.management.commands.run.subprocess") as mock_run_sp:

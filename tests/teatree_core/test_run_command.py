@@ -259,3 +259,51 @@ class TestPortPreservation:
         assert result == "Backend started."
         assert worktree.ports == {"backend": 8001, "frontend": 4201, "postgres": 5433, "redis": 6379}
         assert commands[-1][1]["check"] is True
+
+    @override_settings(**COMMAND_SETTINGS, T3_WORKSPACE_DIR="/tmp/should-not-be-used")
+    def test_run_backend_sets_virtual_env_when_venv_exists(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """VIRTUAL_ENV is set to the worktree's .venv when it exists on disk."""
+        workspace = tmp_path / "workspace"
+        worktree_path = workspace / "ac-ticket-44" / "backend"
+        worktree_path.mkdir(parents=True)
+        venv_dir = worktree_path / ".venv"
+        venv_dir.mkdir()
+
+        ticket = Ticket.objects.create(issue_url="https://example.com/issues/44", variant="acme")
+        Worktree.objects.create(
+            ticket=ticket,
+            repo_path="/tmp/backend",
+            branch="feature",
+            extra={"worktree_path": str(worktree_path)},
+            state=Worktree.State.PROVISIONED,
+            ports={"backend": 8001, "frontend": 4201, "postgres": 5433, "redis": 6379},
+            db_name="wt_44_acme",
+        )
+
+        envfile = worktree_path.parent / ".env.worktree"
+        envfile.write_text("BACKEND_PORT=8001\n", encoding="utf-8")
+        (worktree_path / ".env.worktree").symlink_to(envfile)
+
+        monkeypatch.setattr(
+            Worktree,
+            "_port_available",
+            staticmethod(lambda port: port not in {8001, 4201, 5433}),
+        )
+        monkeypatch.setattr("teatree.utils.ports.port_in_use", lambda port: port in {8001, 4201, 5433})
+        monkeypatch.setattr("teatree.core.models.settings.T3_WORKSPACE_DIR", str(workspace))
+
+        captured_envs: list[dict[str, str]] = []
+
+        def fake_run(*args: object, **kwargs: object) -> CompletedProcess[str]:
+            if "env" in kwargs:
+                captured_envs.append(cast("dict[str, str]", kwargs["env"]))
+            return CompletedProcess(args[0], 0, "", "")
+
+        monkeypatch.setattr("teatree.core.management.commands.run.subprocess.run", fake_run)
+
+        call_command("run", "backend", path=str(worktree_path))
+
+        assert captured_envs
+        assert captured_envs[-1]["VIRTUAL_ENV"] == str(venv_dir)

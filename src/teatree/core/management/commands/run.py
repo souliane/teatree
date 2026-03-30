@@ -1,6 +1,7 @@
 import os
 import subprocess  # noqa: S404
 import urllib.request
+from pathlib import Path
 from typing import cast
 
 import typer
@@ -13,13 +14,23 @@ from teatree.core.worktree_env import write_env_worktree
 
 
 def _run_env(worktree: Worktree) -> dict[str, str]:
-    """Build subprocess env from current env + overlay's get_env_extra."""
+    """Build subprocess env from current env + overlay's get_env_extra.
+
+    Sets ``VIRTUAL_ENV`` to the worktree's ``.venv`` so that ``uv run``
+    and bare ``python`` resolve to the correct interpreter.  Falls back
+    to stripping ``VIRTUAL_ENV`` if the worktree has no ``.venv``.
+    """
     worktree.refresh_ports_if_needed()
     write_env_worktree(worktree)
     env = dict(os.environ)
     env.update(get_overlay().get_env_extra(worktree))
-    # Remove VIRTUAL_ENV so uv/python uses the worktree's .venv (symlinked to main repo)
-    env.pop("VIRTUAL_ENV", None)
+
+    wt_path = (worktree.extra or {}).get("worktree_path", "")
+    venv = Path(wt_path) / ".venv" if wt_path else None
+    if venv and venv.is_dir():
+        env["VIRTUAL_ENV"] = str(venv)
+    else:
+        env.pop("VIRTUAL_ENV", None)
     return env
 
 
