@@ -3,7 +3,7 @@
 import json
 
 import pytest
-from django.test import Client
+from django.test import Client, TestCase
 from django.urls import reverse
 
 from teatree.core.views.history import _extract_text, _load_transcript
@@ -171,14 +171,16 @@ class TestLoadTranscript:
         assert result[0]["text"] == "Structured response"
 
 
-@pytest.mark.django_db
-class TestSessionHistoryView:
-    def test_returns_200_with_valid_transcript(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: pytest.TempPathFactory
-    ) -> None:
-        monkeypatch.setattr("teatree.core.views.history._CLAUDE_PROJECTS_DIR", tmp_path)
+class TestSessionHistoryView(TestCase):
+    @pytest.fixture(autouse=True)
+    def _inject_fixtures(self, monkeypatch: pytest.MonkeyPatch, tmp_path: pytest.TempPathFactory) -> None:
+        self._monkeypatch = monkeypatch
+        self._tmp_path = tmp_path
 
-        project_dir = tmp_path / "-workspace-project"
+    def test_returns_200_with_valid_transcript(self) -> None:
+        self._monkeypatch.setattr("teatree.core.views.history._CLAUDE_PROJECTS_DIR", self._tmp_path)
+
+        project_dir = self._tmp_path / "-workspace-project"
         project_dir.mkdir(parents=True)
         jsonl_path = project_dir / "abc123.jsonl"
 
@@ -205,10 +207,8 @@ class TestSessionHistoryView:
 
         assert response.status_code == 404
 
-    def test_returns_404_when_transcript_empty(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: pytest.TempPathFactory
-    ) -> None:
-        monkeypatch.setattr("teatree.core.views.history._CLAUDE_PROJECTS_DIR", tmp_path)
+    def test_returns_404_when_transcript_empty(self) -> None:
+        self._monkeypatch.setattr("teatree.core.views.history._CLAUDE_PROJECTS_DIR", self._tmp_path)
 
         response = Client().get(
             reverse("teatree:session-history", args=["nonexistent"]),

@@ -2,7 +2,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
-from django.test import override_settings
+from django.test import TestCase, override_settings
 
 from teatree import skill_loading as skill_loading_module
 from teatree.agents.sdk import run_headless_task
@@ -105,87 +105,117 @@ def test_resolve_skill_bundle_uses_builtin_default_when_local_map_missing(
     assert bundle == ["ac-python", "t3-rules", "t3-workspace", "t3-debug"]
 
 
-@override_settings(TEATREE_HEADLESS_RUNTIME="test-sdk")
-@pytest.mark.django_db
-def test_run_headless_task_records_attempt_and_completes_work() -> None:
-    runtime = RecordingRuntime("test-sdk")
-    register_runtime("test-sdk", runtime)
-    ticket = Ticket.objects.create()
-    session = Session.objects.create(ticket=ticket, agent_id="agent-1")
-    task = Task.objects.create(ticket=ticket, session=session)
+class TestRunHeadlessTask(TestCase):
+    @classmethod
+    def setUpTestData(cls) -> None:
+        cls.ticket = Ticket.objects.create()
+        cls.session = Session.objects.create(ticket=cls.ticket, agent_id="agent-1")
 
-    result = run_headless_task(
-        task,
-        phase="coding",
-        overlay_skill_metadata={"skill_path": "/skills/acme/SKILL.md"},
-        delegation_map_path=Path("references/skill-delegation.md"),
+    @override_settings(TEATREE_HEADLESS_RUNTIME="test-sdk")
+    def test_records_attempt_and_completes_work(self) -> None:
+        runtime = RecordingRuntime("test-sdk")
+        register_runtime("test-sdk", runtime)
+        task = Task.objects.create(ticket=self.ticket, session=self.session)
+
+        result = run_headless_task(
+            task,
+            phase="coding",
+            overlay_skill_metadata={"skill_path": "/skills/acme/SKILL.md"},
+            delegation_map_path=Path("references/skill-delegation.md"),
+        )
+
+        task.refresh_from_db()
+
+        assert result.artifact_path == f"artifacts/task-{task.pk}-test-sdk.json"
+        assert runtime.calls[0][1] == [
+            "/skills/acme/SKILL.md",
+            "ac-python",
+            "ac-django",
+            "t3-rules",
+            "t3-workspace",
+            "t3-code",
+        ]
+        assert task.status == Task.Status.COMPLETED
+        assert TaskAttempt.objects.count() == 1
+
+    @override_settings(TEATREE_HEADLESS_RUNTIME="failing")
+    def test_records_failure_attempt_on_runtime_error(self) -> None:
+        register_runtime("failing", FailingRuntime())
+        task = Task.objects.create(ticket=self.ticket, session=self.session)
+
+        with pytest.raises(RuntimeError, match="runtime crashed"):
+            run_headless_task(task, phase="coding", overlay_skill_metadata={})
+
+        task.refresh_from_db()
+
+        assert task.status == Task.Status.FAILED
+        attempt = TaskAttempt.objects.get(task=task)
+        assert attempt.exit_code == 1
+        assert attempt.error == "runtime crashed"
+
+
+class TestRunInteractiveTask(TestCase):
+    @classmethod
+    def setUpTestData(cls) -> None:
+        cls.ticket = Ticket.objects.create()
+        cls.session = Session.objects.create(ticket=cls.ticket, agent_id="agent-1")
+
+    @override_settings(TEATREE_INTERACTIVE_RUNTIME="test-terminal", TEATREE_TERMINAL_MODE="same-terminal")
+    def test_can_reroute_to_interactive(self) -> None:
+        runtime = RecordingRuntime("test-terminal", reroute_to=Task.ExecutionTarget.INTERACTIVE)
+        register_runtime("test-terminal", runtime)
+        task = Task.objects.create(ticket=self.ticket, session=self.session)
+
+        result = run_interactive_task(
+            task,
+            phase="debugging",
+            overlay_skill_metadata={},
+            delegation_map_path=Path("references/skill-delegation.md"),
+        )
+
+        task.refresh_from_db()
+
+        assert result.metadata == {"terminal_mode": "same-terminal"}
+        assert task.status == Task.Status.PENDING
+        assert task.execution_target == Task.ExecutionTarget.INTERACTIVE
+        assert TaskAttempt.objects.count() == 1
+
+    @override_settings(
+        TEATREE_HEADLESS_RUNTIME="claude-code",
+        TEATREE_INTERACTIVE_RUNTIME="codex",
+        TEATREE_TERMINAL_MODE="new-window",
     )
+    def test_expose_defaults_and_complete_interactive_work(self) -> None:
+        task = Task.objects.create(ticket=self.ticket, session=self.session)
 
-    task.refresh_from_db()
+        result = run_interactive_task(
+            task,
+            phase="reviewing",
+            overlay_skill_metadata={},
+            delegation_map_path=Path("references/skill-delegation.md"),
+        )
 
-    assert result.artifact_path == f"artifacts/task-{task.pk}-test-sdk.json"
-    assert runtime.calls[0][1] == [
-        "/skills/acme/SKILL.md",
-        "ac-python",
-        "ac-django",
-        "t3-rules",
-        "t3-workspace",
-        "t3-code",
-    ]
-    assert task.status == Task.Status.COMPLETED
-    assert TaskAttempt.objects.count() == 1
+        task.refresh_from_db()
 
+        assert get_headless_runtime_name() == "claude-code"
+        assert get_interactive_runtime_name() == "codex"
+        assert get_terminal_mode() == "new-window"
+        assert result.artifact_path == f"artifacts/task-{task.pk}-codex.json"
+        assert task.status == Task.Status.COMPLETED
+        assert get_runtime("claude-code").run(task=task, skills=[]).runtime == "claude-code"
 
-@override_settings(TEATREE_INTERACTIVE_RUNTIME="test-terminal", TEATREE_TERMINAL_MODE="same-terminal")
-@pytest.mark.django_db
-def test_run_interactive_task_can_reroute_to_interactive() -> None:
-    runtime = RecordingRuntime("test-terminal", reroute_to=Task.ExecutionTarget.INTERACTIVE)
-    register_runtime("test-terminal", runtime)
-    ticket = Ticket.objects.create()
-    session = Session.objects.create(ticket=ticket, agent_id="agent-1")
-    task = Task.objects.create(ticket=ticket, session=session)
+    @override_settings(TEATREE_INTERACTIVE_RUNTIME="failing", TEATREE_TERMINAL_MODE="same-terminal")
+    def test_records_failure_attempt_on_runtime_error(self) -> None:
+        register_runtime("failing", FailingRuntime())
+        task = Task.objects.create(ticket=self.ticket, session=self.session)
 
-    result = run_interactive_task(
-        task,
-        phase="debugging",
-        overlay_skill_metadata={},
-        delegation_map_path=Path("references/skill-delegation.md"),
-    )
+        with pytest.raises(RuntimeError, match="runtime crashed"):
+            run_interactive_task(task, phase="debugging", overlay_skill_metadata={})
 
-    task.refresh_from_db()
+        task.refresh_from_db()
 
-    assert result.metadata == {"terminal_mode": "same-terminal"}
-    assert task.status == Task.Status.PENDING
-    assert task.execution_target == Task.ExecutionTarget.INTERACTIVE
-    assert TaskAttempt.objects.count() == 1
-
-
-@override_settings(
-    TEATREE_HEADLESS_RUNTIME="claude-code",
-    TEATREE_INTERACTIVE_RUNTIME="codex",
-    TEATREE_TERMINAL_MODE="new-window",
-)
-@pytest.mark.django_db
-def test_runtime_services_expose_defaults_and_complete_interactive_work() -> None:
-    ticket = Ticket.objects.create()
-    session = Session.objects.create(ticket=ticket)
-    task = Task.objects.create(ticket=ticket, session=session)
-
-    result = run_interactive_task(
-        task,
-        phase="reviewing",
-        overlay_skill_metadata={},
-        delegation_map_path=Path("references/skill-delegation.md"),
-    )
-
-    task.refresh_from_db()
-
-    assert get_headless_runtime_name() == "claude-code"
-    assert get_interactive_runtime_name() == "codex"
-    assert get_terminal_mode() == "new-window"
-    assert result.artifact_path == f"artifacts/task-{task.pk}-codex.json"
-    assert task.status == Task.Status.COMPLETED
-    assert get_runtime("claude-code").run(task=task, skills=[]).runtime == "claude-code"
+        assert task.status == Task.Status.FAILED
+        assert TaskAttempt.objects.filter(task=task).count() == 1
 
 
 def test_get_runtime_raises_for_unknown_runtime() -> None:
@@ -197,39 +227,3 @@ class FailingRuntime:
     def run(self, *, task: Task, skills: list[str], terminal_mode: str | None = None) -> RuntimeExecution:
         msg = "runtime crashed"
         raise RuntimeError(msg)
-
-
-@override_settings(TEATREE_HEADLESS_RUNTIME="failing")
-@pytest.mark.django_db
-def test_run_headless_task_records_failure_attempt_on_runtime_error() -> None:
-    register_runtime("failing", FailingRuntime())
-    ticket = Ticket.objects.create()
-    session = Session.objects.create(ticket=ticket)
-    task = Task.objects.create(ticket=ticket, session=session)
-
-    with pytest.raises(RuntimeError, match="runtime crashed"):
-        run_headless_task(task, phase="coding", overlay_skill_metadata={})
-
-    task.refresh_from_db()
-
-    assert task.status == Task.Status.FAILED
-    attempt = TaskAttempt.objects.get(task=task)
-    assert attempt.exit_code == 1
-    assert attempt.error == "runtime crashed"
-
-
-@override_settings(TEATREE_INTERACTIVE_RUNTIME="failing", TEATREE_TERMINAL_MODE="same-terminal")
-@pytest.mark.django_db
-def test_run_interactive_task_records_failure_attempt_on_runtime_error() -> None:
-    register_runtime("failing", FailingRuntime())
-    ticket = Ticket.objects.create()
-    session = Session.objects.create(ticket=ticket)
-    task = Task.objects.create(ticket=ticket, session=session)
-
-    with pytest.raises(RuntimeError, match="runtime crashed"):
-        run_interactive_task(task, phase="debugging", overlay_skill_metadata={})
-
-    task.refresh_from_db()
-
-    assert task.status == Task.Status.FAILED
-    assert TaskAttempt.objects.filter(task=task).count() == 1

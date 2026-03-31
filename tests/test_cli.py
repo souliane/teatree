@@ -395,13 +395,17 @@ class TestReviewRequestDiscover:
     def test_review_request_discover(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         (tmp_path / "pyproject.toml").write_text("[project]\n")
+
+        from teatree.config import OverlayEntry  # noqa: PLC0415
+
+        active = OverlayEntry(name="t3-test", overlay_class="test.Overlay", project_path=tmp_path)
         with (
-            patch("teatree.cli._find_overlay_project", return_value=tmp_path),
+            patch("teatree.config.discover_active_overlay", return_value=active),
             patch("teatree.cli.managepy") as mock_manage,
         ):
             result = runner.invoke(app, ["review-request", "discover"])
             assert result.exit_code == 0
-            mock_manage.assert_called_once_with(tmp_path, "followup", "discover-mrs")
+            mock_manage.assert_called_once_with(tmp_path, "followup", "discover-mrs", overlay_name="t3-test")
 
 
 # ── Internal helpers ─────────────────────────────────────────────────
@@ -543,16 +547,21 @@ class TestDetectAgentTicketStatus:
     def test_returns_empty_without_manage_py(self, tmp_path):
         assert _detect_agent_ticket_status(tmp_path) == ""
 
-    def test_returns_empty_on_subprocess_failure(self, tmp_path):
-        (tmp_path / "manage.py").write_text("print('hi')\n", encoding="utf-8")
+    def test_returns_empty_on_exception(self, tmp_path):
+        (tmp_path / "manage.py").write_text("# stub\n", encoding="utf-8")
 
-        with patch("teatree.cli.subprocess.run", return_value=MagicMock(returncode=1, stdout="broken")):
+        with patch("django.setup", side_effect=Exception("boom")):
             assert _detect_agent_ticket_status(tmp_path) == ""
 
-    def test_returns_stripped_stdout(self, tmp_path):
-        (tmp_path / "manage.py").write_text("print('hi')\n", encoding="utf-8")
+    def test_returns_ticket_state(self, tmp_path):
+        (tmp_path / "manage.py").write_text("# stub\n", encoding="utf-8")
+        mock_wt = MagicMock()
+        mock_wt.ticket.state = "started"
 
-        with patch("teatree.cli.subprocess.run", return_value=MagicMock(returncode=0, stdout="started\n")):
+        with (
+            patch("django.setup"),
+            patch("teatree.core.resolve.resolve_worktree", return_value=mock_wt),
+        ):
             assert _detect_agent_ticket_status(tmp_path) == "started"
 
 

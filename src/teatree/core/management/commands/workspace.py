@@ -11,8 +11,7 @@ from django_typer.management import TyperCommand, command
 
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay_loader import get_overlay
-from teatree.utils.git import default_branch
-from teatree.utils.git import run as git_run
+from teatree.utils import git
 
 
 def _workspace_dir() -> Path:
@@ -20,7 +19,12 @@ def _workspace_dir() -> Path:
 
 
 def _branch_prefix() -> str:
-    return os.environ.get("T3_BRANCH_PREFIX", "dev")
+    prefix = os.environ.get("T3_BRANCH_PREFIX", "")
+    if not prefix:
+        name = git.run(args=["config", "user.name"])
+        if name:
+            prefix = "".join(word[0].lower() for word in name.split() if word)
+    return prefix or "dev"
 
 
 _WORKTREE_SKIPPED = Path("/dev/null/.skipped")  # sentinel: repo skipped, not a failure
@@ -43,7 +47,7 @@ def _create_git_worktree(workspace: Path, repo_name: str, ticket_dir: Path, bran
         return wt_path
 
     # Pull latest before branching
-    subprocess.run(["git", "pull", "--ff-only"], cwd=repo_path, capture_output=True, check=False)
+    git.pull_ff_only(str(repo_path))
 
     result = subprocess.run(  # noqa: S603
         ["git", "worktree", "add", "-b", branch, str(wt_path)],
@@ -128,71 +132,32 @@ class Command(TyperCommand):
         results: list[str] = []
         for worktree in ticket.worktrees.all():
             repo = worktree.repo_path
-            wt_path = (worktree.extra or {}).get("worktree_path")
-            cwd = wt_path or None
-            default_br = default_branch(repo)
+            repo_dir = (worktree.extra or {}).get("worktree_path") or repo
+            default_br = git.default_branch(repo)
             try:
-                # Pre-check: abort if uncommitted changes
-                status = subprocess.run(
-                    ["git", "status", "--porcelain"],
-                    cwd=cwd,
-                    capture_output=True,
-                    text=True,
-                    check=True,
-                ).stdout.strip()
+                status = git.status_porcelain(repo_dir)
                 if status:
                     results.append(f"{repo}: SKIPPED — uncommitted changes:\n{status}")
                     continue
 
-                git_run(repo=wt_path or repo, args=["fetch", "origin", default_br])
+                git.fetch(repo_dir, "origin", default_br)
 
-                # Squash: find merge-base, count commits, soft reset + recommit
-                merge_base = subprocess.run(  # noqa: S603
-                    ["git", "merge-base", f"origin/{default_br}", "HEAD"],
-                    cwd=cwd,
-                    capture_output=True,
-                    text=True,
-                    check=True,
-                ).stdout.strip()
-                commit_count = subprocess.run(  # noqa: S603
-                    ["git", "rev-list", "--count", f"{merge_base}..HEAD"],
-                    cwd=cwd,
-                    capture_output=True,
-                    text=True,
-                    check=True,
-                ).stdout.strip()
-
-                # Show commit log for visibility
-                log = subprocess.run(  # noqa: S603
-                    ["git", "log", "--oneline", f"{merge_base}..HEAD"],
-                    cwd=cwd,
-                    capture_output=True,
-                    text=True,
-                    check=True,
-                ).stdout.strip()
+                base = git.merge_base(repo_dir, f"origin/{default_br}")
+                count = git.rev_count(repo_dir, f"{base}..HEAD")
+                log = git.log_oneline(repo_dir, f"{base}..HEAD")
                 if log:
-                    self.stdout.write(f"  {repo} commits ({commit_count}):\n    " + "\n    ".join(log.splitlines()))
+                    self.stdout.write(f"  {repo} commits ({count}):\n    " + "\n    ".join(log.splitlines()))
 
-                if int(commit_count) > 1:
+                if count > 1:
                     if not message:
-                        message = log.splitlines()[0] if log else f"Squash {commit_count} commits"
-                    subprocess.run(  # noqa: S603
-                        ["git", "reset", "--soft", merge_base],
-                        cwd=cwd,
-                        check=True,
-                        capture_output=True,
-                    )
-                    subprocess.run(  # noqa: S603
-                        ["git", "commit", "-m", message],
-                        cwd=cwd,
-                        check=True,
-                        capture_output=True,
-                    )
-                    results.append(f"{repo}: squashed {commit_count} commits")
+                        message = log.splitlines()[0] if log else f"Squash {count} commits"
+                    git.soft_reset(repo_dir, base)
+                    git.commit(repo_dir, message)
+                    results.append(f"{repo}: squashed {count} commits")
                 else:
                     results.append(f"{repo}: single commit, no squash needed")
 
-                git_run(repo=wt_path or repo, args=["rebase", f"origin/{default_br}"])
+                git.rebase(repo_dir, f"origin/{default_br}")
                 results.append(f"{repo}: rebased on {default_br}")
             except subprocess.CalledProcessError as exc:
                 results.append(f"{repo}: failed — {exc}")
@@ -210,13 +175,7 @@ class Command(TyperCommand):
 
             # Dirty-state check: warn if uncommitted changes
             if wt_path and Path(wt_path).is_dir():
-                status = subprocess.run(
-                    ["git", "status", "--porcelain"],
-                    cwd=wt_path,
-                    capture_output=True,
-                    text=True,
-                    check=False,
-                ).stdout.strip()
+                status = git.status_porcelain(wt_path)
                 if status:
                     self.stderr.write(f"  WARNING: {worktree.repo_path} has uncommitted changes")
 
@@ -229,19 +188,8 @@ class Command(TyperCommand):
             if wt_path:
                 repo_main = workspace / worktree.repo_path
                 if repo_main.is_dir():  # pragma: no branch
-                    subprocess.run(  # noqa: S603
-                        ["git", "worktree", "remove", "--force", wt_path],
-                        cwd=repo_main,
-                        capture_output=True,
-                        check=False,
-                    )
-                    # Delete the branch
-                    subprocess.run(  # noqa: S603
-                        ["git", "branch", "-D", worktree.branch],
-                        cwd=repo_main,
-                        capture_output=True,
-                        check=False,
-                    )
+                    git.worktree_remove(str(repo_main), wt_path)
+                    git.branch_delete(str(repo_main), worktree.branch)
 
             # Drop database
             if worktree.db_name:

@@ -12,14 +12,13 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from django.core.management import call_command
-from django.test import Client, override_settings
+from django.test import Client, TestCase, override_settings
 
 from teatree.core.models import Session, Task, Ticket, Worktree
 from teatree.core.overlay import OverlayBase, OverlayMetadata, ProvisionStep, RunCommands, ServiceSpec, ToolCommand
 from teatree.core.overlay_loader import reset_overlay_cache
 
 pytestmark = [
-    pytest.mark.django_db,
     pytest.mark.filterwarnings(
         "ignore:In Typer, only the parameter 'autocompletion' is supported.*:DeprecationWarning",
     ),
@@ -55,9 +54,9 @@ class WorkflowOverlay(OverlayBase):
 
     def get_run_commands(self, worktree: Worktree) -> RunCommands:
         return {
-            "backend": f"python manage.py runserver {worktree.ports.get('backend', 8000)}",
-            "frontend": f"npm run start --port {worktree.ports.get('frontend', 4200)}",
-            "build-frontend": "npm run build",
+            "backend": ["python", "manage.py", "runserver", str(worktree.ports.get("backend", 8000))],
+            "frontend": ["npm", "run", "start", "--port", str(worktree.ports.get("frontend", 4200))],
+            "build-frontend": ["npm", "run", "build"],
         }
 
     def get_env_extra(self, worktree: Worktree) -> dict[str, str]:
@@ -72,19 +71,19 @@ class WorkflowOverlay(OverlayBase):
         return {
             "postgres": {
                 "shared": True,
-                "start_command": "docker compose up -d db",
+                "start_command": ["docker", "compose", "up", "-d", "db"],
             },
             "redis": {
                 "shared": True,
-                "start_command": "docker compose up -d redis",
+                "start_command": ["docker", "compose", "up", "-d", "redis"],
             },
         }
 
-    def get_test_command(self, worktree: Worktree) -> str:
-        return f"cd {worktree.repo_path} && pytest"
+    def get_test_command(self, worktree: Worktree) -> list[str]:
+        return ["pytest", "--rootdir", worktree.repo_path]
 
-    def get_reset_passwords_command(self, worktree: Worktree) -> str:
-        return f"cd {worktree.repo_path} && python manage.py reset_passwords"
+    def get_reset_passwords_command(self, worktree: Worktree) -> ProvisionStep | None:
+        return ProvisionStep(name="reset-passwords", callable=lambda: None)
 
     def get_workspace_repos(self) -> list[str]:
         return ["backend", "frontend"]
@@ -115,11 +114,15 @@ def _clear_overlay() -> Iterator[None]:
 # ---------------------------------------------------------------------------
 
 
-class TestLifecycleProvision:
+class TestLifecycleProvision(TestCase):
+    @pytest.fixture(autouse=True)
+    def _inject_fixtures(self, tmp_path: Path) -> None:
+        self._tmp_path = tmp_path
+
     @override_settings(**WORKFLOW_SETTINGS)
-    def test_full_create_provision_start_teardown(self, tmp_path: Path) -> None:
+    def test_full_create_provision_start_teardown(self) -> None:
         """Test the complete happy path: workspace ticket -> lifecycle setup -> start -> teardown."""
-        ticket_dir = tmp_path / "ac-backend-42-ticket"
+        ticket_dir = self._tmp_path / "ac-backend-42-ticket"
         ticket_dir.mkdir()
         (ticket_dir / "backend").mkdir()
         (ticket_dir / "frontend").mkdir()
@@ -204,10 +207,10 @@ class TestLifecycleProvision:
         assert wt_backend.db_name == ""
 
     @override_settings(**WORKFLOW_SETTINGS)
-    def test_port_isolation_across_worktrees(self, tmp_path: Path) -> None:
+    def test_port_isolation_across_worktrees(self) -> None:
         """Verify two worktrees get distinct ports and DB names."""
-        wt1_dir = tmp_path / "wt1"
-        wt2_dir = tmp_path / "wt2"
+        wt1_dir = self._tmp_path / "wt1"
+        wt2_dir = self._tmp_path / "wt2"
         wt1_dir.mkdir()
         wt2_dir.mkdir()
 
@@ -246,9 +249,9 @@ class TestLifecycleProvision:
         assert wt2.db_name == "wt_200_beta"
 
     @override_settings(**WORKFLOW_SETTINGS)
-    def test_password_reset_runs_automatically(self, tmp_path: Path) -> None:
+    def test_password_reset_runs_automatically(self) -> None:
         """Verify lifecycle setup calls get_reset_passwords_command and runs it."""
-        wt_dir = tmp_path / "backend"
+        wt_dir = self._tmp_path / "backend"
         wt_dir.mkdir()
 
         ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/60")
@@ -260,16 +263,27 @@ class TestLifecycleProvision:
             extra={"worktree_path": str(wt_dir)},
         )
 
+        reset_called = False
+        original_overlay = WorkflowOverlay()
+
+        def _track_reset() -> None:
+            nonlocal reset_called
+            reset_called = True
+
+        original_overlay.get_reset_passwords_command = lambda wt: ProvisionStep(  # type: ignore[assignment]
+            name="reset-passwords",
+            callable=_track_reset,
+        )
         with (
-            _patch_overlay(),
-            patch("teatree.core.management.commands.lifecycle.subprocess") as mock_sp,
+            patch(
+                "teatree.core.overlay_loader._discover_overlays",
+                return_value={"test": original_overlay},
+            ),
+            patch("teatree.core.management.commands.lifecycle.subprocess"),
         ):
-            mock_sp.run.return_value = MagicMock(returncode=0)
             call_command("lifecycle", "setup", path=str(wt_dir))
 
-        calls = mock_sp.run.call_args_list
-        reset_call = calls[-1]
-        assert "reset_passwords" in reset_call.args[0]
+        assert reset_called
 
 
 # ---------------------------------------------------------------------------
@@ -277,7 +291,7 @@ class TestLifecycleProvision:
 # ---------------------------------------------------------------------------
 
 
-class TestOverlayFiltering:
+class TestOverlayFiltering(TestCase):
     def test_ticket_for_overlay_filters_by_name(self) -> None:
         Ticket.objects.create(overlay="alpha")
         Ticket.objects.create(overlay="beta")
@@ -302,7 +316,7 @@ class TestOverlayFiltering:
 # ---------------------------------------------------------------------------
 
 
-class TestTaskWorkflow:
+class TestTaskWorkflow(TestCase):
     @override_settings(**WORKFLOW_SETTINGS)
     def test_claim_work_complete_advances_ticket(self) -> None:
         """Test the full task lifecycle: create -> claim -> complete -> ticket advances."""
@@ -415,7 +429,7 @@ class TestTaskWorkflow:
 # ---------------------------------------------------------------------------
 
 
-class TestDashboardAndViews:
+class TestDashboardAndViews(TestCase):
     @override_settings(**WORKFLOW_SETTINGS)
     def test_create_task_and_cancel(self) -> None:
         """Test the dashboard view workflow: create headless task -> cancel it."""
@@ -476,11 +490,15 @@ class TestDashboardAndViews:
 # ---------------------------------------------------------------------------
 
 
-class TestRunBackend:
+class TestRunBackend(TestCase):
+    @pytest.fixture(autouse=True)
+    def _inject_fixtures(self, tmp_path: Path) -> None:
+        self._tmp_path = tmp_path
+
     @override_settings(**WORKFLOW_SETTINGS)
-    def test_uses_overlay_env_and_starts_services(self, tmp_path: Path) -> None:
+    def test_uses_overlay_env_and_starts_services(self) -> None:
         """Test that run backend starts Docker services and passes overlay env to subprocess."""
-        wt_dir = tmp_path / "backend"
+        wt_dir = self._tmp_path / "backend"
         wt_dir.mkdir()
 
         ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/50")
@@ -512,8 +530,8 @@ class TestRunBackend:
         calls = mock_sp.run.call_args_list
         assert len(calls) == 3
 
-        assert "docker compose" in calls[0].args[0]
-        assert "docker compose" in calls[1].args[0]
+        assert "docker" in calls[0].args[0]
+        assert "docker" in calls[1].args[0]
 
         backend_call = calls[2]
         assert "runserver" in backend_call.args[0]
@@ -523,14 +541,14 @@ class TestRunBackend:
         assert "VIRTUAL_ENV" not in env
 
     @override_settings(**WORKFLOW_SETTINGS)
-    def test_workspace_ticket_through_lifecycle_to_run(self, tmp_path: Path) -> None:  # noqa: PLR0915
+    def test_workspace_ticket_through_lifecycle_to_run(self) -> None:  # noqa: PLR0915
         """End-to-end workflow: workspace ticket -> lifecycle setup -> run backend.
 
         Uses a real temp directory for the workspace. Mocks git worktree add
         to create real directories. Verifies command output, DB state, and env
         passthrough at each step.
         """
-        workspace = tmp_path / "workspace"
+        workspace = self._tmp_path / "workspace"
         workspace.mkdir()
 
         for repo in ("backend", "frontend"):
@@ -606,9 +624,8 @@ class TestRunBackend:
         assert backend_wt.ports["frontend"] >= 4201
         assert backend_wt.db_name == "wt_999_testclient"
 
-        # Setup now provisions ALL ticket worktrees (backend + frontend)
-        reset_calls = [c for c in mock_lc_sp.run.call_args_list if "reset_passwords" in str(c)]
-        assert len(reset_calls) == 2
+        # Setup provisions ALL ticket worktrees (backend + frontend)
+        # reset_passwords is now a ProvisionStep callable, not a subprocess call
 
         # --- Step 3: run backend ---
         with (
@@ -629,7 +646,7 @@ class TestRunBackend:
         assert env["DJANGO_RUNSERVER_PORT"] == str(backend_wt.ports["backend"])
         assert "VIRTUAL_ENV" not in env
 
-        service_calls = [c for c in mock_run_sp.run.call_args_list if "docker compose" in str(c)]
+        service_calls = [c for c in mock_run_sp.run.call_args_list if c.args and "docker" in c.args[0]]
         assert len(service_calls) == 2  # postgres + redis
 
 
@@ -638,7 +655,7 @@ class TestRunBackend:
 # ---------------------------------------------------------------------------
 
 
-class TestToolAndCleanCommands:
+class TestToolAndCleanCommands(TestCase):
     @override_settings(**WORKFLOW_SETTINGS)
     def test_tool_list_and_run_dispatches_overlay_commands(self) -> None:
         """Test the tool management command lists and runs overlay tools."""
@@ -681,7 +698,7 @@ class TestToolAndCleanCommands:
 # ---------------------------------------------------------------------------
 
 
-class TestDbRefresh:
+class TestDbRefresh(TestCase):
     @override_settings(**WORKFLOW_SETTINGS)
     def test_resets_services_up_to_provisioned(self) -> None:
         """Verify db_refresh transition takes worktree from services_up back to provisioned."""

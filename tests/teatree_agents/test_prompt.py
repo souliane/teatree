@@ -1,8 +1,10 @@
 """Tests for teatree.agents.prompt — agent prompt building."""
 
+import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
-import pytest
+from django.test import TestCase
 
 from teatree.agents.prompt import (
     _is_primary,
@@ -13,7 +15,7 @@ from teatree.agents.prompt import (
     build_system_context,
     build_task_prompt,
 )
-from teatree.core.models import Session, Task, Ticket
+from teatree.core.models import Session, Task, TaskAttempt, Ticket
 
 # --- _read_skill_contents ---
 
@@ -116,421 +118,364 @@ def test_read_scoped_missing_skill(tmp_path: Path) -> None:
 # --- build_task_prompt ---
 
 
-@pytest.mark.django_db
-def test_build_task_prompt_basic() -> None:
-    ticket = Ticket.objects.create(issue_url="https://example.com/issues/42")
-    session = Session.objects.create(ticket=ticket)
-    task = Task.objects.create(ticket=ticket, session=session)
+class TestBuildTaskPrompt(TestCase):
+    def test_basic(self) -> None:
+        ticket = Ticket.objects.create(issue_url="https://example.com/issues/42")
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session)
 
-    prompt = build_task_prompt(task)
-    assert "42" in prompt
-    assert "https://example.com/issues/42" in prompt
+        prompt = build_task_prompt(task)
+        assert "42" in prompt
+        assert "https://example.com/issues/42" in prompt
 
+    def test_includes_title_and_labels(self) -> None:
+        ticket = Ticket.objects.create(
+            issue_url="https://example.com/issues/1",
+            extra={"issue_title": "Fix the bug", "labels": ["bug", "urgent"]},
+        )
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session)
 
-@pytest.mark.django_db
-def test_build_task_prompt_includes_title_and_labels() -> None:
-    ticket = Ticket.objects.create(
-        issue_url="https://example.com/issues/1",
-        extra={"issue_title": "Fix the bug", "labels": ["bug", "urgent"]},
-    )
-    session = Session.objects.create(ticket=ticket)
-    task = Task.objects.create(ticket=ticket, session=session)
+        prompt = build_task_prompt(task)
+        assert "Fix the bug" in prompt
+        assert "bug, urgent" in prompt
 
-    prompt = build_task_prompt(task)
-    assert "Fix the bug" in prompt
-    assert "bug, urgent" in prompt
+    def test_includes_phase_and_reason(self) -> None:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            phase="reviewing",
+            execution_reason="Auto-scheduled review",
+        )
 
+        prompt = build_task_prompt(task)
+        assert "reviewing" in prompt
+        assert "Auto-scheduled review" in prompt
 
-@pytest.mark.django_db
-def test_build_task_prompt_includes_phase_and_reason() -> None:
-    ticket = Ticket.objects.create()
-    session = Session.objects.create(ticket=ticket)
-    task = Task.objects.create(
-        ticket=ticket,
-        session=session,
-        phase="reviewing",
-        execution_reason="Auto-scheduled review",
-    )
-
-    prompt = build_task_prompt(task)
-    assert "reviewing" in prompt
-    assert "Auto-scheduled review" in prompt
-
-
-@pytest.mark.django_db
-def test_build_task_prompt_includes_mr_context() -> None:
-    ticket = Ticket.objects.create(
-        extra={
-            "mrs": {
-                "backend": {
-                    "url": "https://gitlab.com/mr/1",
-                    "title": "Backend changes",
-                    "draft": True,
-                    "pipeline_status": "success",
+    def test_includes_mr_context(self) -> None:
+        ticket = Ticket.objects.create(
+            extra={
+                "mrs": {
+                    "backend": {
+                        "url": "https://gitlab.com/mr/1",
+                        "title": "Backend changes",
+                        "draft": True,
+                        "pipeline_status": "success",
+                    },
                 },
             },
-        },
-    )
-    session = Session.objects.create(ticket=ticket)
-    task = Task.objects.create(ticket=ticket, session=session)
+        )
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session)
 
-    prompt = build_task_prompt(task)
-    assert "https://gitlab.com/mr/1" in prompt
-    assert "(draft)" in prompt
-    assert "pipeline: success" in prompt
-    assert "Backend changes" in prompt
+        prompt = build_task_prompt(task)
+        assert "https://gitlab.com/mr/1" in prompt
+        assert "(draft)" in prompt
+        assert "pipeline: success" in prompt
+        assert "Backend changes" in prompt
 
+    def test_skips_non_dict_mr_items(self) -> None:
+        ticket = Ticket.objects.create(
+            extra={"mrs": {"bad": "not-a-dict", "good": {"url": "https://x.com/mr/2"}}},
+        )
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session)
 
-@pytest.mark.django_db
-def test_build_task_prompt_skips_non_dict_mr_items() -> None:
-    ticket = Ticket.objects.create(
-        extra={"mrs": {"bad": "not-a-dict", "good": {"url": "https://x.com/mr/2"}}},
-    )
-    session = Session.objects.create(ticket=ticket)
-    task = Task.objects.create(ticket=ticket, session=session)
+        prompt = build_task_prompt(task)
+        assert "https://x.com/mr/2" in prompt
 
-    prompt = build_task_prompt(task)
-    assert "https://x.com/mr/2" in prompt
+    def test_handles_non_dict_extra(self) -> None:
+        ticket = Ticket.objects.create(extra="not-a-dict")
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session)
 
+        prompt = build_task_prompt(task)
+        assert "Work on ticket" in prompt
 
-@pytest.mark.django_db
-def test_build_task_prompt_handles_non_dict_extra() -> None:
-    ticket = Ticket.objects.create(extra="not-a-dict")
-    session = Session.objects.create(ticket=ticket)
-    task = Task.objects.create(ticket=ticket, session=session)
+    def test_mr_without_title_or_pipeline(self) -> None:
+        ticket = Ticket.objects.create(
+            extra={"mrs": {"repo": {"url": "https://x.com/mr/3", "draft": False}}},
+        )
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session)
 
-    prompt = build_task_prompt(task)
-    assert "Work on ticket" in prompt
+        prompt = build_task_prompt(task)
+        assert "https://x.com/mr/3" in prompt
+        assert "(draft)" not in prompt
+        assert "pipeline:" not in prompt
 
+    def test_non_dict_mrs_ignored(self) -> None:
+        ticket = Ticket.objects.create(extra={"mrs": "not-a-dict"})
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session)
 
-@pytest.mark.django_db
-def test_build_task_prompt_mr_without_title_or_pipeline() -> None:
-    ticket = Ticket.objects.create(
-        extra={"mrs": {"repo": {"url": "https://x.com/mr/3", "draft": False}}},
-    )
-    session = Session.objects.create(ticket=ticket)
-    task = Task.objects.create(ticket=ticket, session=session)
-
-    prompt = build_task_prompt(task)
-    assert "https://x.com/mr/3" in prompt
-    assert "(draft)" not in prompt
-    assert "pipeline:" not in prompt
-
-
-@pytest.mark.django_db
-def test_build_task_prompt_non_dict_mrs_ignored() -> None:
-    ticket = Ticket.objects.create(extra={"mrs": "not-a-dict"})
-    session = Session.objects.create(ticket=ticket)
-    task = Task.objects.create(ticket=ticket, session=session)
-
-    prompt = build_task_prompt(task)
-    assert "merge requests" not in prompt.lower()
+        prompt = build_task_prompt(task)
+        assert "merge requests" not in prompt.lower()
 
 
 # --- build_system_context ---
 
 
-@pytest.mark.django_db
-def test_build_system_context_basic() -> None:
-    ticket = Ticket.objects.create(issue_url="https://example.com/issues/10")
-    session = Session.objects.create(ticket=ticket)
-    task = Task.objects.create(ticket=ticket, session=session)
+class TestBuildSystemContext(TestCase):
+    def test_basic(self) -> None:
+        ticket = Ticket.objects.create(issue_url="https://example.com/issues/10")
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session)
 
-    ctx = build_system_context(task, skills=[])
-    assert "TeaTree headless agent" in ctx
-    assert "10" in ctx
-    assert "/t3-next" in ctx
+        ctx = build_system_context(task, skills=[])
+        assert "TeaTree headless agent" in ctx
+        assert "10" in ctx
+        assert "/t3-next" in ctx
 
+    def test_with_skills(self) -> None:
+        tmp_dir = Path(tempfile.mkdtemp())
+        skill_dir = tmp_dir / "test-skill"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text("# Test Skill Content", encoding="utf-8")
 
-@pytest.mark.django_db
-def test_build_system_context_with_skills(tmp_path: Path) -> None:
-    skill_dir = tmp_path / "test-skill"
-    skill_dir.mkdir()
-    (skill_dir / "SKILL.md").write_text("# Test Skill Content", encoding="utf-8")
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session)
 
-    ticket = Ticket.objects.create()
-    session = Session.objects.create(ticket=ticket)
-    task = Task.objects.create(ticket=ticket, session=session)
+        ctx = build_system_context(task, skills=["test-skill"])
+        # skill content is read from default skills_dir, not tmp_dir — so skill will not be found.
+        # The test verifies the code path is exercised (lines 78-81).
+        assert "TeaTree headless agent" in ctx
 
-    ctx = build_system_context(task, skills=["test-skill"])
-    # skill content is read from default skills_dir, not tmp_path — so skill will not be found.
-    # The test verifies the code path is exercised (lines 78-81).
-    assert "TeaTree headless agent" in ctx
+    def test_reviewing_phase(self) -> None:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session, phase="reviewing")
 
+        ctx = build_system_context(task, skills=[])
+        assert "PHASE: reviewing" in ctx
+        assert "code review" in ctx
 
-@pytest.mark.django_db
-def test_build_system_context_reviewing_phase() -> None:
-    ticket = Ticket.objects.create()
-    session = Session.objects.create(ticket=ticket)
-    task = Task.objects.create(ticket=ticket, session=session, phase="reviewing")
+    def test_skills_with_content(self) -> None:
+        """Ensure skill content is included when skills resolve to files."""
+        tmp_dir = Path(tempfile.mkdtemp())
+        skill_file = tmp_dir / "my-skill" / "SKILL.md"
+        skill_file.parent.mkdir()
+        skill_file.write_text("# Loaded Skill", encoding="utf-8")
 
-    ctx = build_system_context(task, skills=[])
-    assert "PHASE: reviewing" in ctx
-    assert "code review" in ctx
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session)
 
+        # Use absolute file path so find_skill_md resolves it directly
+        ctx = build_system_context(task, skills=[str(skill_file)])
+        assert "# Loaded Skills" in ctx
+        assert "# Loaded Skill" in ctx
 
-@pytest.mark.django_db
-def test_build_system_context_skills_with_content(tmp_path: Path) -> None:
-    """Ensure skill content is included when skills resolve to files."""
-    skill_file = tmp_path / "my-skill" / "SKILL.md"
-    skill_file.parent.mkdir()
-    skill_file.write_text("# Loaded Skill", encoding="utf-8")
+    def test_with_lifecycle_skill_scopes_loading(self) -> None:
+        """When lifecycle_skill is set, only that skill + t3-rules get full content."""
+        tmp_dir = Path(tempfile.mkdtemp())
+        for name in ("t3-rules", "t3-test", "ac-django"):
+            d = tmp_dir / name
+            d.mkdir()
+            (d / "SKILL.md").write_text(f"# {name} instructions", encoding="utf-8")
 
-    ticket = Ticket.objects.create()
-    session = Session.objects.create(ticket=ticket)
-    task = Task.objects.create(ticket=ticket, session=session)
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session, phase="testing")
 
-    # Use absolute file path so find_skill_md resolves it directly
-    ctx = build_system_context(task, skills=[str(skill_file)])
-    assert "# Loaded Skills" in ctx
-    assert "# Loaded Skill" in ctx
+        # Use absolute SKILL.md paths so find_skill_md resolves them directly
+        skills = [str(tmp_dir / n / "SKILL.md") for n in ("ac-django", "t3-rules", "t3-test")]
+        lifecycle = str(tmp_dir / "t3-test" / "SKILL.md")
+        ctx = build_system_context(task, skills=skills, lifecycle_skill=lifecycle)
 
+        assert "# t3-test instructions" in ctx
+        assert "# t3-rules instructions" in ctx
+        assert "# ac-django instructions" not in ctx
+        assert "COMPANION SKILLS" in ctx
 
-@pytest.mark.django_db
-def test_build_system_context_with_lifecycle_skill_scopes_loading(tmp_path: Path) -> None:
-    """When lifecycle_skill is set, only that skill + t3-rules get full content."""
-    for name in ("t3-rules", "t3-test", "ac-django"):
-        d = tmp_path / name
-        d.mkdir()
-        (d / "SKILL.md").write_text(f"# {name} instructions", encoding="utf-8")
+    def test_empty_skill_content(self) -> None:
+        """When skills list is non-empty but no SKILL.md found, skip the section."""
+        with patch("teatree.agents.prompt._read_skill_contents", return_value=""):
+            ticket = Ticket.objects.create()
+            session = Session.objects.create(ticket=ticket)
+            task = Task.objects.create(ticket=ticket, session=session)
 
-    ticket = Ticket.objects.create()
-    session = Session.objects.create(ticket=ticket)
-    task = Task.objects.create(ticket=ticket, session=session, phase="testing")
+            ctx = build_system_context(task, skills=["nonexistent"])
+            assert "# Loaded Skills" not in ctx
 
-    # Use absolute SKILL.md paths so find_skill_md resolves them directly
-    skills = [str(tmp_path / n / "SKILL.md") for n in ("ac-django", "t3-rules", "t3-test")]
-    lifecycle = str(tmp_path / "t3-test" / "SKILL.md")
-    ctx = build_system_context(task, skills=skills, lifecycle_skill=lifecycle)
+    def test_includes_parent_result(self) -> None:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        parent = Task.objects.create(ticket=ticket, session=session)
+        TaskAttempt.objects.create(
+            task=parent,
+            execution_target="headless",
+            result={"summary": "Prior work done"},
+        )
+        child = Task.objects.create(ticket=ticket, session=session, parent_task=parent)
 
-    assert "# t3-test instructions" in ctx
-    assert "# t3-rules instructions" in ctx
-    assert "# ac-django instructions" not in ctx
-    assert "COMPANION SKILLS" in ctx
+        ctx = build_system_context(child, skills=[])
 
+        assert "Prior Task Result" in ctx
+        assert "Prior work done" in ctx
 
-@pytest.mark.django_db
-def test_build_system_context_empty_skill_content(monkeypatch: pytest.MonkeyPatch) -> None:
-    """When skills list is non-empty but no SKILL.md found, skip the section."""
-    monkeypatch.setattr("teatree.agents.prompt._read_skill_contents", lambda *_a, **_kw: "")
+    def test_includes_context_budget(self) -> None:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session)
 
-    ticket = Ticket.objects.create()
-    session = Session.objects.create(ticket=ticket)
-    task = Task.objects.create(ticket=ticket, session=session)
+        ctx = build_system_context(task, skills=[])
 
-    ctx = build_system_context(task, skills=["nonexistent"])
-    assert "# Loaded Skills" not in ctx
+        assert "Context Budget" in ctx
+        assert "Truncate file reads" in ctx
 
 
 # --- build_interactive_context ---
 
 
-@pytest.mark.django_db
-def test_build_interactive_context_basic() -> None:
-    ticket = Ticket.objects.create(issue_url="https://example.com/issues/99")
-    session = Session.objects.create(ticket=ticket)
-    task = Task.objects.create(ticket=ticket, session=session)
+class TestBuildInteractiveContext(TestCase):
+    def test_basic(self) -> None:
+        ticket = Ticket.objects.create(issue_url="https://example.com/issues/99")
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session)
 
-    ctx = build_interactive_context(task, skills=[])
-    assert "interactive TeaTree session" in ctx
-    assert "https://example.com/issues/99" in ctx
-    assert "99" in ctx
+        ctx = build_interactive_context(task, skills=[])
+        assert "interactive TeaTree session" in ctx
+        assert "https://example.com/issues/99" in ctx
+        assert "99" in ctx
 
+    def test_with_title_and_phase(self) -> None:
+        ticket = Ticket.objects.create(extra={"issue_title": "Implement feature X"})
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session, phase="coding")
 
-@pytest.mark.django_db
-def test_build_interactive_context_with_title_and_phase() -> None:
-    ticket = Ticket.objects.create(extra={"issue_title": "Implement feature X"})
-    session = Session.objects.create(ticket=ticket)
-    task = Task.objects.create(ticket=ticket, session=session, phase="coding")
+        ctx = build_interactive_context(task, skills=[])
+        assert "Implement feature X" in ctx
+        assert "Phase: coding" in ctx
 
-    ctx = build_interactive_context(task, skills=[])
-    assert "Implement feature X" in ctx
-    assert "Phase: coding" in ctx
+    def test_with_reason(self) -> None:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            execution_reason="Agent needs guidance on API design",
+        )
 
+        ctx = build_interactive_context(task, skills=[])
+        assert "Agent needs guidance on API design" in ctx
 
-@pytest.mark.django_db
-def test_build_interactive_context_with_reason() -> None:
-    ticket = Ticket.objects.create()
-    session = Session.objects.create(ticket=ticket)
-    task = Task.objects.create(
-        ticket=ticket,
-        session=session,
-        execution_reason="Agent needs guidance on API design",
-    )
+    def test_with_skills(self) -> None:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session)
 
-    ctx = build_interactive_context(task, skills=[])
-    assert "Agent needs guidance on API design" in ctx
+        ctx = build_interactive_context(task, skills=["t3-code", "t3-test"])
+        assert "/t3-code" in ctx
+        assert "/t3-test" in ctx
+        assert "REQUIRED" in ctx
 
-
-@pytest.mark.django_db
-def test_build_interactive_context_with_skills() -> None:
-    ticket = Ticket.objects.create()
-    session = Session.objects.create(ticket=ticket)
-    task = Task.objects.create(ticket=ticket, session=session)
-
-    ctx = build_interactive_context(task, skills=["t3-code", "t3-test"])
-    assert "/t3-code" in ctx
-    assert "/t3-test" in ctx
-    assert "REQUIRED" in ctx
-
-
-@pytest.mark.django_db
-def test_build_interactive_context_with_mrs() -> None:
-    ticket = Ticket.objects.create(
-        extra={
-            "mrs": {
-                "repo": {
-                    "url": "https://gitlab.com/mr/5",
-                    "title": "MR Title",
-                    "draft": True,
-                    "pipeline_status": "failed",
+    def test_with_mrs(self) -> None:
+        ticket = Ticket.objects.create(
+            extra={
+                "mrs": {
+                    "repo": {
+                        "url": "https://gitlab.com/mr/5",
+                        "title": "MR Title",
+                        "draft": True,
+                        "pipeline_status": "failed",
+                    },
                 },
             },
-        },
-    )
-    session = Session.objects.create(ticket=ticket)
-    task = Task.objects.create(ticket=ticket, session=session)
+        )
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session)
 
-    ctx = build_interactive_context(task, skills=[])
-    assert "https://gitlab.com/mr/5" in ctx
-    assert "(draft)" in ctx
-    assert "pipeline: failed" in ctx
-    assert "MR Title" in ctx
+        ctx = build_interactive_context(task, skills=[])
+        assert "https://gitlab.com/mr/5" in ctx
+        assert "(draft)" in ctx
+        assert "pipeline: failed" in ctx
+        assert "MR Title" in ctx
 
+    def test_skips_non_dict_mr(self) -> None:
+        ticket = Ticket.objects.create(
+            extra={"mrs": {"bad": 42, "ok": {"url": "https://x.com/mr/7"}}},
+        )
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session)
 
-@pytest.mark.django_db
-def test_build_interactive_context_skips_non_dict_mr() -> None:
-    ticket = Ticket.objects.create(
-        extra={"mrs": {"bad": 42, "ok": {"url": "https://x.com/mr/7"}}},
-    )
-    session = Session.objects.create(ticket=ticket)
-    task = Task.objects.create(ticket=ticket, session=session)
+        ctx = build_interactive_context(task, skills=[])
+        assert "https://x.com/mr/7" in ctx
 
-    ctx = build_interactive_context(task, skills=[])
-    assert "https://x.com/mr/7" in ctx
+    def test_non_dict_mrs(self) -> None:
+        ticket = Ticket.objects.create(extra={"mrs": "not-a-dict"})
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session)
 
+        ctx = build_interactive_context(task, skills=[])
+        assert "merge requests" not in ctx.lower()
 
-@pytest.mark.django_db
-def test_build_interactive_context_non_dict_mrs() -> None:
-    ticket = Ticket.objects.create(extra={"mrs": "not-a-dict"})
-    session = Session.objects.create(ticket=ticket)
-    task = Task.objects.create(ticket=ticket, session=session)
+    def test_mr_no_title_no_pipeline(self) -> None:
+        ticket = Ticket.objects.create(
+            extra={"mrs": {"repo": {"url": "https://x.com/mr/8"}}},
+        )
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session)
 
-    ctx = build_interactive_context(task, skills=[])
-    assert "merge requests" not in ctx.lower()
+        ctx = build_interactive_context(task, skills=[])
+        assert "https://x.com/mr/8" in ctx
+        assert "(draft)" not in ctx
+        assert "pipeline:" not in ctx
 
+    def test_non_dict_extra(self) -> None:
+        ticket = Ticket.objects.create(extra="not-a-dict")
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session)
 
-@pytest.mark.django_db
-def test_build_interactive_context_mr_no_title_no_pipeline() -> None:
-    ticket = Ticket.objects.create(
-        extra={"mrs": {"repo": {"url": "https://x.com/mr/8"}}},
-    )
-    session = Session.objects.create(ticket=ticket)
-    task = Task.objects.create(ticket=ticket, session=session)
-
-    ctx = build_interactive_context(task, skills=[])
-    assert "https://x.com/mr/8" in ctx
-    assert "(draft)" not in ctx
-    assert "pipeline:" not in ctx
-
-
-@pytest.mark.django_db
-def test_build_interactive_context_non_dict_extra() -> None:
-    ticket = Ticket.objects.create(extra="not-a-dict")
-    session = Session.objects.create(ticket=ticket)
-    task = Task.objects.create(ticket=ticket, session=session)
-
-    ctx = build_interactive_context(task, skills=[])
-    assert "interactive TeaTree session" in ctx
+        ctx = build_interactive_context(task, skills=[])
+        assert "interactive TeaTree session" in ctx
 
 
 # --- _parent_result_summary ---
 
 
-@pytest.mark.django_db
-def test_parent_result_summary_includes_prior_result() -> None:
-    from teatree.core.models import TaskAttempt  # noqa: PLC0415
+class TestParentResultSummary(TestCase):
+    @classmethod
+    def setUpTestData(cls) -> None:
+        cls.ticket = Ticket.objects.create()
+        cls.session = Session.objects.create(ticket=cls.ticket)
 
-    ticket = Ticket.objects.create()
-    session = Session.objects.create(ticket=ticket)
-    parent = Task.objects.create(ticket=ticket, session=session)
-    TaskAttempt.objects.create(
-        task=parent,
-        execution_target="headless",
-        result={
-            "summary": "Implemented feature X",
-            "files_modified": ["src/a.py", "src/b.py"],
-            "next_steps": ["Run tests", "Deploy"],
-        },
-    )
-    child = Task.objects.create(ticket=ticket, session=session, parent_task=parent)
+    def test_includes_prior_result(self) -> None:
+        parent = Task.objects.create(ticket=self.ticket, session=self.session)
+        TaskAttempt.objects.create(
+            task=parent,
+            execution_target="headless",
+            result={
+                "summary": "Implemented feature X",
+                "files_modified": ["src/a.py", "src/b.py"],
+                "next_steps": ["Run tests", "Deploy"],
+            },
+        )
+        child = Task.objects.create(ticket=self.ticket, session=self.session, parent_task=parent)
 
-    summary = _parent_result_summary(child)
+        summary = _parent_result_summary(child)
 
-    assert "Implemented feature X" in summary
-    assert "src/a.py" in summary
-    assert "Run tests" in summary
+        assert "Implemented feature X" in summary
+        assert "src/a.py" in summary
+        assert "Run tests" in summary
 
+    def test_empty_without_parent(self) -> None:
+        task = Task.objects.create(ticket=self.ticket, session=self.session)
 
-@pytest.mark.django_db
-def test_parent_result_summary_empty_without_parent() -> None:
-    ticket = Ticket.objects.create()
-    session = Session.objects.create(ticket=ticket)
-    task = Task.objects.create(ticket=ticket, session=session)
+        assert _parent_result_summary(task) == ""
 
-    assert _parent_result_summary(task) == ""
+    def test_empty_without_attempts(self) -> None:
+        parent = Task.objects.create(ticket=self.ticket, session=self.session)
+        child = Task.objects.create(ticket=self.ticket, session=self.session, parent_task=parent)
 
+        assert _parent_result_summary(child) == ""
 
-@pytest.mark.django_db
-def test_parent_result_summary_empty_without_attempts() -> None:
-    ticket = Ticket.objects.create()
-    session = Session.objects.create(ticket=ticket)
-    parent = Task.objects.create(ticket=ticket, session=session)
-    child = Task.objects.create(ticket=ticket, session=session, parent_task=parent)
+    def test_handles_non_dict_result(self) -> None:
+        parent = Task.objects.create(ticket=self.ticket, session=self.session)
+        TaskAttempt.objects.create(task=parent, execution_target="headless", result="not-a-dict")
+        child = Task.objects.create(ticket=self.ticket, session=self.session, parent_task=parent)
 
-    assert _parent_result_summary(child) == ""
-
-
-@pytest.mark.django_db
-def test_parent_result_summary_handles_non_dict_result() -> None:
-    from teatree.core.models import TaskAttempt  # noqa: PLC0415
-
-    ticket = Ticket.objects.create()
-    session = Session.objects.create(ticket=ticket)
-    parent = Task.objects.create(ticket=ticket, session=session)
-    TaskAttempt.objects.create(task=parent, execution_target="headless", result="not-a-dict")
-    child = Task.objects.create(ticket=ticket, session=session, parent_task=parent)
-
-    assert _parent_result_summary(child) == ""
-
-
-@pytest.mark.django_db
-def test_build_system_context_includes_parent_result() -> None:
-    from teatree.core.models import TaskAttempt  # noqa: PLC0415
-
-    ticket = Ticket.objects.create()
-    session = Session.objects.create(ticket=ticket)
-    parent = Task.objects.create(ticket=ticket, session=session)
-    TaskAttempt.objects.create(
-        task=parent,
-        execution_target="headless",
-        result={"summary": "Prior work done"},
-    )
-    child = Task.objects.create(ticket=ticket, session=session, parent_task=parent)
-
-    ctx = build_system_context(child, skills=[])
-
-    assert "Prior Task Result" in ctx
-    assert "Prior work done" in ctx
-
-
-@pytest.mark.django_db
-def test_build_system_context_includes_context_budget() -> None:
-    ticket = Ticket.objects.create()
-    session = Session.objects.create(ticket=ticket)
-    task = Task.objects.create(ticket=ticket, session=session)
-
-    ctx = build_system_context(task, skills=[])
-
-    assert "Context Budget" in ctx
-    assert "Truncate file reads" in ctx
+        assert _parent_result_summary(child) == ""

@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from django.test import TestCase
 
 import teatree.contrib.t3_teatree.overlay as overlay_mod
 from teatree.contrib.t3_teatree.apps import T3TeatreeConfig
@@ -61,31 +62,31 @@ class TestGetSkillMetadata:
         assert skill_path.is_dir()
 
 
-class TestGetProvisionSteps:
-    @pytest.mark.django_db
+class TestGetProvisionSteps(TestCase):
+    @classmethod
+    def setUpTestData(cls) -> None:
+        cls.ticket = Ticket.objects.create(overlay="t3-teatree")
+        cls.worktree = Worktree.objects.create(
+            ticket=cls.ticket, overlay="t3-teatree", repo_path="/tmp/teatree", branch="main"
+        )
+
     def test_returns_sync_step(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree")
-        worktree = Worktree.objects.create(ticket=ticket, overlay="t3-teatree", repo_path="/tmp/teatree", branch="main")
         overlay = TeatreeOverlay()
-        steps = overlay.get_provision_steps(worktree)
+        steps = overlay.get_provision_steps(self.worktree)
 
         assert len(steps) == 1
         assert steps[0].name == "sync-dependencies"
 
-    @pytest.mark.django_db
     def test_sync_step_runs_uv_sync(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree")
-        worktree = Worktree.objects.create(ticket=ticket, overlay="t3-teatree", repo_path="/tmp/teatree", branch="main")
         overlay = TeatreeOverlay()
-        steps = overlay.get_provision_steps(worktree)
+        steps = overlay.get_provision_steps(self.worktree)
 
         with patch("subprocess.run") as mock_run:
             steps[0].callable()
             mock_run.assert_called_once_with(["uv", "sync"], cwd=Path("/tmp/teatree"), check=True)
 
 
-class TestGetRunCommands:
-    @pytest.mark.django_db
+class TestGetRunCommands(TestCase):
     def test_returns_test_and_lint(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-teatree")
         worktree = Worktree.objects.create(ticket=ticket, overlay="t3-teatree", repo_path="/tmp/teatree", branch="main")
@@ -94,16 +95,15 @@ class TestGetRunCommands:
 
         assert "test" in commands
         assert "lint" in commands
-        assert "pytest" in commands["test"]
+        assert "pytest" in commands["test"][-1]
 
 
-class TestGetTestCommand:
-    @pytest.mark.django_db
+class TestGetTestCommand(TestCase):
     def test_returns_pytest_command(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-teatree")
         worktree = Worktree.objects.create(ticket=ticket, overlay="t3-teatree", repo_path="/tmp/teatree", branch="main")
         overlay = TeatreeOverlay()
-        assert overlay.get_test_command(worktree) == "uv run pytest"
+        assert overlay.get_test_command(worktree) == ["uv", "run", "pytest"]
 
 
 class TestRepoRoot:
@@ -139,10 +139,9 @@ class TestAppsConfig:
         assert T3TeatreeConfig.name == "teatree.contrib.t3_teatree"
 
 
-class TestOverlayDefaults:
+class TestOverlayDefaults(TestCase):
     """Verify optional hooks that the teatree overlay doesn't override return defaults."""
 
-    @pytest.mark.django_db
     def test_optional_hooks_return_defaults(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-teatree")
         worktree = Worktree.objects.create(ticket=ticket, overlay="t3-teatree", repo_path="/tmp/teatree", branch="main")

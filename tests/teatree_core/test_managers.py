@@ -1,13 +1,12 @@
 from datetime import timedelta
 
-import pytest
+from django.test import TestCase
 from django.utils import timezone
 
 from teatree.core.models import Session, Task, Ticket, Worktree
 
 
-class TestTicketQuerySet:
-    @pytest.mark.django_db
+class TestTicketQuerySet(TestCase):
     def test_in_flight_excludes_delivered_items(self) -> None:
         active = Ticket.objects.create(state=Ticket.State.STARTED)
         Ticket.objects.create(state=Ticket.State.DELIVERED)
@@ -15,8 +14,7 @@ class TestTicketQuerySet:
         assert list(Ticket.objects.in_flight()) == [active]
 
 
-class TestWorktreeQuerySet:
-    @pytest.mark.django_db
+class TestWorktreeQuerySet(TestCase):
     def test_active_excludes_created_items(self) -> None:
         active = Worktree.objects.create(
             ticket=Ticket.objects.create(),
@@ -34,8 +32,7 @@ class TestWorktreeQuerySet:
         assert list(Worktree.objects.active()) == [active]
 
 
-class TestSessionQuerySet:
-    @pytest.mark.django_db
+class TestSessionQuerySet(TestCase):
     def test_for_agent_filters_by_agent_identifier(self) -> None:
         wanted = Session.objects.create(ticket=Ticket.objects.create(), agent_id="agent-1")
         Session.objects.create(ticket=Ticket.objects.create(), agent_id="agent-2")
@@ -43,8 +40,7 @@ class TestSessionQuerySet:
         assert list(Session.objects.for_agent("agent-1")) == [wanted]
 
 
-class TestTaskQuerySet:
-    @pytest.mark.django_db
+class TestTaskQuerySet(TestCase):
     def test_claimable_queries_respect_target_status_and_leases(self) -> None:
         ticket = Ticket.objects.create()
         session = Session.objects.create(ticket=ticket, agent_id="agent-1")

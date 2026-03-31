@@ -1,5 +1,6 @@
 """Discover and cache overlay instances from ``teatree.overlays`` entry points."""
 
+import os
 from functools import lru_cache
 from typing import TYPE_CHECKING
 
@@ -14,6 +15,9 @@ def get_overlay(name: str | None = None) -> "OverlayBase":
     if not overlays:
         msg = "No teatree overlays found. Install a package that provides a 'teatree.overlays' entry point."
         raise ImproperlyConfigured(msg)
+
+    if name is None:
+        name = os.environ.get("T3_OVERLAY_NAME") or None
 
     if name is not None:
         try:

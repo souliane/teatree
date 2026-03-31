@@ -1,5 +1,6 @@
 import pytest
 from django.contrib import admin
+from django.test import TestCase
 from django.utils import timezone
 
 from teatree.core import admin as core_admin
@@ -34,8 +35,7 @@ def _complete_phase_task(ticket: Ticket, phase: str) -> None:
     task.complete()
 
 
-@pytest.mark.django_db
-class TestTicketTransitions:
+class TestTicketTransitions(TestCase):
     def test_persist_delivery_state(self) -> None:
         ticket = Ticket.objects.create()
 
@@ -173,8 +173,11 @@ class TestTicketTransitions:
             ticket.review()
 
 
-@pytest.mark.django_db
-class TestWorktree:
+class TestWorktree(TestCase):
+    @pytest.fixture(autouse=True)
+    def _setup_fixtures(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.monkeypatch = monkeypatch
+
     def test_lifecycle_allocates_ports_and_urls(self) -> None:
         ticket = Ticket.objects.create(issue_url="https://example.com/issues/42", variant="acme")
         worktree = Worktree.objects.create(ticket=ticket, repo_path="/tmp/backend", branch="teatree-django")
@@ -281,7 +284,7 @@ class TestWorktree:
         with pytest.raises(TransitionNotAllowed):
             worktree.verify()
 
-    def test_port_available_returns_false_on_os_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_port_available_returns_false_on_os_error(self) -> None:
         """Worktree._port_available returns False when binding raises OSError."""
         import socket  # noqa: PLC0415
 
@@ -289,19 +292,19 @@ class TestWorktree:
             msg = "Address already in use"
             raise OSError(msg)
 
-        monkeypatch.setattr(socket.socket, "bind", _bind_raises)
+        self.monkeypatch.setattr(socket.socket, "bind", _bind_raises)
 
         assert Worktree._port_available(8001) is False
 
-    def test_port_available_returns_true_on_success(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_port_available_returns_true_on_success(self) -> None:
         """Worktree._port_available returns True when binding succeeds."""
         import socket  # noqa: PLC0415
 
-        monkeypatch.setattr(socket.socket, "bind", lambda self, addr: None)
+        self.monkeypatch.setattr(socket.socket, "bind", lambda self, addr: None)
 
         assert Worktree._port_available(8001) is True
 
-    def test_refresh_ports_fills_missing_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_refresh_ports_fills_missing_key(self) -> None:
         """When ports are incomplete but allocating produces the same result, no save happens."""
         ticket = Ticket.objects.create(issue_url="https://example.com/issues/55")
         worktree = Worktree.objects.create(
@@ -313,8 +316,8 @@ class TestWorktree:
             ports={"backend": 8001, "frontend": 4201, "redis": 6379},
         )
 
-        monkeypatch.setattr(Worktree, "_port_available", staticmethod(lambda _port: True))
-        monkeypatch.setattr(
+        self.monkeypatch.setattr(Worktree, "_port_available", staticmethod(lambda _port: True))
+        self.monkeypatch.setattr(
             Worktree,
             "_allocate_ports",
             # Allocate returns ports that, after merge with current, equal current
@@ -325,7 +328,7 @@ class TestWorktree:
         worktree.refresh_from_db()
         assert worktree.ports["postgres"] == 5433
 
-    def test_refresh_ports_noop_when_all_keys_present(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_refresh_ports_noop_when_all_keys_present(self) -> None:
         """When all required keys are present, refresh does nothing."""
         ticket = Ticket.objects.create(issue_url="https://example.com/issues/56")
         worktree = Worktree.objects.create(
@@ -338,7 +341,7 @@ class TestWorktree:
 
         assert worktree.refresh_ports_if_needed() is False
 
-    def test_refresh_ports_noop_when_allocate_matches_existing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_refresh_ports_noop_when_allocate_matches_existing(self) -> None:
         """When incomplete ports + allocate produces same merged result, no DB write."""
         ticket = Ticket.objects.create(issue_url="https://example.com/issues/57")
         # Missing "postgres" key triggers allocation
@@ -352,7 +355,7 @@ class TestWorktree:
         )
 
         # Allocate returns same keys+values as current — merged == current
-        monkeypatch.setattr(
+        self.monkeypatch.setattr(
             Worktree,
             "_allocate_ports",
             lambda self: dict(current_ports),
@@ -360,7 +363,7 @@ class TestWorktree:
         result = worktree.refresh_ports_if_needed()
         assert result is False
 
-    def test_revalidate_ports_no_conflicts(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_revalidate_ports_no_conflicts(self) -> None:
         """revalidate_ports returns empty dict when all ports are available."""
         ticket = Ticket.objects.create(issue_url="https://example.com/issues/60")
         worktree = Worktree.objects.create(
@@ -369,10 +372,10 @@ class TestWorktree:
             branch="teatree-django",
             ports={"backend": 8001, "frontend": 4201, "postgres": 5432, "redis": 6379},
         )
-        monkeypatch.setattr(Worktree, "_port_available", staticmethod(lambda _port: True))
+        self.monkeypatch.setattr(Worktree, "_port_available", staticmethod(lambda _port: True))
         assert worktree.revalidate_ports() == {}
 
-    def test_revalidate_ports_reallocates_conflicts(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_revalidate_ports_reallocates_conflicts(self) -> None:
         """revalidate_ports detects conflicts and reallocates only conflicting ports."""
         ticket = Ticket.objects.create(issue_url="https://example.com/issues/61")
         worktree = Worktree.objects.create(
@@ -382,8 +385,8 @@ class TestWorktree:
             ports={"backend": 8001, "frontend": 4201, "postgres": 5432, "redis": 6379},
         )
         # Backend port 8001 is in use, frontend 4201 is free
-        monkeypatch.setattr(Worktree, "_port_available", staticmethod(lambda port: port != 8001))
-        monkeypatch.setattr(
+        self.monkeypatch.setattr(Worktree, "_port_available", staticmethod(lambda port: port != 8001))
+        self.monkeypatch.setattr(
             Worktree,
             "_allocate_ports",
             lambda self: {"backend": 8002, "frontend": 4201, "postgres": 5432, "redis": 6379},
@@ -405,8 +408,7 @@ class TestWorktree:
         assert worktree.revalidate_ports() == {}
 
 
-@pytest.mark.django_db
-class TestSession:
+class TestSession(TestCase):
     def test_quality_gates_and_manual_handoff(self) -> None:
         ticket = Ticket.objects.create()
         session = Session.objects.create(ticket=ticket, agent_id="agent-1")
@@ -436,8 +438,7 @@ class TestSession:
         assert session.visited_phases == ["testing"]
 
 
-@pytest.mark.django_db
-class TestTask:
+class TestTask(TestCase):
     def test_claim_route_complete_fail_and_attempt_storage(self) -> None:
         ticket = Ticket.objects.create()
         session = Session.objects.create(ticket=ticket, agent_id="agent-1")
@@ -548,8 +549,7 @@ class TestTask:
         assert list(parent.child_tasks.values_list("pk", flat=True)) == [child.pk]
 
 
-@pytest.mark.django_db
-class TestBuildTaskDetail:
+class TestBuildTaskDetail(TestCase):
     def test_returns_full_lineage(self) -> None:
         from teatree.core.selectors import build_task_detail  # noqa: PLC0415
 
@@ -585,8 +585,7 @@ class TestBuildTaskDetail:
         assert build_task_detail(999999) is None
 
 
-@pytest.mark.django_db
-class TestAdmin:
+class TestAdmin(TestCase):
     def test_registers_all_core_models(self) -> None:
         registry = admin.site._registry
 

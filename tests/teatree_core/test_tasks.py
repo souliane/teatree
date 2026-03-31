@@ -3,7 +3,7 @@ from unittest.mock import patch
 
 import pytest
 from django.tasks import TaskResultStatus
-from django.test import override_settings
+from django.test import TestCase, override_settings
 
 from teatree.agents.services import RuntimeExecution, register_runtime, reset_runtime_registry
 from teatree.core.models import Session, Task, TaskAttempt, Ticket
@@ -38,9 +38,8 @@ IMMEDIATE_BACKEND = {
 _MOCK_OVERLAY = {"test": CommandOverlay()}
 
 
-class TestExecuteSdkTask:
+class TestExecuteSdkTask(TestCase):
     @override_settings(**IMMEDIATE_BACKEND, TEATREE_HEADLESS_RUNTIME="queued-sdk")
-    @pytest.mark.django_db
     def test_enqueue_runs_immediately(self) -> None:
         register_runtime("queued-sdk", TaskRuntime())
         ticket = Ticket.objects.create(overlay="test")
@@ -56,9 +55,8 @@ class TestExecuteSdkTask:
         assert TaskAttempt.objects.count() == 1
 
 
-class TestRefreshFollowupSnapshot:
+class TestRefreshFollowupSnapshot(TestCase):
     @override_settings(**IMMEDIATE_BACKEND)
-    @pytest.mark.django_db
     def test_reports_current_counts(self) -> None:
         ticket = Ticket.objects.create(overlay="test")
         session = Session.objects.create(ticket=ticket, overlay="test")
@@ -69,20 +67,26 @@ class TestRefreshFollowupSnapshot:
         assert result.return_value == {"tickets": 1, "tasks": 1, "open_tasks": 1}
 
 
-class TestSyncFollowup:
+class TestSyncFollowup(TestCase):
+    @pytest.fixture(autouse=True)
+    def _setup_fixtures(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.monkeypatch = monkeypatch
+
     @override_settings(**IMMEDIATE_BACKEND)
-    @pytest.mark.django_db
-    def test_returns_error_without_token(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_returns_error_without_token(self) -> None:
         with patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY):
             result = sync_followup.enqueue()
 
         assert "GitLab token is not configured in overlay" in result.return_value["errors"]
 
 
-class TestExecuteHeadlessTask:
+class TestExecuteHeadlessTask(TestCase):
+    @pytest.fixture(autouse=True)
+    def _setup_fixtures(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.monkeypatch = monkeypatch
+
     @override_settings(**IMMEDIATE_BACKEND)
-    @pytest.mark.django_db
-    def test_records_failure_on_exception(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_records_failure_on_exception(self) -> None:
         """When run_headless raises, execute_headless_task marks the task as failed and re-raises."""
         ticket = Ticket.objects.create(overlay="test")
         session = Session.objects.create(ticket=ticket, overlay="test", agent_id="agent-1")
@@ -92,7 +96,7 @@ class TestExecuteHeadlessTask:
             msg = "headless runtime crashed"
             raise RuntimeError(msg)
 
-        monkeypatch.setattr("teatree.agents.headless.run_headless", _raise)
+        self.monkeypatch.setattr("teatree.agents.headless.run_headless", _raise)
 
         with patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY):
             execute_headless_task.enqueue(int(task.pk), "coding")

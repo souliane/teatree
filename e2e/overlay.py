@@ -17,7 +17,7 @@ class E2EOverlay(OverlayBase):
         return []
 
     def get_run_commands(self, worktree: Worktree) -> RunCommands:
-        return {"backend": "echo 'running'", "frontend": "echo 'running'"}
+        return {"backend": ["echo", "running"], "frontend": ["echo", "running"]}
 
     def get_skill_metadata(self) -> SkillMetadata:
         return {"skill_path": "e2e/SKILL.md"}

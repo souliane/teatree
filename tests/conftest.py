@@ -126,6 +126,30 @@ def _no_system_port_checks(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("lib.env.port_in_use", lambda _port: False)
 
 
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    """Prefer django.test.TestCase for DB-heavy tests; allow @pytest.mark.django_db on classes.
+
+    Standalone functions with @pytest.mark.django_db should be grouped into
+    TestCase classes when they share setup data (setUpTestData).  Class-based
+    tests may use either TestCase or @pytest.mark.django_db depending on
+    whether they need pytest fixtures (monkeypatch, tmp_path).
+
+    See: souliane/teatree#98
+    """
+    for item in items:
+        marker = item.get_closest_marker("django_db")
+        if marker is None:
+            continue
+        cls = getattr(item, "cls", None)
+        if cls is not None:
+            continue  # class-based tests may use either pattern
+        pytest.fail(
+            f"{item.nodeid}: Standalone @pytest.mark.django_db functions "
+            f"should be grouped into a TestCase class (see souliane/teatree#98)",
+            pytrace=False,
+        )
+
+
 @pytest.fixture(autouse=True)
 def _isolate_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Isolate process env so tests cannot touch host workspace/config."""
