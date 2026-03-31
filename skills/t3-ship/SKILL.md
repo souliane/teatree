@@ -101,6 +101,7 @@ Skipping this step is the #1 cause of wasted push-fix-push cycles. The rules exi
 
 When fixing review comments on an already-existing MR:
 
+0. **Verify branch alignment.** Confirm the worktree is on the MR's source branch (`git branch --show-current` vs MR metadata). If the worktree uses a different branch name, resolve the mismatch **before** editing: either checkout the MR branch or plan to cherry-pick onto it after committing. Discovering the mismatch mid-push wastes time on branch gymnastics.
 1. **Fix the issues** as requested.
 2. **Merge the default branch** if needed: `git merge origin/main`. **Never rebase** — the branch has already been reviewed.
 3. **Run lint/pre-commit** (`prek run --all-files` or equivalent) after merging — merges can expose new lint violations in your code even without conflicts.

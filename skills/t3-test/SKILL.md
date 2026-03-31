@@ -244,9 +244,10 @@ Evidence screenshots must always use a **side-by-side comparison table**. Minimu
 - **Clickable references:** Every MR, ticket, or note reference must be a markdown link — see [`../t3-rules/SKILL.md`](../t3-rules/SKILL.md) § "Clickable References".
 - Write in first person, casual tone ("Tested on local...", "Works as expected")
 - **Never mention automation, E2E, Playwright, or scripts** — must read as manual testing
-- Prefer editing the existing test plan over posting a second comment
+- **Update the existing test plan (Non-Negotiable)** — never post a second evidence comment. Always GET existing notes first, find the test plan, and PUT to update it.
 - If a separate evidence comment already exists, delete it after merging evidence into the test plan
 - **Don't post code findings as bugs without asking the user first.** Behavior that looks like a bug may be intentional. Ask "Is this expected?" before posting a finding on the MR.
+- **Match evidence type to MR type (Non-Negotiable).** UI screenshots are evidence for frontend MRs. Backend MRs need backend evidence: unit test output, API response diffs, or logs. Don't post frontend screenshots on a backend-only MR — they prove the frontend works, not the backend fix. When both MRs exist, put screenshots on the frontend MR and reference it from the backend MR.
 
 ## Command Reference
 
@@ -284,8 +285,9 @@ Before claiming E2E success or posting screenshots as evidence, **visually inspe
 - **Missing translations:** Labels show raw keys like `app.feature.xxx.label` or `app.question.xxx` instead of human-readable text. Cause: frontend started without the translation sync step (handled by `t3 run frontend` / `t3 lifecycle start`). Fix: restart via `t3 lifecycle start`.
 - **Missing static files:** Broken image icons, unstyled pages, or 404s for assets. Cause: static asset build/collection not run. Fix: restart via `t3 lifecycle start` (which handles asset preparation).
 - **Console errors:** Open browser devtools and check for blocking JS errors before taking screenshots.
+- **Feature element not visible:** The screenshot must show the specific UI element being tested (badge, field, status indicator), not just the top of the page. Use `element.scrollIntoViewIfNeeded()` before taking screenshots. A screenshot of "Personal Data" doesn't prove the "ID" section badge is correct.
 
-A screenshot with raw translation keys is **not valid evidence** — it proves the environment was broken, not that the feature works.
+A screenshot with raw translation keys is **not valid evidence** — it proves the environment was broken, not that the feature works. A screenshot that doesn't show the tested element is **not valid evidence** either — it proves nothing.
 
 ### Store Contamination Check (Non-Negotiable)
 
