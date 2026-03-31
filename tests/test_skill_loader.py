@@ -34,7 +34,7 @@ SKILLS_DIR = Path(__file__).resolve().parent.parent / "skills"
 class TestParseTriggers:
     def test_full_triggers(self):
         md = (
-            "---\nname: t3-ship\ntriggers:\n  priority: 10\n  exclude: '\\breview\\b'\n"
+            "---\nname: ship\ntriggers:\n  priority: 10\n  exclude: '\\breview\\b'\n"
             "  keywords:\n    - '\\bcommit\\b'\n    - '\\bpush\\b'\n  urls:\n"
             "    - 'https?://example.com'\n---\n# Ship"
         )
@@ -48,7 +48,7 @@ class TestParseTriggers:
 
     def test_end_of_session(self):
         md = (
-            "---\nname: t3-retro\ntriggers:\n  priority: 100\n"
+            "---\nname: retro\ntriggers:\n  priority: 100\n"
             "  end_of_session: true\n  keywords:\n    - '\\bretro\\b'\n---\n"
         )
         result = parse_triggers_from_frontmatter(md)
@@ -56,7 +56,7 @@ class TestParseTriggers:
         assert result["end_of_session"] is True
 
     def test_no_triggers(self):
-        md = "---\nname: t3-rules\n---\n# Rules"
+        md = "---\nname: rules\n---\n# Rules"
         assert parse_triggers_from_frontmatter(md) is None
 
     def test_no_frontmatter(self):
@@ -85,7 +85,7 @@ class TestBuildTriggerIndex:
         index = build_trigger_index([SKILLS_DIR])
         # At minimum, t3-ship (priority 10) should be first
         assert len(index) > 0
-        assert index[0]["skill"] == "t3-ship"
+        assert index[0]["skill"] == "ship"
         assert index[0]["priority"] == 10
 
     def test_sorted_by_priority(self):
@@ -114,7 +114,7 @@ class TestDetectIntent:
         """Minimal trigger index for testing."""
         return [
             {
-                "skill": "t3-ship",
+                "skill": "ship",
                 "priority": 10,
                 "exclude": r"\breview\b",
                 "keywords": [r"\b(commit|push)\b"],
@@ -122,7 +122,7 @@ class TestDetectIntent:
                 "end_of_session": False,
             },
             {
-                "skill": "t3-test",
+                "skill": "test",
                 "priority": 20,
                 "exclude": "",
                 "keywords": [r"\b(pytest|run.*tests?)\b"],
@@ -130,7 +130,7 @@ class TestDetectIntent:
                 "end_of_session": False,
             },
             {
-                "skill": "t3-review",
+                "skill": "review",
                 "priority": 40,
                 "exclude": "",
                 "keywords": [r"\breview\b"],
@@ -138,7 +138,7 @@ class TestDetectIntent:
                 "end_of_session": False,
             },
             {
-                "skill": "t3-debug",
+                "skill": "debug",
                 "priority": 50,
                 "exclude": "",
                 "keywords": [r"\b(broken|error)\b"],
@@ -146,7 +146,7 @@ class TestDetectIntent:
                 "end_of_session": False,
             },
             {
-                "skill": "t3-ticket",
+                "skill": "ticket",
                 "priority": 60,
                 "exclude": "",
                 "keywords": [r"([a-z]+-\d+)"],
@@ -154,7 +154,7 @@ class TestDetectIntent:
                 "end_of_session": False,
             },
             {
-                "skill": "t3-code",
+                "skill": "code",
                 "priority": 70,
                 "exclude": "",
                 "keywords": [r"\b(implement|refactor)\b"],
@@ -162,7 +162,7 @@ class TestDetectIntent:
                 "end_of_session": False,
             },
             {
-                "skill": "t3-retro",
+                "skill": "retro",
                 "priority": 100,
                 "exclude": "",
                 "keywords": [r"\bretro\b"],
@@ -173,39 +173,37 @@ class TestDetectIntent:
 
     def test_explicit_slash_command_overrides_url(self, trigger_index):
         result = detect_intent(
-            "/t3-review https://gitlab.com/org/repo/-/merge_requests/190",
+            "/t3:review https://gitlab.com/org/repo/-/merge_requests/190",
             trigger_index=trigger_index,
         )
-        assert result == "t3-review"
+        assert result == "review"
 
     def test_explicit_slash_command_without_leading_slash(self, trigger_index):
-        assert detect_intent("t3-ship some args", trigger_index=trigger_index) == "t3-ship"
+        assert detect_intent("ship some args", trigger_index=trigger_index) == "ship"
 
     def test_explicit_slash_command_unknown_skill(self, trigger_index):
         assert detect_intent("/unknown-skill do something", trigger_index=trigger_index) != "unknown-skill"
 
     def test_keyword_match(self, trigger_index):
-        assert detect_intent("commit and push", trigger_index=trigger_index) == "t3-ship"
+        assert detect_intent("commit and push", trigger_index=trigger_index) == "ship"
 
     def test_exclude_prevents_match(self, trigger_index):
-        assert detect_intent("review the commit", trigger_index=trigger_index) == "t3-review"
+        assert detect_intent("review the commit", trigger_index=trigger_index) == "review"
 
     def test_url_match_takes_priority(self, trigger_index):
-        assert (
-            detect_intent("check https://gitlab.com/org/repo/-/issues/123", trigger_index=trigger_index) == "t3-ticket"
-        )
+        assert detect_intent("check https://gitlab.com/org/repo/-/issues/123", trigger_index=trigger_index) == "ticket"
 
     def test_sentry_url(self, trigger_index):
-        assert detect_intent("https://sentry.io/issues/999", trigger_index=trigger_index) == "t3-debug"
+        assert detect_intent("https://sentry.io/issues/999", trigger_index=trigger_index) == "debug"
 
     def test_test_intent(self, trigger_index):
-        assert detect_intent("run the tests", trigger_index=trigger_index) == "t3-test"
+        assert detect_intent("run the tests", trigger_index=trigger_index) == "test"
 
     def test_code_intent(self, trigger_index):
-        assert detect_intent("implement the login feature", trigger_index=trigger_index) == "t3-code"
+        assert detect_intent("implement the login feature", trigger_index=trigger_index) == "code"
 
     def test_ticket_intent(self, trigger_index):
-        assert detect_intent("start working on PROJ-123", trigger_index=trigger_index) == "t3-ticket"
+        assert detect_intent("start working on PROJ-123", trigger_index=trigger_index) == "ticket"
 
     def test_no_match(self, trigger_index):
         assert detect_intent("hello", trigger_index=trigger_index) == ""
@@ -214,9 +212,9 @@ class TestDetectIntent:
         result = detect_intent(
             "done",
             trigger_index=trigger_index,
-            loaded_skills={"t3-code", "t3-workspace"},
+            loaded_skills={"code", "workspace"},
         )
-        assert result == "t3-retro"
+        assert result == "retro"
 
     def test_end_of_session_no_lifecycle_loaded(self, trigger_index):
         result = detect_intent("done", trigger_index=trigger_index, loaded_skills=set())
@@ -226,12 +224,12 @@ class TestDetectIntent:
         result = detect_intent(
             "done",
             trigger_index=trigger_index,
-            loaded_skills={"t3-code", "t3-retro"},
+            loaded_skills={"code", "retro"},
         )
         assert result == ""
 
     def test_retro_keyword(self, trigger_index):
-        assert detect_intent("let's do a retro", trigger_index=trigger_index) == "t3-retro"
+        assert detect_intent("let's do a retro", trigger_index=trigger_index) == "retro"
 
     def test_empty_index(self):
         assert detect_intent("commit", trigger_index=[]) == ""
@@ -259,43 +257,43 @@ class TestDetectIntentIntegration:
         return build_trigger_index([SKILLS_DIR])
 
     def test_ship(self, real_index):
-        assert detect_intent("commit and push", trigger_index=real_index) == "t3-ship"
+        assert detect_intent("commit and push", trigger_index=real_index) == "ship"
 
     def test_ship_blocked_by_review(self, real_index):
-        assert detect_intent("review the commit", trigger_index=real_index) == "t3-review"
+        assert detect_intent("review the commit", trigger_index=real_index) == "review"
 
     def test_test(self, real_index):
-        assert detect_intent("run the tests", trigger_index=real_index) == "t3-test"
+        assert detect_intent("run the tests", trigger_index=real_index) == "test"
 
     def test_review(self, real_index):
-        assert detect_intent("review these MRs", trigger_index=real_index) == "t3-review"
+        assert detect_intent("review these MRs", trigger_index=real_index) == "review"
 
     def test_debug(self, real_index):
-        assert detect_intent("the app is broken", trigger_index=real_index) == "t3-debug"
+        assert detect_intent("the app is broken", trigger_index=real_index) == "debug"
 
     def test_ticket(self, real_index):
-        assert detect_intent("start working on PROJ-123", trigger_index=real_index) == "t3-ticket"
+        assert detect_intent("start working on PROJ-123", trigger_index=real_index) == "ticket"
 
     def test_code(self, real_index):
-        assert detect_intent("implement the login feature", trigger_index=real_index) == "t3-code"
+        assert detect_intent("implement the login feature", trigger_index=real_index) == "code"
 
     def test_code_imperative(self, real_index):
-        assert detect_intent("fix the login bug", trigger_index=real_index) == "t3-code"
+        assert detect_intent("fix the login bug", trigger_index=real_index) == "code"
 
     def test_workspace(self, real_index):
-        assert detect_intent("start the backend", trigger_index=real_index) == "t3-workspace"
+        assert detect_intent("start the backend", trigger_index=real_index) == "workspace"
 
     def test_retro(self, real_index):
-        assert detect_intent("let's do a retro", trigger_index=real_index) == "t3-retro"
+        assert detect_intent("let's do a retro", trigger_index=real_index) == "retro"
 
     def test_followup(self, real_index):
-        assert detect_intent("check ticket status", trigger_index=real_index) == "t3-followup"
+        assert detect_intent("check ticket status", trigger_index=real_index) == "followup"
 
     def test_gitlab_url(self, real_index):
-        assert detect_intent("check https://gitlab.com/org/repo/-/issues/123", trigger_index=real_index) == "t3-ticket"
+        assert detect_intent("check https://gitlab.com/org/repo/-/issues/123", trigger_index=real_index) == "ticket"
 
     def test_sentry_url(self, real_index):
-        assert detect_intent("https://sentry.io/issues/999", trigger_index=real_index) == "t3-debug"
+        assert detect_intent("https://sentry.io/issues/999", trigger_index=real_index) == "debug"
 
     def test_no_match(self, real_index):
         assert detect_intent("hello", trigger_index=real_index) == ""
@@ -306,11 +304,11 @@ class TestDetectIntentIntegration:
 
 class TestParseSkillRequires:
     def test_with_requires(self):
-        md = "---\nname: t3-review\nrequires:\n  - t3-workspace\n  - t3-platforms\n---\n# Review"
-        assert _parse_skill_requires(md) == ["t3-workspace", "t3-platforms"]
+        md = "---\nname: review\nrequires:\n  - workspace\n  - platforms\n---\n# Review"
+        assert _parse_skill_requires(md) == ["workspace", "platforms"]
 
     def test_no_requires(self):
-        md = "---\nname: t3-setup\n---\n# Setup"
+        md = "---\nname: setup\n---\n# Setup"
         assert _parse_skill_requires(md) == []
 
     def test_no_frontmatter(self):
@@ -321,10 +319,10 @@ class TestResolveDependencies:
     def test_resolves_from_real_skills(self):
         if not SKILLS_DIR.is_dir():
             pytest.skip("skills directory not found")
-        resolved = resolve_dependencies(["t3-review"], [SKILLS_DIR])
-        assert "t3-workspace" in resolved
-        assert "t3-platforms" in resolved
-        assert resolved.index("t3-workspace") < resolved.index("t3-review")
+        resolved = resolve_dependencies(["review"], [SKILLS_DIR])
+        assert "workspace" in resolved
+        assert "platforms" in resolved
+        assert resolved.index("workspace") < resolved.index("review")
 
     def test_unknown_skill(self):
         resolved = resolve_dependencies(["nonexistent-skill"], [SKILLS_DIR])
@@ -374,7 +372,7 @@ class TestSuggestSkills:
                 {
                     "trigger_index": [
                         {
-                            "skill": "t3-review",
+                            "skill": "review",
                             "priority": 40,
                             "keywords": [r"\breview\b"],
                             "urls": [],
@@ -396,9 +394,8 @@ class TestSuggestSkills:
                 }
             )
         assert "ac-django" in result["suggestions"]
-        assert "t3-review" in result["suggestions"]
-        assert "t3-workspace" in result["suggestions"]
-        assert result["intent"] == "t3-review"
+        assert "review" in result["suggestions"]
+        assert result["intent"] == "review"
 
     def test_filters_loaded(self, tmp_path):
         (tmp_path / "manage.py").write_text("# django project\n", encoding="utf-8")
@@ -408,7 +405,7 @@ class TestSuggestSkills:
                 {
                     "trigger_index": [
                         {
-                            "skill": "t3-review",
+                            "skill": "review",
                             "priority": 40,
                             "keywords": [r"\breview\b"],
                             "urls": [],
@@ -424,12 +421,12 @@ class TestSuggestSkills:
                 {
                     "prompt": "review code",
                     "cwd": str(tmp_path),
-                    "loaded_skills": ["t3-review", "ac-django", "t3-workspace", "t3-platforms", "t3-code"],
+                    "loaded_skills": ["review", "ac-django", "workspace", "platforms", "code"],
                     "skill_search_dirs": [str(SKILLS_DIR)],
                     "supplementary_config": "",
                 }
             )
-        assert "t3-review" not in result["suggestions"]
+        assert "review" not in result["suggestions"]
         assert "ac-django" not in result["suggestions"]
 
     def test_overlay_skill_requires_remote_match(self, tmp_path):
@@ -441,7 +438,7 @@ class TestSuggestSkills:
                     "remote_patterns": ["git@gitlab.com:acme-engineering/*"],
                     "trigger_index": [
                         {
-                            "skill": "t3-code",
+                            "skill": "code",
                             "priority": 70,
                             "keywords": [r"\bimplement\b"],
                             "urls": [],

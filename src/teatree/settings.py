@@ -56,7 +56,7 @@ MIDDLEWARE = [
     "django_htmx.middleware.HtmxMiddleware",
 ]
 
-ROOT_URLCONF = "teatree.core.urls"
+ROOT_URLCONF = "teatree.urls"
 
 TEMPLATES = [
     {

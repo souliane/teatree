@@ -1735,6 +1735,114 @@ class TestRunE2eLocal(TestCase):
         assert "e2e/" not in cmd
 
 
+class TestRunE2ePrivate(TestCase):
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_no_private_tests_configured(self) -> None:
+        with (
+            patch.dict("os.environ", {}, clear=False),
+            patch("teatree.config.load_config") as mock_cfg,
+        ):
+            mock_cfg.return_value.raw = {}
+            os.environ.pop("T3_PRIVATE_TESTS", None)
+            result = cast("str", call_command("run", "e2e-private"))
+        assert "not configured" in result
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_config_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            mock_worktree = MagicMock()
+            mock_worktree.ports = {}
+            mock_result = MagicMock(returncode=0)
+            with (
+                patch.dict("os.environ", {}, clear=False),
+                patch("teatree.config.load_config") as mock_cfg,
+                patch("teatree.core.management.commands.run.resolve_worktree", return_value=mock_worktree),
+                patch("teatree.core.management.commands.run.subprocess.run", return_value=mock_result),
+            ):
+                mock_cfg.return_value.raw = {"teatree": {"private_tests": tmp}}
+                os.environ.pop("T3_PRIVATE_TESTS", None)
+                result = cast("str", call_command("run", "e2e-private"))
+            assert "passed" in result
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_private_tests_dir_missing(self) -> None:
+        with (
+            patch.dict("os.environ", {"T3_PRIVATE_TESTS": "/nonexistent/path"}),
+        ):
+            result = cast("str", call_command("run", "e2e-private"))
+        assert "does not exist" in result
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_runs_private_tests(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            mock_worktree = MagicMock()
+            mock_worktree.ports = {"frontend": 5555}
+            mock_result = MagicMock(returncode=0)
+            with (
+                patch.dict("os.environ", {"T3_PRIVATE_TESTS": tmp}),
+                patch("teatree.core.management.commands.run.resolve_worktree", return_value=mock_worktree),
+                patch("teatree.core.management.commands.run.subprocess.run", return_value=mock_result) as mock_run,
+            ):
+                result = cast("str", call_command("run", "e2e-private"))
+            assert "passed" in result
+            env = mock_run.call_args[1]["env"]
+            assert env["BASE_URL"] == "http://localhost:5555"
+            assert env["CI"] == "1"
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_headed_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            mock_worktree = MagicMock()
+            mock_worktree.ports = {"frontend": 4200}
+            mock_result = MagicMock(returncode=1)
+            with (
+                patch.dict("os.environ", {"T3_PRIVATE_TESTS": tmp}),
+                patch("teatree.core.management.commands.run.resolve_worktree", return_value=mock_worktree),
+                patch("teatree.core.management.commands.run.subprocess.run", return_value=mock_result) as mock_run,
+            ):
+                result = cast("str", call_command("run", "e2e-private", headed=True))
+            assert "failed" in result
+            cmd = mock_run.call_args[0][0]
+            assert "--headed" in cmd
+            env = mock_run.call_args[1]["env"]
+            assert "CI" not in env
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_custom_test_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            mock_worktree = MagicMock()
+            mock_worktree.ports = {}
+            mock_result = MagicMock(returncode=0)
+            with (
+                patch.dict("os.environ", {"T3_PRIVATE_TESTS": tmp}),
+                patch("teatree.core.management.commands.run.resolve_worktree", return_value=mock_worktree),
+                patch("teatree.core.management.commands.run.subprocess.run", return_value=mock_result) as mock_run,
+            ):
+                call_command("run", "e2e-private", test_path="tests/login.py")
+            cmd = mock_run.call_args[0][0]
+            assert "tests/login.py" in cmd
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_no_worktree_uses_default_port(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            mock_result = MagicMock(returncode=0)
+            with (
+                patch.dict("os.environ", {"T3_PRIVATE_TESTS": tmp}),
+                patch("teatree.core.management.commands.run.resolve_worktree", return_value=None),
+                patch("teatree.core.management.commands.run.subprocess.run", return_value=mock_result) as mock_run,
+            ):
+                call_command("run", "e2e-private")
+            env = mock_run.call_args[1]["env"]
+            assert env["BASE_URL"] == "http://localhost:4200"
+
+
 # ── Lifecycle commands ──────────────────────────────────────────────
 
 

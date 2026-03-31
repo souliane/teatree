@@ -11,7 +11,6 @@ from unittest.mock import MagicMock, patch
 from typer.testing import CliRunner
 
 from teatree.cli import (
-    _agent_search_dirs,
     _detect_agent_ticket_status,
     _find_overlay_project,
     _find_project_root,
@@ -104,7 +103,7 @@ class TestAgentCommand:
 
         mock_overlay = OverlayEntry(name="test-overlay", overlay_class="test.overlay.TestOverlay")
         overlay_obj = MagicMock()
-        overlay_obj.metadata.get_skill_metadata.return_value = {"skill_path": "skills/t3-test/SKILL.md"}
+        overlay_obj.metadata.get_skill_metadata.return_value = {"skill_path": "skills/test/SKILL.md"}
 
         with (
             patch("teatree.config.discover_active_overlay", return_value=mock_overlay),
@@ -114,7 +113,7 @@ class TestAgentCommand:
             patch("teatree.cli._detect_agent_ticket_status", return_value="started"),
             patch(
                 "teatree.skill_loading.SkillLoadingPolicy.select_for_agent_launch",
-                return_value=SkillSelectionResult(skills=["t3-code"]),
+                return_value=SkillSelectionResult(skills=["code"]),
             ),
             patch("teatree.cli.os.execvp") as mock_exec,
         ):
@@ -137,7 +136,7 @@ class TestAgentCommand:
             patch("teatree.cli_doctor.IntrospectionHelpers.editable_info", return_value=(False, "")),
             patch(
                 "teatree.skill_loading.SkillLoadingPolicy.select_for_agent_launch",
-                return_value=SkillSelectionResult(skills=["t3-code"]),
+                return_value=SkillSelectionResult(skills=["code"]),
             ),
             patch("teatree.cli.os.execvp") as mock_exec,
         ):
@@ -148,7 +147,7 @@ class TestAgentCommand:
         monkeypatch.chdir(tmp_path)
         (tmp_path / "pyproject.toml").write_text("[project]\n")
 
-        result = runner.invoke(app, ["agent", "--phase", "coding", "--skill", "t3-code"])
+        result = runner.invoke(app, ["agent", "--phase", "coding", "--skill", "code"])
 
         assert result.exit_code == 1
         assert "--phase and --skill cannot be used together." in result.output
@@ -302,7 +301,7 @@ class TestConfigCommands:
 
         active = OverlayEntry(name="test", overlay_class="test.overlay.TestOverlay")
         mock_overlay = MagicMock()
-        mock_overlay.metadata.get_skill_metadata.return_value = {"skill_path": "skills/t3-test/SKILL.md"}
+        mock_overlay.metadata.get_skill_metadata.return_value = {"skill_path": "skills/test/SKILL.md"}
 
         monkeypatch.setattr("teatree.config.DATA_DIR", tmp_path)
         monkeypatch.delenv("DJANGO_SETTINGS_MODULE", raising=False)
@@ -317,7 +316,7 @@ class TestConfigCommands:
             cache = tmp_path / "skill-metadata.json"
             assert cache.is_file()
             data = json.loads(cache.read_text())
-            assert data["skill_path"] == "skills/t3-test/SKILL.md"
+            assert data["skill_path"] == "skills/test/SKILL.md"
 
     def test_write_skill_cache_no_active_overlay(self, monkeypatch):
         """write-skill-cache works when DJANGO_SETTINGS_MODULE is already set."""
@@ -337,7 +336,7 @@ class TestConfigCommands:
     def test_autoload_shows_context_match_files(self, tmp_path):
         """Config autoload lists context-match.yml rules from skill dirs."""
         skills_dir = tmp_path / "skills"
-        skill = skills_dir / "t3-code" / "hook-config"
+        skill = skills_dir / "code" / "hook-config"
         skill.mkdir(parents=True)
         (skill / "context-match.yml").write_text("keywords:\n  - code\n")
 
@@ -347,7 +346,7 @@ class TestConfigCommands:
         with patch("teatree.agents.skill_bundle.DEFAULT_SKILLS_DIR", skills_dir):
             result = runner.invoke(app, ["config", "autoload"])
             assert result.exit_code == 0
-            assert "t3-code" in result.output
+            assert "code" in result.output
             assert "keywords" in result.output
 
     def test_autoload_no_skills_dir(self, tmp_path):
@@ -361,7 +360,7 @@ class TestConfigCommands:
         """Config autoload shows message when no context-match.yml found."""
         skills_dir = tmp_path / "skills"
         skills_dir.mkdir()
-        (skills_dir / "t3-code").mkdir()
+        (skills_dir / "code").mkdir()
         # No hook-config/context-match.yml
 
         with patch("teatree.agents.skill_bundle.DEFAULT_SKILLS_DIR", skills_dir):
@@ -373,7 +372,7 @@ class TestConfigCommands:
         """Config cache displays skill-metadata.json content."""
         monkeypatch.setattr("teatree.config.DATA_DIR", tmp_path)
         cache_path = tmp_path / "skill-metadata.json"
-        cache_path.write_text('{"skill_path": "skills/t3-test/SKILL.md"}\n')
+        cache_path.write_text('{"skill_path": "skills/test/SKILL.md"}\n')
 
         result = runner.invoke(app, ["config", "cache"])
         assert result.exit_code == 0
@@ -453,14 +452,14 @@ class TestOverlayScaffolder:
 
     def test_write_overlay(self, tmp_path):
         s = OverlayScaffolder(tmp_path, "test_overlay", "pkg")
-        s.write_overlay("t3-test")
+        s.write_overlay("test")
         pkg_dir = tmp_path / "src" / "test_overlay"
         assert (pkg_dir / "__init__.py").is_file()
         assert (pkg_dir / "apps.py").is_file()
         text = (pkg_dir / "overlay.py").read_text()
         assert "class TestOverlayOverlay(OverlayBase):" in text
         assert 'django_app: str | None = "test_overlay"' in text
-        assert '"skill_path": "skills/t3-test/SKILL.md"' in text
+        assert '"skill_path": "skills/test/SKILL.md"' in text
 
     def test_write_skill_md(self, tmp_path):
         skill_dir = tmp_path / "skills" / "t3-acme"
@@ -501,7 +500,6 @@ class TestLaunchClaude:
         with (
             patch("shutil.which", return_value="/usr/bin/claude"),
             patch("teatree.cli_doctor.IntrospectionHelpers.editable_info", return_value=(True, "file:///src/teatree")),
-            patch("teatree.agents.skill_bundle.resolve_dependencies", return_value=["t3-code"]),
             patch("teatree.cli.os.execvp") as mock_exec,
         ):
             from teatree.cli import _launch_claude  # noqa: PLC0415
@@ -510,12 +508,34 @@ class TestLaunchClaude:
                 task="test",
                 project_root=tmp_path,
                 context_lines=["test"],
-                skills=["t3-code"],
+                skills=["code"],
                 ask_user_which_skill=False,
             )
             cmd = mock_exec.call_args[0][1]
             context_arg = cmd[cmd.index("--append-system-prompt") + 1]
             assert "/src/teatree" in context_arg
+
+    def test_plugin_dir_added_when_t3_contribute(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("T3_CONTRIBUTE", "true")
+        (tmp_path / "pyproject.toml").write_text("[project]\n")
+
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch("teatree.cli_doctor.IntrospectionHelpers.editable_info", return_value=(False, "")),
+            patch("teatree.cli.os.execvp") as mock_exec,
+        ):
+            from teatree.cli import _launch_claude  # noqa: PLC0415
+
+            _launch_claude(
+                task="",
+                project_root=tmp_path,
+                context_lines=["test"],
+                skills=[],
+                ask_user_which_skill=False,
+            )
+            cmd = mock_exec.call_args[0][1]
+            assert "--plugin-dir" in cmd
 
     def test_asks_user_when_skill_is_unknown(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
@@ -563,15 +583,3 @@ class TestDetectAgentTicketStatus:
             patch("teatree.core.resolve.resolve_worktree", return_value=mock_wt),
         ):
             assert _detect_agent_ticket_status(tmp_path) == "started"
-
-
-# ── _agent_search_dirs ───────────────────────────────────────────────
-
-
-class TestAgentSearchDirs:
-    def test_includes_project_skills(self, tmp_path):
-        (tmp_path / "skills").mkdir()
-
-        search_dirs = _agent_search_dirs(tmp_path)
-
-        assert search_dirs[0] == tmp_path / "skills"

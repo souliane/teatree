@@ -1,6 +1,6 @@
 SECRET_KEY = "teatree-tests"
 USE_TZ = True
-ROOT_URLCONF = "tests.urls"
+ROOT_URLCONF = "teatree.urls"
 
 DATABASES = {
     "default": {

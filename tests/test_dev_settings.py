@@ -10,7 +10,7 @@ def test_settings_importable():
     assert mod.SECRET_KEY == "teatree-dev-insecure"
     assert mod.DEBUG is True
     assert mod.USE_TZ is True
-    assert mod.ROOT_URLCONF == "teatree.core.urls"
+    assert mod.ROOT_URLCONF == "teatree.urls"
     assert "default" in mod.DATABASES
     assert mod.DATABASES["default"]["ENGINE"] == "django.db.backends.sqlite3"
     assert "teatree.core" in mod.INSTALLED_APPS

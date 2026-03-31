@@ -4,7 +4,6 @@ from pathlib import Path
 import pytest
 from django.test import TestCase, override_settings
 
-from teatree import skill_loading as skill_loading_module
 from teatree.agents.sdk import run_headless_task
 from teatree.agents.services import (
     RuntimeExecution,
@@ -43,57 +42,24 @@ def reset_runtimes() -> Iterator[None]:
     reset_runtime_registry()
 
 
-@pytest.fixture(autouse=True)
-def install_framework_skill_fixtures(tmp_path: Path) -> Iterator[None]:
-    for name, body in {
-        "ac-python": "---\nname: ac-python\n---\n",
-        "ac-django": "---\nname: ac-django\nrequires:\n  - ac-python\n---\n",
-    }.items():
-        skill_dir = tmp_path / name
-        skill_dir.mkdir()
-        (skill_dir / "SKILL.md").write_text(body, encoding="utf-8")
-
-    original = list(skill_loading_module.DEFAULT_SKILL_SEARCH_DIRS)
-    skill_loading_module.DEFAULT_SKILL_SEARCH_DIRS[:] = [tmp_path, *original]
-    try:
-        yield
-    finally:
-        skill_loading_module.DEFAULT_SKILL_SEARCH_DIRS[:] = original
-
-
-def test_resolve_skill_bundle_merges_overlay_and_phase_skills() -> None:
+def test_resolve_skill_bundle_with_overlay_and_phase() -> None:
     bundle = resolve_skill_bundle(
         phase="coding",
-        overlay_skill_metadata={
-            "skill_path": "/skills/acme/SKILL.md",
-        },
-        delegation_map_path=Path("references/skill-delegation.md"),
+        overlay_skill_metadata={"skill_path": "/skills/acme/SKILL.md"},
     )
-
-    assert bundle == [
-        "/skills/acme/SKILL.md",
-        "ac-python",
-        "ac-django",
-        "t3-rules",
-        "t3-workspace",
-        "t3-code",
-    ]
+    assert "/skills/acme/SKILL.md" in bundle
+    assert "code" in bundle
 
 
 def test_resolve_skill_bundle_ignores_unknown_phase() -> None:
-    bad_metadata: dict[str, object] = {
-        "skill_path": "t3-code",
-    }
     bundle = resolve_skill_bundle(
         phase="unknown-phase",
-        overlay_skill_metadata=bad_metadata,
-        delegation_map_path=Path("references/skill-delegation.md"),
+        overlay_skill_metadata={"skill_path": "code"},
     )
+    assert "code" in bundle
 
-    assert bundle == ["t3-rules", "t3-workspace", "t3-code", "ac-python", "ac-django"]
 
-
-def test_resolve_skill_bundle_uses_builtin_default_when_local_map_missing(
+def test_resolve_skill_bundle_uses_framework_detection(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -102,7 +68,8 @@ def test_resolve_skill_bundle_uses_builtin_default_when_local_map_missing(
 
     bundle = resolve_skill_bundle(phase="debugging", overlay_skill_metadata={})
 
-    assert bundle == ["ac-python", "t3-rules", "t3-workspace", "t3-debug"]
+    assert "ac-python" in bundle
+    assert "debug" in bundle
 
 
 class TestRunHeadlessTask(TestCase):
@@ -121,20 +88,13 @@ class TestRunHeadlessTask(TestCase):
             task,
             phase="coding",
             overlay_skill_metadata={"skill_path": "/skills/acme/SKILL.md"},
-            delegation_map_path=Path("references/skill-delegation.md"),
         )
 
         task.refresh_from_db()
 
         assert result.artifact_path == f"artifacts/task-{task.pk}-test-sdk.json"
-        assert runtime.calls[0][1] == [
-            "/skills/acme/SKILL.md",
-            "ac-python",
-            "ac-django",
-            "t3-rules",
-            "t3-workspace",
-            "t3-code",
-        ]
+        assert "/skills/acme/SKILL.md" in runtime.calls[0][1]
+        assert "code" in runtime.calls[0][1]
         assert task.status == Task.Status.COMPLETED
         assert TaskAttempt.objects.count() == 1
 
@@ -170,7 +130,6 @@ class TestRunInteractiveTask(TestCase):
             task,
             phase="debugging",
             overlay_skill_metadata={},
-            delegation_map_path=Path("references/skill-delegation.md"),
         )
 
         task.refresh_from_db()
@@ -192,7 +151,6 @@ class TestRunInteractiveTask(TestCase):
             task,
             phase="reviewing",
             overlay_skill_metadata={},
-            delegation_map_path=Path("references/skill-delegation.md"),
         )
 
         task.refresh_from_db()

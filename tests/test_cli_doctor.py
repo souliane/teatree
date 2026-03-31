@@ -48,15 +48,15 @@ class TestDoctorService:
         from teatree.config import OverlayEntry  # noqa: PLC0415
 
         project = tmp_path / "my-project"
-        skill = project / "skills" / "t3-custom"
+        skill = project / "skills" / "custom"
         skill.mkdir(parents=True)
         (skill / "SKILL.md").touch()
 
-        entry = OverlayEntry(name="t3-test", overlay_class="test.overlay.TestOverlay", project_path=project)
+        entry = OverlayEntry(name="test", overlay_class="test.overlay.TestOverlay", project_path=project)
         with patch("teatree.config.discover_overlays", return_value=[entry]):
             results = DoctorService.collect_overlay_skills()
             assert len(results) == 1
-            assert results[0][1] == "t3-custom"
+            assert results[0][1] == "custom"
 
     def test_returns_legacy_overlay_skills(self, tmp_path):
         """Overlay skills from legacy convention (subdir with SKILL.md)."""
@@ -72,7 +72,7 @@ class TestDoctorService:
         with patch("teatree.config.discover_overlays", return_value=[entry]):
             results = DoctorService.collect_overlay_skills()
             assert len(results) == 1
-            assert results[0][1] == "t3-my-overlay"
+            assert results[0][1] == "my-overlay"
 
     def test_returns_empty_when_no_project_path(self):
         from teatree.config import OverlayEntry  # noqa: PLC0415
@@ -87,8 +87,8 @@ class TestDoctorService:
     def test_creates_links(self, tmp_path):
         skills_dir = tmp_path / "skills"
         skills_dir.mkdir()
-        (skills_dir / "t3-code").mkdir()
-        (skills_dir / "t3-code" / "SKILL.md").touch()
+        (skills_dir / "code").mkdir()
+        (skills_dir / "code" / "SKILL.md").touch()
 
         claude_skills = tmp_path / "claude_skills"
         claude_skills.mkdir()
@@ -97,7 +97,7 @@ class TestDoctorService:
             created, fixed = DoctorService.repair_symlinks(skills_dir, claude_skills)
             assert created == 1
             assert fixed == 0
-            assert (claude_skills / "t3-code").is_symlink()
+            assert (claude_skills / "code").is_symlink()
 
     def test_handles_empty_skills_dir(self, tmp_path):
         """_repair_symlinks handles empty skills dir (no SKILL.md files)."""
@@ -117,7 +117,7 @@ class TestDoctorService:
     def test_fixes_wrong_target(self, tmp_path):
         skills_dir = tmp_path / "skills"
         skills_dir.mkdir()
-        skill = skills_dir / "t3-code"
+        skill = skills_dir / "code"
         skill.mkdir()
         (skill / "SKILL.md").touch()
 
@@ -126,7 +126,7 @@ class TestDoctorService:
         # Create a symlink with wrong target
         wrong_target = tmp_path / "wrong"
         wrong_target.mkdir()
-        (claude_skills / "t3-code").symlink_to(wrong_target)
+        (claude_skills / "code").symlink_to(wrong_target)
 
         with patch("teatree.cli_doctor.DoctorService.collect_overlay_skills", return_value=[]):
             created, fixed = DoctorService.repair_symlinks(skills_dir, claude_skills)
@@ -136,14 +136,14 @@ class TestDoctorService:
     def test_skips_real_dir(self, tmp_path):
         skills_dir = tmp_path / "skills"
         skills_dir.mkdir()
-        skill = skills_dir / "t3-code"
+        skill = skills_dir / "code"
         skill.mkdir()
         (skill / "SKILL.md").touch()
 
         claude_skills = tmp_path / "claude_skills"
         claude_skills.mkdir()
         # A real directory, not a symlink
-        (claude_skills / "t3-code").mkdir()
+        (claude_skills / "code").mkdir()
 
         with patch("teatree.cli_doctor.DoctorService.collect_overlay_skills", return_value=[]):
             created, fixed = DoctorService.repair_symlinks(skills_dir, claude_skills)
@@ -153,13 +153,13 @@ class TestDoctorService:
     def test_leaves_correct_link_unchanged(self, tmp_path):
         skills_dir = tmp_path / "skills"
         skills_dir.mkdir()
-        skill = skills_dir / "t3-code"
+        skill = skills_dir / "code"
         skill.mkdir()
         (skill / "SKILL.md").touch()
 
         claude_skills = tmp_path / "claude_skills"
         claude_skills.mkdir()
-        (claude_skills / "t3-code").symlink_to(skill)
+        (claude_skills / "code").symlink_to(skill)
 
         with patch("teatree.cli_doctor.DoctorService.collect_overlay_skills", return_value=[]):
             created, fixed = DoctorService.repair_symlinks(skills_dir, claude_skills)
@@ -381,8 +381,8 @@ class TestDoctorCommands:
         """Doctor repair creates/fixes symlinks."""
         skills_dir = tmp_path / "skills"
         skills_dir.mkdir()
-        (skills_dir / "t3-code").mkdir()
-        (skills_dir / "t3-code" / "SKILL.md").touch()
+        (skills_dir / "code").mkdir()
+        (skills_dir / "code" / "SKILL.md").touch()
 
         claude_skills = tmp_path / "claude_skills"
         claude_skills.mkdir()
@@ -417,8 +417,8 @@ class TestDoctorCommands:
         """Repair reports overlay skill count."""
         skills_dir = tmp_path / "skills"
         skills_dir.mkdir()
-        (skills_dir / "t3-core").mkdir()
-        (skills_dir / "t3-core" / "SKILL.md").touch()
+        (skills_dir / "core").mkdir()
+        (skills_dir / "core" / "SKILL.md").touch()
 
         overlay_skill = tmp_path / "overlay-skill"
         overlay_skill.mkdir()

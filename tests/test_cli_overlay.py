@@ -398,7 +398,7 @@ class TestOverlayCommands:
         from teatree.skill_loading import SkillSelectionResult  # noqa: PLC0415
 
         overlay_obj = MagicMock()
-        overlay_obj.metadata.get_skill_metadata.return_value = {"skill_path": "skills/t3-test/SKILL.md"}
+        overlay_obj.metadata.get_skill_metadata.return_value = {"skill_path": "skills/test/SKILL.md"}
 
         with (
             patch("shutil.which", return_value="/usr/bin/claude"),
@@ -407,7 +407,7 @@ class TestOverlayCommands:
             patch("teatree.cli._detect_agent_ticket_status", return_value="started"),
             patch(
                 "teatree.skill_loading.SkillLoadingPolicy.select_for_agent_launch",
-                return_value=SkillSelectionResult(skills=["t3-code"]),
+                return_value=SkillSelectionResult(skills=["code"]),
             ),
             patch("teatree.cli.os.execvp") as mock_exec,
         ):
@@ -432,7 +432,7 @@ class TestOverlayCommands:
             patch("teatree.cli._detect_agent_ticket_status", return_value=""),
             patch(
                 "teatree.skill_loading.SkillLoadingPolicy.select_for_agent_launch",
-                return_value=SkillSelectionResult(skills=["t3-code"]),
+                return_value=SkillSelectionResult(skills=["code"]),
             ),
             patch("teatree.cli.os.execvp") as mock_exec,
         ):
@@ -444,7 +444,7 @@ class TestOverlayCommands:
         overlay_app = OverlayAppBuilder("test", tmp_path, "test.settings").build()
         test_runner = CliRunner()
 
-        result = test_runner.invoke(overlay_app, ["agent", "--phase", "coding", "--skill", "t3-code"])
+        result = test_runner.invoke(overlay_app, ["agent", "--phase", "coding", "--skill", "code"])
 
         assert result.exit_code == 1
         assert "--phase and --skill cannot be used together." in result.output

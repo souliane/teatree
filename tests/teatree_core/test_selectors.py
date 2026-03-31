@@ -784,6 +784,12 @@ class TestVariantUrl:
     def test_empty_variant(self) -> None:
         assert _variant_url("") == ""
 
+    def test_no_overlay_returns_empty(self) -> None:
+        from unittest.mock import patch  # noqa: PLC0415
+
+        with patch("teatree.core.overlay_loader._discover_overlays", return_value={}):
+            assert _variant_url("ops") == ""
+
     def test_bad_template(self) -> None:
         from unittest.mock import MagicMock, patch  # noqa: PLC0415
 

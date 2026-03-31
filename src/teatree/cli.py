@@ -16,9 +16,9 @@ import typer
 from teatree.cli_ci import ci_app
 from teatree.cli_doctor import DoctorService, IntrospectionHelpers, doctor_app
 from teatree.cli_overlay import OverlayAppBuilder, managepy
+from teatree.cli_plugin import plugin_app
 from teatree.cli_review import review_app
 from teatree.cli_tools import tool_app
-from teatree.skill_loading import DEFAULT_SKILLS_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -104,14 +104,6 @@ def _detect_agent_ticket_status(project_root: Path) -> str:
         return ""
 
 
-def _agent_search_dirs(project_root: Path) -> list[Path]:
-    search_dirs = [DEFAULT_SKILLS_DIR, Path.home() / ".agents" / "skills", Path.home() / ".claude" / "skills"]
-    project_skills_dir = project_root / "skills"
-    if project_skills_dir.is_dir():
-        search_dirs.insert(0, project_skills_dir)
-    return search_dirs
-
-
 def _launch_claude(
     *,
     task: str,
@@ -152,6 +144,11 @@ def _launch_claude(
 
     context = "\n".join(context_lines)
     cmd = [claude_bin, "--append-system-prompt", context]
+
+    if os.environ.get("T3_CONTRIBUTE", "").lower() == "true":
+        teatree_root = Path(__file__).resolve().parents[2]
+        cmd.extend(["--plugin-dir", str(teatree_root)])
+
     if task:
         cmd.extend(["-p", task])
 
@@ -188,7 +185,7 @@ def agent(
         lines.append("No overlay active — working on teatree itself.")
 
     overlay_skill_metadata = get_overlay().metadata.get_skill_metadata() if active else {}
-    policy = SkillLoadingPolicy(skills_dir=_agent_search_dirs(project_root))
+    policy = SkillLoadingPolicy()
     try:
         selection = policy.select_for_agent_launch(
             cwd=Path.cwd(),
@@ -409,6 +406,8 @@ app.add_typer(review_request_app, name="review-request")
 app.add_typer(doctor_app, name="doctor")
 
 app.add_typer(tool_app, name="tool")
+
+app.add_typer(plugin_app, name="plugin")
 
 
 # ── Review-request commands ──────────────────────────────────────────

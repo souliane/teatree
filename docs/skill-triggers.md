@@ -28,7 +28,7 @@ triggers:
 | `priority` | int | `50` | Lower = matched first. Use 10-30 for specific intents, 50-70 for generic, 100+ for fallbacks. |
 | `keywords` | list[str] | `[]` | Regex patterns matched against the lowercased prompt via `re.search`. Patterns starting with `^` anchor to the start of the prompt. |
 | `urls` | list[str] | `[]` | Regex patterns for URL detection. Checked before keywords across all skills (URLs always win). |
-| `exclude` | str | `""` | If this pattern matches the prompt, skip this skill entirely. Useful for disambiguation (e.g., t3-ship excludes `\breview\b`). |
+| `exclude` | str | `""` | If this pattern matches the prompt, skip this skill entirely. Useful for disambiguation (e.g., ship excludes `\breview\b`). |
 | `end_of_session` | bool | `false` | When `true`, this skill only triggers on end-of-session phrases ("done", "lgtm") and only if other lifecycle skills were loaded in the session. |
 
 ### Matching Order

@@ -38,6 +38,8 @@ DJANGO_GROUPS: dict[str, tuple[str, list[tuple[str, str]]]] = {
             ("build-frontend", "Build the frontend for production/testing."),
             ("tests", "Run the project test suite."),
             ("e2e", "Run E2E tests via CI or overlay config."),
+            ("e2e-local", "Run E2E tests locally with Playwright."),
+            ("e2e-private", "Run private Playwright tests from T3_PRIVATE_TESTS repo."),
         ],
     ),
     "db": (
@@ -316,7 +318,6 @@ class OverlayAppBuilder:
         ) -> None:
             """Launch Claude Code with overlay context and auto-detected skills."""
             from teatree.cli import (  # noqa: PLC0415
-                _agent_search_dirs,
                 _detect_agent_ticket_status,
                 _find_project_root,
                 _launch_claude,
@@ -331,7 +332,7 @@ class OverlayAppBuilder:
             lines = [f"You are working on the {overlay_name} TeaTree overlay project.", ""]
             if project_path:
                 lines.append(f"Overlay source: {project_path}")
-            selection = SkillLoadingPolicy(skills_dir=_agent_search_dirs(overlay_root)).select_for_agent_launch(
+            selection = SkillLoadingPolicy().select_for_agent_launch(
                 cwd=Path.cwd(),
                 overlay_skill_metadata=get_overlay().metadata.get_skill_metadata(),
                 task=task,

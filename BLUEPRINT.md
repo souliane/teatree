@@ -56,7 +56,7 @@ src/teatree/
 
   core/                 # Django app: the heart of teatree
     apps.py             # AppConfig with auto-admin registration
-    models.py           # 5 FSM models (see §4)
+    models/             # 5 FSM models (see §4)
     managers.py         # Custom QuerySet managers
     selectors.py        # Dashboard data selectors (no domain logic in views)
     overlay.py          # OverlayBase ABC (see §6)
@@ -109,18 +109,26 @@ src/teatree/
   overlay_init/         # t3 startoverlay helpers
     generator.py        # Scaffold generation logic (called from cli.py)
 
-skills/t3-*/            # Workflow skills (SKILL.md + references/)
+.claude-plugin/         # Plugin manifest
+  plugin.json           # Plugin identity (name: t3)
+  marketplace.json      # Self-hosted marketplace
+agents/                 # Sub-agent definitions (orchestrator + 6 phase agents)
+skills/*/               # Workflow skills (SKILL.md + references/)
+hooks/                  # Plugin hooks
+  hooks.json            # Event → script mapping
+  scripts/              # Hook scripts (bootstrap, skill loading, statusline)
+apm.yml                 # APM package manifest
+settings.json           # Plugin settings (statusline)
 tests/                  # Pytest suite (100% branch coverage)
 e2e/                    # Playwright E2E tests for dashboard
 scripts/                # Standalone utility scripts
-integrations/           # Agent platform hooks
 ```
 
 ---
 
 ## 4. Domain Models
 
-Five models in `teatree.core.models`, all using `django-fsm` for state machines.
+Five models in `teatree.core.models/` (split into domain-specific modules), all using `django-fsm` for state machines.
 
 **No FSM signals for external sync.** django-fsm-2 provides `post_transition` signals that could auto-update external systems (GitLab labels, Notion statuses) on every state change. We deliberately don't use them — external sync is the caller's responsibility, not the state machine's. This keeps FSM transitions fast, testable, and free of side-channel I/O.
 
@@ -375,15 +383,15 @@ Launches ttyd (browser-based terminal) wrapping `claude --append-system-prompt <
 **`build_system_context(task, skills=[])`** — System prompt for headless agents:
 
 - Task/ticket identifiers, skill loading directives
-- Phase-specific instructions (reviewing: thorough code review + /t3-next)
-- Mandatory post-execution: run /t3-next for retro + structured result + pipeline handoff
-- Fallback JSON schema if /t3-next not available
+- Phase-specific instructions (reviewing: thorough code review + /t3:next)
+- Mandatory post-execution: run /t3:next for retro + structured result + pipeline handoff
+- Fallback JSON schema if /t3:next not available
 
 **`build_interactive_context(task, skills=[])`** — System prompt for interactive sessions:
 
 - Same content as system context, plus user-aware instructions
 - **First-message acknowledgement (mandatory):** The agent must begin by stating the project, ticket, current state, and planned next steps
-- "Before ending, run /t3-next"
+- "Before ending, run /t3:next"
 
 ### 5.5 Skill Bundle Resolution (skill_bundle.py)
 
@@ -480,14 +488,14 @@ ToolCommand(name: str, help: str, command: str)                # total=True
 
 ### 6.3 Scaffold (`t3 startoverlay`)
 
-`t3 startoverlay <name> <dest>` generates a lightweight overlay package. Default overlay app name is `t3_overlay` (the `t3_` prefix is a convention). The skill directory is derived: `t3_overlay` → skill `t3-overlay` (strip `t3_` prefix and `_overlay` suffix, then `t3-` prefix).
+`t3 startoverlay <name> <dest>` generates a lightweight overlay package. Default overlay app name is `t3_overlay` (the `t3_` prefix is a convention). The skill directory is derived: `t3_overlay` → skill `overlay` (strip `t3_` prefix and `_overlay` suffix, then `t3-` prefix).
 
 Generated structure:
 
 ```
 <name>/
   src/t3_overlay/__init__.py, overlay.py, apps.py
-  skills/t3-overlay/SKILL.md
+  skills/overlay/SKILL.md
   pyproject.toml, .editorconfig, .pre-commit-config.yaml, ...
 ```
 
@@ -749,32 +757,58 @@ Overlay-specific configuration that previously lived in `TEATREE_*` Django setti
 
 ---
 
-## 12. Skills
+## 12. Skills & Plugin Architecture
 
-Skills live in `skills/t3-*/`. Each skill is a `SKILL.md` file with optional `references/` directory.
+### 12.1 Skills
+
+Skills live in `skills/*/`. Each skill is a `SKILL.md` file with optional `references/` directory. When installed as a plugin, skills are namespaced under `t3:` (e.g., `/t3:code`).
 
 **Skills guide the agent's judgment. They do not drive system behavior.**
 
 | Skill | Purpose |
 |-------|---------|
-| `t3-code` | TDD methodology, coding guidelines |
-| `t3-contribute` | Push improvements to fork, open upstream issues |
-| `t3-debug` | Troubleshooting and fixing |
-| `t3-followup` | Daily follow-up, batch tickets, MR reminders |
-| `t3-handover` | Transfer in-flight tasks to another runtime |
-| `t3-next` | Session wrap-up: retro, structured result, pipeline handoff |
-| `t3-platforms` | Platform-specific API recipes (GitLab, GitHub, Slack) |
-| `t3-retro` | Conversation retrospective and skill improvement |
-| `t3-review` | Code review (self, giving, receiving) |
-| `t3-review-request` | Batch review requests |
-| `t3-rules` | Cross-cutting agent safety rules |
-| `t3-setup` | Bootstrap and validate teatree for local use |
-| `t3-ship` | Committing, pushing, MR creation, pipeline |
-| `t3-test` | Testing, QA, CI |
-| `t3-ticket` | Ticket intake and kickoff |
-| `t3-workspace` | Worktree creation, setup, servers, cleanup |
+| `code` | TDD methodology, coding guidelines |
+| `contribute` | Push improvements to fork, open upstream issues |
+| `debug` | Troubleshooting and fixing |
+| `followup` | Daily follow-up, batch tickets, MR reminders |
+| `handover` | Transfer in-flight tasks to another runtime |
+| `next` | Session wrap-up: retro, structured result, pipeline handoff |
+| `platforms` | Platform-specific API recipes (GitLab, GitHub, Slack) |
+| `retro` | Conversation retrospective and skill improvement |
+| `review` | Code review (self, giving, receiving) |
+| `review-request` | Batch review requests |
+| `rules` | Cross-cutting agent safety rules |
+| `setup` | Bootstrap and validate teatree for local use |
+| `ship` | Committing, pushing, MR creation, pipeline |
+| `test` | Testing, QA, CI |
+| `ticket` | Ticket intake and kickoff |
+| `workspace` | Worktree creation, setup, servers, cleanup |
 
 Skills declare dependencies via `requires:` in YAML frontmatter. The skill bundle resolver performs topological sort for correct load order.
+
+### 12.2 Sub-Agent Architecture
+
+Seven agent definitions in `agents/`. Each is a thin YAML+description wrapper that references skills via `skills:` frontmatter — no content duplication.
+
+| Agent | Skills | Role |
+|-------|--------|------|
+| `orchestrator` | rules, workspace | Routes tasks to phase-specific agents |
+| `coder` | rules, workspace, code | Implements features with TDD |
+| `tester` | rules, workspace, test, platforms | Runs tests, analyzes CI |
+| `reviewer` | rules, platforms, review, code | Read-only code review |
+| `shipper` | rules, workspace, platforms, ship, review-request | Delivery workflow |
+| `debugger` | rules, workspace, debug | Troubleshooting and fixes |
+| `followup` | rules, platforms, followup | Daily MR sync and reminders |
+
+Interactive-only skills (no agent): `retro`, `next`, `contribute`, `handover`, `setup`.
+
+### 12.3 Distribution
+
+Three install paths, one source of truth:
+
+- **APM**: `apm install souliane/teatree` — deploys to any supported agent
+- **Claude Code plugin**: `/plugin install t3@souliane-teatree` — Claude-specific
+- **CLI-first**: `uv tool install teatree && t3 plugin install` — bootstraps from Python
 
 ---
 

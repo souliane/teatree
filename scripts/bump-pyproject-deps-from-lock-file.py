@@ -1,3 +1,11 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# dependencies = [
+#   "typer>=0.17.4",
+#   "tomlkit>=0.13.3",
+# ]
+# ///
+
 # Bump all dependencies in pyproject.toml to >= latest versions from uv.lock,
 # preserving formatting, comments, and upper/lower version constraints.
 import re

@@ -721,9 +721,14 @@ def _extra_str(ticket: Ticket, key: str) -> str:
 def _variant_url(variant: str) -> str:
     if not variant:
         return ""
+    from django.core.exceptions import ImproperlyConfigured  # noqa: PLC0415
+
     from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
 
-    url_template = get_overlay().config.get_dev_env_url()
+    try:
+        url_template = get_overlay().config.get_dev_env_url()
+    except ImproperlyConfigured:
+        return ""
     if not url_template:
         return ""
     try:
