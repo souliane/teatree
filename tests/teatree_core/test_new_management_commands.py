@@ -13,6 +13,7 @@ from django.test import override_settings
 from django.utils.module_loading import import_string
 
 from teatree.core.management.commands.lifecycle import _register_new_repos
+from teatree.core.management.commands.pr import _last_commit_message
 from teatree.core.models import Session, Ticket, Worktree
 from teatree.core.overlay import (
     DbImportStrategy,
@@ -877,22 +878,22 @@ class TestPrCreate:
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
     def test_validation_failure(self) -> None:
-        """FullOverlay.validate_mr returns error when title is empty."""
+        """validate_mr returns error when overlay rejects title."""
         ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/71")
         Worktree.objects.create(overlay="test", ticket=ticket, repo_path="my-repo", branch="feature-71")
 
         mock_host = MagicMock()
+        mock_validate = MagicMock(return_value={"errors": ["Bad title"], "warnings": []})
 
-        with patch("teatree.core.management.commands.pr.get_code_host", return_value=mock_host):
+        with (
+            patch("teatree.core.management.commands.pr.get_code_host", return_value=mock_host),
+            patch("teatree.core.management.commands.pr._last_commit_message", return_value=("Bad Title", "")),
+            patch("teatree.core.management.commands.pr.get_overlay") as mock_overlay,
+        ):
+            mock_overlay.return_value.metadata.validate_mr = mock_validate
             result = cast(
                 "dict[str, object]",
-                call_command(
-                    "pr",
-                    "create",
-                    str(ticket.pk),
-                    title="",
-                    description="desc",
-                ),
+                call_command("pr", "create", str(ticket.pk)),
             )
 
         assert result["error"] == "MR validation failed"
@@ -907,7 +908,10 @@ class TestPrCreate:
         mock_host = MagicMock()
         mock_host.create_pr.return_value = {"url": "https://example.com/mr/2"}
 
-        with patch("teatree.core.management.commands.pr.get_code_host", return_value=mock_host):
+        with (
+            patch("teatree.core.management.commands.pr.get_code_host", return_value=mock_host),
+            patch("teatree.core.management.commands.pr._last_commit_message", return_value=("", "")),
+        ):
             cast(
                 "dict[str, object]",
                 call_command(
@@ -925,18 +929,115 @@ class TestPrCreate:
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
     def test_uses_default_title_from_issue_url(self) -> None:
-        """When no title is given, it defaults to 'Resolve <issue_url>'."""
+        """When no title is given and no commit, it defaults to 'Resolve <issue_url>'."""
         ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/73")
         Worktree.objects.create(overlay="test", ticket=ticket, repo_path="my-repo", branch="feature-73")
 
         mock_host = MagicMock()
         mock_host.create_pr.return_value = {"url": "https://example.com/mr/3"}
 
-        with patch("teatree.core.management.commands.pr.get_code_host", return_value=mock_host):
-            call_command("pr", "create", str(ticket.pk), title="My Title")
+        with (
+            patch("teatree.core.management.commands.pr.get_code_host", return_value=mock_host),
+            patch("teatree.core.management.commands.pr._last_commit_message", return_value=("", "")),
+        ):
+            call_command("pr", "create", str(ticket.pk), skip_validation=True)
 
         call_kwargs = mock_host.create_pr.call_args[1]
-        assert call_kwargs["title"] == "My Title"
+        assert call_kwargs["title"] == "Resolve https://example.com/issues/73"
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_keeps_provided_description(self) -> None:
+        """When description is given but title is not, description is preserved."""
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/77")
+        Worktree.objects.create(overlay="test", ticket=ticket, repo_path="my-repo", branch="feature-77")
+
+        mock_host = MagicMock()
+        mock_host.create_pr.return_value = {"url": "https://example.com/mr/7"}
+
+        with (
+            patch("teatree.core.management.commands.pr.get_code_host", return_value=mock_host),
+            patch(
+                "teatree.core.management.commands.pr._last_commit_message", return_value=("commit title", "commit body")
+            ),
+        ):
+            call_command("pr", "create", str(ticket.pk), description="user desc", skip_validation=True)
+
+        call_kwargs = mock_host.create_pr.call_args[1]
+        assert call_kwargs["title"] == "commit title"
+        assert call_kwargs["description"] == "user desc"
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_dry_run_returns_plan(self) -> None:
+        """--dry-run returns the MR plan without creating it."""
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/74")
+        Worktree.objects.create(overlay="test", ticket=ticket, repo_path="my-repo", branch="feature-74")
+
+        mock_host = MagicMock()
+        with (
+            patch("teatree.core.management.commands.pr.get_code_host", return_value=mock_host),
+            patch("teatree.core.management.commands.pr._last_commit_message", return_value=("", "")),
+        ):
+            result = cast(
+                "dict[str, object]",
+                call_command("pr", "create", str(ticket.pk), title="Dry MR", dry_run=True),
+            )
+
+        assert result["dry_run"] is True
+        assert result["title"] == "Dry MR"
+        mock_host.create_pr.assert_not_called()
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_skip_validation_bypasses_check(self) -> None:
+        """--skip-validation creates MR even with empty title."""
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/75")
+        Worktree.objects.create(overlay="test", ticket=ticket, repo_path="my-repo", branch="feature-75")
+
+        mock_host = MagicMock()
+        mock_host.create_pr.return_value = {"url": "https://example.com/mr/5"}
+
+        with (
+            patch("teatree.core.management.commands.pr.get_code_host", return_value=mock_host),
+            patch("teatree.core.management.commands.pr._last_commit_message", return_value=("", "")),
+        ):
+            result = cast(
+                "dict[str, object]",
+                call_command("pr", "create", str(ticket.pk), skip_validation=True),
+            )
+
+        assert "error" not in result
+        mock_host.create_pr.assert_called_once()
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_title_from_commit_message(self) -> None:
+        """When no title given, falls back to last commit subject."""
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/76")
+        Worktree.objects.create(
+            overlay="test",
+            ticket=ticket,
+            repo_path="my-repo",
+            branch="feature-76",
+            extra={"worktree_path": "/tmp/wt"},
+        )
+
+        mock_host = MagicMock()
+        mock_host.create_pr.return_value = {"url": "https://example.com/mr/6"}
+
+        with (
+            patch("teatree.core.management.commands.pr.get_code_host", return_value=mock_host),
+            patch(
+                "teatree.core.management.commands.pr._last_commit_message",
+                return_value=("fix(api): handle nulls", "Detailed body here"),
+            ),
+        ):
+            call_command("pr", "create", str(ticket.pk), skip_validation=True)
+
+        call_kwargs = mock_host.create_pr.call_args[1]
+        assert call_kwargs["title"] == "fix(api): handle nulls"
+        assert call_kwargs["description"] == "Detailed body here"
 
 
 @pytest.mark.django_db
@@ -976,6 +1077,33 @@ class TestPrCheckGates:
         assert "reviewing" in str(result["reason"])
 
 
+class TestLastCommitMessage:
+    def test_parses_subject_and_body(self) -> None:
+        with patch(
+            "teatree.core.management.commands.pr.subprocess.run",
+            return_value=MagicMock(returncode=0, stdout="fix: bug\n\nDetailed body"),
+        ):
+            subject, body = _last_commit_message("/tmp")
+        assert subject == "fix: bug"
+        assert body == "Detailed body"
+
+    def test_returns_empty_on_failure(self) -> None:
+        with patch(
+            "teatree.core.management.commands.pr.subprocess.run",
+            return_value=MagicMock(returncode=128, stdout=""),
+        ):
+            assert _last_commit_message("/tmp") == ("", "")
+
+    def test_subject_only(self) -> None:
+        with patch(
+            "teatree.core.management.commands.pr.subprocess.run",
+            return_value=MagicMock(returncode=0, stdout="feat: add feature"),
+        ):
+            subject, body = _last_commit_message("/tmp")
+        assert subject == "feat: add feature"
+        assert body == ""
+
+
 @pytest.mark.django_db
 class TestPrFetchIssue:
     @_patch_overlays(FULL_OVERLAY)
@@ -989,12 +1117,61 @@ class TestPrFetchIssue:
     @override_settings(**SETTINGS)
     def test_with_tracker(self) -> None:
         mock_tracker = MagicMock()
-        mock_tracker.get_issue.return_value = {"title": "Bug", "state": "opened"}
+        mock_tracker.get_issue.return_value = {"title": "Bug", "state": "opened", "description": "A bug"}
 
         with patch("teatree.core.management.commands.pr.get_issue_tracker", return_value=mock_tracker):
             result = cast("dict[str, object]", call_command("pr", "fetch-issue", "https://example.com/issues/1"))
 
-        assert result == {"title": "Bug", "state": "opened"}
+        assert result["title"] == "Bug"
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_extracts_images_and_links(self) -> None:
+        """fetch-issue extracts embedded images and external links from description."""
+        desc = "See ![screenshot](/uploads/abc/img.png) and https://notion.so/page/12345 for context."
+        mock_tracker = MagicMock()
+        mock_tracker.get_issue.return_value = {"title": "Task", "description": desc}
+
+        with patch("teatree.core.management.commands.pr.get_issue_tracker", return_value=mock_tracker):
+            result = cast("dict[str, object]", call_command("pr", "fetch-issue", "https://example.com/issues/2"))
+
+        assert result["_embedded_images"] == [{"alt": "screenshot", "path": "/uploads/abc/img.png"}]
+        assert "https://notion.so/page/12345" in result["_external_links"]
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_extracts_comment_images(self) -> None:
+        """fetch-issue extracts images from comments/notes."""
+        mock_tracker = MagicMock()
+        mock_tracker.get_issue.return_value = {
+            "title": "Task",
+            "description": "desc",
+            "comments": [{"body": "See ![fix](/uploads/xyz/fix.png)"}],
+        }
+
+        with patch("teatree.core.management.commands.pr.get_issue_tracker", return_value=mock_tracker):
+            result = cast("dict[str, object]", call_command("pr", "fetch-issue", "https://example.com/issues/3"))
+
+        comments = result["comments"]
+        assert isinstance(comments, list)
+        first = cast("dict[str, object]", comments[0])
+        assert first["_embedded_images"] == [{"alt": "fix", "path": "/uploads/xyz/fix.png"}]
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_skips_non_dict_comments(self) -> None:
+        """fetch-issue skips non-dict items in comments list."""
+        mock_tracker = MagicMock()
+        mock_tracker.get_issue.return_value = {
+            "title": "Task",
+            "description": "desc",
+            "comments": ["not a dict", {"body": "valid"}],
+        }
+
+        with patch("teatree.core.management.commands.pr.get_issue_tracker", return_value=mock_tracker):
+            result = cast("dict[str, object]", call_command("pr", "fetch-issue", "https://example.com/issues/4"))
+
+        assert "error" not in result
 
 
 @pytest.mark.django_db
@@ -1395,6 +1572,65 @@ class TestRunE2e:
             result = cast("dict[str, object]", call_command("run", "e2e"))
 
         assert "error" in result
+
+
+@pytest.mark.django_db
+class TestRunE2eLocal:
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_runs_playwright_locally(self) -> None:
+        mock_result = MagicMock(returncode=0)
+        with (
+            patch("teatree.core.management.commands.run.resolve_worktree", return_value=None),
+            patch("teatree.core.management.commands.run.subprocess.run", return_value=mock_result) as mock_run,
+        ):
+            result = cast("str", call_command("run", "e2e-local"))
+
+        assert "passed" in result
+        cmd = mock_run.call_args[0][0]
+        assert "pytest" in cmd
+        assert "e2e/" in cmd
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_reports_failure(self) -> None:
+        mock_result = MagicMock(returncode=1)
+        with (
+            patch("teatree.core.management.commands.run.resolve_worktree", return_value=None),
+            patch("teatree.core.management.commands.run.subprocess.run", return_value=mock_result),
+        ):
+            result = cast("str", call_command("run", "e2e-local"))
+
+        assert "failed" in result
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_headed_mode_skips_ci_env(self) -> None:
+        """--headed does not set CI=1 in the environment."""
+        mock_result = MagicMock(returncode=0)
+        with (
+            patch("teatree.core.management.commands.run.resolve_worktree", return_value=None),
+            patch("teatree.core.management.commands.run.subprocess.run", return_value=mock_result) as mock_run,
+        ):
+            call_command("run", "e2e-local", headed=True)
+
+        env = mock_run.call_args[1].get("env", {})
+        assert env.get("CI") != "1"
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_custom_test_path(self) -> None:
+        """e2e-local uses the specified test path instead of e2e/."""
+        mock_result = MagicMock(returncode=0)
+        with (
+            patch("teatree.core.management.commands.run.resolve_worktree", return_value=None),
+            patch("teatree.core.management.commands.run.subprocess.run", return_value=mock_result) as mock_run,
+        ):
+            call_command("run", "e2e-local", test_path="tests/e2e/test_login.py")
+
+        cmd = mock_run.call_args[0][0]
+        assert "tests/e2e/test_login.py" in cmd
+        assert "e2e/" not in cmd
 
 
 # ── Lifecycle commands ──────────────────────────────────────────────
@@ -1931,6 +2167,81 @@ class TestLifecycleClean:
 @pytest.mark.django_db
 class TestLifecycleStatus:
     pass  # No status tests in the original file — placeholder for future tests
+
+
+@pytest.mark.django_db
+class TestLifecycleSmokeTest:
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_returns_health_checks(self) -> None:
+        result = cast(
+            "dict[str, dict[str, object]]",
+            call_command("lifecycle", "smoke-test"),
+        )
+        assert result["overlay"]["status"] == "ok"
+        assert result["database"]["status"] == "ok"
+        assert "cli" in result
+
+    @override_settings(**SETTINGS)
+    def test_overlay_error(self) -> None:
+        """smoke-test reports overlay error when loading fails."""
+
+        def _broken_discover() -> dict:
+            msg = "broken"
+            raise RuntimeError(msg)
+
+        _broken_discover.cache_clear = lambda: None
+
+        with patch("teatree.core.overlay_loader._discover_overlays", new=_broken_discover):
+            result = cast(
+                "dict[str, dict[str, object]]",
+                call_command("lifecycle", "smoke-test"),
+            )
+
+        assert result["overlay"]["status"] == "error"
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_hooks_skipped_when_no_config(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """smoke-test reports hooks skipped when no .pre-commit-config.yaml."""
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("PWD", raising=False)
+        result = cast(
+            "dict[str, dict[str, object]]",
+            call_command("lifecycle", "smoke-test"),
+        )
+        assert result["hooks"]["status"] == "skipped"
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_hooks_ok_with_yaml(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """smoke-test reports hooks OK when yaml parses successfully."""
+        config = tmp_path / ".pre-commit-config.yaml"
+        config.write_text("repos: []\n", encoding="utf-8")
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("PWD", raising=False)
+
+        mock_yaml = MagicMock()
+        with patch("importlib.import_module", return_value=mock_yaml):
+            result = cast(
+                "dict[str, dict[str, object]]",
+                call_command("lifecycle", "smoke-test"),
+            )
+        assert result["hooks"]["status"] == "ok"
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_db_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """smoke-test reports DB error when query fails."""
+        monkeypatch.setattr(
+            "teatree.core.models.Worktree.objects",
+            MagicMock(count=MagicMock(side_effect=RuntimeError("DB down"))),
+        )
+        result = cast(
+            "dict[str, dict[str, object]]",
+            call_command("lifecycle", "smoke-test"),
+        )
+        assert result["database"]["status"] == "error"
 
 
 @pytest.mark.django_db

@@ -283,6 +283,36 @@ class Worktree(models.Model):
         self.save(update_fields=["ports"])
         return True
 
+    def revalidate_ports(self) -> dict[str, tuple[int, int]]:
+        """Detect port conflicts and reallocate conflicting ports.
+
+        Returns a dict of ``{service: (old_port, new_port)}`` for each port
+        that was reassigned.  Empty dict means no conflicts.
+        """
+        current = self._ports()
+        if not current:
+            return {}
+
+        conflicts: dict[str, int] = {}
+        for name in ("backend", "frontend"):
+            port = current.get(name)
+            if isinstance(port, int) and not self._port_available(port):
+                conflicts[name] = port
+
+        if not conflicts:
+            return {}
+
+        new_ports = self._allocate_ports()
+        changes: dict[str, tuple[int, int]] = {}
+        for name, old_port in conflicts.items():
+            new_port = new_ports[name]
+            current[name] = new_port
+            changes[name] = (old_port, new_port)
+
+        self.ports = current
+        self.save(update_fields=["ports"])
+        return changes
+
     def _extra(self) -> dict[str, object]:
         return cast("dict[str, object]", self.extra or {})
 

@@ -32,7 +32,10 @@ class TestPrCreate:
         Worktree.objects.create(ticket=ticket, overlay="test", repo_path="/tmp/backend", branch="feature-branch")
 
         # CommandOverlay.get_mr_auto_labels() returns [] (default), so labels=None
-        with patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY):
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.management.commands.pr._last_commit_message", return_value=("", "")),
+        ):
             result = call_command("pr", "create", str(ticket.id), "--title", "feat: add labels")
 
         assert result == {"iid": 12}

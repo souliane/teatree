@@ -167,3 +167,23 @@ class Command(TyperCommand):
         ref = branch or config.get("ref", "main")
         variables = {"E2E": "true"}
         return ci.trigger_pipeline(project=project, ref=ref, variables=variables)
+
+    @command(name="e2e-local")
+    def e2e_local(self, test_path: str = "", *, headed: bool = False) -> str:
+        """Run E2E tests locally with Playwright."""
+        worktree = resolve_worktree()
+        wt_path = (worktree.extra or {}).get("worktree_path", ".") if worktree else "."
+
+        cmd = ["uv", "run", "--with", "playwright", "pytest"]
+        if test_path:
+            cmd.append(test_path)
+        else:
+            cmd.append("e2e/")
+        cmd.extend(["-x", "-v"])
+
+        env = {**os.environ}
+        if not headed:
+            env["CI"] = "1"
+
+        result = subprocess.run(cmd, cwd=wt_path, check=False, env=env)  # noqa: S603
+        return "E2E passed." if result.returncode == 0 else f"E2E failed (exit {result.returncode})."

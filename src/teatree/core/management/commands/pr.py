@@ -1,6 +1,9 @@
 """Pull request helpers: create, check gates, fetch issue, detect tenant."""
 
+import re
+import subprocess  # noqa: S404
 from collections.abc import Iterable
+from typing import cast
 
 from django_typer.management import TyperCommand, command
 
@@ -8,15 +11,38 @@ from teatree.backends.loader import get_code_host, get_issue_tracker
 from teatree.core.models import Ticket
 from teatree.core.overlay_loader import get_overlay
 
+_IMAGE_URL_RE = re.compile(r"!\[([^\]]*)\]\((/uploads/[^\)]+)\)")
+_EXTERNAL_LINK_RE = re.compile(r"https?://(?:www\.)?(?:notion\.so|linear\.app|jira\.\S+)/\S+")
+
+
+def _last_commit_message(cwd: str) -> tuple[str, str]:
+    """Return ``(subject, body)`` from the last git commit in *cwd*."""
+    result = subprocess.run(
+        ["git", "log", "-1", "--format=%s%n%n%b"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return ("", "")
+    lines = result.stdout.strip().split("\n", 1)
+    subject = lines[0].strip()
+    body = lines[1].strip() if len(lines) > 1 else ""
+    return (subject, body)
+
 
 class Command(TyperCommand):
     @command()
-    def create(
+    def create(  # noqa: PLR0913
         self,
         ticket_id: int,
         repo: str = "",
         title: str = "",
         description: str = "",
+        *,
+        dry_run: bool = False,
+        skip_validation: bool = False,
     ) -> dict[str, object]:
         """Create a merge request for the ticket's branch."""
         ticket = Ticket.objects.get(pk=ticket_id)
@@ -28,15 +54,35 @@ class Command(TyperCommand):
         branch = worktree.branch if worktree else f"ticket-{ticket.ticket_number}"
         repo_path = repo or (worktree.repo_path if worktree else "")
 
+        # Auto-fill title/description from the last commit message
+        if not title or not description:
+            wt_path = (worktree.extra or {}).get("worktree_path", "") if worktree else ""
+            commit_subject, commit_body = _last_commit_message(wt_path or repo_path)
+            if not title:
+                title = commit_subject or f"Resolve {ticket.issue_url}"
+            if not description:
+                description = commit_body
+
         overlay = get_overlay()
-        validation = overlay.metadata.validate_mr(title, description)
-        if validation["errors"]:
-            return {"error": "MR validation failed", "details": validation["errors"]}
+        if not skip_validation:
+            validation = overlay.metadata.validate_mr(title, description)
+            if validation["errors"]:
+                return {"error": "MR validation failed", "details": validation["errors"]}
+
+        if dry_run:
+            return {
+                "dry_run": True,
+                "repo": repo_path,
+                "branch": branch,
+                "title": title,
+                "description": description,
+                "labels": _mr_auto_labels(),
+            }
 
         return host.create_pr(
             repo=repo_path,
             branch=branch,
-            title=title or f"Resolve {ticket.issue_url}",
+            title=title,
             description=description,
             labels=_mr_auto_labels() or None,
         )
@@ -57,11 +103,36 @@ class Command(TyperCommand):
 
     @command(name="fetch-issue")
     def fetch_issue(self, issue_url: str) -> dict[str, object]:
-        """Fetch issue details from the configured tracker."""
+        """Fetch issue details with embedded image URLs and external links."""
         tracker = get_issue_tracker()
         if tracker is None:
             return {"error": "No issue tracker configured"}
-        return tracker.get_issue(issue_url)
+        issue = tracker.get_issue(issue_url)
+        description = str(issue.get("description", ""))
+
+        # Extract embedded image paths (GitLab /uploads/ references)
+        images = _IMAGE_URL_RE.findall(description)
+        if images:
+            issue["_embedded_images"] = [{"alt": alt, "path": path} for alt, path in images]
+
+        # Extract external links (Notion, Linear, Jira)
+        external_links = list(set(_EXTERNAL_LINK_RE.findall(description)))
+        if external_links:
+            issue["_external_links"] = external_links
+
+        # Extract comments if available
+        comments = issue.get("comments") or issue.get("notes")
+        if isinstance(comments, list):
+            for item in comments:
+                if not isinstance(item, dict):
+                    continue
+                comment = cast("dict[str, object]", item)
+                body = str(comment.get("body", ""))
+                comment_images = _IMAGE_URL_RE.findall(body)
+                if comment_images:
+                    comment["_embedded_images"] = [{"alt": alt, "path": path} for alt, path in comment_images]
+
+        return issue
 
     @command(name="detect-tenant")
     def detect_tenant(self) -> str:

@@ -24,6 +24,18 @@ def worktree_db_name(ticket_number: str, variant: str) -> str:
     return f"wt_{ticket_number}{suffix}"
 
 
+_TRUNCATION_PATTERNS = ("could not read", "unexpected EOF", "invalid page", "WARNING:  errors ignored")
+
+
+def _check_truncation(stderr: str, db_name: str, dump_path: str) -> None:
+    """Raise if stderr contains signs of a truncated or corrupt dump file."""
+    lower = stderr.lower()
+    for pattern in _TRUNCATION_PATTERNS:
+        if pattern.lower() in lower:
+            msg = f"Corrupt or truncated dump detected for {db_name} from {dump_path}: {pattern!r}"
+            raise RuntimeError(msg)
+
+
 def db_restore(db_name: str, dump_path: str) -> None:
     env = pg_env()
     host = pg_host()
@@ -44,6 +56,7 @@ def db_restore(db_name: str, dump_path: str) -> None:
         if restore.returncode != 0:
             msg = f"pg_restore failed for {db_name} from {dump_path}"
             raise RuntimeError(msg)
+        _check_truncation(restore.stderr, db_name, dump_path)
         return
 
     restore = subprocess.run(
@@ -56,6 +69,7 @@ def db_restore(db_name: str, dump_path: str) -> None:
     if restore.returncode != 0:
         msg = f"psql restore failed for {db_name} from {dump_path}"
         raise RuntimeError(msg)
+    _check_truncation(restore.stderr, db_name, dump_path)
 
 
 def db_exists(db_name: str) -> bool:
