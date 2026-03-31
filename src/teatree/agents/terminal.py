@@ -1,7 +1,5 @@
-from pathlib import Path
-
 from teatree.agents.services import RuntimeExecution, get_interactive_runtime_name, get_runtime, get_terminal_mode
-from teatree.agents.skill_bundle import DEFAULT_DELEGATION_MAP, resolve_skill_bundle
+from teatree.agents.skill_bundle import resolve_skill_bundle
 from teatree.core.models import Task
 from teatree.core.overlay import SkillMetadata
 
@@ -11,7 +9,6 @@ def run_interactive_task(
     *,
     phase: str,
     overlay_skill_metadata: SkillMetadata,
-    delegation_map_path: Path = DEFAULT_DELEGATION_MAP,
 ) -> RuntimeExecution:
     runtime_name = get_interactive_runtime_name()
     runtime = get_runtime(runtime_name)
@@ -21,7 +18,6 @@ def run_interactive_task(
             skills=resolve_skill_bundle(
                 phase=phase,
                 overlay_skill_metadata=overlay_skill_metadata,
-                delegation_map_path=delegation_map_path,
             ),
             terminal_mode=get_terminal_mode(),
         )

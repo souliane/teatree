@@ -46,7 +46,7 @@ def main() -> int:
         return 1
 
     issues = 0
-    for skill_md in sorted(ROOT_DIR.glob("skills/t3-*/SKILL.md")):
+    for skill_md in sorted(ROOT_DIR.glob("skills/*/SKILL.md")):
         actual = _skill_version(skill_md)
         if actual != expected:
             rel = skill_md.relative_to(ROOT_DIR)

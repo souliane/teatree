@@ -1,10 +1,9 @@
 """Centralised skill selection policy for all TeaTree entry points.
 
-Three callers route through ``SkillLoadingPolicy``:
+Two callers route through ``SkillLoadingPolicy``:
 
 * ``t3 agent`` CLI (interactive launch)
 * ``scripts/lib/skill_loader.py`` (UserPromptSubmit hook)
-* ``agents/skill_bundle.py`` (headless runtime)
 """
 
 import re
@@ -16,45 +15,40 @@ from pathlib import Path
 from teatree.core.overlay import SkillMetadata
 
 DEFAULT_SKILLS_DIR = Path(__file__).resolve().parents[2] / "skills"
-DEFAULT_SKILL_SEARCH_DIRS = [DEFAULT_SKILLS_DIR, Path.home() / ".agents" / "skills", Path.home() / ".claude" / "skills"]
-
-AGENT_LAUNCH = "agent_launch"
-PROMPT_HOOK = "prompt_hook"
-RUNTIME_PHASE = "runtime_phase"
 
 _AGENT_TASK_KEYWORDS: dict[str, tuple[str, ...]] = {
-    "t3-debug": ("debug", "fix", "error", "broken", "crash", "not working", "bug", "trace"),
-    "t3-test": ("test", "pytest", "e2e", "lint", "ci", "pipeline", "qa"),
-    "t3-ship": ("commit", "push", "ship", "deliver", "mr", "merge request", "pull request"),
-    "t3-review": ("review", "feedback", "check the code"),
-    "t3-ticket": ("ticket", "issue", "start working on"),
-    "t3-retro": ("retro", "retrospective", "lessons learned"),
-    "t3-workspace": ("setup", "worktree", "create worktree", "servers", "cleanup"),
+    "debug": ("debug", "fix", "error", "broken", "crash", "not working", "bug", "trace"),
+    "test": ("test", "pytest", "e2e", "lint", "ci", "pipeline", "qa"),
+    "ship": ("commit", "push", "ship", "deliver", "mr", "merge request", "pull request"),
+    "review": ("review", "feedback", "check the code"),
+    "ticket": ("ticket", "issue", "start working on"),
+    "retro": ("retro", "retrospective", "lessons learned"),
+    "workspace": ("setup", "worktree", "create worktree", "servers", "cleanup"),
 }
 
 _STATUS_TO_SKILL: dict[str, str] = {
-    "not_started": "t3-ticket",
-    "scoped": "t3-ticket",
-    "started": "t3-code",
-    "coded": "t3-test",
-    "tested": "t3-review",
-    "reviewed": "t3-ship",
-    "shipped": "t3-debug",
-    "in_review": "t3-debug",
-    "merged": "t3-debug",
-    "delivered": "t3-debug",
+    "not_started": "ticket",
+    "scoped": "ticket",
+    "started": "code",
+    "coded": "test",
+    "tested": "review",
+    "reviewed": "ship",
+    "shipped": "debug",
+    "in_review": "debug",
+    "merged": "debug",
+    "delivered": "debug",
 }
 
 _PHASE_TO_SKILL: dict[str, str] = {
-    "ticket-intake": "t3-ticket",
-    "scoping": "t3-ticket",
-    "coding": "t3-code",
-    "testing": "t3-test",
-    "reviewing": "t3-review",
-    "shipping": "t3-ship",
-    "debugging": "t3-debug",
-    "requesting_review": "t3-review-request",
-    "retrospecting": "t3-retro",
+    "ticket-intake": "ticket",
+    "scoping": "ticket",
+    "coding": "code",
+    "testing": "test",
+    "reviewing": "review",
+    "shipping": "ship",
+    "debugging": "debug",
+    "requesting_review": "review-request",
+    "retrospecting": "retro",
 }
 
 _PYTHON_FILE_HINTS = ("pyproject.toml", "setup.py", "requirements.txt")
@@ -71,75 +65,8 @@ class SkillSelectionResult:
 type OverlaySkillMetadata = SkillMetadata | dict[str, object]
 
 
-def parse_skill_requires(skill_md_text: str) -> list[str]:
-    """Extract the ``requires:`` list from SKILL.md YAML frontmatter."""
-    if not skill_md_text.startswith("---"):
-        return []
-    try:
-        end = skill_md_text.index("---", 3)
-    except ValueError:
-        return []
-    frontmatter = skill_md_text[3:end]
-    in_requires = False
-    requires: list[str] = []
-    for line in frontmatter.splitlines():
-        stripped = line.strip()
-        if stripped == "requires:":
-            in_requires = True
-            continue
-        if in_requires:
-            if stripped.startswith("- "):
-                requires.append(stripped.removeprefix("- ").strip())
-            else:
-                break
-    return requires
-
-
-def find_skill_md(name_or_path: str, skills_dir: Path | list[Path]) -> Path | None:
-    """Locate SKILL.md for a skill name or a direct file path."""
-    as_path = Path(name_or_path)
-    if as_path.is_file():
-        return as_path
-    if as_path.name == "SKILL.md" and as_path.parent.is_dir():
-        return as_path if as_path.exists() else None
-
-    search_dirs = skills_dir if isinstance(skills_dir, list) else [skills_dir]
-    for directory in search_dirs:
-        candidate = directory / name_or_path / "SKILL.md"
-        if candidate.is_file():
-            return candidate
-    return None
-
-
-def resolve_dependencies(
-    skills: list[str],
-    *,
-    skills_dir: Path | list[Path] = DEFAULT_SKILL_SEARCH_DIRS,
-) -> list[str]:
-    """Recursively resolve ``requires:`` from SKILL.md frontmatter."""
-    resolved: list[str] = []
-    seen: set[str] = set()
-
-    def _walk(name: str) -> None:
-        if name in seen:
-            return
-        seen.add(name)
-        skill_md = find_skill_md(name, skills_dir)
-        if skill_md is not None:
-            for dep in parse_skill_requires(skill_md.read_text(encoding="utf-8")):
-                _walk(dep)
-        resolved.append(name)
-
-    for skill in skills:
-        _walk(skill)
-    return resolved
-
-
 class SkillLoadingPolicy:
     """Single source of truth for skill selection decisions."""
-
-    def __init__(self, *, skills_dir: Path | list[Path] = DEFAULT_SKILL_SEARCH_DIRS) -> None:
-        self.skills_dir = skills_dir
 
     def select_for_agent_launch(  # noqa: PLR0913
         self,
@@ -187,7 +114,7 @@ class SkillLoadingPolicy:
             ordered.append(lifecycle_skill)
 
         return SkillSelectionResult(
-            skills=self._resolve_and_dedupe(ordered),
+            skills=_dedupe(ordered),
             lifecycle_skill=lifecycle_skill,
             ask_user=ask_user,
         )
@@ -211,7 +138,7 @@ class SkillLoadingPolicy:
             ordered.append(intent)
         if supplementary_skills:
             ordered.extend(supplementary_skills)
-        resolved = self._resolve_and_dedupe(ordered)
+        resolved = _dedupe(ordered)
         suggestions = [skill for skill in resolved if skill not in loaded_skills]
         return SkillSelectionResult(skills=suggestions, lifecycle_skill=intent)
 
@@ -232,7 +159,7 @@ class SkillLoadingPolicy:
         if lifecycle_skill:
             ordered.append(lifecycle_skill)
         return SkillSelectionResult(
-            skills=self._resolve_and_dedupe(ordered),
+            skills=_dedupe(ordered),
             lifecycle_skill=lifecycle_skill,
         )
 
@@ -272,8 +199,8 @@ class SkillLoadingPolicy:
         ordered.extend(self.detect_framework_skills(cwd))
         return ordered
 
+    @staticmethod
     def _overlay_skill_for_context(
-        self,
         *,
         cwd: Path,
         overlay_skill_metadata: OverlaySkillMetadata,
@@ -293,7 +220,7 @@ class SkillLoadingPolicy:
         patterns = [pattern for pattern in patterns_object if isinstance(pattern, str) and pattern]
         if not patterns:
             return ""
-        return skill_path if self._matches_any_remote(cwd, patterns) else ""
+        return skill_path if _matches_any_remote(cwd, patterns) else ""
 
     @staticmethod
     def detect_framework_skills(cwd: Path) -> list[str]:
@@ -313,50 +240,49 @@ class SkillLoadingPolicy:
                 return ["ac-python"]
         return []
 
-    def _resolve_and_dedupe(self, skills: list[str]) -> list[str]:
-        ordered: list[str] = []
-        for skill in resolve_dependencies(skills, skills_dir=self.skills_dir):
-            # ac-adopting-ruff is a one-shot migration skill (ruff adoption),
-            # not a session companion — skip it during automatic resolution.
-            if skill == "ac-adopting-ruff":
-                continue
-            if skill not in ordered:
-                ordered.append(skill)
-        return ordered
 
-    @staticmethod
-    def _matches_any_remote(cwd: Path, patterns: list[str]) -> bool:
-        urls = SkillLoadingPolicy._git_remote_urls(cwd)
-        return any(any(fnmatch(url, pattern) for pattern in patterns) for url in urls)
+def _dedupe(skills: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for skill in skills:
+        if skill not in seen:
+            seen.add(skill)
+            result.append(skill)
+    return result
 
-    @staticmethod
-    def _git_remote_urls(cwd: Path) -> list[str]:
-        origin_url = SkillLoadingPolicy._git_remote_url(cwd, "origin")
-        if origin_url:
-            return [origin_url]
-        command = ["git", "-C", str(cwd), "remote", "-v"]
-        try:
-            proc = subprocess.run(command, capture_output=True, text=True, check=False)  # noqa: S603
-        except OSError:
-            return []
-        if proc.returncode != 0:
-            return []
-        seen: set[str] = set()
-        urls: list[str] = []
-        for raw_line in proc.stdout.splitlines():
-            parts = raw_line.split()
-            if len(parts) >= 2 and parts[1] not in seen:  # noqa: PLR2004
-                seen.add(parts[1])
-                urls.append(parts[1])
-        return urls
 
-    @staticmethod
-    def _git_remote_url(cwd: Path, remote_name: str) -> str:
-        command = ["git", "-C", str(cwd), "remote", "get-url", remote_name]
-        try:
-            proc = subprocess.run(command, capture_output=True, text=True, check=False)  # noqa: S603
-        except OSError:
-            return ""
-        if proc.returncode != 0:
-            return ""
-        return proc.stdout.strip()
+def _matches_any_remote(cwd: Path, patterns: list[str]) -> bool:
+    urls = _git_remote_urls(cwd)
+    return any(any(fnmatch(url, pattern) for pattern in patterns) for url in urls)
+
+
+def _git_remote_urls(cwd: Path) -> list[str]:
+    origin_url = _git_remote_url(cwd, "origin")
+    if origin_url:
+        return [origin_url]
+    command = ["git", "-C", str(cwd), "remote", "-v"]
+    try:
+        proc = subprocess.run(command, capture_output=True, text=True, check=False)  # noqa: S603
+    except OSError:
+        return []
+    if proc.returncode != 0:
+        return []
+    seen: set[str] = set()
+    urls: list[str] = []
+    for raw_line in proc.stdout.splitlines():
+        parts = raw_line.split()
+        if len(parts) >= 2 and parts[1] not in seen:  # noqa: PLR2004
+            seen.add(parts[1])
+            urls.append(parts[1])
+    return urls
+
+
+def _git_remote_url(cwd: Path, remote_name: str) -> str:
+    command = ["git", "-C", str(cwd), "remote", "get-url", remote_name]
+    try:
+        proc = subprocess.run(command, capture_output=True, text=True, check=False)  # noqa: S603
+    except OSError:
+        return ""
+    if proc.returncode != 0:
+        return ""
+    return proc.stdout.strip()

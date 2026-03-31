@@ -1,0 +1,37 @@
+interfaces = []
+exclude = [
+  "**/*__pycache__",
+  "**/*egg-info",
+  "**/docs",
+  "**/tests",
+  "**/venv"
+]
+source_roots = ["tests", "src", "e2e"]
+
+[[modules]]
+path = "teatree.utils"
+depends_on = []
+
+[[modules]]
+path = "teatree.templates"
+depends_on = []
+
+[[modules]]
+path = "teatree.overlay_init"
+depends_on = []
+
+[[modules]]
+path = "teatree.backends"
+depends_on = ["teatree.core", "teatree.utils"]
+
+[[modules]]
+path = "teatree.agents"
+depends_on = ["teatree.core", "teatree.utils"]
+
+[[modules]]
+path = "teatree.core"
+depends_on = ["teatree.backends", "teatree.utils", "teatree.agents"]
+
+[[modules]]
+path = "teatree.contrib"
+depends_on = ["teatree.core"]

@@ -60,11 +60,11 @@ cd ~/workspace/teatree
 uv sync
 ```
 
-Then open your agent and run `/t3-setup` — it creates symlinks from your agent's skills directory to the clone, validates the local environment, creates `~/.teatree`, installs optional hooks, and walks you through `t3 startoverlay`.
+Then open your agent and run `/t3:setup` — it creates symlinks from your agent's skills directory to the clone, validates the local environment, creates `~/.teatree`, installs optional hooks, and walks you through `t3 startoverlay`.
 
 ### Self-improvement (optional)
 
-If you want the retrospective loop to write improvements back into skill files, set `T3_CONTRIBUTE=true` in `~/.teatree` (created by `/t3-setup`). This requires a fork — the agent pushes to your fork, not to the upstream repo. See the Contributing section below for details.
+If you want the retrospective loop to write improvements back into skill files, set `T3_CONTRIBUTE=true` in `~/.teatree` (created by `/t3:setup`). This requires a fork — the agent pushes to your fork, not to the upstream repo. See the Contributing section below for details.
 
 ## What It Looks Like
 
@@ -100,39 +100,39 @@ Each skill teaches the agent one phase of development:
 
 ```mermaid
 graph LR
-  ticket["t3-ticket<br/>(fetches ticket)"] --> code["t3-code<br/>(implements)"]
-  code --> test["t3-test<br/>(tests)"]
-  test --> review["t3-review<br/>(reviews)"]
-  review --> ship["t3-ship<br/>(delivers)"]
-  ship --> retro["t3-retro<br/>(improves skills)"]
+  ticket["ticket<br/>(fetches ticket)"] --> code["code<br/>(implements)"]
+  code --> test["test<br/>(tests)"]
+  test --> review["review<br/>(reviews)"]
+  review --> ship["ship<br/>(delivers)"]
+  ship --> retro["retro<br/>(improves skills)"]
   retro -.-> ticket
 
-  ship --> rr["t3-review-request<br/>(notifies reviewers)"]
-  debug["t3-debug<br/>(troubleshoots)"] -.-> code
+  ship --> rr["review-request<br/>(notifies reviewers)"]
+  debug["debug<br/>(troubleshoots)"] -.-> code
   debug -.-> test
-  followup["t3-followup<br/>(batch processes)"] -.-> ticket
-  workspace["t3-workspace<br/>(provisions infra)"] -..-> code & test & review & ship
+  followup["followup<br/>(batch processes)"] -.-> ticket
+  workspace["workspace<br/>(provisions infra)"] -..-> code & test & review & ship
 ```
 
 <!-- BEGIN SKILLS -->
 | Skill | Phase |
 |-------|-------|
-| `t3-code` | Writing code with TDD methodology |
-| `t3-contribute` | Push retro improvements to your fork and optionally open upstream issues |
-| `t3-debug` | Troubleshooting and fixing — something is broken, find and fix it |
-| `t3-followup` | Daily follow-up — batch process new tickets, check/advance ticket statuses, remind about MRs waiting for review |
-| `t3-handover` | Use when the user wants to transfer an in-flight TeaTree task from Claude to another runtime, or asks whether it is time to switch because Claude usage is getting high. |
-| `t3-next` | Wrap up the current session — retro, structured result, pipeline handoff. |
-| `t3-platforms` | Platform-specific API recipes for GitLab, GitHub, and Slack. Auto-loaded as a dependency by skills that interact with these platforms. |
-| `t3-retro` | Conversation retrospective and skill improvement |
-| `t3-review` | Code review — self-review before finalization, giving review, receiving review feedback |
-| `t3-review-request` | Batch review requests — discover open MRs, validate metadata, check for duplicates, post to review channels |
-| `t3-rules` | Cross-cutting agent safety rules — clickable refs, temp files, sub-agent limits, UX preservation. Auto-loaded as a dependency by other skills. |
-| `t3-setup` | Bootstrap and validate teatree for local use — prerequisites, config, skill symlinks, optional agent hooks, and Django project scaffolding |
-| `t3-ship` | Delivery — committing, pushing, creating MR/PR, pipeline monitoring, review requests |
-| `t3-test` | Testing, QA, and CI — running tests, analyzing failures, quality checks, CI interaction, test plans, and posting testing evidence |
-| `t3-ticket` | Ticket intake and kickoff — from zero to ready-to-code |
-| `t3-workspace` | Environment and workspace lifecycle — worktree creation, setup, DB provisioning, dev servers, cleanup |
+| `code` | Writing code with TDD methodology |
+| `contribute` | Push retro improvements to your fork and optionally open upstream issues |
+| `debug` | Troubleshooting and fixing — something is broken, find and fix it |
+| `followup` | Daily follow-up — batch process new tickets, check/advance ticket statuses, remind about MRs waiting for review |
+| `handover` | Use when the user wants to transfer an in-flight TeaTree task from Claude to another runtime, or asks whether it is time to switch because Claude usage is getting high. |
+| `next` | Wrap up the current session — retro, structured result, pipeline handoff. |
+| `platforms` | Platform-specific API recipes for GitLab, GitHub, and Slack. Auto-loaded as a dependency by skills that interact with these platforms. |
+| `retro` | Conversation retrospective and skill improvement |
+| `review` | Code review — self-review before finalization, giving review, receiving review feedback |
+| `review-request` | Batch review requests — discover open MRs, validate metadata, check for duplicates, post to review channels |
+| `rules` | Cross-cutting agent safety rules — clickable refs, temp files, sub-agent limits, UX preservation. Auto-loaded as a dependency by other skills. |
+| `setup` | Bootstrap and validate teatree for local use — prerequisites, config, skill symlinks, optional agent hooks, and Django project scaffolding |
+| `ship` | Delivery — committing, pushing, creating MR/PR, pipeline monitoring, review requests |
+| `test` | Testing, QA, and CI — running tests, analyzing failures, quality checks, CI interaction, test plans, and posting testing evidence |
+| `ticket` | Ticket intake and kickoff — from zero to ready-to-code |
+| `workspace` | Environment and workspace lifecycle — worktree creation, setup, DB provisioning, dev servers, cleanup |
 <!-- END SKILLS -->
 
 ## Skill Dependencies & Token Economy
@@ -141,13 +141,13 @@ Skills declare dependencies in their YAML frontmatter via the `requires:` field:
 
 ```yaml
 ---
-name: t3-code
+name: code
 requires:
-  - t3-workspace
+  - workspace
 ---
 ```
 
-The `ensure-skills-loaded.sh` hook resolves these automatically — when it suggests loading `t3-code`, it also suggests `t3-workspace` if not already loaded. This eliminates wasted round-trips where the agent would read the skill, notice it says "Load `/t3-workspace` now", and then load it as a second step.
+The `ensure-skills-loaded.sh` hook resolves these automatically — when it suggests loading `code`, it also suggests `workspace` if not already loaded. This eliminates wasted round-trips where the agent would read the skill, notice it says "Load `/workspace` now", and then load it as a second step.
 
 Skills are already lean (most are 80–160 lines). The main token economy levers are:
 
@@ -176,7 +176,7 @@ Once installed alongside teatree (`pip install -e .`), the overlay is auto-disco
 
 ## Configuration
 
-Teatree stores its config in `~/.teatree` (created by `/t3-setup`):
+Teatree stores its config in `~/.teatree` (created by `/t3:setup`):
 
 | Variable | Required | Default | Purpose |
 |----------|----------|---------|---------|
@@ -194,20 +194,20 @@ Teatree stores its config in `~/.teatree` (created by `/t3-setup`):
 
 ## Contributing & Self-Improvement
 
-Teatree learns from every session. The `t3-retro` skill runs a retrospective after non-trivial work, extracts what went wrong, and writes fixes back into the skill system — new guardrails, updated playbooks, troubleshooting entries — so the same mistake never happens twice.
+Teatree learns from every session. The `retro` skill runs a retrospective after non-trivial work, extracts what went wrong, and writes fixes back into the skill system — new guardrails, updated playbooks, troubleshooting entries — so the same mistake never happens twice.
 
 This isn't just local learning. When contributors enable self-improvement, their AI agents push skill fixes to their forks and open issues upstream. The upstream repo can then review and cherry-pick the best improvements. The result: **the skill system evolves from the collective experience of everyone using it** — each user's failures make the system better for all users.
 
 **Where improvements go depends on `T3_CONTRIBUTE`:**
 
 - **`false`** (default): Improvements go to your project overlay only. Core teatree skills are read-only.
-- **`true`**: Your agent also improves core skills in your fork. It creates a **local commit** but never pushes automatically — you review and push with `/t3-contribute`, which handles push confirmation, divergence checks, and upstream issue creation.
+- **`true`**: Your agent also improves core skills in your fork. It creates a **local commit** but never pushes automatically — you review and push with `/t3:contribute`, which handles push confirmation, divergence checks, and upstream issue creation.
 
 This means:
 
 - **Just using teatree?** Leave `T3_CONTRIBUTE=false`.
 - **Want your fork to get smarter?** Set `T3_CONTRIBUTE=true`. No `T3_UPSTREAM` needed.
-- **Want to contribute back?** Set `T3_CONTRIBUTE=true` and `T3_UPSTREAM=souliane/teatree`. After pushing, `/t3-contribute` opens an issue upstream.
+- **Want to contribute back?** Set `T3_CONTRIBUTE=true` and `T3_UPSTREAM=souliane/teatree`. After pushing, `/t3:contribute` opens an issue upstream.
 - **Want to also be prompted about pushing?** Set `T3_PUSH=true`. Retro will ask after each commit whether to push now.
 
 **To contribute directly:**
@@ -215,12 +215,12 @@ This means:
 1. **Fork** `souliane/teatree` on GitHub and make your fork **public**
 2. **Clone your fork** and point `T3_REPO` to it
 3. Set `T3_UPSTREAM="souliane/teatree"` and `T3_CONTRIBUTE=true` in `~/.teatree`
-4. Work normally — `t3-retro` creates local commits improving core skills
-5. Run `/t3-contribute` to review, push, and optionally open an issue upstream — the upstream repo can review and cherry-pick if appropriate
+4. Work normally — `retro` creates local commits improving core skills
+5. Run `/t3:contribute` to review, push, and optionally open an issue upstream — the upstream repo can review and cherry-pick if appropriate
 
-Nothing is ever pushed without your explicit consent. `/t3-contribute` shows you exactly what will be pushed and posted, runs privacy scans, and checks fork divergence before creating issues.
+Nothing is ever pushed without your explicit consent. `/t3:contribute` shows you exactly what will be pushed and posted, runs privacy scans, and checks fork divergence before creating issues.
 
-**Privacy:** Before any upstream interaction, all changes are scanned for personal information (emails, paths, usernames, API keys, hostnames). Your fork must be public for upstream issues — `/t3-contribute` verifies this automatically.
+**Privacy:** Before any upstream interaction, all changes are scanned for personal information (emails, paths, usernames, API keys, hostnames). Your fork must be public for upstream issues — `/t3:contribute` verifies this automatically.
 
 ```bash
 # Run tests locally
@@ -237,7 +237,7 @@ Teatree skills are prompt instructions — they control what your AI agent does.
 
 **Safe defaults:** Self-improvement is off (`T3_CONTRIBUTE=false`), pushing is disabled (`T3_PUSH=false`), and there is no auto-update mechanism. You opt in to each level of automation explicitly. See the Contributing section above for what each setting unlocks.
 
-**Supply chain:** `/t3-setup` verifies that `T3_REPO` is a full git clone (not shallow) and that skills are loaded via symlinks to your clone — not stale copies. If you use a fork from someone else, you are trusting that person's skill files as agent instructions. Review changes before pulling. There is no auto-update — you control when and what you merge.
+**Supply chain:** `/t3:setup` verifies that `T3_REPO` is a full git clone (not shallow) and that skills are loaded via symlinks to your clone — not stale copies. If you use a fork from someone else, you are trusting that person's skill files as agent instructions. Review changes before pulling. There is no auto-update — you control when and what you merge.
 
 ## Project Structure
 
@@ -249,7 +249,7 @@ teatree/
     backends/          #   GitLab / Slack / Notion / Sentry integrations
     utils/             #   Internal helpers (ports, git, DB, GitLab API)
     overlay_init/      #   `t3 startoverlay` templates
-  skills/t3-*/         # AI agent skills (SKILL.md files + references)
+  skills/*/         # AI agent skills (SKILL.md files + references)
   integrations/        # Agent platform hooks (Claude Code statusline)
   scripts/             # Pre-commit hooks, utility scripts
   tests/               # Unit tests (100% branch coverage)
@@ -266,7 +266,7 @@ That said, not all guardrails are permanent. Teatree distinguishes between *doma
 
 **Why are the skills interdependent instead of standalone?**
 
-Because real development work isn't standalone. Implementing a ticket touches intake, coding, testing, review, and delivery — often across multiple repos. The skills mirror this reality: `t3-ticket` hands off to `t3-code`, which hands off to `t3-test`, which hands off to `t3-ship`. They share infrastructure through `t3-workspace` and share cross-cutting rules through common reference files. Making them fully independent would mean duplicating domain knowledge across every skill — which always diverges over time.
+Because real development work isn't standalone. Implementing a ticket touches intake, coding, testing, review, and delivery — often across multiple repos. The skills mirror this reality: `t3:ticket` hands off to `code`, which hands off to `t3:test`, which hands off to `t3:ship`. They share infrastructure through `workspace` and share cross-cutting rules through common reference files. Making them fully independent would mean duplicating domain knowledge across every skill — which always diverges over time.
 
 **Why Django management commands instead of just markdown instructions?**
 
@@ -274,7 +274,7 @@ Markdown instructions tell the agent *what to do*. Management commands *do it*. 
 
 **Is this overkill for my project?**
 
-If you work in a single repo with a simple setup, probably. Teatree shines when your workflow has friction that the model can't solve from first principles: multi-repo synchronization, tenant-specific configuration, isolated worktree environments, or a CI/CD pipeline with project-specific quirks. Start with `/t3-setup` — it scaffolds only what you need.
+If you work in a single repo with a simple setup, probably. Teatree shines when your workflow has friction that the model can't solve from first principles: multi-repo synchronization, tenant-specific configuration, isolated worktree environments, or a CI/CD pipeline with project-specific quirks. Start with `/t3:setup` — it scaffolds only what you need.
 
 **Is this production-ready?**
 
@@ -282,11 +282,11 @@ It works well for the author's workflow but hasn't been battle-tested by many us
 
 **Should the project overlay be shared with the team or per-developer?**
 
-Ideally shared — it encodes project-specific knowledge that benefits everyone. In practice, there's no built-in sync mechanism yet, so each developer maintains their own copy. You can share it via a git repo and use the same fork-based model that teatree itself uses (see `t3-contribute`). This is an area that will improve over time.
+Ideally shared — it encodes project-specific knowledge that benefits everyone. In practice, there's no built-in sync mechanism yet, so each developer maintains their own copy. You can share it via a git repo and use the same fork-based model that teatree itself uses (see `t3:contribute`). This is an area that will improve over time.
 
 **Why do skills live in the same repo as the Django code?**
 
-Because the skills and the code are tightly coupled — skills call management commands, reference the overlay API, and depend on the CLI. Keeping them together means a single `git clone` gives you everything, and skill improvements can be tested against the actual code in the same PR. The `/t3-setup` skill creates symlinks from your agent's skills directory into the `skills/` subdirectory of the clone.
+Because the skills and the code are tightly coupled — skills call management commands, reference the overlay API, and depend on the CLI. Keeping them together means a single `git clone` gives you everything, and skill improvements can be tested against the actual code in the same PR. The `/t3:setup` skill creates symlinks from your agent's skills directory into the `skills/` subdirectory of the clone.
 
 **Does teatree work with bash or only zsh?**
 

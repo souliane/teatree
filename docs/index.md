@@ -11,7 +11,7 @@ The core idea: each workflow phase -- ticket intake, coding, testing, review, de
 ## How it fits together
 
 - **`teatree/`** -- the Django extension package. Models, management commands, overlay loader, views, and the `t3` CLI.
-- **`skills/t3-*/`** -- skill directories. Each teaches the agent one phase of the development lifecycle.
+- **`skills/*/`** -- skill directories. Each teaches the agent one phase of the development lifecycle.
 - **Overlay pattern** -- project-specific behaviour lives in a lightweight overlay package that subclasses `OverlayBase` and registers via a `teatree.overlays` entry point. Teatree stays generic; the overlay wires in your repos, services, and provisioning steps.
 
 ## Getting started

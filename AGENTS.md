@@ -1,6 +1,6 @@
 # TeaTree — Agent Instructions
 
-This is the teatree repo — both the Python package (`src/teatree/`) and the workflow skills (`skills/t3-*/`). You are developing teatree itself, not using it on a downstream project.
+This is the teatree repo — both the Python package (`src/teatree/`) and the workflow skills (`skills/*/`). You are developing teatree itself, not using it on a downstream project.
 
 ## Repo Change Safety
 
@@ -26,7 +26,7 @@ It provides:
 - A Django app (`teatree.core`) with 5 models driven by `django-fsm` state machines
 - An overlay system for downstream project customization (`OverlayBase`)
 - Backend protocols for pluggable external integrations
-- Agent workflow skills (`skills/t3-*`) for the full development lifecycle
+- Agent workflow skills (`skills/*/`) for the full development lifecycle
 - A dashboard (django-htmx) for monitoring tickets, tasks, and agent sessions
 
 ## Repo Layout
@@ -61,7 +61,7 @@ src/teatree/           Python package (the Django app + CLI)
     result_schema.py   JSON schema for structured agent output
   utils/               Git helpers, port allocation, subprocess wrappers
   overlay_init/        `t3 startoverlay` templates (overlay package + app)
-skills/t3-*/           Workflow skills (SKILL.md + references/)
+skills/*/              Workflow skills (SKILL.md + references/)
 tests/                 Pytest suite (100% coverage required)
 e2e/                   Playwright E2E tests for dashboard
 scripts/               Standalone Python CLI scripts
@@ -164,7 +164,7 @@ SDK tasks run `claude -p <prompt> --append-system-prompt <context> --output-form
 
 ### Skill Loading
 
-Skills in `skills/t3-*/` installed as symlinks into `~/.claude/skills/`. Skills with "Auto-loaded as a dependency" descriptions are not user-invocable — loaded via `requires:` in other skills' frontmatter.
+Skills in `skills/*/` are loaded via the plugin system (see `hooks/hooks.json`) or installed as symlinks into agent skill directories. Skills with "Auto-loaded as a dependency" descriptions are not user-invocable — loaded via `requires:` in other skills' frontmatter.
 
 ## Dashboard
 
@@ -205,7 +205,7 @@ uv run t3 agent                     # Launch Claude Code (teatree-self developme
 ```bash
 uv run pytest                       # Unit tests with coverage (must be 100%)
 uv run pytest e2e/ -x               # E2E tests with Playwright
-prek run --all-files                 # Pre-commit hooks (ruff, codespell, import-linter, ty)
+prek run --all-files                 # Pre-commit hooks (ruff, codespell, tach, ty)
 bash dev/test-matrix.sh             # Docker matrix: Python 3.13 + 3.14 (MANDATORY before push)
 ```
 
@@ -216,7 +216,7 @@ bash dev/test-matrix.sh             # Docker matrix: Python 3.13 + 3.14 (MANDATO
 - **100% test coverage** — enforced by pytest-cov, `fail_under = 100`
 - **Ruff** — ALL rules enabled, specific ignores justified in pyproject.toml
 - **ty** — static type checker with `error-on-warning = true`
-- **import-linter** — enforces dependency boundaries
+- **tach** — enforces dependency boundaries
 - **prek** (pre-commit) — runs all of the above on commit
 
 ### Key Conventions
@@ -230,13 +230,13 @@ bash dev/test-matrix.sh             # Docker matrix: Python 3.13 + 3.14 (MANDATO
 
 ## Working on Skills
 
-**Skills are in this repo.** When `/t3-retro` identifies a skill gap, improvements go directly into `skills/t3-*/`.
+**Skills are in this repo.** When `/t3-retro` identifies a skill gap, improvements go directly into `skills/*/`.
 
 After modifying skills: `prek run --all-files` then `uv run pytest` then commit.
 
 ## Abstraction Boundaries
 
-- `t3-*` skills must never reference a specific project or overlay by name.
+- Teatree skills must never reference a specific project or overlay by name.
 - Project-specific knowledge belongs in the generated host project's overlay app.
 - User preferences belong in memory/config files, not skills.
 - Use extension points or `~/.teatree.toml` variables for project context.

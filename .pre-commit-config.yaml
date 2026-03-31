@@ -56,6 +56,15 @@ repos:
     hooks:
       - id: ruff-check
         args: [--fix]
+  - repo: local
+    hooks:
+      - id: tach
+        name: tach
+        entry: uv run tach check
+        language: system
+        types: [python]
+        pass_filenames: false
+        always_run: true
   - repo: https://github.com/pre-commit/pygrep-hooks
     rev: 3a6eb0fadf60b3cccfd80bad9dbb6fae7e47b316  # v1.10.0
     hooks:
@@ -111,6 +120,16 @@ repos:
         pass_filenames: false
         always_run: true
 
+  # Phase 7b - Version sync
+  - repo: local
+    hooks:
+      - id: version-sync
+        name: Version sync (plugin.json == pyproject.toml == apm.yml)
+        language: system
+        entry: uv run python scripts/hooks/check_version_sync.py
+        pass_filenames: false
+        always_run: true
+
   # Phase 8 - Slow (safety, pytest)
   - repo: local
     hooks:
@@ -136,7 +155,7 @@ repos:
         files: ^(pyproject\.toml|uv\.lock)$
         stages: [commit, manual]
 
-  # Phase 9 - Pre-push (Docker)
+  # Phase 8b - Pre-push (Docker)
   - repo: local
     hooks:
       - id: pytest-docker
@@ -147,7 +166,7 @@ repos:
         always_run: true
         stages: [push]
 
-  # Phase 10 - Manual
+  # Phase 9 - Manual
   - repo: https://github.com/semgrep/semgrep
     rev: 984f76026160ea94163eee091bc3caa876476b35  # v1.139.0
     hooks:
@@ -156,7 +175,7 @@ repos:
         args: [--config=p/ci, --error, --timeout=120]
         stages: [manual]
 
-  # Phase 11 - Commit-msg
+  # Phase 10 - Commit-msg
   - repo: https://github.com/compilerla/conventional-pre-commit
     rev: 37b5f04f364960e8e7b361d0dbaaf8f28ec06392  # v4.2.0
     hooks:

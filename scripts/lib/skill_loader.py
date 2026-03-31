@@ -24,13 +24,32 @@ _SRC_DIR = Path(__file__).resolve().parents[2] / "src"
 if str(_SRC_DIR) not in sys.path:
     sys.path.insert(0, str(_SRC_DIR))
 
-from teatree.skill_loading import DEFAULT_SKILL_SEARCH_DIRS, SkillLoadingPolicy
+from teatree.skill_loading import DEFAULT_SKILLS_DIR, SkillLoadingPolicy
 
 XDG_DATA_DIR = Path.home() / ".local" / "share" / "teatree"
 SKILL_METADATA_CACHE = XDG_DATA_DIR / "skill-metadata.json"
 
 # End-of-session phrases (matched when no keyword/URL intent fires and a
 # skill declares ``end_of_session: true``).
+_LIFECYCLE_SKILLS = frozenset(
+    {
+        "ticket",
+        "code",
+        "test",
+        "debug",
+        "review",
+        "ship",
+        "review-request",
+        "retro",
+        "workspace",
+        "next",
+        "contribute",
+        "followup",
+        "handover",
+        "setup",
+    }
+)
+
 _END_OF_SESSION_RE = re.compile(
     r"^(done|all set|finished|all done|wrap up|that.s it|that.s all"
     r"|ship it|we.re done|i.m done|looks good|lgtm)\s*[.!]?\s*$",
@@ -111,7 +130,7 @@ def detect_intent(
 
     lp = prompt.lower()
 
-    # Pass 0: Explicit /t3-<skill> slash commands (highest priority).
+    # Pass 0: Explicit /<skill> slash commands (highest priority).
     # When the prompt starts with a known skill name, use it directly
     # instead of falling through to URL/keyword matching.
     slash_match = re.match(r"^/?([a-z][a-z0-9_-]+)", lp.strip())
@@ -150,7 +169,7 @@ def detect_intent(
     # Pass 3: End-of-session detection for skills with end_of_session: true
     if _END_OF_SESSION_RE.match(prompt.strip().lower()):
         loaded = loaded_skills or set()
-        has_lifecycle = any(s.startswith("t3-") for s in loaded)
+        has_lifecycle = any(s in _LIFECYCLE_SKILLS for s in loaded)
         if has_lifecycle:
             for entry in trigger_index:
                 if entry.get("end_of_session") and entry["skill"] not in loaded:
@@ -370,10 +389,10 @@ def suggest_skills(data: dict) -> dict:
         return {"suggestions": [], "intent": ""}
 
     combined_search_dirs: list[Path] = []
-    for directory in [*search_dirs, *DEFAULT_SKILL_SEARCH_DIRS]:
+    for directory in [*search_dirs, DEFAULT_SKILLS_DIR]:
         if directory not in combined_search_dirs:
             combined_search_dirs.append(directory)
-    policy = SkillLoadingPolicy(skills_dir=combined_search_dirs)
+    policy = SkillLoadingPolicy()
     selection = policy.select_for_prompt_hook(
         cwd=Path(cwd) if cwd else Path.cwd(),
         intent=intent,

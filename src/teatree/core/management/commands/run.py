@@ -188,3 +188,39 @@ class Command(TyperCommand):
 
         result = subprocess.run(cmd, cwd=wt_path, check=False, env=env)  # noqa: S603
         return "E2E passed." if result.returncode == 0 else f"E2E failed (exit {result.returncode})."
+
+    @command(name="e2e-private")
+    def e2e_private(self, test_path: str = "", *, headed: bool = False) -> str:
+        """Run private Playwright tests from T3_PRIVATE_TESTS repo."""
+        from teatree.config import load_config  # noqa: PLC0415
+
+        private_tests = os.environ.get("T3_PRIVATE_TESTS", "")
+        if not private_tests:
+            private_tests = load_config().raw.get("teatree", {}).get("private_tests", "")
+        if not private_tests:
+            return "private_tests not configured in ~/.teatree.toml and T3_PRIVATE_TESTS not set."
+        private_tests_path = Path(private_tests).expanduser()
+        if not private_tests_path.is_dir():
+            return f"Private tests directory does not exist: {private_tests_path}"
+
+        worktree = resolve_worktree()
+        ports = worktree.ports or {} if worktree else {}
+        frontend_port = ports.get("frontend", 4200)
+
+        cmd = ["npx", "playwright", "test"]
+        if test_path:
+            cmd.append(test_path)
+        cmd.extend(["--reporter=list"])
+
+        env = {**os.environ}
+        env["BASE_URL"] = f"http://localhost:{frontend_port}"
+        if not headed:
+            env["CI"] = "1"
+        else:
+            cmd.append("--headed")
+
+        self.stdout.write(f"  Running from: {private_tests_path}")
+        self.stdout.write(f"  BASE_URL: {env['BASE_URL']}")
+
+        result = subprocess.run(cmd, cwd=private_tests_path, check=False, env=env)  # noqa: S603
+        return "E2E passed." if result.returncode == 0 else f"E2E failed (exit {result.returncode})."

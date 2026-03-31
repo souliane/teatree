@@ -1,0 +1,13 @@
+{
+  "name": "t3",
+  "version": "0.0.1",
+  "description": "Multi-repo worktree lifecycle manager for AI-assisted development",
+  "author": {
+    "name": "souliane",
+    "url": "https://github.com/souliane"
+  },
+  "homepage": "https://github.com/souliane/teatree",
+  "repository": "https://github.com/souliane/teatree",
+  "license": "MIT",
+  "keywords": ["development", "lifecycle", "worktree", "multi-repo", "tdd"]
+}

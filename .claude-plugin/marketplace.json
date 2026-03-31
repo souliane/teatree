@@ -1,0 +1,16 @@
+{
+  "name": "souliane",
+  "owner": {
+    "name": "souliane",
+    "url": "https://github.com/souliane"
+  },
+  "plugins": [
+    {
+      "name": "t3",
+      "description": "Multi-repo worktree lifecycle manager for AI-assisted development",
+      "source": "./",
+      "category": "development",
+      "homepage": "https://github.com/souliane/teatree"
+    }
+  ]
+}

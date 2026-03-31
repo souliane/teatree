@@ -6,7 +6,7 @@ from teatree.skill_loading import SkillLoadingPolicy
 
 
 def test_agent_without_status_or_task_asks_user(tmp_path: Path) -> None:
-    policy = SkillLoadingPolicy(skills_dir=tmp_path)
+    policy = SkillLoadingPolicy()
 
     result = policy.select_for_agent_launch(
         cwd=tmp_path,
@@ -23,7 +23,7 @@ def test_agent_without_status_or_task_asks_user(tmp_path: Path) -> None:
 
 
 def test_agent_task_text_selects_debug_skill(tmp_path: Path) -> None:
-    policy = SkillLoadingPolicy(skills_dir=tmp_path)
+    policy = SkillLoadingPolicy()
 
     result = policy.select_for_agent_launch(
         cwd=tmp_path,
@@ -35,13 +35,13 @@ def test_agent_task_text_selects_debug_skill(tmp_path: Path) -> None:
         overlay_active=False,
     )
 
-    assert result.skills == ["t3-debug"]
-    assert result.lifecycle_skill == "t3-debug"
+    assert result.skills == ["debug"]
+    assert result.lifecycle_skill == "debug"
     assert result.ask_user is False
 
 
 def test_agent_task_text_selects_review_skill(tmp_path: Path) -> None:
-    policy = SkillLoadingPolicy(skills_dir=tmp_path)
+    policy = SkillLoadingPolicy()
 
     result = policy.select_for_agent_launch(
         cwd=tmp_path,
@@ -53,12 +53,12 @@ def test_agent_task_text_selects_review_skill(tmp_path: Path) -> None:
         overlay_active=False,
     )
 
-    assert result.skills == ["t3-review"]
-    assert result.lifecycle_skill == "t3-review"
+    assert result.skills == ["review"]
+    assert result.lifecycle_skill == "review"
 
 
 def test_agent_explicit_skills_preserve_order(tmp_path: Path) -> None:
-    policy = SkillLoadingPolicy(skills_dir=tmp_path)
+    policy = SkillLoadingPolicy()
 
     result = policy.select_for_agent_launch(
         cwd=tmp_path,
@@ -66,15 +66,15 @@ def test_agent_explicit_skills_preserve_order(tmp_path: Path) -> None:
         task="",
         ticket_status="",
         explicit_phase="",
-        explicit_skills=["t3-test", "t3-review"],
+        explicit_skills=["test", "review"],
         overlay_active=False,
     )
 
-    assert result.skills == ["t3-test", "t3-review"]
+    assert result.skills == ["test", "review"]
 
 
 def test_agent_overlay_skill_comes_from_metadata_not_local_skill_scan(tmp_path: Path) -> None:
-    policy = SkillLoadingPolicy(skills_dir=tmp_path)
+    policy = SkillLoadingPolicy()
 
     result = policy.select_for_agent_launch(
         cwd=tmp_path,
@@ -86,11 +86,11 @@ def test_agent_overlay_skill_comes_from_metadata_not_local_skill_scan(tmp_path: 
         overlay_active=True,
     )
 
-    assert result.skills == ["t3-acme", "t3-review"]
+    assert result.skills == ["t3-acme", "review"]
 
 
 def test_agent_status_beats_task_text(tmp_path: Path) -> None:
-    policy = SkillLoadingPolicy(skills_dir=tmp_path)
+    policy = SkillLoadingPolicy()
 
     result = policy.select_for_agent_launch(
         cwd=tmp_path,
@@ -102,5 +102,5 @@ def test_agent_status_beats_task_text(tmp_path: Path) -> None:
         overlay_active=False,
     )
 
-    assert result.skills == ["t3-ship"]
-    assert result.lifecycle_skill == "t3-ship"
+    assert result.skills == ["ship"]
+    assert result.lifecycle_skill == "ship"

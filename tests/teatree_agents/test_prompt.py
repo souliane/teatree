@@ -50,46 +50,46 @@ def test_read_skill_contents_multiple_skills(tmp_path: Path) -> None:
 
 
 def test_is_primary_matches_short_name() -> None:
-    assert _is_primary("t3-test", {"t3-test"})
-    assert not _is_primary("t3-code", {"t3-test"})
+    assert _is_primary("test", {"test"})
+    assert not _is_primary("code", {"test"})
 
 
 def test_is_primary_matches_always_full() -> None:
-    assert _is_primary("t3-rules", set())
+    assert _is_primary("rules", set())
 
 
 def test_is_primary_matches_absolute_path() -> None:
-    assert _is_primary("/tmp/skills/t3-test/SKILL.md", {"t3-test"})
-    assert _is_primary("/tmp/skills/t3-rules/SKILL.md", set())
-    assert not _is_primary("/tmp/skills/ac-django/SKILL.md", {"t3-test"})
+    assert _is_primary("/tmp/skills/test/SKILL.md", {"test"})
+    assert _is_primary("/tmp/skills/rules/SKILL.md", set())
+    assert not _is_primary("/tmp/skills/ac-django/SKILL.md", {"test"})
 
 
 # --- _read_skill_contents_scoped ---
 
 
 def test_read_scoped_embeds_primary_and_summarizes_companions(tmp_path: Path) -> None:
-    for name in ("t3-rules", "t3-test", "ac-django", "t3-workspace"):
+    for name in ("rules", "test", "ac-django", "workspace"):
         d = tmp_path / name
         d.mkdir()
         (d / "SKILL.md").write_text(f"# {name} full content", encoding="utf-8")
 
     result = _read_skill_contents_scoped(
-        ["ac-django", "t3-workspace", "t3-rules", "t3-test"],
-        primary_skills={"t3-test"},
+        ["ac-django", "workspace", "rules", "test"],
+        primary_skills={"test"},
         skills_dir=tmp_path,
     )
     # Primary skills get full content
-    assert "--- SKILL: t3-test ---" in result
-    assert "# t3-test full content" in result
-    # t3-rules is always fully loaded
-    assert "--- SKILL: t3-rules ---" in result
-    assert "# t3-rules full content" in result
+    assert "--- SKILL: test ---" in result
+    assert "# test full content" in result
+    # rules is always fully loaded
+    assert "--- SKILL: rules ---" in result
+    assert "# rules full content" in result
     # Companion skills get summary only
     assert "COMPANION SKILLS" in result
     assert "- ac-django:" in result
-    assert "- t3-workspace:" in result
+    assert "- workspace:" in result
     assert "# ac-django full content" not in result
-    assert "# t3-workspace full content" not in result
+    assert "# workspace full content" not in result
 
 
 def test_read_scoped_all_primary(tmp_path: Path) -> None:
@@ -227,7 +227,7 @@ class TestBuildSystemContext(TestCase):
         ctx = build_system_context(task, skills=[])
         assert "TeaTree headless agent" in ctx
         assert "10" in ctx
-        assert "/t3-next" in ctx
+        assert "/t3:next" in ctx
 
     def test_with_skills(self) -> None:
         tmp_dir = Path(tempfile.mkdtemp())
@@ -264,15 +264,15 @@ class TestBuildSystemContext(TestCase):
         session = Session.objects.create(ticket=ticket)
         task = Task.objects.create(ticket=ticket, session=session)
 
-        # Use absolute file path so find_skill_md resolves it directly
-        ctx = build_system_context(task, skills=[str(skill_file)])
+        with patch("teatree.agents.prompt.DEFAULT_SKILLS_DIR", tmp_dir):
+            ctx = build_system_context(task, skills=["my-skill"])
         assert "# Loaded Skills" in ctx
         assert "# Loaded Skill" in ctx
 
     def test_with_lifecycle_skill_scopes_loading(self) -> None:
-        """When lifecycle_skill is set, only that skill + t3-rules get full content."""
+        """When lifecycle_skill is set, only that skill + rules get full content."""
         tmp_dir = Path(tempfile.mkdtemp())
-        for name in ("t3-rules", "t3-test", "ac-django"):
+        for name in ("rules", "test", "ac-django"):
             d = tmp_dir / name
             d.mkdir()
             (d / "SKILL.md").write_text(f"# {name} instructions", encoding="utf-8")
@@ -281,13 +281,15 @@ class TestBuildSystemContext(TestCase):
         session = Session.objects.create(ticket=ticket)
         task = Task.objects.create(ticket=ticket, session=session, phase="testing")
 
-        # Use absolute SKILL.md paths so find_skill_md resolves them directly
-        skills = [str(tmp_dir / n / "SKILL.md") for n in ("ac-django", "t3-rules", "t3-test")]
-        lifecycle = str(tmp_dir / "t3-test" / "SKILL.md")
-        ctx = build_system_context(task, skills=skills, lifecycle_skill=lifecycle)
+        with patch("teatree.agents.prompt.DEFAULT_SKILLS_DIR", tmp_dir):
+            ctx = build_system_context(
+                task,
+                skills=["ac-django", "rules", "test"],
+                lifecycle_skill="test",
+            )
 
-        assert "# t3-test instructions" in ctx
-        assert "# t3-rules instructions" in ctx
+        assert "# test instructions" in ctx
+        assert "# rules instructions" in ctx
         assert "# ac-django instructions" not in ctx
         assert "COMPANION SKILLS" in ctx
 
@@ -368,9 +370,9 @@ class TestBuildInteractiveContext(TestCase):
         session = Session.objects.create(ticket=ticket)
         task = Task.objects.create(ticket=ticket, session=session)
 
-        ctx = build_interactive_context(task, skills=["t3-code", "t3-test"])
-        assert "/t3-code" in ctx
-        assert "/t3-test" in ctx
+        ctx = build_interactive_context(task, skills=["code", "test"])
+        assert "/code" in ctx
+        assert "/test" in ctx
         assert "REQUIRED" in ctx
 
     def test_with_mrs(self) -> None:

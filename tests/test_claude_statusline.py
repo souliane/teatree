@@ -33,7 +33,7 @@ def test_statusline_renders_and_persists_five_hour_usage(tmp_path: Path) -> None
     env["TEATREE_CLAUDE_STATUSLINE_STATE_DIR"] = str(state_dir)
 
     result = subprocess.run(
-        ["./integrations/claude-code-statusline/statusline-command.sh"],
+        ["./hooks/scripts/statusline-command.sh"],
         input=json.dumps(payload),
         capture_output=True,
         text=True,

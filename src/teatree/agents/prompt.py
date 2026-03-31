@@ -3,16 +3,24 @@
 from pathlib import Path
 
 from teatree.core.models import Task, Ticket
-from teatree.skill_loading import DEFAULT_SKILL_SEARCH_DIRS, find_skill_md
+from teatree.skill_loading import DEFAULT_SKILLS_DIR
 
-_ALWAYS_FULL_SKILLS = frozenset({"t3-rules"})
+_ALWAYS_FULL_SKILLS = frozenset({"rules"})
 
 
-def _read_skill_contents(skills: list[str], *, skills_dir: Path | list[Path] = DEFAULT_SKILL_SEARCH_DIRS) -> str:
+def _find_skill_md(name: str, skills_dir: Path | None = None) -> Path | None:
+    """Locate SKILL.md for a skill name within the skills directory."""
+    sd = skills_dir if skills_dir is not None else DEFAULT_SKILLS_DIR
+    candidate = sd / name / "SKILL.md"
+    return candidate if candidate.is_file() else None
+
+
+def _read_skill_contents(skills: list[str], *, skills_dir: Path | None = None) -> str:
     """Read and concatenate SKILL.md content for each resolved skill."""
+    sd = skills_dir if skills_dir is not None else DEFAULT_SKILLS_DIR
     sections: list[str] = []
     for name in skills:
-        skill_md = find_skill_md(name, skills_dir)
+        skill_md = _find_skill_md(name, sd)
         if skill_md is not None:
             content = skill_md.read_text(encoding="utf-8")
             sections.append(f"--- SKILL: {name} ---\n{content}")
@@ -23,7 +31,6 @@ def _is_primary(name: str, primary_skills: set[str]) -> bool:
     """Check if a skill name (or path) matches the primary set or always-full list."""
     if name in primary_skills or name in _ALWAYS_FULL_SKILLS:
         return True
-    # Support absolute paths: extract the skill directory name
     skill_dir_name = Path(name).parent.name if "/" in name else ""
     return skill_dir_name in primary_skills or skill_dir_name in _ALWAYS_FULL_SKILLS
 
@@ -32,14 +39,15 @@ def _read_skill_contents_scoped(
     skills: list[str],
     *,
     primary_skills: set[str],
-    skills_dir: Path | list[Path] = DEFAULT_SKILL_SEARCH_DIRS,
+    skills_dir: Path | None = None,
 ) -> str:
     """Read skills with scoping: primary skills get full content, others get a summary line."""
+    sd = skills_dir if skills_dir is not None else DEFAULT_SKILLS_DIR
     sections: list[str] = []
     companion_names: list[str] = []
     for name in skills:
         if _is_primary(name, primary_skills):
-            skill_md = find_skill_md(name, skills_dir)
+            skill_md = _find_skill_md(name, sd)
             if skill_md is not None:
                 content = skill_md.read_text(encoding="utf-8")
                 sections.append(f"--- SKILL: {name} ---\n{content}")
@@ -130,7 +138,7 @@ def build_task_prompt(task: Task) -> str:
 def build_system_context(task: Task, *, skills: list[str], lifecycle_skill: str = "") -> str:
     """Build the system context for headless (SDK) execution.
 
-    When *lifecycle_skill* is provided, only the lifecycle skill and t3-rules
+    When *lifecycle_skill* is provided, only the lifecycle skill and rules
     are embedded in full; companion skills get a one-line summary to save tokens.
     """
     lines = ["You are a TeaTree headless agent executing a task."]
@@ -156,7 +164,7 @@ def build_system_context(task: Task, *, skills: list[str], lifecycle_skill: str 
                 "",
                 "PHASE: reviewing",
                 "1. Do a thorough code review of all changes on this ticket's branch.",
-                "2. Run /t3-next when done — it handles retro + structured result + handoff.",
+                "2. Run /t3:next when done — it handles retro + structured result + handoff.",
             )
         )
 
@@ -168,12 +176,12 @@ def build_system_context(task: Task, *, skills: list[str], lifecycle_skill: str 
             "- Limit git diff output to 200 lines; use --stat for overview first.",
             "- Summarize test output instead of pasting full logs.",
             "",
-            "When done, run /t3-next to wrap up. It will:",
-            "- Run /t3-retro (captures lessons while context is fresh)",
+            "When done, run /t3:next to wrap up. It will:",
+            "- Run /t3:retro (captures lessons while context is fresh)",
             "- Emit the structured JSON result the pipeline needs",
             "- Display a summary of what happened",
             "",
-            "If /t3-next is not available, output a JSON object on the last line:",
+            "If /t3:next is not available, output a JSON object on the last line:",
             '  {"summary": "...", "needs_user_input": false, "files_modified": [...], "next_steps": [...]}',
         )
     )
@@ -234,7 +242,7 @@ def build_interactive_context(task: Task, *, skills: list[str]) -> str:
             "Your FIRST message must acknowledge the project and ticket you are working on.",
             "Summarize: ticket number, current state, what was done so far, and what you plan to do next.",
             "Then either begin working or ask the user for guidance.",
-            "Before ending, run /t3-next — it handles retro, result reporting, and pipeline handoff.",
+            "Before ending, run /t3:next — it handles retro, result reporting, and pipeline handoff.",
         )
     )
 

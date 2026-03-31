@@ -1,6 +1,6 @@
 """Scan text (typically a git diff) for privacy-sensitive patterns.
 
-Used by: t3-retro (§ Privacy Scan), t3-contribute (§2 Pre-Flight).
+Used by: retro (§ Privacy Scan), contribute (§2 Pre-Flight).
 Exit code 0 = clean, 1 = findings.
 """
 

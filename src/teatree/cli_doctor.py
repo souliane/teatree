@@ -54,7 +54,7 @@ class DoctorService:
             if not entry.project_path or not entry.project_path.is_dir():
                 continue
             project = entry.project_path.expanduser()
-            overlay_name = entry.name if entry.name.startswith("t3-") else f"t3-{entry.name}"
+            overlay_name = entry.name
 
             # New convention: skills/ directory
             project_skills = project / "skills"
