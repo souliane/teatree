@@ -195,5 +195,21 @@ class OverlayBase(ABC):
     def get_test_command(self, worktree: "Worktree") -> str:
         return ""
 
+    def get_verify_endpoints(self, worktree: "Worktree") -> dict[str, str]:
+        """Return custom health-check paths per service.
+
+        Keys match ``worktree.ports`` entries (e.g. ``"backend"``, ``"frontend"``).
+        Values are URL paths (e.g. ``"/admin/login/"``).
+        Services not listed here fall back to ``/``.
+        """
+        return {}
+
+    def get_cleanup_steps(self, worktree: "Worktree") -> list[ProvisionStep]:
+        """Return extra cleanup steps run before a worktree is removed.
+
+        Use for overlay-specific teardown (Docker containers, cache dirs, etc.).
+        """
+        return []
+
     def get_workspace_repos(self) -> list[str]:
         return self.get_repos()

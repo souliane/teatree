@@ -23,12 +23,19 @@ def _branch_prefix() -> str:
     return os.environ.get("T3_BRANCH_PREFIX", "dev")
 
 
+_WORKTREE_SKIPPED = Path("/dev/null/.skipped")  # sentinel: repo skipped, not a failure
+
+
 def _create_git_worktree(workspace: Path, repo_name: str, ticket_dir: Path, branch: str) -> Path | None:
-    """Run ``git worktree add`` for a single repo and return the worktree path."""
+    """Run ``git worktree add`` for a single repo and return the worktree path.
+
+    Returns ``_WORKTREE_SKIPPED`` when the repo doesn't exist or has no ``.git``,
+    the existing ``wt_path`` when it already exists, and ``None`` on actual failure.
+    """
     repo_path = workspace / repo_name
     if not (repo_path / ".git").is_dir():
         print(f"  Skipping {repo_name}: not a git repository", file=sys.stderr)  # noqa: T201
-        return None
+        return _WORKTREE_SKIPPED
 
     wt_path = ticket_dir / repo_name
     if wt_path.exists():
@@ -66,6 +73,7 @@ class Command(TyperCommand):
         issue_url: str,
         variant: str = "",
         repos: str = "",
+        description: str = "",
     ) -> int:
         """Create a ticket with worktree entries for each affected repo."""
         overlay = get_overlay()
@@ -78,20 +86,36 @@ class Command(TyperCommand):
         workspace = _workspace_dir()
         prefix = _branch_prefix()
         first_repo = repo_names[0] if repo_names else "repo"
-        branch = f"{prefix}-{first_repo}-{ticket.ticket_number}-ticket"
+        slug = description.strip().lower().replace(" ", "-")[:40] if description else "ticket"
+        branch = f"{prefix}-{first_repo}-{ticket.ticket_number}-{slug}"
         ticket_dir = workspace / branch
 
         ticket_dir.mkdir(parents=True, exist_ok=True)
 
+        created_worktrees: list[Worktree] = []
+        failures = 0
         for repo_name in repo_names:
             wt_path = _create_git_worktree(workspace, repo_name, ticket_dir, branch)
+            is_real_path = wt_path is not None and wt_path != _WORKTREE_SKIPPED
             worktree = Worktree.objects.create(
                 ticket=ticket,
                 repo_path=repo_name,
                 branch=branch,
-                extra={"worktree_path": str(wt_path)} if wt_path else {},
+                extra={"worktree_path": str(wt_path)} if is_real_path else {},
             )
-            self.stdout.write(f"  {repo_name}: {'created' if wt_path else 'skipped'} (worktree #{worktree.pk})")
+            created_worktrees.append(worktree)
+            if wt_path is None:
+                failures += 1
+            self.stdout.write(f"  {repo_name}: {'created' if is_real_path else 'skipped'} (worktree #{worktree.pk})")
+
+        if failures == len(repo_names):
+            self.stderr.write("  All worktree creations failed — rolling back ticket and DB entries.")
+            for wt in created_worktrees:
+                wt.delete()
+            ticket.delete()
+            with suppress(OSError):
+                ticket_dir.rmdir()
+            return 0
 
         self.stdout.write(f"\nTicket #{ticket.pk} — worktrees in {ticket_dir}")
         self.stdout.write(f"  Branch: {branch}")
@@ -108,6 +132,18 @@ class Command(TyperCommand):
             cwd = wt_path or None
             default_br = default_branch(repo)
             try:
+                # Pre-check: abort if uncommitted changes
+                status = subprocess.run(
+                    ["git", "status", "--porcelain"],
+                    cwd=cwd,
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                ).stdout.strip()
+                if status:
+                    results.append(f"{repo}: SKIPPED — uncommitted changes:\n{status}")
+                    continue
+
                 git_run(repo=wt_path or repo, args=["fetch", "origin", default_br])
 
                 # Squash: find merge-base, count commits, soft reset + recommit
@@ -125,16 +161,20 @@ class Command(TyperCommand):
                     text=True,
                     check=True,
                 ).stdout.strip()
+
+                # Show commit log for visibility
+                log = subprocess.run(  # noqa: S603
+                    ["git", "log", "--oneline", f"{merge_base}..HEAD"],
+                    cwd=cwd,
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                ).stdout.strip()
+                if log:
+                    self.stdout.write(f"  {repo} commits ({commit_count}):\n    " + "\n    ".join(log.splitlines()))
+
                 if int(commit_count) > 1:
-                    # Build squash message from existing commits or use provided message
                     if not message:
-                        log = subprocess.run(  # noqa: S603
-                            ["git", "log", "--oneline", f"{merge_base}..HEAD"],
-                            cwd=cwd,
-                            capture_output=True,
-                            text=True,
-                            check=True,
-                        ).stdout.strip()
                         message = log.splitlines()[0] if log else f"Squash {commit_count} commits"
                     subprocess.run(  # noqa: S603
                         ["git", "reset", "--soft", merge_base],
@@ -163,9 +203,27 @@ class Command(TyperCommand):
         """Prune merged worktrees — remove git worktrees, drop DBs, clean directories."""
         cleaned: list[str] = []
         workspace = _workspace_dir()
+        overlay = get_overlay()
 
         for worktree in Worktree.objects.filter(state=Worktree.State.CREATED):
             wt_path = (worktree.extra or {}).get("worktree_path", "")
+
+            # Dirty-state check: warn if uncommitted changes
+            if wt_path and Path(wt_path).is_dir():
+                status = subprocess.run(
+                    ["git", "status", "--porcelain"],
+                    cwd=wt_path,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                ).stdout.strip()
+                if status:
+                    self.stderr.write(f"  WARNING: {worktree.repo_path} has uncommitted changes")
+
+            # Run overlay-specific cleanup (Docker teardown, etc.)
+            for step in overlay.get_cleanup_steps(worktree):
+                with suppress(Exception):
+                    step.callable()
 
             # Remove git worktree
             if wt_path:

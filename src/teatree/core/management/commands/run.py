@@ -54,8 +54,12 @@ class Command(TyperCommand):
         ports = worktree.ports or {}
         results: dict[str, dict[str, object]] = {}
 
+        overlay = get_overlay()
+        health_paths = overlay.get_verify_endpoints(worktree)
         endpoints = {
-            name: f"http://localhost:{port}" for name, port in ports.items() if name not in {"postgres", "redis"}
+            name: f"http://localhost:{port}{health_paths.get(name, '/')}"
+            for name, port in ports.items()
+            if name not in {"postgres", "redis"}
         }
 
         all_ok = True
