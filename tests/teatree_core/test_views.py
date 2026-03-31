@@ -1,15 +1,13 @@
 from unittest.mock import patch
 
 import pytest
-from django.test import Client, override_settings
+from django.test import Client, TestCase, override_settings
 from django.urls import reverse
 
 from teatree.core.models import Session, Task, Ticket, Worktree
 from teatree.core.sync import SyncResult
 from teatree.core.views.dashboard import DashboardView, _panel_context
 from tests.teatree_core.conftest import CommandOverlay
-
-pytestmark = pytest.mark.django_db
 
 _MOCK_OVERLAY = {"test": CommandOverlay()}
 
@@ -32,7 +30,7 @@ def _mock_perform_sync():
 # ---------------------------------------------------------------------------
 
 
-class TestDashboardView:
+class TestDashboardView(TestCase):
     @pytest.mark.usefixtures("_mock_perform_sync")
     def test_renders_full_page(self) -> None:
         ticket = Ticket.objects.create(
@@ -80,7 +78,7 @@ class TestDashboardView:
 # ---------------------------------------------------------------------------
 
 
-class TestDashboardPanelView:
+class TestDashboardPanelView(TestCase):
     def test_requires_htmx(self) -> None:
         response = Client().get(reverse("teatree:dashboard-panel", args=["summary"]))
 
@@ -177,7 +175,7 @@ class TestDashboardPanelView:
 # ---------------------------------------------------------------------------
 
 
-class TestOverlaySelector:
+class TestOverlaySelector(TestCase):
     @pytest.mark.usefixtures("_mock_perform_sync")
     def test_dashboard_passes_overlay_list_to_template(self) -> None:
         response = Client().get(reverse("teatree:dashboard"))
@@ -211,7 +209,7 @@ class TestOverlaySelector:
         assert len(response.context["tickets"]) == 1
 
 
-class TestPanelContext:
+class TestPanelContext(TestCase):
     def test_raises_for_unknown_panel(self) -> None:
         with pytest.raises(ValueError, match="Unsupported panel"):
             _panel_context("unknown")
@@ -222,7 +220,7 @@ class TestPanelContext:
 # ---------------------------------------------------------------------------
 
 
-class TestTaskDetailView:
+class TestTaskDetailView(TestCase):
     def test_returns_200_for_existing_task(self) -> None:
         """Cover TaskDetailView when the task exists."""
         ticket = Ticket.objects.create(overlay="test", state=Ticket.State.STARTED)
@@ -251,26 +249,24 @@ class TestTaskDetailView:
 # ---------------------------------------------------------------------------
 
 
-class TestSyncFollowupView:
-    def test_triggers_sync_and_returns_html(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(
+class TestSyncFollowupView(TestCase):
+    def test_triggers_sync_and_returns_html(self) -> None:
+        with patch(
             "teatree.core.views.actions.perform_sync",
-            lambda: SyncResult(mrs_found=3, tickets_created=1, tickets_updated=2),
-        )
-
-        response = Client().post(reverse("teatree:dashboard-sync"))
+            return_value=SyncResult(mrs_found=3, tickets_created=1, tickets_updated=2),
+        ):
+            response = Client().post(reverse("teatree:dashboard-sync"))
 
         assert response.status_code == 200
         assert b"Synced 3 MRs" in response.content
         assert b"1 new" in response.content
 
-    def test_shows_errors(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(
+    def test_shows_errors(self) -> None:
+        with patch(
             "teatree.core.views.actions.perform_sync",
-            lambda: SyncResult(errors=["GitLab token is not configured in overlay"]),
-        )
-
-        response = Client().post(reverse("teatree:dashboard-sync"))
+            return_value=SyncResult(errors=["GitLab token is not configured in overlay"]),
+        ):
+            response = Client().post(reverse("teatree:dashboard-sync"))
 
         assert response.status_code == 200
         assert b"Sync error" in response.content
@@ -282,13 +278,16 @@ class TestSyncFollowupView:
 # ---------------------------------------------------------------------------
 
 
-class TestCancelTaskView:
+class TestCancelTaskView(TestCase):
+    @classmethod
+    def setUpTestData(cls) -> None:
+        cls.ticket = Ticket.objects.create(overlay="test", state=Ticket.State.STARTED)
+        cls.session = Session.objects.create(ticket=cls.ticket, overlay="test", agent_id="agent")
+
     def test_pending_task_returns_failed_status(self) -> None:
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.STARTED)
-        session = Session.objects.create(ticket=ticket, overlay="test", agent_id="agent")
         task = Task.objects.create(
-            ticket=ticket,
-            session=session,
+            ticket=self.ticket,
+            session=self.session,
             execution_target=Task.ExecutionTarget.HEADLESS,
             status=Task.Status.PENDING,
         )
@@ -301,11 +300,9 @@ class TestCancelTaskView:
         assert data["status"] == "failed"
 
     def test_completed_task_returns_409(self) -> None:
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.STARTED)
-        session = Session.objects.create(ticket=ticket, overlay="test", agent_id="agent")
         task = Task.objects.create(
-            ticket=ticket,
-            session=session,
+            ticket=self.ticket,
+            session=self.session,
             execution_target=Task.ExecutionTarget.HEADLESS,
             status=Task.Status.COMPLETED,
         )
@@ -326,25 +323,25 @@ class TestCancelTaskView:
 # ---------------------------------------------------------------------------
 
 
-class TestTicketTransitionView:
-    def test_scope_succeeds(self) -> None:
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.NOT_STARTED)
+class TestTicketTransitionView(TestCase):
+    @classmethod
+    def setUpTestData(cls) -> None:
+        cls.ticket = Ticket.objects.create(overlay="test", state=Ticket.State.NOT_STARTED)
 
+    def test_scope_succeeds(self) -> None:
         response = Client().post(
-            reverse("teatree:ticket-transition", args=[ticket.pk]),
+            reverse("teatree:ticket-transition", args=[self.ticket.pk]),
             {"transition": "scope"},
         )
 
         assert response.status_code == 200
         data = response.json()
-        assert data["ticket_id"] == ticket.pk
+        assert data["ticket_id"] == self.ticket.pk
         assert data["state"] == "Scoped"
 
     def test_unknown_transition_returns_400(self) -> None:
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.NOT_STARTED)
-
         response = Client().post(
-            reverse("teatree:ticket-transition", args=[ticket.pk]),
+            reverse("teatree:ticket-transition", args=[self.ticket.pk]),
             {"transition": "nonexistent"},
         )
 
@@ -361,10 +358,8 @@ class TestTicketTransitionView:
 
     def test_not_allowed_returns_409(self) -> None:
         """Try to call 'start' on a NOT_STARTED ticket (requires SCOPED)."""
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.NOT_STARTED)
-
         response = Client().post(
-            reverse("teatree:ticket-transition", args=[ticket.pk]),
+            reverse("teatree:ticket-transition", args=[self.ticket.pk]),
             {"transition": "start"},
         )
 
@@ -373,28 +368,22 @@ class TestTicketTransitionView:
 
     def test_empty_transition_returns_400(self) -> None:
         """Empty transition should be rejected as unknown."""
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.NOT_STARTED)
-
         response = Client().post(
-            reverse("teatree:ticket-transition", args=[ticket.pk]),
+            reverse("teatree:ticket-transition", args=[self.ticket.pk]),
         )
 
         assert response.status_code == 400
 
-    def test_invalid_method_returns_400(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_invalid_method_returns_400(self) -> None:
         """If an allowed transition name doesn't map to a method on the ticket, returns 400."""
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.NOT_STARTED)
-
-        # Temporarily add a fake transition to the allowed set to trigger the method is None branch
         from teatree.core.views import actions  # noqa: PLC0415
 
-        original_set = actions._ALLOWED_TRANSITIONS
-        monkeypatch.setattr(actions, "_ALLOWED_TRANSITIONS", original_set | {"nonexistent_method"})
-
-        response = Client().post(
-            reverse("teatree:ticket-transition", args=[ticket.pk]),
-            {"transition": "nonexistent_method"},
-        )
+        # Temporarily add a fake transition to the allowed set to trigger the method is None branch
+        with patch.object(actions, "_ALLOWED_TRANSITIONS", actions._ALLOWED_TRANSITIONS | {"nonexistent_method"}):
+            response = Client().post(
+                reverse("teatree:ticket-transition", args=[self.ticket.pk]),
+                {"transition": "nonexistent_method"},
+            )
 
         assert response.status_code == 400
         assert "Invalid transition" in response.json()["error"]
@@ -405,7 +394,7 @@ class TestTicketTransitionView:
 # ---------------------------------------------------------------------------
 
 
-class TestCreateTaskView:
+class TestCreateTaskView(TestCase):
     @override_settings(
         TASKS={
             "default": {
@@ -414,17 +403,18 @@ class TestCreateTaskView:
         },
         TEATREE_HEADLESS_RUNTIME="claude-code",
     )
-    def test_headless_creates_and_enqueues(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_headless_creates_and_enqueues(self) -> None:
         """CreateTaskView with headless target claims and enqueues the task."""
-        monkeypatch.setattr("teatree.agents.headless.shutil.which", lambda _name: "/usr/bin/claude-code")
-        monkeypatch.setattr(
-            "teatree.agents.headless.subprocess.run",
-            lambda *_a, **_kw: __import__("subprocess").CompletedProcess([], 0, '{"summary": "OK"}', ""),
-        )
-
         ticket = Ticket.objects.create(overlay="test", state=Ticket.State.STARTED)
 
-        with patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY):
+        with (
+            patch("teatree.agents.headless.shutil.which", return_value="/usr/bin/claude-code"),
+            patch(
+                "teatree.agents.headless.subprocess.run",
+                return_value=__import__("subprocess").CompletedProcess([], 0, '{"summary": "OK"}', ""),
+            ),
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+        ):
             response = Client().post(
                 reverse("teatree:ticket-create-task", args=[ticket.pk]),
                 {"phase": "coding", "target": Task.ExecutionTarget.HEADLESS},
@@ -473,7 +463,7 @@ class TestCreateTaskView:
         session = Session.objects.get(ticket=ticket)
         assert session.agent_id == "dashboard"
 
-    def test_headless_already_claimed_returns_409(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_headless_already_claimed_returns_409(self) -> None:
         """When claim() raises InvalidTransitionError, returns 409."""
         from teatree.core.models import InvalidTransitionError  # noqa: PLC0415
 
@@ -484,17 +474,16 @@ class TestCreateTaskView:
             msg = "Task already claimed"
             raise InvalidTransitionError(msg)
 
-        monkeypatch.setattr(Task, "claim", _raise_claimed)
-
-        response = Client().post(
-            reverse("teatree:ticket-create-task", args=[ticket.pk]),
-            {"phase": "coding", "target": Task.ExecutionTarget.HEADLESS},
-        )
+        with patch.object(Task, "claim", _raise_claimed):
+            response = Client().post(
+                reverse("teatree:ticket-create-task", args=[ticket.pk]),
+                {"phase": "coding", "target": Task.ExecutionTarget.HEADLESS},
+            )
 
         assert response.status_code == 409
         assert response.json()["error"] == "Task already claimed"
 
-    def test_headless_enqueue_failure_fails_task(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_headless_enqueue_failure_fails_task(self) -> None:
         ticket = Ticket.objects.create(overlay="test", state=Ticket.State.STARTED)
         Session.objects.create(ticket=ticket, overlay="test", agent_id="agent")
 
@@ -504,9 +493,10 @@ class TestCreateTaskView:
                 msg = "queue unavailable"
                 raise RuntimeError(msg)
 
-        monkeypatch.setattr("teatree.core.tasks.execute_headless_task", BrokenTask)
-
-        with patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY):
+        with (
+            patch("teatree.core.tasks.execute_headless_task", BrokenTask),
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+        ):
             response = Client().post(
                 reverse("teatree:ticket-create-task", args=[ticket.pk]),
                 {"phase": "coding", "target": Task.ExecutionTarget.HEADLESS},

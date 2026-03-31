@@ -6,13 +6,7 @@ from typing import TYPE_CHECKING, TypedDict
 if TYPE_CHECKING:
     from teatree.core.models import Worktree
 
-type RunCommands = dict[str, str]
-
-
-class PostDbStep(TypedDict, total=False):
-    name: str
-    description: str
-    command: str
+type RunCommands = dict[str, list[str]]
 
 
 class SymlinkSpec(TypedDict, total=False):
@@ -26,7 +20,7 @@ class ServiceSpec(TypedDict, total=False):
     shared: bool
     service: str
     compose_file: str
-    start_command: str
+    start_command: list[str]
     readiness_check: str
 
 
@@ -169,11 +163,11 @@ class OverlayBase(ABC):
     def db_import(self, worktree: "Worktree", *, force: bool = False) -> bool:
         return False
 
-    def get_post_db_steps(self, worktree: "Worktree") -> list[PostDbStep]:
+    def get_post_db_steps(self, worktree: "Worktree") -> list[ProvisionStep]:
         return []
 
-    def get_reset_passwords_command(self, worktree: "Worktree") -> str:
-        return ""
+    def get_reset_passwords_command(self, worktree: "Worktree") -> ProvisionStep | None:
+        return None
 
     def get_envrc_lines(self, worktree: "Worktree") -> list[str]:
         return []
@@ -192,8 +186,8 @@ class OverlayBase(ABC):
     def get_pre_run_steps(self, worktree: "Worktree", service: str) -> list[ProvisionStep]:
         return []
 
-    def get_test_command(self, worktree: "Worktree") -> str:
-        return ""
+    def get_test_command(self, worktree: "Worktree") -> list[str]:
+        return []
 
     def get_verify_endpoints(self, worktree: "Worktree") -> dict[str, str]:
         """Return custom health-check paths per service.

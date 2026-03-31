@@ -1,7 +1,6 @@
 """Database operations: refresh, restore from CI, reset passwords."""
 
 import os
-import subprocess  # noqa: S404
 
 import typer
 from django_typer.management import TyperCommand, command
@@ -43,16 +42,14 @@ class Command(TyperCommand):
 
         # Run post-DB steps (migrations, collectstatic, etc.)
         for step in overlay.get_post_db_steps(worktree):
-            self.stdout.write(f"  Running post-DB step: {step.get('name', '?')}")
-            cmd = step.get("command", "")
-            if cmd:
-                subprocess.run(cmd, shell=True, check=False, env=env)  # noqa: S602
+            self.stdout.write(f"  Running post-DB step: {step.name}")
+            step.callable()
 
         # Reset passwords
-        reset_cmd = overlay.get_reset_passwords_command(worktree)
-        if reset_cmd:  # pragma: no branch
+        reset_step = overlay.get_reset_passwords_command(worktree)
+        if reset_step:  # pragma: no branch
             self.stdout.write("  Resetting passwords...")
-            subprocess.run(reset_cmd, shell=True, check=False, env=env)  # noqa: S602
+            reset_step.callable()
 
         # FSM transition
         worktree.db_refresh()
@@ -83,10 +80,8 @@ class Command(TyperCommand):
         """Reset all user passwords to a known dev value."""
         worktree = resolve_worktree(path)
         overlay = get_overlay()
-        cmd = overlay.get_reset_passwords_command(worktree)
-        if not cmd:
+        step = overlay.get_reset_passwords_command(worktree)
+        if not step:
             return "No reset-passwords command configured in the overlay."
-        env = {**os.environ, **overlay.get_env_extra(worktree)}
-        env.pop("VIRTUAL_ENV", None)
-        subprocess.run(cmd, shell=True, check=True, env=env)  # noqa: S602
+        step.callable()
         return f"Passwords reset for worktree {worktree.repo_path}"

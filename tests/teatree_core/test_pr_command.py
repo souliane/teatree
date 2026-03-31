@@ -3,6 +3,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from django.core.management import call_command
+from django.test import TestCase
 
 from teatree.core.management.commands import pr as pr_command
 from teatree.core.management.commands.pr import _mr_auto_labels
@@ -21,12 +22,15 @@ def clear_overlay_cache() -> Iterator[None]:
 _MOCK_OVERLAY = {"test": CommandOverlay()}
 
 
-class TestPrCreate:
-    @pytest.mark.django_db
-    def test_reads_auto_labels_from_overlay(self, monkeypatch: pytest.MonkeyPatch) -> None:
+class TestPrCreate(TestCase):
+    @pytest.fixture(autouse=True)
+    def _inject_fixtures(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._monkeypatch = monkeypatch
+
+    def test_reads_auto_labels_from_overlay(self) -> None:
         host = MagicMock()
         host.create_pr.return_value = {"iid": 12}
-        monkeypatch.setattr(pr_command, "get_code_host", lambda: host)
+        self._monkeypatch.setattr(pr_command, "get_code_host", lambda: host)
 
         ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/55")
         Worktree.objects.create(ticket=ticket, overlay="test", repo_path="/tmp/backend", branch="feature-branch")
@@ -48,13 +52,16 @@ class TestPrCreate:
         )
 
 
-class TestPostEvidence:
-    @pytest.mark.django_db
-    def test_delegates_to_code_host(self, monkeypatch: pytest.MonkeyPatch) -> None:
+class TestPostEvidence(TestCase):
+    @pytest.fixture(autouse=True)
+    def _inject_fixtures(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._monkeypatch = monkeypatch
+
+    def test_delegates_to_code_host(self) -> None:
         """post-evidence posts an MR note via the code host."""
         host = MagicMock()
         host.post_mr_note.return_value = {"id": 55}
-        monkeypatch.setattr(pr_command, "get_code_host", lambda: host)
+        self._monkeypatch.setattr(pr_command, "get_code_host", lambda: host)
 
         with patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY):
             result = call_command("pr", "post-evidence", "10", "--body", "All tests pass")
@@ -65,10 +72,9 @@ class TestPostEvidence:
         assert call_kw.kwargs["mr_iid"] == 10
         assert "All tests pass" in call_kw.kwargs["body"]
 
-    @pytest.mark.django_db
-    def test_returns_error_without_code_host(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_returns_error_without_code_host(self) -> None:
         """post-evidence returns error when no code host configured."""
-        monkeypatch.setattr(pr_command, "get_code_host", lambda: None)
+        self._monkeypatch.setattr(pr_command, "get_code_host", lambda: None)
 
         with patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY):
             result = call_command("pr", "post-evidence", "10")

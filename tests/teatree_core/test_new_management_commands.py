@@ -1,5 +1,7 @@
 """Tests for workspace, db, pr, and extended run management commands."""
 
+import os
+import tempfile
 from collections.abc import Iterator
 from io import StringIO
 from pathlib import Path
@@ -9,17 +11,18 @@ from unittest.mock import MagicMock, patch
 import pytest
 from django.core.management import call_command
 from django.core.management.base import OutputWrapper
-from django.test import override_settings
+from django.test import TestCase, override_settings
 from django.utils.module_loading import import_string
 
 from teatree.core.management.commands.lifecycle import _register_new_repos
 from teatree.core.management.commands.pr import _last_commit_message
+from teatree.core.management.commands.workspace import _branch_prefix
 from teatree.core.models import Session, Ticket, Worktree
+from teatree.core.models.worktree import _workspace_dir
 from teatree.core.overlay import (
     DbImportStrategy,
     OverlayBase,
     OverlayMetadata,
-    PostDbStep,
     ProvisionStep,
     RunCommands,
     ServiceSpec,
@@ -87,13 +90,13 @@ class FullOverlay(OverlayBase):
 
     def get_run_commands(self, worktree: Worktree) -> RunCommands:
         return {
-            "backend": f"echo backend {worktree.repo_path}",
-            "frontend": f"echo frontend {worktree.repo_path}",
-            "build-frontend": f"echo build {worktree.repo_path}",
+            "backend": ["echo", "backend", worktree.repo_path],
+            "frontend": ["echo", "frontend", worktree.repo_path],
+            "build-frontend": ["echo", "build", worktree.repo_path],
         }
 
-    def get_test_command(self, worktree: Worktree) -> str:
-        return f"echo tests {worktree.repo_path}"
+    def get_test_command(self, worktree: Worktree) -> list[str]:
+        return ["echo", "tests", worktree.repo_path]
 
     def get_db_import_strategy(self, worktree: Worktree) -> DbImportStrategy:
         return {"kind": "test", "source_database": "test_db"}
@@ -101,8 +104,8 @@ class FullOverlay(OverlayBase):
     def db_import(self, worktree: Worktree, *, force: bool = False) -> bool:
         return True
 
-    def get_reset_passwords_command(self, worktree: Worktree) -> str:
-        return "echo passwords_reset"
+    def get_reset_passwords_command(self, worktree: Worktree) -> ProvisionStep | None:
+        return ProvisionStep(name="reset-passwords", callable=lambda: None)
 
 
 class ServicesOverlay(FullOverlay):
@@ -110,7 +113,7 @@ class ServicesOverlay(FullOverlay):
 
     def get_services_config(self, worktree: Worktree) -> dict[str, ServiceSpec]:
         return {
-            "postgres": {"start_command": "echo start-pg"},
+            "postgres": {"start_command": ["echo", "start-pg"]},
             "redis": {},
         }
 
@@ -134,8 +137,8 @@ class MinimalOverlay(OverlayBase):
     def get_run_commands(self, worktree: Worktree) -> RunCommands:
         return {}
 
-    def get_test_command(self, worktree: Worktree) -> str:
-        return ""
+    def get_test_command(self, worktree: Worktree) -> list[str]:
+        return []
 
 
 class _HelplessMetadata(OverlayMetadata):
@@ -152,11 +155,10 @@ class HelplessToolOverlay(FullOverlay):
 class PostDbStepsOverlay(FullOverlay):
     """Overlay with post-DB steps configured — tests the post-DB loop."""
 
-    def get_post_db_steps(self, worktree: Worktree) -> list[PostDbStep]:
+    def get_post_db_steps(self, worktree: Worktree) -> list[ProvisionStep]:
         return [
-            {"name": "run-migrations", "command": "echo migrate"},
-            {"name": "collectstatic", "command": "echo collectstatic"},
-            {"name": "no-command-step"},
+            ProvisionStep(name="run-migrations", callable=lambda: None),
+            ProvisionStep(name="collectstatic", callable=lambda: None),
         ]
 
 
@@ -203,11 +205,42 @@ def _clear_overlay() -> Iterator[None]:
     reset_overlay_cache()
 
 
+# ── Workspace helpers ──────────────────────────────────────────────
+
+
+class TestBranchPrefix(TestCase):
+    def test_from_env(self) -> None:
+        with patch.dict("os.environ", {"T3_BRANCH_PREFIX": "xy"}):
+            assert _branch_prefix() == "xy"
+
+    def test_from_git_config(self) -> None:
+        with (
+            patch.dict("os.environ", {}, clear=False),
+            patch("teatree.core.management.commands.workspace.git.run", return_value="Ada Lovelace"),
+        ):
+            os.environ.pop("T3_BRANCH_PREFIX", None)
+            assert _branch_prefix() == "al"
+
+    def test_fallback_to_dev(self) -> None:
+        with (
+            patch.dict("os.environ", {}, clear=False),
+            patch("teatree.core.management.commands.workspace.git.run", return_value=""),
+        ):
+            os.environ.pop("T3_BRANCH_PREFIX", None)
+            assert _branch_prefix() == "dev"
+
+
+class TestWorkspaceDirHelper(TestCase):
+    def test_uses_t3_workspace_dir_setting(self) -> None:
+        with override_settings(T3_WORKSPACE_DIR="/tmp/ws-test"):
+            result = _workspace_dir()
+            assert result == Path("/tmp/ws-test")
+
+
 # ── Workspace commands ──────────────────────────────────────────────
 
 
-@pytest.mark.django_db
-class TestWorkspaceTicket:
+class TestWorkspaceTicket(TestCase):
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
     def test_creates_ticket_and_worktrees(self) -> None:
@@ -238,29 +271,32 @@ class TestWorkspaceTicket:
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS, T3_WORKSPACE_DIR="/tmp/ws-test")
-    def test_with_git_worktree_creation(self, tmp_path: "pytest.TempPathFactory") -> None:
+    def test_with_git_worktree_creation(self) -> None:
         """Test the workspace ticket command with successful git worktree creation."""
-        workspace = tmp_path / "workspace"
-        workspace.mkdir()
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
 
-        # Create git repos
-        for repo_name in ("backend", "frontend"):
-            repo_dir = workspace / repo_name
-            repo_dir.mkdir()
-            (repo_dir / ".git").mkdir()
-            (repo_dir / ".python-version").write_text("3.12.6")
+            workspace = tmp_path / "workspace"
+            workspace.mkdir()
 
-        mock_result = MagicMock()
-        mock_result.returncode = 0
+            # Create git repos
+            for repo_name in ("backend", "frontend"):
+                repo_dir = workspace / repo_name
+                repo_dir.mkdir()
+                (repo_dir / ".git").mkdir()
+                (repo_dir / ".python-version").write_text("3.12.6")
 
-        with (
-            patch("teatree.core.management.commands.workspace._workspace_dir", return_value=workspace),
-            patch("teatree.core.management.commands.workspace.subprocess.run", return_value=mock_result),
-        ):
-            ticket_id = cast("int", call_command("workspace", "ticket", "https://example.com/issues/80"))
+            mock_result = MagicMock()
+            mock_result.returncode = 0
 
-        ticket = Ticket.objects.get(pk=ticket_id)
-        assert ticket.worktrees.count() == 2
+            with (
+                patch("teatree.core.management.commands.workspace._workspace_dir", return_value=workspace),
+                patch("teatree.utils.git.subprocess.run", return_value=mock_result),
+            ):
+                ticket_id = cast("int", call_command("workspace", "ticket", "https://example.com/issues/80"))
+
+            ticket = Ticket.objects.get(pk=ticket_id)
+            assert ticket.worktrees.count() == 2
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
@@ -276,95 +312,103 @@ class TestWorkspaceTicket:
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS, T3_WORKSPACE_DIR="/tmp/ws-test")
-    def test_skips_non_git_repo(self, tmp_path: "pytest.TempPathFactory") -> None:
+    def test_skips_non_git_repo(self) -> None:
         """Repos without .git directory are skipped."""
-        workspace = tmp_path / "workspace"
-        workspace.mkdir()
-        # Only backend has .git; frontend doesn't
-        (workspace / "backend").mkdir()
-        (workspace / "backend" / ".git").mkdir()
-        (workspace / "frontend").mkdir()
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
 
-        mock_result = MagicMock()
-        mock_result.returncode = 0
+            workspace = tmp_path / "workspace"
+            workspace.mkdir()
+            # Only backend has .git; frontend doesn't
+            (workspace / "backend").mkdir()
+            (workspace / "backend" / ".git").mkdir()
+            (workspace / "frontend").mkdir()
 
-        with (
-            patch("teatree.core.management.commands.workspace._workspace_dir", return_value=workspace),
-            patch("teatree.core.management.commands.workspace.subprocess.run", return_value=mock_result),
-        ):
-            ticket_id = cast("int", call_command("workspace", "ticket", "https://example.com/issues/81"))
+            mock_result = MagicMock()
+            mock_result.returncode = 0
 
-        ticket = Ticket.objects.get(pk=ticket_id)
-        # Both worktrees are created in DB; one was skipped during git worktree add
-        assert ticket.worktrees.count() == 2
+            with (
+                patch("teatree.core.management.commands.workspace._workspace_dir", return_value=workspace),
+                patch("teatree.utils.git.subprocess.run", return_value=mock_result),
+            ):
+                ticket_id = cast("int", call_command("workspace", "ticket", "https://example.com/issues/81"))
+
+            ticket = Ticket.objects.get(pk=ticket_id)
+            # Both worktrees are created in DB; one was skipped during git worktree add
+            assert ticket.worktrees.count() == 2
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS, T3_WORKSPACE_DIR="/tmp/ws-test")
-    def test_handles_worktree_already_exists(self, tmp_path: "pytest.TempPathFactory") -> None:
+    def test_handles_worktree_already_exists(self) -> None:
         """When worktree path already exists, it's skipped."""
-        workspace = tmp_path / "workspace"
-        workspace.mkdir()
-        (workspace / "backend").mkdir()
-        (workspace / "backend" / ".git").mkdir()
-        (workspace / "frontend").mkdir()
-        (workspace / "frontend" / ".git").mkdir()
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
 
-        # Pre-create the ticket_dir/backend to simulate existing worktree
-        prefix = "ac"
-        branch = f"{prefix}-backend-82-ticket"
-        ticket_dir = workspace / branch
-        ticket_dir.mkdir(parents=True)
-        (ticket_dir / "backend").mkdir()
+            workspace = tmp_path / "workspace"
+            workspace.mkdir()
+            (workspace / "backend").mkdir()
+            (workspace / "backend" / ".git").mkdir()
+            (workspace / "frontend").mkdir()
+            (workspace / "frontend" / ".git").mkdir()
 
-        mock_result = MagicMock()
-        mock_result.returncode = 0
+            # Pre-create the ticket_dir/backend to simulate existing worktree
+            prefix = "ac"
+            branch = f"{prefix}-backend-82-ticket"
+            ticket_dir = workspace / branch
+            ticket_dir.mkdir(parents=True)
+            (ticket_dir / "backend").mkdir()
 
-        with (
-            patch("teatree.core.management.commands.workspace._workspace_dir", return_value=workspace),
-            patch("teatree.core.management.commands.workspace._branch_prefix", return_value="ac"),
-            patch("teatree.core.management.commands.workspace.subprocess.run", return_value=mock_result),
-        ):
-            ticket_id = cast("int", call_command("workspace", "ticket", "https://example.com/issues/82"))
+            mock_result = MagicMock()
+            mock_result.returncode = 0
 
-        ticket = Ticket.objects.get(pk=ticket_id)
-        assert ticket.worktrees.count() == 2
+            with (
+                patch("teatree.core.management.commands.workspace._workspace_dir", return_value=workspace),
+                patch("teatree.core.management.commands.workspace._branch_prefix", return_value="ac"),
+                patch("teatree.utils.git.subprocess.run", return_value=mock_result),
+            ):
+                ticket_id = cast("int", call_command("workspace", "ticket", "https://example.com/issues/82"))
+
+            ticket = Ticket.objects.get(pk=ticket_id)
+            assert ticket.worktrees.count() == 2
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS, T3_WORKSPACE_DIR="/tmp/ws-test")
-    def test_rolls_back_when_all_worktrees_fail(self, tmp_path: "pytest.TempPathFactory") -> None:
+    def test_rolls_back_when_all_worktrees_fail(self) -> None:
         """When all git worktree add fail, ticket and DB entries are rolled back."""
-        workspace = tmp_path / "workspace"
-        workspace.mkdir()
-        (workspace / "backend").mkdir()
-        (workspace / "backend" / ".git").mkdir()
-        (workspace / "frontend").mkdir()
-        (workspace / "frontend" / ".git").mkdir()
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
 
-        mock_pull = MagicMock()
-        mock_pull.returncode = 0
+            workspace = tmp_path / "workspace"
+            workspace.mkdir()
+            (workspace / "backend").mkdir()
+            (workspace / "backend" / ".git").mkdir()
+            (workspace / "frontend").mkdir()
+            (workspace / "frontend" / ".git").mkdir()
 
-        mock_add = MagicMock()
-        mock_add.returncode = 1
-        mock_add.stderr = "fatal: branch already exists"
+            mock_pull = MagicMock()
+            mock_pull.returncode = 0
 
-        def side_effect(cmd, **kwargs):
-            if "worktree" in cmd:
-                return mock_add
-            return mock_pull
+            mock_add = MagicMock()
+            mock_add.returncode = 1
+            mock_add.stderr = "fatal: branch already exists"
 
-        with (
-            patch("teatree.core.management.commands.workspace._workspace_dir", return_value=workspace),
-            patch("teatree.core.management.commands.workspace.subprocess.run", side_effect=side_effect),
-        ):
-            result = cast("int", call_command("workspace", "ticket", "https://example.com/issues/83"))
+            def side_effect(cmd, **kwargs):
+                if "worktree" in cmd:
+                    return mock_add
+                return mock_pull
 
-        assert result == 0
-        assert Ticket.objects.filter(issue_url="https://example.com/issues/83").count() == 0
-        assert Worktree.objects.count() == 0
+            with (
+                patch("teatree.core.management.commands.workspace._workspace_dir", return_value=workspace),
+                patch("teatree.utils.git.subprocess.run", side_effect=side_effect),
+            ):
+                result = cast("int", call_command("workspace", "ticket", "https://example.com/issues/83"))
+
+            assert result == 0
+            assert Ticket.objects.filter(issue_url="https://example.com/issues/83").count() == 0
+            assert Worktree.objects.count() == 0
 
 
-@pytest.mark.django_db
-class TestWorkspaceCleanAll:
+class TestWorkspaceCleanAll(TestCase):
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
     def test_removes_stale_worktrees(self) -> None:
@@ -378,178 +422,192 @@ class TestWorkspaceCleanAll:
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_removes_git_worktree_and_branch(self, tmp_path: "pytest.TempPathFactory") -> None:
+    def test_removes_git_worktree_and_branch(self) -> None:
         """clean-all calls 'git worktree remove' and 'git branch -D' when wt_path is set."""
-        workspace = tmp_path / "workspace"
-        repo_main = workspace / "backend"
-        repo_main.mkdir(parents=True)
-        # Add a file so the dir is not empty (avoids empty-dir cleanup side-effect)
-        (repo_main / ".git").mkdir()
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
 
-        wt_dir = workspace / "ac-backend-80-ticket" / "backend"
-        wt_dir.mkdir(parents=True)
+            workspace = tmp_path / "workspace"
+            repo_main = workspace / "backend"
+            repo_main.mkdir(parents=True)
+            # Add a file so the dir is not empty (avoids empty-dir cleanup side-effect)
+            (repo_main / ".git").mkdir()
 
-        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/80")
-        Worktree.objects.create(
-            overlay="test",
-            ticket=ticket,
-            repo_path="backend",
-            branch="ac-backend-80-ticket",
-            extra={"worktree_path": str(wt_dir)},
-        )
+            wt_dir = workspace / "ac-backend-80-ticket" / "backend"
+            wt_dir.mkdir(parents=True)
 
-        mock_result = MagicMock(stdout="")
-        with (
-            patch("teatree.core.management.commands.workspace._workspace_dir", return_value=workspace),
-            patch("teatree.core.management.commands.workspace.subprocess.run", return_value=mock_result) as mock_run,
-        ):
-            cleaned = cast("list[str]", call_command("workspace", "clean-all"))
+            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/80")
+            Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="backend",
+                branch="ac-backend-80-ticket",
+                extra={"worktree_path": str(wt_dir)},
+            )
 
-        assert any("Cleaned: backend" in c for c in cleaned)
-        assert Worktree.objects.count() == 0
+            mock_result = MagicMock(stdout="")
+            with (
+                patch("teatree.core.management.commands.workspace._workspace_dir", return_value=workspace),
+                patch("teatree.utils.git.subprocess.run", return_value=mock_result) as mock_run,
+            ):
+                cleaned = cast("list[str]", call_command("workspace", "clean-all"))
 
-        # Should have called git status, git worktree remove, and git branch -D
-        assert mock_run.call_count == 3
-        worktree_remove_call = mock_run.call_args_list[1]
-        branch_delete_call = mock_run.call_args_list[2]
-        assert "worktree" in worktree_remove_call[0][0]
-        assert "remove" in worktree_remove_call[0][0]
-        assert "branch" in branch_delete_call[0][0]
-        assert "-D" in branch_delete_call[0][0]
-        assert "ac-backend-80-ticket" in branch_delete_call[0][0]
+            assert any("Cleaned: backend" in c for c in cleaned)
+            assert Worktree.objects.count() == 0
+
+            # Should have called git status, git worktree remove, and git branch -D
+            assert mock_run.call_count == 3
+            worktree_remove_call = mock_run.call_args_list[1]
+            branch_delete_call = mock_run.call_args_list[2]
+            assert "worktree" in worktree_remove_call[0][0]
+            assert "remove" in worktree_remove_call[0][0]
+            assert "branch" in branch_delete_call[0][0]
+            assert "-D" in branch_delete_call[0][0]
+            assert "ac-backend-80-ticket" in branch_delete_call[0][0]
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_drops_database_when_db_name_set(self, tmp_path: "pytest.TempPathFactory") -> None:
+    def test_drops_database_when_db_name_set(self) -> None:
         """clean-all calls dropdb when worktree has a db_name."""
-        workspace = tmp_path / "workspace"
-        workspace.mkdir(parents=True)
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
 
-        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/81")
-        wt = Worktree.objects.create(
-            overlay="test",
-            ticket=ticket,
-            repo_path="backend",
-            branch="ac-backend-81-ticket",
-            extra={},
-        )
-        # Set db_name directly (bypass FSM provision)
-        Worktree.objects.filter(pk=wt.pk).update(db_name="wt_test_db")
+            workspace = tmp_path / "workspace"
+            workspace.mkdir(parents=True)
 
-        with (
-            patch("teatree.core.management.commands.workspace._workspace_dir", return_value=workspace),
-            patch("teatree.core.management.commands.workspace.subprocess.run") as mock_run,
-            patch("teatree.utils.db.pg_host", return_value="localhost"),
-            patch("teatree.utils.db.pg_user", return_value="testuser"),
-            patch("teatree.utils.db.pg_env", return_value={"PGPASSWORD": "secret"}),
-        ):
-            cleaned = cast("list[str]", call_command("workspace", "clean-all"))
+            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/81")
+            wt = Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="backend",
+                branch="ac-backend-81-ticket",
+                extra={},
+            )
+            # Set db_name directly (bypass FSM provision)
+            Worktree.objects.filter(pk=wt.pk).update(db_name="wt_test_db")
 
-        assert len(cleaned) == 1
-        assert Worktree.objects.count() == 0
+            with (
+                patch("teatree.core.management.commands.workspace._workspace_dir", return_value=workspace),
+                patch("teatree.utils.git.subprocess.run") as mock_run,
+                patch("teatree.utils.db.pg_host", return_value="localhost"),
+                patch("teatree.utils.db.pg_user", return_value="testuser"),
+                patch("teatree.utils.db.pg_env", return_value={"PGPASSWORD": "secret"}),
+            ):
+                cleaned = cast("list[str]", call_command("workspace", "clean-all"))
 
-        # Should have called dropdb
-        assert mock_run.call_count == 1
-        dropdb_call = mock_run.call_args_list[0]
-        assert "dropdb" in dropdb_call[0][0]
-        assert "wt_test_db" in dropdb_call[0][0]
+            assert len(cleaned) == 1
+            assert Worktree.objects.count() == 0
+
+            # Should have called dropdb
+            assert mock_run.call_count == 1
+            dropdb_call = mock_run.call_args_list[0]
+            assert "dropdb" in dropdb_call[0][0]
+            assert "wt_test_db" in dropdb_call[0][0]
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_warns_on_uncommitted_changes(self, tmp_path: "pytest.TempPathFactory") -> None:
+    def test_warns_on_uncommitted_changes(self) -> None:
         """clean-all warns when a worktree directory has uncommitted changes."""
-        workspace = tmp_path / "workspace"
-        workspace.mkdir(parents=True)
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
 
-        wt_dir = workspace / "ac-backend-85-ticket" / "backend"
-        wt_dir.mkdir(parents=True)
+            workspace = tmp_path / "workspace"
+            workspace.mkdir(parents=True)
 
-        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/85")
-        Worktree.objects.create(
-            overlay="test",
-            ticket=ticket,
-            repo_path="backend",
-            branch="ac-backend-85-ticket",
-            extra={"worktree_path": str(wt_dir)},
-        )
+            wt_dir = workspace / "ac-backend-85-ticket" / "backend"
+            wt_dir.mkdir(parents=True)
 
-        mock_result = MagicMock(stdout=" M dirty_file.py\n")
-        stderr = StringIO()
-        with (
-            patch("teatree.core.management.commands.workspace._workspace_dir", return_value=workspace),
-            patch("teatree.core.management.commands.workspace.subprocess.run", return_value=mock_result),
-        ):
-            call_command("workspace", "clean-all", stderr=OutputWrapper(stderr))
+            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/85")
+            Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="backend",
+                branch="ac-backend-85-ticket",
+                extra={"worktree_path": str(wt_dir)},
+            )
 
-        assert "WARNING" in stderr.getvalue()
-        assert "uncommitted changes" in stderr.getvalue()
+            mock_result = MagicMock(stdout=" M dirty_file.py\n")
+            stderr = StringIO()
+            with (
+                patch("teatree.core.management.commands.workspace._workspace_dir", return_value=workspace),
+                patch("teatree.utils.git.subprocess.run", return_value=mock_result),
+            ):
+                call_command("workspace", "clean-all", stderr=OutputWrapper(stderr))
+
+            assert "WARNING" in stderr.getvalue()
+            assert "uncommitted changes" in stderr.getvalue()
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_runs_overlay_cleanup_steps(self, tmp_path: "pytest.TempPathFactory") -> None:
+    def test_runs_overlay_cleanup_steps(self) -> None:
         """clean-all invokes overlay.get_cleanup_steps() for each worktree."""
-        workspace = tmp_path / "workspace"
-        workspace.mkdir(parents=True)
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
 
-        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/86")
-        Worktree.objects.create(
-            overlay="test",
-            ticket=ticket,
-            repo_path="backend",
-            branch="ac-backend-86-ticket",
-            extra={},
-        )
+            workspace = tmp_path / "workspace"
+            workspace.mkdir(parents=True)
 
-        cleanup_called = []
+            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/86")
+            Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="backend",
+                branch="ac-backend-86-ticket",
+                extra={},
+            )
 
-        class CleanupOverlay(FullOverlay):
-            def get_cleanup_steps(self, worktree: Worktree) -> list[ProvisionStep]:
-                return [ProvisionStep(name="docker-down", callable=lambda: cleanup_called.append(True))]
+            cleanup_called = []
 
-        cleanup_overlay = CleanupOverlay()
-        result: dict[str, OverlayBase] = {"test": cleanup_overlay}
+            class CleanupOverlay(FullOverlay):
+                def get_cleanup_steps(self, worktree: Worktree) -> list[ProvisionStep]:
+                    return [ProvisionStep(name="docker-down", callable=lambda: cleanup_called.append(True))]
 
-        def _fake_discover() -> dict[str, OverlayBase]:
-            return result
+            cleanup_overlay = CleanupOverlay()
+            result: dict[str, OverlayBase] = {"test": cleanup_overlay}
 
-        _fake_discover.cache_clear = lambda: None
+            def _fake_discover() -> dict[str, OverlayBase]:
+                return result
 
-        with (
-            patch("teatree.core.management.commands.workspace._workspace_dir", return_value=workspace),
-            patch("teatree.core.overlay_loader._discover_overlays", new=_fake_discover),
-        ):
-            call_command("workspace", "clean-all")
+            _fake_discover.cache_clear = lambda: None
 
-        assert cleanup_called == [True]
+            with (
+                patch("teatree.core.management.commands.workspace._workspace_dir", return_value=workspace),
+                patch("teatree.core.overlay_loader._discover_overlays", new=_fake_discover),
+            ):
+                call_command("workspace", "clean-all")
+
+            assert cleanup_called == [True]
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_removes_empty_ticket_directories(self, tmp_path: "pytest.TempPathFactory") -> None:
+    def test_removes_empty_ticket_directories(self) -> None:
         """clean-all removes empty directories in workspace after cleaning worktrees."""
-        workspace = tmp_path / "workspace"
-        workspace.mkdir(parents=True)
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
 
-        # Create an empty directory that should be cleaned up
-        empty_dir = workspace / "ac-backend-90-ticket"
-        empty_dir.mkdir()
+            workspace = tmp_path / "workspace"
+            workspace.mkdir(parents=True)
 
-        # Create a non-empty directory that should NOT be removed
-        nonempty_dir = workspace / "ac-backend-91-ticket"
-        nonempty_dir.mkdir()
-        (nonempty_dir / "some_file.txt").write_text("content", encoding="utf-8")
+            # Create an empty directory that should be cleaned up
+            empty_dir = workspace / "ac-backend-90-ticket"
+            empty_dir.mkdir()
 
-        with patch("teatree.core.management.commands.workspace._workspace_dir", return_value=workspace):
-            cleaned = cast("list[str]", call_command("workspace", "clean-all"))
+            # Create a non-empty directory that should NOT be removed
+            nonempty_dir = workspace / "ac-backend-91-ticket"
+            nonempty_dir.mkdir()
+            (nonempty_dir / "some_file.txt").write_text("content", encoding="utf-8")
 
-        # Only the empty dir should be removed
-        assert any("ac-backend-90-ticket" in c for c in cleaned)
-        assert not any("ac-backend-91-ticket" in c for c in cleaned)
-        assert not empty_dir.exists()
-        assert nonempty_dir.exists()
+            with patch("teatree.core.management.commands.workspace._workspace_dir", return_value=workspace):
+                cleaned = cast("list[str]", call_command("workspace", "clean-all"))
+
+            # Only the empty dir should be removed
+            assert any("ac-backend-90-ticket" in c for c in cleaned)
+            assert not any("ac-backend-91-ticket" in c for c in cleaned)
+            assert not empty_dir.exists()
+            assert nonempty_dir.exists()
 
 
-@pytest.mark.django_db
-class TestWorkspaceFinalize:
+class TestWorkspaceFinalize(TestCase):
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
     def test_squashes_and_rebases_worktrees(self) -> None:
@@ -557,21 +615,16 @@ class TestWorkspaceFinalize:
         Worktree.objects.create(overlay="test", ticket=ticket, repo_path="/tmp/backend", branch="feature-90")
         Worktree.objects.create(overlay="test", ticket=ticket, repo_path="/tmp/frontend", branch="feature-90")
 
-        def fake_run(cmd, **kwargs):
-            result = MagicMock(returncode=0, stdout="abc123\n", stderr="")
-            if isinstance(cmd, list):
-                if "status" in cmd and "--porcelain" in cmd:
-                    result.stdout = ""
-                elif "rev-list" in cmd and "--count" in cmd:
-                    result.stdout = "3\n"
-                elif "log" in cmd and "--oneline" in cmd:
-                    result.stdout = "abc fix: first change\ndef feat: second\n"
-            return result
-
         with (
-            patch("teatree.core.management.commands.workspace.default_branch", return_value="main"),
-            patch("teatree.core.management.commands.workspace.git_run"),
-            patch("teatree.core.management.commands.workspace.subprocess.run", side_effect=fake_run),
+            patch("teatree.utils.git.default_branch", return_value="main"),
+            patch("teatree.utils.git.status_porcelain", return_value=""),
+            patch("teatree.utils.git.fetch"),
+            patch("teatree.utils.git.merge_base", return_value="abc123"),
+            patch("teatree.utils.git.rev_count", return_value=3),
+            patch("teatree.utils.git.log_oneline", return_value="abc fix: first change\ndef feat: second"),
+            patch("teatree.utils.git.soft_reset"),
+            patch("teatree.utils.git.commit"),
+            patch("teatree.utils.git.rebase"),
         ):
             result = cast("str", call_command("workspace", "finalize", str(ticket.pk)))
 
@@ -586,21 +639,14 @@ class TestWorkspaceFinalize:
         ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/91")
         Worktree.objects.create(overlay="test", ticket=ticket, repo_path="/tmp/backend", branch="feature-91")
 
-        def mock_git_run(*, repo, args, **kwargs):
-            if "rebase" in args:
-                raise sp.CalledProcessError(1, "git rebase")
-            return ""
-
-        def fake_run(cmd, **kwargs):
-            result = MagicMock(returncode=0, stdout="", stderr="")
-            if isinstance(cmd, list) and "rev-list" in cmd:
-                result.stdout = "1\n"
-            return result
-
         with (
-            patch("teatree.core.management.commands.workspace.default_branch", return_value="main"),
-            patch("teatree.core.management.commands.workspace.git_run", side_effect=mock_git_run),
-            patch("teatree.core.management.commands.workspace.subprocess.run", side_effect=fake_run),
+            patch("teatree.utils.git.default_branch", return_value="main"),
+            patch("teatree.utils.git.status_porcelain", return_value=""),
+            patch("teatree.utils.git.fetch"),
+            patch("teatree.utils.git.merge_base", return_value="abc123"),
+            patch("teatree.utils.git.rev_count", return_value=1),
+            patch("teatree.utils.git.log_oneline", return_value=""),
+            patch("teatree.utils.git.rebase", side_effect=sp.CalledProcessError(1, "git rebase")),
         ):
             result = cast("str", call_command("workspace", "finalize", str(ticket.pk)))
 
@@ -612,16 +658,9 @@ class TestWorkspaceFinalize:
         ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/95")
         Worktree.objects.create(overlay="test", ticket=ticket, repo_path="/tmp/dirty", branch="feature-95")
 
-        def fake_run(cmd, **kwargs):
-            result = MagicMock(returncode=0, stdout="", stderr="")
-            if isinstance(cmd, list) and "status" in cmd:
-                result.stdout = " M src/file.py\n"
-            return result
-
         with (
-            patch("teatree.core.management.commands.workspace.default_branch", return_value="main"),
-            patch("teatree.core.management.commands.workspace.git_run"),
-            patch("teatree.core.management.commands.workspace.subprocess.run", side_effect=fake_run),
+            patch("teatree.utils.git.default_branch", return_value="main"),
+            patch("teatree.utils.git.status_porcelain", return_value=" M src/file.py"),
         ):
             result = cast("str", call_command("workspace", "finalize", str(ticket.pk)))
 
@@ -632,210 +671,266 @@ class TestWorkspaceFinalize:
 # ── DB commands ─────────────────────────────────────────────────────
 
 
-@pytest.mark.django_db
-class TestDbRefresh:
+class TestDbRefresh(TestCase):
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_transitions_worktree(self, tmp_path: Path) -> None:
-        wt_dir = tmp_path / "test"
-        wt_dir.mkdir()
-        ticket = Ticket.objects.create(overlay="test")
-        worktree = Worktree.objects.create(
-            overlay="test", ticket=ticket, repo_path="/tmp/test", branch="feature", extra={"worktree_path": str(wt_dir)}
-        )
-        worktree.provision()
-        worktree.save()
+    def test_transitions_worktree(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            wt_dir = tmp_path / "test"
+            wt_dir.mkdir()
+            ticket = Ticket.objects.create(overlay="test")
+            worktree = Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="/tmp/test",
+                branch="feature",
+                extra={"worktree_path": str(wt_dir)},
+            )
+            worktree.provision()
+            worktree.save()
 
-        result = cast("str", call_command("db", "refresh", path=str(wt_dir)))
-
-        worktree.refresh_from_db()
-        assert "refreshed" in result.lower()
-        assert worktree.state == Worktree.State.PROVISIONED
-
-    @_patch_overlays(FULL_OVERLAY)
-    @override_settings(**SETTINGS)
-    def test_runs_post_db_steps_and_reset_passwords(self, tmp_path: Path) -> None:
-        """Db refresh calls post-DB steps and password reset after successful import."""
-        wt_dir = tmp_path / "test"
-        wt_dir.mkdir()
-        ticket = Ticket.objects.create(overlay="test")
-        worktree = Worktree.objects.create(
-            overlay="test", ticket=ticket, repo_path="/tmp/test", branch="feature", extra={"worktree_path": str(wt_dir)}
-        )
-        worktree.provision()
-        worktree.save()
-
-        with patch("teatree.core.management.commands.db.subprocess") as mock_sp:
-            mock_sp.run.return_value = MagicMock(returncode=0)
             result = cast("str", call_command("db", "refresh", path=str(wt_dir)))
 
-        assert "refreshed" in result.lower()
-        # Post-DB steps and password reset should have been called
-        assert mock_sp.run.call_count >= 1
+            worktree.refresh_from_db()
+            assert "refreshed" in result.lower()
+            assert worktree.state == Worktree.State.PROVISIONED
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_runs_post_db_steps_and_reset_passwords(self) -> None:
+        """Db refresh calls post-DB steps and password reset after successful import."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+
+            wt_dir = tmp_path / "test"
+            wt_dir.mkdir()
+            ticket = Ticket.objects.create(overlay="test")
+            worktree = Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="/tmp/test",
+                branch="feature",
+                extra={"worktree_path": str(wt_dir)},
+            )
+            worktree.provision()
+            worktree.save()
+
+            result = cast("str", call_command("db", "refresh", path=str(wt_dir)))
+
+            assert "refreshed" in result.lower()
 
     @_patch_overlays(FAILING_IMPORT_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_reports_failure_when_import_fails(self, tmp_path: Path) -> None:
+    def test_reports_failure_when_import_fails(self) -> None:
         """Db refresh reports failure when overlay.db_import returns False."""
-        wt_dir = tmp_path / "test"
-        wt_dir.mkdir()
-        ticket = Ticket.objects.create(overlay="test")
-        worktree = Worktree.objects.create(
-            overlay="test", ticket=ticket, repo_path="/tmp/test", branch="feature", extra={"worktree_path": str(wt_dir)}
-        )
-        worktree.provision()
-        worktree.save()
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
 
-        result = cast("str", call_command("db", "refresh", path=str(wt_dir)))
+            wt_dir = tmp_path / "test"
+            wt_dir.mkdir()
+            ticket = Ticket.objects.create(overlay="test")
+            worktree = Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="/tmp/test",
+                branch="feature",
+                extra={"worktree_path": str(wt_dir)},
+            )
+            worktree.provision()
+            worktree.save()
 
-        assert "failed" in result.lower()
+            result = cast("str", call_command("db", "refresh", path=str(wt_dir)))
+
+            assert "failed" in result.lower()
 
     @_patch_overlays(POST_DB_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_runs_post_db_steps_loop(self, tmp_path: Path) -> None:
-        """Db refresh iterates over overlay.get_post_db_steps and runs commands (lines 37-40)."""
-        wt_dir = tmp_path / "test"
-        wt_dir.mkdir()
-        ticket = Ticket.objects.create(overlay="test")
-        worktree = Worktree.objects.create(
-            overlay="test", ticket=ticket, repo_path="/tmp/test", branch="feature", extra={"worktree_path": str(wt_dir)}
-        )
-        worktree.provision()
-        worktree.save()
+    def test_runs_post_db_steps_loop(self) -> None:
+        """Db refresh iterates over overlay.get_post_db_steps and calls each callable."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
 
-        with patch("teatree.core.management.commands.db.subprocess") as mock_sp:
-            mock_sp.run.return_value = MagicMock(returncode=0)
+            wt_dir = tmp_path / "test"
+            wt_dir.mkdir()
+            ticket = Ticket.objects.create(overlay="test")
+            worktree = Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="/tmp/test",
+                branch="feature",
+                extra={"worktree_path": str(wt_dir)},
+            )
+            worktree.provision()
+            worktree.save()
+
             result = cast("str", call_command("db", "refresh", path=str(wt_dir)))
 
-        assert "refreshed" in result.lower()
-        # 2 steps with commands + 1 password reset = 3 subprocess.run calls
-        # (the "no-command-step" has no "command" key so it's skipped)
-        assert mock_sp.run.call_count == 3
+            assert "refreshed" in result.lower()
 
     @_patch_overlays(MINIMAL_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_no_strategy_returns_message(self, tmp_path: Path) -> None:
-        wt_dir = tmp_path / "test"
-        wt_dir.mkdir()
-        ticket = Ticket.objects.create(overlay="test")
-        worktree = Worktree.objects.create(
-            overlay="test", ticket=ticket, repo_path="/tmp/test", branch="feature", extra={"worktree_path": str(wt_dir)}
-        )
-        worktree.provision()
-        worktree.save()
+    def test_no_strategy_returns_message(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            wt_dir = tmp_path / "test"
+            wt_dir.mkdir()
+            ticket = Ticket.objects.create(overlay="test")
+            worktree = Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="/tmp/test",
+                branch="feature",
+                extra={"worktree_path": str(wt_dir)},
+            )
+            worktree.provision()
+            worktree.save()
 
-        result = cast("str", call_command("db", "refresh", path=str(wt_dir)))
+            result = cast("str", call_command("db", "refresh", path=str(wt_dir)))
 
-        assert "no db import strategy" in result.lower()
+            assert "no db import strategy" in result.lower()
 
 
-@pytest.mark.django_db
-class TestDbRestoreCi:
+class TestDbRestoreCi(TestCase):
     @_patch_overlays(FAILING_IMPORT_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_reports_failure(self, tmp_path: Path) -> None:
+    def test_reports_failure(self) -> None:
         """restore-ci returns failure message when db_import returns False (line 65)."""
-        wt_dir = tmp_path / "test"
-        wt_dir.mkdir()
-        ticket = Ticket.objects.create(overlay="test")
-        worktree = Worktree.objects.create(
-            overlay="test", ticket=ticket, repo_path="/tmp/test", branch="feature", extra={"worktree_path": str(wt_dir)}
-        )
-        worktree.provision()
-        worktree.save()
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
 
-        result = cast("str", call_command("db", "restore-ci", path=str(wt_dir)))
+            wt_dir = tmp_path / "test"
+            wt_dir.mkdir()
+            ticket = Ticket.objects.create(overlay="test")
+            worktree = Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="/tmp/test",
+                branch="feature",
+                extra={"worktree_path": str(wt_dir)},
+            )
+            worktree.provision()
+            worktree.save()
 
-        assert "failed" in result.lower()
+            result = cast("str", call_command("db", "restore-ci", path=str(wt_dir)))
+
+            assert "failed" in result.lower()
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_calls_db_import_with_force(self, tmp_path: Path) -> None:
+    def test_calls_db_import_with_force(self) -> None:
         """restore-ci calls db_import with force=True."""
-        wt_dir = tmp_path / "test"
-        wt_dir.mkdir()
-        ticket = Ticket.objects.create(overlay="test")
-        worktree = Worktree.objects.create(
-            overlay="test", ticket=ticket, repo_path="/tmp/test", branch="feature", extra={"worktree_path": str(wt_dir)}
-        )
-        worktree.provision()
-        worktree.save()
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
 
-        result = cast("str", call_command("db", "restore-ci", path=str(wt_dir)))
+            wt_dir = tmp_path / "test"
+            wt_dir.mkdir()
+            ticket = Ticket.objects.create(overlay="test")
+            worktree = Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="/tmp/test",
+                branch="feature",
+                extra={"worktree_path": str(wt_dir)},
+            )
+            worktree.provision()
+            worktree.save()
 
-        worktree.refresh_from_db()
-        assert "restored" in result.lower()
-        assert worktree.state == Worktree.State.PROVISIONED
+            result = cast("str", call_command("db", "restore-ci", path=str(wt_dir)))
+
+            worktree.refresh_from_db()
+            assert "restored" in result.lower()
+            assert worktree.state == Worktree.State.PROVISIONED
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_with_strategy(self, tmp_path: Path) -> None:
-        wt_dir = tmp_path / "test"
-        wt_dir.mkdir()
-        ticket = Ticket.objects.create(overlay="test")
-        worktree = Worktree.objects.create(
-            overlay="test", ticket=ticket, repo_path="/tmp/test", branch="feature", extra={"worktree_path": str(wt_dir)}
-        )
-        worktree.provision()
-        worktree.save()
+    def test_with_strategy(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            wt_dir = tmp_path / "test"
+            wt_dir.mkdir()
+            ticket = Ticket.objects.create(overlay="test")
+            worktree = Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="/tmp/test",
+                branch="feature",
+                extra={"worktree_path": str(wt_dir)},
+            )
+            worktree.provision()
+            worktree.save()
 
-        result = cast("str", call_command("db", "restore-ci", path=str(wt_dir)))
+            result = cast("str", call_command("db", "restore-ci", path=str(wt_dir)))
 
-        assert "restored" in result.lower() or "failed" in result.lower()
+            assert "restored" in result.lower() or "failed" in result.lower()
 
     @_patch_overlays(MINIMAL_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_no_strategy_returns_message(self, tmp_path: Path) -> None:
-        wt_dir = tmp_path / "test"
-        wt_dir.mkdir()
-        ticket = Ticket.objects.create(overlay="test")
-        Worktree.objects.create(
-            overlay="test", ticket=ticket, repo_path="/tmp/test", branch="feature", extra={"worktree_path": str(wt_dir)}
-        )
+    def test_no_strategy_returns_message(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            wt_dir = tmp_path / "test"
+            wt_dir.mkdir()
+            ticket = Ticket.objects.create(overlay="test")
+            Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="/tmp/test",
+                branch="feature",
+                extra={"worktree_path": str(wt_dir)},
+            )
 
-        result = cast("str", call_command("db", "restore-ci", path=str(wt_dir)))
+            result = cast("str", call_command("db", "restore-ci", path=str(wt_dir)))
 
-        assert "no db import strategy" in result.lower()
+            assert "no db import strategy" in result.lower()
 
 
-@pytest.mark.django_db
-class TestDbResetPasswords:
+class TestDbResetPasswords(TestCase):
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_calls_overlay_command(self, tmp_path: Path) -> None:
-        wt_dir = tmp_path / "test"
-        wt_dir.mkdir()
-        ticket = Ticket.objects.create(overlay="test")
-        Worktree.objects.create(
-            overlay="test", ticket=ticket, repo_path="/tmp/test", branch="feature", extra={"worktree_path": str(wt_dir)}
-        )
+    def test_calls_overlay_command(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            wt_dir = tmp_path / "test"
+            wt_dir.mkdir()
+            ticket = Ticket.objects.create(overlay="test")
+            Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="/tmp/test",
+                branch="feature",
+                extra={"worktree_path": str(wt_dir)},
+            )
 
-        with patch("teatree.core.management.commands.db.subprocess.run") as mock_run:
             result = cast("str", call_command("db", "reset-passwords", path=str(wt_dir)))
 
-        assert "reset" in result.lower()
-        mock_run.assert_called_once()
+            assert "reset" in result.lower()
 
     @_patch_overlays(MINIMAL_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_no_command_returns_message(self, tmp_path: Path) -> None:
-        wt_dir = tmp_path / "test"
-        wt_dir.mkdir()
-        ticket = Ticket.objects.create(overlay="test")
-        Worktree.objects.create(
-            overlay="test", ticket=ticket, repo_path="/tmp/test", branch="feature", extra={"worktree_path": str(wt_dir)}
-        )
+    def test_no_command_returns_message(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            wt_dir = tmp_path / "test"
+            wt_dir.mkdir()
+            ticket = Ticket.objects.create(overlay="test")
+            Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="/tmp/test",
+                branch="feature",
+                extra={"worktree_path": str(wt_dir)},
+            )
 
-        result = cast("str", call_command("db", "reset-passwords", path=str(wt_dir)))
+            result = cast("str", call_command("db", "reset-passwords", path=str(wt_dir)))
 
-        assert "no reset-passwords command" in result.lower()
+            assert "no reset-passwords command" in result.lower()
 
 
 # ── PR commands ─────────────────────────────────────────────────────
 
 
-@pytest.mark.django_db
-class TestPrCreate:
+class TestPrCreate(TestCase):
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
     def test_without_code_host_returns_error(self) -> None:
@@ -1040,8 +1135,7 @@ class TestPrCreate:
         assert call_kwargs["description"] == "Detailed body here"
 
 
-@pytest.mark.django_db
-class TestPrCheckGates:
+class TestPrCheckGates(TestCase):
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
     def test_without_session_returns_not_allowed(self) -> None:
@@ -1104,8 +1198,7 @@ class TestLastCommitMessage:
         assert body == ""
 
 
-@pytest.mark.django_db
-class TestPrFetchIssue:
+class TestPrFetchIssue(TestCase):
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
     def test_without_tracker_returns_error(self) -> None:
@@ -1174,8 +1267,7 @@ class TestPrFetchIssue:
         assert "error" not in result
 
 
-@pytest.mark.django_db
-class TestPrDetectTenant:
+class TestPrDetectTenant(TestCase):
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
     def test_returns_overlay_variant(self) -> None:
@@ -1184,8 +1276,7 @@ class TestPrDetectTenant:
         assert result == "test_variant"
 
 
-@pytest.mark.django_db
-class TestPrPostEvidence:
+class TestPrPostEvidence(TestCase):
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
     def test_without_code_host_returns_error(self) -> None:
@@ -1329,204 +1420,216 @@ class TestPrPostEvidence:
 # ── Run commands ───────────────────────────────────────────────────
 
 
-@pytest.mark.django_db
-class TestRunBackend:
+class TestRunBackend(TestCase):
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_calls_overlay_command(self, tmp_path: Path) -> None:
-        wt_dir = tmp_path / "backend"
-        wt_dir.mkdir()
-        ticket = Ticket.objects.create(overlay="test")
-        Worktree.objects.create(
-            overlay="test",
-            ticket=ticket,
-            repo_path="/tmp/backend",
-            branch="feature",
-            extra={"worktree_path": str(wt_dir)},
-        )
+    def test_calls_overlay_command(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            wt_dir = tmp_path / "backend"
+            wt_dir.mkdir()
+            ticket = Ticket.objects.create(overlay="test")
+            Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="/tmp/backend",
+                branch="feature",
+                extra={"worktree_path": str(wt_dir)},
+            )
 
-        with patch("teatree.core.management.commands.run.subprocess.run") as mock_run:
-            result = cast("str", call_command("run", "backend", path=str(wt_dir)))
+            with patch("teatree.core.management.commands.run.subprocess.run") as mock_run:
+                result = cast("str", call_command("run", "backend", path=str(wt_dir)))
 
-        mock_run.assert_called_once()
-        assert "started" in result.lower()
+            mock_run.assert_called_once()
+            assert "started" in result.lower()
 
     @_patch_overlays(MINIMAL_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_no_command_returns_message(self, tmp_path: Path) -> None:
-        wt_dir = tmp_path / "backend"
-        wt_dir.mkdir()
-        ticket = Ticket.objects.create(overlay="test")
-        Worktree.objects.create(
-            overlay="test",
-            ticket=ticket,
-            repo_path="/tmp/backend",
-            branch="feature",
-            extra={"worktree_path": str(wt_dir)},
-        )
+    def test_no_command_returns_message(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            wt_dir = tmp_path / "backend"
+            wt_dir.mkdir()
+            ticket = Ticket.objects.create(overlay="test")
+            Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="/tmp/backend",
+                branch="feature",
+                extra={"worktree_path": str(wt_dir)},
+            )
 
-        result = cast("str", call_command("run", "backend", path=str(wt_dir)))
+            result = cast("str", call_command("run", "backend", path=str(wt_dir)))
 
-        assert "no backend command" in result.lower()
+            assert "no backend command" in result.lower()
 
     @_patch_overlays(SERVICES_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_starts_services_before_command(self, tmp_path: Path) -> None:
+    def test_starts_services_before_command(self) -> None:
         """Backend command calls _start_services which runs start_command for each service."""
-        wt_dir = tmp_path / "backend"
-        wt_dir.mkdir()
-        ticket = Ticket.objects.create(overlay="test")
-        Worktree.objects.create(
-            overlay="test",
-            ticket=ticket,
-            repo_path="/tmp/backend",
-            branch="feature",
-            extra={"worktree_path": str(wt_dir)},
-        )
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
 
-        with patch("teatree.core.management.commands.run.subprocess.run") as mock_run:
-            call_command("run", "backend", path=str(wt_dir))
+            wt_dir = tmp_path / "backend"
+            wt_dir.mkdir()
+            ticket = Ticket.objects.create(overlay="test")
+            Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="/tmp/backend",
+                branch="feature",
+                extra={"worktree_path": str(wt_dir)},
+            )
 
-        # 2 calls: one for postgres start_command, one for the backend command itself.
-        # Redis has no start_command so it's skipped.
-        assert mock_run.call_count == 2
+            with patch("teatree.core.management.commands.run.subprocess.run") as mock_run:
+                call_command("run", "backend", path=str(wt_dir))
+
+            # 2 calls: one for postgres start_command, one for the backend command itself.
+            # Redis has no start_command so it's skipped.
+            assert mock_run.call_count == 2
 
 
-@pytest.mark.django_db
-class TestRunFrontend:
+class TestRunFrontend(TestCase):
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_calls_overlay_command(self, tmp_path: Path) -> None:
-        wt_dir = tmp_path / "frontend"
-        wt_dir.mkdir()
-        ticket = Ticket.objects.create(overlay="test")
-        Worktree.objects.create(
-            overlay="test",
-            ticket=ticket,
-            repo_path="/tmp/frontend",
-            branch="feature",
-            extra={"worktree_path": str(wt_dir)},
-        )
+    def test_calls_overlay_command(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            wt_dir = tmp_path / "frontend"
+            wt_dir.mkdir()
+            ticket = Ticket.objects.create(overlay="test")
+            Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="/tmp/frontend",
+                branch="feature",
+                extra={"worktree_path": str(wt_dir)},
+            )
 
-        with patch("teatree.core.management.commands.run.subprocess.run") as mock_run:
+            with patch("teatree.core.management.commands.run.subprocess.run") as mock_run:
+                result = cast("str", call_command("run", "frontend", path=str(wt_dir)))
+
+            mock_run.assert_called_once()
+            assert "started" in result.lower()
+
+    @_patch_overlays(MINIMAL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_no_command_returns_message(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            wt_dir = tmp_path / "frontend"
+            wt_dir.mkdir()
+            ticket = Ticket.objects.create(overlay="test")
+            Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="/tmp/frontend",
+                branch="feature",
+                extra={"worktree_path": str(wt_dir)},
+            )
+
             result = cast("str", call_command("run", "frontend", path=str(wt_dir)))
 
-        mock_run.assert_called_once()
-        assert "started" in result.lower()
+            assert "no frontend command" in result.lower()
+
+
+class TestRunBuildFrontend(TestCase):
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_calls_overlay_command(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            wt_dir = tmp_path / "frontend"
+            wt_dir.mkdir()
+            ticket = Ticket.objects.create(overlay="test")
+            Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="/tmp/frontend",
+                branch="feature",
+                extra={"worktree_path": str(wt_dir)},
+            )
+
+            with patch("teatree.core.management.commands.run.subprocess.run") as mock_run:
+                result = cast("str", call_command("run", "build-frontend", path=str(wt_dir)))
+
+            mock_run.assert_called_once()
+            assert "built" in result.lower()
 
     @_patch_overlays(MINIMAL_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_no_command_returns_message(self, tmp_path: Path) -> None:
-        wt_dir = tmp_path / "frontend"
-        wt_dir.mkdir()
-        ticket = Ticket.objects.create(overlay="test")
-        Worktree.objects.create(
-            overlay="test",
-            ticket=ticket,
-            repo_path="/tmp/frontend",
-            branch="feature",
-            extra={"worktree_path": str(wt_dir)},
-        )
+    def test_no_command_returns_message(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            wt_dir = tmp_path / "frontend"
+            wt_dir.mkdir()
+            ticket = Ticket.objects.create(overlay="test")
+            Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="/tmp/frontend",
+                branch="feature",
+                extra={"worktree_path": str(wt_dir)},
+            )
 
-        result = cast("str", call_command("run", "frontend", path=str(wt_dir)))
-
-        assert "no frontend command" in result.lower()
-
-
-@pytest.mark.django_db
-class TestRunBuildFrontend:
-    @_patch_overlays(FULL_OVERLAY)
-    @override_settings(**SETTINGS)
-    def test_calls_overlay_command(self, tmp_path: Path) -> None:
-        wt_dir = tmp_path / "frontend"
-        wt_dir.mkdir()
-        ticket = Ticket.objects.create(overlay="test")
-        Worktree.objects.create(
-            overlay="test",
-            ticket=ticket,
-            repo_path="/tmp/frontend",
-            branch="feature",
-            extra={"worktree_path": str(wt_dir)},
-        )
-
-        with patch("teatree.core.management.commands.run.subprocess.run") as mock_run:
             result = cast("str", call_command("run", "build-frontend", path=str(wt_dir)))
 
-        mock_run.assert_called_once()
-        assert "built" in result.lower()
-
-    @_patch_overlays(MINIMAL_OVERLAY)
-    @override_settings(**SETTINGS)
-    def test_no_command_returns_message(self, tmp_path: Path) -> None:
-        wt_dir = tmp_path / "frontend"
-        wt_dir.mkdir()
-        ticket = Ticket.objects.create(overlay="test")
-        Worktree.objects.create(
-            overlay="test",
-            ticket=ticket,
-            repo_path="/tmp/frontend",
-            branch="feature",
-            extra={"worktree_path": str(wt_dir)},
-        )
-
-        result = cast("str", call_command("run", "build-frontend", path=str(wt_dir)))
-
-        assert "no build-frontend command" in result.lower()
+            assert "no build-frontend command" in result.lower()
 
 
-@pytest.mark.django_db
-class TestRunTests:
+class TestRunTests(TestCase):
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_calls_overlay_test_command(self, tmp_path: Path) -> None:
-        wt_dir = tmp_path / "backend"
-        wt_dir.mkdir()
-        ticket = Ticket.objects.create(overlay="test")
-        Worktree.objects.create(
-            overlay="test",
-            ticket=ticket,
-            repo_path="/tmp/backend",
-            branch="feature",
-            extra={"worktree_path": str(wt_dir)},
-        )
+    def test_calls_overlay_test_command(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            wt_dir = tmp_path / "backend"
+            wt_dir.mkdir()
+            ticket = Ticket.objects.create(overlay="test")
+            Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="/tmp/backend",
+                branch="feature",
+                extra={"worktree_path": str(wt_dir)},
+            )
 
-        with patch("teatree.core.management.commands.run.subprocess.run") as mock_run:
-            result = cast("str", call_command("run", "tests", path=str(wt_dir)))
+            with patch("teatree.core.management.commands.run.subprocess.run") as mock_run:
+                result = cast("str", call_command("run", "tests", path=str(wt_dir)))
 
-        mock_run.assert_called_once()
-        assert "completed" in result.lower()
+            mock_run.assert_called_once()
+            assert "completed" in result.lower()
 
     @_patch_overlays(MINIMAL_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_no_command_returns_message(self, tmp_path: Path) -> None:
-        wt_dir = tmp_path / "backend"
-        wt_dir.mkdir()
-        ticket = Ticket.objects.create(overlay="test")
-        Worktree.objects.create(
-            overlay="test",
-            ticket=ticket,
-            repo_path="/tmp/backend",
-            branch="feature",
-            extra={"worktree_path": str(wt_dir)},
-        )
+    def test_no_command_returns_message(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            wt_dir = tmp_path / "backend"
+            wt_dir.mkdir()
+            ticket = Ticket.objects.create(overlay="test")
+            Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="/tmp/backend",
+                branch="feature",
+                extra={"worktree_path": str(wt_dir)},
+            )
 
-        result = cast("str", call_command("run", "tests", path=str(wt_dir)))
+            result = cast("str", call_command("run", "tests", path=str(wt_dir)))
 
-        assert "no test command" in result.lower()
+            assert "no test command" in result.lower()
 
 
-@pytest.mark.django_db
-class TestRunVerify:
+class TestRunVerify(TestCase):
     pass  # No verify tests in the original file — placeholder for future tests
 
 
-@pytest.mark.django_db
-class TestRunServices:
+class TestRunServices(TestCase):
     pass  # No standalone services tests in the original file — placeholder for future tests
 
 
-@pytest.mark.django_db
-class TestRunE2e:
+class TestRunE2e(TestCase):
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
     def test_triggers_pipeline(self) -> None:
@@ -1574,8 +1677,7 @@ class TestRunE2e:
         assert "error" in result
 
 
-@pytest.mark.django_db
-class TestRunE2eLocal:
+class TestRunE2eLocal(TestCase):
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
     def test_runs_playwright_locally(self) -> None:
@@ -1636,334 +1738,377 @@ class TestRunE2eLocal:
 # ── Lifecycle commands ──────────────────────────────────────────────
 
 
-@pytest.mark.django_db
-class TestLifecycleSetup:
+class TestLifecycleSetup(TestCase):
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_runs_reset_passwords(self, tmp_path: Path) -> None:
-        wt_dir = tmp_path / "backend"
-        wt_dir.mkdir()
-        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/60")
-        Worktree.objects.create(
-            overlay="test",
-            ticket=ticket,
-            repo_path="/tmp/backend",
-            branch="feature",
-            extra={"worktree_path": str(wt_dir)},
-        )
+    def test_runs_reset_passwords(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            wt_dir = tmp_path / "backend"
+            wt_dir.mkdir()
+            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/60")
+            Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="/tmp/backend",
+                branch="feature",
+                extra={"worktree_path": str(wt_dir)},
+            )
 
-        with patch("teatree.core.management.commands.lifecycle.subprocess.run") as mock_run:
-            call_command("lifecycle", "setup", path=str(wt_dir))
+            reset_called = False
 
-        # FullOverlay.get_reset_passwords_command returns "echo passwords_reset"
-        # Find the password reset call (direnv allow may also be called)
-        pw_calls = [c for c in mock_run.call_args_list if c[0] and c[0][0] == "echo passwords_reset"]
-        assert len(pw_calls) == 1
-        assert pw_calls[0][1]["shell"] is True
+            def _track_reset() -> None:
+                nonlocal reset_called
+                reset_called = True
+
+            overlay = import_string(FULL_OVERLAY)()
+            overlay.get_reset_passwords_command = lambda wt: ProvisionStep(name="reset", callable=_track_reset)
+
+            with (
+                patch("teatree.core.overlay_loader._discover_overlays", return_value={"test": overlay}),
+                patch("teatree.core.management.commands.lifecycle.subprocess"),
+            ):
+                call_command("lifecycle", "setup", path=str(wt_dir))
+
+            assert reset_called
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_already_provisioned_skips_provision(self, tmp_path: Path) -> None:
+    def test_already_provisioned_skips_provision(self) -> None:
         """When worktree is already provisioned, setup skips the provision step."""
-        wt_dir = tmp_path / "backend"
-        wt_dir.mkdir()
-        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/61")
-        wt = Worktree.objects.create(
-            overlay="test",
-            ticket=ticket,
-            repo_path="/tmp/backend",
-            branch="feature",
-            extra={"worktree_path": str(wt_dir)},
-        )
-        wt.provision()
-        wt.save()
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
 
-        with patch("teatree.core.management.commands.lifecycle.subprocess.run"):
-            worktree_id = cast("int", call_command("lifecycle", "setup", path=str(wt_dir)))
+            wt_dir = tmp_path / "backend"
+            wt_dir.mkdir()
+            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/61")
+            wt = Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="/tmp/backend",
+                branch="feature",
+                extra={"worktree_path": str(wt_dir)},
+            )
+            wt.provision()
+            wt.save()
 
-        worktree = Worktree.objects.get(pk=worktree_id)
-        assert worktree.state == Worktree.State.PROVISIONED
+            with patch("teatree.core.management.commands.lifecycle.subprocess.run"):
+                worktree_id = cast("int", call_command("lifecycle", "setup", path=str(wt_dir)))
+
+            worktree = Worktree.objects.get(pk=worktree_id)
+            assert worktree.state == Worktree.State.PROVISIONED
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_variant_option_updates_ticket(self, tmp_path: Path) -> None:
+    def test_variant_option_updates_ticket(self) -> None:
         """The --variant option updates the ticket variant before provisioning."""
-        wt_dir = tmp_path / "backend"
-        wt_dir.mkdir()
-        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/90", variant="")
-        Worktree.objects.create(
-            overlay="test",
-            ticket=ticket,
-            repo_path="/tmp/backend",
-            branch="feature",
-            extra={"worktree_path": str(wt_dir)},
-        )
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
 
-        with patch("teatree.core.management.commands.lifecycle.subprocess.run"):
-            call_command("lifecycle", "setup", path=str(wt_dir), variant="testcustomer")
+            wt_dir = tmp_path / "backend"
+            wt_dir.mkdir()
+            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/90", variant="")
+            Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="/tmp/backend",
+                branch="feature",
+                extra={"worktree_path": str(wt_dir)},
+            )
 
-        ticket.refresh_from_db()
-        assert ticket.variant == "testcustomer"
+            with patch("teatree.core.management.commands.lifecycle.subprocess.run"):
+                call_command("lifecycle", "setup", path=str(wt_dir), variant="testcustomer")
+
+            ticket.refresh_from_db()
+            assert ticket.variant == "testcustomer"
 
     @_patch_overlays(FAILING_IMPORT_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_continues_on_db_import_failure(self, tmp_path: Path) -> None:
+    def test_continues_on_db_import_failure(self) -> None:
         """Setup continues with provision steps even when db_import fails."""
-        wt_dir = tmp_path / "backend"
-        wt_dir.mkdir()
-        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/70")
-        Worktree.objects.create(
-            overlay="test",
-            ticket=ticket,
-            repo_path="/tmp/backend",
-            branch="feature",
-            extra={"worktree_path": str(wt_dir)},
-        )
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
 
-        with patch("teatree.core.management.commands.lifecycle.subprocess") as mock_sp:
-            mock_sp.run.return_value = MagicMock(returncode=0)
-            worktree_id = cast("int", call_command("lifecycle", "setup", path=str(wt_dir)))
+            wt_dir = tmp_path / "backend"
+            wt_dir.mkdir()
+            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/70")
+            Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="/tmp/backend",
+                branch="feature",
+                extra={"worktree_path": str(wt_dir)},
+            )
 
-        worktree = Worktree.objects.get(pk=worktree_id)
-        assert worktree.state == Worktree.State.PROVISIONED
+            with patch("teatree.core.management.commands.lifecycle.subprocess") as mock_sp:
+                mock_sp.run.return_value = MagicMock(returncode=0)
+                worktree_id = cast("int", call_command("lifecycle", "setup", path=str(wt_dir)))
+
+            worktree = Worktree.objects.get(pk=worktree_id)
+            assert worktree.state == Worktree.State.PROVISIONED
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_runs_post_db_steps(self, tmp_path: Path) -> None:
+    def test_runs_post_db_steps(self) -> None:
         """Setup runs post-DB steps from the overlay."""
-        wt_dir = tmp_path / "backend"
-        wt_dir.mkdir()
-        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/71")
-        Worktree.objects.create(
-            overlay="test",
-            ticket=ticket,
-            repo_path="/tmp/backend",
-            branch="feature",
-            extra={"worktree_path": str(wt_dir)},
-        )
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
 
-        with patch("teatree.core.management.commands.lifecycle.subprocess") as mock_sp:
-            mock_sp.run.return_value = MagicMock(returncode=0)
-            call_command("lifecycle", "setup", path=str(wt_dir))
+            wt_dir = tmp_path / "backend"
+            wt_dir.mkdir()
+            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/71")
+            Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="/tmp/backend",
+                branch="feature",
+                extra={"worktree_path": str(wt_dir)},
+            )
 
-        # Should have called subprocess.run for password reset at minimum
-        assert mock_sp.run.call_count >= 1
+            with patch("teatree.core.management.commands.lifecycle.subprocess") as mock_sp:
+                mock_sp.run.return_value = MagicMock(returncode=0)
+                call_command("lifecycle", "setup", path=str(wt_dir))
+
+            # Should have called subprocess.run for password reset at minimum
+            assert mock_sp.run.call_count >= 1
 
     @_patch_overlays(POST_DB_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_runs_post_db_steps_with_commands(self, tmp_path: Path) -> None:
+    def test_runs_post_db_steps_with_commands(self) -> None:
         """Setup iterates post-DB steps and runs commands via subprocess (lines 49-52)."""
-        wt_dir = tmp_path / "backend"
-        wt_dir.mkdir()
-        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/72")
-        Worktree.objects.create(
-            overlay="test",
-            ticket=ticket,
-            repo_path="/tmp/backend",
-            branch="feature",
-            extra={"worktree_path": str(wt_dir)},
-        )
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
 
-        with patch("teatree.core.management.commands.lifecycle.subprocess") as mock_sp:
-            mock_sp.run.return_value = MagicMock(returncode=0)
-            call_command("lifecycle", "setup", path=str(wt_dir))
+            wt_dir = tmp_path / "backend"
+            wt_dir.mkdir()
+            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/72")
+            Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="/tmp/backend",
+                branch="feature",
+                extra={"worktree_path": str(wt_dir)},
+            )
 
-        # PostDbStepsOverlay returns 3 steps: 2 with commands + 1 without command
-        # Plus 1 password reset call + 1 direnv allow call = 4 total subprocess.run calls
-        assert mock_sp.run.call_count == 4
+            with patch("teatree.core.management.commands.lifecycle.subprocess") as mock_sp:
+                mock_sp.run.return_value = MagicMock(returncode=0)
+                call_command("lifecycle", "setup", path=str(wt_dir))
+
+            # PostDbStepsOverlay returns 2 ProvisionStep callables (no subprocess)
+            # + 1 reset-passwords ProvisionStep callable (no subprocess)
+            # Only direnv allow remains as a subprocess call
+            assert mock_sp.run.call_count == 1
 
     @_patch_overlays(PRE_RUN_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_runs_pre_run_steps_for_all_services(self, tmp_path: Path) -> None:
+    def test_runs_pre_run_steps_for_all_services(self) -> None:
         """Setup calls get_pre_run_steps for every service from get_run_commands."""
-        wt_dir = tmp_path / "backend"
-        wt_dir.mkdir()
-        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/73")
-        wt = Worktree.objects.create(
-            overlay="test",
-            ticket=ticket,
-            repo_path="/tmp/backend",
-            branch="feature",
-            extra={"worktree_path": str(wt_dir)},
-        )
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
 
-        with patch("teatree.core.management.commands.lifecycle.subprocess") as mock_sp:
-            mock_sp.run.return_value = MagicMock(returncode=0)
-            call_command("lifecycle", "setup", path=str(wt_dir))
+            wt_dir = tmp_path / "backend"
+            wt_dir.mkdir()
+            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/73")
+            wt = Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="/tmp/backend",
+                branch="feature",
+                extra={"worktree_path": str(wt_dir)},
+            )
 
-        # PreRunOverlay.get_run_commands returns backend, frontend, build-frontend
-        wt.refresh_from_db()
-        assert sorted((wt.extra or {}).get("pre_run_log", [])) == ["backend", "build-frontend", "frontend"]
+            with patch("teatree.core.management.commands.lifecycle.subprocess") as mock_sp:
+                mock_sp.run.return_value = MagicMock(returncode=0)
+                call_command("lifecycle", "setup", path=str(wt_dir))
+
+            # PreRunOverlay.get_run_commands returns backend, frontend, build-frontend
+            wt.refresh_from_db()
+            assert sorted((wt.extra or {}).get("pre_run_log", [])) == ["backend", "build-frontend", "frontend"]
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_writes_skill_metadata_cache(self, tmp_path: "pytest.TempPathFactory") -> None:
+    def test_writes_skill_metadata_cache(self) -> None:
         """Setup writes the overlay skill metadata to DATA_DIR/skill-metadata.json."""
-        wt_dir = tmp_path / "backend"
-        wt_dir.mkdir()
-        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/63")
-        Worktree.objects.create(
-            overlay="test",
-            ticket=ticket,
-            repo_path="/tmp/backend",
-            branch="feature",
-            extra={"worktree_path": str(wt_dir)},
-        )
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
 
-        with (
-            patch("teatree.core.management.commands.lifecycle.subprocess.run"),
-            patch("teatree.core.management.commands.lifecycle.DATA_DIR", tmp_path),
-        ):
-            call_command("lifecycle", "setup", path=str(wt_dir))
+            wt_dir = tmp_path / "backend"
+            wt_dir.mkdir()
+            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/63")
+            Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="/tmp/backend",
+                branch="feature",
+                extra={"worktree_path": str(wt_dir)},
+            )
 
-        cache_file = tmp_path / "skill-metadata.json"
-        assert cache_file.exists()
+            with (
+                patch("teatree.core.management.commands.lifecycle.subprocess.run"),
+                patch("teatree.core.management.commands.lifecycle.DATA_DIR", tmp_path),
+            ):
+                call_command("lifecycle", "setup", path=str(wt_dir))
+
+            cache_file = tmp_path / "skill-metadata.json"
+            assert cache_file.exists()
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_runs_prek_install_when_config_exists(self, tmp_path: "pytest.TempPathFactory") -> None:
+    def test_runs_prek_install_when_config_exists(self) -> None:
         """Setup runs 'prek install -f' when .pre-commit-config.yaml exists in worktree path."""
-        wt_path = tmp_path / "worktree"
-        wt_path.mkdir()
-        (wt_path / ".pre-commit-config.yaml").write_text("repos: []\n", encoding="utf-8")
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
 
-        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/100")
-        Worktree.objects.create(
-            overlay="test",
-            ticket=ticket,
-            repo_path="/tmp/backend",
-            branch="feature",
-            extra={"worktree_path": str(wt_path)},
-        )
+            wt_path = tmp_path / "worktree"
+            wt_path.mkdir()
+            (wt_path / ".pre-commit-config.yaml").write_text("repos: []\n", encoding="utf-8")
 
-        with patch("teatree.core.management.commands.lifecycle.subprocess") as mock_sp:
-            mock_sp.run.return_value = MagicMock(returncode=0)
-            call_command("lifecycle", "setup", path=str(wt_path))
+            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/100")
+            Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="/tmp/backend",
+                branch="feature",
+                extra={"worktree_path": str(wt_path)},
+            )
 
-        # Find the prek install call among all subprocess.run calls
-        prek_calls = [c for c in mock_sp.run.call_args_list if c[0] and isinstance(c[0][0], list) and "prek" in c[0][0]]
-        assert len(prek_calls) == 1
-        assert prek_calls[0][0][0] == ["prek", "install", "-f"]
-        assert prek_calls[0][1].get("cwd") == str(wt_path)
+            with patch("teatree.core.management.commands.lifecycle.subprocess") as mock_sp:
+                mock_sp.run.return_value = MagicMock(returncode=0)
+                call_command("lifecycle", "setup", path=str(wt_path))
+
+            # Find the prek install call among all subprocess.run calls
+            prek_calls = [
+                c for c in mock_sp.run.call_args_list if c[0] and isinstance(c[0][0], list) and "prek" in c[0][0]
+            ]
+            assert len(prek_calls) == 1
+            assert prek_calls[0][0][0] == ["prek", "install", "-f"]
+            assert prek_calls[0][1].get("cwd") == str(wt_path)
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_appends_envrc_lines_from_overlay(self, tmp_path: "pytest.TempPathFactory") -> None:
+    def test_appends_envrc_lines_from_overlay(self) -> None:
         """Setup appends overlay .envrc lines (e.g. venv activation) to worktree .envrc."""
-        wt_path = tmp_path / "worktree"
-        wt_path.mkdir()
-        (wt_path / ".envrc").write_text("# existing\n", encoding="utf-8")
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
 
-        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/200")
-        Worktree.objects.create(
-            overlay="test",
-            ticket=ticket,
-            repo_path="/tmp/backend",
-            branch="feature",
-            extra={"worktree_path": str(wt_path)},
-        )
+            wt_path = tmp_path / "worktree"
+            wt_path.mkdir()
+            (wt_path / ".envrc").write_text("# existing\n", encoding="utf-8")
 
-        mock_overlay = MagicMock()
-        mock_overlay.get_envrc_lines.return_value = ["export USE_UV=1"]
-        mock_overlay.get_db_import_strategy.return_value = None
-        mock_overlay.get_provision_steps.return_value = []
-        mock_overlay.get_post_db_steps.return_value = []
-        mock_overlay.get_reset_passwords_command.return_value = ""
-        mock_overlay.get_env_extra.return_value = {}
-        mock_overlay.metadata.get_skill_metadata.return_value = {}
+            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/200")
+            Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="/tmp/backend",
+                branch="feature",
+                extra={"worktree_path": str(wt_path)},
+            )
 
-        with (
-            patch("teatree.core.management.commands.lifecycle.get_overlay", return_value=mock_overlay),
-            patch("teatree.core.management.commands.lifecycle.subprocess") as mock_sp,
-        ):
-            mock_sp.run.return_value = MagicMock(returncode=0)
-            call_command("lifecycle", "setup", path=str(wt_path))
+            mock_overlay = MagicMock()
+            mock_overlay.get_envrc_lines.return_value = ["export USE_UV=1"]
+            mock_overlay.get_db_import_strategy.return_value = None
+            mock_overlay.get_provision_steps.return_value = []
+            mock_overlay.get_post_db_steps.return_value = []
+            mock_overlay.get_reset_passwords_command.return_value = ""
+            mock_overlay.get_env_extra.return_value = {}
+            mock_overlay.metadata.get_skill_metadata.return_value = {}
 
-        envrc = (wt_path / ".envrc").read_text()
-        assert "export USE_UV=1" in envrc
-        assert "# existing" in envrc  # original content preserved
+            with (
+                patch("teatree.core.management.commands.lifecycle.get_overlay", return_value=mock_overlay),
+                patch("teatree.core.management.commands.lifecycle.subprocess") as mock_sp,
+            ):
+                mock_sp.run.return_value = MagicMock(returncode=0)
+                call_command("lifecycle", "setup", path=str(wt_path))
 
-        # Run again — should not duplicate
-        with (
-            patch("teatree.core.management.commands.lifecycle.get_overlay", return_value=mock_overlay),
-            patch("teatree.core.management.commands.lifecycle.subprocess") as mock_sp,
-        ):
-            mock_sp.run.return_value = MagicMock(returncode=0)
-            call_command("lifecycle", "setup", path=str(wt_path))
+            envrc = (wt_path / ".envrc").read_text()
+            assert "export USE_UV=1" in envrc
+            assert "# existing" in envrc  # original content preserved
 
-        envrc2 = (wt_path / ".envrc").read_text()
-        assert envrc2.count("export USE_UV=1") == 1
+            # Run again — should not duplicate
+            with (
+                patch("teatree.core.management.commands.lifecycle.get_overlay", return_value=mock_overlay),
+                patch("teatree.core.management.commands.lifecycle.subprocess") as mock_sp,
+            ):
+                mock_sp.run.return_value = MagicMock(returncode=0)
+                call_command("lifecycle", "setup", path=str(wt_path))
 
-    @_patch_overlays(FULL_OVERLAY)
-    @override_settings(**SETTINGS)
-    def test_updates_ticket_variant_when_requested(self, tmp_path: "pytest.TempPathFactory") -> None:
-        wt_path = tmp_path / "worktree"
-        wt_path.mkdir()
-
-        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/201", variant="alpha")
-        Worktree.objects.create(
-            overlay="test",
-            ticket=ticket,
-            repo_path="/tmp/backend",
-            branch="feature",
-            extra={"worktree_path": str(wt_path)},
-        )
-
-        mock_overlay = MagicMock()
-        mock_overlay.get_envrc_lines.return_value = []
-        mock_overlay.get_db_import_strategy.return_value = None
-        mock_overlay.get_provision_steps.return_value = []
-        mock_overlay.get_post_db_steps.return_value = []
-        mock_overlay.get_reset_passwords_command.return_value = ""
-        mock_overlay.get_env_extra.return_value = {}
-        mock_overlay.metadata.get_skill_metadata.return_value = {}
-
-        with (
-            patch("teatree.core.management.commands.lifecycle.get_overlay", return_value=mock_overlay),
-            patch("teatree.core.management.commands.lifecycle.subprocess") as mock_sp,
-        ):
-            mock_sp.run.return_value = MagicMock(returncode=0)
-            call_command("lifecycle", "setup", path=str(wt_path), variant="beta")
-
-        ticket.refresh_from_db()
-        assert ticket.variant == "beta"
+            envrc2 = (wt_path / ".envrc").read_text()
+            assert envrc2.count("export USE_UV=1") == 1
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_skips_envfile_message_when_no_path(self, tmp_path: "pytest.TempPathFactory") -> None:
+    def test_updates_ticket_variant_when_requested(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            wt_path = tmp_path / "worktree"
+            wt_path.mkdir()
+
+            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/201", variant="alpha")
+            Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="/tmp/backend",
+                branch="feature",
+                extra={"worktree_path": str(wt_path)},
+            )
+
+            mock_overlay = MagicMock()
+            mock_overlay.get_envrc_lines.return_value = []
+            mock_overlay.get_db_import_strategy.return_value = None
+            mock_overlay.get_provision_steps.return_value = []
+            mock_overlay.get_post_db_steps.return_value = []
+            mock_overlay.get_reset_passwords_command.return_value = ""
+            mock_overlay.get_env_extra.return_value = {}
+            mock_overlay.metadata.get_skill_metadata.return_value = {}
+
+            with (
+                patch("teatree.core.management.commands.lifecycle.get_overlay", return_value=mock_overlay),
+                patch("teatree.core.management.commands.lifecycle.subprocess") as mock_sp,
+            ):
+                mock_sp.run.return_value = MagicMock(returncode=0)
+                call_command("lifecycle", "setup", path=str(wt_path), variant="beta")
+
+            ticket.refresh_from_db()
+            assert ticket.variant == "beta"
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_skips_envfile_message_when_no_path(self) -> None:
         """Setup skips 'Written:' message when write_env_worktree returns None."""
-        wt_path = tmp_path / "worktree"
-        wt_path.mkdir()
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
 
-        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/251")
-        Worktree.objects.create(
-            overlay="test",
-            ticket=ticket,
-            repo_path="/tmp/backend",
-            branch="feature",
-            extra={"worktree_path": str(wt_path)},
-        )
+            wt_path = tmp_path / "worktree"
+            wt_path.mkdir()
 
-        mock_overlay = MagicMock()
-        mock_overlay.get_db_import_strategy.return_value = None
-        mock_overlay.get_provision_steps.return_value = []
-        mock_overlay.get_post_db_steps.return_value = []
-        mock_overlay.get_reset_passwords_command.return_value = ""
-        mock_overlay.get_env_extra.return_value = {}
-        mock_overlay.get_envrc_lines.return_value = []
-        mock_overlay.metadata.get_skill_metadata.return_value = {}
+            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/251")
+            Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="/tmp/backend",
+                branch="feature",
+                extra={"worktree_path": str(wt_path)},
+            )
 
-        with (
-            patch("teatree.core.management.commands.lifecycle.get_overlay", return_value=mock_overlay),
-            patch("teatree.core.management.commands.lifecycle.subprocess") as mock_sp,
-            patch("teatree.core.management.commands.lifecycle.write_env_worktree", return_value=None),
-        ):
-            mock_sp.run.return_value = MagicMock(returncode=0)
-            call_command("lifecycle", "setup", path=str(wt_path))
+            mock_overlay = MagicMock()
+            mock_overlay.get_db_import_strategy.return_value = None
+            mock_overlay.get_provision_steps.return_value = []
+            mock_overlay.get_post_db_steps.return_value = []
+            mock_overlay.get_reset_passwords_command.return_value = ""
+            mock_overlay.get_env_extra.return_value = {}
+            mock_overlay.get_envrc_lines.return_value = []
+            mock_overlay.metadata.get_skill_metadata.return_value = {}
+
+            with (
+                patch("teatree.core.management.commands.lifecycle.get_overlay", return_value=mock_overlay),
+                patch("teatree.core.management.commands.lifecycle.subprocess") as mock_sp,
+                patch("teatree.core.management.commands.lifecycle.write_env_worktree", return_value=None),
+            ):
+                mock_sp.run.return_value = MagicMock(returncode=0)
+                call_command("lifecycle", "setup", path=str(wt_path))
 
 
-@pytest.mark.django_db
-class TestLifecycleSetupHelpers:
+class TestLifecycleSetupHelpers(TestCase):
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
     def test_setup_worktree_dir_skips_nonexistent_path(self) -> None:
@@ -1998,179 +2143,175 @@ class TestLifecycleSetupHelpers:
         assert write_env_worktree(wt) is None
 
 
-@pytest.mark.django_db
-class TestLifecycleStart:
+class TestLifecycleStart(TestCase):
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_launches_services_and_transitions(
-        self,
-        tmp_path: "pytest.TempPathFactory",
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
+    def test_launches_services_and_transitions(self) -> None:
         """Lifecycle start should start Docker + app services, run pre-run steps, and transition FSM."""
-        wt_path = tmp_path / "worktree"
-        wt_path.mkdir()
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
 
-        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/300", variant="acme")
-        Worktree.objects.create(
-            overlay="test",
-            ticket=ticket,
-            repo_path="/tmp/backend",
-            branch="feature",
-            extra={"worktree_path": str(wt_path)},
-        )
-        worktree_id = cast("int", call_command("lifecycle", "setup", path=str(wt_path)))
+            wt_path = tmp_path / "worktree"
+            wt_path.mkdir()
 
-        launched: list[str] = []
+            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/300", variant="acme")
+            Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="/tmp/backend",
+                branch="feature",
+                extra={"worktree_path": str(wt_path)},
+            )
+            worktree_id = cast("int", call_command("lifecycle", "setup", path=str(wt_path)))
 
-        mock_overlay = MagicMock()
-        mock_overlay.get_run_commands.return_value = {"backend": "run-backend", "frontend": "run-frontend"}
-        mock_overlay.get_services_config.return_value = {
-            "db": {"start_command": "docker compose up -d db"},
-        }
-        mock_overlay.get_pre_run_steps.return_value = []
-        mock_overlay.get_env_extra.return_value = {}
+            launched: list[str] = []
 
-        def _mock_popen(cmd, **kwargs):
-            launched.append(cmd)
-            mock_proc = MagicMock()
-            mock_proc.pid = 12345
-            mock_proc.poll.return_value = None  # still running
-            return mock_proc
+            mock_overlay = MagicMock()
+            mock_overlay.get_run_commands.return_value = {"backend": "run-backend", "frontend": "run-frontend"}
+            mock_overlay.get_services_config.return_value = {
+                "db": {"start_command": "docker compose up -d db"},
+            }
+            mock_overlay.get_pre_run_steps.return_value = []
+            mock_overlay.get_env_extra.return_value = {}
 
-        with (
-            patch("teatree.core.management.commands.lifecycle.get_overlay", return_value=mock_overlay),
-            patch("teatree.core.management.commands.lifecycle.subprocess") as mock_sp,
-            patch("teatree.core.management.commands.lifecycle.Popen", _mock_popen),
-        ):
-            mock_sp.run.return_value = MagicMock(returncode=0)
-            call_command("lifecycle", "start", path=str(wt_path))
+            def _mock_popen(cmd, **kwargs):
+                launched.append(cmd)
+                mock_proc = MagicMock()
+                mock_proc.pid = 12345
+                mock_proc.poll.return_value = None  # still running
+                return mock_proc
 
-        worktree = Worktree.objects.get(pk=worktree_id)
-        assert worktree.state == Worktree.State.SERVICES_UP
-        # Docker service was started
-        docker_calls = [c for c in mock_sp.run.call_args_list if c[0] and "docker" in str(c[0][0])]
-        assert len(docker_calls) >= 1
-        # App services were launched as background processes
-        assert any("run-backend" in cmd for cmd in launched)
-        assert any("run-frontend" in cmd for cmd in launched)
-        # PIDs stored in extra
-        assert "pids" in (worktree.extra or {})
+            with (
+                patch("teatree.core.management.commands.lifecycle.get_overlay", return_value=mock_overlay),
+                patch("teatree.core.management.commands.lifecycle.subprocess") as mock_sp,
+                patch("teatree.core.management.commands.lifecycle.Popen", _mock_popen),
+            ):
+                mock_sp.run.return_value = MagicMock(returncode=0)
+                call_command("lifecycle", "start", path=str(wt_path))
+
+            worktree = Worktree.objects.get(pk=worktree_id)
+            assert worktree.state == Worktree.State.SERVICES_UP
+            # Docker service was started
+            docker_calls = [c for c in mock_sp.run.call_args_list if c[0] and "docker" in str(c[0][0])]
+            assert len(docker_calls) >= 1
+            # App services were launched as background processes
+            assert any("run-backend" in cmd for cmd in launched)
+            assert any("run-frontend" in cmd for cmd in launched)
+            # PIDs stored in extra
+            assert "pids" in (worktree.extra or {})
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_skips_service_without_start_command(
-        self,
-        tmp_path: "pytest.TempPathFactory",
-    ) -> None:
+    def test_skips_service_without_start_command(self) -> None:
         """Docker services without a start_command are silently skipped."""
-        wt_path = tmp_path / "worktree"
-        wt_path.mkdir()
-        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/302", variant="acme")
-        Worktree.objects.create(
-            overlay="test",
-            ticket=ticket,
-            repo_path="/tmp/backend",
-            branch="feature",
-            extra={"worktree_path": str(wt_path)},
-        )
-        call_command("lifecycle", "setup", path=str(wt_path))
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
 
-        mock_overlay = MagicMock()
-        mock_overlay.get_run_commands.return_value = {}
-        mock_overlay.get_services_config.return_value = {"rd": {"start_command": ""}}
-        mock_overlay.get_env_extra.return_value = {}
+            wt_path = tmp_path / "worktree"
+            wt_path.mkdir()
+            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/302", variant="acme")
+            Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="/tmp/backend",
+                branch="feature",
+                extra={"worktree_path": str(wt_path)},
+            )
+            call_command("lifecycle", "setup", path=str(wt_path))
 
-        with (
-            patch("teatree.core.management.commands.lifecycle.get_overlay", return_value=mock_overlay),
-            patch("teatree.core.management.commands.lifecycle.subprocess") as mock_sp,
-        ):
-            mock_sp.run.return_value = MagicMock(returncode=0)
-            call_command("lifecycle", "start", path=str(wt_path))
+            mock_overlay = MagicMock()
+            mock_overlay.get_run_commands.return_value = {}
+            mock_overlay.get_services_config.return_value = {"rd": {"start_command": ""}}
+            mock_overlay.get_env_extra.return_value = {}
 
-        docker_calls = [c for c in mock_sp.run.call_args_list if c[0] and "docker" in str(c[0][0])]
-        assert len(docker_calls) == 0
+            with (
+                patch("teatree.core.management.commands.lifecycle.get_overlay", return_value=mock_overlay),
+                patch("teatree.core.management.commands.lifecycle.subprocess") as mock_sp,
+            ):
+                mock_sp.run.return_value = MagicMock(returncode=0)
+                call_command("lifecycle", "start", path=str(wt_path))
+
+            docker_calls = [c for c in mock_sp.run.call_args_list if c[0] and "docker" in str(c[0][0])]
+            assert len(docker_calls) == 0
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_reports_crashed_process(
-        self,
-        tmp_path: "pytest.TempPathFactory",
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
+    def test_reports_crashed_process(self) -> None:
         """If a launched service exits immediately, start reports the failure."""
-        wt_path = tmp_path / "worktree"
-        wt_path.mkdir()
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
 
-        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/301", variant="acme")
-        Worktree.objects.create(
-            overlay="test",
-            ticket=ticket,
-            repo_path="/tmp/backend",
-            branch="feature",
-            extra={"worktree_path": str(wt_path)},
-        )
-        worktree_id = cast("int", call_command("lifecycle", "setup", path=str(wt_path)))
+            wt_path = tmp_path / "worktree"
+            wt_path.mkdir()
 
-        mock_overlay = MagicMock()
-        mock_overlay.get_run_commands.return_value = {"backend": "run-backend"}
-        mock_overlay.get_services_config.return_value = {}
-        mock_overlay.get_pre_run_steps.return_value = []
-        mock_overlay.get_env_extra.return_value = {}
+            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/301", variant="acme")
+            Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="/tmp/backend",
+                branch="feature",
+                extra={"worktree_path": str(wt_path)},
+            )
+            worktree_id = cast("int", call_command("lifecycle", "setup", path=str(wt_path)))
 
-        def _mock_popen_crash(cmd, **kwargs):
-            mock_proc = MagicMock()
-            mock_proc.pid = 99999
-            mock_proc.poll.return_value = 1  # crashed immediately
-            return mock_proc
+            mock_overlay = MagicMock()
+            mock_overlay.get_run_commands.return_value = {"backend": "run-backend"}
+            mock_overlay.get_services_config.return_value = {}
+            mock_overlay.get_pre_run_steps.return_value = []
+            mock_overlay.get_env_extra.return_value = {}
 
-        with (
-            patch("teatree.core.management.commands.lifecycle.get_overlay", return_value=mock_overlay),
-            patch("teatree.core.management.commands.lifecycle.subprocess") as mock_sp,
-            patch("teatree.core.management.commands.lifecycle.Popen", _mock_popen_crash),
-        ):
-            mock_sp.run.return_value = MagicMock(returncode=0)
-            call_command("lifecycle", "start", path=str(wt_path))
+            def _mock_popen_crash(cmd, **kwargs):
+                mock_proc = MagicMock()
+                mock_proc.pid = 99999
+                mock_proc.poll.return_value = 1  # crashed immediately
+                return mock_proc
 
-        # Should still transition (services were attempted) but report failure
-        worktree = Worktree.objects.get(pk=worktree_id)
-        assert worktree.state == Worktree.State.SERVICES_UP
-        assert "backend" in str(worktree.extra.get("failed_services", []))
+            with (
+                patch("teatree.core.management.commands.lifecycle.get_overlay", return_value=mock_overlay),
+                patch("teatree.core.management.commands.lifecycle.subprocess") as mock_sp,
+                patch("teatree.core.management.commands.lifecycle.Popen", _mock_popen_crash),
+            ):
+                mock_sp.run.return_value = MagicMock(returncode=0)
+                call_command("lifecycle", "start", path=str(wt_path))
+
+            # Should still transition (services were attempted) but report failure
+            worktree = Worktree.objects.get(pk=worktree_id)
+            assert worktree.state == Worktree.State.SERVICES_UP
+            assert "backend" in str(worktree.extra.get("failed_services", []))
 
 
-@pytest.mark.django_db
-class TestLifecycleClean:
+class TestLifecycleClean(TestCase):
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_tears_down_worktree(self, tmp_path: Path) -> None:
-        wt_dir = tmp_path / "backend"
-        wt_dir.mkdir()
-        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/62")
-        wt = Worktree.objects.create(
-            overlay="test",
-            ticket=ticket,
-            repo_path="/tmp/backend",
-            branch="feature",
-            extra={"worktree_path": str(wt_dir)},
-        )
-        wt.provision()
-        wt.save()
+    def test_tears_down_worktree(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            wt_dir = tmp_path / "backend"
+            wt_dir.mkdir()
+            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/62")
+            wt = Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="/tmp/backend",
+                branch="feature",
+                extra={"worktree_path": str(wt_dir)},
+            )
+            wt.provision()
+            wt.save()
 
-        result = cast("str", call_command("lifecycle", "clean", path=str(wt_dir)))
+            result = cast("str", call_command("lifecycle", "clean", path=str(wt_dir)))
 
-        wt.refresh_from_db()
-        assert wt.state == Worktree.State.CREATED
-        assert "cleaned" in result.lower()
-        assert "/tmp/backend" in result
+            wt.refresh_from_db()
+            assert wt.state == Worktree.State.CREATED
+            assert "cleaned" in result.lower()
+            assert "/tmp/backend" in result
 
 
-@pytest.mark.django_db
-class TestLifecycleStatus:
+class TestLifecycleStatus(TestCase):
     pass  # No status tests in the original file — placeholder for future tests
 
 
-@pytest.mark.django_db
-class TestLifecycleSmokeTest:
+class TestLifecycleSmokeTest(TestCase):
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
     def test_returns_health_checks(self) -> None:
@@ -2202,50 +2343,66 @@ class TestLifecycleSmokeTest:
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_hooks_skipped_when_no_config(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_hooks_skipped_when_no_config(self) -> None:
         """smoke-test reports hooks skipped when no .pre-commit-config.yaml."""
-        monkeypatch.chdir(tmp_path)
-        monkeypatch.delenv("PWD", raising=False)
-        result = cast(
-            "dict[str, dict[str, object]]",
-            call_command("lifecycle", "smoke-test"),
-        )
-        assert result["hooks"]["status"] == "skipped"
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            saved_cwd = Path.cwd()
+            try:
+                import os  # noqa: PLC0415
+
+                os.chdir(tmp_path)
+                env_patch = {k: v for k, v in os.environ.items() if k != "PWD"}
+                with patch.dict("os.environ", env_patch, clear=True):
+                    result = cast(
+                        "dict[str, dict[str, object]]",
+                        call_command("lifecycle", "smoke-test"),
+                    )
+            finally:
+                os.chdir(saved_cwd)
+            assert result["hooks"]["status"] == "skipped"
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_hooks_ok_with_yaml(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_hooks_ok_with_yaml(self) -> None:
         """smoke-test reports hooks OK when yaml parses successfully."""
-        config = tmp_path / ".pre-commit-config.yaml"
-        config.write_text("repos: []\n", encoding="utf-8")
-        monkeypatch.chdir(tmp_path)
-        monkeypatch.delenv("PWD", raising=False)
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            config = tmp_path / ".pre-commit-config.yaml"
+            config.write_text("repos: []\n", encoding="utf-8")
+            saved_cwd = Path.cwd()
+            try:
+                import os  # noqa: PLC0415
 
-        mock_yaml = MagicMock()
-        with patch("importlib.import_module", return_value=mock_yaml):
+                os.chdir(tmp_path)
+                env_patch = {k: v for k, v in os.environ.items() if k != "PWD"}
+                with patch.dict("os.environ", env_patch, clear=True):
+                    mock_yaml = MagicMock()
+                    with patch("importlib.import_module", return_value=mock_yaml):
+                        result = cast(
+                            "dict[str, dict[str, object]]",
+                            call_command("lifecycle", "smoke-test"),
+                        )
+            finally:
+                os.chdir(saved_cwd)
+            assert result["hooks"]["status"] == "ok"
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_db_error(self) -> None:
+        """smoke-test reports DB error when query fails."""
+        with patch(
+            "teatree.core.models.Worktree.objects",
+            MagicMock(count=MagicMock(side_effect=RuntimeError("DB down"))),
+        ):
             result = cast(
                 "dict[str, dict[str, object]]",
                 call_command("lifecycle", "smoke-test"),
             )
-        assert result["hooks"]["status"] == "ok"
-
-    @_patch_overlays(FULL_OVERLAY)
-    @override_settings(**SETTINGS)
-    def test_db_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """smoke-test reports DB error when query fails."""
-        monkeypatch.setattr(
-            "teatree.core.models.Worktree.objects",
-            MagicMock(count=MagicMock(side_effect=RuntimeError("DB down"))),
-        )
-        result = cast(
-            "dict[str, dict[str, object]]",
-            call_command("lifecycle", "smoke-test"),
-        )
         assert result["database"]["status"] == "error"
 
 
-@pytest.mark.django_db
-class TestLifecycleDiagram:
+class TestLifecycleDiagram(TestCase):
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
     def test_worktree(self) -> None:
@@ -2285,8 +2442,7 @@ class TestLifecycleDiagram:
 # ── Tool commands ──────────────────────────────────────────────────
 
 
-@pytest.mark.django_db
-class TestToolList:
+class TestToolList(TestCase):
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
     def test_shows_available_tools(self) -> None:
@@ -2314,8 +2470,7 @@ class TestToolList:
         assert "bare-tool" in result
 
 
-@pytest.mark.django_db
-class TestToolRun:
+class TestToolRun(TestCase):
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
     def test_executes_command(self) -> None:
@@ -2361,161 +2516,175 @@ class TestToolRun:
 # ── Repo discovery in lifecycle setup ──────────────────────────────
 
 
-@pytest.mark.django_db
-class TestLifecycleRepoDiscovery:
+class TestLifecycleRepoDiscovery(TestCase):
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_discovers_new_repo_in_ticket_dir(self, tmp_path: Path) -> None:
+    def test_discovers_new_repo_in_ticket_dir(self) -> None:
         """A git worktree added manually to the ticket dir gets auto-registered."""
-        ticket_dir = tmp_path / "ticket-123"
-        ticket_dir.mkdir()
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
 
-        # Existing repo
-        existing = ticket_dir / "backend"
-        existing.mkdir()
+            ticket_dir = tmp_path / "ticket-123"
+            ticket_dir.mkdir()
 
-        # New repo added manually (git worktrees have .git as a file, not dir)
-        new_repo = ticket_dir / "frontend"
-        new_repo.mkdir()
-        (new_repo / ".git").write_text("gitdir: /some/path")
+            # Existing repo
+            existing = ticket_dir / "backend"
+            existing.mkdir()
 
-        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/95")
-        Worktree.objects.create(
-            overlay="test",
-            ticket=ticket,
-            repo_path="backend",
-            branch="feature",
-            extra={"worktree_path": str(existing)},
-        )
+            # New repo added manually (git worktrees have .git as a file, not dir)
+            new_repo = ticket_dir / "frontend"
+            new_repo.mkdir()
+            (new_repo / ".git").write_text("gitdir: /some/path")
 
-        with patch("teatree.core.management.commands.lifecycle.subprocess.run"):
-            call_command("lifecycle", "setup", path=str(existing))
+            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/95")
+            Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="backend",
+                branch="feature",
+                extra={"worktree_path": str(existing)},
+            )
 
-        # Should have created a new Worktree record for frontend
-        assert ticket.worktrees.count() == 2
-        frontend_wt = ticket.worktrees.get(repo_path="frontend")
-        assert frontend_wt.extra["worktree_path"] == str(new_repo)
-        assert frontend_wt.branch == "feature"
+            with patch("teatree.core.management.commands.lifecycle.subprocess.run"):
+                call_command("lifecycle", "setup", path=str(existing))
+
+            # Should have created a new Worktree record for frontend
+            assert ticket.worktrees.count() == 2
+            frontend_wt = ticket.worktrees.get(repo_path="frontend")
+            assert frontend_wt.extra["worktree_path"] == str(new_repo)
+            assert frontend_wt.branch == "feature"
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_skips_main_clones(self, tmp_path: Path) -> None:
+    def test_skips_main_clones(self) -> None:
         """Directories with .git as a directory (main clones) are not registered."""
-        ticket_dir = tmp_path / "ticket-456"
-        ticket_dir.mkdir()
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
 
-        existing = ticket_dir / "backend"
-        existing.mkdir()
+            ticket_dir = tmp_path / "ticket-456"
+            ticket_dir.mkdir()
 
-        main_clone = ticket_dir / "main-repo"
-        main_clone.mkdir()
-        (main_clone / ".git").mkdir()  # directory, not file = main clone
+            existing = ticket_dir / "backend"
+            existing.mkdir()
 
-        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/96")
-        Worktree.objects.create(
-            overlay="test",
-            ticket=ticket,
-            repo_path="backend",
-            branch="feature",
-            extra={"worktree_path": str(existing)},
-        )
+            main_clone = ticket_dir / "main-repo"
+            main_clone.mkdir()
+            (main_clone / ".git").mkdir()  # directory, not file = main clone
 
-        with patch("teatree.core.management.commands.lifecycle.subprocess.run"):
-            call_command("lifecycle", "setup", path=str(existing))
+            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/96")
+            Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="backend",
+                branch="feature",
+                extra={"worktree_path": str(existing)},
+            )
 
-        assert ticket.worktrees.count() == 1
+            with patch("teatree.core.management.commands.lifecycle.subprocess.run"):
+                call_command("lifecycle", "setup", path=str(existing))
+
+            assert ticket.worktrees.count() == 1
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_skips_non_git_directories(self, tmp_path: Path) -> None:
+    def test_skips_non_git_directories(self) -> None:
         """Non-git subdirectories (logs, etc.) are not registered."""
-        ticket_dir = tmp_path / "ticket-789"
-        ticket_dir.mkdir()
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
 
-        existing = ticket_dir / "backend"
-        existing.mkdir()
+            ticket_dir = tmp_path / "ticket-789"
+            ticket_dir.mkdir()
 
-        (ticket_dir / "logs").mkdir()
-        (ticket_dir / "notes.txt").touch()
+            existing = ticket_dir / "backend"
+            existing.mkdir()
 
-        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/97")
-        Worktree.objects.create(
-            overlay="test",
-            ticket=ticket,
-            repo_path="backend",
-            branch="feature",
-            extra={"worktree_path": str(existing)},
-        )
+            (ticket_dir / "logs").mkdir()
+            (ticket_dir / "notes.txt").touch()
 
-        with patch("teatree.core.management.commands.lifecycle.subprocess.run"):
-            call_command("lifecycle", "setup", path=str(existing))
+            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/97")
+            Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="backend",
+                branch="feature",
+                extra={"worktree_path": str(existing)},
+            )
 
-        assert ticket.worktrees.count() == 1
+            with patch("teatree.core.management.commands.lifecycle.subprocess.run"):
+                call_command("lifecycle", "setup", path=str(existing))
+
+            assert ticket.worktrees.count() == 1
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_idempotent_does_not_duplicate(self, tmp_path: Path) -> None:
+    def test_idempotent_does_not_duplicate(self) -> None:
         """Running setup twice doesn't create duplicate Worktree records."""
-        ticket_dir = tmp_path / "ticket-idem"
-        ticket_dir.mkdir()
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
 
-        existing = ticket_dir / "backend"
-        existing.mkdir()
+            ticket_dir = tmp_path / "ticket-idem"
+            ticket_dir.mkdir()
 
-        new_repo = ticket_dir / "frontend"
-        new_repo.mkdir()
-        (new_repo / ".git").write_text("gitdir: /some/path")
+            existing = ticket_dir / "backend"
+            existing.mkdir()
 
-        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/98")
-        Worktree.objects.create(
-            overlay="test",
-            ticket=ticket,
-            repo_path="backend",
-            branch="feature",
-            extra={"worktree_path": str(existing)},
-        )
+            new_repo = ticket_dir / "frontend"
+            new_repo.mkdir()
+            (new_repo / ".git").write_text("gitdir: /some/path")
 
-        with patch("teatree.core.management.commands.lifecycle.subprocess.run"):
-            call_command("lifecycle", "setup", path=str(existing))
-            call_command("lifecycle", "setup", path=str(existing))
+            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/98")
+            Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="backend",
+                branch="feature",
+                extra={"worktree_path": str(existing)},
+            )
 
-        assert ticket.worktrees.count() == 2
+            with patch("teatree.core.management.commands.lifecycle.subprocess.run"):
+                call_command("lifecycle", "setup", path=str(existing))
+                call_command("lifecycle", "setup", path=str(existing))
+
+            assert ticket.worktrees.count() == 2
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_provisions_all_ticket_worktrees(self, tmp_path: Path) -> None:
+    def test_provisions_all_ticket_worktrees(self) -> None:
         """Setup provisions all worktrees for the ticket, not just the resolved one."""
-        ticket_dir = tmp_path / "ticket-all"
-        ticket_dir.mkdir()
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
 
-        backend = ticket_dir / "backend"
-        backend.mkdir()
-        frontend = ticket_dir / "frontend"
-        frontend.mkdir()
+            ticket_dir = tmp_path / "ticket-all"
+            ticket_dir.mkdir()
 
-        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/99")
-        Worktree.objects.create(
-            overlay="test",
-            ticket=ticket,
-            repo_path="backend",
-            branch="feature",
-            extra={"worktree_path": str(backend)},
-        )
-        Worktree.objects.create(
-            overlay="test",
-            ticket=ticket,
-            repo_path="frontend",
-            branch="feature",
-            extra={"worktree_path": str(frontend)},
-        )
+            backend = ticket_dir / "backend"
+            backend.mkdir()
+            frontend = ticket_dir / "frontend"
+            frontend.mkdir()
 
-        with patch("teatree.core.management.commands.lifecycle.subprocess.run"):
-            call_command("lifecycle", "setup", path=str(backend))
+            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/99")
+            Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="backend",
+                branch="feature",
+                extra={"worktree_path": str(backend)},
+            )
+            Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="frontend",
+                branch="feature",
+                extra={"worktree_path": str(frontend)},
+            )
 
-        # Both worktrees should be provisioned
-        for wt in ticket.worktrees.all():
-            wt.refresh_from_db()
-            assert wt.state == Worktree.State.PROVISIONED
+            with patch("teatree.core.management.commands.lifecycle.subprocess.run"):
+                call_command("lifecycle", "setup", path=str(backend))
+
+            # Both worktrees should be provisioned
+            for wt in ticket.worktrees.all():
+                wt.refresh_from_db()
+                assert wt.state == Worktree.State.PROVISIONED
 
     def test_register_skips_when_no_ticket(self) -> None:
         """_register_new_repos returns early when worktree has no ticket."""
@@ -2530,9 +2699,12 @@ class TestLifecycleRepoDiscovery:
         wt.extra = {}
         _register_new_repos(wt, OutputWrapper(StringIO()))
 
-    def test_register_skips_when_ticket_dir_missing(self, tmp_path: Path) -> None:
+    def test_register_skips_when_ticket_dir_missing(self) -> None:
         """_register_new_repos returns early when ticket directory doesn't exist."""
-        wt = MagicMock()
-        wt.ticket = MagicMock()
-        wt.extra = {"worktree_path": str(tmp_path / "nonexistent" / "backend")}
-        _register_new_repos(wt, OutputWrapper(StringIO()))
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+
+            wt = MagicMock()
+            wt.ticket = MagicMock()
+            wt.extra = {"worktree_path": str(tmp_path / "nonexistent" / "backend")}
+            _register_new_repos(wt, OutputWrapper(StringIO()))

@@ -4,6 +4,7 @@ from unittest.mock import patch
 
 import pytest
 from django.core.exceptions import ImproperlyConfigured
+from django.test import TestCase
 
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay import OverlayBase, ProvisionStep
@@ -39,8 +40,11 @@ def clear_overlay_cache() -> Iterator[None]:
     reset_overlay_cache()
 
 
-class TestGetOverlay:
-    @pytest.mark.django_db
+class TestGetOverlay(TestCase):
+    @pytest.fixture(autouse=True)
+    def _inject_fixtures(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._monkeypatch = monkeypatch
+
     def test_loads_and_caches_configured_overlay(self) -> None:
         with patch(
             "teatree.core.overlay_loader._discover_overlays",
@@ -79,6 +83,24 @@ class TestGetOverlay:
         ):
             get_overlay()
 
+    def test_uses_env_var_when_multiple_overlays(self) -> None:
+        overlay_a = DummyOverlay()
+        self._monkeypatch.setenv("T3_OVERLAY_NAME", "a")
+        with patch(
+            "teatree.core.overlay_loader._discover_overlays",
+            return_value={"a": overlay_a, "b": DummyOverlay()},
+        ):
+            assert get_overlay() is overlay_a
+
+    def test_env_var_ignored_when_explicit_name(self) -> None:
+        overlay_b = DummyOverlay()
+        self._monkeypatch.setenv("T3_OVERLAY_NAME", "a")
+        with patch(
+            "teatree.core.overlay_loader._discover_overlays",
+            return_value={"a": DummyOverlay(), "b": overlay_b},
+        ):
+            assert get_overlay("b") is overlay_b
+
 
 class TestDiscoverOverlaysValidation:
     def test_rejects_entry_point_not_subclassing_overlay_base(self) -> None:
@@ -92,8 +114,7 @@ class TestDiscoverOverlaysValidation:
             _discover_overlays.__wrapped__()
 
 
-class TestOverlayBase:
-    @pytest.mark.django_db
+class TestOverlayBase(TestCase):
     def test_optional_hooks_default_to_empty_values(self) -> None:
         ticket = Ticket.objects.create(overlay="test")
         worktree = Worktree.objects.create(ticket=ticket, overlay="test", repo_path="/tmp/backend", branch="feature")
@@ -112,7 +133,6 @@ class TestOverlayBase:
             assert overlay.metadata.validate_mr("title", "description") == {"errors": [], "warnings": []}
             assert overlay.metadata.get_skill_metadata() == {}
 
-    @pytest.mark.django_db
     def test_abstract_fallthroughs_raise_not_implemented(self) -> None:
         overlay = SuperCallingOverlay()
         worktree = Worktree.objects.create(

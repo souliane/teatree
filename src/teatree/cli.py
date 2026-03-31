@@ -15,7 +15,7 @@ import typer
 
 from teatree.cli_ci import ci_app
 from teatree.cli_doctor import DoctorService, IntrospectionHelpers, doctor_app
-from teatree.cli_overlay import OverlayAppBuilder, managepy, uv_cmd
+from teatree.cli_overlay import OverlayAppBuilder, managepy
 from teatree.cli_review import review_app
 from teatree.cli_tools import tool_app
 from teatree.skill_loading import DEFAULT_SKILLS_DIR
@@ -90,31 +90,18 @@ def docs(
 
 
 def _detect_agent_ticket_status(project_root: Path) -> str:
-    manage_py = project_root / "manage.py"
-    if not manage_py.is_file():
+    if not (project_root / "manage.py").is_file():
         return ""
-    command = [
-        *uv_cmd(project_root, "python", str(manage_py), "shell", "-c"),
-        (
-            "from teatree.core.resolve import WorktreeNotFoundError, resolve_worktree\n"
-            "try:\n"
-            "    print(resolve_worktree().ticket.state)\n"
-            "except Exception:\n"
-            "    print('')\n"
-        ),
-    ]
-    env = {key: value for key, value in os.environ.items() if key != "DJANGO_SETTINGS_MODULE"}
-    proc = subprocess.run(  # noqa: S603
-        command,
-        cwd=project_root,
-        env=env,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if proc.returncode != 0:
+    try:
+        import django  # noqa: PLC0415
+
+        os.environ.setdefault("DJANGO_SETTINGS_MODULE", "teatree.settings")
+        django.setup()
+        from teatree.core.resolve import resolve_worktree  # noqa: PLC0415
+
+        return str(resolve_worktree().ticket.state)
+    except Exception:  # noqa: BLE001
         return ""
-    return proc.stdout.strip()
 
 
 def _agent_search_dirs(project_root: Path) -> list[Path]:
@@ -430,8 +417,12 @@ app.add_typer(tool_app, name="tool")
 @review_request_app.command()
 def discover() -> None:
     """Discover open merge requests awaiting review."""
-    project = _find_overlay_project()
-    managepy(project, "followup", "discover-mrs")
+    from teatree.config import discover_active_overlay  # noqa: PLC0415
+
+    active = discover_active_overlay()
+    project = active.project_path if active and active.project_path else _find_project_root()
+    overlay_name = active.name if active else ""
+    managepy(project, "followup", "discover-mrs", overlay_name=overlay_name)
 
 
 # ── Django-dependent command groups ───────────────────────────────────

@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from django.apps import apps
-from django.test import override_settings
+from django.test import TestCase, override_settings
 
 from teatree.core.apps import _cleanup_workers, _start_periodic_sync, _start_workers, _worker_processes
 
@@ -89,8 +89,12 @@ class TestCoreConfigReady:
         assert started == ["sync", "workers"]
 
 
-class TestStartPeriodicSync:
-    def test_starts_daemon_thread(self, monkeypatch: pytest.MonkeyPatch) -> None:
+class TestStartPeriodicSync(TestCase):
+    @pytest.fixture(autouse=True)
+    def _inject_fixtures(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._monkeypatch = monkeypatch
+
+    def test_starts_daemon_thread(self) -> None:
         """_start_periodic_sync creates a daemon thread named 'teatree-periodic-sync'."""
         import threading  # noqa: PLC0415
 
@@ -99,16 +103,16 @@ class TestStartPeriodicSync:
 
         original_init = threading.Thread.__init__
 
-        def _tracking_init(self: threading.Thread, *args: object, **kwargs: object) -> None:
-            original_init(self, *args, **kwargs)
-            captured_names.append(self.name)
+        def _tracking_init(self_thread: threading.Thread, *args: object, **kwargs: object) -> None:
+            original_init(self_thread, *args, **kwargs)
+            captured_names.append(self_thread.name)
             captured_targets.append(kwargs.get("target"))
 
-        def _mock_start(self: threading.Thread) -> None:
+        def _mock_start(self_thread: threading.Thread) -> None:
             pass
 
-        monkeypatch.setattr(threading.Thread, "__init__", _tracking_init)
-        monkeypatch.setattr(threading.Thread, "start", _mock_start)
+        self._monkeypatch.setattr(threading.Thread, "__init__", _tracking_init)
+        self._monkeypatch.setattr(threading.Thread, "start", _mock_start)
 
         _start_periodic_sync()
 
@@ -121,8 +125,7 @@ class TestStartPeriodicSync:
             },
         },
     )
-    @pytest.mark.django_db
-    def test_loop_enqueues_and_handles_exception(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_loop_enqueues_and_handles_exception(self) -> None:
         """Exercise the _loop function inside _start_periodic_sync (success + exception paths)."""
         import threading  # noqa: PLC0415
 
@@ -130,21 +133,21 @@ class TestStartPeriodicSync:
 
         original_init = threading.Thread.__init__
 
-        def _capture_init(self: threading.Thread, *args: object, **kwargs: object) -> None:
+        def _capture_init(self_thread: threading.Thread, *args: object, **kwargs: object) -> None:
             nonlocal captured_target
-            original_init(self, *args, **kwargs)
+            original_init(self_thread, *args, **kwargs)
             captured_target = kwargs.get("target")
 
-        def _mock_start(self: threading.Thread) -> None:
+        def _mock_start(self_thread: threading.Thread) -> None:
             pass
 
-        monkeypatch.setattr(threading.Thread, "__init__", _capture_init)
-        monkeypatch.setattr(threading.Thread, "start", _mock_start)
+        self._monkeypatch.setattr(threading.Thread, "__init__", _capture_init)
+        self._monkeypatch.setattr(threading.Thread, "start", _mock_start)
 
         # Make the wait() return immediately and break after 2 iterations
         call_count = 0
 
-        def _fast_wait(self: threading.Event, timeout: float | None = None) -> bool:
+        def _fast_wait(self_event: threading.Event, timeout: float | None = None) -> bool:
             nonlocal call_count
             call_count += 1
             if call_count > 2:
@@ -152,7 +155,7 @@ class TestStartPeriodicSync:
                 raise StopIteration(msg)
             return True
 
-        monkeypatch.setattr(threading.Event, "wait", _fast_wait)
+        self._monkeypatch.setattr(threading.Event, "wait", _fast_wait)
 
         _start_periodic_sync()
 
@@ -170,8 +173,7 @@ class TestStartPeriodicSync:
             },
         },
     )
-    @pytest.mark.django_db
-    def test_loop_handles_enqueue_exception(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_loop_handles_enqueue_exception(self) -> None:
         """Exercise the exception branch inside the _loop function."""
         import threading  # noqa: PLC0415
 
@@ -179,20 +181,20 @@ class TestStartPeriodicSync:
 
         original_init = threading.Thread.__init__
 
-        def _capture_init(self: threading.Thread, *args: object, **kwargs: object) -> None:
+        def _capture_init(self_thread: threading.Thread, *args: object, **kwargs: object) -> None:
             nonlocal captured_target
-            original_init(self, *args, **kwargs)
+            original_init(self_thread, *args, **kwargs)
             captured_target = kwargs.get("target")
 
-        def _mock_start(self: threading.Thread) -> None:
+        def _mock_start(self_thread: threading.Thread) -> None:
             pass
 
-        monkeypatch.setattr(threading.Thread, "__init__", _capture_init)
-        monkeypatch.setattr(threading.Thread, "start", _mock_start)
+        self._monkeypatch.setattr(threading.Thread, "__init__", _capture_init)
+        self._monkeypatch.setattr(threading.Thread, "start", _mock_start)
 
         call_count = 0
 
-        def _fast_wait(self: threading.Event, timeout: float | None = None) -> bool:
+        def _fast_wait(self_event: threading.Event, timeout: float | None = None) -> bool:
             nonlocal call_count
             call_count += 1
             if call_count > 1:
@@ -200,14 +202,14 @@ class TestStartPeriodicSync:
                 raise StopIteration(msg)
             return True
 
-        monkeypatch.setattr(threading.Event, "wait", _fast_wait)
+        self._monkeypatch.setattr(threading.Event, "wait", _fast_wait)
 
         # Make the task module's sync_followup raise when enqueued
         import teatree.core.tasks as tasks_mod  # noqa: PLC0415
 
         mock_task = MagicMock()
         mock_task.enqueue.side_effect = RuntimeError("enqueue failed")
-        monkeypatch.setattr(tasks_mod, "sync_followup", mock_task)
+        self._monkeypatch.setattr(tasks_mod, "sync_followup", mock_task)
 
         _start_periodic_sync()
 

@@ -65,15 +65,15 @@ class TeatreeOverlay(OverlayBase):
         ]
 
     @override
-    def get_run_commands(self, worktree: Worktree) -> dict[str, str]:
+    def get_run_commands(self, worktree: Worktree) -> dict[str, list[str]]:
         return {
-            "test": "uv run pytest",
-            "lint": "prek run --all-files",
+            "test": ["uv", "run", "pytest"],
+            "lint": ["prek", "run", "--all-files"],
         }
 
     @override
-    def get_test_command(self, worktree: Worktree) -> str:
-        return "uv run pytest"
+    def get_test_command(self, worktree: Worktree) -> list[str]:
+        return ["uv", "run", "pytest"]
 
     @override
     def get_workspace_repos(self) -> list[str]:

@@ -1,11 +1,12 @@
+import tempfile
 from collections.abc import Iterator
 from pathlib import Path
 from typing import cast
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from django.core.management import call_command
-from django.test import override_settings
+from django.test import TestCase, override_settings
 
 from teatree.core.models import Session, Task, TaskAttempt, Ticket, Worktree
 from teatree.core.overlay import OverlayBase, ProvisionStep, RunCommands
@@ -31,8 +32,8 @@ class CommandOverlay(OverlayBase):
 
     def get_run_commands(self, worktree: Worktree) -> RunCommands:
         return {
-            "backend": f"run-backend {worktree.repo_path}",
-            "frontend": f"run-frontend {worktree.repo_path}",
+            "backend": ["run-backend", worktree.repo_path],
+            "frontend": ["run-frontend", worktree.repo_path],
         }
 
 
@@ -52,44 +53,44 @@ COMMAND_SETTINGS = {
 }
 
 
-class TestLifecycleCommands:
+class TestLifecycleCommands(TestCase):
     @override_settings(**COMMAND_SETTINGS)
-    @pytest.mark.django_db
-    def test_create_start_report_and_teardown_worktrees(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        tmp_path: Path,
-    ) -> None:
-        wt_path = str(tmp_path / "test-worktree-backend")
-        Path(wt_path).mkdir()
-        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/55", variant="acme")
-        wt = Worktree.objects.create(
-            ticket=ticket,
-            overlay="test",
-            repo_path="/tmp/backend",
-            branch="feature",
-            extra={"worktree_path": wt_path},
-        )
-        monkeypatch.setenv("T3_ORIG_CWD", wt_path)
+    def test_create_start_report_and_teardown_worktrees(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            wt_path = str(tmp_path / "test-worktree-backend")
+            Path(wt_path).mkdir()
+            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/55", variant="acme")
+            wt = Worktree.objects.create(
+                ticket=ticket,
+                overlay="test",
+                repo_path="/tmp/backend",
+                branch="feature",
+                extra={"worktree_path": wt_path},
+            )
 
-        with patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY):
-            worktree_id = cast("int", call_command("lifecycle", "setup"))
-            status = cast("dict[str, str]", call_command("lifecycle", "status"))
-            call_command("lifecycle", "start")
-            call_command("lifecycle", "teardown")
+            with (
+                patch.dict("os.environ", {"T3_ORIG_CWD": wt_path}),
+                patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+                patch("teatree.core.management.commands.lifecycle.Popen") as mock_popen,
+            ):
+                mock_popen.return_value = MagicMock(pid=12345, poll=MagicMock(return_value=None))
+                worktree_id = cast("int", call_command("lifecycle", "setup"))
+                status = cast("dict[str, str]", call_command("lifecycle", "status"))
+                call_command("lifecycle", "start")
+                call_command("lifecycle", "teardown")
 
-        worktree = Worktree.objects.get(pk=worktree_id)
+            worktree = Worktree.objects.get(pk=worktree_id)
 
-        assert worktree_id == wt.id
-        assert status["state"] == Worktree.State.PROVISIONED
-        assert status["repo_path"] == "/tmp/backend"
-        assert worktree.state == Worktree.State.CREATED
-        assert worktree.extra == {}
+            assert worktree_id == wt.id
+            assert status["state"] == Worktree.State.PROVISIONED
+            assert status["repo_path"] == "/tmp/backend"
+            assert worktree.state == Worktree.State.CREATED
+            assert worktree.extra == {}
 
 
-class TestTaskCommands:
+class TestTaskCommands(TestCase):
     @override_settings(**COMMAND_SETTINGS)
-    @pytest.mark.django_db
     def test_claim_and_complete_work(self) -> None:
         ticket = Ticket.objects.create(overlay="test")
         session = Session.objects.create(ticket=ticket, overlay="test", agent_id="agent-1")
@@ -130,14 +131,12 @@ class TestTaskCommands:
         assert reminders == []
 
     @override_settings(**COMMAND_SETTINGS)
-    @pytest.mark.django_db
     def test_return_none_when_no_work_available(self) -> None:
         assert call_command("tasks", "work-next-sdk", claimed_by="worker-1") is None
         assert call_command("tasks", "work-next-user-input", claimed_by="worker-2") is None
 
 
-class TestFollowupCommands:
-    @pytest.mark.django_db
+class TestFollowupCommands(TestCase):
     def test_sync_reports_no_repos_from_default_overlay(self) -> None:
         with patch(
             "teatree.core.overlay_loader._discover_overlays",

@@ -32,8 +32,8 @@ class CommandOverlay(OverlayBase):
 
     def get_run_commands(self, worktree: Worktree) -> RunCommands:
         return {
-            "backend": f"run-backend {worktree.repo_path}",
-            "frontend": f"run-frontend {worktree.repo_path}",
+            "backend": ["run-backend", worktree.repo_path],
+            "frontend": ["run-frontend", worktree.repo_path],
         }
 
     def get_pre_run_steps(self, worktree: Worktree, service: str) -> list[ProvisionStep]:

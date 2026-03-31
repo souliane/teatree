@@ -3,6 +3,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from django.core.cache import cache
+from django.test import TestCase
 
 from teatree.core.models import Ticket
 from teatree.core.overlay import OverlayBase, OverlayConfig, ProvisionStep
@@ -314,8 +315,7 @@ class TestClassifyDiscussions:
         assert result[0]["detail"] == ""  # first_body from non-dict is ""
 
 
-class TestUpdateTicket:
-    @pytest.mark.django_db
+class TestUpdateTicket(TestCase):
     def test_preserves_skill_written_fields(self) -> None:
         """Skill-written fields (review_channel, review_permalink, e2e_test_plan_url) survive sync updates."""
         ticket = Ticket.objects.create(
@@ -354,8 +354,7 @@ class TestUpdateTicket:
         assert mr["e2e_test_plan_url"] == "https://gitlab.com/org/repo/-/merge_requests/50#note_789"
 
 
-class TestMergeTicketExtras:
-    @pytest.mark.django_db
+class TestMergeTicketExtras(TestCase):
     def test_combines_mrs_and_repos(self) -> None:
         """_merge_ticket_extras merges MR entries and repos from source into target."""
         target = Ticket.objects.create(
@@ -378,7 +377,6 @@ class TestMergeTicketExtras:
         assert "repo-a" in target.repos
         assert "repo-b" in target.repos
 
-    @pytest.mark.django_db
     def test_handles_non_dict_mrs(self) -> None:
         """Non-dict mrs in extras are treated as empty -- repos still merge."""
         target = Ticket.objects.create(
@@ -397,7 +395,6 @@ class TestMergeTicketExtras:
         target.refresh_from_db()
         assert target.repos == ["repo-a", "repo-b"]
 
-    @pytest.mark.django_db
     def test_skips_overlapping_mrs_and_repos(self) -> None:
         """Overlapping MR URLs and repos are not duplicated."""
         target = Ticket.objects.create(
@@ -420,13 +417,16 @@ class TestMergeTicketExtras:
         assert target.repos == ["repo-a", "repo-b", "repo-c"]
 
 
-class TestFetchReviewPermalinks:
+class TestFetchReviewPermalinks(TestCase):
     _SLACK_OVERLAY = SyncOverlay(
         slack_token="xoxb-token",
         review_channel=("review-crew", "C123"),
     )
 
-    @pytest.mark.django_db
+    @pytest.fixture(autouse=True)
+    def _inject_fixtures(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._monkeypatch = monkeypatch
+
     def test_returns_early_without_token(self) -> None:
         """_fetch_review_permalinks returns early when no token (line 359)."""
         overlay = SyncOverlay(slack_token="", review_channel=("", ""))
@@ -436,7 +436,6 @@ class TestFetchReviewPermalinks:
         assert result.reviews_synced == 0
         assert result.errors == []
 
-    @pytest.mark.django_db
     def test_skips_draft_mrs(self) -> None:
         """_fetch_review_permalinks skips draft MRs (line 374)."""
         Ticket.objects.create(
@@ -460,7 +459,6 @@ class TestFetchReviewPermalinks:
         # No non-draft MRs -> no Slack call
         assert result.reviews_synced == 0
 
-    @pytest.mark.django_db
     def test_skips_already_linked_mrs(self) -> None:
         """_fetch_review_permalinks skips MRs that already have review_permalink (line 376-377)."""
         Ticket.objects.create(
@@ -483,7 +481,6 @@ class TestFetchReviewPermalinks:
             _fetch_review_permalinks(result)
         assert result.reviews_synced == 0
 
-    @pytest.mark.django_db
     def test_returns_early_when_no_urls(self) -> None:
         """_fetch_review_permalinks returns early when no eligible MR URLs (line 382-383)."""
         with _patch_overlay(self._SLACK_OVERLAY):
@@ -491,8 +488,7 @@ class TestFetchReviewPermalinks:
             _fetch_review_permalinks(result)
         assert result.reviews_synced == 0
 
-    @pytest.mark.django_db
-    def test_handles_search_exception(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_handles_search_exception(self) -> None:
         """_fetch_review_permalinks appends error on exception (line 392-393)."""
         Ticket.objects.create(
             overlay="test",
@@ -512,15 +508,14 @@ class TestFetchReviewPermalinks:
             msg = "Slack timeout"
             raise RuntimeError(msg)
 
-        monkeypatch.setattr("teatree.backends.slack.search_review_permalinks", _explode)
+        self._monkeypatch.setattr("teatree.backends.slack.search_review_permalinks", _explode)
 
         with _patch_overlay(self._SLACK_OVERLAY):
             result = SyncResult()
             _fetch_review_permalinks(result)
         assert any("Slack review sync" in e for e in result.errors)
 
-    @pytest.mark.django_db
-    def test_stores_matches(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_stores_matches(self) -> None:
         """_fetch_review_permalinks updates ticket extra with permalink (lines 396-410)."""
         from teatree.backends.slack import SlackReviewMatch  # noqa: PLC0415
 
@@ -533,7 +528,7 @@ class TestFetchReviewPermalinks:
             extra={"mrs": {mr_url: {"draft": False}}},
         )
 
-        monkeypatch.setattr(
+        self._monkeypatch.setattr(
             "teatree.backends.slack.search_review_permalinks",
             lambda **kw: [
                 SlackReviewMatch(
@@ -554,8 +549,7 @@ class TestFetchReviewPermalinks:
         assert mr["review_permalink"] == "https://team.slack.com/archives/C123/p170000"
         assert mr["review_channel"] == "review-crew"
 
-    @pytest.mark.django_db
-    def test_skips_non_dict_mrs_in_collection(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_skips_non_dict_mrs_in_collection(self) -> None:
         """Tickets with non-dict mrs are skipped during collection (line 370)."""
         Ticket.objects.create(
             overlay="test",
@@ -564,15 +558,14 @@ class TestFetchReviewPermalinks:
             state=Ticket.State.SHIPPED,
             extra={"mrs": "not-a-dict"},
         )
-        monkeypatch.setattr("teatree.backends.slack.search_review_permalinks", lambda **kw: [])
+        self._monkeypatch.setattr("teatree.backends.slack.search_review_permalinks", lambda **kw: [])
 
         with _patch_overlay(self._SLACK_OVERLAY):
             result = SyncResult()
             _fetch_review_permalinks(result)
         assert result.reviews_synced == 0
 
-    @pytest.mark.django_db
-    def test_skips_non_dict_mr_entry_in_collection(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_skips_non_dict_mr_entry_in_collection(self) -> None:
         """Individual non-dict MR entries are skipped during collection (line 373)."""
         Ticket.objects.create(
             overlay="test",
@@ -581,7 +574,7 @@ class TestFetchReviewPermalinks:
             state=Ticket.State.SHIPPED,
             extra={"mrs": {"https://gitlab.com/mr/1": "not-a-dict"}},
         )
-        monkeypatch.setattr("teatree.backends.slack.search_review_permalinks", lambda **kw: [])
+        self._monkeypatch.setattr("teatree.backends.slack.search_review_permalinks", lambda **kw: [])
 
         with _patch_overlay(self._SLACK_OVERLAY):
             result = SyncResult()
@@ -595,18 +588,18 @@ class TestFetchNotionStatuses:
             fetch_notion_statuses()
 
 
-class TestSyncFollowup:
+class TestSyncFollowup(TestCase):
     _OVERLAY = SyncOverlay()
 
     @pytest.fixture(autouse=True)
-    def _with_overlay(self) -> Iterator[None]:
+    def _with_overlay(self, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+        self._monkeypatch = monkeypatch
         with _patch_overlay(self._OVERLAY):
             yield
 
-    @pytest.mark.django_db
-    def test_creates_tickets_from_mrs(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_creates_tickets_from_mrs(self) -> None:
         mock_client = _make_mock_client([_MR_WITH_ISSUE, _MR_WITHOUT_ISSUE])
-        monkeypatch.setattr("teatree.core.sync.GitLabAPI", lambda **_kw: mock_client)
+        self._monkeypatch.setattr("teatree.core.sync.GitLabAPI", lambda **_kw: mock_client)
 
         result = sync_followup()
 
@@ -626,10 +619,9 @@ class TestSyncFollowup:
         mr_ticket = Ticket.objects.get(issue_url=_MR_WITHOUT_ISSUE["web_url"])
         assert mr_ticket.extra["mrs"][_MR_WITHOUT_ISSUE["web_url"]]["draft"] is True
 
-    @pytest.mark.django_db
-    def test_fetches_issue_labels(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_fetches_issue_labels(self) -> None:
         mock_client = _make_mock_client([_MR_WITH_ISSUE])
-        monkeypatch.setattr("teatree.core.sync.GitLabAPI", lambda **_kw: mock_client)
+        self._monkeypatch.setattr("teatree.core.sync.GitLabAPI", lambda **_kw: mock_client)
 
         result = sync_followup()
 
@@ -638,8 +630,7 @@ class TestSyncFollowup:
         assert ticket.extra["tracker_status"] == "Process::Doing"
         assert ticket.extra["issue_title"] == "Issue title"
 
-    @pytest.mark.django_db
-    def test_updates_existing_ticket(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_updates_existing_ticket(self) -> None:
         Ticket.objects.create(
             overlay="test",
             issue_url="https://gitlab.com/org/repo/-/issues/100",
@@ -648,7 +639,7 @@ class TestSyncFollowup:
         )
 
         mock_client = _make_mock_client([_MR_WITH_ISSUE])
-        monkeypatch.setattr("teatree.core.sync.GitLabAPI", lambda **_kw: mock_client)
+        self._monkeypatch.setattr("teatree.core.sync.GitLabAPI", lambda **_kw: mock_client)
 
         result = sync_followup()
 
@@ -666,11 +657,10 @@ class TestSyncFollowup:
 
         assert result.errors == ["GitLab token is not configured in overlay"]
 
-    @pytest.mark.django_db
-    def test_captures_api_errors(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_captures_api_errors(self) -> None:
         mock_client = MagicMock()
         mock_client.list_all_open_mrs.side_effect = RuntimeError("API timeout")
-        monkeypatch.setattr("teatree.core.sync.GitLabAPI", lambda **_kw: mock_client)
+        self._monkeypatch.setattr("teatree.core.sync.GitLabAPI", lambda **_kw: mock_client)
 
         result = sync_followup()
 
@@ -678,19 +668,18 @@ class TestSyncFollowup:
         assert len(result.errors) == 1
         assert "API timeout" in result.errors[0]
 
-    def test_returns_error_when_username_missing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_returns_error_when_username_missing(self) -> None:
         overlay = SyncOverlay(gitlab_username="")
         mock_client = MagicMock()
         mock_client.current_username.return_value = ""
-        monkeypatch.setattr("teatree.core.sync.GitLabAPI", lambda **_kw: mock_client)
+        self._monkeypatch.setattr("teatree.core.sync.GitLabAPI", lambda **_kw: mock_client)
 
         with _patch_overlay(overlay):
             result = sync_followup()
 
         assert result.errors == ["GitLab username is not configured in overlay"]
 
-    @pytest.mark.django_db
-    def test_updates_existing_mr_only_ticket(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_updates_existing_mr_only_ticket(self) -> None:
         Ticket.objects.create(
             overlay="test",
             issue_url=_MR_WITHOUT_ISSUE["web_url"],
@@ -699,7 +688,7 @@ class TestSyncFollowup:
         )
 
         mock_client = _make_mock_client([_MR_WITHOUT_ISSUE])
-        monkeypatch.setattr("teatree.core.sync.GitLabAPI", lambda **_kw: mock_client)
+        self._monkeypatch.setattr("teatree.core.sync.GitLabAPI", lambda **_kw: mock_client)
 
         result = sync_followup()
 
@@ -707,8 +696,7 @@ class TestSyncFollowup:
         ticket = Ticket.objects.get(issue_url=_MR_WITHOUT_ISSUE["web_url"])
         assert _MR_WITHOUT_ISSUE["web_url"] in ticket.extra["mrs"]
 
-    @pytest.mark.django_db
-    def test_handles_corrupted_extra_field(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_handles_corrupted_extra_field(self) -> None:
         Ticket.objects.create(
             overlay="test",
             issue_url="https://gitlab.com/org/repo/-/issues/100",
@@ -717,7 +705,7 @@ class TestSyncFollowup:
         )
 
         mock_client = _make_mock_client([_MR_WITH_ISSUE])
-        monkeypatch.setattr("teatree.core.sync.GitLabAPI", lambda **_kw: mock_client)
+        self._monkeypatch.setattr("teatree.core.sync.GitLabAPI", lambda **_kw: mock_client)
 
         result = sync_followup()
 
@@ -725,23 +713,21 @@ class TestSyncFollowup:
         ticket = Ticket.objects.get(issue_url="https://gitlab.com/org/repo/-/issues/100")
         assert isinstance(ticket.extra["mrs"], dict)
 
-    @pytest.mark.django_db
-    def test_first_run_passes_no_updated_after(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_first_run_passes_no_updated_after(self) -> None:
         """First sync (no cached timestamp) should call list_open_mrs without updated_after."""
         cache.delete(LAST_SYNC_CACHE_KEY)
         mock_client = _make_mock_client([_MR_WITH_ISSUE])
-        monkeypatch.setattr("teatree.core.sync.GitLabAPI", lambda **_kw: mock_client)
+        self._monkeypatch.setattr("teatree.core.sync.GitLabAPI", lambda **_kw: mock_client)
 
         sync_followup()
 
         mock_client.list_all_open_mrs.assert_called_once_with("testuser", updated_after=None)
 
-    @pytest.mark.django_db
-    def test_stores_timestamp_and_uses_it_on_next_run(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_stores_timestamp_and_uses_it_on_next_run(self) -> None:
         """After a successful sync, the timestamp is cached and passed on the next call."""
         cache.delete(LAST_SYNC_CACHE_KEY)
         mock_client = _make_mock_client([_MR_WITH_ISSUE])
-        monkeypatch.setattr("teatree.core.sync.GitLabAPI", lambda **_kw: mock_client)
+        self._monkeypatch.setattr("teatree.core.sync.GitLabAPI", lambda **_kw: mock_client)
 
         # First run: stores the timestamp
         sync_followup()
@@ -755,41 +741,37 @@ class TestSyncFollowup:
 
         mock_client.list_all_open_mrs.assert_called_once_with("testuser", updated_after=stored)
 
-    @pytest.mark.django_db
-    def test_stores_timestamp_even_when_no_mrs_returned(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_stores_timestamp_even_when_no_mrs_returned(self) -> None:
         """Timestamp is stored after a successful sync even if zero MRs are returned."""
         cache.delete(LAST_SYNC_CACHE_KEY)
         mock_client = _make_mock_client([])
-        monkeypatch.setattr("teatree.core.sync.GitLabAPI", lambda **_kw: mock_client)
+        self._monkeypatch.setattr("teatree.core.sync.GitLabAPI", lambda **_kw: mock_client)
 
         sync_followup()
 
         assert cache.get(LAST_SYNC_CACHE_KEY) is not None
 
-    @pytest.mark.django_db
-    def test_creates_ticket_with_inferred_state(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_creates_ticket_with_inferred_state(self) -> None:
         """New ticket from a non-draft MR should be SHIPPED, not NOT_STARTED."""
         mock_client = _make_mock_client([_MR_WITH_ISSUE])
-        monkeypatch.setattr("teatree.core.sync.GitLabAPI", lambda **_kw: mock_client)
+        self._monkeypatch.setattr("teatree.core.sync.GitLabAPI", lambda **_kw: mock_client)
 
         sync_followup()
 
         ticket = Ticket.objects.get(issue_url="https://gitlab.com/org/repo/-/issues/100")
         assert ticket.state == Ticket.State.SHIPPED
 
-    @pytest.mark.django_db
-    def test_creates_draft_ticket_as_started(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_creates_draft_ticket_as_started(self) -> None:
         """New ticket from a draft MR should be STARTED."""
         mock_client = _make_mock_client([_MR_WITHOUT_ISSUE])
-        monkeypatch.setattr("teatree.core.sync.GitLabAPI", lambda **_kw: mock_client)
+        self._monkeypatch.setattr("teatree.core.sync.GitLabAPI", lambda **_kw: mock_client)
 
         sync_followup()
 
         ticket = Ticket.objects.get(issue_url=_MR_WITHOUT_ISSUE["web_url"])
         assert ticket.state == Ticket.State.STARTED
 
-    @pytest.mark.django_db
-    def test_advances_existing_ticket_state(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_advances_existing_ticket_state(self) -> None:
         """Existing ticket at NOT_STARTED should advance when MR data implies a later state."""
         Ticket.objects.create(
             overlay="test",
@@ -799,15 +781,14 @@ class TestSyncFollowup:
             extra={"mrs": {}},
         )
         mock_client = _make_mock_client([_MR_WITH_ISSUE])
-        monkeypatch.setattr("teatree.core.sync.GitLabAPI", lambda **_kw: mock_client)
+        self._monkeypatch.setattr("teatree.core.sync.GitLabAPI", lambda **_kw: mock_client)
 
         sync_followup()
 
         ticket = Ticket.objects.get(issue_url="https://gitlab.com/org/repo/-/issues/100")
         assert ticket.state == Ticket.State.SHIPPED
 
-    @pytest.mark.django_db
-    def test_does_not_regress_ticket_state(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_does_not_regress_ticket_state(self) -> None:
         """Ticket already at IN_REVIEW should not regress to SHIPPED on sync."""
         Ticket.objects.create(
             overlay="test",
@@ -819,22 +800,21 @@ class TestSyncFollowup:
         # MR with no approvals -> inferred SHIPPED, but ticket is already at IN_REVIEW
         mock_client = _make_mock_client([_MR_WITH_ISSUE])
         mock_client.get_mr_approvals.return_value = {"count": 0, "required": 1}
-        monkeypatch.setattr("teatree.core.sync.GitLabAPI", lambda **_kw: mock_client)
+        self._monkeypatch.setattr("teatree.core.sync.GitLabAPI", lambda **_kw: mock_client)
 
         sync_followup()
 
         ticket = Ticket.objects.get(issue_url="https://gitlab.com/org/repo/-/issues/100")
         assert ticket.state == Ticket.State.IN_REVIEW
 
-    @pytest.mark.django_db
-    def test_handles_non_list_reviewers(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_handles_non_list_reviewers(self) -> None:
         """When reviewers is not a list (e.g. None), reviewer fields are omitted."""
         mr = {
             **_MR_WITHOUT_ISSUE,
             "reviewers": None,
         }
         mock_client = _make_mock_client([mr])
-        monkeypatch.setattr("teatree.core.sync.GitLabAPI", lambda **_kw: mock_client)
+        self._monkeypatch.setattr("teatree.core.sync.GitLabAPI", lambda **_kw: mock_client)
 
         result = sync_followup()
 
@@ -844,8 +824,7 @@ class TestSyncFollowup:
         assert "review_requested" not in mr_data
         assert "reviewer_names" not in mr_data
 
-    @pytest.mark.django_db
-    def test_deduplicates_tickets_on_upsert(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_deduplicates_tickets_on_upsert(self) -> None:
         """When duplicate tickets exist for the same issue_url, sync merges and deletes extras."""
         ticket_a = Ticket.objects.create(
             overlay="test",
@@ -875,10 +854,10 @@ class TestSyncFollowup:
                 return Ticket.objects.filter(pk__in=[ticket_a.pk, dup_b.pk, dup_c.pk]).order_by("pk")
             return qs
 
-        monkeypatch.setattr(Ticket.objects, "filter", patched_filter)
+        self._monkeypatch.setattr(Ticket.objects, "filter", patched_filter)
 
         mock_client = _make_mock_client([_MR_WITH_ISSUE])
-        monkeypatch.setattr("teatree.core.sync.GitLabAPI", lambda **_kw: mock_client)
+        self._monkeypatch.setattr("teatree.core.sync.GitLabAPI", lambda **_kw: mock_client)
 
         result = sync_followup()
 
@@ -890,21 +869,21 @@ class TestSyncFollowup:
         assert "other-repo" in ticket_a.repos
 
 
-class TestSyncFollowupWorkItems:
+class TestSyncFollowupWorkItems(TestCase):
     _OVERLAY = SyncOverlay()
 
     @pytest.fixture(autouse=True)
-    def _with_overlay(self) -> Iterator[None]:
+    def _with_overlay(self, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+        self._monkeypatch = monkeypatch
         with _patch_overlay(self._OVERLAY):
             yield
 
-    @pytest.mark.django_db
-    def test_fetches_work_item_status(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_fetches_work_item_status(self) -> None:
         """Work items without Process:: labels get their status from the GraphQL Status widget."""
         mock_client = _make_mock_client([_MR_WITH_WORK_ITEM])
         mock_client.get_issue.return_value = {"labels": [], "title": "Work item title"}
         mock_client.get_work_item_status.return_value = "In progress"
-        monkeypatch.setattr("teatree.core.sync.GitLabAPI", lambda **_kw: mock_client)
+        self._monkeypatch.setattr("teatree.core.sync.GitLabAPI", lambda **_kw: mock_client)
 
         result = sync_followup()
 
@@ -913,13 +892,12 @@ class TestSyncFollowupWorkItems:
         assert ticket.extra["tracker_status"] == "In progress"
         assert ticket.extra["issue_title"] == "Work item title"
 
-    @pytest.mark.django_db
-    def test_process_label_takes_precedence(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_process_label_takes_precedence(self) -> None:
         """When a work item has Process:: labels, those take precedence over the Status widget."""
         mock_client = _make_mock_client([_MR_WITH_WORK_ITEM])
         mock_client.get_issue.return_value = {"labels": ["Process::Doing"], "title": "Work item title"}
         mock_client.get_work_item_status.return_value = "In progress"
-        monkeypatch.setattr("teatree.core.sync.GitLabAPI", lambda **_kw: mock_client)
+        self._monkeypatch.setattr("teatree.core.sync.GitLabAPI", lambda **_kw: mock_client)
 
         result = sync_followup()
 
@@ -929,13 +907,12 @@ class TestSyncFollowupWorkItems:
         assert ticket.extra["tracker_status"] == "Process::Doing"
         mock_client.get_work_item_status.assert_not_called()
 
-    @pytest.mark.django_db
-    def test_status_none_falls_through(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_status_none_falls_through(self) -> None:
         """When GraphQL returns no status, tracker_status stays empty."""
         mock_client = _make_mock_client([_MR_WITH_WORK_ITEM])
         mock_client.get_issue.return_value = {"labels": [], "title": "Work item title"}
         mock_client.get_work_item_status.return_value = None
-        monkeypatch.setattr("teatree.core.sync.GitLabAPI", lambda **_kw: mock_client)
+        self._monkeypatch.setattr("teatree.core.sync.GitLabAPI", lambda **_kw: mock_client)
 
         sync_followup()
 
@@ -943,16 +920,16 @@ class TestSyncFollowupWorkItems:
         assert "tracker_status" not in ticket.extra
 
 
-class TestSyncFollowupMergedMrs:
+class TestSyncFollowupMergedMrs(TestCase):
     _OVERLAY = SyncOverlay()
 
     @pytest.fixture(autouse=True)
-    def _with_overlay(self) -> Iterator[None]:
+    def _with_overlay(self, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+        self._monkeypatch = monkeypatch
         with _patch_overlay(self._OVERLAY):
             yield
 
-    @pytest.mark.django_db
-    def test_removes_discussions_from_merged_mr(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_removes_discussions_from_merged_mr(self) -> None:
         """When an MR is merged, its discussions should be removed from the ticket."""
         Ticket.objects.create(
             overlay="test",
@@ -975,7 +952,7 @@ class TestSyncFollowupMergedMrs:
         )
 
         mock_client = _make_merged_mock([_MERGED_MR])
-        monkeypatch.setattr("teatree.core.sync.GitLabAPI", lambda **_kw: mock_client)
+        self._monkeypatch.setattr("teatree.core.sync.GitLabAPI", lambda **_kw: mock_client)
 
         result = sync_followup()
 
@@ -984,8 +961,7 @@ class TestSyncFollowupMergedMrs:
         mr = ticket.extra["mrs"]["https://gitlab.com/org/repo/-/merge_requests/42"]
         assert "discussions" not in mr
 
-    @pytest.mark.django_db
-    def test_advances_ticket_to_merged_when_all_mrs_merged(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_advances_ticket_to_merged_when_all_mrs_merged(self) -> None:
         """When all MRs for a ticket are merged, ticket state advances to MERGED."""
         Ticket.objects.create(
             overlay="test",
@@ -1005,15 +981,14 @@ class TestSyncFollowupMergedMrs:
         )
 
         mock_client = _make_merged_mock([_MERGED_MR])
-        monkeypatch.setattr("teatree.core.sync.GitLabAPI", lambda **_kw: mock_client)
+        self._monkeypatch.setattr("teatree.core.sync.GitLabAPI", lambda **_kw: mock_client)
 
         sync_followup()
 
         ticket = Ticket.objects.get(issue_url="https://gitlab.com/org/repo/-/issues/100")
         assert ticket.state == Ticket.State.MERGED
 
-    @pytest.mark.django_db
-    def test_does_not_advance_when_some_mrs_still_open(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_does_not_advance_when_some_mrs_still_open(self) -> None:
         """Ticket should stay in current state if only some MRs are merged."""
         Ticket.objects.create(
             overlay="test",
@@ -1040,7 +1015,7 @@ class TestSyncFollowupMergedMrs:
 
         # Only MR 42 is merged; MR 99 is still open
         mock_client = _make_merged_mock([_MERGED_MR])
-        monkeypatch.setattr("teatree.core.sync.GitLabAPI", lambda **_kw: mock_client)
+        self._monkeypatch.setattr("teatree.core.sync.GitLabAPI", lambda **_kw: mock_client)
 
         sync_followup()
 
@@ -1050,19 +1025,17 @@ class TestSyncFollowupMergedMrs:
         assert "discussions" not in ticket.extra["mrs"]["https://gitlab.com/org/repo/-/merge_requests/42"]
         assert "discussions" in ticket.extra["mrs"]["https://gitlab.com/org/repo/-/merge_requests/99"]
 
-    @pytest.mark.django_db
-    def test_handles_merged_mr_fetch_failure(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_handles_merged_mr_fetch_failure(self) -> None:
         """When merged MR fetch fails, error is appended but sync continues."""
         mock_client = _make_mock_client([])
         mock_client.list_recently_merged_mrs.side_effect = RuntimeError("timeout")
-        monkeypatch.setattr("teatree.core.sync.GitLabAPI", lambda **_kw: mock_client)
+        self._monkeypatch.setattr("teatree.core.sync.GitLabAPI", lambda **_kw: mock_client)
 
         result = sync_followup()
 
         assert any("Merged MR fetch failed" in e for e in result.errors)
 
-    @pytest.mark.django_db
-    def test_skips_ticket_with_no_mrs(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_skips_ticket_with_no_mrs(self) -> None:
         """Ticket with empty/missing mrs dict should be skipped in merged detection."""
         Ticket.objects.create(
             overlay="test",
@@ -1073,14 +1046,13 @@ class TestSyncFollowupMergedMrs:
         )
 
         mock_client = _make_merged_mock([_MERGED_MR])
-        monkeypatch.setattr("teatree.core.sync.GitLabAPI", lambda **_kw: mock_client)
+        self._monkeypatch.setattr("teatree.core.sync.GitLabAPI", lambda **_kw: mock_client)
 
         result = sync_followup()
 
         assert result.mrs_merged == 0
 
-    @pytest.mark.django_db
-    def test_skips_non_dict_mr_entry(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_skips_non_dict_mr_entry(self) -> None:
         """Non-dict mr_entry values should be skipped in merged detection."""
         Ticket.objects.create(
             overlay="test",
@@ -1095,15 +1067,14 @@ class TestSyncFollowupMergedMrs:
         )
 
         mock_client = _make_merged_mock([_MERGED_MR])
-        monkeypatch.setattr("teatree.core.sync.GitLabAPI", lambda **_kw: mock_client)
+        self._monkeypatch.setattr("teatree.core.sync.GitLabAPI", lambda **_kw: mock_client)
 
         result = sync_followup()
 
         # Non-dict entries are skipped; no crash, no merge count
         assert result.mrs_merged == 0
 
-    @pytest.mark.django_db
-    def test_no_change_when_mr_has_no_discussions(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_no_change_when_mr_has_no_discussions(self) -> None:
         """Merged MR without discussions causes no save (no changed flag)."""
         Ticket.objects.create(
             overlay="test",
@@ -1123,7 +1094,7 @@ class TestSyncFollowupMergedMrs:
         )
 
         mock_client = _make_merged_mock([_MERGED_MR])
-        monkeypatch.setattr("teatree.core.sync.GitLabAPI", lambda **_kw: mock_client)
+        self._monkeypatch.setattr("teatree.core.sync.GitLabAPI", lambda **_kw: mock_client)
 
         result = sync_followup()
 
@@ -1131,16 +1102,16 @@ class TestSyncFollowupMergedMrs:
         assert result.mrs_merged == 1
 
 
-class TestSyncFollowupLabels:
+class TestSyncFollowupLabels(TestCase):
     _OVERLAY = SyncOverlay()
 
     @pytest.fixture(autouse=True)
-    def _with_overlay(self) -> Iterator[None]:
+    def _with_overlay(self, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+        self._monkeypatch = monkeypatch
         with _patch_overlay(self._OVERLAY):
             yield
 
-    @pytest.mark.django_db
-    def test_skips_issue_url_with_no_regex_match(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_skips_issue_url_with_no_regex_match(self) -> None:
         """Issue URLs not matching the gitlab pattern are skipped."""
         Ticket.objects.create(
             overlay="test",
@@ -1152,14 +1123,13 @@ class TestSyncFollowupLabels:
 
         mock_client = _make_mock_client([])
         mock_client.resolve_project.return_value = None  # Force no project
-        monkeypatch.setattr("teatree.core.sync.GitLabAPI", lambda **_kw: mock_client)
+        self._monkeypatch.setattr("teatree.core.sync.GitLabAPI", lambda **_kw: mock_client)
 
         result = sync_followup()
 
         assert result.labels_fetched == 0
 
-    @pytest.mark.django_db
-    def test_skips_iid_zero(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_skips_iid_zero(self) -> None:
         """Issue with iid 0 should be skipped."""
         Ticket.objects.create(
             overlay="test",
@@ -1170,14 +1140,13 @@ class TestSyncFollowupLabels:
         )
 
         mock_client = _make_mock_client([])
-        monkeypatch.setattr("teatree.core.sync.GitLabAPI", lambda **_kw: mock_client)
+        self._monkeypatch.setattr("teatree.core.sync.GitLabAPI", lambda **_kw: mock_client)
 
         result = sync_followup()
 
         assert result.labels_fetched == 0
 
-    @pytest.mark.django_db
-    def test_skips_when_project_not_resolved(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_skips_when_project_not_resolved(self) -> None:
         """When resolve_project returns None, skip the ticket."""
         Ticket.objects.create(
             overlay="test",
@@ -1189,14 +1158,13 @@ class TestSyncFollowupLabels:
 
         mock_client = _make_mock_client([])
         mock_client.resolve_project.return_value = None
-        monkeypatch.setattr("teatree.core.sync.GitLabAPI", lambda **_kw: mock_client)
+        self._monkeypatch.setattr("teatree.core.sync.GitLabAPI", lambda **_kw: mock_client)
 
         result = sync_followup()
 
         assert result.labels_fetched == 0
 
-    @pytest.mark.django_db
-    def test_skips_when_issue_not_found(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_skips_when_issue_not_found(self) -> None:
         """When get_issue returns None, skip the ticket."""
         Ticket.objects.create(
             overlay="test",
@@ -1208,14 +1176,13 @@ class TestSyncFollowupLabels:
 
         mock_client = _make_mock_client([])
         mock_client.get_issue.return_value = None
-        monkeypatch.setattr("teatree.core.sync.GitLabAPI", lambda **_kw: mock_client)
+        self._monkeypatch.setattr("teatree.core.sync.GitLabAPI", lambda **_kw: mock_client)
 
         result = sync_followup()
 
         assert result.labels_fetched == 0
 
-    @pytest.mark.django_db
-    def test_no_change_when_labels_and_title_unchanged(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_no_change_when_labels_and_title_unchanged(self) -> None:
         """When tracker_status and issue_title are already the same, no save happens."""
         Ticket.objects.create(
             overlay="test",
@@ -1226,15 +1193,14 @@ class TestSyncFollowupLabels:
         )
 
         mock_client = _make_mock_client([])
-        monkeypatch.setattr("teatree.core.sync.GitLabAPI", lambda **_kw: mock_client)
+        self._monkeypatch.setattr("teatree.core.sync.GitLabAPI", lambda **_kw: mock_client)
 
         result = sync_followup()
 
         # No change -> labels_fetched stays at 0
         assert result.labels_fetched == 0
 
-    @pytest.mark.django_db
-    def test_skips_non_gitlab_url(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_skips_non_gitlab_url(self) -> None:
         """Issue URL not containing gitlab.com should not match the Python regex (line 278)."""
         Ticket.objects.create(
             overlay="test",
@@ -1245,14 +1211,13 @@ class TestSyncFollowupLabels:
         )
 
         mock_client = _make_mock_client([])
-        monkeypatch.setattr("teatree.core.sync.GitLabAPI", lambda **_kw: mock_client)
+        self._monkeypatch.setattr("teatree.core.sync.GitLabAPI", lambda **_kw: mock_client)
 
         result = sync_followup()
 
         assert result.labels_fetched == 0
 
-    @pytest.mark.django_db
-    def test_updates_ticket_variant_from_issue_labels(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_updates_ticket_variant_from_issue_labels(self) -> None:
         """_fetch_issue_labels extracts variant from labels and saves to ticket (lines 323-326)."""
         overlay = SyncOverlay(known_variants=["Acme", "BigCorp"])
         Ticket.objects.create(
@@ -1265,7 +1230,7 @@ class TestSyncFollowupLabels:
 
         mock_client = _make_mock_client([])
         mock_client.get_issue.return_value = {"labels": ["acme", "Bug"], "title": "Fix bug"}
-        monkeypatch.setattr("teatree.core.sync.GitLabAPI", lambda **_kw: mock_client)
+        self._monkeypatch.setattr("teatree.core.sync.GitLabAPI", lambda **_kw: mock_client)
 
         with _patch_overlay(overlay):
             sync_followup()

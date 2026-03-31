@@ -92,14 +92,20 @@ def _base_env() -> dict[str, str]:
     return env
 
 
-def managepy(project_path: Path | None, *args: str) -> None:
+def managepy(project_path: Path | None, *args: str, overlay_name: str = "") -> None:
     """Run a Django management command for an overlay.
 
     For overlays with their own project directory (TOML-configured), delegates
     to ``uv --directory <path> run python manage.py``.  For entry-point overlays
     (pip-installed, no project directory), uses ``python -m teatree``.
+
+    When *overlay_name* is provided, ``T3_OVERLAY_NAME`` is set in the subprocess
+    environment so that ``get_overlay()`` can resolve the correct overlay even when
+    multiple overlays are installed.
     """
     env = _base_env()
+    if overlay_name:
+        env["T3_OVERLAY_NAME"] = overlay_name
 
     if project_path and (project_path / "manage.py").is_file():
         cmd = uv_cmd(project_path, "python", "manage.py", *args)
@@ -113,10 +119,14 @@ def managepy(project_path: Path | None, *args: str) -> None:
         )
 
 
-def _uvicorn(project_path: Path | None, host: str, port: int, settings_module: str = "") -> None:
+def _uvicorn(
+    project_path: Path | None, host: str, port: int, settings_module: str = "", overlay_name: str = ""
+) -> None:
     """Start uvicorn for the teatree ASGI application."""
     env = _base_env()
     env["DJANGO_SETTINGS_MODULE"] = settings_module or "teatree.settings"
+    if overlay_name:
+        env["T3_OVERLAY_NAME"] = overlay_name
 
     if project_path and (project_path / "manage.py").is_file():
         cmd = [
@@ -186,7 +196,7 @@ class OverlayAppBuilder:
             """Migrate the database and start the dashboard dev server."""
             import socket  # noqa: PLC0415
 
-            managepy(project_path, "migrate", "--no-input")
+            managepy(project_path, "migrate", "--no-input", overlay_name=overlay_name)
             actual_port = port
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                 if s.connect_ex((host, port)) == 0:
@@ -196,7 +206,7 @@ class OverlayAppBuilder:
                     actual_port = s2.getsockname()[1]
                     s2.close()
                     typer.echo(f"Port {port} in use, using {actual_port}")
-            _uvicorn(project_path, host, actual_port, settings_module)
+            _uvicorn(project_path, host, actual_port, settings_module, overlay_name=overlay_name)
 
         @overlay_app.command()
         def resetdb() -> None:
@@ -207,12 +217,13 @@ class OverlayAppBuilder:
             if db_path.exists():
                 db_path.unlink()
                 typer.echo(f"Deleted {db_path}")
-            managepy(project_path, "migrate", "--no-input")
+            managepy(project_path, "migrate", "--no-input", overlay_name=overlay_name)
             typer.echo("Database recreated.")
 
     def _register_worker_command(self) -> None:
         """Register the background worker command."""
         project_path = self.project_path
+        overlay_name = self.overlay_name
         overlay_app = self.overlay_app
 
         @overlay_app.command()
@@ -227,6 +238,8 @@ class OverlayAppBuilder:
 
             manage_py = str(project_path / "manage.py")
             env = {k: v for k, v in os.environ.items() if k != "DJANGO_SETTINGS_MODULE"}
+            if overlay_name:
+                env["T3_OVERLAY_NAME"] = overlay_name
             processes = []
             for _ in range(count):
                 p = subprocess.Popen(  # noqa: S603
@@ -262,7 +275,7 @@ class OverlayAppBuilder:
         @overlay_app.command(name="full-status")
         def full_status() -> None:
             """Show ticket, worktree, and session state summary."""
-            managepy(project_path, "followup", "refresh")
+            managepy(project_path, "followup", "refresh", overlay_name=overlay_name)
 
         @overlay_app.command(name="start-ticket")
         def start_ticket(
@@ -273,7 +286,7 @@ class OverlayAppBuilder:
             args = ["workspace", "ticket", issue_url]
             if variant:
                 args.extend(["--variant", variant])
-            managepy(project_path, *args)
+            managepy(project_path, *args, overlay_name=overlay_name)
 
         @overlay_app.command(name="ship")
         def ship(
@@ -284,12 +297,12 @@ class OverlayAppBuilder:
             args = ["pr", "create", ticket_id]
             if title:
                 args.extend(["--title", title])
-            managepy(project_path, *args)
+            managepy(project_path, *args, overlay_name=overlay_name)
 
         @overlay_app.command(name="daily")
         def daily() -> None:
             """Daily followup — sync MRs, check gates, remind reviewers."""
-            managepy(project_path, "followup", "sync")
+            managepy(project_path, "followup", "sync", overlay_name=overlay_name)
 
         @overlay_app.command(name="agent")
         def overlay_agent(
@@ -410,6 +423,7 @@ class OverlayAppBuilder:
         shows the real options (``--path``, ``--variant``, etc.).
         """
         project_path = self.project_path
+        overlay_name = self.overlay_name
 
         @group.command(
             name=sub_name,
@@ -422,7 +436,7 @@ class OverlayAppBuilder:
             add_help_option=False,
         )
         def _run(ctx: typer.Context) -> None:
-            managepy(project_path, group_name, sub_name, *ctx.args)
+            managepy(project_path, group_name, sub_name, *ctx.args, overlay_name=overlay_name)
 
         _run.__name__ = f"_run_{group_name}_{sub_name.replace('-', '_')}"
 
@@ -465,6 +479,7 @@ class OverlayAppBuilder:
     ) -> None:
         """Register a tool subcommand that forwards to a shell command."""
         project_path = self.project_path
+        overlay_name = self.overlay_name
 
         @group.command(
             name=name,
@@ -472,6 +487,6 @@ class OverlayAppBuilder:
             help=help_text,
         )
         def _run(ctx: typer.Context) -> None:
-            managepy(project_path, *command.split(), *ctx.args)
+            managepy(project_path, *command.split(), *ctx.args, overlay_name=overlay_name)
 
         _run.__name__ = f"_run_tool_{name.replace('-', '_')}"

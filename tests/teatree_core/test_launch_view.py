@@ -1,8 +1,11 @@
 import json
+from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
-import pytest
-from django.test import Client, override_settings
+from django.test import Client, TestCase, override_settings
+
+if TYPE_CHECKING:
+    import pytest
 
 from teatree.core.models import Session, Task, TaskAttempt, Ticket
 from tests.teatree_core.conftest import CommandOverlay
@@ -10,27 +13,30 @@ from tests.teatree_core.conftest import CommandOverlay
 _MOCK_OVERLAY = {"test": CommandOverlay()}
 
 
-@pytest.mark.django_db
-class TestLaunchTaskView:
+class TestLaunchTaskView(TestCase):
+    @classmethod
+    def setUpTestData(cls) -> None:
+        cls.ticket = Ticket.objects.create(overlay="test")
+        cls.session = Session.objects.create(ticket=cls.ticket, overlay="test", agent_id="agent-1")
+
     @override_settings(
         TEATREE_INTERACTIVE_RUNTIME="claude-code",
         TEATREE_TERMINAL_MODE="same-terminal",
     )
-    def test_interactive_task_returns_url(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr("teatree.agents.web_terminal.shutil.which", lambda _name: "/usr/bin/ttyd")
-        monkeypatch.setattr("teatree.agents.web_terminal._find_free_port", lambda: 9999)
-        monkeypatch.setattr("teatree.agents.web_terminal.subprocess.Popen", MagicMock())
-
-        ticket = Ticket.objects.create(overlay="test")
-        session = Session.objects.create(ticket=ticket, overlay="test", agent_id="agent-1")
+    def test_interactive_task_returns_url(self) -> None:
         task = Task.objects.create(
-            ticket=ticket,
-            session=session,
+            ticket=self.ticket,
+            session=self.session,
             execution_target=Task.ExecutionTarget.INTERACTIVE,
             phase="coding",
         )
 
-        with patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY):
+        with (
+            patch("teatree.agents.web_terminal.shutil.which", return_value="/usr/bin/ttyd"),
+            patch("teatree.agents.web_terminal._find_free_port", return_value=9999),
+            patch("teatree.agents.web_terminal.subprocess.Popen", MagicMock()),
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+        ):
             response = Client().post(f"/tasks/{task.pk}/launch/")
         data = json.loads(response.content)
 
@@ -46,23 +52,24 @@ class TestLaunchTaskView:
             },
         },
     )
-    def test_headless_task_enqueues_background_job(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr("teatree.agents.headless.shutil.which", lambda _name: "/usr/bin/claude-code")
-        monkeypatch.setattr(
-            "teatree.agents.headless.subprocess.run",
-            lambda *_args, **_kwargs: __import__("subprocess").CompletedProcess([], 0, '{"summary": "OK"}', ""),
-        )
+    def test_headless_task_enqueues_background_job(self) -> None:
+        import subprocess as _sp  # noqa: PLC0415
 
-        ticket = Ticket.objects.create(overlay="test")
-        session = Session.objects.create(ticket=ticket, overlay="test", agent_id="agent-1")
         task = Task.objects.create(
-            ticket=ticket,
-            session=session,
+            ticket=self.ticket,
+            session=self.session,
             execution_target=Task.ExecutionTarget.HEADLESS,
             phase="coding",
         )
 
-        with patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY):
+        with (
+            patch("teatree.agents.headless.shutil.which", return_value="/usr/bin/claude-code"),
+            patch(
+                "teatree.agents.headless.subprocess.run",
+                return_value=_sp.CompletedProcess([], 0, '{"summary": "OK"}', ""),
+            ),
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+        ):
             response = Client().post(f"/tasks/{task.pk}/launch/")
         data = json.loads(response.content)
 
@@ -75,9 +82,7 @@ class TestLaunchTaskView:
         assert response.status_code == 404
 
     def test_returns_409_when_task_already_claimed(self) -> None:
-        ticket = Ticket.objects.create(overlay="test")
-        session = Session.objects.create(ticket=ticket, overlay="test", agent_id="agent-1")
-        task = Task.objects.create(ticket=ticket, session=session)
+        task = Task.objects.create(ticket=self.ticket, session=self.session)
         task.claim(claimed_by="other-worker")
 
         response = Client().post(f"/tasks/{task.pk}/launch/")
@@ -87,9 +92,7 @@ class TestLaunchTaskView:
         assert data["error"] == "Task already claimed"
 
     def test_returns_409_when_task_already_finished(self) -> None:
-        ticket = Ticket.objects.create(overlay="test")
-        session = Session.objects.create(ticket=ticket, overlay="test", agent_id="agent-1")
-        task = Task.objects.create(ticket=ticket, session=session, status=Task.Status.COMPLETED)
+        task = Task.objects.create(ticket=self.ticket, session=self.session, status=Task.Status.COMPLETED)
 
         response = Client().post(f"/tasks/{task.pk}/launch/")
         data = json.loads(response.content)
@@ -97,18 +100,15 @@ class TestLaunchTaskView:
         assert response.status_code == 409
         assert data["error"] == "Task already finished"
 
-    def test_fails_task_when_overlay_lookup_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_fails_task_when_overlay_lookup_raises(self) -> None:
         def _raise() -> None:
             msg = "overlay unavailable"
             raise RuntimeError(msg)
 
-        monkeypatch.setattr("teatree.core.views.launch.get_overlay", _raise)
+        task = Task.objects.create(ticket=self.ticket, session=self.session)
 
-        ticket = Ticket.objects.create(overlay="test")
-        session = Session.objects.create(ticket=ticket, overlay="test", agent_id="agent-1")
-        task = Task.objects.create(ticket=ticket, session=session)
-
-        response = Client().post(f"/tasks/{task.pk}/launch/")
+        with patch("teatree.core.views.launch.get_overlay", side_effect=_raise):
+            response = Client().post(f"/tasks/{task.pk}/launch/")
         data = json.loads(response.content)
 
         assert response.status_code == 500
@@ -123,23 +123,22 @@ class TestLaunchTaskView:
         TEATREE_INTERACTIVE_RUNTIME="claude-code",
         TEATREE_TERMINAL_MODE="same-terminal",
     )
-    def test_returns_json_error_and_stores_attempt_on_failure(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_returns_json_error_and_stores_attempt_on_failure(self) -> None:
         def _raise(*_args: object, **_kw: object) -> None:
             msg = "ttyd is not installed"
             raise FileNotFoundError(msg)
 
-        monkeypatch.setattr("teatree.agents.web_terminal.launch_web_session", _raise)
-
-        ticket = Ticket.objects.create(overlay="test")
-        session = Session.objects.create(ticket=ticket, overlay="test", agent_id="agent-1")
         task = Task.objects.create(
-            ticket=ticket,
-            session=session,
+            ticket=self.ticket,
+            session=self.session,
             execution_target=Task.ExecutionTarget.INTERACTIVE,
             phase="coding",
         )
 
-        with patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY):
+        with (
+            patch("teatree.agents.web_terminal.launch_web_session", side_effect=_raise),
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+        ):
             response = Client().post(f"/tasks/{task.pk}/launch/")
         data = json.loads(response.content)
 
@@ -154,7 +153,7 @@ class TestLaunchTaskView:
 
 
 class TestLaunchTerminalView:
-    def test_spawns_ttyd_with_shell(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_spawns_ttyd_with_shell(self, monkeypatch: "pytest.MonkeyPatch") -> None:
         popen_mock = MagicMock()
         monkeypatch.setattr("teatree.core.views.launch.shutil.which", lambda name: f"/usr/bin/{name}")
         monkeypatch.setattr("teatree.core.views.launch._find_free_port", lambda: 7777)
@@ -172,7 +171,7 @@ class TestLaunchTerminalView:
         assert "/bin/zsh" in args
         assert "-l" in args
 
-    def test_returns_500_when_ttyd_missing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_returns_500_when_ttyd_missing(self, monkeypatch: "pytest.MonkeyPatch") -> None:
         monkeypatch.setattr("teatree.core.views.launch.shutil.which", lambda _name: None)
 
         response = Client().post("/dashboard/launch-terminal/")
@@ -192,7 +191,7 @@ class TestFindFreePort:
 
 
 class TestLaunchInteractiveForTask:
-    def test_returns_url(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_returns_url(self, monkeypatch: "pytest.MonkeyPatch") -> None:
         from teatree.core.views.launch import launch_interactive_for_task  # noqa: PLC0415
 
         popen_mock = MagicMock()
@@ -208,7 +207,7 @@ class TestLaunchInteractiveForTask:
         assert url == "http://127.0.0.1:8888"
         popen_mock.assert_called_once()
 
-    def test_returns_empty_when_binaries_missing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_returns_empty_when_binaries_missing(self, monkeypatch: "pytest.MonkeyPatch") -> None:
         from teatree.core.views.launch import launch_interactive_for_task  # noqa: PLC0415
 
         monkeypatch.setattr("teatree.core.views.launch.shutil.which", lambda _name: None)
@@ -222,7 +221,7 @@ class TestLaunchInteractiveForTask:
 
 
 class TestLaunchInteractiveAgentView:
-    def test_spawns_ttyd_with_claude(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_spawns_ttyd_with_claude(self, monkeypatch: "pytest.MonkeyPatch") -> None:
         popen_mock = MagicMock()
         monkeypatch.setattr("teatree.core.views.launch.shutil.which", lambda name: f"/usr/bin/{name}")
         monkeypatch.setattr("teatree.core.views.launch._find_free_port", lambda: 6666)
@@ -238,7 +237,7 @@ class TestLaunchInteractiveAgentView:
         assert "/usr/bin/ttyd" in args[0]
         assert "/usr/bin/claude" in args
 
-    def test_returns_500_when_claude_missing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_returns_500_when_claude_missing(self, monkeypatch: "pytest.MonkeyPatch") -> None:
         monkeypatch.setattr("teatree.core.views.launch.shutil.which", lambda _name: None)
 
         response = Client().post("/dashboard/launch-agent/")
@@ -247,7 +246,7 @@ class TestLaunchInteractiveAgentView:
         assert response.status_code == 500
         assert "claude CLI not found" in data["error"]
 
-    def test_returns_500_when_ttyd_missing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_returns_500_when_ttyd_missing(self, monkeypatch: "pytest.MonkeyPatch") -> None:
         def _selective_which(name: str) -> str | None:
             if name == "claude":
                 return "/usr/bin/claude"

@@ -158,6 +158,92 @@ def test_git_helpers_cover_run_check_current_branch_and_failure(monkeypatch: pyt
         git.default_branch("/tmp/repo")
 
 
+def test_run_checked_raises_on_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_run(
+        args: list[str], *, capture_output: bool, text: bool = False, check: bool = False
+    ) -> CompletedProcess[str]:
+        if check:
+            raise git.subprocess.CalledProcessError(1, args)
+        return CompletedProcess(args, 0, "ok\n", "")
+
+    monkeypatch.setattr(git.subprocess, "run", fake_run)
+
+    assert git.run(repo="/tmp/r", args=["log"]) == "ok"
+    with pytest.raises(git.subprocess.CalledProcessError):
+        git.run_checked(repo="/tmp/r", args=["bad"])
+
+
+def test_git_high_level_operations(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(
+        args: list[str], *, capture_output: bool, text: bool = False, check: bool = False
+    ) -> CompletedProcess[str]:
+        calls.append(list(args))
+        if "merge-base" in args:
+            return CompletedProcess(args, 0, "abc123\n", "")
+        if "rev-list" in args:
+            return CompletedProcess(args, 0, "3\n", "")
+        if "log" in args:
+            return CompletedProcess(args, 0, "abc feat one\ndef feat two\n", "")
+        if "status" in args:
+            return CompletedProcess(args, 0, " M file.py\n", "")
+        return CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr(git.subprocess, "run", fake_run)
+
+    assert git.merge_base("/tmp/r", "origin/main") == "abc123"
+    assert git.rev_count("/tmp/r", "abc123..HEAD") == 3
+    assert git.log_oneline("/tmp/r", "abc123..HEAD") == "abc feat one\ndef feat two"
+    assert git.status_porcelain("/tmp/r") == "M file.py"
+
+    git.soft_reset("/tmp/r", "abc123")
+    assert any("reset" in c for c in calls)
+
+    git.commit("/tmp/r", "squash msg")
+    assert any("commit" in c for c in calls)
+
+    git.fetch("/tmp/r", "origin", "main")
+    assert any("fetch" in c for c in calls)
+
+    git.rebase("/tmp/r", "origin/main")
+    assert any("rebase" in c for c in calls)
+
+
+def test_git_worktree_and_branch_ops(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_run(
+        args: list[str], *, capture_output: bool, text: bool = False, check: bool = False
+    ) -> CompletedProcess[str]:
+        if "worktree" in args:
+            return CompletedProcess(args, 0, "", "")
+        if "branch" in args:
+            return CompletedProcess(args, 1, "", "")
+        if "pull" in args:
+            return CompletedProcess(args, 0, "", "")
+        return CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr(git.subprocess, "run", fake_run)
+
+    assert git.worktree_remove("/tmp/r", "/tmp/wt") is True
+    assert git.branch_delete("/tmp/r", "old-branch") is False
+    assert git.pull_ff_only("/tmp/r") is True
+
+
+def test_fetch_without_ref(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(
+        args: list[str], *, capture_output: bool, text: bool = False, check: bool = False
+    ) -> CompletedProcess[str]:
+        calls.append(list(args))
+        return CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr(git.subprocess, "run", fake_run)
+
+    git.fetch("/tmp/r")
+    assert calls[-1] == ["git", "-C", "/tmp/r", "fetch", "origin"]
+
+
 def test_free_port_kills_process(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(ports, "port_in_use", lambda _port: True)
     monkeypatch.setattr(

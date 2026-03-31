@@ -6,12 +6,12 @@ chain together correctly.
 """
 
 import pytest
+from django.test import TestCase
 
 from teatree.core.models import QualityGateError, Session, Task, Ticket, Worktree
 
 
-class TestTicketLifecycle:
-    @pytest.mark.django_db
+class TestTicketLifecycle(TestCase):
     def test_from_creation_to_tested(self) -> None:
         """Ticket flows from creation through testing with worktree provisioning."""
         ticket = Ticket.objects.create()
@@ -40,7 +40,6 @@ class TestTicketLifecycle:
         assert review_task.status == "pending"
         assert review_task.execution_target == "headless"
 
-    @pytest.mark.django_db
     def test_from_tested_to_delivered(self) -> None:
         """Ticket flows from tested through delivery via auto-scheduled tasks."""
         ticket = Ticket.objects.create()
@@ -80,8 +79,7 @@ class TestTicketLifecycle:
         assert Task.objects.filter(ticket=ticket).count() >= 2
 
 
-class TestReworkCycle:
-    @pytest.mark.django_db
+class TestReworkCycle(TestCase):
     def test_resets_progress(self) -> None:
         """Rework from tested -> started clears tests_passed and cancels pending tasks."""
         ticket = Ticket.objects.create()
@@ -99,8 +97,7 @@ class TestReworkCycle:
         assert not Task.objects.filter(ticket=ticket, status="pending").exists()
 
 
-class TestQualityGate:
-    @pytest.mark.django_db
+class TestQualityGate(TestCase):
     def test_blocks_out_of_order_phases(self) -> None:
         """Session quality gates prevent skipping required phases."""
         ticket = Ticket.objects.create()

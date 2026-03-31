@@ -2,6 +2,7 @@ import time
 from pathlib import Path
 
 import pytest
+from django.test import TestCase
 from django.utils import timezone
 
 from teatree.core.models import Session, Task, TaskAttempt, Ticket, Worktree
@@ -29,8 +30,6 @@ from teatree.core.selectors import (
     build_worktree_rows,
     invalidate_panel_cache,
 )
-
-pytestmark = pytest.mark.django_db
 
 
 class TestCached:
@@ -75,7 +74,7 @@ class TestInvalidatePanelCache:
         _panel_cache.clear()
 
 
-class TestBuildDashboardSummary:
+class TestBuildDashboardSummary(TestCase):
     def test_counts_in_flight_work(self) -> None:
         active_ticket = Ticket.objects.create(issue_url="https://example.com/issues/101", state=Ticket.State.STARTED)
         done_ticket = Ticket.objects.create(issue_url="https://example.com/issues/102", state=Ticket.State.DELIVERED)
@@ -117,7 +116,7 @@ class TestBuildDashboardSummary:
         assert summary.pending_interactive_tasks == 1
 
 
-class TestBuildDashboardTicketRows:
+class TestBuildDashboardTicketRows(TestCase):
     def test_annotates_related_counts(self) -> None:
         first_ticket = Ticket.objects.create(
             issue_url="https://example.com/issues/201",
@@ -270,7 +269,7 @@ class TestBuildDashboardTicketRows:
         assert mr_without.e2e_test_plan_url == ""
 
 
-class TestBuildInteractiveQueue:
+class TestBuildInteractiveQueue(TestCase):
     def test_returns_non_completed_manual_tasks(self) -> None:
         first_ticket = Ticket.objects.create(state=Ticket.State.STARTED)
         second_ticket = Ticket.objects.create(state=Ticket.State.CODED)
@@ -342,7 +341,7 @@ class TestBuildInteractiveQueue:
         assert [row.task_id for row in queue] == [pending.pk]
 
 
-class TestBuildHeadlessQueue:
+class TestBuildHeadlessQueue(TestCase):
     def test_excludes_failed_tasks(self) -> None:
         ticket = Ticket.objects.create(state=Ticket.State.STARTED)
         session = Session.objects.create(ticket=ticket, agent_id="agent")
@@ -429,14 +428,19 @@ class TestBuildHeadlessQueue:
         assert pending.pk in task_ids
 
 
-class TestBuildActiveSessions:
-    def test_reads_claude_session_files(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+class TestBuildActiveSessions(TestCase):
+    @pytest.fixture(autouse=True)
+    def _setup_fixtures(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        self.monkeypatch = monkeypatch
+        self.tmp_path = tmp_path
+
+    def test_reads_claude_session_files(self) -> None:
         import json  # noqa: PLC0415
         import os  # noqa: PLC0415
 
-        sessions_dir = tmp_path / "sessions"
+        sessions_dir = self.tmp_path / "sessions"
         sessions_dir.mkdir()
-        monkeypatch.setattr("teatree.core.selectors._CLAUDE_SESSIONS_DIR", sessions_dir)
+        self.monkeypatch.setattr("teatree.core.selectors._CLAUDE_SESSIONS_DIR", sessions_dir)
 
         # Create a session file with current process PID (guaranteed alive)
         current_pid = os.getpid()
@@ -492,12 +496,12 @@ class TestBuildActiveSessions:
         assert result[0].kind == "headless"
         assert result[0].phase == "coding"
 
-    def test_handles_invalid_json(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    def test_handles_invalid_json(self) -> None:
         import json  # noqa: PLC0415
 
-        sessions_dir = tmp_path / "sessions"
+        sessions_dir = self.tmp_path / "sessions"
         sessions_dir.mkdir()
-        monkeypatch.setattr("teatree.core.selectors._CLAUDE_SESSIONS_DIR", sessions_dir)
+        self.monkeypatch.setattr("teatree.core.selectors._CLAUDE_SESSIONS_DIR", sessions_dir)
 
         # Invalid JSON file
         (sessions_dir / "bad.json").write_text("not valid json", encoding="utf-8")
@@ -510,16 +514,16 @@ class TestBuildActiveSessions:
 
         assert result == []
 
-    def test_no_sessions_dir(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    def test_no_sessions_dir(self) -> None:
         """When _CLAUDE_SESSIONS_DIR is not a directory, return empty list."""
-        monkeypatch.setattr("teatree.core.selectors._CLAUDE_SESSIONS_DIR", tmp_path / "nonexistent")
+        self.monkeypatch.setattr("teatree.core.selectors._CLAUDE_SESSIONS_DIR", self.tmp_path / "nonexistent")
 
         result = build_active_sessions()
 
         assert result == []
 
 
-class TestBuildTaskDetail:
+class TestBuildTaskDetail(TestCase):
     def test_returns_none_for_missing_task(self) -> None:
         assert build_task_detail(999999) is None
 
@@ -626,17 +630,18 @@ class TestBuildTaskDetail:
         assert detail.session_agent_id == "agent"
 
 
-class TestCheckMr:
+class TestCheckMr(TestCase):
+    @classmethod
+    def setUpTestData(cls) -> None:
+        cls.ticket = Ticket.objects.create(state=Ticket.State.STARTED)
+
     def test_returns_empty_for_draft(self) -> None:
-        ticket = Ticket.objects.create(state=Ticket.State.STARTED)
-        assert _check_mr({"draft": True}, ticket) == []
+        assert _check_mr({"draft": True}, self.ticket) == []
 
     def test_returns_empty_for_non_dict(self) -> None:
-        ticket = Ticket.objects.create(state=Ticket.State.STARTED)
-        assert _check_mr("not-a-dict", ticket) == []
+        assert _check_mr("not-a-dict", self.ticket) == []
 
     def test_needs_review_request(self) -> None:
-        ticket = Ticket.objects.create(state=Ticket.State.STARTED)
         mr = {
             "draft": False,
             "repo": "backend",
@@ -644,12 +649,11 @@ class TestCheckMr:
             "url": "https://gitlab.com/org/backend/-/merge_requests/10",
             "pipeline_status": "success",
         }
-        items = _check_mr(mr, ticket)
+        items = _check_mr(mr, self.ticket)
         assert len(items) == 1
         assert items[0].kind == "needs_review_request"
 
     def test_needs_reply(self) -> None:
-        ticket = Ticket.objects.create(state=Ticket.State.STARTED)
         mr = {
             "draft": False,
             "repo": "backend",
@@ -661,13 +665,12 @@ class TestCheckMr:
                 {"status": "needs_reply"},
             ],
         }
-        items = _check_mr(mr, ticket)
+        items = _check_mr(mr, self.ticket)
         assert any(item.kind == "needs_reply" for item in items)
         needs_reply_item = next(i for i in items if i.kind == "needs_reply")
         assert "2 comments" in needs_reply_item.label
 
     def test_needs_reply_singular(self) -> None:
-        ticket = Ticket.objects.create(state=Ticket.State.STARTED)
         mr = {
             "draft": False,
             "repo": "backend",
@@ -675,11 +678,10 @@ class TestCheckMr:
             "url": "https://gitlab.com/org/backend/-/merge_requests/10",
             "discussions": [{"status": "needs_reply"}],
         }
-        items = _check_mr(mr, ticket)
+        items = _check_mr(mr, self.ticket)
         assert any("1 comment need reply" in i.label for i in items)
 
     def test_needs_approval(self) -> None:
-        ticket = Ticket.objects.create(state=Ticket.State.STARTED)
         mr = {
             "draft": False,
             "repo": "backend",
@@ -690,12 +692,11 @@ class TestCheckMr:
             "review_permalink": "https://slack.com/x",
             "approvals": {"count": 0, "required": 2},
         }
-        items = _check_mr(mr, ticket)
+        items = _check_mr(mr, self.ticket)
         assert any(item.kind == "needs_approval" for item in items)
 
     def test_non_dict_approvals(self) -> None:
         """Non-dict approvals should be treated as empty."""
-        ticket = Ticket.objects.create(state=Ticket.State.STARTED)
         mr = {
             "draft": False,
             "repo": "backend",
@@ -706,12 +707,11 @@ class TestCheckMr:
             "review_permalink": "https://slack.com/x",
             "approvals": "not-a-dict",
         }
-        items = _check_mr(mr, ticket)
+        items = _check_mr(mr, self.ticket)
         assert any(item.kind == "needs_approval" for item in items)
 
     def test_non_list_discussions(self) -> None:
         """When discussions is not a list, the needs_reply check is skipped (branch 464->477)."""
-        ticket = Ticket.objects.create(state=Ticket.State.STARTED)
         mr = {
             "draft": False,
             "repo": "backend",
@@ -719,12 +719,12 @@ class TestCheckMr:
             "url": "https://gitlab.com/org/backend/-/merge_requests/10",
             "discussions": "not-a-list",
         }
-        items = _check_mr(mr, ticket)
+        items = _check_mr(mr, self.ticket)
         # No crash; no needs_reply item
         assert all(i.kind != "needs_reply" for i in items)
 
 
-class TestBuildActionRequired:
+class TestBuildActionRequired(TestCase):
     def test_skips_non_dict_mrs(self) -> None:
         """When mrs is not a dict, it should be skipped."""
         Ticket.objects.create(
@@ -796,7 +796,7 @@ class TestVariantUrl:
             assert _variant_url("ops") == ""
 
 
-class TestBuildMrRows:
+class TestBuildMrRows(TestCase):
     def test_non_dict_mrs_data(self) -> None:
         ticket = Ticket.objects.create(
             state=Ticket.State.STARTED,
@@ -882,7 +882,7 @@ class TestListOfStr:
         assert _list_of_str([1, "two", 3]) == ["1", "two", "3"]
 
 
-class TestBuildReviewComments:
+class TestBuildReviewComments(TestCase):
     def test_with_discussions(self) -> None:
         Ticket.objects.create(
             state=Ticket.State.STARTED,
@@ -981,7 +981,7 @@ class TestBuildReviewComments:
         assert rows[0].mr_label == "https://gitlab.com/org/x/-/merge_requests/1"
 
 
-class TestBuildRecentActivity:
+class TestBuildRecentActivity(TestCase):
     def test_returns_ended_attempts(self) -> None:
         ticket = Ticket.objects.create(state=Ticket.State.STARTED)
         session = Session.objects.create(ticket=ticket, agent_id="agent")
@@ -1035,7 +1035,7 @@ class TestBuildRecentActivity:
         assert rows[0].error != ""
 
 
-class TestBuildWorktreeRows:
+class TestBuildWorktreeRows(TestCase):
     def test_excludes_delivered_tickets(self) -> None:
         active_ticket = Ticket.objects.create(state=Ticket.State.STARTED)
         delivered_ticket = Ticket.objects.create(state=Ticket.State.DELIVERED)
@@ -1070,7 +1070,7 @@ class TestUptimeFromEpochMs:
         assert _uptime_from_epoch_ms(now_ms - (2 * 60 + 30) * 60_000) == "2h30m"
 
 
-class TestFirstMrTitle:
+class TestFirstMrTitle(TestCase):
     def test_mrs_not_dict(self) -> None:
         """When mrs is not a dict, return empty string (branch 631->637)."""
         ticket = Ticket.objects.create(
@@ -1103,7 +1103,7 @@ class TestFirstMrTitle:
         assert _first_mr_title(ticket) == "My Feature"
 
 
-class TestLastResultForTasks:
+class TestLastResultForTasks(TestCase):
     def test_empty_list(self) -> None:
         """Empty task id list should return empty dict (loop doesn't execute)."""
         assert _last_result_for_tasks([]) == {}
@@ -1146,7 +1146,7 @@ class TestLastResultForTasks:
         assert task.pk not in result
 
 
-class TestBuildAutomationSummary:
+class TestBuildAutomationSummary(TestCase):
     def test_counts_headless_activity(self) -> None:
         ticket = Ticket.objects.create(state=Ticket.State.STARTED)
         session = Session.objects.create(ticket=ticket, agent_id="agent")
@@ -1283,10 +1283,11 @@ class TestBuildAutomationSummary:
         _panel_cache.clear()
 
 
-class TestOverlayFiltering:
+class TestOverlayFiltering(TestCase):
     """Verify that overlay= parameter filters all selector functions."""
 
-    def setup_method(self) -> None:
+    def setUp(self) -> None:
+        super().setUp()
         _panel_cache.clear()
 
     def test_summary_filters_by_overlay(self) -> None:

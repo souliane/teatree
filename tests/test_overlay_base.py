@@ -38,9 +38,9 @@ def test_get_run_commands_returns_empty_dict():
     assert overlay.get_run_commands(_make_worktree()) == {}
 
 
-def test_get_test_command_returns_empty_string():
+def test_get_test_command_returns_empty_list():
     overlay = _MinimalOverlay()
-    assert overlay.get_test_command(_make_worktree()) == ""
+    assert overlay.get_test_command(_make_worktree()) == []
 
 
 def test_get_db_import_strategy_returns_none():
@@ -63,9 +63,9 @@ def test_get_post_db_steps_returns_empty_list():
     assert overlay.get_post_db_steps(_make_worktree()) == []
 
 
-def test_get_reset_passwords_command_returns_empty_string():
+def test_get_reset_passwords_command_returns_none():
     overlay = _MinimalOverlay()
-    assert overlay.get_reset_passwords_command(_make_worktree()) == ""
+    assert overlay.get_reset_passwords_command(_make_worktree()) is None
 
 
 def test_get_symlinks_returns_empty_list():
