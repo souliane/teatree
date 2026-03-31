@@ -201,6 +201,7 @@ lint.preview = true
 
 [tool.codespell]
 dictionary = ".codespell-dictionary.txt,-"
+ignore-words-list = "iterm"
 
 # --- Pytest ---
 

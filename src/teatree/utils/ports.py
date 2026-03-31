@@ -101,6 +101,14 @@ def _find_free_ports_unlocked(
     return backend, frontend, postgres, _DEFAULT_REDIS_PORT
 
 
+def find_free_port() -> int:
+    """Return a single free port (OS-assigned)."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
 def free_port(port: int) -> int | None:
     """Kill the process holding *port* and return its PID, or ``None`` if the port was free."""
     if not port_in_use(port):
