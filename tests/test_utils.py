@@ -1,3 +1,4 @@
+import signal
 import socket
 from pathlib import Path
 from subprocess import CompletedProcess
@@ -157,6 +158,34 @@ def test_git_helpers_cover_run_check_current_branch_and_failure(monkeypatch: pyt
         git.default_branch("/tmp/repo")
 
 
+def test_free_port_kills_process(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(ports, "port_in_use", lambda _port: True)
+    monkeypatch.setattr(
+        ports.subprocess,
+        "run",
+        lambda *_a, **_k: CompletedProcess([], 0, stdout="12345\n"),
+    )
+    killed: list[tuple[int, int]] = []
+    monkeypatch.setattr(ports.os, "kill", lambda pid, sig: killed.append((pid, sig)))
+    assert ports.free_port(8001) == 12345
+    assert killed == [(12345, signal.SIGTERM)]
+
+
+def test_free_port_returns_none_when_not_in_use(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(ports, "port_in_use", lambda _port: False)
+    assert ports.free_port(8001) is None
+
+
+def test_free_port_returns_none_when_lsof_finds_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(ports, "port_in_use", lambda _port: True)
+    monkeypatch.setattr(
+        ports.subprocess,
+        "run",
+        lambda *_a, **_k: CompletedProcess([], 1, stdout=""),
+    )
+    assert ports.free_port(8001) is None
+
+
 def test_db_restore_uses_pg_restore_when_supported(monkeypatch: pytest.MonkeyPatch) -> None:
     commands: list[list[str]] = []
     monkeypatch.setenv("POSTGRES_HOST", "db.internal")
@@ -264,6 +293,48 @@ def test_db_restore_raises_when_psql_restore_fails(monkeypatch: pytest.MonkeyPat
 
     with pytest.raises(RuntimeError, match="psql restore failed"):
         db.db_restore("wt_56", "/tmp/dump.sql")
+
+
+def test_db_restore_detects_truncated_pg_restore(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_run(
+        args: list[str],
+        *,
+        env: dict[str, str] | None = None,
+        capture_output: bool = False,
+        text: bool = False,
+        check: bool = False,
+    ) -> CompletedProcess[str]:
+        if args[:2] == ["pg_restore", "-l"]:
+            return CompletedProcess(args, 0, "TOC", "")
+        if args[0] == "pg_restore" and "-d" in args:
+            return CompletedProcess(args, 0, "", "WARNING: could not read data")
+        return CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr(db.subprocess, "run", fake_run)
+
+    with pytest.raises(RuntimeError, match="Corrupt or truncated dump"):
+        db.db_restore("wt_70", "/tmp/dump.pgdump")
+
+
+def test_db_restore_detects_truncated_psql(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_run(
+        args: list[str],
+        *,
+        env: dict[str, str] | None = None,
+        capture_output: bool = False,
+        text: bool = False,
+        check: bool = False,
+    ) -> CompletedProcess[str]:
+        if args[:2] == ["pg_restore", "-l"]:
+            return CompletedProcess(args, 1, "", "")
+        if args[0] == "psql":
+            return CompletedProcess(args, 0, "", "unexpected EOF on client connection")
+        return CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr(db.subprocess, "run", fake_run)
+
+    with pytest.raises(RuntimeError, match="Corrupt or truncated dump"):
+        db.db_restore("wt_71", "/tmp/dump.sql")
 
 
 def test_gitlab_api_resolves_remote_project(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -790,6 +861,31 @@ def test_gitlab_api_explicit_token_overrides_env(monkeypatch: pytest.MonkeyPatch
     client = gitlab_api.GitLabAPI(token="explicit-token")
 
     assert client.token == "explicit-token"
+
+
+def test_resolve_token_falls_back_to_pass(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("GITLAB_TOKEN", raising=False)
+    monkeypatch.setattr(
+        gitlab_api,
+        "subprocess",
+        type("M", (), {"run": staticmethod(lambda *_a, **_k: CompletedProcess([], 0, stdout="pass-token\n"))})(),
+    )
+    assert gitlab_api._resolve_token() == "pass-token"
+
+
+def test_resolve_token_returns_empty_when_pass_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("GITLAB_TOKEN", raising=False)
+    monkeypatch.setattr(
+        gitlab_api,
+        "subprocess",
+        type("M", (), {"run": staticmethod(lambda *_a, **_k: CompletedProcess([], 1, stdout=""))})(),
+    )
+    assert gitlab_api._resolve_token() == ""
+
+
+def test_resolve_token_prefers_env_over_pass(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GITLAB_TOKEN", "env-token")
+    assert gitlab_api._resolve_token() == "env-token"
 
 
 class TestGitLabAPICacheHits:

@@ -270,6 +270,51 @@ class Command(TyperCommand):
         worktree.save()
         return f"Cleaned worktree {worktree.repo_path} ({worktree.state})"
 
+    @command(name="smoke-test")
+    def smoke_test(self) -> dict[str, object]:
+        """Quick health check: overlay loads, CLI responds, imports OK."""
+        checks: dict[str, object] = {}
+
+        # 1. Overlay loads
+        try:
+            overlay = get_overlay()
+            checks["overlay"] = {"status": "ok", "repos": overlay.get_repos()}
+        except Exception as exc:  # noqa: BLE001
+            checks["overlay"] = {"status": "error", "detail": str(exc)}
+
+        # 2. CLI responds (t3 --help)
+        result = subprocess.run(
+            ["uv", "run", "t3", "--help"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        checks["cli"] = {"status": "ok" if result.returncode == 0 else "error"}
+
+        # 3. DB accessible
+        try:
+            count = Worktree.objects.count()
+            checks["database"] = {"status": "ok", "worktrees": count}
+        except Exception as exc:  # noqa: BLE001
+            checks["database"] = {"status": "error", "detail": str(exc)}
+
+        # 4. Pre-commit hooks parseable
+        hook_config = Path("." if Path(".pre-commit-config.yaml").is_file() else os.environ.get("PWD", "."))
+        hook_file = hook_config / ".pre-commit-config.yaml"
+        if hook_file.is_file():
+            try:
+                from importlib import import_module  # noqa: PLC0415
+
+                yaml = import_module("yaml")
+                yaml.safe_load(hook_file.read_text(encoding="utf-8"))
+                checks["hooks"] = {"status": "ok"}
+            except Exception as exc:  # noqa: BLE001
+                checks["hooks"] = {"status": "error", "detail": str(exc)}
+        else:
+            checks["hooks"] = {"status": "skipped", "detail": "no .pre-commit-config.yaml"}
+
+        return checks
+
     @command()
     def diagram(self, model: str = "worktree") -> str:
         """Print a state diagram as Mermaid. Models: worktree, ticket, task."""

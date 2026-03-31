@@ -360,6 +360,50 @@ class TestWorktree:
         result = worktree.refresh_ports_if_needed()
         assert result is False
 
+    def test_revalidate_ports_no_conflicts(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """revalidate_ports returns empty dict when all ports are available."""
+        ticket = Ticket.objects.create(issue_url="https://example.com/issues/60")
+        worktree = Worktree.objects.create(
+            ticket=ticket,
+            repo_path="/tmp/backend",
+            branch="teatree-django",
+            ports={"backend": 8001, "frontend": 4201, "postgres": 5432, "redis": 6379},
+        )
+        monkeypatch.setattr(Worktree, "_port_available", staticmethod(lambda _port: True))
+        assert worktree.revalidate_ports() == {}
+
+    def test_revalidate_ports_reallocates_conflicts(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """revalidate_ports detects conflicts and reallocates only conflicting ports."""
+        ticket = Ticket.objects.create(issue_url="https://example.com/issues/61")
+        worktree = Worktree.objects.create(
+            ticket=ticket,
+            repo_path="/tmp/backend",
+            branch="teatree-django",
+            ports={"backend": 8001, "frontend": 4201, "postgres": 5432, "redis": 6379},
+        )
+        # Backend port 8001 is in use, frontend 4201 is free
+        monkeypatch.setattr(Worktree, "_port_available", staticmethod(lambda port: port != 8001))
+        monkeypatch.setattr(
+            Worktree,
+            "_allocate_ports",
+            lambda self: {"backend": 8002, "frontend": 4201, "postgres": 5432, "redis": 6379},
+        )
+        changes = worktree.revalidate_ports()
+        assert changes == {"backend": (8001, 8002)}
+        worktree.refresh_from_db()
+        assert worktree.ports["backend"] == 8002
+        assert worktree.ports["frontend"] == 4201  # unchanged
+
+    def test_revalidate_ports_empty_ports(self) -> None:
+        """revalidate_ports returns empty dict when no ports are assigned."""
+        ticket = Ticket.objects.create(issue_url="https://example.com/issues/62")
+        worktree = Worktree.objects.create(
+            ticket=ticket,
+            repo_path="/tmp/backend",
+            branch="teatree-django",
+        )
+        assert worktree.revalidate_ports() == {}
+
 
 @pytest.mark.django_db
 class TestSession:

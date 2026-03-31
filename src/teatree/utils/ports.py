@@ -1,6 +1,8 @@
 import fcntl
 import os
+import signal
 import socket
+import subprocess
 from pathlib import Path
 
 _MAX_SCAN_DEPTH = 2
@@ -97,6 +99,24 @@ def _find_free_ports_unlocked(
         _DEFAULT_POSTGRES_PORT if share_db_server else _next_free_port(5433, used_postgres, check_system=check_system)
     )
     return backend, frontend, postgres, _DEFAULT_REDIS_PORT
+
+
+def free_port(port: int) -> int | None:
+    """Kill the process holding *port* and return its PID, or ``None`` if the port was free."""
+    if not port_in_use(port):
+        return None
+    result = subprocess.run(
+        ["lsof", "-ti", f":{port}"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    pids = [int(p) for p in result.stdout.split() if p.strip().isdigit()]
+    if not pids:
+        return None
+    pid = pids[0]
+    os.kill(pid, signal.SIGTERM)
+    return pid
 
 
 def find_free_ports(

@@ -46,9 +46,23 @@ class ProjectInfo:
     default_branch: str = "main"
 
 
+def _resolve_token() -> str:
+    """Resolve a GitLab token from env, then ``pass`` store as fallback."""
+    token = os.environ.get("GITLAB_TOKEN", "")
+    if token:
+        return token
+    result = subprocess.run(
+        ["pass", "show", "gitlab/pat"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
 class GitLabAPI:
     def __init__(self, *, token: str = "", base_url: str = "https://gitlab.com/api/v4") -> None:
-        self.token = token or os.environ.get("GITLAB_TOKEN", "")
+        self.token = token or _resolve_token()
         self.base_url = base_url.rstrip("/")
         self._project_cache: dict[str, ProjectInfo] = {}
         self._response_cache: dict[str, tuple[float, object]] = {}
