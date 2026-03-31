@@ -183,7 +183,11 @@ class TestLifecycleProvision:
         assert (ticket_dir / "backend" / ".env.worktree").is_symlink()
         assert (ticket_dir / "frontend" / ".env.worktree").is_symlink()
 
-        with _patch_overlay():
+        mock_popen = MagicMock(poll=MagicMock(return_value=None), pid=9999, returncode=0)
+        with (
+            _patch_overlay(),
+            patch("teatree.core.management.commands.lifecycle.Popen", return_value=mock_popen),
+        ):
             call_command("lifecycle", "start", path=backend_path)
         wt_backend.refresh_from_db()
         assert wt_backend.state == Worktree.State.SERVICES_UP

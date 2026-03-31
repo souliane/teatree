@@ -262,6 +262,18 @@ class TestWorkspaceTicket:
         assert ticket.worktrees.count() == 2
 
     @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_with_description(self) -> None:
+        ticket_id = cast(
+            "int",
+            call_command("workspace", "ticket", "https://example.com/issues/99", description="Add Login Page"),
+        )
+        ticket = Ticket.objects.get(pk=ticket_id)
+        worktree = ticket.worktrees.first()
+        assert worktree.branch.endswith("-add-login-page")
+        assert "ticket" not in worktree.branch
+
+    @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS, T3_WORKSPACE_DIR="/tmp/ws-test")
     def test_skips_non_git_repo(self, tmp_path: "pytest.TempPathFactory") -> None:
         """Repos without .git directory are skipped."""
@@ -318,8 +330,8 @@ class TestWorkspaceTicket:
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS, T3_WORKSPACE_DIR="/tmp/ws-test")
-    def test_handles_git_worktree_failure(self, tmp_path: "pytest.TempPathFactory") -> None:
-        """When git worktree add fails, the worktree is still created in DB with empty extra."""
+    def test_rolls_back_when_all_worktrees_fail(self, tmp_path: "pytest.TempPathFactory") -> None:
+        """When all git worktree add fail, ticket and DB entries are rolled back."""
         workspace = tmp_path / "workspace"
         workspace.mkdir()
         (workspace / "backend").mkdir()
@@ -343,12 +355,11 @@ class TestWorkspaceTicket:
             patch("teatree.core.management.commands.workspace._workspace_dir", return_value=workspace),
             patch("teatree.core.management.commands.workspace.subprocess.run", side_effect=side_effect),
         ):
-            ticket_id = cast("int", call_command("workspace", "ticket", "https://example.com/issues/83"))
+            result = cast("int", call_command("workspace", "ticket", "https://example.com/issues/83"))
 
-        ticket = Ticket.objects.get(pk=ticket_id)
-        # Worktrees are created in DB even if git worktree add failed
-        for wt in ticket.worktrees.all():
-            assert wt.extra == {}
+        assert result == 0
+        assert Ticket.objects.filter(issue_url="https://example.com/issues/83").count() == 0
+        assert Worktree.objects.count() == 0
 
 
 @pytest.mark.django_db
@@ -374,28 +385,32 @@ class TestWorkspaceCleanAll:
         # Add a file so the dir is not empty (avoids empty-dir cleanup side-effect)
         (repo_main / ".git").mkdir()
 
+        wt_dir = workspace / "ac-backend-80-ticket" / "backend"
+        wt_dir.mkdir(parents=True)
+
         ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/80")
         Worktree.objects.create(
             overlay="test",
             ticket=ticket,
             repo_path="backend",
             branch="ac-backend-80-ticket",
-            extra={"worktree_path": str(workspace / "ac-backend-80-ticket" / "backend")},
+            extra={"worktree_path": str(wt_dir)},
         )
 
+        mock_result = MagicMock(stdout="")
         with (
             patch("teatree.core.management.commands.workspace._workspace_dir", return_value=workspace),
-            patch("teatree.core.management.commands.workspace.subprocess.run") as mock_run,
+            patch("teatree.core.management.commands.workspace.subprocess.run", return_value=mock_result) as mock_run,
         ):
             cleaned = cast("list[str]", call_command("workspace", "clean-all"))
 
         assert any("Cleaned: backend" in c for c in cleaned)
         assert Worktree.objects.count() == 0
 
-        # Should have called git worktree remove and git branch -D
-        assert mock_run.call_count == 2
-        worktree_remove_call = mock_run.call_args_list[0]
-        branch_delete_call = mock_run.call_args_list[1]
+        # Should have called git status, git worktree remove, and git branch -D
+        assert mock_run.call_count == 3
+        worktree_remove_call = mock_run.call_args_list[1]
+        branch_delete_call = mock_run.call_args_list[2]
         assert "worktree" in worktree_remove_call[0][0]
         assert "remove" in worktree_remove_call[0][0]
         assert "branch" in branch_delete_call[0][0]
@@ -440,6 +455,74 @@ class TestWorkspaceCleanAll:
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
+    def test_warns_on_uncommitted_changes(self, tmp_path: "pytest.TempPathFactory") -> None:
+        """clean-all warns when a worktree directory has uncommitted changes."""
+        workspace = tmp_path / "workspace"
+        workspace.mkdir(parents=True)
+
+        wt_dir = workspace / "ac-backend-85-ticket" / "backend"
+        wt_dir.mkdir(parents=True)
+
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/85")
+        Worktree.objects.create(
+            overlay="test",
+            ticket=ticket,
+            repo_path="backend",
+            branch="ac-backend-85-ticket",
+            extra={"worktree_path": str(wt_dir)},
+        )
+
+        mock_result = MagicMock(stdout=" M dirty_file.py\n")
+        stderr = StringIO()
+        with (
+            patch("teatree.core.management.commands.workspace._workspace_dir", return_value=workspace),
+            patch("teatree.core.management.commands.workspace.subprocess.run", return_value=mock_result),
+        ):
+            call_command("workspace", "clean-all", stderr=OutputWrapper(stderr))
+
+        assert "WARNING" in stderr.getvalue()
+        assert "uncommitted changes" in stderr.getvalue()
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_runs_overlay_cleanup_steps(self, tmp_path: "pytest.TempPathFactory") -> None:
+        """clean-all invokes overlay.get_cleanup_steps() for each worktree."""
+        workspace = tmp_path / "workspace"
+        workspace.mkdir(parents=True)
+
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/86")
+        Worktree.objects.create(
+            overlay="test",
+            ticket=ticket,
+            repo_path="backend",
+            branch="ac-backend-86-ticket",
+            extra={},
+        )
+
+        cleanup_called = []
+
+        class CleanupOverlay(FullOverlay):
+            def get_cleanup_steps(self, worktree: Worktree) -> list[ProvisionStep]:
+                return [ProvisionStep(name="docker-down", callable=lambda: cleanup_called.append(True))]
+
+        cleanup_overlay = CleanupOverlay()
+        result: dict[str, OverlayBase] = {"test": cleanup_overlay}
+
+        def _fake_discover() -> dict[str, OverlayBase]:
+            return result
+
+        _fake_discover.cache_clear = lambda: None
+
+        with (
+            patch("teatree.core.management.commands.workspace._workspace_dir", return_value=workspace),
+            patch("teatree.core.overlay_loader._discover_overlays", new=_fake_discover),
+        ):
+            call_command("workspace", "clean-all")
+
+        assert cleanup_called == [True]
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
     def test_removes_empty_ticket_directories(self, tmp_path: "pytest.TempPathFactory") -> None:
         """clean-all removes empty directories in workspace after cleaning worktrees."""
         workspace = tmp_path / "workspace"
@@ -476,7 +559,9 @@ class TestWorkspaceFinalize:
         def fake_run(cmd, **kwargs):
             result = MagicMock(returncode=0, stdout="abc123\n", stderr="")
             if isinstance(cmd, list):
-                if "rev-list" in cmd and "--count" in cmd:
+                if "status" in cmd and "--porcelain" in cmd:
+                    result.stdout = ""
+                elif "rev-list" in cmd and "--count" in cmd:
                     result.stdout = "3\n"
                 elif "log" in cmd and "--oneline" in cmd:
                     result.stdout = "abc fix: first change\ndef feat: second\n"
@@ -506,7 +591,10 @@ class TestWorkspaceFinalize:
             return ""
 
         def fake_run(cmd, **kwargs):
-            return MagicMock(returncode=0, stdout="1\n", stderr="")
+            result = MagicMock(returncode=0, stdout="", stderr="")
+            if isinstance(cmd, list) and "rev-list" in cmd:
+                result.stdout = "1\n"
+            return result
 
         with (
             patch("teatree.core.management.commands.workspace.default_branch", return_value="main"),
@@ -516,6 +604,28 @@ class TestWorkspaceFinalize:
             result = cast("str", call_command("workspace", "finalize", str(ticket.pk)))
 
         assert "failed" in result.lower()
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_skips_worktree_with_uncommitted_changes(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/95")
+        Worktree.objects.create(overlay="test", ticket=ticket, repo_path="/tmp/dirty", branch="feature-95")
+
+        def fake_run(cmd, **kwargs):
+            result = MagicMock(returncode=0, stdout="", stderr="")
+            if isinstance(cmd, list) and "status" in cmd:
+                result.stdout = " M src/file.py\n"
+            return result
+
+        with (
+            patch("teatree.core.management.commands.workspace.default_branch", return_value="main"),
+            patch("teatree.core.management.commands.workspace.git_run"),
+            patch("teatree.core.management.commands.workspace.subprocess.run", side_effect=fake_run),
+        ):
+            result = cast("str", call_command("workspace", "finalize", str(ticket.pk)))
+
+        assert "SKIPPED" in result
+        assert "uncommitted changes" in result
 
 
 # ── DB commands ─────────────────────────────────────────────────────
