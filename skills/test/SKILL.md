@@ -68,6 +68,8 @@ E2E and integration tests ideally live in the project repo they test (e.g., the 
 
 **Test depth (Non-Negotiable):** Don't just verify "page loads with 200". Read the source code to understand what the feature does, then test specific behaviors: form fields, filters, CRUD operations, access control, edge cases.
 
+**Component placement (Non-Negotiable):** Before writing E2E tests for a UI component, check the **routing module** to find which page/route renders it. Components may only appear at specific wizard steps or behind navigation — not on the page you'd naively navigate to. Grep for the component selector in `.html` templates to find its host, then check the routing module for the URL path.
+
 **Test integrity (Non-Negotiable):** Never weaken, simplify, or remove test cases to work around failures. If a test fails, fix the underlying issue (environment, selectors, timing) — don't dilute the test. Tests must cover both happy paths and edge cases.
 
 **Evidence posting:** After a green run, embed key screenshots into the test plan comment on the MR (see § "Post Testing Evidence on MR"). Evidence should read as manual testing — never mention automation tools.
