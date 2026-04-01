@@ -288,6 +288,10 @@ When an E2E test fails or the environment misbehaves, **re-read this skill's ver
 | "Evidence posted" | HTTP 200 from API + note/comment ID in output |
 | "MR updated" | Confirmed via API response, not just "script ran" |
 
+### Browser Console First (Non-Negotiable)
+
+When an E2E test shows missing UI elements (empty form, blank section, component not rendering), **capture browser console errors before investigating component code.** Add `page.on('console', ...)` and `page.on('pageerror', ...)` listeners to your test. Runtime errors like `"Undefined form configuration!"` or `"Cannot read property of undefined"` reveal the root cause in seconds — investigating Angular change detection, signal timing, or template rendering without this context wastes hours.
+
 ### Screenshot Sanity Check (Non-Negotiable)
 
 Before claiming E2E success or posting screenshots as evidence, **visually inspect every screenshot** for environment issues. Reject and fix if any of these are present:
