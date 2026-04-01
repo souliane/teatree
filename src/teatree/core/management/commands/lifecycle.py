@@ -305,13 +305,17 @@ class Command(TyperCommand):
             checks["overlay"] = {"status": "error", "detail": str(exc)}
 
         # 2. CLI responds (t3 --help)
-        result = subprocess.run(
-            ["uv", "run", "t3", "--help"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        checks["cli"] = {"status": "ok" if result.returncode == 0 else "error"}
+        try:
+            result = subprocess.run(
+                ["uv", "run", "t3", "--help"],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+            checks["cli"] = {"status": "ok" if result.returncode == 0 else "error"}
+        except subprocess.TimeoutExpired:
+            checks["cli"] = {"status": "error", "detail": "t3 --help timed out"}
 
         # 3. DB accessible
         try:
