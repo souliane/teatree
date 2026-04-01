@@ -49,6 +49,7 @@ class SkillMetadata(TypedDict, total=False):
     skill_path: str
     remote_patterns: list[str]
     trigger_index: list[dict[str, object]]
+    teatree_version: str
 
 
 class ToolCommand(TypedDict, total=False):
