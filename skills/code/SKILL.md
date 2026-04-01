@@ -137,6 +137,8 @@ When launching parallel agents to write code (especially tests), include these r
 
 Sub-agents don't inherit project context. Include the specific linting rules and pre-commit expectations in their prompts.
 
+**After a sub-agent completes, re-read any files it modified before continuing.** Your file state cache is stale — the sub-agent's changes are invisible until you re-read. Writing to a stale-cached file will overwrite the sub-agent's work.
+
 ### Systematic Debugging Protocol
 
 If implementation breaks, switch to `t3:debug` and follow `systematic-debugging` before attempting speculative fixes.
