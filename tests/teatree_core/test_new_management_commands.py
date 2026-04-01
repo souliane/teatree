@@ -2432,10 +2432,11 @@ class TestLifecycleStatus(TestCase):
     pass  # No status tests in the original file — placeholder for future tests
 
 
+@patch("subprocess.run", return_value=MagicMock(returncode=0))
 class TestLifecycleSmokeTest(TestCase):
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_returns_health_checks(self) -> None:
+    def test_returns_health_checks(self, mock_subprocess: MagicMock) -> None:
         result = cast(
             "dict[str, dict[str, object]]",
             call_command("lifecycle", "smoke-test"),
@@ -2445,7 +2446,7 @@ class TestLifecycleSmokeTest(TestCase):
         assert "cli" in result
 
     @override_settings(**SETTINGS)
-    def test_overlay_error(self) -> None:
+    def test_overlay_error(self, mock_subprocess: MagicMock) -> None:
         """smoke-test reports overlay error when loading fails."""
 
         def _broken_discover() -> dict:
@@ -2464,7 +2465,7 @@ class TestLifecycleSmokeTest(TestCase):
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_hooks_skipped_when_no_config(self) -> None:
+    def test_hooks_skipped_when_no_config(self, mock_subprocess: MagicMock) -> None:
         """smoke-test reports hooks skipped when no .pre-commit-config.yaml."""
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -2485,7 +2486,7 @@ class TestLifecycleSmokeTest(TestCase):
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_hooks_ok_with_yaml(self) -> None:
+    def test_hooks_ok_with_yaml(self, mock_subprocess: MagicMock) -> None:
         """smoke-test reports hooks OK when yaml parses successfully."""
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -2510,15 +2511,12 @@ class TestLifecycleSmokeTest(TestCase):
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_db_error(self) -> None:
+    def test_db_error(self, mock_subprocess: MagicMock) -> None:
         """smoke-test reports DB error when query fails."""
-        with (
-            patch.object(
-                Worktree,
-                "objects",
-                MagicMock(count=MagicMock(side_effect=RuntimeError("DB down"))),
-            ),
-            patch("subprocess.run", return_value=MagicMock(returncode=0)),
+        with patch.object(
+            Worktree,
+            "objects",
+            MagicMock(count=MagicMock(side_effect=RuntimeError("DB down"))),
         ):
             result = cast(
                 "dict[str, dict[str, object]]",
