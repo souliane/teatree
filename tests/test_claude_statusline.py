@@ -31,6 +31,7 @@ def test_statusline_renders_and_persists_five_hour_usage(tmp_path: Path) -> None
     env = os.environ.copy()
     env["T3_WORKSPACE_DIR"] = str(workspace)
     env["TEATREE_CLAUDE_STATUSLINE_STATE_DIR"] = str(state_dir)
+    env["TZ"] = "UTC"
 
     result = subprocess.run(
         ["./hooks/scripts/statusline-command.sh"],
@@ -45,6 +46,7 @@ def test_statusline_renders_and_persists_five_hour_usage(tmp_path: Path) -> None
     assert result.returncode == 0, result.stderr
     output = _strip_ansi(result.stdout)
     assert "96%" in output
+    assert "17:00" in output, f"Reset time not displayed in output: {output}"
 
     latest = json.loads((state_dir / "latest-telemetry.json").read_text(encoding="utf-8"))
     assert latest["session_id"] == "session-123"
@@ -53,3 +55,45 @@ def test_statusline_renders_and_persists_five_hour_usage(tmp_path: Path) -> None
 
     session_file = state_dir / "session-123.telemetry.json"
     assert session_file.is_file()
+
+
+def test_statusline_handles_epoch_resets_at(tmp_path: Path) -> None:
+    """resets_at may be a Unix epoch (seconds) instead of ISO 8601."""
+    workspace = tmp_path / "workspace"
+    cwd = workspace / "teatree"
+    cwd.mkdir(parents=True)
+    state_dir = tmp_path / "state"
+
+    # 1775062800 = 2026-04-01T17:00:00 UTC
+    payload = {
+        "workspace": {"current_dir": str(cwd)},
+        "model": {"display_name": "Claude Opus"},
+        "session_id": "session-epoch",
+        "context_window": {"used_percentage": 10},
+        "rate_limits": {
+            "five_hour": {
+                "used_percentage": 30,
+                "resets_at": "1775062800",
+            }
+        },
+    }
+
+    env = os.environ.copy()
+    env["T3_WORKSPACE_DIR"] = str(workspace)
+    env["TEATREE_CLAUDE_STATUSLINE_STATE_DIR"] = str(state_dir)
+    env["TZ"] = "UTC"
+
+    result = subprocess.run(
+        ["./hooks/scripts/statusline-command.sh"],
+        input=json.dumps(payload),
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+        cwd=Path(__file__).resolve().parent.parent,
+    )
+
+    assert result.returncode == 0, result.stderr
+    output = _strip_ansi(result.stdout)
+    assert "30%" in output
+    assert "17:00" in output, f"Reset time not displayed for epoch input: {output}"

@@ -499,10 +499,20 @@ fi
 rate_reset=""
 if [ -n "$five_hour_resets_at" ]; then
     tz_name="${T3_TIMEZONE:-$(date +%Z)}"
-    if [[ "$OSTYPE" == "darwin"* ]]; then
-        reset_time=$(date -j -f "%Y-%m-%dT%H:%M:%S" "${five_hour_resets_at%%.*}" "+%H:%M" 2>/dev/null)
+    if [[ "$five_hour_resets_at" =~ ^[0-9]+$ ]]; then
+        # Unix epoch (seconds)
+        if [[ "$OSTYPE" == "darwin"* ]]; then
+            reset_time=$(date -j -r "$five_hour_resets_at" "+%H:%M" 2>/dev/null)
+        else
+            reset_time=$(date -d "@$five_hour_resets_at" "+%H:%M" 2>/dev/null)
+        fi
     else
-        reset_time=$(date -d "$five_hour_resets_at" "+%H:%M" 2>/dev/null)
+        # ISO 8601
+        if [[ "$OSTYPE" == "darwin"* ]]; then
+            reset_time=$(date -j -f "%Y-%m-%dT%H:%M:%S" "${five_hour_resets_at%%[.Z]*}" "+%H:%M" 2>/dev/null)
+        else
+            reset_time=$(date -d "$five_hour_resets_at" "+%H:%M" 2>/dev/null)
+        fi
     fi
     [ -n "$reset_time" ] && rate_reset=" until ${reset_time} ${tz_name}"
 fi
