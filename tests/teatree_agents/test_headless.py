@@ -3,8 +3,9 @@ from subprocess import CompletedProcess
 from unittest.mock import patch
 
 import pytest
-from django.test import TestCase, override_settings
+from django.test import TestCase
 
+import teatree.agents.headless as headless_mod
 from teatree.agents.headless import (
     _get_resume_session_id,
     _parse_cli_envelope,
@@ -17,21 +18,21 @@ from teatree.agents.headless import (
 )
 from teatree.core.models import Session, Task, TaskAttempt, Ticket
 
-_WHICH = "teatree.agents.headless.shutil.which"
-_SUBPROCESS_RUN = "teatree.agents.headless.subprocess.run"
-
 
 class TestRunHeadless(TestCase):
     @classmethod
     def setUpTestData(cls) -> None:
         cls.ticket = Ticket.objects.create()
 
-    @override_settings(TEATREE_HEADLESS_RUNTIME="claude-code")
     def test_captures_structured_result(self) -> None:
         result_json = json.dumps({"summary": "Done", "tests_passed": 5, "tests_failed": 0})
         with (
-            patch(_WHICH, return_value="/usr/bin/claude-code"),
-            patch(_SUBPROCESS_RUN, return_value=CompletedProcess([], 0, f"Progress...\n{result_json}\n", "")),
+            patch.object(headless_mod.shutil, "which", return_value="/usr/bin/claude-code"),
+            patch.object(
+                headless_mod.subprocess,
+                "run",
+                return_value=CompletedProcess([], 0, f"Progress...\n{result_json}\n", ""),
+            ),
         ):
             session = Session.objects.create(ticket=self.ticket, agent_id="agent-1")
             task = Task.objects.create(ticket=self.ticket, session=session)
@@ -44,11 +45,10 @@ class TestRunHeadless(TestCase):
         assert attempt.result["tests_passed"] == 5
         assert task.status == Task.Status.COMPLETED
 
-    @override_settings(TEATREE_HEADLESS_RUNTIME="claude-code")
     def test_records_failure(self) -> None:
         with (
-            patch(_WHICH, return_value="/usr/bin/claude-code"),
-            patch(_SUBPROCESS_RUN, return_value=CompletedProcess([], 1, "", "segfault")),
+            patch.object(headless_mod.shutil, "which", return_value="/usr/bin/claude-code"),
+            patch.object(headless_mod.subprocess, "run", return_value=CompletedProcess([], 1, "", "segfault")),
         ):
             session = Session.objects.create(ticket=self.ticket)
             task = Task.objects.create(ticket=self.ticket, session=session)
@@ -60,9 +60,8 @@ class TestRunHeadless(TestCase):
         assert attempt.error == "segfault"
         assert task.status == Task.Status.FAILED
 
-    @override_settings(TEATREE_HEADLESS_RUNTIME="missing-agent")
     def test_fails_when_binary_not_found(self) -> None:
-        with patch(_WHICH, return_value=None):
+        with patch.object(headless_mod.shutil, "which", return_value=None):
             session = Session.objects.create(ticket=self.ticket)
             task = Task.objects.create(ticket=self.ticket, session=session)
 
@@ -73,11 +72,14 @@ class TestRunHeadless(TestCase):
         assert "not installed" in attempt.error
         assert task.status == Task.Status.FAILED
 
-    @override_settings(TEATREE_HEADLESS_RUNTIME="claude-code")
     def test_fails_when_no_json_in_successful_exit(self) -> None:
         with (
-            patch(_WHICH, return_value="/usr/bin/claude-code"),
-            patch(_SUBPROCESS_RUN, return_value=CompletedProcess([], 0, "no structured output\n", "")),
+            patch.object(headless_mod.shutil, "which", return_value="/usr/bin/claude-code"),
+            patch.object(
+                headless_mod.subprocess,
+                "run",
+                return_value=CompletedProcess([], 0, "no structured output\n", ""),
+            ),
         ):
             session = Session.objects.create(ticket=self.ticket)
             task = Task.objects.create(ticket=self.ticket, session=session)
@@ -89,12 +91,11 @@ class TestRunHeadless(TestCase):
         assert "no structured output" in attempt.result["summary"]
         assert task.status == Task.Status.COMPLETED
 
-    @override_settings(TEATREE_HEADLESS_RUNTIME="claude-code")
     def test_fails_when_result_violates_schema(self) -> None:
         bad_json = json.dumps({"summary": "OK", "rogue_field": True})
         with (
-            patch(_WHICH, return_value="/usr/bin/claude-code"),
-            patch(_SUBPROCESS_RUN, return_value=CompletedProcess([], 0, f"{bad_json}\n", "")),
+            patch.object(headless_mod.shutil, "which", return_value="/usr/bin/claude-code"),
+            patch.object(headless_mod.subprocess, "run", return_value=CompletedProcess([], 0, f"{bad_json}\n", "")),
         ):
             session = Session.objects.create(ticket=self.ticket)
             task = Task.objects.create(ticket=self.ticket, session=session)
@@ -106,7 +107,6 @@ class TestRunHeadless(TestCase):
         assert "rogue_field" in attempt.error
         assert task.status == Task.Status.FAILED
 
-    @override_settings(TEATREE_HEADLESS_RUNTIME="claude-code")
     def test_routes_to_interactive_when_needs_user_input(self) -> None:
         result_json = json.dumps(
             {
@@ -116,8 +116,8 @@ class TestRunHeadless(TestCase):
             }
         )
         with (
-            patch(_WHICH, return_value="/usr/bin/claude-code"),
-            patch(_SUBPROCESS_RUN, return_value=CompletedProcess([], 0, f"{result_json}\n", "")),
+            patch.object(headless_mod.shutil, "which", return_value="/usr/bin/claude-code"),
+            patch.object(headless_mod.subprocess, "run", return_value=CompletedProcess([], 0, f"{result_json}\n", "")),
         ):
             session = Session.objects.create(ticket=self.ticket, agent_id="agent-1")
             task = Task.objects.create(
@@ -139,15 +139,14 @@ class TestRunHeadless(TestCase):
         assert followup is not None
         assert "Need design decision" in followup.execution_reason
 
-    @override_settings(TEATREE_HEADLESS_RUNTIME="claude-code", TEATREE_SDK_USE_CLI=True)
     def test_parses_cli_envelope_with_session_id(self) -> None:
         """When the CLI returns a JSON envelope, session_id is extracted and stored."""
         result_json = json.dumps({"summary": "Work done"})
         cli_envelope = json.dumps({"session_id": "sess-abc-123", "result": result_json})
 
         with (
-            patch(_WHICH, return_value="/usr/bin/claude"),
-            patch(_SUBPROCESS_RUN, return_value=CompletedProcess([], 0, cli_envelope, "")),
+            patch.object(headless_mod.shutil, "which", return_value="/usr/bin/claude"),
+            patch.object(headless_mod.subprocess, "run", return_value=CompletedProcess([], 0, cli_envelope, "")),
         ):
             session = Session.objects.create(ticket=self.ticket)
             task = Task.objects.create(ticket=self.ticket, session=session)
@@ -246,7 +245,6 @@ class TestGetResumeSessionId(TestCase):
 
 
 class TestRunHeadlessResumesParentSession(TestCase):
-    @override_settings(TEATREE_HEADLESS_RUNTIME="claude-code", TEATREE_SDK_USE_CLI=True)
     def test_resumes_parent_session(self) -> None:
         """When a parent task has a session_id, run_headless passes --resume to the CLI."""
         captured_commands: list[list[str]] = []
@@ -257,8 +255,8 @@ class TestRunHeadlessResumesParentSession(TestCase):
             return CompletedProcess([], 0, f"{result_json}\n", "")
 
         with (
-            patch(_WHICH, return_value="/usr/bin/claude"),
-            patch(_SUBPROCESS_RUN, side_effect=fake_run),
+            patch.object(headless_mod.shutil, "which", return_value="/usr/bin/claude"),
+            patch.object(headless_mod.subprocess, "run", side_effect=fake_run),
         ):
             ticket = Ticket.objects.create()
             parent_session = Session.objects.create(ticket=ticket, agent_id=FAKE_SESSION_UUID)

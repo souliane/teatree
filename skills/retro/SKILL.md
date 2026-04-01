@@ -10,6 +10,10 @@ triggers:
   end_of_session: true
   keywords:
     - '\b(retro|retrospective|lessons learned|improve skills?|auto.?improve|what went wrong)\b'
+search_hints:
+  - retro
+  - retrospective
+  - lessons learned
 metadata:
   version: 0.0.1
   subagent_safe: false

@@ -40,10 +40,12 @@ def write_env_worktree(worktree: Worktree) -> str | None:
         f"FRONT_END_URL=http://localhost:{resolved_ports['fe']}",
         f"COMPOSE_PROJECT_NAME={worktree.repo_path}-wt{ticket.ticket_number}",
     ]
-    # Append overlay env extras, but don't duplicate keys already set by core
-    core_keys = {line.split("=", 1)[0] for line in lines}
+    # Merge overlay env extras — overlay values override core defaults
+    core_index = {line.split("=", 1)[0]: i for i, line in enumerate(lines)}
     for key, value in get_overlay().get_env_extra(worktree).items():
-        if key not in core_keys:
+        if key in core_index:
+            lines[core_index[key]] = f"{key}={value}"
+        else:
             lines.append(f"{key}={value}")
 
     envfile.write_text("\n".join(lines) + "\n", encoding="utf-8")

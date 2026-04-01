@@ -72,6 +72,37 @@ class TestParseTriggers:
         assert result["keywords"] == [r"\bfoo\b"]
         assert result["urls"] == ["https://example.com"]
 
+    def test_search_hints_standalone(self):
+        md = "---\nname: test\nsearch_hints:\n  - debug\n  - troubleshoot\n---\n"
+        result = parse_triggers(md)
+        assert result is not None
+        assert result["search_hints"] == ["debug", "troubleshoot"]
+
+    def test_search_hints_with_triggers(self):
+        md = (
+            "---\nname: test\ntriggers:\n  priority: 10\n  keywords:\n"
+            "    - '\\bcommit\\b'\nsearch_hints:\n  - ship\n  - deliver\n"
+            "metadata:\n  version: 1\n---\n"
+        )
+        result = parse_triggers(md)
+        assert result is not None
+        assert result["keywords"] == [r"\bcommit\b"]
+        assert result["search_hints"] == ["ship", "deliver"]
+        assert result["priority"] == 10
+
+    def test_search_hints_before_triggers(self):
+        md = "---\nname: test\nsearch_hints:\n  - fix\n  - error\ntriggers:\n  keywords:\n    - '\\bdebug\\b'\n---\n"
+        result = parse_triggers(md)
+        assert result is not None
+        assert result["search_hints"] == ["fix", "error"]
+        assert result["keywords"] == [r"\bdebug\b"]
+
+    def test_no_search_hints_returns_empty_list(self):
+        md = "---\nname: test\ntriggers:\n  keywords:\n    - '\\btest\\b'\n---\n"
+        result = parse_triggers(md)
+        assert result is not None
+        assert result["search_hints"] == []
+
 
 class TestParseTriggerLine:
     def test_priority(self):

@@ -133,6 +133,15 @@ See your [issue tracker platform reference](../../t3:platforms/references/) § "
 - **Fix:** Re-apply the edits after the rebuild.
 - **Prevention:** Never use `uv run` to verify edits in an editable install. Use `python -c "..."` directly, or verify file content with `grep`/`read`. Commit changes before running `uv run` if possible.
 
+## Test Timeout in `sync_followup` or Other Overlay-Config-Dependent Tests
+
+- **Symptom:** `test_creates_tickets_from_mrs` (or similar) hangs for 10s then fails with `pytest-timeout`. Stack trace shows `read_pass` → `subprocess.run(["pass", ...])` blocking.
+- **Cause:** `OverlayConfig._register_secret()` used `setattr(type(self), method_name, _reader)` — setting the `get_*_token()` method on the **class**, not the instance. When any earlier test loaded a real overlay (e.g., `t3-teatree` with `GITHUB_TOKEN_PASS_KEY`), the dynamic method leaked to ALL `OverlayConfig` subclasses for the rest of the test session. The autouse `read_pass` mock couldn't intercept it because: (a) the closure captured the `read_pass` function reference at import time, bypassing `patch.object`, and (b) the method lived on the class, not re-created per test.
+- **Fix (applied):** Two changes in `overlay.py`:
+  1. `setattr(self, ...)` instead of `setattr(type(self), ...)` — instance-level binding prevents cross-test pollution.
+  2. `from teatree.utils.secrets import read_pass` moved inside the closure body (late binding) — so `patch.object(_secrets_mod, "read_pass", ...)` works.
+- **Prevention:** Never use `setattr(type(self), ...)` for per-instance dynamic methods — it mutates the class and leaks across all instances. Use `setattr(self, ...)` for instance-scoped behavior.
+
 ## direnv Not Loading `.envrc`
 
 - **Cause:** direnv not hooked into the shell or `.envrc` not allowed.

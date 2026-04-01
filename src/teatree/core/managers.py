@@ -12,12 +12,16 @@ class _OverlayFilterMixin:
 
 class TicketQuerySet(_OverlayFilterMixin, models.QuerySet):
     def in_flight(self, overlay: str | None = None) -> models.QuerySet:
-        return self.for_overlay(overlay).exclude(state="delivered").order_by("pk")
+        from teatree.core.models.ticket import Ticket  # noqa: PLC0415
+
+        return self.for_overlay(overlay).exclude(state=Ticket.State.DELIVERED).order_by("pk")
 
 
 class WorktreeQuerySet(_OverlayFilterMixin, models.QuerySet):
     def active(self, overlay: str | None = None) -> models.QuerySet:
-        return self.for_overlay(overlay).exclude(state="created").order_by("pk")
+        from teatree.core.models.worktree import Worktree  # noqa: PLC0415
+
+        return self.for_overlay(overlay).exclude(state=Worktree.State.CREATED).order_by("pk")
 
 
 class SessionQuerySet(_OverlayFilterMixin, models.QuerySet):
@@ -27,17 +31,24 @@ class SessionQuerySet(_OverlayFilterMixin, models.QuerySet):
 
 class TaskQuerySet(models.QuerySet):
     def claimable_for_headless(self, overlay: str | None = None) -> models.QuerySet:
-        return self._claimable_for_target("headless", overlay)
+        from teatree.core.models.task import Task  # noqa: PLC0415
+
+        return self._claimable_for_target(Task.ExecutionTarget.HEADLESS, overlay)
 
     def claimable_for_interactive(self, overlay: str | None = None) -> models.QuerySet:
-        return self._claimable_for_target("interactive", overlay)
+        from teatree.core.models.task import Task  # noqa: PLC0415
+
+        return self._claimable_for_target(Task.ExecutionTarget.INTERACTIVE, overlay)
 
     def _claimable_for_target(self, target: str, overlay: str | None = None) -> models.QuerySet:
-        # String values mirror Task.ExecutionTarget / Task.Status enum values.
-        # Direct import from models.py is not possible (circular).
+        from teatree.core.models.task import Task  # noqa: PLC0415
+
         now = timezone.now()
         qs = (
-            self.filter(execution_target=target, status__in=["pending", "claimed"])
+            self.filter(
+                execution_target=target,
+                status__in=[Task.Status.PENDING, Task.Status.CLAIMED],
+            )
             .filter(Q(lease_expires_at__isnull=True) | Q(lease_expires_at__lte=now))
             .order_by("pk")
         )

@@ -9,6 +9,12 @@ triggers:
   keywords:
     - '\b(worktree|setup|servers?|start session|refresh db|cleanup|clean up|reset passwords?|restore.*(db|database))\b'
     - '\b(database|start (the )?backend|start (the )?frontend)\b'
+search_hints:
+  - setup
+  - worktree
+  - create worktree
+  - servers
+  - cleanup
 metadata:
   version: 0.0.1
   subagent_safe: false

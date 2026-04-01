@@ -10,6 +10,10 @@ triggers:
   priority: 40
   keywords:
     - '\b(review|check the code|check my code|feedback|quality check|code review)\b'
+search_hints:
+  - review
+  - feedback
+  - check the code
 metadata:
   version: 0.0.1
   subagent_safe: false

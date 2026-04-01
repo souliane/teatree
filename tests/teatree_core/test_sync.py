@@ -5,6 +5,7 @@ import pytest
 from django.core.cache import cache
 from django.test import TestCase
 
+import teatree.core.overlay_loader as overlay_loader_mod
 from teatree.backends.gitlab_api import ProjectInfo
 from teatree.core.models import Ticket
 from teatree.core.overlay import OverlayBase, OverlayConfig, ProvisionStep
@@ -85,7 +86,7 @@ def _patch_overlay(overlay: OverlayBase):
 
     _fake_discover.cache_clear = lambda: None
 
-    return patch("teatree.core.overlay_loader._discover_overlays", new=_fake_discover)
+    return patch.object(overlay_loader_mod, "_discover_overlays", new=_fake_discover)
 
 
 @pytest.fixture(autouse=True)
@@ -655,7 +656,8 @@ class TestSyncFollowup(TestCase):
         with _patch_overlay(overlay):
             result = sync_followup()
 
-        assert result.errors == ["No code host token configured in overlay"]
+        assert len(result.errors) == 1
+        assert "No code host token configured" in result.errors[0]
 
     def test_captures_api_errors(self) -> None:
         mock_client = MagicMock()

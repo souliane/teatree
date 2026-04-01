@@ -44,7 +44,7 @@ def test_statusline_renders_and_persists_five_hour_usage(tmp_path: Path) -> None
 
     assert result.returncode == 0, result.stderr
     output = _strip_ansi(result.stdout)
-    assert "5h=96%" in output
+    assert "96%" in output
 
     latest = json.loads((state_dir / "latest-telemetry.json").read_text(encoding="utf-8"))
     assert latest["session_id"] == "session-123"

@@ -207,7 +207,7 @@ class TestSessionHistoryView(TestCase):
 
         assert response.status_code == 404
 
-    def test_returns_404_when_transcript_empty(self) -> None:
+    def test_returns_200_with_empty_messages_when_transcript_missing(self) -> None:
         self._monkeypatch.setattr("teatree.core.views.history._CLAUDE_PROJECTS_DIR", self._tmp_path)
 
         response = Client().get(
@@ -215,4 +215,5 @@ class TestSessionHistoryView(TestCase):
             {"cwd": "/workspace/project"},
         )
 
-        assert response.status_code == 404
+        assert response.status_code == 200
+        assert response.context["messages"] == []

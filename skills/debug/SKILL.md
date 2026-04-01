@@ -10,6 +10,16 @@ triggers:
     - '\b(broken|error|not working|crash|blank page|can.t connect|debug|fix this|won.t start|500|traceback|exception)\b'
   urls:
     - 'https?://[^\s]*sentry\.[^\s]+/issues/'
+search_hints:
+  - debug
+  - fix
+  - error
+  - broken
+  - crash
+  - not working
+  - bug
+  - trace
+  - troubleshoot
 metadata:
   version: 0.0.1
   subagent_safe: false

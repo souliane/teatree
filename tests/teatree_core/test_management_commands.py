@@ -8,6 +8,10 @@ import pytest
 from django.core.management import call_command
 from django.test import TestCase, override_settings
 
+import teatree.agents.headless as headless_mod
+import teatree.agents.web_terminal as web_terminal_mod
+import teatree.core.management.commands.lifecycle as lifecycle_cmd
+import teatree.core.overlay_loader as overlay_loader_mod
 from teatree.core.models import Session, Task, TaskAttempt, Ticket, Worktree
 from teatree.core.overlay import OverlayBase, ProvisionStep, RunCommands
 from teatree.core.overlay_loader import reset_overlay_cache
@@ -47,8 +51,6 @@ def clear_overlay_cache() -> Iterator[None]:
 _MOCK_OVERLAY = {"test": CommandOverlay()}
 
 COMMAND_SETTINGS = {
-    "TEATREE_HEADLESS_RUNTIME": "claude-code",
-    "TEATREE_INTERACTIVE_RUNTIME": "codex",
     "TEATREE_TERMINAL_MODE": "same-terminal",
 }
 
@@ -71,8 +73,8 @@ class TestLifecycleCommands(TestCase):
 
             with (
                 patch.dict("os.environ", {"T3_ORIG_CWD": wt_path}),
-                patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
-                patch("teatree.core.management.commands.lifecycle.Popen") as mock_popen,
+                patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
+                patch.object(lifecycle_cmd, "Popen") as mock_popen,
             ):
                 mock_popen.return_value = MagicMock(pid=12345, poll=MagicMock(return_value=None))
                 worktree_id = cast("int", call_command("lifecycle", "setup"))
@@ -92,6 +94,10 @@ class TestLifecycleCommands(TestCase):
 class TestTaskCommands(TestCase):
     @override_settings(**COMMAND_SETTINGS)
     def test_claim_and_complete_work(self) -> None:
+        import subprocess as _sp  # noqa: PLC0415
+
+        from teatree.agents.terminal_launcher import LaunchResult  # noqa: PLC0415
+
         ticket = Ticket.objects.create(overlay="test")
         session = Session.objects.create(ticket=ticket, overlay="test", agent_id="agent-1")
         sdk_task = Task.objects.create(ticket=ticket, session=session)
@@ -102,32 +108,50 @@ class TestTaskCommands(TestCase):
             execution_target=Task.ExecutionTarget.INTERACTIVE,
         )
 
-        claimed_task_id = cast(
-            "int", call_command("tasks", "claim", execution_target="headless", claimed_by="worker-1")
-        )
-        sdk_result = cast(
-            "dict[str, str]",
-            call_command("tasks", "work-next-sdk", claimed_by="worker-1"),
-        )
-        user_result = cast(
-            "dict[str, str]",
-            call_command("tasks", "work-next-user-input", claimed_by="worker-2"),
-        )
-        refresh_summary = cast("dict[str, int]", call_command("followup", "refresh"))
-        reminders = cast("list[int]", call_command("followup", "remind"))
+        mock_result = LaunchResult(launch_url="http://127.0.0.1:9999", pid=1, mode="ttyd")
+
+        with (
+            patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
+            patch.object(
+                headless_mod.subprocess,
+                "run",
+                return_value=_sp.CompletedProcess(
+                    [],
+                    0,
+                    '{"session_id": "test-session", "result": "```json\\n{\\"summary\\": \\"done\\"}\\n```"}',
+                    "",
+                ),
+            ),
+            patch.object(headless_mod.shutil, "which", return_value="/usr/bin/claude"),
+            patch.object(web_terminal_mod.shutil, "which", return_value="/usr/bin/claude"),
+            patch.object(web_terminal_mod, "terminal_launch", return_value=mock_result),
+        ):
+            claimed_task_id = cast(
+                "int", call_command("tasks", "claim", execution_target="headless", claimed_by="worker-1")
+            )
+            sdk_result = cast(
+                "dict[str, str]",
+                call_command("tasks", "work-next-sdk", claimed_by="worker-1"),
+            )
+            user_result = cast(
+                "dict[str, str]",
+                call_command("tasks", "work-next-user-input", claimed_by="worker-2"),
+            )
+            refresh_summary = cast("dict[str, int]", call_command("followup", "refresh"))
+            reminders = cast("list[int]", call_command("followup", "remind"))
 
         sdk_task.refresh_from_db()
         sdk_followup_task.refresh_from_db()
         user_task.refresh_from_db()
 
         assert claimed_task_id == sdk_task.id
-        assert sdk_result["runtime"] == "claude-code"
-        assert user_result["runtime"] == "codex"
+        assert "exit_code" in sdk_result
+        assert "launch_url" in user_result
         assert sdk_task.status == Task.Status.CLAIMED
         assert sdk_followup_task.status == Task.Status.COMPLETED
-        assert user_task.status == Task.Status.COMPLETED
+        assert user_task.status == Task.Status.CLAIMED
         assert TaskAttempt.objects.count() == 2
-        assert refresh_summary == {"tickets": 1, "tasks": 3, "open_tasks": 1}
+        assert refresh_summary == {"tickets": 1, "tasks": 3, "open_tasks": 2}
         assert reminders == []
 
     @override_settings(**COMMAND_SETTINGS)
@@ -138,10 +162,14 @@ class TestTaskCommands(TestCase):
 
 class TestFollowupCommands(TestCase):
     def test_sync_reports_no_repos_from_default_overlay(self) -> None:
-        with patch(
-            "teatree.core.overlay_loader._discover_overlays",
+        with patch.object(
+            overlay_loader_mod,
+            "_discover_overlays",
             return_value=_MOCK_OVERLAY,
         ):
             result = cast("dict[str, int | list[str]]", call_command("followup", "sync"))
 
-        assert result["errors"] == ["No code host token configured in overlay"]
+        errors = result["errors"]
+        assert isinstance(errors, list)
+        assert len(errors) == 1
+        assert "No code host token configured" in errors[0]

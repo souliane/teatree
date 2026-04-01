@@ -49,8 +49,6 @@ class CommandOverlay(OverlayBase):
 COMMAND_OVERLAY = "tests.teatree_core.conftest.CommandOverlay"
 
 COMMAND_SETTINGS = {
-    "TEATREE_HEADLESS_RUNTIME": "claude-code",
-    "TEATREE_INTERACTIVE_RUNTIME": "codex",
     "TEATREE_TERMINAL_MODE": "same-terminal",
 }
 

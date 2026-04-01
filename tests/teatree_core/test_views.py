@@ -4,6 +4,10 @@ import pytest
 from django.test import Client, TestCase, override_settings
 from django.urls import reverse
 
+import teatree.agents.headless as headless_mod
+import teatree.core.overlay_loader as overlay_loader_mod
+import teatree.core.tasks as tasks_mod
+import teatree.core.views.actions as actions_views
 from teatree.core.models import Session, Task, Ticket, Worktree
 from teatree.core.sync import SyncResult
 from teatree.core.views.dashboard import _panel_context
@@ -234,8 +238,9 @@ class TestTaskDetailView(TestCase):
 
 class TestSyncFollowupView(TestCase):
     def test_triggers_sync_and_returns_html(self) -> None:
-        with patch(
-            "teatree.core.views.actions.perform_sync",
+        with patch.object(
+            actions_views,
+            "perform_sync",
             return_value=SyncResult(mrs_found=3, tickets_created=1, tickets_updated=2),
         ):
             response = Client().post(reverse("teatree:dashboard-sync"))
@@ -245,8 +250,9 @@ class TestSyncFollowupView(TestCase):
         assert b"1 new" in response.content
 
     def test_shows_errors(self) -> None:
-        with patch(
-            "teatree.core.views.actions.perform_sync",
+        with patch.object(
+            actions_views,
+            "perform_sync",
             return_value=SyncResult(errors=["No code host token configured in overlay"]),
         ):
             response = Client().post(reverse("teatree:dashboard-sync"))
@@ -384,19 +390,19 @@ class TestCreateTaskView(TestCase):
                 "BACKEND": "django_tasks.backends.immediate.ImmediateBackend",
             },
         },
-        TEATREE_HEADLESS_RUNTIME="claude-code",
     )
     def test_headless_creates_and_enqueues(self) -> None:
         """CreateTaskView with headless target claims and enqueues the task."""
         ticket = Ticket.objects.create(overlay="test", state=Ticket.State.STARTED)
 
         with (
-            patch("teatree.agents.headless.shutil.which", return_value="/usr/bin/claude-code"),
-            patch(
-                "teatree.agents.headless.subprocess.run",
+            patch.object(headless_mod.shutil, "which", return_value="/usr/bin/claude-code"),
+            patch.object(
+                headless_mod.subprocess,
+                "run",
                 return_value=__import__("subprocess").CompletedProcess([], 0, '{"summary": "OK"}', ""),
             ),
-            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
         ):
             response = Client().post(
                 reverse("teatree:ticket-create-task", args=[ticket.pk]),
@@ -477,8 +483,8 @@ class TestCreateTaskView(TestCase):
                 raise RuntimeError(msg)
 
         with (
-            patch("teatree.core.tasks.execute_headless_task", BrokenTask),
-            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch.object(tasks_mod, "execute_headless_task", BrokenTask),
+            patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
         ):
             response = Client().post(
                 reverse("teatree:ticket-create-task", args=[ticket.pk]),

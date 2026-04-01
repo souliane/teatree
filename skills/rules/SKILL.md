@@ -125,6 +125,26 @@ Long sessions lose context to automatic compaction. Proactively manage session l
 - **Re-reading a file you already read earlier** is a sign of context pressure. Consider wrapping up.
 - **When context gets compacted**, critical state must survive — see the user's global agent config § Compact Instructions for what to preserve.
 
+## Commit Before Declaring Done (Non-Negotiable)
+
+When implementation is complete (all files written, tests pass or verified), **commit immediately** in the same response — do not wait for the user to ask. An uncommitted change is not "done"; it is in-progress work at risk of being lost to context compaction, parallel agents, or session timeout.
+
+## Pre-Commit Hook Failures on Unrelated Tests (Non-Negotiable)
+
+When a pre-commit hook runs the full test suite and fails on tests **unrelated to your changes** (pre-existing failures), do not fix them one by one in a loop. After the **second** unrelated failure, stop and tell the user: the hook is failing on pre-existing test issues, recommend `--no-verify` for this commit, and list the failing tests so they can be fixed separately.
+
+## Worktree-First Work (Non-Negotiable)
+
+**All development work MUST happen in a worktree**, never on the main clone. Use `t3 workspace ticket` or the `using-git-worktrees` skill to create one before writing any code.
+
+**Collision detection — check on EVERY file write or git operation:**
+
+1. Before writing to a file, run `git status`. If you see unexpected modifications to files you did not touch, **another agent is working in the same directory**.
+2. **If you are NOT in a worktree:** STOP writing code. Move all your work to a worktree immediately (`t3 workspace ticket` or `EnterWorktree`), then continue there.
+3. **If you ARE in a worktree and see someone else's changes:** STOP ALL WORK IMMEDIATELY. Alert the user with `AskUserQuestion`: *"ALERT: Another agent is modifying files in my worktree at `<path>`. I've stopped all work to avoid conflicts. Please resolve before I continue."* Do NOT attempt to continue, merge, or work around the collision.
+
+**Why:** Parallel agents modifying the same checkout cause silent data loss — commits overwrite each other, stashes destroy in-progress work, and merge conflicts go undetected. This has cost hours of wasted work. Worktrees give each agent an isolated copy. The rules below are secondary defenses.
+
 ## Concurrent Agent Safety (Non-Negotiable)
 
 Assume another agent may be modifying the same repo concurrently. Never `git stash`, `git checkout --`, or `git restore` files you didn't change — this destroys the other agent's in-progress work. Only stage and commit files you explicitly modified.

@@ -10,6 +10,13 @@ triggers:
     - '\b(implement|code it|feature|refactor|rework|restructure|rewrite|redesign)\b'
     - '\b(fix|change|update|modify|adjust|add|remove|delete|write|create|build|move|rename|extract|split|merge|convert|migrate|optimize|improve|replace|swap|introduce|drop|deprecate|wire|hook up|integrate|extend|override|wrap|unwrap|inline|deduplicate|dedup|simplify|generalize|normalize|transform|adapt|port|backport|scaffold|stub|mock|patch|hotfix|tweak|rework|clean) (the|a|an|this|that|my|our|its|some|all|each|every)\b'
     - '^(fix|change|update|modify|adjust|add|remove|delete|write|create|build|move|rename|extract|refactor|replace|introduce|extend|override|simplify|optimize|improve|implement|convert|migrate|integrate|wire|hook|patch|hotfix|tweak|rework|clean up|scaffold|stub|mock|deduplicate|dedup) '
+search_hints:
+  - implement
+  - feature
+  - refactor
+  - coding
+  - build
+  - write code
 metadata:
   version: 0.0.1
   subagent_safe: false
