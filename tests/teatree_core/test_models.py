@@ -552,6 +552,40 @@ class TestTask(TestCase):
         assert list(parent.child_tasks.values_list("pk", flat=True)) == [child.pk]
 
 
+class TestChildTaskSpawning(TestCase):
+    def test_spawn_child_tasks_creates_per_repo_tasks(self) -> None:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket, agent_id="worker")
+        parent = Task.objects.create(ticket=ticket, session=session, phase="coding")
+
+        children = parent.spawn_child_tasks(["backend", "frontend", "translations"])
+
+        assert len(children) == 3
+        assert all(c.parent_task_id == parent.pk for c in children)
+        assert all(c.phase == "coding" for c in children)
+        assert [c.execution_reason for c in children] == [
+            "Repo: backend",
+            "Repo: frontend",
+            "Repo: translations",
+        ]
+
+    def test_all_children_done(self) -> None:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        parent = Task.objects.create(ticket=ticket, session=session)
+        children = parent.spawn_child_tasks(["a", "b"])
+
+        assert not parent.all_children_done()
+
+        children[0].status = Task.Status.COMPLETED
+        children[0].save(update_fields=["status"])
+        assert not parent.all_children_done()
+
+        children[1].status = Task.Status.FAILED
+        children[1].save(update_fields=["status"])
+        assert parent.all_children_done()
+
+
 class TestBuildTaskDetail(TestCase):
     def test_returns_full_lineage(self) -> None:
         from teatree.core.selectors import build_task_detail  # noqa: PLC0415
