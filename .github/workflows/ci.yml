@@ -8,15 +8,15 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
       - run: uv sync
-      - uses: j178/prek-action@v1
+      - uses: j178/prek-action@v2
         env:
           SKIP: pytest,safety
 
@@ -26,9 +26,9 @@ jobs:
       matrix:
         python-version: ["3.13", "3.14"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/build-push-action@v6
+      - uses: actions/checkout@v6
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/build-push-action@v7
         with:
           context: .
           file: dev/Dockerfile.test
