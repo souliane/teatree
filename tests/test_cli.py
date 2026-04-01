@@ -13,7 +13,6 @@ from typer.testing import CliRunner
 import teatree.agents.skill_bundle as skill_bundle_mod
 import teatree.claude_sessions as claude_sessions_mod
 import teatree.cli as cli_mod
-import teatree.cli.review as cli_review_mod
 import teatree.config as config_mod
 import teatree.core.overlay_loader as overlay_loader_mod
 import teatree.core.resolve as resolve_mod

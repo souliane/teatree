@@ -143,7 +143,7 @@ When a pre-commit hook runs the full test suite and fails on tests **unrelated t
 
 1. Before writing to a file, run `git status`. If you see unexpected modifications to files you did not touch, **another agent is working in the same directory**.
 2. **If you are NOT in a worktree:** STOP writing code. Move all your work to a worktree immediately (`t3 workspace ticket` or `EnterWorktree`), then continue there.
-3. **If you ARE in a worktree and see someone else's changes:** STOP ALL WORK IMMEDIATELY. Alert the user with `AskUserQuestion`: *"ALERT: Another agent is modifying files in my worktree at `<path>`. I've stopped all work to avoid conflicts. Please resolve before I continue."* Do NOT attempt to continue, merge, or work around the collision.
+3. **If you ARE in a worktree and see someone else's changes:** STOP ALL WORK IMMEDIATELY. Alert the user: *"ALERT: Another agent is modifying files in my worktree at `<path>`. I've stopped all work to avoid conflicts. Please resolve before I continue."* Do NOT attempt to continue, merge, or work around the collision.
 
 **Why:** Parallel agents modifying the same checkout cause silent data loss — commits overwrite each other, stashes destroy in-progress work, and merge conflicts go undetected. This has cost hours of wasted work. Worktrees give each agent an isolated copy. The rules below are secondary defenses.
 
