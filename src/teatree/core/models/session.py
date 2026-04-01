@@ -15,6 +15,8 @@ class Session(models.Model):
     started_at = models.DateTimeField(auto_now_add=True)
     ended_at = models.DateTimeField(null=True, blank=True)
     agent_id = models.CharField(max_length=255, blank=True)
+    repos_modified = models.JSONField(default=list, blank=True)
+    repos_tested = models.JSONField(default=list, blank=True)
 
     objects = SessionManager()
 
@@ -46,6 +48,23 @@ class Session(models.Model):
             joined = ", ".join(missing)
             msg = f"{target_phase} requires: {joined}"
             raise QualityGateError(msg)
+
+    def mark_repo_modified(self, repo: str) -> None:
+        repos = cast("list[str]", self.repos_modified or [])
+        if repo not in repos:
+            self.repos_modified = [*repos, repo]
+            self.save(update_fields=["repos_modified"])
+
+    def mark_repo_tested(self, repo: str) -> None:
+        repos = cast("list[str]", self.repos_tested or [])
+        if repo not in repos:
+            self.repos_tested = [*repos, repo]
+            self.save(update_fields=["repos_tested"])
+
+    def untested_repos(self) -> list[str]:
+        modified = set(cast("list[str]", self.repos_modified or []))
+        tested = set(cast("list[str]", self.repos_tested or []))
+        return sorted(modified - tested)
 
     def begin_manual_handoff(self) -> None:
         self.ended_at = timezone.now()
