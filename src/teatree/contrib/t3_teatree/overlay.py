@@ -36,6 +36,13 @@ class TeatreeMetadata(OverlayMetadata):
             "remote_patterns": ["souliane/teatree"],
         }
 
+    @override
+    def get_e2e_config(self) -> dict[str, str]:
+        return {
+            "test_dir": "e2e/",
+            "settings_module": "e2e.settings",
+        }
+
 
 class TeatreeOverlay(OverlayBase):
     """Overlay for developing teatree itself."""

@@ -173,16 +173,20 @@ class Command(TyperCommand):
     def e2e_local(self, test_path: str = "", *, headed: bool = False) -> str:
         """Run E2E tests locally with Playwright."""
         worktree = resolve_worktree()
+        overlay = get_overlay()
         wt_path = (worktree.extra or {}).get("worktree_path", ".") if worktree else "."
+
+        e2e_config = overlay.metadata.get_e2e_config()
+        settings_module = e2e_config.get("settings_module", "e2e.settings")
 
         cmd = ["uv", "run", "--with", "playwright", "pytest"]
         if test_path:
             cmd.append(test_path)
         else:
-            cmd.append("e2e/")
+            cmd.append(e2e_config.get("test_dir", "e2e/"))
         cmd.extend(["-x", "-v"])
 
-        env = {**os.environ}
+        env = {**os.environ, "DJANGO_SETTINGS_MODULE": settings_module}
         if not headed:
             env["CI"] = "1"
 

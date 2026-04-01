@@ -1,3 +1,17 @@
 name: souliane/teatree
 version: 0.0.1
 description: Multi-repo worktree lifecycle manager for AI-assisted development
+homepage: https://github.com/souliane/teatree
+license: MIT
+keywords:
+  - development
+  - lifecycle
+  - worktree
+  - multi-repo
+  - tdd
+  - django
+agents:
+  - claude-code
+install:
+  pip: teatree
+  post_install: uv run t3 config write-skill-cache

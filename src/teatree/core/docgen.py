@@ -1,4 +1,5 @@
 import json
+import subprocess  # noqa: S404
 from collections.abc import Callable
 from inspect import signature
 from pathlib import Path
@@ -260,3 +261,63 @@ def write_generated_doc(
 def _signature_without_self(method: Callable[..., object]) -> str:
     raw_signature = str(signature(method))
     return raw_signature.replace("(self, ", "(").replace("(self)", "()")
+
+
+# ── CLI reference generation ──────────────────────────────────────────
+
+
+def _run_help(command: list[str]) -> str:
+    result = subprocess.run(  # noqa: S603
+        [*command, "--help"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.stdout.strip()
+
+
+def _extract_subcommands(help_text: str) -> list[str]:
+    """Parse command names from a Typer/Click ``--help`` output."""
+    in_commands = False
+    commands: list[str] = []
+    for line in help_text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("╭─ Commands") or stripped == "Commands:":
+            in_commands = True
+            continue
+        if in_commands and stripped.startswith("╰"):
+            break
+        if in_commands and stripped and not stripped.startswith("│"):
+            # Plain click format: "  name   Description"
+            parts = stripped.split(None, 1)
+            if parts:
+                commands.append(parts[0])
+        elif in_commands and stripped.startswith("│"):
+            content = stripped.strip("│").strip()
+            if content:
+                parts = content.split(None, 1)
+                if parts and not parts[0].startswith("-"):
+                    commands.append(parts[0])
+    return commands
+
+
+def build_cli_reference(base_command: list[str] | None = None) -> str:
+    """Recursively introspect the CLI and return a markdown reference."""
+    base = base_command or ["uv", "run", "t3"]
+    lines = ["# CLI Reference", "", f"Generated from `{' '.join(base)} --help`.", ""]
+    _walk_commands(base, lines, depth=0)
+    return "\n".join(lines) + "\n"
+
+
+def _walk_commands(command: list[str], lines: list[str], depth: int) -> None:
+    help_text = _run_help(command)
+    if not help_text:
+        return
+
+    name = " ".join(command)
+    heading = "#" * min(depth + 2, 6)
+    lines.extend((f"{heading} `{name}`", "", "```", help_text, "```", ""))
+
+    subcommands = _extract_subcommands(help_text)
+    for sub in subcommands:
+        _walk_commands([*command, sub], lines, depth + 1)

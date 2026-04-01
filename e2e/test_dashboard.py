@@ -221,9 +221,63 @@ def test_unknown_panel_404(e2e_server: str, page: Page) -> None:
 
 
 def test_htmx_panels_present(e2e_server: str, page: Page) -> None:
-    """All 5 hx-get panel attributes are present in the DOM."""
+    """All panel hx-get attributes are present in the DOM."""
     page.goto(e2e_server)
 
-    for panel in ["summary", "tickets", "headless_queue", "queue", "sessions"]:
+    for panel in [
+        "summary",
+        "tickets",
+        "headless_queue",
+        "queue",
+        "sessions",
+        "action_required",
+        "automation",
+        "worktrees",
+        "review_comments",
+        "activity",
+    ]:
         locator = page.locator(f"[hx-get*='{panel}']")
         expect(locator.first).to_be_visible()
+
+
+# ── Additional panels ──────────────────────────────────────────────
+
+
+def test_action_required_panel(e2e_server: str, page: Page) -> None:
+    """Action Required section heading is visible."""
+    page.goto(e2e_server)
+    expect(page.locator("h2", has_text="Action Required")).to_be_visible()
+
+
+def test_worktrees_panel(e2e_server: str, page: Page) -> None:
+    """Worktrees section heading is visible."""
+    page.goto(e2e_server)
+    expect(page.locator("h2", has_text="Worktrees")).to_be_visible()
+
+
+def test_review_comments_panel(e2e_server: str, page: Page) -> None:
+    """Review Comments section heading is visible."""
+    page.goto(e2e_server)
+    expect(page.locator("h2", has_text="Review Comments")).to_be_visible()
+
+
+def test_activity_panel(e2e_server: str, page: Page) -> None:
+    """Recent Activity section heading is visible."""
+    page.goto(e2e_server)
+    expect(page.locator("h2", has_text="Recent Activity")).to_be_visible()
+
+
+def test_automation_panel(e2e_server: str, page: Page) -> None:
+    """Automation Summary section heading is visible."""
+    page.goto(e2e_server)
+    expect(page.locator("h2", has_text="Automation")).to_be_visible()
+
+
+def test_task_detail_modal(e2e_server: str, page: Page) -> None:
+    """Clicking a task row opens the detail modal."""
+    page.goto(e2e_server)
+    task_link = page.locator("[hx-get*='/tasks/'][hx-get*='/detail/']").first
+    if task_link.is_visible():
+        task_link.click()
+        page.wait_for_timeout(500)
+        expect(page.locator("#task-modal-body")).to_be_visible()

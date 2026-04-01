@@ -20,7 +20,6 @@ from teatree.core.selectors import (
     build_task_detail,
     build_worktree_rows,
 )
-from teatree.core.views._startup import perform_sync
 
 _PANEL_TEMPLATES = {
     "summary": "teatree/partials/dashboard_summary.html",
@@ -43,15 +42,12 @@ def _extract_overlay(request: HttpRequest) -> str | None:
 
 
 class DashboardView(View):
-    _synced = False
-
     def get(self, request: HttpRequest) -> HttpResponse:
-        if not DashboardView._synced:  # pragma: no branch
-            perform_sync()
-            DashboardView._synced = True
         overlay = _extract_overlay(request)
         overlays = sorted(get_all_overlays())
         logo_url = get_overlay().config.get_dashboard_logo() or static("teatree/img/teatree-logo.svg")
+        from teatree.agents.services import get_terminal_mode  # noqa: PLC0415
+
         return TemplateResponse(
             request,
             "teatree/dashboard.html",
@@ -60,6 +56,8 @@ class DashboardView(View):
                 "logo_url": logo_url,
                 "overlays": overlays,
                 "selected_overlay": overlay or "",
+                "terminal_mode": get_terminal_mode(),
+                "sync_pending": True,
             },
         )
 
