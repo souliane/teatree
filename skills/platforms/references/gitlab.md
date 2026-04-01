@@ -8,6 +8,19 @@
 
 `glab` — the GitLab CLI. Install via `brew install glab` or see [glab docs](https://gitlab.com/gitlab-org/cli).
 
+## User Identity
+
+### Get Authenticated User ID
+
+When using the REST API directly (not `glab`), get the current user's ID from `/api/v4/user`:
+
+```bash
+TOKEN=$(glab config get token --host gitlab.com)
+MY_ID=$(curl -s -H "PRIVATE-TOKEN: $TOKEN" "https://gitlab.com/api/v4/user" | jq '.id')
+```
+
+**Never use `members/all?search=<name>`** to look up your own user ID — search results are not ordered by relevance and may return a different user with a similar name.
+
 ## Authentication
 
 ### Token Extraction
