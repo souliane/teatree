@@ -3,7 +3,7 @@ from unittest.mock import MagicMock, patch
 from typer.testing import CliRunner
 
 from teatree.cli import app
-from teatree.cli_review import ReviewService
+from teatree.cli.review import ReviewService
 
 runner = CliRunner()
 
@@ -18,7 +18,7 @@ class TestGetGitlabToken:
 
     def test_from_glab(self, monkeypatch):
         monkeypatch.delenv("GITLAB_TOKEN", raising=False)
-        with patch("teatree.cli_review.subprocess.run") as mock_run:
+        with patch("teatree.cli.review.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(
                 stderr="  Token: glpat-ABCDEF\n  User: test\n",
                 returncode=0,
@@ -27,14 +27,14 @@ class TestGetGitlabToken:
 
     def test_returns_empty_when_not_found(self, monkeypatch):
         monkeypatch.delenv("GITLAB_TOKEN", raising=False)
-        with patch("teatree.cli_review.subprocess.run") as mock_run:
+        with patch("teatree.cli.review.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(stderr="", returncode=1)
             assert ReviewService.get_gitlab_token() == ""
 
     def test_returns_empty_when_glab_no_token_line(self, monkeypatch):
         """_get_gitlab_token returns empty when glab output has no Token line."""
         monkeypatch.delenv("GITLAB_TOKEN", raising=False)
-        with patch("teatree.cli_review.subprocess.run") as mock_run:
+        with patch("teatree.cli.review.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(
                 stderr="  User: test\n  Scopes: api\n",
                 returncode=0,
@@ -52,7 +52,7 @@ class TestReviewService:
         mock_api = MagicMock()
         mock_api.post_json.return_value = {"id": 42, "position": None}
 
-        with patch("teatree.utils.gitlab_api.GitLabAPI", return_value=mock_api):
+        with patch("teatree.backends.gitlab_api.GitLabAPI", return_value=mock_api):
             result = runner.invoke(app, ["review", "post-draft-note", "org/repo", "1", "looks good"])
             assert result.exit_code == 0
             assert "OK draft_note_id=42" in result.output
@@ -73,7 +73,7 @@ class TestReviewService:
             "position": {"line_code": "abc_1_1"},
         }
 
-        with patch("teatree.utils.gitlab_api.GitLabAPI", return_value=mock_api):
+        with patch("teatree.backends.gitlab_api.GitLabAPI", return_value=mock_api):
             result = runner.invoke(
                 app,
                 ["review", "post-draft-note", "org/repo", "1", "fix this", "--file", "src/main.py", "--line", "10"],
@@ -91,7 +91,7 @@ class TestReviewService:
         }
         mock_api.post_json.return_value = {"id": 100, "position": {}}
 
-        with patch("teatree.utils.gitlab_api.GitLabAPI", return_value=mock_api):
+        with patch("teatree.backends.gitlab_api.GitLabAPI", return_value=mock_api):
             result = runner.invoke(
                 app,
                 ["review", "post-draft-note", "org/repo", "1", "fix this", "--file", "a.py", "--line", "5"],
@@ -105,7 +105,7 @@ class TestReviewService:
         mock_api = MagicMock()
         mock_api.get_json.return_value = None
 
-        with patch("teatree.utils.gitlab_api.GitLabAPI", return_value=mock_api):
+        with patch("teatree.backends.gitlab_api.GitLabAPI", return_value=mock_api):
             result = runner.invoke(
                 app,
                 ["review", "post-draft-note", "org/repo", "1", "note", "--file", "a.py", "--line", "1"],
@@ -119,7 +119,7 @@ class TestReviewService:
         mock_api = MagicMock()
         mock_api.get_json.return_value = {"diff_refs": None}
 
-        with patch("teatree.utils.gitlab_api.GitLabAPI", return_value=mock_api):
+        with patch("teatree.backends.gitlab_api.GitLabAPI", return_value=mock_api):
             result = runner.invoke(
                 app,
                 ["review", "post-draft-note", "org/repo", "1", "note", "--file", "a.py", "--line", "1"],
@@ -133,7 +133,7 @@ class TestReviewService:
         mock_api = MagicMock()
         mock_api.post_json.return_value = None
 
-        with patch("teatree.utils.gitlab_api.GitLabAPI", return_value=mock_api):
+        with patch("teatree.backends.gitlab_api.GitLabAPI", return_value=mock_api):
             result = runner.invoke(app, ["review", "post-draft-note", "org/repo", "1", "note"])
             assert result.exit_code == 1
             assert "Failed to post" in result.output
@@ -162,7 +162,7 @@ class TestReviewService:
             {"id": 2, "note": "second note", "position": None},
             "not a dict",
         ]
-        with patch("teatree.utils.gitlab_api.GitLabAPI", return_value=mock_api):
+        with patch("teatree.backends.gitlab_api.GitLabAPI", return_value=mock_api):
             result = runner.invoke(app, ["review", "list-draft-notes", "org/repo", "1"])
             assert result.exit_code == 0
             assert "a.py:10" in result.output
@@ -171,7 +171,7 @@ class TestReviewService:
         monkeypatch.setenv("GITLAB_TOKEN", "test-token")
         mock_api = MagicMock()
         mock_api.get_json.return_value = "not a list"
-        with patch("teatree.utils.gitlab_api.GitLabAPI", return_value=mock_api):
+        with patch("teatree.backends.gitlab_api.GitLabAPI", return_value=mock_api):
             result = runner.invoke(app, ["review", "list-draft-notes", "org/repo", "1"])
             assert result.exit_code == 0
             assert "No draft notes" in result.output
@@ -184,7 +184,7 @@ class TestRequireToken:
     def test_post_draft_note_rejected(self, monkeypatch):
         monkeypatch.delenv("GITLAB_TOKEN", raising=False)
         monkeypatch.delenv("GITLAB_TOKEN", raising=False)
-        with patch("teatree.cli_review.subprocess.run") as mock_run:
+        with patch("teatree.cli.review.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(stderr="", returncode=1)
             result = runner.invoke(app, ["review", "post-draft-note", "org/repo", "1", "note"])
             assert result.exit_code == 1
@@ -193,7 +193,7 @@ class TestRequireToken:
     def test_delete_draft_note_rejected(self, monkeypatch):
         monkeypatch.delenv("GITLAB_TOKEN", raising=False)
         monkeypatch.delenv("GITLAB_TOKEN", raising=False)
-        with patch("teatree.cli_review.subprocess.run") as mock_run:
+        with patch("teatree.cli.review.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(stderr="", returncode=1)
             result = runner.invoke(app, ["review", "delete-draft-note", "org/repo", "1", "42"])
             assert result.exit_code == 1
@@ -202,7 +202,7 @@ class TestRequireToken:
     def test_list_draft_notes_rejected(self, monkeypatch):
         monkeypatch.delenv("GITLAB_TOKEN", raising=False)
         monkeypatch.delenv("GITLAB_TOKEN", raising=False)
-        with patch("teatree.cli_review.subprocess.run") as mock_run:
+        with patch("teatree.cli.review.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(stderr="", returncode=1)
             result = runner.invoke(app, ["review", "list-draft-notes", "org/repo", "1"])
             assert result.exit_code == 1

@@ -1,6 +1,5 @@
 import logging
 import shutil
-import subprocess  # noqa: S404
 
 from django.http import Http404, HttpRequest, HttpResponse, JsonResponse
 from django.utils.decorators import method_decorator
@@ -12,15 +11,6 @@ from teatree.core.overlay import SkillMetadata
 from teatree.core.overlay_loader import get_overlay
 
 logger = logging.getLogger(__name__)
-
-
-def _find_free_port() -> int:
-    import socket  # noqa: PLC0415
-
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        s.bind(("", 0))
-        return s.getsockname()[1]
 
 
 @method_decorator(csrf_exempt, name="dispatch")
@@ -66,71 +56,54 @@ class LaunchAgentView(View):
             {
                 "status": "queued",
                 "django_task_id": str(django_task_result.id),
-            }
+            },
         )
 
 
 @method_decorator(csrf_exempt, name="dispatch")
 class LaunchTerminalView(View):
-    def post(self, _request: HttpRequest) -> HttpResponse:
+    def post(self, request: HttpRequest) -> HttpResponse:
         import os  # noqa: PLC0415
 
-        ttyd_bin = shutil.which("ttyd")
-        if ttyd_bin is None:
-            return JsonResponse({"error": "ttyd not installed (brew install ttyd)"}, status=500)
+        from teatree.agents.services import get_terminal_mode  # noqa: PLC0415
+        from teatree.agents.terminal_launcher import launch as terminal_launch  # noqa: PLC0415
 
+        mode = request.POST.get("terminal_mode") or get_terminal_mode()
         shell = os.environ.get("SHELL", "/bin/zsh")
-        port = _find_free_port()
+        result = terminal_launch([shell, "-l"], mode=mode)
 
-        subprocess.Popen(  # noqa: S603
-            [ttyd_bin, "--writable", "--port", str(port), "--once", shell, "-l"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-        )
-
-        launch_url = f"http://127.0.0.1:{port}"
-        logger.info("Launched terminal ttyd (port=%s, shell=%s)", port, shell)
-        return JsonResponse({"launch_url": launch_url})
+        if result.launch_url:
+            return JsonResponse({"launch_url": result.launch_url})
+        return JsonResponse({"launched": True, "mode": result.mode})
 
 
 def launch_interactive_for_task(task: "Task") -> str:
-    """Launch a ttyd+claude session for a task and return the launch URL."""
+    """Launch an interactive agent session for a task and return the launch URL."""
+    from teatree.agents.services import get_terminal_mode  # noqa: PLC0415
+    from teatree.agents.terminal_launcher import launch as terminal_launch  # noqa: PLC0415
+
     claude_bin = shutil.which("claude")
-    ttyd_bin = shutil.which("ttyd")
-    if not claude_bin or not ttyd_bin:
+    if not claude_bin:
         return ""
 
-    port = _find_free_port()
-    subprocess.Popen(  # noqa: S603
-        [ttyd_bin, "--writable", "--port", str(port), "--once", claude_bin],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
-    )
-
-    launch_url = f"http://127.0.0.1:{port}"
-    logger.info("Launched interactive session for task %s (port=%s)", task.pk, port)
-    return launch_url
+    result = terminal_launch([claude_bin], mode=get_terminal_mode())
+    logger.info("Launched interactive session for task %s (mode=%s)", task.pk, result.mode)
+    return result.launch_url
 
 
 @method_decorator(csrf_exempt, name="dispatch")
 class LaunchInteractiveAgentView(View):
-    def post(self, _request: HttpRequest) -> HttpResponse:
+    def post(self, request: HttpRequest) -> HttpResponse:
+        from teatree.agents.services import get_terminal_mode  # noqa: PLC0415
+        from teatree.agents.terminal_launcher import launch as terminal_launch  # noqa: PLC0415
+
         claude_bin = shutil.which("claude")
         if claude_bin is None:
             return JsonResponse({"error": "claude CLI not found on PATH"}, status=500)
 
-        ttyd_bin = shutil.which("ttyd")
-        if ttyd_bin is None:
-            return JsonResponse({"error": "ttyd not installed (brew install ttyd)"}, status=500)
+        mode = request.POST.get("terminal_mode") or get_terminal_mode()
+        result = terminal_launch([claude_bin], mode=mode)
 
-        port = _find_free_port()
-
-        subprocess.Popen(  # noqa: S603
-            [ttyd_bin, "--writable", "--port", str(port), "--once", claude_bin],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-        )
-
-        launch_url = f"http://127.0.0.1:{port}"
-        logger.info("Launched interactive agent ttyd (port=%s)", port)
-        return JsonResponse({"launch_url": launch_url})
+        if result.launch_url:
+            return JsonResponse({"launch_url": result.launch_url})
+        return JsonResponse({"launched": True, "mode": result.mode})

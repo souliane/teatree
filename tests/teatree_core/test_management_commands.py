@@ -144,4 +144,4 @@ class TestFollowupCommands(TestCase):
         ):
             result = cast("dict[str, int | list[str]]", call_command("followup", "sync"))
 
-        assert result["errors"] == ["GitLab token is not configured in overlay"]
+        assert result["errors"] == ["No code host token configured in overlay"]

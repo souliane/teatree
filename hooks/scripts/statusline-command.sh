@@ -495,13 +495,24 @@ else
     printf "ctx=${DIM}%s%%${RESET} | " "$ctx_pct"
 fi
 
-# Five-hour Claude usage
+# Five-hour Claude usage — human-readable with reset time in local timezone
+rate_reset=""
+if [ -n "$five_hour_resets_at" ]; then
+    tz_name="${T3_TIMEZONE:-$(date +%Z)}"
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        reset_time=$(date -j -f "%Y-%m-%dT%H:%M:%S" "${five_hour_resets_at%%.*}" "+%H:%M" 2>/dev/null)
+    else
+        reset_time=$(date -d "$five_hour_resets_at" "+%H:%M" 2>/dev/null)
+    fi
+    [ -n "$reset_time" ] && rate_reset=" until ${reset_time} ${tz_name}"
+fi
+
 if (( five_hour_pct >= 95 )); then
-    printf "5h=${RED}%s%%${RESET} | " "$five_hour_pct"
+    printf "${RED}%s%%${RESET}%s | " "$five_hour_pct" "$rate_reset"
 elif (( five_hour_pct >= 80 )); then
-    printf "5h=${YELLOW}%s%%${RESET} | " "$five_hour_pct"
+    printf "${YELLOW}%s%%${RESET}%s | " "$five_hour_pct" "$rate_reset"
 else
-    printf "5h=${DIM}%s%%${RESET} | " "$five_hour_pct"
+    printf "${DIM}%s%%${RESET}%s | " "$five_hour_pct" "$rate_reset"
 fi
 
 # CWD with ticket context when inside a worktree/ticket directory

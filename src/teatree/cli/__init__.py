@@ -13,12 +13,12 @@ from pathlib import Path
 
 import typer
 
-from teatree.cli_ci import ci_app
-from teatree.cli_doctor import DoctorService, IntrospectionHelpers, doctor_app
-from teatree.cli_overlay import OverlayAppBuilder, managepy
-from teatree.cli_plugin import plugin_app
-from teatree.cli_review import review_app
-from teatree.cli_tools import tool_app
+from teatree.cli.ci import ci_app
+from teatree.cli.doctor import DoctorService, IntrospectionHelpers, doctor_app
+from teatree.cli.overlay import OverlayAppBuilder, managepy
+from teatree.cli.plugin import plugin_app
+from teatree.cli.review import review_app
+from teatree.cli.tools import tool_app
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +59,9 @@ def startoverlay(
     *,
     overlay_app: str = typer.Option("t3_overlay", "--overlay-app", help="Name of the overlay Django app"),
     project_package: str | None = typer.Option(
-        None, "--project-package", help="Project package name (default: derived from project name)"
+        None,
+        "--project-package",
+        help="Project package name (default: derived from project name)",
     ),
 ) -> None:
     """Create a new TeaTree overlay package."""
@@ -142,14 +144,14 @@ def _launch_claude(
             (
                 "Load only these skills before starting work:",
                 *(f"  - /{skill}" for skill in skills),
-            )
+            ),
         )
     if ask_user_which_skill:
         context_lines.extend(
             (
                 "TeaTree could not infer the lifecycle skill for this session.",
                 "Before doing any work, ask the user which lifecycle skill to load.",
-            )
+            ),
         )
     context_lines.extend(("", "Run `uv run t3 --help` to see available commands.", "Run `uv run pytest` to run tests."))
     if task:
@@ -159,7 +161,7 @@ def _launch_claude(
     cmd = [claude_bin, "--append-system-prompt", context]
 
     if os.environ.get("T3_CONTRIBUTE", "").lower() == "true":
-        teatree_root = Path(__file__).resolve().parents[2]
+        teatree_root = Path(__file__).resolve().parents[3]
         cmd.extend(["--plugin-dir", str(teatree_root)])
 
     if task:
@@ -192,7 +194,7 @@ def agent(
             (
                 f"Active overlay: {active.name} ({active.overlay_class or '(cwd)'})",
                 f"Overlay source: {project_root}",
-            )
+            ),
         )
     else:
         lines.append("No overlay active — working on teatree itself.")
@@ -260,7 +262,7 @@ def sessions(
             project_filter=project,
             all_projects=all_projects,
             limit=limit,
-        )
+        ),
     )
 
     if not results:

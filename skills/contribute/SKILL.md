@@ -1,6 +1,6 @@
 ---
 name: contribute
-description: Push retro improvements to your fork and optionally open upstream issues. Use when user says "contribute", "push improvements", "push skills", "t3-contribute", or after t3-retro creates a local commit.
+description: Push retro improvements to your fork and optionally open upstream issues. Use when user says "contribute", "push improvements", "push skills", or after retro creates a local commit.
 compatibility: macOS/Linux, git, gh CLI (for upstream issues).
 requires:
   - retro

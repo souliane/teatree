@@ -1,107 +1,102 @@
-# Extension Points
+# Extension Points — OverlayBase API
 
-> **Current system:** Project overlays subclass `OverlayBase` (see `teatree.core.overlay`) and override methods like `get_repos()`, `get_provision_steps()`, `get_env_extra()`, `get_run_commands()`. The `wt_*` names below are the **conceptual extension point names** used in skill documentation — they map to `OverlayBase` methods, not to a function registry.
+Project-specific behavior lives in overlay packages. Each overlay subclasses `OverlayBase` and uses composition:
 
-Project-specific behavior lives in the overlay package. The active overlay class subclasses `OverlayBase`, and runtime code calls overlay methods directly.
+- `overlay.config` — `OverlayConfig` instance (credentials, URLs, labels, settings)
+- `overlay.metadata` — `OverlayMetadata` instance (CI, MR, skills, tool commands)
 
-Priority: **default** (no-op) < **framework** (Django) < **project** (project-specific).
+## Architecture
 
-```mermaid
-graph TB
-  subgraph "Extension Point Resolution"
-    direction TB
-    call["overlay.run_backend()"] --> resolve["Resolve via MRO"]
-    resolve --> project["Project Layer<br/>(your overlay)<br/>Priority: highest"]
-    resolve --> framework["Framework Layer<br/>(e.g., Django plugin)<br/>Priority: middle"]
-    resolve --> default["Default Layer<br/>(teatree core)<br/>Priority: lowest"]
-  end
-
-  project -.->|"if registered"| result["Use project handler"]
-  framework -.->|"if no project"| result2["Use framework handler"]
-  default -.->|"fallback"| result3["Use default (usually no-op)"]
-
-  style project fill:#c8e6c9
-  style framework fill:#bbdefb
-  style default fill:#f5f5f5
+```
+OverlayBase
+  ├── config: OverlayConfig      (settings_module + ~/.teatree.toml overrides)
+  │     ├── get_gitlab_token()    (dynamic from *_PASS_KEY convention)
+  │     ├── get_github_token()
+  │     ├── github_owner          (class-level constant)
+  │     └── ...
+  ├── metadata: OverlayMetadata
+  │     ├── get_skill_metadata()
+  │     ├── get_ci_project_path()
+  │     └── ...
+  └── instance methods            (worktree-scoped hooks)
+        ├── get_repos()
+        ├── get_provision_steps()
+        └── ...
 ```
 
-**Prefix convention (intentional):** Most extension points use the `wt_` prefix (worktree-scoped). This includes delivery operations (`wt_create_mr`, `wt_monitor_pipeline`, `wt_send_review_request`) that conceptually operate beyond a single worktree — but they always run *from within* a worktree context and use its branch/env. The `ticket_*` and `followup_*` prefixes are reserved for operations that span multiple worktrees or operate at the workspace level.
+## OverlayConfig Methods (credentials & settings)
 
-| Point | Default | Django Plugin | Override in overlay for... |
-|---|---|---|---|
-| `wt_symlinks` | Replicate symlinks from main repo + share `.venv`, `node_modules`, `.python-version`, `.data` | — | Additional project-specific symlinks |
-| `wt_env_extra` | No-op | `DJANGO_SETTINGS_MODULE`, `POSTGRES_DB` | Project-specific env vars |
-| `wt_services` | `docker compose up -d` from main repo | — | Different service selection |
-| `wt_db_import` | Return False (no default) | — | Project-specific dump discovery + restore |
-| `wt_post_db` | No-op | `migrate` + `createsuperuser` | Custom post-restore steps |
-| `wt_detect_variant` | Read `$WT_VARIANT` or `.env.worktree` | — | Project-specific variant detection |
-| `wt_run_backend` | Print "not configured" | `manage.py runserver` + Docker up | Custom backend startup |
-| `wt_run_frontend` | Print "not configured" | — | Custom frontend startup |
-| `wt_build_frontend` | Print "not configured" | — | Custom frontend build |
-| `wt_run_tests` | Print "not configured" | `pytest` or `manage.py test` | Custom test runner |
-| `wt_create_mr` | Print "not configured" | — | MR/PR creation (GitLab, GitHub, etc.) |
-| `wt_monitor_pipeline` | Print "not configured" | — | CI pipeline polling (GitLab CI, GitHub Actions, etc.) |
-| `wt_send_review_request` | Print "not configured" | — | Review notification (Slack, Teams, email, etc.) |
-| `wt_fetch_failed_tests` | Print "not configured" | — | Failed test extraction from CI |
-| `wt_restore_ci_db` | Print "not configured" | — | Restore DB from a CI-produced dump |
-| `wt_reset_passwords` | Print "not configured" | — | Reset all user passwords to a known dev value |
-| `wt_trigger_e2e` | Print "not configured" | — | Trigger E2E tests on CI |
-| `wt_quality_check` | Print "not configured" | — | Quality analysis (SonarQube, CodeClimate, etc.) |
-| `wt_fetch_ci_errors` | Print "not configured" | — | Fetch error logs from CI (distinct from failed test IDs) |
-| `wt_start_session` | Print "not configured" | — | Full dev session entrypoint: self-heal (`t3 lifecycle setup` if needed) + start everything |
-| `ticket_check_deployed` | Return False | — | Check if merged code is deployed to target env (CI pipeline, GCP, k8s) |
-| `ticket_update_external_tracker` | No-op (log warning) | — | Update ticket status in Notion/Jira/external tracker |
-| `ticket_get_mrs` | List MRs by branch name via issue tracker CLI | — | Custom MR discovery for multi-repo tickets |
-| `followup_enrich_data` | No-op | — | Add project-specific fields to `followup.json` entries (e.g., Notion status, tenant) |
-| `followup_enrich_dashboard` | No-op | — | Inject extra columns/sections into the HTML dashboard |
+Settings are defined in `overlay_settings.py` and overridden per-user in `~/.teatree.toml`.
 
-## How the Override Chain Works
-
-TeaTree packages the generic runtime. The overlay package owns the project layer:
-
-Inside each Python script:
-
-```python
-from teatree.core.overlay_loader import get_overlay
-
-overlay = get_overlay()
-overlay.post_db_setup(project_dir)  # example project-layer hook
-```
-
-Use `uv run t3 startoverlay ...` to create the overlay package, register the entry point in pyproject.toml, and implement the required hooks on the overlay class.
-
-## Settings Architecture (3 tiers)
-
-### 1. User Settings (`UserSettings` dataclass)
-
-Personal preferences from `[teatree]` in `~/.teatree.toml`. Not overlay-specific.
-
-| Setting | Default | Description |
+| Method / Attribute | Source | Purpose |
 |---|---|---|
-| `workspace_dir` | `~/workspace` | Where main repo clones live |
-| `worktrees_dir` | `~/.teatree/worktrees` | Where ticket worktrees are created |
-| `branch_prefix` | `""` (derived from git user) | Prefix for worktree branch names |
-| `privacy` | `""` | Privacy mode (controls data sent externally) |
-| `check_updates` | `true` | Check for new teatree versions (max once/day) |
-| `timezone` | `""` | Local timezone for statusline display |
+| `get_gitlab_token()` | `GITLAB_TOKEN_PASS_KEY` | GitLab API authentication |
+| `get_gitlab_username()` | `GITLAB_USERNAME` | MR author filtering |
+| `get_github_token()` | `GITHUB_TOKEN_PASS_KEY` | GitHub API authentication |
+| `get_slack_token()` | `SLACK_TOKEN_PASS_KEY` | Slack notifications |
+| `get_review_channel()` | `REVIEW_CHANNEL_ID/NAME` | Review request target |
+| `get_gitlab_url()` | `GITLAB_URL` | GitLab instance base URL |
+| `get_known_variants()` | `KNOWN_VARIANTS` | Multi-tenant variant list |
+| `get_mr_auto_labels()` | `MR_AUTO_LABELS` | Labels applied to new MRs |
+| `get_frontend_repos()` | `FRONTEND_REPOS` | Repos that need E2E tests |
+| `get_dev_env_url()` | `DEV_ENV_URL` | Development environment URL |
+| `get_dashboard_logo()` | `DASHBOARD_LOGO` | Custom dashboard branding |
+| `github_owner` | `GITHUB_OWNER` | GitHub org/user for API calls |
+| `github_project_number` | `GITHUB_PROJECT_NUMBER` | GitHub Projects v2 board number |
+| `require_ticket` | `REQUIRE_TICKET` | Enforce ticket for all changes |
 
-### 2. Overlay Settings (`OverlayConfig` + `overlay_settings.py`)
+## OverlayMetadata Methods (CI, MR, skills)
 
-Per-overlay configuration. Defined in code, overridable per-user via `[overlays.<name>]`.
+| Method | Default | Override for... |
+|---|---|---|
+| `get_followup_repos()` | `[]` | Repos to sync MRs from |
+| `get_skill_metadata()` | `{}` | Skill delegation and phase mapping |
+| `get_ci_project_path()` | `""` | CI project path for pipeline triggers |
+| `get_e2e_config()` | `{}` | E2E test runner configuration |
+| `get_tool_commands()` | `[]` | Overlay-specific CLI tool commands |
 
-- `overlay_settings.py` constants (code defaults)
-- `~/.teatree.toml` `[overlays.<name>]` section (user overrides)
-- `*_PASS_KEY` convention auto-generates `get_*()` methods reading from `pass` store
+## OverlayBase Instance Methods (worktree-scoped hooks)
 
-### 3. Core Settings (Django `settings.py`)
+| Method | Default | Override for... |
+|---|---|---|
+| `get_repos()` | `[]` | Repos to create worktrees for |
+| `get_workspace_repos()` | `get_repos()` | Repos available in the workspace |
+| `get_provision_steps(wt)` | `[]` | Post-setup steps (migrations, fixtures) |
+| `get_env_extra(wt)` | `{}` | Extra env vars for worktree processes |
+| `get_db_import_strategy(wt)` | `None` | DB import method (dslr, dump, none) |
+| `db_import(wt)` | `False` | Execute DB import for the worktree |
+| `get_post_db_steps(wt)` | `[]` | Post-DB-import steps (migrate, seed) |
+| `get_reset_passwords_command(wt)` | `None` | Reset dev passwords |
+| `get_envrc_lines(wt)` | `[]` | Lines for `.envrc` (direnv) |
+| `get_symlinks(wt)` | `[]` | Symlinks from main repo to worktree |
+| `get_services_config(wt)` | `{}` | Docker/background services to start |
+| `get_run_commands(wt)` | `{}` | Dev server commands (backend, frontend) |
+| `get_pre_run_steps(wt, service)` | `[]` | Steps before starting a service |
+| `get_test_command(wt)` | `[]` | Test suite command |
+| `get_verify_endpoints(wt)` | `{}` | Health check URLs for running services |
+| `get_cleanup_steps(wt)` | `[]` | Steps when cleaning up a worktree |
 
-Framework-level config. Not user-facing.
+## Creating an Overlay
 
-| Setting | Description |
-|---|---|
-| `TEATREE_TERMINAL_MODE` | Default terminal mode (ttyd, new-window, new-tab) |
-| `TEATREE_CLAUDE_STATUSLINE_STATE_DIR` | Path for statusline telemetry files |
+```bash
+uv run t3 startoverlay my-project ~/workspace/
+```
 
-## Legacy Note
+This creates a minimal overlay package with:
 
-The old `scripts/lib/registry.py` bridge has been removed. New project integrations use `OverlayBase` subclasses exclusively — do not add `project_hooks.py`, shell bootstraps, or custom `t3` subcommand groups.
+- `overlay.py` — `OverlayBase` subclass
+- `overlay_settings.py` — constants (credentials, repos, labels)
+- `pyproject.toml` — entry point registration
+
+Register the entry point:
+
+```toml
+[project.entry-points."teatree.overlays"]
+t3-my-project = "my_project.overlay:MyProjectOverlay"
+```
+
+## Settings Resolution Order
+
+1. `overlay_settings.py` constants (code defaults)
+2. `~/.teatree.toml` `[overlays.<name>]` section (user overrides)
+3. `*_PASS_KEY` convention auto-generates `get_*()` methods reading from `pass` store

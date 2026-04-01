@@ -131,12 +131,13 @@ lint.per-file-ignores."scripts/**/*.py" = [
   "T201",    # print (CLI output)
   "TRY300",  # try-consider-else (readability preference)
 ]
-lint.per-file-ignores."src/teatree/cli.py" = [
+lint.per-file-ignores."src/teatree/cli/__init__.py" = [
   "FBT003",
   "PLR2004",
   "RSE102",
+  "RUF067", # __init__ contains the full CLI app, not just re-exports
 ]
-lint.per-file-ignores."src/teatree/cli_*.py" = [
+lint.per-file-ignores."src/teatree/cli/*.py" = [
   "FBT003", # boolean positional/default (typer CLI flags)
 ]
 lint.per-file-ignores."src/teatree/core/management/commands/*.py" = [
@@ -152,10 +153,6 @@ lint.per-file-ignores."src/teatree/core/migrations/*.py" = [
 lint.per-file-ignores."src/teatree/core/overlay.py" = [
   "ARG002",
   "PLR6301", # overlay hook defaults are instance methods by contract
-]
-lint.per-file-ignores."src/teatree/core/sync.py" = [
-  "F821",
-  "S112",
 ]
 lint.per-file-ignores."src/teatree/core/views/*.py" = [
   "PLR6301", # Django class-based views intentionally implement HTTP verb methods on the class

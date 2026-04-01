@@ -66,6 +66,21 @@
 
 See your [issue tracker platform reference](../../t3:platforms/references/) § "Known CLI Quirks" for platform-specific CLI issues. Common gotcha: some CLIs cannot serialize nested JSON — use `curl` instead for complex payloads.
 
+## Pre-Commit Hook Failure + Stash Cycle Destroys Uncommitted Work
+
+- **Symptom:** After a pre-commit hook fails, the agent runs `git stash` / `git checkout -- .` / `git clean -fd` to "fix" the working tree state. All uncommitted changes from the session are lost.
+- **Cause:** `prek` (pre-commit) stashes uncommitted changes before running hooks, then unstashes after. Running `git stash` on top of prek's internal stash creates a nested stash. Then `git checkout -- .` wipes the working tree, and `git stash pop` creates merge conflicts because the stash was made from a different state. The result: hours of work destroyed.
+- **Fix:** When a pre-commit hook fails, the ONLY safe actions are:
+  1. Fix the specific issue the hook reported (lint error, test failure, etc.)
+  2. Re-stage the fixed files
+  3. Commit again
+  4. If the user says to skip hooks: `git commit --no-verify` immediately
+- **Prevention:**
+  1. NEVER run `git stash`, `git checkout -- .`, `git clean -fd`, or `git reset --hard` when there are uncommitted changes you need to keep
+  2. When the user says `--no-verify`, do it immediately — do not keep retrying with hooks
+  3. `git diff` and `git status` are always safe; `git checkout` and `git stash` are not
+  4. If the working tree is in a confusing state, create a backup branch FIRST: `git branch backup-$(date +%s)`
+
 ## Pre-Commit Hooks Stage Unrelated Files
 
 - **Symptom:** After running `prek run --all-files` (or `pre-commit run --all-files`), a subsequent `git commit` includes unexpected file changes (deletions, formatting fixes) that weren't explicitly staged.

@@ -6,10 +6,12 @@ the terminal session accessible from a browser at ``http://host:port``.
 
 import logging
 import shutil
-import subprocess  # noqa: S404
 
+from teatree.agents.headless import _UUID_RE
 from teatree.agents.prompt import build_interactive_context
+from teatree.agents.services import get_terminal_mode
 from teatree.agents.skill_bundle import resolve_skill_bundle
+from teatree.agents.terminal_launcher import launch as terminal_launch
 from teatree.core.models import Task, TaskAttempt
 from teatree.core.overlay import SkillMetadata
 
@@ -21,23 +23,17 @@ def launch_web_session(
     *,
     phase: str,
     overlay_skill_metadata: SkillMetadata,
-    host: str = "127.0.0.1",
 ) -> TaskAttempt:
-    """Spawn a ttyd-wrapped interactive agent session.
+    """Launch an interactive agent session using the configured terminal mode.
 
-    Returns a TaskAttempt with ``launch_url`` set to the web terminal URL.
+    Returns a TaskAttempt with ``launch_url`` set for browser-based modes,
+    or empty for native terminal modes.
     """
-    port = _find_free_port()
     skills = resolve_skill_bundle(phase=phase, overlay_skill_metadata=overlay_skill_metadata)
 
     claude_bin = shutil.which("claude")
     if claude_bin is None:
         msg = "claude CLI is not installed"
-        raise FileNotFoundError(msg)
-
-    ttyd_binary = shutil.which("ttyd")
-    if ttyd_binary is None:
-        msg = "ttyd is not installed. Install it with: brew install ttyd"
         raise FileNotFoundError(msg)
 
     resume_session_id = _get_resume_session_id(task)
@@ -49,22 +45,14 @@ def launch_web_session(
         system_context = build_interactive_context(task, skills=skills)
         agent_command = [claude_bin, "--append-system-prompt", system_context]
 
-    proc = subprocess.Popen(  # noqa: S603
-        [ttyd_binary, "--writable", "--port", str(port), "--once", *agent_command],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
-    )
-    logger.info("Launched ttyd session for task %s (pid=%s, port=%s)", task.pk, proc.pid, port)
+    mode = get_terminal_mode()
+    result = terminal_launch(agent_command, mode=mode)
 
-    launch_url = f"http://{host}:{port}"
     return TaskAttempt.objects.create(
         task=task,
         execution_target=task.execution_target,
-        launch_url=launch_url,
+        launch_url=result.launch_url,
     )
-
-
-_UUID_RE = __import__("re").compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 
 
 def _get_resume_session_id(task: Task) -> str:
@@ -77,12 +65,3 @@ def _get_resume_session_id(task: Task) -> str:
     if agent_id and _UUID_RE.match(agent_id):
         return agent_id
     return ""
-
-
-def _find_free_port() -> int:
-    import socket  # noqa: PLC0415
-
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        s.bind(("", 0))
-        return s.getsockname()[1]

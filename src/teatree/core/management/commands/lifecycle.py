@@ -1,4 +1,3 @@
-import json
 import os
 import subprocess  # noqa: S404
 import time
@@ -10,9 +9,8 @@ import typer
 from django.core.management.base import OutputWrapper
 from django_typer.management import TyperCommand, command
 
-from teatree.config import DATA_DIR
 from teatree.core.models import Ticket, Worktree
-from teatree.core.overlay import OverlayBase
+from teatree.core.overlay import OverlayBase, RunCommand
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.resolve import resolve_worktree
 from teatree.core.worktree_env import write_env_worktree
@@ -29,10 +27,9 @@ def _append_envrc_lines(wt_path: str, lines: list[str]) -> None:
 
 def _write_skill_metadata_cache() -> None:
     """Write overlay skill metadata to XDG cache for hook consumption."""
-    metadata = get_overlay().metadata.get_skill_metadata()
-    cache_path = DATA_DIR / "skill-metadata.json"
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
-    cache_path.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
+    from teatree.core.views._startup import _write_skill_metadata_cache as _write  # noqa: PLC0415
+
+    _write()
 
 
 def _setup_worktree_dir(wt_path: str, worktree: Worktree, overlay: OverlayBase, stdout: OutputWrapper) -> None:
@@ -105,12 +102,15 @@ class Command(TyperCommand):
         self,
         path: str = typer.Option("", help="Worktree path (auto-detects from PWD if empty)."),
         variant: str = typer.Option("", help="Tenant variant. Updates ticket if provided."),
+        overlay: str = typer.Option("", help="Overlay name (auto-detects if empty)."),
     ) -> int:
         """Provision a worktree (allocate ports, DB name, run overlay steps).
 
         Discovers repos added to the ticket directory since initial creation
         and provisions all worktrees for the ticket, not just the resolved one.
         """
+        if overlay:
+            os.environ["T3_OVERLAY_NAME"] = overlay
         worktree = resolve_worktree(path)
         ticket = Ticket.objects.get(pk=worktree.ticket.pk)
 
@@ -121,11 +121,19 @@ class Command(TyperCommand):
         # Discover repos added to the ticket directory since initial creation
         _register_new_repos(worktree, self.stdout)
 
-        overlay = get_overlay()
+        resolved_overlay = get_overlay()
 
-        # Provision ALL worktrees for the ticket
+        # Provision ALL worktrees for the ticket (fault-tolerant per worktree)
+        failed_repos: list[str] = []
         for wt in ticket.worktrees.all():
-            self._provision_worktree(wt, overlay)
+            try:
+                self._provision_worktree(wt, resolved_overlay)
+            except Exception as exc:  # noqa: BLE001
+                failed_repos.append(wt.repo_path)
+                self.stderr.write(f"  ERROR provisioning {wt.repo_path}: {exc}")
+
+        if failed_repos:
+            self.stderr.write(f"  {len(failed_repos)} worktree(s) failed: {', '.join(failed_repos)}")
 
         _write_skill_metadata_cache()
 
@@ -186,19 +194,25 @@ class Command(TyperCommand):
 
     def _launch_app_processes(
         self,
-        commands: dict[str, list[str]],
+        commands: dict[str, list[str] | RunCommand],
         env: dict[str, str],
         log_dir: Path,
     ) -> tuple[dict[str, int], list[str]]:
         pids: dict[str, int] = {}
         failed: list[str] = []
         log_files: list[IO] = []
-        for service_name, cmd in commands.items():
+        for service_name, raw_cmd in commands.items():
+            if isinstance(raw_cmd, RunCommand):
+                cmd = raw_cmd.args
+                cwd: str | Path | None = raw_cmd.cwd
+            else:
+                cmd = raw_cmd
+                cwd = None
             log_path = log_dir / f"{service_name}.log"
             self.stdout.write(f"  Launching {service_name} (log: {log_path})")
             log_file = log_path.open("w")
             log_files.append(log_file)
-            proc = Popen(cmd, env=env, stdout=log_file, stderr=log_file, start_new_session=True)  # noqa: S603
+            proc = Popen(cmd, env=env, cwd=cwd, stdout=log_file, stderr=log_file, start_new_session=True)  # noqa: S603
             pids[service_name] = proc.pid
             time.sleep(1)
             if proc.poll() is not None:
@@ -209,21 +223,27 @@ class Command(TyperCommand):
         return pids, failed
 
     @command()
-    def start(self, path: str = typer.Option("", help="Worktree path (auto-detects from PWD if empty).")) -> str:
+    def start(
+        self,
+        path: str = typer.Option("", help="Worktree path (auto-detects from PWD if empty)."),
+        overlay: str = typer.Option("", help="Overlay name (auto-detects if empty)."),
+    ) -> str:
         """Start Docker services + app servers (background), then transition FSM."""
+        if overlay:
+            os.environ["T3_OVERLAY_NAME"] = overlay
         worktree = resolve_worktree(path)
-        overlay = get_overlay()
+        resolved_overlay = get_overlay()
 
-        self._start_docker_services(worktree, overlay)
+        self._start_docker_services(worktree, resolved_overlay)
 
-        commands = overlay.get_run_commands(worktree)
+        commands = resolved_overlay.get_run_commands(worktree)
         for service_name in commands:
-            for step in overlay.get_pre_run_steps(worktree, service_name):
+            for step in resolved_overlay.get_pre_run_steps(worktree, service_name):
                 self.stdout.write(f"  Preparing: {step.name}")
                 step.callable()
 
         write_env_worktree(worktree)
-        env = {**os.environ, **overlay.get_env_extra(worktree)}
+        env = {**os.environ, **resolved_overlay.get_env_extra(worktree)}
         env.pop("VIRTUAL_ENV", None)
 
         ticket_dir = (worktree.extra or {}).get("worktree_path", "")
@@ -247,7 +267,8 @@ class Command(TyperCommand):
 
     @command()
     def status(
-        self, path: str = typer.Option("", help="Worktree path (auto-detects from PWD if empty).")
+        self,
+        path: str = typer.Option("", help="Worktree path (auto-detects from PWD if empty)."),
     ) -> dict[str, str]:
         worktree = resolve_worktree(path)
         return {
@@ -315,6 +336,35 @@ class Command(TyperCommand):
             checks["hooks"] = {"status": "skipped", "detail": "no .pre-commit-config.yaml"}
 
         return checks
+
+    @command(name="start-full")
+    def start_full(
+        self,
+        issue_url: str = typer.Argument(help="Issue/ticket URL."),
+        variant: str = typer.Option("", help="Tenant variant."),
+        repos: str = typer.Option("", help="Comma-separated repo names (default: overlay repos)."),
+        description: str = typer.Option("", help="Short description for the branch name."),
+    ) -> str:
+        """Zero to coding — create ticket, provision worktrees, start services."""
+        from teatree.core.management.commands.workspace import Command as WorkspaceCommand  # noqa: PLC0415
+
+        ws = WorkspaceCommand()
+        ws.stdout = self.stdout
+        ws.stderr = self.stderr
+        ticket_id = ws.ticket(issue_url, variant=variant, repos=repos, description=description)
+        if not ticket_id:
+            return "Failed to create ticket."
+
+        ticket = Ticket.objects.get(pk=ticket_id)
+        first_wt = ticket.worktrees.first()
+        if not first_wt:
+            return f"Ticket #{ticket_id} created but no worktrees."
+
+        wt_path = (first_wt.extra or {}).get("worktree_path", "")
+        self.setup(path=wt_path, variant=variant)
+        self.start(path=wt_path)
+
+        return f"Ticket #{ticket_id} ready — services running in {wt_path}"
 
     @command()
     def diagram(self, model: str = "worktree") -> str:

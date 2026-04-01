@@ -68,8 +68,6 @@ class SessionHistoryView(View):
             raise Http404
 
         messages = _load_transcript(session_id, cwd)
-        if not messages:
-            raise Http404
 
         return TemplateResponse(
             request,

@@ -114,6 +114,12 @@ def default_branch(repo: str = ".") -> str:
     raise RuntimeError(msg)
 
 
+def branch_merged(repo: str, branch: str, target: str = "origin/main") -> bool:
+    """Return True if *branch* has been merged into *target*."""
+    output = run(repo=repo, args=["branch", "--merged", target])
+    return any(line.strip() == branch for line in output.splitlines())
+
+
 def current_branch(repo: str = ".") -> str:
     result = subprocess.run(
         ["git", "-C", repo, "rev-parse", "--abbrev-ref", "HEAD"],

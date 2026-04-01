@@ -102,7 +102,7 @@ def _find_free_ports_unlocked(
 
 
 def find_free_port() -> int:
-    """Return a single free port (OS-assigned)."""
+    """Return a single free port (OS-assigned on localhost)."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         s.bind(("127.0.0.1", 0))

@@ -50,7 +50,7 @@ The result is a living, version-controlled repository of everything you know abo
 
 ### Install
 
-Teatree requires a local git clone — it has shared infrastructure (`src/teatree/`, `integrations/`, and the skill directories themselves) that lives outside any single installed skill, so `npx skills add` alone isn't enough.
+Teatree requires a local git clone — it has shared infrastructure (`src/teatree/`, `hooks/`, and the skill directories themselves) that lives outside any single installed skill, so `npx skills add` alone isn't enough.
 
 [Fork the repo on GitHub](https://github.com/souliane/teatree/fork) (or just clone it directly if you don't plan to contribute back), then:
 
@@ -250,7 +250,7 @@ teatree/
     utils/             #   Internal helpers (ports, git, DB, GitLab API)
     overlay_init/      #   `t3 startoverlay` templates
   skills/*/         # AI agent skills (SKILL.md files + references)
-  integrations/        # Agent platform hooks (Claude Code statusline)
+  hooks/               # Agent platform hooks (Claude Code statusline)
   scripts/             # Pre-commit hooks, utility scripts
   tests/               # Unit tests (100% branch coverage)
   docs/                # MkDocs documentation site

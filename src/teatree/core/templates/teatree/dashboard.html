@@ -133,7 +133,12 @@
         if (errorSpan) { errorSpan.classList.add('hidden'); errorSpan.textContent = ''; }
         try {
           var data = JSON.parse(xhr.responseText);
-          if (data.launch_url) { window.open(data.launch_url, '_blank'); }
+          if (data.launch_url) {
+            window.open(data.launch_url, '_blank');
+          } else if (data.launched) {
+            var toast = document.getElementById('toast-msg');
+            if (toast) { toast.textContent = 'Launched in ' + (data.mode || 'terminal'); toast.parentElement.classList.remove('hidden'); setTimeout(function(){ toast.parentElement.classList.add('hidden'); }, 3000); }
+          }
         } catch(e) { console.warn('Failed to parse success response:', e); }
       }
       htmx.trigger(document.body, 'refreshPanels');
@@ -152,6 +157,9 @@
       if (dot) { dot.className = 'inline-block h-2 w-2 rounded-full bg-bark/40'; dot.title = 'SSE disconnected'; }
     });
   </script>
+  <div class="hidden fixed bottom-4 right-4 rounded-lg bg-moss/90 px-4 py-2 text-sm text-white shadow-lg" id="toast-container">
+    <span id="toast-msg"></span>
+  </div>
 </head>
 <body class="min-h-screen bg-[radial-gradient(circle_at_top_left,_rgba(66,104,85,0.18),_transparent_30%),linear-gradient(180deg,_#fbf4e8_0%,_#f5ecdd_55%,_#eadbc6_100%)] text-bark">
   <div hx-ext="sse" sse-connect="{% url 'teatree:dashboard-events' %}">
@@ -167,7 +175,7 @@
     <header class="mb-4 flex items-center gap-4">
       <img src="{{ logo_url }}" alt="Logo" class="h-8">
       <span class="font-sans text-xs font-semibold uppercase tracking-[0.24em] text-moss">TeaTree Runtime <span id="sse-status" class="inline-block h-2 w-2 rounded-full bg-bark/40" title="SSE disconnected"></span></span>
-      {% if overlays|length > 1 %}
+      {% if overlays %}
       <select
         id="overlay-selector"
         class="ml-auto rounded-lg border border-bark/15 bg-cream/80 px-3 py-1 font-sans text-xs text-bark/70 focus:border-moss focus:outline-none"
@@ -205,16 +213,34 @@
       </div>
       <div class="ml-auto flex items-center gap-3">
         <div id="sync-status"></div>
+        <select
+          id="terminal-mode-selector"
+          class="rounded-lg border border-bark/15 bg-cream/80 px-2 py-1 font-sans text-xs text-bark/70 focus:border-moss focus:outline-none"
+          onchange="localStorage.setItem('teatree_terminal_mode', this.value)"
+        >
+          <option value="ttyd">ttyd (browser)</option>
+          <option value="new-window">New window</option>
+          <option value="new-tab">New tab</option>
+        </select>
+        <script>
+        (function() {
+          var sel = document.getElementById('terminal-mode-selector');
+          var saved = localStorage.getItem('teatree_terminal_mode') || '{{ terminal_mode }}';
+          if (sel && saved) sel.value = saved;
+        })();
+        </script>
         <button
           class="pill-btn pill-xs border border-clay/30 bg-clay/10 uppercase tracking-[0.18em] text-clay hover:bg-clay/20"
           hx-post="{% url 'teatree:launch-terminal' %}"
           hx-swap="none"
+          hx-on::before-request="event.detail.requestConfig.parameters['terminal_mode'] = document.getElementById('terminal-mode-selector').value"
           hx-on::after-request="handleActionResponse(event)"
         >Terminal</button>
         <button
           class="pill-btn pill-xs border border-moss/30 bg-moss/10 uppercase tracking-[0.18em] text-moss hover:bg-moss/20"
           hx-post="{% url 'teatree:launch-interactive-agent' %}"
           hx-swap="none"
+          hx-on::before-request="event.detail.requestConfig.parameters['terminal_mode'] = document.getElementById('terminal-mode-selector').value"
           hx-on::after-request="handleActionResponse(event)"
         >Agent</button>
         <button

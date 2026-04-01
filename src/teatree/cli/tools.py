@@ -17,7 +17,7 @@ class ToolRunner:
     @staticmethod
     def scripts_dir() -> Path:
         """Locate the scripts/ directory relative to the teatree package."""
-        return Path(__file__).resolve().parent.parent.parent / "scripts"
+        return Path(__file__).resolve().parent.parent.parent.parent / "scripts"
 
     @staticmethod
     def run_script(script_name: str, *args: str) -> None:
@@ -115,5 +115,5 @@ def claude_handover(
         f"{telemetry_state}; "
         f"5h={used if used is not None else 'n/a'}%; "
         f"reset={reset_at}; "
-        f"recommended={recommendation}"
+        f"recommended={recommendation}",
     )

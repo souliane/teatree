@@ -1,7 +1,6 @@
 """CI CLI commands — pipeline helpers."""
 
 import os
-import subprocess  # noqa: S404
 
 import typer
 
@@ -25,8 +24,8 @@ class CICommands:
 
         token = os.environ.get("GITLAB_TOKEN", "")
         if token:
+            from teatree.backends.gitlab_api import GitLabAPI  # noqa: PLC0415
             from teatree.backends.gitlab_ci import GitLabCIService  # noqa: PLC0415
-            from teatree.utils.gitlab_api import GitLabAPI  # noqa: PLC0415
 
             base_url = os.environ.get("GITLAB_URL", "https://gitlab.com/api/v4")
             return GitLabCIService(client=GitLabAPI(token=token, base_url=base_url))
@@ -47,20 +46,16 @@ class CICommands:
         except Exception:  # noqa: BLE001, S110 — Django may not be configured
             pass
 
-        from teatree.utils.gitlab_api import GitLabAPI  # noqa: PLC0415
+        from teatree.backends.gitlab_api import GitLabAPI  # noqa: PLC0415
 
         project_info = GitLabAPI().resolve_project_from_remote()
         return project_info.path_with_namespace if project_info else ""
 
     @staticmethod
     def current_git_branch() -> str:
-        result = subprocess.run(
-            ["git", "rev-parse", "--abbrev-ref", "HEAD"],  # noqa: S607
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        return result.stdout.strip() if result.returncode == 0 else ""
+        from teatree.utils.git import current_branch  # noqa: PLC0415
+
+        return current_branch()
 
 
 def _require_ci() -> tuple[CIService, str]:

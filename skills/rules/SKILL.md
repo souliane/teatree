@@ -11,6 +11,10 @@ metadata:
 
 Cross-cutting rules that apply to all teatree skills. Loaded automatically via `requires:`.
 
+## User Instructions Are Priority 1 (Non-Negotiable)
+
+When the user gives a direct, explicit instruction (`--no-verify`, skip tests, push now, use this approach), execute it IMMEDIATELY. Do not try a "better" approach first, do not retry the same failing approach hoping it works, and do not silently substitute your own plan. Execute the instruction first (it's fast and safe), then suggest an alternative if you have one.
+
 ## Context Transparency (Non-Negotiable)
 
 The user cannot see system-reminders, memory content, or hook output injected into your context. When your response is influenced by any of this invisible context, **briefly state what you received** so the user can follow your reasoning. For example: "Teatree suggested loading `/t3:code`. Memory mentions X."
@@ -99,7 +103,7 @@ Destroying MR dependency chains wastes hours of carefully organized work.
 
 ## Never Push Without Separate Explicit Approval (Non-Negotiable)
 
-Commit approval ≠ push approval. Always ask "Push?" as a **separate question** after committing. This applies to all repos, all contexts — even when the user said "yes" to committing. (Safety net — source: `t3-ship § Never push without explicit approval`)
+Commit approval ≠ push approval. Always ask "Push?" as a **separate question** after committing. This applies to all repos, all contexts — even when the user said "yes" to committing. (Safety net — source: `t3:ship § Never push without explicit approval`)
 
 ## Run Retro Before Ending Non-Trivial Sessions (Non-Negotiable)
 

@@ -90,23 +90,8 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 LOGGING = default_logging("teatree")
 
 # Framework-level config (not overlay-specific)
-TEATREE_HEADLESS_RUNTIME = "claude-code"
-TEATREE_INTERACTIVE_RUNTIME = "codex"
 TEATREE_TERMINAL_MODE = "same-terminal"
 TEATREE_CLAUDE_STATUSLINE_STATE_DIR = "/tmp/claude-statusline"  # noqa: S108
-TEATREE_AGENT_HANDOVER = [
-    {
-        "runtime": "claude-code",
-        "telemetry": {
-            "provider": "claude-statusline",
-            "switch_away_at_percent": 95,
-            "switch_back_at_percent": 80,
-        },
-    },
-    {
-        "runtime": "codex",
-    },
-]
 
 TASKS = {
     "default": {

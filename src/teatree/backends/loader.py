@@ -14,6 +14,11 @@ def get_code_host() -> CodeHost | None:
     except Exception:  # noqa: BLE001
         return None
 
+    if overlay.config.get_github_token():
+        from teatree.backends.github import GitHubCodeHost  # noqa: PLC0415
+
+        return GitHubCodeHost(token=overlay.config.get_github_token())
+
     if overlay.config.get_gitlab_token():
         from teatree.backends.gitlab import GitLabCodeHost  # noqa: PLC0415
 

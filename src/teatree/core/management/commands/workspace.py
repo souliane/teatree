@@ -15,11 +15,11 @@ from teatree.utils import git
 
 
 def _workspace_dir() -> Path:
-    return load_config().workspace_dir
+    return load_config().user.workspace_dir
 
 
 def _worktrees_dir() -> Path:
-    return load_config().worktrees_dir
+    return load_config().user.worktrees_dir
 
 
 def _branch_prefix() -> str:
@@ -87,8 +87,12 @@ class Command(TyperCommand):
         overlay = get_overlay()
         repo_names = [r.strip() for r in repos.split(",") if r.strip()] if repos else overlay.get_workspace_repos()
 
-        ticket = Ticket.objects.create(issue_url=issue_url, variant=variant, repos=repo_names)
-        ticket.scope(issue_url=issue_url, variant=variant or None, repos=repo_names)
+        ticket, _created = Ticket.objects.get_or_create(
+            issue_url=issue_url,
+            defaults={"variant": variant, "repos": repo_names},
+        )
+        if ticket.state == Ticket.State.NOT_STARTED:
+            ticket.scope(issue_url=issue_url, variant=variant or None, repos=repo_names)
         ticket.save()
 
         workspace = _workspace_dir()

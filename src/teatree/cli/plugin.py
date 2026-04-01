@@ -13,7 +13,7 @@ _MARKETPLACE_NAME = "souliane"
 
 
 def _teatree_root() -> Path:
-    return Path(__file__).resolve().parents[2]
+    return Path(__file__).resolve().parents[3]
 
 
 def _try_apm_install() -> bool:

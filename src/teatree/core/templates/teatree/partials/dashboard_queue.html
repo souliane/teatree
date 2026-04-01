@@ -39,6 +39,8 @@
                 hx-swap="none"
                 hx-on::after-request="handleActionResponse(event)"
                 hx-disable-elt="this"
+                hx-confirm="This task is in progress. Are you sure?"
+                hx-vals='{"confirm": "true"}'
               >
                 Cancel
               </button>

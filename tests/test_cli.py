@@ -67,7 +67,7 @@ class TestDocsCommand:
         fake_mkdocs = types.ModuleType("mkdocs")
         monkeypatch.setitem(sys.modules, "mkdocs", fake_mkdocs)
 
-        with patch("teatree.cli_review.subprocess.run") as mock_run:
+        with patch("teatree.cli.review.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0)
             result = runner.invoke(app, ["docs"])
             assert result.exit_code == 0
@@ -109,7 +109,7 @@ class TestAgentCommand:
             patch("teatree.config.discover_active_overlay", return_value=mock_overlay),
             patch("teatree.core.overlay_loader.get_overlay", return_value=overlay_obj),
             patch("shutil.which", return_value="/usr/bin/claude"),
-            patch("teatree.cli_doctor.IntrospectionHelpers.editable_info", return_value=(False, "")),
+            patch("teatree.cli.doctor.IntrospectionHelpers.editable_info", return_value=(False, "")),
             patch("teatree.cli._detect_agent_ticket_status", return_value="started"),
             patch(
                 "teatree.skill_loading.SkillLoadingPolicy.select_for_agent_launch",
@@ -133,7 +133,7 @@ class TestAgentCommand:
         with (
             patch("teatree.config.discover_active_overlay", return_value=None),
             patch("shutil.which", return_value="/usr/bin/claude"),
-            patch("teatree.cli_doctor.IntrospectionHelpers.editable_info", return_value=(False, "")),
+            patch("teatree.cli.doctor.IntrospectionHelpers.editable_info", return_value=(False, "")),
             patch(
                 "teatree.skill_loading.SkillLoadingPolicy.select_for_agent_launch",
                 return_value=SkillSelectionResult(skills=["code"]),
@@ -282,8 +282,8 @@ class TestInfoCommand:
         """Info command shows installation details."""
         with (
             patch("shutil.which", return_value="/usr/local/bin/t3"),
-            patch("teatree.cli_doctor.IntrospectionHelpers.editable_info", return_value=(True, "file:///home/src")),
-            patch("teatree.cli_doctor.IntrospectionHelpers.print_package_info"),
+            patch("teatree.cli.doctor.IntrospectionHelpers.editable_info", return_value=(True, "file:///home/src")),
+            patch("teatree.cli.doctor.IntrospectionHelpers.print_package_info"),
             patch("teatree.config.discover_active_overlay", return_value=None),
             patch("teatree.config.discover_overlays", return_value=[]),
         ):
@@ -499,7 +499,7 @@ class TestLaunchClaude:
 
         with (
             patch("shutil.which", return_value="/usr/bin/claude"),
-            patch("teatree.cli_doctor.IntrospectionHelpers.editable_info", return_value=(True, "file:///src/teatree")),
+            patch("teatree.cli.doctor.IntrospectionHelpers.editable_info", return_value=(True, "file:///src/teatree")),
             patch("teatree.cli.os.execvp") as mock_exec,
         ):
             from teatree.cli import _launch_claude  # noqa: PLC0415
@@ -522,7 +522,7 @@ class TestLaunchClaude:
 
         with (
             patch("shutil.which", return_value="/usr/bin/claude"),
-            patch("teatree.cli_doctor.IntrospectionHelpers.editable_info", return_value=(False, "")),
+            patch("teatree.cli.doctor.IntrospectionHelpers.editable_info", return_value=(False, "")),
             patch("teatree.cli.os.execvp") as mock_exec,
         ):
             from teatree.cli import _launch_claude  # noqa: PLC0415
@@ -543,7 +543,7 @@ class TestLaunchClaude:
 
         with (
             patch("shutil.which", return_value="/usr/bin/claude"),
-            patch("teatree.cli_doctor.IntrospectionHelpers.editable_info", return_value=(False, "")),
+            patch("teatree.cli.doctor.IntrospectionHelpers.editable_info", return_value=(False, "")),
             patch("teatree.cli.os.execvp") as mock_exec,
         ):
             from teatree.cli import _launch_claude  # noqa: PLC0415

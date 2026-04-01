@@ -158,24 +158,24 @@ privacy = "strict"
 """,
     )
     config = load_config(config_path)
-    assert config.workspace_dir == Path("/custom/workspace")
-    assert config.branch_prefix == "ac-"
-    assert config.privacy == "strict"
+    assert config.user.workspace_dir == Path("/custom/workspace")
+    assert config.user.branch_prefix == "ac-"
+    assert config.user.privacy == "strict"
     assert "teatree" in config.raw
 
 
 def test_load_config_missing_file(tmp_path):
     config = load_config(tmp_path / "nonexistent.toml")
-    assert config.workspace_dir == Path.home() / "workspace"
-    assert config.branch_prefix == ""
-    assert config.privacy == ""
+    assert config.user.workspace_dir == Path.home() / "workspace"
+    assert config.user.branch_prefix == ""
+    assert config.user.privacy == ""
 
 
 def test_load_config_defaults_when_teatree_section_empty(tmp_path):
     config_path = tmp_path / ".teatree.toml"
     _write_toml(config_path, "[other]\nfoo = 1\n")
     config = load_config(config_path)
-    assert config.branch_prefix == ""
+    assert config.user.branch_prefix == ""
 
 
 # ── get_data_dir ──────────────────────────────────────────────────────

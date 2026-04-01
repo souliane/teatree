@@ -129,7 +129,7 @@ def build_task_prompt(task: Task) -> str:
             "3. If you can proceed (code, test, fix) — do it",
             "4. If you need human input (design decision, access, clarification) — say so clearly",
             "5. Run tests before declaring done",
-        )
+        ),
     )
 
     return "\n".join(lines)
@@ -165,7 +165,7 @@ def build_system_context(task: Task, *, skills: list[str], lifecycle_skill: str 
                 "PHASE: reviewing",
                 "1. Do a thorough code review of all changes on this ticket's branch.",
                 "2. Run /t3:next when done — it handles retro + structured result + handoff.",
-            )
+            ),
         )
 
     lines.extend(
@@ -183,7 +183,7 @@ def build_system_context(task: Task, *, skills: list[str], lifecycle_skill: str 
             "",
             "If /t3:next is not available, output a JSON object on the last line:",
             '  {"summary": "...", "needs_user_input": false, "files_modified": [...], "next_steps": [...]}',
-        )
+        ),
     )
 
     return "\n".join(lines)
@@ -216,7 +216,7 @@ def build_interactive_context(task: Task, *, skills: list[str]) -> str:
                 "REQUIRED: Before starting any work, call the Skill tool for EACH of these skills:",
                 *(f"  - /{skill}" for skill in skills),
                 "Do this FIRST, before reading files, running commands, or responding to the user.",
-            )
+            ),
         )
 
     # MR context
@@ -243,7 +243,7 @@ def build_interactive_context(task: Task, *, skills: list[str]) -> str:
             "Summarize: ticket number, current state, what was done so far, and what you plan to do next.",
             "Then either begin working or ask the user for guidance.",
             "Before ending, run /t3:next — it handles retro, result reporting, and pipeline handoff.",
-        )
+        ),
     )
 
     return "\n".join(lines)

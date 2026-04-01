@@ -15,13 +15,11 @@ if str(_SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS_DIR))
 
 from lib.skill_loader import (  # noqa: E402
-    _parse_skill_requires,
     build_trigger_index,
     detect_intent,
     parse_triggers_from_frontmatter,
     read_companion_skills,
     read_supplementary_skills,
-    resolve_dependencies,
     suggest_skills,
 )
 
@@ -300,33 +298,6 @@ class TestDetectIntentIntegration:
 
 
 # ── Preserved tests ──────────────────────────────────────────────────
-
-
-class TestParseSkillRequires:
-    def test_with_requires(self):
-        md = "---\nname: review\nrequires:\n  - workspace\n  - platforms\n---\n# Review"
-        assert _parse_skill_requires(md) == ["workspace", "platforms"]
-
-    def test_no_requires(self):
-        md = "---\nname: setup\n---\n# Setup"
-        assert _parse_skill_requires(md) == []
-
-    def test_no_frontmatter(self):
-        assert _parse_skill_requires("# No frontmatter") == []
-
-
-class TestResolveDependencies:
-    def test_resolves_from_real_skills(self):
-        if not SKILLS_DIR.is_dir():
-            pytest.skip("skills directory not found")
-        resolved = resolve_dependencies(["review"], [SKILLS_DIR])
-        assert "workspace" in resolved
-        assert "platforms" in resolved
-        assert resolved.index("workspace") < resolved.index("review")
-
-    def test_unknown_skill(self):
-        resolved = resolve_dependencies(["nonexistent-skill"], [SKILLS_DIR])
-        assert resolved == ["nonexistent-skill"]
 
 
 class TestCompanionSkills:

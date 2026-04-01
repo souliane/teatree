@@ -32,5 +32,5 @@ class Command(TyperCommand):
                 status=Task.Status.PENDING,
             )
             .order_by("pk")
-            .values_list("id", flat=True)
+            .values_list("id", flat=True),
         )

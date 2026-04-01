@@ -14,8 +14,8 @@ if TYPE_CHECKING:
     from teatree.core.models.types import Ports, WorktreeExtra
 
 
-def _worktrees_dir() -> Path:
-    return _load_config().worktrees_dir
+def _workspace_dir() -> Path:
+    return _load_config().user.workspace_dir
 
 
 class Worktree(models.Model):
@@ -88,8 +88,7 @@ class Worktree(models.Model):
                 if isinstance(value, int):
                     reserved_ports[name].add(value)
         backend, frontend, postgres, redis = port_utils.find_free_ports(
-            str(_worktrees_dir()),
-            share_db_server=False,
+            str(_workspace_dir()),
             reserved_ports=reserved_ports,
         )
         return {

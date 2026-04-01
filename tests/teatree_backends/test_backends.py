@@ -5,7 +5,7 @@ import httpx
 import pytest
 
 from teatree.backends import gitlab, notion, slack
-from teatree.utils.gitlab_api import GitLabAPI
+from teatree.backends.gitlab_api import GitLabAPI
 
 
 def test_slack_backend_posts_webhook_payload(monkeypatch: pytest.MonkeyPatch) -> None:

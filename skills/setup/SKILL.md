@@ -116,7 +116,7 @@ for root in "$HOME/.claude/skills" "$HOME/.codex/skills" "$HOME/.cursor/skills" 
   [ -d "$root" ] || continue
   for skill in "$T3_REPO"/skills/*/; do
     [ -f "$skill/SKILL.md" ] || continue  # skip non-skill dirs
-    name="t3-$(basename "$skill")"
+    name="$(basename "$skill")"
     [ -L "$root/$name" ] && continue  # already symlinked
     ln -s "$skill" "$root/$name"
   done
@@ -128,7 +128,7 @@ Verify that each teatree skill is symlinked into the active runtime skill direct
 ```bash
 for root in "$HOME/.claude/skills" "$HOME/.codex/skills" "$HOME/.cursor/skills" "$HOME/.copilot/skills" "$HOME/.agents/skills"; do
   [ -d "$root" ] || continue
-  find "$root" -maxdepth 1 -type l -name 't3-*' -o -name 'teatree' | sort
+  find "$root" -maxdepth 1 -type l | sort
 done
 ```
 
@@ -139,7 +139,7 @@ Do not overwrite existing contributor-mode symlinks for third-party companion sk
 If the user uses Claude Code, validate `~/.claude/settings.json` for the hooks below.
 Show the JSON patch the user should apply, but **do not edit the file without consent**.
 
-Required hooks (all paths relative to `$T3_REPO/integrations/claude-code-statusline/`):
+Required hooks (all paths relative to `$T3_REPO/hooks/claude-code-statusline/`):
 
 | Hook | Event | Matcher | Script | Purpose |
 | --- | --- | --- | --- | --- |
@@ -159,7 +159,7 @@ JSON patch to merge into `~/.claude/settings.json`:
         "hooks": [
           {
             "type": "command",
-            "command": "~/path/to/teatree/integrations/claude-code-statusline/ensure-skills-loaded.sh",
+            "command": "~/path/to/teatree/hooks/claude-code-statusline/ensure-skills-loaded.sh",
             "timeout": 5
           }
         ]
@@ -171,7 +171,7 @@ JSON patch to merge into `~/.claude/settings.json`:
         "hooks": [
           {
             "type": "command",
-            "command": "~/path/to/teatree/integrations/claude-code-statusline/track-active-repo.sh",
+            "command": "~/path/to/teatree/hooks/claude-code-statusline/track-active-repo.sh",
             "timeout": 5
           }
         ]
@@ -181,7 +181,7 @@ JSON patch to merge into `~/.claude/settings.json`:
         "hooks": [
           {
             "type": "command",
-            "command": "~/path/to/teatree/integrations/claude-code-statusline/track-skill-usage.sh",
+            "command": "~/path/to/teatree/hooks/claude-code-statusline/track-skill-usage.sh",
             "timeout": 5
           }
         ]
@@ -193,7 +193,7 @@ JSON patch to merge into `~/.claude/settings.json`:
         "hooks": [
           {
             "type": "command",
-            "command": "~/path/to/teatree/integrations/claude-code-statusline/track-skill-usage.sh",
+            "command": "~/path/to/teatree/hooks/claude-code-statusline/track-skill-usage.sh",
             "timeout": 5
           }
         ]
@@ -202,7 +202,7 @@ JSON patch to merge into `~/.claude/settings.json`:
   },
   "statusLine": {
     "type": "command",
-    "command": "~/path/to/teatree/integrations/claude-code-statusline/statusline-command.sh"
+    "command": "~/path/to/teatree/hooks/claude-code-statusline/statusline-command.sh"
   }
 }
 ```

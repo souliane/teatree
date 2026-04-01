@@ -8,7 +8,7 @@ import typer
 from django_typer.management import TyperCommand, command
 
 from teatree.core.models import Worktree
-from teatree.core.overlay import RunCommands
+from teatree.core.overlay import RunCommand, RunCommands
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.resolve import resolve_worktree
 from teatree.core.worktree_env import write_env_worktree
@@ -48,7 +48,8 @@ class Command(TyperCommand):
 
     @command()
     def verify(
-        self, path: str = typer.Option("", help="Worktree path (auto-detects from PWD if empty).")
+        self,
+        path: str = typer.Option("", help="Worktree path (auto-detects from PWD if empty)."),
     ) -> dict[str, object]:
         """Check that dev services respond via HTTP, then advance FSM."""
         worktree = resolve_worktree(path)
@@ -87,7 +88,8 @@ class Command(TyperCommand):
 
     @command()
     def services(
-        self, path: str = typer.Option("", help="Worktree path (auto-detects from PWD if empty).")
+        self,
+        path: str = typer.Option("", help="Worktree path (auto-detects from PWD if empty)."),
     ) -> RunCommands:
         worktree = resolve_worktree(path)
         return get_overlay().get_run_commands(worktree)
@@ -97,6 +99,12 @@ class Command(TyperCommand):
         for step in get_overlay().get_pre_run_steps(worktree, service):
             self.stdout.write(f"  Preparing: {step.name}")
             step.callable()
+
+    def _run_command(self, cmd: list[str] | RunCommand, env: dict[str, str] | None = None) -> None:
+        if isinstance(cmd, RunCommand):
+            subprocess.run(cmd.args, check=True, env=env, cwd=cmd.cwd)  # noqa: S603
+        else:
+            subprocess.run(cmd, check=True, env=env)  # noqa: S603
 
     @command()
     def backend(self, path: str = typer.Option("", help="Worktree path (auto-detects from PWD if empty).")) -> str:
@@ -108,8 +116,7 @@ class Command(TyperCommand):
         cmd = commands.get("backend", [])
         if not cmd:
             return "No backend command configured in the overlay."
-        env = _run_env(worktree)
-        subprocess.run(cmd, check=True, env=env)  # noqa: S603
+        self._run_command(cmd, env=_run_env(worktree))
         return "Backend started."
 
     @command()
@@ -122,13 +129,13 @@ class Command(TyperCommand):
         cmd = commands.get("frontend", [])
         if not cmd:
             return "No frontend command configured in the overlay."
-        env = _run_env(worktree)
-        subprocess.run(cmd, check=True, env=env)  # noqa: S603
+        self._run_command(cmd, env=_run_env(worktree))
         return "Frontend started."
 
     @command(name="build-frontend")
     def build_frontend(
-        self, path: str = typer.Option("", help="Worktree path (auto-detects from PWD if empty).")
+        self,
+        path: str = typer.Option("", help="Worktree path (auto-detects from PWD if empty)."),
     ) -> str:
         """Build the frontend app for production/testing."""
         worktree = resolve_worktree(path)
@@ -137,7 +144,7 @@ class Command(TyperCommand):
         cmd = commands.get("build-frontend", [])
         if not cmd:
             return "No build-frontend command configured in the overlay."
-        subprocess.run(cmd, check=True)  # noqa: S603
+        self._run_command(cmd)
         return "Frontend built."
 
     @command()

@@ -6,21 +6,21 @@ import pytest
 from django.test import TestCase
 
 from teatree.agents.web_terminal import (
-    _find_free_port,
     _get_resume_session_id,
     launch_web_session,
 )
 from teatree.core.models import Session, Task, TaskAttempt, Ticket
+from teatree.utils.ports import find_free_port
 
 _WHICH = "teatree.agents.web_terminal.shutil.which"
-_FREE_PORT = "teatree.agents.web_terminal._find_free_port"
+_FREE_PORT = "teatree.agents.terminal_launcher.find_free_port"
 _POPEN = "teatree.agents.web_terminal.subprocess.Popen"
 
 # --- _find_free_port ---
 
 
 def test_find_free_port_returns_int() -> None:
-    port = _find_free_port()
+    port = find_free_port()
     assert isinstance(port, int)
     assert port > 0
 

@@ -18,6 +18,7 @@ from teatree.core.selectors import (
     build_recent_activity,
     build_review_comments,
     build_task_detail,
+    build_task_graph,
     build_worktree_rows,
 )
 
@@ -87,6 +88,20 @@ class TaskDetailView(View):
             request,
             "teatree/partials/task_detail_popup.html",
             {"detail": detail},
+        )
+
+
+class TaskGraphView(View):
+    def get(self, request: HttpRequest, ticket_id: int) -> HttpResponse:
+        from teatree.core.models import Ticket  # noqa: PLC0415
+
+        if not Ticket.objects.filter(pk=ticket_id).exists():
+            raise Http404
+        graph = build_task_graph(ticket_id)
+        return TemplateResponse(
+            request,
+            "teatree/partials/task_graph.html",
+            {"ticket_id": ticket_id, "graph": graph},
         )
 
 
