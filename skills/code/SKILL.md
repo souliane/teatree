@@ -39,6 +39,15 @@ The implementation phase. Follow test-driven development and project conventions
 
 ## Workflow
 
+### 0. Ticket-Required Overlay Check (Non-Negotiable)
+
+When the active overlay has `require_ticket = True` in its configuration, a tracked issue must exist before writing any code.
+
+- **Detection:** check `overlay.config.require_ticket`. Overlays that dogfood their own workflow (e.g., the teatree overlay) enable this flag.
+- **If no ticket context exists:** ask "Which ticket is this for?" or offer to create one. Do not proceed without a ticket reference.
+- **Use the overlay** for worktree creation and lifecycle management.
+- **Exception:** changes from `/t3:retro` are exempt. Retro findings are small tactical fixes committed directly on the current branch by design.
+
 ### 1. Plan First
 
 **Always make a plan before writing code.** Never jump straight to coding.
@@ -47,7 +56,7 @@ The implementation phase. Follow test-driven development and project conventions
 - Identify scope: which files, modules, and repos are affected.
 - Review existing patterns in the codebase before writing new code.
 - If the task matches a playbook, follow playbook-specific patterns.
-- **Feature flag check:** Follow the decision gate in [`references/multi-tenant-development.md`](references/multi-tenant-development.md). Detect the target tenant using the priority chain from `t3-ticket § 6. Detect Variant/Tenant`.
+- **Feature flag check:** Follow the decision gate in [`references/multi-tenant-development.md`](references/multi-tenant-development.md). Detect the target tenant using the priority chain from `t3:ticket § 6. Detect Variant/Tenant`.
 
 **Scaling the plan to the task:**
 

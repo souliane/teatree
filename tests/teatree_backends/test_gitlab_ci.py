@@ -4,8 +4,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from teatree.backends.gitlab_api import GitLabAPI, ProjectInfo
 from teatree.backends.gitlab_ci import GitLabCIService, _extract_error_tail
-from teatree.utils.gitlab_api import GitLabAPI, ProjectInfo
 
 
 def _make_client(*, project: ProjectInfo | None = None) -> tuple[GitLabAPI, MagicMock]:

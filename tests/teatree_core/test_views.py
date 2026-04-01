@@ -6,23 +6,10 @@ from django.urls import reverse
 
 from teatree.core.models import Session, Task, Ticket, Worktree
 from teatree.core.sync import SyncResult
-from teatree.core.views.dashboard import DashboardView, _panel_context
+from teatree.core.views.dashboard import _panel_context
 from tests.teatree_core.conftest import CommandOverlay
 
 _MOCK_OVERLAY = {"test": CommandOverlay()}
-
-
-@pytest.fixture(autouse=True)
-def _reset_dashboard_sync_flag():
-    DashboardView._synced = False
-    yield
-    DashboardView._synced = False
-
-
-@pytest.fixture
-def _mock_perform_sync():
-    with patch("teatree.core.views.dashboard.perform_sync"):
-        yield
 
 
 # ---------------------------------------------------------------------------
@@ -31,7 +18,6 @@ def _mock_perform_sync():
 
 
 class TestDashboardView(TestCase):
-    @pytest.mark.usefixtures("_mock_perform_sync")
     def test_renders_full_page(self) -> None:
         ticket = Ticket.objects.create(
             overlay="test",
@@ -63,7 +49,6 @@ class TestDashboardView(TestCase):
         assert b"Action Required" in response.content
         assert b"hx-get" in response.content
 
-    @pytest.mark.usefixtures("_mock_perform_sync")
     def test_renders_sync_button(self) -> None:
         response = Client().get(reverse("teatree:dashboard"))
 
@@ -176,7 +161,6 @@ class TestDashboardPanelView(TestCase):
 
 
 class TestOverlaySelector(TestCase):
-    @pytest.mark.usefixtures("_mock_perform_sync")
     def test_dashboard_passes_overlay_list_to_template(self) -> None:
         response = Client().get(reverse("teatree:dashboard"))
 
@@ -184,7 +168,6 @@ class TestOverlaySelector(TestCase):
         assert "overlays" in response.context
         assert "selected_overlay" in response.context
 
-    @pytest.mark.usefixtures("_mock_perform_sync")
     def test_dashboard_with_overlay_param_filters_snapshot(self) -> None:
         Ticket.objects.create(overlay="alpha", state=Ticket.State.STARTED)
         Ticket.objects.create(overlay="beta", state=Ticket.State.STARTED)
@@ -264,13 +247,13 @@ class TestSyncFollowupView(TestCase):
     def test_shows_errors(self) -> None:
         with patch(
             "teatree.core.views.actions.perform_sync",
-            return_value=SyncResult(errors=["GitLab token is not configured in overlay"]),
+            return_value=SyncResult(errors=["No code host token configured in overlay"]),
         ):
             response = Client().post(reverse("teatree:dashboard-sync"))
 
         assert response.status_code == 200
         assert b"Sync error" in response.content
-        assert b"GitLab token is not configured" in response.content
+        assert b"No code host token configured" in response.content
 
 
 # ---------------------------------------------------------------------------

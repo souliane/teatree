@@ -5,7 +5,7 @@ from unittest.mock import patch
 from typer.testing import CliRunner
 
 from teatree.cli import app
-from teatree.cli_tools import ToolRunner
+from teatree.cli.tools import ToolRunner
 
 runner = CliRunner()
 
@@ -20,7 +20,7 @@ class TestToolRunner:
         """ToolRunner.run_script succeeds for a passing script."""
         script = tmp_path / "ok_script.py"
         script.write_text("pass")
-        with patch("teatree.cli_tools.ToolRunner.scripts_dir", return_value=tmp_path):
+        with patch("teatree.cli.tools.ToolRunner.scripts_dir", return_value=tmp_path):
             ToolRunner.run_script("ok_script")
 
     def test_run_script_failure(self, tmp_path):
@@ -29,7 +29,7 @@ class TestToolRunner:
 
         script = tmp_path / "test_script.py"
         script.write_text("import sys; sys.exit(2)")
-        with patch("teatree.cli_tools.ToolRunner.scripts_dir", return_value=tmp_path):
+        with patch("teatree.cli.tools.ToolRunner.scripts_dir", return_value=tmp_path):
             try:
                 ToolRunner.run_script("test_script")
                 msg = "Expected Exit"
@@ -41,7 +41,7 @@ class TestToolRunner:
         """ToolRunner.run_script raises Exit when script not found."""
         import click  # noqa: PLC0415
 
-        with patch("teatree.cli_tools.ToolRunner.scripts_dir", return_value=tmp_path):
+        with patch("teatree.cli.tools.ToolRunner.scripts_dir", return_value=tmp_path):
             try:
                 ToolRunner.run_script("nonexistent_script")
                 msg = "Expected Exit"
@@ -52,19 +52,19 @@ class TestToolRunner:
 
 class TestToolCommands:
     def test_privacy_scan(self):
-        with patch("teatree.cli_tools.ToolRunner.run_script") as mock:
+        with patch("teatree.cli.tools.ToolRunner.run_script") as mock:
             result = runner.invoke(app, ["tool", "privacy-scan", "myfile.txt"])
             assert result.exit_code == 0
             mock.assert_called_once_with("privacy_scan", "myfile.txt")
 
     def test_analyze_video(self):
-        with patch("teatree.cli_tools.ToolRunner.run_script") as mock:
+        with patch("teatree.cli.tools.ToolRunner.run_script") as mock:
             result = runner.invoke(app, ["tool", "analyze-video", "/path/to/video.mp4"])
             assert result.exit_code == 0
             mock.assert_called_once_with("analyze_video", "/path/to/video.mp4")
 
     def test_bump_deps(self):
-        with patch("teatree.cli_tools.ToolRunner.run_script") as mock:
+        with patch("teatree.cli.tools.ToolRunner.run_script") as mock:
             result = runner.invoke(app, ["tool", "bump-deps"])
             assert result.exit_code == 0
             mock.assert_called_once_with("bump-pyproject-deps-from-lock-file")
@@ -85,7 +85,7 @@ class TestSonarCheck:
         script.touch()
         with (
             patch("teatree.cli._find_overlay_project", return_value=tmp_path),
-            patch("teatree.cli_tools.subprocess") as mock_sub,
+            patch("teatree.cli.tools.subprocess") as mock_sub,
         ):
             mock_sub.run.return_value = subprocess.CompletedProcess([], 0)
             result = runner.invoke(app, ["tool", "sonar-check", "/tmp/repo"])
@@ -102,7 +102,7 @@ class TestSonarCheck:
         script.touch()
         with (
             patch("teatree.cli._find_overlay_project", return_value=tmp_path),
-            patch("teatree.cli_tools.subprocess") as mock_sub,
+            patch("teatree.cli.tools.subprocess") as mock_sub,
         ):
             mock_sub.run.return_value = subprocess.CompletedProcess([], 0)
             result = runner.invoke(app, ["tool", "sonar-check", "--skip-baseline", "--remote", "--remote-status"])
@@ -120,7 +120,7 @@ class TestSonarCheck:
         monkeypatch.setenv("PWD", "/original/worktree")
         with (
             patch("teatree.cli._find_overlay_project", return_value=tmp_path),
-            patch("teatree.cli_tools.subprocess") as mock_sub,
+            patch("teatree.cli.tools.subprocess") as mock_sub,
         ):
             mock_sub.run.return_value = subprocess.CompletedProcess([], 0)
             result = runner.invoke(app, ["tool", "sonar-check", "--remote"])

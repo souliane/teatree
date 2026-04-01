@@ -3,7 +3,7 @@
 import re
 from typing import cast
 
-from teatree.utils.gitlab_api import GitLabAPI
+from teatree.backends.gitlab_api import GitLabAPI
 
 
 class GitLabCIService:

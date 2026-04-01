@@ -90,6 +90,7 @@ If the environment seems incomplete (missing `uv`, hooks not firing, overlay abs
 
 - `t3 workspace ticket` — creates a ticket directory with git worktrees for each affected repo.
 - Convention: one directory per ticket, one worktree per repo.
+- **One `t3 workspace ticket` call per ticket (Non-Negotiable).** Include ALL repos the ticket needs in a single call. Never run `t3 workspace ticket` a second time for the same ticket — it creates a separate directory with different ports, DBs, and env files, making `t3 lifecycle start` unable to coordinate all services. If a repo was forgotten, delete the workspace and recreate with all repos.
 - **NEVER use raw `git worktree add`, `git checkout -b`, or `git branch` directly.** Always use `t3 workspace ticket` — it creates the correct directory structure (`<ticket>/<repo>/`) and handles branch naming. Raw git commands produce flat worktrees that break the ticket-directory convention and confuse subsequent tooling.
 
 ### Worktree Setup
@@ -317,7 +318,7 @@ Before any setup or server operation, check [`references/troubleshooting.md`](re
 ## Skill File Locations & Symlink Chain
 
 ```text
-<agent-skills-dir>/t3-* → $T3_REPO/skills/*
+<agent-skills-dir>/* → $T3_REPO/skills/*
                             (SOURCE OF TRUTH)
 ```
 

@@ -77,7 +77,7 @@ class TestSyncFollowup(TestCase):
         with patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY):
             result = sync_followup.enqueue()
 
-        assert "GitLab token is not configured in overlay" in result.return_value["errors"]
+        assert "No code host token configured in overlay" in result.return_value["errors"]
 
 
 class TestExecuteHeadlessTask(TestCase):

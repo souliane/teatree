@@ -230,8 +230,11 @@ class TestBranchPrefix(TestCase):
 
 
 class TestWorkspaceDirHelper(TestCase):
-    def test_uses_t3_workspace_dir_setting(self) -> None:
-        with override_settings(T3_WORKSPACE_DIR="/tmp/ws-test"):
+    def test_uses_config_workspace_dir(self) -> None:
+        from teatree.config import TeaTreeConfig, UserSettings  # noqa: PLC0415
+
+        cfg = TeaTreeConfig(user=UserSettings(workspace_dir=Path("/tmp/ws-test")))
+        with patch("teatree.core.management.commands.workspace.load_config", return_value=cfg):
             result = _workspace_dir()
             assert result == Path("/tmp/ws-test")
 

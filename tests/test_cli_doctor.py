@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 from typer.testing import CliRunner
 
 from teatree.cli import app
-from teatree.cli_doctor import DoctorService, IntrospectionHelpers
+from teatree.cli.doctor import DoctorService, IntrospectionHelpers
 
 runner = CliRunner()
 
@@ -24,8 +24,8 @@ class TestDoctorService:
 
         with (
             patch("shutil.which", return_value="/usr/bin/t3"),
-            patch("teatree.cli_doctor.IntrospectionHelpers.editable_info", return_value=(False, "")),
-            patch("teatree.cli_doctor.IntrospectionHelpers.print_package_info"),
+            patch("teatree.cli.doctor.IntrospectionHelpers.editable_info", return_value=(False, "")),
+            patch("teatree.cli.doctor.IntrospectionHelpers.print_package_info"),
             patch("teatree.config.discover_active_overlay", return_value=active),
             patch("teatree.config.discover_overlays", return_value=entries),
         ):
@@ -34,8 +34,8 @@ class TestDoctorService:
     def test_show_info_no_overlay(self, capsys):
         with (
             patch("shutil.which", return_value=None),
-            patch("teatree.cli_doctor.IntrospectionHelpers.editable_info", return_value=(False, "")),
-            patch("teatree.cli_doctor.IntrospectionHelpers.print_package_info"),
+            patch("teatree.cli.doctor.IntrospectionHelpers.editable_info", return_value=(False, "")),
+            patch("teatree.cli.doctor.IntrospectionHelpers.print_package_info"),
             patch("teatree.config.discover_active_overlay", return_value=None),
             patch("teatree.config.discover_overlays", return_value=[]),
         ):
@@ -93,7 +93,7 @@ class TestDoctorService:
         claude_skills = tmp_path / "claude_skills"
         claude_skills.mkdir()
 
-        with patch("teatree.cli_doctor.DoctorService.collect_overlay_skills", return_value=[]):
+        with patch("teatree.cli.doctor.DoctorService.collect_overlay_skills", return_value=[]):
             created, fixed = DoctorService.repair_symlinks(skills_dir, claude_skills)
             assert created == 1
             assert fixed == 0
@@ -109,7 +109,7 @@ class TestDoctorService:
         claude_skills = tmp_path / "claude_skills"
         claude_skills.mkdir()
 
-        with patch("teatree.cli_doctor.DoctorService.collect_overlay_skills", return_value=[]):
+        with patch("teatree.cli.doctor.DoctorService.collect_overlay_skills", return_value=[]):
             created, fixed = DoctorService.repair_symlinks(skills_dir, claude_skills)
             assert created == 0
             assert fixed == 0
@@ -128,7 +128,7 @@ class TestDoctorService:
         wrong_target.mkdir()
         (claude_skills / "code").symlink_to(wrong_target)
 
-        with patch("teatree.cli_doctor.DoctorService.collect_overlay_skills", return_value=[]):
+        with patch("teatree.cli.doctor.DoctorService.collect_overlay_skills", return_value=[]):
             created, fixed = DoctorService.repair_symlinks(skills_dir, claude_skills)
             assert created == 1  # re-created after unlinking
             assert fixed == 1
@@ -145,7 +145,7 @@ class TestDoctorService:
         # A real directory, not a symlink
         (claude_skills / "code").mkdir()
 
-        with patch("teatree.cli_doctor.DoctorService.collect_overlay_skills", return_value=[]):
+        with patch("teatree.cli.doctor.DoctorService.collect_overlay_skills", return_value=[]):
             created, fixed = DoctorService.repair_symlinks(skills_dir, claude_skills)
             assert created == 0
             assert fixed == 0
@@ -161,7 +161,7 @@ class TestDoctorService:
         claude_skills.mkdir()
         (claude_skills / "code").symlink_to(skill)
 
-        with patch("teatree.cli_doctor.DoctorService.collect_overlay_skills", return_value=[]):
+        with patch("teatree.cli.doctor.DoctorService.collect_overlay_skills", return_value=[]):
             created, fixed = DoctorService.repair_symlinks(skills_dir, claude_skills)
             assert created == 0
             assert fixed == 0
@@ -183,7 +183,7 @@ class TestDoctorService:
         active = OverlayEntry(name="test", overlay_class="tests.teatree_core.conftest.CommandOverlay")
         with (
             patch("teatree.config.discover_active_overlay", return_value=active),
-            patch("teatree.cli_doctor.IntrospectionHelpers.editable_info", return_value=(False, "")),
+            patch("teatree.cli.doctor.IntrospectionHelpers.editable_info", return_value=(False, "")),
         ):
             result = DoctorService.check_editable_sanity()
             assert isinstance(result, list)
@@ -204,7 +204,7 @@ class TestDoctorService:
         with (
             patch("django.setup"),
             patch("django.conf.settings", mock_settings),
-            patch("teatree.cli_doctor.IntrospectionHelpers.editable_info", return_value=(False, "")),
+            patch("teatree.cli.doctor.IntrospectionHelpers.editable_info", return_value=(False, "")),
             patch("teatree.core.overlay_loader.get_all_overlays", return_value={}),
         ):
             result = DoctorService.check_editable_sanity()
@@ -219,7 +219,7 @@ class TestDoctorService:
         with (
             patch("django.setup"),
             patch("django.conf.settings", mock_settings),
-            patch("teatree.cli_doctor.IntrospectionHelpers.editable_info", return_value=(True, "file:///src")),
+            patch("teatree.cli.doctor.IntrospectionHelpers.editable_info", return_value=(True, "file:///src")),
             patch("teatree.core.overlay_loader.get_all_overlays", return_value={}),
         ):
             result = DoctorService.check_editable_sanity()
@@ -243,7 +243,7 @@ class TestDoctorService:
         with (
             patch("django.setup"),
             patch("django.conf.settings", mock_settings),
-            patch("teatree.cli_doctor.IntrospectionHelpers.editable_info", side_effect=editable_info),
+            patch("teatree.cli.doctor.IntrospectionHelpers.editable_info", side_effect=editable_info),
             patch("teatree.core.overlay_loader.get_all_overlays", return_value={"test": mock_overlay}),
             patch("importlib.metadata.packages_distributions", return_value={"my_overlay": ["my-overlay"]}),
         ):
@@ -268,7 +268,7 @@ class TestDoctorService:
         with (
             patch("django.setup"),
             patch("django.conf.settings", mock_settings),
-            patch("teatree.cli_doctor.IntrospectionHelpers.editable_info", side_effect=editable_info),
+            patch("teatree.cli.doctor.IntrospectionHelpers.editable_info", side_effect=editable_info),
             patch("teatree.core.overlay_loader.get_all_overlays", return_value={"test": mock_overlay}),
             patch("importlib.metadata.packages_distributions", return_value={"my_overlay": ["my-overlay"]}),
         ):
@@ -288,7 +288,7 @@ class TestDoctorService:
         with (
             patch("django.setup"),
             patch("django.conf.settings", mock_settings),
-            patch("teatree.cli_doctor.IntrospectionHelpers.editable_info", return_value=(False, "")),
+            patch("teatree.cli.doctor.IntrospectionHelpers.editable_info", return_value=(False, "")),
             patch("teatree.core.overlay_loader.get_all_overlays", return_value={"test": mock_overlay}),
             patch("importlib.metadata.packages_distributions", return_value={"my_overlay": ["my-overlay"]}),
         ):
@@ -337,7 +337,7 @@ class TestIntrospectionHelpers:
     def test_installed(self, capsys):
         with (
             patch("importlib.import_module") as mock_import,
-            patch("teatree.cli_doctor.IntrospectionHelpers.editable_info", return_value=(False, "")),
+            patch("teatree.cli.doctor.IntrospectionHelpers.editable_info", return_value=(False, "")),
         ):
             mock_mod = MagicMock()
             mock_mod.__file__ = "/usr/lib/python/teatree/__init__.py"
@@ -353,7 +353,7 @@ class TestIntrospectionHelpers:
     def test_editable_with_url(self, capsys):
         with (
             patch("importlib.import_module") as mock_import,
-            patch("teatree.cli_doctor.IntrospectionHelpers.editable_info", return_value=(True, "file:///src")),
+            patch("teatree.cli.doctor.IntrospectionHelpers.editable_info", return_value=(True, "file:///src")),
         ):
             mock_mod = MagicMock()
             mock_mod.__file__ = "/src/teatree/__init__.py"
@@ -364,7 +364,7 @@ class TestIntrospectionHelpers:
         """_print_package_info doesn't print URL when editable but no url."""
         with (
             patch("importlib.import_module") as mock_import,
-            patch("teatree.cli_doctor.IntrospectionHelpers.editable_info", return_value=(True, "")),
+            patch("teatree.cli.doctor.IntrospectionHelpers.editable_info", return_value=(True, "")),
         ):
             mock_mod = MagicMock()
             mock_mod.__file__ = "/src/teatree/__init__.py"
@@ -393,7 +393,7 @@ class TestDoctorCommands:
         with (
             patch("teatree.agents.skill_bundle.DEFAULT_SKILLS_DIR", skills_dir),
             patch("pathlib.Path.home", return_value=tmp_path),
-            patch("teatree.cli_doctor.DoctorService.collect_overlay_skills", return_value=[]),
+            patch("teatree.cli.doctor.DoctorService.collect_overlay_skills", return_value=[]),
         ):
             # Create the .claude/skills dir where the command expects it
             real_claude_skills = tmp_path / ".claude" / "skills"
@@ -428,7 +428,7 @@ class TestDoctorCommands:
             patch("teatree.agents.skill_bundle.DEFAULT_SKILLS_DIR", skills_dir),
             patch("pathlib.Path.home", return_value=tmp_path),
             patch(
-                "teatree.cli_doctor.DoctorService.collect_overlay_skills", return_value=[(overlay_skill, "t3-overlay")]
+                "teatree.cli.doctor.DoctorService.collect_overlay_skills", return_value=[(overlay_skill, "t3-overlay")]
             ),
         ):
             claude_skills = tmp_path / ".claude" / "skills"
@@ -443,7 +443,7 @@ class TestDoctorCommands:
     def test_check_ok(self):
         """Doctor check passes when all checks pass."""
         with (
-            patch("teatree.cli_doctor.DoctorService.check_editable_sanity", return_value=[]),
+            patch("teatree.cli.doctor.DoctorService.check_editable_sanity", return_value=[]),
         ):
             result = runner.invoke(app, ["doctor", "check"])
             assert result.exit_code == 0
@@ -452,7 +452,7 @@ class TestDoctorCommands:
     def test_check_with_warnings(self):
         """Doctor check shows warnings."""
         with patch(
-            "teatree.cli_doctor.DoctorService.check_editable_sanity",
+            "teatree.cli.doctor.DoctorService.check_editable_sanity",
             return_value=["teatree is editable but not declared"],
         ):
             result = runner.invoke(app, ["doctor", "check"])
@@ -462,8 +462,8 @@ class TestDoctorCommands:
     def test_check_fails_when_required_tool_missing(self):
         """Doctor check fails when a required tool is not on PATH."""
         with (
-            patch("teatree.cli_doctor.shutil.which", side_effect=lambda t: None if t == "direnv" else f"/usr/bin/{t}"),
-            patch("teatree.cli_doctor.DoctorService.check_editable_sanity", return_value=[]),
+            patch("teatree.cli.doctor.shutil.which", side_effect=lambda t: None if t == "direnv" else f"/usr/bin/{t}"),
+            patch("teatree.cli.doctor.DoctorService.check_editable_sanity", return_value=[]),
         ):
             result = runner.invoke(app, ["doctor", "check"])
             assert result.exit_code == 0  # typer returns 0; check() returns bool
@@ -490,8 +490,8 @@ class TestDoctorCommands:
         """Doctor info delegates to _show_info."""
         with (
             patch("shutil.which", return_value="/usr/local/bin/t3"),
-            patch("teatree.cli_doctor.IntrospectionHelpers.editable_info", return_value=(False, "")),
-            patch("teatree.cli_doctor.IntrospectionHelpers.print_package_info"),
+            patch("teatree.cli.doctor.IntrospectionHelpers.editable_info", return_value=(False, "")),
+            patch("teatree.cli.doctor.IntrospectionHelpers.print_package_info"),
             patch("teatree.config.discover_active_overlay", return_value=None),
             patch("teatree.config.discover_overlays", return_value=[]),
         ):

@@ -67,7 +67,9 @@ class Migration(migrations.Migration):
                 (
                     "session",
                     models.ForeignKey(
-                        on_delete=django.db.models.deletion.CASCADE, related_name="tasks", to="core.session"
+                        on_delete=django.db.models.deletion.CASCADE,
+                        related_name="tasks",
+                        to="core.session",
                     ),
                 ),
             ],
@@ -95,7 +97,9 @@ class Migration(migrations.Migration):
                 (
                     "task",
                     models.ForeignKey(
-                        on_delete=django.db.models.deletion.CASCADE, related_name="attempts", to="core.task"
+                        on_delete=django.db.models.deletion.CASCADE,
+                        related_name="attempts",
+                        to="core.task",
                     ),
                 ),
             ],
@@ -135,7 +139,7 @@ class Migration(migrations.Migration):
                         condition=models.Q(("issue_url", ""), _negated=True),
                         fields=("issue_url",),
                         name="unique_nonempty_issue_url",
-                    )
+                    ),
                 ],
             },
         ),
@@ -143,14 +147,18 @@ class Migration(migrations.Migration):
             model_name="task",
             name="ticket",
             field=models.ForeignKey(
-                on_delete=django.db.models.deletion.CASCADE, related_name="tasks", to="core.ticket"
+                on_delete=django.db.models.deletion.CASCADE,
+                related_name="tasks",
+                to="core.ticket",
             ),
         ),
         migrations.AddField(
             model_name="session",
             name="ticket",
             field=models.ForeignKey(
-                on_delete=django.db.models.deletion.CASCADE, related_name="sessions", to="core.ticket"
+                on_delete=django.db.models.deletion.CASCADE,
+                related_name="sessions",
+                to="core.ticket",
             ),
         ),
         migrations.CreateModel(
@@ -179,7 +187,9 @@ class Migration(migrations.Migration):
                 (
                     "ticket",
                     models.ForeignKey(
-                        on_delete=django.db.models.deletion.CASCADE, related_name="worktrees", to="core.ticket"
+                        on_delete=django.db.models.deletion.CASCADE,
+                        related_name="worktrees",
+                        to="core.ticket",
                     ),
                 ),
             ],

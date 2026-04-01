@@ -37,7 +37,7 @@ src/teatree/           Python package (the Django app + CLI)
   config.py            ~/.teatree.toml parsing, overlay discovery
   skill_map.py         Skill delegation map (phase → companion skills)
   core/                Django app: models, managers, views, selectors, management commands
-    models.py          Ticket, Worktree, Session, Task, TaskAttempt (FSM states)
+    models/            Ticket, Worktree, Session, Task, TaskAttempt (FSM states)
     selectors.py       Selector functions for dashboard views (no domain logic in views)
     overlay.py         OverlayBase ABC — extension point for downstream projects
     overlay_loader.py  Loads the active overlay class from Django settings
@@ -65,7 +65,7 @@ skills/*/              Workflow skills (SKILL.md + references/)
 tests/                 Pytest suite (100% coverage required)
 e2e/                   Playwright E2E tests for dashboard
 scripts/               Standalone Python CLI scripts
-integrations/          Agent platform hooks (Claude Code ensure-skills-loaded, etc.)
+hooks/                 Agent platform hooks (Claude Code ensure-skills-loaded, etc.)
 ```
 
 ## 5 Models
@@ -230,7 +230,7 @@ bash dev/test-matrix.sh             # Docker matrix: Python 3.13 + 3.14 (MANDATO
 
 ## Working on Skills
 
-**Skills are in this repo.** When `/t3-retro` identifies a skill gap, improvements go directly into `skills/*/`.
+**Skills are in this repo.** When `/t3:retro` identifies a skill gap, improvements go directly into `skills/*/`.
 
 After modifying skills: `prek run --all-files` then `uv run pytest` then commit.
 

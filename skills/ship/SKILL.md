@@ -31,9 +31,18 @@ From "code is done" to "MR is merged."
 
 ## Dependencies
 
-- **t3-workspace** (required) — provides environment context. **Load `/t3:workspace` now** if not already loaded.
+- **workspace** (required) — provides environment context. **Load `/t3:workspace` now** if not already loaded.
 
 ## Workflow
+
+### 0. Ticket-Required Overlay Gate (Non-Negotiable)
+
+When the active overlay has `require_ticket = True`, refuse to commit or push without a ticket reference.
+
+- **Detection:** check `overlay.config.require_ticket`. Overlays that dogfood their own workflow enable this flag.
+- **Every commit must include** `Fixes #<number>`, `Closes #<number>`, or `Relates-to #<number>` in the message body.
+- **If no ticket context exists:** ask "Which ticket is this for?" Do not proceed without a ticket reference.
+- **Exception:** commits from `/t3:retro` (format `fix(<skill>): ...`) are exempt — retro findings are small tactical fixes committed directly on the current branch.
 
 ### 1. Commit
 
@@ -83,6 +92,14 @@ Skipping this step is the #1 cause of wasted push-fix-push cycles. The rules exi
 
 - Cancel stale pipelines before pushing (if branch has an existing MR).
 - Push to remote.
+
+### 4b. Review Gate (Non-Negotiable)
+
+Before creating an MR, the `pr create` command automatically checks the session gate:
+
+- **shipping** requires prior `testing` and `reviewing` phases
+- If no review session ran for this ticket, `pr create` returns an error with a hint to run `/t3:review`
+- Use `--skip-validation` only when explicitly told to bypass gates
 
 ### 5. Create MR/PR
 
@@ -140,6 +157,7 @@ After delivery is complete (MR created, pipeline green), run `/t3:retro` to capt
 - **Cancel stale pipelines** before every push to a branch with an existing MR.
 - **Cancel running pipelines when closing an MR/PR.** When an MR is closed (abandoned, superseded, or replaced), cancel any running or pending pipelines for that branch immediately — they waste CI resources on code that will never be merged.
 - **Clickable references:** Every MR, ticket, or note reference must be a markdown link — see [`../t3:rules/SKILL.md`](../t3:rules/SKILL.md) § "Clickable References".
+- **Commit early, commit often (Non-Negotiable).** Never accumulate more than 1-2 tickets of uncommitted changes. Commit after completing each ticket or logical unit of work. Use `--no-verify` if pre-commit hooks are slow — small frequent commits are always safer than one big commit. Squash later with `git rebase`.
 - **Never push without explicit approval (Non-Negotiable).** Squash approval ≠ push approval. "All done" ≠ push approval. Rebase approval ≠ force-push approval. Always present the final state and ask "Push?" before running `git push`. For force-push (`--force-with-lease`), get **separate explicit confirmation** even if the user already approved the rebase — force-push is destructive and warrants its own approval step. This applies to ALL repos, ALL contexts.
 - **Squash with `git reset --soft`, not interactive rebase.** `git rebase -i` with custom editors is fragile when pre-commit hooks run on each commit. Use `git reset --soft HEAD~N && git commit` for adjacent commits, or cherry-pick for non-adjacent ones.
 - **Respect commit trailer preferences.** Check the user's global agent config for rules about `Co-Authored-By` trailers before committing. Some users explicitly opt out. When in doubt, **do not add trailers** — the user can always configure their agent to add them.

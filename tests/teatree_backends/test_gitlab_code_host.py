@@ -1,7 +1,7 @@
 from unittest.mock import MagicMock
 
 from teatree.backends.gitlab import GitLabCodeHost
-from teatree.utils.gitlab_api import GitLabAPI, ProjectInfo
+from teatree.backends.gitlab_api import GitLabAPI, ProjectInfo
 
 
 def _project() -> ProjectInfo:

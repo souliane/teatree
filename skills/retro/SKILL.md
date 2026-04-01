@@ -23,8 +23,8 @@ metadata:
 
 ## Dependencies
 
-- **t3-rules** (required) — cross-cutting agent safety rules. Auto-loaded via `requires:`.
-- **t3-workspace** (required) — provides worktree context and `t3` CLI commands. **Load `/t3:workspace` now** if not already loaded.
+- **rules** (required) — cross-cutting agent safety rules. Auto-loaded via `requires:`.
+- **workspace** (required) — provides worktree context and `t3` CLI commands. **Load `/t3:workspace` now** if not already loaded.
 
 Optional: If `T3_REVIEW_SKILL` is configured (e.g., `ac-reviewing-skills`), retro recommends running it after skill modifications for deeper architectural quality assurance. Retro is lightweight and tactical; the review skill is methodical and systematic.
 
@@ -251,7 +251,7 @@ Retro can also modify core teatree skills in the user's fork:
 | What to fix | Where to write |
 |---|---|
 | Infrastructure/worktree failure | `$T3_REPO/skills/workspace/references/troubleshooting.md` |
-| Hook should have triggered | `$T3_REPO/integrations/.../ensure-skills-loaded.sh` |
+| Hook should have triggered | `$T3_REPO/hooks/.../ensure-skills-loaded.sh` |
 | Missing verification step | The core skill that owns that workflow phase |
 | Stale or incorrect guidance in a core skill | The affected skill's `SKILL.md` or reference file |
 
@@ -272,6 +272,7 @@ Retro can also modify core teatree skills in the user's fork:
 - **Skills over personal config (Non-Negotiable).** When fixing an issue, always prefer updating **skill files** (`SKILL.md`, `references/`) over writing to user-specific config (the agent's personal config and memory files). Skills benefit ALL users; personal config only helps one machine. Memory/config files are only for: user preferences (formatting, tone), environment-specific facts (paths, usernames, credentials), and user-specific workflow choices. Guardrails, troubleshooting, patterns, and "do this not that" rules belong in skills. **Checklist before writing to memory/config:** "Would another user of these skills need this too?" — if yes, put it in a skill. When in doubt, prefer skill files over personal config — skills are portable, personal config is not.
 - **Scan personal config for promotable entries.** During every retro, read the agent's memory and personal config files. Any entry that encodes a guardrail, pattern, or "do this not that" rule (not a user preference or env-specific fact) should be **promoted to the appropriate skill file**. However, always-loaded agent config/memory files serve as a safety net — critical guardrails that are already in skills may still deserve a one-line reminder there, because skills are only available when loaded. When keeping a duplicate, mark it clearly as "Safety net — source: `<skill> § <section>`" to prevent drift. Only fully remove entries that are truly redundant (pure cross-references with no actionable content).
 - **Prefer deterministic helpers over repeated manual work.** If the same audit or extraction step is likely to recur, capture it in a shell/Python helper or reusable command snippet and document where it lives.
+- **Ask about backward compatibility before adding compat shims.** When a retro fix involves renaming, removing, or changing an API, ask the user whether backward compatibility matters before adding wrappers, re-exports, or deprecation paths. Clean code is preferred over compat shims unless the user explicitly needs them.
 
 ### 5. Playbook Lifecycle
 

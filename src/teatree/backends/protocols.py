@@ -30,7 +30,12 @@ class CodeHost(Protocol):
     def post_mr_note(self, *, repo: str, mr_iid: int, body: str) -> dict[str, object]: ...  # pragma: no branch
 
     def update_mr_note(
-        self, *, repo: str, mr_iid: int, note_id: int, body: str
+        self,
+        *,
+        repo: str,
+        mr_iid: int,
+        note_id: int,
+        body: str,
     ) -> dict[str, object]: ...  # pragma: no branch
 
     def list_mr_notes(self, *, repo: str, mr_iid: int) -> list[dict[str, object]]: ...  # pragma: no branch

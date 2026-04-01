@@ -75,7 +75,8 @@ class Command(TyperCommand):
 
     @command(name="reset-passwords")
     def reset_passwords(
-        self, path: str = typer.Option("", help="Worktree path (auto-detects from PWD if empty).")
+        self,
+        path: str = typer.Option("", help="Worktree path (auto-detects from PWD if empty)."),
     ) -> str:
         """Reset all user passwords to a known dev value."""
         worktree = resolve_worktree(path)

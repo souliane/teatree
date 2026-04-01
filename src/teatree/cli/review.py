@@ -30,14 +30,14 @@ class ReviewService:
             check=False,
         )
         for line in result.stderr.splitlines():
-            if "Token:" in line:
-                parts = line.split(":", 1)
-                if len(parts) == _TOKEN_PARTS_COUNT:  # pragma: no branch
-                    return parts[1].strip()
+            if "Token" in line and ":" in line:
+                token_value = line.rsplit(":", 1)[-1].strip()
+                if token_value:
+                    return token_value
         return ""
 
     def _get_api(self):  # noqa: ANN202
-        from teatree.utils.gitlab_api import GitLabAPI  # noqa: PLC0415
+        from teatree.backends.gitlab_api import GitLabAPI  # noqa: PLC0415
 
         return GitLabAPI(token=self.token)
 

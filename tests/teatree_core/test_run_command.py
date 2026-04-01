@@ -178,9 +178,9 @@ class TestRunCommand(TestCase):
 
 
 class TestCliOverlay:
-    @patch("teatree.cli_overlay.subprocess.run")
+    @patch("teatree.cli.overlay.subprocess.run")
     def test_managepy_calls_uv(self, mock_run: MagicMock, tmp_path: Path) -> None:
-        from teatree.cli_overlay import managepy  # noqa: PLC0415
+        from teatree.cli.overlay import managepy  # noqa: PLC0415
 
         (tmp_path / "manage.py").write_text("# stub", encoding="utf-8")
         managepy(tmp_path, "migrate", "--no-input")
@@ -191,10 +191,10 @@ class TestCliOverlay:
         assert cmd[1:3] == ["--directory", str(tmp_path)]
         assert cmd[-2:] == ["migrate", "--no-input"]
 
-    @patch("teatree.cli_overlay.subprocess.run")
+    @patch("teatree.cli.overlay.subprocess.run")
     @patch.dict("os.environ", {"DJANGO_SETTINGS_MODULE": "acme.settings"})
     def test_uvicorn_launches_asgi_with_reload(self, mock_run: MagicMock, tmp_path: Path) -> None:
-        from teatree.cli_overlay import _uvicorn  # noqa: PLC0415
+        from teatree.cli.overlay import _uvicorn  # noqa: PLC0415
 
         (tmp_path / "manage.py").write_text("pass\n")
         _uvicorn(tmp_path, "127.0.0.1", 8000)
@@ -212,9 +212,9 @@ class TestCliOverlay:
         call_env = mock_run.call_args[1]["env"]
         assert call_env["DJANGO_SETTINGS_MODULE"] == "teatree.settings"
 
-    @patch("teatree.cli_overlay.subprocess.run")
+    @patch("teatree.cli.overlay.subprocess.run")
     def test_uvicorn_none_project_path_falls_back(self, mock_run: MagicMock) -> None:
-        from teatree.cli_overlay import _uvicorn  # noqa: PLC0415
+        from teatree.cli.overlay import _uvicorn  # noqa: PLC0415
 
         mock_run.return_value = MagicMock(returncode=0)
         _uvicorn(None, "127.0.0.1", 8000)
@@ -252,7 +252,7 @@ class TestPortPreservation(TestCase):
                     staticmethod(lambda port: port not in {8001, 4201, 5433}),
                 ),
                 patch("teatree.utils.ports.port_in_use", side_effect=lambda port: port in {8001, 4201, 5433}),
-                patch("teatree.core.models.worktree.settings.T3_WORKSPACE_DIR", str(workspace)),
+                patch("teatree.core.models.worktree._workspace_dir", return_value=Path(str(workspace))),
                 patch(
                     "teatree.core.management.commands.lifecycle.subprocess.run",
                     side_effect=lambda *a, **kw: CompletedProcess(a[0], 0, "", ""),
@@ -309,7 +309,7 @@ class TestPortPreservation(TestCase):
                     staticmethod(lambda port: port not in {8001, 4201, 5433}),
                 ),
                 patch("teatree.utils.ports.port_in_use", side_effect=lambda port: port in {8001, 4201, 5433}),
-                patch("teatree.core.models.worktree.settings.T3_WORKSPACE_DIR", str(workspace)),
+                patch("teatree.core.models.worktree._workspace_dir", return_value=Path(str(workspace))),
                 patch("teatree.core.management.commands.run.subprocess.run", side_effect=fake_run),
                 patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             ):
@@ -361,7 +361,7 @@ class TestPortPreservation(TestCase):
                     staticmethod(lambda port: port not in {8001, 4201, 5433}),
                 ),
                 patch("teatree.utils.ports.port_in_use", side_effect=lambda port: port in {8001, 4201, 5433}),
-                patch("teatree.core.models.worktree.settings.T3_WORKSPACE_DIR", str(workspace)),
+                patch("teatree.core.models.worktree._workspace_dir", return_value=Path(str(workspace))),
                 patch("teatree.core.management.commands.run.subprocess.run", side_effect=fake_run),
                 patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             ):

@@ -97,10 +97,22 @@ def _auto_register_from_git(cwd: str) -> Worktree | None:
     return wt
 
 
+def _is_main_clone(path: str) -> bool:
+    """Return True if *path* is a main git clone (not a worktree).
+
+    Git worktrees have ``.git`` as a file pointing to the main repo's
+    ``.git/worktrees/<name>`` directory. Main clones have ``.git`` as a
+    directory.
+    """
+    git_marker = Path(path) / ".git"
+    return git_marker.is_dir()
+
+
 def resolve_worktree(path: str = "") -> Worktree:
     """Resolve a worktree from *path* or the user's CWD.
 
-    Raises ``WorktreeNotFoundError`` if no worktree can be found.
+    Raises ``WorktreeNotFoundError`` if no worktree can be found or if
+    the resolved path is a main repo clone (not a worktree).
     """
     cwd = path or _get_user_cwd()
 
@@ -117,6 +129,13 @@ def resolve_worktree(path: str = "") -> Worktree:
     # 2. Match CWD directly against stored worktree paths
     wt = _match_worktree_by_path(cwd)
     if wt is not None:
+        wt_path = (wt.extra or {}).get("worktree_path", "")
+        if wt_path and _is_main_clone(wt_path):
+            msg = (
+                f"Refusing to operate on main clone at {wt_path}.\n"
+                "Create a worktree first: t3 <overlay> workspace ticket <issue_url>"
+            )
+            raise WorktreeNotFoundError(msg)
         return wt
 
     # 3. Detect git worktree from filesystem and auto-register

@@ -1,7 +1,7 @@
 from pathlib import Path
 
+from teatree.backends.gitlab_api import GitLabAPI, ProjectInfo
 from teatree.core.overlay import OverlayBase
-from teatree.utils.gitlab_api import GitLabAPI, ProjectInfo
 
 
 def get_client(overlay: OverlayBase | None = None) -> GitLabAPI:

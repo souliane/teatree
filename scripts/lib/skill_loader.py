@@ -1,17 +1,15 @@
 """Skill suggestion engine for the UserPromptSubmit hook.
 
-Called by ensure-skills-loaded.sh to detect user intent, resolve companion
-and supplementary skills, and return a deduped suggestion list.
+Called by ensure-skills-loaded.sh to detect user intent and return a
+deduped suggestion list via ``SkillLoadingPolicy``.
 
 Trigger patterns are read from SKILL.md frontmatter (``triggers:`` field),
 not hardcoded.  A cached trigger index in the XDG data directory is used
 when available; otherwise skills are scanned on the fly from
 ``skill_search_dirs``.
-
-Runs with PYTHONPATH=$T3_REPO/scripts — no teatree package imports.
 """
 
-from __future__ import annotations  # noqa: TID251 — standalone script, no teatree package imports
+from __future__ import annotations  # noqa: TID251
 
 import json
 import re
@@ -241,123 +239,6 @@ def read_supplementary_skills(config_path: str, prompt: str) -> list[str]:
     return matched
 
 
-# ── Dependency resolution ────────────────────────────────────────────
-
-
-def _parse_skill_requires(skill_md_text: str) -> list[str]:
-    """Extract the requires: list from SKILL.md YAML frontmatter."""
-    if not skill_md_text.startswith("---"):
-        return []
-    try:
-        end = skill_md_text.index("---", 3)
-    except ValueError:
-        return []
-    frontmatter = skill_md_text[3:end]
-    in_requires = False
-    requires: list[str] = []
-    for line in frontmatter.splitlines():
-        stripped = line.strip()
-        if stripped == "requires:":
-            in_requires = True
-            continue
-        if in_requires:
-            if stripped.startswith("- "):
-                requires.append(stripped.removeprefix("- ").strip())
-            else:
-                break
-    return requires
-
-
-def _find_skill_md(name: str, search_dirs: list[Path]) -> Path | None:
-    """Find SKILL.md for a skill name across search directories."""
-    for d in search_dirs:
-        candidate = d / name / "SKILL.md"
-        if candidate.is_file():
-            return candidate
-    return None
-
-
-def resolve_dependencies(skills: list[str], search_dirs: list[Path]) -> list[str]:
-    """Recursively resolve requires: from SKILL.md frontmatter.
-
-    Returns dependencies in topological order (deps before dependents).
-    """
-    resolved: list[str] = []
-    seen: set[str] = set()
-
-    def _walk(name: str) -> None:
-        if name in seen:
-            return
-        seen.add(name)
-        skill_md = _find_skill_md(name, search_dirs)
-        if skill_md is not None:
-            try:
-                text = skill_md.read_text(encoding="utf-8")
-            except OSError:
-                text = ""
-            for dep in _parse_skill_requires(text):
-                _walk(dep)
-        if name not in resolved:
-            resolved.append(name)
-
-    for skill in skills:
-        _walk(skill)
-    return resolved
-
-
-# ── Overlay discovery (lightweight) ──────────────────────────────────
-
-
-def _find_overlay_skill_dir(search_dirs: list[Path]) -> tuple[str, str]:
-    """Find the overlay skill directory and project name from skill metadata cache.
-
-    Returns (overlay_skill_dir, project_overlay) or ("", "").
-    """
-    if not SKILL_METADATA_CACHE.is_file():
-        return "", ""
-    try:
-        metadata = json.loads(SKILL_METADATA_CACHE.read_text(encoding="utf-8"))
-        skill_path = metadata.get("skill_path", "")
-        if not skill_path:
-            return "", ""
-        # skill_path is relative to the host project (e.g., "overlay/SKILL.md")
-        # We need to find the actual directory — check search_dirs
-        for d in search_dirs:
-            candidate = d / Path(skill_path).parent
-            if candidate.is_dir():
-                project_name = candidate.parent.name
-                return str(candidate), project_name
-        return "", ""
-    except (json.JSONDecodeError, OSError):
-        return "", ""
-
-
-# ── Project-type detection ───────────────────────────────────────────
-
-
-def _detect_framework_skills(cwd: str) -> list[str]:
-    """Detect framework skills from project indicators in cwd or ancestors."""
-    skills: list[str] = []
-    search = Path(cwd)
-    for directory in [search, *search.parents]:
-        # Django project (has manage.py) or Django library (django in deps)
-        if (directory / "manage.py").is_file():
-            skills.append("ac-django")
-            break
-        pyproject = directory / "pyproject.toml"
-        if pyproject.is_file():
-            try:
-                content = pyproject.read_text(encoding="utf-8")
-                if re.search(r'["\']django[>=<]', content, re.IGNORECASE):
-                    skills.append("ac-django")
-            except OSError:
-                pass
-            break  # Stop at pyproject.toml regardless
-        if directory == directory.parent:
-            break
-    return skills
-
-
 # ── Main entry point ─────────────────────────────────────────────────
 
 
@@ -369,7 +250,7 @@ def suggest_skills(data: dict) -> dict:
             loaded_skills, skill_search_dirs, supplementary_config.
 
     Returns:
-        Dict with keys: suggestions, intent, overlay_skill_dir, project_overlay.
+        Dict with keys: suggestions, intent.
 
     """
     prompt = data.get("prompt", "")

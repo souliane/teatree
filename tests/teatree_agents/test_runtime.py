@@ -78,10 +78,9 @@ class TestRunHeadlessTask(TestCase):
         cls.ticket = Ticket.objects.create()
         cls.session = Session.objects.create(ticket=cls.ticket, agent_id="agent-1")
 
-    @override_settings(TEATREE_HEADLESS_RUNTIME="test-sdk")
     def test_records_attempt_and_completes_work(self) -> None:
-        runtime = RecordingRuntime("test-sdk")
-        register_runtime("test-sdk", runtime)
+        runtime = RecordingRuntime("claude-code")
+        register_runtime("claude-code", runtime)
         task = Task.objects.create(ticket=self.ticket, session=self.session)
 
         result = run_headless_task(
@@ -92,15 +91,14 @@ class TestRunHeadlessTask(TestCase):
 
         task.refresh_from_db()
 
-        assert result.artifact_path == f"artifacts/task-{task.pk}-test-sdk.json"
+        assert result.artifact_path == f"artifacts/task-{task.pk}-claude-code.json"
         assert "/skills/acme/SKILL.md" in runtime.calls[0][1]
         assert "code" in runtime.calls[0][1]
         assert task.status == Task.Status.COMPLETED
         assert TaskAttempt.objects.count() == 1
 
-    @override_settings(TEATREE_HEADLESS_RUNTIME="failing")
     def test_records_failure_attempt_on_runtime_error(self) -> None:
-        register_runtime("failing", FailingRuntime())
+        register_runtime("claude-code", FailingRuntime())
         task = Task.objects.create(ticket=self.ticket, session=self.session)
 
         with pytest.raises(RuntimeError, match="runtime crashed"):

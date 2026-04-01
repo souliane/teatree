@@ -162,7 +162,7 @@ def fetch_project_items(
                 position=position,
                 labels=labels,
                 updated_at=str(content.get("updatedAt", "")),
-            )
+            ),
         )
 
     return items

@@ -17,6 +17,7 @@ DJANGO_GROUPS: dict[str, tuple[str, list[tuple[str, str]]]] = {
             ("status", "Return worktree state information."),
             ("teardown", "Tear down a worktree."),
             ("clean", "Teardown worktree — stop services, drop DB, clean state."),
+            ("start-full", "Zero to coding — create ticket, provision, start services."),
             ("diagram", "Print the lifecycle state diagram as Mermaid."),
         ],
     ),
@@ -64,6 +65,8 @@ DJANGO_GROUPS: dict[str, tuple[str, list[tuple[str, str]]]] = {
         "Async task queue.",
         [
             ("claim", "Claim the next available task."),
+            ("cancel", "Cancel a task by ID."),
+            ("list", "List tasks with optional filters."),
             ("work-next-sdk", "Claim and execute an headless task."),
             ("work-next-user-input", "Claim and execute a user input task."),
         ],
@@ -122,7 +125,11 @@ def managepy(project_path: Path | None, *args: str, overlay_name: str = "") -> N
 
 
 def _uvicorn(
-    project_path: Path | None, host: str, port: int, settings_module: str = "", overlay_name: str = ""
+    project_path: Path | None,
+    host: str,
+    port: int,
+    settings_module: str = "",
+    overlay_name: str = "",
 ) -> None:
     """Start uvicorn for the teatree ASGI application."""
     env = _base_env()
@@ -283,11 +290,14 @@ class OverlayAppBuilder:
         def start_ticket(
             issue_url: str = typer.Argument(help="Issue/ticket URL"),
             variant: str = typer.Option("", help="Tenant variant"),
+            description: str = typer.Option("", help="Short description for branch name"),
         ) -> None:
             """Zero to coding — create ticket, provision worktree, start services."""
-            args = ["workspace", "ticket", issue_url]
+            args = ["lifecycle", "start-full", issue_url]
             if variant:
                 args.extend(["--variant", variant])
+            if description:
+                args.extend(["--description", description])
             managepy(project_path, *args, overlay_name=overlay_name)
 
         @overlay_app.command(name="ship")
@@ -306,7 +316,14 @@ class OverlayAppBuilder:
             """Daily followup — sync MRs, check gates, remind reviewers."""
             managepy(project_path, "followup", "sync", overlay_name=overlay_name)
 
-        @overlay_app.command(name="agent")
+        self._register_agent_command()
+
+    def _register_agent_command(self) -> None:
+        """Register the ``agent`` overlay command."""
+        project_path = self.project_path
+        overlay_name = self.overlay_name
+
+        @self.overlay_app.command(name="agent")
         def overlay_agent(
             task: str = typer.Argument("", help="What to work on"),
             phase: str = typer.Option("", "--phase", help="Explicit TeaTree phase override."),

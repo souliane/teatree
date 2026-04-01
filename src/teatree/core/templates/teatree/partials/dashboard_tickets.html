@@ -141,6 +141,14 @@
                 <div class="flex flex-col gap-1">
                   {% if ticket.total_tasks > 0 %}
                     <span class="pill pill-xs bg-clay/10 text-clay">{{ ticket.ongoing_tasks }}/{{ ticket.total_tasks }}</span>
+                    <button
+                      class="pill-btn pill-xs border border-bark/20 bg-bark/5 text-bark/60 hover:bg-bark/10"
+                      hx-get="/tickets/{{ ticket.ticket_id }}/task-graph/"
+                      hx-target="#task-modal-body"
+                      hx-swap="innerHTML"
+                      onclick="openTaskModal()"
+                      title="View task graph"
+                    >Graph</button>
                   {% endif %}
                   <button
                     class="pill-btn pill-xs border border-moss/30 bg-moss/10 uppercase tracking-[0.18em] text-moss hover:bg-moss/20"

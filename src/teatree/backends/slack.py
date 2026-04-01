@@ -96,7 +96,7 @@ def search_review_permalinks(  # noqa: C901, PLR0912, PLR0913
                                 mr_url=clean_url,
                                 permalink=permalink,
                                 channel=channel_name,
-                            )
+                            ),
                         )
 
             if seen == mr_url_set:

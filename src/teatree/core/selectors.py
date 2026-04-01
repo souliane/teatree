@@ -1,3 +1,4 @@
+import operator
 import re
 import time
 from collections.abc import Callable
@@ -292,6 +293,41 @@ def build_task_detail(task_id: int) -> TaskDetail | None:
     )
 
 
+@dataclass(frozen=True, slots=True)
+class TaskGraphNode:
+    task_id: int
+    phase: str
+    status: str
+    execution_target: str
+    execution_reason: str
+    depth: int
+    children: list["TaskGraphNode"]
+
+
+def build_task_graph(ticket_id: int) -> list[TaskGraphNode]:
+    """Build a tree of tasks for a ticket, rooted at tasks with no parent."""
+    tasks = list(Task.objects.filter(ticket_id=ticket_id).select_related("parent_task").order_by("pk"))
+    children_map: dict[int | None, list[Task]] = {}
+    for task in tasks:
+        children_map.setdefault(task.parent_task_id, []).append(task)
+
+    def _build(parent_id: int | None, depth: int) -> list[TaskGraphNode]:
+        return [
+            TaskGraphNode(
+                task_id=task.pk,
+                phase=task.phase,
+                status=task.get_status_display(),
+                execution_target=task.get_execution_target_display(),
+                execution_reason=task.execution_reason[:120],
+                depth=depth,
+                children=_build(task.pk, depth + 1),
+            )
+            for task in children_map.get(parent_id, [])
+        ]
+
+    return _build(None, 0)
+
+
 _AUTOMATION_WINDOW_HOURS = 24
 
 
@@ -391,7 +427,7 @@ def build_dashboard_ticket_rows(overlay: str | None = None) -> list[DashboardTic
         )
         .order_by("pk")
     )
-    return [
+    rows = [
         DashboardTicketRow(
             ticket_id=ticket.pk,
             display_id=_display_id(ticket),
@@ -412,6 +448,38 @@ def build_dashboard_ticket_rows(overlay: str | None = None) -> list[DashboardTic
         )
         for ticket in tickets
     ]
+    return _sort_ticket_rows(rows)
+
+
+def _mr_latest_updated_at(row: DashboardTicketRow) -> str:
+    """Return the most recent MR updated_at for sorting (empty string if no MR)."""
+    extra = Ticket.objects.filter(pk=row.ticket_id).values_list("extra", flat=True).first()
+    if not isinstance(extra, dict):
+        return ""
+    mrs = extra.get("mrs", {})
+    if isinstance(mrs, dict):
+        timestamps = [str(mr.get("updated_at", "")) for mr in mrs.values() if isinstance(mr, dict)]
+        return max(timestamps, default="")
+    return str(extra.get("updated_at", ""))
+
+
+def _sort_ticket_rows(rows: list[DashboardTicketRow]) -> list[DashboardTicketRow]:
+    """Sort: tickets with MRs first (by updated_at DESC), then without MR by board position."""
+    with_mr: list[tuple[str, DashboardTicketRow]] = []
+    without_mr: list[tuple[int, DashboardTicketRow]] = []
+
+    for row in rows:
+        if row.mrs:
+            with_mr.append((_mr_latest_updated_at(row), row))
+        else:
+            extra = Ticket.objects.filter(pk=row.ticket_id).values_list("extra", flat=True).first()
+            position = int(extra.get("board_position", 9999)) if isinstance(extra, dict) else 9999
+            without_mr.append((position, row))
+
+    with_mr.sort(key=operator.itemgetter(0), reverse=True)
+    without_mr.sort(key=operator.itemgetter(0))
+
+    return [row for _, row in with_mr] + [row for _, row in without_mr]
 
 
 def _last_error_for_tasks(task_ids: list[int]) -> dict[int, str]:
@@ -493,7 +561,10 @@ def build_headless_queue(*, include_dismissed: bool = False, overlay: str | None
 
 
 def build_interactive_queue(
-    *, include_dismissed: bool = False, pending_only: bool = False, overlay: str | None = None
+    *,
+    include_dismissed: bool = False,
+    pending_only: bool = False,
+    overlay: str | None = None,
 ) -> list[DashboardTaskRow]:
     return _build_task_queue(
         Task.ExecutionTarget.INTERACTIVE,
@@ -563,7 +634,7 @@ def _check_mr(mr: dict, ticket: "Ticket") -> list[ActionRequiredItem]:
                 url=mr_url,
                 ticket_id=ticket.pk,
                 detail="CI green, no review posted yet",
-            )
+            ),
         )
 
     discussions = mr.get("discussions", [])
@@ -577,7 +648,7 @@ def _check_mr(mr: dict, ticket: "Ticket") -> list[ActionRequiredItem]:
                     url=mr_url,
                     ticket_id=ticket.pk,
                     detail="Review threads waiting for your response",
-                )
+                ),
             )
 
     if pipeline == "success" and mr.get("review_requested") and count < required:
@@ -588,7 +659,7 @@ def _check_mr(mr: dict, ticket: "Ticket") -> list[ActionRequiredItem]:
                 url=mr_url,
                 ticket_id=ticket.pk,
                 detail="Review requested, approval pending",
-            )
+            ),
         )
 
     return items
@@ -668,7 +739,7 @@ def build_active_sessions() -> list[ActiveSessionRow]:
                 session_id=session_id,
                 cwd=cwd,
                 name=name,
-            )
+            ),
         )
 
     return sessions
@@ -798,7 +869,7 @@ def _build_mr_rows(ticket: Ticket) -> list[DashboardMRRow]:
                 review_permalink=str(mr.get("review_permalink", "")),
                 e2e_test_plan_url=str(mr.get("e2e_test_plan_url", "")),
                 is_frontend=str(mr.get("repo", "")) in frontend_repos,
-            )
+            ),
         )
     return rows
 
@@ -844,7 +915,7 @@ def build_review_comments(overlay: str | None = None) -> list[DashboardReviewCom
                         status=_DISCUSSION_STATUS_DISPLAY.get(status_key, status_key),
                         detail_text=str(disc.get("detail", ""))[:120],
                         ticket_id=ticket.pk,
-                    )
+                    ),
                 )
     return rows
 
@@ -871,6 +942,6 @@ def build_recent_activity(overlay: str | None = None) -> list[RecentActivityRow]
                 error=attempt.error[:200] if attempt.error else "",
                 ended_at=attempt.ended_at.isoformat() if attempt.ended_at else "",
                 execution_target=attempt.get_execution_target_display(),
-            )
+            ),
         )
     return rows

@@ -134,14 +134,14 @@ class DoctorService:
             problems.append(
                 "TEATREE_EDITABLE=True but teatree is not editable. "
                 "Changes to teatree source will be lost. "
-                "Fix: add `teatree = { path = '...', editable = true }` to [tool.uv.sources]"
+                "Fix: add `teatree = { path = '...', editable = true }` to [tool.uv.sources]",
             )
         elif not teatree_should_be_editable and teatree_is_editable:
             problems.append(
                 "teatree is editable but TEATREE_EDITABLE is not set. "
                 "You risk accidentally modifying framework code. "
                 "Fix: set TEATREE_EDITABLE = True in settings.py if contributing, "
-                "or remove the editable source."
+                "or remove the editable source.",
             )
 
         # Check overlay discoverability via entry points
@@ -164,12 +164,12 @@ class DoctorService:
                 problems.append(
                     f"OVERLAY_EDITABLE=True but overlay ({overlay_dist}) is not editable. "
                     "Agent changes to overlay code will be lost. "
-                    "Fix: run `uv pip install -e .`"
+                    "Fix: run `uv pip install -e .`",
                 )
             elif not overlay_should_be_editable and overlay_is_editable:
                 problems.append(
                     f"Overlay ({overlay_dist}) is editable but OVERLAY_EDITABLE is not set. "
-                    "Fix: set OVERLAY_EDITABLE = True in settings.py if contributing."
+                    "Fix: set OVERLAY_EDITABLE = True in settings.py if contributing.",
                 )
 
         return problems

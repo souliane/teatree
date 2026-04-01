@@ -1,21 +1,27 @@
-"""Sync external data (GitLab MRs, issues) into the local database.
+"""Sync external data (MRs/PRs, issues, project boards) into the local database.
 
-Fetches the authenticated user's open MRs across all accessible projects
-and upserts them as Tickets.
+Dispatches to the appropriate backend (GitLab or GitHub) based on the
+active overlay's configuration.
 """
 
+import logging
 import re
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from django.core.cache import cache
 from django.utils import timezone
 
 from teatree.core.models import Ticket
-from teatree.utils.gitlab_api import GitLabAPI, ProjectInfo
+
+if TYPE_CHECKING:
+    from teatree.backends.gitlab_api import GitLabAPI, ProjectInfo
 
 LAST_SYNC_CACHE_KEY = "teatree_followup_last_sync"
 
 _REPO_PATH_RE = re.compile(r"gitlab\.com/(.+?)/-/merge_requests/")
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -30,19 +36,112 @@ class SyncResult:
 
 
 def sync_followup() -> SyncResult:
+    """Dispatch sync to the configured code host backend.
+
+    Routes to GitHub project board sync or GitLab MR sync based on
+    which credentials are configured in the active overlay.
+    """
+    from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
+
+    overlay = get_overlay()
+
+    if overlay.config.get_github_token():
+        return _sync_github(overlay)
+    if overlay.config.get_gitlab_token():
+        return _sync_gitlab(overlay)
+    return SyncResult(
+        errors=[
+            (
+                "No code host token configured. "
+                "Set github_token_pass_key or gitlab_token_pass_key in "
+                "overlay_settings.py, or override in ~/.teatree.toml "
+                "under [overlays.<name>]."
+            ),
+        ],
+    )
+
+
+# ── GitHub sync ──────────────────────────────────────────────────────
+
+
+def _sync_github(overlay: object) -> SyncResult:
+    """Sync issues from a GitHub Projects v2 board into Tickets."""
+    from teatree.backends.github import fetch_project_items  # noqa: PLC0415
+    from teatree.core.overlay import OverlayBase  # noqa: PLC0415
+
+    if not isinstance(overlay, OverlayBase):
+        return SyncResult(errors=["Invalid overlay"])
+
+    token = overlay.config.get_github_token()
+    owner = overlay.config.github_owner
+    project_number = overlay.config.github_project_number
+
+    if not owner or not project_number:
+        return SyncResult(errors=["GitHub owner or project number not configured"])
+
+    result = SyncResult()
+
+    try:
+        items = fetch_project_items(owner, project_number, token=token)
+    except Exception as exc:  # noqa: BLE001
+        return SyncResult(errors=[f"GitHub project fetch failed: {exc}"])
+
+    status_map = {
+        "Todo": Ticket.State.NOT_STARTED,
+        "In Progress": Ticket.State.STARTED,
+        "Done": Ticket.State.DELIVERED,
+    }
+
+    for item in items:
+        result.mrs_found += 1
+        state = status_map.get(item.status, Ticket.State.NOT_STARTED)
+        extra: dict[str, object] = {
+            "issue_title": item.title,
+            "board_position": item.position,
+            "board_status": item.status,
+            "labels": item.labels,
+            "updated_at": item.updated_at,
+        }
+
+        tickets = list(Ticket.objects.filter(issue_url=item.url).order_by("pk"))
+        if not tickets:
+            Ticket.objects.create(
+                issue_url=item.url,
+                repos=[owner.split("/")[-1]],
+                state=state,
+                extra=extra,
+            )
+            result.tickets_created += 1
+        else:
+            ticket = tickets[0]
+            # Preserve existing extra fields not set by sync
+            existing_extra = ticket.extra if isinstance(ticket.extra, dict) else {}
+            existing_extra.update(extra)
+            ticket.extra = existing_extra
+            ticket.state = state
+            ticket.save(update_fields=["extra", "state"])
+            result.tickets_updated += 1
+
+    return result
+
+
+# ── GitLab sync ──────────────────────────────────────────────────────
+
+
+def _sync_gitlab(overlay: object) -> SyncResult:
     """Fetch all open MRs for the current user and upsert Tickets.
 
     Uses the global ``/merge_requests`` endpoint so no per-repo configuration
     is needed.  On subsequent runs, only fetches MRs updated since the last
     successful sync (using GitLab's ``updated_after`` filter).
     """
-    from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
+    from teatree.backends.gitlab_api import GitLabAPI, ProjectInfo  # noqa: PLC0415
+    from teatree.core.overlay import OverlayBase  # noqa: PLC0415
 
-    overlay = get_overlay()
+    if not isinstance(overlay, OverlayBase):
+        return SyncResult(errors=["Invalid overlay"])
+
     token = overlay.config.get_gitlab_token()
-    if not token:
-        return SyncResult(errors=["GitLab token is not configured in overlay"])
-
     client = GitLabAPI(token=token)
     username = overlay.config.get_gitlab_username() or client.current_username()
     if not username:
@@ -90,8 +189,8 @@ def _extract_repo_path(mr: dict[str, object]) -> str:
 def _upsert_ticket_from_mr(  # noqa: PLR0913, PLR0914
     mr: dict[str, object],
     repo_path: str,
-    client: GitLabAPI,
-    project: ProjectInfo | None,
+    client: "GitLabAPI",
+    project: "ProjectInfo | None",
     result: SyncResult,
     *,
     username: str = "",
@@ -111,6 +210,7 @@ def _upsert_ticket_from_mr(  # noqa: PLR0913, PLR0914
         "draft": is_draft,
         "repo": repo_short,
         "iid": mr_iid,
+        "updated_at": str(mr.get("updated_at", "")),
     }
 
     # Enrich non-draft MRs with pipeline and approval data
@@ -281,7 +381,7 @@ def _apply_merged_status(ticket: Ticket, merged_urls: set[str], result: SyncResu
 
 
 def _detect_merged_mrs(
-    client: GitLabAPI,
+    client: "GitLabAPI",
     username: str,
     result: SyncResult,
     last_sync: str | None,
@@ -304,7 +404,7 @@ def _detect_merged_mrs(
 _ISSUE_PARTS_RE = re.compile(r"gitlab\.com/(.+?)/-/(?:issues|work_items)/(\d+)")
 
 
-def _resolve_issue(client: GitLabAPI, issue_url: str) -> tuple[dict, str, int] | None:
+def _resolve_issue(client: "GitLabAPI", issue_url: str) -> tuple[dict, str, int] | None:
     """Parse a GitLab issue/work-item URL and fetch the issue. Returns (issue, project_path, iid) or None."""
     match = _ISSUE_PARTS_RE.search(issue_url)
     if not match:
@@ -320,7 +420,7 @@ def _resolve_issue(client: GitLabAPI, issue_url: str) -> tuple[dict, str, int] |
     return (issue, project_path, iid) if issue else None
 
 
-def _apply_issue_data(client: GitLabAPI, ticket: Ticket, issue: dict, project_path: str, iid: int) -> bool:
+def _apply_issue_data(client: "GitLabAPI", ticket: Ticket, issue: dict, project_path: str, iid: int) -> bool:
     """Update a ticket with labels, title, variant, and tracker status from an issue. Returns True if saved."""
     labels = issue.get("labels", [])
     tracker_status = _process_label(labels) if isinstance(labels, list) else None
@@ -353,7 +453,7 @@ def _apply_issue_data(client: GitLabAPI, ticket: Ticket, issue: dict, project_pa
     return False
 
 
-def _fetch_issue_labels(client: GitLabAPI, result: SyncResult) -> None:
+def _fetch_issue_labels(client: "GitLabAPI", result: SyncResult) -> None:
     """Fetch GitLab issue labels and work item status for tickets with issue URLs."""
     for ticket in Ticket.objects.exclude(issue_url="").filter(
         issue_url__regex=r"/-/(issues|work_items)/\d+$",

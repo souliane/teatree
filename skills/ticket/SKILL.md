@@ -34,7 +34,7 @@ From zero to ready-to-code. Combines understanding the ticket with setting up th
 
 ## Dependencies
 
-- **t3-workspace** (required) — provides worktree creation, setup, and dev servers. **Load `/t3:workspace` now** if not already loaded.
+- **workspace** (required) — provides worktree creation, setup, and dev servers. **Load `/t3:workspace` now** if not already loaded.
 
 ## Workflow
 

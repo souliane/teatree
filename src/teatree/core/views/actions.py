@@ -11,7 +11,7 @@ from teatree.core.views._startup import perform_sync
 
 @method_decorator(csrf_exempt, name="dispatch")
 class CancelTaskView(View):
-    def post(self, _request: HttpRequest, task_id: int) -> HttpResponse:
+    def post(self, request: HttpRequest, task_id: int) -> HttpResponse:
         from django.db import transaction  # noqa: PLC0415
 
         try:
@@ -19,6 +19,11 @@ class CancelTaskView(View):
                 task = Task.objects.select_for_update().get(pk=task_id)
                 if task.status in {Task.Status.COMPLETED, Task.Status.FAILED}:
                     return JsonResponse({"error": "Task already finished"}, status=409)
+                if task.status == Task.Status.CLAIMED and request.POST.get("confirm") != "true":
+                    return JsonResponse(
+                        {"error": "Task is in progress. Pass confirm=true to cancel."},
+                        status=409,
+                    )
                 task.fail()
         except Task.DoesNotExist:
             raise Http404 from None

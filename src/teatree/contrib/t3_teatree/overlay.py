@@ -8,7 +8,9 @@ from pathlib import Path
 from typing import override
 
 from teatree.core.models import Worktree
-from teatree.core.overlay import OverlayBase, OverlayMetadata, ProvisionStep, SkillMetadata
+from teatree.core.overlay import OverlayBase, OverlayConfig, OverlayMetadata, ProvisionStep, RunCommands, SkillMetadata
+
+_SETTINGS_MODULE = "teatree.contrib.t3_teatree.overlay_settings"
 
 
 def _repo_root() -> Path:
@@ -48,6 +50,7 @@ class TeatreeOverlay(OverlayBase):
     """Overlay for developing teatree itself."""
 
     django_app: str | None = "teatree.contrib.t3_teatree"
+    config = OverlayConfig(settings_module=_SETTINGS_MODULE, overlay_name="teatree")
     metadata = TeatreeMetadata()
 
     @override
@@ -72,7 +75,7 @@ class TeatreeOverlay(OverlayBase):
         ]
 
     @override
-    def get_run_commands(self, worktree: Worktree) -> dict[str, list[str]]:
+    def get_run_commands(self, worktree: Worktree) -> RunCommands:
         return {
             "test": ["uv", "run", "pytest"],
             "lint": ["prek", "run", "--all-files"],

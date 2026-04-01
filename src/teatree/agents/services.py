@@ -41,7 +41,6 @@ class EchoRuntime:
 
 _RUNTIME_REGISTRY: dict[str, RuntimeAdapter] = {
     "claude-code": EchoRuntime("claude-code"),
-    "codex": EchoRuntime("codex"),
 }
 
 
@@ -51,15 +50,10 @@ def register_runtime(name: str, adapter: RuntimeAdapter) -> None:
 
 def reset_runtime_registry() -> None:
     _RUNTIME_REGISTRY.clear()
-    _RUNTIME_REGISTRY.update(
-        {
-            "claude-code": EchoRuntime("claude-code"),
-            "codex": EchoRuntime("codex"),
-        },
-    )
+    _RUNTIME_REGISTRY["claude-code"] = EchoRuntime("claude-code")
 
 
-def get_runtime(name: str) -> RuntimeAdapter:
+def get_runtime(name: str = "claude-code") -> RuntimeAdapter:
     try:
         return _RUNTIME_REGISTRY[name]
     except KeyError as exc:
@@ -68,12 +62,12 @@ def get_runtime(name: str) -> RuntimeAdapter:
 
 
 def get_headless_runtime_name() -> str:
-    return getattr(settings, "TEATREE_HEADLESS_RUNTIME", "claude-code")
+    return "claude-code"
 
 
 def get_interactive_runtime_name() -> str:
-    return getattr(settings, "TEATREE_INTERACTIVE_RUNTIME", "codex")
+    return "claude-code"
 
 
 def get_terminal_mode() -> str:
-    return getattr(settings, "TEATREE_TERMINAL_MODE", "same-terminal")
+    return getattr(settings, "TEATREE_TERMINAL_MODE", "ttyd")

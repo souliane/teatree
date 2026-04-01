@@ -2,10 +2,12 @@ import signal
 import socket
 from pathlib import Path
 from subprocess import CompletedProcess
+from unittest.mock import patch
 
 import pytest
 
-from teatree.utils import db, git, gitlab_api, ports
+from teatree.backends import gitlab_api
+from teatree.utils import db, git, ports
 
 
 def test_find_free_ports_scans_existing_env_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -951,22 +953,14 @@ def test_gitlab_api_explicit_token_overrides_env(monkeypatch: pytest.MonkeyPatch
 
 def test_resolve_token_falls_back_to_pass(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("GITLAB_TOKEN", raising=False)
-    monkeypatch.setattr(
-        gitlab_api,
-        "subprocess",
-        type("M", (), {"run": staticmethod(lambda *_a, **_k: CompletedProcess([], 0, stdout="pass-token\n"))})(),
-    )
-    assert gitlab_api._resolve_token() == "pass-token"
+    with patch("teatree.utils.secrets.read_pass", return_value="pass-token"):
+        assert gitlab_api._resolve_token() == "pass-token"
 
 
 def test_resolve_token_returns_empty_when_pass_fails(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("GITLAB_TOKEN", raising=False)
-    monkeypatch.setattr(
-        gitlab_api,
-        "subprocess",
-        type("M", (), {"run": staticmethod(lambda *_a, **_k: CompletedProcess([], 1, stdout=""))})(),
-    )
-    assert gitlab_api._resolve_token() == ""
+    with patch("teatree.utils.secrets.read_pass", return_value=""):
+        assert gitlab_api._resolve_token() == ""
 
 
 def test_resolve_token_prefers_env_over_pass(monkeypatch: pytest.MonkeyPatch) -> None:

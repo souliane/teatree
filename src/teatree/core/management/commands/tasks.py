@@ -1,9 +1,61 @@
+from typing import Annotated
+
+import typer
 from django_typer.management import TyperCommand, command
 
 from teatree.core.models import Task
 
 
 class Command(TyperCommand):
+    @command()
+    def cancel(self, task_id: int, *, confirm: bool = False) -> None:
+        from django.db import transaction  # noqa: PLC0415
+
+        with transaction.atomic():
+            try:
+                task = Task.objects.select_for_update().get(pk=task_id)
+            except Task.DoesNotExist:
+                self.stderr.write(f"Task {task_id} not found.")
+                raise SystemExit(1) from None
+
+            if task.status == Task.Status.CLAIMED and not confirm:
+                self.stderr.write(f"Task {task_id} is currently claimed. Pass --confirm to cancel it.")
+                raise SystemExit(1)
+
+            if task.status in {Task.Status.COMPLETED, Task.Status.FAILED}:
+                self.stderr.write(f"Task {task_id} already finished ({task.status}).")
+                raise SystemExit(1)
+
+            task.fail()
+        self.stdout.write(f"Task {task_id} cancelled.")
+
+    @command(name="list")
+    def list_tasks(
+        self,
+        status: Annotated[str | None, typer.Option(help="Filter by status")] = None,
+        execution_target: Annotated[str | None, typer.Option(help="Filter by execution target")] = None,
+    ) -> list[dict[str, object]]:
+        qs = Task.objects.all().order_by("pk")
+        if status:
+            qs = qs.filter(status=status)
+        if execution_target:
+            qs = qs.filter(execution_target=execution_target)
+        rows: list[dict[str, object]] = [
+            {
+                "task_id": task.pk,
+                "ticket_id": task.ticket_id,
+                "status": task.status,
+                "execution_target": task.execution_target,
+                "phase": task.phase,
+                "execution_reason": task.execution_reason,
+                "claimed_by": task.claimed_by,
+            }
+            for task in qs
+        ]
+        for row in rows:
+            self.stdout.write(str(row))
+        return rows
+
     @command()
     def claim(self, execution_target: str = "headless", claimed_by: str = "worker") -> int | None:
         task = self._claim_next_task(execution_target=execution_target, claimed_by=claimed_by)

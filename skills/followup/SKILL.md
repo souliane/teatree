@@ -113,7 +113,7 @@ If the project uses an external tracker (e.g., Notion), update the ticket status
 
 If not found in the external tracker, log a warning but continue — not all tickets have an entry.
 
-**b. Run the full lifecycle** using the loaded skills — each phase uses the corresponding t3- skill:
+**b. Run the full lifecycle** using the loaded skills — each phase uses the corresponding lifecycle skill:
 
 1. **Intake** (`/t3:ticket`): Fetch issue, create worktree (`t3 workspace ticket`), run `t3 lifecycle setup`, verify environment.
 2. **Implementation** (`/t3:code`): Implement with TDD. Check ALL repos in scope.

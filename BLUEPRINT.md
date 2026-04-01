@@ -48,7 +48,7 @@ Entry point: t3 = teatree.cli:main
 ```
 src/teatree/
   __init__.py
-  cli.py               # Typer CLI — bootstrap commands (no Django needed)
+  cli/                 # Typer CLI package — bootstrap commands (no Django needed)
   config.py             # ~/.teatree.toml parsing, overlay discovery
   skill_map.py          # Phase → companion skills delegation map
   dev_settings.py       # Development Django settings

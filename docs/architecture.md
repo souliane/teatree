@@ -12,7 +12,7 @@ Teatree splits its commands into three layers:
 
 ## Models
 
-Five models in `teatree/core/models.py` track the state of ongoing work:
+Five models in `teatree/core/models/` track the state of ongoing work:
 
 | Model | Purpose |
 |-------|---------|

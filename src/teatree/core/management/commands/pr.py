@@ -32,6 +32,20 @@ def _last_commit_message(cwd: str) -> tuple[str, str]:
     return (subject, body)
 
 
+def _check_shipping_gate(ticket: Ticket) -> dict[str, object] | None:
+    """Return an error dict if the ticket hasn't passed the review gate."""
+    from teatree.core.models.errors import QualityGateError  # noqa: PLC0415
+
+    session = ticket.sessions.order_by("-pk").first()
+    if session is None:
+        return None
+    try:
+        session.check_gate("shipping")
+    except QualityGateError as exc:
+        return {"error": f"Gate check failed: {exc}", "hint": "Run /t3:review before shipping."}
+    return None
+
+
 class Command(TyperCommand):
     @command()
     def create(  # noqa: PLR0913
@@ -64,7 +78,11 @@ class Command(TyperCommand):
                 description = commit_body
 
         overlay = get_overlay()
+
         if not skip_validation:
+            gate_error = _check_shipping_gate(ticket)
+            if gate_error:
+                return gate_error
             validation = overlay.metadata.validate_mr(title, description)
             if validation["errors"]:
                 return {"error": "MR validation failed", "details": validation["errors"]}

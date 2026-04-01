@@ -30,7 +30,7 @@ Reactive mode — something is wrong, find and fix it.
 
 ## Dependencies
 
-- **t3-workspace** (required) — provides server restart and environment context. **Load `/t3:workspace` now** if not already loaded.
+- **workspace** (required) — provides server restart and environment context. **Load `/t3:workspace` now** if not already loaded.
 
 ## MANDATORY: Read Troubleshooting First
 
