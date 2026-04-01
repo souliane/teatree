@@ -440,6 +440,19 @@ class TestSession(TestCase):
 
         assert session.visited_phases == ["testing"]
 
+    def test_repo_tracking(self) -> None:
+        session = Session.objects.create(ticket=Ticket.objects.create())
+
+        session.mark_repo_modified("backend")
+        session.mark_repo_modified("frontend")
+        session.mark_repo_modified("backend")  # duplicate
+        session.mark_repo_tested("backend")
+
+        session.refresh_from_db()
+        assert session.repos_modified == ["backend", "frontend"]
+        assert session.repos_tested == ["backend"]
+        assert session.untested_repos() == ["frontend"]
+
 
 class TestTask(TestCase):
     def test_claim_route_complete_fail_and_attempt_storage(self) -> None:

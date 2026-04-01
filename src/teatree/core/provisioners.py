@@ -76,13 +76,13 @@ def start_services(
     specs: dict[str, ServiceSpec],
     *,
     env: dict[str, str] | None = None,
-) -> dict[str, int]:
+) -> dict[str, bool]:
     """Start services defined by ServiceSpec dicts.
 
-    Returns a mapping of service name to PID (0 if start failed).
+    Returns a mapping of service name to success status.
     """
     run_env = {**os.environ, **(env or {})}
-    pids: dict[str, int] = {}
+    results: dict[str, bool] = {}
 
     for name, spec in specs.items():
         command = spec.get("start_command", [])
@@ -93,27 +93,27 @@ def start_services(
                 command = ["docker", "compose", "-f", compose_file, "up", "-d", service]
             else:
                 logger.warning("No start_command or compose_file for service %s", name)
-                pids[name] = 0
+                results[name] = False
                 continue
 
         try:
-            result = subprocess.run(  # noqa: S603
+            proc = subprocess.run(  # noqa: S603
                 command,
                 capture_output=True,
                 text=True,
                 check=False,
                 env=run_env,
             )
-            if result.returncode != 0:
-                logger.warning("Service %s failed to start: %s", name, result.stderr[:500])
-                pids[name] = 0
+            if proc.returncode != 0:
+                logger.warning("Service %s failed to start: %s", name, proc.stderr[:500])
+                results[name] = False
             else:
-                pids[name] = 1  # Docker Compose doesn't return PIDs directly
+                results[name] = True
         except FileNotFoundError:
             logger.warning("Command not found for service %s: %s", name, command[0])
-            pids[name] = 0
+            results[name] = False
 
-    return pids
+    return results
 
 
 # ── Settings Injector ───────────────────────────────────────────────
@@ -140,7 +140,8 @@ def inject_settings(target_file: Path, settings: dict[str, str], *, header: str 
         if key in existing_keys:
             existing_lines[existing_keys[key]] = new_line
         else:
-            if header and not any(header in line for line in existing_lines):
+            header_line = f"# {header}"
+            if header and not any(line.strip() == header_line for line in existing_lines):
                 existing_lines.append(f"\n# {header}")
             existing_lines.append(new_line)
 
