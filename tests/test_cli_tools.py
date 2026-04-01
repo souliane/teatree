@@ -4,6 +4,8 @@ from unittest.mock import patch
 
 from typer.testing import CliRunner
 
+import teatree.cli as teatree_cli
+import teatree.cli.tools as teatree_cli_tools
 from teatree.cli import app
 from teatree.cli.tools import ToolRunner
 
@@ -20,7 +22,7 @@ class TestToolRunner:
         """ToolRunner.run_script succeeds for a passing script."""
         script = tmp_path / "ok_script.py"
         script.write_text("pass")
-        with patch("teatree.cli.tools.ToolRunner.scripts_dir", return_value=tmp_path):
+        with patch.object(ToolRunner, "scripts_dir", return_value=tmp_path):
             ToolRunner.run_script("ok_script")
 
     def test_run_script_failure(self, tmp_path):
@@ -29,7 +31,7 @@ class TestToolRunner:
 
         script = tmp_path / "test_script.py"
         script.write_text("import sys; sys.exit(2)")
-        with patch("teatree.cli.tools.ToolRunner.scripts_dir", return_value=tmp_path):
+        with patch.object(ToolRunner, "scripts_dir", return_value=tmp_path):
             try:
                 ToolRunner.run_script("test_script")
                 msg = "Expected Exit"
@@ -41,7 +43,7 @@ class TestToolRunner:
         """ToolRunner.run_script raises Exit when script not found."""
         import click  # noqa: PLC0415
 
-        with patch("teatree.cli.tools.ToolRunner.scripts_dir", return_value=tmp_path):
+        with patch.object(ToolRunner, "scripts_dir", return_value=tmp_path):
             try:
                 ToolRunner.run_script("nonexistent_script")
                 msg = "Expected Exit"
@@ -52,19 +54,19 @@ class TestToolRunner:
 
 class TestToolCommands:
     def test_privacy_scan(self):
-        with patch("teatree.cli.tools.ToolRunner.run_script") as mock:
+        with patch.object(ToolRunner, "run_script") as mock:
             result = runner.invoke(app, ["tool", "privacy-scan", "myfile.txt"])
             assert result.exit_code == 0
             mock.assert_called_once_with("privacy_scan", "myfile.txt")
 
     def test_analyze_video(self):
-        with patch("teatree.cli.tools.ToolRunner.run_script") as mock:
+        with patch.object(ToolRunner, "run_script") as mock:
             result = runner.invoke(app, ["tool", "analyze-video", "/path/to/video.mp4"])
             assert result.exit_code == 0
             mock.assert_called_once_with("analyze_video", "/path/to/video.mp4")
 
     def test_bump_deps(self):
-        with patch("teatree.cli.tools.ToolRunner.run_script") as mock:
+        with patch.object(ToolRunner, "run_script") as mock:
             result = runner.invoke(app, ["tool", "bump-deps"])
             assert result.exit_code == 0
             mock.assert_called_once_with("bump-pyproject-deps-from-lock-file")
@@ -73,7 +75,7 @@ class TestToolCommands:
 class TestSonarCheck:
     def test_script_not_found(self, tmp_path):
         """Sonar-check exits with error when script is missing."""
-        with patch("teatree.cli._find_overlay_project", return_value=tmp_path):
+        with patch.object(teatree_cli, "_find_overlay_project", return_value=tmp_path):
             result = runner.invoke(app, ["tool", "sonar-check"])
             assert result.exit_code == 1
             assert "sonar_check.sh not found" in result.output
@@ -84,8 +86,8 @@ class TestSonarCheck:
         script.parent.mkdir()
         script.touch()
         with (
-            patch("teatree.cli._find_overlay_project", return_value=tmp_path),
-            patch("teatree.cli.tools.subprocess") as mock_sub,
+            patch.object(teatree_cli, "_find_overlay_project", return_value=tmp_path),
+            patch.object(teatree_cli_tools, "subprocess") as mock_sub,
         ):
             mock_sub.run.return_value = subprocess.CompletedProcess([], 0)
             result = runner.invoke(app, ["tool", "sonar-check", "/tmp/repo"])
@@ -101,8 +103,8 @@ class TestSonarCheck:
         script.parent.mkdir()
         script.touch()
         with (
-            patch("teatree.cli._find_overlay_project", return_value=tmp_path),
-            patch("teatree.cli.tools.subprocess") as mock_sub,
+            patch.object(teatree_cli, "_find_overlay_project", return_value=tmp_path),
+            patch.object(teatree_cli_tools, "subprocess") as mock_sub,
         ):
             mock_sub.run.return_value = subprocess.CompletedProcess([], 0)
             result = runner.invoke(app, ["tool", "sonar-check", "--skip-baseline", "--remote", "--remote-status"])
@@ -119,8 +121,8 @@ class TestSonarCheck:
         script.touch()
         monkeypatch.setenv("PWD", "/original/worktree")
         with (
-            patch("teatree.cli._find_overlay_project", return_value=tmp_path),
-            patch("teatree.cli.tools.subprocess") as mock_sub,
+            patch.object(teatree_cli, "_find_overlay_project", return_value=tmp_path),
+            patch.object(teatree_cli_tools, "subprocess") as mock_sub,
         ):
             mock_sub.run.return_value = subprocess.CompletedProcess([], 0)
             result = runner.invoke(app, ["tool", "sonar-check", "--remote"])

@@ -15,6 +15,11 @@ triggers:
     - 'https?://(www\.)?notion\.(so|site)/'
     - 'https?://[^\s]*\.atlassian\.net/wiki/'
     - 'https?://linear\.app/[^\s]+/issue/'
+search_hints:
+  - ticket
+  - issue
+  - start working on
+  - intake
 metadata:
   version: 0.0.1
   subagent_safe: false

@@ -7,12 +7,16 @@ from unittest.mock import MagicMock, patch
 from django.core.management import call_command
 from django.test import TestCase, override_settings
 
+import teatree.cli.overlay as cli_overlay_mod
+import teatree.core.management.commands.lifecycle as lifecycle_mod
+import teatree.core.management.commands.run as run_mod
+import teatree.core.models.worktree as worktree_model_mod
+import teatree.core.overlay_loader as overlay_loader_mod
+import teatree.utils.ports as ports_mod
 from teatree.core.models import Ticket, Worktree
 from tests.teatree_core.conftest import CommandOverlay
 
 COMMAND_SETTINGS = {
-    "TEATREE_HEADLESS_RUNTIME": "claude-code",
-    "TEATREE_INTERACTIVE_RUNTIME": "codex",
     "TEATREE_TERMINAL_MODE": "same-terminal",
 }
 
@@ -41,10 +45,11 @@ class TestRunCommand(TestCase):
             mock_resp.__exit__ = MagicMock(return_value=False)
 
             with (
-                patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
-                patch("teatree.core.management.commands.lifecycle.Popen") as mock_popen,
-                patch(
-                    "teatree.core.management.commands.run.urllib.request.urlopen",
+                patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
+                patch.object(lifecycle_mod, "Popen") as mock_popen,
+                patch.object(
+                    run_mod.urllib.request,
+                    "urlopen",
                     return_value=mock_resp,
                 ),
             ):
@@ -81,10 +86,11 @@ class TestRunCommand(TestCase):
                 raise OSError(msg)
 
             with (
-                patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
-                patch("teatree.core.management.commands.lifecycle.Popen") as mock_popen,
-                patch(
-                    "teatree.core.management.commands.run.urllib.request.urlopen",
+                patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
+                patch.object(lifecycle_mod, "Popen") as mock_popen,
+                patch.object(
+                    run_mod.urllib.request,
+                    "urlopen",
                     side_effect=_fail_urlopen,
                 ),
             ):
@@ -120,7 +126,7 @@ class TestRunCommand(TestCase):
                 branch="feature",
                 extra={"worktree_path": wt_path},
             )
-            with patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY):
+            with patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY):
                 cast("int", call_command("lifecycle", "setup", path=wt_path))
 
                 result = cast("dict[str, str]", call_command("run", "services", path=wt_path))
@@ -148,10 +154,11 @@ class TestRunCommand(TestCase):
                 extra={"worktree_path": wt_path},
             )
             with (
-                patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
-                patch("teatree.core.management.commands.lifecycle.Popen") as mock_popen,
-                patch(
-                    "teatree.core.management.commands.run.subprocess.run",
+                patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
+                patch.object(lifecycle_mod, "Popen") as mock_popen,
+                patch.object(
+                    run_mod.subprocess,
+                    "run",
                     side_effect=lambda *a, **kw: CompletedProcess(a[0], 0, "", ""),
                 ),
             ):
@@ -178,7 +185,7 @@ class TestRunCommand(TestCase):
 
 
 class TestCliOverlay:
-    @patch("teatree.cli.overlay.subprocess.run")
+    @patch.object(cli_overlay_mod.subprocess, "run")
     def test_managepy_calls_uv(self, mock_run: MagicMock, tmp_path: Path) -> None:
         from teatree.cli.overlay import managepy  # noqa: PLC0415
 
@@ -191,7 +198,7 @@ class TestCliOverlay:
         assert cmd[1:3] == ["--directory", str(tmp_path)]
         assert cmd[-2:] == ["migrate", "--no-input"]
 
-    @patch("teatree.cli.overlay.subprocess.run")
+    @patch.object(cli_overlay_mod.subprocess, "run")
     @patch.dict("os.environ", {"DJANGO_SETTINGS_MODULE": "acme.settings"})
     def test_uvicorn_launches_asgi_with_reload(self, mock_run: MagicMock, tmp_path: Path) -> None:
         from teatree.cli.overlay import _uvicorn  # noqa: PLC0415
@@ -212,7 +219,7 @@ class TestCliOverlay:
         call_env = mock_run.call_args[1]["env"]
         assert call_env["DJANGO_SETTINGS_MODULE"] == "teatree.settings"
 
-    @patch("teatree.cli.overlay.subprocess.run")
+    @patch.object(cli_overlay_mod.subprocess, "run")
     def test_uvicorn_none_project_path_falls_back(self, mock_run: MagicMock) -> None:
         from teatree.cli.overlay import _uvicorn  # noqa: PLC0415
 
@@ -251,13 +258,14 @@ class TestPortPreservation(TestCase):
                     "_port_available",
                     staticmethod(lambda port: port not in {8001, 4201, 5433}),
                 ),
-                patch("teatree.utils.ports.port_in_use", side_effect=lambda port: port in {8001, 4201, 5433}),
-                patch("teatree.core.models.worktree._workspace_dir", return_value=Path(str(workspace))),
-                patch(
-                    "teatree.core.management.commands.lifecycle.subprocess.run",
+                patch.object(ports_mod, "port_in_use", side_effect=lambda port: port in {8001, 4201, 5433}),
+                patch.object(worktree_model_mod, "_workspace_dir", return_value=Path(str(workspace))),
+                patch.object(
+                    lifecycle_mod.subprocess,
+                    "run",
                     side_effect=lambda *a, **kw: CompletedProcess(a[0], 0, "", ""),
                 ),
-                patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+                patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
             ):
                 call_command("lifecycle", "setup", path=str(worktree_path))
 
@@ -308,10 +316,10 @@ class TestPortPreservation(TestCase):
                     "_port_available",
                     staticmethod(lambda port: port not in {8001, 4201, 5433}),
                 ),
-                patch("teatree.utils.ports.port_in_use", side_effect=lambda port: port in {8001, 4201, 5433}),
-                patch("teatree.core.models.worktree._workspace_dir", return_value=Path(str(workspace))),
-                patch("teatree.core.management.commands.run.subprocess.run", side_effect=fake_run),
-                patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+                patch.object(ports_mod, "port_in_use", side_effect=lambda port: port in {8001, 4201, 5433}),
+                patch.object(worktree_model_mod, "_workspace_dir", return_value=Path(str(workspace))),
+                patch.object(run_mod.subprocess, "run", side_effect=fake_run),
+                patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
             ):
                 result = cast("str", call_command("run", "backend", path=str(worktree_path)))
 
@@ -360,10 +368,10 @@ class TestPortPreservation(TestCase):
                     "_port_available",
                     staticmethod(lambda port: port not in {8001, 4201, 5433}),
                 ),
-                patch("teatree.utils.ports.port_in_use", side_effect=lambda port: port in {8001, 4201, 5433}),
-                patch("teatree.core.models.worktree._workspace_dir", return_value=Path(str(workspace))),
-                patch("teatree.core.management.commands.run.subprocess.run", side_effect=fake_run),
-                patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+                patch.object(ports_mod, "port_in_use", side_effect=lambda port: port in {8001, 4201, 5433}),
+                patch.object(worktree_model_mod, "_workspace_dir", return_value=Path(str(workspace))),
+                patch.object(run_mod.subprocess, "run", side_effect=fake_run),
+                patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
             ):
                 call_command("run", "backend", path=str(worktree_path))
 

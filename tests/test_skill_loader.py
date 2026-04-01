@@ -14,6 +14,7 @@ _SCRIPTS_DIR = Path(__file__).resolve().parent.parent / "scripts"
 if str(_SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS_DIR))
 
+from lib import skill_loader as skill_loader_mod  # noqa: E402
 from lib.skill_loader import (  # noqa: E402
     build_trigger_index,
     detect_intent,
@@ -22,6 +23,8 @@ from lib.skill_loader import (  # noqa: E402
     read_supplementary_skills,
     suggest_skills,
 )
+
+import teatree.skill_loading as skill_loading_mod  # noqa: E402
 
 SKILLS_DIR = Path(__file__).resolve().parent.parent / "skills"
 
@@ -237,7 +240,7 @@ class TestDetectIntent:
         skill_dir = tmp_path / "my-skill"
         skill_dir.mkdir()
         (skill_dir / "SKILL.md").write_text("---\nname: my-skill\ntriggers:\n  keywords:\n    - '\\bhello\\b'\n---\n")
-        with mock.patch("lib.skill_loader._read_trigger_index", return_value=[]):
+        with mock.patch.object(skill_loader_mod, "_read_trigger_index", return_value=[]):
             result = detect_intent("hello", skill_search_dirs=[tmp_path])
         assert result == "my-skill"
 
@@ -304,17 +307,17 @@ class TestCompanionSkills:
     def test_reads_cache(self, tmp_path):
         cache = tmp_path / "skill-metadata.json"
         cache.write_text(json.dumps({"companion_skills": ["ac-django", "ac-python"]}))
-        with mock.patch("lib.skill_loader.SKILL_METADATA_CACHE", cache):
+        with mock.patch.object(skill_loader_mod, "SKILL_METADATA_CACHE", cache):
             assert read_companion_skills() == ["ac-django", "ac-python"]
 
     def test_missing_cache(self, tmp_path):
-        with mock.patch("lib.skill_loader.SKILL_METADATA_CACHE", tmp_path / "missing.json"):
+        with mock.patch.object(skill_loader_mod, "SKILL_METADATA_CACHE", tmp_path / "missing.json"):
             assert read_companion_skills() == []
 
     def test_corrupt_cache(self, tmp_path):
         cache = tmp_path / "skill-metadata.json"
         cache.write_text("not json")
-        with mock.patch("lib.skill_loader.SKILL_METADATA_CACHE", cache):
+        with mock.patch.object(skill_loader_mod, "SKILL_METADATA_CACHE", cache):
             assert read_companion_skills() == []
 
 
@@ -354,7 +357,7 @@ class TestSuggestSkills:
                 }
             )
         )
-        with mock.patch("lib.skill_loader.SKILL_METADATA_CACHE", cache):
+        with mock.patch.object(skill_loader_mod, "SKILL_METADATA_CACHE", cache):
             result = suggest_skills(
                 {
                     "prompt": "review these MRs",
@@ -387,7 +390,7 @@ class TestSuggestSkills:
                 }
             )
         )
-        with mock.patch("lib.skill_loader.SKILL_METADATA_CACHE", cache):
+        with mock.patch.object(skill_loader_mod, "SKILL_METADATA_CACHE", cache):
             result = suggest_skills(
                 {
                     "prompt": "review code",
@@ -421,9 +424,10 @@ class TestSuggestSkills:
             )
         )
         with (
-            mock.patch("lib.skill_loader.SKILL_METADATA_CACHE", cache),
-            mock.patch(
-                "teatree.skill_loading.subprocess.run",
+            mock.patch.object(skill_loader_mod, "SKILL_METADATA_CACHE", cache),
+            mock.patch.object(
+                skill_loading_mod.subprocess,
+                "run",
                 return_value=mock.Mock(returncode=0, stdout="git@gitlab.com:acme-engineering/platform-product\n"),
             ),
         ):
@@ -449,7 +453,7 @@ class TestSuggestSkills:
                 }
             )
         )
-        with mock.patch("lib.skill_loader.SKILL_METADATA_CACHE", cache):
+        with mock.patch.object(skill_loader_mod, "SKILL_METADATA_CACHE", cache):
             result = suggest_skills(
                 {
                     "prompt": "hello",

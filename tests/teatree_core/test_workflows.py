@@ -14,6 +14,12 @@ import pytest
 from django.core.management import call_command
 from django.test import Client, TestCase, override_settings
 
+import teatree.core.management.commands.lifecycle as lifecycle_mod
+import teatree.core.management.commands.run as run_mod
+import teatree.core.management.commands.tool as tool_mod
+import teatree.core.management.commands.workspace as workspace_mod
+import teatree.core.overlay_loader as overlay_loader_mod
+import teatree.core.tasks as tasks_mod
 from teatree.core.models import Session, Task, Ticket, Worktree
 from teatree.core.overlay import OverlayBase, OverlayMetadata, ProvisionStep, RunCommands, ServiceSpec, ToolCommand
 from teatree.core.overlay_loader import reset_overlay_cache
@@ -92,14 +98,12 @@ class WorkflowOverlay(OverlayBase):
 _MOCK_OVERLAY = {"test": WorkflowOverlay()}
 
 WORKFLOW_SETTINGS = {
-    "TEATREE_HEADLESS_RUNTIME": "claude-code",
-    "TEATREE_INTERACTIVE_RUNTIME": "codex",
     "TEATREE_TERMINAL_MODE": "same-terminal",
 }
 
 
 def _patch_overlay():
-    return patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY)
+    return patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY)
 
 
 @pytest.fixture(autouse=True)
@@ -158,7 +162,7 @@ class TestLifecycleProvision(TestCase):
         frontend_path = str(ticket_dir / "frontend")
         with (
             _patch_overlay(),
-            patch("teatree.core.management.commands.lifecycle.subprocess") as mock_sp,
+            patch.object(lifecycle_mod, "subprocess") as mock_sp,
         ):
             mock_sp.run.return_value = MagicMock(returncode=0)
             backend_id = cast("int", call_command("lifecycle", "setup", path=backend_path))
@@ -189,7 +193,7 @@ class TestLifecycleProvision(TestCase):
         mock_popen = MagicMock(poll=MagicMock(return_value=None), pid=9999, returncode=0)
         with (
             _patch_overlay(),
-            patch("teatree.core.management.commands.lifecycle.Popen", return_value=mock_popen),
+            patch.object(lifecycle_mod, "Popen", return_value=mock_popen),
         ):
             call_command("lifecycle", "start", path=backend_path)
         wt_backend.refresh_from_db()
@@ -234,7 +238,7 @@ class TestLifecycleProvision(TestCase):
 
         with (
             _patch_overlay(),
-            patch("teatree.core.management.commands.lifecycle.subprocess") as mock_sp,
+            patch.object(lifecycle_mod, "subprocess") as mock_sp,
         ):
             mock_sp.run.return_value = MagicMock(returncode=0)
             call_command("lifecycle", "setup", path=str(wt1_dir))
@@ -279,7 +283,7 @@ class TestLifecycleProvision(TestCase):
                 "teatree.core.overlay_loader._discover_overlays",
                 return_value={"test": original_overlay},
             ),
-            patch("teatree.core.management.commands.lifecycle.subprocess"),
+            patch.object(lifecycle_mod, "subprocess"),
         ):
             call_command("lifecycle", "setup", path=str(wt_dir))
 
@@ -438,7 +442,7 @@ class TestDashboardAndViews(TestCase):
         ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/77")
         Session.objects.create(ticket=ticket, overlay="test", agent_id="dashboard")
 
-        with patch("teatree.core.tasks.execute_headless_task") as mock_enqueue:
+        with patch.object(tasks_mod, "execute_headless_task") as mock_enqueue:
             mock_enqueue.enqueue = MagicMock()
             resp = client.post(
                 f"/tickets/{ticket.pk}/create-task/",
@@ -512,7 +516,7 @@ class TestRunBackend(TestCase):
 
         with (
             _patch_overlay(),
-            patch("teatree.core.management.commands.lifecycle.subprocess"),
+            patch.object(lifecycle_mod, "subprocess"),
         ):
             call_command("lifecycle", "setup", path=str(wt_dir))
 
@@ -520,7 +524,7 @@ class TestRunBackend(TestCase):
 
         with (
             _patch_overlay(),
-            patch("teatree.core.management.commands.run.subprocess") as mock_sp,
+            patch.object(run_mod, "subprocess") as mock_sp,
         ):
             mock_sp.run.return_value = MagicMock(returncode=0)
             result = cast("str", call_command("run", "backend", path=str(wt_dir)))
@@ -570,11 +574,12 @@ class TestRunBackend(TestCase):
         with (
             _patch_overlay(),
             patch.dict("os.environ", {"T3_WORKSPACE_DIR": str(workspace), "T3_BRANCH_PREFIX": "ac"}),
-            patch(
-                "teatree.core.management.commands.workspace.subprocess.run",
+            patch.object(
+                workspace_mod.subprocess,
+                "run",
                 side_effect=fake_subprocess_run,
             ),
-            patch("teatree.core.management.commands.workspace._workspace_dir", return_value=workspace),
+            patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
         ):
             ticket_id = cast(
                 "int",
@@ -611,7 +616,7 @@ class TestRunBackend(TestCase):
 
         with (
             _patch_overlay(),
-            patch("teatree.core.management.commands.lifecycle.subprocess") as mock_lc_sp,
+            patch.object(lifecycle_mod, "subprocess") as mock_lc_sp,
         ):
             mock_lc_sp.run.return_value = MagicMock(returncode=0)
             setup_result = cast("int", call_command("lifecycle", "setup", path=backend_wt_path))
@@ -630,7 +635,7 @@ class TestRunBackend(TestCase):
         # --- Step 3: run backend ---
         with (
             _patch_overlay(),
-            patch("teatree.core.management.commands.run.subprocess") as mock_run_sp,
+            patch.object(run_mod, "subprocess") as mock_run_sp,
         ):
             mock_run_sp.run.return_value = MagicMock(returncode=0)
             run_result = cast("str", call_command("run", "backend", path=backend_wt_path))
@@ -666,7 +671,7 @@ class TestToolAndCleanCommands(TestCase):
 
         with (
             _patch_overlay(),
-            patch("teatree.core.management.commands.tool.subprocess") as mock_sp,
+            patch.object(tool_mod, "subprocess") as mock_sp,
         ):
             mock_sp.run.return_value = MagicMock(returncode=0)
             result = cast("str", call_command("tool", "run", "check-translations"))

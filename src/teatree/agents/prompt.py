@@ -127,7 +127,9 @@ def build_task_prompt(task: Task) -> str:
             "1. Check what has been done so far (git log, existing code, MR status)",
             "2. Identify what remains to be done",
             "3. If you can proceed (code, test, fix) — do it",
-            "4. If you need human input (design decision, access, clarification) — say so clearly",
+            "4. If you need human input (design decision, access, clarification) — STOP immediately.",
+            '   Do NOT attempt to guess or work around it. Set "needs_user_input": true and "user_input_reason": "..."',
+            "   in your JSON result. The pipeline will create an interactive session for a human to continue.",
             "5. Run tests before declaring done",
         ),
     )
@@ -183,6 +185,11 @@ def build_system_context(task: Task, *, skills: list[str], lifecycle_skill: str 
             "",
             "If /t3:next is not available, output a JSON object on the last line:",
             '  {"summary": "...", "needs_user_input": false, "files_modified": [...], "next_steps": [...]}',
+            "",
+            "IMPORTANT: If you cannot proceed without human input (design decision, access, clarification),",
+            "STOP immediately. Do not guess or work around it. Output:",
+            '  {"summary": "...", "needs_user_input": true, "user_input_reason": "Why you need input"}',
+            "The pipeline will automatically create an interactive session for a human to continue your work.",
         ),
     )
 

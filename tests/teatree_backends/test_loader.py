@@ -2,6 +2,7 @@
 
 from unittest.mock import patch
 
+import teatree.core.overlay_loader as overlay_loader_mod
 from teatree.backends.gitlab import GitLabCodeHost
 from teatree.backends.gitlab_ci import GitLabCIService
 from teatree.backends.loader import (
@@ -47,8 +48,9 @@ def teardown_function() -> None:
 
 
 def _patch_overlay(overlay_cls):
-    return patch(
-        "teatree.core.overlay_loader._discover_overlays",
+    return patch.object(
+        overlay_loader_mod,
+        "_discover_overlays",
         return_value={"test": overlay_cls()},
     )
 
@@ -88,16 +90,18 @@ def test_get_ci_service_returns_gitlab_when_token_present() -> None:
 
 
 def test_get_code_host_returns_none_when_overlay_not_configured() -> None:
-    with patch(
-        "teatree.core.overlay_loader._discover_overlays",
+    with patch.object(
+        overlay_loader_mod,
+        "_discover_overlays",
         return_value={},
     ):
         assert get_code_host() is None
 
 
 def test_get_ci_service_returns_none_when_overlay_not_configured() -> None:
-    with patch(
-        "teatree.core.overlay_loader._discover_overlays",
+    with patch.object(
+        overlay_loader_mod,
+        "_discover_overlays",
         return_value={},
     ):
         assert get_ci_service() is None

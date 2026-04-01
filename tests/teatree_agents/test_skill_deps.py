@@ -3,6 +3,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+import teatree.skill_loading as skill_loading_mod
 from teatree.agents.skill_bundle import resolve_skill_bundle
 from teatree.skill_loading import SkillLoadingPolicy, _git_remote_url, _git_remote_urls
 
@@ -171,7 +172,7 @@ def test_git_remote_urls_fallback_to_verbose(tmp_path: Path) -> None:
         returncode=0, stdout="upstream\tgit@gitlab.com:foo/bar (fetch)\nupstream\tgit@gitlab.com:foo/bar (push)\n"
     )
 
-    with patch("teatree.skill_loading.subprocess.run", side_effect=[mock_origin_fail, mock_verbose_ok]):
+    with patch.object(skill_loading_mod.subprocess, "run", side_effect=[mock_origin_fail, mock_verbose_ok]):
         urls = _git_remote_urls(tmp_path)
 
     assert urls == ["git@gitlab.com:foo/bar"]
@@ -179,18 +180,18 @@ def test_git_remote_urls_fallback_to_verbose(tmp_path: Path) -> None:
 
 def test_git_remote_urls_all_fail(tmp_path: Path) -> None:
     mock_fail = MagicMock(returncode=1, stdout="")
-    with patch("teatree.skill_loading.subprocess.run", return_value=mock_fail):
+    with patch.object(skill_loading_mod.subprocess, "run", return_value=mock_fail):
         urls = _git_remote_urls(tmp_path)
     assert urls == []
 
 
 def test_git_remote_url_os_error(tmp_path: Path) -> None:
-    with patch("teatree.skill_loading.subprocess.run", side_effect=OSError("no git")):
+    with patch.object(skill_loading_mod.subprocess, "run", side_effect=OSError("no git")):
         assert _git_remote_url(tmp_path, "origin") == ""
 
 
 def test_git_remote_urls_verbose_os_error(tmp_path: Path) -> None:
     mock_origin_fail = MagicMock(returncode=1, stdout="")
-    with patch("teatree.skill_loading.subprocess.run", side_effect=[mock_origin_fail, OSError("no git")]):
+    with patch.object(skill_loading_mod.subprocess, "run", side_effect=[mock_origin_fail, OSError("no git")]):
         urls = _git_remote_urls(tmp_path)
     assert urls == []

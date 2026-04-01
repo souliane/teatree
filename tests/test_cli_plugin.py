@@ -6,6 +6,7 @@ from unittest.mock import patch
 import typer
 from typer.testing import CliRunner
 
+import teatree.cli.plugin as cli_plugin_mod
 from teatree.cli import app
 from teatree.cli.plugin import (
     _ensure_marketplace,
@@ -29,8 +30,9 @@ def test_try_apm_install_no_apm():
 def test_try_apm_install_success():
     with (
         patch("shutil.which", return_value="/usr/bin/apm"),
-        patch(
-            "teatree.cli.plugin.subprocess.run",
+        patch.object(
+            cli_plugin_mod.subprocess,
+            "run",
             return_value=CompletedProcess(args=[], returncode=0),
         ),
     ):
@@ -40,8 +42,9 @@ def test_try_apm_install_success():
 def test_try_apm_install_failure():
     with (
         patch("shutil.which", return_value="/usr/bin/apm"),
-        patch(
-            "teatree.cli.plugin.subprocess.run",
+        patch.object(
+            cli_plugin_mod.subprocess,
+            "run",
             return_value=CompletedProcess(args=[], returncode=1),
         ),
     ):
@@ -61,8 +64,9 @@ def test_try_claude_plugin_install_dev_mode():
 def test_try_claude_plugin_install_success():
     with (
         patch("shutil.which", return_value="/usr/bin/claude"),
-        patch(
-            "teatree.cli.plugin.subprocess.run",
+        patch.object(
+            cli_plugin_mod.subprocess,
+            "run",
             return_value=CompletedProcess(args=[], returncode=0),
         ),
     ):
@@ -72,8 +76,9 @@ def test_try_claude_plugin_install_success():
 def test_try_claude_plugin_install_marketplace_fails():
     with (
         patch("shutil.which", return_value="/usr/bin/claude"),
-        patch(
-            "teatree.cli.plugin.subprocess.run",
+        patch.object(
+            cli_plugin_mod.subprocess,
+            "run",
             return_value=CompletedProcess(args=[], returncode=1, stderr="error"),
         ),
     ):
@@ -83,8 +88,9 @@ def test_try_claude_plugin_install_marketplace_fails():
 def test_try_claude_plugin_install_marketplace_ok_install_fails():
     with (
         patch("shutil.which", return_value="/usr/bin/claude"),
-        patch(
-            "teatree.cli.plugin.subprocess.run",
+        patch.object(
+            cli_plugin_mod.subprocess,
+            "run",
             side_effect=[
                 CompletedProcess(args=[], returncode=0),  # marketplace add
                 CompletedProcess(args=[], returncode=1, stderr="install error"),  # plugin install
@@ -95,8 +101,9 @@ def test_try_claude_plugin_install_marketplace_ok_install_fails():
 
 
 def test_ensure_marketplace_already_exists():
-    with patch(
-        "teatree.cli.plugin.subprocess.run",
+    with patch.object(
+        cli_plugin_mod.subprocess,
+        "run",
         return_value=CompletedProcess(args=[], returncode=1, stderr="already added"),
     ):
         assert _ensure_marketplace("/usr/bin/claude") is True
@@ -104,7 +111,7 @@ def test_ensure_marketplace_already_exists():
 
 def test_install_via_apm():
     runner = CliRunner()
-    with patch("teatree.cli.plugin._try_apm_install", return_value=True):
+    with patch.object(cli_plugin_mod, "_try_apm_install", return_value=True):
         result = runner.invoke(app, ["plugin", "install"])
         assert result.exit_code == 0
         assert "APM" in result.output
@@ -113,8 +120,8 @@ def test_install_via_apm():
 def test_install_via_claude_cli():
     runner = CliRunner()
     with (
-        patch("teatree.cli.plugin._try_apm_install", return_value=False),
-        patch("teatree.cli.plugin._try_claude_plugin_install", return_value=True),
+        patch.object(cli_plugin_mod, "_try_apm_install", return_value=False),
+        patch.object(cli_plugin_mod, "_try_claude_plugin_install", return_value=True),
     ):
         result = runner.invoke(app, ["plugin", "install"])
         assert result.exit_code == 0
@@ -124,8 +131,8 @@ def test_install_via_claude_cli():
 def test_install_all_fail():
     runner = CliRunner()
     with (
-        patch("teatree.cli.plugin._try_apm_install", return_value=False),
-        patch("teatree.cli.plugin._try_claude_plugin_install", return_value=False),
+        patch.object(cli_plugin_mod, "_try_apm_install", return_value=False),
+        patch.object(cli_plugin_mod, "_try_claude_plugin_install", return_value=False),
     ):
         result = runner.invoke(app, ["plugin", "install"])
         assert result.exit_code == 1
@@ -133,14 +140,14 @@ def test_install_all_fail():
 
 def test_install_dev_mode_with_claude():
     runner = CliRunner()
-    with patch("teatree.cli.plugin._try_claude_plugin_install", return_value=True):
+    with patch.object(cli_plugin_mod, "_try_claude_plugin_install", return_value=True):
         result = runner.invoke(app, ["plugin", "install", "--dev"])
         assert result.exit_code == 0
 
 
 def test_install_dev_mode_fallback():
     runner = CliRunner()
-    with patch("teatree.cli.plugin._try_claude_plugin_install", return_value=False):
+    with patch.object(cli_plugin_mod, "_try_claude_plugin_install", return_value=False):
         result = runner.invoke(app, ["plugin", "install", "--dev"])
         assert result.exit_code == 1
 

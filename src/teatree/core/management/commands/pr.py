@@ -36,7 +36,7 @@ def _check_shipping_gate(ticket: Ticket) -> dict[str, object] | None:
     """Return an error dict if the ticket hasn't passed the review gate."""
     from teatree.core.models.errors import QualityGateError  # noqa: PLC0415
 
-    session = ticket.sessions.order_by("-pk").first()
+    session = ticket.sessions.order_by("-pk").first()  # ty: ignore[unresolved-attribute]
     if session is None:
         return None
     try:

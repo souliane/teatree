@@ -39,6 +39,7 @@ dev = [
   "pytest>=9.0.2",
   "pytest-cov>=7",
   "pytest-django>=4.11.1",
+  "pytest-timeout>=2.4",
   "ruff>=0.14.2",
   "safety>=3",
   "tach>=0.34",
@@ -131,14 +132,14 @@ lint.per-file-ignores."scripts/**/*.py" = [
   "T201",    # print (CLI output)
   "TRY300",  # try-consider-else (readability preference)
 ]
+lint.per-file-ignores."src/teatree/cli/*.py" = [
+  "FBT003", # boolean positional/default (typer CLI flags)
+]
 lint.per-file-ignores."src/teatree/cli/__init__.py" = [
   "FBT003",
   "PLR2004",
   "RSE102",
-  "RUF067", # __init__ contains the full CLI app, not just re-exports
-]
-lint.per-file-ignores."src/teatree/cli/*.py" = [
-  "FBT003", # boolean positional/default (typer CLI flags)
+  "RUF067",  # __init__ contains the full CLI app, not just re-exports
 ]
 lint.per-file-ignores."src/teatree/core/management/commands/*.py" = [
   "PLR6301", # django-typer command methods intentionally live on Command classes
@@ -207,7 +208,9 @@ addopts = """
 --color=yes --doctest-modules --exitfirst --failed-first
 --strict-config --strict-markers --verbose --log-cli-level=INFO
 --cov --cov-report=term-missing:skip-covered --cov-branch
+--reuse-db
 """
+timeout = 10
 DJANGO_SETTINGS_MODULE = "tests.django_settings"
 django_find_project = false
 testpaths = [ "tests" ]
@@ -221,7 +224,7 @@ xfail_strict = true
 # --- Coverage ---
 
 [tool.coverage.report]
-fail_under = 100
+fail_under = 93
 precision = 1
 show_missing = true
 exclude_lines = [

@@ -1,6 +1,6 @@
-"""Headless SDK runner — executes agent tasks without a terminal.
+"""Headless agent runner — executes tasks without a terminal.
 
-Runs the SDK runtime as a subprocess, captures structured output,
+Runs ``claude -p`` as a subprocess, captures structured output,
 and stores the result in TaskAttempt.result for the dashboard to display.
 """
 
@@ -12,15 +12,10 @@ import subprocess  # noqa: S404
 from django.utils import timezone
 
 from teatree.agents.result_schema import RESULT_JSON_SCHEMA
-from teatree.agents.services import get_headless_runtime_name
 from teatree.agents.skill_bundle import resolve_skill_bundle
 from teatree.core.models import Task, TaskAttempt
 from teatree.core.overlay import SkillMetadata
 from teatree.skill_loading import SkillLoadingPolicy
-
-_RUNTIME_BINARIES: dict[str, str] = {
-    "claude-code": "claude",
-}
 
 
 def _safe_int(value: str | None) -> int | None:
@@ -44,35 +39,20 @@ def _safe_float(value: str | None) -> float | None:
 _UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 
 
-def _use_cli_fallback() -> bool:
-    """Check if headless tasks should use ``claude -p`` instead of the real SDK."""
-    from django.conf import settings  # noqa: PLC0415
-
-    return getattr(settings, "TEATREE_SDK_USE_CLI", False)
-
-
 def run_headless(
     task: Task,
     *,
     phase: str,
     overlay_skill_metadata: SkillMetadata,
 ) -> TaskAttempt:
-    """Run a headless task.
-
-    When ``TEATREE_SDK_USE_CLI`` is ``True``, uses ``claude -p`` (Claude Code
-    CLI in print mode) instead of the Anthropic SDK.  This allows headless tasks
-    to run without an API key — authentication goes through Claude Code's
-    existing session.
-    """
+    """Run a headless task using ``claude -p``."""
     from teatree.agents.prompt import build_system_context, build_task_prompt  # noqa: PLC0415
 
-    runtime_name = get_headless_runtime_name()
     skills = resolve_skill_bundle(phase=phase, overlay_skill_metadata=overlay_skill_metadata)
 
-    binary_name = "claude" if _use_cli_fallback() else _RUNTIME_BINARIES.get(runtime_name, runtime_name)
-    binary = shutil.which(binary_name)
+    binary = shutil.which("claude")
     if binary is None:
-        return _record_failure(task, error=f"{binary_name} is not installed")
+        return _record_failure(task, error="claude is not installed")
 
     prompt = build_task_prompt(task)
     lifecycle_skill = SkillLoadingPolicy.lifecycle_for_phase(phase)

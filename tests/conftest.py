@@ -67,6 +67,23 @@ def pg_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("POSTGRES_PASSWORD", "testpass")
 
 
+@pytest.fixture(autouse=True)
+def _clear_backend_caches() -> Iterator[None]:
+    """Clear caches and block real token resolution so tests never call gpg/pass."""
+    from unittest.mock import patch  # noqa: PLC0415
+
+    import teatree.utils.secrets as _secrets_mod  # noqa: PLC0415
+    from teatree.backends.loader import reset_backend_caches  # noqa: PLC0415
+    from teatree.core.overlay_loader import reset_overlay_cache  # noqa: PLC0415
+
+    reset_backend_caches()
+    reset_overlay_cache()
+    with patch.object(_secrets_mod, "read_pass", lambda _key: ""):
+        yield
+    reset_backend_caches()
+    reset_overlay_cache()
+
+
 @pytest.fixture
 def workspace(tmp_path: Path) -> Path:
     """Create a minimal workspace structure with a main repo."""

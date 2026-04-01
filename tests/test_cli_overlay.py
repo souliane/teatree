@@ -13,6 +13,12 @@ from unittest.mock import MagicMock, patch
 import typer
 from typer.testing import CliRunner
 
+import teatree.autostart as autostart_mod
+import teatree.cli as cli_mod
+import teatree.cli.overlay as cli_overlay_mod
+import teatree.cli.review as cli_review_mod
+import teatree.config as config_mod
+import teatree.core.overlay_loader as overlay_loader_mod
 from teatree.cli import _register_overlay_commands
 from teatree.cli.overlay import OverlayAppBuilder, managepy, uv_cmd
 from teatree.cli.overlay import _uvicorn as _uvicorn_fn
@@ -38,7 +44,7 @@ class TestUvCmd:
 class TestManagepy:
     def test_none_path_falls_back_to_python_m_teatree(self):
         """managepy(None) falls back to ``python -m teatree``."""
-        with patch("teatree.cli.overlay.subprocess.run") as mock_run:
+        with patch.object(cli_overlay_mod.subprocess, "run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0)
             managepy(None, "migrate")
             mock_run.assert_called_once()
@@ -48,7 +54,7 @@ class TestManagepy:
 
     def test_no_manage_py_falls_back_to_python_m_teatree(self, tmp_path):
         """Managepy with no manage.py falls back to ``python -m teatree``."""
-        with patch("teatree.cli.overlay.subprocess.run") as mock_run:
+        with patch.object(cli_overlay_mod.subprocess, "run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0)
             managepy(tmp_path, "migrate")
             mock_run.assert_called_once()
@@ -58,7 +64,7 @@ class TestManagepy:
 
     def test_runs_subprocess(self, tmp_path):
         (tmp_path / "manage.py").write_text("pass\n")
-        with patch("teatree.cli.overlay.subprocess.run") as mock_run:
+        with patch.object(cli_overlay_mod.subprocess, "run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0)
             managepy(tmp_path, "migrate")
             mock_run.assert_called_once()
@@ -66,7 +72,7 @@ class TestManagepy:
     def test_sets_overlay_name_env_var(self, tmp_path):
         """Managepy propagates overlay_name as T3_OVERLAY_NAME in subprocess env."""
         (tmp_path / "manage.py").write_text("pass\n")
-        with patch("teatree.cli.overlay.subprocess.run") as mock_run:
+        with patch.object(cli_overlay_mod.subprocess, "run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0)
             managepy(tmp_path, "migrate", overlay_name="t3-acme")
             env = mock_run.call_args[1]["env"]
@@ -75,7 +81,7 @@ class TestManagepy:
     def test_omits_overlay_name_when_empty(self, tmp_path):
         """Managepy does not set T3_OVERLAY_NAME when overlay_name is empty."""
         (tmp_path / "manage.py").write_text("pass\n")
-        with patch("teatree.cli.overlay.subprocess.run") as mock_run:
+        with patch.object(cli_overlay_mod.subprocess, "run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0)
             managepy(tmp_path, "migrate")
             env = mock_run.call_args[1]["env"]
@@ -85,7 +91,7 @@ class TestManagepy:
 class TestUvicorn:
     def test_none_path_falls_back_to_python_m_uvicorn(self):
         """_uvicorn(None, ...) falls back to ``python -m uvicorn``."""
-        with patch("teatree.cli.overlay.subprocess.run") as mock_run:
+        with patch.object(cli_overlay_mod.subprocess, "run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0)
             _uvicorn_fn(None, "127.0.0.1", 8000)
             mock_run.assert_called_once()
@@ -95,7 +101,7 @@ class TestUvicorn:
 
     def test_runs_subprocess_with_project_path(self, tmp_path):
         (tmp_path / "manage.py").write_text("pass\n")
-        with patch("teatree.cli.overlay.subprocess.run") as mock_run:
+        with patch.object(cli_overlay_mod.subprocess, "run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0)
             _uvicorn_fn(tmp_path, "127.0.0.1", 8000, "myapp.settings")
             mock_run.assert_called_once()
@@ -106,7 +112,7 @@ class TestUvicorn:
             assert "teatree.asgi:application" in str(call_args)
 
     def test_sets_overlay_name_env_var_in_uvicorn(self):
-        with patch("teatree.cli.overlay.subprocess.run") as mock_run:
+        with patch.object(cli_overlay_mod.subprocess, "run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0)
             _uvicorn_fn(None, "127.0.0.1", 8000, overlay_name="t3-acme")
             env = mock_run.call_args[1]["env"]
@@ -132,8 +138,8 @@ class TestOverlayAppBuilder:
         active = OverlayEntry(name="test", overlay_class="test.overlay.TestOverlay", project_path=Path("/tmp/test"))
 
         with (
-            patch("teatree.config.discover_active_overlay", return_value=active),
-            patch("teatree.config.discover_overlays", return_value=entries),
+            patch.object(config_mod, "discover_active_overlay", return_value=active),
+            patch.object(config_mod, "discover_overlays", return_value=entries),
         ):
             _register_overlay_commands()
 
@@ -143,9 +149,9 @@ class TestOverlayAppBuilder:
         entries = [OverlayEntry(name="t3-acme", overlay_class="acme.overlay:AcmeOverlay", project_path=None)]
 
         with (
-            patch("teatree.config.discover_active_overlay", return_value=None),
-            patch("teatree.config.discover_overlays", return_value=entries),
-            patch("teatree.cli.OverlayAppBuilder") as mock_builder,
+            patch.object(config_mod, "discover_active_overlay", return_value=None),
+            patch.object(config_mod, "discover_overlays", return_value=entries),
+            patch.object(cli_mod, "OverlayAppBuilder") as mock_builder,
         ):
             mock_builder.return_value.build.return_value = typer.Typer()
             _register_overlay_commands()
@@ -154,8 +160,8 @@ class TestOverlayAppBuilder:
 
     def test_register_commands_no_overlays(self):
         with (
-            patch("teatree.config.discover_active_overlay", return_value=None),
-            patch("teatree.config.discover_overlays", return_value=[]),
+            patch.object(config_mod, "discover_active_overlay", return_value=None),
+            patch.object(config_mod, "discover_overlays", return_value=[]),
         ):
             _register_overlay_commands()
 
@@ -167,7 +173,7 @@ class TestOverlayAppBuilder:
         builder._bridge_tool_command(group, "my-tool", "Run my tool", "tool my-tool")
 
         test_runner = CliRunner()
-        with patch("teatree.cli.overlay.managepy") as mock_manage:
+        with patch.object(cli_overlay_mod, "managepy") as mock_manage:
             result = test_runner.invoke(group, ["my-tool", "extra-arg"])
             assert result.exit_code == 0
             mock_manage.assert_called_once()
@@ -185,8 +191,8 @@ class TestOverlayCommands:
         (tmp_path / "manage.py").write_text("pass\n")
 
         with (
-            patch("teatree.cli.overlay.managepy") as mock_manage,
-            patch("teatree.cli.overlay._uvicorn") as mock_uvicorn,
+            patch.object(cli_overlay_mod, "managepy") as mock_manage,
+            patch.object(cli_overlay_mod, "_uvicorn") as mock_uvicorn,
             patch("socket.socket") as mock_socket_cls,
         ):
             # Port is free (connect_ex returns non-zero)
@@ -231,8 +237,8 @@ class TestOverlayCommands:
             return ephemeral_sock
 
         with (
-            patch("teatree.cli.overlay.managepy"),
-            patch("teatree.cli.overlay._uvicorn") as mock_uvicorn,
+            patch.object(cli_overlay_mod, "managepy"),
+            patch.object(cli_overlay_mod, "_uvicorn") as mock_uvicorn,
             patch("socket.socket", side_effect=socket_factory),
         ):
             result = test_runner.invoke(overlay_app, ["dashboard"])
@@ -253,7 +259,7 @@ class TestOverlayCommands:
         db_path = db_dir / "db.sqlite3"
         db_path.write_text("fake db")
 
-        with patch("teatree.cli.overlay.managepy"):
+        with patch.object(cli_overlay_mod, "managepy"):
             result = test_runner.invoke(overlay_app, ["resetdb"])
             assert result.exit_code == 0
             assert "Deleted" in result.output
@@ -266,7 +272,7 @@ class TestOverlayCommands:
         overlay_app = OverlayAppBuilder("test", tmp_path, "test.settings").build()
         test_runner = CliRunner()
 
-        with patch("teatree.cli.overlay.managepy"):
+        with patch.object(cli_overlay_mod, "managepy"):
             result = test_runner.invoke(overlay_app, ["resetdb"])
             assert result.exit_code == 0
             assert "Database recreated" in result.output
@@ -288,7 +294,7 @@ class TestOverlayCommands:
         mock_proc = MagicMock()
         mock_proc.wait.return_value = 0
 
-        with patch("teatree.cli.overlay.subprocess.Popen", return_value=mock_proc) as mock_popen:
+        with patch.object(cli_overlay_mod.subprocess, "Popen", return_value=mock_proc) as mock_popen:
             result = test_runner.invoke(overlay_app, ["worker", "--count", "2"])
             assert result.exit_code == 0
             assert mock_popen.call_count == 2
@@ -303,7 +309,7 @@ class TestOverlayCommands:
         mock_proc = MagicMock()
         mock_proc.wait.return_value = 0
 
-        with patch("teatree.cli.overlay.subprocess.Popen", return_value=mock_proc) as mock_popen:
+        with patch.object(cli_overlay_mod.subprocess, "Popen", return_value=mock_proc) as mock_popen:
             result = test_runner.invoke(overlay_app, ["worker", "--count", "1"])
             assert result.exit_code == 0
             env = mock_popen.call_args[1]["env"]
@@ -318,7 +324,7 @@ class TestOverlayCommands:
         mock_proc = MagicMock()
         mock_proc.wait.side_effect = KeyboardInterrupt
 
-        with patch("teatree.cli.overlay.subprocess.Popen", return_value=mock_proc):
+        with patch.object(cli_overlay_mod.subprocess, "Popen", return_value=mock_proc):
             result = test_runner.invoke(overlay_app, ["worker", "--count", "1"])
             assert "Shutting down" in result.output
             mock_proc.terminate.assert_called_once()
@@ -328,21 +334,21 @@ class TestOverlayCommands:
         overlay_app = OverlayAppBuilder("test", tmp_path, "test.settings").build()
         test_runner = CliRunner()
 
-        with patch("teatree.cli.overlay.managepy") as mock_manage:
+        with patch.object(cli_overlay_mod, "managepy") as mock_manage:
             result = test_runner.invoke(overlay_app, ["full-status"])
             assert result.exit_code == 0
             mock_manage.assert_called_once_with(tmp_path, "followup", "refresh", overlay_name="test")
 
     def test_start_ticket(self, tmp_path):
-        """start-ticket delegates to workspace ticket."""
+        """start-ticket delegates to lifecycle start-full."""
         overlay_app = OverlayAppBuilder("test", tmp_path, "test.settings").build()
         test_runner = CliRunner()
 
-        with patch("teatree.cli.overlay.managepy") as mock_manage:
+        with patch.object(cli_overlay_mod, "managepy") as mock_manage:
             result = test_runner.invoke(overlay_app, ["start-ticket", "https://issue/123"])
             assert result.exit_code == 0
             mock_manage.assert_called_once_with(
-                tmp_path, "workspace", "ticket", "https://issue/123", overlay_name="test"
+                tmp_path, "lifecycle", "start-full", "https://issue/123", overlay_name="test"
             )
 
     def test_start_ticket_with_variant(self, tmp_path):
@@ -350,11 +356,11 @@ class TestOverlayCommands:
         overlay_app = OverlayAppBuilder("test", tmp_path, "test.settings").build()
         test_runner = CliRunner()
 
-        with patch("teatree.cli.overlay.managepy") as mock_manage:
+        with patch.object(cli_overlay_mod, "managepy") as mock_manage:
             result = test_runner.invoke(overlay_app, ["start-ticket", "https://issue/123", "--variant", "tenant-a"])
             assert result.exit_code == 0
             mock_manage.assert_called_once_with(
-                tmp_path, "workspace", "ticket", "https://issue/123", "--variant", "tenant-a", overlay_name="test"
+                tmp_path, "lifecycle", "start-full", "https://issue/123", "--variant", "tenant-a", overlay_name="test"
             )
 
     def test_ship(self, tmp_path):
@@ -362,7 +368,7 @@ class TestOverlayCommands:
         overlay_app = OverlayAppBuilder("test", tmp_path, "test.settings").build()
         test_runner = CliRunner()
 
-        with patch("teatree.cli.overlay.managepy") as mock_manage:
+        with patch.object(cli_overlay_mod, "managepy") as mock_manage:
             result = test_runner.invoke(overlay_app, ["ship", "TICKET-123"])
             assert result.exit_code == 0
             mock_manage.assert_called_once_with(tmp_path, "pr", "create", "TICKET-123", overlay_name="test")
@@ -372,7 +378,7 @@ class TestOverlayCommands:
         overlay_app = OverlayAppBuilder("test", tmp_path, "test.settings").build()
         test_runner = CliRunner()
 
-        with patch("teatree.cli.overlay.managepy") as mock_manage:
+        with patch.object(cli_overlay_mod, "managepy") as mock_manage:
             result = test_runner.invoke(overlay_app, ["ship", "TICKET-123", "--title", "Fix bug"])
             assert result.exit_code == 0
             mock_manage.assert_called_once_with(
@@ -384,7 +390,7 @@ class TestOverlayCommands:
         overlay_app = OverlayAppBuilder("test", tmp_path, "test.settings").build()
         test_runner = CliRunner()
 
-        with patch("teatree.cli.overlay.managepy") as mock_manage:
+        with patch.object(cli_overlay_mod, "managepy") as mock_manage:
             result = test_runner.invoke(overlay_app, ["daily"])
             assert result.exit_code == 0
             mock_manage.assert_called_once_with(tmp_path, "followup", "sync", overlay_name="test")
@@ -395,21 +401,23 @@ class TestOverlayCommands:
         (tmp_path / "pyproject.toml").write_text("[project]\n")
         overlay_app = OverlayAppBuilder("test", tmp_path, "test.settings").build()
         test_runner = CliRunner()
-        from teatree.skill_loading import SkillSelectionResult  # noqa: PLC0415
+        from teatree.cli import doctor as cli_doctor_mod  # noqa: PLC0415
+        from teatree.skill_loading import SkillLoadingPolicy, SkillSelectionResult  # noqa: PLC0415
 
         overlay_obj = MagicMock()
         overlay_obj.metadata.get_skill_metadata.return_value = {"skill_path": "skills/test/SKILL.md"}
 
         with (
             patch("shutil.which", return_value="/usr/bin/claude"),
-            patch("teatree.cli.doctor.IntrospectionHelpers.editable_info", return_value=(False, "")),
-            patch("teatree.core.overlay_loader.get_overlay", return_value=overlay_obj),
-            patch("teatree.cli._detect_agent_ticket_status", return_value="started"),
-            patch(
-                "teatree.skill_loading.SkillLoadingPolicy.select_for_agent_launch",
+            patch.object(cli_doctor_mod.IntrospectionHelpers, "editable_info", return_value=(False, "")),
+            patch.object(overlay_loader_mod, "get_overlay", return_value=overlay_obj),
+            patch.object(cli_mod, "_detect_agent_ticket_status", return_value="started"),
+            patch.object(
+                SkillLoadingPolicy,
+                "select_for_agent_launch",
                 return_value=SkillSelectionResult(skills=["code"]),
             ),
-            patch("teatree.cli.os.execvp") as mock_exec,
+            patch.object(cli_mod.os, "execvp") as mock_exec,
         ):
             test_runner.invoke(overlay_app, ["agent", "fix something"])
             mock_exec.assert_called_once()
@@ -420,21 +428,23 @@ class TestOverlayCommands:
         (tmp_path / "pyproject.toml").write_text("[project]\n")
         overlay_app = OverlayAppBuilder("test", None, "test.settings").build()
         test_runner = CliRunner()
-        from teatree.skill_loading import SkillSelectionResult  # noqa: PLC0415
+        from teatree.cli import doctor as cli_doctor_mod  # noqa: PLC0415
+        from teatree.skill_loading import SkillLoadingPolicy, SkillSelectionResult  # noqa: PLC0415
 
         overlay_obj = MagicMock()
         overlay_obj.metadata.get_skill_metadata.return_value = {}
 
         with (
             patch("shutil.which", return_value="/usr/bin/claude"),
-            patch("teatree.cli.doctor.IntrospectionHelpers.editable_info", return_value=(False, "")),
-            patch("teatree.core.overlay_loader.get_overlay", return_value=overlay_obj),
-            patch("teatree.cli._detect_agent_ticket_status", return_value=""),
-            patch(
-                "teatree.skill_loading.SkillLoadingPolicy.select_for_agent_launch",
+            patch.object(cli_doctor_mod.IntrospectionHelpers, "editable_info", return_value=(False, "")),
+            patch.object(overlay_loader_mod, "get_overlay", return_value=overlay_obj),
+            patch.object(cli_mod, "_detect_agent_ticket_status", return_value=""),
+            patch.object(
+                SkillLoadingPolicy,
+                "select_for_agent_launch",
                 return_value=SkillSelectionResult(skills=["code"]),
             ),
-            patch("teatree.cli.os.execvp") as mock_exec,
+            patch.object(cli_mod.os, "execvp") as mock_exec,
         ):
             test_runner.invoke(overlay_app, ["agent"])
             mock_exec.assert_called_once()
@@ -454,7 +464,7 @@ class TestOverlayCommands:
         overlay_app = OverlayAppBuilder("test", tmp_path, "test.settings").build()
         test_runner = CliRunner()
 
-        with patch("teatree.cli.overlay.managepy") as mock_manage:
+        with patch.object(cli_overlay_mod, "managepy") as mock_manage:
             result = test_runner.invoke(overlay_app, ["lifecycle", "setup"])
             assert result.exit_code == 0
             mock_manage.assert_called_once_with(tmp_path, "lifecycle", "setup", overlay_name="test")
@@ -465,8 +475,8 @@ class TestOverlayCommands:
         test_runner = CliRunner()
 
         with (
-            patch("teatree.config.discover_active_overlay", return_value=None),
-            patch("teatree.autostart.enable", return_value="Service installed") as mock_enable,
+            patch.object(config_mod, "discover_active_overlay", return_value=None),
+            patch.object(autostart_mod, "enable", return_value="Service installed") as mock_enable,
         ):
             result = test_runner.invoke(overlay_app, ["config", "enable-autostart"])
             assert result.exit_code == 0
@@ -478,7 +488,7 @@ class TestOverlayCommands:
         overlay_app = OverlayAppBuilder("test", tmp_path, "test.settings").build()
         test_runner = CliRunner()
 
-        with patch("teatree.autostart.disable", return_value="Service removed") as mock_disable:
+        with patch.object(autostart_mod, "disable", return_value="Service removed") as mock_disable:
             result = test_runner.invoke(overlay_app, ["config", "disable-autostart"])
             assert result.exit_code == 0
             assert "Service removed" in result.output
@@ -493,11 +503,12 @@ class TestOverlayCommands:
         stdout_log.write_text("log line 1\nlog line 2\n")
 
         with (
-            patch(
-                "teatree.autostart.log_paths",
+            patch.object(
+                autostart_mod,
+                "log_paths",
                 return_value={"stdout": stdout_log, "stderr": tmp_path / "stderr.log"},
             ),
-            patch("teatree.cli.review.subprocess.run") as mock_run,
+            patch.object(cli_review_mod.subprocess, "run") as mock_run,
         ):
             mock_run.return_value = MagicMock(returncode=0)
             result = test_runner.invoke(overlay_app, ["config", "logs"])
@@ -515,11 +526,12 @@ class TestOverlayCommands:
         stdout_log.write_text("log data\n")
 
         with (
-            patch(
-                "teatree.autostart.log_paths",
+            patch.object(
+                autostart_mod,
+                "log_paths",
                 return_value={"stdout": stdout_log, "stderr": tmp_path / "stderr.log"},
             ),
-            patch("teatree.cli.review.subprocess.run") as mock_run,
+            patch.object(cli_review_mod.subprocess, "run") as mock_run,
         ):
             mock_run.return_value = MagicMock(returncode=0)
             result = test_runner.invoke(overlay_app, ["config", "logs", "--follow"])
@@ -532,8 +544,9 @@ class TestOverlayCommands:
         overlay_app = OverlayAppBuilder("test", tmp_path, "test.settings").build()
         test_runner = CliRunner()
 
-        with patch(
-            "teatree.autostart.log_paths",
+        with patch.object(
+            autostart_mod,
+            "log_paths",
             return_value={"stdout": tmp_path / "nonexistent.log", "stderr": tmp_path / "stderr.log"},
         ):
             result = test_runner.invoke(overlay_app, ["config", "logs"])
@@ -549,11 +562,12 @@ class TestOverlayCommands:
         stderr_log.write_text("error data\n")
 
         with (
-            patch(
-                "teatree.autostart.log_paths",
+            patch.object(
+                autostart_mod,
+                "log_paths",
                 return_value={"stdout": tmp_path / "stdout.log", "stderr": stderr_log},
             ),
-            patch("teatree.cli.review.subprocess.run") as mock_run,
+            patch.object(cli_review_mod.subprocess, "run") as mock_run,
         ):
             mock_run.return_value = MagicMock(returncode=0)
             result = test_runner.invoke(overlay_app, ["config", "logs", "--stderr"])

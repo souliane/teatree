@@ -8,6 +8,7 @@ import pytest
 from django.test import TestCase
 
 import teatree.contrib.t3_teatree.overlay as overlay_mod
+import teatree.core.overlay_loader as overlay_loader_mod
 from teatree.contrib.t3_teatree.apps import T3TeatreeConfig
 from teatree.contrib.t3_teatree.overlay import TeatreeOverlay, _repo_root
 from teatree.core.models import Ticket, Worktree
@@ -20,8 +21,9 @@ class TestTeatreeOverlayIsValid:
         assert issubclass(TeatreeOverlay, OverlayBase)
 
     def test_loadable_via_overlay_loader(self) -> None:
-        with patch(
-            "teatree.core.overlay_loader._discover_overlays",
+        with patch.object(
+            overlay_loader_mod,
+            "_discover_overlays",
             return_value={"t3-teatree": TeatreeOverlay()},
         ):
             overlay = get_overlay()

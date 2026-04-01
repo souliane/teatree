@@ -149,13 +149,16 @@ class OverlayConfig:
 
     def _register_secret(self, attr_name: str, pass_key: str) -> None:
         """Create a ``get_<attr_name>()`` method that reads from ``pass``."""
-        from teatree.utils.secrets import read_pass  # noqa: PLC0415
 
-        def _reader(_self: "OverlayConfig", _key: str = pass_key) -> str:
+        def _reader(_key: str = pass_key) -> str:
+            from teatree.utils.secrets import read_pass  # noqa: PLC0415
+
             return read_pass(_key)
 
         method_name = f"get_{attr_name}"
-        setattr(type(self), method_name, _reader)
+        # Bind to the instance (not the class) so other OverlayConfig
+        # instances are unaffected — prevents test pollution.
+        setattr(self, method_name, _reader)
 
     # ── Secret getters (override in subclass or via *_PASS_KEY) ──────
 

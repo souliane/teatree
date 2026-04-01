@@ -14,6 +14,17 @@ from django.core.management.base import OutputWrapper
 from django.test import TestCase, override_settings
 from django.utils.module_loading import import_string
 
+import teatree.backends.loader as backends_loader_mod
+import teatree.config as config_mod
+import teatree.core.management.commands.lifecycle as lifecycle_mod
+import teatree.core.management.commands.pr as pr_mod
+import teatree.core.management.commands.run as run_mod
+import teatree.core.management.commands.tool as tool_mod
+import teatree.core.management.commands.workspace as workspace_mod
+import teatree.core.overlay_loader as overlay_loader_mod
+import teatree.core.views._startup as startup_mod
+import teatree.utils.db as db_mod
+import teatree.utils.git as git_mod
 from teatree.core.management.commands.lifecycle import _register_new_repos
 from teatree.core.management.commands.pr import _last_commit_message
 from teatree.core.management.commands.workspace import _branch_prefix, _workspace_dir
@@ -51,7 +62,7 @@ def _patch_overlays(overlay_class_path: str):
 
     _fake_discover.cache_clear = lambda: None
 
-    return patch("teatree.core.overlay_loader._discover_overlays", new=_fake_discover)
+    return patch.object(overlay_loader_mod, "_discover_overlays", new=_fake_discover)
 
 
 class FullMetadata(OverlayMetadata):
@@ -191,8 +202,6 @@ FAILING_IMPORT_OVERLAY = "tests.teatree_core.test_new_management_commands.Failin
 PRE_RUN_OVERLAY = "tests.teatree_core.test_new_management_commands.PreRunOverlay"
 
 SETTINGS = {
-    "TEATREE_HEADLESS_RUNTIME": "claude-code",
-    "TEATREE_INTERACTIVE_RUNTIME": "codex",
     "TEATREE_TERMINAL_MODE": "same-terminal",
 }
 
@@ -215,7 +224,7 @@ class TestBranchPrefix(TestCase):
     def test_from_git_config(self) -> None:
         with (
             patch.dict("os.environ", {}, clear=False),
-            patch("teatree.core.management.commands.workspace.git.run", return_value="Ada Lovelace"),
+            patch.object(workspace_mod.git, "run", return_value="Ada Lovelace"),
         ):
             os.environ.pop("T3_BRANCH_PREFIX", None)
             assert _branch_prefix() == "al"
@@ -223,7 +232,7 @@ class TestBranchPrefix(TestCase):
     def test_fallback_to_dev(self) -> None:
         with (
             patch.dict("os.environ", {}, clear=False),
-            patch("teatree.core.management.commands.workspace.git.run", return_value=""),
+            patch.object(workspace_mod.git, "run", return_value=""),
         ):
             os.environ.pop("T3_BRANCH_PREFIX", None)
             assert _branch_prefix() == "dev"
@@ -234,7 +243,7 @@ class TestWorkspaceDirHelper(TestCase):
         from teatree.config import TeaTreeConfig, UserSettings  # noqa: PLC0415
 
         cfg = TeaTreeConfig(user=UserSettings(workspace_dir=Path("/tmp/ws-test")))
-        with patch("teatree.core.management.commands.workspace.load_config", return_value=cfg):
+        with patch.object(workspace_mod, "load_config", return_value=cfg):
             result = _workspace_dir()
             assert result == Path("/tmp/ws-test")
 
@@ -292,8 +301,8 @@ class TestWorkspaceTicket(TestCase):
             mock_result.returncode = 0
 
             with (
-                patch("teatree.core.management.commands.workspace._workspace_dir", return_value=workspace),
-                patch("teatree.utils.git.subprocess.run", return_value=mock_result),
+                patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
+                patch.object(git_mod.subprocess, "run", return_value=mock_result),
             ):
                 ticket_id = cast("int", call_command("workspace", "ticket", "https://example.com/issues/80"))
 
@@ -330,8 +339,8 @@ class TestWorkspaceTicket(TestCase):
             mock_result.returncode = 0
 
             with (
-                patch("teatree.core.management.commands.workspace._workspace_dir", return_value=workspace),
-                patch("teatree.utils.git.subprocess.run", return_value=mock_result),
+                patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
+                patch.object(git_mod.subprocess, "run", return_value=mock_result),
             ):
                 ticket_id = cast("int", call_command("workspace", "ticket", "https://example.com/issues/81"))
 
@@ -364,9 +373,9 @@ class TestWorkspaceTicket(TestCase):
             mock_result.returncode = 0
 
             with (
-                patch("teatree.core.management.commands.workspace._workspace_dir", return_value=workspace),
-                patch("teatree.core.management.commands.workspace._branch_prefix", return_value="ac"),
-                patch("teatree.utils.git.subprocess.run", return_value=mock_result),
+                patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
+                patch.object(workspace_mod, "_branch_prefix", return_value="ac"),
+                patch.object(git_mod.subprocess, "run", return_value=mock_result),
             ):
                 ticket_id = cast("int", call_command("workspace", "ticket", "https://example.com/issues/82"))
 
@@ -400,8 +409,8 @@ class TestWorkspaceTicket(TestCase):
                 return mock_pull
 
             with (
-                patch("teatree.core.management.commands.workspace._workspace_dir", return_value=workspace),
-                patch("teatree.utils.git.subprocess.run", side_effect=side_effect),
+                patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
+                patch.object(git_mod.subprocess, "run", side_effect=side_effect),
             ):
                 result = cast("int", call_command("workspace", "ticket", "https://example.com/issues/83"))
 
@@ -449,8 +458,8 @@ class TestWorkspaceCleanAll(TestCase):
 
             mock_result = MagicMock(stdout="")
             with (
-                patch("teatree.core.management.commands.workspace._workspace_dir", return_value=workspace),
-                patch("teatree.utils.git.subprocess.run", return_value=mock_result) as mock_run,
+                patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
+                patch.object(git_mod.subprocess, "run", return_value=mock_result) as mock_run,
             ):
                 cleaned = cast("list[str]", call_command("workspace", "clean-all"))
 
@@ -489,11 +498,11 @@ class TestWorkspaceCleanAll(TestCase):
             Worktree.objects.filter(pk=wt.pk).update(db_name="wt_test_db")
 
             with (
-                patch("teatree.core.management.commands.workspace._workspace_dir", return_value=workspace),
-                patch("teatree.utils.git.subprocess.run") as mock_run,
-                patch("teatree.utils.db.pg_host", return_value="localhost"),
-                patch("teatree.utils.db.pg_user", return_value="testuser"),
-                patch("teatree.utils.db.pg_env", return_value={"PGPASSWORD": "secret"}),
+                patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
+                patch.object(git_mod.subprocess, "run") as mock_run,
+                patch.object(db_mod, "pg_host", return_value="localhost"),
+                patch.object(db_mod, "pg_user", return_value="testuser"),
+                patch.object(db_mod, "pg_env", return_value={"PGPASSWORD": "secret"}),
             ):
                 cleaned = cast("list[str]", call_command("workspace", "clean-all"))
 
@@ -531,8 +540,8 @@ class TestWorkspaceCleanAll(TestCase):
             mock_result = MagicMock(stdout=" M dirty_file.py\n")
             stderr = StringIO()
             with (
-                patch("teatree.core.management.commands.workspace._workspace_dir", return_value=workspace),
-                patch("teatree.utils.git.subprocess.run", return_value=mock_result),
+                patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
+                patch.object(git_mod.subprocess, "run", return_value=mock_result),
             ):
                 call_command("workspace", "clean-all", stderr=OutputWrapper(stderr))
 
@@ -573,8 +582,8 @@ class TestWorkspaceCleanAll(TestCase):
             _fake_discover.cache_clear = lambda: None
 
             with (
-                patch("teatree.core.management.commands.workspace._workspace_dir", return_value=workspace),
-                patch("teatree.core.overlay_loader._discover_overlays", new=_fake_discover),
+                patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
+                patch.object(overlay_loader_mod, "_discover_overlays", new=_fake_discover),
             ):
                 call_command("workspace", "clean-all")
 
@@ -599,7 +608,7 @@ class TestWorkspaceCleanAll(TestCase):
             nonempty_dir.mkdir()
             (nonempty_dir / "some_file.txt").write_text("content", encoding="utf-8")
 
-            with patch("teatree.core.management.commands.workspace._workspace_dir", return_value=workspace):
+            with patch.object(workspace_mod, "_workspace_dir", return_value=workspace):
                 cleaned = cast("list[str]", call_command("workspace", "clean-all"))
 
             # Only the empty dir should be removed
@@ -618,15 +627,15 @@ class TestWorkspaceFinalize(TestCase):
         Worktree.objects.create(overlay="test", ticket=ticket, repo_path="/tmp/frontend", branch="feature-90")
 
         with (
-            patch("teatree.utils.git.default_branch", return_value="main"),
-            patch("teatree.utils.git.status_porcelain", return_value=""),
-            patch("teatree.utils.git.fetch"),
-            patch("teatree.utils.git.merge_base", return_value="abc123"),
-            patch("teatree.utils.git.rev_count", return_value=3),
-            patch("teatree.utils.git.log_oneline", return_value="abc fix: first change\ndef feat: second"),
-            patch("teatree.utils.git.soft_reset"),
-            patch("teatree.utils.git.commit"),
-            patch("teatree.utils.git.rebase"),
+            patch.object(git_mod, "default_branch", return_value="main"),
+            patch.object(git_mod, "status_porcelain", return_value=""),
+            patch.object(git_mod, "fetch"),
+            patch.object(git_mod, "merge_base", return_value="abc123"),
+            patch.object(git_mod, "rev_count", return_value=3),
+            patch.object(git_mod, "log_oneline", return_value="abc fix: first change\ndef feat: second"),
+            patch.object(git_mod, "soft_reset"),
+            patch.object(git_mod, "commit"),
+            patch.object(git_mod, "rebase"),
         ):
             result = cast("str", call_command("workspace", "finalize", str(ticket.pk)))
 
@@ -642,13 +651,13 @@ class TestWorkspaceFinalize(TestCase):
         Worktree.objects.create(overlay="test", ticket=ticket, repo_path="/tmp/backend", branch="feature-91")
 
         with (
-            patch("teatree.utils.git.default_branch", return_value="main"),
-            patch("teatree.utils.git.status_porcelain", return_value=""),
-            patch("teatree.utils.git.fetch"),
-            patch("teatree.utils.git.merge_base", return_value="abc123"),
-            patch("teatree.utils.git.rev_count", return_value=1),
-            patch("teatree.utils.git.log_oneline", return_value=""),
-            patch("teatree.utils.git.rebase", side_effect=sp.CalledProcessError(1, "git rebase")),
+            patch.object(git_mod, "default_branch", return_value="main"),
+            patch.object(git_mod, "status_porcelain", return_value=""),
+            patch.object(git_mod, "fetch"),
+            patch.object(git_mod, "merge_base", return_value="abc123"),
+            patch.object(git_mod, "rev_count", return_value=1),
+            patch.object(git_mod, "log_oneline", return_value=""),
+            patch.object(git_mod, "rebase", side_effect=sp.CalledProcessError(1, "git rebase")),
         ):
             result = cast("str", call_command("workspace", "finalize", str(ticket.pk)))
 
@@ -661,8 +670,8 @@ class TestWorkspaceFinalize(TestCase):
         Worktree.objects.create(overlay="test", ticket=ticket, repo_path="/tmp/dirty", branch="feature-95")
 
         with (
-            patch("teatree.utils.git.default_branch", return_value="main"),
-            patch("teatree.utils.git.status_porcelain", return_value=" M src/file.py"),
+            patch.object(git_mod, "default_branch", return_value="main"),
+            patch.object(git_mod, "status_porcelain", return_value=" M src/file.py"),
         ):
             result = cast("str", call_command("workspace", "finalize", str(ticket.pk)))
 
@@ -951,7 +960,7 @@ class TestPrCreate(TestCase):
         mock_host = MagicMock()
         mock_host.create_pr.return_value = {"url": "https://example.com/mr/1"}
 
-        with patch("teatree.core.management.commands.pr.get_code_host", return_value=mock_host):
+        with patch.object(pr_mod, "get_code_host", return_value=mock_host):
             result = cast(
                 "dict[str, object]",
                 call_command(
@@ -983,9 +992,9 @@ class TestPrCreate(TestCase):
         mock_validate = MagicMock(return_value={"errors": ["Bad title"], "warnings": []})
 
         with (
-            patch("teatree.core.management.commands.pr.get_code_host", return_value=mock_host),
-            patch("teatree.core.management.commands.pr._last_commit_message", return_value=("Bad Title", "")),
-            patch("teatree.core.management.commands.pr.get_overlay") as mock_overlay,
+            patch.object(pr_mod, "get_code_host", return_value=mock_host),
+            patch.object(pr_mod, "_last_commit_message", return_value=("Bad Title", "")),
+            patch.object(pr_mod, "get_overlay") as mock_overlay,
         ):
             mock_overlay.return_value.metadata.validate_mr = mock_validate
             result = cast(
@@ -1006,8 +1015,8 @@ class TestPrCreate(TestCase):
         mock_host.create_pr.return_value = {"url": "https://example.com/mr/2"}
 
         with (
-            patch("teatree.core.management.commands.pr.get_code_host", return_value=mock_host),
-            patch("teatree.core.management.commands.pr._last_commit_message", return_value=("", "")),
+            patch.object(pr_mod, "get_code_host", return_value=mock_host),
+            patch.object(pr_mod, "_last_commit_message", return_value=("", "")),
         ):
             cast(
                 "dict[str, object]",
@@ -1034,8 +1043,8 @@ class TestPrCreate(TestCase):
         mock_host.create_pr.return_value = {"url": "https://example.com/mr/3"}
 
         with (
-            patch("teatree.core.management.commands.pr.get_code_host", return_value=mock_host),
-            patch("teatree.core.management.commands.pr._last_commit_message", return_value=("", "")),
+            patch.object(pr_mod, "get_code_host", return_value=mock_host),
+            patch.object(pr_mod, "_last_commit_message", return_value=("", "")),
         ):
             call_command("pr", "create", str(ticket.pk), skip_validation=True)
 
@@ -1053,10 +1062,8 @@ class TestPrCreate(TestCase):
         mock_host.create_pr.return_value = {"url": "https://example.com/mr/7"}
 
         with (
-            patch("teatree.core.management.commands.pr.get_code_host", return_value=mock_host),
-            patch(
-                "teatree.core.management.commands.pr._last_commit_message", return_value=("commit title", "commit body")
-            ),
+            patch.object(pr_mod, "get_code_host", return_value=mock_host),
+            patch.object(pr_mod, "_last_commit_message", return_value=("commit title", "commit body")),
         ):
             call_command("pr", "create", str(ticket.pk), description="user desc", skip_validation=True)
 
@@ -1073,8 +1080,8 @@ class TestPrCreate(TestCase):
 
         mock_host = MagicMock()
         with (
-            patch("teatree.core.management.commands.pr.get_code_host", return_value=mock_host),
-            patch("teatree.core.management.commands.pr._last_commit_message", return_value=("", "")),
+            patch.object(pr_mod, "get_code_host", return_value=mock_host),
+            patch.object(pr_mod, "_last_commit_message", return_value=("", "")),
         ):
             result = cast(
                 "dict[str, object]",
@@ -1096,8 +1103,8 @@ class TestPrCreate(TestCase):
         mock_host.create_pr.return_value = {"url": "https://example.com/mr/5"}
 
         with (
-            patch("teatree.core.management.commands.pr.get_code_host", return_value=mock_host),
-            patch("teatree.core.management.commands.pr._last_commit_message", return_value=("", "")),
+            patch.object(pr_mod, "get_code_host", return_value=mock_host),
+            patch.object(pr_mod, "_last_commit_message", return_value=("", "")),
         ):
             result = cast(
                 "dict[str, object]",
@@ -1124,9 +1131,10 @@ class TestPrCreate(TestCase):
         mock_host.create_pr.return_value = {"url": "https://example.com/mr/6"}
 
         with (
-            patch("teatree.core.management.commands.pr.get_code_host", return_value=mock_host),
-            patch(
-                "teatree.core.management.commands.pr._last_commit_message",
+            patch.object(pr_mod, "get_code_host", return_value=mock_host),
+            patch.object(
+                pr_mod,
+                "_last_commit_message",
                 return_value=("fix(api): handle nulls", "Detailed body here"),
             ),
         ):
@@ -1175,8 +1183,9 @@ class TestPrCheckGates(TestCase):
 
 class TestLastCommitMessage:
     def test_parses_subject_and_body(self) -> None:
-        with patch(
-            "teatree.core.management.commands.pr.subprocess.run",
+        with patch.object(
+            pr_mod.subprocess,
+            "run",
             return_value=MagicMock(returncode=0, stdout="fix: bug\n\nDetailed body"),
         ):
             subject, body = _last_commit_message("/tmp")
@@ -1184,15 +1193,17 @@ class TestLastCommitMessage:
         assert body == "Detailed body"
 
     def test_returns_empty_on_failure(self) -> None:
-        with patch(
-            "teatree.core.management.commands.pr.subprocess.run",
+        with patch.object(
+            pr_mod.subprocess,
+            "run",
             return_value=MagicMock(returncode=128, stdout=""),
         ):
             assert _last_commit_message("/tmp") == ("", "")
 
     def test_subject_only(self) -> None:
-        with patch(
-            "teatree.core.management.commands.pr.subprocess.run",
+        with patch.object(
+            pr_mod.subprocess,
+            "run",
             return_value=MagicMock(returncode=0, stdout="feat: add feature"),
         ):
             subject, body = _last_commit_message("/tmp")
@@ -1214,7 +1225,7 @@ class TestPrFetchIssue(TestCase):
         mock_tracker = MagicMock()
         mock_tracker.get_issue.return_value = {"title": "Bug", "state": "opened", "description": "A bug"}
 
-        with patch("teatree.core.management.commands.pr.get_issue_tracker", return_value=mock_tracker):
+        with patch.object(pr_mod, "get_issue_tracker", return_value=mock_tracker):
             result = cast("dict[str, object]", call_command("pr", "fetch-issue", "https://example.com/issues/1"))
 
         assert result["title"] == "Bug"
@@ -1227,7 +1238,7 @@ class TestPrFetchIssue(TestCase):
         mock_tracker = MagicMock()
         mock_tracker.get_issue.return_value = {"title": "Task", "description": desc}
 
-        with patch("teatree.core.management.commands.pr.get_issue_tracker", return_value=mock_tracker):
+        with patch.object(pr_mod, "get_issue_tracker", return_value=mock_tracker):
             result = cast("dict[str, object]", call_command("pr", "fetch-issue", "https://example.com/issues/2"))
 
         assert result["_embedded_images"] == [{"alt": "screenshot", "path": "/uploads/abc/img.png"}]
@@ -1244,7 +1255,7 @@ class TestPrFetchIssue(TestCase):
             "comments": [{"body": "See ![fix](/uploads/xyz/fix.png)"}],
         }
 
-        with patch("teatree.core.management.commands.pr.get_issue_tracker", return_value=mock_tracker):
+        with patch.object(pr_mod, "get_issue_tracker", return_value=mock_tracker):
             result = cast("dict[str, object]", call_command("pr", "fetch-issue", "https://example.com/issues/3"))
 
         comments = result["comments"]
@@ -1263,7 +1274,7 @@ class TestPrFetchIssue(TestCase):
             "comments": ["not a dict", {"body": "valid"}],
         }
 
-        with patch("teatree.core.management.commands.pr.get_issue_tracker", return_value=mock_tracker):
+        with patch.object(pr_mod, "get_issue_tracker", return_value=mock_tracker):
             result = cast("dict[str, object]", call_command("pr", "fetch-issue", "https://example.com/issues/4"))
 
         assert "error" not in result
@@ -1293,7 +1304,7 @@ class TestPrPostEvidence(TestCase):
         mock_host.post_mr_note.return_value = {"id": 42}
         mock_host.list_mr_notes.return_value = []  # no existing note
 
-        with patch("teatree.core.management.commands.pr.get_code_host", return_value=mock_host):
+        with patch.object(pr_mod, "get_code_host", return_value=mock_host):
             result = cast(
                 "dict[str, object]",
                 call_command(
@@ -1321,7 +1332,7 @@ class TestPrPostEvidence(TestCase):
         ]
         mock_host.update_mr_note.return_value = {"id": 999}
 
-        with patch("teatree.core.management.commands.pr.get_code_host", return_value=mock_host):
+        with patch.object(pr_mod, "get_code_host", return_value=mock_host):
             result = cast(
                 "dict[str, object]",
                 call_command(
@@ -1348,7 +1359,7 @@ class TestPrPostEvidence(TestCase):
         mock_host.list_mr_notes.return_value = []
         mock_host.post_mr_note.return_value = {"id": 55}
 
-        with patch("teatree.core.management.commands.pr.get_code_host", return_value=mock_host):
+        with patch.object(pr_mod, "get_code_host", return_value=mock_host):
             cast(
                 "dict[str, object]",
                 call_command(
@@ -1374,7 +1385,7 @@ class TestPrPostEvidence(TestCase):
         mock_host.list_mr_notes.return_value = []
         mock_host.post_mr_note.return_value = {"id": 56}
 
-        with patch("teatree.core.management.commands.pr.get_code_host", return_value=mock_host):
+        with patch.object(pr_mod, "get_code_host", return_value=mock_host):
             cast(
                 "dict[str, object]",
                 call_command("pr", "post-evidence", "100", repo="my/repo", body="x", files=["/tmp/bad.png"]),
@@ -1390,7 +1401,7 @@ class TestPrPostEvidence(TestCase):
         mock_host.post_mr_note.return_value = {"id": 43}
         mock_host.list_mr_notes.return_value = []
 
-        with patch("teatree.core.management.commands.pr.get_code_host", return_value=mock_host):
+        with patch.object(pr_mod, "get_code_host", return_value=mock_host):
             cast(
                 "dict[str, object]",
                 call_command(
@@ -1412,7 +1423,7 @@ class TestPrPostEvidence(TestCase):
         mock_host.post_mr_note.return_value = {"id": 44}
         mock_host.list_mr_notes.return_value = []
 
-        with patch("teatree.core.management.commands.pr.get_code_host", return_value=mock_host):
+        with patch.object(pr_mod, "get_code_host", return_value=mock_host):
             call_command("pr", "post-evidence", "102", title="T")
 
         call_kwargs = mock_host.post_mr_note.call_args[1]
@@ -1439,7 +1450,7 @@ class TestRunBackend(TestCase):
                 extra={"worktree_path": str(wt_dir)},
             )
 
-            with patch("teatree.core.management.commands.run.subprocess.run") as mock_run:
+            with patch.object(run_mod.subprocess, "run") as mock_run:
                 result = cast("str", call_command("run", "backend", path=str(wt_dir)))
 
             mock_run.assert_called_once()
@@ -1483,7 +1494,7 @@ class TestRunBackend(TestCase):
                 extra={"worktree_path": str(wt_dir)},
             )
 
-            with patch("teatree.core.management.commands.run.subprocess.run") as mock_run:
+            with patch.object(run_mod.subprocess, "run") as mock_run:
                 call_command("run", "backend", path=str(wt_dir))
 
             # 2 calls: one for postgres start_command, one for the backend command itself.
@@ -1508,7 +1519,7 @@ class TestRunFrontend(TestCase):
                 extra={"worktree_path": str(wt_dir)},
             )
 
-            with patch("teatree.core.management.commands.run.subprocess.run") as mock_run:
+            with patch.object(run_mod.subprocess, "run") as mock_run:
                 result = cast("str", call_command("run", "frontend", path=str(wt_dir)))
 
             mock_run.assert_called_once()
@@ -1552,7 +1563,7 @@ class TestRunBuildFrontend(TestCase):
                 extra={"worktree_path": str(wt_dir)},
             )
 
-            with patch("teatree.core.management.commands.run.subprocess.run") as mock_run:
+            with patch.object(run_mod.subprocess, "run") as mock_run:
                 result = cast("str", call_command("run", "build-frontend", path=str(wt_dir)))
 
             mock_run.assert_called_once()
@@ -1596,7 +1607,7 @@ class TestRunTests(TestCase):
                 extra={"worktree_path": str(wt_dir)},
             )
 
-            with patch("teatree.core.management.commands.run.subprocess.run") as mock_run:
+            with patch.object(run_mod.subprocess, "run") as mock_run:
                 result = cast("str", call_command("run", "tests", path=str(wt_dir)))
 
             mock_run.assert_called_once()
@@ -1638,7 +1649,7 @@ class TestRunE2e(TestCase):
         mock_ci = MagicMock()
         mock_ci.trigger_pipeline.return_value = {"pipeline_id": 123}
 
-        with patch("teatree.backends.loader.get_ci_service", return_value=mock_ci):
+        with patch.object(backends_loader_mod, "get_ci_service", return_value=mock_ci):
             result = cast("dict[str, object]", call_command("run", "e2e"))
 
         assert result == {"pipeline_id": 123}
@@ -1654,7 +1665,7 @@ class TestRunE2e(TestCase):
         mock_ci = MagicMock()
         mock_ci.trigger_pipeline.return_value = {"pipeline_id": 456}
 
-        with patch("teatree.backends.loader.get_ci_service", return_value=mock_ci):
+        with patch.object(backends_loader_mod, "get_ci_service", return_value=mock_ci):
             cast("dict[str, object]", call_command("run", "e2e", branch="feature-branch"))
 
         mock_ci.trigger_pipeline.assert_called_once_with(
@@ -1673,7 +1684,7 @@ class TestRunE2e(TestCase):
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
     def test_no_ci_service_returns_error(self) -> None:
-        with patch("teatree.backends.loader.get_ci_service", return_value=None):
+        with patch.object(backends_loader_mod, "get_ci_service", return_value=None):
             result = cast("dict[str, object]", call_command("run", "e2e"))
 
         assert "error" in result
@@ -1685,8 +1696,8 @@ class TestRunE2eLocal(TestCase):
     def test_runs_playwright_locally(self) -> None:
         mock_result = MagicMock(returncode=0)
         with (
-            patch("teatree.core.management.commands.run.resolve_worktree", return_value=None),
-            patch("teatree.core.management.commands.run.subprocess.run", return_value=mock_result) as mock_run,
+            patch.object(run_mod, "resolve_worktree", return_value=None),
+            patch.object(run_mod.subprocess, "run", return_value=mock_result) as mock_run,
         ):
             result = cast("str", call_command("run", "e2e-local"))
 
@@ -1700,8 +1711,8 @@ class TestRunE2eLocal(TestCase):
     def test_reports_failure(self) -> None:
         mock_result = MagicMock(returncode=1)
         with (
-            patch("teatree.core.management.commands.run.resolve_worktree", return_value=None),
-            patch("teatree.core.management.commands.run.subprocess.run", return_value=mock_result),
+            patch.object(run_mod, "resolve_worktree", return_value=None),
+            patch.object(run_mod.subprocess, "run", return_value=mock_result),
         ):
             result = cast("str", call_command("run", "e2e-local"))
 
@@ -1713,8 +1724,8 @@ class TestRunE2eLocal(TestCase):
         """--headed does not set CI=1 in the environment."""
         mock_result = MagicMock(returncode=0)
         with (
-            patch("teatree.core.management.commands.run.resolve_worktree", return_value=None),
-            patch("teatree.core.management.commands.run.subprocess.run", return_value=mock_result) as mock_run,
+            patch.object(run_mod, "resolve_worktree", return_value=None),
+            patch.object(run_mod.subprocess, "run", return_value=mock_result) as mock_run,
         ):
             call_command("run", "e2e-local", headed=True)
 
@@ -1727,8 +1738,8 @@ class TestRunE2eLocal(TestCase):
         """e2e-local uses the specified test path instead of e2e/."""
         mock_result = MagicMock(returncode=0)
         with (
-            patch("teatree.core.management.commands.run.resolve_worktree", return_value=None),
-            patch("teatree.core.management.commands.run.subprocess.run", return_value=mock_result) as mock_run,
+            patch.object(run_mod, "resolve_worktree", return_value=None),
+            patch.object(run_mod.subprocess, "run", return_value=mock_result) as mock_run,
         ):
             call_command("run", "e2e-local", test_path="tests/e2e/test_login.py")
 
@@ -1743,7 +1754,7 @@ class TestRunE2ePrivate(TestCase):
     def test_no_private_tests_configured(self) -> None:
         with (
             patch.dict("os.environ", {}, clear=False),
-            patch("teatree.config.load_config") as mock_cfg,
+            patch.object(config_mod, "load_config") as mock_cfg,
         ):
             mock_cfg.return_value.raw = {}
             os.environ.pop("T3_PRIVATE_TESTS", None)
@@ -1759,9 +1770,9 @@ class TestRunE2ePrivate(TestCase):
             mock_result = MagicMock(returncode=0)
             with (
                 patch.dict("os.environ", {}, clear=False),
-                patch("teatree.config.load_config") as mock_cfg,
-                patch("teatree.core.management.commands.run.resolve_worktree", return_value=mock_worktree),
-                patch("teatree.core.management.commands.run.subprocess.run", return_value=mock_result),
+                patch.object(config_mod, "load_config") as mock_cfg,
+                patch.object(run_mod, "resolve_worktree", return_value=mock_worktree),
+                patch.object(run_mod.subprocess, "run", return_value=mock_result),
             ):
                 mock_cfg.return_value.raw = {"teatree": {"private_tests": tmp}}
                 os.environ.pop("T3_PRIVATE_TESTS", None)
@@ -1786,8 +1797,8 @@ class TestRunE2ePrivate(TestCase):
             mock_result = MagicMock(returncode=0)
             with (
                 patch.dict("os.environ", {"T3_PRIVATE_TESTS": tmp}),
-                patch("teatree.core.management.commands.run.resolve_worktree", return_value=mock_worktree),
-                patch("teatree.core.management.commands.run.subprocess.run", return_value=mock_result) as mock_run,
+                patch.object(run_mod, "resolve_worktree", return_value=mock_worktree),
+                patch.object(run_mod.subprocess, "run", return_value=mock_result) as mock_run,
             ):
                 result = cast("str", call_command("run", "e2e-private"))
             assert "passed" in result
@@ -1804,8 +1815,8 @@ class TestRunE2ePrivate(TestCase):
             mock_result = MagicMock(returncode=1)
             with (
                 patch.dict("os.environ", {"T3_PRIVATE_TESTS": tmp}),
-                patch("teatree.core.management.commands.run.resolve_worktree", return_value=mock_worktree),
-                patch("teatree.core.management.commands.run.subprocess.run", return_value=mock_result) as mock_run,
+                patch.object(run_mod, "resolve_worktree", return_value=mock_worktree),
+                patch.object(run_mod.subprocess, "run", return_value=mock_result) as mock_run,
             ):
                 result = cast("str", call_command("run", "e2e-private", headed=True))
             assert "failed" in result
@@ -1823,8 +1834,8 @@ class TestRunE2ePrivate(TestCase):
             mock_result = MagicMock(returncode=0)
             with (
                 patch.dict("os.environ", {"T3_PRIVATE_TESTS": tmp}),
-                patch("teatree.core.management.commands.run.resolve_worktree", return_value=mock_worktree),
-                patch("teatree.core.management.commands.run.subprocess.run", return_value=mock_result) as mock_run,
+                patch.object(run_mod, "resolve_worktree", return_value=mock_worktree),
+                patch.object(run_mod.subprocess, "run", return_value=mock_result) as mock_run,
             ):
                 call_command("run", "e2e-private", test_path="tests/login.py")
             cmd = mock_run.call_args[0][0]
@@ -1837,8 +1848,8 @@ class TestRunE2ePrivate(TestCase):
             mock_result = MagicMock(returncode=0)
             with (
                 patch.dict("os.environ", {"T3_PRIVATE_TESTS": tmp}),
-                patch("teatree.core.management.commands.run.resolve_worktree", return_value=None),
-                patch("teatree.core.management.commands.run.subprocess.run", return_value=mock_result) as mock_run,
+                patch.object(run_mod, "resolve_worktree", return_value=None),
+                patch.object(run_mod.subprocess, "run", return_value=mock_result) as mock_run,
             ):
                 call_command("run", "e2e-private")
             env = mock_run.call_args[1]["env"]
@@ -1875,8 +1886,8 @@ class TestLifecycleSetup(TestCase):
             overlay.get_reset_passwords_command = lambda wt: ProvisionStep(name="reset", callable=_track_reset)
 
             with (
-                patch("teatree.core.overlay_loader._discover_overlays", return_value={"test": overlay}),
-                patch("teatree.core.management.commands.lifecycle.subprocess"),
+                patch.object(overlay_loader_mod, "_discover_overlays", return_value={"test": overlay}),
+                patch.object(lifecycle_mod, "subprocess"),
             ):
                 call_command("lifecycle", "setup", path=str(wt_dir))
 
@@ -1902,7 +1913,7 @@ class TestLifecycleSetup(TestCase):
             wt.provision()
             wt.save()
 
-            with patch("teatree.core.management.commands.lifecycle.subprocess.run"):
+            with patch.object(lifecycle_mod.subprocess, "run"):
                 worktree_id = cast("int", call_command("lifecycle", "setup", path=str(wt_dir)))
 
             worktree = Worktree.objects.get(pk=worktree_id)
@@ -1926,7 +1937,7 @@ class TestLifecycleSetup(TestCase):
                 extra={"worktree_path": str(wt_dir)},
             )
 
-            with patch("teatree.core.management.commands.lifecycle.subprocess.run"):
+            with patch.object(lifecycle_mod.subprocess, "run"):
                 call_command("lifecycle", "setup", path=str(wt_dir), variant="testcustomer")
 
             ticket.refresh_from_db()
@@ -1950,7 +1961,7 @@ class TestLifecycleSetup(TestCase):
                 extra={"worktree_path": str(wt_dir)},
             )
 
-            with patch("teatree.core.management.commands.lifecycle.subprocess") as mock_sp:
+            with patch.object(lifecycle_mod, "subprocess") as mock_sp:
                 mock_sp.run.return_value = MagicMock(returncode=0)
                 worktree_id = cast("int", call_command("lifecycle", "setup", path=str(wt_dir)))
 
@@ -1975,7 +1986,7 @@ class TestLifecycleSetup(TestCase):
                 extra={"worktree_path": str(wt_dir)},
             )
 
-            with patch("teatree.core.management.commands.lifecycle.subprocess") as mock_sp:
+            with patch.object(lifecycle_mod, "subprocess") as mock_sp:
                 mock_sp.run.return_value = MagicMock(returncode=0)
                 call_command("lifecycle", "setup", path=str(wt_dir))
 
@@ -2000,7 +2011,7 @@ class TestLifecycleSetup(TestCase):
                 extra={"worktree_path": str(wt_dir)},
             )
 
-            with patch("teatree.core.management.commands.lifecycle.subprocess") as mock_sp:
+            with patch.object(lifecycle_mod, "subprocess") as mock_sp:
                 mock_sp.run.return_value = MagicMock(returncode=0)
                 call_command("lifecycle", "setup", path=str(wt_dir))
 
@@ -2027,7 +2038,7 @@ class TestLifecycleSetup(TestCase):
                 extra={"worktree_path": str(wt_dir)},
             )
 
-            with patch("teatree.core.management.commands.lifecycle.subprocess") as mock_sp:
+            with patch.object(lifecycle_mod, "subprocess") as mock_sp:
                 mock_sp.run.return_value = MagicMock(returncode=0)
                 call_command("lifecycle", "setup", path=str(wt_dir))
 
@@ -2054,8 +2065,8 @@ class TestLifecycleSetup(TestCase):
             )
 
             with (
-                patch("teatree.core.management.commands.lifecycle.subprocess.run"),
-                patch("teatree.core.management.commands.lifecycle.DATA_DIR", tmp_path),
+                patch.object(lifecycle_mod.subprocess, "run"),
+                patch.object(startup_mod, "DATA_DIR", tmp_path),
             ):
                 call_command("lifecycle", "setup", path=str(wt_dir))
 
@@ -2082,7 +2093,7 @@ class TestLifecycleSetup(TestCase):
                 extra={"worktree_path": str(wt_path)},
             )
 
-            with patch("teatree.core.management.commands.lifecycle.subprocess") as mock_sp:
+            with patch.object(lifecycle_mod, "subprocess") as mock_sp:
                 mock_sp.run.return_value = MagicMock(returncode=0)
                 call_command("lifecycle", "setup", path=str(wt_path))
 
@@ -2124,8 +2135,8 @@ class TestLifecycleSetup(TestCase):
             mock_overlay.metadata.get_skill_metadata.return_value = {}
 
             with (
-                patch("teatree.core.management.commands.lifecycle.get_overlay", return_value=mock_overlay),
-                patch("teatree.core.management.commands.lifecycle.subprocess") as mock_sp,
+                patch.object(lifecycle_mod, "get_overlay", return_value=mock_overlay),
+                patch.object(lifecycle_mod, "subprocess") as mock_sp,
             ):
                 mock_sp.run.return_value = MagicMock(returncode=0)
                 call_command("lifecycle", "setup", path=str(wt_path))
@@ -2136,8 +2147,8 @@ class TestLifecycleSetup(TestCase):
 
             # Run again — should not duplicate
             with (
-                patch("teatree.core.management.commands.lifecycle.get_overlay", return_value=mock_overlay),
-                patch("teatree.core.management.commands.lifecycle.subprocess") as mock_sp,
+                patch.object(lifecycle_mod, "get_overlay", return_value=mock_overlay),
+                patch.object(lifecycle_mod, "subprocess") as mock_sp,
             ):
                 mock_sp.run.return_value = MagicMock(returncode=0)
                 call_command("lifecycle", "setup", path=str(wt_path))
@@ -2172,8 +2183,8 @@ class TestLifecycleSetup(TestCase):
             mock_overlay.metadata.get_skill_metadata.return_value = {}
 
             with (
-                patch("teatree.core.management.commands.lifecycle.get_overlay", return_value=mock_overlay),
-                patch("teatree.core.management.commands.lifecycle.subprocess") as mock_sp,
+                patch.object(lifecycle_mod, "get_overlay", return_value=mock_overlay),
+                patch.object(lifecycle_mod, "subprocess") as mock_sp,
             ):
                 mock_sp.run.return_value = MagicMock(returncode=0)
                 call_command("lifecycle", "setup", path=str(wt_path), variant="beta")
@@ -2210,9 +2221,9 @@ class TestLifecycleSetup(TestCase):
             mock_overlay.metadata.get_skill_metadata.return_value = {}
 
             with (
-                patch("teatree.core.management.commands.lifecycle.get_overlay", return_value=mock_overlay),
-                patch("teatree.core.management.commands.lifecycle.subprocess") as mock_sp,
-                patch("teatree.core.management.commands.lifecycle.write_env_worktree", return_value=None),
+                patch.object(lifecycle_mod, "get_overlay", return_value=mock_overlay),
+                patch.object(lifecycle_mod, "subprocess") as mock_sp,
+                patch.object(lifecycle_mod, "write_env_worktree", return_value=None),
             ):
                 mock_sp.run.return_value = MagicMock(returncode=0)
                 call_command("lifecycle", "setup", path=str(wt_path))
@@ -2292,9 +2303,9 @@ class TestLifecycleStart(TestCase):
                 return mock_proc
 
             with (
-                patch("teatree.core.management.commands.lifecycle.get_overlay", return_value=mock_overlay),
-                patch("teatree.core.management.commands.lifecycle.subprocess") as mock_sp,
-                patch("teatree.core.management.commands.lifecycle.Popen", _mock_popen),
+                patch.object(lifecycle_mod, "get_overlay", return_value=mock_overlay),
+                patch.object(lifecycle_mod, "subprocess") as mock_sp,
+                patch.object(lifecycle_mod, "Popen", _mock_popen),
             ):
                 mock_sp.run.return_value = MagicMock(returncode=0)
                 call_command("lifecycle", "start", path=str(wt_path))
@@ -2335,8 +2346,8 @@ class TestLifecycleStart(TestCase):
             mock_overlay.get_env_extra.return_value = {}
 
             with (
-                patch("teatree.core.management.commands.lifecycle.get_overlay", return_value=mock_overlay),
-                patch("teatree.core.management.commands.lifecycle.subprocess") as mock_sp,
+                patch.object(lifecycle_mod, "get_overlay", return_value=mock_overlay),
+                patch.object(lifecycle_mod, "subprocess") as mock_sp,
             ):
                 mock_sp.run.return_value = MagicMock(returncode=0)
                 call_command("lifecycle", "start", path=str(wt_path))
@@ -2377,9 +2388,9 @@ class TestLifecycleStart(TestCase):
                 return mock_proc
 
             with (
-                patch("teatree.core.management.commands.lifecycle.get_overlay", return_value=mock_overlay),
-                patch("teatree.core.management.commands.lifecycle.subprocess") as mock_sp,
-                patch("teatree.core.management.commands.lifecycle.Popen", _mock_popen_crash),
+                patch.object(lifecycle_mod, "get_overlay", return_value=mock_overlay),
+                patch.object(lifecycle_mod, "subprocess") as mock_sp,
+                patch.object(lifecycle_mod, "Popen", _mock_popen_crash),
             ):
                 mock_sp.run.return_value = MagicMock(returncode=0)
                 call_command("lifecycle", "start", path=str(wt_path))
@@ -2443,7 +2454,7 @@ class TestLifecycleSmokeTest(TestCase):
 
         _broken_discover.cache_clear = lambda: None
 
-        with patch("teatree.core.overlay_loader._discover_overlays", new=_broken_discover):
+        with patch.object(overlay_loader_mod, "_discover_overlays", new=_broken_discover):
             result = cast(
                 "dict[str, dict[str, object]]",
                 call_command("lifecycle", "smoke-test"),
@@ -2501,9 +2512,13 @@ class TestLifecycleSmokeTest(TestCase):
     @override_settings(**SETTINGS)
     def test_db_error(self) -> None:
         """smoke-test reports DB error when query fails."""
-        with patch(
-            "teatree.core.models.Worktree.objects",
-            MagicMock(count=MagicMock(side_effect=RuntimeError("DB down"))),
+        with (
+            patch.object(
+                Worktree,
+                "objects",
+                MagicMock(count=MagicMock(side_effect=RuntimeError("DB down"))),
+            ),
+            patch("subprocess.run", return_value=MagicMock(returncode=0)),
         ):
             result = cast(
                 "dict[str, dict[str, object]]",
@@ -2584,7 +2599,7 @@ class TestToolRun(TestCase):
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
     def test_executes_command(self) -> None:
-        with patch("teatree.core.management.commands.tool.subprocess.run") as mock_run:
+        with patch.object(tool_mod.subprocess, "run") as mock_run:
             result = cast("str", call_command("tool", "run", "migrate"))
 
         assert "completed" in result.lower()
@@ -2612,7 +2627,7 @@ class TestToolRun(TestCase):
     @override_settings(**SETTINGS)
     def test_forwards_extra_args(self) -> None:
         """Extra args after the tool name are appended to the command."""
-        with patch("teatree.core.management.commands.tool.subprocess.run") as mock_run:
+        with patch.object(tool_mod.subprocess, "run") as mock_run:
             result = cast(
                 "str",
                 call_command("tool", "run", "migrate", "--verbose", "--dry-run"),
@@ -2655,7 +2670,7 @@ class TestLifecycleRepoDiscovery(TestCase):
                 extra={"worktree_path": str(existing)},
             )
 
-            with patch("teatree.core.management.commands.lifecycle.subprocess.run"):
+            with patch.object(lifecycle_mod.subprocess, "run"):
                 call_command("lifecycle", "setup", path=str(existing))
 
             # Should have created a new Worktree record for frontend
@@ -2690,7 +2705,7 @@ class TestLifecycleRepoDiscovery(TestCase):
                 extra={"worktree_path": str(existing)},
             )
 
-            with patch("teatree.core.management.commands.lifecycle.subprocess.run"):
+            with patch.object(lifecycle_mod.subprocess, "run"):
                 call_command("lifecycle", "setup", path=str(existing))
 
             assert ticket.worktrees.count() == 1
@@ -2720,7 +2735,7 @@ class TestLifecycleRepoDiscovery(TestCase):
                 extra={"worktree_path": str(existing)},
             )
 
-            with patch("teatree.core.management.commands.lifecycle.subprocess.run"):
+            with patch.object(lifecycle_mod.subprocess, "run"):
                 call_command("lifecycle", "setup", path=str(existing))
 
             assert ticket.worktrees.count() == 1
@@ -2751,7 +2766,7 @@ class TestLifecycleRepoDiscovery(TestCase):
                 extra={"worktree_path": str(existing)},
             )
 
-            with patch("teatree.core.management.commands.lifecycle.subprocess.run"):
+            with patch.object(lifecycle_mod.subprocess, "run"):
                 call_command("lifecycle", "setup", path=str(existing))
                 call_command("lifecycle", "setup", path=str(existing))
 
@@ -2788,7 +2803,7 @@ class TestLifecycleRepoDiscovery(TestCase):
                 extra={"worktree_path": str(frontend)},
             )
 
-            with patch("teatree.core.management.commands.lifecycle.subprocess.run"):
+            with patch.object(lifecycle_mod.subprocess, "run"):
                 call_command("lifecycle", "setup", path=str(backend))
 
             # Both worktrees should be provisioned

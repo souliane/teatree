@@ -78,6 +78,7 @@ class SkillLoadingPolicy:
         explicit_phase: str,
         explicit_skills: list[str],
         overlay_active: bool,
+        trigger_index: list[dict[str, object]] | None = None,
     ) -> SkillSelectionResult:
         if explicit_phase and explicit_skills:
             msg = "--phase and --skill cannot be used together"
@@ -95,7 +96,7 @@ class SkillLoadingPolicy:
         elif ticket_status:
             lifecycle_skill = self.lifecycle_for_status(ticket_status)
         elif task:
-            lifecycle_skill = self.lifecycle_for_task_text(task)
+            lifecycle_skill = self.lifecycle_for_task_text(task, trigger_index=trigger_index)
         else:
             ask_user = True
 
@@ -172,11 +173,25 @@ class SkillLoadingPolicy:
         return _PHASE_TO_SKILL.get(phase, "")
 
     @staticmethod
-    def lifecycle_for_task_text(task: str) -> str:
+    def lifecycle_for_task_text(
+        task: str,
+        *,
+        trigger_index: list[dict[str, object]] | None = None,
+    ) -> str:
         lowered = task.lower()
+        # Pass 1: hardcoded keywords (fast, no I/O).
         for skill_name, keywords in _AGENT_TASK_KEYWORDS.items():
             if any(keyword in lowered for keyword in keywords):
                 return skill_name
+        # Pass 2: search_hints from skill frontmatter (trigger index).
+        if trigger_index:
+            for entry in trigger_index:
+                hints = entry.get("search_hints", [])
+                if not isinstance(hints, list):
+                    continue
+                skill = str(entry.get("skill", ""))
+                if any(isinstance(h, str) and h.lower() in lowered for h in hints):
+                    return skill
         return ""
 
     def _base_detected_skills(

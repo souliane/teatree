@@ -316,8 +316,8 @@ def build_task_graph(ticket_id: int) -> list[TaskGraphNode]:
             TaskGraphNode(
                 task_id=task.pk,
                 phase=task.phase,
-                status=task.get_status_display(),
-                execution_target=task.get_execution_target_display(),
+                status=task.get_status_display(),  # ty: ignore[unresolved-attribute]
+                execution_target=task.get_execution_target_display(),  # ty: ignore[unresolved-attribute]
                 execution_reason=task.execution_reason[:120],
                 depth=depth,
                 children=_build(task.pk, depth + 1),

@@ -14,10 +14,16 @@ DEFAULT_PRIORITY = 50
 
 
 def parse_triggers(skill_md_text: str) -> dict | None:
-    """Extract the ``triggers:`` block from SKILL.md YAML frontmatter.
+    """Extract the ``triggers:`` and ``search_hints:`` blocks from SKILL.md frontmatter.
 
     Returns a dict with keys ``priority``, ``keywords``, ``urls``,
-    ``exclude``, ``end_of_session`` — or ``None`` if no triggers are defined.
+    ``exclude``, ``end_of_session``, ``search_hints`` — or ``None``
+    if neither ``triggers:`` nor ``search_hints:`` is defined.
+
+    ``search_hints`` is a top-level frontmatter field (not nested under
+    ``triggers:``).  It lists simple keywords for agent-launch skill
+    discovery — conceptually different from ``triggers.keywords`` which
+    are regex patterns for the UserPromptSubmit hook.
     """
     if not skill_md_text.startswith("---"):
         return None
@@ -29,6 +35,7 @@ def parse_triggers(skill_md_text: str) -> dict | None:
     frontmatter = skill_md_text[3:end]
 
     in_triggers = False
+    in_search_hints = False
     current_key = ""
     triggers: dict = {
         "priority": DEFAULT_PRIORITY,
@@ -36,6 +43,7 @@ def parse_triggers(skill_md_text: str) -> dict | None:
         "urls": [],
         "exclude": "",
         "end_of_session": False,
+        "search_hints": [],
     }
     found = False
 
@@ -45,13 +53,25 @@ def parse_triggers(skill_md_text: str) -> dict | None:
         # Top-level key detection (not indented)
         if not line.startswith((" ", "\t")) and ":" in stripped:
             key = stripped.split(":")[0].strip()
+            in_search_hints = False
             if key == "triggers":
                 in_triggers = True
                 found = True
                 current_key = ""
                 continue
+            if key == "search_hints":
+                in_search_hints = True
+                found = True
+                if in_triggers:
+                    in_triggers = False
+                continue
             if in_triggers:
-                break  # Left the triggers block
+                in_triggers = False
+            continue
+
+        if in_search_hints:
+            if stripped.startswith("- "):
+                triggers["search_hints"].append(stripped.removeprefix("- ").strip().strip("'\""))
             continue
 
         if not in_triggers:

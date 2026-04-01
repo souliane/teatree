@@ -135,6 +135,31 @@ def test_select_for_agent_launch_task_text(tmp_path: Path):
     assert result.lifecycle_skill == "ship"
 
 
+def test_lifecycle_for_task_text_with_search_hints():
+    policy = SkillLoadingPolicy()
+    trigger_index: list[dict[str, object]] = [
+        {"skill": "deploy", "search_hints": ["deploy", "release", "rollout"]},
+    ]
+    assert policy.lifecycle_for_task_text("deploy to prod", trigger_index=trigger_index) == "deploy"
+
+
+def test_lifecycle_for_task_text_hardcoded_takes_precedence():
+    policy = SkillLoadingPolicy()
+    trigger_index: list[dict[str, object]] = [
+        {"skill": "custom-debug", "search_hints": ["debug"]},
+    ]
+    # Hardcoded _AGENT_TASK_KEYWORDS maps "debug" to "debug" skill, not "custom-debug"
+    assert policy.lifecycle_for_task_text("debug the issue", trigger_index=trigger_index) == "debug"
+
+
+def test_lifecycle_for_task_text_no_match_with_index():
+    policy = SkillLoadingPolicy()
+    trigger_index: list[dict[str, object]] = [
+        {"skill": "deploy", "search_hints": ["deploy"]},
+    ]
+    assert policy.lifecycle_for_task_text("random gibberish", trigger_index=trigger_index) == ""
+
+
 def test_select_for_agent_launch_no_inputs_asks_user(tmp_path: Path):
     result = _launch(tmp_path)
     assert result.ask_user is True

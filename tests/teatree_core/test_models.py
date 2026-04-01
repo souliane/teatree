@@ -179,6 +179,7 @@ class TestWorktree(TestCase):
         self.monkeypatch = monkeypatch
 
     def test_lifecycle_allocates_ports_and_urls(self) -> None:
+        self.monkeypatch.setattr("teatree.utils.ports.port_in_use", lambda _port: False)
         ticket = Ticket.objects.create(issue_url="https://example.com/issues/42", variant="acme")
         worktree = Worktree.objects.create(ticket=ticket, repo_path="/tmp/backend", branch="teatree-django")
 
@@ -195,7 +196,7 @@ class TestWorktree(TestCase):
         assert worktree.ports == {
             "backend": 8001,
             "frontend": 4201,
-            "postgres": 5433,
+            "postgres": 5432,
             "redis": 6379,
         }
         assert worktree.db_name == "wt_42_acme"
@@ -207,6 +208,7 @@ class TestWorktree(TestCase):
         assert str(worktree) == "/tmp/backend"
 
     def test_reuses_next_available_ports_and_allows_refresh_teardown(self) -> None:
+        self.monkeypatch.setattr("teatree.utils.ports.port_in_use", lambda _port: False)
         ticket = Ticket.objects.create(issue_url="https://example.com/issues/100")
         occupied = Worktree.objects.create(
             ticket=ticket,
@@ -258,6 +260,7 @@ class TestWorktree(TestCase):
 
     def test_start_services_allows_restart(self) -> None:
         """Calling start_services when already in SERVICES_UP should work (restart)."""
+        self.monkeypatch.setattr("teatree.utils.ports.port_in_use", lambda _port: False)
         ticket = Ticket.objects.create(issue_url="https://example.com/restart", variant="acme")
         worktree = Worktree.objects.create(ticket=ticket, repo_path="/tmp/backend", branch="restart")
         worktree.provision()

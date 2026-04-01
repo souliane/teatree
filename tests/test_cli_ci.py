@@ -4,6 +4,10 @@ from unittest.mock import MagicMock, patch
 
 from typer.testing import CliRunner
 
+import teatree.backends.gitlab_api as gitlab_api_mod
+import teatree.backends.loader as backends_loader_mod
+import teatree.core.overlay_loader as overlay_loader_mod
+import teatree.utils.git as git_mod
 from teatree.cli import app
 from teatree.cli.ci import CICommands
 
@@ -17,14 +21,14 @@ class TestGetCIService:
     def test_from_env(self, monkeypatch):
         """Creates service from env when Django fails."""
         monkeypatch.setenv("GITLAB_TOKEN", "token")
-        with patch("teatree.backends.loader.get_ci_service", side_effect=Exception("no django")):
+        with patch.object(backends_loader_mod, "get_ci_service", side_effect=Exception("no django")):
             service = CICommands.get_ci_service()
             assert service is not None
 
     def test_no_token(self, monkeypatch):
         monkeypatch.delenv("GITLAB_TOKEN", raising=False)
         monkeypatch.delenv("GITLAB_TOKEN", raising=False)
-        with patch("teatree.backends.loader.get_ci_service", side_effect=Exception("no django")):
+        with patch.object(backends_loader_mod, "get_ci_service", side_effect=Exception("no django")):
             assert CICommands.get_ci_service() is None
 
 
@@ -38,7 +42,7 @@ class TestGetCIProject:
         mock_overlay.metadata.get_ci_project_path.return_value = "org/repo"
         with (
             patch("django.setup"),
-            patch("teatree.core.overlay_loader.get_overlay", return_value=mock_overlay),
+            patch.object(overlay_loader_mod, "get_overlay", return_value=mock_overlay),
         ):
             result = CICommands.get_ci_project()
             assert result == "org/repo"
@@ -48,7 +52,7 @@ class TestGetCIProject:
         mock_project_info = MagicMock(path_with_namespace="org/repo-from-remote")
         with (
             patch("django.setup", side_effect=Exception("no django")),
-            patch("teatree.backends.gitlab_api.GitLabAPI") as mock_api_cls,
+            patch.object(gitlab_api_mod, "GitLabAPI") as mock_api_cls,
         ):
             mock_api_cls.return_value.resolve_project_from_remote.return_value = mock_project_info
             result = CICommands.get_ci_project()
@@ -58,7 +62,7 @@ class TestGetCIProject:
         """Returns empty string when no remote."""
         with (
             patch("django.setup", side_effect=Exception("no django")),
-            patch("teatree.backends.gitlab_api.GitLabAPI") as mock_api_cls,
+            patch.object(gitlab_api_mod, "GitLabAPI") as mock_api_cls,
         ):
             mock_api_cls.return_value.resolve_project_from_remote.return_value = None
             result = CICommands.get_ci_project()
@@ -71,8 +75,8 @@ class TestGetCIProject:
         mock_project_info = MagicMock(path_with_namespace="org/fallback")
         with (
             patch("django.setup"),
-            patch("teatree.core.overlay_loader.get_overlay", return_value=mock_overlay),
-            patch("teatree.backends.gitlab_api.GitLabAPI") as mock_api_cls,
+            patch.object(overlay_loader_mod, "get_overlay", return_value=mock_overlay),
+            patch.object(gitlab_api_mod, "GitLabAPI") as mock_api_cls,
         ):
             mock_api_cls.return_value.resolve_project_from_remote.return_value = mock_project_info
             result = CICommands.get_ci_project()
@@ -84,12 +88,12 @@ class TestGetCIProject:
 
 class TestCurrentGitBranch:
     def test_success(self):
-        with patch("teatree.cli.ci.subprocess.run") as mock_run:
+        with patch.object(git_mod.subprocess, "run") as mock_run:
             mock_run.return_value = MagicMock(stdout="feature-branch\n", returncode=0)
             assert CICommands.current_git_branch() == "feature-branch"
 
     def test_failure(self):
-        with patch("teatree.cli.ci.subprocess.run") as mock_run:
+        with patch.object(git_mod.subprocess, "run") as mock_run:
             mock_run.return_value = MagicMock(stdout="", returncode=128)
             assert CICommands.current_git_branch() == ""
 
@@ -102,28 +106,28 @@ class TestRequireCI:
         """Cancel fails without CI service."""
         monkeypatch.delenv("GITLAB_TOKEN", raising=False)
         monkeypatch.delenv("GITLAB_TOKEN", raising=False)
-        with patch("teatree.cli.ci.CICommands.get_ci_service", return_value=None):
+        with patch.object(CICommands, "get_ci_service", return_value=None):
             result = runner.invoke(app, ["ci", "cancel"])
             assert result.exit_code == 1
             assert "No CI service" in result.output
 
     def test_fetch_errors_no_service(self):
-        with patch("teatree.cli.ci.CICommands.get_ci_service", return_value=None):
+        with patch.object(CICommands, "get_ci_service", return_value=None):
             result = runner.invoke(app, ["ci", "fetch-errors"])
             assert result.exit_code == 1
 
     def test_fetch_failed_tests_no_service(self):
-        with patch("teatree.cli.ci.CICommands.get_ci_service", return_value=None):
+        with patch.object(CICommands, "get_ci_service", return_value=None):
             result = runner.invoke(app, ["ci", "fetch-failed-tests"])
             assert result.exit_code == 1
 
     def test_trigger_e2e_no_service(self):
-        with patch("teatree.cli.ci.CICommands.get_ci_service", return_value=None):
+        with patch.object(CICommands, "get_ci_service", return_value=None):
             result = runner.invoke(app, ["ci", "trigger-e2e"])
             assert result.exit_code == 1
 
     def test_quality_check_no_service(self):
-        with patch("teatree.cli.ci.CICommands.get_ci_service", return_value=None):
+        with patch.object(CICommands, "get_ci_service", return_value=None):
             result = runner.invoke(app, ["ci", "quality-check"])
             assert result.exit_code == 1
 
@@ -136,9 +140,9 @@ class TestCICommands:
         """Cancel fails when branch cannot be detected."""
         mock_ci = MagicMock()
         with (
-            patch("teatree.cli.ci.CICommands.get_ci_service", return_value=mock_ci),
-            patch("teatree.cli.ci.CICommands.get_ci_project", return_value="org/repo"),
-            patch("teatree.cli.ci.CICommands.current_git_branch", return_value=""),
+            patch.object(CICommands, "get_ci_service", return_value=mock_ci),
+            patch.object(CICommands, "get_ci_project", return_value="org/repo"),
+            patch.object(CICommands, "current_git_branch", return_value=""),
         ):
             result = runner.invoke(app, ["ci", "cancel"])
             assert result.exit_code == 1
@@ -149,9 +153,9 @@ class TestCICommands:
         mock_ci = MagicMock()
         mock_ci.cancel_pipelines.return_value = [123, 456]
         with (
-            patch("teatree.cli.ci.CICommands.get_ci_service", return_value=mock_ci),
-            patch("teatree.cli.ci.CICommands.get_ci_project", return_value="org/repo"),
-            patch("teatree.cli.ci.CICommands.current_git_branch", return_value="main"),
+            patch.object(CICommands, "get_ci_service", return_value=mock_ci),
+            patch.object(CICommands, "get_ci_project", return_value="org/repo"),
+            patch.object(CICommands, "current_git_branch", return_value="main"),
         ):
             result = runner.invoke(app, ["ci", "cancel"])
             assert result.exit_code == 0
@@ -162,9 +166,9 @@ class TestCICommands:
         mock_ci = MagicMock()
         mock_ci.cancel_pipelines.return_value = []
         with (
-            patch("teatree.cli.ci.CICommands.get_ci_service", return_value=mock_ci),
-            patch("teatree.cli.ci.CICommands.get_ci_project", return_value="org/repo"),
-            patch("teatree.cli.ci.CICommands.current_git_branch", return_value="main"),
+            patch.object(CICommands, "get_ci_service", return_value=mock_ci),
+            patch.object(CICommands, "get_ci_project", return_value="org/repo"),
+            patch.object(CICommands, "current_git_branch", return_value="main"),
         ):
             result = runner.invoke(app, ["ci", "cancel"])
             assert result.exit_code == 0
@@ -175,8 +179,8 @@ class TestCICommands:
         mock_ci = MagicMock()
         mock_ci.cancel_pipelines.return_value = [1]
         with (
-            patch("teatree.cli.ci.CICommands.get_ci_service", return_value=mock_ci),
-            patch("teatree.cli.ci.CICommands.get_ci_project", return_value="org/repo"),
+            patch.object(CICommands, "get_ci_service", return_value=mock_ci),
+            patch.object(CICommands, "get_ci_project", return_value="org/repo"),
         ):
             result = runner.invoke(app, ["ci", "cancel", "my-branch"])
             assert result.exit_code == 0
@@ -187,8 +191,8 @@ class TestCICommands:
         monkeypatch.chdir(tmp_path)
         (tmp_path / "pyproject.toml").write_text("[project]\n")
         with (
-            patch("teatree.utils.git.run", side_effect=["", "3", "1"]),
-            patch("teatree.utils.git.current_branch", return_value="feature-branch"),
+            patch.object(git_mod, "run", side_effect=["", "3", "1"]),
+            patch.object(git_mod, "current_branch", return_value="feature-branch"),
         ):
             result = runner.invoke(app, ["ci", "divergence"])
             assert result.exit_code == 0
@@ -199,7 +203,7 @@ class TestCICommands:
         """Divergence fails when no upstream configured."""
         monkeypatch.chdir(tmp_path)
         (tmp_path / "pyproject.toml").write_text("[project]\n")
-        with patch("teatree.utils.git.run", side_effect=Exception("no upstream")):
+        with patch.object(git_mod, "run", side_effect=Exception("no upstream")):
             result = runner.invoke(app, ["ci", "divergence"])
             assert result.exit_code == 1
             assert "No upstream" in result.output
@@ -209,9 +213,9 @@ class TestCICommands:
         mock_ci = MagicMock()
         mock_ci.fetch_pipeline_errors.return_value = ["Error in job build", "Error in job test"]
         with (
-            patch("teatree.cli.ci.CICommands.get_ci_service", return_value=mock_ci),
-            patch("teatree.cli.ci.CICommands.get_ci_project", return_value="org/repo"),
-            patch("teatree.cli.ci.CICommands.current_git_branch", return_value="main"),
+            patch.object(CICommands, "get_ci_service", return_value=mock_ci),
+            patch.object(CICommands, "get_ci_project", return_value="org/repo"),
+            patch.object(CICommands, "current_git_branch", return_value="main"),
         ):
             result = runner.invoke(app, ["ci", "fetch-errors"])
             assert result.exit_code == 0
@@ -222,9 +226,9 @@ class TestCICommands:
         mock_ci = MagicMock()
         mock_ci.fetch_pipeline_errors.return_value = []
         with (
-            patch("teatree.cli.ci.CICommands.get_ci_service", return_value=mock_ci),
-            patch("teatree.cli.ci.CICommands.get_ci_project", return_value="org/repo"),
-            patch("teatree.cli.ci.CICommands.current_git_branch", return_value="main"),
+            patch.object(CICommands, "get_ci_service", return_value=mock_ci),
+            patch.object(CICommands, "get_ci_project", return_value="org/repo"),
+            patch.object(CICommands, "current_git_branch", return_value="main"),
         ):
             result = runner.invoke(app, ["ci", "fetch-errors"])
             assert result.exit_code == 0
@@ -235,9 +239,9 @@ class TestCICommands:
         mock_ci = MagicMock()
         mock_ci.fetch_failed_tests.return_value = ["test_foo", "test_bar"]
         with (
-            patch("teatree.cli.ci.CICommands.get_ci_service", return_value=mock_ci),
-            patch("teatree.cli.ci.CICommands.get_ci_project", return_value="org/repo"),
-            patch("teatree.cli.ci.CICommands.current_git_branch", return_value="main"),
+            patch.object(CICommands, "get_ci_service", return_value=mock_ci),
+            patch.object(CICommands, "get_ci_project", return_value="org/repo"),
+            patch.object(CICommands, "current_git_branch", return_value="main"),
         ):
             result = runner.invoke(app, ["ci", "fetch-failed-tests"])
             assert result.exit_code == 0
@@ -248,9 +252,9 @@ class TestCICommands:
         mock_ci = MagicMock()
         mock_ci.fetch_failed_tests.return_value = []
         with (
-            patch("teatree.cli.ci.CICommands.get_ci_service", return_value=mock_ci),
-            patch("teatree.cli.ci.CICommands.get_ci_project", return_value="org/repo"),
-            patch("teatree.cli.ci.CICommands.current_git_branch", return_value="main"),
+            patch.object(CICommands, "get_ci_service", return_value=mock_ci),
+            patch.object(CICommands, "get_ci_project", return_value="org/repo"),
+            patch.object(CICommands, "current_git_branch", return_value="main"),
         ):
             result = runner.invoke(app, ["ci", "fetch-failed-tests"])
             assert result.exit_code == 0
@@ -261,9 +265,9 @@ class TestCICommands:
         mock_ci = MagicMock()
         mock_ci.trigger_pipeline.return_value = {"web_url": "https://ci/pipeline/1"}
         with (
-            patch("teatree.cli.ci.CICommands.get_ci_service", return_value=mock_ci),
-            patch("teatree.cli.ci.CICommands.get_ci_project", return_value="org/repo"),
-            patch("teatree.cli.ci.CICommands.current_git_branch", return_value="main"),
+            patch.object(CICommands, "get_ci_service", return_value=mock_ci),
+            patch.object(CICommands, "get_ci_project", return_value="org/repo"),
+            patch.object(CICommands, "current_git_branch", return_value="main"),
         ):
             result = runner.invoke(app, ["ci", "trigger-e2e"])
             assert result.exit_code == 0
@@ -273,9 +277,9 @@ class TestCICommands:
         mock_ci = MagicMock()
         mock_ci.trigger_pipeline.return_value = {"error": "forbidden"}
         with (
-            patch("teatree.cli.ci.CICommands.get_ci_service", return_value=mock_ci),
-            patch("teatree.cli.ci.CICommands.get_ci_project", return_value="org/repo"),
-            patch("teatree.cli.ci.CICommands.current_git_branch", return_value="main"),
+            patch.object(CICommands, "get_ci_service", return_value=mock_ci),
+            patch.object(CICommands, "get_ci_project", return_value="org/repo"),
+            patch.object(CICommands, "current_git_branch", return_value="main"),
         ):
             result = runner.invoke(app, ["ci", "trigger-e2e"])
             assert result.exit_code == 1
@@ -291,9 +295,9 @@ class TestCICommands:
             "failed_count": 2,
         }
         with (
-            patch("teatree.cli.ci.CICommands.get_ci_service", return_value=mock_ci),
-            patch("teatree.cli.ci.CICommands.get_ci_project", return_value="org/repo"),
-            patch("teatree.cli.ci.CICommands.current_git_branch", return_value="main"),
+            patch.object(CICommands, "get_ci_service", return_value=mock_ci),
+            patch.object(CICommands, "get_ci_project", return_value="org/repo"),
+            patch.object(CICommands, "current_git_branch", return_value="main"),
         ):
             result = runner.invoke(app, ["ci", "quality-check"])
             assert result.exit_code == 0
@@ -304,9 +308,9 @@ class TestCICommands:
         mock_ci = MagicMock()
         mock_ci.quality_check.return_value = {"error": "no pipeline"}
         with (
-            patch("teatree.cli.ci.CICommands.get_ci_service", return_value=mock_ci),
-            patch("teatree.cli.ci.CICommands.get_ci_project", return_value="org/repo"),
-            patch("teatree.cli.ci.CICommands.current_git_branch", return_value="main"),
+            patch.object(CICommands, "get_ci_service", return_value=mock_ci),
+            patch.object(CICommands, "get_ci_project", return_value="org/repo"),
+            patch.object(CICommands, "current_git_branch", return_value="main"),
         ):
             result = runner.invoke(app, ["ci", "quality-check"])
             assert result.exit_code == 1

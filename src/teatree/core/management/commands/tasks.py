@@ -90,24 +90,24 @@ class Command(TyperCommand):
 
     @staticmethod
     def _execute_sdk(task: Task) -> dict[str, str]:
-        from teatree.agents.sdk import run_headless_task  # noqa: PLC0415
+        from teatree.agents.headless import run_headless  # noqa: PLC0415
         from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
 
-        result = run_headless_task(
+        attempt = run_headless(
             task,
             phase=task.phase,
             overlay_skill_metadata=get_overlay().metadata.get_skill_metadata(),
         )
-        return {"runtime": result.runtime, "artifact_path": result.artifact_path}
+        return {"exit_code": str(attempt.exit_code), "attempt_id": str(attempt.pk)}
 
     @staticmethod
     def _execute_runtime(task: Task) -> dict[str, str]:
-        from teatree.agents.terminal import run_interactive_task  # noqa: PLC0415
+        from teatree.agents.web_terminal import launch_web_session  # noqa: PLC0415
         from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
 
-        result = run_interactive_task(
+        attempt = launch_web_session(
             task,
             phase=task.phase,
             overlay_skill_metadata=get_overlay().metadata.get_skill_metadata(),
         )
-        return {"runtime": result.runtime, "artifact_path": result.artifact_path}
+        return {"launch_url": attempt.launch_url, "attempt_id": str(attempt.pk)}

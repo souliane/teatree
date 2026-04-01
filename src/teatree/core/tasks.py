@@ -1,18 +1,6 @@
 from django.tasks import task
 
-from teatree.agents.sdk import run_headless_task
 from teatree.core.models import Task, Ticket
-
-
-@task()
-def execute_sdk_task(task_id: int, phase: str) -> str:
-    task_obj = Task.objects.get(pk=task_id)
-    result = run_headless_task(
-        task_obj,
-        phase=phase,
-        overlay_skill_metadata={},
-    )
-    return result.artifact_path
 
 
 @task()
