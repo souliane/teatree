@@ -5,9 +5,11 @@ and stores the result in TaskAttempt.result for the dashboard to display.
 """
 
 import json
+import logging
 import re
 import shutil
 import subprocess  # noqa: S404
+import threading
 
 from django.utils import timezone
 
@@ -16,6 +18,10 @@ from teatree.agents.skill_bundle import resolve_skill_bundle
 from teatree.core.models import Task, TaskAttempt
 from teatree.core.overlay import SkillMetadata
 from teatree.skill_loading import SkillLoadingPolicy
+
+logger = logging.getLogger(__name__)
+
+_HEARTBEAT_INTERVAL = 60  # seconds
 
 
 def _safe_int(value: str | None) -> int | None:
@@ -60,18 +66,43 @@ def run_headless(
     resume_session_id = _get_resume_session_id(task)
     command = _build_headless_command(binary, prompt, system_context, resume_session_id=resume_session_id)
 
-    proc = subprocess.run(  # noqa: S603
-        command,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    stdout, stderr, returncode = _run_with_heartbeat(task, command)
 
-    if proc.returncode != 0:
-        return _record_failure(task, exit_code=proc.returncode, error=proc.stderr[:2000])
+    if returncode != 0:
+        return _record_failure(task, exit_code=returncode, error=stderr[:2000])
 
-    envelope = _parse_cli_envelope(proc.stdout)
+    envelope = _parse_cli_envelope(stdout)
     return _record_success(task, envelope)
+
+
+def _run_with_heartbeat(task: Task, command: list[str]) -> tuple[str, str, int]:
+    """Run *command* as a subprocess while sending lease heartbeats.
+
+    Returns ``(stdout, stderr, returncode)``.
+    """
+    stop_event = threading.Event()
+
+    def _heartbeat() -> None:
+        while not stop_event.wait(_HEARTBEAT_INTERVAL):
+            try:
+                task.renew_lease()
+            except Exception:  # noqa: BLE001
+                logger.warning("Heartbeat failed for task %s", task.pk)
+
+    heartbeat_thread = threading.Thread(target=_heartbeat, daemon=True)
+    heartbeat_thread.start()
+    try:
+        proc = subprocess.run(  # noqa: S603
+            command,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    finally:
+        stop_event.set()
+        heartbeat_thread.join(timeout=5)
+
+    return proc.stdout, proc.stderr, proc.returncode
 
 
 def _record_success(task: Task, envelope: dict[str, str]) -> TaskAttempt:
