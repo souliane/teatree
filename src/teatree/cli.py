@@ -37,6 +37,19 @@ AGENT_SKILL_OPTION = typer.Option(
 @app.callback()
 def _root_callback(ctx: typer.Context) -> None:
     ctx.ensure_object(dict)
+    _maybe_show_update_notice()
+
+
+def _maybe_show_update_notice() -> None:
+    """Show update notice at most once per day, if enabled in user settings."""
+    try:
+        from teatree.config import check_for_updates  # noqa: PLC0415
+
+        message = check_for_updates()
+        if message:
+            typer.echo(f"[update] {message}", err=True)
+    except Exception:  # noqa: BLE001, S110
+        pass
 
 
 @app.command()
@@ -306,6 +319,15 @@ def info() -> None:
 
 config_app = typer.Typer(no_args_is_help=True, help="Configuration and autoloading.")
 app.add_typer(config_app, name="config")
+
+
+@config_app.command(name="check-update")
+def check_update() -> None:
+    """Check if a newer version of teatree is available."""
+    from teatree.config import check_for_updates  # noqa: PLC0415
+
+    message = check_for_updates(force=True)
+    typer.echo(message or "You are up to date.")
 
 
 @config_app.command(name="write-skill-cache")

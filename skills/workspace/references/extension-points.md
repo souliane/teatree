@@ -70,6 +70,38 @@ overlay.post_db_setup(project_dir)  # example project-layer hook
 
 Use `uv run t3 startoverlay ...` to create the overlay package, register the entry point in pyproject.toml, and implement the required hooks on the overlay class.
 
+## Settings Architecture (3 tiers)
+
+### 1. User Settings (`UserSettings` dataclass)
+
+Personal preferences from `[teatree]` in `~/.teatree.toml`. Not overlay-specific.
+
+| Setting | Default | Description |
+|---|---|---|
+| `workspace_dir` | `~/workspace` | Where main repo clones live |
+| `worktrees_dir` | `~/.teatree/worktrees` | Where ticket worktrees are created |
+| `branch_prefix` | `""` (derived from git user) | Prefix for worktree branch names |
+| `privacy` | `""` | Privacy mode (controls data sent externally) |
+| `check_updates` | `true` | Check for new teatree versions (max once/day) |
+| `timezone` | `""` | Local timezone for statusline display |
+
+### 2. Overlay Settings (`OverlayConfig` + `overlay_settings.py`)
+
+Per-overlay configuration. Defined in code, overridable per-user via `[overlays.<name>]`.
+
+- `overlay_settings.py` constants (code defaults)
+- `~/.teatree.toml` `[overlays.<name>]` section (user overrides)
+- `*_PASS_KEY` convention auto-generates `get_*()` methods reading from `pass` store
+
+### 3. Core Settings (Django `settings.py`)
+
+Framework-level config. Not user-facing.
+
+| Setting | Description |
+|---|---|
+| `TEATREE_TERMINAL_MODE` | Default terminal mode (ttyd, new-window, new-tab) |
+| `TEATREE_CLAUDE_STATUSLINE_STATE_DIR` | Path for statusline telemetry files |
+
 ## Legacy Note
 
 The old `scripts/lib/registry.py` bridge has been removed. New project integrations use `OverlayBase` subclasses exclusively — do not add `project_hooks.py`, shell bootstraps, or custom `t3` subcommand groups.

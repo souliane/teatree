@@ -16,9 +16,8 @@ from django.utils.module_loading import import_string
 
 from teatree.core.management.commands.lifecycle import _register_new_repos
 from teatree.core.management.commands.pr import _last_commit_message
-from teatree.core.management.commands.workspace import _branch_prefix
+from teatree.core.management.commands.workspace import _branch_prefix, _workspace_dir
 from teatree.core.models import Session, Ticket, Worktree
-from teatree.core.models.worktree import _workspace_dir
 from teatree.core.overlay import (
     DbImportStrategy,
     OverlayBase,

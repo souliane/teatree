@@ -2,11 +2,10 @@ import socket
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
-from django.conf import settings
 from django.db import models
 from django_fsm import FSMField, transition
 
-from teatree.config import load_config
+from teatree.config import load_config as _load_config
 from teatree.core.managers import WorktreeManager
 from teatree.core.models.ticket import Ticket
 from teatree.utils import ports as port_utils
@@ -15,11 +14,8 @@ if TYPE_CHECKING:
     from teatree.core.models.types import Ports, WorktreeExtra
 
 
-def _workspace_dir() -> Path:
-    configured = getattr(settings, "T3_WORKSPACE_DIR", "")
-    if configured:
-        return Path(str(configured)).expanduser()
-    return load_config().workspace_dir
+def _worktrees_dir() -> Path:
+    return _load_config().worktrees_dir
 
 
 class Worktree(models.Model):
@@ -92,7 +88,7 @@ class Worktree(models.Model):
                 if isinstance(value, int):
                     reserved_ports[name].add(value)
         backend, frontend, postgres, redis = port_utils.find_free_ports(
-            str(_workspace_dir()),
+            str(_worktrees_dir()),
             share_db_server=False,
             reserved_ports=reserved_ports,
         )

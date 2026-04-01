@@ -6,16 +6,20 @@ import sys
 from contextlib import suppress
 from pathlib import Path
 
-from django.conf import settings
 from django_typer.management import TyperCommand, command
 
+from teatree.config import load_config
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay_loader import get_overlay
 from teatree.utils import git
 
 
 def _workspace_dir() -> Path:
-    return Path(getattr(settings, "T3_WORKSPACE_DIR", os.environ.get("T3_WORKSPACE_DIR", Path.home() / "workspace")))
+    return load_config().workspace_dir
+
+
+def _worktrees_dir() -> Path:
+    return load_config().worktrees_dir
 
 
 def _branch_prefix() -> str:
