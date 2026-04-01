@@ -1,3 +1,5 @@
+import http
+import logging
 import os
 import re
 import subprocess  # noqa: S404
@@ -7,6 +9,8 @@ from pathlib import Path
 from typing import SupportsInt, cast
 
 import httpx
+
+logger = logging.getLogger(__name__)
 
 # TTL constants for response caching (seconds)
 _TTL_PIPELINE = 60
@@ -315,7 +319,14 @@ class GitLabAPI:
         cached = self._get_cached(cache_key, _TTL_ISSUE)
         if cached is not None:
             return cached  # type: ignore[return-value]
-        data = self.get_json(f"projects/{project_id}/issues/{issue_iid}")
+        try:
+            data = self.get_json(f"projects/{project_id}/issues/{issue_iid}")
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == http.HTTPStatus.NOT_FOUND:
+                logger.warning("Issue %s#%s not found (404)", project_id, issue_iid)
+                self._set_cached(cache_key, None)
+                return None
+            raise
         result = data if isinstance(data, dict) else None
         self._set_cached(cache_key, result)
         return result

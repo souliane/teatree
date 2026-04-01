@@ -4,6 +4,7 @@ from pathlib import Path
 from subprocess import CompletedProcess
 from unittest.mock import patch
 
+import httpx
 import pytest
 
 from teatree.backends import gitlab_api
@@ -885,6 +886,22 @@ def test_get_issue_returns_issue_dict(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_get_issue_returns_none_when_not_a_dict(monkeypatch: pytest.MonkeyPatch) -> None:
     client = gitlab_api.GitLabAPI(token="test-token")
     monkeypatch.setattr(client, "get_json", lambda endpoint: None)
+
+    result = client.get_issue(42, 5)
+
+    assert result is None
+
+
+def test_get_issue_returns_none_on_404(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = gitlab_api.GitLabAPI(token="test-token")
+    response = httpx.Response(status_code=404, request=httpx.Request("GET", "https://example.com"))
+
+    msg = "Not Found"
+
+    def _raise(endpoint: str) -> None:
+        raise httpx.HTTPStatusError(msg, request=response.request, response=response)
+
+    monkeypatch.setattr(client, "get_json", _raise)
 
     result = client.get_issue(42, 5)
 
