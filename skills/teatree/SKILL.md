@@ -1,6 +1,8 @@
 ---
 name: teatree
 description: TeaTree agent lifecycle platform — installation, configuration, lifecycle phases, overlay concept, CLI reference, and skill loading. Use when working on teatree itself or when understanding how teatree orchestrates agent workflows.
+metadata:
+  version: 0.0.1
 triggers:
   priority: 90
   keywords:
@@ -26,8 +28,8 @@ TeaTree is a Django project that orchestrates agent workflows through lifecycle 
 
 - **TeaTree IS the Django project.** `pip install teatree` works standalone.
 - **Overlays** register via `teatree.overlays` entry points and provide project-specific configuration.
-- **Skills** live in `skills/` and are loaded by Claude Code's skill system.
-- **Hooks** in `hooks/scripts/` run on Claude Code lifecycle events (UserPromptSubmit, PreToolUse, PostToolUse).
+- **Skills** live in `skills/` and are loaded by the agent's skill system.
+- **Hooks** in `hooks/scripts/` run on agent lifecycle events (e.g., prompt submit, pre/post tool use).
 
 ## Lifecycle Phases
 
