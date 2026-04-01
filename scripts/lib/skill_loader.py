@@ -27,6 +27,37 @@ from teatree.skill_loading import DEFAULT_SKILLS_DIR, SkillLoadingPolicy
 XDG_DATA_DIR = Path.home() / ".local" / "share" / "teatree"
 SKILL_METADATA_CACHE = XDG_DATA_DIR / "skill-metadata.json"
 
+
+def _get_installed_version() -> str:
+    """Return the installed teatree package version, or ``""`` on failure."""
+    try:
+        import importlib.metadata
+
+        return importlib.metadata.version("teatree")
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _read_metadata_cache() -> dict:
+    """Read and validate the XDG skill-metadata cache.
+
+    Returns an empty dict when the cache is missing, corrupt, or was
+    written by a different teatree version.
+    """
+    if not SKILL_METADATA_CACHE.is_file():
+        return {}
+    try:
+        metadata = json.loads(SKILL_METADATA_CACHE.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+    if not isinstance(metadata, dict):
+        return {}
+    cached_version = metadata.get("teatree_version", "")
+    if cached_version and cached_version != _get_installed_version():
+        return {}
+    return metadata
+
+
 # End-of-session phrases (matched when no keyword/URL intent fires and a
 # skill declares ``end_of_session: true``).
 _LIFECYCLE_SKILLS = frozenset(
@@ -93,14 +124,9 @@ def build_trigger_index(skill_search_dirs: list[Path]) -> list[dict]:
 
 def _read_trigger_index() -> list[dict]:
     """Read the cached trigger index from the XDG data directory."""
-    if not SKILL_METADATA_CACHE.is_file():
-        return []
-    try:
-        metadata = json.loads(SKILL_METADATA_CACHE.read_text(encoding="utf-8"))
-        index = metadata.get("trigger_index", [])
-        return index if isinstance(index, list) else []
-    except (json.JSONDecodeError, OSError):
-        return []
+    metadata = _read_metadata_cache()
+    index = metadata.get("trigger_index", [])
+    return index if isinstance(index, list) else []
 
 
 # ── Intent detection (data-driven) ──────────────────────────────────
@@ -181,26 +207,14 @@ def detect_intent(
 
 def read_companion_skills() -> list[str]:
     """Read companion skills from the XDG skill-metadata cache."""
-    if not SKILL_METADATA_CACHE.is_file():
-        return []
-    try:
-        metadata = json.loads(SKILL_METADATA_CACHE.read_text(encoding="utf-8"))
-        companions = metadata.get("companion_skills", [])
-        return companions if isinstance(companions, list) else []
-    except (json.JSONDecodeError, OSError):
-        return []
+    metadata = _read_metadata_cache()
+    companions = metadata.get("companion_skills", [])
+    return companions if isinstance(companions, list) else []
 
 
 def read_overlay_skill_metadata() -> dict[str, object]:
     """Read overlay skill metadata from the XDG cache."""
-    if not SKILL_METADATA_CACHE.is_file():
-        return {}
-    try:
-        metadata = json.loads(SKILL_METADATA_CACHE.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return {}
-    if not isinstance(metadata, dict):
-        return {}
+    metadata = _read_metadata_cache()
     return {
         "skill_path": metadata.get("skill_path", ""),
         "remote_patterns": metadata.get("remote_patterns", []),

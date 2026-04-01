@@ -167,6 +167,32 @@ class Task(models.Model):
             self.fail()
         return attempt
 
+    def spawn_child_tasks(self, repos: list[str], *, phase: str = "") -> list["Task"]:
+        """Create one child task per repo for parallel execution.
+
+        Each child task inherits the ticket and session from the parent.
+        The parent can wait for all children by querying ``child_tasks``.
+        """
+        children = []
+        for repo in repos:
+            child = Task.objects.create(
+                ticket=self.ticket,
+                session=self.session,
+                phase=phase or self.phase,
+                execution_target=self.execution_target,
+                execution_reason=f"Repo: {repo}",
+                parent_task=self,
+            )
+            children.append(child)
+        return children
+
+    def all_children_done(self) -> bool:
+        """Return True if all child tasks have reached a terminal state."""
+        children = self.child_tasks.all()  # ty: ignore[unresolved-attribute]
+        if not children.exists():
+            return True
+        return not children.exclude(status__in={self.Status.COMPLETED, self.Status.FAILED}).exists()
+
     def _route(self, target: ExecutionTarget, reason: str) -> None:
         self.execution_target = target
         self.execution_reason = reason

@@ -97,12 +97,15 @@ def _register_new_repos(worktree: Worktree, stdout: OutputWrapper) -> None:
 
 
 class Command(TyperCommand):
+    _DB_IMPORT_MAX_FAILURES = 3
+
     @command()
     def setup(
         self,
         path: str = typer.Option("", help="Worktree path (auto-detects from PWD if empty)."),
         variant: str = typer.Option("", help="Tenant variant. Updates ticket if provided."),
         overlay: str = typer.Option("", help="Overlay name (auto-detects if empty)."),
+        force: bool = typer.Option(default=False, help="Bypass DB import circuit breaker."),  # noqa: FBT001
     ) -> int:
         """Provision a worktree (allocate ports, DB name, run overlay steps).
 
@@ -127,7 +130,7 @@ class Command(TyperCommand):
         failed_repos: list[str] = []
         for wt in ticket.worktrees.all():
             try:
-                self._provision_worktree(wt, resolved_overlay)
+                self._provision_worktree(wt, resolved_overlay, force=force)
             except Exception as exc:  # noqa: BLE001
                 failed_repos.append(wt.repo_path)
                 self.stderr.write(f"  ERROR provisioning {wt.repo_path}: {exc}")
@@ -139,7 +142,7 @@ class Command(TyperCommand):
 
         return int(worktree.pk)
 
-    def _provision_worktree(self, worktree: Worktree, overlay: "OverlayBase") -> None:
+    def _provision_worktree(self, worktree: Worktree, overlay: "OverlayBase", *, force: bool = False) -> None:
         self.stdout.write(f"  Provisioning: {worktree.repo_path}")
 
         if worktree.state == Worktree.State.CREATED:
@@ -156,12 +159,24 @@ class Command(TyperCommand):
 
         # Import database (DSLR/dump fallback chain) before running provision steps
         if overlay.get_db_import_strategy(worktree) is not None:
-            self.stdout.write("  Running: db-import")
-            env = {**os.environ, **overlay.get_env_extra(worktree)}
-            env.pop("VIRTUAL_ENV", None)
-            os.environ.update(env)  # pg tools need these to connect
-            if not overlay.db_import(worktree):
-                self.stderr.write("  WARNING: DB import failed. Continuing with provision steps...")
+            extra = worktree.extra or {}
+            failures = extra.get("db_import_failures", 0)
+            if failures >= self._DB_IMPORT_MAX_FAILURES and not force:
+                self.stderr.write(f"  SKIPPED: DB import (failed {failures} consecutive times). Use --force to retry.")
+            else:
+                self.stdout.write("  Running: db-import")
+                env = {**os.environ, **overlay.get_env_extra(worktree)}
+                env.pop("VIRTUAL_ENV", None)
+                os.environ.update(env)  # pg tools need these to connect
+                if overlay.db_import(worktree):
+                    extra.pop("db_import_failures", None)
+                    worktree.extra = extra
+                    worktree.save(update_fields=["extra"])
+                else:
+                    extra["db_import_failures"] = failures + 1
+                    worktree.extra = extra
+                    worktree.save(update_fields=["extra"])
+                    self.stderr.write("  WARNING: DB import failed. Continuing with provision steps...")
 
         for step in overlay.get_provision_steps(worktree):
             self.stdout.write(f"  Running: {step.name}")

@@ -13,7 +13,7 @@ import teatree.agents.web_terminal as web_terminal_mod
 import teatree.core.management.commands.lifecycle as lifecycle_cmd
 import teatree.core.overlay_loader as overlay_loader_mod
 from teatree.core.models import Session, Task, TaskAttempt, Ticket, Worktree
-from teatree.core.overlay import OverlayBase, ProvisionStep, RunCommands
+from teatree.core.overlay import DbImportStrategy, OverlayBase, ProvisionStep, RunCommands
 from teatree.core.overlay_loader import reset_overlay_cache
 
 pytestmark = pytest.mark.filterwarnings(
@@ -158,6 +158,71 @@ class TestTaskCommands(TestCase):
     def test_return_none_when_no_work_available(self) -> None:
         assert call_command("tasks", "work-next-sdk", claimed_by="worker-1") is None
         assert call_command("tasks", "work-next-user-input", claimed_by="worker-2") is None
+
+
+class DbOverlay(CommandOverlay):
+    """CommandOverlay with a DB import strategy that always fails."""
+
+    def get_db_import_strategy(self, worktree: Worktree) -> DbImportStrategy | None:
+        return DbImportStrategy(kind="dslr")
+
+    def db_import(self, worktree: Worktree, *, force: bool = False) -> bool:
+        return False
+
+
+_DB_MOCK_OVERLAY = {"test": DbOverlay()}
+
+
+class TestDbImportCircuitBreaker(TestCase):
+    @override_settings(**COMMAND_SETTINGS)
+    def test_skips_db_import_after_max_failures(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            wt_path = str(tmp_path / "backend")
+            Path(wt_path).mkdir()
+            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/99")
+            Worktree.objects.create(
+                ticket=ticket,
+                overlay="test",
+                repo_path="/tmp/backend",
+                branch="feature",
+                extra={"worktree_path": wt_path, "db_import_failures": 3},
+            )
+
+            with (
+                patch.dict("os.environ", {"T3_ORIG_CWD": wt_path}),
+                patch.object(overlay_loader_mod, "_discover_overlays", return_value=_DB_MOCK_OVERLAY),
+            ):
+                call_command("lifecycle", "setup")
+
+            # db_import was NOT called — failure count unchanged
+            wt = Worktree.objects.get(ticket=ticket)
+            assert wt.extra["db_import_failures"] == 3
+
+    @override_settings(**COMMAND_SETTINGS)
+    def test_force_bypasses_circuit_breaker(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            wt_path = str(tmp_path / "backend")
+            Path(wt_path).mkdir()
+            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/100")
+            Worktree.objects.create(
+                ticket=ticket,
+                overlay="test",
+                repo_path="/tmp/backend",
+                branch="feature",
+                extra={"worktree_path": wt_path, "db_import_failures": 3},
+            )
+
+            with (
+                patch.dict("os.environ", {"T3_ORIG_CWD": wt_path}),
+                patch.object(overlay_loader_mod, "_discover_overlays", return_value=_DB_MOCK_OVERLAY),
+            ):
+                call_command("lifecycle", "setup", "--force")
+
+            # db_import WAS called and failed again — count incremented
+            wt = Worktree.objects.get(ticket=ticket)
+            assert wt.extra["db_import_failures"] == 4
 
 
 class TestFollowupCommands(TestCase):

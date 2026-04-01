@@ -1,4 +1,5 @@
 import json
+import time
 from subprocess import CompletedProcess
 from unittest.mock import patch
 
@@ -10,6 +11,7 @@ from teatree.agents.headless import (
     _get_resume_session_id,
     _parse_cli_envelope,
     _parse_result,
+    _run_with_heartbeat,
     _safe_float,
     _safe_int,
     _validate_result,
@@ -340,3 +342,90 @@ def test_parse_cli_envelope_falls_back_for_invalid_json() -> None:
     parsed = _parse_cli_envelope("not json at all")
     assert parsed["agent_text"] == "not json at all"
     assert parsed["session_id"] == ""
+
+
+# --- _run_with_heartbeat tests ---
+
+
+class TestRunWithHeartbeat(TestCase):
+    def test_calls_renew_lease(self) -> None:
+        """Heartbeat thread calls renew_lease() while the subprocess runs."""
+        renew_count = 0
+
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session)
+
+        def counting_renew(**_kwargs: object) -> None:
+            nonlocal renew_count
+            renew_count += 1
+
+        task.renew_lease = counting_renew
+
+        def slow_subprocess(*_args: object, **_kwargs: object) -> CompletedProcess[str]:
+            time.sleep(0.2)
+            return CompletedProcess([], 0, "done", "")
+
+        with (
+            patch.object(headless_mod, "_HEARTBEAT_INTERVAL", 0.05),
+            patch.object(headless_mod.subprocess, "run", slow_subprocess),
+        ):
+            stdout, _stderr, returncode = _run_with_heartbeat(task, ["echo"])
+
+        assert returncode == 0
+        assert stdout == "done"
+        assert renew_count >= 2
+
+    def test_stops_after_subprocess_completes(self) -> None:
+        """Heartbeat thread stops cleanly after subprocess exits."""
+        renew_calls: list[float] = []
+
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session)
+
+        def tracking_renew(**_kwargs: object) -> None:
+            renew_calls.append(time.monotonic())
+
+        task.renew_lease = tracking_renew
+
+        with (
+            patch.object(headless_mod, "_HEARTBEAT_INTERVAL", 0.05),
+            patch.object(
+                headless_mod.subprocess,
+                "run",
+                lambda *_a, **_kw: CompletedProcess([], 0, "", ""),
+            ),
+        ):
+            _run_with_heartbeat(task, ["echo"])
+
+        count_at_exit = len(renew_calls)
+        time.sleep(0.15)
+        assert len(renew_calls) == count_at_exit
+
+    def test_survives_renew_lease_failure(self) -> None:
+        """A failing renew_lease() is logged but doesn't crash the subprocess."""
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session)
+
+        def failing_renew(**_kwargs: object) -> None:
+            msg = "DB connection lost"
+            raise RuntimeError(msg)
+
+        task.renew_lease = failing_renew
+
+        def slow_subprocess(*_args: object, **_kwargs: object) -> CompletedProcess[str]:
+            time.sleep(0.15)
+            return CompletedProcess([], 0, "ok", "")
+
+        with (
+            patch.object(headless_mod, "_HEARTBEAT_INTERVAL", 0.05),
+            patch.object(headless_mod.subprocess, "run", slow_subprocess),
+            patch.object(headless_mod, "logger") as mock_logger,
+        ):
+            stdout, _stderr, returncode = _run_with_heartbeat(task, ["echo"])
+
+        assert returncode == 0
+        assert stdout == "ok"
+        assert mock_logger.warning.call_count >= 1

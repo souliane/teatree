@@ -4,6 +4,7 @@ import json
 import sys
 from pathlib import Path
 
+import teatree
 from teatree.config import DATA_DIR
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.sync import SyncResult, sync_followup
@@ -43,6 +44,7 @@ def _write_skill_metadata_cache() -> None:
     """
     metadata = get_overlay().metadata.get_skill_metadata()
     metadata["trigger_index"] = _build_trigger_index()
+    metadata["teatree_version"] = teatree.__version__
     cache_path = DATA_DIR / "skill-metadata.json"
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     cache_path.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
