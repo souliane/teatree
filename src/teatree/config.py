@@ -67,11 +67,40 @@ class OverlayEntry:
 
 
 @dataclass
-class TeaTreeConfig:
+class UserSettings:
+    """User preferences from ``[teatree]`` in ``~/.teatree.toml``.
+
+    These are personal preferences that affect the user's local experience
+    — not overlay-specific and not framework internals.
+    """
+
     workspace_dir: Path = field(default_factory=lambda: Path.home() / "workspace")
+    worktrees_dir: Path = field(default_factory=lambda: Path.home() / ".teatree" / "worktrees")
     branch_prefix: str = ""
     privacy: str = ""
+    check_updates: bool = True
+    timezone: str = ""
+
+
+@dataclass
+class TeaTreeConfig:
+    """Full parsed config including raw TOML for overlay discovery."""
+
+    user: UserSettings = field(default_factory=UserSettings)
     raw: dict = field(default_factory=dict)
+
+    # Backward compat properties
+    @property
+    def workspace_dir(self) -> Path:
+        return self.user.workspace_dir
+
+    @property
+    def worktrees_dir(self) -> Path:
+        return self.user.worktrees_dir
+
+    @property
+    def branch_prefix(self) -> str:
+        return self.user.branch_prefix
 
 
 def load_config(path: Path = CONFIG_PATH) -> TeaTreeConfig:
@@ -82,14 +111,17 @@ def load_config(path: Path = CONFIG_PATH) -> TeaTreeConfig:
         raw = tomllib.load(f)
 
     teatree = raw.get("teatree", {})
-    workspace_dir = Path(teatree.get("workspace_dir", "~/workspace")).expanduser()
 
-    return TeaTreeConfig(
-        workspace_dir=workspace_dir,
+    user = UserSettings(
+        workspace_dir=Path(teatree.get("workspace_dir", "~/workspace")).expanduser(),
+        worktrees_dir=Path(teatree.get("worktrees_dir", "~/.teatree/worktrees")).expanduser(),
         branch_prefix=teatree.get("branch_prefix", ""),
         privacy=teatree.get("privacy", ""),
-        raw=raw,
+        check_updates=teatree.get("check_updates", True),
+        timezone=teatree.get("timezone", ""),
     )
+
+    return TeaTreeConfig(user=user, raw=raw)
 
 
 def discover_overlays(config_path: Path = CONFIG_PATH) -> list[OverlayEntry]:
@@ -184,3 +216,74 @@ def _extract_settings_module(manage_py: Path) -> str:
         if "DJANGO_SETTINGS_MODULE" in line and '"' in line:
             return line.split('"')[-2]
     return ""
+
+
+# ── Update checker ───────────────────────────────────────────────────
+
+_UPDATE_CACHE_FILE = DATA_DIR / "update-check.json"
+_UPDATE_CHECK_INTERVAL_SECONDS = 86400  # 24 hours
+
+
+def check_for_updates(*, force: bool = False) -> str | None:
+    """Return an update message if a newer tag exists upstream, or None.
+
+    Checks at most once per day (cached). Respects ``check_updates`` user setting.
+    """
+    import json  # noqa: PLC0415
+    import subprocess  # noqa: PLC0415, S404
+    import time  # noqa: PLC0415
+
+    config = load_config()
+    if not config.user.check_updates and not force:
+        return None
+
+    # Check cache
+    if not force and _UPDATE_CACHE_FILE.is_file():
+        try:
+            cache = json.loads(_UPDATE_CACHE_FILE.read_text(encoding="utf-8"))
+            if time.time() - cache.get("checked_at", 0) < _UPDATE_CHECK_INTERVAL_SECONDS:
+                return cache.get("message") or None
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    # Fetch latest tag
+    result = subprocess.run(
+        ["gh", "api", "repos/souliane/teatree/releases/latest", "--jq", ".tag_name"],  # noqa: S607
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        _write_update_cache("")
+        return None
+
+    latest_tag = result.stdout.strip()
+    if not latest_tag:
+        _write_update_cache("")
+        return None
+
+    # Compare with installed version
+    from importlib.metadata import version  # noqa: PLC0415
+
+    try:
+        current = version("teatree")
+    except Exception:  # noqa: BLE001
+        current = "0.0.0"
+
+    message = ""
+    if latest_tag.lstrip("v") != current:
+        message = f"teatree {latest_tag} available (you have {current}). Run: uv pip install --upgrade teatree"
+
+    _write_update_cache(message)
+    return message or None
+
+
+def _write_update_cache(message: str) -> None:
+    import json  # noqa: PLC0415
+    import time  # noqa: PLC0415
+
+    _UPDATE_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    _UPDATE_CACHE_FILE.write_text(
+        json.dumps({"checked_at": time.time(), "message": message}) + "\n",
+        encoding="utf-8",
+    )
