@@ -300,6 +300,37 @@ class TestDetectIntentIntegration:
         assert detect_intent("hello", trigger_index=real_index) == ""
 
 
+# ── Cache version validation ─────────────────────────────────────────
+
+
+class TestMetadataCacheInvalidation:
+    def test_valid_version_returns_data(self, tmp_path):
+        cache = tmp_path / "skill-metadata.json"
+        cache.write_text(json.dumps({"teatree_version": "1.0.0", "trigger_index": [{"skill": "test"}]}))
+        with (
+            mock.patch.object(skill_loader_mod, "SKILL_METADATA_CACHE", cache),
+            mock.patch.object(skill_loader_mod, "_get_installed_version", return_value="1.0.0"),
+        ):
+            result = skill_loader_mod._read_metadata_cache()
+            assert result["trigger_index"] == [{"skill": "test"}]
+
+    def test_mismatched_version_returns_empty(self, tmp_path):
+        cache = tmp_path / "skill-metadata.json"
+        cache.write_text(json.dumps({"teatree_version": "1.0.0", "trigger_index": [{"skill": "test"}]}))
+        with (
+            mock.patch.object(skill_loader_mod, "SKILL_METADATA_CACHE", cache),
+            mock.patch.object(skill_loader_mod, "_get_installed_version", return_value="2.0.0"),
+        ):
+            assert skill_loader_mod._read_metadata_cache() == {}
+
+    def test_missing_version_in_cache_skips_check(self, tmp_path):
+        cache = tmp_path / "skill-metadata.json"
+        cache.write_text(json.dumps({"trigger_index": [{"skill": "test"}]}))
+        with mock.patch.object(skill_loader_mod, "SKILL_METADATA_CACHE", cache):
+            result = skill_loader_mod._read_metadata_cache()
+            assert result["trigger_index"] == [{"skill": "test"}]
+
+
 # ── Preserved tests ──────────────────────────────────────────────────
 
 

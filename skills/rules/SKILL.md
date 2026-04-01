@@ -67,6 +67,8 @@ Sub-agents (Agent tool) **lose all loaded skills, MCP access, and shell function
 
 **Before delegating platform API work:** Read the relevant platform reference (`t3:platforms`) before writing sub-agent prompts that involve API calls (draft notes, discussions, MR operations). Sub-agents can't read skills themselves — copy the exact API recipe into the agent prompt.
 
+**After a sub-agent completes, re-read any files it modified.** Sub-agents get a forked copy of your file state — their edits don't update your cache. Writing to a file without re-reading first will silently overwrite their changes.
+
 ## Prefer Native Tool APIs Over Filesystem Heuristics
 
 When integrating with tools (issue trackers, CI, chat), prefer their API or CLI over scraping files. File-based approaches break on layout changes, don't handle pagination, and miss metadata.

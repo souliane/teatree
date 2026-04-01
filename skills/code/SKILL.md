@@ -59,6 +59,7 @@ When the active overlay has `require_ticket = True` in its configuration, a trac
 
 **Always make a plan before writing code.** Never jump straight to coding.
 
+- **Verify the codebase matches expectations.** Run `git fetch origin main` and check: (1) are any ticket items already implemented on main? (2) does the current architecture match what the ticket assumes? Read the actual files before assuming the ticket description is current. Tickets derived from external analysis (source code leaks, competitor research, blog posts) are especially prone to stale assumptions.
 - **Check for prior work:** Search git history (`git log --grep`, PR list) for previous attempts at this task. Existing research, rejected approaches, and partial implementations save hours.
 - Identify scope: which files, modules, and repos are affected.
 - Review existing patterns in the codebase before writing new code.
@@ -136,6 +137,8 @@ When launching parallel agents to write code (especially tests), include these r
 - **Never add `# noqa` without justification** — prefer fixing the issue
 
 Sub-agents don't inherit project context. Include the specific linting rules and pre-commit expectations in their prompts.
+
+**After a sub-agent completes, re-read any files it modified before continuing.** Your file state cache is stale — the sub-agent's changes are invisible until you re-read. Writing to a stale-cached file will overwrite the sub-agent's work.
 
 ### Systematic Debugging Protocol
 

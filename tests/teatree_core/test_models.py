@@ -440,6 +440,19 @@ class TestSession(TestCase):
 
         assert session.visited_phases == ["testing"]
 
+    def test_repo_tracking(self) -> None:
+        session = Session.objects.create(ticket=Ticket.objects.create())
+
+        session.mark_repo_modified("backend")
+        session.mark_repo_modified("frontend")
+        session.mark_repo_modified("backend")  # duplicate
+        session.mark_repo_tested("backend")
+
+        session.refresh_from_db()
+        assert session.repos_modified == ["backend", "frontend"]
+        assert session.repos_tested == ["backend"]
+        assert session.untested_repos() == ["frontend"]
+
 
 class TestTask(TestCase):
     def test_claim_route_complete_fail_and_attempt_storage(self) -> None:
@@ -550,6 +563,40 @@ class TestTask(TestCase):
         assert child is not None
         assert child.parent_task_id == parent.pk
         assert list(parent.child_tasks.values_list("pk", flat=True)) == [child.pk]
+
+
+class TestChildTaskSpawning(TestCase):
+    def test_spawn_child_tasks_creates_per_repo_tasks(self) -> None:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket, agent_id="worker")
+        parent = Task.objects.create(ticket=ticket, session=session, phase="coding")
+
+        children = parent.spawn_child_tasks(["backend", "frontend", "translations"])
+
+        assert len(children) == 3
+        assert all(c.parent_task_id == parent.pk for c in children)
+        assert all(c.phase == "coding" for c in children)
+        assert [c.execution_reason for c in children] == [
+            "Repo: backend",
+            "Repo: frontend",
+            "Repo: translations",
+        ]
+
+    def test_all_children_done(self) -> None:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        parent = Task.objects.create(ticket=ticket, session=session)
+        children = parent.spawn_child_tasks(["a", "b"])
+
+        assert not parent.all_children_done()
+
+        children[0].status = Task.Status.COMPLETED
+        children[0].save(update_fields=["status"])
+        assert not parent.all_children_done()
+
+        children[1].status = Task.Status.FAILED
+        children[1].save(update_fields=["status"])
+        assert parent.all_children_done()
 
 
 class TestBuildTaskDetail(TestCase):
