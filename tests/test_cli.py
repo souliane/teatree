@@ -75,7 +75,10 @@ class TestDocsCommand:
         fake_mkdocs = types.ModuleType("mkdocs")
         monkeypatch.setitem(sys.modules, "mkdocs", fake_mkdocs)
 
-        with patch.object(cli_review_mod.subprocess, "run") as mock_run:
+        with (
+            patch.object(cli_mod.subprocess, "run") as mock_run,
+            patch("teatree.cli._maybe_show_update_notice"),
+        ):
             mock_run.return_value = MagicMock(returncode=0)
             result = runner.invoke(app, ["docs"])
             assert result.exit_code == 0

@@ -193,8 +193,10 @@ class TestLifecycleProvision(TestCase):
         mock_popen = MagicMock(poll=MagicMock(return_value=None), pid=9999, returncode=0)
         with (
             _patch_overlay(),
+            patch.object(lifecycle_mod, "subprocess") as mock_start_sp,
             patch.object(lifecycle_mod, "Popen", return_value=mock_popen),
         ):
+            mock_start_sp.run.return_value = MagicMock(returncode=0)
             call_command("lifecycle", "start", path=backend_path)
         wt_backend.refresh_from_db()
         assert wt_backend.state == Worktree.State.SERVICES_UP
