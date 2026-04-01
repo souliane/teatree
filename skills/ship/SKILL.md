@@ -60,6 +60,14 @@ From "code is done" to "MR is merged."
 - **E2E gate:** If the project requires E2E tests for the type of changes made (UI, forms, user flows), those tests must be written and passing BEFORE proceeding. E2E is part of implementation, not a post-push activity.
 - **Wait for user feedback.** Do NOT proceed to push without user approval.
 
+### 3a. BLUEPRINT.md Sync (Non-Negotiable)
+
+If the changes touch architecture, add new modules, rename commands, or change extension points:
+
+1. Read `BLUEPRINT.md` and check if it reflects the current state.
+2. If it doesn't, update it **before** pushing. Ask the user before modifying.
+3. This applies to all repos that have a `BLUEPRINT.md`.
+
 ### 3b. Self-Review Against Repo Rules (Non-Negotiable)
 
 **Before every push**, run the self-review gate from [`../t3:review/SKILL.md`](../t3:review/SKILL.md) § "Active Verification Against Repo Rules":

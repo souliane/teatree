@@ -1,10 +1,10 @@
 {% if review_comments %}
   <div class="overflow-x-auto">
-  <table class="mx-auto border-collapse text-sm">
+  <table class="mx-auto w-full table-fixed border-collapse text-sm">
     <thead>
       <tr>
-        <th class="border-b border-bark/10 px-3 py-3 text-left font-sans text-[11px] font-semibold uppercase tracking-[0.2em] text-bark/55">MR</th>
-        <th class="border-b border-bark/10 px-3 py-3 text-left font-sans text-[11px] font-semibold uppercase tracking-[0.2em] text-bark/55">Status</th>
+        <th class="w-1/5 border-b border-bark/10 px-3 py-3 text-left font-sans text-[11px] font-semibold uppercase tracking-[0.2em] text-bark/55">MR</th>
+        <th class="w-1/6 border-b border-bark/10 px-3 py-3 text-left font-sans text-[11px] font-semibold uppercase tracking-[0.2em] text-bark/55">Status</th>
         <th class="border-b border-bark/10 px-3 py-3 text-left font-sans text-[11px] font-semibold uppercase tracking-[0.2em] text-bark/55">Details</th>
       </tr>
     </thead>
@@ -29,7 +29,7 @@
               <span class="inline-flex rounded-full bg-bark/5 px-3 py-1 font-sans text-xs font-semibold text-bark/40">{{ row.status }}</span>
             {% endif %}
           </td>
-          <td class="border-b border-bark/10 px-3 py-3 align-top font-sans text-xs text-bark/65">{{ row.detail_text }}</td>
+          <td class="border-b border-bark/10 px-3 py-3 align-top font-sans text-xs text-bark/65 break-words">{{ row.detail_text }}</td>
         </tr>
       {% endfor %}
     </tbody>

@@ -1,0 +1,31 @@
+from pathlib import Path
+
+from django.core.management import call_command
+from django_typer.management import TyperCommand, command
+
+
+class Command(TyperCommand):
+    help = "Generate all documentation: overlay docs, skill docs, CLI reference."
+
+    @command()
+    def handle(self, output_dir: str = "docs/generated") -> str:
+        out = Path(output_dir)
+        out.mkdir(parents=True, exist_ok=True)
+
+        generated: list[str] = []
+
+        self.stdout.write("Generating overlay extension-point docs...")
+        call_command("generate_overlay_docs", output_dir=output_dir, stdout=self.stdout)
+        generated.append("overlay-extension-points.md")
+
+        self.stdout.write("Generating skill delegation docs...")
+        call_command("generate_skill_docs", output_dir=output_dir, stdout=self.stdout)
+        generated.append("skill-delegation-matrix.md")
+
+        self.stdout.write("Generating CLI reference...")
+        call_command("generate_cli_docs", output=str(out / "cli-reference.md"), stdout=self.stdout)
+        generated.append("cli-reference.md")
+
+        summary = f"Generated {len(generated)} docs in {out}: {', '.join(generated)}"
+        self.stdout.write(summary)
+        return summary
