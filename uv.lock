@@ -1474,7 +1474,9 @@ dev = [
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "pytest-django" },
+    { name = "pytest-playwright" },
     { name = "pytest-timeout" },
+    { name = "pytest-xdist" },
     { name = "ruff" },
     { name = "safety" },
     { name = "tach" },
@@ -1484,10 +1486,6 @@ dev = [
 docs = [
     { name = "mkdocs" },
     { name = "mkdocs-material" },
-]
-e2e = [
-    { name = "pytest-playwright" },
-    { name = "pytest-xdist" },
 ]
 
 [package.metadata]
@@ -1511,7 +1509,9 @@ dev = [
     { name = "pytest", specifier = ">=9.0.2" },
     { name = "pytest-cov", specifier = ">=7" },
     { name = "pytest-django", specifier = ">=4.11.1" },
+    { name = "pytest-playwright", specifier = ">=0.7" },
     { name = "pytest-timeout", specifier = ">=2.4" },
+    { name = "pytest-xdist", specifier = ">=3.5" },
     { name = "ruff", specifier = ">=0.14.2" },
     { name = "safety", specifier = ">=3" },
     { name = "tach", specifier = ">=0.34" },
@@ -1521,10 +1521,6 @@ dev = [
 docs = [
     { name = "mkdocs", specifier = ">=1.6" },
     { name = "mkdocs-material", specifier = ">=9" },
-]
-e2e = [
-    { name = "pytest-playwright", specifier = ">=0.7" },
-    { name = "pytest-xdist", specifier = ">=3.5" },
 ]
 
 [[package]]

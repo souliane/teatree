@@ -39,7 +39,9 @@ dev = [
   "pytest>=9.0.2",
   "pytest-cov>=7",
   "pytest-django>=4.11.1",
+  "pytest-playwright>=0.7",
   "pytest-timeout>=2.4",
+  "pytest-xdist>=3.5",
   "ruff>=0.14.2",
   "safety>=3",
   "tach>=0.34",
@@ -49,10 +51,6 @@ dev = [
 docs = [
   "mkdocs>=1.6",
   "mkdocs-material>=9",
-]
-e2e = [
-  "pytest-playwright>=0.7",
-  "pytest-xdist>=3.5",
 ]
 
 [tool.hatch.build.targets.wheel]
