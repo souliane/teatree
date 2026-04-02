@@ -420,7 +420,13 @@ class TestWorkspaceTicket(TestCase):
             assert Worktree.objects.count() == 0
 
 
+_no_prune = patch.object(workspace_mod, "_prune_branches", new=lambda _repo: [])
+_no_stash = patch.object(workspace_mod, "_drop_orphaned_stashes", new=lambda _repo: [])
+
+
 class TestWorkspaceCleanAll(TestCase):
+    @_no_prune
+    @_no_stash
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
     def test_removes_stale_worktrees(self) -> None:
@@ -432,6 +438,8 @@ class TestWorkspaceCleanAll(TestCase):
         assert len(cleaned) == 1
         assert Worktree.objects.count() == 0
 
+    @_no_prune
+    @_no_stash
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
     def test_removes_git_worktree_and_branch(self) -> None:
@@ -477,6 +485,8 @@ class TestWorkspaceCleanAll(TestCase):
             assert "-D" in branch_delete_call[0][0]
             assert "ac-backend-80-ticket" in branch_delete_call[0][0]
 
+    @_no_prune
+    @_no_stash
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
     def test_drops_database_when_db_name_set(self) -> None:
@@ -516,6 +526,8 @@ class TestWorkspaceCleanAll(TestCase):
             assert "dropdb" in dropdb_call[0][0]
             assert "wt_test_db" in dropdb_call[0][0]
 
+    @_no_prune
+    @_no_stash
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
     def test_warns_on_uncommitted_changes(self) -> None:
@@ -549,6 +561,8 @@ class TestWorkspaceCleanAll(TestCase):
             assert "WARNING" in stderr.getvalue()
             assert "uncommitted changes" in stderr.getvalue()
 
+    @_no_prune
+    @_no_stash
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
     def test_runs_overlay_cleanup_steps(self) -> None:
@@ -590,6 +604,8 @@ class TestWorkspaceCleanAll(TestCase):
 
             assert cleanup_called == [True]
 
+    @_no_prune
+    @_no_stash
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
     def test_removes_empty_ticket_directories(self) -> None:

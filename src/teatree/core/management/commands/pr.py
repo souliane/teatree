@@ -33,7 +33,11 @@ def _last_commit_message(cwd: str) -> tuple[str, str]:
 
 
 def _check_shipping_gate(ticket: Ticket) -> dict[str, object] | None:
-    """Return an error dict if the ticket hasn't passed the review gate."""
+    """Return an error dict if the ticket hasn't passed the review gate.
+
+    Returns structured JSON with ``missing`` phases so the calling agent
+    can spawn a sub-agent to satisfy the gate rather than failing outright.
+    """
     from teatree.core.models.errors import QualityGateError  # noqa: PLC0415
 
     session = ticket.sessions.order_by("-pk").first()  # ty: ignore[unresolved-attribute]
@@ -42,7 +46,15 @@ def _check_shipping_gate(ticket: Ticket) -> dict[str, object] | None:
     try:
         session.check_gate("shipping")
     except QualityGateError as exc:
-        return {"error": f"Gate check failed: {exc}", "hint": "Run /t3:review before shipping."}
+        visited = session.visited_phases or []
+        required = session._REQUIRED_PHASES.get("shipping", [])  # noqa: SLF001
+        missing = [p for p in required if p not in visited]
+        return {
+            "allowed": False,
+            "error": f"Gate check failed: {exc}",
+            "missing": missing,
+            "hint": "Spawn a review sub-agent to satisfy the reviewing gate, then retry.",
+        }
     return None
 
 
@@ -108,14 +120,21 @@ class Command(TyperCommand):
     @command(name="check-gates")
     def check_gates(self, ticket_id: int, target_phase: str = "shipping") -> dict[str, object]:
         """Check whether session gates allow a phase transition."""
+        from teatree.core.models.errors import QualityGateError  # noqa: PLC0415
+
         ticket = Ticket.objects.get(pk=ticket_id)
         session = ticket.sessions.order_by("-pk").first()
         if session is None:
-            return {"allowed": False, "reason": "No active session"}
+            return {"allowed": False, "reason": "No active session", "missing": []}
         try:
             session.check_gate(target_phase)
+        except QualityGateError:
+            visited = session.visited_phases or []
+            required = session._REQUIRED_PHASES.get(target_phase, [])  # noqa: SLF001
+            missing = [p for p in required if p not in visited]
+            return {"allowed": False, "missing": missing, "reason": f"{target_phase} requires: {', '.join(missing)}"}
         except (ValueError, KeyError) as exc:
-            return {"allowed": False, "reason": str(exc)}
+            return {"allowed": False, "reason": str(exc), "missing": []}
         else:
             return {"allowed": True, "target_phase": target_phase}
 

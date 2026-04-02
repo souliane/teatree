@@ -9,7 +9,7 @@ from django.db.models import Count, Q, Sum
 from django.utils import timezone
 from django_fsm import can_proceed
 
-from teatree.core.models import Task, TaskAttempt, Ticket, Worktree
+from teatree.core.models import Task, TaskAttempt, Ticket, TicketTransition, Worktree
 
 # ── Panel cache ──────────────────────────────────────────────────────
 
@@ -326,6 +326,25 @@ def build_task_graph(ticket_id: int) -> list[TaskGraphNode]:
         ]
 
     return _build(None, 0)
+
+
+def build_ticket_lifecycle_mermaid(ticket_id: int) -> str:
+    """Build a Mermaid stateDiagram-v2 from recorded TicketTransition rows."""
+    ticket = Ticket.objects.get(pk=ticket_id)
+    transitions = TicketTransition.objects.filter(ticket_id=ticket_id).select_related("session")
+
+    lines = ["stateDiagram-v2", f"    [*] --> {ticket.State.NOT_STARTED}"]
+
+    for t in transitions:
+        label = f"{t.triggered_by}()"
+        if t.session_id:
+            label += f" S{t.session_id}"
+        lines.append(f"    {t.from_state} --> {t.to_state}: {label}")
+
+    # Highlight current state with a note.
+    lines.append(f"    note right of {ticket.state}: current")
+
+    return "\n".join(lines)
 
 
 _AUTOMATION_WINDOW_HOURS = 24

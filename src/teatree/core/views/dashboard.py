@@ -130,6 +130,21 @@ class TaskGraphView(View):
         )
 
 
+class TicketLifecycleView(View):
+    def get(self, request: HttpRequest, ticket_id: int) -> HttpResponse:
+        from teatree.core.models import Ticket  # noqa: PLC0415
+        from teatree.core.selectors import build_ticket_lifecycle_mermaid  # noqa: PLC0415
+
+        if not Ticket.objects.filter(pk=ticket_id).exists():
+            raise Http404
+        mermaid = build_ticket_lifecycle_mermaid(ticket_id)
+        return TemplateResponse(
+            request,
+            "teatree/partials/ticket_lifecycle.html",
+            {"ticket_id": ticket_id, "mermaid": mermaid},
+        )
+
+
 type _PanelBuilder = Callable[[bool, str | None], dict[str, object]]
 
 _PANEL_BUILDERS: dict[str, _PanelBuilder] = {

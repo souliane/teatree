@@ -7,6 +7,7 @@ from django_fsm import FSMField, transition
 from teatree.core.managers import TicketManager
 
 if TYPE_CHECKING:
+    from teatree.core.models.session import Session
     from teatree.core.models.task import Task
     from teatree.core.models.types import TicketExtra
 
@@ -101,6 +102,19 @@ class Ticket(models.Model):
             phase="reviewing",
             execution_target=Task.ExecutionTarget.HEADLESS,
             execution_reason="Auto-scheduled review + retro — fresh agent, no bias",
+            parent_task=parent_task,
+        )
+
+    def schedule_review_in_session(self, session: "Session", *, parent_task: "Task | None" = None) -> "Task":
+        """Create a review task within an existing session (sub-agent, not a new session)."""
+        from teatree.core.models.task import Task  # noqa: PLC0415
+
+        return Task.objects.create(
+            ticket=self,
+            session=session,
+            phase="reviewing",
+            execution_target=Task.ExecutionTarget.HEADLESS,
+            execution_reason="Auto-review before shipping — sub-agent in current session",
             parent_task=parent_task,
         )
 
