@@ -1,7 +1,7 @@
 ---
 name: contribute
-description: Push retro improvements to your fork and optionally open upstream issues. Use when user says "contribute", "push improvements", "push skills", or after retro creates a local commit.
-compatibility: macOS/Linux, git, gh CLI (for upstream issues).
+description: Push retro improvements to a branch, open a PR, and optionally create upstream issues. Use when user says "contribute", "push improvements", "push skills", or after retro creates a local commit.
+compatibility: macOS/Linux, git, gh CLI (for PRs and upstream issues).
 requires:
   - retro
 triggers:
@@ -13,9 +13,11 @@ metadata:
   subagent_safe: false
 ---
 
-# Contribute — Push & Upstream Issue Creation
+# Contribute — Branch, PR & Upstream Issue Creation
 
-Handles the **push and upstream interaction** for skill improvements created by `t3:retro`. Retro commits improvements directly on the current branch in `$T3_REPO`; this skill reviews unpushed commits and pushes them — with explicit user consent every time.
+Handles the **push and PR workflow** for skill improvements created by `t3:retro`. Retro commits improvements locally in `$T3_REPO`; this skill pushes them to a branch and opens a PR — with explicit user consent every time.
+
+**All pushes go to branches, never to main.** The PR is the review gate.
 
 ## Dependencies
 
@@ -26,20 +28,21 @@ Handles the **push and upstream interaction** for skill improvements created by 
 Uses these `~/.teatree` variables (set by `/t3:setup`):
 
 - **`T3_CONTRIBUTE`** — must be `true` for this skill to do anything.
-- **`T3_PUSH`** — `false` (default) or `true`. When `false`, this skill refuses to push and tells the user to push manually. Exists as a hard safety stop.
-- **`T3_UPSTREAM`** — upstream GitHub repo (e.g., `souliane/teatree`). If set and origin differs, this skill opens an issue after pushing.
+- **`T3_PUSH`** — `false` (default) or `true`. When `false`, this skill refuses to push and tells the user to push manually. Exists as a safety stop for privacy/secret review.
+- **`T3_UPSTREAM`** — upstream repo (e.g., `souliane/teatree`). Controls where the PR is created:
+  - **Empty** → push to branch on `origin`, create PR on `origin` (same repo).
+  - **Set** → push to branch on `origin` (your fork), create PR targeting `T3_UPSTREAM`.
 - **`T3_PRIVACY`** — `strict` (default) or `relaxed`. See `t3:retro` § Privacy Scan.
 
 ## Why Not Just `git push`?
 
 Do **not** push retro commits with `git push` directly. This skill:
 
-1. Runs pre-flight checks (pre-commit, tests, privacy scan)
-2. Requires explicit user confirmation before every push
-3. Performs divergence analysis before creating upstream issues
-4. Includes fork/upstream metadata in issues so upstream reviewers can evaluate relevance
-
-Without this, improvements may leak private data, fail quality gates, or create useless upstream issues from heavily diverged forks.
+1. Ensures commits are on a feature branch (never pushes to main)
+2. Runs pre-flight checks (pre-commit, tests, privacy scan)
+3. Requires explicit user confirmation before every push
+4. Opens a PR for review
+5. Optionally creates an upstream issue when working from a fork
 
 ## Workflow
 
@@ -67,7 +70,24 @@ If there is **more than one** unpushed commit, offer to squash following the can
 5. **All tests pass:** `cd "$T3_REPO" && uv run pytest` — must be green.
 6. **Privacy scan passes:** see `t3:retro` § Privacy Scan. Scan the diff of unpushed commits.
 
-### 3. Push Confirmation (Non-Negotiable)
+### 3. Verify Branch
+
+Retro commits should already be on the session's working branch (see `t3:retro` § Branch Selection). Verify you're not on `main`:
+
+```bash
+cd "$T3_REPO"
+DEFAULT=$(git config init.defaultBranch || echo main)
+[ "$(git branch --show-current)" = "$DEFAULT" ] && echo "ERROR: on default branch" && exit 1
+```
+
+If somehow on `main` (shouldn't happen — retro handles branch selection), create a new branch:
+
+```bash
+BRANCH="fix/retro-$(date +%Y%m%d)-$(git log -1 --format=%s | sed 's/[^a-zA-Z0-9]/-/g' | head -c 50)"
+git checkout -b "$BRANCH"
+```
+
+### 4. Push Confirmation (Non-Negotiable)
 
 **Every push requires explicit user consent.** No exceptions, no config to bypass this.
 
@@ -95,22 +115,39 @@ Show:
 
 **Do NOT push without explicit "yes" from the user.**
 
-### 4. Push
+### 5. Push and Create PR
 
 ```bash
 cd "$T3_REPO"
-git push
+git push -u origin HEAD
 ```
 
-### 5. Upstream Issue (if applicable)
+Then create the PR:
 
-After pushing, check if an upstream issue should be created:
+- **`T3_UPSTREAM` is empty** → PR on `origin` (same repo):
 
-- **`T3_UPSTREAM` is not set** → stop, no issue needed.
-- **Fork's `origin` matches `T3_UPSTREAM`** → stop, the push already landed upstream.
+  ```bash
+  gh pr create --title "fix(<skill>): <title>" --body "<body>" --base main
+  ```
+
+- **`T3_UPSTREAM` is set** → PR targeting upstream:
+
+  ```bash
+  gh pr create --title "fix(<skill>): <title>" --body "<body>" \
+    --repo "$T3_UPSTREAM" --head "<fork-owner>:<branch>" --base main
+  ```
+
+The PR body should include: summary of changes, files changed, validation status (pre-commit, tests, privacy scan).
+
+### 6. Upstream Issue (if applicable)
+
+After creating the PR, check if an upstream issue should also be created (for visibility when the PR comes from a fork):
+
+- **`T3_UPSTREAM` is not set** → stop, the PR is already on the same repo.
+- **Fork's `origin` matches `T3_UPSTREAM`** → stop, the PR already landed upstream.
 - **Otherwise** → proceed with divergence analysis and issue creation.
 
-#### 5a. Divergence Analysis (Non-Negotiable)
+#### 6a. Divergence Analysis (Non-Negotiable)
 
 Before creating an issue, run the divergence check (requires an `upstream` git remote):
 
@@ -139,13 +176,13 @@ The command prints `<ahead> ahead, <behind> behind upstream`. Parse the counts t
 
 Stop — do not create the issue.
 
-#### 5b. Pre-Flight Checks
+#### 6b. Pre-Flight Checks
 
 1. **`gh` is authenticated:** `gh auth status` succeeds.
 2. **Fork is public:** `gh repo view <fork-owner>/<fork-name> --json isPrivate -q '.isPrivate'` → `false`. If private, **STOP**.
 3. **Privacy scan passes** on the issue body.
 
-#### 5c. Issue Content
+#### 6c. Issue Content
 
 Build the issue body with full context for the upstream repo:
 
@@ -158,6 +195,10 @@ no internal URLs, no personal details>
 ## Suggested Changes
 
 <Summary of what was changed and why>
+
+## Pull Request
+
+<link to the PR created in step 5>
 
 ## Fork Branch
 
@@ -185,7 +226,7 @@ no internal URLs, no personal details>
 - Privacy scan: passing
 ```
 
-#### 5d. Check for Related Issues
+#### 6d. Check for Related Issues
 
 Before creating, search for existing open issues that touch the same skill:
 
@@ -195,7 +236,7 @@ gh issue list -R "$T3_UPSTREAM" --search "<skill-name> in:title" --state open
 
 If related issues exist, mention them in the issue body under "Related upstream issues" and tell the user — they may want to comment on the existing issue instead of creating a new one.
 
-#### 5e. User Confirmation (Non-Negotiable)
+#### 6e. User Confirmation (Non-Negotiable)
 
 **Display the full issue for review before creating it:**
 
@@ -225,7 +266,7 @@ If related issues exist, mention them in the issue body under "Related upstream 
 
 **Do NOT proceed without explicit "yes".**
 
-#### 5f. Create the Issue
+#### 6f. Create the Issue
 
 ```bash
 gh issue create -R "$T3_UPSTREAM" \
@@ -244,6 +285,7 @@ After creation, print the issue URL.
 ## What NOT to Do
 
 - Do not push without explicit user consent — ever.
+- Do not push to main — always use a branch.
 - Do not create upstream issues from heavily diverged forks — they're not useful.
 - Do not use `git push` directly — always go through this skill for retro commits.
 - Do not create duplicate upstream issues — check for existing ones first.

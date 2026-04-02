@@ -142,6 +142,27 @@ See your [issue tracker platform reference](../../t3:platforms/references/) § "
   2. `from teatree.utils.secrets import read_pass` moved inside the closure body (late binding) — so `patch.object(_secrets_mod, "read_pass", ...)` works.
 - **Prevention:** Never use `setattr(type(self), ...)` for per-instance dynamic methods — it mutates the class and leaks across all instances. Use `setattr(self, ...)` for instance-scoped behavior.
 
+## Dashboard SSE Not Working (No Live Updates)
+
+- **Symptom:** Dashboard loads but panels never auto-refresh. No SSE events received. Browser console may show a 404 for `sse.js`.
+- **Cause:** The CDN URL for `htmx-ext-sse` referenced a nonexistent version (`@2.3.0`). The latest published version was `2.2.4`. The 404 response silently broke all SSE functionality.
+- **Fix (applied):** Vendored `htmx` and `htmx-ext-sse` as local static files (`src/teatree/core/static/teatree/js/`) to eliminate CDN dependency. Updated template `<script>` tags to use `{% static %}`.
+- **Prevention:** After changing any `<script src>` or `<link href>` in templates: (1) verify the URL resolves (`curl -sI <url>`), (2) if vendoring locally, verify file size is reasonable (a 45-byte file is an error page, not a JS library), (3) take a Playwright screenshot and check browser console for errors.
+
+## Dashboard SSE `SynchronousOnlyOperation` Under ASGI
+
+- **Symptom:** Dashboard 500s on the SSE endpoint with `SynchronousOnlyOperation: You cannot call this from an async context`.
+- **Cause:** `DashboardSSEView` is an async view (uses `async def get`), but `_detect_changed_panels` calls sync ORM builders directly.
+- **Fix (applied):** Wrap `_detect_changed_panels` in `sync_to_async()` in the SSE event loop.
+- **Prevention:** Any function called from an `async def` view that touches the ORM must go through `sync_to_async`. Grep for `async def` in views and verify no sync ORM calls in the call chain.
+
+## Git Pull Fails With "editor 'emacs -nw'" Error
+
+- **Symptom:** Dashboard "Git Pull" button fails with `error: there was a problem with the editor 'emacs -nw'`.
+- **Cause:** User has `pull.rebase = interactive` in git config, which opens an editor for the rebase todo list. The dashboard subprocess has no TTY, so the editor fails.
+- **Fix (applied):** Set `GIT_EDITOR=true` and `GIT_SEQUENCE_EDITOR=true` in the subprocess environment for `git pull`. This makes interactive rebase silently accept the default todo (equivalent to a normal rebase).
+- **Prevention:** Any `git` subprocess that might trigger an editor (pull, rebase, commit without `-m`) should set `GIT_EDITOR=true` in the env to avoid TTY dependency.
+
 ## direnv Not Loading `.envrc`
 
 - **Cause:** direnv not hooked into the shell or `.envrc` not allowed.

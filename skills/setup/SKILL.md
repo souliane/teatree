@@ -80,8 +80,8 @@ Useful optional values:
 | Variable | Purpose | Default |
 | --- | --- | --- |
 | `T3_CONTRIBUTE` | Allow self-improvement commits in the teatree repo | `false` |
-| `T3_PUSH` | Ask about pushing after retro commits | `false` |
-| `T3_UPSTREAM` | Upstream repo for contribution flow | empty |
+| `T3_PUSH` | Allow pushing retro commits (safety gate for privacy review) | `false` |
+| `T3_UPSTREAM` | Upstream repo for PRs (empty = PR on origin, set = PR on upstream) | empty |
 | `T3_PRIVATE_TESTS` | Private QA repo path | empty |
 | `T3_BRANCH_PREFIX` | Branch prefix for generated worktrees | derived from git user |
 | `T3_ISSUE_TRACKER` | `gitlab` or `github` | detected |
