@@ -184,6 +184,7 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.delenv("T3_WORKSPACE_DIR", raising=False)
     monkeypatch.delenv("T3_BRANCH_PREFIX", raising=False)
     monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+    monkeypatch.delenv("T3_ORIG_CWD", raising=False)
     monkeypatch.delenv("TICKET_DIR", raising=False)
     monkeypatch.delenv("WT_VARIANT", raising=False)
     monkeypatch.delenv("COMPOSE_PROJECT_NAME", raising=False)
