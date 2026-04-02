@@ -526,3 +526,66 @@ class TestCreateTaskView(TestCase):
 
         task = Task.objects.get(ticket=ticket, phase="coding")
         assert task.status == Task.Status.FAILED
+
+
+# ---------------------------------------------------------------------------
+# TicketLifecycleView
+# ---------------------------------------------------------------------------
+
+
+class TestTicketLifecycleView(TestCase):
+    def test_returns_mermaid_for_ticket_with_transitions(self) -> None:
+        ticket = Ticket.objects.create()
+        ticket.scope(issue_url="https://example.com/issues/view-1")
+        ticket.save()
+
+        response = Client().get(reverse("teatree:ticket-lifecycle", args=[ticket.pk]))
+
+        assert response.status_code == 200
+        content = response.content.decode()
+        assert "stateDiagram-v2" in content
+        assert "not_started --&gt; scoped" in content
+
+    def test_returns_empty_for_ticket_without_transitions(self) -> None:
+        ticket = Ticket.objects.create()
+
+        response = Client().get(reverse("teatree:ticket-lifecycle", args=[ticket.pk]))
+
+        assert response.status_code == 200
+        content = response.content.decode()
+        assert "note right of not_started" in content
+
+    def test_returns_404_for_missing_ticket(self) -> None:
+        response = Client().get(reverse("teatree:ticket-lifecycle", args=[999999]))
+
+        assert response.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# TaskGraphView
+# ---------------------------------------------------------------------------
+
+
+class TestTaskGraphView(TestCase):
+    def test_returns_graph_for_ticket_with_tasks(self) -> None:
+        ticket = Ticket.objects.create(overlay="test")
+        session = Session.objects.create(ticket=ticket, overlay="test")
+        Task.objects.create(ticket=ticket, session=session, phase="coding")
+
+        response = Client().get(reverse("teatree:task-graph", args=[ticket.pk]))
+
+        assert response.status_code == 200
+        assert b"coding" in response.content
+
+    def test_returns_empty_for_ticket_without_tasks(self) -> None:
+        ticket = Ticket.objects.create()
+
+        response = Client().get(reverse("teatree:task-graph", args=[ticket.pk]))
+
+        assert response.status_code == 200
+        assert b"No tasks" in response.content
+
+    def test_returns_404_for_missing_ticket(self) -> None:
+        response = Client().get(reverse("teatree:task-graph", args=[999999]))
+
+        assert response.status_code == 404
