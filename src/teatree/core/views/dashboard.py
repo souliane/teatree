@@ -57,7 +57,7 @@ class DashboardView(View):
         all_overlays = get_all_overlays()
         overlay_paths = {name: type(ov).__module__ for name, ov in all_overlays.items()}
         overlays = sorted(all_overlays)
-        teatree_logo = static("teatree/img/teatree-logo.svg")
+        teatree_logo = static("teatree/img/teatree-logo.jpg")
         overlay_logos = {name: ov.config.get_dashboard_logo() or teatree_logo for name, ov in all_overlays.items()}
         if overlay and overlay in all_overlays:
             logo_url = all_overlays[overlay].config.get_dashboard_logo() or teatree_logo

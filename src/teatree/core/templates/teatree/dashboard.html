@@ -1,3 +1,4 @@
+{% load static %}
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -75,8 +76,8 @@
     .split-btn .split-menu button:hover, .split-btn .split-menu label:hover { background: rgba(66,104,85,0.08); }
     .split-btn .split-menu .active { font-weight: 700; color: #426855; }
   </style>
-  <script src="https://unpkg.com/htmx.org@2.0.4"></script>
-  <script src="https://unpkg.com/htmx-ext-sse@2.3.0/sse.js"></script>
+  <script src="{% static 'teatree/js/htmx-2.0.4.min.js' %}"></script>
+  <script src="{% static 'teatree/js/htmx-ext-sse-2.2.4.js' %}"></script>
   <script>
     var _selectedOverlay = localStorage.getItem('teatree_overlay') || '{{ selected_overlay }}';
     var _overlayLogos = {{ overlay_logos_json|safe }};
@@ -278,7 +279,7 @@
   {% endif %}
   <main class="mx-auto max-w-7xl px-4 py-10 sm:px-6 lg:px-8">
     <header class="mb-4 flex items-center gap-4">
-      {% if logo_url %}<img id="dashboard-logo" src="{{ logo_url }}" alt="" class="h-8" onerror="this.style.display='none'">{% endif %}
+      {% if logo_url %}<img id="dashboard-logo" src="{{ logo_url }}" alt="" class="h-14" onerror="this.style.display='none'">{% endif %}
       {% if overlays %}
       <select
         id="overlay-selector"
@@ -328,6 +329,12 @@
           var appSel = document.getElementById('terminal-app-selector');
           var savedApp = localStorage.getItem('teatree_terminal_app') || '';
           if (appSel && savedApp) appSel.value = savedApp;
+          // Mark active buttons in all split-menus
+          document.querySelectorAll('.split-menu [data-key]').forEach(function(btn) {
+            var stored = localStorage.getItem(btn.dataset.key);
+            if (stored == null && btn.dataset.key === 'teatree_terminal_mode') stored = 'new-window';
+            btn.classList.toggle('active', btn.dataset.value === stored);
+          });
         })();
         </script>
         <div class="split-btn">

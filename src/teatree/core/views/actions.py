@@ -144,6 +144,8 @@ class GitPullView(View):
         if t3_repo is None or not t3_repo.is_dir():
             return JsonResponse({"error": "T3_REPO not found"}, status=400)
 
+        # Override editor so pull.rebase=interactive doesn't open a TTY editor
+        env = {**os.environ, "GIT_EDITOR": "true", "GIT_SEQUENCE_EDITOR": "true"}
         try:
             result = subprocess.run(
                 ["git", "pull"],  # noqa: S607
@@ -152,6 +154,7 @@ class GitPullView(View):
                 text=True,
                 timeout=30,
                 check=False,
+                env=env,
             )
         except subprocess.TimeoutExpired:
             return JsonResponse({"error": "git pull timed out after 30s"}, status=500)
