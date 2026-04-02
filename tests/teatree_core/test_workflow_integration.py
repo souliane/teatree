@@ -26,7 +26,6 @@ class TestTicketLifecycle(TestCase):
         wt.provision()
         wt.save()
         assert wt.state == "provisioned"
-        assert wt.ports
         assert wt.db_name
 
         ticket.code()

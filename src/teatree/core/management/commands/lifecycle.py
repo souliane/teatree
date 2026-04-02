@@ -1,20 +1,18 @@
 import os
 import subprocess  # noqa: S404
-import time
 from pathlib import Path
-from subprocess import Popen  # noqa: S404
-from typing import IO
 
 import typer
 from django.core.management.base import OutputWrapper
 from django_typer.management import TyperCommand, command
 
 from teatree.core.models import Ticket, Worktree
-from teatree.core.overlay import OverlayBase, RunCommand
+from teatree.core.overlay import OverlayBase
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.resolve import resolve_worktree
 from teatree.core.step_runner import ProvisionReport, run_provision_steps, run_step
 from teatree.core.worktree_env import write_env_worktree
+from teatree.utils.ports import find_free_ports, get_worktree_ports
 
 
 def _append_envrc_lines(wt_path: str, lines: list[str]) -> None:
@@ -49,20 +47,13 @@ def _setup_worktree_dir(wt_path: str, worktree: Worktree, overlay: OverlayBase, 
 
 
 def _register_new_repos(worktree: Worktree, stdout: OutputWrapper) -> None:
-    """Discover git worktrees in the ticket directory that aren't in the DB yet.
-
-    When a user manually runs ``git worktree add`` inside a ticket directory,
-    the new repo has no Worktree record.  This function scans the ticket
-    directory for subdirectories that look like git worktrees (``.git`` is a
-    file, not a directory) and creates missing records under the same ticket.
-    """
+    """Discover git worktrees in the ticket directory that aren't in the DB yet."""
     ticket_or_none = worktree.ticket
     if ticket_or_none is None:
         return
     ticket_dir = (worktree.extra or {}).get("worktree_path", "")
     if not ticket_dir:
         return
-    # The ticket directory is the parent of the repo worktree path
     ticket_path = Path(ticket_dir).parent
     if not ticket_path.is_dir():
         return
@@ -76,13 +67,11 @@ def _register_new_repos(worktree: Worktree, stdout: OutputWrapper) -> None:
         git_marker = entry / ".git"
         if not git_marker.exists():
             continue
-        # .git as a file = git worktree; .git as a dir = main clone (skip)
         if git_marker.is_dir():
             continue
         entry_str = str(entry)
         if entry_str in known_paths:
             continue
-        # New repo discovered — create a Worktree record
         Worktree.objects.create(
             ticket=ticket,
             repo_path=entry.name,
@@ -95,10 +84,6 @@ def _register_new_repos(worktree: Worktree, stdout: OutputWrapper) -> None:
 def _resolve_typer_defaults(
     variant: "str | object", overlay: "str | object", verbose: "bool | object"
 ) -> tuple[str, str, bool]:
-    """Guard against typer.Option defaults when setup() is called as a Python method.
-
-    typer.Option("") evaluates to OptionInfo, not "" — resolve to real defaults.
-    """
     return (
         variant if isinstance(variant, str) else "",
         overlay if isinstance(overlay, str) else "",
@@ -112,11 +97,61 @@ def _update_ticket_variant(ticket: "Ticket", variant: str) -> None:
         return
     ticket.variant = variant
     ticket.save(update_fields=["variant"])
-    for wt in ticket.worktrees.all():  # type: ignore[attr-defined]  # Django reverse relation
+    for wt in ticket.worktrees.all():  # type: ignore[attr-defined]
         old_db = wt.db_name
         wt.db_name = wt._build_db_name()  # noqa: SLF001
         if wt.db_name != old_db:
             wt.save(update_fields=["db_name"])
+
+
+def _compose_project(worktree: Worktree) -> str:
+    """Return the docker-compose project name for this worktree."""
+    ticket = worktree.ticket
+    return f"{worktree.repo_path}-wt{ticket.ticket_number}" if ticket else worktree.repo_path
+
+
+def _compose_env(ports: dict[str, int]) -> dict[str, str]:
+    """Build env vars for docker-compose port mapping."""
+    return {
+        "BACKEND_HOST_PORT": str(ports.get("backend", 8000)),
+        "FRONTEND_HOST_PORT": str(ports.get("frontend", 4200)),
+        "POSTGRES_HOST_PORT": str(ports.get("postgres", 5432)),
+        "REDIS_HOST_PORT": str(ports.get("redis", 6379)),
+    }
+
+
+def _docker_compose_down(project: str, stdout: OutputWrapper) -> None:
+    """Stop and remove containers for the compose project."""
+    result = subprocess.run(  # noqa: S603
+        ["docker", "compose", "-p", project, "down", "--remove-orphans"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        stdout.write(f"  docker compose down: {result.stderr.strip()[:300]}")
+
+
+def _docker_compose_up(
+    project: str,
+    compose_file: str,
+    env: dict[str, str],
+    stdout: OutputWrapper,
+    stderr: OutputWrapper,
+) -> bool:
+    """Start all services via docker-compose."""
+    cmd = [
+        "docker", "compose",
+        "-p", project,
+        "-f", compose_file,
+        "up", "-d",
+    ]
+    result = subprocess.run(cmd, env=env, capture_output=True, text=True, check=False)  # noqa: S603
+    if result.returncode != 0:
+        stderr.write(f"  docker compose up failed: {result.stderr.strip()[:500]}")
+        return False
+    stdout.write("  docker compose up -d: OK")
+    return True
 
 
 class Command(TyperCommand):
@@ -132,11 +167,7 @@ class Command(TyperCommand):
         force: bool = typer.Option(default=False, help="Bypass DB import circuit breaker."),  # noqa: FBT001
         verbose: bool = typer.Option(default=False, help="Show step stdout/stderr."),  # noqa: FBT001
     ) -> int:
-        """Provision a worktree (allocate ports, DB name, run overlay steps).
-
-        Discovers repos added to the ticket directory since initial creation
-        and provisions all worktrees for the ticket, not just the resolved one.
-        """
+        """Provision a worktree (DB name, env file, overlay steps). No port allocation."""
         variant, overlay, verbose = _resolve_typer_defaults(variant, overlay, verbose)
         self._verbose = verbose
         if overlay:
@@ -145,13 +176,10 @@ class Command(TyperCommand):
         ticket = Ticket.objects.get(pk=worktree.ticket.pk)
 
         _update_ticket_variant(ticket, variant)
-
-        # Discover repos added to the ticket directory since initial creation
         _register_new_repos(worktree, self.stdout)
 
         resolved_overlay = get_overlay()
 
-        # Provision ALL worktrees for the ticket (fault-tolerant per worktree)
         failed_repos: list[str] = []
         for wt in ticket.worktrees.all():
             try:
@@ -166,19 +194,7 @@ class Command(TyperCommand):
             self.stderr.write(f"  {len(failed_repos)} worktree(s) failed: {', '.join(failed_repos)}")
 
         _write_skill_metadata_cache()
-
         return int(worktree.pk)
-
-    @staticmethod
-    def _apply_variant(ticket: Ticket, variant: str) -> None:
-        """Update ticket variant and recompute db_name for all worktrees."""
-        ticket.variant = variant
-        ticket.save(update_fields=["variant"])
-        for wt in ticket.worktrees.all():  # type: ignore[attr-defined]
-            old_db = wt.db_name
-            wt.db_name = wt._build_db_name()  # noqa: SLF001
-            if wt.db_name != old_db:
-                wt.save(update_fields=["db_name"])
 
     def _provision_worktree(
         self, worktree: Worktree, overlay: "OverlayBase", *, force: bool = False
@@ -188,8 +204,6 @@ class Command(TyperCommand):
         if worktree.state == Worktree.State.CREATED:
             worktree.provision()
             worktree.save()
-        else:
-            worktree.refresh_ports_if_needed()
 
         envfile = write_env_worktree(worktree)
         if envfile:
@@ -197,11 +211,9 @@ class Command(TyperCommand):
 
         _setup_worktree_dir((worktree.extra or {}).get("worktree_path", ""), worktree, overlay, self.stdout)
 
-        # Import database (DSLR/dump fallback chain) before running provision steps
         if overlay.get_db_import_strategy(worktree) is not None:
             self._run_db_import(worktree, overlay, force=force)
 
-        # Run overlay provision steps with structured reporting
         provision_report = run_provision_steps(
             overlay.get_provision_steps(worktree),
             verbose=self._verbose,
@@ -209,10 +221,8 @@ class Command(TyperCommand):
             stderr_writer=self.stderr.write,
         )
 
-        # Post-DB steps (optional — don't halt on failure)
         post_db_report = self._run_post_db_steps(overlay, worktree)
 
-        # Pre-run steps for all services (e.g. frontend translation sync)
         pre_run_steps = []
         for service_name in overlay.get_run_commands(worktree):
             pre_run_steps.extend(overlay.get_pre_run_steps(worktree, service_name))
@@ -224,10 +234,8 @@ class Command(TyperCommand):
             stop_on_required_failure=False,
         )
 
-        # Post-provision health checks
         self._run_health_checks(worktree, overlay)
 
-        # Combine all reports
         combined = ProvisionReport(
             steps=provision_report.steps + post_db_report.steps + pre_run_report.steps,
         )
@@ -244,7 +252,7 @@ class Command(TyperCommand):
         self.stdout.write("  Running: db-import")
         env = {**os.environ, **overlay.get_env_extra(worktree)}
         env.pop("VIRTUAL_ENV", None)
-        os.environ.update(env)  # pg tools need these to connect
+        os.environ.update(env)
         if overlay.db_import(worktree):
             extra.pop("db_import_failures", None)
             worktree.extra = extra
@@ -269,7 +277,6 @@ class Command(TyperCommand):
         )
 
     def _run_health_checks(self, worktree: Worktree, overlay: OverlayBase) -> None:
-        """Run post-provision health checks and report failures."""
         checks = overlay.get_health_checks(worktree)
         if not checks:
             return
@@ -287,66 +294,27 @@ class Command(TyperCommand):
         if failures:
             self.stderr.write(f"  {len(failures)}/{len(checks)} health check(s) failed.")
 
-    def _start_docker_services(self, worktree: Worktree, overlay: "OverlayBase") -> None:
-        for name, spec in overlay.get_services_config(worktree).items():
-            start_cmd = spec.get("start_command", [])
-            if start_cmd:
-                self.stdout.write(f"  Starting {name}...")
-                proc = subprocess.run(start_cmd, check=False, capture_output=True, text=True)  # noqa: S603
-                if proc.returncode != 0:
-                    error = proc.stderr.strip()[:500] if proc.stderr else f"exit code {proc.returncode}"
-                    self.stderr.write(f"  WARNING: {name} failed to start: {error}")
-
-    def _launch_app_processes(
-        self,
-        commands: dict[str, list[str] | RunCommand],
-        env: dict[str, str],
-        log_dir: Path,
-    ) -> tuple[dict[str, int], list[str]]:
-        pids: dict[str, int] = {}
-        failed: list[str] = []
-        log_files: list[IO] = []
-        for service_name, raw_cmd in commands.items():
-            if isinstance(raw_cmd, RunCommand):
-                cmd = raw_cmd.args
-                cwd: str | Path | None = raw_cmd.cwd
-            else:
-                cmd = raw_cmd
-                cwd = None
-            log_path = log_dir / f"{service_name}.log"
-            self.stdout.write(f"  Launching {service_name} (log: {log_path})")
-            log_file = log_path.open("w")
-            log_files.append(log_file)
-            proc = Popen(cmd, env=env, cwd=cwd, stdout=log_file, stderr=log_file, start_new_session=True)  # noqa: S603
-            pids[service_name] = proc.pid
-            time.sleep(1)
-            if proc.poll() is not None:
-                self.stderr.write(f"  ERROR: {service_name} exited immediately (code {proc.returncode})")
-                failed.append(service_name)
-        for f in log_files:
-            f.close()
-        return pids, failed
-
     @command()
     def start(
         self,
         path: str = typer.Option("", help="Worktree path (auto-detects from PWD if empty)."),
         overlay: str = typer.Option("", help="Overlay name (auto-detects if empty)."),
     ) -> str:
-        """Start Docker services + app servers (background), then transition FSM.
+        """Start all services via docker-compose with dynamically allocated ports.
 
-        Safe to re-run: kills existing processes before launching new ones.
+        Finds free host ports at runtime, passes them to docker-compose,
+        and starts all containers.  Safe to re-run (runs compose down first).
         """
         if overlay:
             os.environ["T3_OVERLAY_NAME"] = overlay
         worktree = resolve_worktree(path)
         resolved_overlay = get_overlay()
+        project = _compose_project(worktree)
 
-        # Kill stale processes from a previous start (safe if none exist)
-        self._kill_worktree_processes(worktree)
+        # 1. Stop previous containers
+        _docker_compose_down(project, self.stdout)
 
-        self._start_docker_services(worktree, resolved_overlay)
-
+        # 2. Run pre-run steps (translation sync, customer.json patch, etc.)
         commands = resolved_overlay.get_run_commands(worktree)
         pre_run_steps = []
         for service_name in commands:
@@ -359,26 +327,32 @@ class Command(TyperCommand):
             stop_on_required_failure=False,
         )
 
+        # 3. Write non-port env file (variant, DB name, compose project)
         write_env_worktree(worktree)
-        env = {**os.environ, **resolved_overlay.get_env_extra(worktree)}
+
+        # 4. Allocate free host ports at runtime
+        from teatree.config import load_config  # noqa: PLC0415
+
+        workspace_dir = str(load_config().user.workspace_dir)
+        ports = find_free_ports(workspace_dir)
+        self.stdout.write(f"  Ports: {ports}")
+
+        # 5. Start all services via docker-compose
+        compose_file = resolved_overlay.get_compose_file(worktree)
+        if not compose_file:
+            self.stderr.write("  ERROR: No docker-compose file found.")
+            return "error"
+
+        env = {**os.environ, **resolved_overlay.get_env_extra(worktree), **_compose_env(ports)}
         env.pop("VIRTUAL_ENV", None)
+        ok = _docker_compose_up(project, compose_file, env, self.stdout, self.stderr)
 
-        ticket_dir = (worktree.extra or {}).get("worktree_path", "")
-        log_dir = Path(ticket_dir) / "logs" if ticket_dir else Path("/tmp")  # noqa: S108
-        log_dir.mkdir(parents=True, exist_ok=True)
+        if not ok:
+            return "error"
 
-        pids, failed = self._launch_app_processes(commands, env, log_dir)
-
+        # 6. FSM transition
         worktree.start_services(services=list(commands))
-        extra = dict(worktree.extra or {})
-        extra["pids"] = pids
-        if failed:
-            extra["failed_services"] = failed
-        worktree.extra = extra
         worktree.save()
-
-        if failed:
-            self.stderr.write(f"  WARNING: {len(failed)} service(s) failed: {', '.join(failed)}")
 
         return worktree.state
 
@@ -388,38 +362,14 @@ class Command(TyperCommand):
         path: str = typer.Option("", help="Worktree path (auto-detects from PWD if empty)."),
     ) -> dict[str, str]:
         worktree = resolve_worktree(path)
+        project = _compose_project(worktree)
+        ports = get_worktree_ports(project)
         return {
             "state": worktree.state,
             "repo_path": worktree.repo_path,
             "branch": worktree.branch,
+            "ports": ports,
         }
-
-    def _kill_worktree_processes(self, worktree: Worktree) -> list[str]:
-        """Kill app processes from a previous ``start`` run.
-
-        Returns the list of service names whose PIDs were found and signalled.
-        """
-        import signal as sig  # noqa: PLC0415
-
-        extra = dict(worktree.extra or {})
-        pids: dict[str, int] = extra.get("pids", {})
-        killed: list[str] = []
-        for service_name, pid in pids.items():
-            try:
-                os.kill(pid, sig.SIGTERM)
-                killed.append(service_name)
-                self.stdout.write(f"  Stopped {service_name} (pid {pid})")
-            except ProcessLookupError:
-                self.stdout.write(f"  {service_name} already stopped (pid {pid})")
-            except PermissionError:
-                self.stderr.write(f"  WARNING: cannot kill {service_name} (pid {pid}) — permission denied")
-        if killed:
-            time.sleep(2)  # give processes time to clean up
-        extra.pop("pids", None)
-        extra.pop("failed_services", None)
-        worktree.extra = extra
-        worktree.save()
-        return killed
 
     @command()
     def restart(
@@ -427,12 +377,7 @@ class Command(TyperCommand):
         path: str = typer.Option("", help="Worktree path (auto-detects from PWD if empty)."),
         overlay: str = typer.Option("", help="Overlay name (auto-detects if empty)."),
     ) -> str:
-        """Kill existing processes and restart all services.
-
-        Use after ``git pull`` or code changes when the worktree is already
-        provisioned.  Re-runs pre-run steps (patches customer.json, syncs
-        translations, etc.) and launches fresh processes.
-        """
+        """Stop containers, allocate fresh ports, and restart all services."""
         if overlay:
             os.environ["T3_OVERLAY_NAME"] = overlay
         worktree = resolve_worktree(path)
@@ -442,62 +387,23 @@ class Command(TyperCommand):
             self.setup(path=path, variant="", overlay=overlay)
             return self.start(path=path, overlay=overlay)
 
-        resolved_overlay = get_overlay()
-
-        # 1. Kill old processes
-        self._kill_worktree_processes(worktree)
-
-        # 2. Start docker services (idempotent)
-        self._start_docker_services(worktree, resolved_overlay)
-
-        # 3. Re-run pre-run steps and launch fresh
-        commands = resolved_overlay.get_run_commands(worktree)
-        pre_run_steps = []
-        for service_name in commands:
-            pre_run_steps.extend(resolved_overlay.get_pre_run_steps(worktree, service_name))
-        run_provision_steps(
-            pre_run_steps,
-            verbose=self._verbose,
-            stdout_writer=self.stdout.write,
-            stderr_writer=self.stderr.write,
-            stop_on_required_failure=False,
-        )
-
-        write_env_worktree(worktree)
-        env = {**os.environ, **resolved_overlay.get_env_extra(worktree)}
-        env.pop("VIRTUAL_ENV", None)
-
-        ticket_dir = (worktree.extra or {}).get("worktree_path", "")
-        log_dir = Path(ticket_dir) / "logs" if ticket_dir else Path("/tmp")  # noqa: S108
-        log_dir.mkdir(parents=True, exist_ok=True)
-
-        pids, failed = self._launch_app_processes(commands, env, log_dir)
-
-        worktree.start_services(services=list(commands))
-        extra = dict(worktree.extra or {})
-        extra["pids"] = pids
-        if failed:
-            extra["failed_services"] = failed
-        worktree.extra = extra
-        worktree.save()
-
-        if failed:
-            self.stderr.write(f"  WARNING: {len(failed)} service(s) failed: {', '.join(failed)}")
-            return f"restarted with {len(failed)} failure(s)"
-
-        return worktree.state
+        return self.start(path=path, overlay=overlay)
 
     @command()
     def teardown(self, path: str = typer.Option("", help="Worktree path (auto-detects from PWD if empty).")) -> str:
         worktree = resolve_worktree(path)
+        project = _compose_project(worktree)
+        _docker_compose_down(project, self.stdout)
         worktree.teardown()
         worktree.save()
         return worktree.state
 
     @command()
     def clean(self, path: str = typer.Option("", help="Worktree path (auto-detects from PWD if empty).")) -> str:
-        """Teardown worktree — stop services, drop DB, clean state."""
+        """Teardown worktree — stop containers, drop DB, clean state."""
         worktree = resolve_worktree(path)
+        project = _compose_project(worktree)
+        _docker_compose_down(project, self.stdout)
         worktree.teardown()
         worktree.save()
         return f"Cleaned worktree {worktree.repo_path} ({worktree.state})"
@@ -507,14 +413,12 @@ class Command(TyperCommand):
         """Quick health check: overlay loads, CLI responds, imports OK."""
         checks: dict[str, object] = {}
 
-        # 1. Overlay loads
         try:
             overlay = get_overlay()
             checks["overlay"] = {"status": "ok", "repos": overlay.get_repos()}
         except Exception as exc:  # noqa: BLE001
             checks["overlay"] = {"status": "error", "detail": str(exc)}
 
-        # 2. CLI responds (t3 --help)
         try:
             result = subprocess.run(
                 ["uv", "run", "t3", "--help"],
@@ -527,14 +431,12 @@ class Command(TyperCommand):
         except subprocess.TimeoutExpired:
             checks["cli"] = {"status": "error", "detail": "t3 --help timed out"}
 
-        # 3. DB accessible
         try:
             count = Worktree.objects.count()
             checks["database"] = {"status": "ok", "worktrees": count}
         except Exception as exc:  # noqa: BLE001
             checks["database"] = {"status": "error", "detail": str(exc)}
 
-        # 4. Pre-commit hooks parseable
         hook_config = Path("." if Path(".pre-commit-config.yaml").is_file() else os.environ.get("PWD", "."))
         hook_file = hook_config / ".pre-commit-config.yaml"
         if hook_file.is_file():
@@ -594,11 +496,7 @@ class Command(TyperCommand):
 
     @command()
     def diagram(self, model: str = "worktree", ticket: int | None = None) -> str:
-        """Print a state diagram as Mermaid. Models: worktree, ticket, task.
-
-        Use --ticket <id> to render the actual lifecycle of a specific ticket
-        from its recorded transitions (not the static FSM).
-        """
+        """Print a state diagram as Mermaid. Models: worktree, ticket, task."""
         if ticket is not None:
             from teatree.core.selectors import build_ticket_lifecycle_mermaid  # noqa: PLC0415
 

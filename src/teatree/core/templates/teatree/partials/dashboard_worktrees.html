@@ -8,7 +8,6 @@
         <th class="border-b border-bark/10 px-3 py-3 text-left font-sans text-[11px] font-semibold uppercase tracking-[0.2em] text-bark/55">Branch</th>
         <th class="border-b border-bark/10 px-3 py-3 text-left font-sans text-[11px] font-semibold uppercase tracking-[0.2em] text-bark/55">State</th>
         <th class="border-b border-bark/10 px-3 py-3 text-left font-sans text-[11px] font-semibold uppercase tracking-[0.2em] text-bark/55">Database</th>
-        <th class="border-b border-bark/10 px-3 py-3 text-left font-sans text-[11px] font-semibold uppercase tracking-[0.2em] text-bark/55">Ports</th>
       </tr>
     </thead>
     <tbody>
@@ -35,15 +34,6 @@
           <td class="border-b border-bark/10 px-3 py-3 align-top">
             {% if wt.db_name %}
               <span class="font-mono text-xs text-bark/60">{{ wt.db_name }}</span>
-            {% else %}
-              <span class="text-bark/30">&mdash;</span>
-            {% endif %}
-          </td>
-          <td class="border-b border-bark/10 px-3 py-3 align-top">
-            {% if wt.ports %}
-              <span class="font-mono text-[10px] text-bark/50">
-                {% for name, port in wt.ports.items %}{{ name }}:{{ port }}{% if not forloop.last %} {% endif %}{% endfor %}
-              </span>
             {% else %}
               <span class="text-bark/30">&mdash;</span>
             {% endif %}

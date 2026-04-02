@@ -1,18 +1,31 @@
 import fcntl
-import os
-import signal
 import socket
 import subprocess
 from pathlib import Path
 
-_MAX_SCAN_DEPTH = 2
-_DEFAULT_POSTGRES_PORT = 5432
-_DEFAULT_REDIS_PORT = 6379
+# Duplicated from teatree.core.models.types to avoid circular import
+# through Django model registration.
+type Ports = dict[str, int]
 
-type ReservedPorts = dict[str, set[int]]
+# Container-internal ports (fixed). Only host ports vary per worktree.
+CONTAINER_PORTS: dict[str, int] = {
+    "backend": 8000,
+    "frontend": 4200,
+    "postgres": 5432,
+    "redis": 6379,
+}
+
+# Default compose service → container port mapping.
+COMPOSE_SERVICE_MAP: dict[str, tuple[str, int]] = {
+    "web": ("backend", 8000),
+    "frontend": ("frontend", 4200),
+    "db": ("postgres", 5432),
+    "rd": ("redis", 6379),
+}
 
 
 def port_in_use(port: int) -> bool:
+    """Return True if *port* is already bound on localhost."""
     for family in (socket.AF_INET, socket.AF_INET6):
         sock = socket.socket(family, socket.SOCK_STREAM)
         try:
@@ -24,83 +37,6 @@ def port_in_use(port: int) -> bool:
     return False
 
 
-def _parse_port_line(line: str, prefix: str) -> int | None:
-    if not line.startswith(prefix):
-        return None
-    try:
-        return int(line.split("=", 1)[1])
-    except ValueError:
-        return None
-
-
-def _collect_used_ports(
-    env_file: Path,
-    used_backend: set[int],
-    used_frontend: set[int],
-    used_postgres: set[int],
-) -> None:
-    for raw_line in env_file.read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
-        value = _parse_port_line(line, "BACKEND_PORT=") or _parse_port_line(line, "DJANGO_RUNSERVER_PORT=")
-        if value is not None:
-            used_backend.add(value)
-            continue
-        value = _parse_port_line(line, "FRONTEND_PORT=")
-        if value is not None:
-            used_frontend.add(value)
-            continue
-        value = _parse_port_line(line, "POSTGRES_PORT=")
-        if value is not None:
-            used_postgres.add(value)
-        continue
-
-
-def _next_free_port(start: int, used_ports: set[int], *, check_system: bool) -> int:
-    port = start
-    while port in used_ports or (check_system and port_in_use(port)):
-        used_ports.add(port)
-        port += 1
-    return port
-
-
-def _find_free_ports_unlocked(
-    workspace_dir: str,
-    exclude_dir: str = "",
-    *,
-    check_system: bool,
-    share_db_server: bool,
-    reserved_ports: ReservedPorts | None = None,
-) -> tuple[int, int, int, int]:
-    workspace = Path(workspace_dir)
-    used_backend: set[int] = set()
-    used_frontend: set[int] = set()
-    used_postgres: set[int] = set()
-
-    for root, dirs, files in os.walk(workspace):
-        depth = len(Path(root).relative_to(workspace).parts)
-        if depth > _MAX_SCAN_DEPTH:
-            dirs.clear()
-            continue
-        if ".env.worktree" not in files:
-            continue
-        env_file = Path(root) / ".env.worktree"
-        if exclude_dir and str(env_file).startswith(f"{exclude_dir}/"):
-            continue
-        _collect_used_ports(env_file, used_backend, used_frontend, used_postgres)
-
-    if reserved_ports:
-        used_backend.update(reserved_ports.get("backend", set()))
-        used_frontend.update(reserved_ports.get("frontend", set()))
-        used_postgres.update(reserved_ports.get("postgres", set()))
-
-    backend = _next_free_port(8001, used_backend, check_system=check_system)
-    frontend = _next_free_port(4201, used_frontend, check_system=check_system)
-    postgres = (
-        _DEFAULT_POSTGRES_PORT if share_db_server else _next_free_port(5433, used_postgres, check_system=check_system)
-    )
-    return backend, frontend, postgres, _DEFAULT_REDIS_PORT
-
-
 def find_free_port() -> int:
     """Return a single free port (OS-assigned on localhost)."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -109,8 +45,99 @@ def find_free_port() -> int:
         return s.getsockname()[1]
 
 
+def _next_free_port(start: int, *, used: set[int]) -> int:
+    """Walk from *start* until a free port is found."""
+    port = start
+    while port in used or port_in_use(port):
+        used.add(port)
+        port += 1
+    return port
+
+
+def find_free_ports(workspace_dir: str) -> Ports:
+    """Find four free host ports for backend, frontend, postgres, redis.
+
+    Uses a file lock in *workspace_dir* to prevent concurrent allocations
+    from picking the same ports.  Port availability is checked via socket
+    bind only — no file scanning.
+    """
+    lock_file = Path(workspace_dir) / ".port-allocation.lock"
+    lock_file.parent.mkdir(parents=True, exist_ok=True)
+
+    handle = lock_file.open("w", encoding="utf-8")
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        used: set[int] = set()
+        backend = _next_free_port(8001, used=used)
+        used.add(backend)
+        frontend = _next_free_port(4201, used=used)
+        used.add(frontend)
+        # Postgres: default 5432 for shared server, 5433+ for isolated
+        postgres = _next_free_port(5432, used=used)
+        used.add(postgres)
+        redis = _next_free_port(6379, used=used)
+        return {
+            "backend": backend,
+            "frontend": frontend,
+            "postgres": postgres,
+            "redis": redis,
+        }
+    finally:
+        fcntl.flock(handle, fcntl.LOCK_UN)
+        handle.close()
+
+
+# ── Docker Compose port discovery ────────────────────────────────────
+
+
+def get_service_port(
+    compose_project: str,
+    service: str,
+    container_port: int,
+    *,
+    compose_file: str = "",
+) -> int | None:
+    """Ask docker-compose for the host port bound to *service:container_port*.
+
+    Returns ``None`` if the service is not running or the port is not mapped.
+    """
+    cmd = ["docker", "compose", "-p", compose_project]
+    if compose_file:
+        cmd.extend(["-f", compose_file])
+    cmd.extend(["port", service, str(container_port)])
+
+    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        return None
+    # Output format: "0.0.0.0:8002\n" or ":::8002\n"
+    output = result.stdout.strip()
+    _, _, port_str = output.rpartition(":")
+    return int(port_str) if port_str.isdigit() else None
+
+
+def get_worktree_ports(
+    compose_project: str,
+    *,
+    compose_file: str = "",
+) -> Ports:
+    """Query all compose services for their current host ports.
+
+    Returns a dict like ``{"backend": 8002, "frontend": 4242, ...}``.
+    Services that are not running are omitted.
+    """
+    ports: Ports = {}
+    for service, (name, container_port) in COMPOSE_SERVICE_MAP.items():
+        host_port = get_service_port(compose_project, service, container_port, compose_file=compose_file)
+        if host_port is not None:
+            ports[name] = host_port
+    return ports
+
+
 def free_port(port: int) -> int | None:
-    """Kill the process holding *port* and return its PID, or ``None`` if the port was free."""
+    """Kill the process holding *port* and return its PID, or ``None``."""
+    import os  # noqa: PLC0415
+    import signal  # noqa: PLC0415
+
     if not port_in_use(port):
         return None
     result = subprocess.run(
@@ -125,29 +152,3 @@ def free_port(port: int) -> int | None:
     pid = pids[0]
     os.kill(pid, signal.SIGTERM)
     return pid
-
-
-def find_free_ports(
-    workspace_dir: str,
-    exclude_dir: str = "",
-    *,
-    check_system: bool = True,
-    share_db_server: bool = True,
-    reserved_ports: ReservedPorts | None = None,
-) -> tuple[int, int, int, int]:
-    lock_file = Path(workspace_dir) / ".port-allocation.lock"
-    lock_file.parent.mkdir(parents=True, exist_ok=True)
-
-    handle = lock_file.open("w", encoding="utf-8")
-    try:
-        fcntl.flock(handle, fcntl.LOCK_EX)
-        return _find_free_ports_unlocked(
-            workspace_dir,
-            exclude_dir,
-            check_system=check_system,
-            share_db_server=share_db_server,
-            reserved_ports=reserved_ports,
-        )
-    finally:
-        fcntl.flock(handle, fcntl.LOCK_UN)
-        handle.close()

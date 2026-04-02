@@ -106,7 +106,6 @@ class DashboardWorktreeRow:
     branch: str
     state: str
     db_name: str
-    ports: dict[str, int]
 
 
 @dataclass(frozen=True, slots=True)
@@ -435,7 +434,6 @@ def build_worktree_rows(overlay: str | None = None) -> list[DashboardWorktreeRow
             branch=wt.branch,
             state=wt.get_state_display(),
             db_name=wt.db_name,
-            ports=dict(wt.ports) if isinstance(wt.ports, dict) else {},
         )
         for wt in worktrees
     ]

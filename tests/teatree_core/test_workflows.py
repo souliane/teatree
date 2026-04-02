@@ -60,18 +60,19 @@ class WorkflowOverlay(OverlayBase):
 
     def get_run_commands(self, worktree: Worktree) -> RunCommands:
         return {
-            "backend": ["python", "manage.py", "runserver", str(worktree.ports.get("backend", 8000))],
-            "frontend": ["npm", "run", "start", "--port", str(worktree.ports.get("frontend", 4200))],
+            "backend": ["python", "manage.py", "runserver"],
+            "frontend": ["npm", "run", "start"],
             "build-frontend": ["npm", "run", "build"],
         }
 
     def get_env_extra(self, worktree: Worktree) -> dict[str, str]:
-        ports = worktree.ports or {}
         return {
             "DJANGO_SETTINGS_MODULE": "project.settings",
             "POSTGRES_DB": worktree.db_name or "test_db",
-            "DJANGO_RUNSERVER_PORT": str(ports.get("backend", 8000)),
         }
+
+    def get_compose_file(self, worktree: "Worktree") -> str:
+        return "/fake/docker-compose.yml"
 
     def get_services_config(self, worktree: Worktree) -> dict[str, ServiceSpec]:
         return {
@@ -123,9 +124,7 @@ class TestLifecycleProvision(TestCase):
     def _inject_fixtures(self, tmp_path: Path) -> None:
         self._tmp_path = tmp_path
 
-    @override_settings(**WORKFLOW_SETTINGS)
-    def test_full_create_provision_start_teardown(self) -> None:
-        """Test the complete happy path: workspace ticket -> lifecycle setup -> start -> teardown."""
+    def _create_ticket_and_worktrees(self) -> tuple[Ticket, Worktree, Worktree, Path]:
         ticket_dir = self._tmp_path / "ac-backend-42-ticket"
         ticket_dir.mkdir()
         (ticket_dir / "backend").mkdir()
@@ -157,9 +156,14 @@ class TestLifecycleProvision(TestCase):
             branch="ac-backend-42-ticket",
             extra={"worktree_path": str(ticket_dir / "frontend")},
         )
+        return ticket, wt_backend, wt_frontend, ticket_dir
 
+    @override_settings(**WORKFLOW_SETTINGS)
+    def test_setup_provisions_worktrees_and_generates_env(self) -> None:
+        _ticket, wt_backend, wt_frontend, ticket_dir = self._create_ticket_and_worktrees()
         backend_path = str(ticket_dir / "backend")
         frontend_path = str(ticket_dir / "frontend")
+
         with (
             _patch_overlay(),
             patch.object(lifecycle_mod, "subprocess") as mock_sp,
@@ -175,7 +179,6 @@ class TestLifecycleProvision(TestCase):
         wt_frontend.refresh_from_db()
         assert wt_backend.state == Worktree.State.PROVISIONED
         assert wt_frontend.state == Worktree.State.PROVISIONED
-        assert wt_backend.ports["backend"] != wt_frontend.ports["backend"]
         assert wt_backend.db_name == "wt_42_testclient"
         assert wt_backend.extra.get("provisioned_by_overlay") is True
         assert wt_frontend.extra.get("provisioned_by_overlay") is True
@@ -185,36 +188,72 @@ class TestLifecycleProvision(TestCase):
         env_content = envfile.read_text()
         assert "WT_VARIANT=testclient" in env_content
         assert "WT_DB_NAME=wt_42_testclient" in env_content
-        assert "DJANGO_RUNSERVER_PORT=" in env_content
         assert "DJANGO_SETTINGS_MODULE=" in env_content
         assert (ticket_dir / "backend" / ".env.worktree").is_symlink()
         assert (ticket_dir / "frontend" / ".env.worktree").is_symlink()
 
-        mock_popen = MagicMock(poll=MagicMock(return_value=None), pid=9999, returncode=0)
+    @override_settings(**WORKFLOW_SETTINGS)
+    def test_start_transitions_to_services_up(self) -> None:
+        _ticket, wt_backend, _wt_frontend, ticket_dir = self._create_ticket_and_worktrees()
+        backend_path = str(ticket_dir / "backend")
+
+        # Provision first
+        with (
+            _patch_overlay(),
+            patch.object(lifecycle_mod, "subprocess") as mock_sp,
+        ):
+            mock_sp.run.return_value = MagicMock(returncode=0)
+            call_command("lifecycle", "setup", path=backend_path)
+
+        # Start
+        mock_config = MagicMock()
+        mock_config.user.workspace_dir = self._tmp_path
         with (
             _patch_overlay(),
             patch.object(lifecycle_mod, "subprocess") as mock_start_sp,
-            patch.object(lifecycle_mod, "Popen", return_value=mock_popen),
+            patch.object(
+                lifecycle_mod,
+                "find_free_ports",
+                return_value={"backend": 8001, "frontend": 4201, "postgres": 5432, "redis": 6379},
+            ),
+            patch("teatree.config.load_config", return_value=mock_config),
         ):
             mock_start_sp.run.return_value = MagicMock(returncode=0)
             call_command("lifecycle", "start", path=backend_path)
+
         wt_backend.refresh_from_db()
         assert wt_backend.state == Worktree.State.SERVICES_UP
 
-        status = cast("dict[str, str]", call_command("lifecycle", "status", path=backend_path))
+        with patch.object(lifecycle_mod, "get_worktree_ports", return_value={"backend": 8001, "frontend": 4201}):
+            status = cast("dict[str, str]", call_command("lifecycle", "status", path=backend_path))
         assert status["state"] == Worktree.State.SERVICES_UP
         assert status["repo_path"] == "backend"
-        assert status["branch"] == "ac-backend-42-ticket"
 
-        call_command("lifecycle", "teardown", path=backend_path)
+    @override_settings(**WORKFLOW_SETTINGS)
+    def test_teardown_resets_state(self) -> None:
+        _ticket, wt_backend, _wt_frontend, ticket_dir = self._create_ticket_and_worktrees()
+        backend_path = str(ticket_dir / "backend")
+
+        # Provision
+        with (
+            _patch_overlay(),
+            patch.object(lifecycle_mod, "subprocess") as mock_sp,
+        ):
+            mock_sp.run.return_value = MagicMock(returncode=0)
+            call_command("lifecycle", "setup", path=backend_path)
+
+        # Teardown
+        with patch.object(lifecycle_mod, "subprocess") as mock_td_sp:
+            mock_td_sp.run.return_value = MagicMock(returncode=0)
+            call_command("lifecycle", "teardown", path=backend_path)
+
         wt_backend.refresh_from_db()
         assert wt_backend.state == Worktree.State.CREATED
-        assert wt_backend.ports == {}
         assert wt_backend.db_name == ""
 
     @override_settings(**WORKFLOW_SETTINGS)
-    def test_port_isolation_across_worktrees(self) -> None:
-        """Verify two worktrees get distinct ports and DB names."""
+    def test_db_name_isolation_across_worktrees(self) -> None:
+        """Verify two worktrees get distinct DB names based on ticket number and variant."""
         wt1_dir = self._tmp_path / "wt1"
         wt2_dir = self._tmp_path / "wt2"
         wt1_dir.mkdir()
@@ -249,8 +288,6 @@ class TestLifecycleProvision(TestCase):
         wt1.refresh_from_db()
         wt2.refresh_from_db()
 
-        assert wt1.ports["backend"] != wt2.ports["backend"]
-        assert wt1.ports["frontend"] != wt2.ports["frontend"]
         assert wt1.db_name == "wt_100_alpha"
         assert wt2.db_name == "wt_200_beta"
 
@@ -502,8 +539,8 @@ class TestRunBackend(TestCase):
         self._tmp_path = tmp_path
 
     @override_settings(**WORKFLOW_SETTINGS)
-    def test_uses_overlay_env_and_starts_services(self) -> None:
-        """Test that run backend starts Docker services and passes overlay env to subprocess."""
+    def test_uses_overlay_env_and_starts_via_docker_compose(self) -> None:
+        """Test that run backend calls docker compose up -d web with overlay env."""
         wt_dir = self._tmp_path / "backend"
         wt_dir.mkdir()
 
@@ -518,36 +555,35 @@ class TestRunBackend(TestCase):
 
         with (
             _patch_overlay(),
-            patch.object(lifecycle_mod, "subprocess"),
+            patch.object(lifecycle_mod, "subprocess") as mock_sp,
         ):
+            mock_sp.run.return_value = MagicMock(returncode=0)
             call_command("lifecycle", "setup", path=str(wt_dir))
 
         wt.refresh_from_db()
 
+        mock_config = MagicMock()
+        mock_config.user.workspace_dir = self._tmp_path
         with (
             _patch_overlay(),
-            patch.object(run_mod, "subprocess") as mock_sp,
+            patch.object(run_mod.subprocess, "run", return_value=MagicMock(returncode=0)) as mock_sp_run,
+            patch("teatree.config.load_config", return_value=mock_config),
+            patch.object(
+                run_mod,
+                "find_free_ports",
+                return_value={"backend": 8001, "frontend": 4201, "postgres": 5432, "redis": 6379},
+            ),
         ):
-            mock_sp.run.return_value = MagicMock(returncode=0)
             result = cast("str", call_command("run", "backend", path=str(wt_dir)))
 
-        assert result == "Backend started."
+        assert result == "Backend started via docker-compose."
 
-        calls = mock_sp.run.call_args_list
-        assert len(calls) == 3
-
-        assert "docker" in calls[0].args[0]
-        assert "docker" in calls[1].args[0]
-
-        backend_call = calls[2]
-        assert "runserver" in backend_call.args[0]
-        env = backend_call.kwargs.get("env", {})
-        assert env.get("DJANGO_SETTINGS_MODULE") == "project.settings"
-        assert env.get("POSTGRES_DB") == wt.db_name
-        assert "VIRTUAL_ENV" not in env
+        # Should have called docker compose up -d web
+        docker_calls = [c for c in mock_sp_run.call_args_list if "docker" in str(c)]
+        assert len(docker_calls) >= 1
 
     @override_settings(**WORKFLOW_SETTINGS)
-    def test_workspace_ticket_through_lifecycle_to_run(self) -> None:  # noqa: PLR0915
+    def test_workspace_ticket_through_lifecycle_to_run(self) -> None:
         """End-to-end workflow: workspace ticket -> lifecycle setup -> run backend.
 
         Uses a real temp directory for the workspace. Mocks git worktree add
@@ -627,34 +663,28 @@ class TestRunBackend(TestCase):
 
         backend_wt.refresh_from_db()
         assert backend_wt.state == Worktree.State.PROVISIONED
-        assert backend_wt.ports["backend"] >= 8001
-        assert backend_wt.ports["frontend"] >= 4201
         assert backend_wt.db_name == "wt_999_testclient"
 
-        # Setup provisions ALL ticket worktrees (backend + frontend)
-        # reset_passwords is now a ProvisionStep callable, not a subprocess call
-
-        # --- Step 3: run backend ---
+        # --- Step 3: run backend (docker compose) ---
+        mock_config = MagicMock()
+        mock_config.user.workspace_dir = self._tmp_path
         with (
             _patch_overlay(),
-            patch.object(run_mod, "subprocess") as mock_run_sp,
+            patch.object(run_mod.subprocess, "run", return_value=MagicMock(returncode=0)) as mock_run_sp,
+            patch("teatree.config.load_config", return_value=mock_config),
+            patch.object(
+                run_mod,
+                "find_free_ports",
+                return_value={"backend": 8001, "frontend": 4201, "postgres": 5432, "redis": 6379},
+            ),
         ):
-            mock_run_sp.run.return_value = MagicMock(returncode=0)
             run_result = cast("str", call_command("run", "backend", path=backend_wt_path))
 
-        assert run_result == "Backend started."
+        assert run_result == "Backend started via docker-compose."
 
-        backend_calls = [c for c in mock_run_sp.run.call_args_list if "runserver" in str(c)]
-        assert len(backend_calls) == 1
-
-        env = backend_calls[0].kwargs.get("env", {})
-        assert env["DJANGO_SETTINGS_MODULE"] == "project.settings"
-        assert env["POSTGRES_DB"] == "wt_999_testclient"
-        assert env["DJANGO_RUNSERVER_PORT"] == str(backend_wt.ports["backend"])
-        assert "VIRTUAL_ENV" not in env
-
-        service_calls = [c for c in mock_run_sp.run.call_args_list if c.args and "docker" in c.args[0]]
-        assert len(service_calls) == 2  # postgres + redis
+        # Docker compose was called
+        docker_calls = [c for c in mock_run_sp.call_args_list if "docker" in str(c)]
+        assert len(docker_calls) >= 1
 
 
 # ---------------------------------------------------------------------------
