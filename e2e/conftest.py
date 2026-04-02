@@ -20,6 +20,19 @@ os.environ.setdefault("DJANGO_SETTINGS_MODULE", "e2e.settings")
 os.environ["DJANGO_ALLOW_ASYNC_UNSAFE"] = "1"
 
 
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    """Exempt fixture setup/teardown from pytest-timeout for E2E tests.
+
+    Under xdist each worker starts its own Playwright browser + Django server
+    inside session-scoped fixtures.  The global ``timeout = 10`` (from
+    pyproject.toml) would kill setup before Playwright finishes launching.
+    Adding ``func_only=True`` keeps the timeout on the test body only.
+    """
+    mark = pytest.mark.timeout(func_only=True)
+    for item in items:
+        item.add_marker(mark)
+
+
 @pytest.fixture(scope="session")
 def django_db_modify_db_settings():
     """Prevent pytest-django from renaming the DB to a test_ prefix."""
