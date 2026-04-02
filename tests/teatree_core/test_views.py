@@ -210,8 +210,10 @@ class TestOverlaySelector(TestCase):
         assert response.context["snapshot"].summary.in_flight_tickets == 1
 
     def test_panel_view_passes_overlay_to_builders(self) -> None:
-        Ticket.objects.create(overlay="alpha", state=Ticket.State.STARTED)
-        Ticket.objects.create(overlay="beta", state=Ticket.State.STARTED)
+        Ticket.objects.create(
+            overlay="alpha", state=Ticket.State.STARTED, issue_url="https://gitlab.com/o/r/-/issues/1"
+        )
+        Ticket.objects.create(overlay="beta", state=Ticket.State.STARTED, issue_url="https://gitlab.com/o/r/-/issues/2")
 
         response = Client().get(
             reverse("teatree:dashboard-panel", args=["tickets"]),

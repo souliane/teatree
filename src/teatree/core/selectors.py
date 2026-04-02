@@ -433,10 +433,9 @@ def build_dashboard_ticket_rows(overlay: str | None = None) -> list[DashboardTic
         title = _extra_str(ticket, "issue_title") or _first_mr_title(ticket)
         has_issue = "issues/" in ticket.issue_url or "work_items/" in ticket.issue_url
         display_id = _display_id(ticket)
-        # Skip synced tickets that have no identifiable info in the dashboard:
-        # they have an issue_url (from sync) but it's not an actual issue/work_item,
-        # and they have no title and no MR data to display.
-        if ticket.issue_url and not has_issue and not mrs and not title:
+        # Skip tickets with nothing visible in the row: no issue link to display,
+        # no title, and no MR data.
+        if not has_issue and not mrs and not title:
             continue
         rows.append(
             DashboardTicketRow(

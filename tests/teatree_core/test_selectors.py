@@ -287,11 +287,17 @@ class TestTicketRowFiltering(TestCase):
         assert len(rows) == 1
         assert rows[0].issue_title == "Real ticket"
 
-    def test_keeps_locally_created_tickets_without_issue_url(self) -> None:
-        """Tickets created via worktree (no issue_url) should be shown."""
-        Ticket.objects.create(overlay="test", state=Ticket.State.STARTED)
+    def test_keeps_tickets_with_issue_link(self) -> None:
+        """Tickets with a real issue URL are shown even without MRs."""
+        Ticket.objects.create(issue_url="https://gitlab.com/org/repo/-/issues/42", state=Ticket.State.STARTED)
         rows = build_dashboard_ticket_rows()
         assert len(rows) == 1
+
+    def test_hides_tickets_with_no_visible_data(self) -> None:
+        """Tickets with no issue link, no title, and no MRs are hidden."""
+        Ticket.objects.create(overlay="test", state=Ticket.State.STARTED)
+        rows = build_dashboard_ticket_rows()
+        assert len(rows) == 0
 
 
 class TestBuildInteractiveQueue(TestCase):
@@ -1361,8 +1367,10 @@ class TestOverlayFiltering(TestCase):
         assert alpha_summary.in_flight_tickets == 1
 
     def test_ticket_rows_filter_by_overlay(self) -> None:
-        Ticket.objects.create(overlay="alpha", state=Ticket.State.STARTED)
-        Ticket.objects.create(overlay="beta", state=Ticket.State.STARTED)
+        Ticket.objects.create(
+            overlay="alpha", state=Ticket.State.STARTED, issue_url="https://gitlab.com/o/r/-/issues/1"
+        )
+        Ticket.objects.create(overlay="beta", state=Ticket.State.STARTED, issue_url="https://gitlab.com/o/r/-/issues/2")
 
         all_rows = build_dashboard_ticket_rows()
         alpha_rows = build_dashboard_ticket_rows(overlay="alpha")
