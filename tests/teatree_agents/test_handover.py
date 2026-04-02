@@ -157,9 +157,9 @@ def test_get_next_runtime_last_in_list() -> None:
     assert _get_next_runtime("codex") == ""
 
 
-def test_get_next_runtime_default_config() -> None:
-    """Default config has claude-code and codex; next after claude-code is codex."""
-    assert _get_next_runtime("claude-code") == "codex"
+def test_get_next_runtime_single_config() -> None:
+    """Default config has only claude-code, so there is no next runtime."""
+    assert _get_next_runtime("claude-code") == ""
 
 
 def test_get_next_runtime_unknown() -> None:
