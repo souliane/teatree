@@ -13,13 +13,17 @@ from teatree.core.overlay_loader import reset_overlay_cache
 from teatree.core.sync import (
     LAST_SYNC_CACHE_KEY,
     SyncResult,
+    _apply_merged_status,
     _classify_discussions,
+    _detect_e2e_evidence,
     _extract_issue_url,
     _extract_variant,
     _fetch_review_permalinks,
     _infer_state_from_mrs,
     _merge_ticket_extras,
+    _overlay_name,
     _process_label,
+    _resolve_issue,
     _update_ticket,
     fetch_notion_statuses,
     sync_followup,
@@ -77,9 +81,9 @@ class SyncOverlay(OverlayBase):
         return []
 
 
-def _patch_overlay(overlay: OverlayBase):
+def _patch_overlay(overlay: OverlayBase, *, name: str = "test"):
     """Return a ``patch`` that makes the overlay loader return the given instance."""
-    result: dict[str, OverlayBase] = {"test": overlay}
+    result: dict[str, OverlayBase] = {name: overlay}
 
     def _fake_discover() -> dict[str, OverlayBase]:
         return result
@@ -589,6 +593,102 @@ class TestFetchNotionStatuses:
             fetch_notion_statuses()
 
 
+class TestOverlayName:
+    def test_returns_name_for_registered_overlay(self) -> None:
+        overlay = SyncOverlay()
+        with _patch_overlay(overlay, name="my-overlay"):
+            assert _overlay_name(overlay) == "my-overlay"
+
+    def test_returns_empty_for_unknown_overlay(self) -> None:
+        overlay = SyncOverlay()
+        other = SyncOverlay()
+        with _patch_overlay(other, name="other"):
+            assert _overlay_name(overlay) == ""
+
+
+class TestResolveIssueHandles404:
+    def test_returns_none_on_404(self) -> None:
+        import httpx  # noqa: PLC0415
+
+        client = MagicMock()
+        client.resolve_project.return_value = ProjectInfo(
+            project_id=1, path_with_namespace="org/repo", short_name="repo"
+        )
+        client.get_issue.side_effect = httpx.HTTPStatusError(
+            "404 Not Found",
+            request=MagicMock(),
+            response=MagicMock(status_code=404),
+        )
+        result = _resolve_issue(client, "https://gitlab.com/org/repo/-/issues/123")
+        assert result is None
+
+    def test_returns_issue_on_success(self) -> None:
+        client = MagicMock()
+        client.resolve_project.return_value = ProjectInfo(
+            project_id=1, path_with_namespace="org/repo", short_name="repo"
+        )
+        client.get_issue.return_value = {"id": 123, "title": "Test issue", "labels": []}
+        result = _resolve_issue(client, "https://gitlab.com/org/repo/-/issues/123")
+        assert result is not None
+        assert result[0]["title"] == "Test issue"
+
+
+class TestDetectE2EEvidence:
+    def test_finds_evidence_with_keyword_and_image(self) -> None:
+        discussions = [
+            {
+                "notes": [
+                    {
+                        "id": 42,
+                        "body": "E2E test evidence:\n![screenshot](/uploads/abc.png)",
+                    },
+                ],
+            },
+        ]
+        url = _detect_e2e_evidence(discussions, "https://gitlab.com/org/repo/-/merge_requests/1")
+        assert url == "https://gitlab.com/org/repo/-/merge_requests/1#note_42"
+
+    def test_skips_keyword_without_image(self) -> None:
+        discussions = [{"notes": [{"id": 1, "body": "E2E tests look good"}]}]
+        assert _detect_e2e_evidence(discussions, "https://example.com") == ""
+
+    def test_skips_image_without_keyword(self) -> None:
+        discussions = [{"notes": [{"id": 1, "body": "![logo](/uploads/logo.png)"}]}]
+        assert _detect_e2e_evidence(discussions, "https://example.com") == ""
+
+    def test_empty_discussions(self) -> None:
+        assert _detect_e2e_evidence([], "https://example.com") == ""
+
+    def test_non_dict_entries_skipped(self) -> None:
+        bad_input: list[dict[str, object]] = ["not-a-dict"]  # type: ignore[list-item]
+        assert _detect_e2e_evidence(bad_input, "https://example.com") == ""
+
+
+class TestApplyMergedStatusAllMerged(TestCase):
+    def test_advances_state_when_all_merged_no_discussions(self) -> None:
+        """All MRs merged but none have discussions — state should still advance."""
+        ticket = Ticket.objects.create(
+            issue_url="https://gitlab.com/org/repo/-/issues/1",
+            state=Ticket.State.IN_REVIEW,
+            extra={"mrs": {"url1": {"title": "MR1"}, "url2": {"title": "MR2"}}},
+        )
+        result = SyncResult()
+        _apply_merged_status(ticket, {"url1", "url2"}, result)
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.MERGED
+
+    def test_does_not_advance_when_some_unmerged(self) -> None:
+        ticket = Ticket.objects.create(
+            issue_url="https://gitlab.com/org/repo/-/issues/2",
+            state=Ticket.State.IN_REVIEW,
+            extra={"mrs": {"url1": {"title": "MR1"}, "url2": {"title": "MR2"}}},
+        )
+        result = SyncResult()
+        _apply_merged_status(ticket, {"url1"}, result)
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.IN_REVIEW
+
+
 class TestSyncFollowup(TestCase):
     _OVERLAY = SyncOverlay()
 
@@ -657,7 +757,7 @@ class TestSyncFollowup(TestCase):
             result = sync_followup()
 
         assert len(result.errors) == 1
-        assert "No code host token configured" in result.errors[0]
+        assert "No code host token for" in result.errors[0]
 
     def test_captures_api_errors(self) -> None:
         mock_client = MagicMock()

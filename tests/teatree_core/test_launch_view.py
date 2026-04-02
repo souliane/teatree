@@ -158,7 +158,7 @@ class TestLaunchTerminalView:
         mock_result = LaunchResult(launch_url="http://127.0.0.1:7777", pid=123, mode="ttyd")
         monkeypatch.setattr(
             "teatree.agents.terminal_launcher.launch",
-            lambda command, mode="ttyd", cwd="": mock_result,
+            lambda command, mode="ttyd", cwd="", app="": mock_result,
         )
         monkeypatch.setenv("SHELL", "/bin/zsh")
 
@@ -174,7 +174,7 @@ class TestLaunchTerminalView:
         mock_result = LaunchResult(launch_url="", pid=0, mode="same-terminal")
         monkeypatch.setattr(
             "teatree.agents.terminal_launcher.launch",
-            lambda command, mode="ttyd", cwd="": mock_result,
+            lambda command, mode="ttyd", cwd="", app="": mock_result,
         )
 
         response = Client().post("/dashboard/launch-terminal/")
@@ -202,7 +202,7 @@ class TestLaunchInteractiveForTask:
         monkeypatch.setattr("teatree.core.views.launch.shutil.which", lambda name: f"/usr/bin/{name}")
         monkeypatch.setattr(
             "teatree.agents.terminal_launcher.launch",
-            lambda command, mode="ttyd", cwd="": mock_result,
+            lambda command, mode="ttyd", cwd="", app="": mock_result,
         )
 
         mock_task = MagicMock()
@@ -233,7 +233,7 @@ class TestLaunchInteractiveAgentView:
         monkeypatch.setattr("teatree.core.views.launch.shutil.which", lambda name: f"/usr/bin/{name}")
         monkeypatch.setattr(
             "teatree.agents.terminal_launcher.launch",
-            lambda command, mode="ttyd", cwd="": mock_result,
+            lambda command, mode="ttyd", cwd="", app="": mock_result,
         )
 
         response = Client().post("/dashboard/launch-agent/")

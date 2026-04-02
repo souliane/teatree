@@ -453,9 +453,9 @@ class TestDashboardAndViews(TestCase):
         assert resp.status_code == 200
         data = resp.json()
         task_id = data["task_id"]
-        assert data["status"] == Task.Status.CLAIMED
+        assert data["status"] == Task.Status.PENDING
 
-        resp = client.post(f"/tasks/{task_id}/cancel/", {"confirm": "true"})
+        resp = client.post(f"/tasks/{task_id}/cancel/")
         assert resp.status_code == 200
         cancel_data = resp.json()
         assert cancel_data["status"] == Task.Status.FAILED

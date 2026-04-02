@@ -269,6 +269,37 @@ class TestBuildDashboardTicketRows(TestCase):
         assert mr_without.e2e_test_plan_url == ""
 
 
+class TestTicketRowFiltering(TestCase):
+    def test_filters_synced_tickets_with_no_data(self) -> None:
+        """Synced tickets with MR-only issue_url and no title/MRs are hidden."""
+        # This ticket has an MR URL as issue_url but no issue/work_item URL, no title, no MRs
+        Ticket.objects.create(
+            issue_url="https://gitlab.com/org/repo/-/merge_requests/999",
+            state=Ticket.State.STARTED,
+        )
+        # This ticket has a proper issue URL — should be shown
+        Ticket.objects.create(
+            issue_url="https://gitlab.com/org/repo/-/issues/100",
+            state=Ticket.State.STARTED,
+            extra={"issue_title": "Real ticket"},
+        )
+        rows = build_dashboard_ticket_rows()
+        assert len(rows) == 1
+        assert rows[0].issue_title == "Real ticket"
+
+    def test_keeps_tickets_with_issue_link(self) -> None:
+        """Tickets with a real issue URL are shown even without MRs."""
+        Ticket.objects.create(issue_url="https://gitlab.com/org/repo/-/issues/42", state=Ticket.State.STARTED)
+        rows = build_dashboard_ticket_rows()
+        assert len(rows) == 1
+
+    def test_hides_tickets_with_no_visible_data(self) -> None:
+        """Tickets with no issue link, no title, and no MRs are hidden."""
+        Ticket.objects.create(overlay="test", state=Ticket.State.STARTED)
+        rows = build_dashboard_ticket_rows()
+        assert len(rows) == 0
+
+
 class TestBuildInteractiveQueue(TestCase):
     def test_returns_non_completed_manual_tasks(self) -> None:
         first_ticket = Ticket.objects.create(state=Ticket.State.STARTED)
@@ -520,6 +551,35 @@ class TestBuildActiveSessions(TestCase):
 
         result = build_active_sessions()
 
+        assert result == []
+
+    def test_skips_sessions_for_completed_tasks(self) -> None:
+        import json  # noqa: PLC0415
+        import os  # noqa: PLC0415
+
+        sessions_dir = self.tmp_path / "sessions"
+        sessions_dir.mkdir()
+        self.monkeypatch.setattr("teatree.core.selectors._CLAUDE_SESSIONS_DIR", sessions_dir)
+
+        current_pid = os.getpid()
+        session_data = {"pid": current_pid, "sessionId": "done-session", "startedAt": 0}
+        (sessions_dir / f"{current_pid}.json").write_text(json.dumps(session_data), encoding="utf-8")
+
+        ticket = Ticket.objects.create(state=Ticket.State.STARTED)
+        session = Session.objects.create(ticket=ticket, agent_id="agent")
+        task = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            status=Task.Status.COMPLETED,
+            phase="coding",
+        )
+        TaskAttempt.objects.create(
+            task=task,
+            execution_target=task.execution_target,
+            agent_session_id="done-session",
+        )
+
+        result = build_active_sessions()
         assert result == []
 
 
@@ -1307,8 +1367,10 @@ class TestOverlayFiltering(TestCase):
         assert alpha_summary.in_flight_tickets == 1
 
     def test_ticket_rows_filter_by_overlay(self) -> None:
-        Ticket.objects.create(overlay="alpha", state=Ticket.State.STARTED)
-        Ticket.objects.create(overlay="beta", state=Ticket.State.STARTED)
+        Ticket.objects.create(
+            overlay="alpha", state=Ticket.State.STARTED, issue_url="https://gitlab.com/o/r/-/issues/1"
+        )
+        Ticket.objects.create(overlay="beta", state=Ticket.State.STARTED, issue_url="https://gitlab.com/o/r/-/issues/2")
 
         all_rows = build_dashboard_ticket_rows()
         alpha_rows = build_dashboard_ticket_rows(overlay="alpha")

@@ -194,7 +194,9 @@ class Command(TyperCommand):
         cmd.extend(["-x", "-v"])
 
         env = {**os.environ, "DJANGO_SETTINGS_MODULE": settings_module}
-        if not headed:
+        if headed:
+            env.pop("CI", None)
+        else:
             env["CI"] = "1"
 
         result = subprocess.run(cmd, cwd=wt_path, check=False, env=env)  # noqa: S603
@@ -225,10 +227,11 @@ class Command(TyperCommand):
 
         env = {**os.environ}
         env["BASE_URL"] = f"http://localhost:{frontend_port}"
-        if not headed:
-            env["CI"] = "1"
-        else:
+        if headed:
+            env.pop("CI", None)
             cmd.append("--headed")
+        else:
+            env["CI"] = "1"
 
         self.stdout.write(f"  Running from: {private_tests_path}")
         self.stdout.write(f"  BASE_URL: {env['BASE_URL']}")
