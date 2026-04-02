@@ -68,6 +68,10 @@ class CoreConfig(AppConfig):
     verbose_name = "TeaTree Core"
 
     def ready(self) -> None:  # noqa: PLR6301
+        from teatree.core.signals import register_signals  # noqa: PLC0415
+
+        register_signals()
+
         if os.environ.get("RUN_MAIN") == "true" and not os.environ.get("_TEETREE_WORKER") and "runserver" in sys.argv:
             _start_periodic_sync()
             _start_workers()

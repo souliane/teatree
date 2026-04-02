@@ -478,9 +478,30 @@ class Command(TyperCommand):
 
         return f"Ticket #{ticket_id} ready — services running in {wt_path}"
 
+    @command(name="visit-phase")
+    def visit_phase(self, ticket_id: int, phase: str) -> str:
+        """Mark a phase as visited on the ticket's latest session."""
+        from teatree.core.models import Session  # noqa: PLC0415
+
+        ticket = Ticket.objects.get(pk=ticket_id)
+        session = ticket.sessions.order_by("-pk").first()
+        if session is None:
+            session = Session.objects.create(ticket=ticket)
+        session.visit_phase(phase)
+        return f"Phase '{phase}' marked as visited on session {session.pk}"
+
     @command()
-    def diagram(self, model: str = "worktree") -> str:
-        """Print a state diagram as Mermaid. Models: worktree, ticket, task."""
+    def diagram(self, model: str = "worktree", ticket: int | None = None) -> str:
+        """Print a state diagram as Mermaid. Models: worktree, ticket, task.
+
+        Use --ticket <id> to render the actual lifecycle of a specific ticket
+        from its recorded transitions (not the static FSM).
+        """
+        if ticket is not None:
+            from teatree.core.selectors import build_ticket_lifecycle_mermaid  # noqa: PLC0415
+
+            return build_ticket_lifecycle_mermaid(ticket)
+
         model_map: dict[str, type] = {"worktree": Worktree, "ticket": Ticket}
         if model == "task":
             return _task_diagram()
