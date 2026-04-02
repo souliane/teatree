@@ -7,3 +7,7 @@ USER testuser
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh -s -- -q 2>/dev/null
 ENV PATH="/home/testuser/.local/bin:$PATH"
 WORKDIR /app
+
+# Pre-install Playwright browsers (cached in image layer).
+# This avoids re-downloading ~150MB of browser binaries on every run.
+RUN uv tool install playwright && playwright install --with-deps chromium 2>/dev/null

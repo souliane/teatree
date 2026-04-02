@@ -31,6 +31,17 @@ _TWO_RUNTIME_CONFIG = [
     {"runtime": "codex"},
 ]
 
+_SINGLE_RUNTIME_CONFIG = [
+    {
+        "runtime": "claude-code",
+        "telemetry": {
+            "provider": "claude-statusline",
+            "switch_away_at_percent": 95,
+            "switch_back_at_percent": 80,
+        },
+    },
+]
+
 # --- get_claude_statusline_state_dir ---
 
 
@@ -156,8 +167,9 @@ def test_get_next_runtime_last_in_list() -> None:
     assert _get_next_runtime("codex") == ""
 
 
-def test_get_next_runtime_default_config() -> None:
-    """Default config has only claude-code; no next runtime."""
+@override_settings(TEATREE_AGENT_HANDOVER=_SINGLE_RUNTIME_CONFIG)
+def test_get_next_runtime_single_config() -> None:
+    """Single-runtime config has no next runtime."""
     assert _get_next_runtime("claude-code") == ""
 
 

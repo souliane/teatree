@@ -14,6 +14,15 @@ from teatree.core.resolve import resolve_worktree
 from teatree.core.worktree_env import write_env_worktree
 
 
+def _find_compose_file(wt_path: str, filename: str) -> Path | None:
+    """Locate a docker-compose file in the dev/ directory."""
+    for base in (Path(__file__).resolve().parents[4], Path(wt_path)):
+        candidate = base / "dev" / filename
+        if candidate.is_file():
+            return candidate
+    return None
+
+
 def _run_env(worktree: Worktree) -> dict[str, str]:
     """Build subprocess env from current env + overlay's get_env_extra.
 
@@ -177,21 +186,34 @@ class Command(TyperCommand):
         return ci.trigger_pipeline(project=project, ref=ref, variables=variables)
 
     @command(name="e2e-local")
-    def e2e_local(self, test_path: str = "", *, headed: bool = False) -> str:
-        """Run E2E tests locally with Playwright."""
+    def e2e_local(
+        self,
+        test_path: str = "",
+        *,
+        headed: bool = False,
+        docker: bool = True,
+    ) -> str:
+        """Run E2E tests locally with Playwright.
+
+        By default runs via docker-compose (``dev/docker-compose.yml``) for
+        reproducibility.  Pass ``--no-docker`` to run directly on the host.
+        """
         worktree = resolve_worktree()
         overlay = get_overlay()
         wt_path = (worktree.extra or {}).get("worktree_path", ".") if worktree else "."
-
         e2e_config = overlay.metadata.get_e2e_config()
         settings_module = e2e_config.get("settings_module", "e2e.settings")
+        test_dir = test_path or e2e_config.get("test_dir", "e2e/")
 
-        cmd = ["uv", "run", "--with", "playwright", "pytest"]
-        if test_path:
-            cmd.append(test_path)
-        else:
-            cmd.append(e2e_config.get("test_dir", "e2e/"))
-        cmd.extend(["-x", "-v"])
+        if docker and not Path("/.dockerenv").exists():
+            compose_file = _find_compose_file(wt_path, "docker-compose.yml")
+            if compose_file:
+                cmd = ["docker", "compose", "-f", str(compose_file), "run", "--rm", "e2e"]
+                result = subprocess.run(cmd, cwd=wt_path, check=False)  # noqa: S603
+                return "E2E passed." if result.returncode == 0 else f"E2E failed (exit {result.returncode})."
+
+        cmd = ["uv", "run", "--group", "e2e", "pytest", test_dir]
+        cmd.extend(["--ds", settings_module, "--no-cov", "-n", "auto", "-v"])
 
         env = {**os.environ, "DJANGO_SETTINGS_MODULE": settings_module}
         if headed:

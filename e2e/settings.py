@@ -1,4 +1,4 @@
-"""Django settings for E2E tests — uses file-based SQLite shared with test process."""
+"""Django settings for E2E tests — uses file-based SQLite, one per xdist worker."""
 
 import os
 import tempfile
@@ -10,7 +10,11 @@ from pathlib import Path
 _DB_DIR = Path(os.environ.get("TEATREE_E2E_DB_DIR") or tempfile.mkdtemp(prefix="teatree-e2e-"))
 _DB_DIR.mkdir(parents=True, exist_ok=True)
 os.environ.setdefault("TEATREE_E2E_DB_DIR", str(_DB_DIR))
-E2E_DB_PATH = _DB_DIR / "e2e.sqlite3"
+
+# Per-worker DB when running under pytest-xdist (PYTEST_XDIST_WORKER = "gw0", "gw1", …).
+# Without xdist the env var is absent → single shared DB.
+_WORKER = os.environ.get("PYTEST_XDIST_WORKER", "")
+E2E_DB_PATH = _DB_DIR / f"e2e_{_WORKER}.sqlite3" if _WORKER else _DB_DIR / "e2e.sqlite3"
 
 SECRET_KEY = "e2e-tests-only"
 DEBUG = True
