@@ -96,6 +96,11 @@ class Command(TyperCommand):
     _DB_IMPORT_MAX_FAILURES = 3
     _verbose: bool = False
 
+    @staticmethod
+    def _guard_typer_option(value: object, default: str = "") -> str:
+        """Guard against typer.Option defaults when setup is called as a Python method."""
+        return value if isinstance(value, str) else default
+
     @command()
     def setup(
         self,
@@ -110,12 +115,8 @@ class Command(TyperCommand):
         Discovers repos added to the ticket directory since initial creation
         and provisions all worktrees for the ticket, not just the resolved one.
         """
-        # Guard against typer.Option defaults when called as a Python method
-        # (typer.Option("") evaluates to OptionInfo, not "")
-        if not isinstance(variant, str):
-            variant = ""
-        if not isinstance(overlay, str):
-            overlay = ""
+        variant = self._guard_typer_option(variant)
+        overlay = self._guard_typer_option(overlay)
         self._verbose = verbose if isinstance(verbose, bool) else False
         if overlay:
             os.environ["T3_OVERLAY_NAME"] = overlay
