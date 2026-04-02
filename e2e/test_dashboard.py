@@ -1,7 +1,7 @@
 """E2E tests for the TeaTree dashboard.
 
 Run with:
-    uv run --group e2e pytest e2e/ --ds e2e.settings --no-cov -n auto -v
+    t3 teatree run e2e-local
 """
 
 import re
