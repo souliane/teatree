@@ -2401,6 +2401,120 @@ class TestLifecycleStart(TestCase):
             assert "backend" in str(worktree.extra.get("failed_services", []))
 
 
+class TestLifecycleRestart(TestCase):
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_kills_existing_processes_and_relaunches(self) -> None:
+        """Restart should kill stored PIDs, re-run pre-run steps, and launch fresh."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            wt_path = tmp_path / "worktree"
+            wt_path.mkdir()
+
+            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/400", variant="acme")
+            Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="/tmp/backend",
+                branch="feature",
+                extra={"worktree_path": str(wt_path)},
+            )
+            worktree_id = cast("int", call_command("lifecycle", "setup", path=str(wt_path)))
+
+            # Simulate a previous start by storing PIDs
+            wt = Worktree.objects.get(pk=worktree_id)
+            wt.state = Worktree.State.SERVICES_UP
+            wt.extra = {**(wt.extra or {}), "pids": {"backend": 11111, "frontend": 22222}}
+            wt.save()
+
+            launched: list[str] = []
+
+            mock_overlay = MagicMock()
+            mock_overlay.get_run_commands.return_value = {"backend": "run-backend", "frontend": "run-frontend"}
+            mock_overlay.get_services_config.return_value = {}
+            mock_overlay.get_pre_run_steps.return_value = []
+            mock_overlay.get_env_extra.return_value = {}
+
+            def _mock_popen(cmd, **kwargs):
+                launched.append(cmd)
+                mock_proc = MagicMock()
+                mock_proc.pid = 33333
+                mock_proc.poll.return_value = None
+                return mock_proc
+
+            with (
+                patch.object(lifecycle_mod, "get_overlay", return_value=mock_overlay),
+                patch.object(lifecycle_mod, "subprocess") as mock_sp,
+                patch.object(lifecycle_mod, "Popen", _mock_popen),
+                patch("os.kill") as mock_kill,
+            ):
+                mock_sp.run.return_value = MagicMock(returncode=0)
+                call_command("lifecycle", "restart", path=str(wt_path))
+
+            # Old PIDs were killed
+            killed_pids = {call.args[0] for call in mock_kill.call_args_list}
+            assert 11111 in killed_pids
+            assert 22222 in killed_pids
+
+            # New services launched
+            assert any("run-backend" in cmd for cmd in launched)
+            assert any("run-frontend" in cmd for cmd in launched)
+
+            # New PIDs stored
+            wt = Worktree.objects.get(pk=worktree_id)
+            assert wt.state == Worktree.State.SERVICES_UP
+            assert wt.extra["pids"]["backend"] == 33333
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_handles_already_dead_processes(self) -> None:
+        """Restart should handle ProcessLookupError gracefully for already-dead PIDs."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            wt_path = tmp_path / "worktree"
+            wt_path.mkdir()
+
+            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/401", variant="acme")
+            Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="/tmp/backend",
+                branch="feature",
+                extra={"worktree_path": str(wt_path)},
+            )
+            worktree_id = cast("int", call_command("lifecycle", "setup", path=str(wt_path)))
+
+            wt = Worktree.objects.get(pk=worktree_id)
+            wt.state = Worktree.State.SERVICES_UP
+            wt.extra = {**(wt.extra or {}), "pids": {"backend": 99999}}
+            wt.save()
+
+            mock_overlay = MagicMock()
+            mock_overlay.get_run_commands.return_value = {"backend": "run-backend"}
+            mock_overlay.get_services_config.return_value = {}
+            mock_overlay.get_pre_run_steps.return_value = []
+            mock_overlay.get_env_extra.return_value = {}
+
+            def _mock_popen(cmd, **kwargs):
+                mock_proc = MagicMock()
+                mock_proc.pid = 44444
+                mock_proc.poll.return_value = None
+                return mock_proc
+
+            with (
+                patch.object(lifecycle_mod, "get_overlay", return_value=mock_overlay),
+                patch.object(lifecycle_mod, "subprocess") as mock_sp,
+                patch.object(lifecycle_mod, "Popen", _mock_popen),
+                patch("os.kill", side_effect=ProcessLookupError),
+            ):
+                mock_sp.run.return_value = MagicMock(returncode=0)
+                # Should not raise
+                call_command("lifecycle", "restart", path=str(wt_path))
+
+            wt = Worktree.objects.get(pk=worktree_id)
+            assert wt.state == Worktree.State.SERVICES_UP
+
+
 class TestLifecycleClean(TestCase):
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)

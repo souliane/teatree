@@ -282,7 +282,117 @@ Claude Code includes a Rust crate (`cc-core`) that mirrors TypeScript types:
 
 ---
 
-## 9. Key Corrections to Original Ticket Assumptions
+## 9. Task System (TaskCreate / TaskUpdate)
+
+Source: Claude Code v2.1.16+ changelog, `deepwiki` docs, `claudefa.st` guide
+
+### Migration from TodoWrite
+
+Anthropic replaced `TodoWrite`/`TodoRead` with a four-tool Tasks API (v2.1.19 default, Jan 2025):
+
+| Aspect | TodoWrite (legacy) | TaskCreate (current) |
+|--------|-------------------|---------------------|
+| Storage | Ephemeral (context window only) | Persistent disk (`~/.claude/tasks/`) |
+| Session survival | No — lost on restart | Yes |
+| Dependencies | None | Full graph (`addBlockedBy`/`addBlocks`) |
+| Multi-session | Impossible | Yes (shared via `CLAUDE_CODE_TASK_LIST_ID`) |
+| Tools | 2 (`TodoWrite`, `TodoRead`) | 4 (`TaskCreate`, `TaskGet`, `TaskUpdate`, `TaskList`) |
+| Revert | Set `CLAUDE_CODE_ENABLE_TASKS=false` | N/A |
+
+### Task Tool API
+
+- **TaskCreate**: `subject` (imperative), `description`, optional `activeForm` (present continuous for spinner)
+- **TaskUpdate**: change `status` (pending → in_progress → completed), `addBlockedBy`/`addBlocks`
+- **TaskGet**: full task details including dependency graph
+- **TaskList**: summaries with id, subject, status, owner, blockedBy
+
+### Persistence
+
+- Default: session-scoped
+- With `CLAUDE_CODE_TASK_LIST_ID` env var: persists to `~/.claude/tasks/<task-list-id>/` as JSON files
+- Same ID across terminal sessions = shared task list (caution: use repo-specific IDs to avoid contamination)
+
+### Task Hook Events
+
+| Event | Fires | Exit 2 effect | Stdin fields |
+|-------|-------|---------------|-------------|
+| `TaskCreated` | Before task creation | Blocks creation | `task_id`, `task_subject`, `task_description`, `teammate_name`, `team_name` |
+| `TaskCompleted` | Before marking complete | Prevents completion | Same |
+
+Neither event supports matchers — they fire on every occurrence.
+
+`{"continue": false, "stopReason": "..."}` in hook output stops the entire teammate.
+
+### Known Limitations
+
+- **Task tools bypass `PreToolUse`/`PostToolUse` hooks** — known regression from TodoWrite
+- **VSCode extension**: tasks completely disabled due to `isTTY` check on `process.stdout.isTTY`
+- **Task UI freezes during auto-compact** — no status updates on completed tasks
+
+### Enforcement Patterns
+
+**Stop hook** (best mechanism): fires when Claude finishes a response. Return `"decision": "block"` to prevent stopping. Must check `stop_hook_active` flag to prevent infinite loops:
+
+```json
+{"stop_hook_active": false, "decision": "block", "reason": "Tasks not complete"}
+```
+
+**UserPromptSubmit**: inject `additionalContext` reminding the agent to create tasks. Lightweight but advisory-only.
+
+**TaskCompleted hook**: exit 2 to block completion until validation passes (e.g., tests must be green).
+
+---
+
+## 10. AskUserQuestion & Elicitation
+
+### AskUserQuestion Tool
+
+Purpose: structured user input when the agent needs clarification. Renders as multiple-choice UI.
+
+```typescript
+{
+  questions: [{                    // 1–4 questions per call
+    question: string,              // the question text
+    header: string,                // short chip label (max 12 chars)
+    options: [{                    // 2–4 options per question
+      label: string,               // display text
+      description: string,         // explanation
+      preview?: string,            // optional markdown preview (single-select only)
+    }],
+    multiSelect: boolean,
+  }]
+}
+```
+
+Response: `answers` mapping question text → selected option label.
+
+**Constraints:**
+- Not available in sub-agents (Agent tool)
+- Does NOT trigger `PreToolUse`/`PostToolUse` hooks (as of v2.1.90)
+- "Other" option is always auto-added for free-text input
+
+### Elicitation Hooks (MCP, v2.1.76+)
+
+MCP servers can request structured user input mid-task. Two hooks intercept this lifecycle:
+
+| Hook | Fires | `hookSpecificOutput` |
+|------|-------|---------------------|
+| `Elicitation` | When MCP requests input, before UI shown | `action` (accept/decline/cancel), `content` (pre-fill) |
+| `ElicitationResult` | After user responds, before sent to MCP | `action`, `content` (modified values) |
+
+`elicitation_id` tracks each elicitation through its lifecycle. Exit code 2 on `ElicitationResult` converts action to "decline".
+
+### Enforcement
+
+No built-in setting forces use of `AskUserQuestion`. Enforcement options:
+
+- **Instructions** (CLAUDE.md / skills): most effective — tell the agent to always use `AskUserQuestion` instead of inline questions
+- **UserPromptSubmit hook**: inject reminder text as `additionalContext`
+- **Stop hook**: could theoretically check if questions were asked inline vs. via tool, but fragile
+
+---
+
+## 11. Key Corrections to Original Ticket Assumptions
 
 | Original Claim | Reality (from claurst spec) |
 |---|---|
@@ -296,7 +406,7 @@ Claude Code includes a Rust crate (`cc-core`) that mirrors TypeScript types:
 
 ---
 
-## 10. Patterns TeaTree Should Adopt
+## 12. Patterns TeaTree Should Adopt
 
 ### High Priority (directly applicable)
 
