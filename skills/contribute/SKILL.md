@@ -38,7 +38,7 @@ Uses these `~/.teatree` variables (set by `/t3:setup`):
 
 Do **not** push retro commits with `git push` directly. This skill:
 
-1. Creates a dedicated branch (never pushes to main)
+1. Ensures commits are on a feature branch (never pushes to main)
 2. Runs pre-flight checks (pre-commit, tests, privacy scan)
 3. Requires explicit user confirmation before every push
 4. Opens a PR for review
@@ -70,17 +70,22 @@ If there is **more than one** unpushed commit, offer to squash following the can
 5. **All tests pass:** `cd "$T3_REPO" && uv run pytest` — must be green.
 6. **Privacy scan passes:** see `t3:retro` § Privacy Scan. Scan the diff of unpushed commits.
 
-### 3. Create Branch
+### 3. Verify Branch
 
-If not already on a non-main branch, create one:
+Retro commits should already be on the session's working branch (see `t3:retro` § Branch Selection). Verify you're not on `main`:
 
 ```bash
 cd "$T3_REPO"
-BRANCH="retro/$(date +%Y%m%d)-$(git log -1 --format=%s | sed 's/[^a-zA-Z0-9]/-/g' | head -c 50)"
-git checkout -b "$BRANCH"
+DEFAULT=$(git config init.defaultBranch || echo main)
+[ "$(git branch --show-current)" = "$DEFAULT" ] && echo "ERROR: on default branch" && exit 1
 ```
 
-If already on a feature/retro branch, reuse it.
+If somehow on `main` (shouldn't happen — retro handles branch selection), create a new branch:
+
+```bash
+BRANCH="fix/retro-$(date +%Y%m%d)-$(git log -1 --format=%s | sed 's/[^a-zA-Z0-9]/-/g' | head -c 50)"
+git checkout -b "$BRANCH"
+```
 
 ### 4. Push Confirmation (Non-Negotiable)
 
