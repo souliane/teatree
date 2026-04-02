@@ -16,6 +16,12 @@ from tests.teatree_core.conftest import CommandOverlay
 _MOCK_OVERLAY = {"test": CommandOverlay()}
 
 
+class _MockDjangoTask:
+    @staticmethod
+    def enqueue(*_args: object, **_kwargs: object) -> None:
+        pass
+
+
 # ---------------------------------------------------------------------------
 # DashboardView
 # ---------------------------------------------------------------------------
@@ -52,6 +58,27 @@ class TestDashboardView(TestCase):
         assert b"In-Flight Tickets" in response.content
         assert b"Action Required" in response.content
         assert b"hx-get" in response.content
+
+    def test_renders_with_overlay_param(self) -> None:
+        response = Client().get(reverse("teatree:dashboard") + "?overlay=test")
+        assert response.status_code == 200
+        assert b"TeaTree Runtime" in response.content
+
+    def test_renders_with_known_overlay_uses_overlay_logo(self) -> None:
+        overlay = CommandOverlay()
+        overlay.config = type(overlay.config)()
+        overlay.config.dashboard_logo = "/static/custom-logo.svg"
+        mock_overlays = {"test": overlay}
+        with patch("teatree.core.views.dashboard.get_all_overlays", return_value=mock_overlays):
+            response = Client().get(reverse("teatree:dashboard") + "?overlay=test")
+        assert response.status_code == 200
+        assert response.context["logo_url"] == "/static/custom-logo.svg"
+
+    def test_renders_with_known_overlay_falls_back_to_default_logo(self) -> None:
+        with patch("teatree.core.views.dashboard.get_all_overlays", return_value=_MOCK_OVERLAY):
+            response = Client().get(reverse("teatree:dashboard") + "?overlay=test")
+        assert response.status_code == 200
+        assert "teatree-logo.svg" in response.context["logo_url"]
 
     def test_renders_sync_button(self) -> None:
         response = Client().get(reverse("teatree:dashboard"))
@@ -452,25 +479,20 @@ class TestCreateTaskView(TestCase):
         session = Session.objects.get(ticket=ticket)
         assert session.agent_id == "dashboard"
 
-    def test_headless_already_claimed_returns_409(self) -> None:
-        """When claim() raises InvalidTransitionError, returns 409."""
-        from teatree.core.models import InvalidTransitionError  # noqa: PLC0415
-
+    def test_headless_enqueues_without_claiming(self) -> None:
+        """Headless tasks are enqueued without immediate claim — worker claims on pickup."""
         ticket = Ticket.objects.create(overlay="test", state=Ticket.State.STARTED)
         Session.objects.create(ticket=ticket, overlay="test", agent_id="agent")
 
-        def _raise_claimed(self: object, *, claimed_by: str, **_kw: object) -> None:
-            msg = "Task already claimed"
-            raise InvalidTransitionError(msg)
-
-        with patch.object(Task, "claim", _raise_claimed):
+        with patch.object(tasks_mod, "execute_headless_task", _MockDjangoTask):
             response = Client().post(
                 reverse("teatree:ticket-create-task", args=[ticket.pk]),
                 {"phase": "coding", "target": Task.ExecutionTarget.HEADLESS},
             )
 
-        assert response.status_code == 409
-        assert response.json()["error"] == "Task already claimed"
+        assert response.status_code == 200
+        task = Task.objects.latest("pk")
+        assert task.status == Task.Status.PENDING  # Not claimed until worker picks it up
 
     def test_headless_enqueue_failure_fails_task(self) -> None:
         ticket = Ticket.objects.create(overlay="test", state=Ticket.State.STARTED)

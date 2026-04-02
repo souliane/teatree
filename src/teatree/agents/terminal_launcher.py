@@ -25,16 +25,11 @@ class LaunchResult:
     mode: str = ""
 
 
-def launch(command: list[str], *, mode: str = "ttyd", cwd: str = "") -> LaunchResult:
+def launch(command: list[str], *, mode: str = "ttyd", cwd: str = "", app: str = "") -> LaunchResult:
     """Launch a command in the configured terminal mode."""
-    launchers = {
-        "ttyd": _launch_ttyd,
-        "browser": _launch_ttyd,
-        "new-window": _launch_native_window,
-        "new-tab": _launch_native_tab,
-    }
-    launcher = launchers.get(mode, _launch_ttyd)
-    return launcher(command, cwd=cwd)
+    if mode == "new-window":
+        return _launch_native_window(command, cwd=cwd, app=app)
+    return _launch_ttyd(command, cwd=cwd)
 
 
 def _launch_ttyd(command: list[str], *, cwd: str = "") -> LaunchResult:
@@ -58,60 +53,53 @@ def _launch_ttyd(command: list[str], *, cwd: str = "") -> LaunchResult:
     return LaunchResult(launch_url=launch_url, pid=proc.pid, mode="ttyd")
 
 
-def _launch_native_window(command: list[str], *, cwd: str = "") -> LaunchResult:
+def _launch_native_window(command: list[str], *, cwd: str = "", app: str = "") -> LaunchResult:
     cmd_str = " ".join(command)
 
     if sys.platform == "darwin":
-        return _launch_macos_window(cmd_str, cwd=cwd)
-    return _launch_linux_window(cmd_str, cwd=cwd)
+        return _launch_macos_window(cmd_str, cwd=cwd, app=app)
+    return _launch_linux_window(cmd_str, cwd=cwd, app=app)
 
 
-def _launch_native_tab(command: list[str], *, cwd: str = "") -> LaunchResult:
-    term_program = os.environ.get("TERM_PROGRAM", "")
-    cmd_str = " ".join(command)
+_MACOS_APP_NAMES: dict[str, str] = {
+    "iterm2": "iTerm",
+    "iterm": "iTerm",
+    "terminal": "Terminal",
+    "kitty": "kitty",
+    "alacritty": "Alacritty",
+    "wezterm": "WezTerm",
+}
 
-    if sys.platform == "darwin" and term_program == "iTerm.app":
-        return _launch_iterm_tab(cmd_str, cwd=cwd)
 
-    # Fall back to new window for unsupported terminals
-    return _launch_native_window(command, cwd=cwd)
-
-
-def _launch_macos_window(cmd_str: str, *, cwd: str = "") -> LaunchResult:
+def _launch_macos_window(cmd_str: str, *, cwd: str = "", app: str = "") -> LaunchResult:
     cd_prefix = f"cd {cwd} && " if cwd else ""
-    script = f'tell application "Terminal" to do script "{cd_prefix}{cmd_str}"'
-    proc = subprocess.Popen(  # noqa: S603
-        ["osascript", "-e", script],  # noqa: S607
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
-    )
-    logger.info("Launched native macOS Terminal window (pid=%d)", proc.pid)
-    return LaunchResult(pid=proc.pid, mode="new-window")
+    app_name = _MACOS_APP_NAMES.get(app.lower(), "Terminal")
 
-
-def _launch_iterm_tab(cmd_str: str, *, cwd: str = "") -> LaunchResult:
-    cd_prefix = f"cd {cwd} && " if cwd else ""
-    script = f"""
-    tell application "iTerm"
-        tell current window
-            create tab with default profile
-            tell current session
+    if app_name == "iTerm":
+        script = f"""
+        tell application "iTerm"
+            create window with default profile
+            tell current session of current window
                 write text "{cd_prefix}{cmd_str}"
             end tell
         end tell
-    end tell
-    """
+        """
+    else:
+        script = f'tell application "{app_name}" to do script "{cd_prefix}{cmd_str}"'
+
     proc = subprocess.Popen(  # noqa: S603
         ["osascript", "-e", script],  # noqa: S607
         stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
     )
-    logger.info("Launched iTerm2 tab (pid=%d)", proc.pid)
-    return LaunchResult(pid=proc.pid, mode="new-tab")
+    logger.info("Launched %s window (pid=%d)", app_name, proc.pid)
+    return LaunchResult(pid=proc.pid, mode="new-window")
 
 
-def _launch_linux_window(cmd_str: str, *, cwd: str = "") -> LaunchResult:
-    terminal = _detect_linux_terminal()
+def _launch_linux_window(cmd_str: str, *, cwd: str = "", app: str = "") -> LaunchResult:
+    terminal = shutil.which(app) if app else None
+    if not terminal:
+        terminal = _detect_linux_terminal()
     if not terminal:
         logger.error("No terminal emulator found on PATH")
         return LaunchResult(mode="new-window")

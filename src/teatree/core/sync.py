@@ -24,6 +24,16 @@ _REPO_PATH_RE = re.compile(r"gitlab\.com/(.+?)/-/merge_requests/")
 logger = logging.getLogger(__name__)
 
 
+def _overlay_name(overlay: object) -> str:
+    """Reverse-lookup the registered name for an overlay instance."""
+    from teatree.core.overlay_loader import get_all_overlays  # noqa: PLC0415
+
+    for name, ov in get_all_overlays().items():
+        if ov is overlay:
+            return name
+    return ""
+
+
 @dataclass(slots=True)
 class SyncResult:
     mrs_found: int = 0
@@ -141,6 +151,7 @@ def _sync_gitlab(overlay: object) -> SyncResult:
     if not isinstance(overlay, OverlayBase):
         return SyncResult(errors=["Invalid overlay"])
 
+    overlay_name = _overlay_name(overlay)
     token = overlay.config.get_gitlab_token()
     client = GitLabAPI(token=token)
     username = overlay.config.get_gitlab_username() or client.current_username()
@@ -169,10 +180,11 @@ def _sync_gitlab(overlay: object) -> SyncResult:
             if project_id
             else None
         )
-        _upsert_ticket_from_mr(mr, repo_path, client, project, result, username=username)
+        _upsert_ticket_from_mr(mr, repo_path, client, project, result, username=username, overlay_name=overlay_name)
 
     _fetch_issue_labels(client, result)
     _detect_merged_mrs(client, username, result, last_sync)
+    _fetch_review_permalinks(result)
 
     cache.set(LAST_SYNC_CACHE_KEY, sync_started_at.isoformat(), timeout=None)
 
@@ -194,6 +206,7 @@ def _upsert_ticket_from_mr(  # noqa: PLR0913, PLR0914
     result: SyncResult,
     *,
     username: str = "",
+    overlay_name: str = "",
 ) -> None:
     issue_url = _extract_issue_url(mr)
     web_url = str(mr.get("web_url", ""))
@@ -225,6 +238,10 @@ def _upsert_ticket_from_mr(  # noqa: PLR0913, PLR0914
         discussions = client.get_mr_discussions(project.project_id, mr_iid)
         mr_entry["discussions"] = _classify_discussions(discussions, username)
 
+        e2e_url = _detect_e2e_evidence(discussions, web_url)
+        if e2e_url:
+            mr_entry["e2e_test_plan_url"] = e2e_url
+
     # Reviewer info is available on all MRs (including drafts)
     reviewers = mr.get("reviewers", [])
     if isinstance(reviewers, list):
@@ -240,6 +257,7 @@ def _upsert_ticket_from_mr(  # noqa: PLR0913, PLR0914
             repos=[repo_short],
             extra={"mrs": {web_url: mr_entry}},
             state=inferred_state,
+            overlay=overlay_name,
         )
         result.tickets_created += 1
     else:
@@ -247,6 +265,9 @@ def _upsert_ticket_from_mr(  # noqa: PLR0913, PLR0914
         for dup in tickets[1:]:
             _merge_ticket_extras(ticket, dup)
             dup.delete()
+        if overlay_name and not ticket.overlay:
+            ticket.overlay = overlay_name
+            ticket.save(update_fields=["overlay"])
         _update_ticket(ticket, mr_entry, web_url, repo_short, inferred_state)
         result.tickets_updated += 1
 
@@ -283,6 +304,33 @@ def _classify_discussions(
 
         result.append({"status": status, "detail": first_body[:120]})
     return result
+
+
+_E2E_EVIDENCE_RE = re.compile(
+    r"e2e|test.?evidence|playwright|screenshot|side.by.side|figma",
+    re.IGNORECASE,
+)
+
+
+def _detect_e2e_evidence(discussions: list[dict[str, object]], mr_url: str) -> str:
+    """Scan MR discussion notes for E2E test evidence. Returns the note URL or empty string."""
+    for disc in discussions:
+        if not isinstance(disc, dict):
+            continue
+        notes = disc.get("notes", [])
+        if not isinstance(notes, list):
+            continue
+        for note in notes:
+            if not isinstance(note, dict):
+                continue
+            body = str(note.get("body", ""))  # ty: ignore[no-matching-overload]
+            # Check for E2E keywords or embedded images (common in evidence posts)
+            has_image = "![" in body or "/uploads/" in body
+            has_keyword = bool(_E2E_EVIDENCE_RE.search(body))
+            if has_keyword and has_image:
+                note_id = note.get("id")  # ty: ignore[invalid-argument-type]
+                return f"{mr_url}#note_{note_id}" if note_id else mr_url
+    return ""
 
 
 _SKILL_WRITTEN_FIELDS = ("review_channel", "review_permalink", "e2e_test_plan_url", "notion_status", "notion_url")
@@ -368,16 +416,19 @@ def _apply_merged_status(ticket: Ticket, merged_urls: set[str], result: SyncResu
         else:
             all_merged = False
 
-    if not changed:
+    if not changed and not all_merged:
         return
 
-    extra["mrs"] = mrs
-    ticket.extra = extra
-    update_fields = ["extra"]
+    update_fields: list[str] = []
+    if changed:
+        extra["mrs"] = mrs
+        ticket.extra = extra
+        update_fields.append("extra")
     if all_merged and _STATE_ORDER.index(Ticket.State.MERGED) > _STATE_ORDER.index(ticket.state):
         ticket.state = Ticket.State.MERGED
         update_fields.append("state")
-    ticket.save(update_fields=update_fields)
+    if update_fields:
+        ticket.save(update_fields=update_fields)
 
 
 def _detect_merged_mrs(
@@ -406,6 +457,8 @@ _ISSUE_PARTS_RE = re.compile(r"gitlab\.com/(.+?)/-/(?:issues|work_items)/(\d+)")
 
 def _resolve_issue(client: "GitLabAPI", issue_url: str) -> tuple[dict, str, int] | None:
     """Parse a GitLab issue/work-item URL and fetch the issue. Returns (issue, project_path, iid) or None."""
+    import httpx  # noqa: PLC0415
+
     match = _ISSUE_PARTS_RE.search(issue_url)
     if not match:
         return None
@@ -416,7 +469,11 @@ def _resolve_issue(client: "GitLabAPI", issue_url: str) -> tuple[dict, str, int]
     project = client.resolve_project(project_path)
     if not project:
         return None
-    issue = client.get_issue(project.project_id, iid)
+    try:
+        issue = client.get_issue(project.project_id, iid)
+    except httpx.HTTPStatusError as exc:
+        logger.warning("Failed to fetch issue %s#%d: %s", project_path, iid, exc)
+        return None
     return (issue, project_path, iid) if issue else None
 
 
