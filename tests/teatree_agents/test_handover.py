@@ -19,6 +19,18 @@ from teatree.agents.handover import (
     should_suggest_handover,
 )
 
+_TWO_RUNTIME_CONFIG = [
+    {
+        "runtime": "claude-code",
+        "telemetry": {
+            "provider": "claude-statusline",
+            "switch_away_at_percent": 95,
+            "switch_back_at_percent": 80,
+        },
+    },
+    {"runtime": "codex"},
+]
+
 # --- get_claude_statusline_state_dir ---
 
 
@@ -135,12 +147,19 @@ def test_get_runtime_policy_not_found() -> None:
 # --- _get_next_runtime ---
 
 
+@override_settings(TEATREE_AGENT_HANDOVER=_TWO_RUNTIME_CONFIG)
 def test_get_next_runtime_exists() -> None:
     assert _get_next_runtime("claude-code") == "codex"
 
 
+@override_settings(TEATREE_AGENT_HANDOVER=_TWO_RUNTIME_CONFIG)
 def test_get_next_runtime_last_in_list() -> None:
     assert _get_next_runtime("codex") == ""
+
+
+def test_get_next_runtime_default_config() -> None:
+    """Default config has claude-code and codex; next after claude-code is codex."""
+    assert _get_next_runtime("claude-code") == "codex"
 
 
 def test_get_next_runtime_unknown() -> None:
@@ -169,6 +188,7 @@ def test_switch_threshold_valid() -> None:
     assert threshold == 95
 
 
+@override_settings(TEATREE_AGENT_HANDOVER=_TWO_RUNTIME_CONFIG)
 def test_switch_threshold_no_telemetry() -> None:
     threshold = _get_switch_threshold("codex", "switch_away_at_percent")
     assert threshold is None
@@ -307,6 +327,7 @@ def test_should_suggest_handover_empty_telemetry() -> None:
     assert should_suggest_handover({}, runtime="claude-code") is False
 
 
+@override_settings(TEATREE_AGENT_HANDOVER=_TWO_RUNTIME_CONFIG)
 def test_should_suggest_handover_no_threshold() -> None:
     telemetry = {"five_hour_used_percentage": 96}
     assert should_suggest_handover(telemetry, runtime="codex") is False
@@ -325,6 +346,7 @@ def test_should_suggest_handover_missing_used_key() -> None:
 # --- get_recommended_runtime ---
 
 
+@override_settings(TEATREE_AGENT_HANDOVER=_TWO_RUNTIME_CONFIG)
 def test_recommended_runtime_triggers_handover() -> None:
     telemetry = {"five_hour_used_percentage": 96}
     assert get_recommended_runtime("claude-code", telemetry) == "codex"
@@ -335,12 +357,14 @@ def test_recommended_runtime_no_handover_needed() -> None:
     assert get_recommended_runtime("claude-code", telemetry) == ""
 
 
+@override_settings(TEATREE_AGENT_HANDOVER=_TWO_RUNTIME_CONFIG)
 def test_recommended_runtime_recovery_switch_back() -> None:
     """When on fallback runtime and preferred has recovered, switch back."""
     telemetry = {"five_hour_used_percentage": 70}
     assert get_recommended_runtime("codex", telemetry) == "claude-code"
 
 
+@override_settings(TEATREE_AGENT_HANDOVER=_TWO_RUNTIME_CONFIG)
 def test_recommended_runtime_recovery_still_high() -> None:
     """When on fallback but preferred usage still high, stay on fallback."""
     telemetry = {"five_hour_used_percentage": 90}
@@ -352,6 +376,7 @@ def test_recommended_runtime_already_preferred() -> None:
     assert get_recommended_runtime("claude-code", telemetry) == ""
 
 
+@override_settings(TEATREE_AGENT_HANDOVER=_TWO_RUNTIME_CONFIG)
 def test_recommended_runtime_no_telemetry() -> None:
     assert get_recommended_runtime("codex", None) == ""
 
@@ -418,6 +443,7 @@ def test_build_status_without_telemetry(tmp_path: Path) -> None:
     assert status["session_id"] == ""
 
 
+@override_settings(TEATREE_AGENT_HANDOVER=_TWO_RUNTIME_CONFIG)
 def test_build_status_with_current_runtime(tmp_path: Path) -> None:
     status = build_claude_handover_status(current_runtime="codex", state_dir=tmp_path)
     assert status["current_runtime"] == "codex"
@@ -432,6 +458,7 @@ def test_build_status_with_session_id(tmp_path: Path) -> None:
     assert status["session_id"] == "explicit-session"
 
 
+@override_settings(TEATREE_AGENT_HANDOVER=_TWO_RUNTIME_CONFIG)
 def test_build_status_handover_triggered(tmp_path: Path) -> None:
     data = {"session_id": "s1", "five_hour_used_percentage": 96}
     path = tmp_path / "latest-telemetry.json"

@@ -43,7 +43,7 @@ class TestSyncFollowup(TestCase):
 
         errors = result.return_value["errors"]
         assert len(errors) == 1
-        assert "No code host token configured" in errors[0]
+        assert "No code host token for" in errors[0]
 
 
 class TestExecuteHeadlessTask(TestCase):

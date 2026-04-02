@@ -137,3 +137,13 @@ class TestLaunchWebSession(TestCase):
             call_args = popen_mock.call_args[0][0]
             assert "--append-system-prompt" in call_args
             assert "--resume" not in call_args
+
+
+def test_detect_available_apps_returns_list() -> None:
+    from teatree.agents.terminal_launcher import detect_available_apps  # noqa: PLC0415
+
+    apps = detect_available_apps()
+    assert isinstance(apps, list)
+    for value, label in apps:
+        assert isinstance(value, str)
+        assert isinstance(label, str)

@@ -363,7 +363,7 @@ class TestRunWithHeartbeat(TestCase):
         task.renew_lease = counting_renew
 
         def slow_subprocess(*_args: object, **_kwargs: object) -> CompletedProcess[str]:
-            time.sleep(0.2)
+            time.sleep(0.4)
             return CompletedProcess([], 0, "done", "")
 
         with (
