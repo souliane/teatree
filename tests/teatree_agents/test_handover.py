@@ -61,10 +61,9 @@ def test_state_dir_reads_settings() -> None:
 
 def test_default_handover_config() -> None:
     config = get_agent_handover_config()
-    assert len(config) == 2
+    assert len(config) == 1
     assert config[0]["runtime"] == "claude-code"
     assert "telemetry" in config[0]
-    assert config[1]["runtime"] == "codex"
 
 
 @override_settings(TEATREE_AGENT_HANDOVER="not-a-list")
@@ -158,8 +157,8 @@ def test_get_next_runtime_last_in_list() -> None:
 
 
 def test_get_next_runtime_default_config() -> None:
-    """Default config has claude-code and codex; next after claude-code is codex."""
-    assert _get_next_runtime("claude-code") == "codex"
+    """Default config has only claude-code; no next runtime."""
+    assert _get_next_runtime("claude-code") == ""
 
 
 def test_get_next_runtime_unknown() -> None:
@@ -472,4 +471,4 @@ def test_build_status_handover_triggered(tmp_path: Path) -> None:
 def test_build_status_includes_agent_handover_config(tmp_path: Path) -> None:
     status = build_claude_handover_status(state_dir=tmp_path)
     assert isinstance(status["agent_handover"], list)
-    assert len(status["agent_handover"]) == 2
+    assert len(status["agent_handover"]) == 1

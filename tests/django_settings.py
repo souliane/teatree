@@ -65,7 +65,4 @@ TEATREE_AGENT_HANDOVER = [
             "switch_back_at_percent": 80,
         },
     },
-    {
-        "runtime": "codex",
-    },
 ]
