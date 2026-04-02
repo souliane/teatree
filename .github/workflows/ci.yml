@@ -56,6 +56,6 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
-      - run: uv sync --group e2e
+      - run: uv sync
       - run: uv run playwright install --with-deps chromium
       - run: uv run t3 teatree run e2e-local --no-docker
