@@ -55,9 +55,7 @@ class DashboardView(View):
         except Exception:  # noqa: BLE001
             git_sha, git_branch = "", ""
         all_overlays = get_all_overlays()
-        import inspect  # noqa: PLC0415
-
-        overlay_paths = {name: inspect.getfile(type(ov)) for name, ov in all_overlays.items()}
+        overlay_paths = {name: type(ov).__module__ for name, ov in all_overlays.items()}
         overlays = sorted(all_overlays)
         teatree_logo = static("teatree/img/teatree-logo.svg")
         overlay_logos = {name: ov.config.get_dashboard_logo() or teatree_logo for name, ov in all_overlays.items()}
