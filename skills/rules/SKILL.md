@@ -103,6 +103,14 @@ When an MR targets a non-default branch, that is intentional — it means the MR
 
 Destroying MR dependency chains wastes hours of carefully organized work.
 
+## Always Create Tasks (Non-Negotiable)
+
+On **every prompt**, use `TaskCreate` to create tasks before doing any work — even for a single task. Mark each task `in_progress` when starting, `completed` when done. Never skip this. Visible task tracking prevents forgotten steps and shows the user your progress.
+
+## Always Use AskUserQuestion for Questions (Non-Negotiable)
+
+**Never ask questions inline in text responses.** Always use the `AskUserQuestion` tool — it gives the user a structured UI to respond and prevents questions from being buried in output. One question at a time; wait for the answer before asking the next.
+
 ## Never Push Without Separate Explicit Approval (Non-Negotiable)
 
 Commit approval ≠ push approval. Always ask "Push?" as a **separate question** after committing. This applies to all repos, all contexts — even when the user said "yes" to committing. (Safety net — source: `t3:ship § Never push without explicit approval`)

@@ -41,24 +41,24 @@ Priority order:
 1. User explicitly says the phase ("test this", "ship it", "review the code")
 2. Ticket status maps to a phase:
 
-   | Status | Phase | Agent |
+ | Status | Phase | Agent |
    |--------|-------|-------|
-   | not_started, scoped | intake | (handle directly — create worktree) |
-   | started | coding | @coder |
-   | coded | testing | @tester |
-   | tested | reviewing | @reviewer |
-   | reviewed | shipping | @shipper |
-   | shipped, in_review, merged | debugging | @debugger |
+ | not_started, scoped | intake | (handle directly — create worktree) |
+ | started | coding | @coder |
+ | coded | testing | @tester |
+ | tested | reviewing | @reviewer |
+ | reviewed | shipping | @shipper |
+ | shipped, in_review, merged | debugging | @debugger |
 
 3. Intent keywords in the user's message:
 
-   | Keywords | Agent |
+ | Keywords | Agent |
    |----------|-------|
-   | debug, fix, error, broken, crash | @debugger |
-   | test, pytest, e2e, lint, ci, qa | @tester |
-   | commit, push, ship, mr, merge request | @shipper |
-   | review, feedback, check the code | @reviewer |
-   | code, implement, build, feature | @coder |
+ | debug, fix, error, broken, crash | @debugger |
+ | test, pytest, e2e, lint, ci, qa | @tester |
+ | commit, push, ship, mr, merge request | @shipper |
+ | review, feedback, check the code | @reviewer |
+ | code, implement, build, feature | @coder |
 
 4. Ask the user if no match.
 

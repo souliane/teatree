@@ -144,7 +144,7 @@ glab api "projects/<URL-ENCODED-PROJECT>/merge_requests/<IID>/commits"
 
 ```bash
 glab api "projects/<PROJECT_ID>/merge_requests/<IID>/approvals" \
-  | python3 -c "import sys,json; d=json.load(sys.stdin); print('approved' if d.get('approved') else 'pending')"
+ | python3 -c "import sys,json; d=json.load(sys.stdin); print('approved' if d.get('approved') else 'pending')"
 ```
 
 ### List MR Notes
@@ -177,7 +177,7 @@ uv run t3 review delete-draft-note <REPO> <MR_IID> <NOTE_ID>
 
 ### Key Differences from `/discussions`
 
-| | `/discussions` | `/draft_notes` |
+|  | `/discussions` | `/draft_notes` |
 |---|---|---|
 | Field name | `"body"` | `"note"` |
 | Visibility | Immediately visible to everyone | Only visible to author until submitted |
@@ -192,7 +192,7 @@ Never target a context line (an unchanged line in `@@` hunk headers). GitLab ren
 ```bash
 # Extract added line numbers for a specific file from a unified diff
 glab mr diff <IID> -R <repo> 2>/dev/null \
-  | python3 -c "
+ | python3 -c "
 import sys, re
 target_file = '<file_path>'  # relative to repo root
 in_target = False

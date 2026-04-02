@@ -60,7 +60,7 @@ Always present **two tables** before posting:
 
 | MR | Title | CI | validate_mr | Review asked? | Ready? |
 |---|---|---|---|---|---|
-| [!123](https://example.com/mrs/123) | fix(scope): description | ✅/❌/🔄 | ✅/❌ reason | [link](https://example.com/chat/review-requests/123) / ❌ | ✅/⏳/❌ |
+| [!123](https://example.com/mrs/123) | fix(scope): description | ✅/❌/🔄 | ✅/❌ reason | [review request](https://example.com/chat/review-requests/123) / ❌ | ✅/⏳/❌ |
 
 - MR column: clickable link
 - CI: ✅ green, ❌ failed, 🔄 running

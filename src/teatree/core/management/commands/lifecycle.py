@@ -243,11 +243,17 @@ class Command(TyperCommand):
         path: str = typer.Option("", help="Worktree path (auto-detects from PWD if empty)."),
         overlay: str = typer.Option("", help="Overlay name (auto-detects if empty)."),
     ) -> str:
-        """Start Docker services + app servers (background), then transition FSM."""
+        """Start Docker services + app servers (background), then transition FSM.
+
+        Safe to re-run: kills existing processes before launching new ones.
+        """
         if overlay:
             os.environ["T3_OVERLAY_NAME"] = overlay
         worktree = resolve_worktree(path)
         resolved_overlay = get_overlay()
+
+        # Kill stale processes from a previous start (safe if none exist)
+        self._kill_worktree_processes(worktree)
 
         self._start_docker_services(worktree, resolved_overlay)
 
@@ -291,6 +297,93 @@ class Command(TyperCommand):
             "repo_path": worktree.repo_path,
             "branch": worktree.branch,
         }
+
+    def _kill_worktree_processes(self, worktree: Worktree) -> list[str]:
+        """Kill app processes from a previous ``start`` run.
+
+        Returns the list of service names whose PIDs were found and signalled.
+        """
+        import signal as sig  # noqa: PLC0415
+
+        extra = dict(worktree.extra or {})
+        pids: dict[str, int] = extra.get("pids", {})
+        killed: list[str] = []
+        for service_name, pid in pids.items():
+            try:
+                os.kill(pid, sig.SIGTERM)
+                killed.append(service_name)
+                self.stdout.write(f"  Stopped {service_name} (pid {pid})")
+            except ProcessLookupError:
+                self.stdout.write(f"  {service_name} already stopped (pid {pid})")
+            except PermissionError:
+                self.stderr.write(f"  WARNING: cannot kill {service_name} (pid {pid}) — permission denied")
+        if killed:
+            time.sleep(2)  # give processes time to clean up
+        extra.pop("pids", None)
+        extra.pop("failed_services", None)
+        worktree.extra = extra
+        worktree.save()
+        return killed
+
+    @command()
+    def restart(
+        self,
+        path: str = typer.Option("", help="Worktree path (auto-detects from PWD if empty)."),
+        overlay: str = typer.Option("", help="Overlay name (auto-detects if empty)."),
+    ) -> str:
+        """Kill existing processes and restart all services.
+
+        Use after ``git pull`` or code changes when the worktree is already
+        provisioned.  Re-runs pre-run steps (patches customer.json, syncs
+        translations, etc.) and launches fresh processes.
+        """
+        if overlay:
+            os.environ["T3_OVERLAY_NAME"] = overlay
+        worktree = resolve_worktree(path)
+
+        if worktree.state == Worktree.State.CREATED:
+            self.stdout.write("  Worktree not provisioned — running setup + start instead.")
+            self.setup(path=path, overlay=overlay)
+            return self.start(path=path, overlay=overlay)
+
+        resolved_overlay = get_overlay()
+
+        # 1. Kill old processes
+        self._kill_worktree_processes(worktree)
+
+        # 2. Start docker services (idempotent)
+        self._start_docker_services(worktree, resolved_overlay)
+
+        # 3. Re-run pre-run steps and launch fresh
+        commands = resolved_overlay.get_run_commands(worktree)
+        for service_name in commands:
+            for step in resolved_overlay.get_pre_run_steps(worktree, service_name):
+                self.stdout.write(f"  Preparing: {step.name}")
+                step.callable()
+
+        write_env_worktree(worktree)
+        env = {**os.environ, **resolved_overlay.get_env_extra(worktree)}
+        env.pop("VIRTUAL_ENV", None)
+
+        ticket_dir = (worktree.extra or {}).get("worktree_path", "")
+        log_dir = Path(ticket_dir) / "logs" if ticket_dir else Path("/tmp")  # noqa: S108
+        log_dir.mkdir(parents=True, exist_ok=True)
+
+        pids, failed = self._launch_app_processes(commands, env, log_dir)
+
+        worktree.start_services(services=list(commands))
+        extra = dict(worktree.extra or {})
+        extra["pids"] = pids
+        if failed:
+            extra["failed_services"] = failed
+        worktree.extra = extra
+        worktree.save()
+
+        if failed:
+            self.stderr.write(f"  WARNING: {len(failed)} service(s) failed: {', '.join(failed)}")
+            return f"restarted with {len(failed)} failure(s)"
+
+        return worktree.state
 
     @command()
     def teardown(self, path: str = typer.Option("", help="Worktree path (auto-detects from PWD if empty).")) -> str:

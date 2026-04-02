@@ -27,7 +27,7 @@ This is Skill-Driven Development — a workflow where the human's primary job sh
 
 The parallel to Test-Driven Development is deliberate — and deeper than it first appears:
 
-| | TDD | SDD |
+|  | TDD | SDD |
 |---|-----|-----|
 | **Write** | Write the test first | Write the skill first |
 | **Run** | Run the code | Let the agent produce the code |
