@@ -104,6 +104,7 @@
       else { localStorage.removeItem('teatree_overlay'); }
       document.querySelectorAll('[hx-get]').forEach(function(el) {
         el.setAttribute('hx-get', appendOverlay(el.getAttribute('hx-get')));
+        htmx.process(el);
       });
       var logo = document.getElementById('dashboard-logo');
       if (logo) { logo.src = (value && _overlayLogos[value]) ? _overlayLogos[value] : _defaultLogo; }
@@ -222,7 +223,14 @@
     hx-swap="outerHTML"
     hx-on::after-request="htmx.trigger(document.body, 'refreshPanels')"
   ></div>
-  {% if git_sha %}<div class="fixed top-2 right-3 z-40 rounded-full border border-bark/10 bg-cream/90 px-2.5 py-0.5 font-mono text-[10px] text-bark/40 backdrop-blur" title="{{ git_branch }}&#10;{% for name, path in overlay_paths.items %}{{ name }}: {{ path }}&#10;{% endfor %}">{{ git_sha }}</div>{% endif %}
+  {% if git_sha %}
+  <div class="fixed top-2 right-3 z-40 group">
+    <div class="rounded-full border border-bark/10 bg-cream/90 px-2.5 py-0.5 font-mono text-[10px] text-bark/40 backdrop-blur cursor-help">{{ git_sha }}</div>
+    <div class="hidden group-hover:block absolute right-0 mt-1 rounded-lg border border-bark/10 bg-cream px-3 py-2 font-mono text-[11px] text-bark/70 shadow-soft whitespace-pre">{{ git_branch }}
+{% for name, path in overlay_paths.items %}{{ name }}: {{ path }}
+{% endfor %}</div>
+  </div>
+  {% endif %}
   <main class="mx-auto max-w-7xl px-4 py-10 sm:px-6 lg:px-8">
     <header class="mb-4 flex items-center gap-4">
       {% if logo_url %}<img id="dashboard-logo" src="{{ logo_url }}" alt="" class="h-8" onerror="this.style.display='none'">{% endif %}
