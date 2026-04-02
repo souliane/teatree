@@ -176,6 +176,10 @@ def _sync_gitlab(overlay: object) -> SyncResult:
         )
         _upsert_ticket_from_mr(mr, repo_path, client, project, result, username=username, overlay_name=overlay_name)
 
+    # Backfill overlay on any in-flight tickets that still have it empty
+    if overlay_name:
+        Ticket.objects.in_flight().filter(overlay="").update(overlay=overlay_name)
+
     _fetch_issue_labels(client, result)
     _detect_merged_mrs(client, username, result, last_sync)
     _fetch_review_permalinks(result)
