@@ -92,6 +92,33 @@ def _register_new_repos(worktree: Worktree, stdout: OutputWrapper) -> None:
         stdout.write(f"  Discovered new repo: {entry.name}")
 
 
+def _resolve_typer_defaults(
+    variant: "str | object", overlay: "str | object", verbose: "bool | object"
+) -> tuple[str, str, bool]:
+    """Guard against typer.Option defaults when setup() is called as a Python method.
+
+    typer.Option("") evaluates to OptionInfo, not "" — resolve to real defaults.
+    """
+    return (
+        variant if isinstance(variant, str) else "",
+        overlay if isinstance(overlay, str) else "",
+        verbose if isinstance(verbose, bool) else False,
+    )
+
+
+def _update_ticket_variant(ticket: "Ticket", variant: str) -> None:
+    """Update ticket variant and recompute db_name for all worktrees."""
+    if not variant or ticket.variant == variant:
+        return
+    ticket.variant = variant
+    ticket.save(update_fields=["variant"])
+    for wt in ticket.worktrees.all():  # type: ignore[attr-defined]  # Django reverse relation
+        old_db = wt.db_name
+        wt.db_name = wt._build_db_name()  # noqa: SLF001
+        if wt.db_name != old_db:
+            wt.save(update_fields=["db_name"])
+
+
 class Command(TyperCommand):
     _DB_IMPORT_MAX_FAILURES = 3
     _verbose: bool = False
@@ -110,32 +137,14 @@ class Command(TyperCommand):
         Discovers repos added to the ticket directory since initial creation
         and provisions all worktrees for the ticket, not just the resolved one.
         """
-        # Guard against typer.Option defaults when called as a Python method
-        # (typer.Option("") evaluates to OptionInfo, not "")
-        if not isinstance(variant, str):
-            variant = ""
-        if not isinstance(overlay, str):
-            overlay = ""
-        self._verbose = verbose if isinstance(verbose, bool) else False
+        variant, overlay, verbose = _resolve_typer_defaults(variant, overlay, verbose)
+        self._verbose = verbose
         if overlay:
             os.environ["T3_OVERLAY_NAME"] = overlay
         worktree = resolve_worktree(path)
         ticket = Ticket.objects.get(pk=worktree.ticket.pk)
 
-        if variant and ticket.variant != variant:
-            ticket.variant = variant
-            ticket.save(update_fields=["variant"])
-            # Recompute db_name for all worktrees to match the new variant
-            for wt in ticket.worktrees.all():
-                old_db = wt.db_name
-                wt.db_name = wt._build_db_name()  # noqa: SLF001
-                if wt.db_name != old_db:
-                    wt.save(update_fields=["db_name"])
-
-        # Clear bad artifact markers so re-setup gets a fresh chance
-        from teatree.utils.bad_artifacts import clear_all as _clear_bad_artifacts  # noqa: PLC0415
-
-        _clear_bad_artifacts()
+        _update_ticket_variant(ticket, variant)
 
         # Discover repos added to the ticket directory since initial creation
         _register_new_repos(worktree, self.stdout)
