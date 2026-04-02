@@ -1,6 +1,12 @@
 from django.urls import path
 
-from teatree.core.views.actions import CancelTaskView, CreateTaskView, SyncFollowupView, TicketTransitionView
+from teatree.core.views.actions import (
+    CancelTaskView,
+    CreateTaskView,
+    GitPullView,
+    SyncFollowupView,
+    TicketTransitionView,
+)
 from teatree.core.views.dashboard import DashboardPanelView, DashboardView, TaskDetailView, TaskGraphView
 from teatree.core.views.history import SessionHistoryView
 from teatree.core.views.launch import LaunchAgentView, LaunchInteractiveAgentView, LaunchTerminalView
@@ -22,4 +28,5 @@ urlpatterns = [
     path("dashboard/launch-terminal/", LaunchTerminalView.as_view(), name="launch-terminal"),
     path("dashboard/launch-agent/", LaunchInteractiveAgentView.as_view(), name="launch-interactive-agent"),
     path("sessions/<str:session_id>/history/", SessionHistoryView.as_view(), name="session-history"),
+    path("dashboard/git-pull/", GitPullView.as_view(), name="dashboard-git-pull"),
 ]

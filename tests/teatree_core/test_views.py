@@ -1,3 +1,4 @@
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -526,3 +527,48 @@ class TestCreateTaskView(TestCase):
 
         task = Task.objects.get(ticket=ticket, phase="coding")
         assert task.status == Task.Status.FAILED
+
+
+class TestGitPullView(TestCase):
+    @pytest.fixture(autouse=True)
+    def _inject_tmp_path(self, tmp_path: Path) -> None:
+        self.tmp_path = tmp_path
+
+    def test_success_returns_output(self) -> None:
+        completed = __import__("subprocess").CompletedProcess([], 0, "Already up to date.\n", "")
+        with (
+            patch.object(actions_views, "_get_t3_repo", return_value=self.tmp_path),
+            patch("teatree.core.views.actions.subprocess") as mock_subprocess,
+        ):
+            mock_subprocess.run.return_value = completed
+            mock_subprocess.TimeoutExpired = __import__("subprocess").TimeoutExpired
+            response = Client().post(reverse("teatree:dashboard-git-pull"))
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["ok"] is True
+        assert "Already up to date" in data["output"]
+
+    def test_failure_returns_error_and_creates_task(self) -> None:
+        completed = __import__("subprocess").CompletedProcess([], 1, "", "fatal: not a git repository\n")
+        with (
+            patch.object(actions_views, "_get_t3_repo", return_value=self.tmp_path),
+            patch("teatree.core.views.actions.subprocess") as mock_subprocess,
+        ):
+            mock_subprocess.run.return_value = completed
+            mock_subprocess.TimeoutExpired = __import__("subprocess").TimeoutExpired
+            response = Client().post(reverse("teatree:dashboard-git-pull"))
+
+        assert response.status_code == 500
+        data = response.json()
+        assert "fatal" in data["error"]
+        assert data["task_created"] is True
+        task = Task.objects.get(phase="maintenance")
+        assert task.execution_target == Task.ExecutionTarget.INTERACTIVE
+        assert "git pull failed" in task.execution_reason
+
+    def test_missing_repo_returns_400(self) -> None:
+        with patch.object(actions_views, "_get_t3_repo", return_value=None):
+            response = Client().post(reverse("teatree:dashboard-git-pull"))
+
+        assert response.status_code == 400

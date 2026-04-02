@@ -177,7 +177,7 @@ class OverlayAppBuilder:
 
     def build(self) -> typer.Typer:
         """Build and return the fully-configured overlay Typer app."""
-        self._register_server_commands()
+        self._register_resetdb_command()
         self._register_worker_command()
         self._register_shortcut_commands()
         self._register_config_commands()
@@ -191,32 +191,11 @@ class OverlayAppBuilder:
         self._register_overlay_tools()
         return self.overlay_app
 
-    def _register_server_commands(self) -> None:
-        """Register dashboard, resetdb commands."""
+    def _register_resetdb_command(self) -> None:
+        """Register the resetdb command on the overlay sub-app."""
         project_path = self.project_path
         overlay_name = self.overlay_name
-        settings_module = self.settings_module
         overlay_app = self.overlay_app
-
-        @overlay_app.command()
-        def dashboard(
-            host: str = typer.Option("127.0.0.1", help="Host to bind to"),
-            port: int = typer.Option(8000, help="Port to serve on"),
-        ) -> None:
-            """Migrate the database and start the dashboard dev server."""
-            import socket  # noqa: PLC0415
-
-            managepy(project_path, "migrate", "--no-input", overlay_name=overlay_name)
-            actual_port = port
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                if s.connect_ex((host, port)) == 0:
-                    s2 = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                    s2.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                    s2.bind((host, 0))
-                    actual_port = s2.getsockname()[1]
-                    s2.close()
-                    typer.echo(f"Port {port} in use, using {actual_port}")
-            _uvicorn(project_path, host, actual_port, settings_module, overlay_name=overlay_name)
 
         @overlay_app.command()
         def resetdb() -> None:

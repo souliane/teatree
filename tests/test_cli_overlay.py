@@ -184,24 +184,29 @@ class TestOverlayAppBuilder:
 
 
 class TestOverlayCommands:
+    def _mock_active_overlay(self, tmp_path):
+        """Return a mock active overlay pointing at tmp_path."""
+        return config_mod.OverlayEntry(name="test", overlay_class="test.settings", project_path=tmp_path)
+
     def test_dashboard(self, tmp_path):
         """Dashboard command migrates and starts uvicorn."""
-        overlay_app = OverlayAppBuilder("test", tmp_path, "test.settings").build()
+        from teatree.cli import app  # noqa: PLC0415
+
         test_runner = CliRunner()
         (tmp_path / "manage.py").write_text("pass\n")
 
         with (
-            patch.object(cli_overlay_mod, "managepy") as mock_manage,
-            patch.object(cli_overlay_mod, "_uvicorn") as mock_uvicorn,
+            patch.object(cli_mod, "managepy") as mock_manage,
+            patch.object(cli_mod, "_uvicorn") as mock_uvicorn,
+            patch("teatree.cli.discover_active_overlay", return_value=self._mock_active_overlay(tmp_path)),
             patch("socket.socket") as mock_socket_cls,
         ):
-            # Port is free (connect_ex returns non-zero)
             mock_sock = MagicMock()
             mock_sock.connect_ex.return_value = 1
             mock_socket_cls.return_value.__enter__ = MagicMock(return_value=mock_sock)
             mock_socket_cls.return_value.__exit__ = MagicMock(return_value=False)
 
-            result = test_runner.invoke(overlay_app, ["dashboard"])
+            result = test_runner.invoke(app, ["dashboard"])
             assert result.exit_code == 0
             mock_manage.assert_called_once()
             mock_uvicorn.assert_called_once()
@@ -210,12 +215,11 @@ class TestOverlayCommands:
         """Dashboard falls back to a free port when default is in use."""
         import socket as _socket  # noqa: PLC0415
 
-        overlay_app = OverlayAppBuilder("test", tmp_path, "test.settings").build()
+        from teatree.cli import app  # noqa: PLC0415
+
         test_runner = CliRunner()
         (tmp_path / "manage.py").write_text("pass\n")
 
-        # We need to mock socket.socket to return different objects for
-        # the context manager socket and the ephemeral socket.
         context_sock = MagicMock()
         context_sock.connect_ex.return_value = 0  # port in use
 
@@ -228,23 +232,21 @@ class TestOverlayCommands:
             nonlocal call_count
             call_count += 1
             if call_count == 1:
-                # The context manager socket
                 cm = MagicMock()
                 cm.__enter__ = MagicMock(return_value=context_sock)
                 cm.__exit__ = MagicMock(return_value=False)
                 return cm
-            # The ephemeral socket for finding a free port
             return ephemeral_sock
 
         with (
-            patch.object(cli_overlay_mod, "managepy"),
-            patch.object(cli_overlay_mod, "_uvicorn") as mock_uvicorn,
+            patch.object(cli_mod, "managepy"),
+            patch.object(cli_mod, "_uvicorn") as mock_uvicorn,
+            patch("teatree.cli.discover_active_overlay", return_value=self._mock_active_overlay(tmp_path)),
             patch("socket.socket", side_effect=socket_factory),
         ):
-            result = test_runner.invoke(overlay_app, ["dashboard"])
+            result = test_runner.invoke(app, ["dashboard"])
             assert result.exit_code == 0
             assert "Port 8000 in use" in result.output
-            # Verify uvicorn was called with the fallback port
             assert mock_uvicorn.call_args[0][2] == 9999
 
     def test_resetdb(self, tmp_path, monkeypatch):
@@ -253,7 +255,6 @@ class TestOverlayCommands:
         overlay_app = OverlayAppBuilder("test", tmp_path, "test.settings").build()
         test_runner = CliRunner()
 
-        # Create fake db
         db_dir = tmp_path / "data" / "test"
         db_dir.mkdir(parents=True)
         db_path = db_dir / "db.sqlite3"
