@@ -8,11 +8,8 @@ from django.core.management import call_command
 from django.test import TestCase, override_settings
 
 import teatree.cli.overlay as cli_overlay_mod
-import teatree.core.management.commands.lifecycle as lifecycle_mod
 import teatree.core.management.commands.run as run_mod
-import teatree.core.models.worktree as worktree_model_mod
 import teatree.core.overlay_loader as overlay_loader_mod
-import teatree.utils.ports as ports_mod
 from teatree.core.models import Ticket, Worktree
 from tests.teatree_core.conftest import CommandOverlay
 
@@ -32,13 +29,20 @@ class TestRunCommand(TestCase):
             wt_dir.mkdir()
             wt_path = str(wt_dir)
             ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/20", variant="acme")
-            Worktree.objects.create(
+            wt = Worktree.objects.create(
                 ticket=ticket,
                 overlay="test",
                 repo_path="/tmp/backend",
                 branch="feature",
                 extra={"worktree_path": wt_path},
             )
+
+            # Manually advance FSM to SERVICES_UP (required for verify)
+            wt.provision()
+            wt.save()
+            wt.start_services(services=["backend", "frontend"])
+            wt.save()
+
             mock_resp = MagicMock()
             mock_resp.status = 200
             mock_resp.__enter__ = lambda s: s
@@ -46,20 +50,20 @@ class TestRunCommand(TestCase):
 
             with (
                 patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
-                patch.object(lifecycle_mod, "Popen") as mock_popen,
+                patch.object(
+                    run_mod,
+                    "get_worktree_ports",
+                    return_value={"backend": 8001, "frontend": 4201},
+                ),
                 patch.object(
                     run_mod.urllib.request,
                     "urlopen",
                     return_value=mock_resp,
                 ),
             ):
-                mock_popen.return_value = MagicMock(pid=12345, poll=MagicMock(return_value=None))
-                worktree_id = cast("int", call_command("lifecycle", "setup", path=wt_path))
-                call_command("lifecycle", "start", path=wt_path)
-
                 result = cast("dict[str, object]", call_command("run", "verify", path=wt_path))
 
-            worktree = Worktree.objects.get(pk=worktree_id)
+            worktree = Worktree.objects.get(pk=wt.pk)
             assert result["state"] == Worktree.State.READY
             assert isinstance(result["urls"], dict)
             assert worktree.state == Worktree.State.READY
@@ -81,23 +85,29 @@ class TestRunCommand(TestCase):
                 extra={"worktree_path": wt_path},
             )
 
+            # Manually advance FSM to SERVICES_UP
+            wt.provision()
+            wt.save()
+            wt.start_services(services=["backend", "frontend"])
+            wt.save()
+
             def _fail_urlopen(*_args: object, **_kwargs: object) -> None:
                 msg = "Connection refused"
                 raise OSError(msg)
 
             with (
                 patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
-                patch.object(lifecycle_mod, "Popen") as mock_popen,
+                patch.object(
+                    run_mod,
+                    "get_worktree_ports",
+                    return_value={"backend": 8001, "frontend": 4201},
+                ),
                 patch.object(
                     run_mod.urllib.request,
                     "urlopen",
                     side_effect=_fail_urlopen,
                 ),
             ):
-                mock_popen.return_value = MagicMock(pid=12345, poll=MagicMock(return_value=None))
-                cast("int", call_command("lifecycle", "setup", path=wt_path))
-                call_command("lifecycle", "start", path=wt_path)
-
                 result = cast("dict[str, object]", call_command("run", "verify", path=wt_path))
 
             worktree = Worktree.objects.get(pk=wt.pk)
@@ -136,52 +146,140 @@ class TestRunCommand(TestCase):
                 "frontend": ["run-frontend", "/tmp/backend"],
             }
 
-    def _assert_pre_run_steps(self, service: str) -> None:
-        """Pre-run steps are executed before each service command."""
+    @override_settings(**COMMAND_SETTINGS)
+    def test_backend_starts_via_docker_compose(self) -> None:
+        """Run backend should call docker compose up -d web."""
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             wt_dir = tmp_path / "backend"
             wt_dir.mkdir()
             wt_path = str(wt_dir)
-            ticket = Ticket.objects.create(
-                overlay="test", issue_url=f"https://example.com/issues/{service}", variant="acme"
-            )
-            wt = Worktree.objects.create(
+            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/50", variant="acme")
+            Worktree.objects.create(
                 ticket=ticket,
                 overlay="test",
                 repo_path="/tmp/backend",
                 branch="feature",
                 extra={"worktree_path": wt_path},
+                state=Worktree.State.PROVISIONED,
+                db_name="wt_50_acme",
             )
+
+            mock_config = MagicMock()
+            mock_config.user.workspace_dir = tmp_path
+            mock_overlay = MagicMock()
+            mock_overlay.get_compose_file.return_value = "/fake/docker-compose.yml"
+            mock_overlay.get_env_extra.return_value = {"DJANGO_SETTINGS_MODULE": "project.settings"}
+
+            commands: list[tuple[object, dict[str, object]]] = []
+
+            def fake_run(*args: object, **kwargs: object) -> CompletedProcess[str]:
+                commands.append((args[0], kwargs))
+                return CompletedProcess(args[0], 0, "", "")
+
             with (
                 patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
-                patch.object(lifecycle_mod, "Popen") as mock_popen,
+                patch.object(run_mod, "get_overlay", return_value=mock_overlay),
+                patch.object(run_mod.subprocess, "run", side_effect=fake_run),
+                patch("teatree.config.load_config", return_value=mock_config),
                 patch.object(
-                    run_mod.subprocess,
-                    "run",
-                    side_effect=lambda *a, **kw: CompletedProcess(a[0], 0, "", ""),
+                    run_mod,
+                    "find_free_ports",
+                    return_value={"backend": 8001, "frontend": 4201, "postgres": 5432, "redis": 6379},
                 ),
             ):
-                mock_popen.return_value = MagicMock(pid=12345, poll=MagicMock(return_value=None))
-                cast("int", call_command("lifecycle", "setup", path=wt_path))
-                call_command("lifecycle", "start", path=wt_path)
+                result = cast("str", call_command("run", "backend", path=wt_path))
 
-                call_command("run", service, path=wt_path)
+            assert result == "Backend started via docker-compose."
+            # Should have called docker compose up -d web
+            assert any("docker" in str(c[0]) and "web" in str(c[0]) for c in commands)
 
-            worktree = Worktree.objects.get(pk=wt.pk)
-            assert (worktree.extra or {}).get(f"pre_run_{service}") == "ran"
+
+class TestE2ePrivateCommand(TestCase):
+    @override_settings(**COMMAND_SETTINGS)
+    def test_reads_port_from_docker_compose_and_variant_from_env(self) -> None:
+        """e2e_private reads frontend port from docker compose and variant from .env.worktree."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            private_tests_dir = tmp_path / "private-tests"
+            private_tests_dir.mkdir()
+
+            worktree_dir = tmp_path / "workspace" / "backend"
+            worktree_dir.mkdir(parents=True)
+            envfile = worktree_dir / ".env.worktree"
+            envfile.write_text("WT_VARIANT=acme\n", encoding="utf-8")
+
+            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/80", variant="acme")
+            Worktree.objects.create(
+                ticket=ticket,
+                overlay="test",
+                repo_path="/tmp/backend",
+                branch="feature",
+                extra={"worktree_path": str(worktree_dir)},
+                state=Worktree.State.SERVICES_UP,
+                db_name="wt_80_acme",
+            )
+
+            captured_envs: list[dict[str, str]] = []
+
+            def fake_run(*args: object, **kwargs: object) -> CompletedProcess[str]:
+                if "env" in kwargs:
+                    captured_envs.append(cast("dict[str, str]", kwargs["env"]))
+                return CompletedProcess(args[0], 0, "", "")
+
+            with (
+                patch.dict(
+                    "os.environ",
+                    {
+                        "T3_PRIVATE_TESTS": str(private_tests_dir),
+                        "T3_ORIG_CWD": str(worktree_dir),
+                    },
+                ),
+                patch.object(run_mod, "get_service_port", return_value=4299),
+                patch.object(run_mod.subprocess, "run", side_effect=fake_run),
+            ):
+                result = cast("str", call_command("run", "e2e-private"))
+
+            assert result == "E2E passed."
+            assert captured_envs
+            assert captured_envs[-1]["BASE_URL"] == "http://localhost:4299"
+            assert captured_envs[-1]["CUSTOMER"] == "acme"
 
     @override_settings(**COMMAND_SETTINGS)
-    def test_executes_pre_run_steps_frontend(self) -> None:
-        self._assert_pre_run_steps("frontend")
+    def test_returns_error_when_frontend_not_running(self) -> None:
+        """e2e_private returns error when frontend service is not running."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            private_tests_dir = tmp_path / "private-tests"
+            private_tests_dir.mkdir()
 
-    @override_settings(**COMMAND_SETTINGS)
-    def test_executes_pre_run_steps_backend(self) -> None:
-        self._assert_pre_run_steps("backend")
+            worktree_dir = tmp_path / "workspace" / "backend"
+            worktree_dir.mkdir(parents=True)
 
-    @override_settings(**COMMAND_SETTINGS)
-    def test_executes_pre_run_steps_build_frontend(self) -> None:
-        self._assert_pre_run_steps("build-frontend")
+            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/81", variant="acme")
+            Worktree.objects.create(
+                ticket=ticket,
+                overlay="test",
+                repo_path="/tmp/backend",
+                branch="feature",
+                extra={"worktree_path": str(worktree_dir)},
+                state=Worktree.State.SERVICES_UP,
+                db_name="wt_81_acme",
+            )
+
+            with (
+                patch.dict(
+                    "os.environ",
+                    {
+                        "T3_PRIVATE_TESTS": str(private_tests_dir),
+                        "T3_ORIG_CWD": str(worktree_dir),
+                    },
+                ),
+                patch.object(run_mod, "get_service_port", return_value=None),
+            ):
+                result = cast("str", call_command("run", "e2e-private"))
+
+            assert "not running" in result
 
 
 class TestCliOverlay:
@@ -229,229 +327,3 @@ class TestCliOverlay:
         cmd = mock_run.call_args[0][0]
         assert "-m" in cmd
         assert "uvicorn" in cmd
-
-
-class TestPortPreservation(TestCase):
-    @override_settings(**COMMAND_SETTINGS, T3_WORKSPACE_DIR="/tmp/should-not-be-used")
-    def test_lifecycle_setup_preserves_already_assigned_ports(self) -> None:
-        """Ports that are already assigned are preserved — a running service is expected to hold its port."""
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            workspace = tmp_path / "workspace"
-            worktree_path = workspace / "ac-ticket-42" / "backend"
-            worktree_path.mkdir(parents=True)
-
-            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/42", variant="acme")
-            worktree = Worktree.objects.create(
-                ticket=ticket,
-                overlay="test",
-                repo_path="backend",
-                branch="feature",
-                extra={"worktree_path": str(worktree_path)},
-            )
-            worktree.provision(ports={"backend": 8001, "frontend": 4201, "postgres": 5433, "redis": 6379})
-            worktree.save()
-
-            with (
-                patch.object(
-                    Worktree,
-                    "_port_available",
-                    staticmethod(lambda port: port not in {8001, 4201, 5433}),
-                ),
-                patch.object(ports_mod, "port_in_use", side_effect=lambda port: port in {8001, 4201, 5433}),
-                patch.object(worktree_model_mod, "_workspace_dir", return_value=Path(str(workspace))),
-                patch.object(
-                    lifecycle_mod.subprocess,
-                    "run",
-                    side_effect=lambda *a, **kw: CompletedProcess(a[0], 0, "", ""),
-                ),
-                patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
-            ):
-                call_command("lifecycle", "setup", path=str(worktree_path))
-
-            worktree.refresh_from_db()
-            # Ports stay as-is — the worktree's own services may be using them
-            assert worktree.ports == {"backend": 8001, "frontend": 4201, "postgres": 5433, "redis": 6379}
-
-            envfile = worktree_path.parent / ".env.worktree"
-            env_text = envfile.read_text(encoding="utf-8")
-            assert "BACKEND_PORT=8001" in env_text
-            assert "FRONTEND_PORT=4201" in env_text
-            assert "POSTGRES_PORT=5433" in env_text
-
-    @override_settings(**COMMAND_SETTINGS, T3_WORKSPACE_DIR="/tmp/should-not-be-used")
-    def test_run_backend_preserves_ports_before_launch(self) -> None:
-        """Already-assigned ports are preserved when running backend — services may be using them."""
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            workspace = tmp_path / "workspace"
-            worktree_path = workspace / "ac-ticket-43" / "backend"
-            worktree_path.mkdir(parents=True)
-
-            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/43", variant="acme")
-            worktree = Worktree.objects.create(
-                ticket=ticket,
-                overlay="test",
-                repo_path="/tmp/backend",
-                branch="feature",
-                extra={"worktree_path": str(worktree_path)},
-                state=Worktree.State.PROVISIONED,
-                ports={"backend": 8001, "frontend": 4201, "postgres": 5433, "redis": 6379},
-                db_name="wt_43_acme",
-            )
-
-            envfile = worktree_path.parent / ".env.worktree"
-            envfile.write_text("BACKEND_PORT=8001\n", encoding="utf-8")
-            (worktree_path / ".env.worktree").symlink_to(envfile)
-
-            commands: list[tuple[object, dict[str, object]]] = []
-
-            def fake_run(*args: object, **kwargs: object) -> CompletedProcess[str]:
-                commands.append((args[0], kwargs))
-                return CompletedProcess(args[0], 0, "", "")
-
-            with (
-                patch.object(
-                    Worktree,
-                    "_port_available",
-                    staticmethod(lambda port: port not in {8001, 4201, 5433}),
-                ),
-                patch.object(ports_mod, "port_in_use", side_effect=lambda port: port in {8001, 4201, 5433}),
-                patch.object(worktree_model_mod, "_workspace_dir", return_value=Path(str(workspace))),
-                patch.object(run_mod.subprocess, "run", side_effect=fake_run),
-                patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
-            ):
-                result = cast("str", call_command("run", "backend", path=str(worktree_path)))
-
-            worktree.refresh_from_db()
-            assert result == "Backend started."
-            assert worktree.ports == {"backend": 8001, "frontend": 4201, "postgres": 5433, "redis": 6379}
-            assert commands[-1][1]["check"] is True
-
-    @override_settings(**COMMAND_SETTINGS, T3_WORKSPACE_DIR="/tmp/should-not-be-used")
-    def test_run_backend_sets_virtual_env_when_venv_exists(self) -> None:
-        """VIRTUAL_ENV is set to the worktree's .venv when it exists on disk."""
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            workspace = tmp_path / "workspace"
-            worktree_path = workspace / "ac-ticket-44" / "backend"
-            worktree_path.mkdir(parents=True)
-            venv_dir = worktree_path / ".venv"
-            venv_dir.mkdir()
-
-            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/44", variant="acme")
-            Worktree.objects.create(
-                ticket=ticket,
-                overlay="test",
-                repo_path="/tmp/backend",
-                branch="feature",
-                extra={"worktree_path": str(worktree_path)},
-                state=Worktree.State.PROVISIONED,
-                ports={"backend": 8001, "frontend": 4201, "postgres": 5433, "redis": 6379},
-                db_name="wt_44_acme",
-            )
-
-            envfile = worktree_path.parent / ".env.worktree"
-            envfile.write_text("BACKEND_PORT=8001\n", encoding="utf-8")
-            (worktree_path / ".env.worktree").symlink_to(envfile)
-
-            captured_envs: list[dict[str, str]] = []
-
-            def fake_run(*args: object, **kwargs: object) -> CompletedProcess[str]:
-                if "env" in kwargs:
-                    captured_envs.append(cast("dict[str, str]", kwargs["env"]))
-                return CompletedProcess(args[0], 0, "", "")
-
-            with (
-                patch.object(
-                    Worktree,
-                    "_port_available",
-                    staticmethod(lambda port: port not in {8001, 4201, 5433}),
-                ),
-                patch.object(ports_mod, "port_in_use", side_effect=lambda port: port in {8001, 4201, 5433}),
-                patch.object(worktree_model_mod, "_workspace_dir", return_value=Path(str(workspace))),
-                patch.object(run_mod.subprocess, "run", side_effect=fake_run),
-                patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
-            ):
-                call_command("run", "backend", path=str(worktree_path))
-
-            assert captured_envs
-            assert captured_envs[-1]["VIRTUAL_ENV"] == str(venv_dir)
-
-
-class TestE2ePrivateCommand(TestCase):
-    @override_settings(**COMMAND_SETTINGS)
-    def test_reads_ports_and_variant_from_env_worktree(self) -> None:
-        """e2e_private reads FRONTEND_PORT and WT_VARIANT from .env.worktree."""
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            private_tests_dir = tmp_path / "private-tests"
-            private_tests_dir.mkdir()
-
-            worktree_dir = tmp_path / "workspace" / "backend"
-            worktree_dir.mkdir(parents=True)
-            envfile = worktree_dir / ".env.worktree"
-            envfile.write_text(
-                "FRONTEND_PORT=4299\nWT_VARIANT=acme\nBACKEND_PORT=8099\n",
-                encoding="utf-8",
-            )
-
-            captured_envs: list[dict[str, str]] = []
-
-            def fake_run(*args: object, **kwargs: object) -> CompletedProcess[str]:
-                if "env" in kwargs:
-                    captured_envs.append(cast("dict[str, str]", kwargs["env"]))
-                return CompletedProcess(args[0], 0, "", "")
-
-            with (
-                patch.dict(
-                    "os.environ",
-                    {
-                        "T3_PRIVATE_TESTS": str(private_tests_dir),
-                        "T3_ORIG_CWD": str(worktree_dir),
-                    },
-                ),
-                patch.object(run_mod.subprocess, "run", side_effect=fake_run),
-            ):
-                result = cast("str", call_command("run", "e2e-private"))
-
-            assert result == "E2E passed."
-            assert captured_envs
-            assert captured_envs[-1]["BASE_URL"] == "http://localhost:4299"
-            assert captured_envs[-1]["CUSTOMER"] == "acme"
-
-    @override_settings(**COMMAND_SETTINGS)
-    def test_uses_default_port_when_no_env_worktree(self) -> None:
-        """e2e_private falls back to port 4200 when no .env.worktree exists."""
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            private_tests_dir = tmp_path / "private-tests"
-            private_tests_dir.mkdir()
-
-            # No .env.worktree — should use defaults
-            bare_dir = tmp_path / "bare"
-            bare_dir.mkdir()
-
-            captured_envs: list[dict[str, str]] = []
-
-            def fake_run(*args: object, **kwargs: object) -> CompletedProcess[str]:
-                if "env" in kwargs:
-                    captured_envs.append(cast("dict[str, str]", kwargs["env"]))
-                return CompletedProcess(args[0], 0, "", "")
-
-            with (
-                patch.dict(
-                    "os.environ",
-                    {
-                        "T3_PRIVATE_TESTS": str(private_tests_dir),
-                        "T3_ORIG_CWD": str(bare_dir),
-                    },
-                ),
-                patch.object(run_mod.subprocess, "run", side_effect=fake_run),
-            ):
-                result = cast("str", call_command("run", "e2e-private"))
-
-            assert result == "E2E passed."
-            assert captured_envs
-            assert captured_envs[-1]["BASE_URL"] == "http://localhost:4200"
-            assert "CUSTOMER" not in captured_envs[-1]

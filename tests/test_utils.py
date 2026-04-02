@@ -10,76 +10,41 @@ from teatree.backends import gitlab_api
 from teatree.utils import db, git, ports
 
 
-def test_find_free_ports_scans_existing_env_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    workspace_dir = tmp_path / "workspace"
-    first_env = workspace_dir / "ticket-1" / "backend" / ".env.worktree"
-    first_env.parent.mkdir(parents=True)
-    first_env.write_text(
-        "\n".join(
-            [
-                "BACKEND_PORT=8001",
-                "FRONTEND_PORT=4201",
-                "POSTGRES_PORT=5433",
-            ],
-        ),
-        encoding="utf-8",
-    )
-
-    second_env = workspace_dir / "ticket-2" / "frontend" / ".env.worktree"
-    second_env.parent.mkdir(parents=True)
-    second_env.write_text(
-        "\n".join(
-            [
-                "DJANGO_RUNSERVER_PORT=8002",
-                "FRONTEND_PORT=4202",
-            ],
-        ),
-        encoding="utf-8",
-    )
-
+def test_find_free_ports_returns_dict_of_four_ports(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """find_free_ports returns a dict with backend, frontend, postgres, redis keys."""
     monkeypatch.setattr(ports, "port_in_use", lambda port: False)
 
-    assert ports.find_free_ports(str(workspace_dir), share_db_server=False) == (8003, 4203, 5434, 6379)
-    assert ports.find_free_ports(str(workspace_dir), share_db_server=True) == (8003, 4203, 5432, 6379)
+    result = ports.find_free_ports(str(tmp_path))
+    assert isinstance(result, dict)
+    assert set(result.keys()) == {"backend", "frontend", "postgres", "redis"}
+    assert result["backend"] >= 8001
+    assert result["frontend"] >= 4201
+    assert result["postgres"] >= 5432
+    assert result["redis"] >= 6379
 
 
-def test_ports_helpers_cover_socket_and_exclusions(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_find_free_ports_skips_occupied(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """find_free_ports skips ports that are already in use."""
+    occupied = {8001, 4201}
+    monkeypatch.setattr(ports, "port_in_use", lambda port: port in occupied)
+
+    result = ports.find_free_ports(str(tmp_path))
+    assert result["backend"] > 8001  # skipped 8001
+    assert result["frontend"] > 4201  # skipped 4201
+
+
+def test_port_in_use_detects_bound_socket() -> None:
+    """port_in_use returns True for a bound port and False for an unbound one."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind(("localhost", 0))
         sock.listen()
         occupied_port = sock.getsockname()[1]
         assert ports.port_in_use(occupied_port) is True
 
-    workspace_dir = tmp_path / "workspace"
-    ignored_env = workspace_dir / "ticket-3" / "repo" / ".env.worktree"
-    ignored_env.parent.mkdir(parents=True)
-    ignored_env.write_text("BACKEND_PORT=8003\nPOSTGRES_PORT=invalid", encoding="utf-8")
 
-    deep_env = workspace_dir / "too" / "deep" / "repo" / ".env.worktree"
-    deep_env.parent.mkdir(parents=True)
-    deep_env.write_text("BACKEND_PORT=9999", encoding="utf-8")
+def test_port_in_use_returns_false_for_dummy_socket(monkeypatch: pytest.MonkeyPatch) -> None:
+    """port_in_use returns False when bind succeeds."""
 
-    checked_ports: list[int] = []
-
-    def fake_port_in_use(port: int) -> bool:
-        checked_ports.append(port)
-        return port == 8001
-
-    monkeypatch.setattr(ports, "port_in_use", fake_port_in_use)
-
-    assert ports.find_free_ports(str(workspace_dir), exclude_dir=str(ignored_env.parent), share_db_server=False) == (
-        8002,
-        4201,
-        5433,
-        6379,
-    )
-    assert 8001 in checked_ports
-
-
-def test_ports_low_level_helpers_cover_free_port_and_invalid_values(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
     class DummySocket:
         def bind(self, _address: tuple[str, int]) -> None:
             return None
@@ -89,17 +54,49 @@ def test_ports_low_level_helpers_cover_free_port_and_invalid_values(
 
     monkeypatch.setattr(ports.socket, "socket", lambda family, sock_type: DummySocket())
     assert ports.port_in_use(12345) is False
-    assert ports._parse_port_line("POSTGRES_PORT=bad", "POSTGRES_PORT=") is None
 
-    env_file = tmp_path / ".env.worktree"
-    env_file.write_text("POSTGRES_PORT=5433\nIGNORED=true\nBACKEND_PORT=8001\n", encoding="utf-8")
-    used_backend: set[int] = set()
-    used_frontend: set[int] = set()
-    used_postgres: set[int] = set()
 
-    ports._collect_used_ports(env_file, used_backend, used_frontend, used_postgres)
+def test_get_service_port_parses_docker_compose_output(monkeypatch: pytest.MonkeyPatch) -> None:
+    """get_service_port parses `docker compose port` output."""
+    monkeypatch.setattr(
+        ports.subprocess,
+        "run",
+        lambda *_a, **_k: CompletedProcess([], 0, stdout="0.0.0.0:8042\n"),
+    )
+    assert ports.get_service_port("myproject", "web", 8000) == 8042
 
-    assert used_postgres == {5433}
+
+def test_get_service_port_returns_none_on_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    """get_service_port returns None when service is not running."""
+    monkeypatch.setattr(
+        ports.subprocess,
+        "run",
+        lambda *_a, **_k: CompletedProcess([], 1, stdout=""),
+    )
+    assert ports.get_service_port("myproject", "web", 8000) is None
+
+
+def test_get_worktree_ports_queries_all_services(monkeypatch: pytest.MonkeyPatch) -> None:
+    """get_worktree_ports queries all compose services and returns named ports."""
+    port_map = {
+        ("web", 8000): "0.0.0.0:8042\n",
+        ("frontend", 4200): "0.0.0.0:4242\n",
+        ("db", 5432): "",  # not running
+        ("rd", 6379): "0.0.0.0:6380\n",
+    }
+
+    def fake_run(cmd: list[str], **kwargs: object) -> CompletedProcess[str]:
+        service = cmd[-2]
+        container_port = int(cmd[-1])
+        key = (service, container_port)
+        output = port_map.get(key, "")
+        return CompletedProcess(cmd, 0 if output else 1, stdout=output)
+
+    monkeypatch.setattr(ports.subprocess, "run", fake_run)
+
+    result = ports.get_worktree_ports("myproject")
+    assert result == {"backend": 8042, "frontend": 4242, "redis": 6380}
+    assert "postgres" not in result  # db service was not running
 
 
 def test_default_branch_prefers_symbolic_ref_and_falls_back(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -254,8 +251,8 @@ def test_free_port_kills_process(monkeypatch: pytest.MonkeyPatch) -> None:
         lambda *_a, **_k: CompletedProcess([], 0, stdout="12345\n"),
     )
     killed: list[tuple[int, int]] = []
-    monkeypatch.setattr(ports.os, "kill", lambda pid, sig: killed.append((pid, sig)))
-    assert ports.free_port(8001) == 12345
+    with patch("os.kill", side_effect=lambda pid, sig: killed.append((pid, sig))):
+        assert ports.free_port(8001) == 12345
     assert killed == [(12345, signal.SIGTERM)]
 
 

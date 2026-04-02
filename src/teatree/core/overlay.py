@@ -279,6 +279,10 @@ class OverlayBase(ABC):
     def get_services_config(self, worktree: "Worktree") -> dict[str, ServiceSpec]:
         return {}
 
+    def get_compose_file(self, worktree: "Worktree") -> str:
+        """Return the path to the docker-compose file for this worktree."""
+        return ""
+
     # ── Run hooks ────────────────────────────────────────────────────
 
     def get_run_commands(self, worktree: "Worktree") -> RunCommands:
@@ -363,15 +367,6 @@ def _default_health_checks(overlay: OverlayBase, worktree: "Worktree") -> list[H
                 name="db-name-set",
                 check=lambda: bool(worktree.db_name),
                 description=f"Database name assigned: {worktree.db_name}",
-            )
-        )
-
-    if worktree.ports:
-        checks.append(
-            HealthCheck(
-                name="ports-allocated",
-                check=lambda: bool(worktree.ports.get("backend") and worktree.ports.get("frontend")),
-                description="Backend and frontend ports allocated",
             )
         )
 

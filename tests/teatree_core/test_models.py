@@ -174,12 +174,7 @@ class TestTicketTransitions(TestCase):
 
 
 class TestWorktree(TestCase):
-    @pytest.fixture(autouse=True)
-    def _setup_fixtures(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        self.monkeypatch = monkeypatch
-
-    def test_lifecycle_allocates_ports_and_urls(self) -> None:
-        self.monkeypatch.setattr("teatree.utils.ports.port_in_use", lambda _port: False)
+    def test_lifecycle_transitions_and_stores_urls(self) -> None:
         ticket = Ticket.objects.create(issue_url="https://example.com/issues/42", variant="acme")
         worktree = Worktree.objects.create(ticket=ticket, repo_path="/tmp/backend", branch="teatree-django")
 
@@ -187,18 +182,12 @@ class TestWorktree(TestCase):
         worktree.save()
         worktree.start_services(services=["backend", "frontend"])
         worktree.save()
-        worktree.verify()
+        worktree.verify(urls={"backend": "http://localhost:8001", "frontend": "http://localhost:4201"})
         worktree.save()
 
         worktree.refresh_from_db()
 
         assert worktree.state == Worktree.State.READY
-        assert worktree.ports == {
-            "backend": 8001,
-            "frontend": 4201,
-            "postgres": 5432,
-            "redis": 6379,
-        }
         assert worktree.db_name == "wt_42_acme"
         assert worktree.extra["services"] == ["backend", "frontend"]
         assert worktree.extra["urls"] == {
@@ -207,37 +196,8 @@ class TestWorktree(TestCase):
         }
         assert str(worktree) == "/tmp/backend"
 
-    def test_reuses_next_available_ports_and_allows_refresh_teardown(self) -> None:
-        self.monkeypatch.setattr("teatree.utils.ports.port_in_use", lambda _port: False)
+    def test_full_lifecycle_with_refresh_and_teardown(self) -> None:
         ticket = Ticket.objects.create(issue_url="https://example.com/issues/100")
-        occupied = Worktree.objects.create(
-            ticket=ticket,
-            repo_path="/tmp/occupied",
-            branch="occupied",
-            state=Worktree.State.PROVISIONED,
-            ports={"backend": 8001, "frontend": 4201, "postgres": 5433, "redis": 6379},
-        )
-        Worktree.objects.create(
-            ticket=ticket,
-            repo_path="/tmp/weird",
-            branch="weird",
-            state=Worktree.State.PROVISIONED,
-            ports=["not", "a", "dict"],
-        )
-        Worktree.objects.create(
-            ticket=ticket,
-            repo_path="/tmp/backend-only",
-            branch="backend-only",
-            state=Worktree.State.PROVISIONED,
-            ports={"backend": 8010},
-        )
-        Worktree.objects.create(
-            ticket=ticket,
-            repo_path="/tmp/frontend-only",
-            branch="frontend-only",
-            state=Worktree.State.PROVISIONED,
-            ports={"frontend": 4210},
-        )
         worktree = Worktree.objects.create(ticket=ticket, repo_path="/tmp/next", branch="next")
 
         worktree.provision()
@@ -250,17 +210,13 @@ class TestWorktree(TestCase):
         worktree.save()
 
         worktree.refresh_from_db()
-        occupied.refresh_from_db()
 
-        assert occupied.ports["backend"] == 8001
         assert worktree.state == Worktree.State.CREATED
-        assert worktree.ports == {}
         assert worktree.db_name == ""
         assert worktree.extra == {}
 
     def test_start_services_allows_restart(self) -> None:
         """Calling start_services when already in SERVICES_UP should work (restart)."""
-        self.monkeypatch.setattr("teatree.utils.ports.port_in_use", lambda _port: False)
         ticket = Ticket.objects.create(issue_url="https://example.com/restart", variant="acme")
         worktree = Worktree.objects.create(ticket=ticket, repo_path="/tmp/backend", branch="restart")
         worktree.provision()
@@ -286,129 +242,6 @@ class TestWorktree(TestCase):
 
         with pytest.raises(TransitionNotAllowed):
             worktree.verify()
-
-    def test_port_available_returns_false_on_os_error(self) -> None:
-        """Worktree._port_available returns False when binding raises OSError."""
-        import socket  # noqa: PLC0415
-
-        def _bind_raises(self: socket.socket, address: tuple[str, int]) -> None:
-            msg = "Address already in use"
-            raise OSError(msg)
-
-        self.monkeypatch.setattr(socket.socket, "bind", _bind_raises)
-
-        assert Worktree._port_available(8001) is False
-
-    def test_port_available_returns_true_on_success(self) -> None:
-        """Worktree._port_available returns True when binding succeeds."""
-        import socket  # noqa: PLC0415
-
-        self.monkeypatch.setattr(socket.socket, "bind", lambda self, addr: None)
-
-        assert Worktree._port_available(8001) is True
-
-    def test_refresh_ports_fills_missing_key(self) -> None:
-        """When ports are incomplete but allocating produces the same result, no save happens."""
-        ticket = Ticket.objects.create(issue_url="https://example.com/issues/55")
-        worktree = Worktree.objects.create(
-            ticket=ticket,
-            repo_path="/tmp/backend",
-            branch="teatree-django",
-            state=Worktree.State.PROVISIONED,
-            # Missing "postgres" key — incomplete, so falls through to allocate
-            ports={"backend": 8001, "frontend": 4201, "redis": 6379},
-        )
-
-        self.monkeypatch.setattr(Worktree, "_port_available", staticmethod(lambda _port: True))
-        self.monkeypatch.setattr(
-            Worktree,
-            "_allocate_ports",
-            # Allocate returns ports that, after merge with current, equal current
-            lambda self: {"backend": 9999, "frontend": 9998, "postgres": 5433, "redis": 6380},
-        )
-        # Merge fills in missing postgres from _allocate_ports, triggers save
-        assert worktree.refresh_ports_if_needed() is True
-        worktree.refresh_from_db()
-        assert worktree.ports["postgres"] == 5433
-
-    def test_refresh_ports_noop_when_all_keys_present(self) -> None:
-        """When all required keys are present, refresh does nothing."""
-        ticket = Ticket.objects.create(issue_url="https://example.com/issues/56")
-        worktree = Worktree.objects.create(
-            ticket=ticket,
-            repo_path="/tmp/backend",
-            branch="teatree-django",
-            state=Worktree.State.PROVISIONED,
-            ports={"backend": 8001, "frontend": 4201, "postgres": 5433, "redis": 6379},
-        )
-
-        assert worktree.refresh_ports_if_needed() is False
-
-    def test_refresh_ports_noop_when_allocate_matches_existing(self) -> None:
-        """When incomplete ports + allocate produces same merged result, no DB write."""
-        ticket = Ticket.objects.create(issue_url="https://example.com/issues/57")
-        # Missing "postgres" key triggers allocation
-        current_ports = {"backend": 8001, "frontend": 4201, "redis": 6379}
-        worktree = Worktree.objects.create(
-            ticket=ticket,
-            repo_path="/tmp/backend",
-            branch="teatree-django",
-            state=Worktree.State.PROVISIONED,
-            ports=dict(current_ports),
-        )
-
-        # Allocate returns same keys+values as current — merged == current
-        self.monkeypatch.setattr(
-            Worktree,
-            "_allocate_ports",
-            lambda self: dict(current_ports),
-        )
-        result = worktree.refresh_ports_if_needed()
-        assert result is False
-
-    def test_revalidate_ports_no_conflicts(self) -> None:
-        """revalidate_ports returns empty dict when all ports are available."""
-        ticket = Ticket.objects.create(issue_url="https://example.com/issues/60")
-        worktree = Worktree.objects.create(
-            ticket=ticket,
-            repo_path="/tmp/backend",
-            branch="teatree-django",
-            ports={"backend": 8001, "frontend": 4201, "postgres": 5432, "redis": 6379},
-        )
-        self.monkeypatch.setattr(Worktree, "_port_available", staticmethod(lambda _port: True))
-        assert worktree.revalidate_ports() == {}
-
-    def test_revalidate_ports_reallocates_conflicts(self) -> None:
-        """revalidate_ports detects conflicts and reallocates only conflicting ports."""
-        ticket = Ticket.objects.create(issue_url="https://example.com/issues/61")
-        worktree = Worktree.objects.create(
-            ticket=ticket,
-            repo_path="/tmp/backend",
-            branch="teatree-django",
-            ports={"backend": 8001, "frontend": 4201, "postgres": 5432, "redis": 6379},
-        )
-        # Backend port 8001 is in use, frontend 4201 is free
-        self.monkeypatch.setattr(Worktree, "_port_available", staticmethod(lambda port: port != 8001))
-        self.monkeypatch.setattr(
-            Worktree,
-            "_allocate_ports",
-            lambda self: {"backend": 8002, "frontend": 4201, "postgres": 5432, "redis": 6379},
-        )
-        changes = worktree.revalidate_ports()
-        assert changes == {"backend": (8001, 8002)}
-        worktree.refresh_from_db()
-        assert worktree.ports["backend"] == 8002
-        assert worktree.ports["frontend"] == 4201  # unchanged
-
-    def test_revalidate_ports_empty_ports(self) -> None:
-        """revalidate_ports returns empty dict when no ports are assigned."""
-        ticket = Ticket.objects.create(issue_url="https://example.com/issues/62")
-        worktree = Worktree.objects.create(
-            ticket=ticket,
-            repo_path="/tmp/backend",
-            branch="teatree-django",
-        )
-        assert worktree.revalidate_ports() == {}
 
 
 class TestSession(TestCase):
