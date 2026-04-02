@@ -80,7 +80,7 @@ def e2e_server(django_db_setup) -> Iterator[str]:
         stderr=subprocess.DEVNULL,
     )
 
-    _wait_for_server(url, timeout=10)
+    _wait_for_server(url)
     yield url
     proc.terminate()
     proc.wait(timeout=5)
