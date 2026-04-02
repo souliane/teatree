@@ -204,6 +204,7 @@ lint.preview = true
 [tool.codespell]
 dictionary = ".codespell-dictionary.txt,-"
 ignore-words-list = "iterm"
+skip = "src/teatree/core/static/teatree/js/*"
 
 # --- Pytest ---
 
@@ -257,6 +258,9 @@ module-name = "teatree"
 
 [tool.ty]
 terminal = { error-on-warning = true }
+
+[tool.ty.src]
+exclude = [ ".claude/worktrees/" ]
 
 [tool.ty.environment]
 extra-paths = [ ".", "src", "scripts", "scripts/hooks", "tests" ]

@@ -79,7 +79,7 @@ class TestDashboardView(TestCase):
         with patch("teatree.core.views.dashboard.get_all_overlays", return_value=_MOCK_OVERLAY):
             response = Client().get(reverse("teatree:dashboard") + "?overlay=test")
         assert response.status_code == 200
-        assert "teatree-logo.svg" in response.context["logo_url"]
+        assert "teatree-logo.jpg" in response.context["logo_url"]
 
     def test_handles_git_command_failure(self) -> None:
         with patch("subprocess.check_output", side_effect=FileNotFoundError("git not found")):

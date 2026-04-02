@@ -30,7 +30,14 @@ class LaunchAgentView(View):
             overlay = get_overlay()
             skill_metadata = overlay.metadata.get_skill_metadata()
             if task.execution_target == Task.ExecutionTarget.INTERACTIVE:
-                return self._launch_interactive(task, skill_metadata)
+                terminal_mode = request.POST.get("terminal_mode", "")
+                terminal_app = request.POST.get("terminal_app", "")
+                return self._launch_interactive(
+                    task,
+                    skill_metadata,
+                    terminal_mode=terminal_mode,
+                    terminal_app=terminal_app,
+                )
             return self._launch_headless(task)
         except Exception as exc:
             logger.exception("Launch failed for task %s", task_id)
@@ -38,13 +45,22 @@ class LaunchAgentView(View):
             task.complete_with_attempt(exit_code=1, error=error_msg)
             return JsonResponse({"error": error_msg}, status=500)
 
-    def _launch_interactive(self, task: Task, skill_metadata: SkillMetadata) -> JsonResponse:
+    def _launch_interactive(
+        self,
+        task: Task,
+        skill_metadata: SkillMetadata,
+        *,
+        terminal_mode: str = "",
+        terminal_app: str = "",
+    ) -> JsonResponse:
         from teatree.agents.web_terminal import launch_web_session  # noqa: PLC0415
 
         attempt = launch_web_session(
             task,
             phase=task.phase,
             overlay_skill_metadata=skill_metadata,
+            terminal_mode=terminal_mode,
+            terminal_app=terminal_app,
         )
         return JsonResponse({"launch_url": attempt.launch_url, "attempt_id": attempt.pk})
 

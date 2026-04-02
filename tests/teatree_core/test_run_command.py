@@ -377,3 +377,81 @@ class TestPortPreservation(TestCase):
 
             assert captured_envs
             assert captured_envs[-1]["VIRTUAL_ENV"] == str(venv_dir)
+
+
+class TestE2ePrivateCommand(TestCase):
+    @override_settings(**COMMAND_SETTINGS)
+    def test_reads_ports_and_variant_from_env_worktree(self) -> None:
+        """e2e_private reads FRONTEND_PORT and WT_VARIANT from .env.worktree."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            private_tests_dir = tmp_path / "private-tests"
+            private_tests_dir.mkdir()
+
+            worktree_dir = tmp_path / "workspace" / "backend"
+            worktree_dir.mkdir(parents=True)
+            envfile = worktree_dir / ".env.worktree"
+            envfile.write_text(
+                "FRONTEND_PORT=4299\nWT_VARIANT=acme\nBACKEND_PORT=8099\n",
+                encoding="utf-8",
+            )
+
+            captured_envs: list[dict[str, str]] = []
+
+            def fake_run(*args: object, **kwargs: object) -> CompletedProcess[str]:
+                if "env" in kwargs:
+                    captured_envs.append(cast("dict[str, str]", kwargs["env"]))
+                return CompletedProcess(args[0], 0, "", "")
+
+            with (
+                patch.dict(
+                    "os.environ",
+                    {
+                        "T3_PRIVATE_TESTS": str(private_tests_dir),
+                        "T3_ORIG_CWD": str(worktree_dir),
+                    },
+                ),
+                patch.object(run_mod.subprocess, "run", side_effect=fake_run),
+            ):
+                result = cast("str", call_command("run", "e2e-private"))
+
+            assert result == "E2E passed."
+            assert captured_envs
+            assert captured_envs[-1]["BASE_URL"] == "http://localhost:4299"
+            assert captured_envs[-1]["CUSTOMER"] == "acme"
+
+    @override_settings(**COMMAND_SETTINGS)
+    def test_uses_default_port_when_no_env_worktree(self) -> None:
+        """e2e_private falls back to port 4200 when no .env.worktree exists."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            private_tests_dir = tmp_path / "private-tests"
+            private_tests_dir.mkdir()
+
+            # No .env.worktree — should use defaults
+            bare_dir = tmp_path / "bare"
+            bare_dir.mkdir()
+
+            captured_envs: list[dict[str, str]] = []
+
+            def fake_run(*args: object, **kwargs: object) -> CompletedProcess[str]:
+                if "env" in kwargs:
+                    captured_envs.append(cast("dict[str, str]", kwargs["env"]))
+                return CompletedProcess(args[0], 0, "", "")
+
+            with (
+                patch.dict(
+                    "os.environ",
+                    {
+                        "T3_PRIVATE_TESTS": str(private_tests_dir),
+                        "T3_ORIG_CWD": str(bare_dir),
+                    },
+                ),
+                patch.object(run_mod.subprocess, "run", side_effect=fake_run),
+            ):
+                result = cast("str", call_command("run", "e2e-private"))
+
+            assert result == "E2E passed."
+            assert captured_envs
+            assert captured_envs[-1]["BASE_URL"] == "http://localhost:4200"
+            assert "CUSTOMER" not in captured_envs[-1]

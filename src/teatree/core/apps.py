@@ -11,22 +11,30 @@ from django.conf import settings
 
 logger = logging.getLogger(__name__)
 
-_SYNC_INTERVAL = 300  # 5 minutes
+_DRAIN_INTERVAL = 10  # seconds — check for pending headless tasks
+_SYNC_INTERVAL = 300  # 5 minutes — full followup sync
 _worker_processes: list[_subprocess.Popen] = []
 
 
 def _start_periodic_sync() -> None:
-    """Enqueue sync_followup every 5 minutes in a daemon thread."""
-    from teatree.core.tasks import sync_followup  # noqa: PLC0415
+    """Enqueue sync_followup and drain_headless_queue periodically."""
+    from teatree.core.tasks import drain_headless_queue, sync_followup  # noqa: PLC0415
 
     def _loop() -> None:
+        tick = 0
         while True:
-            threading.Event().wait(_SYNC_INTERVAL)
+            threading.Event().wait(_DRAIN_INTERVAL)
+            tick += 1
             try:
-                sync_followup.enqueue()
-                logger.info("Periodic followup sync enqueued")
+                drain_headless_queue.enqueue()
             except Exception:
-                logger.exception("Periodic followup sync failed to enqueue")
+                logger.exception("Periodic headless drain failed to enqueue")
+            if tick % (_SYNC_INTERVAL // _DRAIN_INTERVAL) == 0:
+                try:
+                    sync_followup.enqueue()
+                    logger.info("Periodic followup sync enqueued")
+                except Exception:
+                    logger.exception("Periodic followup sync failed to enqueue")
 
     thread = threading.Thread(target=_loop, daemon=True, name="teatree-periodic-sync")
     thread.start()
@@ -72,6 +80,7 @@ class CoreConfig(AppConfig):
 
         register_signals()
 
-        if os.environ.get("RUN_MAIN") == "true" and not os.environ.get("_TEETREE_WORKER") and "runserver" in sys.argv:
+        is_server = "runserver" in sys.argv or "uvicorn" in sys.argv[0]
+        if os.environ.get("RUN_MAIN") == "true" and not os.environ.get("_TEETREE_WORKER") and is_server:
             _start_periodic_sync()
             _start_workers()

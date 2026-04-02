@@ -30,6 +30,20 @@ def execute_headless_task(task_id: int, phase: str) -> dict[str, object]:
 
 
 @task()
+def drain_headless_queue() -> dict[str, list[int]]:
+    """Auto-enqueue pending headless tasks for execution."""
+    pending = Task.objects.filter(
+        execution_target=Task.ExecutionTarget.HEADLESS,
+        status=Task.Status.PENDING,
+    ).values_list("pk", "phase")
+    enqueued: list[int] = []
+    for task_id, phase in pending:
+        execute_headless_task.enqueue(task_id, phase)
+        enqueued.append(task_id)
+    return {"enqueued": enqueued}
+
+
+@task()
 def sync_followup() -> dict[str, int | list[str]]:
     from teatree.core.sync import sync_followup as _sync  # noqa: PLC0415
 

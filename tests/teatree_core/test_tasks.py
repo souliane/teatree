@@ -5,7 +5,7 @@ from django.test import TestCase, override_settings
 
 import teatree.core.overlay_loader as overlay_loader_mod
 from teatree.core.models import Session, Task, TaskAttempt, Ticket
-from teatree.core.tasks import execute_headless_task, refresh_followup_snapshot, sync_followup
+from teatree.core.tasks import drain_headless_queue, execute_headless_task, refresh_followup_snapshot, sync_followup
 from tests.teatree_core.conftest import CommandOverlay
 
 IMMEDIATE_BACKEND = {
@@ -44,6 +44,40 @@ class TestSyncFollowup(TestCase):
         errors = result.return_value["errors"]
         assert len(errors) == 1
         assert "No code host token for" in errors[0]
+
+
+class TestDrainHeadlessQueue(TestCase):
+    @override_settings(**IMMEDIATE_BACKEND)
+    def test_enqueues_pending_headless_tasks(self) -> None:
+        ticket = Ticket.objects.create(overlay="test")
+        session = Session.objects.create(ticket=ticket, overlay="test")
+        pending = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            execution_target=Task.ExecutionTarget.HEADLESS,
+            status=Task.Status.PENDING,
+            phase="coding",
+        )
+        # Interactive task should NOT be enqueued
+        Task.objects.create(
+            ticket=ticket,
+            session=session,
+            execution_target=Task.ExecutionTarget.INTERACTIVE,
+            status=Task.Status.PENDING,
+            phase="testing",
+        )
+
+        with patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY):
+            result = drain_headless_queue.enqueue()
+
+        assert result.return_value == {"enqueued": [pending.pk]}
+
+    @override_settings(**IMMEDIATE_BACKEND)
+    def test_skips_when_no_pending_tasks(self) -> None:
+        with patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY):
+            result = drain_headless_queue.enqueue()
+
+        assert result.return_value == {"enqueued": []}
 
 
 class TestExecuteHeadlessTask(TestCase):

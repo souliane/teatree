@@ -16,8 +16,13 @@ from collections.abc import Iterator
 import httpx
 import pytest
 
-os.environ.setdefault("DJANGO_SETTINGS_MODULE", "e2e.settings")
+os.environ["DJANGO_SETTINGS_MODULE"] = "e2e.settings"
 os.environ["DJANGO_ALLOW_ASYNC_UNSAFE"] = "1"
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    """Override DJANGO_SETTINGS_MODULE before pytest-django initializes Django."""
+    os.environ["DJANGO_SETTINGS_MODULE"] = "e2e.settings"
 
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
@@ -49,11 +54,14 @@ def django_db_setup(django_db_modify_db_settings, django_db_blocker):
 
     E2E_DB_PATH.unlink(missing_ok=True)
 
+    # Force Django to use the E2E database regardless of which settings module
+    # was loaded (pyproject.toml may have set a different one before conftest).
+    from django.conf import settings as django_settings
+
+    django_settings.DATABASES["default"]["ENGINE"] = "django.db.backends.sqlite3"
+    django_settings.DATABASES["default"]["NAME"] = str(E2E_DB_PATH)
+
     with django_db_blocker.unblock():
-        import django
-
-        django.setup()
-
         from django.core.management import call_command
 
         call_command("migrate", "--run-syncdb", "--no-input", verbosity=0)
@@ -65,6 +73,19 @@ def e2e_server(django_db_setup) -> Iterator[str]:
     port = _find_free_port()
     url = f"http://127.0.0.1:{port}"
 
+    from django.conf import settings as django_settings
+
+    from e2e.settings import _DB_DIR, E2E_DB_PATH
+
+    # Debug: ensure test process and server subprocess use the same DB
+    actual_db = django_settings.DATABASES["default"]["NAME"]
+    sys.stderr.write(f"E2E debug: test DB={actual_db}, E2E_DB_PATH={E2E_DB_PATH}, DB_DIR={_DB_DIR}\n")
+
+    env = {
+        **os.environ,
+        "DJANGO_SETTINGS_MODULE": "e2e.settings",
+        "TEATREE_E2E_DB_DIR": str(_DB_DIR),
+    }
     proc = subprocess.Popen(  # noqa: S603
         [
             sys.executable,
@@ -76,14 +97,17 @@ def e2e_server(django_db_setup) -> Iterator[str]:
             "e2e.settings",
             str(port),
         ],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env,
     )
 
     _wait_for_server(url)
     yield url
     proc.terminate()
-    proc.wait(timeout=5)
+    _, stderr = proc.communicate(timeout=5)
+    if stderr:
+        sys.stderr.write(f"E2E server stderr:\n{stderr.decode()[-1000:]}\n")
 
 
 @pytest.fixture(autouse=True)

@@ -8,7 +8,7 @@ from django.test import TestCase
 
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay import OverlayBase, ProvisionStep
-from teatree.core.overlay_loader import get_overlay, reset_overlay_cache
+from teatree.core.overlay_loader import get_all_overlay_names, get_overlay, reset_overlay_cache
 
 
 class DummyOverlay(OverlayBase):
@@ -147,3 +147,33 @@ class TestOverlayBase(TestCase):
 
         with pytest.raises(NotImplementedError):
             overlay.get_provision_steps(worktree)
+
+
+class TestGetAllOverlayNames(TestCase):
+    def test_includes_entry_point_overlays(self) -> None:
+        with patch(
+            "teatree.core.overlay_loader._discover_overlays",
+            return_value={"ep-overlay": DummyOverlay()},
+        ):
+            names = get_all_overlay_names()
+        assert "ep-overlay" in names
+
+    def test_includes_path_only_toml_overlays(self) -> None:
+        with (
+            patch(
+                "teatree.core.overlay_loader._discover_overlays",
+                return_value={"ep-overlay": DummyOverlay()},
+            ),
+            patch("teatree.config.load_config") as mock_config,
+        ):
+            mock_config.return_value.raw = {
+                "overlays": {
+                    "ep-overlay": {},
+                    "toml-path-only": {"path": "~/workspace/other"},
+                    "toml-config-only": {"github_token_pass_key": "key"},
+                },
+            }
+            names = get_all_overlay_names()
+        assert "ep-overlay" in names
+        assert "toml-path-only" in names
+        assert "toml-config-only" not in names

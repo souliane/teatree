@@ -23,6 +23,8 @@ def launch_web_session(
     *,
     phase: str,
     overlay_skill_metadata: SkillMetadata,
+    terminal_mode: str = "",
+    terminal_app: str = "",
 ) -> TaskAttempt:
     """Launch an interactive agent session using the configured terminal mode.
 
@@ -45,8 +47,8 @@ def launch_web_session(
         system_context = build_interactive_context(task, skills=skills)
         agent_command = [claude_bin, "--append-system-prompt", system_context]
 
-    mode = get_terminal_mode()
-    result = terminal_launch(agent_command, mode=mode)
+    mode = terminal_mode or get_terminal_mode()
+    result = terminal_launch(agent_command, mode=mode, app=terminal_app)
 
     return TaskAttempt.objects.create(
         task=task,

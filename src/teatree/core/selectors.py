@@ -350,11 +350,18 @@ def build_ticket_lifecycle_mermaid(ticket_id: int) -> str:
 _AUTOMATION_WINDOW_HOURS = 24
 
 
-def _task_overlay_q(overlay: str | None) -> Q:
-    """Return a Q filter for task's ticket/session overlay."""
+def _overlay_q(overlay: str | None, prefix: str = "") -> Q:
+    """Return a Q filter including empty-overlay rows (pre-multi-overlay data)."""
     if not overlay:
         return Q()
-    return Q(task__ticket__overlay=overlay) | Q(task__session__overlay=overlay)
+    t = f"{prefix}ticket__overlay"
+    s = f"{prefix}session__overlay"
+    return Q(**{t: overlay}) | Q(**{s: overlay}) | Q(**{t: ""}) | Q(**{s: ""})
+
+
+def _task_overlay_q(overlay: str | None) -> Q:
+    """Return a Q filter for task's ticket/session overlay (from TaskAttempt)."""
+    return _overlay_q(overlay, prefix="task__")
 
 
 def build_automation_summary(overlay: str | None = None) -> AutomationSummary:
@@ -364,7 +371,7 @@ def build_automation_summary(overlay: str | None = None) -> AutomationSummary:
         status=Task.Status.CLAIMED,
     )
     if overlay:
-        task_filter &= Q(ticket__overlay=overlay) | Q(session__overlay=overlay)
+        task_filter &= _overlay_q(overlay)
     running = Task.objects.filter(task_filter).count()
     attempt_filter = Q(
         task__execution_target=Task.ExecutionTarget.HEADLESS,
@@ -412,7 +419,7 @@ def build_dashboard_summary(overlay: str | None = None) -> DashboardSummary:
 def build_worktree_rows(overlay: str | None = None) -> list[DashboardWorktreeRow]:
     qs = Worktree.objects.select_related("ticket").exclude(ticket__state=Ticket.State.DELIVERED)
     if overlay:
-        qs = qs.filter(overlay=overlay)
+        qs = qs.filter(Q(overlay=overlay) | Q(overlay=""))
     worktrees = qs.order_by("ticket__pk", "pk")
     return [
         DashboardWorktreeRow(
@@ -555,7 +562,7 @@ def _build_task_queue(
 ) -> list[DashboardTaskRow]:
     qs = Task.objects.filter(execution_target=target).select_related("ticket", "session")
     if overlay:
-        qs = qs.filter(Q(ticket__overlay=overlay) | Q(session__overlay=overlay))
+        qs = qs.filter(_overlay_q(overlay))
     qs = qs.order_by("pk")
     if pending_only:
         qs = qs.filter(status=Task.Status.PENDING)
@@ -609,7 +616,7 @@ def build_action_required(overlay: str | None = None) -> list[ActionRequiredItem
         status=Task.Status.PENDING,
     ).select_related("ticket")
     if overlay:
-        task_qs = task_qs.filter(Q(ticket__overlay=overlay) | Q(session__overlay=overlay))
+        task_qs = task_qs.filter(_overlay_q(overlay))
     items: list[ActionRequiredItem] = [
         ActionRequiredItem(
             kind="interactive_task",
