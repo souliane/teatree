@@ -56,6 +56,17 @@ When the user gives a debugging hint, **investigate that hint FIRST** before oth
 
 When the bug report includes screenshots or videos, **analyze ALL visual evidence before writing any code.** Use `t3 tool analyze-video` for videos. Each frame may reveal additional issues beyond what the text description mentions.
 
+### Phase 0c: What Changed Recently?
+
+When a user reports "this worked yesterday" or "this just started happening," check **what changed** before deep-diving into code:
+
+1. `git log --oneline --since="3 days ago"` in relevant repos
+2. File modification dates on config/hook files (`ls -la`)
+3. Plugin/package updates (check cache timestamps, lockfiles)
+4. Environment changes (new env vars, updated tools)
+
+This is faster than reading every file in detail and often pinpoints the cause immediately. (Source: retro 2026-04-02 — duplicate hooks from plugin migration found via file dates, not code reading.)
+
 ### Phase 1: Root Cause Investigation
 
 - Read **full** error output, stack traces, logs. Do not skim.
