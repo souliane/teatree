@@ -1,4 +1,6 @@
-from collections.abc import Callable
+import importlib
+from collections.abc import Callable, Mapping
+from pathlib import Path
 
 from django.http import Http404, HttpRequest, HttpResponse
 from django.template.response import TemplateResponse
@@ -55,7 +57,7 @@ class DashboardView(View):
         except Exception:  # noqa: BLE001
             git_sha, git_branch = "", ""
         all_overlays = get_all_overlays()
-        overlay_paths = {name: type(ov).__module__ for name, ov in all_overlays.items()}
+        overlay_paths = _build_overlay_paths(all_overlays)
         overlays = get_all_overlay_names()
         teatree_logo = static("teatree/img/teatree-logo.jpg")
         overlay_logos = {name: ov.config.get_dashboard_logo() or teatree_logo for name, ov in all_overlays.items()}
@@ -165,6 +167,26 @@ _PANEL_BUILDERS: dict[str, _PanelBuilder] = {
     "review_comments": lambda _d, o: {"review_comments": build_review_comments(overlay=o)},
     "activity": lambda _d, o: {"activity": build_recent_activity(overlay=o)},
 }
+
+
+def _build_overlay_paths(all_overlays: Mapping[str, object]) -> dict[str, str]:
+    """Build overlay name -> filesystem path mapping for all overlays."""
+    from teatree.config import discover_overlays  # noqa: PLC0415
+
+    paths: dict[str, str] = {}
+    for entry in discover_overlays():
+        if entry.project_path:
+            paths[entry.name] = str(entry.project_path)
+        elif entry.name in all_overlays:
+            ov = all_overlays[entry.name]
+            mod = importlib.import_module(type(ov).__module__)
+            if hasattr(mod, "__file__") and mod.__file__:
+                paths[entry.name] = str(Path(mod.__file__).resolve().parent)
+            else:
+                paths[entry.name] = type(ov).__module__
+        else:
+            paths[entry.name] = entry.overlay_class or "unknown"
+    return paths
 
 
 def _panel_context(panel: str, *, show_dismissed: bool = False, overlay: str | None = None) -> dict[str, object]:

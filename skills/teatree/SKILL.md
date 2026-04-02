@@ -6,7 +6,7 @@ metadata:
 triggers:
   priority: 90
   keywords:
-    - '\b(teatree|t3 )\b'
+    - '\b(teatree|t3)\b'
     - '\b(lifecycle|overlay|worktree|provision|headless)\b'
   exclude: '\b(t3:code|t3:test|t3:ship|t3:debug|t3:review)\b'
 search_hints:
