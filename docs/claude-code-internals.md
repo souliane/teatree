@@ -22,15 +22,15 @@ The frontmatter parser recognizes these fields in `SKILL.md`:
 | `disable-model-invocation` | `bool` | `false` | If `true`, excluded from listing — model can't auto-invoke, only manual `/skill` |
 | `disableNonInteractive` | `bool` | `false` | Disables the skill in non-interactive (headless) mode |
 | `model` | `string` | — | Override model for this skill. `"inherit"` = use parent |
-| `effort` | `string\|int` | — | Override reasoning effort level |
-| `allowed-tools` | `string\|string[]` | `[]` | Tools granted. `"*"` wildcard, brace expansion (`mcp__{a,b}__*`) |
+| `effort` | `string \| int` | — | Override reasoning effort level |
+| `allowed-tools` | `string \| string[]` | `[]` | Tools granted. `"*"` wildcard, brace expansion (`mcp__{a,b}__*`) |
 | `argument-hint` | `string` | — | Hint shown in typeahead |
-| `arguments` | `string\|string[]` | `[]` | Named arguments |
-| `context` | `"inline"\|"fork"` | `"inline"` | `"fork"` = run as sub-agent in isolated context |
+| `arguments` | `string \| string[]` | `[]` | Named arguments |
+| `context` | `"inline" \| "fork"` | `"inline"` | `"fork"` = run as sub-agent in isolated context |
 | `agent` | `string` | — | Associate with agent-based execution |
-| `shell` | `"bash"\|"powershell"` | — | Shell for embedded commands |
+| `shell` | `"bash" \| "powershell"` | — | Shell for embedded commands |
 | `hooks` | `object` | — | **Inline hooks** — skill registers its own hooks for any event |
-| `paths` | `string\|string[]` | — | **Conditional activation** — glob patterns; skill stays dormant until a file op matches |
+| `paths` | `string \| string[]` | — | **Conditional activation** — glob patterns; skill stays dormant until a file op matches |
 | `version` | any | — | Stored, not validated |
 
 ### BundledSkillDefinition TypeScript type
@@ -367,6 +367,7 @@ Purpose: structured user input when the agent needs clarification. Renders as mu
 Response: `answers` mapping question text → selected option label.
 
 **Constraints:**
+
 - Not available in sub-agents (Agent tool)
 - Does NOT trigger `PreToolUse`/`PostToolUse` hooks (as of v2.1.90)
 - "Other" option is always auto-added for free-text input
