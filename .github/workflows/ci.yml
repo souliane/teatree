@@ -45,3 +45,17 @@ jobs:
           teatree-test
           uv run -p ${{ matrix.python-version }} pytest --no-header -q
           -o cache_dir=/tmp/.pytest_cache
+
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - run: uv sync
+      - run: uv run playwright install --with-deps chromium
+      - run: uv run t3 teatree run e2e-local --no-docker

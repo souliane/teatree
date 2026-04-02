@@ -31,8 +31,8 @@ services:
       context: ..
       dockerfile: dev/Dockerfile.e2e
     command: >
-      uv run --group e2e pytest e2e/
-      --ds e2e.settings --no-cov
-      -n auto -v
+      uv run pytest e2e/
+      -o DJANGO_SETTINGS_MODULE=e2e.settings --no-cov
+      -p no:tach -v
       -o cache_dir=/tmp/.pytest_cache
     profiles: [e2e]

@@ -34,12 +34,18 @@ INSTALLED_APPS = [
     "django.contrib.contenttypes",
     "django.contrib.messages",
     "django.contrib.sessions",
+    "django.contrib.staticfiles",
     "django_htmx",
     "django_tasks",
     "django_tasks_db",
     "teatree.core",
     "teatree.agents",
 ]
+
+STATIC_URL = "static/"
+TIME_ZONE = "UTC"
+USE_TZ = True
+DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 MIDDLEWARE = [
     "django.contrib.sessions.middleware.SessionMiddleware",

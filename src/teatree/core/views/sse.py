@@ -4,6 +4,7 @@ import json
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 
+from asgiref.sync import sync_to_async
 from django.conf import settings
 from django.http import HttpRequest, StreamingHttpResponse
 from django.views import View
@@ -54,7 +55,8 @@ class DashboardSSEView(View):
         ticks_since_event = 0
         while True:
             try:
-                changed_panels, last_mtime, last_hashes = _detect_changed_panels(last_mtime, last_hashes)
+                detect = sync_to_async(_detect_changed_panels)
+                changed_panels, last_mtime, last_hashes = await detect(last_mtime, last_hashes)
                 if changed_panels:
                     ticks_since_event = 0
                     for panel in changed_panels:

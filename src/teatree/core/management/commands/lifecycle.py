@@ -169,6 +169,17 @@ class Command(TyperCommand):
 
         return int(worktree.pk)
 
+    @staticmethod
+    def _apply_variant(ticket: Ticket, variant: str) -> None:
+        """Update ticket variant and recompute db_name for all worktrees."""
+        ticket.variant = variant
+        ticket.save(update_fields=["variant"])
+        for wt in ticket.worktrees.all():  # type: ignore[attr-defined]
+            old_db = wt.db_name
+            wt.db_name = wt._build_db_name()  # noqa: SLF001
+            if wt.db_name != old_db:
+                wt.save(update_fields=["db_name"])
+
     def _provision_worktree(
         self, worktree: Worktree, overlay: "OverlayBase", *, force: bool = False
     ) -> ProvisionReport:

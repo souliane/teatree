@@ -225,6 +225,55 @@ class TestDbImportCircuitBreaker(TestCase):
             assert wt.extra["db_import_failures"] == 4
 
 
+class TestApplyVariant(TestCase):
+    def test_updates_ticket_variant_and_recomputes_db_name(self) -> None:
+        from teatree.core.management.commands.lifecycle import Command as LifecycleCommand  # noqa: PLC0415
+
+        ticket = Ticket.objects.create(
+            overlay="test",
+            issue_url="https://example.com/issues/200",
+            variant="old",
+        )
+        wt = Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path="backend",
+            branch="feature",
+            db_name=f"wt_{ticket.ticket_number}_old",
+        )
+
+        LifecycleCommand._apply_variant(ticket, "new")
+
+        ticket.refresh_from_db()
+        wt.refresh_from_db()
+        assert ticket.variant == "new"
+        assert wt.db_name == f"wt_{ticket.ticket_number}_new"
+
+    def test_skips_save_when_db_name_unchanged(self) -> None:
+        from teatree.core.management.commands.lifecycle import Command as LifecycleCommand  # noqa: PLC0415
+
+        ticket = Ticket.objects.create(
+            overlay="test",
+            issue_url="https://example.com/issues/201",
+            variant="",
+        )
+        wt = Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path="backend",
+            branch="feature",
+            db_name=f"wt_{ticket.ticket_number}",
+        )
+        original_db_name = wt.db_name
+
+        # Variant "" → "acme" should change the db_name
+        LifecycleCommand._apply_variant(ticket, "acme")
+
+        wt.refresh_from_db()
+        assert wt.db_name != original_db_name
+        assert wt.db_name == f"wt_{ticket.ticket_number}_acme"
+
+
 class TestFollowupCommands(TestCase):
     def test_sync_reports_no_repos_from_default_overlay(self) -> None:
         with patch.object(
