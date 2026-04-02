@@ -11,7 +11,9 @@ from teatree.core.models.ticket import Ticket
 from teatree.utils import ports as port_utils
 
 if TYPE_CHECKING:
-    from teatree.core.models.types import Ports, WorktreeExtra
+    from teatree.core.models.types import Ports
+
+from teatree.core.models.types import WorktreeExtra, validated_worktree_extra
 
 
 def _workspace_dir() -> Path:
@@ -165,8 +167,12 @@ class Worktree(models.Model):
         self.save(update_fields=["ports"])
         return changes
 
-    def _extra(self) -> "WorktreeExtra":
-        return cast("WorktreeExtra", self.extra or {})
+    def get_extra(self) -> WorktreeExtra:
+        """Return the extra field as a typed WorktreeExtra dict."""
+        return validated_worktree_extra(self.extra)
+
+    def _extra(self) -> WorktreeExtra:
+        return validated_worktree_extra(self.extra)
 
     def _ports(self) -> "Ports":
         return cast("Ports", self.ports or {})

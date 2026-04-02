@@ -42,6 +42,8 @@ Each phase maps to a skill (`t3:ticket`, `t3:code`, etc.). The `Session` model t
 ## CLI Reference
 
 ```bash
+t3 dashboard                # Start dashboard + background worker (top-level)
+t3 <overlay> resetdb        # Drop and recreate the SQLite database
 t3 lifecycle setup          # Provision worktree (ports, DB, overlay steps)
 t3 lifecycle start          # Start dev servers
 t3 lifecycle status         # Show worktree state
@@ -80,6 +82,17 @@ The `SkillLoadingPolicy` class resolves which skills to load based on intent, ov
 Hooks are registered in `hooks/hooks.json` (shipped with the plugin). This is the **sole source** for hook registrations — do NOT duplicate hooks in the user's `~/.claude/settings.json`. When adding or changing hooks, only modify `hooks.json` in this repo.
 
 **Known failure (2026-04-02):** PR #109 moved hooks from `settings.json` to plugin `hooks.json` but didn't remove the old ones. This caused double hook execution on every tool call, accelerating context consumption and triggering aggressive microcompaction. Prevention: when migrating hooks to the plugin, always remove the `settings.json` equivalents in the same change.
+
+## Dogfooding Checklist (Non-Negotiable for CLI/Server Changes)
+
+When modifying CLI commands, dashboard views, or server startup:
+
+1. **Run the command yourself** — don't rely on unit tests alone. `uv run t3 <command>` from a worktree (not the main clone) to catch cwd-dependent bugs.
+2. **Verify HTTP 200** — for dashboard/server changes: `curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:<port>/` must return 200.
+3. **Test the full flow** — if the change involves task execution, create a task and verify the worker picks it up. Don't declare "auto-start works" without observing a task transition from PENDING to CLAIMED.
+4. **Check overlay resolution from worktrees** — `discover_active_overlay()` uses cwd-based discovery. Worktree directory names don't match overlay names. Always test from a worktree path, not the main clone.
+
+**Known pitfall:** `discover_active_overlay()` returns the directory name when `manage.py` is found via cwd walk. In worktrees, this gives names like `move-dashboard-to-general-cli` instead of `t3-teatree`. The `_resolve_overlay_for_server()` function in `cli/__init__.py` works around this by preferring entry-point overlays.
 
 ## Configuration
 
