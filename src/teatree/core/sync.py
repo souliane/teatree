@@ -59,15 +59,9 @@ def sync_followup() -> SyncResult:
         return _sync_github(overlay)
     if overlay.config.get_gitlab_token():
         return _sync_gitlab(overlay)
+    overlay_label = _overlay_name(overlay) or "active overlay"
     return SyncResult(
-        errors=[
-            (
-                "No code host token configured. "
-                "Set github_token_pass_key or gitlab_token_pass_key in "
-                "overlay_settings.py, or override in ~/.teatree.toml "
-                "under [overlays.<name>]."
-            ),
-        ],
+        errors=[f"No code host token for {overlay_label}"],
     )
 
 

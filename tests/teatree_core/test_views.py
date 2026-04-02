@@ -280,13 +280,13 @@ class TestSyncFollowupView(TestCase):
         with patch.object(
             actions_views,
             "perform_sync",
-            return_value=SyncResult(errors=["No code host token configured in overlay"]),
+            return_value=SyncResult(errors=["No code host token for test"]),
         ):
             response = Client().post(reverse("teatree:dashboard-sync"))
 
         assert response.status_code == 200
         assert b"Sync error" in response.content
-        assert b"No code host token configured" in response.content
+        assert b"No code host token for" in response.content
 
 
 # ---------------------------------------------------------------------------

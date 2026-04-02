@@ -757,7 +757,7 @@ class TestSyncFollowup(TestCase):
             result = sync_followup()
 
         assert len(result.errors) == 1
-        assert "No code host token configured" in result.errors[0]
+        assert "No code host token for" in result.errors[0]
 
     def test_captures_api_errors(self) -> None:
         mock_client = MagicMock()
