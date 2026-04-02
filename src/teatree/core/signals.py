@@ -17,7 +17,7 @@ def _log_ticket_transition(
 ) -> None:
     from teatree.core.models.transition import TicketTransition  # noqa: PLC0415
 
-    session = instance.sessions.order_by("-started_at").first()
+    session = instance.sessions.order_by("-started_at").first()  # ty: ignore[unresolved-attribute]
     TicketTransition.objects.create(
         ticket=instance,
         session=session,

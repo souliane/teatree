@@ -1,3 +1,5 @@
+from typing import cast
+
 from django.core.management import call_command
 from django.test import TestCase
 
@@ -163,11 +165,11 @@ class TestCheckGatesStructured(TestCase):
         ticket = Ticket.objects.create()
         Session.objects.create(ticket=ticket)
 
-        result = call_command("pr", "check-gates", ticket.pk, target_phase="shipping")
+        result = cast("dict[str, object]", call_command("pr", "check-gates", ticket.pk, target_phase="shipping"))
 
         assert result["allowed"] is False
-        assert "reviewing" in result["missing"]
-        assert "testing" in result["missing"]
+        assert "reviewing" in cast("list[str]", result["missing"])
+        assert "testing" in cast("list[str]", result["missing"])
 
     def test_check_gates_passes_when_phases_visited(self) -> None:
         ticket = Ticket.objects.create()
@@ -175,7 +177,7 @@ class TestCheckGatesStructured(TestCase):
         session.visit_phase("testing")
         session.visit_phase("reviewing")
 
-        result = call_command("pr", "check-gates", ticket.pk, target_phase="shipping")
+        result = cast("dict[str, object]", call_command("pr", "check-gates", ticket.pk, target_phase="shipping"))
 
         assert result["allowed"] is True
 
