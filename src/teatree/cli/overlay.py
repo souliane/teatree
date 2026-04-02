@@ -14,6 +14,7 @@ DJANGO_GROUPS: dict[str, tuple[str, list[tuple[str, str]]]] = {
         [
             ("setup", "Create and provision a worktree."),
             ("start", "Start services for a worktree."),
+            ("restart", "Kill existing processes and restart all services."),
             ("status", "Return worktree state information."),
             ("teardown", "Tear down a worktree."),
             ("clean", "Teardown worktree — stop services, drop DB, clean state."),

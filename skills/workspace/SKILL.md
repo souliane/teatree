@@ -116,7 +116,8 @@ If the environment seems incomplete (missing `uv`, hooks not firing, overlay abs
 
 ### Dev Servers
 
-- `t3 lifecycle start` — full-stack startup (Docker services + migrations + backend + frontend).
+- `t3 lifecycle start` — full-stack startup (Docker services + migrations + backend + frontend). Safe to re-run (kills stale processes first).
+- `t3 lifecycle restart` — kill existing processes and restart all services. Use after `git pull` or code changes. Re-runs pre-run steps (patches customer.json, syncs translations). Falls back to setup + start if the worktree isn't provisioned.
 - `t3 run backend` — start backend dev server only.
 - `t3 run frontend` — start frontend dev server only.
 - `t3 run build-frontend` — build frontend app for production/testing.
@@ -266,6 +267,7 @@ stateDiagram-v2
 | `t3 <overlay> lifecycle status [--json]` | Show current state, ports, DB, available transitions |
 | `t3 <overlay> lifecycle setup [VARIANT]` | Provision worktree: ports, env, symlinks, DB |
 | `t3 <overlay> lifecycle start` | Start dev servers (backend + frontend), then verify |
+| `t3 <overlay> lifecycle restart` | Kill processes, re-run pre-run steps, relaunch fresh |
 | `t3 <overlay> lifecycle clean` | Teardown worktree — stop services, drop DB, clean state |
 | `t3 <overlay> lifecycle diagram` | Print state diagram as Mermaid |
 
