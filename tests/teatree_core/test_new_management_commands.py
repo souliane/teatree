@@ -1847,12 +1847,12 @@ class TestRunE2ePrivate(TestCase):
     @override_settings(**SETTINGS)
     def test_custom_test_path(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            mock_worktree = MagicMock()
-            mock_worktree.ports = {}
+            tmp_path = Path(tmp)
+            private_dir = tmp_path / "private"
+            private_dir.mkdir()
             mock_result = MagicMock(returncode=0)
             with (
-                patch.dict("os.environ", {"T3_PRIVATE_TESTS": tmp}),
-                patch.object(run_mod, "resolve_worktree", return_value=mock_worktree),
+                patch.dict("os.environ", {"T3_PRIVATE_TESTS": str(private_dir), "T3_ORIG_CWD": tmp}),
                 patch.object(run_mod.subprocess, "run", return_value=mock_result) as mock_run,
             ):
                 call_command("run", "e2e-private", test_path="tests/login.py")
@@ -1861,12 +1861,14 @@ class TestRunE2ePrivate(TestCase):
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_no_worktree_uses_default_port(self) -> None:
+    def test_no_env_worktree_uses_default_port(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            private_dir = tmp_path / "private"
+            private_dir.mkdir()
             mock_result = MagicMock(returncode=0)
             with (
-                patch.dict("os.environ", {"T3_PRIVATE_TESTS": tmp}),
-                patch.object(run_mod, "resolve_worktree", return_value=None),
+                patch.dict("os.environ", {"T3_PRIVATE_TESTS": str(private_dir), "T3_ORIG_CWD": tmp}),
                 patch.object(run_mod.subprocess, "run", return_value=mock_result) as mock_run,
             ):
                 call_command("run", "e2e-private")
