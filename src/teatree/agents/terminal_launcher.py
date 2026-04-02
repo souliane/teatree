@@ -61,6 +61,39 @@ def _launch_native_window(command: list[str], *, cwd: str = "", app: str = "") -
     return _launch_linux_window(cmd_str, cwd=cwd, app=app)
 
 
+_MACOS_CANDIDATES = [
+    ("iterm2", "iTerm"),
+    ("terminal", "Terminal"),
+    ("kitty", "kitty"),
+    ("alacritty", "Alacritty"),
+    ("wezterm", "WezTerm"),
+]
+
+_LINUX_CANDIDATES = [
+    ("gnome-terminal", "GNOME Terminal"),
+    ("konsole", "Konsole"),
+    ("xfce4-terminal", "Xfce Terminal"),
+    ("kitty", "kitty"),
+    ("alacritty", "Alacritty"),
+    ("wezterm", "WezTerm"),
+]
+
+
+def detect_available_apps() -> list[tuple[str, str]]:
+    """Return (value, label) pairs for terminal apps found on this system."""
+    candidates = _MACOS_CANDIDATES if sys.platform == "darwin" else _LINUX_CANDIDATES
+    available: list[tuple[str, str]] = []
+    for value, label in candidates:
+        if sys.platform == "darwin":
+            # On macOS, check if the .app bundle exists
+            app_path = Path(f"/Applications/{label}.app")
+            if app_path.exists() or shutil.which(value):
+                available.append((value, label))
+        elif shutil.which(value):
+            available.append((value, label))
+    return available
+
+
 _MACOS_APP_NAMES: dict[str, str] = {
     "iterm2": "iTerm",
     "iterm": "iTerm",

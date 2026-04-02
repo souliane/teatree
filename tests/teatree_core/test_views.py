@@ -80,6 +80,12 @@ class TestDashboardView(TestCase):
         assert response.status_code == 200
         assert "teatree-logo.svg" in response.context["logo_url"]
 
+    def test_handles_git_command_failure(self) -> None:
+        with patch("subprocess.check_output", side_effect=FileNotFoundError("git not found")):
+            response = Client().get(reverse("teatree:dashboard"))
+        assert response.status_code == 200
+        assert response.context["git_sha"] == ""
+
     def test_renders_sync_button(self) -> None:
         response = Client().get(reverse("teatree:dashboard"))
 

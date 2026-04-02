@@ -283,11 +283,6 @@
           var appSel = document.getElementById('terminal-app-selector');
           var savedApp = localStorage.getItem('teatree_terminal_app') || '';
           if (appSel && savedApp) appSel.value = savedApp;
-          // Mark active options in split-button menus
-          document.querySelectorAll('.split-menu [data-key]').forEach(function(b) {
-            var current = localStorage.getItem(b.dataset.key) || (b.dataset.key === 'teatree_terminal_mode' ? 'new-window' : '');
-            b.classList.toggle('active', b.dataset.value === current);
-          });
         })();
         </script>
         <div class="split-btn">
@@ -299,18 +294,7 @@
             hx-on::after-request="handleActionResponse(event)"
           >Terminal</button>
           <button type="button" class="pill-btn pill-xs split-arrow border border-clay/30 bg-clay/10 text-clay hover:bg-clay/20" onclick="toggleSplitMenu(this)">&#9662;</button>
-          <div class="split-menu hidden">
-            <div class="px-2 py-1 font-semibold text-bark/40 uppercase tracking-widest" style="font-size:9px">Mode</div>
-            <button data-key="teatree_terminal_mode" data-value="new-window" onclick="setTerminalOption('teatree_terminal_mode','new-window',this)">New window</button>
-            <button data-key="teatree_terminal_mode" data-value="ttyd" onclick="setTerminalOption('teatree_terminal_mode','ttyd',this)">ttyd (browser)</button>
-            <div class="px-2 py-1 font-semibold text-bark/40 uppercase tracking-widest border-t border-bark/10 mt-1 pt-1" style="font-size:9px">App</div>
-            <button data-key="teatree_terminal_app" data-value="" onclick="setTerminalOption('teatree_terminal_app','',this)">Default</button>
-            <button data-key="teatree_terminal_app" data-value="iterm2" onclick="setTerminalOption('teatree_terminal_app','iterm2',this)">iTerm2</button>
-            <button data-key="teatree_terminal_app" data-value="terminal" onclick="setTerminalOption('teatree_terminal_app','terminal',this)">Terminal.app</button>
-            <button data-key="teatree_terminal_app" data-value="kitty" onclick="setTerminalOption('teatree_terminal_app','kitty',this)">Kitty</button>
-            <button data-key="teatree_terminal_app" data-value="alacritty" onclick="setTerminalOption('teatree_terminal_app','alacritty',this)">Alacritty</button>
-            <button data-key="teatree_terminal_app" data-value="wezterm" onclick="setTerminalOption('teatree_terminal_app','wezterm',this)">WezTerm</button>
-          </div>
+          <div class="split-menu hidden">{% include "teatree/partials/_terminal_options_menu.html" %}</div>
         </div>
         <div class="split-btn">
           <button
@@ -321,11 +305,7 @@
             hx-on::after-request="handleActionResponse(event)"
           >Agent</button>
           <button type="button" class="pill-btn pill-xs split-arrow border border-moss/30 bg-moss/10 text-moss hover:bg-moss/20" onclick="toggleSplitMenu(this)">&#9662;</button>
-          <div class="split-menu hidden">
-            <div class="px-2 py-1 font-semibold text-bark/40 uppercase tracking-widest" style="font-size:9px">Mode</div>
-            <button data-key="teatree_terminal_mode" data-value="new-window" onclick="setTerminalOption('teatree_terminal_mode','new-window',this)">New window</button>
-            <button data-key="teatree_terminal_mode" data-value="ttyd" onclick="setTerminalOption('teatree_terminal_mode','ttyd',this)">ttyd (browser)</button>
-          </div>
+          <div class="split-menu hidden">{% include "teatree/partials/_terminal_options_menu.html" %}</div>
         </div>
         <button
           class="pill-btn pill-xs border border-moss/30 bg-moss/10 uppercase tracking-[0.18em] text-moss hover:bg-moss/20"
@@ -500,5 +480,12 @@
     <div class="relative mx-4 max-h-[85vh] w-full max-w-2xl overflow-y-auto rounded-[1.5rem] border border-bark/10 bg-cream shadow-soft p-6" id="task-modal-body">
     </div>
   </div>
+  <script>
+    // Mark active split-menu options on load (runs after all DOM is ready)
+    document.querySelectorAll('.split-menu [data-key]').forEach(function(b) {
+      var current = localStorage.getItem(b.dataset.key) || (b.dataset.key === 'teatree_terminal_mode' ? 'new-window' : '');
+      b.classList.toggle('active', b.dataset.value === current);
+    });
+  </script>
 </body>
 </html>
