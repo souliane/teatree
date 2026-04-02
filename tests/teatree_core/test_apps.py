@@ -204,12 +204,13 @@ class TestStartPeriodicSync(TestCase):
 
         self._monkeypatch.setattr(threading.Event, "wait", _fast_wait)
 
-        # Make the task module's sync_followup raise when enqueued
+        # Make the task module's drain_headless_queue raise when enqueued
+        # (drain runs every tick; sync_followup only runs every 30th tick)
         import teatree.core.tasks as tasks_mod  # noqa: PLC0415
 
-        mock_task = MagicMock()
-        mock_task.enqueue.side_effect = RuntimeError("enqueue failed")
-        self._monkeypatch.setattr(tasks_mod, "sync_followup", mock_task)
+        mock_drain = MagicMock()
+        mock_drain.enqueue.side_effect = RuntimeError("enqueue failed")
+        self._monkeypatch.setattr(tasks_mod, "drain_headless_queue", mock_drain)
 
         _start_periodic_sync()
 
@@ -217,7 +218,7 @@ class TestStartPeriodicSync(TestCase):
         with pytest.raises(StopIteration):
             captured_target()
 
-        mock_task.enqueue.assert_called_once()
+        mock_drain.enqueue.assert_called_once()
 
 
 class TestStartWorkers:

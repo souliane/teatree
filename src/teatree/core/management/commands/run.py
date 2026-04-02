@@ -246,9 +246,19 @@ class Command(TyperCommand):
         if not private_tests_path.is_dir():
             return f"Private tests directory does not exist: {private_tests_path}"
 
-        worktree = resolve_worktree()
-        ports = worktree.ports or {} if worktree else {}
-        frontend_port = ports.get("frontend", 4200)
+        # Read ports and variant from .env.worktree (filesystem truth,
+        # no DB dependency — immune to race conditions and empty DBs).
+        from teatree.core.resolve import _find_env_worktree, _get_user_cwd  # noqa: PLC0415
+
+        envfile = _find_env_worktree(_get_user_cwd())
+        wt_env: dict[str, str] = {}
+        if envfile is not None:
+            from teatree.core.resolve import _parse_env_file  # noqa: PLC0415
+
+            wt_env = _parse_env_file(envfile)
+
+        frontend_port = wt_env.get("FRONTEND_PORT", "4200")
+        variant = wt_env.get("WT_VARIANT", "")
 
         cmd = ["npx", "playwright", "test"]
         if test_path:
@@ -257,6 +267,8 @@ class Command(TyperCommand):
 
         env = {**os.environ}
         env["BASE_URL"] = f"http://localhost:{frontend_port}"
+        if variant:
+            env["CUSTOMER"] = variant
         if headed:
             env.pop("CI", None)
             cmd.append("--headed")
@@ -265,6 +277,8 @@ class Command(TyperCommand):
 
         self.stdout.write(f"  Running from: {private_tests_path}")
         self.stdout.write(f"  BASE_URL: {env['BASE_URL']}")
+        if variant:
+            self.stdout.write(f"  CUSTOMER: {variant}")
 
         result = subprocess.run(cmd, cwd=private_tests_path, check=False, env=env)  # noqa: S603
         return "E2E passed." if result.returncode == 0 else f"E2E failed (exit {result.returncode})."
