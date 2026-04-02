@@ -15,10 +15,11 @@ import typer
 
 from teatree.cli.ci import ci_app
 from teatree.cli.doctor import DoctorService, IntrospectionHelpers, doctor_app
-from teatree.cli.overlay import OverlayAppBuilder, managepy
+from teatree.cli.overlay import OverlayAppBuilder, _uvicorn, managepy
 from teatree.cli.plugin import plugin_app
 from teatree.cli.review import review_app
 from teatree.cli.tools import tool_app
+from teatree.config import discover_active_overlay
 
 logger = logging.getLogger(__name__)
 
@@ -409,7 +410,82 @@ def _find_overlay_project() -> Path:
     return _find_project_root()
 
 
-# dashboard and resetdb are registered per-overlay in _register_overlay_commands()
+@app.command()
+def dashboard(
+    host: str = typer.Option("127.0.0.1", help="Host to bind to"),
+    port: int = typer.Option(8000, help="Port to serve on"),
+    *,
+    workers: int = typer.Option(1, help="Number of background task workers to start (0 to disable)"),
+) -> None:
+    """Migrate the database and start the dashboard dev server."""
+    import socket  # noqa: PLC0415
+
+    from teatree.cli.overlay import uv_cmd  # noqa: PLC0415
+
+    project_path, overlay_name, settings_module = _resolve_overlay_for_server()
+    managepy(project_path, "migrate", "--no-input", overlay_name=overlay_name)
+    actual_port = port
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        if s.connect_ex((host, port)) == 0:
+            s2 = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s2.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            s2.bind((host, 0))
+            actual_port = s2.getsockname()[1]
+            s2.close()
+            typer.echo(f"Port {port} in use, using {actual_port}")
+
+    worker_procs: list[subprocess.Popen] = []
+    if workers > 0 and project_path:
+        env = {k: v for k, v in os.environ.items() if k != "DJANGO_SETTINGS_MODULE"}
+        if overlay_name:
+            env["T3_OVERLAY_NAME"] = overlay_name
+        manage_py = str(project_path / "manage.py")
+        worker_cmd = [
+            *uv_cmd(project_path, "python", manage_py, "db_worker"),
+            "--interval",
+            "1",
+            "--no-startup-delay",
+            "--no-reload",
+        ]
+        worker_procs.extend(
+            subprocess.Popen(worker_cmd, cwd=project_path, env=env)  # noqa: S603
+            for _ in range(workers)
+        )
+        typer.echo(f"Started {workers} background worker(s).")
+
+    try:
+        _uvicorn(project_path, host, actual_port, settings_module, overlay_name=overlay_name)
+    finally:
+        for p in worker_procs:
+            p.terminate()
+        for p in worker_procs:
+            p.wait(timeout=5)
+
+
+def _resolve_overlay_for_server() -> tuple[Path, str, str]:
+    """Resolve the active overlay's project path, name, and settings module.
+
+    Prefers entry-point overlays over cwd-based discovery, since cwd may be a
+    worktree whose directory name doesn't match the overlay.
+    """
+    from teatree.config import discover_overlays  # noqa: PLC0415
+
+    # Entry-point overlays (overlay_class contains ":") are the canonical
+    # installed overlays.  TOML-only entries without a class are config
+    # supplements, not standalone overlays.
+    installed = discover_overlays()
+    ep_overlays = [e for e in installed if ":" in (e.overlay_class or "")]
+    active = ep_overlays[0] if len(ep_overlays) == 1 else discover_active_overlay()
+    if not active:
+        typer.echo("No active overlay found. Add one to ~/.teatree.toml.")
+        raise typer.Exit(code=1)
+    project_path = active.project_path or _find_project_root()
+    overlay_name = active.name
+    if project_path and ":" not in active.overlay_class and active.overlay_class:
+        settings_module = active.overlay_class
+    else:
+        settings_module = "teatree.settings"
+    return project_path, overlay_name, settings_module
 
 
 def _find_project_root() -> Path:

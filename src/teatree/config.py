@@ -75,6 +75,7 @@ class UserSettings:
     privacy: str = ""
     check_updates: bool = True
     timezone: str = ""
+    contribute: bool = False
 
 
 @dataclass
@@ -101,6 +102,7 @@ def load_config(path: Path = CONFIG_PATH) -> TeaTreeConfig:
         privacy=teatree.get("privacy", ""),
         check_updates=teatree.get("check_updates", True),
         timezone=teatree.get("timezone", ""),
+        contribute=bool(teatree.get("contribute", False)),
     )
 
     return TeaTreeConfig(user=user, raw=raw)
