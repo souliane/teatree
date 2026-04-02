@@ -53,11 +53,28 @@ def _find_env_worktree(cwd: str) -> Path | None:
 
 
 def _match_worktree_by_path(path: str) -> Worktree | None:
-    """Find a Worktree whose ``extra["worktree_path"]`` matches or contains *path*."""
-    for wt in Worktree.objects.exclude(extra={}).exclude(extra__isnull=True):
-        wt_path = (wt.extra or {}).get("worktree_path", "")
-        if wt_path and path.startswith(wt_path):
-            return wt
+    """Find a Worktree whose ``extra["worktree_path"]`` matches or contains *path*.
+
+    First tries an exact DB-level JSON lookup, then falls back to a prefix
+    match for when the user is in a subdirectory of the worktree.
+    """
+    # Fast path: exact match via DB-level JSON lookup
+    exact = Worktree.objects.filter(extra__worktree_path=path).first()
+    if exact is not None:
+        return exact
+
+    # Walk up from path to find a parent that matches a stored worktree_path.
+    # This handles being inside a subdirectory of a worktree.
+    path_obj = Path(path)
+    for parent in path_obj.parents:
+        parent_str = str(parent)
+        match = Worktree.objects.filter(extra__worktree_path=parent_str).first()
+        if match is not None:
+            return match
+        # Stop at filesystem root or home directory to avoid excessive queries
+        if parent_str == str(Path.home()) or parent == parent.parent:
+            break
+
     return None
 
 

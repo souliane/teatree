@@ -13,6 +13,7 @@ from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay import OverlayBase, RunCommand
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.resolve import resolve_worktree
+from teatree.core.step_runner import ProvisionReport, run_provision_steps, run_step
 from teatree.core.worktree_env import write_env_worktree
 
 
@@ -37,19 +38,14 @@ def _setup_worktree_dir(wt_path: str, worktree: Worktree, overlay: OverlayBase, 
     if not wt_path or not Path(wt_path).is_dir():
         return
     _append_envrc_lines(wt_path, overlay.get_envrc_lines(worktree))
-    subprocess.run(  # noqa: S603
-        ["direnv", "allow", wt_path],
-        capture_output=True,
-        check=False,
-    )
+    result = run_step("direnv-allow", ["direnv", "allow", wt_path], check=False)
+    if not result.success:
+        stdout.write(f"  direnv allow: {result.error}")
     if (Path(wt_path) / ".pre-commit-config.yaml").is_file():
         stdout.write("  Running: prek install")
-        subprocess.run(
-            ["prek", "install", "-f"],
-            cwd=wt_path,
-            capture_output=True,
-            check=False,
-        )
+        result = run_step("prek-install", ["prek", "install", "-f"], cwd=wt_path, check=False)
+        if not result.success:
+            stdout.write(f"  prek install: {result.error}")
 
 
 def _register_new_repos(worktree: Worktree, stdout: OutputWrapper) -> None:
@@ -98,6 +94,7 @@ def _register_new_repos(worktree: Worktree, stdout: OutputWrapper) -> None:
 
 class Command(TyperCommand):
     _DB_IMPORT_MAX_FAILURES = 3
+    _verbose: bool = False
 
     @command()
     def setup(
@@ -106,12 +103,20 @@ class Command(TyperCommand):
         variant: str = typer.Option("", help="Tenant variant. Updates ticket if provided."),
         overlay: str = typer.Option("", help="Overlay name (auto-detects if empty)."),
         force: bool = typer.Option(default=False, help="Bypass DB import circuit breaker."),  # noqa: FBT001
+        verbose: bool = typer.Option(default=False, help="Show step stdout/stderr."),  # noqa: FBT001
     ) -> int:
         """Provision a worktree (allocate ports, DB name, run overlay steps).
 
         Discovers repos added to the ticket directory since initial creation
         and provisions all worktrees for the ticket, not just the resolved one.
         """
+        # Guard against typer.Option defaults when called as a Python method
+        # (typer.Option("") evaluates to OptionInfo, not "")
+        if not isinstance(variant, str):
+            variant = ""
+        if not isinstance(overlay, str):
+            overlay = ""
+        self._verbose = verbose if isinstance(verbose, bool) else False
         if overlay:
             os.environ["T3_OVERLAY_NAME"] = overlay
         worktree = resolve_worktree(path)
@@ -130,7 +135,9 @@ class Command(TyperCommand):
         failed_repos: list[str] = []
         for wt in ticket.worktrees.all():
             try:
-                self._provision_worktree(wt, resolved_overlay, force=force)
+                report = self._provision_worktree(wt, resolved_overlay, force=force)
+                if not report.success:
+                    failed_repos.append(wt.repo_path)
             except Exception as exc:  # noqa: BLE001
                 failed_repos.append(wt.repo_path)
                 self.stderr.write(f"  ERROR provisioning {wt.repo_path}: {exc}")
@@ -142,7 +149,9 @@ class Command(TyperCommand):
 
         return int(worktree.pk)
 
-    def _provision_worktree(self, worktree: Worktree, overlay: "OverlayBase", *, force: bool = False) -> None:
+    def _provision_worktree(
+        self, worktree: Worktree, overlay: "OverlayBase", *, force: bool = False
+    ) -> ProvisionReport:
         self.stdout.write(f"  Provisioning: {worktree.repo_path}")
 
         if worktree.state == Worktree.State.CREATED:
@@ -159,53 +168,103 @@ class Command(TyperCommand):
 
         # Import database (DSLR/dump fallback chain) before running provision steps
         if overlay.get_db_import_strategy(worktree) is not None:
-            extra = worktree.extra or {}
-            failures = extra.get("db_import_failures", 0)
-            if failures >= self._DB_IMPORT_MAX_FAILURES and not force:
-                self.stderr.write(f"  SKIPPED: DB import (failed {failures} consecutive times). Use --force to retry.")
-            else:
-                self.stdout.write("  Running: db-import")
-                env = {**os.environ, **overlay.get_env_extra(worktree)}
-                env.pop("VIRTUAL_ENV", None)
-                os.environ.update(env)  # pg tools need these to connect
-                if overlay.db_import(worktree):
-                    extra.pop("db_import_failures", None)
-                    worktree.extra = extra
-                    worktree.save(update_fields=["extra"])
-                else:
-                    extra["db_import_failures"] = failures + 1
-                    worktree.extra = extra
-                    worktree.save(update_fields=["extra"])
-                    self.stderr.write("  WARNING: DB import failed. Continuing with provision steps...")
+            self._run_db_import(worktree, overlay, force=force)
 
-        for step in overlay.get_provision_steps(worktree):
-            self.stdout.write(f"  Running: {step.name}")
-            step.callable()
+        # Run overlay provision steps with structured reporting
+        provision_report = run_provision_steps(
+            overlay.get_provision_steps(worktree),
+            verbose=self._verbose,
+            stdout_writer=self.stdout.write,
+            stderr_writer=self.stderr.write,
+        )
 
-        self._run_post_db_steps(overlay, worktree)
+        # Post-DB steps (optional — don't halt on failure)
+        post_db_report = self._run_post_db_steps(overlay, worktree)
 
-        # Run pre-run steps for all services (e.g. frontend translation sync)
+        # Pre-run steps for all services (e.g. frontend translation sync)
+        pre_run_steps = []
         for service_name in overlay.get_run_commands(worktree):
-            for step in overlay.get_pre_run_steps(worktree, service_name):
-                self.stdout.write(f"  Running: {step.name}")
-                step.callable()
+            pre_run_steps.extend(overlay.get_pre_run_steps(worktree, service_name))
+        pre_run_report = run_provision_steps(
+            pre_run_steps,
+            verbose=self._verbose,
+            stdout_writer=self.stdout.write,
+            stderr_writer=self.stderr.write,
+            stop_on_required_failure=False,
+        )
 
-    def _run_post_db_steps(self, overlay: OverlayBase, worktree: Worktree) -> None:
-        for step in overlay.get_post_db_steps(worktree):
-            self.stdout.write(f"  Running: {step.name}")
-            step.callable()
+        # Post-provision health checks
+        self._run_health_checks(worktree, overlay)
 
+        # Combine all reports
+        combined = ProvisionReport(
+            steps=provision_report.steps + post_db_report.steps + pre_run_report.steps,
+        )
+        if self._verbose:
+            self.stdout.write(combined.summary())
+        return combined
+
+    def _run_db_import(self, worktree: Worktree, overlay: OverlayBase, *, force: bool = False) -> None:
+        extra = worktree.extra or {}
+        failures = extra.get("db_import_failures", 0)
+        if failures >= self._DB_IMPORT_MAX_FAILURES and not force:
+            self.stderr.write(f"  SKIPPED: DB import (failed {failures} consecutive times). Use --force to retry.")
+            return
+        self.stdout.write("  Running: db-import")
+        env = {**os.environ, **overlay.get_env_extra(worktree)}
+        env.pop("VIRTUAL_ENV", None)
+        os.environ.update(env)  # pg tools need these to connect
+        if overlay.db_import(worktree):
+            extra.pop("db_import_failures", None)
+            worktree.extra = extra
+            worktree.save(update_fields=["extra"])
+        else:
+            extra["db_import_failures"] = failures + 1
+            worktree.extra = extra
+            worktree.save(update_fields=["extra"])
+            self.stderr.write("  WARNING: DB import failed. Continuing with provision steps...")
+
+    def _run_post_db_steps(self, overlay: OverlayBase, worktree: Worktree) -> ProvisionReport:
+        steps = list(overlay.get_post_db_steps(worktree))
         reset_step = overlay.get_reset_passwords_command(worktree)
         if reset_step:
-            self.stdout.write("  Running: reset-passwords")
-            reset_step.callable()
+            steps.append(reset_step)
+        return run_provision_steps(
+            steps,
+            verbose=self._verbose,
+            stdout_writer=self.stdout.write,
+            stderr_writer=self.stderr.write,
+            stop_on_required_failure=False,
+        )
+
+    def _run_health_checks(self, worktree: Worktree, overlay: OverlayBase) -> None:
+        """Run post-provision health checks and report failures."""
+        checks = overlay.get_health_checks(worktree)
+        if not checks:
+            return
+        failures: list[str] = []
+        for check in checks:
+            try:
+                if not check.check():
+                    failures.append(check.name)
+                    self.stderr.write(f"  HEALTH CHECK FAILED: {check.name} — {check.description}")
+                elif self._verbose:
+                    self.stdout.write(f"  HEALTH CHECK OK: {check.name}")
+            except Exception as exc:  # noqa: BLE001
+                failures.append(check.name)
+                self.stderr.write(f"  HEALTH CHECK ERROR: {check.name} — {exc}")
+        if failures:
+            self.stderr.write(f"  {len(failures)}/{len(checks)} health check(s) failed.")
 
     def _start_docker_services(self, worktree: Worktree, overlay: "OverlayBase") -> None:
         for name, spec in overlay.get_services_config(worktree).items():
             start_cmd = spec.get("start_command", [])
             if start_cmd:
                 self.stdout.write(f"  Starting {name}...")
-                subprocess.run(start_cmd, check=False, capture_output=True)  # noqa: S603
+                proc = subprocess.run(start_cmd, check=False, capture_output=True, text=True)  # noqa: S603
+                if proc.returncode != 0:
+                    error = proc.stderr.strip()[:500] if proc.stderr else f"exit code {proc.returncode}"
+                    self.stderr.write(f"  WARNING: {name} failed to start: {error}")
 
     def _launch_app_processes(
         self,
@@ -258,10 +317,16 @@ class Command(TyperCommand):
         self._start_docker_services(worktree, resolved_overlay)
 
         commands = resolved_overlay.get_run_commands(worktree)
+        pre_run_steps = []
         for service_name in commands:
-            for step in resolved_overlay.get_pre_run_steps(worktree, service_name):
-                self.stdout.write(f"  Preparing: {step.name}")
-                step.callable()
+            pre_run_steps.extend(resolved_overlay.get_pre_run_steps(worktree, service_name))
+        run_provision_steps(
+            pre_run_steps,
+            verbose=self._verbose,
+            stdout_writer=self.stdout.write,
+            stderr_writer=self.stderr.write,
+            stop_on_required_failure=False,
+        )
 
         write_env_worktree(worktree)
         env = {**os.environ, **resolved_overlay.get_env_extra(worktree)}
@@ -343,7 +408,7 @@ class Command(TyperCommand):
 
         if worktree.state == Worktree.State.CREATED:
             self.stdout.write("  Worktree not provisioned — running setup + start instead.")
-            self.setup(path=path, overlay=overlay)
+            self.setup(path=path, variant="", overlay=overlay)
             return self.start(path=path, overlay=overlay)
 
         resolved_overlay = get_overlay()
@@ -356,10 +421,16 @@ class Command(TyperCommand):
 
         # 3. Re-run pre-run steps and launch fresh
         commands = resolved_overlay.get_run_commands(worktree)
+        pre_run_steps = []
         for service_name in commands:
-            for step in resolved_overlay.get_pre_run_steps(worktree, service_name):
-                self.stdout.write(f"  Preparing: {step.name}")
-                step.callable()
+            pre_run_steps.extend(resolved_overlay.get_pre_run_steps(worktree, service_name))
+        run_provision_steps(
+            pre_run_steps,
+            verbose=self._verbose,
+            stdout_writer=self.stdout.write,
+            stderr_writer=self.stderr.write,
+            stop_on_required_failure=False,
+        )
 
         write_env_worktree(worktree)
         env = {**os.environ, **resolved_overlay.get_env_extra(worktree)}

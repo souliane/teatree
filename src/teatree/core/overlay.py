@@ -306,5 +306,73 @@ class OverlayBase(ABC):
         """
         return []
 
+    def get_health_checks(self, worktree: "Worktree") -> list["HealthCheck"]:
+        """Return post-provision health checks to verify the worktree is functional.
+
+        Overlays can override to add project-specific checks (e.g., verify
+        specific DB tables exist, check custom symlinks).  The default checks
+        verify: worktree path exists, symlinks are valid, and DB name is set.
+        """
+        return _default_health_checks(self, worktree)
+
     def get_workspace_repos(self) -> list[str]:
         return self.get_repos()
+
+
+# ── Health checks ───────────────────────────────────────────────────
+
+
+@dataclass(frozen=True, slots=True)
+class HealthCheck:
+    name: str
+    check: Callable[[], bool]
+    description: str = ""
+
+
+def _default_health_checks(overlay: OverlayBase, worktree: "Worktree") -> list[HealthCheck]:
+    """Return standard post-provision checks applicable to any overlay."""
+    checks: list[HealthCheck] = []
+    extra = worktree.extra or {}
+    wt_path = extra.get("worktree_path", "")
+
+    if wt_path:
+        checks.append(
+            HealthCheck(
+                name="worktree-exists",
+                check=lambda: Path(wt_path).is_dir(),
+                description=f"Worktree directory exists: {wt_path}",
+            )
+        )
+
+        # Verify symlinks point to valid targets
+        for spec in overlay.get_symlinks(worktree):
+            dest = Path(wt_path) / spec.get("path", "")
+            source = Path(spec.get("source", ""))
+            if spec.get("mode", "symlink") == "symlink" and source.exists():
+                checks.append(
+                    HealthCheck(
+                        name=f"symlink-{spec.get('path', '?')}",
+                        check=lambda d=dest: d.exists() or d.is_symlink(),
+                        description=f"Symlink exists: {spec.get('path', '')}",
+                    )
+                )
+
+    if worktree.db_name:
+        checks.append(
+            HealthCheck(
+                name="db-name-set",
+                check=lambda: bool(worktree.db_name),
+                description=f"Database name assigned: {worktree.db_name}",
+            )
+        )
+
+    if worktree.ports:
+        checks.append(
+            HealthCheck(
+                name="ports-allocated",
+                check=lambda: bool(worktree.ports.get("backend") and worktree.ports.get("frontend")),
+                description="Backend and frontend ports allocated",
+            )
+        )
+
+    return checks

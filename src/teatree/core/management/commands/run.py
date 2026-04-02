@@ -11,6 +11,7 @@ from teatree.core.models import Worktree
 from teatree.core.overlay import RunCommand, RunCommands
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.resolve import resolve_worktree
+from teatree.core.step_runner import run_provision_steps
 from teatree.core.worktree_env import write_env_worktree
 
 
@@ -53,7 +54,10 @@ class Command(TyperCommand):
             start_cmd = spec.get("start_command", [])
             if start_cmd:
                 self.stdout.write(f"  Starting {name}...")
-                subprocess.run(start_cmd, check=False, capture_output=True)  # noqa: S603
+                proc = subprocess.run(start_cmd, check=False, capture_output=True, text=True)  # noqa: S603
+                if proc.returncode != 0:
+                    error = proc.stderr.strip()[:500] if proc.stderr else f"exit code {proc.returncode}"
+                    self.stderr.write(f"  WARNING: {name} failed to start: {error}")
 
     @command()
     def verify(
@@ -105,9 +109,13 @@ class Command(TyperCommand):
 
     def _run_pre_steps(self, worktree: Worktree, service: str) -> None:
         """Execute overlay pre-run steps for *service*."""
-        for step in get_overlay().get_pre_run_steps(worktree, service):
-            self.stdout.write(f"  Preparing: {step.name}")
-            step.callable()
+        steps = get_overlay().get_pre_run_steps(worktree, service)
+        run_provision_steps(
+            steps,
+            stdout_writer=self.stdout.write,
+            stderr_writer=self.stderr.write,
+            stop_on_required_failure=False,
+        )
 
     def _run_command(self, cmd: list[str] | RunCommand, env: dict[str, str] | None = None) -> None:
         if isinstance(cmd, RunCommand):
