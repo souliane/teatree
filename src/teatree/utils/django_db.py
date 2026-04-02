@@ -165,7 +165,24 @@ def _find_dslr_snapshots(dslr_cmd: str, env: dict[str, str], ref_db: str) -> lis
     return names
 
 
-def _restore_ref_from_dslr(dslr_cmd: str, env: dict[str, str], snap_name: str) -> bool:
+def _is_env_error(stderr: str) -> bool:
+    """Return True if the error is environmental (connection, auth), not data corruption."""
+    env_patterns = [
+        "connection refused",
+        "could not connect",
+        "password authentication failed",
+        "SSL",
+        "ssl",
+        "no pg_hba.conf entry",
+        "timeout expired",
+        "server closed the connection",
+    ]
+    lower = stderr.lower()
+    return any(p.lower() in lower for p in env_patterns)
+
+
+def _restore_ref_from_dslr(dslr_cmd: str, env: dict[str, str], snap_name: str) -> tuple[bool, bool]:
+    """Restore a DSLR snapshot. Returns (success, is_env_error)."""
     result = subprocess.run(
         [dslr_cmd, "restore", snap_name],
         env=env,
@@ -173,7 +190,9 @@ def _restore_ref_from_dslr(dslr_cmd: str, env: dict[str, str], snap_name: str) -
         text=True,
         check=False,
     )
-    return result.returncode == 0
+    if result.returncode == 0:
+        return True, False
+    return False, _is_env_error(result.stderr)
 
 
 def _take_dslr_snapshot(dslr_cmd: str, env: dict[str, str], ref_db: str) -> None:
@@ -330,13 +349,18 @@ def _try_restore_from_dslr(ctx: _RestoreContext, *, skip_dslr: bool) -> bool:
         return False
     for snap_name in snapshots:
         print(f"  Restoring {ctx.cfg.ref_db_name} from DSLR snapshot: {snap_name}")  # noqa: T201
-        if not _restore_ref_from_dslr(ctx.dslr_cmd, ctx.dslr_env, snap_name):
-            bad_artifacts.mark_bad(_dslr_artifact_key(snap_name))
-            print(f"  BAD ARTIFACT: DSLR snapshot '{snap_name}' marked bad (delete: dslr delete {snap_name})")  # noqa: T201
+        ok, is_env = _restore_ref_from_dslr(ctx.dslr_cmd, ctx.dslr_env, snap_name)
+        if not ok:
+            if is_env:
+                print(f"  WARNING: DSLR restore failed (environment error, not marking bad): {snap_name}")  # noqa: T201
+            else:
+                bad_artifacts.mark_bad(_dslr_artifact_key(snap_name))
+                print(f"  BAD ARTIFACT: DSLR snapshot '{snap_name}' marked bad (delete: dslr delete {snap_name})")  # noqa: T201
             continue
         if not _migrate_reference_db(ctx.cfg.main_repo_path, ctx.cfg.ref_db_name, ctx.cfg.migrate_env_extra):
-            bad_artifacts.mark_bad(_dslr_artifact_key(snap_name))
-            print(f"  BAD ARTIFACT: DSLR snapshot '{snap_name}' marked bad (delete: dslr delete {snap_name})")  # noqa: T201
+            # Migration failures are typically environmental (wrong settings, missing deps),
+            # not snapshot corruption — don't mark the snapshot as bad.
+            print(f"  WARNING: Migration failed after DSLR restore of {snap_name} (not marking snapshot bad)")  # noqa: T201
             continue
         _take_dslr_snapshot(ctx.dslr_cmd, ctx.dslr_env, ctx.cfg.ref_db_name)
         if _copy_ref_to_ticket(ctx):
