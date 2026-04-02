@@ -65,6 +65,7 @@ class DashboardView(View):
             logo_url = teatree_logo
         from teatree.agents.services import get_terminal_mode  # noqa: PLC0415
         from teatree.agents.terminal_launcher import detect_available_apps  # noqa: PLC0415
+        from teatree.config import load_config  # noqa: PLC0415
 
         return TemplateResponse(
             request,
@@ -82,6 +83,7 @@ class DashboardView(View):
                 "git_branch": git_branch,
                 "overlay_paths": overlay_paths,
                 "terminal_apps": detect_available_apps(),
+                "contribute_mode": load_config().user.contribute,
             },
         )
 
