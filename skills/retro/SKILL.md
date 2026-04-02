@@ -342,9 +342,15 @@ When `T3_CONTRIBUTE=true` and retro modified files under `$T3_REPO`, **proceed t
 
 **NEVER commit to the default branch (`main`/`master`) directly. NEVER push to it.** Always work on a feature branch in a worktree. This applies to retro commits, skill edits, "quick fixes" — everything. No exceptions.
 
-### Commit (No Push)
+### Branch Selection for Retro Commits
 
-Commit on the **current feature branch** in a worktree — never on the default branch. Retro commits are small, incremental improvements that belong on the working branch.
+Retro commits go on the **teatree branch that was already used during the session** — never on a dedicated `retro-findings` or `retro/*` branch. Rules:
+
+1. **Session used a teatree branch** (e.g., `feat/dashboard-fix`) → commit there.
+2. **Session's branch was already merged** → create a new branch from `main` (e.g., `fix/retro-<topic>`) and open an MR.
+3. **Session didn't touch any teatree branch** → create a new branch from `main` and open an MR.
+
+### Commit (No Push)
 
 ```bash
 cd "$T3_REPO"

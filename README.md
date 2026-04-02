@@ -118,7 +118,7 @@ graph LR
 | Skill | Phase |
 |-------|-------|
 | `code` | Writing code with TDD methodology |
-| `contribute` | Push retro improvements to your fork and optionally open upstream issues |
+| `contribute` | Push retro improvements to a branch, open a PR, and optionally create upstream issues |
 | `debug` | Troubleshooting and fixing — something is broken, find and fix it |
 | `followup` | Daily follow-up — batch process new tickets, check/advance ticket statuses, remind about MRs waiting for review |
 | `handover` | Use when the user wants to transfer an in-flight TeaTree task from Claude to another runtime, or asks whether it is time to switch because Claude usage is getting high. |
@@ -184,8 +184,8 @@ Teatree stores its config in `~/.teatree` (created by `/t3:setup`):
 | `T3_WORKSPACE_DIR` | Yes | — | Root workspace directory |
 | `T3_REPO` | For contributors | Auto-detected | Path to your teatree fork/clone |
 | `T3_CONTRIBUTE` | No | `false` | `false` or `true` — enable skill self-improvement |
-| `T3_PUSH` | No | `false` | When `true`, retro prompts about pushing after commits |
-| `T3_UPSTREAM` | No | None | Upstream GitHub repo (e.g., `souliane/teatree`). Enables upstream issue creation |
+| `T3_PUSH` | No | `false` | Safety gate — allow `/t3:contribute` to push (privacy/secret review) |
+| `T3_UPSTREAM` | No | None | Upstream repo for PRs (empty = PR on origin, set = PR on upstream) |
 | `T3_PRIVATE_TESTS` | No | None | Path to a private test suite repo (E2E, integration) |
 | `T3_BANNED_TERMS` | No | None | Comma-separated terms that must never appear in committed code |
 | `T3_REVIEW_SKILL` | No | None | External skill review tool name (e.g., `ac-reviewing-skills`) |
@@ -202,24 +202,25 @@ This isn't just local learning. When contributors enable self-improvement, their
 **Where improvements go depends on `T3_CONTRIBUTE`:**
 
 - **`false`** (default): Improvements go to your project overlay only. Core teatree skills are read-only.
-- **`true`**: Your agent also improves core skills in your fork. It creates a **local commit** but never pushes automatically — you review and push with `/t3:contribute`, which handles push confirmation, divergence checks, and upstream issue creation.
+- **`true`**: Your agent also improves core skills. It creates a **local commit**, then `/t3:contribute` pushes to a branch and opens a PR — never directly to main.
+
+**All pushes go through branch+PR.** The PR is the review gate.
 
 This means:
 
 - **Just using teatree?** Leave `T3_CONTRIBUTE=false`.
-- **Want your fork to get smarter?** Set `T3_CONTRIBUTE=true`. No `T3_UPSTREAM` needed.
-- **Want to contribute back?** Set `T3_CONTRIBUTE=true` and `T3_UPSTREAM=souliane/teatree`. After pushing, `/t3:contribute` opens an issue upstream.
-- **Want to also be prompted about pushing?** Set `T3_PUSH=true`. Retro will ask after each commit whether to push now.
+- **Want your repo to get smarter?** Set `T3_CONTRIBUTE=true` and `T3_PUSH=true`. `/t3:contribute` pushes to a branch and opens a PR on your repo.
+- **Want to contribute to upstream?** Also set `T3_UPSTREAM=souliane/teatree`. `/t3:contribute` opens the PR on the upstream repo and optionally creates an issue.
 
-**To contribute directly:**
+**To contribute from a fork:**
 
 1. **Fork** `souliane/teatree` on GitHub and make your fork **public**
 2. **Clone your fork** and point `T3_REPO` to it
 3. Set `T3_UPSTREAM="souliane/teatree"` and `T3_CONTRIBUTE=true` in `~/.teatree`
 4. Work normally — `retro` creates local commits improving core skills
-5. Run `/t3:contribute` to review, push, and optionally open an issue upstream — the upstream repo can review and cherry-pick if appropriate
+5. Run `/t3:contribute` to review, push to a branch, and open a PR upstream
 
-Nothing is ever pushed without your explicit consent. `/t3:contribute` shows you exactly what will be pushed and posted, runs privacy scans, and checks fork divergence before creating issues.
+Nothing is ever pushed without your explicit consent. `/t3:contribute` shows you exactly what will be pushed, runs privacy scans, and checks fork divergence before creating PRs.
 
 **Privacy:** Before any upstream interaction, all changes are scanned for personal information (emails, paths, usernames, API keys, hostnames). Your fork must be public for upstream issues — `/t3:contribute` verifies this automatically.
 
@@ -236,7 +237,7 @@ prek run --all-files         # ruff, pytest, codespell, banned-terms
 
 Teatree skills are prompt instructions — they control what your AI agent does. This makes the supply chain a security surface.
 
-**Safe defaults:** Self-improvement is off (`T3_CONTRIBUTE=false`), pushing is disabled (`T3_PUSH=false`), and there is no auto-update mechanism. You opt in to each level of automation explicitly. See the Contributing section above for what each setting unlocks.
+**Safe defaults:** Self-improvement is off (`T3_CONTRIBUTE=false`), pushing is disabled (`T3_PUSH=false`), and there is no auto-update mechanism. All pushes go to branches (never main) and require a PR. You opt in to each level of automation explicitly.
 
 **Supply chain:** `/t3:setup` verifies that `T3_REPO` is a full git clone (not shallow) and that skills are loaded via symlinks to your clone — not stale copies. If you use a fork from someone else, you are trusting that person's skill files as agent instructions. Review changes before pulling. There is no auto-update — you control when and what you merge.
 
