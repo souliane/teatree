@@ -27,7 +27,15 @@ def django_db_modify_db_settings():
 
 @pytest.fixture(scope="session")
 def django_db_setup(django_db_modify_db_settings, django_db_blocker):
-    """Run migrations against the per-worker E2E SQLite file."""
+    """Run migrations against the per-worker E2E SQLite file.
+
+    Deletes any stale DB file first so reused TEATREE_E2E_DB_DIR dirs
+    (from killed processes or inherited env vars) start clean.
+    """
+    from e2e.settings import E2E_DB_PATH
+
+    E2E_DB_PATH.unlink(missing_ok=True)
+
     with django_db_blocker.unblock():
         import django
 
