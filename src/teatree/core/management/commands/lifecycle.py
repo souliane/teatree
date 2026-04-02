@@ -125,6 +125,17 @@ class Command(TyperCommand):
         if variant and ticket.variant != variant:
             ticket.variant = variant
             ticket.save(update_fields=["variant"])
+            # Recompute db_name for all worktrees to match the new variant
+            for wt in ticket.worktrees.all():
+                old_db = wt.db_name
+                wt.db_name = wt._build_db_name()  # noqa: SLF001
+                if wt.db_name != old_db:
+                    wt.save(update_fields=["db_name"])
+
+        # Clear bad artifact markers so re-setup gets a fresh chance
+        from teatree.utils.bad_artifacts import clear_all as _clear_bad_artifacts  # noqa: PLC0415
+
+        _clear_bad_artifacts()
 
         # Discover repos added to the ticket directory since initial creation
         _register_new_repos(worktree, self.stdout)
