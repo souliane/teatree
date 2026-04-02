@@ -196,6 +196,38 @@
       htmx.trigger(document.body, 'refreshPanels');
     }
 
+    function handleGitPullResponse(event) {
+      var xhr = event.detail.xhr;
+      var errorSpan = document.getElementById('git-pull-error');
+      var toast = document.getElementById('toast-msg');
+      if (xhr.status >= 400) {
+        try {
+          var data = JSON.parse(xhr.responseText);
+          if (errorSpan && data.error) {
+            errorSpan.textContent = data.error;
+            errorSpan.title = data.error;
+            errorSpan.classList.remove('hidden');
+          }
+          if (data.task_created && toast) {
+            toast.textContent = 'Git pull failed — interactive task created';
+            toast.parentElement.classList.remove('hidden');
+            setTimeout(function(){ toast.parentElement.classList.add('hidden'); }, 5000);
+          }
+        } catch(e) { console.warn('Failed to parse git pull error:', e); }
+        htmx.trigger(document.body, 'refreshPanels');
+      } else {
+        if (errorSpan) { errorSpan.classList.add('hidden'); errorSpan.textContent = ''; }
+        try {
+          var data = JSON.parse(xhr.responseText);
+          if (toast) {
+            toast.textContent = data.output || 'Git pull complete';
+            toast.parentElement.classList.remove('hidden');
+            setTimeout(function(){ toast.parentElement.classList.add('hidden'); }, 3000);
+          }
+        } catch(e) {}
+      }
+    }
+
     document.body.addEventListener('htmx:sseOpen', function() {
       var dot = document.getElementById('sse-status');
       if (dot) { dot.className = 'inline-block h-2 w-2 rounded-full bg-emerald-500'; dot.title = 'SSE connected'; }
@@ -307,6 +339,19 @@
           <button type="button" class="pill-btn pill-xs split-arrow border border-moss/30 bg-moss/10 text-moss hover:bg-moss/20" onclick="toggleSplitMenu(this)">&#9662;</button>
           <div class="split-menu hidden">{% include "teatree/partials/_terminal_options_menu.html" %}</div>
         </div>
+        {% if contribute_mode %}
+        <button
+          id="git-pull-btn"
+          class="pill-btn pill-xs border border-bark/20 bg-bark/5 uppercase tracking-[0.18em] text-bark/60 hover:bg-bark/10"
+          hx-post="{% url 'teatree:dashboard-git-pull' %}"
+          hx-swap="none"
+          hx-on::after-request="handleGitPullResponse(event)"
+        >
+          <span id="git-pull-spinner" class="htmx-indicator mr-1">&#8635;</span>
+          Git Pull
+        </button>
+        <span id="git-pull-error" class="hidden font-sans text-xs text-red-600 max-w-xs truncate" title=""></span>
+        {% endif %}
         <button
           class="pill-btn pill-xs border border-moss/30 bg-moss/10 uppercase tracking-[0.18em] text-moss hover:bg-moss/20"
           hx-post="{% url 'teatree:dashboard-sync' %}"
