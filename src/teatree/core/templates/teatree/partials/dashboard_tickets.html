@@ -39,12 +39,12 @@
                 <div class="flex flex-col gap-1">
                   {% if ticket.has_issue %}
                     {% if ticket.tracker_status %}
-                      <a href="{{ ticket.issue_url }}" class="pill pill-sm bg-moss/10 text-moss hover:brightness-110" target="_blank">{{ ticket.tracker_status }}</a>
+                      <a href="{{ ticket.issue_url }}" class="pill pill-sm bg-moss/10 text-moss hover:brightness-110" target="_blank" title="{{ ticket.state_helptext }}">{{ ticket.tracker_status }}</a>
                     {% else %}
-                      <a href="{{ ticket.issue_url }}" class="pill pill-sm bg-clay/10 text-clay hover:brightness-95" target="_blank">{{ ticket.state }}</a>
+                      <a href="{{ ticket.issue_url }}" class="pill pill-sm bg-clay/10 text-clay hover:brightness-95" target="_blank" title="{{ ticket.state_helptext }}">{{ ticket.state }}</a>
                     {% endif %}
                   {% else %}
-                    <span class="pill pill-sm bg-bark/5 text-bark/40">{{ ticket.state }}</span>
+                    <span class="pill pill-sm bg-bark/5 text-bark/40" title="{{ ticket.state_helptext }}">{{ ticket.state }}</span>
                   {% endif %}
                   {% if ticket.notion_status and ticket.notion_url %}
                     <a href="{{ ticket.notion_url }}" class="pill pill-xs bg-purple-100 text-purple-700 hover:brightness-110" target="_blank">{{ ticket.notion_status }}</a>
@@ -193,12 +193,12 @@
               <div class="flex flex-col gap-1">
                 {% if ticket.has_issue %}
                   {% if ticket.tracker_status %}
-                    <a href="{{ ticket.issue_url }}" class="pill pill-sm bg-moss/10 text-moss hover:brightness-110" target="_blank">{{ ticket.tracker_status }}</a>
+                    <a href="{{ ticket.issue_url }}" class="pill pill-sm bg-moss/10 text-moss hover:brightness-110" target="_blank" title="{{ ticket.state_helptext }}">{{ ticket.tracker_status }}</a>
                   {% else %}
-                    <a href="{{ ticket.issue_url }}" class="pill pill-sm bg-clay/10 text-clay hover:brightness-95" target="_blank">{{ ticket.state }}</a>
+                    <a href="{{ ticket.issue_url }}" class="pill pill-sm bg-clay/10 text-clay hover:brightness-95" target="_blank" title="{{ ticket.state_helptext }}">{{ ticket.state }}</a>
                   {% endif %}
                 {% else %}
-                  <span class="pill pill-sm bg-bark/5 text-bark/40">{{ ticket.state }}</span>
+                  <span class="pill pill-sm bg-bark/5 text-bark/40" title="{{ ticket.state_helptext }}">{{ ticket.state }}</span>
                 {% endif %}
                 {% if ticket.notion_status and ticket.notion_url %}
                   <a href="{{ ticket.notion_url }}" class="pill pill-xs bg-purple-100 text-purple-700 hover:brightness-110" target="_blank">{{ ticket.notion_status }}</a>

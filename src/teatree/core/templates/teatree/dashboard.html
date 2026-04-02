@@ -196,6 +196,14 @@
       htmx.trigger(document.body, 'refreshPanels');
     }
 
+    function filterTicketRows(query) {
+      var q = query.toLowerCase().trim();
+      document.querySelectorAll('table tbody tr:not([id^="task-graph-"])').forEach(function(row) {
+        if (!q) { row.style.display = ''; return; }
+        row.style.display = row.textContent.toLowerCase().includes(q) ? '' : 'none';
+      });
+    }
+
     document.body.addEventListener('htmx:sseOpen', function() {
       var dot = document.getElementById('sse-status');
       if (dot) { dot.className = 'inline-block h-2 w-2 rounded-full bg-emerald-500'; dot.title = 'SSE connected'; }
@@ -373,8 +381,17 @@
         <summary class="flex cursor-pointer items-center gap-2 border-b border-bark/10 px-5 py-4">
           <span class="group-open:hidden">&#9654;</span><span class="hidden group-open:inline">&#9660;</span>
           <h2 class="font-display text-2xl">In-Flight Tickets</h2>
+          <input
+            id="ticket-search"
+            type="text"
+            placeholder="Search tickets..."
+            class="ml-auto rounded-full border border-bark/10 bg-white px-3 py-1 font-sans text-xs text-bark/70 focus:outline-none focus:border-moss/40"
+            style="width:14rem"
+            onclick="event.stopPropagation()"
+            oninput="filterTicketRows(this.value)"
+          >
           <button
-            class="ml-auto pill-btn pill-xs border border-moss/30 bg-moss/10 uppercase tracking-[0.18em] text-moss hover:bg-moss/20"
+            class="pill-btn pill-xs border border-moss/30 bg-moss/10 uppercase tracking-[0.18em] text-moss hover:bg-moss/20"
             hx-post="{% url 'teatree:dashboard-sync' %}"
             hx-target="#sync-status"
             hx-swap="outerHTML"

@@ -1,4 +1,5 @@
 from datetime import timedelta
+from typing import ClassVar
 
 from django.db import models, transaction
 from django.utils import timezone
@@ -20,6 +21,13 @@ class Task(models.Model):
         CLAIMED = "claimed", "Claimed"
         COMPLETED = "completed", "Completed"
         FAILED = "failed", "Failed"
+
+    STATUS_HELPTEXT: ClassVar[dict[str, str]] = {
+        "pending": "Waiting for an agent to pick up this task",
+        "claimed": "An agent is actively executing this task",
+        "completed": "Task finished successfully",
+        "failed": "Task execution failed (see attempt details)",
+    }
 
     ticket = models.ForeignKey(Ticket, on_delete=models.CASCADE, related_name="tasks")
     session = models.ForeignKey(Session, on_delete=models.CASCADE, related_name="tasks")

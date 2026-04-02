@@ -127,6 +127,7 @@ class DashboardTicketRow:
     total_tasks: int
     mrs: list[DashboardMRRow]
     transitions: list[tuple[str, str]]  # (method_name, label)
+    state_helptext: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -298,32 +299,50 @@ class TaskGraphNode:
     task_id: int
     phase: str
     status: str
+    status_helptext: str
     execution_target: str
     execution_reason: str
     depth: int
     children: list["TaskGraphNode"]
+    attempt_count: int
+    last_error: str
 
 
 def build_task_graph(ticket_id: int) -> list[TaskGraphNode]:
     """Build a tree of tasks for a ticket, rooted at tasks with no parent."""
-    tasks = list(Task.objects.filter(ticket_id=ticket_id).select_related("parent_task").order_by("pk"))
+    tasks = list(
+        Task.objects.filter(ticket_id=ticket_id)
+        .select_related("parent_task")
+        .prefetch_related("attempts")
+        .order_by("pk")
+    )
     children_map: dict[int | None, list[Task]] = {}
     for task in tasks:
         children_map.setdefault(task.parent_task_id, []).append(task)
 
     def _build(parent_id: int | None, depth: int) -> list[TaskGraphNode]:
-        return [
-            TaskGraphNode(
-                task_id=task.pk,
-                phase=task.phase,
-                status=task.get_status_display(),  # ty: ignore[unresolved-attribute]
-                execution_target=task.get_execution_target_display(),  # ty: ignore[unresolved-attribute]
-                execution_reason=task.execution_reason[:120],
-                depth=depth,
-                children=_build(task.pk, depth + 1),
+        nodes = []
+        for task in children_map.get(parent_id, []):
+            attempts = list(task.attempts.all())  # ty: ignore[unresolved-attribute]
+            last_error = ""
+            if attempts:
+                last_attempt = max(attempts, key=lambda a: a.pk)
+                last_error = (last_attempt.error or "")[:200]
+            nodes.append(
+                TaskGraphNode(
+                    task_id=task.pk,
+                    phase=task.phase,
+                    status=task.get_status_display(),  # ty: ignore[unresolved-attribute]
+                    status_helptext=Task.STATUS_HELPTEXT.get(task.status, ""),
+                    execution_target=task.get_execution_target_display(),  # ty: ignore[unresolved-attribute]
+                    execution_reason=task.execution_reason[:120],
+                    depth=depth,
+                    children=_build(task.pk, depth + 1),
+                    attempt_count=len(attempts),
+                    last_error=last_error,
+                ),
             )
-            for task in children_map.get(parent_id, [])
-        ]
+        return nodes
 
     return _build(None, 0)
 
@@ -455,6 +474,7 @@ def build_dashboard_ticket_rows(overlay: str | None = None) -> list[DashboardTic
                 total_tasks=ticket.total_tasks,
                 mrs=mrs,
                 transitions=available_ticket_transitions(ticket),
+                state_helptext=Ticket.STATE_HELPTEXT.get(ticket.state, ""),
             ),
         )
     return _sort_ticket_rows(rows)

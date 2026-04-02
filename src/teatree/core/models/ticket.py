@@ -24,6 +24,19 @@ class Ticket(models.Model):
         MERGED = "merged", "Merged"
         DELIVERED = "delivered", "Delivered"
 
+    STATE_HELPTEXT: ClassVar[dict[str, str]] = {
+        "not_started": "Ticket exists but no work has begun",
+        "scoped": "Requirements analysed, ready for implementation",
+        "started": "Agent is actively working on this ticket",
+        "coded": "Implementation complete, awaiting tests",
+        "tested": "Tests pass, awaiting code review",
+        "reviewed": "Code review approved, ready to ship",
+        "shipped": "MRs merged or delivered to staging",
+        "in_review": "MR posted, waiting for reviewer feedback",
+        "merged": "All MRs merged to default branch",
+        "delivered": "Deployed to production or closed",
+    }
+
     overlay = models.CharField(max_length=255)
     issue_url = models.URLField(max_length=500, blank=True)
     variant = models.CharField(max_length=100, blank=True)

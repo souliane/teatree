@@ -1,21 +1,24 @@
 <div class="flex items-center gap-2" style="padding-left: {{ node.depth|add:0 }}rem;">
   {% if node.depth > 0 %}
-  <span class="text-bark/20">{% for _ in node.children %}{% endfor %}&#x2514;</span>
+  <span class="text-bark/20">&#x2514;</span>
   {% endif %}
   <button
     class="flex-1 rounded-lg border border-bark/10 bg-white/80 px-3 py-1.5 font-sans text-xs text-bark/70 text-left hover:bg-moss/5 transition cursor-pointer"
     hx-get="/tasks/{{ node.task_id }}/detail/"
     hx-target="#task-modal-body"
     hx-swap="innerHTML"
+    onclick="document.getElementById('task-modal').classList.remove('hidden')"
   >
     <span class="inline-block rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider mr-1
       {% if node.status == 'Completed' %}bg-green-100 text-green-700
       {% elif node.status == 'Failed' %}bg-red-100 text-red-700
       {% elif node.status == 'Claimed' %}bg-amber-100 text-amber-700
       {% elif node.status == 'Pending' %}bg-sky-100 text-sky-700
-      {% else %}bg-bark/10 text-bark/60{% endif %}">{{ node.status }}</span>
+      {% else %}bg-bark/10 text-bark/60{% endif %}" title="{{ node.status_helptext }}">{{ node.status }}</span>
     Task {{ node.task_id }} · {{ node.phase }} · {{ node.execution_target }}
+    {% if node.attempt_count %}<span class="text-bark/40 ml-1">({{ node.attempt_count }} attempt{{ node.attempt_count|pluralize }})</span>{% endif %}
     {% if node.execution_reason %}<span class="text-bark/40 ml-1">— {{ node.execution_reason }}</span>{% endif %}
+    {% if node.last_error %}<div class="mt-1 truncate text-[10px] text-red-500">{{ node.last_error }}</div>{% endif %}
   </button>
 </div>
 {% for child in node.children %}
