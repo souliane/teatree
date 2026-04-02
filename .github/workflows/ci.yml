@@ -58,7 +58,4 @@ jobs:
           python-version: "3.13"
       - run: uv sync
       - run: uv run playwright install --with-deps chromium
-      - run: >
-          uv run pytest e2e/ -q --no-cov --timeout=60
-          -p no:tach
-          -o DJANGO_SETTINGS_MODULE=e2e.settings
+      - run: uv run t3 teatree run e2e-local --no-docker

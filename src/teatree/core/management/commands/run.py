@@ -206,9 +206,12 @@ class Command(TyperCommand):
         By default runs via docker-compose (``dev/docker-compose.yml``) for
         reproducibility.  Pass ``--no-docker`` to run directly on the host.
         """
-        worktree = resolve_worktree()
+        try:
+            worktree = resolve_worktree()
+            wt_path = (worktree.extra or {}).get("worktree_path", ".") if worktree else "."
+        except Exception:  # noqa: BLE001
+            wt_path = "."
         overlay = get_overlay()
-        wt_path = (worktree.extra or {}).get("worktree_path", ".") if worktree else "."
         e2e_config = overlay.metadata.get_e2e_config()
         settings_module = e2e_config.get("settings_module", "e2e.settings")
         test_dir = test_path or e2e_config.get("test_dir", "e2e/")
@@ -220,8 +223,8 @@ class Command(TyperCommand):
                 result = subprocess.run(cmd, cwd=wt_path, check=False)  # noqa: S603
                 return "E2E passed." if result.returncode == 0 else f"E2E failed (exit {result.returncode})."
 
-        cmd = ["uv", "run", "--group", "e2e", "pytest", test_dir]
-        cmd.extend(["--ds", settings_module, "--no-cov", "-n", "auto", "-v"])
+        cmd = ["uv", "run", "pytest", test_dir]
+        cmd.extend(["-o", f"DJANGO_SETTINGS_MODULE={settings_module}", "--no-cov", "-p", "no:tach", "-v"])
 
         env = {**os.environ, "DJANGO_SETTINGS_MODULE": settings_module}
         if headed:
