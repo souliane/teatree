@@ -7,66 +7,27 @@ from typing import cast
 import typer
 from django_typer.management import TyperCommand, command
 
-from teatree.core.models import Worktree
-from teatree.core.overlay import RunCommand, RunCommands
+from teatree.core.management.commands.lifecycle import _compose_project
+from teatree.core.overlay import RunCommands
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.resolve import resolve_worktree
-from teatree.core.step_runner import run_provision_steps
-from teatree.core.worktree_env import write_env_worktree
-
-
-def _find_compose_file(wt_path: str, filename: str) -> Path | None:
-    """Locate a docker-compose file in the dev/ directory."""
-    for base in (Path(__file__).resolve().parents[4], Path(wt_path)):
-        candidate = base / "dev" / filename
-        if candidate.is_file():
-            return candidate
-    return None
-
-
-def _run_env(worktree: Worktree) -> dict[str, str]:
-    """Build subprocess env from current env + overlay's get_env_extra.
-
-    Sets ``VIRTUAL_ENV`` to the worktree's ``.venv`` so that ``uv run``
-    and bare ``python`` resolve to the correct interpreter.  Falls back
-    to stripping ``VIRTUAL_ENV`` if the worktree has no ``.venv``.
-    """
-    worktree.refresh_ports_if_needed()
-    write_env_worktree(worktree)
-    env = dict(os.environ)
-    env.update(get_overlay().get_env_extra(worktree))
-
-    wt_path = (worktree.extra or {}).get("worktree_path", "")
-    venv = Path(wt_path) / ".venv" if wt_path else None
-    if venv and venv.is_dir():
-        env["VIRTUAL_ENV"] = str(venv)
-    else:
-        env.pop("VIRTUAL_ENV", None)
-    return env
+from teatree.utils.ports import find_free_ports, get_service_port, get_worktree_ports
 
 
 class Command(TyperCommand):
-    def _start_services(self, worktree: Worktree) -> None:
-        """Ensure Docker services (DB, Redis) are running before starting the app."""
-        overlay = get_overlay()
-        services = overlay.get_services_config(worktree)
-        for name, spec in services.items():
-            start_cmd = spec.get("start_command", [])
-            if start_cmd:
-                self.stdout.write(f"  Starting {name}...")
-                proc = subprocess.run(start_cmd, check=False, capture_output=True, text=True)  # noqa: S603
-                if proc.returncode != 0:
-                    error = proc.stderr.strip()[:500] if proc.stderr else f"exit code {proc.returncode}"
-                    self.stderr.write(f"  WARNING: {name} failed to start: {error}")
-
     @command()
     def verify(
         self,
         path: str = typer.Option("", help="Worktree path (auto-detects from PWD if empty)."),
     ) -> dict[str, object]:
-        """Check that dev services respond via HTTP, then advance FSM."""
+        """Check that dev services respond via HTTP, then advance FSM.
+
+        Discovers ports from running docker-compose containers via
+        ``docker compose port``.
+        """
         worktree = resolve_worktree(path)
-        ports = worktree.ports or {}
+        project = _compose_project(worktree)
+        ports = get_worktree_ports(project)
         results: dict[str, dict[str, object]] = {}
 
         overlay = get_overlay()
@@ -89,7 +50,12 @@ class Command(TyperCommand):
                 all_ok = False
 
         if all_ok and endpoints:
-            worktree.verify()
+            urls = {
+                name: f"http://localhost:{port}"
+                for name, port in ports.items()
+                if name not in {"postgres", "redis"}
+            }
+            worktree.verify(urls=urls)
             worktree.save()
 
         extra = cast("dict[str, object]", worktree.extra or {})
@@ -107,47 +73,47 @@ class Command(TyperCommand):
         worktree = resolve_worktree(path)
         return get_overlay().get_run_commands(worktree)
 
-    def _run_pre_steps(self, worktree: Worktree, service: str) -> None:
-        """Execute overlay pre-run steps for *service*."""
-        steps = get_overlay().get_pre_run_steps(worktree, service)
-        run_provision_steps(
-            steps,
-            stdout_writer=self.stdout.write,
-            stderr_writer=self.stderr.write,
-            stop_on_required_failure=False,
-        )
-
-    def _run_command(self, cmd: list[str] | RunCommand, env: dict[str, str] | None = None) -> None:
-        if isinstance(cmd, RunCommand):
-            subprocess.run(cmd.args, check=True, env=env, cwd=cmd.cwd)  # noqa: S603
-        else:
-            subprocess.run(cmd, check=True, env=env)  # noqa: S603
-
     @command()
     def backend(self, path: str = typer.Option("", help="Worktree path (auto-detects from PWD if empty).")) -> str:
-        """Start the backend dev server."""
+        """Start the backend via docker-compose."""
         worktree = resolve_worktree(path)
-        self._start_services(worktree)
-        self._run_pre_steps(worktree, "backend")
-        commands = get_overlay().get_run_commands(worktree)
-        cmd = commands.get("backend", [])
-        if not cmd:
-            return "No backend command configured in the overlay."
-        self._run_command(cmd, env=_run_env(worktree))
-        return "Backend started."
+        project = _compose_project(worktree)
+        overlay = get_overlay()
+        compose_file = overlay.get_compose_file(worktree)
+        if not compose_file:
+            return "No docker-compose file found."
+
+        from teatree.config import load_config  # noqa: PLC0415
+        from teatree.core.management.commands.lifecycle import _compose_env  # noqa: PLC0415
+
+        ports = find_free_ports(str(load_config().user.workspace_dir))
+        env = {**os.environ, **overlay.get_env_extra(worktree), **_compose_env(ports)}
+        env.pop("VIRTUAL_ENV", None)
+
+        cmd = ["docker", "compose", "-p", project, "-f", compose_file, "up", "-d", "web"]
+        subprocess.run(cmd, env=env, check=False)  # noqa: S603
+        return "Backend started via docker-compose."
 
     @command()
     def frontend(self, path: str = typer.Option("", help="Worktree path (auto-detects from PWD if empty).")) -> str:
-        """Start the frontend dev server."""
+        """Start the frontend via docker-compose."""
         worktree = resolve_worktree(path)
-        self._start_services(worktree)
-        self._run_pre_steps(worktree, "frontend")
-        commands = get_overlay().get_run_commands(worktree)
-        cmd = commands.get("frontend", [])
-        if not cmd:
-            return "No frontend command configured in the overlay."
-        self._run_command(cmd, env=_run_env(worktree))
-        return "Frontend started."
+        project = _compose_project(worktree)
+        overlay = get_overlay()
+        compose_file = overlay.get_compose_file(worktree)
+        if not compose_file:
+            return "No docker-compose file found."
+
+        from teatree.config import load_config  # noqa: PLC0415
+        from teatree.core.management.commands.lifecycle import _compose_env  # noqa: PLC0415
+
+        ports = find_free_ports(str(load_config().user.workspace_dir))
+        env = {**os.environ, **overlay.get_env_extra(worktree), **_compose_env(ports)}
+        env.pop("VIRTUAL_ENV", None)
+
+        cmd = ["docker", "compose", "-p", project, "-f", compose_file, "up", "-d", "frontend"]
+        subprocess.run(cmd, env=env, check=False)  # noqa: S603
+        return "Frontend started via docker-compose."
 
     @command(name="build-frontend")
     def build_frontend(
@@ -156,12 +122,11 @@ class Command(TyperCommand):
     ) -> str:
         """Build the frontend app for production/testing."""
         worktree = resolve_worktree(path)
-        self._run_pre_steps(worktree, "build-frontend")
         commands = get_overlay().get_run_commands(worktree)
         cmd = commands.get("build-frontend", [])
         if not cmd:
             return "No build-frontend command configured in the overlay."
-        self._run_command(cmd)
+        subprocess.run(cmd.args if hasattr(cmd, "args") else cmd, check=True)  # noqa: S603
         return "Frontend built."
 
     @command()
@@ -201,11 +166,7 @@ class Command(TyperCommand):
         headed: bool = False,
         docker: bool = True,
     ) -> str:
-        """Run E2E tests locally with Playwright.
-
-        By default runs via docker-compose (``dev/docker-compose.yml``) for
-        reproducibility.  Pass ``--no-docker`` to run directly on the host.
-        """
+        """Run E2E tests locally with Playwright."""
         try:
             worktree = resolve_worktree()
             wt_path = (worktree.extra or {}).get("worktree_path", ".") if worktree else "."
@@ -217,8 +178,8 @@ class Command(TyperCommand):
         test_dir = test_path or e2e_config.get("test_dir", "e2e/")
 
         if docker and not Path("/.dockerenv").exists():
-            compose_file = _find_compose_file(wt_path, "docker-compose.yml")
-            if compose_file:
+            compose_file = Path(wt_path) / "dev" / "docker-compose.yml"
+            if compose_file.is_file():
                 cmd = ["docker", "compose", "-f", str(compose_file), "run", "--rm", "e2e"]
                 result = subprocess.run(cmd, cwd=wt_path, check=False)  # noqa: S603
                 return "E2E passed." if result.returncode == 0 else f"E2E failed (exit {result.returncode})."
@@ -237,7 +198,11 @@ class Command(TyperCommand):
 
     @command(name="e2e-private")
     def e2e_private(self, test_path: str = "", *, headed: bool = False) -> str:
-        """Run private Playwright tests from T3_PRIVATE_TESTS repo."""
+        """Run private Playwright tests from T3_PRIVATE_TESTS repo.
+
+        Discovers the frontend port from docker-compose and reads the
+        tenant variant from .env.worktree.
+        """
         from teatree.config import load_config  # noqa: PLC0415
 
         private_tests = os.environ.get("T3_PRIVATE_TESTS", "")
@@ -249,19 +214,21 @@ class Command(TyperCommand):
         if not private_tests_path.is_dir():
             return f"Private tests directory does not exist: {private_tests_path}"
 
-        # Read ports and variant from .env.worktree (filesystem truth,
-        # no DB dependency — immune to race conditions and empty DBs).
-        from teatree.core.resolve import _find_env_worktree, _get_user_cwd  # noqa: PLC0415
+        # Discover frontend port from docker-compose (single source of truth)
+        worktree = resolve_worktree()
+        project = _compose_project(worktree)
+        frontend_port = get_service_port(project, "frontend", 4200)
+        if frontend_port is None:
+            return f"Frontend service not running in compose project '{project}'. Run `t3 oper lifecycle start` first."
 
+        # Read variant from .env.worktree
+        from teatree.core.resolve import _find_env_worktree, _get_user_cwd, _parse_env_file  # noqa: PLC0415
+
+        variant = ""
         envfile = _find_env_worktree(_get_user_cwd())
-        wt_env: dict[str, str] = {}
         if envfile is not None:
-            from teatree.core.resolve import _parse_env_file  # noqa: PLC0415
-
             wt_env = _parse_env_file(envfile)
-
-        frontend_port = wt_env.get("FRONTEND_PORT", "4200")
-        variant = wt_env.get("WT_VARIANT", "")
+            variant = wt_env.get("WT_VARIANT", "")
 
         cmd = ["npx", "playwright", "test"]
         if test_path:

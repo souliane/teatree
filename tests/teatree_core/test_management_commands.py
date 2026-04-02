@@ -71,14 +71,26 @@ class TestLifecycleCommands(TestCase):
                 extra={"worktree_path": wt_path},
             )
 
+            mock_config = MagicMock()
+            mock_config.user.workspace_dir = tmp_path
+
             with (
                 patch.dict("os.environ", {"T3_ORIG_CWD": wt_path}),
                 patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
-                patch.object(lifecycle_cmd, "Popen") as mock_popen,
+                patch.object(lifecycle_cmd, "subprocess") as mock_sp,
+                patch.object(
+                    lifecycle_cmd,
+                    "find_free_ports",
+                    return_value={"backend": 8001, "frontend": 4201, "postgres": 5432, "redis": 6379},
+                ),
+                patch.object(lifecycle_cmd, "get_worktree_ports", return_value={"backend": 8001, "frontend": 4201}),
+                patch("teatree.config.load_config", return_value=mock_config),
             ):
-                mock_popen.return_value = MagicMock(pid=12345, poll=MagicMock(return_value=None))
+                mock_sp.run.return_value = MagicMock(returncode=0)
                 worktree_id = cast("int", call_command("lifecycle", "setup"))
                 status = cast("dict[str, str]", call_command("lifecycle", "status"))
+                # start returns "error" since CommandOverlay has no compose file;
+                # state stays PROVISIONED, which is fine for teardown
                 call_command("lifecycle", "start")
                 call_command("lifecycle", "teardown")
 
@@ -225,9 +237,9 @@ class TestDbImportCircuitBreaker(TestCase):
             assert wt.extra["db_import_failures"] == 4
 
 
-class TestApplyVariant(TestCase):
+class TestUpdateTicketVariant(TestCase):
     def test_updates_ticket_variant_and_recomputes_db_name(self) -> None:
-        from teatree.core.management.commands.lifecycle import Command as LifecycleCommand  # noqa: PLC0415
+        from teatree.core.management.commands.lifecycle import _update_ticket_variant  # noqa: PLC0415
 
         ticket = Ticket.objects.create(
             overlay="test",
@@ -242,7 +254,7 @@ class TestApplyVariant(TestCase):
             db_name=f"wt_{ticket.ticket_number}_old",
         )
 
-        LifecycleCommand._apply_variant(ticket, "new")
+        _update_ticket_variant(ticket, "new")
 
         ticket.refresh_from_db()
         wt.refresh_from_db()
@@ -250,7 +262,7 @@ class TestApplyVariant(TestCase):
         assert wt.db_name == f"wt_{ticket.ticket_number}_new"
 
     def test_skips_save_when_db_name_unchanged(self) -> None:
-        from teatree.core.management.commands.lifecycle import Command as LifecycleCommand  # noqa: PLC0415
+        from teatree.core.management.commands.lifecycle import _update_ticket_variant  # noqa: PLC0415
 
         ticket = Ticket.objects.create(
             overlay="test",
@@ -267,7 +279,7 @@ class TestApplyVariant(TestCase):
         original_db_name = wt.db_name
 
         # Variant "" → "acme" should change the db_name
-        LifecycleCommand._apply_variant(ticket, "acme")
+        _update_ticket_variant(ticket, "acme")
 
         wt.refresh_from_db()
         assert wt.db_name != original_db_name
