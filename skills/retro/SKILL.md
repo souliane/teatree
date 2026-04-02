@@ -298,15 +298,20 @@ Retro can also modify core teatree skills in the user's fork:
 
 **Playbook staleness check:** Before following any playbook, verify instructions against current code. If the codebase has moved to a config-driven approach or the referenced pattern no longer exists, the playbook is stale — fix it immediately.
 
-### 5b. Unpushed Commits Check
+### 5b. Unpushed Commits & Dirty Repos Check
 
-After completing all retro changes, check for unpushed commits across ALL repos touched during the session:
+After completing all retro changes, check for unpushed work across ALL repos touched during the session. The goal is to ensure no work is forgotten — orphaned branches, stashes, and uncommitted changes are all risks.
 
-1. `git log --oneline @{u}..HEAD` in each touched repo
-2. Flag any commits with `Co-Authored-By` trailers (should be removed per user's global config)
-3. Flag merge commits that could be rebased away
-4. Suggest consolidating multiple commits targeting the same skill into one
-5. Present a concrete consolidation proposal and ask before acting
+For each touched repo, collect and display:
+
+1. **Unpushed commits:** `git log --oneline @{u}..HEAD`
+2. **Non-main branches:** detect the main branch via `git config init.defaultBranch` (fallback: `main`), then list all other local branches with `git branch --no-merged <main>` — these may contain in-progress work
+3. **Stashes:** `git stash list` — stashes are easy to forget and may contain important WIP
+4. **Uncommitted changes:** `git status --short` — show the summary, not just "dirty"
+5. Flag any commits with `Co-Authored-By` trailers (should be removed per user's global config)
+6. Flag merge commits that could be rebased away
+7. Suggest consolidating multiple commits targeting the same skill into one
+8. Present a concrete consolidation proposal and ask before acting
 
 ### 6. Verification
 
@@ -333,9 +338,13 @@ When `T3_CONTRIBUTE=true` and retro modified files under `$T3_REPO`, **proceed t
 3. **All tests pass:** `cd "$T3_REPO" && uv run pytest` — must be green.
 4. **Privacy scan passes:** see § Privacy Scan.
 
+### Never Work on Main (Non-Negotiable)
+
+**NEVER commit to the default branch (`main`/`master`) directly. NEVER push to it.** Always work on a feature branch in a worktree. This applies to retro commits, skill edits, "quick fixes" — everything. No exceptions.
+
 ### Commit (No Push)
 
-Commit directly on the **current branch** — do not create a dedicated `retro/` branch. Retro commits are small, incremental improvements that belong on the working branch.
+Commit on the **current feature branch** in a worktree — never on the default branch. Retro commits are small, incremental improvements that belong on the working branch.
 
 ```bash
 cd "$T3_REPO"

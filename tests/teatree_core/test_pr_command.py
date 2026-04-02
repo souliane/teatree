@@ -6,8 +6,8 @@ from django.core.management import call_command
 from django.test import TestCase
 
 from teatree.core.management.commands import pr as pr_command
-from teatree.core.management.commands.pr import _mr_auto_labels
-from teatree.core.models import Ticket, Worktree
+from teatree.core.management.commands.pr import _check_shipping_gate, _mr_auto_labels
+from teatree.core.models import Session, Ticket, Worktree
 from teatree.core.overlay_loader import reset_overlay_cache
 from tests.teatree_core.conftest import CommandOverlay
 
@@ -80,6 +80,31 @@ class TestPostEvidence(TestCase):
             result = call_command("pr", "post-evidence", "10")
 
         assert "error" in result
+
+
+class TestCheckShippingGate(TestCase):
+    def test_returns_none_when_no_session(self) -> None:
+        ticket = Ticket.objects.create()
+        assert _check_shipping_gate(ticket) is None
+
+    def test_returns_none_when_gate_passes(self) -> None:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        session.visit_phase("testing")
+        session.visit_phase("reviewing")
+        assert _check_shipping_gate(ticket) is None
+
+    def test_returns_structured_error_with_missing_phases(self) -> None:
+        ticket = Ticket.objects.create()
+        Session.objects.create(ticket=ticket)
+
+        result = _check_shipping_gate(ticket)
+
+        assert result is not None
+        assert result["allowed"] is False
+        assert "reviewing" in result["missing"]
+        assert "testing" in result["missing"]
+        assert "hint" in result
 
 
 class TestMrAutoLabels:

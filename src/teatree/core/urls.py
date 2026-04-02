@@ -7,7 +7,13 @@ from teatree.core.views.actions import (
     SyncFollowupView,
     TicketTransitionView,
 )
-from teatree.core.views.dashboard import DashboardPanelView, DashboardView, TaskDetailView, TaskGraphView
+from teatree.core.views.dashboard import (
+    DashboardPanelView,
+    DashboardView,
+    TaskDetailView,
+    TaskGraphView,
+    TicketLifecycleView,
+)
 from teatree.core.views.history import SessionHistoryView
 from teatree.core.views.launch import LaunchAgentView, LaunchInteractiveAgentView, LaunchTerminalView
 from teatree.core.views.sse import DashboardSSEView
@@ -21,6 +27,7 @@ urlpatterns = [
     path("dashboard/sync/", SyncFollowupView.as_view(), name="dashboard-sync"),
     path("tasks/<int:task_id>/detail/", TaskDetailView.as_view(), name="task-detail"),
     path("tickets/<int:ticket_id>/task-graph/", TaskGraphView.as_view(), name="task-graph"),
+    path("tickets/<int:ticket_id>/lifecycle/", TicketLifecycleView.as_view(), name="ticket-lifecycle"),
     path("tasks/<int:task_id>/launch/", LaunchAgentView.as_view(), name="task-launch"),
     path("tasks/<int:task_id>/cancel/", CancelTaskView.as_view(), name="task-cancel"),
     path("tickets/<int:ticket_id>/transition/", TicketTransitionView.as_view(), name="ticket-transition"),

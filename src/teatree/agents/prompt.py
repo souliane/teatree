@@ -170,6 +170,23 @@ def build_system_context(task: Task, *, skills: list[str], lifecycle_skill: str 
             ),
         )
 
+    if task.phase == "shipping":
+        lines.extend(
+            (
+                "",
+                "PHASE: shipping — auto-review gate",
+                "Before creating the MR, check quality gates: `t3 <overlay> pr check-gates <ticket_id>`.",
+                "If the result shows `reviewing` in the `missing` list:",
+                "1. Spawn a sub-agent to review the diff (run the code-review skill against the branch).",
+                (
+                    "2. After the sub-agent completes, mark reviewing as visited:"
+                    " `t3 <overlay> lifecycle visit-phase <ticket_id> reviewing`."
+                ),
+                "3. Retry `t3 <overlay> pr create <ticket_id>`.",
+                "Do NOT create a new session for the review — use a sub-agent within this session.",
+            ),
+        )
+
     lines.extend(
         (
             "",

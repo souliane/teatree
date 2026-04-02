@@ -14,6 +14,66 @@ from teatree.core.overlay_loader import get_overlay
 from teatree.utils import git
 
 
+def _worktree_branches(repo: str) -> set[str]:
+    """Return branch names linked to active git worktrees (safe to skip)."""
+    raw = git.run(repo=repo, args=["worktree", "list", "--porcelain"])
+    return {
+        line.removeprefix("branch refs/heads/") for line in raw.splitlines() if line.startswith("branch refs/heads/")
+    }
+
+
+def _prune_branches(repo: str) -> list[str]:
+    """Delete local branches that are gone or merged. Skip worktree-linked branches."""
+    cleaned: list[str] = []
+    git.run(repo=repo, args=["fetch", "--prune"])
+
+    current = git.current_branch(repo)
+    default = git.default_branch(repo)
+    protected = {current, default, "main", "master"}
+    wt_branches = _worktree_branches(repo)
+
+    for line in git.run(repo=repo, args=["branch", "-v", "--no-color"]).splitlines():
+        if "[gone]" not in line:
+            continue
+        name = line.strip().removeprefix("+ ").split()[0]
+        if name not in protected and name not in wt_branches:
+            git.branch_delete(repo, name)
+            cleaned.append(f"Pruned gone branch: {name}")
+
+    for line in git.run(repo=repo, args=["branch", "--merged", f"origin/{default}", "--no-color"]).splitlines():
+        name = line.strip().removeprefix("* ").removeprefix("+ ")
+        if name not in protected and name not in wt_branches:
+            git.branch_delete(repo, name)
+            cleaned.append(f"Pruned merged branch: {name}")
+
+    return cleaned
+
+
+def _drop_orphaned_stashes(repo: str) -> list[str]:
+    """Drop stashes whose branch no longer exists."""
+    stash_list = git.run(repo=repo, args=["stash", "list"])
+    if not stash_list:
+        return []
+
+    existing = {
+        line.strip().removeprefix("* ").removeprefix("+ ")
+        for line in git.run(repo=repo, args=["branch", "--no-color"]).splitlines()
+    }
+
+    cleaned: list[str] = []
+    entries = stash_list.splitlines()
+    for i in range(len(entries) - 1, -1, -1):
+        line = entries[i]
+        if " on " not in line:
+            continue
+        branch_part = line.split(" on ", 1)[1].split(":")[0].strip()
+        if branch_part not in existing:
+            git.run(repo=repo, args=["stash", "drop", f"stash@{{{i}}}"])
+            cleaned.append(f"Dropped orphaned stash: {line.split(':')[0]} (was on {branch_part})")
+
+    return cleaned
+
+
 def _workspace_dir() -> Path:
     return load_config().user.workspace_dir
 
@@ -171,53 +231,55 @@ class Command(TyperCommand):
                 results.append(f"{repo}: failed — {exc}")
         return "\n".join(results)
 
-    @command(name="clean-all")
-    def clean_all(self) -> list[str]:
-        """Prune merged worktrees — remove git worktrees, drop DBs, clean directories."""
-        cleaned: list[str] = []
-        workspace = _workspace_dir()
+    def _clean_one_worktree(self, worktree: Worktree, workspace: Path) -> str:
+        """Remove a single DB-tracked worktree: git worktree, branch, DB, overlay cleanup."""
+        wt_path = (worktree.extra or {}).get("worktree_path", "")
         overlay = get_overlay()
 
-        for worktree in Worktree.objects.filter(state=Worktree.State.CREATED):
-            wt_path = (worktree.extra or {}).get("worktree_path", "")
+        if wt_path and Path(wt_path).is_dir() and git.status_porcelain(wt_path):
+            self.stderr.write(f"  WARNING: {worktree.repo_path} has uncommitted changes")
 
-            # Dirty-state check: warn if uncommitted changes
-            if wt_path and Path(wt_path).is_dir():
-                status = git.status_porcelain(wt_path)
-                if status:
-                    self.stderr.write(f"  WARNING: {worktree.repo_path} has uncommitted changes")
+        for step in overlay.get_cleanup_steps(worktree):
+            with suppress(Exception):
+                step.callable()
 
-            # Run overlay-specific cleanup (Docker teardown, etc.)
-            for step in overlay.get_cleanup_steps(worktree):
-                with suppress(Exception):
-                    step.callable()
+        if wt_path:
+            repo_main = workspace / worktree.repo_path
+            if repo_main.is_dir():  # pragma: no branch
+                git.worktree_remove(str(repo_main), wt_path)
+                git.branch_delete(str(repo_main), worktree.branch)
 
-            # Remove git worktree
-            if wt_path:
-                repo_main = workspace / worktree.repo_path
-                if repo_main.is_dir():  # pragma: no branch
-                    git.worktree_remove(str(repo_main), wt_path)
-                    git.branch_delete(str(repo_main), worktree.branch)
+        if worktree.db_name:
+            from teatree.utils.db import pg_env, pg_host, pg_user  # noqa: PLC0415
 
-            # Drop database
-            if worktree.db_name:
-                from teatree.utils.db import pg_env, pg_host, pg_user  # noqa: PLC0415
+            subprocess.run(  # noqa: S603
+                ["dropdb", "-h", pg_host(), "-U", pg_user(), "--if-exists", worktree.db_name],
+                env=pg_env(),
+                capture_output=True,
+                check=False,
+            )
 
-                subprocess.run(  # noqa: S603
-                    ["dropdb", "-h", pg_host(), "-U", pg_user(), "--if-exists", worktree.db_name],
-                    env=pg_env(),
-                    capture_output=True,
-                    check=False,
-                )
+        label = f"Cleaned: {worktree.repo_path} ({worktree.branch})"
+        worktree.delete()
+        return label
 
-            cleaned.append(f"Cleaned: {worktree.repo_path} ({worktree.branch})")
-            worktree.delete()
+    @command(name="clean-all")
+    def clean_all(self) -> list[str]:
+        """Prune merged worktrees, stale branches, and orphaned stashes."""
+        workspace = _workspace_dir()
+        cleaned = [
+            self._clean_one_worktree(wt, workspace) for wt in Worktree.objects.filter(state=Worktree.State.CREATED)
+        ]
 
-        # Remove empty ticket directories
         for entry in workspace.iterdir():
             if entry.is_dir() and not any(entry.iterdir()):
                 with suppress(OSError):
                     entry.rmdir()
                     cleaned.append(f"Removed empty dir: {entry.name}")
+
+        repo_root = Path.cwd()
+        if (repo_root / ".git").exists():
+            cleaned.extend(_prune_branches(str(repo_root)))
+            cleaned.extend(_drop_orphaned_stashes(str(repo_root)))
 
         return cleaned

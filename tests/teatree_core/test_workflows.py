@@ -692,7 +692,11 @@ class TestToolAndCleanCommands(TestCase):
         active_wt.provision()
         active_wt.save()
 
-        result = cast("list[str]", call_command("workspace", "clean-all"))
+        with (
+            patch.object(workspace_mod, "_prune_branches", return_value=[]),
+            patch.object(workspace_mod, "_drop_orphaned_stashes", return_value=[]),
+        ):
+            result = cast("list[str]", call_command("workspace", "clean-all"))
 
         assert len(result) == 1
         assert "stale" in result[0]

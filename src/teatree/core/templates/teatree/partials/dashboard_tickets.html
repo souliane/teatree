@@ -136,6 +136,17 @@
                 {% else %}
                   <span class="text-bark/30">&mdash;</span>
                 {% endif %}
+                {% if ticket.state == "tested" %}
+                  <button
+                    class="pill-btn pill-xs border border-purple-300 bg-purple-50 text-purple-700 hover:bg-purple-100"
+                    hx-post="/tickets/{{ ticket.ticket_id }}/create-task/"
+                    hx-vals='{"phase": "reviewing", "target": "headless", "reason": "Auto-review before shipping"}'
+                    hx-swap="none"
+                    hx-on::after-request="htmx.trigger(document.body, 'refreshPanels')"
+                    hx-disable-elt="this"
+                    title="Trigger auto-review"
+                  >Review</button>
+                {% endif %}
               </td>
               <td class="border-b border-bark/10 px-3 py-3 align-top" {% if mr_count > 1 %}rowspan="{{ mr_count }}"{% endif %}>
                 <div class="flex flex-col gap-1">
@@ -149,6 +160,14 @@
                       onclick="var t=document.getElementById('task-graph-{{ ticket.ticket_id }}');if(!t.classList.contains('hidden')&&t.querySelector('td').innerHTML.trim()){t.classList.add('hidden');t.querySelector('td').innerHTML='';return false}else{t.classList.remove('hidden')}"
                       title="View task graph"
                     >Graph</button>
+                    <button
+                      class="pill-btn pill-xs border border-bark/20 bg-bark/5 text-bark/60 hover:bg-bark/10"
+                      hx-get="/tickets/{{ ticket.ticket_id }}/lifecycle/"
+                      hx-target="#lifecycle-{{ ticket.ticket_id }} td"
+                      hx-swap="innerHTML"
+                      onclick="var t=document.getElementById('lifecycle-{{ ticket.ticket_id }}');if(!t.classList.contains('hidden')&&t.querySelector('td').innerHTML.trim()){t.classList.add('hidden');t.querySelector('td').innerHTML='';return false}else{t.classList.remove('hidden')}"
+                      title="View lifecycle transitions"
+                    >Lifecycle</button>
                   {% endif %}
                   <button
                     class="pill-btn pill-xs border border-moss/30 bg-moss/10 uppercase tracking-[0.18em] text-moss hover:bg-moss/20"
@@ -261,6 +280,10 @@
         {% endfor %}
         <!-- Inline task graph container (toggled by Graph button) -->
         <tr id="task-graph-{{ ticket.ticket_id }}" class="hidden">
+          <td colspan="9" class="border-b border-bark/10 bg-parchment/50 px-5 py-3"></td>
+        </tr>
+        <!-- Inline lifecycle diagram container (toggled by Lifecycle button) -->
+        <tr id="lifecycle-{{ ticket.ticket_id }}" class="hidden">
           <td colspan="9" class="border-b border-bark/10 bg-parchment/50 px-5 py-3"></td>
         </tr>
         {% endwith %}
