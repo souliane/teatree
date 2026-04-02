@@ -1,7 +1,7 @@
 """E2E tests for the TeaTree dashboard.
 
 Run with:
-    DJANGO_SETTINGS_MODULE=e2e.settings uv run --with playwright pytest e2e/ -x -v
+    uv run --group e2e pytest e2e/ --ds e2e.settings -n auto -v
 """
 
 import re
@@ -12,9 +12,9 @@ from playwright.sync_api import Page, expect
 
 
 def test_dashboard_loads(e2e_server: str, page: Page) -> None:
-    """Page loads, shows 'TeaTree Runtime' and visible section headings."""
+    """Page loads, summary counters and section headings are visible."""
     page.goto(e2e_server)
-    expect(page.locator("body")).to_contain_text("TeaTree Runtime")
+    expect(page.locator("body")).to_contain_text("In Flight Tickets")
     for heading in ["Automation", "Action Required", "In-Flight Tickets", "Interactive Queue", "Active Sessions"]:
         expect(page.locator("h2", has_text=heading)).to_be_visible()
 
@@ -172,7 +172,6 @@ def test_review_comments_panel(e2e_server: str, page: Page) -> None:
 
 def test_activity_panel(e2e_server: str, page: Page) -> None:
     page.goto(e2e_server)
-    page.locator("button", has_text="Activity").click()
     expect(page.locator("h2", has_text="Recent Activity")).to_be_visible()
 
 

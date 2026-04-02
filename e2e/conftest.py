@@ -1,4 +1,11 @@
-"""E2E test fixtures — start a live Django dev server for Playwright."""
+"""E2E test fixtures — start a live Django dev server for Playwright.
+
+Supports parallel execution via pytest-xdist: each worker gets its own SQLite
+DB and Django dev server, so tests run with zero shared state.
+
+Run with:
+    uv run --group e2e pytest e2e/ --ds e2e.settings -n auto -v
+"""
 
 import os
 import subprocess
@@ -9,7 +16,7 @@ from collections.abc import Iterator
 import httpx
 import pytest
 
-os.environ["DJANGO_SETTINGS_MODULE"] = "e2e.settings"
+os.environ.setdefault("DJANGO_SETTINGS_MODULE", "e2e.settings")
 os.environ["DJANGO_ALLOW_ASYNC_UNSAFE"] = "1"
 
 
@@ -20,7 +27,7 @@ def django_db_modify_db_settings():
 
 @pytest.fixture(scope="session")
 def django_db_setup(django_db_modify_db_settings, django_db_blocker):
-    """Run migrations against the shared E2E SQLite file."""
+    """Run migrations against the per-worker E2E SQLite file."""
     with django_db_blocker.unblock():
         import django
 

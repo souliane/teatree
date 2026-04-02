@@ -50,6 +50,10 @@ docs = [
   "mkdocs>=1.6",
   "mkdocs-material>=9",
 ]
+e2e = [
+  "pytest-playwright>=0.7",
+  "pytest-xdist>=3.5",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = [
