@@ -112,6 +112,12 @@ class Command(TyperCommand):
         Discovers repos added to the ticket directory since initial creation
         and provisions all worktrees for the ticket, not just the resolved one.
         """
+        # Guard against typer.Option defaults when called as a Python method
+        # (typer.Option("") evaluates to OptionInfo, not "")
+        if not isinstance(variant, str):
+            variant = ""
+        if not isinstance(overlay, str):
+            overlay = ""
         if overlay:
             os.environ["T3_OVERLAY_NAME"] = overlay
         worktree = resolve_worktree(path)
@@ -343,7 +349,7 @@ class Command(TyperCommand):
 
         if worktree.state == Worktree.State.CREATED:
             self.stdout.write("  Worktree not provisioned — running setup + start instead.")
-            self.setup(path=path, overlay=overlay)
+            self.setup(path=path, variant="", overlay=overlay)
             return self.start(path=path, overlay=overlay)
 
         resolved_overlay = get_overlay()
