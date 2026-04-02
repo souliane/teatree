@@ -5,25 +5,38 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('core', '0002_session_repos_modified_session_repos_tested'),
+        ("core", "0002_session_repos_modified_session_repos_tested"),
     ]
 
     operations = [
         migrations.CreateModel(
-            name='TicketTransition',
+            name="TicketTransition",
             fields=[
-                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
-                ('from_state', models.CharField(max_length=32)),
-                ('to_state', models.CharField(max_length=32)),
-                ('triggered_by', models.CharField(blank=True, max_length=64)),
-                ('created_at', models.DateTimeField(auto_now_add=True)),
-                ('session', models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='transitions', to='core.session')),
-                ('ticket', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='transitions', to='core.ticket')),
+                ("id", models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name="ID")),
+                ("from_state", models.CharField(max_length=32)),
+                ("to_state", models.CharField(max_length=32)),
+                ("triggered_by", models.CharField(blank=True, max_length=64)),
+                ("created_at", models.DateTimeField(auto_now_add=True)),
+                (
+                    "session",
+                    models.ForeignKey(
+                        blank=True,
+                        null=True,
+                        on_delete=django.db.models.deletion.SET_NULL,
+                        related_name="transitions",
+                        to="core.session",
+                    ),
+                ),
+                (
+                    "ticket",
+                    models.ForeignKey(
+                        on_delete=django.db.models.deletion.CASCADE, related_name="transitions", to="core.ticket"
+                    ),
+                ),
             ],
             options={
-                'ordering': ['created_at'],
+                "ordering": ["created_at"],
             },
         ),
     ]
