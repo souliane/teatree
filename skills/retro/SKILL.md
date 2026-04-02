@@ -338,9 +338,13 @@ When `T3_CONTRIBUTE=true` and retro modified files under `$T3_REPO`, **proceed t
 3. **All tests pass:** `cd "$T3_REPO" && uv run pytest` — must be green.
 4. **Privacy scan passes:** see § Privacy Scan.
 
+### Never Work on Main (Non-Negotiable)
+
+**NEVER commit to the default branch (`main`/`master`) directly. NEVER push to it.** Always work on a feature branch in a worktree. This applies to retro commits, skill edits, "quick fixes" — everything. No exceptions.
+
 ### Commit (No Push)
 
-Commit directly on the **current branch** — do not create a dedicated `retro/` branch. Retro commits are small, incremental improvements that belong on the working branch.
+Commit on the **current feature branch** in a worktree — never on the default branch. Retro commits are small, incremental improvements that belong on the working branch.
 
 ```bash
 cd "$T3_REPO"
