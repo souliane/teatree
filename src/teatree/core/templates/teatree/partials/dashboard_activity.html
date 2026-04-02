@@ -21,7 +21,11 @@
           <p class="mt-2 rounded-lg bg-red-50 px-3 py-2 font-sans text-xs text-red-700">{{ row.error }}</p>
         {% endif %}
         <div class="mt-2 flex items-center justify-between">
-          <p class="font-sans text-xs text-bark/45">{{ row.execution_target }} · {{ row.ended_at }}</p>
+          <p class="font-sans text-xs text-bark/45">
+            {{ row.execution_target }} · {{ row.ended_at }}
+            {% if row.input_tokens or row.output_tokens %} · {{ row.input_tokens|default:"0" }}&rarr;{{ row.output_tokens|default:"0" }} tokens{% endif %}
+            {% if row.cost_usd %} · ${{ row.cost_usd|floatformat:3 }}{% endif %}
+          </p>
         </div>
       </article>
     {% endfor %}

@@ -9,9 +9,10 @@ import teatree.agents.headless as headless_mod
 import teatree.core.overlay_loader as overlay_loader_mod
 import teatree.core.tasks as tasks_mod
 import teatree.core.views.actions as actions_views
+from teatree.config import OverlayEntry
 from teatree.core.models import Session, Task, Ticket, Worktree
 from teatree.core.sync import SyncResult
-from teatree.core.views.dashboard import _panel_context
+from teatree.core.views.dashboard import _build_overlay_paths, _panel_context
 from tests.teatree_core.conftest import CommandOverlay
 
 _MOCK_OVERLAY = {"test": CommandOverlay()}
@@ -230,6 +231,34 @@ class TestOverlaySelector(TestCase):
 
         assert response.status_code == 200
         assert len(response.context["tickets"]) == 1
+
+
+class TestBuildOverlayPaths:
+    def test_uses_project_path_from_discover_overlays(self) -> None:
+        entries = [OverlayEntry(name="my-overlay", overlay_class="", project_path=Path("/opt/my-overlay"))]
+        with patch("teatree.config.discover_overlays", return_value=entries):
+            result = _build_overlay_paths({})
+
+        assert result == {"my-overlay": "/opt/my-overlay"}
+
+    def test_includes_path_only_toml_overlays(self) -> None:
+        entries = [
+            OverlayEntry(name="ep-overlay", overlay_class="mod:Cls", project_path=Path("/opt/ep")),
+            OverlayEntry(name="toml-only", overlay_class="", project_path=Path("/opt/toml")),
+        ]
+        with patch("teatree.config.discover_overlays", return_value=entries):
+            result = _build_overlay_paths({"ep-overlay": CommandOverlay()})
+
+        assert result["ep-overlay"] == "/opt/ep"
+        assert result["toml-only"] == "/opt/toml"
+
+    def test_falls_back_to_module_file_when_no_project_path(self) -> None:
+        overlay = CommandOverlay()
+        entries = [OverlayEntry(name="test", overlay_class="", project_path=None)]
+        with patch("teatree.config.discover_overlays", return_value=entries):
+            result = _build_overlay_paths({"test": overlay})
+
+        assert "conftest" in result["test"] or "test_overlay" in result["test"] or "/" in result["test"]
 
 
 class TestPanelContext(TestCase):

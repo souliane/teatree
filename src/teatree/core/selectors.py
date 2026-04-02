@@ -140,6 +140,8 @@ class DashboardTaskRow:
     result_summary: str
     session_agent_id: str
     phase: str
+    elapsed_time: str = ""
+    heartbeat_age: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -185,6 +187,9 @@ class RecentActivityRow:
     error: str
     ended_at: str
     execution_target: str
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cost_usd: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -553,6 +558,22 @@ def _last_result_for_tasks(task_ids: list[int]) -> dict[int, str]:
     return result
 
 
+_SECONDS_PER_MINUTE = 60
+_MINUTES_PER_HOUR = 60
+
+
+def _humanize_duration(seconds: float) -> str:
+    """Format seconds into a short human-readable string like '2m 30s' or '1h 15m'."""
+    total = max(0, int(seconds))
+    if total < _SECONDS_PER_MINUTE:
+        return f"{total}s"
+    minutes, secs = divmod(total, _SECONDS_PER_MINUTE)
+    if minutes < _MINUTES_PER_HOUR:
+        return f"{minutes}m {secs}s" if secs else f"{minutes}m"
+    hours, mins = divmod(minutes, _MINUTES_PER_HOUR)
+    return f"{hours}h {mins}m" if mins else f"{hours}h"
+
+
 def _build_task_queue(
     target: str,
     *,
@@ -575,6 +596,7 @@ def _build_task_queue(
     ids = [t.pk for t in task_list]
     errors = _last_error_for_tasks(ids)
     results = _last_result_for_tasks(ids)
+    now = timezone.now()
     return [
         DashboardTaskRow(
             task_id=task.pk,
@@ -586,6 +608,8 @@ def _build_task_queue(
             result_summary=results.get(task.pk, ""),
             session_agent_id=task.session.agent_id if task.session_id else "",
             phase=task.phase,
+            elapsed_time=_humanize_duration((now - task.claimed_at).total_seconds()) if task.claimed_at else "",
+            heartbeat_age=_humanize_duration((now - task.heartbeat_at).total_seconds()) if task.heartbeat_at else "",
         )
         for task in task_list
     ]
@@ -981,6 +1005,9 @@ def build_recent_activity(overlay: str | None = None) -> list[RecentActivityRow]
                 error=attempt.error[:200] if attempt.error else "",
                 ended_at=attempt.ended_at.isoformat() if attempt.ended_at else "",
                 execution_target=attempt.get_execution_target_display(),
+                input_tokens=attempt.input_tokens,
+                output_tokens=attempt.output_tokens,
+                cost_usd=attempt.cost_usd,
             ),
         )
     return rows

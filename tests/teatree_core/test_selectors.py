@@ -1,4 +1,5 @@
 import time
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -11,6 +12,7 @@ from teatree.core.selectors import (
     _cached,
     _check_mr,
     _first_mr_title,
+    _humanize_duration,
     _last_result_for_tasks,
     _list_of_str,
     _panel_cache,
@@ -301,6 +303,9 @@ class TestTicketRowFiltering(TestCase):
 
 
 class TestBuildInteractiveQueue(TestCase):
+    def setUp(self) -> None:
+        _panel_cache.clear()
+
     def test_returns_non_completed_manual_tasks(self) -> None:
         first_ticket = Ticket.objects.create(state=Ticket.State.STARTED)
         second_ticket = Ticket.objects.create(state=Ticket.State.CODED)
@@ -457,6 +462,119 @@ class TestBuildHeadlessQueue(TestCase):
         task_ids = [row.task_id for row in queue]
         assert failed.pk in task_ids
         assert pending.pk in task_ids
+
+
+class TestHumanizeDuration:
+    def test_seconds_only(self) -> None:
+        assert _humanize_duration(45) == "45s"
+
+    def test_minutes_and_seconds(self) -> None:
+        assert _humanize_duration(150) == "2m 30s"
+
+    def test_exact_minutes(self) -> None:
+        assert _humanize_duration(120) == "2m"
+
+    def test_hours_and_minutes(self) -> None:
+        assert _humanize_duration(3900) == "1h 5m"
+
+    def test_exact_hours(self) -> None:
+        assert _humanize_duration(3600) == "1h"
+
+    def test_zero(self) -> None:
+        assert _humanize_duration(0) == "0s"
+
+    def test_negative_clamps_to_zero(self) -> None:
+        assert _humanize_duration(-5) == "0s"
+
+
+class TestHeadlessQueueElapsedTime(TestCase):
+    def test_claimed_task_shows_elapsed_and_heartbeat(self) -> None:
+        ticket = Ticket.objects.create(state=Ticket.State.STARTED)
+        session = Session.objects.create(ticket=ticket, agent_id="agent")
+        now = timezone.now()
+        Task.objects.create(
+            ticket=ticket,
+            session=session,
+            execution_target=Task.ExecutionTarget.HEADLESS,
+            status=Task.Status.CLAIMED,
+            claimed_by="worker-1",
+            claimed_at=now - timedelta(minutes=5),
+            heartbeat_at=now - timedelta(seconds=30),
+            lease_expires_at=now + timedelta(minutes=5),
+        )
+
+        queue = build_headless_queue()
+
+        assert len(queue) == 1
+        assert queue[0].elapsed_time  # non-empty
+        assert "5m" in queue[0].elapsed_time
+        assert queue[0].heartbeat_age  # non-empty
+        assert "30s" in queue[0].heartbeat_age
+
+    def test_pending_task_has_empty_elapsed(self) -> None:
+        ticket = Ticket.objects.create(state=Ticket.State.STARTED)
+        session = Session.objects.create(ticket=ticket, agent_id="agent")
+        Task.objects.create(
+            ticket=ticket,
+            session=session,
+            execution_target=Task.ExecutionTarget.HEADLESS,
+        )
+
+        queue = build_headless_queue()
+
+        assert len(queue) == 1
+        assert queue[0].elapsed_time == ""
+        assert queue[0].heartbeat_age == ""
+
+
+class TestRecentActivityTokens(TestCase):
+    def test_includes_token_counts_and_cost(self) -> None:
+        ticket = Ticket.objects.create(state=Ticket.State.STARTED)
+        session = Session.objects.create(ticket=ticket, agent_id="agent")
+        task = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            execution_target=Task.ExecutionTarget.HEADLESS,
+        )
+        TaskAttempt.objects.create(
+            task=task,
+            execution_target="headless",
+            exit_code=0,
+            ended_at=timezone.now(),
+            input_tokens=1500,
+            output_tokens=800,
+            cost_usd=0.025,
+        )
+
+        rows = build_recent_activity()
+
+        assert len(rows) == 1
+        assert rows[0].input_tokens == 1500
+        assert rows[0].output_tokens == 800
+        assert rows[0].cost_usd is not None
+        assert abs(rows[0].cost_usd - 0.025) < 1e-9
+
+    def test_null_tokens_default_to_none(self) -> None:
+        ticket = Ticket.objects.create(state=Ticket.State.STARTED)
+        session = Session.objects.create(ticket=ticket, agent_id="agent")
+        task = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            execution_target=Task.ExecutionTarget.HEADLESS,
+        )
+        TaskAttempt.objects.create(
+            task=task,
+            execution_target="headless",
+            exit_code=0,
+            ended_at=timezone.now(),
+        )
+
+        rows = build_recent_activity()
+
+        assert len(rows) == 1
+        assert rows[0].input_tokens is None
+        assert rows[0].output_tokens is None
+        assert rows[0].cost_usd is None
 
 
 class TestBuildActiveSessions(TestCase):
