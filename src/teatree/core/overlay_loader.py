@@ -49,6 +49,23 @@ def get_all_overlays() -> "dict[str, OverlayBase]":
     return dict(_discover_overlays())
 
 
+def get_all_overlay_names() -> list[str]:
+    """Return all overlay names, including path-only TOML entries.
+
+    Unlike ``get_all_overlays()``, this includes TOML entries that declare a
+    ``path`` but no ``class`` — they can't be instantiated as OverlayBase but
+    should appear in the dashboard overlay selector for ticket filtering.
+    """
+    from teatree.config import load_config  # noqa: PLC0415
+
+    names = set(_discover_overlays())
+    config = load_config()
+    for name, cfg in config.raw.get("overlays", {}).items():
+        if cfg.get("path"):
+            names.add(name)
+    return sorted(names)
+
+
 @lru_cache(maxsize=1)
 def _discover_overlays() -> "dict[str, OverlayBase]":
     import importlib.metadata  # noqa: PLC0415

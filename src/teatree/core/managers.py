@@ -6,7 +6,8 @@ from django.utils import timezone
 class _OverlayFilterMixin:
     def for_overlay(self, overlay: str | None = None) -> models.QuerySet:
         if overlay:
-            return self.filter(overlay=overlay)  # type: ignore[attr-defined]
+            # Include tickets with empty overlay (created before multi-overlay)
+            return self.filter(Q(overlay=overlay) | Q(overlay=""))  # type: ignore[attr-defined]
         return self.all()  # type: ignore[attr-defined]
 
 
@@ -53,7 +54,12 @@ class TaskQuerySet(models.QuerySet):
             .order_by("pk")
         )
         if overlay:
-            qs = qs.filter(Q(ticket__overlay=overlay) | Q(session__overlay=overlay))
+            qs = qs.filter(
+                Q(ticket__overlay=overlay)
+                | Q(session__overlay=overlay)
+                | Q(ticket__overlay="")
+                | Q(session__overlay="")
+            )
         return qs
 
 

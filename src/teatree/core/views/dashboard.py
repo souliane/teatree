@@ -5,7 +5,7 @@ from django.template.response import TemplateResponse
 from django.templatetags.static import static
 from django.views import View
 
-from teatree.core.overlay_loader import get_all_overlays
+from teatree.core.overlay_loader import get_all_overlay_names, get_all_overlays
 from teatree.core.selectors import (
     build_action_required,
     build_active_sessions,
@@ -56,7 +56,7 @@ class DashboardView(View):
             git_sha, git_branch = "", ""
         all_overlays = get_all_overlays()
         overlay_paths = {name: type(ov).__module__ for name, ov in all_overlays.items()}
-        overlays = sorted(all_overlays)
+        overlays = get_all_overlay_names()
         teatree_logo = static("teatree/img/teatree-logo.jpg")
         overlay_logos = {name: ov.config.get_dashboard_logo() or teatree_logo for name, ov in all_overlays.items()}
         if overlay and overlay in all_overlays:
