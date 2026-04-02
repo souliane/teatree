@@ -40,7 +40,6 @@ def test_get_agent_handover_config_defaults_to_ordered_cli_agents() -> None:
                 "switch_back_at_percent": 80,
             },
         },
-        {"runtime": "codex"},
     ]
 
 

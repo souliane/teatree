@@ -22,6 +22,8 @@ from teatree.cli.tools import tool_app
 
 logger = logging.getLogger(__name__)
 
+__all__ = ["app", "main"]
+
 app = typer.Typer(name="t3", no_args_is_help=True, add_completion=False)
 
 AGENT_PHASE_OPTION = typer.Option("", "--phase", help="Explicit TeaTree phase override.")
