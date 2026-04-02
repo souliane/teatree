@@ -1,5 +1,4 @@
 import json
-import os
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
@@ -37,7 +36,6 @@ class TestLaunchTaskView(TestCase):
         mock_attempt.save()
 
         with (
-            patch.dict(os.environ, {"T3_OVERLAY_NAME": ""}),
             patch.object(web_terminal_mod, "launch_web_session", return_value=mock_attempt),
             patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
         ):
@@ -66,7 +64,6 @@ class TestLaunchTaskView(TestCase):
         )
 
         with (
-            patch.dict(os.environ, {"T3_OVERLAY_NAME": ""}),
             patch.object(headless_mod.shutil, "which", return_value="/usr/bin/claude-code"),
             patch.object(
                 headless_mod.subprocess,
@@ -138,7 +135,6 @@ class TestLaunchTaskView(TestCase):
         )
 
         with (
-            patch.dict(os.environ, {"T3_OVERLAY_NAME": ""}),
             patch.object(web_terminal_mod, "launch_web_session", side_effect=_raise),
             patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
         ):

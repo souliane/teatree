@@ -1782,13 +1782,10 @@ class TestRunE2ePrivate(TestCase):
     @override_settings(**SETTINGS)
     def test_config_fallback(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            mock_worktree = MagicMock()
-            mock_worktree.ports = {}
             mock_result = MagicMock(returncode=0)
             with (
-                patch.dict("os.environ", {}, clear=False),
+                patch.dict("os.environ", {"T3_ORIG_CWD": tmp}, clear=False),
                 patch.object(config_mod, "load_config") as mock_cfg,
-                patch.object(run_mod, "resolve_worktree", return_value=mock_worktree),
                 patch.object(run_mod.subprocess, "run", return_value=mock_result),
             ):
                 mock_cfg.return_value.raw = {"teatree": {"private_tests": tmp}}
@@ -1807,20 +1804,24 @@ class TestRunE2ePrivate(TestCase):
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_runs_private_tests(self) -> None:
+    def test_runs_private_tests_with_variant(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            mock_worktree = MagicMock()
-            mock_worktree.ports = {"frontend": 5555}
+            tmp_path = Path(tmp)
+            wt_dir = tmp_path / "worktree"
+            wt_dir.mkdir()
+            (wt_dir / ".env.worktree").write_text("FRONTEND_PORT=5555\nWT_VARIANT=acme\n", encoding="utf-8")
+            private_dir = tmp_path / "private"
+            private_dir.mkdir()
             mock_result = MagicMock(returncode=0)
             with (
-                patch.dict("os.environ", {"T3_PRIVATE_TESTS": tmp}),
-                patch.object(run_mod, "resolve_worktree", return_value=mock_worktree),
+                patch.dict("os.environ", {"T3_PRIVATE_TESTS": str(private_dir), "T3_ORIG_CWD": str(wt_dir)}),
                 patch.object(run_mod.subprocess, "run", return_value=mock_result) as mock_run,
             ):
                 result = cast("str", call_command("run", "e2e-private"))
             assert "passed" in result
             env = mock_run.call_args[1]["env"]
             assert env["BASE_URL"] == "http://localhost:5555"
+            assert env["CUSTOMER"] == "acme"
             assert env["CI"] == "1"
 
     @_patch_overlays(FULL_OVERLAY)
