@@ -4,7 +4,7 @@ Supports parallel execution via pytest-xdist: each worker gets its own SQLite
 DB and Django dev server, so tests run with zero shared state.
 
 Run with:
-    uv run --group e2e pytest e2e/ --ds e2e.settings -n auto -v
+    uv run --group e2e pytest e2e/ --ds e2e.settings --no-cov -n auto -v
 """
 
 import os
@@ -157,13 +157,13 @@ def _find_free_port() -> int:
         return s.getsockname()[1]
 
 
-def _wait_for_server(url: str, *, timeout: int = 10) -> None:
+def _wait_for_server(url: str, *, timeout: int = 30) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
-            httpx.get(url, timeout=1.0)
+            httpx.get(url, timeout=2.0)
             return
-        except httpx.ConnectError:
-            time.sleep(0.2)
+        except (httpx.ConnectError, httpx.ReadTimeout):
+            time.sleep(0.3)
     msg = f"Server at {url} did not start within {timeout}s"
     raise TimeoutError(msg)
