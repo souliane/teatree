@@ -205,7 +205,7 @@ class Command(TyperCommand):
         settings_module = e2e_config.get("settings_module", "e2e.settings")
         test_dir = test_path or e2e_config.get("test_dir", "e2e/")
 
-        if docker:
+        if docker and not Path("/.dockerenv").exists():
             compose_file = _find_compose_file(wt_path, "docker-compose.yml")
             if compose_file:
                 cmd = ["docker", "compose", "-f", str(compose_file), "run", "--rm", "e2e"]
