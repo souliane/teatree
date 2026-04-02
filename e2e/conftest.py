@@ -1,4 +1,11 @@
-"""E2E test fixtures — start a live Django dev server for Playwright."""
+"""E2E test fixtures — start a live Django dev server for Playwright.
+
+Supports parallel execution via pytest-xdist: each worker gets its own SQLite
+DB and Django dev server, so tests run with zero shared state.
+
+Run with:
+    t3 teatree run e2e-local
+"""
 
 import os
 import subprocess
@@ -9,8 +16,21 @@ from collections.abc import Iterator
 import httpx
 import pytest
 
-os.environ["DJANGO_SETTINGS_MODULE"] = "e2e.settings"
+os.environ.setdefault("DJANGO_SETTINGS_MODULE", "e2e.settings")
 os.environ["DJANGO_ALLOW_ASYNC_UNSAFE"] = "1"
+
+
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    """Exempt fixture setup/teardown from pytest-timeout for E2E tests.
+
+    Under xdist each worker starts its own Playwright browser + Django server
+    inside session-scoped fixtures.  The global ``timeout = 10`` (from
+    pyproject.toml) would kill setup before Playwright finishes launching.
+    Adding ``func_only=True`` keeps the timeout on the test body only.
+    """
+    mark = pytest.mark.timeout(func_only=True)
+    for item in items:
+        item.add_marker(mark)
 
 
 @pytest.fixture(scope="session")
@@ -20,7 +40,15 @@ def django_db_modify_db_settings():
 
 @pytest.fixture(scope="session")
 def django_db_setup(django_db_modify_db_settings, django_db_blocker):
-    """Run migrations against the shared E2E SQLite file."""
+    """Run migrations against the per-worker E2E SQLite file.
+
+    Deletes any stale DB file first so reused TEATREE_E2E_DB_DIR dirs
+    (from killed processes or inherited env vars) start clean.
+    """
+    from e2e.settings import E2E_DB_PATH
+
+    E2E_DB_PATH.unlink(missing_ok=True)
+
     with django_db_blocker.unblock():
         import django
 
@@ -52,7 +80,7 @@ def e2e_server(django_db_setup) -> Iterator[str]:
         stderr=subprocess.DEVNULL,
     )
 
-    _wait_for_server(url, timeout=10)
+    _wait_for_server(url)
     yield url
     proc.terminate()
     proc.wait(timeout=5)
@@ -142,13 +170,13 @@ def _find_free_port() -> int:
         return s.getsockname()[1]
 
 
-def _wait_for_server(url: str, *, timeout: int = 10) -> None:
+def _wait_for_server(url: str, *, timeout: int = 30) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
-            httpx.get(url, timeout=1.0)
+            httpx.get(url, timeout=2.0)
             return
-        except httpx.ConnectError:
-            time.sleep(0.2)
+        except (httpx.ConnectError, httpx.ReadTimeout):
+            time.sleep(0.3)
     msg = f"Server at {url} did not start within {timeout}s"
     raise TimeoutError(msg)

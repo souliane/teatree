@@ -1699,7 +1699,7 @@ class TestRunE2eLocal(TestCase):
             patch.object(run_mod, "resolve_worktree", return_value=None),
             patch.object(run_mod.subprocess, "run", return_value=mock_result) as mock_run,
         ):
-            result = cast("str", call_command("run", "e2e-local"))
+            result = cast("str", call_command("run", "e2e-local", docker=False))
 
         assert "passed" in result
         cmd = mock_run.call_args[0][0]
@@ -1714,7 +1714,7 @@ class TestRunE2eLocal(TestCase):
             patch.object(run_mod, "resolve_worktree", return_value=None),
             patch.object(run_mod.subprocess, "run", return_value=mock_result),
         ):
-            result = cast("str", call_command("run", "e2e-local"))
+            result = cast("str", call_command("run", "e2e-local", docker=False))
 
         assert "failed" in result
 
@@ -1727,7 +1727,7 @@ class TestRunE2eLocal(TestCase):
             patch.object(run_mod, "resolve_worktree", return_value=None),
             patch.object(run_mod.subprocess, "run", return_value=mock_result) as mock_run,
         ):
-            call_command("run", "e2e-local", headed=True)
+            call_command("run", "e2e-local", headed=True, docker=False)
 
         env = mock_run.call_args[1].get("env", {})
         assert env.get("CI") != "1"
@@ -1741,7 +1741,7 @@ class TestRunE2eLocal(TestCase):
             patch.object(run_mod, "resolve_worktree", return_value=None),
             patch.object(run_mod.subprocess, "run", return_value=mock_result) as mock_run,
         ):
-            call_command("run", "e2e-local", test_path="tests/e2e/test_login.py")
+            call_command("run", "e2e-local", test_path="tests/e2e/test_login.py", docker=False)
 
         cmd = mock_run.call_args[0][0]
         assert "tests/e2e/test_login.py" in cmd

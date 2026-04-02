@@ -1,0 +1,21 @@
+# Docker Compose for running the teatree dashboard locally.
+# Serves the dashboard with hot-reload, mounting the source for live edits.
+#
+# Usage:
+#   t3 teatree dashboard --docker
+
+services:
+  dashboard:
+    build:
+      context: ..
+      dockerfile: dev/Dockerfile.test
+    volumes:
+      - ..:/app
+    ports:
+      - "${T3_DASHBOARD_PORT:-8000}:8000"
+    command: >
+      sh -c "uv run python -m teatree migrate --no-input
+      && uv run python -m uvicorn teatree.asgi:application --host 0.0.0.0 --port 8000 --reload"
+    environment:
+      UV_PROJECT_ENVIRONMENT: /tmp/.venv
+      DJANGO_SETTINGS_MODULE: teatree.settings

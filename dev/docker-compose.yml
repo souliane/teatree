@@ -1,0 +1,38 @@
+# Docker Compose for teatree CI/testing tasks.
+# Lightweight, SQLite-only, ephemeral containers.
+#
+# Usage (prefer t3 CLI wrappers):
+#   t3 teatree run tests          # unit tests
+#   t3 teatree run e2e-local      # E2E with parallel Playwright workers
+
+x-base: &base
+  build:
+    context: ..
+    dockerfile: dev/Dockerfile.test
+  volumes:
+    - ..:/app:ro
+  environment:
+    UV_PROJECT_ENVIRONMENT: /tmp/.venv
+    COVERAGE_FILE: /tmp/.coverage
+  working_dir: /app
+
+services:
+  tests:
+    <<: *base
+    command: >
+      uv run pytest
+      --no-header --no-cov -v
+      -o cache_dir=/tmp/.pytest_cache
+    profiles: [tests]
+
+  e2e:
+    <<: *base
+    build:
+      context: ..
+      dockerfile: dev/Dockerfile.e2e
+    command: >
+      uv run --group e2e pytest e2e/
+      --ds e2e.settings --no-cov
+      -n auto -v
+      -o cache_dir=/tmp/.pytest_cache
+    profiles: [e2e]
