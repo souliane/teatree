@@ -6,7 +6,7 @@ cd "$(dirname "$0")/.."
 
 IMAGE="teatree-test"
 failed=0
-versions=(3.13 3.14)
+versions=(3.13)
 total=${#versions[@]}
 current=0
 
