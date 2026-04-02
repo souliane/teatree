@@ -70,6 +70,7 @@
     .split-btn .split-menu button, .split-btn .split-menu label {
       display: block; width: 100%; text-align: left;
       padding: 0.375rem 0.75rem; cursor: pointer; border: none; background: none;
+      color: #1f2a24;
     }
     .split-btn .split-menu button:hover, .split-btn .split-menu label:hover { background: rgba(66,104,85,0.08); }
     .split-btn .split-menu .active { font-weight: 700; color: #426855; }
@@ -161,20 +162,6 @@
       if (sel) sel.value = value;
     }
 
-    var _activityVisible = false;
-    function toggleActivity(btn) {
-      _activityVisible = !_activityVisible;
-      var section = document.getElementById('section-activity');
-      if (_activityVisible) {
-        section.classList.remove('hidden');
-        btn.classList.add('bg-moss/10', 'text-moss');
-        btn.classList.remove('bg-bark/5', 'text-bark/40');
-      } else {
-        section.classList.add('hidden');
-        btn.classList.remove('bg-moss/10', 'text-moss');
-        btn.classList.add('bg-bark/5', 'text-bark/40');
-      }
-    }
 
     function handleActionResponse(event) {
       var xhr = event.detail.xhr;
@@ -238,8 +225,7 @@
   {% if git_sha %}<div class="fixed top-2 right-3 z-40 rounded-full border border-bark/10 bg-cream/90 px-2.5 py-0.5 font-mono text-[10px] text-bark/40 backdrop-blur" title="{{ git_branch }}&#10;{% for name, path in overlay_paths.items %}{{ name }}: {{ path }}&#10;{% endfor %}">{{ git_sha }}</div>{% endif %}
   <main class="mx-auto max-w-7xl px-4 py-10 sm:px-6 lg:px-8">
     <header class="mb-4 flex items-center gap-4">
-      <img id="dashboard-logo" src="{{ logo_url }}" alt="Logo" class="h-8">
-      <span class="font-sans text-xs font-semibold uppercase tracking-[0.24em] text-moss">TeaTree Runtime <span id="sse-status" class="inline-block h-2 w-2 rounded-full bg-bark/40" title="SSE disconnected"></span></span>
+      {% if logo_url %}<img id="dashboard-logo" src="{{ logo_url }}" alt="" class="h-8" onerror="this.style.display='none'">{% endif %}
       {% if overlays %}
       <select
         id="overlay-selector"
@@ -267,7 +253,7 @@
       })();
     </script>
     <!-- Compact status bar -->
-    <div class="mb-4 flex flex-wrap items-center gap-3 rounded-[1rem] border border-bark/10 bg-cream/90 px-5 py-3 shadow-soft backdrop-blur">
+    <div class="mb-4 flex flex-wrap items-center gap-3 overflow-visible rounded-[1rem] border border-bark/10 bg-cream/90 px-5 py-3 shadow-soft">
       <div
         class="flex gap-3 font-sans text-sm text-bark/60"
         hx-get="{% url 'teatree:dashboard-panel' 'summary' %}"
@@ -348,14 +334,12 @@
     </div>
     <div class="grid gap-4">
       <!-- Automation Summary -->
-      <section class="overflow-hidden rounded-[1.5rem] border border-bark/10 bg-cream/90 shadow-soft backdrop-blur">
-        <div class="flex flex-col gap-2 border-b border-bark/10 px-5 py-4 sm:flex-row sm:items-end sm:justify-between">
-          <div>
-            <h2 class="font-display text-2xl">Automation</h2>
-            <p class="font-sans text-sm text-bark/60">Headless task execution stats.</p>
-          </div>
-          <span class="font-sans text-xs uppercase tracking-[0.18em] text-moss">Last 24h</span>
-        </div>
+      <details open class="group overflow-hidden rounded-[1.5rem] border border-bark/10 bg-cream/90 shadow-soft backdrop-blur">
+        <summary class="flex cursor-pointer items-center gap-2 border-b border-bark/10 px-5 py-4">
+          <span class="group-open:hidden">&#9654;</span><span class="hidden group-open:inline">&#9660;</span>
+          <h2 class="font-display text-2xl">Automation</h2>
+          <span class="ml-auto font-sans text-xs uppercase tracking-[0.18em] text-moss">Last 24h</span>
+        </summary>
         <div
           class="px-5 py-5"
           hx-get="{% url 'teatree:dashboard-panel' 'automation' %}"
@@ -364,15 +348,13 @@
         >
           {% include "teatree/partials/dashboard_automation.html" with automation=snapshot.automation only %}
         </div>
-      </section>
+      </details>
       <!-- Action Required -->
-      <section class="overflow-hidden rounded-[1.5rem] border border-bark/10 bg-cream/90 shadow-soft backdrop-blur">
-        <div class="flex flex-col gap-2 border-b border-bark/10 px-5 py-4 sm:flex-row sm:items-end sm:justify-between">
-          <div>
-            <h2 class="font-display text-2xl">Action Required</h2>
-            <p class="font-sans text-sm text-bark/60">Items that need your input or participation.</p>
-          </div>
-        </div>
+      <details open class="group overflow-hidden rounded-[1.5rem] border border-bark/10 bg-cream/90 shadow-soft backdrop-blur">
+        <summary class="flex cursor-pointer items-center gap-2 border-b border-bark/10 px-5 py-4">
+          <span class="group-open:hidden">&#9654;</span><span class="hidden group-open:inline">&#9660;</span>
+          <h2 class="font-display text-2xl">Action Required</h2>
+        </summary>
         <div
           class="px-5 py-5"
           hx-get="{% url 'teatree:dashboard-panel' 'action_required' %}"
@@ -381,15 +363,13 @@
         >
           {% include "teatree/partials/dashboard_action_required.html" with action_items=snapshot.action_required only %}
         </div>
-      </section>
+      </details>
       <!-- Interactive Queue -->
-      <section class="overflow-hidden rounded-[1.5rem] border border-bark/10 bg-cream/90 shadow-soft backdrop-blur">
-        <div class="flex flex-col gap-2 border-b border-bark/10 px-5 py-4 sm:flex-row sm:items-end sm:justify-between">
-          <div>
-            <h2 class="font-display text-2xl">Interactive Queue</h2>
-            <p class="font-sans text-sm text-bark/60">Pending tasks waiting for pickup.</p>
-          </div>
-        </div>
+      <details open class="group overflow-hidden rounded-[1.5rem] border border-bark/10 bg-cream/90 shadow-soft backdrop-blur">
+        <summary class="flex cursor-pointer items-center gap-2 border-b border-bark/10 px-5 py-4">
+          <span class="group-open:hidden">&#9654;</span><span class="hidden group-open:inline">&#9660;</span>
+          <h2 class="font-display text-2xl">Interactive Queue</h2>
+        </summary>
         <div
           id="panel-queue"
           class="px-5 py-5"
@@ -399,22 +379,21 @@
         >
           {% include "teatree/partials/dashboard_queue.html" with queue=snapshot.interactive_queue only %}
         </div>
-      </section>
+      </details>
       <!-- In-Flight Tickets -->
-      <section class="overflow-hidden rounded-[1.5rem] border border-bark/10 bg-cream/90 shadow-soft backdrop-blur">
-        <div class="flex flex-col gap-2 border-b border-bark/10 px-5 py-4 sm:flex-row sm:items-end sm:justify-between">
-          <div>
-            <h2 class="font-display text-2xl">In-Flight Tickets</h2>
-            <p class="font-sans text-sm text-bark/60">All active tickets with MR status.</p>
-          </div>
+      <details open class="group overflow-hidden rounded-[1.5rem] border border-bark/10 bg-cream/90 shadow-soft backdrop-blur">
+        <summary class="flex cursor-pointer items-center gap-2 border-b border-bark/10 px-5 py-4">
+          <span class="group-open:hidden">&#9654;</span><span class="hidden group-open:inline">&#9660;</span>
+          <h2 class="font-display text-2xl">In-Flight Tickets</h2>
           <button
-            class="pill-btn pill-xs border border-moss/30 bg-moss/10 uppercase tracking-[0.18em] text-moss hover:bg-moss/20"
+            class="ml-auto pill-btn pill-xs border border-moss/30 bg-moss/10 uppercase tracking-[0.18em] text-moss hover:bg-moss/20"
             hx-post="{% url 'teatree:dashboard-sync' %}"
             hx-target="#sync-status"
             hx-swap="outerHTML"
             hx-on::after-request="htmx.trigger(document.body, 'refreshPanels')"
+            onclick="event.stopPropagation()"
           >Sync</button>
-        </div>
+        </summary>
         <div
           class="px-5 py-5"
           hx-get="{% url 'teatree:dashboard-panel' 'tickets' %}"
@@ -423,20 +402,14 @@
         >
           {% include "teatree/partials/dashboard_tickets.html" with tickets=snapshot.tickets only %}
         </div>
-      </section>
+      </details>
       <!-- Active Sessions -->
-      <section class="overflow-hidden rounded-[1.5rem] border border-bark/10 bg-cream/90 shadow-soft backdrop-blur">
-        <div class="flex flex-col gap-2 border-b border-bark/10 px-5 py-4 sm:flex-row sm:items-end sm:justify-between">
-          <div>
-            <h2 class="font-display text-2xl">Active Sessions</h2>
-            <p class="font-sans text-sm text-bark/60">Running Claude processes on this machine.</p>
-          </div>
-          <button
-            id="activity-toggle-btn"
-            class="pill-btn pill-xs border border-bark/15 bg-bark/5 text-bark/40 hover:bg-bark/10 hover:text-bark"
-            onclick="toggleActivity(this)"
-          >Activity</button>
-        </div>
+      <details open class="group overflow-hidden rounded-[1.5rem] border border-bark/10 bg-cream/90 shadow-soft backdrop-blur">
+        <summary class="flex cursor-pointer items-center gap-2 border-b border-bark/10 px-5 py-4">
+          <span class="group-open:hidden">&#9654;</span><span class="hidden group-open:inline">&#9660;</span>
+          <h2 class="font-display text-2xl">Active Sessions</h2>
+          <span class="font-sans text-sm text-bark/60">Running Claude processes on this machine.</span>
+        </summary>
         <div
           class="px-5 py-5"
           hx-get="{% url 'teatree:dashboard-panel' 'sessions' %}"
@@ -445,13 +418,14 @@
         >
           {% include "teatree/partials/dashboard_sessions.html" with sessions=snapshot.active_sessions only %}
         </div>
-      </section>
-      <!-- Recent Activity (hidden, toggled by History button) -->
-      <section id="section-activity" class="hidden overflow-hidden rounded-[1.5rem] border border-bark/10 bg-cream/90 shadow-soft backdrop-blur">
-        <div class="border-b border-bark/10 px-5 py-4">
+      </details>
+      <!-- Recent Activity -->
+      <details open class="group overflow-hidden rounded-[1.5rem] border border-bark/10 bg-cream/90 shadow-soft backdrop-blur">
+        <summary class="flex cursor-pointer items-center gap-2 border-b border-bark/10 px-5 py-4">
+          <span class="group-open:hidden">&#9654;</span><span class="hidden group-open:inline">&#9660;</span>
           <h2 class="font-display text-2xl">Recent Activity</h2>
-          <p class="font-sans text-sm text-bark/60">Last completed task attempts.</p>
-        </div>
+          <span class="font-sans text-sm text-bark/60">Last completed task attempts.</span>
+        </summary>
         <div
           class="px-5 py-5"
           hx-get="{% url 'teatree:dashboard-panel' 'activity' %}"
@@ -460,7 +434,7 @@
         >
           {% include "teatree/partials/dashboard_activity.html" with activity=snapshot.recent_activity only %}
         </div>
-      </section>
+      </details>
       <!-- Automated (collapsed by default) -->
       <details class="group">
         <summary class="cursor-pointer list-none rounded-[1rem] border border-bark/10 bg-cream/90 px-5 py-3 font-sans text-sm font-semibold text-bark/50 shadow-soft backdrop-blur hover:text-bark">

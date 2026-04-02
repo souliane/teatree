@@ -54,7 +54,7 @@ class TestDashboardView(TestCase):
         response = Client().get(reverse("teatree:dashboard"))
 
         assert response.status_code == 200
-        assert b"TeaTree Runtime" in response.content
+        assert b"TeaTree Dashboard" in response.content
         assert b"In-Flight Tickets" in response.content
         assert b"Action Required" in response.content
         assert b"hx-get" in response.content
@@ -62,7 +62,7 @@ class TestDashboardView(TestCase):
     def test_renders_with_overlay_param(self) -> None:
         response = Client().get(reverse("teatree:dashboard") + "?overlay=test")
         assert response.status_code == 200
-        assert b"TeaTree Runtime" in response.content
+        assert b"TeaTree Dashboard" in response.content
 
     def test_renders_with_known_overlay_uses_overlay_logo(self) -> None:
         overlay = CommandOverlay()
