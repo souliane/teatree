@@ -1,0 +1,9 @@
+<div class="px-2 py-1 font-semibold text-bark/40 uppercase tracking-widest" style="font-size:9px">Mode</div>
+<button data-key="teatree_terminal_mode" data-value="new-window" onclick="setTerminalOption('teatree_terminal_mode','new-window',this)">New window</button>
+<button data-key="teatree_terminal_mode" data-value="ttyd" onclick="setTerminalOption('teatree_terminal_mode','ttyd',this)">ttyd (browser)</button>
+{% if terminal_apps %}
+<div class="px-2 py-1 font-semibold text-bark/40 uppercase tracking-widest border-t border-bark/10 mt-1 pt-1" style="font-size:9px">App</div>
+{% for value, label in terminal_apps %}
+<button data-key="teatree_terminal_app" data-value="{{ value }}" onclick="setTerminalOption('teatree_terminal_app','{{ value }}',this)">{{ label }}</button>
+{% endfor %}
+{% endif %}

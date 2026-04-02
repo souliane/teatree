@@ -51,11 +51,36 @@
       font-weight: 600;
       transition: all 150ms;
     }
+    /* Split-button group */
+    .split-btn { position: relative; display: inline-flex; }
+    .split-btn .split-main { border-radius: 9999px 0 0 9999px; border-right: none; }
+    .split-btn .split-arrow {
+      border-radius: 0 9999px 9999px 0;
+      padding-left: 0.25rem; padding-right: 0.375rem;
+      border-left: 1px solid rgba(31,42,36,0.1);
+      cursor: pointer;
+    }
+    .split-btn .split-menu {
+      position: absolute; top: 100%; right: 0; z-index: 50;
+      margin-top: 0.25rem; min-width: 10rem;
+      border-radius: 0.5rem; border: 1px solid rgba(31,42,36,0.1);
+      background: #fffaf1; box-shadow: 0 4px 12px rgba(31,42,36,0.1);
+      font-family: "Avenir Next", "Segoe UI", sans-serif; font-size: 11px;
+    }
+    .split-btn .split-menu button, .split-btn .split-menu label {
+      display: block; width: 100%; text-align: left;
+      padding: 0.375rem 0.75rem; cursor: pointer; border: none; background: none;
+      color: #1f2a24;
+    }
+    .split-btn .split-menu button:hover, .split-btn .split-menu label:hover { background: rgba(66,104,85,0.08); }
+    .split-btn .split-menu .active { font-weight: 700; color: #426855; }
   </style>
   <script src="https://unpkg.com/htmx.org@2.0.4"></script>
   <script src="https://unpkg.com/htmx-ext-sse@2.3.0/sse.js"></script>
   <script>
     var _selectedOverlay = localStorage.getItem('teatree_overlay') || '{{ selected_overlay }}';
+    var _overlayLogos = {{ overlay_logos_json|safe }};
+    var _defaultLogo = '{{ default_logo }}';
 
     function getOverlayParam() {
       return _selectedOverlay ? 'overlay=' + encodeURIComponent(_selectedOverlay) : '';
@@ -79,7 +104,10 @@
       else { localStorage.removeItem('teatree_overlay'); }
       document.querySelectorAll('[hx-get]').forEach(function(el) {
         el.setAttribute('hx-get', appendOverlay(el.getAttribute('hx-get')));
+        htmx.process(el);
       });
+      var logo = document.getElementById('dashboard-logo');
+      if (logo) { logo.src = (value && _overlayLogos[value]) ? _overlayLogos[value] : _defaultLogo; }
       htmx.trigger(document.body, 'refreshPanels');
     }
 
@@ -111,6 +139,30 @@
     document.addEventListener('keydown', function(e) {
       if (e.key === 'Escape') closeTaskModal();
     });
+
+    function toggleSplitMenu(arrowBtn) {
+      var menu = arrowBtn.parentElement.querySelector('.split-menu');
+      document.querySelectorAll('.split-menu').forEach(function(m) {
+        if (m !== menu) m.classList.add('hidden');
+      });
+      menu.classList.toggle('hidden');
+    }
+    document.addEventListener('click', function(e) {
+      if (!e.target.closest('.split-btn')) {
+        document.querySelectorAll('.split-menu').forEach(function(m) { m.classList.add('hidden'); });
+      }
+    });
+    function setTerminalOption(key, value, btn) {
+      localStorage.setItem(key, value);
+      var menu = btn.closest('.split-menu');
+      menu.querySelectorAll('[data-key="' + key + '"]').forEach(function(b) {
+        b.classList.toggle('active', b.dataset.value === value);
+      });
+      // Update hidden selectors for backward compat
+      var sel = document.getElementById(key === 'teatree_terminal_mode' ? 'terminal-mode-selector' : 'terminal-app-selector');
+      if (sel) sel.value = value;
+    }
+
 
     function handleActionResponse(event) {
       var xhr = event.detail.xhr;
@@ -171,10 +223,17 @@
     hx-swap="outerHTML"
     hx-on::after-request="htmx.trigger(document.body, 'refreshPanels')"
   ></div>
-  <main class="px-4 py-10 sm:px-6 lg:px-8">
+  {% if git_sha %}
+  <div class="fixed top-2 right-3 z-40 group">
+    <div class="rounded-full border border-bark/10 bg-cream/90 px-2.5 py-0.5 font-mono text-[10px] text-bark/40 backdrop-blur cursor-help">{{ git_sha }}</div>
+    <div class="hidden group-hover:block absolute right-0 mt-1 rounded-lg border border-bark/10 bg-cream px-3 py-2 font-mono text-[11px] text-bark/70 shadow-soft whitespace-pre">{{ git_branch }}
+{% for name, path in overlay_paths.items %}{{ name }}: {{ path }}
+{% endfor %}</div>
+  </div>
+  {% endif %}
+  <main class="mx-auto max-w-7xl px-4 py-10 sm:px-6 lg:px-8">
     <header class="mb-4 flex items-center gap-4">
-      <img src="{{ logo_url }}" alt="Logo" class="h-8">
-      <span class="font-sans text-xs font-semibold uppercase tracking-[0.24em] text-moss">TeaTree Runtime <span id="sse-status" class="inline-block h-2 w-2 rounded-full bg-bark/40" title="SSE disconnected"></span></span>
+      {% if logo_url %}<img id="dashboard-logo" src="{{ logo_url }}" alt="" class="h-8" onerror="this.style.display='none'">{% endif %}
       {% if overlays %}
       <select
         id="overlay-selector"
@@ -202,7 +261,7 @@
       })();
     </script>
     <!-- Compact status bar -->
-    <div class="mb-4 flex flex-wrap items-center gap-3 rounded-[1rem] border border-bark/10 bg-cream/90 px-5 py-3 shadow-soft backdrop-blur">
+    <div class="mb-4 flex flex-wrap items-center gap-3 overflow-visible rounded-[1rem] border border-bark/10 bg-cream/90 px-5 py-3 shadow-soft">
       <div
         class="flex gap-3 font-sans text-sm text-bark/60"
         hx-get="{% url 'teatree:dashboard-panel' 'summary' %}"
@@ -213,36 +272,41 @@
       </div>
       <div class="ml-auto flex items-center gap-3">
         <div id="sync-status"></div>
-        <select
-          id="terminal-mode-selector"
-          class="rounded-lg border border-bark/15 bg-cream/80 px-2 py-1 font-sans text-xs text-bark/70 focus:border-moss focus:outline-none"
-          onchange="localStorage.setItem('teatree_terminal_mode', this.value)"
-        >
-          <option value="ttyd">ttyd (browser)</option>
-          <option value="new-window">New window</option>
-          <option value="new-tab">New tab</option>
-        </select>
+        <!-- Hidden selectors for HTMX parameter injection -->
+        <select id="terminal-mode-selector" class="hidden"><option value="new-window">New window</option><option value="ttyd">ttyd</option></select>
+        <select id="terminal-app-selector" class="hidden"><option value="">Default</option><option value="iterm2">iTerm2</option><option value="terminal">Terminal.app</option><option value="kitty">Kitty</option><option value="alacritty">Alacritty</option><option value="wezterm">WezTerm</option></select>
         <script>
         (function() {
-          var sel = document.getElementById('terminal-mode-selector');
-          var saved = localStorage.getItem('teatree_terminal_mode') || '{{ terminal_mode }}';
-          if (sel && saved) sel.value = saved;
+          var modeSel = document.getElementById('terminal-mode-selector');
+          var savedMode = localStorage.getItem('teatree_terminal_mode') || 'new-window';
+          if (modeSel) modeSel.value = savedMode;
+          var appSel = document.getElementById('terminal-app-selector');
+          var savedApp = localStorage.getItem('teatree_terminal_app') || '';
+          if (appSel && savedApp) appSel.value = savedApp;
         })();
         </script>
-        <button
-          class="pill-btn pill-xs border border-clay/30 bg-clay/10 uppercase tracking-[0.18em] text-clay hover:bg-clay/20"
-          hx-post="{% url 'teatree:launch-terminal' %}"
-          hx-swap="none"
-          hx-on::before-request="event.detail.requestConfig.parameters['terminal_mode'] = document.getElementById('terminal-mode-selector').value"
-          hx-on::after-request="handleActionResponse(event)"
-        >Terminal</button>
-        <button
-          class="pill-btn pill-xs border border-moss/30 bg-moss/10 uppercase tracking-[0.18em] text-moss hover:bg-moss/20"
-          hx-post="{% url 'teatree:launch-interactive-agent' %}"
-          hx-swap="none"
-          hx-on::before-request="event.detail.requestConfig.parameters['terminal_mode'] = document.getElementById('terminal-mode-selector').value"
-          hx-on::after-request="handleActionResponse(event)"
-        >Agent</button>
+        <div class="split-btn">
+          <button
+            class="pill-btn pill-xs split-main border border-clay/30 bg-clay/10 uppercase tracking-[0.18em] text-clay hover:bg-clay/20"
+            hx-post="{% url 'teatree:launch-terminal' %}"
+            hx-swap="none"
+            hx-on::before-request="event.detail.requestConfig.parameters['terminal_mode'] = document.getElementById('terminal-mode-selector').value; event.detail.requestConfig.parameters['terminal_app'] = document.getElementById('terminal-app-selector').value"
+            hx-on::after-request="handleActionResponse(event)"
+          >Terminal</button>
+          <button type="button" class="pill-btn pill-xs split-arrow border border-clay/30 bg-clay/10 text-clay hover:bg-clay/20" onclick="toggleSplitMenu(this)">&#9662;</button>
+          <div class="split-menu hidden">{% include "teatree/partials/_terminal_options_menu.html" %}</div>
+        </div>
+        <div class="split-btn">
+          <button
+            class="pill-btn pill-xs split-main border border-moss/30 bg-moss/10 uppercase tracking-[0.18em] text-moss hover:bg-moss/20"
+            hx-post="{% url 'teatree:launch-interactive-agent' %}"
+            hx-swap="none"
+            hx-on::before-request="event.detail.requestConfig.parameters['terminal_mode'] = document.getElementById('terminal-mode-selector').value; event.detail.requestConfig.parameters['terminal_app'] = document.getElementById('terminal-app-selector').value"
+            hx-on::after-request="handleActionResponse(event)"
+          >Agent</button>
+          <button type="button" class="pill-btn pill-xs split-arrow border border-moss/30 bg-moss/10 text-moss hover:bg-moss/20" onclick="toggleSplitMenu(this)">&#9662;</button>
+          <div class="split-menu hidden">{% include "teatree/partials/_terminal_options_menu.html" %}</div>
+        </div>
         <button
           class="pill-btn pill-xs border border-moss/30 bg-moss/10 uppercase tracking-[0.18em] text-moss hover:bg-moss/20"
           hx-post="{% url 'teatree:dashboard-sync' %}"
@@ -258,14 +322,12 @@
     </div>
     <div class="grid gap-4">
       <!-- Automation Summary -->
-      <section class="overflow-hidden rounded-[1.5rem] border border-bark/10 bg-cream/90 shadow-soft backdrop-blur">
-        <div class="flex flex-col gap-2 border-b border-bark/10 px-5 py-4 sm:flex-row sm:items-end sm:justify-between">
-          <div>
-            <h2 class="font-display text-2xl">Automation</h2>
-            <p class="font-sans text-sm text-bark/60">Headless task execution stats.</p>
-          </div>
-          <span class="font-sans text-xs uppercase tracking-[0.18em] text-moss">Last 24h</span>
-        </div>
+      <details open class="group overflow-hidden rounded-[1.5rem] border border-bark/10 bg-cream/90 shadow-soft backdrop-blur">
+        <summary class="flex cursor-pointer items-center gap-2 border-b border-bark/10 px-5 py-4">
+          <span class="group-open:hidden">&#9654;</span><span class="hidden group-open:inline">&#9660;</span>
+          <h2 class="font-display text-2xl">Automation</h2>
+          <span class="ml-auto font-sans text-xs uppercase tracking-[0.18em] text-moss">Last 24h</span>
+        </summary>
         <div
           class="px-5 py-5"
           hx-get="{% url 'teatree:dashboard-panel' 'automation' %}"
@@ -274,15 +336,13 @@
         >
           {% include "teatree/partials/dashboard_automation.html" with automation=snapshot.automation only %}
         </div>
-      </section>
+      </details>
       <!-- Action Required -->
-      <section class="overflow-hidden rounded-[1.5rem] border border-bark/10 bg-cream/90 shadow-soft backdrop-blur">
-        <div class="flex flex-col gap-2 border-b border-bark/10 px-5 py-4 sm:flex-row sm:items-end sm:justify-between">
-          <div>
-            <h2 class="font-display text-2xl">Action Required</h2>
-            <p class="font-sans text-sm text-bark/60">Items that need your input or participation.</p>
-          </div>
-        </div>
+      <details open class="group overflow-hidden rounded-[1.5rem] border border-bark/10 bg-cream/90 shadow-soft backdrop-blur">
+        <summary class="flex cursor-pointer items-center gap-2 border-b border-bark/10 px-5 py-4">
+          <span class="group-open:hidden">&#9654;</span><span class="hidden group-open:inline">&#9660;</span>
+          <h2 class="font-display text-2xl">Action Required</h2>
+        </summary>
         <div
           class="px-5 py-5"
           hx-get="{% url 'teatree:dashboard-panel' 'action_required' %}"
@@ -291,15 +351,13 @@
         >
           {% include "teatree/partials/dashboard_action_required.html" with action_items=snapshot.action_required only %}
         </div>
-      </section>
+      </details>
       <!-- Interactive Queue -->
-      <section class="overflow-hidden rounded-[1.5rem] border border-bark/10 bg-cream/90 shadow-soft backdrop-blur">
-        <div class="flex flex-col gap-2 border-b border-bark/10 px-5 py-4 sm:flex-row sm:items-end sm:justify-between">
-          <div>
-            <h2 class="font-display text-2xl">Interactive Queue</h2>
-            <p class="font-sans text-sm text-bark/60">Pending tasks waiting for pickup.</p>
-          </div>
-        </div>
+      <details open class="group overflow-hidden rounded-[1.5rem] border border-bark/10 bg-cream/90 shadow-soft backdrop-blur">
+        <summary class="flex cursor-pointer items-center gap-2 border-b border-bark/10 px-5 py-4">
+          <span class="group-open:hidden">&#9654;</span><span class="hidden group-open:inline">&#9660;</span>
+          <h2 class="font-display text-2xl">Interactive Queue</h2>
+        </summary>
         <div
           id="panel-queue"
           class="px-5 py-5"
@@ -309,22 +367,21 @@
         >
           {% include "teatree/partials/dashboard_queue.html" with queue=snapshot.interactive_queue only %}
         </div>
-      </section>
+      </details>
       <!-- In-Flight Tickets -->
-      <section class="overflow-hidden rounded-[1.5rem] border border-bark/10 bg-cream/90 shadow-soft backdrop-blur">
-        <div class="flex flex-col gap-2 border-b border-bark/10 px-5 py-4 sm:flex-row sm:items-end sm:justify-between">
-          <div>
-            <h2 class="font-display text-2xl">In-Flight Tickets</h2>
-            <p class="font-sans text-sm text-bark/60">All active tickets with MR status.</p>
-          </div>
+      <details open class="group overflow-hidden rounded-[1.5rem] border border-bark/10 bg-cream/90 shadow-soft backdrop-blur">
+        <summary class="flex cursor-pointer items-center gap-2 border-b border-bark/10 px-5 py-4">
+          <span class="group-open:hidden">&#9654;</span><span class="hidden group-open:inline">&#9660;</span>
+          <h2 class="font-display text-2xl">In-Flight Tickets</h2>
           <button
-            class="pill-btn pill-xs border border-moss/30 bg-moss/10 uppercase tracking-[0.18em] text-moss hover:bg-moss/20"
+            class="ml-auto pill-btn pill-xs border border-moss/30 bg-moss/10 uppercase tracking-[0.18em] text-moss hover:bg-moss/20"
             hx-post="{% url 'teatree:dashboard-sync' %}"
             hx-target="#sync-status"
             hx-swap="outerHTML"
             hx-on::after-request="htmx.trigger(document.body, 'refreshPanels')"
+            onclick="event.stopPropagation()"
           >Sync</button>
-        </div>
+        </summary>
         <div
           class="px-5 py-5"
           hx-get="{% url 'teatree:dashboard-panel' 'tickets' %}"
@@ -333,19 +390,14 @@
         >
           {% include "teatree/partials/dashboard_tickets.html" with tickets=snapshot.tickets only %}
         </div>
-      </section>
+      </details>
       <!-- Active Sessions -->
-      <section class="overflow-hidden rounded-[1.5rem] border border-bark/10 bg-cream/90 shadow-soft backdrop-blur">
-        <div class="flex flex-col gap-2 border-b border-bark/10 px-5 py-4 sm:flex-row sm:items-end sm:justify-between">
-          <div>
-            <h2 class="font-display text-2xl">Active Sessions</h2>
-            <p class="font-sans text-sm text-bark/60">Running Claude processes on this machine.</p>
-          </div>
-          <button
-            class="pill-btn pill-xs border border-bark/15 bg-bark/5 text-bark/40 hover:bg-bark/10 hover:text-bark"
-            onclick="var s=document.getElementById('section-activity');s.classList.toggle('hidden');this.classList.toggle('bg-moss/10');this.classList.toggle('text-moss');this.classList.toggle('bg-bark/5');this.classList.toggle('text-bark/40')"
-          >History</button>
-        </div>
+      <details open class="group overflow-hidden rounded-[1.5rem] border border-bark/10 bg-cream/90 shadow-soft backdrop-blur">
+        <summary class="flex cursor-pointer items-center gap-2 border-b border-bark/10 px-5 py-4">
+          <span class="group-open:hidden">&#9654;</span><span class="hidden group-open:inline">&#9660;</span>
+          <h2 class="font-display text-2xl">Active Sessions</h2>
+          <span class="font-sans text-sm text-bark/60">Running Claude processes on this machine.</span>
+        </summary>
         <div
           class="px-5 py-5"
           hx-get="{% url 'teatree:dashboard-panel' 'sessions' %}"
@@ -354,13 +406,14 @@
         >
           {% include "teatree/partials/dashboard_sessions.html" with sessions=snapshot.active_sessions only %}
         </div>
-      </section>
-      <!-- Recent Activity (hidden, toggled by History button) -->
-      <section id="section-activity" class="hidden overflow-hidden rounded-[1.5rem] border border-bark/10 bg-cream/90 shadow-soft backdrop-blur">
-        <div class="border-b border-bark/10 px-5 py-4">
+      </details>
+      <!-- Recent Activity -->
+      <details open class="group overflow-hidden rounded-[1.5rem] border border-bark/10 bg-cream/90 shadow-soft backdrop-blur">
+        <summary class="flex cursor-pointer items-center gap-2 border-b border-bark/10 px-5 py-4">
+          <span class="group-open:hidden">&#9654;</span><span class="hidden group-open:inline">&#9660;</span>
           <h2 class="font-display text-2xl">Recent Activity</h2>
-          <p class="font-sans text-sm text-bark/60">Last completed task attempts.</p>
-        </div>
+          <span class="font-sans text-sm text-bark/60">Last completed task attempts.</span>
+        </summary>
         <div
           class="px-5 py-5"
           hx-get="{% url 'teatree:dashboard-panel' 'activity' %}"
@@ -369,7 +422,7 @@
         >
           {% include "teatree/partials/dashboard_activity.html" with activity=snapshot.recent_activity only %}
         </div>
-      </section>
+      </details>
       <!-- Automated (collapsed by default) -->
       <details class="group">
         <summary class="cursor-pointer list-none rounded-[1rem] border border-bark/10 bg-cream/90 px-5 py-3 font-sans text-sm font-semibold text-bark/50 shadow-soft backdrop-blur hover:text-bark">
@@ -427,5 +480,12 @@
     <div class="relative mx-4 max-h-[85vh] w-full max-w-2xl overflow-y-auto rounded-[1.5rem] border border-bark/10 bg-cream shadow-soft p-6" id="task-modal-body">
     </div>
   </div>
+  <script>
+    // Mark active split-menu options on load (runs after all DOM is ready)
+    document.querySelectorAll('.split-menu [data-key]').forEach(function(b) {
+      var current = localStorage.getItem(b.dataset.key) || (b.dataset.key === 'teatree_terminal_mode' ? 'new-window' : '');
+      b.classList.toggle('active', b.dataset.value === current);
+    });
+  </script>
 </body>
 </html>

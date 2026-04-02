@@ -10,6 +10,9 @@ def execute_headless_task(task_id: int, phase: str) -> dict[str, object]:
     from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
 
     task_obj = Task.objects.get(pk=task_id)
+    # Claim here (when the worker actually starts) instead of at enqueue time
+    if task_obj.status == Task.Status.PENDING:
+        task_obj.claim(claimed_by="headless-worker")
     try:
         from teatree.agents.headless import run_headless  # noqa: PLC0415
 

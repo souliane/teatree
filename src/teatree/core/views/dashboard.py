@@ -5,7 +5,7 @@ from django.template.response import TemplateResponse
 from django.templatetags.static import static
 from django.views import View
 
-from teatree.core.overlay_loader import get_all_overlays, get_overlay
+from teatree.core.overlay_loader import get_all_overlays
 from teatree.core.selectors import (
     build_action_required,
     build_active_sessions,
@@ -44,10 +44,27 @@ def _extract_overlay(request: HttpRequest) -> str | None:
 
 class DashboardView(View):
     def get(self, request: HttpRequest) -> HttpResponse:
+        import json  # noqa: PLC0415
+        import subprocess  # noqa: PLC0415, S404
+
         overlay = _extract_overlay(request)
-        overlays = sorted(get_all_overlays())
-        logo_url = get_overlay().config.get_dashboard_logo() or static("teatree/img/teatree-logo.svg")
+        try:
+            run = lambda cmd: subprocess.check_output(cmd, text=True, timeout=2).strip()  # noqa: E731, S603
+            git_sha = run(["git", "rev-parse", "--short", "HEAD"])
+            git_branch = run(["git", "rev-parse", "--abbrev-ref", "HEAD"])
+        except Exception:  # noqa: BLE001
+            git_sha, git_branch = "", ""
+        all_overlays = get_all_overlays()
+        overlay_paths = {name: type(ov).__module__ for name, ov in all_overlays.items()}
+        overlays = sorted(all_overlays)
+        teatree_logo = static("teatree/img/teatree-logo.svg")
+        overlay_logos = {name: ov.config.get_dashboard_logo() or teatree_logo for name, ov in all_overlays.items()}
+        if overlay and overlay in all_overlays:
+            logo_url = all_overlays[overlay].config.get_dashboard_logo() or teatree_logo
+        else:
+            logo_url = teatree_logo
         from teatree.agents.services import get_terminal_mode  # noqa: PLC0415
+        from teatree.agents.terminal_launcher import detect_available_apps  # noqa: PLC0415
 
         return TemplateResponse(
             request,
@@ -59,6 +76,12 @@ class DashboardView(View):
                 "selected_overlay": overlay or "",
                 "terminal_mode": get_terminal_mode(),
                 "sync_pending": True,
+                "overlay_logos_json": json.dumps(overlay_logos),
+                "default_logo": teatree_logo,
+                "git_sha": git_sha,
+                "git_branch": git_branch,
+                "overlay_paths": overlay_paths,
+                "terminal_apps": detect_available_apps(),
             },
         )
 

@@ -427,27 +427,36 @@ def build_dashboard_ticket_rows(overlay: str | None = None) -> list[DashboardTic
         )
         .order_by("pk")
     )
-    rows = [
-        DashboardTicketRow(
-            ticket_id=ticket.pk,
-            display_id=_display_id(ticket),
-            issue_url=ticket.issue_url,
-            has_issue="issues/" in ticket.issue_url or "work_items/" in ticket.issue_url,
-            issue_title=_extra_str(ticket, "issue_title") or _first_mr_title(ticket),
-            state=ticket.get_state_display(),
-            tracker_status=_tracker_status_label(ticket),
-            notion_status=_extra_str(ticket, "notion_status"),
-            notion_url=_extra_str(ticket, "notion_url"),
-            variant=ticket.variant,
-            variant_url=_variant_url(ticket.variant),
-            repos=list(ticket.repos),
-            ongoing_tasks=ticket.ongoing_tasks,
-            total_tasks=ticket.total_tasks,
-            mrs=_build_mr_rows(ticket),
-            transitions=available_ticket_transitions(ticket),
+    rows = []
+    for ticket in tickets:
+        mrs = _build_mr_rows(ticket)
+        title = _extra_str(ticket, "issue_title") or _first_mr_title(ticket)
+        has_issue = "issues/" in ticket.issue_url or "work_items/" in ticket.issue_url
+        display_id = _display_id(ticket)
+        # Skip tickets with nothing visible in the row: no issue link to display,
+        # no title, and no MR data.
+        if not has_issue and not mrs and not title:
+            continue
+        rows.append(
+            DashboardTicketRow(
+                ticket_id=ticket.pk,
+                display_id=display_id,
+                issue_url=ticket.issue_url,
+                has_issue=has_issue,
+                issue_title=title,
+                state=ticket.get_state_display(),
+                tracker_status=_tracker_status_label(ticket),
+                notion_status=_extra_str(ticket, "notion_status"),
+                notion_url=_extra_str(ticket, "notion_url"),
+                variant=ticket.variant,
+                variant_url=_variant_url(ticket.variant),
+                repos=list(ticket.repos),
+                ongoing_tasks=ticket.ongoing_tasks,
+                total_tasks=ticket.total_tasks,
+                mrs=mrs,
+                transitions=available_ticket_transitions(ticket),
+            ),
         )
-        for ticket in tickets
-    ]
     return _sort_ticket_rows(rows)
 
 
@@ -689,14 +698,25 @@ def build_active_sessions() -> list[ActiveSessionRow]:
     if not _CLAUDE_SESSIONS_DIR.is_dir():
         return []
 
-    claimed_tasks = {t.pk: t for t in Task.objects.filter(status=Task.Status.CLAIMED).select_related("ticket")}
+    active_statuses = (Task.Status.PENDING, Task.Status.CLAIMED)
+    active_tasks = {t.pk: t for t in Task.objects.filter(status__in=active_statuses).select_related("ticket")}
 
     # Match tasks to sessions by agent_session_id
     session_to_task: dict[str, Task] = {}
-    for task in claimed_tasks.values():
+    for task in active_tasks.values():
         last_attempt = task.attempts.order_by("-pk").first()
         if last_attempt and last_attempt.agent_session_id:
             session_to_task[last_attempt.agent_session_id] = task
+
+    # Collect session IDs for finished tasks so we can exclude them
+    finished_statuses = (Task.Status.COMPLETED, Task.Status.FAILED)
+    finished_session_ids: set[str] = set(
+        TaskAttempt.objects.filter(
+            task__status__in=finished_statuses,
+        )
+        .exclude(agent_session_id="")
+        .values_list("agent_session_id", flat=True)
+    )
 
     sessions: list[ActiveSessionRow] = []
     for session_file in _CLAUDE_SESSIONS_DIR.glob("*.json"):
@@ -716,29 +736,22 @@ def build_active_sessions() -> list[ActiveSessionRow]:
             continue
 
         session_id = str(data.get("sessionId", ""))
-        started_at = data.get("startedAt", 0)
-        cwd = str(data.get("cwd", ""))
-        name = str(data.get("name", ""))
-
-        # Match to a task via session ID
+        if session_id and session_id in finished_session_ids:
+            continue
         task = session_to_task.get(session_id)
-        task_id = task.pk if task else None
-        ticket_id = task.ticket.pk if task else None
-        phase = task.phase if task else ""
-        kind = "headless" if task and task.execution_target == Task.ExecutionTarget.HEADLESS else "interactive"
 
         sessions.append(
             ActiveSessionRow(
                 pid=pid,
-                uptime=_uptime_from_epoch_ms(started_at) if started_at else "",
-                kind=kind,
-                task_id=task_id,
-                ticket_id=ticket_id,
-                phase=phase,
+                uptime=_uptime_from_epoch_ms(data.get("startedAt", 0)) if data.get("startedAt") else "",
+                kind="headless" if task and task.execution_target == Task.ExecutionTarget.HEADLESS else "interactive",
+                task_id=task.pk if task else None,
+                ticket_id=task.ticket.pk if task else None,
+                phase=task.phase if task else "",
                 launch_url="",
                 session_id=session_id,
-                cwd=cwd,
-                name=name,
+                cwd=str(data.get("cwd", "")),
+                name=str(data.get("name", "")),
             ),
         )
 

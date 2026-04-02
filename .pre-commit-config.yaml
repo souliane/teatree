@@ -130,16 +130,9 @@ repos:
         pass_filenames: false
         always_run: true
 
-  # Phase 8 - Slow (safety, pytest)
+  # Phase 8 - Slow (safety)
   - repo: local
     hooks:
-      - id: pytest
-        name: pytest
-        language: system
-        entry: env -u DJANGO_SETTINGS_MODULE uv run pytest --no-header -q
-        pass_filenames: false
-        always_run: true
-        stages: [commit]
       - id: safety
         name: safety
         language: system

@@ -237,4 +237,4 @@ class TestFollowupCommands(TestCase):
         errors = result["errors"]
         assert isinstance(errors, list)
         assert len(errors) == 1
-        assert "No code host token configured" in errors[0]
+        assert "No code host token for" in errors[0]

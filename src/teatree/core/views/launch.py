@@ -69,8 +69,9 @@ class LaunchTerminalView(View):
         from teatree.agents.terminal_launcher import launch as terminal_launch  # noqa: PLC0415
 
         mode = request.POST.get("terminal_mode") or get_terminal_mode()
+        app = request.POST.get("terminal_app", "")
         shell = os.environ.get("SHELL", "/bin/zsh")
-        result = terminal_launch([shell, "-l"], mode=mode)
+        result = terminal_launch([shell, "-l"], mode=mode, app=app)
 
         if result.launch_url:
             return JsonResponse({"launch_url": result.launch_url})
@@ -102,7 +103,8 @@ class LaunchInteractiveAgentView(View):
             return JsonResponse({"error": "claude CLI not found on PATH"}, status=500)
 
         mode = request.POST.get("terminal_mode") or get_terminal_mode()
-        result = terminal_launch([claude_bin], mode=mode)
+        app = request.POST.get("terminal_app", "")
+        result = terminal_launch([claude_bin], mode=mode, app=app)
 
         if result.launch_url:
             return JsonResponse({"launch_url": result.launch_url})

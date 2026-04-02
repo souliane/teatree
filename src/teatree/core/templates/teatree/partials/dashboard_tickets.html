@@ -144,9 +144,9 @@
                     <button
                       class="pill-btn pill-xs border border-bark/20 bg-bark/5 text-bark/60 hover:bg-bark/10"
                       hx-get="/tickets/{{ ticket.ticket_id }}/task-graph/"
-                      hx-target="#task-modal-body"
+                      hx-target="#task-graph-{{ ticket.ticket_id }} td"
                       hx-swap="innerHTML"
-                      onclick="openTaskModal()"
+                      onclick="var t=document.getElementById('task-graph-{{ ticket.ticket_id }}');if(!t.classList.contains('hidden')&&t.querySelector('td').innerHTML.trim()){t.classList.add('hidden');t.querySelector('td').innerHTML='';return false}else{t.classList.remove('hidden')}"
                       title="View task graph"
                     >Graph</button>
                   {% endif %}
@@ -259,6 +259,10 @@
             </td>
           </tr>
         {% endfor %}
+        <!-- Inline task graph container (toggled by Graph button) -->
+        <tr id="task-graph-{{ ticket.ticket_id }}" class="hidden">
+          <td colspan="9" class="border-b border-bark/10 bg-parchment/50 px-5 py-3"></td>
+        </tr>
         {% endwith %}
       {% endfor %}
     </tbody>

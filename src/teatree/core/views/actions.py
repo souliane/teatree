@@ -5,7 +5,7 @@ from django.views import View
 from django.views.decorators.csrf import csrf_exempt
 from django_fsm import TransitionNotAllowed
 
-from teatree.core.models import InvalidTransitionError, Session, Task, Ticket
+from teatree.core.models import Session, Task, Ticket
 from teatree.core.views._startup import perform_sync
 
 
@@ -111,10 +111,7 @@ class CreateTaskView(View):
             from teatree.core.tasks import execute_headless_task  # noqa: PLC0415
 
             try:
-                task.claim(claimed_by="auto-launch")
                 execute_headless_task.enqueue(int(task.pk), phase)
-            except InvalidTransitionError as exc:
-                return JsonResponse({"error": str(exc)}, status=409)
             except Exception as exc:  # noqa: BLE001
                 task.complete_with_attempt(exit_code=1, error=str(exc))
                 return JsonResponse({"error": str(exc)}, status=500)
