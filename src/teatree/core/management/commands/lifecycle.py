@@ -149,6 +149,7 @@ def _docker_compose_up(
         compose_file,
         "up",
         "-d",
+        "--no-build",
     ]
     result = subprocess.run(cmd, env=env, capture_output=True, text=True, check=False)  # noqa: S603
     if result.returncode != 0:
