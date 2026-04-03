@@ -1,4 +1,5 @@
 import os
+import socket
 import subprocess  # noqa: S404
 import urllib.request
 from pathlib import Path
@@ -12,6 +13,47 @@ from teatree.core.overlay import RunCommand, RunCommands
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.resolve import resolve_worktree
 from teatree.utils.ports import find_free_ports, get_service_port, get_worktree_ports
+
+
+def _compose_has_service(compose_file: str, service: str) -> bool:
+    """Check if a service is defined in docker-compose (uses ``docker compose config``)."""
+    result = subprocess.run(  # noqa: S603
+        ["docker", "compose", "-f", compose_file, "config", "--services"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return service in result.stdout.splitlines()
+
+
+def _detect_local_port(port: int) -> int | None:
+    """Return *port* if something is listening on localhost, else None."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(0.3)
+        if s.connect_ex(("127.0.0.1", port)) == 0:
+            return port
+    return None
+
+
+def _resolve_private_tests_path() -> Path | None:
+    """Resolve the private tests directory from env or config."""
+    from teatree.config import load_config  # noqa: PLC0415
+
+    private_tests = os.environ.get("T3_PRIVATE_TESTS", "")
+    if not private_tests:
+        private_tests = load_config().raw.get("teatree", {}).get("private_tests", "")
+    if not private_tests:
+        return None
+    path = Path(private_tests).expanduser()
+    return path if path.is_dir() else None
+
+
+def _discover_frontend_port(project: str, default: int = 4200) -> int | None:
+    """Try docker-compose service, then fall back to local port check."""
+    port = get_service_port(project, "frontend", default)
+    if port is not None:
+        return port
+    return _detect_local_port(default)
 
 
 class Command(TyperCommand):
@@ -94,24 +136,37 @@ class Command(TyperCommand):
 
     @command()
     def frontend(self, path: str = typer.Option("", help="Worktree path (auto-detects from PWD if empty).")) -> str:
-        """Start the frontend via docker-compose."""
+        """Start the frontend (docker-compose if available, otherwise local)."""
         worktree = resolve_worktree(path)
-        project = _compose_project(worktree)
         overlay = get_overlay()
+
+        # Check if "frontend" service exists in docker-compose.
         compose_file = overlay.get_compose_file(worktree)
-        if not compose_file:
-            return "No docker-compose file found."
+        if compose_file and _compose_has_service(compose_file, "frontend"):
+            from teatree.config import load_config  # noqa: PLC0415
+            from teatree.core.management.commands.lifecycle import _compose_env  # noqa: PLC0415
 
-        from teatree.config import load_config  # noqa: PLC0415
-        from teatree.core.management.commands.lifecycle import _compose_env  # noqa: PLC0415
+            ports = find_free_ports(str(load_config().user.workspace_dir))
+            env = {**os.environ, **overlay.get_env_extra(worktree), **_compose_env(ports)}
+            env.pop("VIRTUAL_ENV", None)
 
-        ports = find_free_ports(str(load_config().user.workspace_dir))
-        env = {**os.environ, **overlay.get_env_extra(worktree), **_compose_env(ports)}
-        env.pop("VIRTUAL_ENV", None)
+            project = _compose_project(worktree)
+            cmd = ["docker", "compose", "-p", project, "-f", compose_file, "up", "-d", "frontend"]
+            subprocess.run(cmd, env=env, check=False)  # noqa: S603
+            return "Frontend started via docker-compose."
 
-        cmd = ["docker", "compose", "-p", project, "-f", compose_file, "up", "-d", "frontend"]
-        subprocess.run(cmd, env=env, check=False)  # noqa: S603
-        return "Frontend started via docker-compose."
+        # Fall back to overlay's local run command.
+        commands = overlay.get_run_commands(worktree)
+        run_cmd = commands.get("frontend")
+        if not run_cmd:
+            return "No frontend command configured in overlay or docker-compose."
+        args = run_cmd.args if isinstance(run_cmd, RunCommand) else list(run_cmd)
+        cwd = run_cmd.cwd if isinstance(run_cmd, RunCommand) else None
+        self.stdout.write(f"  Starting frontend locally: {' '.join(args)}")
+        if cwd:
+            self.stdout.write(f"  cwd: {cwd}")
+        subprocess.Popen(args, cwd=cwd, env={**os.environ, **overlay.get_env_extra(worktree)})  # noqa: S603
+        return "Frontend started locally (background process)."
 
     @command(name="build-frontend")
     def build_frontend(
@@ -199,28 +254,22 @@ class Command(TyperCommand):
     def e2e_private(self, test_path: str = "", *, headed: bool = False) -> str:
         """Run private Playwright tests from T3_PRIVATE_TESTS repo.
 
-        Discovers the frontend port from docker-compose and reads the
-        tenant variant from .env.worktree.
+        Discovers the frontend port from docker-compose (or local process)
+        and reads the tenant variant from .env.worktree.
         """
-        from teatree.config import load_config  # noqa: PLC0415
+        private_tests_path = _resolve_private_tests_path()
+        if not private_tests_path:
+            return "private_tests not configured in ~/.teatree.toml / T3_PRIVATE_TESTS, or directory missing."
 
-        private_tests = os.environ.get("T3_PRIVATE_TESTS", "")
-        if not private_tests:
-            private_tests = load_config().raw.get("teatree", {}).get("private_tests", "")
-        if not private_tests:
-            return "private_tests not configured in ~/.teatree.toml and T3_PRIVATE_TESTS not set."
-        private_tests_path = Path(private_tests).expanduser()
-        if not private_tests_path.is_dir():
-            return f"Private tests directory does not exist: {private_tests_path}"
-
-        # Discover frontend port from docker-compose (single source of truth)
         worktree = resolve_worktree()
         project = _compose_project(worktree)
-        frontend_port = get_service_port(project, "frontend", 4200)
+        frontend_port = _discover_frontend_port(project)
         if frontend_port is None:
-            return f"Frontend service not running in compose project '{project}'. Run `t3 lifecycle start` first."
+            return (
+                f"Frontend not running (no docker service in '{project}', no local process on 4200). "
+                "Run `t3 run frontend` first."
+            )
 
-        # Read variant from .env.worktree
         from teatree.core.resolve import _find_env_worktree, _get_user_cwd, _parse_env_file  # noqa: PLC0415
 
         variant = ""

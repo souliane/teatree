@@ -276,6 +276,7 @@ class TestE2ePrivateCommand(TestCase):
                     },
                 ),
                 patch.object(run_mod, "get_service_port", return_value=None),
+                patch.object(run_mod, "_detect_local_port", return_value=None),
             ):
                 result = cast("str", call_command("run", "e2e-private"))
 
