@@ -430,10 +430,18 @@ When `T3_PRIVACY` is not set, default to `strict`.
 
 ### 7. Clean Personal Config
 
-During every retro, scan the agent's personal config and memory files:
+During every retro, scan the agent's personal config and memory files.
+
+**Discovery:** Memory files are platform-specific. Discover them dynamically:
+
+- **Claude Code:** glob `~/.claude/projects/*/memory/MEMORY.md` — each match is an index file; read it to find individual memory files in the same directory.
+- **Repo-level:** check for `CLAUDE.md`, `.cursorrules`, `AGENTS.md`, or similar agent config in the project root.
+- If no memory files are found, skip this step and note it in the retro output.
+
+**Actions:**
 
 1. **Promote to skills:** Any guardrail, pattern, or "do this not that" entry that would help other users → move to the appropriate skill file. Leave a one-line safety-net reminder if the rule is critical enough to need early loading.
-2. **Scan for promotable entries:** Read the agent's personal config and memory files (for example the repo-level instructions file plus user-level agent memory/config files) for entries marked `(Also in: ...)` or containing domain knowledge that belongs in a skill file. Propose promoting them — the `(Also in: ...)` marker indicates the entry was intentionally duplicated as a safety net, but the authoritative source should be verified and kept current.
+2. **Scan for promotable entries:** Read the discovered memory/config files for entries marked `(Also in: ...)` or containing domain knowledge that belongs in a skill file. Propose promoting them — the `(Also in: ...)` marker indicates the entry was intentionally duplicated as a safety net, but the authoritative source should be verified and kept current.
 3. **Remove stale entries:** If a memory entry references old paths, deleted features, or outdated patterns — update or remove it.
 4. **Deduplicate:** If the same rule appears in both a skill AND memory/config, verify the skill version is current, then trim the config copy to a one-line reference.
 
