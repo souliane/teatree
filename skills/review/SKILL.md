@@ -51,6 +51,7 @@ Cleanup checklist:
 
 - [ ] No code duplication introduced
 - [ ] No dead code left behind
+- [ ] **Routing reachability:** every modified component is reachable via the target flow's route tree. Read the relevant `routes.ts` and confirm the component (or its parent shell) appears there. If the component lives in a flow-specific folder (e.g., `natural-person-calculation/`), verify the target flow actually routes through it.
 - [ ] Naming follows project conventions
 - [ ] Patterns match existing codebase
 - [ ] No debug/temporary code remaining
