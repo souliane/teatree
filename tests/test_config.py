@@ -1,6 +1,8 @@
 """Tests for overlay discovery from ~/.teatree.toml and entry points."""
 
 import importlib.util
+import json
+import subprocess
 import types
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -8,11 +10,15 @@ from unittest.mock import MagicMock, patch
 from teatree.config import (
     _extract_settings_module,
     _resolve_ep_project_path,
+    _write_update_cache,
+    check_for_updates,
     default_logging,
     discover_active_overlay,
     discover_overlays,
     get_data_dir,
     load_config,
+    workspace_dir,
+    worktrees_dir,
 )
 
 
@@ -368,3 +374,202 @@ def test_discover_overlays_entry_point_with_project_path(tmp_path):
         result = discover_overlays(config_path=config_path)
         assert len(result) == 1
         assert result[0].project_path == project_root
+
+
+# ── workspace_dir / worktrees_dir ────────────────────────────────────
+
+
+class TestWorkspaceDir:
+    def test_returns_path_from_django_settings(self, tmp_path, settings):
+        custom = tmp_path / "custom-ws"
+        settings.T3_WORKSPACE_DIR = str(custom)
+        result = workspace_dir()
+        assert result == custom
+
+    def test_falls_back_to_config_file(self, tmp_path):
+        from teatree.config import TeaTreeConfig, UserSettings  # noqa: PLC0415
+
+        fake_config = TeaTreeConfig(user=UserSettings(workspace_dir=Path("/from/config")))
+        with patch("teatree.config.load_config", return_value=fake_config):
+            result = workspace_dir()
+        assert result == Path("/from/config")
+
+
+class TestWorktreesDir:
+    def test_returns_path_from_django_settings(self, tmp_path, settings):
+        custom = tmp_path / "custom-wt"
+        settings.T3_WORKTREES_DIR = str(custom)
+        result = worktrees_dir()
+        assert result == custom
+
+    def test_falls_back_to_config_file(self, tmp_path):
+        from teatree.config import TeaTreeConfig, UserSettings  # noqa: PLC0415
+
+        fake_config = TeaTreeConfig(user=UserSettings(worktrees_dir=Path("/from/config/wt")))
+        with patch("teatree.config.load_config", return_value=fake_config):
+            result = worktrees_dir()
+        assert result == Path("/from/config/wt")
+
+
+# ── check_for_updates ────────────────────────────────────────────────
+
+
+class TestCheckForUpdates:
+    def _fake_config(self, *, check_updates: bool = True):
+        from teatree.config import TeaTreeConfig, UserSettings  # noqa: PLC0415
+
+        return TeaTreeConfig(user=UserSettings(check_updates=check_updates))
+
+    def test_returns_none_when_updates_disabled(self):
+        """Line 144: early return None when check_updates=false and force=False."""
+        with patch("teatree.config.load_config", return_value=self._fake_config(check_updates=False)):
+            assert check_for_updates(force=False) is None
+
+    def test_cached_result_returned_when_fresh(self, tmp_path, monkeypatch):
+        """Lines 153-156: return cached message when within TTL."""
+        import time  # noqa: PLC0415
+
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        cache_path = data_dir / "update-check.json"
+        cache_path.write_text(
+            json.dumps({"ts": time.time(), "message": "teatree v9.9 available"}),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr("teatree.config.DATA_DIR", data_dir)
+
+        with patch("teatree.config.load_config", return_value=self._fake_config()):
+            result = check_for_updates(force=False)
+        assert result == "teatree v9.9 available"
+
+    def test_cached_empty_message_returns_none(self, tmp_path, monkeypatch):
+        """Lines 153-154: cached empty message means up-to-date => None."""
+        import time  # noqa: PLC0415
+
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        cache_path = data_dir / "update-check.json"
+        cache_path.write_text(
+            json.dumps({"ts": time.time(), "message": ""}),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr("teatree.config.DATA_DIR", data_dir)
+
+        with patch("teatree.config.load_config", return_value=self._fake_config()):
+            assert check_for_updates(force=False) is None
+
+    def test_cached_corrupt_json_falls_through(self, tmp_path, monkeypatch):
+        """Lines 155-156: corrupt cache JSON is silently ignored, proceeds to network check."""
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        cache_path = data_dir / "update-check.json"
+        cache_path.write_text("NOT VALID JSON {{{", encoding="utf-8")
+        monkeypatch.setattr("teatree.config.DATA_DIR", data_dir)
+
+        mock_result = MagicMock(stdout="v1.0.0\n")
+        with (
+            patch("teatree.config.load_config", return_value=self._fake_config()),
+            patch("subprocess.run", return_value=mock_result),
+            patch("importlib.metadata.version", return_value="1.0.0"),
+        ):
+            # Falls through corrupt cache, hits network, finds same version
+            assert check_for_updates(force=False) is None
+
+    def test_empty_tag_returns_none(self, tmp_path, monkeypatch):
+        """Line 175: when gh returns empty tag, returns None."""
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        monkeypatch.setattr("teatree.config.DATA_DIR", data_dir)
+
+        mock_result = MagicMock(stdout="\n")
+        with (
+            patch("teatree.config.load_config", return_value=self._fake_config()),
+            patch("subprocess.run", return_value=mock_result),
+            patch("importlib.metadata.version", return_value="1.0.0"),
+        ):
+            assert check_for_updates(force=True) is None
+
+    def test_subprocess_timeout_returns_none(self, tmp_path, monkeypatch):
+        """Lines 171-172: TimeoutExpired from gh CLI returns None."""
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        monkeypatch.setattr("teatree.config.DATA_DIR", data_dir)
+
+        with (
+            patch("teatree.config.load_config", return_value=self._fake_config()),
+            patch("subprocess.run", side_effect=subprocess.TimeoutExpired("gh", 10)),
+        ):
+            assert check_for_updates(force=True) is None
+
+    def test_file_not_found_returns_none(self, tmp_path, monkeypatch):
+        """Lines 171-172: FileNotFoundError (gh not installed) returns None."""
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        monkeypatch.setattr("teatree.config.DATA_DIR", data_dir)
+
+        with (
+            patch("teatree.config.load_config", return_value=self._fake_config()),
+            patch("subprocess.run", side_effect=FileNotFoundError),
+        ):
+            assert check_for_updates(force=True) is None
+
+    def test_newer_version_returns_upgrade_message(self, tmp_path, monkeypatch):
+        """Lines 177-184: when latest != current, returns upgrade message."""
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        monkeypatch.setattr("teatree.config.DATA_DIR", data_dir)
+
+        mock_result = MagicMock(stdout="v2.0.0\n")
+        with (
+            patch("teatree.config.load_config", return_value=self._fake_config()),
+            patch("subprocess.run", return_value=mock_result),
+            patch("importlib.metadata.version", return_value="1.0.0"),
+        ):
+            result = check_for_updates(force=True)
+
+        assert result is not None
+        assert "v2.0.0" in result
+        assert "1.0.0" in result
+        assert "uv pip install --upgrade teatree" in result
+
+        # Verify cache was written
+        cache_path = data_dir / "update-check.json"
+        assert cache_path.is_file()
+        cached = json.loads(cache_path.read_text(encoding="utf-8"))
+        assert "v2.0.0" in cached["message"]
+
+    def test_same_version_returns_none_and_caches(self, tmp_path, monkeypatch):
+        """Lines 178-180: when latest == current, returns None and caches empty."""
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        monkeypatch.setattr("teatree.config.DATA_DIR", data_dir)
+
+        mock_result = MagicMock(stdout="v1.0.0\n")
+        with (
+            patch("teatree.config.load_config", return_value=self._fake_config()),
+            patch("subprocess.run", return_value=mock_result),
+            patch("importlib.metadata.version", return_value="1.0.0"),
+        ):
+            result = check_for_updates(force=True)
+
+        assert result is None
+        cache_path = data_dir / "update-check.json"
+        assert cache_path.is_file()
+        cached = json.loads(cache_path.read_text(encoding="utf-8"))
+        assert cached["message"] == ""
+
+
+# ── _write_update_cache ──────────────────────────────────────────────
+
+
+class TestWriteUpdateCache:
+    def test_creates_parent_dirs_and_writes_json(self, tmp_path):
+        """Lines 189-193: creates parent dirs and writes valid JSON cache."""
+        cache_path = tmp_path / "nested" / "dir" / "update-check.json"
+        _write_update_cache(cache_path, "test message")
+
+        assert cache_path.is_file()
+        data = json.loads(cache_path.read_text(encoding="utf-8"))
+        assert data["message"] == "test message"
+        assert "ts" in data
+        assert isinstance(data["ts"], float)

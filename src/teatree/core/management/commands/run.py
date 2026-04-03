@@ -8,7 +8,7 @@ import typer
 from django_typer.management import TyperCommand, command
 
 from teatree.core.management.commands.lifecycle import _compose_project
-from teatree.core.overlay import RunCommands
+from teatree.core.overlay import RunCommand, RunCommands
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.resolve import resolve_worktree
 from teatree.utils.ports import find_free_ports, get_service_port, get_worktree_ports
@@ -51,9 +51,7 @@ class Command(TyperCommand):
 
         if all_ok and endpoints:
             urls = {
-                name: f"http://localhost:{port}"
-                for name, port in ports.items()
-                if name not in {"postgres", "redis"}
+                name: f"http://localhost:{port}" for name, port in ports.items() if name not in {"postgres", "redis"}
             }
             worktree.verify(urls=urls)
             worktree.save()
@@ -126,7 +124,8 @@ class Command(TyperCommand):
         cmd = commands.get("build-frontend", [])
         if not cmd:
             return "No build-frontend command configured in the overlay."
-        subprocess.run(cmd.args if hasattr(cmd, "args") else cmd, check=True)  # noqa: S603
+        run_args = cmd.args if isinstance(cmd, RunCommand) else list(cmd)
+        subprocess.run(run_args, check=True)  # noqa: S603
         return "Frontend built."
 
     @command()
@@ -219,7 +218,7 @@ class Command(TyperCommand):
         project = _compose_project(worktree)
         frontend_port = get_service_port(project, "frontend", 4200)
         if frontend_port is None:
-            return f"Frontend service not running in compose project '{project}'. Run `t3 oper lifecycle start` first."
+            return f"Frontend service not running in compose project '{project}'. Run `t3 lifecycle start` first."
 
         # Read variant from .env.worktree
         from teatree.core.resolve import _find_env_worktree, _get_user_cwd, _parse_env_file  # noqa: PLC0415
