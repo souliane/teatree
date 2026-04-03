@@ -400,6 +400,59 @@ def cache() -> None:
     typer.echo(_json.dumps(data, indent=2))
 
 
+@config_app.command()
+def deps(skill: str) -> None:
+    """Show resolved dependency chain for a skill."""
+    import json as _json  # noqa: PLC0415
+
+    from teatree.config import DATA_DIR  # noqa: PLC0415
+    from teatree.skill_deps import resolve_all  # noqa: PLC0415
+
+    cache_path = DATA_DIR / "skill-metadata.json"
+    if not cache_path.is_file():
+        typer.echo(f"No cache found at {cache_path}")
+        typer.echo("Run: uv run t3 config write-skill-cache")
+        raise typer.Exit(code=1)
+
+    data = _json.loads(cache_path.read_text(encoding="utf-8"))
+    trigger_index = data.get("trigger_index", [])
+
+    # Use pre-computed resolved_requires if available, otherwise compute.
+    precomputed = data.get("resolved_requires", {})
+    if precomputed and skill in precomputed:
+        chain = precomputed[skill]
+    else:
+        resolved = resolve_all(trigger_index)
+        chain = resolved.get(skill, [skill])
+
+    typer.echo(" → ".join(chain))
+
+
+@config_app.command(name="test-trigger")
+def test_trigger(prompt: str) -> None:
+    """Test which skill would be triggered for a given prompt."""
+    import json as _json  # noqa: PLC0415
+    import sys as _sys  # noqa: PLC0415
+
+    from teatree.config import DATA_DIR  # noqa: PLC0415
+
+    # Import from scripts/lib (same pattern as _startup.py).
+    scripts_lib = Path(__file__).resolve().parents[3] / "scripts" / "lib"
+    if str(scripts_lib) not in _sys.path:
+        _sys.path.insert(0, str(scripts_lib))
+
+    from skill_loader import detect_intent_detailed  # noqa: PLC0415  # ty: ignore[unresolved-import]
+
+    cache_path = DATA_DIR / "skill-metadata.json"
+    trigger_index: list[dict] | None = None
+    if cache_path.is_file():
+        data = _json.loads(cache_path.read_text(encoding="utf-8"))
+        trigger_index = data.get("trigger_index", [])
+
+    match = detect_intent_detailed(prompt, trigger_index=trigger_index)
+    typer.echo(str(match))
+
+
 def _find_overlay_project() -> Path:
     """Find the active overlay project root."""
     from teatree.config import discover_active_overlay  # noqa: PLC0415

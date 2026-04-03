@@ -104,6 +104,44 @@ class TestParseTriggers:
         assert result["search_hints"] == []
 
 
+class TestParseRequires:
+    def test_requires_standalone(self):
+        md = "---\nname: t3-review\nrequires:\n  - workspace\n  - platforms\n  - code\n---\n"
+        result = parse_triggers(md)
+        assert result is not None
+        assert result["requires"] == ["workspace", "platforms", "code"]
+
+    def test_no_requires_returns_empty_list(self):
+        md = "---\nname: test\ntriggers:\n  keywords:\n    - '\\btest\\b'\n---\n"
+        result = parse_triggers(md)
+        assert result is not None
+        assert result["requires"] == []
+
+    def test_requires_with_triggers(self):
+        md = (
+            "---\nname: t3-ship\ntriggers:\n  priority: 10\n  keywords:\n"
+            "    - '\\bcommit\\b'\nrequires:\n  - workspace\n  - rules\n---\n"
+        )
+        result = parse_triggers(md)
+        assert result is not None
+        assert result["keywords"] == [r"\bcommit\b"]
+        assert result["requires"] == ["workspace", "rules"]
+        assert result["priority"] == 10
+
+    def test_requires_before_triggers(self):
+        md = "---\nname: test\nrequires:\n  - rules\ntriggers:\n  keywords:\n    - '\\bdebug\\b'\n---\n"
+        result = parse_triggers(md)
+        assert result is not None
+        assert result["requires"] == ["rules"]
+        assert result["keywords"] == [r"\bdebug\b"]
+
+    def test_requires_only_marks_found(self):
+        md = "---\nname: test\nrequires:\n  - workspace\n---\n"
+        result = parse_triggers(md)
+        assert result is not None
+        assert result["requires"] == ["workspace"]
+
+
 class TestParseTriggerLine:
     def test_priority(self):
         triggers: dict = {"priority": 50, "keywords": [], "urls": [], "exclude": "", "end_of_session": False}

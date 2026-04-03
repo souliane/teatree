@@ -476,6 +476,19 @@ class TestDoctorCommands:
             assert result.exit_code == 0  # typer returns 0; check() returns bool
             assert "FAIL  Required tool not found: direnv" in result.output
 
+    def test_check_validates_skills(self, tmp_path, monkeypatch):
+        """Doctor check validates SKILL.md files in skills directory."""
+        claude_skills = tmp_path / ".claude" / "skills"
+        ok = claude_skills / "ok-skill"
+        ok.mkdir(parents=True)
+        (ok / "SKILL.md").write_text("---\nname: ok-skill\ndescription: d\n---\n")
+
+        monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: tmp_path))
+        with patch.object(DoctorService, "check_editable_sanity", return_value=[]):
+            result = runner.invoke(app, ["doctor", "check"])
+            assert result.exit_code == 0
+            assert "1 skill(s) validated" in result.output
+
     def test_check_import_failure(self):
         """Doctor check returns False on import failure."""
         import builtins  # noqa: PLC0415

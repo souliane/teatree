@@ -8,6 +8,7 @@ import teatree
 from teatree.config import DATA_DIR
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.sync import SyncResult, sync_followup
+from teatree.skill_deps import resolve_all
 
 # Allow importing the shared trigger parser from scripts/lib/.
 _SCRIPTS_LIB = Path(__file__).resolve().parents[4] / "scripts" / "lib"
@@ -43,7 +44,10 @@ def _write_skill_metadata_cache() -> None:
     and the trigger index without needing Django at hook time.
     """
     metadata = get_overlay().metadata.get_skill_metadata()
-    metadata["trigger_index"] = _build_trigger_index()
+    trigger_index = _build_trigger_index()
+    metadata["trigger_index"] = trigger_index
+    metadata["resolved_requires"] = resolve_all(trigger_index)
+    metadata["skill_mtimes"] = _collect_skill_mtimes()
     metadata["teatree_version"] = teatree.__version__
     cache_path = DATA_DIR / "skill-metadata.json"
     cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -81,8 +85,26 @@ def _build_trigger_index() -> list[dict]:
 
     import operator  # noqa: PLC0415
 
-    index.sort(key=operator.itemgetter("priority"))
+    index.sort(key=operator.itemgetter("priority", "skill"))
     return index
+
+
+def _collect_skill_mtimes() -> dict[str, int]:
+    """Collect mtime_ns for each SKILL.md file in the skills directory."""
+    mtimes: dict[str, int] = {}
+    if not _CLAUDE_SKILLS_DIR.is_dir():
+        return mtimes
+    for skill_dir in _CLAUDE_SKILLS_DIR.iterdir():
+        resolved = skill_dir.resolve() if skill_dir.is_symlink() else skill_dir
+        if not resolved.is_dir():
+            continue
+        skill_md = resolved / "SKILL.md"
+        if skill_md.is_file():
+            try:
+                mtimes[skill_dir.name] = skill_md.stat().st_mtime_ns
+            except OSError:
+                continue
+    return mtimes
 
 
 # _parse_triggers is imported from scripts/lib/trigger_parser.py (single source of truth).
