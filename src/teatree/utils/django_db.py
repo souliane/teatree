@@ -36,7 +36,7 @@ class DjangoDbImportConfig:
 @dataclass(frozen=True)
 class _RestoreContext:
     cfg: DjangoDbImportConfig
-    dslr_cmd: str
+    dslr_cmd: list[str]
     dslr_env: dict[str, str]
     pg_host: str
     pg_user: str
@@ -124,16 +124,24 @@ def _copy_ref_to_ticket(ctx: _RestoreContext) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def _find_dslr_cmd(tool_name: str) -> str:
+def _find_dslr_cmd(tool_name: str) -> list[str]:
+    """Return a command prefix for invoking dslr (e.g. ``["dslr"]`` or ``["uv", "run", "dslr"]``)."""
     dslr = os.environ.get("DSLR_CMD", "")
     if dslr and shutil.which(dslr):
-        return dslr
-    pyenv_path = str(Path("~/.pyenv/versions/3.12.6/bin").expanduser() / tool_name)
-    if shutil.which(pyenv_path):
-        return pyenv_path
+        return [dslr]
     if shutil.which(tool_name):
-        return tool_name
-    return ""
+        return [tool_name]
+    # dslr is a Python tool — invoke via uv which resolves the correct venv.
+    if shutil.which("uv"):
+        result = subprocess.run(
+            ["uv", "run", tool_name, "list"],
+            capture_output=True,
+            check=False,
+            timeout=15,
+        )
+        if result.returncode == 0:
+            return ["uv", "run", tool_name]
+    return []
 
 
 def _dslr_env(ref_db: str) -> dict[str, str]:
@@ -150,10 +158,10 @@ def _dslr_artifact_key(snap_name: str) -> str:
     return f"dslr:{snap_name}"
 
 
-def _find_dslr_snapshots(dslr_cmd: str, env: dict[str, str], ref_db: str) -> list[str]:
+def _find_dslr_snapshots(dslr_cmd: list[str], env: dict[str, str], ref_db: str) -> list[str]:
     """Return matching DSLR snapshots sorted newest-first, excluding bad artifacts."""
     suffix = f"_{ref_db}"
-    result = subprocess.run([dslr_cmd, "list"], env=env, capture_output=True, text=True, check=False)
+    result = subprocess.run([*dslr_cmd, "list"], env=env, capture_output=True, text=True, check=False)
     if result.returncode != 0:
         return []
     names: list[str] = []
@@ -181,10 +189,10 @@ def _is_env_error(stderr: str) -> bool:
     return any(p.lower() in lower for p in env_patterns)
 
 
-def _restore_ref_from_dslr(dslr_cmd: str, env: dict[str, str], snap_name: str) -> tuple[bool, bool]:
+def _restore_ref_from_dslr(dslr_cmd: list[str], env: dict[str, str], snap_name: str) -> tuple[bool, bool]:
     """Restore a DSLR snapshot. Returns (success, is_env_error)."""
     result = subprocess.run(
-        [dslr_cmd, "restore", snap_name],
+        [*dslr_cmd, "restore", snap_name],
         env=env,
         capture_output=True,
         text=True,
@@ -195,11 +203,11 @@ def _restore_ref_from_dslr(dslr_cmd: str, env: dict[str, str], snap_name: str) -
     return False, _is_env_error(result.stderr)
 
 
-def _take_dslr_snapshot(dslr_cmd: str, env: dict[str, str], ref_db: str) -> None:
+def _take_dslr_snapshot(dslr_cmd: list[str], env: dict[str, str], ref_db: str) -> None:
     snap_name = _dslr_snap_name(ref_db)
     print(f"  Taking DSLR snapshot: {snap_name}")  # noqa: T201
     subprocess.run(
-        [dslr_cmd, "snapshot", "-y", snap_name],
+        [*dslr_cmd, "snapshot", "-y", snap_name],
         env=env,
         capture_output=True,
         check=False,
@@ -475,7 +483,7 @@ def django_db_import(
 
     Returns True on success, False if no source was available.
     """
-    dslr_cmd = _find_dslr_cmd(cfg.snapshot_tool) if cfg.snapshot_tool else ""
+    dslr_cmd = _find_dslr_cmd(cfg.snapshot_tool) if cfg.snapshot_tool else []
     pg_host, pg_user, pg_env = _pg_args()
     dslr_e = _dslr_env(cfg.ref_db_name) if dslr_cmd else {}
     ctx = _RestoreContext(
