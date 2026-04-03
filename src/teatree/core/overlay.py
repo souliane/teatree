@@ -261,7 +261,7 @@ class OverlayBase(ABC):
     def get_db_import_strategy(self, worktree: "Worktree") -> DbImportStrategy | None:
         return None
 
-    def db_import(self, worktree: "Worktree", *, force: bool = False) -> bool:
+    def db_import(self, worktree: "Worktree", *, force: bool = False, slow_import: bool = False) -> bool:
         return False
 
     def get_post_db_steps(self, worktree: "Worktree") -> list[ProvisionStep]:
@@ -300,6 +300,15 @@ class OverlayBase(ABC):
         Keys match ``worktree.ports`` entries (e.g. ``"backend"``, ``"frontend"``).
         Values are URL paths (e.g. ``"/admin/login/"``).
         Services not listed here fall back to ``/``.
+        """
+        return {}
+
+    def get_timeouts(self) -> dict[str, int]:
+        """Return overlay-specific timeout overrides (seconds).
+
+        Keys match ``teatree.timeouts`` operation names (e.g. ``"setup"``,
+        ``"db_import"``).  ``0`` disables the timeout for that operation.
+        Only return overrides — missing keys fall through to core defaults.
         """
         return {}
 

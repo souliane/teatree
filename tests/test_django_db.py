@@ -678,7 +678,16 @@ class TestDjangoDbImport:
         monkeypatch.setattr(mod, "_try_restore_from_dslr", lambda ctx, *, skip_dslr: False)
         monkeypatch.setattr(mod, "_try_restore_from_local_dump", lambda ctx: True)
         cfg = _make_cfg(tmp_path)
-        assert django_db_import(cfg) is True
+        assert django_db_import(cfg, slow_import=True) is True
+
+    def test_blocks_fallback_without_slow_import(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Non-DSLR fallbacks require --slow-import."""
+        reset_remote_dump_state()
+        monkeypatch.setattr(mod, "_find_dslr_cmd", lambda tool: [])
+        monkeypatch.setattr(mod, "_try_restore_from_dslr", lambda ctx, *, skip_dslr: False)
+        monkeypatch.setattr(mod, "_try_restore_from_local_dump", lambda ctx: True)
+        cfg = _make_cfg(tmp_path)
+        assert django_db_import(cfg) is False
 
     def test_falls_through_to_remote_fetch_then_local(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         reset_remote_dump_state()
@@ -693,7 +702,7 @@ class TestDjangoDbImport:
         monkeypatch.setattr(mod, "_try_restore_from_local_dump", local_dump)
         monkeypatch.setattr(mod, "_try_fetch_remote_dump", lambda ctx: True)
         cfg = _make_cfg(tmp_path)
-        assert django_db_import(cfg, allow_remote_dump=True) is True
+        assert django_db_import(cfg, slow_import=True, allow_remote_dump=True) is True
         assert len(local_calls) == 2  # called twice: before and after remote fetch
 
     def test_skips_remote_when_not_allowed(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -705,7 +714,7 @@ class TestDjangoDbImport:
         monkeypatch.setattr(mod, "_try_fetch_remote_dump", lambda ctx: remote_called.append(1) or True)
         monkeypatch.setattr(mod, "_try_restore_from_ci_dump", lambda ctx: True)
         cfg = _make_cfg(tmp_path)
-        assert django_db_import(cfg, allow_remote_dump=False) is True
+        assert django_db_import(cfg, slow_import=True, allow_remote_dump=False) is True
         assert remote_called == []
 
     def test_falls_through_to_ci(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -716,7 +725,7 @@ class TestDjangoDbImport:
         monkeypatch.setattr(mod, "_try_fetch_remote_dump", lambda ctx: False)
         monkeypatch.setattr(mod, "_try_restore_from_ci_dump", lambda ctx: True)
         cfg = _make_cfg(tmp_path)
-        assert django_db_import(cfg) is True
+        assert django_db_import(cfg, slow_import=True) is True
 
     def test_fails_when_all_strategies_fail(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         reset_remote_dump_state()
@@ -726,7 +735,7 @@ class TestDjangoDbImport:
         monkeypatch.setattr(mod, "_try_fetch_remote_dump", lambda ctx: False)
         monkeypatch.setattr(mod, "_try_restore_from_ci_dump", lambda ctx: False)
         cfg = _make_cfg(tmp_path)
-        assert django_db_import(cfg) is False
+        assert django_db_import(cfg, slow_import=True) is False
 
     def test_failure_message_with_remote_url(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
@@ -738,8 +747,8 @@ class TestDjangoDbImport:
         monkeypatch.setattr(mod, "_try_fetch_remote_dump", lambda ctx: False)
         monkeypatch.setattr(mod, "_try_restore_from_ci_dump", lambda ctx: False)
         cfg = _make_cfg(tmp_path, remote_db_url="postgres://u:p@host/db")
-        django_db_import(cfg)
-        assert "network access" in capsys.readouterr().out
+        django_db_import(cfg, slow_import=True)
+        assert "--slow-import" in capsys.readouterr().out
 
     def test_failure_message_without_remote_url(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
@@ -751,7 +760,7 @@ class TestDjangoDbImport:
         monkeypatch.setattr(mod, "_try_fetch_remote_dump", lambda ctx: False)
         monkeypatch.setattr(mod, "_try_restore_from_ci_dump", lambda ctx: False)
         cfg = _make_cfg(tmp_path)
-        django_db_import(cfg)
+        django_db_import(cfg, slow_import=True)
         assert "Configure remote_db_url" in capsys.readouterr().out
 
     def test_skip_dslr_passed_through(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -781,4 +790,4 @@ class TestDjangoDbImport:
             ci_dump_glob="*.sql.gz",
             snapshot_tool="",
         )
-        assert django_db_import(cfg) is True
+        assert django_db_import(cfg, slow_import=True) is True
