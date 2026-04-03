@@ -12,6 +12,7 @@ from teatree.core.overlay_loader import get_overlay
 from teatree.core.resolve import resolve_worktree
 from teatree.core.step_runner import ProvisionReport, run_provision_steps, run_step
 from teatree.core.worktree_env import write_env_worktree
+from teatree.timeouts import TimeoutConfig, load_timeouts
 from teatree.utils.ports import find_free_ports, get_worktree_ports
 
 
@@ -120,24 +121,39 @@ def _compose_env(ports: dict[str, int]) -> dict[str, str]:
     }
 
 
-def _docker_compose_down(project: str, stdout: OutputWrapper) -> None:
+def _docker_compose_down(project: str, stdout: OutputWrapper, *, timeout: int | None = 30) -> None:
     """Stop and remove containers for the compose project."""
-    result = subprocess.run(  # noqa: S603
-        ["docker", "compose", "-p", project, "down", "--remove-orphans"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if result.returncode != 0:
-        stdout.write(f"  docker compose down: {result.stderr.strip()[:300]}")
+    try:
+        result = subprocess.run(  # noqa: S603
+            ["docker", "compose", "-p", project, "down", "--remove-orphans"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=timeout,
+        )
+        if result.returncode != 0:
+            stdout.write(f"  docker compose down: {result.stderr.strip()[:300]}")
+    except subprocess.TimeoutExpired:
+        stdout.write(f"  docker compose down: timed out after {timeout}s")
 
 
-def _docker_compose_up(
+def _compose_files(compose_file: str) -> list[str]:
+    """Return -f flags for compose file and its override (if present)."""
+    flags = ["-f", compose_file]
+    override = Path(compose_file).parent / "docker-compose.override.yml"
+    if override.is_file():
+        flags.extend(["-f", str(override)])
+    return flags
+
+
+def _docker_compose_up(  # noqa: PLR0913
     project: str,
     compose_file: str,
     env: dict[str, str],
     stdout: OutputWrapper,
     stderr: OutputWrapper,
+    *,
+    timeout: int | None = 60,
 ) -> bool:
     """Start all services via docker-compose."""
     cmd = [
@@ -145,15 +161,21 @@ def _docker_compose_up(
         "compose",
         "-p",
         project,
-        "-f",
-        compose_file,
+        *_compose_files(compose_file),
         "up",
         "-d",
         "--no-build",
+        "--pull=never",
     ]
-    result = subprocess.run(cmd, env=env, capture_output=True, text=True, check=False)  # noqa: S603
+    try:
+        result = subprocess.run(cmd, env=env, capture_output=True, text=True, check=False, timeout=timeout)  # noqa: S603
+    except subprocess.TimeoutExpired:
+        stderr.write(f"  docker compose up: timed out after {timeout}s")
+        return False
     if result.returncode != 0:
-        stderr.write(f"  docker compose up failed: {result.stderr.strip()[:500]}")
+        stderr.write(f"  docker compose up failed (exit {result.returncode}):")
+        stderr.write(f"  stderr: {result.stderr.strip()}")
+        stderr.write(f"  stdout: {result.stdout.strip()[:500]}")
         return False
     stdout.write("  docker compose up -d: OK")
     return True
@@ -161,16 +183,29 @@ def _docker_compose_up(
 
 class Command(TyperCommand):
     _DB_IMPORT_MAX_FAILURES = 3
-    _verbose: bool = False
+    _verbose: bool = True
+    _timeouts: TimeoutConfig = TimeoutConfig()
+
+    def _init_timeouts(self, overlay: OverlayBase | None = None, *, no_timeout: bool = False) -> None:
+        if no_timeout:
+            self._timeouts = TimeoutConfig(values=dict.fromkeys(self._timeouts.values, 0))
+        else:
+            self._timeouts = load_timeouts(overlay)
 
     @command()
-    def setup(
+    def setup(  # noqa: PLR0913, PLR0917
         self,
         path: str = typer.Option("", help="Worktree path (auto-detects from PWD if empty)."),
         variant: str = typer.Option("", help="Tenant variant. Updates ticket if provided."),
         overlay: str = typer.Option("", help="Overlay name (auto-detects if empty)."),
-        force: bool = typer.Option(default=False, help="Bypass DB import circuit breaker."),  # noqa: FBT001
-        verbose: bool = typer.Option(default=False, help="Show step stdout/stderr."),  # noqa: FBT001
+        force: bool = typer.Option(  # noqa: FBT001
+            default=False, help="Reset DB import circuit breaker (retry after repeated failures)."
+        ),
+        slow_import: bool = typer.Option(  # noqa: FBT001
+            default=False, help="Allow slow DB fallbacks (pg_restore, remote dump). DSLR-only by default."
+        ),
+        verbose: bool = typer.Option(default=True, help="Show step stdout/stderr."),  # noqa: FBT001
+        no_timeout: bool = typer.Option(default=False, help="Disable operation timeouts."),  # noqa: FBT001
     ) -> int:
         """Provision a worktree (DB name, env file, overlay steps). No port allocation."""
         variant, overlay, verbose = _resolve_typer_defaults(variant, overlay, verbose)
@@ -184,11 +219,12 @@ class Command(TyperCommand):
         _register_new_repos(worktree, self.stdout)
 
         resolved_overlay = get_overlay()
+        self._init_timeouts(resolved_overlay, no_timeout=no_timeout)
 
         failed_repos: list[str] = []
         for wt in ticket.worktrees.all():
             try:
-                report = self._provision_worktree(wt, resolved_overlay, force=force)
+                report = self._provision_worktree(wt, resolved_overlay, force=force, slow_import=slow_import)
                 if not report.success:
                     failed_repos.append(wt.repo_path)
             except Exception as exc:  # noqa: BLE001
@@ -202,7 +238,7 @@ class Command(TyperCommand):
         return int(worktree.pk)
 
     def _provision_worktree(
-        self, worktree: Worktree, overlay: "OverlayBase", *, force: bool = False
+        self, worktree: Worktree, overlay: "OverlayBase", *, force: bool = False, slow_import: bool = False
     ) -> ProvisionReport:
         self.stdout.write(f"  Provisioning: {worktree.repo_path}")
 
@@ -217,7 +253,7 @@ class Command(TyperCommand):
         _setup_worktree_dir((worktree.extra or {}).get("worktree_path", ""), worktree, overlay, self.stdout)
 
         if overlay.get_db_import_strategy(worktree) is not None:
-            self._run_db_import(worktree, overlay, force=force)
+            self._run_db_import(worktree, overlay, force=force, slow_import=slow_import)
 
         provision_report = run_provision_steps(
             overlay.get_provision_steps(worktree),
@@ -248,7 +284,9 @@ class Command(TyperCommand):
             self.stdout.write(combined.summary())
         return combined
 
-    def _run_db_import(self, worktree: Worktree, overlay: OverlayBase, *, force: bool = False) -> None:
+    def _run_db_import(
+        self, worktree: Worktree, overlay: OverlayBase, *, force: bool = False, slow_import: bool = False
+    ) -> None:
         extra = worktree.extra or {}
         failures = extra.get("db_import_failures", 0)
         if failures >= self._DB_IMPORT_MAX_FAILURES and not force:
@@ -258,7 +296,7 @@ class Command(TyperCommand):
         env = {**os.environ, **overlay.get_env_extra(worktree)}
         env.pop("VIRTUAL_ENV", None)
         os.environ.update(env)
-        if overlay.db_import(worktree):
+        if overlay.db_import(worktree, slow_import=slow_import):
             extra.pop("db_import_failures", None)
             worktree.extra = extra
             worktree.save(update_fields=["extra"])
@@ -304,20 +342,25 @@ class Command(TyperCommand):
         self,
         path: str = typer.Option("", help="Worktree path (auto-detects from PWD if empty)."),
         overlay: str = typer.Option("", help="Overlay name (auto-detects if empty)."),
+        verbose: bool = typer.Option(default=True, help="Show step stdout/stderr."),  # noqa: FBT001
+        no_timeout: bool = typer.Option(default=False, help="Disable operation timeouts."),  # noqa: FBT001
     ) -> str:
         """Start all services via docker-compose with dynamically allocated ports.
 
         Finds free host ports at runtime, passes them to docker-compose,
         and starts all containers.  Safe to re-run (runs compose down first).
         """
+        if isinstance(verbose, bool):
+            self._verbose = verbose
         if overlay:
             os.environ["T3_OVERLAY_NAME"] = overlay
         worktree = resolve_worktree(path)
         resolved_overlay = get_overlay()
+        self._init_timeouts(resolved_overlay, no_timeout=no_timeout)
         project = _compose_project(worktree)
 
         # 1. Stop previous containers
-        _docker_compose_down(project, self.stdout)
+        _docker_compose_down(project, self.stdout, timeout=self._timeouts.get("docker_compose_down"))
 
         # 2. Run pre-run steps (translation sync, customer.json patch, etc.)
         commands = resolved_overlay.get_run_commands(worktree)
@@ -350,7 +393,14 @@ class Command(TyperCommand):
 
         env = {**os.environ, **resolved_overlay.get_env_extra(worktree), **_compose_env(ports)}
         env.pop("VIRTUAL_ENV", None)
-        ok = _docker_compose_up(project, compose_file, env, self.stdout, self.stderr)
+        ok = _docker_compose_up(
+            project,
+            compose_file,
+            env,
+            self.stdout,
+            self.stderr,
+            timeout=self._timeouts.get("docker_compose_up"),
+        )
 
         if not ok:
             return "error"
@@ -381,18 +431,22 @@ class Command(TyperCommand):
         self,
         path: str = typer.Option("", help="Worktree path (auto-detects from PWD if empty)."),
         overlay: str = typer.Option("", help="Overlay name (auto-detects if empty)."),
+        verbose: bool = typer.Option(default=True, help="Show step stdout/stderr."),  # noqa: FBT001
+        no_timeout: bool = typer.Option(default=False, help="Disable operation timeouts."),  # noqa: FBT001
     ) -> str:
         """Stop containers, allocate fresh ports, and restart all services."""
+        if isinstance(verbose, bool):
+            self._verbose = verbose
         if overlay:
             os.environ["T3_OVERLAY_NAME"] = overlay
         worktree = resolve_worktree(path)
 
         if worktree.state == Worktree.State.CREATED:
             self.stdout.write("  Worktree not provisioned — running setup + start instead.")
-            self.setup(path=path, variant="", overlay=overlay)
-            return self.start(path=path, overlay=overlay)
+            self.setup(path=path, variant="", overlay=overlay, no_timeout=no_timeout)
+            return self.start(path=path, overlay=overlay, no_timeout=no_timeout)
 
-        return self.start(path=path, overlay=overlay)
+        return self.start(path=path, overlay=overlay, no_timeout=no_timeout)
 
     @command()
     def teardown(self, path: str = typer.Option("", help="Worktree path (auto-detects from PWD if empty).")) -> str:

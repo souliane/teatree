@@ -112,7 +112,7 @@ class FullOverlay(OverlayBase):
     def get_db_import_strategy(self, worktree: Worktree) -> DbImportStrategy:
         return {"kind": "test", "source_database": "test_db"}
 
-    def db_import(self, worktree: Worktree, *, force: bool = False) -> bool:
+    def db_import(self, worktree: Worktree, *, force: bool = False, slow_import: bool = False) -> bool:
         return True
 
     def get_reset_passwords_command(self, worktree: Worktree) -> ProvisionStep | None:
@@ -179,7 +179,7 @@ class PostDbStepsOverlay(FullOverlay):
 class FailingImportOverlay(FullOverlay):
     """Overlay where db_import always fails — tests error reporting."""
 
-    def db_import(self, worktree: Worktree, *, force: bool = False) -> bool:
+    def db_import(self, worktree: Worktree, *, force: bool = False, slow_import: bool = False) -> bool:
         return False
 
 
