@@ -135,7 +135,9 @@ def _find_dslr_cmd(tool_name: str) -> list[str]:
     if shutil.which("uv"):
         result = subprocess.run(
             ["uv", "run", tool_name, "list"],
-            capture_output=True, check=False, timeout=15,
+            capture_output=True,
+            check=False,
+            timeout=15,
         )
         if result.returncode == 0:
             return ["uv", "run", tool_name]
