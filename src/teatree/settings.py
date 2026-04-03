@@ -91,6 +91,19 @@ LOGGING = default_logging("teatree")
 
 # Framework-level config (not overlay-specific)
 TEATREE_TERMINAL_MODE = "same-terminal"
+
+# Operation timeouts (seconds).  0 = no timeout.
+# Override per-overlay via OverlayBase.get_timeouts() or per-user
+# via [teatree.timeouts] in ~/.teatree.toml.
+TEATREE_TIMEOUTS = {
+    "setup": 120,
+    "start": 60,
+    "db_import": 180,
+    "docker_compose_up": 60,
+    "docker_compose_down": 30,
+    "provision_step": 120,
+    "pre_run_step": 60,
+}
 TEATREE_CLAUDE_STATUSLINE_STATE_DIR = "/tmp/claude-statusline"  # noqa: S108
 
 TASKS = {

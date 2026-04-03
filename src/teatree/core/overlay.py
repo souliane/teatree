@@ -303,6 +303,15 @@ class OverlayBase(ABC):
         """
         return {}
 
+    def get_timeouts(self) -> dict[str, int]:
+        """Return overlay-specific timeout overrides (seconds).
+
+        Keys match ``teatree.timeouts`` operation names (e.g. ``"setup"``,
+        ``"db_import"``).  ``0`` disables the timeout for that operation.
+        Only return overrides — missing keys fall through to core defaults.
+        """
+        return {}
+
     def get_cleanup_steps(self, worktree: "Worktree") -> list[ProvisionStep]:
         """Return extra cleanup steps run before a worktree is removed.
 
