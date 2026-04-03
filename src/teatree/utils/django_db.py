@@ -125,18 +125,8 @@ def _copy_ref_to_ticket(ctx: _RestoreContext) -> bool:
 
 
 def _find_dslr_cmd(tool_name: str) -> list[str]:
-    """Return a command prefix for invoking dslr.
-
-    Prefers ``uv run`` (resolves project venv where dslr + psycopg live).
-    Bare ``dslr`` on PATH is unreliable (pyenv shims, missing deps).
-    Honour ``DSLR_CMD`` env var as an explicit override.
-    """
-    dslr = os.environ.get("DSLR_CMD", "")
-    if dslr and shutil.which(dslr):
-        return [dslr]
-    if shutil.which("uv"):
-        return ["uv", "run", tool_name]
-    return []
+    """Return ``["uv", "run", <tool_name>]`` if uv is available, else ``[]``."""
+    return ["uv", "run", tool_name] if shutil.which("uv") else []
 
 
 def _dslr_env(ref_db: str) -> dict[str, str]:
@@ -174,14 +164,18 @@ def _is_env_error(stderr: str) -> bool:
         "connection refused",
         "could not connect",
         "password authentication failed",
-        "SSL",
-        "ssl",
         "no pg_hba.conf entry",
         "timeout expired",
         "server closed the connection",
+        "is being accessed by other users",
+        "does not exist",
+        "could not translate host name",
+        "role .* does not exist",
+        "permission denied",
+        "ssl",
     ]
     lower = stderr.lower()
-    return any(p.lower() in lower for p in env_patterns)
+    return any(p in lower for p in env_patterns)
 
 
 def _restore_ref_from_dslr(dslr_cmd: list[str], env: dict[str, str], snap_name: str) -> tuple[bool, bool]:
@@ -319,13 +313,19 @@ def _restore_ref_and_copy(ctx: _RestoreContext, dump_path: str, label: str) -> b
     try:
         db_restore(cfg.ref_db_name, dump_path)
     except (RuntimeError, subprocess.CalledProcessError) as exc:
-        bad_artifacts.mark_bad(dump_path)
-        print(f"  BAD ARTIFACT: {label} marked bad (delete: rm {dump_path})")  # noqa: T201
-        print(f"    Restore error: {exc}", file=sys.stderr)  # noqa: T201
+        err_msg = str(exc)
+        if _is_env_error(err_msg):
+            print(f"  WARNING: Restore of {label} failed (environment error, not marking bad)")  # noqa: T201
+            print(f"    {err_msg}", file=sys.stderr)  # noqa: T201
+        else:
+            bad_artifacts.mark_bad(dump_path)
+            print(f"  BAD ARTIFACT: {label} marked bad (delete: rm {dump_path})")  # noqa: T201
+            print(f"    Restore error: {err_msg}", file=sys.stderr)  # noqa: T201
         return False
     if not _migrate_reference_db(cfg.main_repo_path, cfg.ref_db_name, cfg.migrate_env_extra):
-        bad_artifacts.mark_bad(dump_path)
-        print(f"  BAD ARTIFACT: {label} marked bad (delete: rm {dump_path})")  # noqa: T201
+        # Migration failures are environmental (wrong settings, missing deps),
+        # not dump corruption — never mark the dump as bad.
+        print(f"  WARNING: Migration failed after restoring {label} (not marking dump bad)")  # noqa: T201
         return False
     if ctx.dslr_cmd:
         _take_dslr_snapshot(ctx.dslr_cmd, ctx.dslr_env, cfg.ref_db_name)
@@ -344,11 +344,17 @@ _remote_dump_failed: bool = False
 
 
 def _try_restore_from_dslr(ctx: _RestoreContext, *, skip_dslr: bool) -> bool:
-    if skip_dslr or not ctx.dslr_cmd:
+    if skip_dslr:
+        print("  DSLR: skipped (--skip-dslr)")  # noqa: T201
         return False
+    if not ctx.dslr_cmd:
+        print("  DSLR: skipped (dslr command not found — install dslr or set DSLR_CMD)")  # noqa: T201
+        return False
+    print(f"  DSLR: using {' '.join(ctx.dslr_cmd)}")  # noqa: T201
     _ensure_ref_db(ctx.cfg.ref_db_name, ctx.pg_host, ctx.pg_user, ctx.pg_env)
     snapshots = _find_dslr_snapshots(ctx.dslr_cmd, ctx.dslr_env, ctx.cfg.ref_db_name)
     if not snapshots:
+        print(f"  DSLR: no valid snapshots for {ctx.cfg.ref_db_name} (all marked bad or none exist)")  # noqa: T201
         return False
     for snap_name in snapshots:
         print(f"  Restoring {ctx.cfg.ref_db_name} from DSLR snapshot: {snap_name}")  # noqa: T201

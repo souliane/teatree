@@ -68,7 +68,7 @@ def db_restore(db_name: str, dump_path: str) -> None:
             check=False,
         )
         if restore.returncode != 0:
-            msg = f"pg_restore failed for {db_name} from {dump_path}"
+            msg = f"pg_restore failed for {db_name} from {dump_path}: {restore.stderr.strip()}"
             raise RuntimeError(msg)
         _check_truncation(restore.stderr, db_name, dump_path)
         return
@@ -81,7 +81,7 @@ def db_restore(db_name: str, dump_path: str) -> None:
         check=False,
     )
     if restore.returncode != 0:
-        msg = f"psql restore failed for {db_name} from {dump_path}"
+        msg = f"psql restore failed for {db_name} from {dump_path}: {restore.stderr.strip()}"
         raise RuntimeError(msg)
     _check_truncation(restore.stderr, db_name, dump_path)
 

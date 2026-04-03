@@ -292,6 +292,14 @@ class Command(TyperCommand):
         if failures >= self._DB_IMPORT_MAX_FAILURES and not force:
             self.stderr.write(f"  SKIPPED: DB import (failed {failures} consecutive times). Use --force to retry.")
             return
+        if force:
+            from teatree.utils import bad_artifacts  # noqa: PLC0415
+
+            cleared = [a for a in bad_artifacts.list_bad() if a.startswith("dslr:")]
+            for artifact in cleared:
+                bad_artifacts.unmark(artifact)
+            if cleared:
+                self.stdout.write(f"  Cleared {len(cleared)} bad DSLR artifact(s) (--force)")
         self.stdout.write("  Running: db-import")
         env = {**os.environ, **overlay.get_env_extra(worktree)}
         env.pop("VIRTUAL_ENV", None)
