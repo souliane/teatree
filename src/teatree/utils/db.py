@@ -46,8 +46,14 @@ def db_restore(db_name: str, dump_path: str) -> None:
 
     inspection = subprocess.run(["pg_restore", "-l", dump_path], capture_output=True, text=True, check=False)
     if inspection.returncode == 0:
+        # Use --jobs for parallel restore (data + indexes concurrently).
+        cpu_count = os.cpu_count() or 2
+        jobs = min(cpu_count, 4)
         restore = subprocess.run(
-            ["pg_restore", "-h", host, "-U", user, "-d", db_name, "--no-owner", "--no-acl", dump_path],
+            [
+                "pg_restore", "-h", host, "-U", user, "-d", db_name,
+                "--no-owner", "--no-acl", f"--jobs={jobs}", dump_path,
+            ],
             env=env,
             capture_output=True,
             text=True,
