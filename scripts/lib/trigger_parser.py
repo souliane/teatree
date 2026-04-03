@@ -14,16 +14,18 @@ DEFAULT_PRIORITY = 50
 
 
 def parse_triggers(skill_md_text: str) -> dict | None:
-    """Extract the ``triggers:`` and ``search_hints:`` blocks from SKILL.md frontmatter.
+    """Extract ``triggers:``, ``search_hints:``, and ``requires:`` from SKILL.md frontmatter.
 
     Returns a dict with keys ``priority``, ``keywords``, ``urls``,
-    ``exclude``, ``end_of_session``, ``search_hints`` — or ``None``
-    if neither ``triggers:`` nor ``search_hints:`` is defined.
+    ``exclude``, ``end_of_session``, ``search_hints``, ``requires``
+    — or ``None`` if none of these top-level fields is defined.
 
     ``search_hints`` is a top-level frontmatter field (not nested under
     ``triggers:``).  It lists simple keywords for agent-launch skill
     discovery — conceptually different from ``triggers.keywords`` which
     are regex patterns for the UserPromptSubmit hook.
+
+    ``requires`` lists skill names that must be loaded alongside this skill.
     """
     if not skill_md_text.startswith("---"):
         return None
@@ -36,6 +38,7 @@ def parse_triggers(skill_md_text: str) -> dict | None:
 
     in_triggers = False
     in_search_hints = False
+    in_requires = False
     current_key = ""
     triggers: dict = {
         "priority": DEFAULT_PRIORITY,
@@ -44,6 +47,7 @@ def parse_triggers(skill_md_text: str) -> dict | None:
         "exclude": "",
         "end_of_session": False,
         "search_hints": [],
+        "requires": [],
     }
     found = False
 
@@ -54,6 +58,7 @@ def parse_triggers(skill_md_text: str) -> dict | None:
         if not line.startswith((" ", "\t")) and ":" in stripped:
             key = stripped.split(":")[0].strip()
             in_search_hints = False
+            in_requires = False
             if key == "triggers":
                 in_triggers = True
                 found = True
@@ -65,6 +70,12 @@ def parse_triggers(skill_md_text: str) -> dict | None:
                 if in_triggers:
                     in_triggers = False
                 continue
+            if key == "requires":
+                in_requires = True
+                found = True
+                if in_triggers:
+                    in_triggers = False
+                continue
             if in_triggers:
                 in_triggers = False
             continue
@@ -72,6 +83,11 @@ def parse_triggers(skill_md_text: str) -> dict | None:
         if in_search_hints:
             if stripped.startswith("- "):
                 triggers["search_hints"].append(stripped.removeprefix("- ").strip().strip("'\""))
+            continue
+
+        if in_requires:
+            if stripped.startswith("- "):
+                triggers["requires"].append(stripped.removeprefix("- ").strip().strip("'\""))
             continue
 
         if not in_triggers:

@@ -6,6 +6,7 @@ dependencies (subprocess, filesystem, network, Django).
 
 import json
 import time
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from typer.testing import CliRunner
@@ -400,6 +401,100 @@ class TestConfigCommands:
         result = runner.invoke(app, ["config", "cache"])
         assert result.exit_code == 1
         assert "No cache found" in result.output
+
+    def test_deps_shows_chain(self, tmp_path, monkeypatch):
+        """Config deps shows resolved dependency chain from cache."""
+        monkeypatch.setattr("teatree.config.DATA_DIR", tmp_path)
+        cache = tmp_path / "skill-metadata.json"
+        cache.write_text(
+            json.dumps(
+                {
+                    "trigger_index": [
+                        {"skill": "rules", "requires": []},
+                        {"skill": "workspace", "requires": ["rules"]},
+                        {"skill": "code", "requires": ["workspace"]},
+                    ],
+                    "resolved_requires": {
+                        "rules": ["rules"],
+                        "workspace": ["rules", "workspace"],
+                        "code": ["rules", "workspace", "code"],
+                    },
+                }
+            )
+        )
+        result = runner.invoke(app, ["config", "deps", "code"])
+        assert result.exit_code == 0
+        assert "rules → workspace → code" in result.output
+
+    def test_deps_no_cache(self, tmp_path, monkeypatch):
+        """Config deps fails when no cache exists."""
+        monkeypatch.setattr("teatree.config.DATA_DIR", tmp_path)
+        result = runner.invoke(app, ["config", "deps", "test"])
+        assert result.exit_code == 1
+        assert "No cache found" in result.output
+
+    def test_deps_computes_when_not_precomputed(self, tmp_path, monkeypatch):
+        """Config deps computes deps on the fly if resolved_requires is missing."""
+        monkeypatch.setattr("teatree.config.DATA_DIR", tmp_path)
+        cache = tmp_path / "skill-metadata.json"
+        cache.write_text(
+            json.dumps(
+                {
+                    "trigger_index": [
+                        {"skill": "rules", "requires": []},
+                        {"skill": "workspace", "requires": ["rules"]},
+                    ],
+                }
+            )
+        )
+        result = runner.invoke(app, ["config", "deps", "workspace"])
+        assert result.exit_code == 0
+        assert "rules → workspace" in result.output
+
+    def test_test_trigger_keyword_match(self, tmp_path, monkeypatch):
+        """Config test-trigger shows matching skill and pattern."""
+        import sys  # noqa: PLC0415
+
+        monkeypatch.setattr("teatree.config.DATA_DIR", tmp_path)
+        cache = tmp_path / "skill-metadata.json"
+        cache.write_text(
+            json.dumps(
+                {
+                    "trigger_index": [
+                        {
+                            "skill": "ship",
+                            "priority": 10,
+                            "keywords": [r"\bcommit\b"],
+                            "urls": [],
+                            "exclude": "",
+                            "end_of_session": False,
+                        },
+                    ],
+                }
+            )
+        )
+        # Add scripts dir to path so skill_loader can be imported inside the CLI command.
+        scripts_dir = str(Path(__file__).resolve().parent.parent / "scripts")
+        if scripts_dir not in sys.path:
+            sys.path.insert(0, scripts_dir)
+        result = runner.invoke(app, ["config", "test-trigger", "commit and push"])
+        assert result.exit_code == 0
+        assert "ship" in result.output
+        assert "keyword" in result.output
+
+    def test_test_trigger_no_match(self, tmp_path, monkeypatch):
+        """Config test-trigger shows no match for unrelated prompt."""
+        import sys  # noqa: PLC0415
+
+        monkeypatch.setattr("teatree.config.DATA_DIR", tmp_path)
+        cache = tmp_path / "skill-metadata.json"
+        cache.write_text(json.dumps({"trigger_index": []}))
+        scripts_dir = str(Path(__file__).resolve().parent.parent / "scripts")
+        if scripts_dir not in sys.path:
+            sys.path.insert(0, scripts_dir)
+        result = runner.invoke(app, ["config", "test-trigger", "hello world"])
+        assert result.exit_code == 0
+        assert "no match" in result.output
 
 
 # ── Review-request discover ──────────────────────────────────────────

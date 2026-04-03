@@ -27,6 +27,25 @@ _FILE_PATH_TOOLS = {"Read", "Edit", "Write"}
 _PATH_TOOLS = {"Grep", "Glob"}
 _MR_TOOLS = {"mcp__glab__glab_mr_create", "mcp__glab__glab_mr_update"}
 
+# Patterns that indicate workspace/infrastructure operations where the agent
+# MUST use `t3` CLI instead of running underlying commands directly.
+_T3_CLI_REMINDER_RE = re.compile(
+    r"\b("
+    r"worktree|setup|workspace|database|restore|migrate|runserver|"
+    r"manage\.py|nx serve|docker compose|createdb|dropdb|"
+    r"playwright|e2e|frontend|backend|dslr|pg_restore|pg_dump|"
+    r"npm run|pipenv|pip install"
+    r")\b",
+    re.IGNORECASE,
+)
+
+_T3_CLI_REMINDER = (
+    "MANDATORY: Use `t3` CLI for ALL workspace, server, database, and test operations. "
+    "NEVER run underlying commands directly (manage.py, nx serve, docker compose, "
+    "createdb, playwright, npm run, pipenv, pip install, dslr, etc.). "
+    "If a `t3` command fails, fix the `t3` code — do not work around it."
+)
+
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Unified hook router")
@@ -109,12 +128,22 @@ def handle_user_prompt_submit(data: dict) -> None:
         sys.path.pop(0)
 
     suggestions = result.get("suggestions", [])
+
+    # Deterministic t3 CLI reminder — injected when prompt matches
+    # workspace/infrastructure patterns, regardless of skill suggestions.
+    t3_reminder = _T3_CLI_REMINDER if _T3_CLI_REMINDER_RE.search(prompt) else ""
+
     if not suggestions:
+        if t3_reminder:
+            print(t3_reminder)  # noqa: T201
         return
 
     skill_list = ", ".join(f"/{s}" for s in suggestions)
     pending.write_text("\n".join(suggestions) + "\n", encoding="utf-8")
-    print(f"LOAD THESE SKILLS NOW (call the Skill tool for each, before doing anything else): {skill_list}.")  # noqa: T201
+    parts = [f"LOAD THESE SKILLS NOW (call the Skill tool for each, before doing anything else): {skill_list}."]
+    if t3_reminder:
+        parts.append(t3_reminder)
+    print("\n".join(parts))  # noqa: T201
 
 
 # ── PreToolUse: enforce-skill-loading ───────────────────────────────

@@ -13,6 +13,7 @@ from fnmatch import fnmatch
 from pathlib import Path
 
 from teatree.core.overlay import SkillMetadata
+from teatree.skill_deps import resolve_requires
 
 DEFAULT_SKILLS_DIR = Path(__file__).resolve().parents[2] / "skills"
 
@@ -114,13 +115,14 @@ class SkillLoadingPolicy:
         elif lifecycle_skill:
             ordered.append(lifecycle_skill)
 
+        resolved = resolve_requires(ordered, trigger_index or [])
         return SkillSelectionResult(
-            skills=_dedupe(ordered),
+            skills=_dedupe(resolved),
             lifecycle_skill=lifecycle_skill,
             ask_user=ask_user,
         )
 
-    def select_for_prompt_hook(
+    def select_for_prompt_hook(  # noqa: PLR0913
         self,
         *,
         cwd: Path,
@@ -128,6 +130,7 @@ class SkillLoadingPolicy:
         overlay_skill_metadata: OverlaySkillMetadata,
         loaded_skills: set[str],
         supplementary_skills: list[str] | None = None,
+        trigger_index: list[dict[str, object]] | None = None,
     ) -> SkillSelectionResult:
         ordered = self._base_detected_skills(
             cwd=cwd,
@@ -139,7 +142,7 @@ class SkillLoadingPolicy:
             ordered.append(intent)
         if supplementary_skills:
             ordered.extend(supplementary_skills)
-        resolved = _dedupe(ordered)
+        resolved = _dedupe(resolve_requires(ordered, trigger_index or []))
         suggestions = [skill for skill in resolved if skill not in loaded_skills]
         return SkillSelectionResult(skills=suggestions, lifecycle_skill=intent)
 
@@ -149,6 +152,7 @@ class SkillLoadingPolicy:
         cwd: Path,
         phase: str,
         overlay_skill_metadata: OverlaySkillMetadata,
+        trigger_index: list[dict[str, object]] | None = None,
     ) -> SkillSelectionResult:
         lifecycle_skill = self.lifecycle_for_phase(phase)
         ordered = self._base_detected_skills(
@@ -159,8 +163,9 @@ class SkillLoadingPolicy:
         )
         if lifecycle_skill:
             ordered.append(lifecycle_skill)
+        resolved = resolve_requires(ordered, trigger_index or [])
         return SkillSelectionResult(
-            skills=_dedupe(ordered),
+            skills=_dedupe(resolved),
             lifecycle_skill=lifecycle_skill,
         )
 

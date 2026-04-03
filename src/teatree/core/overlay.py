@@ -49,6 +49,8 @@ class SkillMetadata(TypedDict, total=False):
     skill_path: str
     remote_patterns: list[str]
     trigger_index: list[dict[str, object]]
+    resolved_requires: dict[str, list[str]]
+    skill_mtimes: dict[str, int]
     teatree_version: str
 
 
