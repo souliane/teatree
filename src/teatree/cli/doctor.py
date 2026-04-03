@@ -276,6 +276,21 @@ def check() -> bool:
         typer.echo(f"WARN  {problem}")
         ok = False
 
+    # Validate SKILL.md frontmatter.
+    claude_skills = Path.home() / ".claude" / "skills"
+    if claude_skills.is_dir():
+        from teatree.skill_schema import validate_directory  # noqa: PLC0415
+
+        errors, warnings = validate_directory(claude_skills)
+        for warning in warnings:
+            typer.echo(f"WARN  {warning}")
+        for error in errors:
+            typer.echo(f"FAIL  {error}")
+            ok = False
+        if not errors:
+            skill_count = sum(1 for d in claude_skills.iterdir() if d.is_dir() and (d / "SKILL.md").is_file())
+            typer.echo(f"OK    {skill_count} skill(s) validated")
+
     if ok:
         typer.echo("All checks passed")
     return ok

@@ -14,6 +14,7 @@ from __future__ import annotations  # noqa: TID251
 import json
 import re
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 from lib.trigger_parser import parse_triggers as parse_triggers_from_frontmatter
@@ -22,7 +23,7 @@ _SRC_DIR = Path(__file__).resolve().parents[2] / "src"
 if str(_SRC_DIR) not in sys.path:
     sys.path.insert(0, str(_SRC_DIR))
 
-from teatree.skill_loading import DEFAULT_SKILLS_DIR, SkillLoadingPolicy
+from teatree.skill_loading import SkillLoadingPolicy
 
 XDG_DATA_DIR = Path.home() / ".local" / "share" / "teatree"
 SKILL_METADATA_CACHE = XDG_DATA_DIR / "skill-metadata.json"
@@ -41,8 +42,8 @@ def _get_installed_version() -> str:
 def _read_metadata_cache() -> dict:
     """Read and validate the XDG skill-metadata cache.
 
-    Returns an empty dict when the cache is missing, corrupt, or was
-    written by a different teatree version.
+    Returns an empty dict when the cache is missing, corrupt, was
+    written by a different teatree version, or has stale mtimes.
     """
     if not SKILL_METADATA_CACHE.is_file():
         return {}
@@ -55,7 +56,35 @@ def _read_metadata_cache() -> dict:
     cached_version = metadata.get("teatree_version", "")
     if cached_version and cached_version != _get_installed_version():
         return {}
+    if _cache_is_stale(metadata):
+        return {}
     return metadata
+
+
+def _cache_is_stale(metadata: dict) -> bool:
+    """Check if any SKILL.md file has been modified since the cache was written."""
+    cached_mtimes = metadata.get("skill_mtimes", {})
+    if not isinstance(cached_mtimes, dict):
+        return False  # No mtimes stored — can't check, assume fresh.
+    home = Path.home()
+    skills_dir = home / ".claude" / "skills"
+    if not skills_dir.is_dir():
+        return False
+    for skill_dir in skills_dir.iterdir():
+        resolved = skill_dir.resolve() if skill_dir.is_symlink() else skill_dir
+        if not resolved.is_dir():
+            continue
+        skill_md = resolved / "SKILL.md"
+        if not skill_md.is_file():
+            continue
+        try:
+            current_mtime = skill_md.stat().st_mtime_ns
+        except OSError:
+            continue
+        cached_mtime = cached_mtimes.get(skill_dir.name)
+        if cached_mtime is None or current_mtime != cached_mtime:
+            return True
+    return False
 
 
 # End-of-session phrases (matched when no keyword/URL intent fires and a
@@ -118,7 +147,7 @@ def build_trigger_index(skill_search_dirs: list[Path]) -> list[dict]:
 
     import operator
 
-    index.sort(key=operator.itemgetter("priority"))
+    index.sort(key=operator.itemgetter("priority", "skill"))
     return index
 
 
@@ -202,6 +231,93 @@ def detect_intent(
     return ""
 
 
+# ── Detailed intent detection (for CLI debugging) ─────────────────
+
+
+@dataclass(frozen=True, slots=True)
+class IntentMatch:
+    skill: str
+    match_pass: str  # "slash", "url", "keyword", "end_of_session", or ""
+    pattern: str
+    priority: int
+
+    def __str__(self) -> str:
+        if not self.skill:
+            return "no match"
+        return f"{self.skill} ({self.match_pass}: {self.pattern}, priority {self.priority})"
+
+
+_NO_MATCH = IntentMatch(skill="", match_pass="", pattern="", priority=0)
+
+
+def detect_intent_detailed(
+    prompt: str,
+    *,
+    trigger_index: list[dict] | None = None,
+    skill_search_dirs: list[Path] | None = None,
+    loaded_skills: set[str] | None = None,
+) -> IntentMatch:
+    """Like ``detect_intent`` but returns match details for debugging."""
+    if trigger_index is None:
+        trigger_index = _read_trigger_index()
+        if not trigger_index and skill_search_dirs:
+            trigger_index = build_trigger_index(skill_search_dirs)
+
+    if not trigger_index:
+        return _NO_MATCH
+
+    lp = prompt.lower()
+
+    # Pass 0: Explicit /<skill> slash commands.
+    slash_match = re.match(r"^/?([a-z][a-z0-9_-]+)", lp.strip())
+    if slash_match:
+        candidate = slash_match.group(1)
+        for entry in trigger_index:
+            if entry["skill"] == candidate:
+                return IntentMatch(candidate, "slash", f"/{candidate}", entry.get("priority", 50))
+
+    # Pass 1: URL patterns.
+    for entry in trigger_index:
+        for url_pattern in entry.get("urls", []):
+            try:
+                if re.search(url_pattern, lp):
+                    return IntentMatch(entry["skill"], "url", url_pattern, entry.get("priority", 50))
+            except re.error:
+                continue
+
+    # Pass 2: Keyword patterns.
+    for entry in trigger_index:
+        exclude = entry.get("exclude", "")
+        if exclude:
+            try:
+                if re.search(exclude, lp):
+                    continue
+            except re.error:
+                pass
+        for kw_pattern in entry.get("keywords", []):
+            try:
+                if re.search(kw_pattern, lp):
+                    return IntentMatch(entry["skill"], "keyword", kw_pattern, entry.get("priority", 50))
+            except re.error:
+                continue
+
+    # Pass 3: End-of-session.
+    if _END_OF_SESSION_RE.match(prompt.strip().lower()):
+        loaded = loaded_skills or set()
+        has_lifecycle = any(s in _LIFECYCLE_SKILLS for s in loaded)
+        if has_lifecycle:
+            for entry in trigger_index:
+                if entry.get("end_of_session") and entry["skill"] not in loaded:
+                    return IntentMatch(
+                        entry["skill"],
+                        "end_of_session",
+                        "end_of_session: true",
+                        entry.get("priority", 50),
+                    )
+
+    return _NO_MATCH
+
+
 # ── Companion skills (XDG cache) ────────────────────────────────────
 
 
@@ -273,9 +389,15 @@ def suggest_skills(data: dict) -> dict:
     search_dirs = [Path(d) for d in data.get("skill_search_dirs", [])]
     supplementary_config = data.get("supplementary_config", "")
 
-    # 1. Detect intent from trigger index
+    # 1. Read the trigger index (cached or built on the fly).
+    trigger_index = _read_trigger_index()
+    if not trigger_index and search_dirs:
+        trigger_index = build_trigger_index(search_dirs)
+
+    # 2. Detect intent from trigger index
     intent = detect_intent(
         prompt,
+        trigger_index=trigger_index,
         skill_search_dirs=search_dirs,
         loaded_skills=loaded,
     )
@@ -283,10 +405,6 @@ def suggest_skills(data: dict) -> dict:
     if not intent:
         return {"suggestions": [], "intent": ""}
 
-    combined_search_dirs: list[Path] = []
-    for directory in [*search_dirs, DEFAULT_SKILLS_DIR]:
-        if directory not in combined_search_dirs:
-            combined_search_dirs.append(directory)
     policy = SkillLoadingPolicy()
     selection = policy.select_for_prompt_hook(
         cwd=Path(cwd) if cwd else Path.cwd(),
@@ -294,5 +412,6 @@ def suggest_skills(data: dict) -> dict:
         overlay_skill_metadata=read_overlay_skill_metadata(),
         loaded_skills=loaded,
         supplementary_skills=read_supplementary_skills(supplementary_config, prompt),
+        trigger_index=trigger_index,
     )
     return {"suggestions": selection.skills, "intent": intent}
