@@ -17,6 +17,7 @@ from teatree.utils.django_db import (
     _extract_failing_migration,
     _find_dslr_cmd,
     _find_dslr_snapshots,
+    _is_env_error,
     _local_db_url,
     _migrate_reference_db,
     _pg_args,
@@ -133,24 +134,11 @@ class TestPgArgs:
 
 
 class TestFindDslrCmd:
-    def test_uses_env_var(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("DSLR_CMD", "/custom/dslr")
-        monkeypatch.setattr(mod.shutil, "which", lambda p: p)
-        assert _find_dslr_cmd("dslr") == ["/custom/dslr"]
-
-    def test_prefers_uv_run(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Without DSLR_CMD, always uses uv run (avoids broken pyenv shims)."""
-        monkeypatch.delenv("DSLR_CMD", raising=False)
-        monkeypatch.setattr(mod.shutil, "which", lambda p: p)
+    def test_returns_uv_run_when_uv_available(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(mod.shutil, "which", lambda p: "/usr/bin/uv" if p == "uv" else None)
         assert _find_dslr_cmd("dslr") == ["uv", "run", "dslr"]
 
-    def test_falls_back_to_uv_run(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("DSLR_CMD", raising=False)
-        monkeypatch.setattr(mod.shutil, "which", lambda p: "uv" if p == "uv" else None)
-        assert _find_dslr_cmd("dslr") == ["uv", "run", "dslr"]
-
-    def test_returns_empty_when_not_found(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("DSLR_CMD", raising=False)
+    def test_returns_empty_when_uv_not_found(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(mod.shutil, "which", lambda _: None)
         assert _find_dslr_cmd("dslr") == []
 
@@ -195,6 +183,36 @@ class TestFindDslrSnapshots:
             lambda *a, **kw: CompletedProcess(a, 1, "", "error"),
         )
         assert _find_dslr_snapshots(["/bin/dslr"], {}, "development-acme") == []
+
+
+class TestIsEnvError:
+    @pytest.mark.parametrize(
+        "msg",
+        [
+            "connection refused",
+            "could not connect to server",
+            "password authentication failed for user",
+            "is being accessed by other users",
+            "database 'foo' does not exist",
+            "could not translate host name",
+            "permission denied for relation",
+            "SSL connection has been closed",
+        ],
+    )
+    def test_detects_env_errors(self, msg: str) -> None:
+        assert _is_env_error(msg) is True
+
+    @pytest.mark.parametrize(
+        "msg",
+        [
+            "could not read input file",
+            "unexpected EOF",
+            "invalid page header",
+            "pg_restore failed for mydb",
+        ],
+    )
+    def test_rejects_data_corruption(self, msg: str) -> None:
+        assert _is_env_error(msg) is False
 
 
 class TestRestoreRefFromDslr:
@@ -392,10 +410,30 @@ class TestRestoreRefAndCopy:
         ctx = _make_ctx(tmp_path)
         assert _restore_ref_and_copy(ctx, "/tmp/dump.pgsql", "test") is True
 
-    def test_failure_on_restore(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr("teatree.utils.db.db_restore", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("boom")))
+    def test_marks_bad_on_data_corruption(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            "teatree.utils.db.db_restore",
+            lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("could not read input")),
+        )
         ctx = _make_ctx(tmp_path)
         assert _restore_ref_and_copy(ctx, "/tmp/dump.pgsql", "test") is False
+        assert bad_artifacts.is_bad("/tmp/dump.pgsql")
+
+    def test_does_not_mark_bad_on_env_error(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            "teatree.utils.db.db_restore",
+            lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("connection refused")),
+        )
+        ctx = _make_ctx(tmp_path)
+        assert _restore_ref_and_copy(ctx, "/tmp/dump.pgsql", "test") is False
+        assert not bad_artifacts.is_bad("/tmp/dump.pgsql")
+
+    def test_does_not_mark_bad_on_migration_failure(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("teatree.utils.db.db_restore", lambda *a, **kw: None)
+        monkeypatch.setattr(mod, "_migrate_reference_db", lambda *a: False)
+        ctx = _make_ctx(tmp_path)
+        assert _restore_ref_and_copy(ctx, "/tmp/dump.pgsql", "test") is False
+        assert not bad_artifacts.is_bad("/tmp/dump.pgsql")
 
     def test_success_without_dslr(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(mod.subprocess, "run", _ok_run)
@@ -403,12 +441,6 @@ class TestRestoreRefAndCopy:
         (tmp_path / "manage.py").write_text("", encoding="utf-8")
         ctx = _make_ctx(tmp_path, dslr_cmd="")
         assert _restore_ref_and_copy(ctx, "/tmp/dump.pgsql", "test") is True
-
-    def test_returns_false_when_migration_fails(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr("teatree.utils.db.db_restore", lambda *a, **kw: None)
-        monkeypatch.setattr(mod, "_migrate_reference_db", lambda *a: False)
-        ctx = _make_ctx(tmp_path)
-        assert _restore_ref_and_copy(ctx, "/tmp/dump.pgsql", "test") is False
 
     def test_returns_false_when_template_copy_fails(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr("teatree.utils.db.db_restore", lambda *a, **kw: None)

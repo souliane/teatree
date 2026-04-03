@@ -170,7 +170,6 @@ def _is_env_error(stderr: str) -> bool:
         "is being accessed by other users",
         "does not exist",
         "could not translate host name",
-        "role .* does not exist",
         "permission denied",
         "ssl",
     ]
