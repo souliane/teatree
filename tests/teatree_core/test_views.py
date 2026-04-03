@@ -1,3 +1,5 @@
+import os
+import subprocess as subprocess_mod
 from pathlib import Path
 from unittest.mock import patch
 
@@ -366,6 +368,33 @@ class TestCancelTaskView(TestCase):
         assert response.status_code == 409
         assert response.json()["error"] == "Task already finished"
 
+    def test_claimed_task_without_confirm_returns_409(self) -> None:
+        task = Task.objects.create(
+            ticket=self.ticket,
+            session=self.session,
+            execution_target=Task.ExecutionTarget.HEADLESS,
+            status=Task.Status.CLAIMED,
+        )
+
+        response = Client().post(reverse("teatree:task-cancel", args=[task.pk]))
+
+        assert response.status_code == 409
+        assert "in progress" in response.json()["error"]
+
+    def test_claimed_task_with_confirm_cancels(self) -> None:
+        task = Task.objects.create(
+            ticket=self.ticket,
+            session=self.session,
+            execution_target=Task.ExecutionTarget.HEADLESS,
+            status=Task.Status.CLAIMED,
+        )
+
+        response = Client().post(reverse("teatree:task-cancel", args=[task.pk]), {"confirm": "true"})
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "failed"
+
     def test_nonexistent_task_returns_404(self) -> None:
         response = Client().post(reverse("teatree:task-cancel", args=[999999]))
 
@@ -659,8 +688,69 @@ class TestGitPullView(TestCase):
         assert task.execution_target == Task.ExecutionTarget.INTERACTIVE
         assert "git pull failed" in task.execution_reason
 
+    def test_timeout_returns_500(self) -> None:
+        with (
+            patch.object(actions_views, "_get_t3_repo", return_value=self.tmp_path),
+            patch("teatree.core.views.actions.subprocess") as mock_subprocess,
+        ):
+            mock_subprocess.TimeoutExpired = subprocess_mod.TimeoutExpired
+            mock_subprocess.run.side_effect = subprocess_mod.TimeoutExpired(["git", "pull"], 30)
+            response = Client().post(reverse("teatree:dashboard-git-pull"))
+
+        assert response.status_code == 500
+        assert "timed out" in response.json()["error"]
+
     def test_missing_repo_returns_400(self) -> None:
         with patch.object(actions_views, "_get_t3_repo", return_value=None):
             response = Client().post(reverse("teatree:dashboard-git-pull"))
 
         assert response.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# _get_t3_repo
+# ---------------------------------------------------------------------------
+
+
+class TestGetT3Repo:
+    def test_returns_path_from_env_var(self, tmp_path: Path) -> None:
+        with patch.dict(os.environ, {"T3_REPO": str(tmp_path)}):
+            result = actions_views._get_t3_repo()
+
+        assert result == tmp_path
+
+    def test_expands_user_in_env_var(self) -> None:
+        with patch.dict(os.environ, {"T3_REPO": "~/my-teatree"}):
+            result = actions_views._get_t3_repo()
+
+        assert result == Path("~/my-teatree").expanduser()
+
+    def test_auto_detects_from_package_location(self, tmp_path: Path) -> None:
+        fake_file = tmp_path / "src" / "teatree" / "core" / "views" / "actions.py"
+        fake_file.parent.mkdir(parents=True)
+        fake_file.touch()
+        # Create .git dir at the repo root (4 parents up from actions.py)
+        (tmp_path / ".git").mkdir()
+
+        with (
+            patch.dict(os.environ, {"T3_REPO": ""}, clear=False),
+            patch("teatree.core.views.actions.Path") as mock_path_cls,
+        ):
+            # Make Path(__file__).resolve().parents[4] return tmp_path
+            mock_file_path = mock_path_cls.return_value.resolve.return_value
+            mock_file_path.parents.__getitem__ = lambda self, i: tmp_path if i == 4 else None
+            result = actions_views._get_t3_repo()
+
+        assert result == tmp_path
+
+    def test_returns_none_when_no_git_dir(self, tmp_path: Path) -> None:
+        # No .git directory at the computed package root
+        with (
+            patch.dict(os.environ, {"T3_REPO": ""}, clear=False),
+            patch("teatree.core.views.actions.Path") as mock_path_cls,
+        ):
+            mock_file_path = mock_path_cls.return_value.resolve.return_value
+            mock_file_path.parents.__getitem__ = lambda self, i: tmp_path if i == 4 else None
+            result = actions_views._get_t3_repo()
+
+        assert result is None

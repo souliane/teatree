@@ -141,10 +141,14 @@ def _docker_compose_up(
 ) -> bool:
     """Start all services via docker-compose."""
     cmd = [
-        "docker", "compose",
-        "-p", project,
-        "-f", compose_file,
-        "up", "-d",
+        "docker",
+        "compose",
+        "-p",
+        project,
+        "-f",
+        compose_file,
+        "up",
+        "-d",
     ]
     result = subprocess.run(cmd, env=env, capture_output=True, text=True, check=False)  # noqa: S603
     if result.returncode != 0:
@@ -360,7 +364,7 @@ class Command(TyperCommand):
     def status(
         self,
         path: str = typer.Option("", help="Worktree path (auto-detects from PWD if empty)."),
-    ) -> dict[str, str]:
+    ) -> dict[str, object]:
         worktree = resolve_worktree(path)
         project = _compose_project(worktree)
         ports = get_worktree_ports(project)

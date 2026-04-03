@@ -158,6 +158,7 @@ When raising concerns about caching, stale data, or side effects: **investigate 
 6. **Safety** — no security issues, no data loss risks?
 7. **Migrations** — reversible? data-safe? performance-safe?
 8. **Scope** — are unrelated changes bundled in? Flag only if genuinely unrelated; small related fixes alongside the main change are normal practice.
+9. **MR metadata** — title and description comply with the overlay's commit message format? If the overlay provides `validate_pr()`, run it programmatically rather than checking by eye.
 
 **Step 2 — Review Tone & Formatting (Non-Negotiable):**
 
