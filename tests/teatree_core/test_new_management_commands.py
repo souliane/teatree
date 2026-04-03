@@ -1520,7 +1520,7 @@ class TestRunBackend(TestCase):
 class TestRunFrontend(TestCase):
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_starts_via_docker_compose(self) -> None:
+    def test_starts_via_docker_compose_when_service_exists(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             wt_dir = tmp_path / "frontend"
@@ -1537,6 +1537,7 @@ class TestRunFrontend(TestCase):
             mock_config = MagicMock()
             mock_config.user.workspace_dir = tmp_path
             with (
+                patch.object(run_mod, "_compose_has_service", return_value=True),
                 patch.object(run_mod.subprocess, "run") as mock_run,
                 patch("teatree.config.load_config", return_value=mock_config),
                 patch.object(
@@ -1550,9 +1551,9 @@ class TestRunFrontend(TestCase):
             mock_run.assert_called_once()
             assert "docker-compose" in result.lower()
 
-    @_patch_overlays(MINIMAL_OVERLAY)
+    @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_no_compose_file_returns_message(self) -> None:
+    def test_falls_back_to_local_when_no_docker_service(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             wt_dir = tmp_path / "frontend"
@@ -1566,19 +1567,34 @@ class TestRunFrontend(TestCase):
                 extra={"worktree_path": str(wt_dir)},
             )
 
-            mock_config = MagicMock()
-            mock_config.user.workspace_dir = tmp_path
             with (
-                patch("teatree.config.load_config", return_value=mock_config),
-                patch.object(
-                    run_mod,
-                    "find_free_ports",
-                    return_value={"backend": 8001, "frontend": 4201, "postgres": 5432, "redis": 6379},
-                ),
+                patch.object(run_mod, "_compose_has_service", return_value=False),
+                patch.object(run_mod.subprocess, "Popen") as mock_popen,
             ):
                 result = cast("str", call_command("run", "frontend", path=str(wt_dir)))
 
-            assert "no docker-compose file" in result.lower()
+            mock_popen.assert_called_once()
+            assert "locally" in result.lower()
+
+    @_patch_overlays(MINIMAL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_no_command_configured_returns_message(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            wt_dir = tmp_path / "frontend"
+            wt_dir.mkdir()
+            ticket = Ticket.objects.create(overlay="test")
+            Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="/tmp/frontend",
+                branch="feature",
+                extra={"worktree_path": str(wt_dir)},
+            )
+
+            result = cast("str", call_command("run", "frontend", path=str(wt_dir)))
+
+            assert "no frontend command" in result.lower()
 
 
 class TestRunBuildFrontend(TestCase):
@@ -1835,7 +1851,7 @@ class TestRunE2ePrivate(TestCase):
             patch.dict("os.environ", {"T3_PRIVATE_TESTS": "/nonexistent/path"}),
         ):
             result = cast("str", call_command("run", "e2e-private"))
-        assert "does not exist" in result
+        assert "not configured" in result or "directory missing" in result
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
@@ -1955,6 +1971,7 @@ class TestRunE2ePrivate(TestCase):
             with (
                 patch.dict("os.environ", {"T3_PRIVATE_TESTS": str(private_dir), "T3_ORIG_CWD": str(wt_dir)}),
                 patch.object(run_mod, "get_service_port", return_value=None),
+                patch.object(run_mod, "_detect_local_port", return_value=None),
             ):
                 result = cast("str", call_command("run", "e2e-private"))
             assert "not running" in result
