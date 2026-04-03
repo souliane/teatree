@@ -9,7 +9,6 @@ does the rest.  No Django imports — shells out to ``manage.py``.
 
 import os
 import re
-import shutil
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -124,9 +123,9 @@ def _copy_ref_to_ticket(ctx: _RestoreContext) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def _find_dslr_cmd(tool_name: str) -> list[str]:
-    """Return ``["uv", "run", <tool_name>]`` if uv is available, else ``[]``."""
-    return ["uv", "run", tool_name] if shutil.which("uv") else []
+def _dslr_cmd(tool_name: str) -> list[str]:
+    """Return ``["uv", "run", <tool_name>]``. Assumes uv is installed."""
+    return ["uv", "run", tool_name]
 
 
 def _dslr_env(ref_db: str) -> dict[str, str]:
@@ -143,10 +142,10 @@ def _dslr_artifact_key(snap_name: str) -> str:
     return f"dslr:{snap_name}"
 
 
-def _find_dslr_snapshots(dslr_cmd: list[str], env: dict[str, str], ref_db: str) -> list[str]:
+def _find_dslr_snapshots(dslr_cmd: list[str], env: dict[str, str], ref_db: str, *, cwd: str = "") -> list[str]:
     """Return matching DSLR snapshots sorted newest-first, excluding bad artifacts."""
     suffix = f"_{ref_db}"
-    result = subprocess.run([*dslr_cmd, "list"], env=env, capture_output=True, text=True, check=False)
+    result = subprocess.run([*dslr_cmd, "list"], env=env, capture_output=True, text=True, check=False, cwd=cwd or None)
     if result.returncode != 0:
         return []
     names: list[str] = []
@@ -177,7 +176,9 @@ def _is_env_error(stderr: str) -> bool:
     return any(p in lower for p in env_patterns)
 
 
-def _restore_ref_from_dslr(dslr_cmd: list[str], env: dict[str, str], snap_name: str) -> tuple[bool, bool]:
+def _restore_ref_from_dslr(
+    dslr_cmd: list[str], env: dict[str, str], snap_name: str, *, cwd: str = ""
+) -> tuple[bool, bool]:
     """Restore a DSLR snapshot. Returns (success, is_env_error)."""
     result = subprocess.run(
         [*dslr_cmd, "restore", snap_name],
@@ -185,13 +186,14 @@ def _restore_ref_from_dslr(dslr_cmd: list[str], env: dict[str, str], snap_name: 
         capture_output=True,
         text=True,
         check=False,
+        cwd=cwd or None,
     )
     if result.returncode == 0:
         return True, False
     return False, _is_env_error(result.stderr)
 
 
-def _take_dslr_snapshot(dslr_cmd: list[str], env: dict[str, str], ref_db: str) -> None:
+def _take_dslr_snapshot(dslr_cmd: list[str], env: dict[str, str], ref_db: str, *, cwd: str = "") -> None:
     snap_name = _dslr_snap_name(ref_db)
     print(f"  Taking DSLR snapshot: {snap_name}")  # noqa: T201
     subprocess.run(
@@ -199,6 +201,7 @@ def _take_dslr_snapshot(dslr_cmd: list[str], env: dict[str, str], ref_db: str) -
         env=env,
         capture_output=True,
         check=False,
+        cwd=cwd or None,
     )
 
 
@@ -249,9 +252,12 @@ def _migrate_reference_db(main_repo: str, ref_db: str, extra_env: dict[str, str]
         return True
 
     print(f"  Migrating reference DB ({ref_db}) using main repo...")  # noqa: T201
+    from teatree.utils.uv import uv_cmd  # noqa: PLC0415
+
+    python_cmd = uv_cmd("python")
     for _attempt in range(_MAX_MIGRATE_RETRIES):
         result = subprocess.run(
-            ["python", "manage.py", "migrate", "--no-input"],
+            [*python_cmd, "manage.py", "migrate", "--no-input"],
             cwd=main_repo,
             env=run_env,
             capture_output=True,
@@ -271,7 +277,7 @@ def _migrate_reference_db(main_repo: str, ref_db: str, extra_env: dict[str, str]
             "No module named",
         )
         if any(m in combined for m in config_markers):
-            print("  WARNING: Cannot migrate reference DB (config error), skipping.")  # noqa: T201
+            print(f"  WARNING: Cannot migrate reference DB (config error): {combined.strip()[:300]}")  # noqa: T201
             return False
 
         fakeable = "already exists" in combined or "does not exist" in combined
@@ -288,7 +294,7 @@ def _migrate_reference_db(main_repo: str, ref_db: str, extra_env: dict[str, str]
         reason = "schema already exists" if "already exists" in combined else "table absent from dump"
         print(f"  Faking {failing} on reference DB ({reason})...")  # noqa: T201
         subprocess.run(
-            ["python", "manage.py", "migrate", app_label, migration_name, "--fake"],
+            [*python_cmd, "manage.py", "migrate", app_label, migration_name, "--fake"],
             cwd=main_repo,
             env=run_env,
             capture_output=True,
@@ -327,7 +333,7 @@ def _restore_ref_and_copy(ctx: _RestoreContext, dump_path: str, label: str) -> b
         print(f"  WARNING: Migration failed after restoring {label} (not marking dump bad)")  # noqa: T201
         return False
     if ctx.dslr_cmd:
-        _take_dslr_snapshot(ctx.dslr_cmd, ctx.dslr_env, cfg.ref_db_name)
+        _take_dslr_snapshot(ctx.dslr_cmd, ctx.dslr_env, cfg.ref_db_name, cwd=cfg.main_repo_path)
     if _copy_ref_to_ticket(ctx):
         print(f"  Created {cfg.ticket_db_name} from {label}.")  # noqa: T201
         return True
@@ -347,17 +353,18 @@ def _try_restore_from_dslr(ctx: _RestoreContext, *, skip_dslr: bool) -> bool:
         print("  DSLR: skipped (--skip-dslr)")  # noqa: T201
         return False
     if not ctx.dslr_cmd:
-        print("  DSLR: skipped (dslr command not found — install dslr or set DSLR_CMD)")  # noqa: T201
+        print("  DSLR: skipped (no snapshot_tool configured)")  # noqa: T201
         return False
     print(f"  DSLR: using {' '.join(ctx.dslr_cmd)}")  # noqa: T201
     _ensure_ref_db(ctx.cfg.ref_db_name, ctx.pg_host, ctx.pg_user, ctx.pg_env)
-    snapshots = _find_dslr_snapshots(ctx.dslr_cmd, ctx.dslr_env, ctx.cfg.ref_db_name)
+    main_repo = ctx.cfg.main_repo_path
+    snapshots = _find_dslr_snapshots(ctx.dslr_cmd, ctx.dslr_env, ctx.cfg.ref_db_name, cwd=main_repo)
     if not snapshots:
         print(f"  DSLR: no valid snapshots for {ctx.cfg.ref_db_name} (all marked bad or none exist)")  # noqa: T201
         return False
     for snap_name in snapshots:
         print(f"  Restoring {ctx.cfg.ref_db_name} from DSLR snapshot: {snap_name}")  # noqa: T201
-        ok, is_env = _restore_ref_from_dslr(ctx.dslr_cmd, ctx.dslr_env, snap_name)
+        ok, is_env = _restore_ref_from_dslr(ctx.dslr_cmd, ctx.dslr_env, snap_name, cwd=main_repo)
         if not ok:
             if is_env:
                 print(f"  WARNING: DSLR restore failed (environment error, not marking bad): {snap_name}")  # noqa: T201
@@ -370,7 +377,7 @@ def _try_restore_from_dslr(ctx: _RestoreContext, *, skip_dslr: bool) -> bool:
             # not snapshot corruption — don't mark the snapshot as bad.
             print(f"  WARNING: Migration failed after DSLR restore of {snap_name} (not marking snapshot bad)")  # noqa: T201
             continue
-        _take_dslr_snapshot(ctx.dslr_cmd, ctx.dslr_env, ctx.cfg.ref_db_name)
+        _take_dslr_snapshot(ctx.dslr_cmd, ctx.dslr_env, ctx.cfg.ref_db_name, cwd=main_repo)
         if _copy_ref_to_ticket(ctx):
             print(f"  Created {ctx.cfg.ticket_db_name} from DSLR snapshot.")  # noqa: T201
             return True
@@ -493,7 +500,7 @@ def django_db_import(
 
     Returns True on success, False if no source was available.
     """
-    dslr_cmd = _find_dslr_cmd(cfg.snapshot_tool) if cfg.snapshot_tool else []
+    dslr_cmd = _dslr_cmd(cfg.snapshot_tool) if cfg.snapshot_tool else []
     pg_host, pg_user, pg_env = _pg_args()
     dslr_e = _dslr_env(cfg.ref_db_name) if dslr_cmd else {}
     ctx = _RestoreContext(
