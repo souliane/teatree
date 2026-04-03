@@ -46,8 +46,22 @@ def db_restore(db_name: str, dump_path: str) -> None:
 
     inspection = subprocess.run(["pg_restore", "-l", dump_path], capture_output=True, text=True, check=False)
     if inspection.returncode == 0:
+        jobs = min(os.cpu_count() or 2, 4)
+        cmd = [
+            "pg_restore",
+            "-h",
+            host,
+            "-U",
+            user,
+            "-d",
+            db_name,
+            "--no-owner",
+            "--no-acl",
+            f"--jobs={jobs}",
+            dump_path,
+        ]
         restore = subprocess.run(
-            ["pg_restore", "-h", host, "-U", user, "-d", db_name, "--no-owner", "--no-acl", dump_path],
+            cmd,
             env=env,
             capture_output=True,
             text=True,
