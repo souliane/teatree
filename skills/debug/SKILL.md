@@ -105,6 +105,10 @@ Common failure categories:
 - Remove diagnostic logging.
 - Verify the fix with concrete evidence.
 
+### Phase 5: Deliver
+
+After fixing and verifying, the fix needs to be committed and pushed via a PR. **Load `/t3:ship`** (or the project's delivery skill) before committing. Never commit directly on main — create a worktree and branch first. (Source: `t3:rules` § Worktree-First Work)
+
 ## Escalation Rules
 
 - **After 1 failed fix** → re-read error output carefully.
