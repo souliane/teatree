@@ -293,6 +293,55 @@ def handle_track_skill_usage(data: dict) -> None:
             _append_line(skills_file, name)
 
 
+# ── PostCompact: recover-temp-files ───────────────────────────────
+
+
+_T3_TEMP_PREFIX = "t3-snapshot-"
+
+
+def _find_temp_files(session_id: str) -> list[Path]:
+    """Find t3 temp files for this session in STATE_DIR and /tmp."""
+    results: list[Path] = []
+    session_glob = f"{_T3_TEMP_PREFIX}{session_id}-*.md"
+    for search_dir in (STATE_DIR, Path("/tmp")):  # noqa: S108
+        if search_dir.is_dir():
+            results.extend(sorted(search_dir.glob(session_glob)))
+    # Also pick up any sessionless t3-snapshot files in /tmp (legacy retro pattern)
+    tmp = Path("/tmp")  # noqa: S108
+    if tmp.is_dir():
+        for f in sorted(tmp.glob(f"{_T3_TEMP_PREFIX}*.md")):
+            if f not in results:
+                results.append(f)
+    return results
+
+
+def handle_post_compact(data: dict) -> None:
+    """Inject saved temp files back into context after compaction."""
+    session_id = data.get("session_id", "")
+    files = _find_temp_files(session_id)
+    if not files:
+        return
+
+    parts: list[str] = []
+    for f in files:
+        try:
+            content = f.read_text(encoding="utf-8").strip()
+        except OSError:
+            continue
+        if content:
+            parts.append(f"## {f.name}\n\n{content}")
+
+    if not parts:
+        return
+
+    context = (
+        "PRE-COMPACTION SNAPSHOTS RECOVERED — the following files were saved before "
+        "context compaction. Read them to resume where you left off, then delete the "
+        "temp files when done:\n\n" + "\n\n---\n\n".join(parts)
+    )
+    json.dump({"additionalContext": context}, sys.stdout)
+
+
 # ── Router ──────────────────────────────────────────────────────────
 
 _HANDLERS: dict[str, list] = {
@@ -300,6 +349,7 @@ _HANDLERS: dict[str, list] = {
     "PreToolUse": [handle_enforce_skill_loading, handle_validate_mr_metadata],
     "PostToolUse": [handle_track_active_repo, handle_track_skill_usage],
     "InstructionsLoaded": [handle_track_skill_usage],
+    "PostCompact": [handle_post_compact],
 }
 
 

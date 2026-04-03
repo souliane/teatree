@@ -44,6 +44,7 @@ When using temporary files (for MR note bodies, test data, etc.):
 - **Always use `mktemp`** or inline Python heredocs instead.
 - **Always use `>|`** (clobber override) not `>` — zsh `noclobber` silently prevents overwrite.
 - **Always clean up** the temp file immediately after use (`os.unlink()` in Python, `rm` in shell).
+- **Exception: pre-compaction snapshots** — files matching `/tmp/t3-snapshot-*.md` are recovered automatically by the `PostCompact` hook. Use `t3-snapshot-${CLAUDE_SESSION_ID:-manual}-$(date +%Y%m%d-%H%M).md` for the filename. Delete after persisting findings to durable storage.
 
 ## Complex API Payloads: Use curl or Python (Non-Negotiable)
 
@@ -133,7 +134,7 @@ Long sessions lose context to automatic compaction. Proactively manage session l
 - **After 15+ tool calls**, suggest `/t3:next` or `/t3:retro` to preserve findings before compaction.
 - **Before switching phases** (coding → testing, testing → reviewing), suggest wrapping up the current phase — phase transitions are natural breakpoints.
 - **Re-reading a file you already read earlier** is a sign of context pressure. Consider wrapping up.
-- **When context gets compacted**, critical state must survive — see the user's global agent config § Compact Instructions for what to preserve.
+- **When context gets compacted**, critical state must survive — see the user's global agent config § Compact Instructions for what to preserve. The `PostCompact` hook automatically recovers any `/tmp/t3-snapshot-*.md` files into context.
 
 ## Commit Before Declaring Done (Non-Negotiable)
 

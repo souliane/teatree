@@ -65,16 +65,16 @@ Systematic review of the current conversation to extract failures, near-misses, 
 
 ### Pre-Compaction Persistence (Non-Negotiable)
 
-If retro is in progress when compaction is imminent (long conversation, many tool calls), **write findings to a temporary file immediately** before they are lost:
+If retro is in progress when compaction is imminent (long conversation, many tool calls), **write findings to a temporary file immediately** before they are lost. Use the `t3-snapshot-` prefix so the `PostCompact` hook can find and inject the file back into context automatically:
 
 ```bash
-cat > /tmp/retro-$(date +%Y%m%d-%H%M).md <<'EOF'
+cat > /tmp/t3-snapshot-${CLAUDE_SESSION_ID:-manual}-$(date +%Y%m%d-%H%M).md <<'EOF'
 # Retro Findings (pre-compaction snapshot)
 <paste categorized findings here>
 EOF
 ```
 
-After compaction, read the temp file to resume. This prevents the most common retro failure: findings identified but lost to context compression before being written to durable skill files.
+**Recovery is automatic.** The teatree `PostCompact` hook scans for `t3-snapshot-*.md` files and injects their content as `additionalContext` after compaction. You do not need to remember to read the file — it will appear in your context. Delete the temp file once findings are persisted to durable skill files.
 
 ## Scope & Editability
 
