@@ -71,6 +71,14 @@ class TestValidateSkillMd:
         errors, _ = validate_skill_md(tmp_path / "missing.md")
         assert any("file not found" in e for e in errors)
 
+    def test_unreadable_file(self, tmp_path: Path):
+        skill_md = tmp_path / "SKILL.md"
+        skill_md.write_text("---\nname: test\n---\n")
+        skill_md.chmod(0o000)
+        errors, _ = validate_skill_md(skill_md)
+        assert len(errors) == 1
+        skill_md.chmod(0o644)  # Restore for cleanup
+
 
 class TestValidateDirectory:
     def test_validates_all_skills(self, tmp_path: Path):

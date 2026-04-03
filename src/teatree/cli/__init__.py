@@ -437,7 +437,7 @@ def test_trigger(prompt: str) -> None:
     from teatree.config import DATA_DIR  # noqa: PLC0415
 
     # Import from scripts/lib (same pattern as _startup.py).
-    scripts_lib = Path(__file__).resolve().parents[2] / "scripts" / "lib"
+    scripts_lib = Path(__file__).resolve().parents[3] / "scripts" / "lib"
     if str(scripts_lib) not in _sys.path:
         _sys.path.insert(0, str(scripts_lib))
 

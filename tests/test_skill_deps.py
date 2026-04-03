@@ -99,3 +99,16 @@ class TestResolveAll:
         result = resolve_all(index)
         assert result["a"] == ["a"]
         assert result["b"] == ["b"]
+
+    def test_empty_skill_name_skipped(self):
+        index = [{"skill": "", "requires": []}, {"skill": "rules", "requires": []}]
+        result = resolve_all(index)
+        assert "" not in result
+        assert result["rules"] == ["rules"]
+
+
+class TestBuildRequiresMap:
+    def test_empty_skill_name_skipped(self):
+        index = [{"skill": "", "requires": ["x"]}, {"skill": "a", "requires": []}]
+        result = resolve_requires(["a"], index)
+        assert result == ["a"]
