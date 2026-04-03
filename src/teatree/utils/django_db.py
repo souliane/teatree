@@ -125,22 +125,17 @@ def _copy_ref_to_ticket(ctx: _RestoreContext) -> bool:
 
 
 def _find_dslr_cmd(tool_name: str) -> list[str]:
-    """Return a command prefix for invoking dslr (e.g. ``["dslr"]`` or ``["uv", "run", "dslr"]``)."""
+    """Return a command prefix for invoking dslr.
+
+    Prefers ``uv run`` (resolves project venv where dslr + psycopg live).
+    Bare ``dslr`` on PATH is unreliable (pyenv shims, missing deps).
+    Honour ``DSLR_CMD`` env var as an explicit override.
+    """
     dslr = os.environ.get("DSLR_CMD", "")
     if dslr and shutil.which(dslr):
         return [dslr]
-    if shutil.which(tool_name):
-        return [tool_name]
-    # dslr is a Python tool — invoke via uv which resolves the correct venv.
     if shutil.which("uv"):
-        result = subprocess.run(
-            ["uv", "run", tool_name, "list"],
-            capture_output=True,
-            check=False,
-            timeout=15,
-        )
-        if result.returncode == 0:
-            return ["uv", "run", tool_name]
+        return ["uv", "run", tool_name]
     return []
 
 

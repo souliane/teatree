@@ -138,19 +138,15 @@ class TestFindDslrCmd:
         monkeypatch.setattr(mod.shutil, "which", lambda p: p)
         assert _find_dslr_cmd("dslr") == ["/custom/dslr"]
 
-    def test_falls_back_to_path(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_prefers_uv_run(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Without DSLR_CMD, always uses uv run (avoids broken pyenv shims)."""
         monkeypatch.delenv("DSLR_CMD", raising=False)
-
-        def which(p: str) -> str | None:
-            return p if p == "dslr" else None
-
-        monkeypatch.setattr(mod.shutil, "which", which)
-        assert _find_dslr_cmd("dslr") == ["dslr"]
+        monkeypatch.setattr(mod.shutil, "which", lambda p: p)
+        assert _find_dslr_cmd("dslr") == ["uv", "run", "dslr"]
 
     def test_falls_back_to_uv_run(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("DSLR_CMD", raising=False)
         monkeypatch.setattr(mod.shutil, "which", lambda p: "uv" if p == "uv" else None)
-        monkeypatch.setattr(mod.subprocess, "run", lambda *a, **kw: type("R", (), {"returncode": 0})())
         assert _find_dslr_cmd("dslr") == ["uv", "run", "dslr"]
 
     def test_returns_empty_when_not_found(self, monkeypatch: pytest.MonkeyPatch) -> None:
