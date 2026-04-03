@@ -132,6 +132,15 @@ def _docker_compose_down(project: str, stdout: OutputWrapper) -> None:
         stdout.write(f"  docker compose down: {result.stderr.strip()[:300]}")
 
 
+def _compose_files(compose_file: str) -> list[str]:
+    """Return -f flags for compose file and its override (if present)."""
+    flags = ["-f", compose_file]
+    override = Path(compose_file).parent / "docker-compose.override.yml"
+    if override.is_file():
+        flags.extend(["-f", str(override)])
+    return flags
+
+
 def _docker_compose_up(
     project: str,
     compose_file: str,
@@ -145,15 +154,17 @@ def _docker_compose_up(
         "compose",
         "-p",
         project,
-        "-f",
-        compose_file,
+        *_compose_files(compose_file),
         "up",
         "-d",
         "--no-build",
+        "--pull=never",
     ]
     result = subprocess.run(cmd, env=env, capture_output=True, text=True, check=False)  # noqa: S603
     if result.returncode != 0:
-        stderr.write(f"  docker compose up failed: {result.stderr.strip()[:500]}")
+        stderr.write(f"  docker compose up failed (exit {result.returncode}):")
+        stderr.write(f"  stderr: {result.stderr.strip()}")
+        stderr.write(f"  stdout: {result.stdout.strip()[:500]}")
         return False
     stdout.write("  docker compose up -d: OK")
     return True
@@ -161,7 +172,7 @@ def _docker_compose_up(
 
 class Command(TyperCommand):
     _DB_IMPORT_MAX_FAILURES = 3
-    _verbose: bool = False
+    _verbose: bool = True
 
     @command()
     def setup(
@@ -170,7 +181,7 @@ class Command(TyperCommand):
         variant: str = typer.Option("", help="Tenant variant. Updates ticket if provided."),
         overlay: str = typer.Option("", help="Overlay name (auto-detects if empty)."),
         force: bool = typer.Option(default=False, help="Bypass DB import circuit breaker."),  # noqa: FBT001
-        verbose: bool = typer.Option(default=False, help="Show step stdout/stderr."),  # noqa: FBT001
+        verbose: bool = typer.Option(default=True, help="Show step stdout/stderr."),  # noqa: FBT001
     ) -> int:
         """Provision a worktree (DB name, env file, overlay steps). No port allocation."""
         variant, overlay, verbose = _resolve_typer_defaults(variant, overlay, verbose)
@@ -304,12 +315,15 @@ class Command(TyperCommand):
         self,
         path: str = typer.Option("", help="Worktree path (auto-detects from PWD if empty)."),
         overlay: str = typer.Option("", help="Overlay name (auto-detects if empty)."),
+        verbose: bool = typer.Option(default=True, help="Show step stdout/stderr."),  # noqa: FBT001
     ) -> str:
         """Start all services via docker-compose with dynamically allocated ports.
 
         Finds free host ports at runtime, passes them to docker-compose,
         and starts all containers.  Safe to re-run (runs compose down first).
         """
+        if isinstance(verbose, bool):
+            self._verbose = verbose
         if overlay:
             os.environ["T3_OVERLAY_NAME"] = overlay
         worktree = resolve_worktree(path)
@@ -381,8 +395,11 @@ class Command(TyperCommand):
         self,
         path: str = typer.Option("", help="Worktree path (auto-detects from PWD if empty)."),
         overlay: str = typer.Option("", help="Overlay name (auto-detects if empty)."),
+        verbose: bool = typer.Option(default=True, help="Show step stdout/stderr."),  # noqa: FBT001
     ) -> str:
         """Stop containers, allocate fresh ports, and restart all services."""
+        if isinstance(verbose, bool):
+            self._verbose = verbose
         if overlay:
             os.environ["T3_OVERLAY_NAME"] = overlay
         worktree = resolve_worktree(path)

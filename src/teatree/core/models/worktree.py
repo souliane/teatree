@@ -38,7 +38,7 @@ class Worktree(models.Model):
     def provision(self) -> None:
         self.db_name = self._build_db_name()
 
-    @transition(field=state, source=[State.PROVISIONED, State.SERVICES_UP], target=State.SERVICES_UP)
+    @transition(field=state, source=[State.PROVISIONED, State.SERVICES_UP, State.READY], target=State.SERVICES_UP)
     def start_services(self, *, services: list[str] | None = None) -> None:
         if services is not None:
             extra = self._extra()
