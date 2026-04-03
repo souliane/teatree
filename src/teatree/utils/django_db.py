@@ -469,17 +469,27 @@ def reset_remote_dump_state() -> None:
     _remote_dump_failed = False
 
 
+def _warn_slow_path(label: str) -> None:
+    """Print a prominent warning when a non-DSLR (slow) restore path executes."""
+    print(f"  WARNING [SLOW PATH]: {label}", file=sys.stderr)  # noqa: T201
+    print("  DSLR snapshots are the expected fast path. This operation is significantly slower.", file=sys.stderr)  # noqa: T201
+
+
 def django_db_import(
     cfg: DjangoDbImportConfig,
     *,
     skip_dslr: bool = False,
+    slow_import: bool = False,
     allow_remote_dump: bool = False,
 ) -> bool:
     """Import a Django database with fallback chain.
 
-    Remote dumps are slow and network-dependent. They are only attempted
-    when *allow_remote_dump* is True (e.g., user explicitly requested
-    ``--force`` or confirmed via interactive prompt).
+    By default only DSLR snapshots are tried — the fast, expected path.
+    Non-DSLR fallbacks (pg_restore from dump, remote dump download) are
+    gated behind *slow_import=True* to prevent accidentally triggering
+    multi-minute operations.  Pass ``--slow-import`` on the CLI to enable.
+
+    Remote dumps additionally require *allow_remote_dump=True*.
 
     Returns True on success, False if no source was available.
     """
@@ -497,10 +507,27 @@ def django_db_import(
 
     if _try_restore_from_dslr(ctx, skip_dslr=skip_dslr):
         return True
+
+    # --- Non-DSLR fallbacks (slow) — gated behind --slow-import --------
+    if not slow_import:
+        print(  # noqa: T201
+            "\n  DSLR restore failed or unavailable. Non-DSLR fallbacks are disabled by default.\n"
+            "  Non-DSLR paths (pg_restore, remote dump) take minutes instead of seconds.\n"
+            "  To allow slow fallback paths, re-run with: --slow-import\n",
+            file=sys.stderr,
+        )
+        return False
+
+    _warn_slow_path("Falling back to pg_restore from local dump file.")
     if _try_restore_from_local_dump(ctx):
         return True
-    if allow_remote_dump and _try_fetch_remote_dump(ctx) and _try_restore_from_local_dump(ctx):
-        return True
+
+    if allow_remote_dump:
+        _warn_slow_path("Downloading fresh dump from remote database (pg_dump over network).")
+        if _try_fetch_remote_dump(ctx) and _try_restore_from_local_dump(ctx):
+            return True
+
+    _warn_slow_path("Trying CI dump as last resort (pg_restore).")
     if _try_restore_from_ci_dump(ctx):
         return True
 
@@ -511,7 +538,7 @@ def django_db_import(
     print(f"  - No CI dump matching {cfg.ci_dump_glob} in {cfg.main_repo_path}")  # noqa: T201
     print()  # noqa: T201
     if cfg.remote_db_url:
-        print("  To fetch a fresh dump from the remote DB, re-run with network access.")  # noqa: T201
+        print("  To fetch a fresh dump from the remote DB, re-run with --slow-import.")  # noqa: T201
     else:
         print("  Configure remote_db_url in DjangoDbImportConfig to enable remote dump fetching.")  # noqa: T201
     return False

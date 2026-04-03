@@ -198,7 +198,12 @@ class Command(TyperCommand):
         path: str = typer.Option("", help="Worktree path (auto-detects from PWD if empty)."),
         variant: str = typer.Option("", help="Tenant variant. Updates ticket if provided."),
         overlay: str = typer.Option("", help="Overlay name (auto-detects if empty)."),
-        force: bool = typer.Option(default=False, help="Bypass DB import circuit breaker."),  # noqa: FBT001
+        force: bool = typer.Option(  # noqa: FBT001
+            default=False, help="Reset DB import circuit breaker (retry after repeated failures)."
+        ),
+        slow_import: bool = typer.Option(  # noqa: FBT001
+            default=False, help="Allow slow DB fallbacks (pg_restore, remote dump). DSLR-only by default."
+        ),
         verbose: bool = typer.Option(default=True, help="Show step stdout/stderr."),  # noqa: FBT001
         no_timeout: bool = typer.Option(default=False, help="Disable operation timeouts."),  # noqa: FBT001
     ) -> int:
@@ -219,7 +224,7 @@ class Command(TyperCommand):
         failed_repos: list[str] = []
         for wt in ticket.worktrees.all():
             try:
-                report = self._provision_worktree(wt, resolved_overlay, force=force)
+                report = self._provision_worktree(wt, resolved_overlay, force=force, slow_import=slow_import)
                 if not report.success:
                     failed_repos.append(wt.repo_path)
             except Exception as exc:  # noqa: BLE001
@@ -233,7 +238,7 @@ class Command(TyperCommand):
         return int(worktree.pk)
 
     def _provision_worktree(
-        self, worktree: Worktree, overlay: "OverlayBase", *, force: bool = False
+        self, worktree: Worktree, overlay: "OverlayBase", *, force: bool = False, slow_import: bool = False
     ) -> ProvisionReport:
         self.stdout.write(f"  Provisioning: {worktree.repo_path}")
 
@@ -248,7 +253,7 @@ class Command(TyperCommand):
         _setup_worktree_dir((worktree.extra or {}).get("worktree_path", ""), worktree, overlay, self.stdout)
 
         if overlay.get_db_import_strategy(worktree) is not None:
-            self._run_db_import(worktree, overlay, force=force)
+            self._run_db_import(worktree, overlay, force=force, slow_import=slow_import)
 
         provision_report = run_provision_steps(
             overlay.get_provision_steps(worktree),
@@ -279,7 +284,9 @@ class Command(TyperCommand):
             self.stdout.write(combined.summary())
         return combined
 
-    def _run_db_import(self, worktree: Worktree, overlay: OverlayBase, *, force: bool = False) -> None:
+    def _run_db_import(
+        self, worktree: Worktree, overlay: OverlayBase, *, force: bool = False, slow_import: bool = False
+    ) -> None:
         extra = worktree.extra or {}
         failures = extra.get("db_import_failures", 0)
         if failures >= self._DB_IMPORT_MAX_FAILURES and not force:
@@ -289,7 +296,7 @@ class Command(TyperCommand):
         env = {**os.environ, **overlay.get_env_extra(worktree)}
         env.pop("VIRTUAL_ENV", None)
         os.environ.update(env)
-        if overlay.db_import(worktree):
+        if overlay.db_import(worktree, slow_import=slow_import):
             extra.pop("db_import_failures", None)
             worktree.extra = extra
             worktree.save(update_fields=["extra"])

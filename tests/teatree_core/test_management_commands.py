@@ -178,7 +178,7 @@ class DbOverlay(CommandOverlay):
     def get_db_import_strategy(self, worktree: Worktree) -> DbImportStrategy | None:
         return DbImportStrategy(kind="dslr")
 
-    def db_import(self, worktree: Worktree, *, force: bool = False) -> bool:
+    def db_import(self, worktree: Worktree, *, force: bool = False, slow_import: bool = False) -> bool:
         return False
 
 

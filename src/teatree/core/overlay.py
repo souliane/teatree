@@ -261,7 +261,7 @@ class OverlayBase(ABC):
     def get_db_import_strategy(self, worktree: "Worktree") -> DbImportStrategy | None:
         return None
 
-    def db_import(self, worktree: "Worktree", *, force: bool = False) -> bool:
+    def db_import(self, worktree: "Worktree", *, force: bool = False, slow_import: bool = False) -> bool:
         return False
 
     def get_post_db_steps(self, worktree: "Worktree") -> list[ProvisionStep]:

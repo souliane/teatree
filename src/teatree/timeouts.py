@@ -10,6 +10,10 @@ means "no timeout" for that operation.
 """
 
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from teatree.core.overlay import OverlayBase
 
 # Operation names used as keys.
 SETUP = "setup"
@@ -44,7 +48,7 @@ class TimeoutConfig:
         return val if val > 0 else None
 
 
-def load_timeouts(overlay: object | None = None) -> TimeoutConfig:
+def load_timeouts(overlay: "OverlayBase | None" = None) -> TimeoutConfig:
     """Build a TimeoutConfig by merging all three tiers."""
     merged = dict(CORE_DEFAULTS)
 
