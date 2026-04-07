@@ -1,8 +1,20 @@
+import platform
 from pathlib import Path
 from typing import cast
 
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay_loader import get_overlay
+
+
+def _docker_host_address() -> str:
+    """Return the address Docker containers should use to reach the host.
+
+    On macOS/Windows, ``host.docker.internal`` is resolved by Docker Desktop.
+    On Linux, the standard Docker bridge gateway ``172.17.0.1`` is used.
+    """
+    if platform.system() in {"Darwin", "Windows"}:
+        return "host.docker.internal"
+    return "172.17.0.1"
 
 
 def write_env_worktree(worktree: Worktree) -> str | None:
@@ -23,6 +35,8 @@ def write_env_worktree(worktree: Worktree) -> str | None:
     ticket = cast("Ticket", worktree.ticket)
     variant = ticket.variant or ""
 
+    overlay = get_overlay()
+
     lines = [
         f"WT_VARIANT={variant}",
         f"TICKET_DIR={ticket_dir}",
@@ -30,9 +44,19 @@ def write_env_worktree(worktree: Worktree) -> str | None:
         f"WT_DB_NAME={worktree.db_name}",
         f"COMPOSE_PROJECT_NAME={worktree.repo_path}-wt{ticket.ticket_number}",
     ]
+
+    # When the overlay declares shared_postgres, containers must reach the
+    # host's Postgres (not a per-worktree container).  Set POSTGRES_HOST to
+    # the Docker-accessible host address so both host tooling (localhost) and
+    # containers (host.docker.internal / 172.17.0.1) hit the same server.
+    db_strategy = overlay.get_db_import_strategy(worktree)
+    if db_strategy and db_strategy.get("shared_postgres"):
+        docker_host = _docker_host_address()
+        lines.append(f"POSTGRES_HOST={docker_host}")
+
     # Merge overlay env extras — overlay values override core defaults
     core_index = {line.split("=", 1)[0]: i for i, line in enumerate(lines)}
-    for key, value in get_overlay().get_env_extra(worktree).items():
+    for key, value in overlay.get_env_extra(worktree).items():
         if key in core_index:
             lines[core_index[key]] = f"{key}={value}"
         else:
