@@ -1733,7 +1733,7 @@ class TestRunTests(TestCase):
                 extra={"worktree_path": str(wt_dir)},
             )
 
-            with patch.object(run_mod.subprocess, "run") as mock_run:
+            with patch.object(run_mod.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)) as mock_run:
                 result = cast("str", call_command("run", "tests", path=str(wt_dir)))
 
             mock_run.assert_called_once()
