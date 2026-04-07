@@ -322,6 +322,51 @@ def handle_track_skill_usage(data: dict) -> None:
             _append_line(skills_file, name)
 
 
+# ── PostToolUse: read-dedup ────────────────────────────────────────
+
+
+def handle_read_dedup(data: dict) -> None:
+    """Warn when a file is re-read without having changed since last read."""
+    if data.get("tool_name") != "Read":
+        return
+
+    session_id = data.get("session_id", "")
+    file_path = data.get("tool_input", {}).get("file_path", "")
+    if not session_id or not file_path:
+        return
+
+    _ensure_state_dir()
+    reads_file = _state_file(session_id, "reads")
+
+    # Load existing reads: each line is "mtime\tpath"
+    reads: dict[str, str] = {}
+    for line in _read_lines(reads_file):
+        parts = line.split("\t", 1)
+        if len(parts) == 2:  # noqa: PLR2004
+            reads[parts[1]] = parts[0]
+
+    # Get current mtime
+    try:
+        current_mtime = str(Path(file_path).stat().st_mtime)
+    except OSError:
+        return
+
+    prev_mtime = reads.get(file_path)
+    if prev_mtime == current_mtime:
+        print(  # noqa: T201
+            f"TOKEN SAVINGS HINT: {file_path} was already read this session "
+            "and hasn't changed. Use your cached knowledge of its contents "
+            "instead of re-reading."
+        )
+
+    # Update the reads file (overwrite to keep latest mtime per path)
+    reads[file_path] = current_mtime
+    reads_file.write_text(
+        "\n".join(f"{mtime}\t{path}" for path, mtime in reads.items()) + "\n",
+        encoding="utf-8",
+    )
+
+
 # ── PostCompact: recover-temp-files ───────────────────────────────
 
 
@@ -376,7 +421,7 @@ def handle_post_compact(data: dict) -> None:
 _HANDLERS: dict[str, list] = {
     "UserPromptSubmit": [handle_user_prompt_submit],
     "PreToolUse": [handle_enforce_skill_loading, handle_validate_mr_metadata],
-    "PostToolUse": [handle_track_active_repo, handle_track_skill_usage],
+    "PostToolUse": [handle_track_active_repo, handle_track_skill_usage, handle_read_dedup],
     "InstructionsLoaded": [handle_track_skill_usage],
     "PostCompact": [handle_post_compact],
 }
