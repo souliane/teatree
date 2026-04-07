@@ -638,6 +638,65 @@ class TestWorkspaceCleanAll(TestCase):
             assert nonempty_dir.exists()
 
 
+class TestPruneBranches(TestCase):
+    def test_squash_merged_detected_via_empty_diff(self) -> None:
+        with patch.object(git_mod, "run", return_value=""):
+            assert workspace_mod._is_squash_merged("/repo", "feature", "main") is True
+
+    def test_non_squash_merged_detected_via_nonempty_diff(self) -> None:
+        with patch.object(git_mod, "run", return_value=" file.py | 1 +"):
+            assert workspace_mod._is_squash_merged("/repo", "feature", "main") is False
+
+    def test_worktree_map_parses_porcelain(self) -> None:
+        porcelain = (
+            "worktree /home/user/main\n"
+            "HEAD abc123\n"
+            "branch refs/heads/main\n"
+            "\n"
+            "worktree /home/user/wt-feature\n"
+            "HEAD def456\n"
+            "branch refs/heads/feature-branch\n"
+        )
+        with patch.object(git_mod, "run", return_value=porcelain):
+            result = workspace_mod._worktree_map("/repo")
+        assert result == {"main": "/home/user/main", "feature-branch": "/home/user/wt-feature"}
+
+    @_no_stash
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_prune_removes_squash_merged_worktree_branch(self) -> None:
+        wt_map = {"gone-branch": "/tmp/old-worktree"}
+        gone_output = "  gone-branch abc123 [gone] some msg"
+        merged_output = ""
+
+        def fake_run(*, repo: str = ".", args: list[str]) -> str:
+            if args == ["branch", "-v", "--no-color"]:
+                return gone_output
+            if args == ["branch", "--merged", "origin/main", "--no-color"]:
+                return merged_output
+            if args[:2] == ["diff", "origin/main...gone-branch"]:
+                return ""  # squash-merged: empty diff
+            if args == ["worktree", "list", "--porcelain"]:
+                return "worktree /tmp/old-worktree\nHEAD abc123\nbranch refs/heads/gone-branch\n"
+            return ""
+
+        with (
+            patch.object(workspace_mod, "_workspace_dir", return_value=Path("/tmp/ws")),
+            patch.object(workspace_mod, "_worktree_map", return_value=wt_map),
+            patch.object(workspace_mod, "_worktree_branches", return_value={"gone-branch"}),
+            patch.object(git_mod, "run", side_effect=fake_run),
+            patch.object(git_mod, "current_branch", return_value="main"),
+            patch.object(git_mod, "default_branch", return_value="main"),
+            patch.object(git_mod, "worktree_remove", return_value=True) as mock_wt_rm,
+            patch.object(git_mod, "branch_delete", return_value=True) as mock_br_del,
+        ):
+            cleaned = workspace_mod._prune_branches("/repo")
+
+        assert any("squash-merged" in c for c in cleaned)
+        mock_wt_rm.assert_called_once_with("/repo", "/tmp/old-worktree")
+        mock_br_del.assert_called_once_with("/repo", "gone-branch")
+
+
 class TestWorkspaceFinalize(TestCase):
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)

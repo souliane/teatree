@@ -14,31 +14,76 @@ from teatree.core.overlay_loader import get_overlay
 from teatree.utils import git
 
 
+def _worktree_map(repo: str) -> dict[str, str]:
+    """Return ``{branch_name: worktree_path}`` for active git worktrees."""
+    raw = git.run(repo=repo, args=["worktree", "list", "--porcelain"])
+    result: dict[str, str] = {}
+    current_path = ""
+    for line in raw.splitlines():
+        if line.startswith("worktree "):
+            current_path = line.removeprefix("worktree ")
+        elif line.startswith("branch refs/heads/"):
+            result[line.removeprefix("branch refs/heads/")] = current_path
+    return result
+
+
 def _worktree_branches(repo: str) -> set[str]:
     """Return branch names linked to active git worktrees (safe to skip)."""
-    raw = git.run(repo=repo, args=["worktree", "list", "--porcelain"])
-    return {
-        line.removeprefix("branch refs/heads/") for line in raw.splitlines() if line.startswith("branch refs/heads/")
-    }
+    return set(_worktree_map(repo))
+
+
+def _is_squash_merged(repo: str, branch: str, default: str) -> bool:
+    """Check if *branch* was squash-merged into *default* by comparing tree content.
+
+    A squash-merge rewrites history so ``git branch --merged`` won't detect it.
+    Instead, check if the diff between the branch and main is empty — meaning
+    all the branch's changes are already in main.
+    """
+    diff = git.run(repo=repo, args=["diff", f"origin/{default}...{branch}", "--stat"])
+    return not diff
 
 
 def _prune_branches(repo: str) -> list[str]:
-    """Delete local branches that are gone or merged. Skip worktree-linked branches."""
+    """Delete local branches that are gone or merged.
+
+    Handles squash-merged branches by comparing tree content against main.
+    Prunes stale git worktree entries before checking branches so that
+    worktrees whose directories no longer exist don't block cleanup.
+    """
     cleaned: list[str] = []
     git.run(repo=repo, args=["fetch", "--prune"])
+    git.run(repo=repo, args=["worktree", "prune"])
 
     current = git.current_branch(repo)
     default = git.default_branch(repo)
     protected = {current, default, "main", "master"}
     wt_branches = _worktree_branches(repo)
 
+    wt_map = _worktree_map(repo)
+    gone_wt_branches: list[str] = []
     for line in git.run(repo=repo, args=["branch", "-v", "--no-color"]).splitlines():
         if "[gone]" not in line:
             continue
         name = line.strip().removeprefix("+ ").split()[0]
-        if name not in protected and name not in wt_branches:
+        if name in protected:
+            continue
+        if name not in wt_branches:
             git.branch_delete(repo, name)
             cleaned.append(f"Pruned gone branch: {name}")
+        else:
+            gone_wt_branches.append(name)
+
+    # Worktree-linked branches whose remote is gone: safe to prune if
+    # squash-merged (all changes already in main).
+    for name in gone_wt_branches:
+        if not _is_squash_merged(repo, name, default):
+            continue
+        wt_path = wt_map.get(name, "")
+        if wt_path:
+            git.worktree_remove(repo, wt_path)
+            git.run(repo=repo, args=["worktree", "prune"])
+        git.branch_delete(repo, name)
+        cleaned.append(f"Pruned squash-merged worktree branch: {name}")
 
     for line in git.run(repo=repo, args=["branch", "--merged", f"origin/{default}", "--no-color"]).splitlines():
         name = line.strip().removeprefix("* ").removeprefix("+ ")
