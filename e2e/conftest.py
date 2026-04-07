@@ -75,7 +75,12 @@ def django_db_setup(django_db_modify_db_settings, django_db_blocker):
 
 @pytest.fixture(scope="session")
 def e2e_server(django_db_setup) -> Iterator[str]:
-    """Start Django dev server on a free port, yield URL."""
+    """Start ASGI server (uvicorn) on a free port, yield URL.
+
+    Using ASGI instead of WSGI (runserver) so SSE streaming connections
+    are handled properly — async generators are cancelled on client
+    disconnect instead of leaking threads.
+    """
     port = _find_free_port()
     url = f"http://127.0.0.1:{port}"
 
@@ -96,12 +101,14 @@ def e2e_server(django_db_setup) -> Iterator[str]:
         [
             sys.executable,
             "-m",
-            "django",
-            "runserver",
-            "--noreload",
-            "--settings",
-            "e2e.settings",
+            "uvicorn",
+            "e2e.asgi:application",
+            "--host",
+            "127.0.0.1",
+            "--port",
             str(port),
+            "--log-level",
+            "warning",
         ],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -111,7 +118,11 @@ def e2e_server(django_db_setup) -> Iterator[str]:
     _wait_for_server(url)
     yield url
     proc.terminate()
-    _, stderr = proc.communicate(timeout=5)
+    try:
+        _, stderr = proc.communicate(timeout=5)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        _, stderr = proc.communicate(timeout=3)
     if stderr:
         sys.stderr.write(f"E2E server stderr:\n{stderr.decode()[-1000:]}\n")
 
