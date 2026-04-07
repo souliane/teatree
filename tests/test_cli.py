@@ -679,11 +679,11 @@ class TestDetectAgentTicketStatus:
     def test_returns_empty_without_manage_py(self, tmp_path):
         assert _detect_agent_ticket_status(tmp_path) == ""
 
-    def test_returns_empty_on_exception(self, tmp_path):
+    def test_returns_error_on_exception(self, tmp_path):
         (tmp_path / "manage.py").write_text("# stub\n", encoding="utf-8")
 
         with patch("django.setup", side_effect=Exception("boom")):
-            assert _detect_agent_ticket_status(tmp_path) == ""
+            assert _detect_agent_ticket_status(tmp_path) == "(error)"
 
     def test_returns_ticket_state(self, tmp_path):
         (tmp_path / "manage.py").write_text("# stub\n", encoding="utf-8")

@@ -3,10 +3,17 @@
 No Django imports — works without django.setup().
 """
 
+import logging
 import subprocess  # noqa: S404
 import sys
 from importlib.resources import files
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
+
+def _stderr(result: subprocess.CompletedProcess[bytes]) -> str:
+    return result.stderr.decode(errors="replace") if result.stderr else ""
 
 
 class UnsupportedPlatformError(RuntimeError):
@@ -126,20 +133,25 @@ def _launchd_enable(overlay_name: str, context: dict[str, str]) -> str:
 
     # Unload first if already installed
     if plist_path.is_file():
-        subprocess.run(  # noqa: S603
+        result = subprocess.run(  # noqa: S603
             ["launchctl", "unload", str(plist_path)],  # noqa: S607
             check=False,
             capture_output=True,
         )
+        if result.returncode:
+            logger.warning("launchctl unload failed (rc=%d): %s", result.returncode, _stderr(result))
 
     content = _render_template("launchd.plist.tmpl", context)
     plist_path.write_text(content, encoding="utf-8")
 
-    subprocess.run(  # noqa: S603
+    result = subprocess.run(  # noqa: S603
         ["launchctl", "load", str(plist_path)],  # noqa: S607
         check=False,
         capture_output=True,
     )
+    if result.returncode:
+        msg = f"launchctl load failed (rc={result.returncode}): {_stderr(result)}"
+        raise RuntimeError(msg)
 
     return f"Dashboard daemon installed and started. URL: http://{context['host']}:{context['port']}/"
 
@@ -150,11 +162,13 @@ def _launchd_disable(overlay_name: str) -> str:
     if not plist_path.is_file():
         return f"Autostart not installed for {overlay_name}."
 
-    subprocess.run(  # noqa: S603
+    result = subprocess.run(  # noqa: S603
         ["launchctl", "unload", str(plist_path)],  # noqa: S607
         check=False,
         capture_output=True,
     )
+    if result.returncode:
+        logger.warning("launchctl unload failed (rc=%d): %s", result.returncode, _stderr(result))
     plist_path.unlink()
 
     return f"Dashboard daemon removed for {overlay_name}."
@@ -171,8 +185,13 @@ def _systemd_enable(overlay_name: str, context: dict[str, str]) -> str:
     content = _render_template("systemd.service.tmpl", context)
     unit_path.write_text(content, encoding="utf-8")
 
-    subprocess.run(["systemctl", "--user", "daemon-reload"], check=False, capture_output=True)  # noqa: S607
-    subprocess.run(["systemctl", "--user", "enable", "--now", unit_name], check=False, capture_output=True)  # noqa: S603, S607
+    result = subprocess.run(["systemctl", "--user", "daemon-reload"], check=False, capture_output=True)  # noqa: S607
+    if result.returncode:
+        logger.warning("systemctl daemon-reload failed (rc=%d): %s", result.returncode, _stderr(result))
+    result = subprocess.run(["systemctl", "--user", "enable", "--now", unit_name], check=False, capture_output=True)  # noqa: S603, S607
+    if result.returncode:
+        msg = f"systemctl enable failed (rc={result.returncode}): {_stderr(result)}"
+        raise RuntimeError(msg)
 
     return f"Dashboard daemon installed and started. URL: http://{context['host']}:{context['port']}/"
 
@@ -184,8 +203,12 @@ def _systemd_disable(overlay_name: str) -> str:
     if not unit_path.is_file():
         return f"Autostart not installed for {overlay_name}."
 
-    subprocess.run(["systemctl", "--user", "disable", "--now", unit_name], check=False, capture_output=True)  # noqa: S603, S607
+    result = subprocess.run(["systemctl", "--user", "disable", "--now", unit_name], check=False, capture_output=True)  # noqa: S603, S607
+    if result.returncode:
+        logger.warning("systemctl disable failed (rc=%d): %s", result.returncode, _stderr(result))
     unit_path.unlink()
-    subprocess.run(["systemctl", "--user", "daemon-reload"], check=False, capture_output=True)  # noqa: S607
+    result = subprocess.run(["systemctl", "--user", "daemon-reload"], check=False, capture_output=True)  # noqa: S607
+    if result.returncode:
+        logger.warning("systemctl daemon-reload failed (rc=%d): %s", result.returncode, _stderr(result))
 
     return f"Dashboard daemon removed for {overlay_name}."
