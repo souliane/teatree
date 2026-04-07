@@ -425,11 +425,13 @@ class TestWorkspaceTicket(TestCase):
 
 _no_prune = patch.object(workspace_mod, "_prune_branches", new=lambda _repo: [])
 _no_stash = patch.object(workspace_mod, "_drop_orphaned_stashes", new=lambda _repo: [])
+_no_orphan_dbs = patch.object(workspace_mod, "_drop_orphan_databases", new=list)
 
 
 class TestWorkspaceCleanAll(TestCase):
     @_no_prune
     @_no_stash
+    @_no_orphan_dbs
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
     def test_removes_stale_worktrees(self) -> None:
@@ -443,6 +445,7 @@ class TestWorkspaceCleanAll(TestCase):
 
     @_no_prune
     @_no_stash
+    @_no_orphan_dbs
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
     def test_removes_git_worktree_and_branch(self) -> None:
@@ -490,6 +493,7 @@ class TestWorkspaceCleanAll(TestCase):
 
     @_no_prune
     @_no_stash
+    @_no_orphan_dbs
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
     def test_drops_database_when_db_name_set(self) -> None:
@@ -531,6 +535,7 @@ class TestWorkspaceCleanAll(TestCase):
 
     @_no_prune
     @_no_stash
+    @_no_orphan_dbs
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
     def test_warns_on_uncommitted_changes(self) -> None:
@@ -566,6 +571,7 @@ class TestWorkspaceCleanAll(TestCase):
 
     @_no_prune
     @_no_stash
+    @_no_orphan_dbs
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
     def test_runs_overlay_cleanup_steps(self) -> None:
@@ -609,6 +615,7 @@ class TestWorkspaceCleanAll(TestCase):
 
     @_no_prune
     @_no_stash
+    @_no_orphan_dbs
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
     def test_removes_empty_ticket_directories(self) -> None:
@@ -676,6 +683,7 @@ class TestPruneBranches(TestCase):
         assert result == {"main": "/home/user/main", "feature-branch": "/home/user/wt-feature"}
 
     @_no_stash
+    @_no_orphan_dbs
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
     def test_prune_removes_squash_merged_worktree_branch(self) -> None:
@@ -2489,6 +2497,7 @@ class TestLifecycleStart(TestCase):
             with (
                 patch.object(lifecycle_mod, "get_overlay", return_value=mock_overlay),
                 patch.object(lifecycle_mod, "subprocess") as mock_sp,
+                patch.object(run_mod, "_compose_has_service", return_value=True),
                 patch.object(
                     lifecycle_mod,
                     "find_free_ports",
@@ -2640,6 +2649,7 @@ class TestLifecycleRestart(TestCase):
             with (
                 patch.object(lifecycle_mod, "get_overlay", return_value=mock_overlay),
                 patch.object(lifecycle_mod, "subprocess") as mock_sp,
+                patch.object(run_mod, "_compose_has_service", return_value=True),
                 patch.object(
                     lifecycle_mod,
                     "find_free_ports",
@@ -2735,6 +2745,88 @@ class TestLifecycleClean(TestCase):
             assert wt.state == Worktree.State.CREATED
             assert "cleaned" in result.lower()
             assert "/tmp/backend" in result
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_drops_database_on_clean(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            wt_dir = tmp_path / "backend"
+            wt_dir.mkdir()
+            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/63")
+            wt = Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="/tmp/backend",
+                branch="feature-db",
+                extra={"worktree_path": str(wt_dir)},
+            )
+            wt.provision()
+            wt.save()
+
+            commands_run: list[list[str]] = []
+
+            def _capture(*args: object, **kwargs: object) -> MagicMock:
+                if args:
+                    commands_run.append(list(args[0]))
+                return MagicMock(returncode=0)
+
+            with (
+                patch.object(lifecycle_mod, "subprocess") as mock_sp,
+                patch.object(db_mod, "pg_env", return_value={}),
+                patch.object(db_mod, "pg_host", return_value="localhost"),
+                patch.object(db_mod, "pg_user", return_value="postgres"),
+            ):
+                mock_sp.run.side_effect = _capture
+                call_command("lifecycle", "clean", path=str(wt_dir))
+
+            dropdb_cmds = [c for c in commands_run if "dropdb" in c]
+            assert len(dropdb_cmds) == 1
+            # provision() generates db_name as wt_{ticket_number}
+            assert f"wt_{ticket.ticket_number}" in " ".join(dropdb_cmds[0])
+
+
+class TestDropOrphanDatabases(TestCase):
+    @override_settings(**SETTINGS)
+    def test_drops_orphan_wt_databases(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/64")
+        Worktree.objects.create(
+            overlay="test",
+            ticket=ticket,
+            repo_path="/tmp/repo",
+            branch="feature",
+            db_name="wt_known",
+        )
+
+        psql_output = "wt_known|postgres|UTF8\nwt_orphan|postgres|UTF8\nother_db|postgres|UTF8\n"
+
+        commands_run: list[list[str]] = []
+
+        def _capture(*args: object, **kwargs: object) -> MagicMock:
+            cmd = list(args[0]) if args else []
+            commands_run.append(cmd)
+            if "psql" in cmd:
+                return MagicMock(returncode=0, stdout=psql_output)
+            return MagicMock(returncode=0)
+
+        with (
+            patch.object(workspace_mod, "subprocess") as mock_sp,
+            patch.object(db_mod, "pg_env", return_value={}),
+            patch.object(db_mod, "pg_host", return_value="localhost"),
+            patch.object(db_mod, "pg_user", return_value="postgres"),
+        ):
+            mock_sp.run.side_effect = _capture
+            result = workspace_mod._drop_orphan_databases()
+
+        assert len(result) == 1
+        assert "wt_orphan" in result[0]
+        dropdb_cmds = [c for c in commands_run if "dropdb" in c]
+        assert len(dropdb_cmds) == 1
+        assert "wt_orphan" in dropdb_cmds[0]
+        # wt_known should NOT be dropped (it's tracked)
+        assert not any("wt_known" in c for c in dropdb_cmds)
+        # other_db should NOT be dropped (no wt_ prefix)
+        assert not any("other_db" in " ".join(c) for c in commands_run if "dropdb" in c)
 
 
 class TestLifecycleStatus(TestCase):

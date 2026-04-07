@@ -7,7 +7,7 @@ from django.core.management.base import OutputWrapper
 from django_typer.management import TyperCommand, command
 
 from teatree.core.models import Ticket, Worktree
-from teatree.core.overlay import OverlayBase
+from teatree.core.overlay import OverlayBase, RunCommand
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.resolve import resolve_worktree
 from teatree.core.step_runner import ProvisionReport, run_provision_steps, run_step
@@ -405,6 +405,25 @@ class Command(TyperCommand):
         if not ok:
             return "error"
 
+        # 5b. Start local frontend if not covered by docker-compose
+        from teatree.core.management.commands.run import _compose_has_service  # noqa: PLC0415
+
+        if "frontend" in commands and not _compose_has_service(compose_file, "frontend"):
+            os.environ.update(_compose_env(ports))
+            fresh_commands = resolved_overlay.get_run_commands(worktree)
+            frontend_cmd = fresh_commands.get("frontend")
+            if frontend_cmd:
+                run_cmd = frontend_cmd if isinstance(frontend_cmd, RunCommand) else RunCommand(args=list(frontend_cmd))
+                if run_cmd.args:
+                    self.stdout.write(f"  Starting frontend locally: {' '.join(run_cmd.args)}")
+                    subprocess.Popen(  # noqa: S603
+                        run_cmd.args,
+                        cwd=run_cmd.cwd,
+                        env=env,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+
         # 6. FSM transition
         worktree.start_services(services=list(commands))
         worktree.save()
@@ -463,6 +482,17 @@ class Command(TyperCommand):
         worktree = resolve_worktree(path)
         project = _compose_project(worktree)
         _docker_compose_down(project, self.stdout)
+
+        if worktree.db_name:
+            from teatree.utils.db import pg_env, pg_host, pg_user  # noqa: PLC0415
+
+            subprocess.run(  # noqa: S603
+                ["dropdb", "-h", pg_host(), "-U", pg_user(), "--if-exists", worktree.db_name],
+                env=pg_env(),
+                capture_output=True,
+                check=False,
+            )
+
         worktree.teardown()
         worktree.save()
         return f"Cleaned worktree {worktree.repo_path} ({worktree.state})"
