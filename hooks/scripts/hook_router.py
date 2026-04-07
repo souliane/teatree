@@ -171,6 +171,64 @@ def handle_enforce_skill_loading(data: dict) -> None:
     json.dump({"permissionDecision": "deny", "permissionDecisionReason": reason}, sys.stdout)
 
 
+# ── PreToolUse: protect-default-branch ─────────────────────────────
+
+
+_DEFAULT_PROTECTED_BRANCHES = {"main", "master"}
+
+
+def _load_protected_branches() -> set[str]:
+    """Return the merged set of protected branches from defaults + all overlays."""
+    import tomllib  # noqa: PLC0415
+
+    branches = set(_DEFAULT_PROTECTED_BRANCHES)
+    config_path = Path.home() / ".teatree.toml"
+    if not config_path.is_file():
+        return branches
+    try:
+        with config_path.open("rb") as f:
+            config = tomllib.load(f)
+    except Exception:  # noqa: BLE001
+        return branches
+    for overlay_cfg in config.get("overlays", {}).values():
+        branches.update(overlay_cfg.get("protected_branches", []))
+    return branches
+
+
+def handle_protect_default_branch(data: dict) -> None:
+    """Block Edit/Write on files that live on a protected branch."""
+    tool_name = data.get("tool_name", "")
+    if tool_name not in _FILE_PATH_TOOLS:
+        return
+
+    file_path = data.get("tool_input", {}).get("file_path", "")
+    if not file_path:
+        return
+
+    parent = str(Path(file_path).parent)
+    try:
+        branch = subprocess.check_output(  # noqa: S603
+            ["git", "-C", parent, "--no-optional-locks", "rev-parse", "--abbrev-ref", "HEAD"],  # noqa: S607
+            text=True,
+            timeout=3,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
+        return
+
+    if branch in _load_protected_branches():
+        json.dump(
+            {
+                "permissionDecision": "deny",
+                "permissionDecisionReason": (
+                    f"BLOCKED: file is on protected branch '{branch}'. "
+                    "Create a worktree first with `t3 workspace ticket`."
+                ),
+            },
+            sys.stdout,
+        )
+
+
 # ── PreToolUse: validate-mr-metadata ────────────────────────────────
 
 
@@ -420,7 +478,7 @@ def handle_post_compact(data: dict) -> None:
 
 _HANDLERS: dict[str, list] = {
     "UserPromptSubmit": [handle_user_prompt_submit],
-    "PreToolUse": [handle_enforce_skill_loading, handle_validate_mr_metadata],
+    "PreToolUse": [handle_protect_default_branch, handle_enforce_skill_loading, handle_validate_mr_metadata],
     "PostToolUse": [handle_track_active_repo, handle_track_skill_usage, handle_read_dedup],
     "InstructionsLoaded": [handle_track_skill_usage],
     "PostCompact": [handle_post_compact],
