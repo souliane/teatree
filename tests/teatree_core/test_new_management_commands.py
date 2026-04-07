@@ -641,12 +641,14 @@ class TestWorkspaceTicket(TestCase):
 _no_prune = patch.object(workspace_mod, "_prune_branches", new=lambda _repo: [])
 _no_stash = patch.object(workspace_mod, "_drop_orphaned_stashes", new=lambda _repo: [])
 _no_orphan_dbs = patch.object(workspace_mod, "_drop_orphan_databases", new=list)
+_no_dslr_prune = patch("teatree.utils.django_db.prune_dslr_snapshots", new=lambda **kw: [])
 
 
 class TestWorkspaceCleanAll(TestCase):
     @_no_prune
     @_no_stash
     @_no_orphan_dbs
+    @_no_dslr_prune
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
     def test_removes_stale_worktrees(self) -> None:
@@ -661,6 +663,7 @@ class TestWorkspaceCleanAll(TestCase):
     @_no_prune
     @_no_stash
     @_no_orphan_dbs
+    @_no_dslr_prune
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
     def test_removes_git_worktree_and_branch(self) -> None:
@@ -709,6 +712,7 @@ class TestWorkspaceCleanAll(TestCase):
     @_no_prune
     @_no_stash
     @_no_orphan_dbs
+    @_no_dslr_prune
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
     def test_drops_database_when_db_name_set(self) -> None:
@@ -751,6 +755,7 @@ class TestWorkspaceCleanAll(TestCase):
     @_no_prune
     @_no_stash
     @_no_orphan_dbs
+    @_no_dslr_prune
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
     def test_warns_on_uncommitted_changes(self) -> None:
@@ -787,6 +792,7 @@ class TestWorkspaceCleanAll(TestCase):
     @_no_prune
     @_no_stash
     @_no_orphan_dbs
+    @_no_dslr_prune
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
     def test_runs_overlay_cleanup_steps(self) -> None:
@@ -831,6 +837,7 @@ class TestWorkspaceCleanAll(TestCase):
     @_no_prune
     @_no_stash
     @_no_orphan_dbs
+    @_no_dslr_prune
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
     def test_removes_empty_ticket_directories(self) -> None:
@@ -899,6 +906,7 @@ class TestPruneBranches(TestCase):
 
     @_no_stash
     @_no_orphan_dbs
+    @_no_dslr_prune
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
     def test_prune_removes_squash_merged_worktree_branch(self) -> None:
@@ -1834,11 +1842,19 @@ class TestRunFrontend(TestCase):
                 extra={"worktree_path": str(wt_dir)},
             )
 
-            with patch.object(run_mod.subprocess, "Popen") as mock_popen:
+            mock_config = MagicMock()
+            mock_config.user.workspace_dir = tmp_path
+
+            with (
+                patch.object(run_mod.subprocess, "Popen") as mock_popen,
+                patch.object(run_mod, "find_free_ports", return_value={"frontend": 4201, "backend": 8001}),
+                patch("teatree.config.load_config", return_value=mock_config),
+                patch("teatree.utils.ports.free_port", return_value=None),
+            ):
                 result = cast("str", call_command("run", "frontend", path=str(wt_dir)))
 
             mock_popen.assert_called_once()
-            assert "locally" in result.lower()
+            assert "4201" in result
 
     @_patch_overlays(MINIMAL_OVERLAY)
     @override_settings(**SETTINGS)

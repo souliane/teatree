@@ -107,19 +107,50 @@ class Command(TyperCommand):
         limits. The frontend always runs on the host; backend/redis stay in Docker.
         In CI, use build-frontend + nginx instead (see docker-compose.e2e.yml).
         """
+        from teatree.config import load_config  # noqa: PLC0415
+        from teatree.core.management.commands.lifecycle import _compose_env  # noqa: PLC0415
+        from teatree.core.step_runner import run_provision_steps  # noqa: PLC0415
+        from teatree.utils.ports import free_port  # noqa: PLC0415
+
         worktree = resolve_worktree(path)
         overlay = get_overlay()
+
+        # Allocate ports so the frontend uses a dynamic port, not the default 4200
+        ports = find_free_ports(str(load_config().user.workspace_dir))
+        port_env = _compose_env(ports)
+        frontend_port = ports.get("frontend", 4200)
+
+        # Kill stale process on the allocated port
+        freed_pid = free_port(frontend_port)
+        if freed_pid:
+            self.stdout.write(f"  Killed stale process on port {frontend_port} (PID {freed_pid})")
+
+        # Set port env so overlay's get_run_commands() picks up FRONTEND_HOST_PORT
+        os.environ.update(port_env)
+
+        # Run pre-run steps (customer.json, translations, feature flags)
+        pre_run_steps = overlay.get_pre_run_steps(worktree, "frontend")
+        if pre_run_steps:
+            run_provision_steps(
+                pre_run_steps,
+                verbose=True,
+                stdout_writer=self.stdout.write,
+                stderr_writer=self.stderr.write,
+                stop_on_required_failure=False,
+            )
+
         commands = overlay.get_run_commands(worktree)
         run_cmd = commands.get("frontend")
         if not run_cmd:
             return "No frontend command configured in overlay."
         args = run_cmd.args if isinstance(run_cmd, RunCommand) else list(run_cmd)
         cwd = run_cmd.cwd if isinstance(run_cmd, RunCommand) else None
-        self.stdout.write(f"  Starting frontend locally: {' '.join(args)}")
+        env = {**os.environ, **overlay.get_env_extra(worktree), **port_env}
+        self.stdout.write(f"  Starting frontend on port {frontend_port}: {' '.join(args)}")
         if cwd:
             self.stdout.write(f"  cwd: {cwd}")
-        subprocess.Popen(args, cwd=cwd, env={**os.environ, **overlay.get_env_extra(worktree)})  # noqa: S603
-        return "Frontend started locally (background process)."
+        subprocess.Popen(args, cwd=cwd, env=env)  # noqa: S603
+        return f"Frontend started on port {frontend_port} (background process)."
 
     @command(name="build-frontend")
     def build_frontend(
