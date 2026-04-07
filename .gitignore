@@ -9,7 +9,8 @@ __pycache__/
 dist/
 build/
 node_modules/
-.claude/
+.claude/settings.local.json
+.claude/worktrees/
 docs/plan
 docs/design
 tach_module_graph.dot
