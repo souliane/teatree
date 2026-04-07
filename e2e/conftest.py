@@ -25,6 +25,12 @@ def pytest_configure(config: pytest.Config) -> None:
     os.environ["DJANGO_SETTINGS_MODULE"] = "e2e.settings"
 
 
+@pytest.fixture(scope="session")
+def browser_context_args(browser_context_args: dict[str, object]) -> dict[str, object]:
+    """Fix viewport size for deterministic screenshots."""
+    return {**browser_context_args, "viewport": {"width": 1280, "height": 900}}
+
+
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     """Exempt fixture setup/teardown from pytest-timeout for E2E tests.
 
@@ -153,7 +159,6 @@ def _seed_data(e2e_server: str, django_db_blocker) -> Iterator[None]:
             repo_path="/tmp/demo-backend",
             branch="feat-42",
             state="provisioned",
-            ports={"backend": 8001, "frontend": 4201, "postgres": 5433},
             db_name="wt_42_demo",
         )
         session = Session.objects.create(ticket=ticket, agent_id="e2e-agent")
