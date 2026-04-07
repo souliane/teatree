@@ -86,10 +86,12 @@ class OverlayScaffolder:
             ".markdownlint-cli2.yaml": ".markdownlint-cli2.yaml",
             ".pre-commit-config.yaml.tmpl": ".pre-commit-config.yaml",
             ".python-version": ".python-version",
+            "ci.yml.tmpl": ".github/workflows/ci.yml",
         }
         for source_name, dest_name in templates.items():
             source = template_dir.joinpath(source_name)
             dest = self.project_root / dest_name
+            dest.parent.mkdir(parents=True, exist_ok=True)
             dest.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
 
     def write_pyproject(self, project_name: str) -> None:

@@ -163,6 +163,14 @@ See your [issue tracker platform reference](../../t3:platforms/references/) § "
 - **Fix (applied):** Set `GIT_EDITOR=true` and `GIT_SEQUENCE_EDITOR=true` in the subprocess environment for `git pull`. This makes interactive rebase silently accept the default todo (equivalent to a normal rebase).
 - **Prevention:** Any `git` subprocess that might trigger an editor (pull, rebase, commit without `-m`) should set `GIT_EDITOR=true` in the env to avoid TTY dependency.
 
+## GitHub Branch Protection Check Names Don't Match CI
+
+- **Symptom:** PR shows "Expected — Waiting for status to be reported" for required checks, even though all CI jobs passed. Both pending and successful checks appear with identical display names.
+- **Cause:** GitHub displays check runs as `CI / lint (pull_request)` in the UI, but the actual check name used by the API is just `lint` (the job key in the workflow YAML). Branch protection rules must use the raw job name, not the display name.
+- **Diagnosis:** `gh api repos/OWNER/REPO/commits/BRANCH/check-runs --jq '.check_runs[] | .name'` — shows the real names.
+- **Fix:** Update branch protection to use raw names (e.g., `lint`, `test (3.13)`, `e2e`), not the display format (`CI / lint (pull_request)`).
+- **Prevention:** After setting branch protection, always verify with `gh api repos/OWNER/REPO/branches/main/protection --jq '.required_status_checks.checks[].context'` and compare against actual check-run names.
+
 ## direnv Not Loading `.envrc`
 
 - **Cause:** direnv not hooked into the shell or `.envrc` not allowed.
