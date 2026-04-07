@@ -20,18 +20,26 @@ fi
 for py in "${versions[@]}"; do
     current=$((current + 1))
     echo "=== [$current/$total] Python $py ==="
+    # Capture output to a temp file — piping 1600+ test lines through
+    # Docker → git pre-push hook overflows the stderr buffer (Rust panic).
+    tmpout=$(mktemp)
     if docker run --rm \
         -v "$PWD":/app:ro \
         -e UV_PROJECT_ENVIRONMENT=/tmp/.venv \
         -e COVERAGE_FILE=/tmp/.coverage \
         "$IMAGE" \
-        uv run -p "$py" pytest --no-header --no-cov -v \
-            -o cache_dir=/tmp/.pytest_cache; then
+        uv run -p "$py" pytest --no-header --no-cov -q --tb=short \
+            -o cache_dir=/tmp/.pytest_cache > "$tmpout" 2>&1; then
+        # Show only the summary line (last non-empty line)
+        tail -3 "$tmpout"
         echo "  -> Python $py: OK"
     else
+        # On failure, show last 30 lines for diagnosis
+        tail -30 "$tmpout"
         echo "  -> Python $py: FAILED"
         failed=1
     fi
+    rm -f "$tmpout"
     echo
 done
 
