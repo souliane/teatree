@@ -111,6 +111,16 @@ def _prune_branches(repo: str) -> list[str]:
         git.branch_delete(repo, name)
         cleaned.append(f"Pruned squash-merged branch: {name}")
 
+    # Pass 4: warn about remaining non-protected branches with no merged PR.
+    # Re-read after deletions above.
+    remaining = {
+        line.strip().removeprefix("* ").removeprefix("+ ")
+        for line in git.run(repo=repo, args=["branch", "--no-color"]).splitlines()
+    } - protected
+    for name in sorted(remaining):
+        commits = git.run(repo=repo, args=["rev-list", "--count", f"{default}..{name}"])
+        cleaned.append(f"WARNING: branch '{name}' has {commits} unpushed commit(s) and no merged PR")
+
     return cleaned
 
 
