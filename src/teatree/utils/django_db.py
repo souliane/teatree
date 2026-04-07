@@ -7,6 +7,7 @@ Overlays configure the engine via ``DjangoDbImportConfig``; the engine
 does the rest.  No Django imports — shells out to ``manage.py``.
 """
 
+import enum
 import logging
 import os
 import re
@@ -241,24 +242,31 @@ def validate_dump(dump_path: Path) -> bool:
 _MAX_MIGRATE_RETRIES = 20
 
 
+class _MigrateResult(enum.Enum):
+    APPLIED = "applied"
+    ALREADY_MIGRATED = "already_migrated"
+    FAILED = "failed"
+
+
 def _extract_failing_migration(stdout: str) -> str | None:
     match = re.search(r"Applying (\w+\.\w+)\.\.\.", stdout)
     return match.group(1) if match else None
 
 
-def _migrate_reference_db(main_repo: str, ref_db: str, extra_env: dict[str, str]) -> bool:
-    ref_db_url = _local_db_url(ref_db)
-    run_env = {
-        **os.environ,
-        "DATABASE_URL": ref_db_url,
-        "DISABLE_DATABASE_SSL": "True",
-        **extra_env,
-    }
+def _migrate_reference_db(main_repo: str, ref_db: str, extra_env: dict[str, str]) -> _MigrateResult:
+    """Migrate the reference database.
 
+    Returns APPLIED when migrations ran, ALREADY_MIGRATED when the DB was
+    already up to date (callers skip the post-migrate DSLR snapshot), or
+    FAILED when migration cannot proceed.
+    """
     manage_py = Path(main_repo) / "manage.py"
     if not manage_py.is_file():
         print(f"  Skipping reference DB migration (no manage.py in {main_repo})")  # noqa: T201
-        return True
+        return _MigrateResult.ALREADY_MIGRATED
+
+    ref_db_url = _local_db_url(ref_db)
+    run_env = {**os.environ, "DATABASE_URL": ref_db_url, "DISABLE_DATABASE_SSL": "True", **extra_env}
 
     print(f"  Migrating reference DB ({ref_db}) using main repo...")  # noqa: T201
     for _attempt in range(_MAX_MIGRATE_RETRIES):
@@ -271,45 +279,47 @@ def _migrate_reference_db(main_repo: str, ref_db: str, extra_env: dict[str, str]
             check=False,
         )
         if result.returncode == 0:
+            if "No migrations to apply" in result.stdout:
+                print("  Reference DB already up to date (no migrations applied).")  # noqa: T201
+                return _MigrateResult.ALREADY_MIGRATED
             print("  Reference DB migrated.")  # noqa: T201
-            return True
+            return _MigrateResult.APPLIED
 
         combined = f"{result.stdout}\n{result.stderr}"
-
-        config_markers = (
-            "ModuleNotFoundError",
-            "ImproperlyConfigured",
-            "DJANGO_SETTINGS_MODULE",
-            "No module named",
-        )
-        if any(m in combined for m in config_markers):
-            print("  WARNING: Cannot migrate reference DB (config error), skipping.")  # noqa: T201
-            return False
-
-        fakeable = "already exists" in combined or "does not exist" in combined
-        if not fakeable:
-            print("  WARNING: Cannot migrate reference DB (non-fakeable error), skipping.")  # noqa: T201
-            return False
-
-        failing = _extract_failing_migration(result.stdout)
-        if not failing:
-            print("  WARNING: Cannot identify failing migration, skipping reference migration.")  # noqa: T201
-            return False
-
-        app_label, migration_name = failing.split(".", 1)
-        reason = "schema already exists" if "already exists" in combined else "table absent from dump"
-        print(f"  Faking {failing} on reference DB ({reason})...")  # noqa: T201
-        subprocess.run(
-            ["python", "manage.py", "migrate", app_label, migration_name, "--fake"],
-            cwd=main_repo,
-            env=run_env,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        failure_reason = _try_fake_failing_migration(combined, result.stdout, main_repo, run_env)
+        if failure_reason:
+            print(f"  WARNING: {failure_reason}")  # noqa: T201
+            return _MigrateResult.FAILED
 
     print("  WARNING: Reference DB migration exhausted retries, skipping.")  # noqa: T201
-    return False
+    return _MigrateResult.FAILED
+
+
+def _try_fake_failing_migration(combined: str, stdout: str, main_repo: str, run_env: dict[str, str]) -> str:
+    """Try to fake a failing migration. Returns empty string on success, error message on failure."""
+    config_markers = ("ModuleNotFoundError", "ImproperlyConfigured", "DJANGO_SETTINGS_MODULE", "No module named")
+    if any(m in combined for m in config_markers):
+        return "Cannot migrate reference DB (config error), skipping."
+
+    if "already exists" not in combined and "does not exist" not in combined:
+        return "Cannot migrate reference DB (non-fakeable error), skipping."
+
+    failing = _extract_failing_migration(stdout)
+    if not failing:
+        return "Cannot identify failing migration, skipping reference migration."
+
+    app_label, migration_name = failing.split(".", 1)
+    reason = "schema already exists" if "already exists" in combined else "table absent from dump"
+    print(f"  Faking {failing} on reference DB ({reason})...")  # noqa: T201
+    subprocess.run(
+        ["python", "manage.py", "migrate", app_label, migration_name, "--fake"],
+        cwd=main_repo,
+        env=run_env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return ""
 
 
 # ---------------------------------------------------------------------------
@@ -328,11 +338,12 @@ def _restore_ref_and_copy(ctx: _RestoreContext, dump_path: str, label: str) -> b
         print(f"  BAD ARTIFACT: {label} marked bad (delete: rm {dump_path})")  # noqa: T201
         print(f"    Restore error: {exc}", file=sys.stderr)  # noqa: T201
         return False
-    if not _migrate_reference_db(cfg.main_repo_path, cfg.ref_db_name, cfg.migrate_env_extra):
+    migrate_result = _migrate_reference_db(cfg.main_repo_path, cfg.ref_db_name, cfg.migrate_env_extra)
+    if migrate_result is _MigrateResult.FAILED:
         bad_artifacts.mark_bad(dump_path)
         print(f"  BAD ARTIFACT: {label} marked bad (delete: rm {dump_path})")  # noqa: T201
         return False
-    if ctx.dslr_cmd:
+    if ctx.dslr_cmd and migrate_result is _MigrateResult.APPLIED:
         _take_dslr_snapshot(ctx.dslr_cmd, ctx.dslr_env, cfg.ref_db_name)
     if _copy_ref_to_ticket(ctx):
         print(f"  Created {cfg.ticket_db_name} from {label}.")  # noqa: T201
@@ -358,19 +369,31 @@ def _try_restore_from_dump_path(ctx: _RestoreContext) -> bool:
         return False
     print(f"  Restoring from explicit dump: {dump}")  # noqa: T201
     _ensure_ref_db(ctx.cfg.ref_db_name, ctx.pg_host, ctx.pg_user, ctx.pg_env)
-    if db_restore(ctx.cfg.ref_db_name, str(dump)) and _migrate_reference_db(
-        ctx.cfg.main_repo_path,
-        ctx.cfg.ref_db_name,
-        ctx.cfg.migrate_env_extra,
-    ):
-        return _copy_ref_to_ticket(ctx)
-    return False
+    if not db_restore(ctx.cfg.ref_db_name, str(dump)):
+        return False
+    migrate_result = _migrate_reference_db(ctx.cfg.main_repo_path, ctx.cfg.ref_db_name, ctx.cfg.migrate_env_extra)
+    if migrate_result is _MigrateResult.FAILED:
+        return False
+    if ctx.dslr_cmd and migrate_result is _MigrateResult.APPLIED:
+        _take_dslr_snapshot(ctx.dslr_cmd, ctx.dslr_env, ctx.cfg.ref_db_name)
+    return _copy_ref_to_ticket(ctx)
 
 
 def _resolve_dslr_snapshots(ctx: _RestoreContext) -> list[str]:
     if ctx.cfg.dslr_snapshot:
         return [ctx.cfg.dslr_snapshot]
     return _find_dslr_snapshots(ctx.dslr_cmd, ctx.dslr_env, ctx.cfg.ref_db_name)
+
+
+def _log_dslr_restore_failure(snap_name: str, *, is_env: bool, stderr: str) -> None:
+    if is_env:
+        print(f"  WARNING: DSLR restore failed (environment error, not marking bad): {snap_name}")  # noqa: T201
+    else:
+        bad_artifacts.mark_bad(_dslr_artifact_key(snap_name))
+        print(f"  BAD ARTIFACT: DSLR snapshot '{snap_name}' marked bad (delete: dslr delete {snap_name})")  # noqa: T201
+    if stderr:
+        logger.warning("DSLR restore stderr for %s: %s", snap_name, stderr)
+        print(f"    Restore error: {stderr[:200]}")  # noqa: T201
 
 
 def _try_restore_from_dslr(ctx: _RestoreContext, *, skip_dslr: bool) -> bool:
@@ -388,21 +411,16 @@ def _try_restore_from_dslr(ctx: _RestoreContext, *, skip_dslr: bool) -> bool:
         print(f"  Restoring {ctx.cfg.ref_db_name} from DSLR snapshot: {snap_name}")  # noqa: T201
         ok, is_env, stderr = _restore_ref_from_dslr(ctx.dslr_cmd, ctx.dslr_env, snap_name)
         if not ok:
-            if is_env:
-                print(f"  WARNING: DSLR restore failed (environment error, not marking bad): {snap_name}")  # noqa: T201
-            else:
-                bad_artifacts.mark_bad(_dslr_artifact_key(snap_name))
-                print(f"  BAD ARTIFACT: DSLR snapshot '{snap_name}' marked bad (delete: dslr delete {snap_name})")  # noqa: T201
-            if stderr:
-                logger.warning("DSLR restore stderr for %s: %s", snap_name, stderr)
-                print(f"    Restore error: {stderr[:200]}")  # noqa: T201
+            _log_dslr_restore_failure(snap_name, is_env=is_env, stderr=stderr)
             continue
-        if not _migrate_reference_db(ctx.cfg.main_repo_path, ctx.cfg.ref_db_name, ctx.cfg.migrate_env_extra):
-            # Migration failures are typically environmental (wrong settings, missing deps),
-            # not snapshot corruption — don't mark the snapshot as bad.
+        migrate_result = _migrate_reference_db(ctx.cfg.main_repo_path, ctx.cfg.ref_db_name, ctx.cfg.migrate_env_extra)
+        if migrate_result is _MigrateResult.FAILED:
             print(f"  WARNING: Migration failed after DSLR restore of {snap_name} (not marking snapshot bad)")  # noqa: T201
             continue
-        _take_dslr_snapshot(ctx.dslr_cmd, ctx.dslr_env, ctx.cfg.ref_db_name)
+        if migrate_result is _MigrateResult.APPLIED:
+            _take_dslr_snapshot(ctx.dslr_cmd, ctx.dslr_env, ctx.cfg.ref_db_name)
+        else:
+            print("  Skipping DSLR snapshot (DB already migrated, snapshot is up to date).")  # noqa: T201
         if _copy_ref_to_ticket(ctx):
             print(f"  Created {ctx.cfg.ticket_db_name} from DSLR snapshot.")  # noqa: T201
             return True
@@ -505,6 +523,43 @@ def reset_remote_dump_state() -> None:
     """Reset the remote dump failure flag (for testing)."""
     global _remote_dump_failed  # noqa: PLW0603
     _remote_dump_failed = False
+
+
+def _parse_dslr_snapshots(stdout: str) -> dict[str, list[str]]:
+    """Parse ``dslr list`` output, group snapshot names by tenant (suffix after date)."""
+    by_tenant: dict[str, list[str]] = {}
+    for line in stdout.splitlines():
+        token = line.strip().split()[0] if line.strip() else ""
+        if not token:
+            continue
+        # Snapshot names: <date>_<tenant>  e.g. "20260401_development-finporta"
+        if "_" in token:
+            tenant = token.split("_", maxsplit=1)[1]
+            by_tenant.setdefault(tenant, []).append(token)
+    for names in by_tenant.values():
+        names.sort(reverse=True)
+    return by_tenant
+
+
+def prune_dslr_snapshots(*, keep: int = 1, snapshot_tool: str = "dslr") -> list[str]:
+    """Delete old DSLR snapshots, keeping the *keep* newest per tenant.
+
+    Returns a list of deleted snapshot names.
+    """
+    dslr_cmd = _find_dslr_cmd(snapshot_tool)
+    if not dslr_cmd:
+        return []
+    result = subprocess.run([*dslr_cmd, "list"], capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        return []
+    by_tenant = _parse_dslr_snapshots(result.stdout)
+    deleted: list[str] = []
+    for tenant, names in by_tenant.items():
+        for old in names[keep:]:
+            print(f"  Pruning DSLR snapshot: {old} (tenant={tenant})")  # noqa: T201
+            subprocess.run([*dslr_cmd, "delete", "-y", old], capture_output=True, check=False)
+            deleted.append(old)
+    return deleted
 
 
 def _warn_slow_path(label: str) -> None:
