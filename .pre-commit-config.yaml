@@ -106,7 +106,7 @@ repos:
       - id: banned-terms
         name: banned-terms
         language: script
-        entry: scripts/hooks/check-banned-terms.sh --config ~/.teatree
+        entry: scripts/hooks/check-banned-terms.sh --config ~/.teatree.toml
         types: [text]
         exclude: ^(\.pre-commit-config\.yaml|scripts/hooks/)$
 

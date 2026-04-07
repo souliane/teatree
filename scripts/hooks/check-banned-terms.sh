@@ -1,22 +1,23 @@
 #!/usr/bin/env bash
 # Pre-commit hook: reject files containing banned terms.
 #
-# Reads terms from a user-local config file:
-#   --config <path>  Shell KEY=VALUE file. Reads *BANNED_TERMS= variable.
+# Reads banned_terms from a TOML config file (e.g., ~/.teatree.toml):
+#   --config <path>  TOML file with a *banned_terms array in any section.
 #
 # Example .pre-commit-config.yaml entry:
-#   entry: scripts/hooks/check-banned-terms.sh --config ~/.teatree
+#   entry: scripts/hooks/check-banned-terms.sh --config ~/.teatree.toml
 #
-# The config file (e.g., ~/.teatree) should contain:
-#   T3_BANNED_TERMS="term1,term2,term3"
+# Example TOML:
+#   [teatree]
+#   banned_terms = ["term1", "term2"]
 #
-# If no config or no BANNED_TERMS variable, exits 0 (no-op).
+# If no config or no banned_terms key, exits 0 (no-op).
 # Matches that only appear inside email addresses are ignored so author/contact
 # metadata can stay intact while still blocking leaked tenant/project terms.
 
 set -euo pipefail
 
-terms=""
+config=""
 
 # Parse --config argument
 if [[ "${1:-}" == "--config" ]]; then
@@ -25,10 +26,21 @@ if [[ "${1:-}" == "--config" ]]; then
   if [ -n "$config" ]; then
     config="${config/#\~/$HOME}"
   fi
-  if [ -n "$config" ] && [ -f "$config" ]; then
-    terms="$(grep -E '_?BANNED_TERMS=' "$config" 2>/dev/null | head -1 | sed 's/^.*BANNED_TERMS=//' | sed 's/^["'"'"']//;s/["'"'"']$//')"
-  fi
 fi
+
+if [ -z "$config" ] || [ ! -f "$config" ]; then
+  exit 0
+fi
+
+# Extract banned_terms from TOML using tomllib (stdlib since Python 3.11)
+terms="$(python3 -c "
+import tomllib, pathlib, sys
+data = tomllib.loads(pathlib.Path(sys.argv[1]).read_text())
+for v in list(data.values()) + [data]:
+    if isinstance(v, dict) and 'banned_terms' in v:
+        print(','.join(v['banned_terms']))
+        break
+" "$config" 2>/dev/null || true)"
 
 if [ -z "$terms" ]; then
   exit 0
