@@ -19,6 +19,7 @@ from teatree.utils.django_db import (
     _find_dslr_snapshots,
     _local_db_url,
     _migrate_reference_db,
+    _MigrateResult,
     _pg_args,
     _restore_ref_and_copy,
     _restore_ref_from_dslr,
@@ -305,7 +306,16 @@ class TestMigrateReferenceDb:
     def test_succeeds_on_first_try(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         (tmp_path / "manage.py").write_text("", encoding="utf-8")
         monkeypatch.setattr(mod.subprocess, "run", _ok_run)
-        assert _migrate_reference_db(str(tmp_path), "development-acme", {}) is True
+        assert _migrate_reference_db(str(tmp_path), "development-acme", {}) is _MigrateResult.APPLIED
+
+    def test_returns_already_migrated_when_no_migrations(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        (tmp_path / "manage.py").write_text("", encoding="utf-8")
+        monkeypatch.setattr(
+            mod.subprocess,
+            "run",
+            lambda *a, **kw: CompletedProcess(a, 0, "No migrations to apply.\n", ""),
+        )
+        assert _migrate_reference_db(str(tmp_path), "development-acme", {}) is _MigrateResult.ALREADY_MIGRATED
 
     def test_fakes_already_exists(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         (tmp_path / "manage.py").write_text("", encoding="utf-8")
@@ -321,7 +331,7 @@ class TestMigrateReferenceDb:
             return CompletedProcess(args, 0, "", "")
 
         monkeypatch.setattr(mod.subprocess, "run", fake_run)
-        assert _migrate_reference_db(str(tmp_path), "development-acme", {}) is True
+        assert _migrate_reference_db(str(tmp_path), "development-acme", {}) is _MigrateResult.APPLIED
         assert "--fake" in calls[1]
 
     def test_skips_on_config_error(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -331,7 +341,7 @@ class TestMigrateReferenceDb:
             "run",
             lambda *a, **kw: CompletedProcess(a, 1, "", "ModuleNotFoundError: No module named 'foo'"),
         )
-        assert _migrate_reference_db(str(tmp_path), "development-acme", {}) is False
+        assert _migrate_reference_db(str(tmp_path), "development-acme", {}) is _MigrateResult.FAILED
 
     def test_skips_on_non_fakeable_error(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         (tmp_path / "manage.py").write_text("", encoding="utf-8")
@@ -340,10 +350,10 @@ class TestMigrateReferenceDb:
             "run",
             lambda *a, **kw: CompletedProcess(a, 1, "", "unexpected error"),
         )
-        assert _migrate_reference_db(str(tmp_path), "development-acme", {}) is False
+        assert _migrate_reference_db(str(tmp_path), "development-acme", {}) is _MigrateResult.FAILED
 
     def test_skips_when_no_manage_py(self, tmp_path: Path) -> None:
-        assert _migrate_reference_db(str(tmp_path), "development-acme", {}) is True
+        assert _migrate_reference_db(str(tmp_path), "development-acme", {}) is _MigrateResult.ALREADY_MIGRATED
 
     def test_skips_when_failing_migration_not_parseable(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         (tmp_path / "manage.py").write_text("", encoding="utf-8")
@@ -352,7 +362,7 @@ class TestMigrateReferenceDb:
             "run",
             lambda *a, **kw: CompletedProcess(a, 1, "Running migrate...\n", "already exists"),
         )
-        assert _migrate_reference_db(str(tmp_path), "development-acme", {}) is False
+        assert _migrate_reference_db(str(tmp_path), "development-acme", {}) is _MigrateResult.FAILED
 
     def test_exhausts_retries(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         (tmp_path / "manage.py").write_text("", encoding="utf-8")
@@ -361,7 +371,7 @@ class TestMigrateReferenceDb:
             "run",
             lambda *a, **kw: CompletedProcess(a, 1, "Applying myapp.0001_init...\n", "already exists"),
         )
-        assert _migrate_reference_db(str(tmp_path), "development-acme", {}) is False
+        assert _migrate_reference_db(str(tmp_path), "development-acme", {}) is _MigrateResult.FAILED
 
     def test_fakes_does_not_exist(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         (tmp_path / "manage.py").write_text("", encoding="utf-8")
@@ -377,7 +387,7 @@ class TestMigrateReferenceDb:
             return CompletedProcess(args, 0, "", "")
 
         monkeypatch.setattr(mod.subprocess, "run", fake_run)
-        assert _migrate_reference_db(str(tmp_path), "development-acme", {}) is True
+        assert _migrate_reference_db(str(tmp_path), "development-acme", {}) is _MigrateResult.APPLIED
 
 
 # ---------------------------------------------------------------------------
@@ -407,14 +417,14 @@ class TestRestoreRefAndCopy:
 
     def test_returns_false_when_migration_fails(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr("teatree.utils.db.db_restore", lambda *a, **kw: None)
-        monkeypatch.setattr(mod, "_migrate_reference_db", lambda *a: False)
+        monkeypatch.setattr(mod, "_migrate_reference_db", lambda *a: _MigrateResult.FAILED)
         ctx = _make_ctx(tmp_path)
         assert _restore_ref_and_copy(ctx, "/tmp/dump.pgsql", "test") is False
 
     def test_returns_false_when_template_copy_fails(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr("teatree.utils.db.db_restore", lambda *a, **kw: None)
         (tmp_path / "manage.py").write_text("", encoding="utf-8")
-        monkeypatch.setattr(mod, "_migrate_reference_db", lambda *a: True)
+        monkeypatch.setattr(mod, "_migrate_reference_db", lambda *a: _MigrateResult.APPLIED)
         monkeypatch.setattr(mod, "_take_dslr_snapshot", lambda *a: None)
         monkeypatch.setattr(mod, "_copy_ref_to_ticket", lambda ctx: False)
         ctx = _make_ctx(tmp_path)
@@ -439,12 +449,24 @@ class TestTryRestoreFromDslr:
     def test_succeeds_with_snapshot_and_runs_migrate(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(mod, "_find_dslr_snapshots", lambda *a: ["20260326_development-acme"])
         monkeypatch.setattr(mod, "_restore_ref_from_dslr", lambda *a: (True, False, ""))
-        monkeypatch.setattr(mod, "_migrate_reference_db", lambda *a: True)
+        monkeypatch.setattr(mod, "_migrate_reference_db", lambda *a: _MigrateResult.APPLIED)
         monkeypatch.setattr(mod, "_take_dslr_snapshot", lambda *a: None)
         monkeypatch.setattr(mod, "_copy_ref_to_ticket", lambda ctx: True)
         monkeypatch.setattr(mod.subprocess, "run", _ok_run)
         ctx = _make_ctx(tmp_path)
         assert _try_restore_from_dslr(ctx, skip_dslr=False) is True
+
+    def test_skips_dslr_snapshot_when_already_migrated(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        snapshot_calls: list[str] = []
+        monkeypatch.setattr(mod, "_find_dslr_snapshots", lambda *a: ["20260326_development-acme"])
+        monkeypatch.setattr(mod, "_restore_ref_from_dslr", lambda *a: (True, False, ""))
+        monkeypatch.setattr(mod, "_migrate_reference_db", lambda *a: _MigrateResult.ALREADY_MIGRATED)
+        monkeypatch.setattr(mod, "_take_dslr_snapshot", lambda *a: snapshot_calls.append("called"))
+        monkeypatch.setattr(mod, "_copy_ref_to_ticket", lambda ctx: True)
+        monkeypatch.setattr(mod.subprocess, "run", _ok_run)
+        ctx = _make_ctx(tmp_path)
+        assert _try_restore_from_dslr(ctx, skip_dslr=False) is True
+        assert snapshot_calls == [], "DSLR snapshot should be skipped when DB is already migrated"
 
     def test_tries_older_snapshot_when_first_fails(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         attempts: list[str] = []
@@ -458,7 +480,7 @@ class TestTryRestoreFromDslr:
             mod, "_find_dslr_snapshots", lambda *a: ["20260326_development-acme", "20260320_development-acme"]
         )
         monkeypatch.setattr(mod, "_restore_ref_from_dslr", fake_restore)
-        monkeypatch.setattr(mod, "_migrate_reference_db", lambda *a: True)
+        monkeypatch.setattr(mod, "_migrate_reference_db", lambda *a: _MigrateResult.APPLIED)
         monkeypatch.setattr(mod, "_take_dslr_snapshot", lambda *a: None)
         monkeypatch.setattr(mod, "_copy_ref_to_ticket", lambda ctx: True)
         monkeypatch.setattr(mod.subprocess, "run", _ok_run)
@@ -471,7 +493,7 @@ class TestTryRestoreFromDslr:
 
         def fake_migrate(repo, ref_db, extra):
             migrate_calls.append(ref_db)
-            return len(migrate_calls) == 2  # fail first, succeed second
+            return _MigrateResult.APPLIED if len(migrate_calls) == 2 else _MigrateResult.FAILED
 
         monkeypatch.setattr(
             mod, "_find_dslr_snapshots", lambda *a: ["20260326_development-acme", "20260320_development-acme"]
@@ -499,7 +521,7 @@ class TestTryRestoreFromDslr:
     ) -> None:
         monkeypatch.setattr(mod, "_find_dslr_snapshots", lambda *a: ["20260326_development-acme"])
         monkeypatch.setattr(mod, "_restore_ref_from_dslr", lambda *a: (True, False, ""))
-        monkeypatch.setattr(mod, "_migrate_reference_db", lambda *a: True)
+        monkeypatch.setattr(mod, "_migrate_reference_db", lambda *a: _MigrateResult.APPLIED)
         monkeypatch.setattr(mod, "_take_dslr_snapshot", lambda *a: None)
         monkeypatch.setattr(mod, "_copy_ref_to_ticket", lambda ctx: False)
         monkeypatch.setattr(mod.subprocess, "run", _ok_run)
