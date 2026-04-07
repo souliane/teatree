@@ -171,6 +171,14 @@ See your [issue tracker platform reference](../../t3:platforms/references/) § "
 - **Fix:** Update branch protection to use raw names (e.g., `lint`, `test (3.13)`, `e2e`), not the display format (`CI / lint (pull_request)`).
 - **Prevention:** After setting branch protection, always verify with `gh api repos/OWNER/REPO/branches/main/protection --jq '.required_status_checks.checks[].context'` and compare against actual check-run names.
 
+## Docker CI: `FileNotFoundError: No such file or directory: 'docker'` (or `psql`)
+
+- **Symptom:** Tests pass locally but fail in the Docker test matrix with `FileNotFoundError` for `docker`, `psql`, or other CLI tools not available inside the CI container.
+- **Cause:** New code introduced a `subprocess.run` call to an external tool. Local dev has the tool installed; Docker CI does not. Common culprits: `_compose_has_service` (calls `docker compose`), `_drop_orphan_databases` (calls `psql`/`dropdb`).
+- **Subtle variant — local imports:** When a function uses `from module import func` inside the function body, patching the *caller's* `subprocess` doesn't cover calls made through the *imported module's* `subprocess`. Example: patching `lifecycle_mod.subprocess` does NOT mock `_compose_has_service` which is imported from `run_mod` at call time.
+- **Fix:** Patch the function directly on the module it lives in: `patch.object(run_mod, "_compose_has_service", return_value=True)`.
+- **Prevention:** When adding any `subprocess` call to an external tool, grep all test files for tests that exercise that code path (`grep -r "lifecycle.*start\|workspace.*clean"`) and add mocks. Run the Docker test matrix locally before pushing: the pre-push hook does this automatically.
+
 ## direnv Not Loading `.envrc`
 
 - **Cause:** direnv not hooked into the shell or `.envrc` not allowed.
