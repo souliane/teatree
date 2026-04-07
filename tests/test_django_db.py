@@ -20,6 +20,7 @@ from teatree.utils.django_db import (
     _local_db_url,
     _migrate_reference_db,
     _MigrateResult,
+    _parse_dslr_snapshots,
     _pg_args,
     _restore_ref_and_copy,
     _restore_ref_from_dslr,
@@ -31,6 +32,7 @@ from teatree.utils.django_db import (
     _try_restore_from_dslr,
     _try_restore_from_local_dump,
     django_db_import,
+    prune_dslr_snapshots,
     reset_remote_dump_state,
     validate_dump,
 )
@@ -810,3 +812,82 @@ class TestDjangoDbImport:
             snapshot_tool="",
         )
         assert django_db_import(cfg, slow_import=True) is True
+
+
+# ---------------------------------------------------------------------------
+# DSLR snapshot pruning
+# ---------------------------------------------------------------------------
+
+
+class TestParseDslrSnapshots:
+    def test_groups_by_tenant(self) -> None:
+        stdout = (
+            "20260402_development-finporta  125MB\n"
+            "20260401_development-finporta  123MB\n"
+            "20260315_development-volksbank  98MB\n"
+            "20260320_development-volksbank  100MB\n"
+        )
+        result = _parse_dslr_snapshots(stdout)
+        assert set(result) == {"development-finporta", "development-volksbank"}
+        assert result["development-finporta"] == [
+            "20260402_development-finporta",
+            "20260401_development-finporta",
+        ]
+        assert result["development-volksbank"] == [
+            "20260320_development-volksbank",
+            "20260315_development-volksbank",
+        ]
+
+    def test_empty_output(self) -> None:
+        assert _parse_dslr_snapshots("") == {}
+
+    def test_skips_blank_lines(self) -> None:
+        result = _parse_dslr_snapshots("\n\n20260401_dev-acme  50MB\n\n")
+        assert result == {"dev-acme": ["20260401_dev-acme"]}
+
+
+class TestPruneDslrSnapshots:
+    def test_deletes_old_keeps_newest(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        dslr_output = (
+            "20260402_development-finporta  125MB\n"
+            "20260401_development-finporta  123MB\n"
+            "20260320_development-finporta  120MB\n"
+        )
+        deleted: list[str] = []
+
+        def fake_run(cmd, **kw):
+            if "delete" in cmd:
+                deleted.append(cmd[-1])
+            return CompletedProcess(cmd, 0, stdout=dslr_output, stderr="")
+
+        monkeypatch.setattr(mod.subprocess, "run", fake_run)
+        monkeypatch.setattr(mod.shutil, "which", lambda _: "/usr/bin/uv")
+        result = prune_dslr_snapshots(keep=1)
+
+        assert result == ["20260401_development-finporta", "20260320_development-finporta"]
+        assert deleted == ["20260401_development-finporta", "20260320_development-finporta"]
+
+    def test_keeps_n_snapshots(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        dslr_output = "20260403_dev-a  10MB\n20260402_dev-a  10MB\n20260401_dev-a  10MB\n"
+        deleted: list[str] = []
+
+        def fake_run(cmd, **kw):
+            if "delete" in cmd:
+                deleted.append(cmd[-1])
+            return CompletedProcess(cmd, 0, stdout=dslr_output, stderr="")
+
+        monkeypatch.setattr(mod.subprocess, "run", fake_run)
+        monkeypatch.setattr(mod.shutil, "which", lambda _: "/usr/bin/uv")
+        result = prune_dslr_snapshots(keep=2)
+
+        assert result == ["20260401_dev-a"]
+
+    def test_returns_empty_when_no_dslr(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(mod.shutil, "which", lambda _: None)
+        monkeypatch.delenv("DSLR_CMD", raising=False)
+        assert prune_dslr_snapshots() == []
+
+    def test_returns_empty_when_dslr_list_fails(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(mod.subprocess, "run", lambda *a, **kw: CompletedProcess(a, 1, stdout="", stderr=""))
+        monkeypatch.setattr(mod.shutil, "which", lambda _: "/usr/bin/uv")
+        assert prune_dslr_snapshots() == []

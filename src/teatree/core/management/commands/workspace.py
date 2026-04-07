@@ -7,6 +7,7 @@ import sys
 from contextlib import suppress
 from pathlib import Path
 
+import typer
 from django_typer.management import TyperCommand, command
 
 from teatree.config import load_config
@@ -427,8 +428,11 @@ class Command(TyperCommand):
         return label
 
     @command(name="clean-all")
-    def clean_all(self) -> list[str]:
-        """Prune merged worktrees, stale branches, orphaned stashes, and orphan databases."""
+    def clean_all(
+        self,
+        keep_dslr: int = typer.Option(1, help="Number of DSLR snapshots to keep per tenant."),
+    ) -> list[str]:
+        """Prune merged worktrees, stale branches, orphaned stashes, orphan databases, and old DSLR snapshots."""
         workspace = _workspace_dir()
         cleaned = [
             self._clean_one_worktree(wt, workspace) for wt in Worktree.objects.filter(state=Worktree.State.CREATED)
@@ -446,5 +450,11 @@ class Command(TyperCommand):
         if (repo_root / ".git").exists():
             cleaned.extend(_prune_branches(str(repo_root)))
             cleaned.extend(_drop_orphaned_stashes(str(repo_root)))
+
+        # Prune old DSLR snapshots
+        from teatree.utils.django_db import prune_dslr_snapshots  # noqa: PLC0415
+
+        pruned = prune_dslr_snapshots(keep=keep_dslr)
+        cleaned.extend(f"Pruned DSLR snapshot: {name}" for name in pruned)
 
         return cleaned

@@ -525,6 +525,43 @@ def reset_remote_dump_state() -> None:
     _remote_dump_failed = False
 
 
+def _parse_dslr_snapshots(stdout: str) -> dict[str, list[str]]:
+    """Parse ``dslr list`` output, group snapshot names by tenant (suffix after date)."""
+    by_tenant: dict[str, list[str]] = {}
+    for line in stdout.splitlines():
+        token = line.strip().split()[0] if line.strip() else ""
+        if not token:
+            continue
+        # Snapshot names: <date>_<tenant>  e.g. "20260401_development-finporta"
+        if "_" in token:
+            tenant = token.split("_", maxsplit=1)[1]
+            by_tenant.setdefault(tenant, []).append(token)
+    for names in by_tenant.values():
+        names.sort(reverse=True)
+    return by_tenant
+
+
+def prune_dslr_snapshots(*, keep: int = 1, snapshot_tool: str = "dslr") -> list[str]:
+    """Delete old DSLR snapshots, keeping the *keep* newest per tenant.
+
+    Returns a list of deleted snapshot names.
+    """
+    dslr_cmd = _find_dslr_cmd(snapshot_tool)
+    if not dslr_cmd:
+        return []
+    result = subprocess.run([*dslr_cmd, "list"], capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        return []
+    by_tenant = _parse_dslr_snapshots(result.stdout)
+    deleted: list[str] = []
+    for tenant, names in by_tenant.items():
+        for old in names[keep:]:
+            print(f"  Pruning DSLR snapshot: {old} (tenant={tenant})")  # noqa: T201
+            subprocess.run([*dslr_cmd, "delete", "-y", old], capture_output=True, check=False)
+            deleted.append(old)
+    return deleted
+
+
 def _warn_slow_path(label: str) -> None:
     """Print a prominent warning when a non-DSLR (slow) restore path executes."""
     print(f"  WARNING [SLOW PATH]: {label}", file=sys.stderr)  # noqa: T201
