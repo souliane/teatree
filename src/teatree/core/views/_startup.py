@@ -2,7 +2,6 @@
 
 import json
 import logging
-import sys
 from pathlib import Path
 
 import teatree
@@ -11,15 +10,9 @@ from teatree.core.overlay_loader import get_overlay
 from teatree.core.sync import SyncResult, sync_followup
 from teatree.skill_deps import resolve_all
 from teatree.skill_schema import validate_skill_md
+from teatree.trigger_parser import parse_triggers as _parse_triggers
 
 logger = logging.getLogger(__name__)
-
-# Allow importing the shared trigger parser from scripts/lib/.
-_SCRIPTS_LIB = Path(__file__).resolve().parents[4] / "scripts" / "lib"
-if str(_SCRIPTS_LIB) not in sys.path:  # pragma: no branch
-    sys.path.insert(0, str(_SCRIPTS_LIB))
-
-from trigger_parser import parse_triggers as _parse_triggers  # noqa: E402  # ty: ignore[unresolved-import]
 
 # Default skill directory where Claude Code discovers skills.
 # When supporting other agent platforms, make this configurable via settings.
