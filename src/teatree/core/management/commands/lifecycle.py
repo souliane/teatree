@@ -280,8 +280,7 @@ class Command(TyperCommand):
         combined = ProvisionReport(
             steps=provision_report.steps + post_db_report.steps + pre_run_report.steps,
         )
-        if self._verbose:
-            self.stdout.write(combined.summary())
+        self._print_diagnostics(worktree, combined)
         return combined
 
     def _run_db_import(
@@ -336,6 +335,61 @@ class Command(TyperCommand):
                 self.stderr.write(f"  HEALTH CHECK ERROR: {check.name} — {exc}")
         if failures:
             self.stderr.write(f"  {len(failures)}/{len(checks)} health check(s) failed.")
+
+    def _print_diagnostics(self, worktree: Worktree, report: ProvisionReport) -> None:
+        """Print a structured checklist summarizing worktree state after provisioning."""
+        wt_path = (worktree.extra or {}).get("worktree_path", "")
+        self.stdout.write(f"\n  ── {worktree.repo_path} ──")
+        checks = [
+            ("worktree dir", bool(wt_path and Path(wt_path).is_dir())),
+            (".env.worktree", bool(wt_path and (Path(wt_path).parent / ".env.worktree").is_file())),
+            ("DB name", bool(worktree.db_name)),
+        ]
+        checks.extend((step.name, step.success) for step in report.steps)
+        ok = sum(1 for _, passed in checks if passed)
+        for name, passed in checks:
+            status = "OK" if passed else "FAIL"
+            self.stdout.write(f"  [{status}] {name}")
+        self.stdout.write(f"  {ok}/{len(checks)} checks passed\n")
+
+    @command()
+    def diagnose(
+        self,
+        path: str = typer.Option("", help="Worktree path (auto-detects from PWD if empty)."),
+    ) -> dict[str, object]:
+        """Check worktree health: git dir, env file, DB, docker services."""
+        worktree = resolve_worktree(path)
+        wt_path = (worktree.extra or {}).get("worktree_path", "")
+        ticket_dir = Path(wt_path).parent if wt_path else None
+
+        checks: dict[str, object] = {
+            "state": worktree.state,
+            "repo_path": worktree.repo_path,
+            "worktree_dir": bool(wt_path and Path(wt_path).is_dir()),
+            "git_marker": bool(wt_path and (Path(wt_path) / ".git").exists()),
+            "env_file": bool(ticket_dir and (ticket_dir / ".env.worktree").is_file()),
+            "db_name": worktree.db_name,
+        }
+
+        # Docker compose status
+        project = _compose_project(worktree)
+        result = subprocess.run(  # noqa: S603
+            ["docker", "compose", "-p", project, "ps", "--format", "{{.Name}} {{.State}}"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        checks["docker_services"] = result.stdout.strip() if result.returncode == 0 else "not running"
+
+        # Print human-readable checklist
+        self.stdout.write(f"\n  ── {worktree.repo_path} ({worktree.state}) ──")
+        for key in ("worktree_dir", "git_marker", "env_file"):
+            status = "OK" if checks[key] else "FAIL"
+            self.stdout.write(f"  [{status}] {key}")
+        self.stdout.write(f"  [{'OK' if checks['db_name'] else 'FAIL'}] DB name: {checks['db_name'] or '(none)'}")
+        self.stdout.write(f"  docker: {checks['docker_services']}")
+
+        return checks
 
     @command()
     def start(
