@@ -188,7 +188,7 @@ Teatree stores its config in `~/.teatree` (created by `/t3:setup`):
 | `T3_UPSTREAM` | No | None | Upstream repo for PRs (empty = PR on origin, set = PR on upstream) |
 | `T3_PRIVATE_TESTS` | No | None | Path to a private test suite repo (E2E, integration) |
 | `T3_BANNED_TERMS` | No | None | Comma-separated terms that must never appear in committed code |
-| `T3_REVIEW_SKILL` | No | None | External skill review tool name (e.g., `ac-reviewing-skills`) |
+| `T3_REVIEW_SKILL` | No | None | External skill review tool name (e.g., `ac-reviewing-codebase`) |
 | `T3_FOLLOWUP_PURGE_DAYS` | No | `14` | Auto-purge tickets from dashboard cache after all MRs merged for N days |
 | `T3_BRANCH_PREFIX` | No | `dev` | Prefix for worktree branches (e.g., your initials) |
 | `T3_AUTO_SQUASH` | No | `false` | Auto-squash related unpushed commits before push |
