@@ -1,5 +1,7 @@
 """Overlay CLI — builds Typer sub-apps that delegate to manage.py commands."""
 
+import json as _json
+import logging
 import os
 import shutil
 import subprocess  # noqa: S404
@@ -7,6 +9,8 @@ import sys
 from pathlib import Path
 
 import typer
+
+logger = logging.getLogger(__name__)
 
 DJANGO_GROUPS: dict[str, tuple[str, list[tuple[str, str]]]] = {
     "lifecycle": (
@@ -444,15 +448,17 @@ class OverlayAppBuilder:
         if project_path is None:
             return
 
-        import json  # noqa: PLC0415
-
         tool_commands: list[dict[str, str]] = []
         for candidate in project_path.rglob("hook-config/tool-commands.json"):
             try:
-                data = json.loads(candidate.read_text(encoding="utf-8"))
+                data = _json.loads(candidate.read_text(encoding="utf-8"))
                 if isinstance(data, list):  # pragma: no branch
                     tool_commands.extend(data)
-            except Exception:  # noqa: BLE001, S112
+            except _json.JSONDecodeError:
+                logger.warning("Invalid JSON in %s", candidate)
+                continue
+            except OSError as exc:
+                logger.warning("Cannot read %s: %s", candidate, exc)
                 continue
 
         if not tool_commands:

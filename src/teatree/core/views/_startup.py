@@ -1,6 +1,7 @@
 """Shared startup/sync logic called by both dashboard init and sync-now button."""
 
 import json
+import logging
 import sys
 from pathlib import Path
 
@@ -9,6 +10,9 @@ from teatree.config import DATA_DIR
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.sync import SyncResult, sync_followup
 from teatree.skill_deps import resolve_all
+from teatree.skill_schema import validate_skill_md
+
+logger = logging.getLogger(__name__)
 
 # Allow importing the shared trigger parser from scripts/lib/.
 _SCRIPTS_LIB = Path(__file__).resolve().parents[4] / "scripts" / "lib"
@@ -54,6 +58,21 @@ def _write_skill_metadata_cache() -> None:
     cache_path.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
 
 
+def _validate_skills(known_skills: set[str]) -> None:
+    for d in sorted(_CLAUDE_SKILLS_DIR.iterdir()):
+        resolved = d.resolve() if d.is_symlink() else d
+        if not resolved.is_dir():
+            continue
+        skill_md = resolved / "SKILL.md"
+        if not skill_md.is_file():
+            continue
+        errors, warnings = validate_skill_md(skill_md, known_skills=known_skills)
+        for warning in warnings:
+            logger.warning("%s", warning)
+        for error in errors:
+            logger.warning("Skill validation error: %s", error)
+
+
 def _build_trigger_index() -> list[dict]:
     """Scan ``~/.claude/skills/*/SKILL.md`` and extract ``triggers:`` blocks.
 
@@ -65,6 +84,14 @@ def _build_trigger_index() -> list[dict]:
 
     if not _CLAUDE_SKILLS_DIR.is_dir():
         return index
+
+    known_skills: set[str] = set()
+    for d in _CLAUDE_SKILLS_DIR.iterdir():
+        resolved = d.resolve() if d.is_symlink() else d
+        if resolved.is_dir() and (resolved / "SKILL.md").is_file():
+            known_skills.add(d.name)
+
+    _validate_skills(known_skills)
 
     for skill_dir in sorted(_CLAUDE_SKILLS_DIR.iterdir()):
         # Resolve symlinks so we can check if target exists

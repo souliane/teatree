@@ -7,6 +7,7 @@ Overlays configure the engine via ``DjangoDbImportConfig``; the engine
 does the rest.  No Django imports — shells out to ``manage.py``.
 """
 
+import logging
 import os
 import re
 import shutil
@@ -17,6 +18,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from teatree.utils import bad_artifacts
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -344,7 +347,11 @@ _remote_dump_failed: bool = False
 
 
 def _try_restore_from_dslr(ctx: _RestoreContext, *, skip_dslr: bool) -> bool:
-    if skip_dslr or not ctx.dslr_cmd:
+    if skip_dslr:
+        logger.info("DSLR restore skipped (skip_dslr=True)")
+        return False
+    if not ctx.dslr_cmd:
+        logger.info("DSLR restore skipped (no snapshot tool configured)")
         return False
     _ensure_ref_db(ctx.cfg.ref_db_name, ctx.pg_host, ctx.pg_user, ctx.pg_env)
     snapshots = _find_dslr_snapshots(ctx.dslr_cmd, ctx.dslr_env, ctx.cfg.ref_db_name)
@@ -370,6 +377,7 @@ def _try_restore_from_dslr(ctx: _RestoreContext, *, skip_dslr: bool) -> bool:
             print(f"  Created {ctx.cfg.ticket_db_name} from DSLR snapshot.")  # noqa: T201
             return True
         print(f"  WARNING: Template copy after DSLR {snap_name} failed, trying older...")  # noqa: T201
+    logger.warning("All DSLR snapshots failed for %s", ctx.cfg.ref_db_name)
     print("  WARNING: All DSLR snapshots failed. Trying local dump fallback...")  # noqa: T201
     return False
 
@@ -377,6 +385,7 @@ def _try_restore_from_dslr(ctx: _RestoreContext, *, skip_dslr: bool) -> bool:
 def _try_restore_from_local_dump(ctx: _RestoreContext) -> bool:
     dump_dir = Path(ctx.cfg.dump_dir)
     if not dump_dir.is_dir():
+        logger.info("Local dump dir %s does not exist", dump_dir)
         return False
     dumps = sorted(
         (p for p in dump_dir.glob(ctx.cfg.dump_glob) if validate_dump(p) and not bad_artifacts.is_bad(str(p))),
@@ -393,6 +402,7 @@ def _try_restore_from_local_dump(ctx: _RestoreContext) -> bool:
         if _restore_ref_and_copy(ctx, str(dump), f"local dump ({dump.name})"):
             return True
         print(f"  WARNING: Local dump {dump.name} failed, trying older...")  # noqa: T201
+    logger.warning("All local dumps failed for %s", ctx.cfg.ref_db_name)
     print("  WARNING: All local dumps failed. Trying remote dump...")  # noqa: T201
     return False
 
@@ -406,6 +416,7 @@ def _try_fetch_remote_dump(ctx: _RestoreContext) -> bool:
     global _remote_dump_failed  # noqa: PLW0603
     cfg = ctx.cfg
     if not cfg.remote_db_url:
+        logger.info("Remote dump skipped (no remote_db_url configured)")
         return False
     if _remote_dump_failed:
         print("  Skipping remote dump (already failed in this run).")  # noqa: T201
@@ -433,6 +444,7 @@ def _try_fetch_remote_dump(ctx: _RestoreContext) -> bool:
     _remote_dump_failed = True
     raw = result.stderr or b""
     stderr_text = raw.decode(errors="replace").strip() if isinstance(raw, bytes) else raw.strip()
+    logger.warning("pg_dump failed (rc=%d) for %s: %s", result.returncode, cfg.ref_db_name, stderr_text)
     print(f"  WARNING: pg_dump failed: {stderr_text}")  # noqa: T201
     return False
 
@@ -449,6 +461,7 @@ def _try_restore_from_ci_dump(ctx: _RestoreContext) -> bool:
     print(f"  Restoring from CI dump (last resort): {ci_dump.name}")  # noqa: T201
     if _restore_ref_and_copy(ctx, str(ci_dump), f"CI dump ({ci_dump.name})"):
         return True
+    logger.warning("CI dump restore failed for %s", ctx.cfg.ref_db_name)
     print("  WARNING: CI dump restore failed.")  # noqa: T201
     return False
 

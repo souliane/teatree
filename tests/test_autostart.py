@@ -1,3 +1,4 @@
+import subprocess
 import sys
 from pathlib import Path
 
@@ -120,7 +121,7 @@ class TestEnable:
         commands_run: list[list[str]] = []
         monkeypatch.setattr(
             "teatree.autostart.subprocess.run",
-            lambda *a, **kw: commands_run.append(a[0]),
+            lambda *a, **kw: (commands_run.append(a[0]), subprocess.CompletedProcess(a[0], 0))[1],
         )
 
         msg = enable("acme", project, "acme.settings", "127.0.0.1", 8000)
@@ -147,7 +148,7 @@ class TestEnable:
         commands_run: list[list[str]] = []
         monkeypatch.setattr(
             "teatree.autostart.subprocess.run",
-            lambda *a, **kw: commands_run.append(a[0]),
+            lambda *a, **kw: (commands_run.append(a[0]), subprocess.CompletedProcess(a[0], 0))[1],
         )
 
         enable("acme", project, "acme.settings", "127.0.0.1", 8000)
@@ -166,7 +167,7 @@ class TestEnable:
         commands_run: list[list[str]] = []
         monkeypatch.setattr(
             "teatree.autostart.subprocess.run",
-            lambda *a, **kw: commands_run.append(a[0]),
+            lambda *a, **kw: (commands_run.append(a[0]), subprocess.CompletedProcess(a[0], 0))[1],
         )
 
         msg = enable("acme", project, "acme.settings", "127.0.0.1", 8000)
@@ -188,7 +189,7 @@ class TestDisable:
         commands_run: list[list[str]] = []
         monkeypatch.setattr(
             "teatree.autostart.subprocess.run",
-            lambda *a, **kw: commands_run.append(a[0]),
+            lambda *a, **kw: (commands_run.append(a[0]), subprocess.CompletedProcess(a[0], 0))[1],
         )
 
         msg = disable("acme")
@@ -206,7 +207,7 @@ class TestDisable:
         commands_run: list[list[str]] = []
         monkeypatch.setattr(
             "teatree.autostart.subprocess.run",
-            lambda *a, **kw: commands_run.append(a[0]),
+            lambda *a, **kw: (commands_run.append(a[0]), subprocess.CompletedProcess(a[0], 0))[1],
         )
 
         msg = disable("acme")
@@ -228,6 +229,67 @@ class TestDisable:
         msg = disable("acme")
 
         assert "not installed" in msg.lower()
+
+
+class TestEnableFailures:
+    def test_launchd_load_failure_raises(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("teatree.autostart.sys.platform", "darwin")
+        project = tmp_path / "myproject"
+        project.mkdir()
+        (project / "manage.py").touch()
+
+        def fake_run(*a, **kw):
+            cmd = a[0]
+            if "load" in cmd:
+                return subprocess.CompletedProcess(cmd, 1, stderr=b"load error")
+            return subprocess.CompletedProcess(cmd, 0)
+
+        monkeypatch.setattr("teatree.autostart.subprocess.run", fake_run)
+
+        with pytest.raises(RuntimeError, match="launchctl load failed"):
+            enable("acme", project, "acme.settings", "127.0.0.1", 8000)
+
+    def test_systemd_enable_failure_raises(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("teatree.autostart.sys.platform", "linux")
+        project = tmp_path / "myproject"
+        project.mkdir()
+        (project / "manage.py").touch()
+
+        def fake_run(*a, **kw):
+            cmd = a[0]
+            if "enable" in cmd:
+                return subprocess.CompletedProcess(cmd, 1, stderr=b"enable error")
+            return subprocess.CompletedProcess(cmd, 0)
+
+        monkeypatch.setattr("teatree.autostart.subprocess.run", fake_run)
+
+        with pytest.raises(RuntimeError, match="systemctl enable failed"):
+            enable("acme", project, "acme.settings", "127.0.0.1", 8000)
+
+    def test_launchd_unload_failure_logs_warning(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        monkeypatch.setattr("teatree.autostart.sys.platform", "darwin")
+        project = tmp_path / "myproject"
+        project.mkdir()
+        (project / "manage.py").touch()
+
+        plist_path = _launchd_plist_path("acme")
+        plist_path.parent.mkdir(parents=True, exist_ok=True)
+        plist_path.write_text("<plist/>")
+
+        def fake_run(*a, **kw):
+            cmd = a[0]
+            if "unload" in cmd:
+                return subprocess.CompletedProcess(cmd, 1, stderr=b"unload err")
+            return subprocess.CompletedProcess(cmd, 0)
+
+        monkeypatch.setattr("teatree.autostart.subprocess.run", fake_run)
+
+        with caplog.at_level("WARNING", logger="teatree.autostart"):
+            enable("acme", project, "acme.settings", "127.0.0.1", 8000)
+
+        assert "launchctl unload failed" in caplog.text
 
 
 class TestLogPaths:
