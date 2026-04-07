@@ -187,8 +187,8 @@ def _is_env_error(stderr: str) -> bool:
     return any(p.lower() in lower for p in env_patterns)
 
 
-def _restore_ref_from_dslr(dslr_cmd: list[str], env: dict[str, str], snap_name: str) -> tuple[bool, bool]:
-    """Restore a DSLR snapshot. Returns (success, is_env_error)."""
+def _restore_ref_from_dslr(dslr_cmd: list[str], env: dict[str, str], snap_name: str) -> tuple[bool, bool, str]:
+    """Restore a DSLR snapshot. Returns (success, is_env_error, stderr)."""
     result = subprocess.run(
         [*dslr_cmd, "restore", snap_name],
         env=env,
@@ -197,8 +197,8 @@ def _restore_ref_from_dslr(dslr_cmd: list[str], env: dict[str, str], snap_name: 
         check=False,
     )
     if result.returncode == 0:
-        return True, False
-    return False, _is_env_error(result.stderr)
+        return True, False, ""
+    return False, _is_env_error(result.stderr), result.stderr.strip()
 
 
 def _take_dslr_snapshot(dslr_cmd: list[str], env: dict[str, str], ref_db: str) -> None:
@@ -359,13 +359,16 @@ def _try_restore_from_dslr(ctx: _RestoreContext, *, skip_dslr: bool) -> bool:
         return False
     for snap_name in snapshots:
         print(f"  Restoring {ctx.cfg.ref_db_name} from DSLR snapshot: {snap_name}")  # noqa: T201
-        ok, is_env = _restore_ref_from_dslr(ctx.dslr_cmd, ctx.dslr_env, snap_name)
+        ok, is_env, stderr = _restore_ref_from_dslr(ctx.dslr_cmd, ctx.dslr_env, snap_name)
         if not ok:
             if is_env:
                 print(f"  WARNING: DSLR restore failed (environment error, not marking bad): {snap_name}")  # noqa: T201
             else:
                 bad_artifacts.mark_bad(_dslr_artifact_key(snap_name))
                 print(f"  BAD ARTIFACT: DSLR snapshot '{snap_name}' marked bad (delete: dslr delete {snap_name})")  # noqa: T201
+            if stderr:
+                logger.warning("DSLR restore stderr for %s: %s", snap_name, stderr)
+                print(f"    Restore error: {stderr[:200]}")  # noqa: T201
             continue
         if not _migrate_reference_db(ctx.cfg.main_repo_path, ctx.cfg.ref_db_name, ctx.cfg.migrate_env_extra):
             # Migration failures are typically environmental (wrong settings, missing deps),
