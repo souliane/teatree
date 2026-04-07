@@ -33,12 +33,27 @@ def _worktree_branches(repo: str) -> set[str]:
 
 
 def _is_squash_merged(repo: str, branch: str, default: str) -> bool:
-    """Check if *branch* was squash-merged into *default* by comparing tree content.
+    """Check if *branch* was squash-merged into *default*.
 
     A squash-merge rewrites history so ``git branch --merged`` won't detect it.
-    Instead, check if the diff between the branch and main is empty — meaning
-    all the branch's changes are already in main.
+
+    Strategy: merge the branch into a temporary tree-only merge with main.
+    If ``git merge-tree`` reports no conflicts and ``git cherry`` shows all
+    commits as applied, the branch is merged. As a fast fallback, check if
+    ``gh pr list`` reports the branch's PR as merged.
     """
+    # Fast path: ask GitHub if a PR for this branch was merged.
+    result = subprocess.run(  # noqa: S603
+        ["gh", "pr", "list", "--head", branch, "--state", "merged", "--json", "number", "--limit", "1"],
+        capture_output=True,
+        text=True,
+        check=False,
+        cwd=repo,
+    )
+    if result.returncode == 0 and result.stdout.strip() not in {"", "[]"}:
+        return True
+
+    # Fallback: empty diff means all changes are already in main.
     diff = git.run(repo=repo, args=["diff", f"origin/{default}...{branch}", "--stat"])
     return not diff
 
@@ -60,22 +75,33 @@ def _prune_branches(repo: str) -> list[str]:
     wt_branches = _worktree_branches(repo)
 
     wt_map = _worktree_map(repo)
-    gone_wt_branches: list[str] = []
+
+    # Pass 1: delete "gone" branches that are not worktree-linked.
     for line in git.run(repo=repo, args=["branch", "-v", "--no-color"]).splitlines():
         if "[gone]" not in line:
             continue
         name = line.strip().removeprefix("+ ").split()[0]
-        if name in protected:
+        if name in protected or name in wt_branches:
             continue
-        if name not in wt_branches:
-            git.branch_delete(repo, name)
-            cleaned.append(f"Pruned gone branch: {name}")
-        else:
-            gone_wt_branches.append(name)
+        git.branch_delete(repo, name)
+        cleaned.append(f"Pruned gone branch: {name}")
 
-    # Worktree-linked branches whose remote is gone: safe to prune if
-    # squash-merged (all changes already in main).
-    for name in gone_wt_branches:
+    # Pass 2: delete branches merged via regular merge.
+    for line in git.run(repo=repo, args=["branch", "--merged", f"origin/{default}", "--no-color"]).splitlines():
+        name = line.strip().removeprefix("* ").removeprefix("+ ")
+        if name in protected or name in wt_branches:
+            continue
+        git.branch_delete(repo, name)
+        cleaned.append(f"Pruned merged branch: {name}")
+
+    # Pass 3: detect squash-merged branches (worktree-linked or not).
+    # Squash-merge rewrites history so --merged can't detect them.
+    # Uses the GitHub API as the primary signal, falls back to diff comparison.
+    all_branches = {
+        line.strip().removeprefix("* ").removeprefix("+ ")
+        for line in git.run(repo=repo, args=["branch", "--no-color"]).splitlines()
+    }
+    for name in sorted(all_branches - protected):
         if not _is_squash_merged(repo, name, default):
             continue
         wt_path = wt_map.get(name, "")
@@ -83,13 +109,7 @@ def _prune_branches(repo: str) -> list[str]:
             git.worktree_remove(repo, wt_path)
             git.run(repo=repo, args=["worktree", "prune"])
         git.branch_delete(repo, name)
-        cleaned.append(f"Pruned squash-merged worktree branch: {name}")
-
-    for line in git.run(repo=repo, args=["branch", "--merged", f"origin/{default}", "--no-color"]).splitlines():
-        name = line.strip().removeprefix("* ").removeprefix("+ ")
-        if name not in protected and name not in wt_branches:
-            git.branch_delete(repo, name)
-            cleaned.append(f"Pruned merged branch: {name}")
+        cleaned.append(f"Pruned squash-merged branch: {name}")
 
     return cleaned
 

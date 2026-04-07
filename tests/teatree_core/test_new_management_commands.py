@@ -638,13 +638,27 @@ class TestWorkspaceCleanAll(TestCase):
             assert nonempty_dir.exists()
 
 
+_gh_no_pr = patch(
+    "teatree.core.management.commands.workspace.subprocess.run",
+    return_value=subprocess.CompletedProcess([], 0, stdout="[]"),
+)
+_gh_merged_pr = patch(
+    "teatree.core.management.commands.workspace.subprocess.run",
+    return_value=subprocess.CompletedProcess([], 0, stdout='[{"number":1}]'),
+)
+
+
 class TestPruneBranches(TestCase):
-    def test_squash_merged_detected_via_empty_diff(self) -> None:
-        with patch.object(git_mod, "run", return_value=""):
+    def test_squash_merged_detected_via_gh_api(self) -> None:
+        with _gh_merged_pr:
+            assert workspace_mod._is_squash_merged("/repo", "feature", "main") is True
+
+    def test_squash_merged_fallback_via_empty_diff(self) -> None:
+        with _gh_no_pr, patch.object(git_mod, "run", return_value=""):
             assert workspace_mod._is_squash_merged("/repo", "feature", "main") is True
 
     def test_non_squash_merged_detected_via_nonempty_diff(self) -> None:
-        with patch.object(git_mod, "run", return_value=" file.py | 1 +"):
+        with _gh_no_pr, patch.object(git_mod, "run", return_value=" file.py | 1 +"):
             assert workspace_mod._is_squash_merged("/repo", "feature", "main") is False
 
     def test_worktree_map_parses_porcelain(self) -> None:
@@ -674,12 +688,13 @@ class TestPruneBranches(TestCase):
                 return gone_output
             if args == ["branch", "--merged", "origin/main", "--no-color"]:
                 return merged_output
-            if args[:2] == ["diff", "origin/main...gone-branch"]:
-                return ""  # squash-merged: empty diff
+            if args == ["branch", "--no-color"]:
+                return "* main\n  gone-branch"
             if args == ["worktree", "list", "--porcelain"]:
                 return "worktree /tmp/old-worktree\nHEAD abc123\nbranch refs/heads/gone-branch\n"
             return ""
 
+        gh_merged = subprocess.CompletedProcess([], 0, stdout='[{"number":1}]')
         with (
             patch.object(workspace_mod, "_workspace_dir", return_value=Path("/tmp/ws")),
             patch.object(workspace_mod, "_worktree_map", return_value=wt_map),
@@ -689,6 +704,7 @@ class TestPruneBranches(TestCase):
             patch.object(git_mod, "default_branch", return_value="main"),
             patch.object(git_mod, "worktree_remove", return_value=True) as mock_wt_rm,
             patch.object(git_mod, "branch_delete", return_value=True) as mock_br_del,
+            patch("teatree.core.management.commands.workspace.subprocess.run", return_value=gh_merged),
         ):
             cleaned = workspace_mod._prune_branches("/repo")
 
