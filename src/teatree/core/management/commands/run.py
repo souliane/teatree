@@ -1,4 +1,5 @@
 import os
+import re
 import socket
 import subprocess  # noqa: S404
 import urllib.request
@@ -48,8 +49,36 @@ def _resolve_private_tests_path() -> Path | None:
     return path if path.is_dir() else None
 
 
+def _detect_nx_serve_port(worktree_path: str) -> int | None:
+    """Find a running ``nx serve`` whose cwd matches *worktree_path* and extract ``--port``."""
+    result = subprocess.run(
+        ["ps", "axo", "args"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    for line in result.stdout.splitlines():
+        if "nx serve" not in line or "--port=" not in line:
+            continue
+        if worktree_path not in line:
+            continue
+        match = re.search(r"--port=(\d+)", line)
+        if match:
+            return int(match.group(1))
+    return None
+
+
 def _discover_frontend_port(project: str, default: int = 4200) -> int | None:
-    """Try docker-compose service, then fall back to local port check."""
+    """Try nx serve process match, then docker-compose, then local port check."""
+    from teatree.core.resolve import _find_env_worktree, _get_user_cwd  # noqa: PLC0415
+
+    cwd = _get_user_cwd()
+    envfile = _find_env_worktree(cwd)
+    if envfile is not None:
+        worktree_root = str(envfile.parent)
+        nx_port = _detect_nx_serve_port(worktree_root)
+        if nx_port is not None:
+            return nx_port
     port = get_service_port(project, "frontend", default)
     if port is not None:
         return port
