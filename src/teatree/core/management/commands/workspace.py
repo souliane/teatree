@@ -149,6 +149,38 @@ def _drop_orphaned_stashes(repo: str) -> list[str]:
     return cleaned
 
 
+def _drop_orphan_databases() -> list[str]:
+    """Drop Postgres databases matching wt_* that don't belong to any worktree."""
+    from teatree.utils.db import pg_env, pg_host, pg_user  # noqa: PLC0415
+
+    result = subprocess.run(  # noqa: S603
+        ["psql", "-h", pg_host(), "-U", pg_user(), "-l", "-t", "-A"],
+        env=pg_env(),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return []
+
+    all_dbs = {line.split("|")[0] for line in result.stdout.splitlines() if line}
+    wt_dbs = {db for db in all_dbs if db.startswith("wt_")}
+
+    known_db_names = set(Worktree.objects.exclude(db_name="").values_list("db_name", flat=True))
+
+    orphans = wt_dbs - known_db_names
+    cleaned: list[str] = []
+    for db_name in sorted(orphans):
+        subprocess.run(  # noqa: S603
+            ["dropdb", "-h", pg_host(), "-U", pg_user(), "--if-exists", db_name],
+            env=pg_env(),
+            capture_output=True,
+            check=False,
+        )
+        cleaned.append(f"Dropped orphan database: {db_name}")
+    return cleaned
+
+
 def _workspace_dir() -> Path:
     return load_config().user.workspace_dir
 
@@ -340,7 +372,7 @@ class Command(TyperCommand):
 
     @command(name="clean-all")
     def clean_all(self) -> list[str]:
-        """Prune merged worktrees, stale branches, and orphaned stashes."""
+        """Prune merged worktrees, stale branches, orphaned stashes, and orphan databases."""
         workspace = _workspace_dir()
         cleaned = [
             self._clean_one_worktree(wt, workspace) for wt in Worktree.objects.filter(state=Worktree.State.CREATED)
@@ -351,6 +383,8 @@ class Command(TyperCommand):
                 with suppress(OSError):
                     entry.rmdir()
                     cleaned.append(f"Removed empty dir: {entry.name}")
+
+        cleaned.extend(_drop_orphan_databases())
 
         repo_root = Path.cwd()
         if (repo_root / ".git").exists():

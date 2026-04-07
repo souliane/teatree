@@ -211,6 +211,7 @@ class TestLifecycleProvision(TestCase):
         with (
             _patch_overlay(),
             patch.object(lifecycle_mod, "subprocess") as mock_start_sp,
+            patch.object(run_mod, "_compose_has_service", return_value=True),
             patch.object(
                 lifecycle_mod,
                 "find_free_ports",
@@ -725,6 +726,7 @@ class TestToolAndCleanCommands(TestCase):
         with (
             patch.object(workspace_mod, "_prune_branches", return_value=[]),
             patch.object(workspace_mod, "_drop_orphaned_stashes", return_value=[]),
+            patch.object(workspace_mod, "_drop_orphan_databases", return_value=[]),
         ):
             result = cast("list[str]", call_command("workspace", "clean-all"))
 
