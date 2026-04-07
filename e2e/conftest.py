@@ -4,7 +4,7 @@ Supports parallel execution via pytest-xdist: each worker gets its own SQLite
 DB and Django dev server, so tests run with zero shared state.
 
 Run with:
-    t3 teatree run e2e-local
+    t3 teatree e2e project
 """
 
 import os

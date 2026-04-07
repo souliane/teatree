@@ -41,9 +41,14 @@ DJANGO_GROUPS: dict[str, tuple[str, list[tuple[str, str]]]] = {
             ("frontend", "Start the frontend dev server."),
             ("build-frontend", "Build the frontend for production/testing."),
             ("tests", "Run the project test suite."),
-            ("e2e", "Run E2E tests via CI or overlay config."),
-            ("e2e-local", "Run E2E tests locally with Playwright."),
-            ("e2e-private", "Run private Playwright tests from T3_PRIVATE_TESTS repo."),
+        ],
+    ),
+    "e2e": (
+        "E2E test commands.",
+        [
+            ("trigger-ci", "Trigger E2E tests on a remote CI pipeline."),
+            ("external", "Run Playwright tests from the external test repo (T3_PRIVATE_TESTS)."),
+            ("project", "Run E2E tests from the project's own test directory."),
         ],
     ),
     "db": (

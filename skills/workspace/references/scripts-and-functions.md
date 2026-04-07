@@ -58,7 +58,9 @@ uv run t3 <overlay> --help     # overlay-specific commands (from overlay project
 | `t3 <overlay> run build-frontend` | Build frontend app |
 | `t3 <overlay> run tests` | Run project tests |
 | `t3 <overlay> run verify` | Verify dev services respond via HTTP |
-| `t3 <overlay> run e2e` | Run E2E tests |
+| `t3 <overlay> e2e trigger-ci` | Trigger E2E tests on CI |
+| `t3 <overlay> e2e external` | Run Playwright from external test repo |
+| `t3 <overlay> e2e project` | Run E2E tests from project's test directory |
 | `t3 <overlay> db refresh` | Re-import database from dump/DSLR |
 | `t3 <overlay> db restore-ci` | Restore database from CI dump |
 | `t3 <overlay> db reset-passwords` | Reset all user passwords |
