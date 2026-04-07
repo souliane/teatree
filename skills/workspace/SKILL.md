@@ -88,43 +88,9 @@ $T3_DATA_DIR  (default: ${XDG_DATA_HOME:-$HOME/.local/share}/teatree)
 
 If the environment seems incomplete (missing `uv`, hooks not firing, overlay absent), load `/t3:setup` to run the bootstrap validator.
 
-## Workflows
+## Commands
 
-> **Convention:** Overlay commands below are shown without the `<overlay>` prefix for brevity. In practice, run `t3 <overlay> <command>` (e.g., `t3 acme lifecycle setup`).
-
-### Worktree Creation
-
-- `t3 workspace ticket` — creates a ticket directory with git worktrees for each affected repo.
-- Convention: one directory per ticket, one worktree per repo.
-- **One `t3 workspace ticket` call per ticket (Non-Negotiable).** Include ALL repos the ticket needs in a single call. Never run `t3 workspace ticket` a second time for the same ticket — it creates a separate directory with different ports, DBs, and env files, making `t3 lifecycle start` unable to coordinate all services. If a repo was forgotten, delete the workspace and recreate with all repos.
-- **NEVER use raw `git worktree add`, `git checkout -b`, or `git branch` directly.** Always use `t3 workspace ticket` — it creates the correct directory structure (`<ticket>/<repo>/`) and handles branch naming. Raw git commands produce flat worktrees that break the ticket-directory convention and confuse subsequent tooling.
-
-### Worktree Setup
-
-- `t3 lifecycle setup` — full environment provisioning for a worktree:
-  - Symlinks (`.venv`, `node_modules`, `.python-version`, `.data`, project-specific)
-  - Environment files (`.env`, `.env.worktree`, `.env.local.*`)
-  - DB provisioning (create DB, import from DSLR/dump, run migrations)
-  - direnv integration
-  - Frontend dependencies
-
-### Database Management
-
-- `t3 db refresh` — refresh worktree DB from DSLR snapshots or dump files.
-- `t3 db restore-ci` — restore from the latest CI dump (extension point: `wt_restore_ci_db`).
-- `t3 db reset-passwords` — reset all user passwords to a known value (extension point: `wt_reset_passwords`).
-
-### Dev Servers
-
-- `t3 lifecycle start` — full-stack startup (Docker services + migrations + backend + frontend). Safe to re-run (kills stale processes first).
-- `t3 lifecycle restart` — kill existing processes and restart all services. Use after `git pull` or code changes. Re-runs pre-run steps (patches customer.json, syncs translations). Falls back to setup + start if the worktree isn't provisioned.
-- `t3 run backend` — start backend dev server only.
-- `t3 run frontend` — start frontend dev server only.
-- `t3 run build-frontend` — build frontend app for production/testing.
-
-### Cleanup
-
-- `t3 workspace clean-all` — prune merged worktrees, drop orphan DBs, remove stale directories. Detects squash-merged branches via GitHub API (`gh pr list --state merged`). Warns about branches with no merged PR (possible forgotten work).
+All workspace operations go through the `t3` CLI. Run `t3 <overlay> --help` for the full command list. Key command groups: `lifecycle` (setup/start/restart/teardown), `workspace` (ticket/finalize/clean-all), `run` (backend/frontend/tests), `db` (refresh/restore-ci/reset-passwords).
 
 ## Rules
 
@@ -208,14 +174,7 @@ For the full extension points table, override chain, and project skill creation 
 
 Summary: 23 extension points with 3-layer priority (**default** < **framework** < **project**). Key points: `wt_db_import`, `wt_post_db`, `wt_env_extra`, `wt_run_backend`, `wt_run_frontend`, `wt_create_mr`, `wt_monitor_pipeline`, `wt_send_review_request`.
 
-## `t3` CLI (Unified Entry Point)
-
-All worktree operations go through the packaged `t3` command. Run it with `uv run t3 ...`. State is persisted in the Django database (SQLite by default).
-
-**Command types:** The CLI has two levels:
-
-- **Global commands** (`t3 ci`, `t3 review-request`, `t3 tool`, `t3 info`) — work from any directory, no Django needed.
-- **Overlay commands** (`t3 <overlay> ...`) — require the overlay prefix (e.g., `t3 acme lifecycle setup`). This includes lifecycle shortcuts: `t3 <overlay> start-ticket`, `t3 <overlay> ship`, `t3 <overlay> daily`, `t3 <overlay> agent`.
+## Lifecycle State Machine
 
 ```mermaid
 stateDiagram-v2
@@ -230,94 +189,6 @@ stateDiagram-v2
     services_up --> created : teardown
     services_up --> ready : verify
 ```
-
-### Global Commands
-
-| Command | Purpose |
-|---------|---------|
-| `t3 info` | Show t3 entry point, teatree/overlay sources, editable status |
-| `t3 ci cancel` | Cancel stale CI pipelines |
-| `t3 ci divergence` | Check fork divergence from upstream |
-| `t3 ci trigger-e2e` | Trigger E2E tests on CI |
-| `t3 ci fetch-errors` | Fetch error logs from CI |
-| `t3 ci fetch-failed-tests` | Extract failed test IDs from CI |
-| `t3 ci quality-check` | Run quality analysis |
-| `t3 review-request discover` | Discover open MRs awaiting review |
-| `t3 tool privacy-scan` | Scan for privacy-sensitive patterns |
-| `t3 tool analyze-video` | Decompose video into frames |
-| `t3 tool bump-deps` | Bump pyproject.toml deps from uv.lock |
-
-### Overlay Commands (`t3 <overlay> ...`)
-
-#### Shortcuts
-
-| Command | Purpose |
-|---------|---------|
-| `t3 <overlay> start-ticket <ISSUE_URL>` | Zero to coding — create ticket, provision worktree, start services |
-| `t3 <overlay> ship <TICKET_ID>` | Code to MR — create merge request for the ticket |
-| `t3 <overlay> daily` | Daily followup — sync MRs, check gates, remind reviewers |
-| `t3 <overlay> full-status` | Show ticket, worktree, and session state summary |
-| `t3 <overlay> agent [TASK]` | Launch headless agent with overlay context |
-| `t3 <overlay> dashboard` | Start the dashboard dev server |
-
-#### `lifecycle` — Lifecycle state machine
-
-| Command | Purpose |
-|---------|---------|
-| `t3 <overlay> lifecycle status [--json]` | Show current state, ports, DB, available transitions |
-| `t3 <overlay> lifecycle setup [VARIANT]` | Provision worktree: ports, env, symlinks, DB |
-| `t3 <overlay> lifecycle start` | Start dev servers (backend + frontend), then verify |
-| `t3 <overlay> lifecycle restart` | Kill processes, re-run pre-run steps, relaunch fresh |
-| `t3 <overlay> lifecycle clean` | Teardown worktree — stop services, drop DB, clean state |
-| `t3 <overlay> lifecycle diagram` | Print state diagram as Mermaid |
-
-#### `workspace` — Workspace management
-
-| Command | Purpose |
-|---------|---------|
-| `t3 <overlay> workspace ticket <NUM> <DESC> <REPO...>` | Create ticket workspace with git worktrees |
-| `t3 <overlay> workspace finalize [MSG]` | Squash worktree commits + rebase on default branch |
-| `t3 <overlay> workspace clean-all` | Prune merged/gone worktrees and branches across all repos |
-
-#### `run` — Dev servers and test runners
-
-| Command | Purpose |
-|---------|---------|
-| `t3 <overlay> run backend` | Start backend dev server |
-| `t3 <overlay> run frontend` | Start frontend dev server |
-| `t3 <overlay> run build-frontend` | Build frontend app |
-| `t3 <overlay> run tests` | Run project tests |
-| `t3 <overlay> run verify` | Verify dev services respond via HTTP |
-
-#### `db` — Database operations
-
-| Command | Purpose |
-|---------|---------|
-| `t3 <overlay> db refresh` | Re-import database from dump/DSLR |
-| `t3 <overlay> db restore-ci` | Restore database from CI dump |
-| `t3 <overlay> db reset-passwords` | Reset all user passwords to a known value |
-
-#### `pr` — Merge request and ticket workflow
-
-| Command | Purpose |
-|---------|---------|
-| `t3 <overlay> pr create` | Create merge request |
-| `t3 <overlay> pr check-gates` | Check transition gates for ticket status |
-| `t3 <overlay> pr fetch-issue` | Fetch issue context from tracker |
-| `t3 <overlay> pr detect-tenant` | Detect tenant variant |
-
-#### `followup` — Follow-up and dashboard
-
-| Command | Purpose |
-|---------|---------|
-| `t3 <overlay> followup sync` | Sync followup data from MRs |
-| `t3 <overlay> followup refresh` | Return counts of tickets and tasks |
-| `t3 <overlay> followup remind` | Return list of pending user input tasks |
-| `t3 <overlay> dashboard` | Start the Django dashboard dev server |
-
-### Project-specific Commands
-
-Project-specific command surfaces belong in the overlay package as Django management commands or overlay methods, not as dynamically injected `t3` subcommand groups.
 
 ## Troubleshooting
 

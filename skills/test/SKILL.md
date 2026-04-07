@@ -259,19 +259,6 @@ Evidence screenshots must always use a **side-by-side comparison table**. Minimu
 - **Don't post code findings as bugs without asking the user first.** Behavior that looks like a bug may be intentional. Ask "Is this expected?" before posting a finding on the MR.
 - **Match evidence type to MR type (Non-Negotiable).** UI screenshots are evidence for frontend MRs. Backend MRs need backend evidence: unit test output, API response diffs, or logs. Don't post frontend screenshots on a backend-only MR — they prove the frontend works, not the backend fix. When both MRs exist, put screenshots on the frontend MR and reference it from the backend MR.
 
-## Command Reference
-
-| Command | Purpose |
-|---------|---------|
-| `t3 <overlay> run tests` | Run project tests |
-| `t3 <overlay> e2e trigger-ci` | Trigger E2E tests on a remote CI pipeline |
-| `t3 <overlay> e2e external` | Run Playwright tests from external test repo |
-| `t3 <overlay> e2e project` | Run E2E tests from the project's own test directory |
-| `t3 <overlay> pr post-evidence` | Post test evidence as MR comment |
-| `t3 ci fetch-failed-tests` | Extract failed test IDs from CI |
-| `t3 ci fetch-errors` | Extract error logs from CI |
-| `t3 ci quality-check` | Quality analysis |
-
 ## Re-Read Before Debugging (Non-Negotiable)
 
 When an E2E test fails or the environment misbehaves, **re-read this skill's verification sections** (Screenshot Sanity Check, Store Contamination Check, Establish Baseline) before spending more than 2 minutes on ad-hoc debugging. Skill guidance loaded at the start of a long session gets compressed out of active context — re-reading takes 10 seconds and prevents 30-minute debugging detours.

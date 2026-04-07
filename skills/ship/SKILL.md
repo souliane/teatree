@@ -53,11 +53,10 @@ When the active overlay has `require_ticket = True`, refuse to commit or push wi
 
 ### 1. Commit
 
-- **Verify branch matches ticket:** Run `git branch --show-current` and confirm the branch name relates to the ticket you're working on. If on the wrong branch (e.g., a stale branch from a previous task), create a clean branch from the default branch and cherry-pick your commit before pushing.
-- Check for unstaged changes: `git status --short` in **every** repo of the ticket directory.
-- **Check for pre-existing changes before staging.** Run `git diff <file>` for each file you intend to stage. If the diff includes changes you did not make in this session, **warn the user** — `git add <file>` will sweep in all changes, not just yours. Either stage only your hunks (via a patch file) or ask the user how to proceed.
+- **Verify branch matches ticket** before committing. If on the wrong branch, create a clean branch from the default branch and cherry-pick.
+- **Check for pre-existing changes before staging.** If the diff includes changes you did not make in this session, **warn the user** — either stage only your hunks or ask how to proceed.
 - Format commit message following the project's commit format reference.
-- **Link commits to issues (Non-Negotiable).** Check whether the work relates to a tracked issue (GitHub issue, GitLab issue, ticket). If it does, include `Fixes #<number>` or `Closes #<number>` in the commit message body (not the first line) to auto-close it on merge. Use `Relates-to #<number>` for partial progress. This applies to ALL repos — including the teatree repo itself when working on its own issues.
+- **Link commits to issues (Non-Negotiable).** Include `Fixes #<number>` or `Closes #<number>` in the commit message body (not the first line) to auto-close on merge. Use `Relates-to #<number>` for partial progress. This applies to ALL repos.
 - Read `TICKET_URL` from `.env.worktree` — never construct it from the branch name.
 
 ### 2. Finalize Branch
@@ -114,8 +113,7 @@ Before creating an MR, the `pr create` command automatically checks the session 
 
 - **MR title = squash commit message** (MRs use squash-before-merge, so the title becomes the final commit). It MUST include the ticket URL: `type(scope): description [flag_if_feat] (TICKET_URL)`
 - **MR description first line = same format as title** (CI validates it). NEVER start with `## Summary` — that fails validation.
-- **Always assign to the user.**
-- Flags: `--squash-before-merge`, `--remove-source-branch`, `--assignee @me`.
+- **Always assign to the user.** The `t3 pr create` command handles the correct flags automatically.
 
 > **PreToolUse hook:** A `validate-mr-metadata.sh` hook automatically intercepts MR create/update commands in project repos. It validates the title and description first line against the release-notes format rules and **blocks** non-compliant calls with a clear error. Fix the reported issues and retry — no manual validation needed.
 
@@ -169,37 +167,8 @@ After delivery is complete (MR created, pipeline green), run `/t3:retro` to capt
 - **Squash with `git reset --soft`, not interactive rebase.** `git rebase -i` with custom editors is fragile when pre-commit hooks run on each commit. Use `git reset --soft HEAD~N && git commit` for adjacent commits, or cherry-pick for non-adjacent ones.
 - **Respect commit trailer preferences.** Check the user's global agent config for rules about `Co-Authored-By` trailers before committing. Some users explicitly opt out. When in doubt, **do not add trailers** — the user can always configure their agent to add them.
 
-### Git History Rewriting Recipes
+### Git History Rewriting
 
-When rewriting commit messages, use `filter-branch --msg-filter` — it reliably matches commits by full hash. Do NOT use `git rebase -i` with `GIT_SEQUENCE_EDITOR="sed"` — the short hash in the rebase todo may differ from `git log --oneline`, causing a silent no-op.
-
-```bash
-# Rewrite one commit's message:
-FILTER_BRANCH_SQUELCH_WARNING=1 git filter-branch -f --msg-filter '
-if [ "$GIT_COMMIT" = "'"$(git rev-parse <short-hash>)"'" ]; then
-  cat << "NEWMSG"
-<new message here>
-NEWMSG
-else
-  cat
-fi
-' <short-hash>^..HEAD
-git update-ref -d refs/original/refs/heads/main
-
-# Drop a commit:
-git rebase --onto <commit>^ <commit>
-
-# Remove a trailer from all commits in a range:
-FILTER_BRANCH_SQUELCH_WARNING=1 git filter-branch -f --msg-filter 'sed "/^Co-Authored-By:/d"' <oldest-commit>^..HEAD
-```
+When rewriting commit messages, use `filter-branch --msg-filter` (matches by full hash). Do NOT use `git rebase -i` with `GIT_SEQUENCE_EDITOR="sed"` — the short hash may differ from `git log --oneline`, causing a silent no-op.
 
 **Post-rewrite verification (Non-Negotiable):** After ANY rebase or filter-branch, verify the hash changed. Same hash = no-op.
-
-## Command Reference
-
-| Command | Purpose |
-|---------|---------|
-| `t3 <overlay> workspace finalize` | Squash + rebase on default branch |
-| `t3 <overlay> pr create` | MR/PR creation |
-| `t3 ci trigger-e2e` | Trigger E2E tests on CI |
-| `t3 ci fetch-failed-tests` | CI failure analysis |
