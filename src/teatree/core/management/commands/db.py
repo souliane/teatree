@@ -14,6 +14,8 @@ class Command(TyperCommand):
     def refresh(
         self,
         path: str = typer.Option("", help="Worktree path (auto-detects from PWD if empty)."),
+        dslr_snapshot: str = typer.Option("", help="Force a specific DSLR snapshot name."),
+        dump_path: str = typer.Option("", help="Path to a .pgsql dump file to restore from."),
         *,
         force: bool = False,
     ) -> str:
@@ -21,6 +23,8 @@ class Command(TyperCommand):
 
         Without --force: tries DSLR restore first (fast), then full reimport.
         With --force: drops existing DB first, then reimports from scratch.
+        Use --dslr-snapshot to force a specific snapshot (skip auto-discovery).
+        Use --dump-path to restore from a specific dump file.
         """
         worktree = resolve_worktree(path)
         overlay = get_overlay()
@@ -36,7 +40,7 @@ class Command(TyperCommand):
         os.environ.update(overlay.get_env_extra(worktree))
 
         # Run the overlay's import logic
-        success = overlay.db_import(worktree, force=force)
+        success = overlay.db_import(worktree, force=force, dslr_snapshot=dslr_snapshot, dump_path=dump_path)
         if not success:
             return f"DB import failed for {worktree.db_name}. Check output above for details."
 
