@@ -136,6 +136,7 @@ lint.per-file-ignores."scripts/**/*.py" = [
   "TRY300",  # try-consider-else (readability preference)
 ]
 lint.per-file-ignores."src/teatree/cli/*.py" = [
+  "B008",   # function-call-in-default-argument (typer.Option/Argument is idiomatic)
   "FBT003", # boolean positional/default (typer CLI flags)
   "S607",   # partial executable paths (uv is a trusted internal tool)
 ]

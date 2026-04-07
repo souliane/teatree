@@ -13,6 +13,7 @@ from pathlib import Path
 
 import typer
 
+from teatree.cli.assess import assess_app
 from teatree.cli.ci import ci_app
 from teatree.cli.doctor import DoctorService, IntrospectionHelpers, doctor_app
 from teatree.cli.overlay import OverlayAppBuilder, _uvicorn, managepy
@@ -564,6 +565,8 @@ app.add_typer(doctor_app, name="doctor")
 app.add_typer(tool_app, name="tool")
 
 app.add_typer(plugin_app, name="plugin")
+
+app.add_typer(assess_app, name="assess")
 
 
 # ── Review-request commands ──────────────────────────────────────────

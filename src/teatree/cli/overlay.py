@@ -300,7 +300,7 @@ class OverlayAppBuilder:
         def overlay_agent(
             task: str = typer.Argument("", help="What to work on"),
             phase: str = typer.Option("", "--phase", help="Explicit TeaTree phase override."),
-            skill: list[str] = typer.Option(  # noqa: B008
+            skill: list[str] = typer.Option(
                 None,
                 "--skill",
                 help="Explicit skill override. Repeat to load multiple skills.",

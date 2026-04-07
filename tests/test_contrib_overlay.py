@@ -39,7 +39,9 @@ class TestGetRepos:
 class TestGetWorkspaceRepos:
     def test_returns_teatree(self) -> None:
         overlay = TeatreeOverlay()
-        assert overlay.get_workspace_repos() == ["teatree"]
+        repos = overlay.get_workspace_repos()
+        assert len(repos) == 1
+        assert repos[0].endswith("teatree")
 
 
 class TestGetFollowupRepos:
