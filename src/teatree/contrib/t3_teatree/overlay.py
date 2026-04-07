@@ -84,7 +84,3 @@ class TeatreeOverlay(OverlayBase):
     @override
     def get_test_command(self, worktree: Worktree) -> list[str]:
         return ["uv", "run", "pytest"]
-
-    @override
-    def get_workspace_repos(self) -> list[str]:
-        return ["teatree"]

@@ -153,7 +153,6 @@ def _seed_data(e2e_server: str, django_db_blocker) -> Iterator[None]:
             repo_path="/tmp/demo-backend",
             branch="feat-42",
             state="provisioned",
-            ports={"backend": 8001, "frontend": 4201, "postgres": 5433},
             db_name="wt_42_demo",
         )
         session = Session.objects.create(ticket=ticket, agent_id="e2e-agent")

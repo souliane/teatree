@@ -33,6 +33,7 @@ from teatree.core.models import Session, Ticket, Worktree
 from teatree.core.overlay import (
     DbImportStrategy,
     OverlayBase,
+    OverlayConfig,
     OverlayMetadata,
     ProvisionStep,
     RunCommands,
@@ -166,6 +167,19 @@ class HelplessToolOverlay(FullOverlay):
     metadata = _HelplessMetadata()
 
 
+class NestedRepoOverlay(FullOverlay):
+    """Overlay with repos in nested subdirectories of workspace_dir."""
+
+    config = OverlayConfig()
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.config.workspace_repos = ["org/backend", "org/frontend"]
+
+    def get_repos(self) -> list[str]:
+        return ["backend", "frontend"]
+
+
 class PostDbStepsOverlay(FullOverlay):
     """Overlay with post-DB steps configured — tests the post-DB loop."""
 
@@ -199,6 +213,7 @@ class PreRunOverlay(FullOverlay):
 
 
 FULL_OVERLAY = "tests.teatree_core.test_new_management_commands.FullOverlay"
+NESTED_OVERLAY = "tests.teatree_core.test_new_management_commands.NestedRepoOverlay"
 MINIMAL_OVERLAY = "tests.teatree_core.test_new_management_commands.MinimalOverlay"
 SERVICES_OVERLAY = "tests.teatree_core.test_new_management_commands.ServicesOverlay"
 POST_DB_OVERLAY = "tests.teatree_core.test_new_management_commands.PostDbStepsOverlay"
@@ -562,6 +577,48 @@ class TestWorkspaceTicket(TestCase):
             # Backend worktree should exist, frontend should have been cleaned up
             assert Worktree.objects.filter(ticket_id=ticket_id, repo_path="backend").exists()
             assert not Worktree.objects.filter(ticket_id=ticket_id, repo_path="frontend").exists()
+
+    @_patch_overlays(NESTED_OVERLAY)
+    @override_settings(**SETTINGS, T3_WORKSPACE_DIR="/tmp/ws-test")
+    def test_nested_repo_paths(self) -> None:
+        """Repos in nested subdirectories (e.g. org/backend) are found and worktrees use basenames."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+
+            workspace = tmp_path / "workspace"
+            (workspace / "org" / "backend").mkdir(parents=True)
+            (workspace / "org" / "backend" / ".git").mkdir()
+            (workspace / "org" / "frontend").mkdir(parents=True)
+            (workspace / "org" / "frontend" / ".git").mkdir()
+
+            mock_result = MagicMock()
+            mock_result.returncode = 0
+
+            with (
+                patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
+                patch.object(git_mod.subprocess, "run", return_value=mock_result),
+            ):
+                ticket_id = cast("int", call_command("workspace", "ticket", "https://example.com/issues/90"))
+
+            ticket = Ticket.objects.get(pk=ticket_id)
+            assert ticket.worktrees.count() == 2
+
+            repo_paths = sorted(ticket.worktrees.values_list("repo_path", flat=True))
+            assert repo_paths == ["org/backend", "org/frontend"]
+
+            branch = ticket.worktrees.first().branch
+            assert "/" not in branch.split("-")[1]
+            assert "backend" in branch
+
+    @_patch_overlays(NESTED_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_config_workspace_repos_overrides_get_repos(self) -> None:
+        """get_workspace_repos() returns config.workspace_repos when set."""
+        from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
+
+        overlay = get_overlay()
+        assert overlay.get_workspace_repos() == ["org/backend", "org/frontend"]
+        assert overlay.get_repos() == ["backend", "frontend"]
 
 
 _no_prune = patch.object(workspace_mod, "_prune_branches", new=lambda _repo: [])

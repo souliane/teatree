@@ -101,6 +101,8 @@ class OverlayConfig:
     known_variants: list[str]
     mr_auto_labels: list[str]
     frontend_repos: list[str]
+    workspace_repos: list[str]
+    protected_branches: list[str]
     dev_env_url: str = ""
     dashboard_logo: str = ""
 
@@ -109,6 +111,8 @@ class OverlayConfig:
         self.known_variants = []
         self.mr_auto_labels = []
         self.frontend_repos = []
+        self.workspace_repos = []
+        self.protected_branches = []
         if settings_module:
             self._load_settings(settings_module)
         if overlay_name:
@@ -335,6 +339,13 @@ class OverlayBase(ABC):
         return _default_health_checks(self, worktree)
 
     def get_workspace_repos(self) -> list[str]:
+        """Return repo paths relative to ``workspace_dir``.
+
+        Supports nested paths (e.g. ``souliane/teatree``).  Reads from
+        ``config.workspace_repos`` first; falls back to ``get_repos()``.
+        """
+        if self.config.workspace_repos:
+            return list(self.config.workspace_repos)
         return self.get_repos()
 
 

@@ -241,6 +241,89 @@
       var dot = document.getElementById('sse-status');
       if (dot) { dot.className = 'inline-block h-2 w-2 rounded-full bg-bark/40'; dot.title = 'SSE disconnected'; }
     });
+
+    function filterTickets() {
+      var query = (document.getElementById('ticket-search').value || '').toLowerCase();
+      var hasMR = document.getElementById('filter-has-mr').checked;
+      var nonDraft = document.getElementById('filter-non-draft').checked;
+      var unapproved = document.getElementById('filter-unapproved').checked;
+
+      // Collect unique ticket group IDs
+      var groups = {};
+      document.querySelectorAll('tr[data-ticket-group]').forEach(function(row) {
+        var gid = row.dataset.ticketGroup;
+        if (!groups[gid]) groups[gid] = { rows: [], mrRows: [] };
+        groups[gid].rows.push(row);
+        if (row.dataset.mrRow) groups[gid].mrRows.push(row);
+      });
+
+      Object.keys(groups).forEach(function(gid) {
+        var g = groups[gid];
+        var mrRows = g.mrRows;
+        var hasMRs = mrRows.length > 0;
+        var show = true;
+
+        // "Has MR" filter: hide tickets without MRs
+        if (hasMR && !hasMRs) show = false;
+
+        if (show && hasMRs) {
+          // Check if at least one MR in this group matches all active filters
+          var anyMatch = mrRows.some(function(row) {
+            var text = (row.dataset.mrTitle || '').toLowerCase() + ' ' + (row.dataset.ticketId || '').toLowerCase() + ' ' + (row.dataset.ticketTitle || '').toLowerCase();
+            if (query && text.indexOf(query) === -1) return false;
+            if (nonDraft && row.dataset.mrDraft === 'true') return false;
+            if (unapproved && row.dataset.mrApproved === 'true') return false;
+            return true;
+          });
+          if (!anyMatch) show = false;
+        } else if (show && !hasMRs) {
+          // Ticket without MRs: only apply text search
+          var firstRow = g.rows[0];
+          var text = (firstRow.dataset.ticketId || '').toLowerCase() + ' ' + (firstRow.dataset.ticketTitle || '').toLowerCase();
+          if (query && text.indexOf(query) === -1) show = false;
+        }
+
+        g.rows.forEach(function(row) {
+          // Don't unhide auxiliary rows (task-graph, lifecycle) — they toggle independently
+          if (row.id && (row.id.startsWith('task-graph-') || row.id.startsWith('lifecycle-'))) return;
+          row.style.display = show ? '' : 'none';
+        });
+      });
+
+      updateCopyButton();
+    }
+
+    function updateCopyButton() {
+      var checked = document.querySelectorAll('input.mr-select:checked');
+      var btn = document.getElementById('copy-selected-btn');
+      if (btn) btn.classList.toggle('hidden', checked.length === 0);
+    }
+
+    function toggleAllMRs(master) {
+      document.querySelectorAll('input.mr-select').forEach(function(cb) {
+        if (cb.closest('tr').style.display !== 'none') {
+          cb.checked = master.checked;
+        }
+      });
+      updateCopyButton();
+    }
+
+    function copySelectedMRs() {
+      var lines = [];
+      document.querySelectorAll('input.mr-select:checked').forEach(function(cb) {
+        var row = cb.closest('tr');
+        lines.push(row.dataset.mrTitle + ' — ' + row.dataset.mrUrl);
+      });
+      if (lines.length === 0) return;
+      navigator.clipboard.writeText(lines.join('\n')).then(function() {
+        var toast = document.getElementById('toast-msg');
+        if (toast) {
+          toast.textContent = lines.length + ' MR(s) copied to clipboard';
+          toast.parentElement.classList.remove('hidden');
+          setTimeout(function(){ toast.parentElement.classList.add('hidden'); }, 3000);
+        }
+      });
+    }
   </script>
   <div class="hidden fixed bottom-4 right-4 rounded-lg bg-moss/90 px-4 py-2 text-sm text-white shadow-lg" id="toast-container">
     <span id="toast-msg"></span>
@@ -447,11 +530,38 @@
             onclick="event.stopPropagation()"
           >Sync</button>
         </summary>
+        <!-- Filter toolbar -->
+        <div class="flex flex-wrap items-center gap-3 border-b border-bark/10 px-5 py-3">
+          <input
+            id="ticket-search"
+            type="search"
+            placeholder="Search tickets / MRs…"
+            class="w-48 rounded-lg border border-bark/15 bg-cream/80 px-3 py-1 font-sans text-xs text-bark/70 placeholder:text-bark/40 focus:border-moss focus:outline-none"
+            oninput="filterTickets()"
+          >
+          <label class="flex cursor-pointer items-center gap-1 font-sans text-[10px] uppercase tracking-[0.18em] text-bark/50">
+            <input type="checkbox" id="filter-has-mr" class="accent-moss" onchange="filterTickets()"> Has MR
+          </label>
+          <label class="flex cursor-pointer items-center gap-1 font-sans text-[10px] uppercase tracking-[0.18em] text-bark/50">
+            <input type="checkbox" id="filter-non-draft" class="accent-moss" onchange="filterTickets()"> Non-draft
+          </label>
+          <label class="flex cursor-pointer items-center gap-1 font-sans text-[10px] uppercase tracking-[0.18em] text-bark/50">
+            <input type="checkbox" id="filter-unapproved" class="accent-moss" onchange="filterTickets()"> Unapproved
+          </label>
+          <div class="ml-auto flex items-center gap-2">
+            <button
+              id="copy-selected-btn"
+              class="pill-btn pill-xs border border-bark/20 bg-bark/5 uppercase tracking-[0.18em] text-bark/60 hover:bg-bark/10 hidden"
+              onclick="copySelectedMRs()"
+            >Copy selected</button>
+          </div>
+        </div>
         <div
           class="px-5 py-5"
           hx-get="{% url 'teatree:dashboard-panel' 'tickets' %}"
           hx-trigger="load, every 600s, refreshPanels from:body, sse:tickets"
           hx-swap="innerHTML"
+          hx-on::after-settle="filterTickets()"
         >
           {% include "teatree/partials/dashboard_tickets.html" with tickets=snapshot.tickets only %}
         </div>
