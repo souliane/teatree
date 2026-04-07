@@ -113,12 +113,20 @@ def _compose_project(worktree: Worktree) -> str:
 
 
 def _compose_env(ports: dict[str, int]) -> dict[str, str]:
-    """Build env vars for docker-compose port mapping."""
+    """Build env vars for docker-compose port mapping.
+
+    Sets both ``*_HOST_PORT`` (compose port-mapping) and commonly used
+    aliases (``POSTGRES_PORT``, ``CORS_WHITE_FRONT``) so that runtime
+    consumers (DSLR, manage.py, overlays) always see the allocated ports.
+    """
+    frontend = ports.get("frontend", 4200)
     return {
         "BACKEND_HOST_PORT": str(ports.get("backend", 8000)),
-        "FRONTEND_HOST_PORT": str(ports.get("frontend", 4200)),
+        "FRONTEND_HOST_PORT": str(frontend),
         "POSTGRES_HOST_PORT": str(ports.get("postgres", 5432)),
+        "POSTGRES_PORT": str(ports.get("postgres", 5432)),
         "REDIS_HOST_PORT": str(ports.get("redis", 6379)),
+        "CORS_WHITE_FRONT": f"http://localhost:{frontend}",
     }
 
 
