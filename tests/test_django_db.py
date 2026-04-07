@@ -490,24 +490,19 @@ class TestTryRestoreFromDslr:
         assert _try_restore_from_dslr(ctx, skip_dslr=False) is True
         assert attempts == ["20260326_development-acme", "20260320_development-acme"]
 
-    def test_tries_older_snapshot_when_migration_fails(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        migrate_calls: list[str] = []
-
-        def fake_migrate(repo, ref_db, extra):
-            migrate_calls.append(ref_db)
-            return _MigrateResult.APPLIED if len(migrate_calls) == 2 else _MigrateResult.FAILED
-
+    def test_uses_data_as_is_when_migration_fails(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Migration config errors don't discard good DSLR data — copy proceeds."""
         monkeypatch.setattr(
             mod, "_find_dslr_snapshots", lambda *a: ["20260326_development-acme", "20260320_development-acme"]
         )
         monkeypatch.setattr(mod, "_restore_ref_from_dslr", lambda *a: (True, False, ""))
-        monkeypatch.setattr(mod, "_migrate_reference_db", fake_migrate)
+        monkeypatch.setattr(mod, "_migrate_reference_db", lambda *a: _MigrateResult.FAILED)
         monkeypatch.setattr(mod, "_take_dslr_snapshot", lambda *a: None)
         monkeypatch.setattr(mod, "_copy_ref_to_ticket", lambda ctx: True)
         monkeypatch.setattr(mod.subprocess, "run", _ok_run)
         ctx = _make_ctx(tmp_path)
+        # Should succeed — migration failed but data is used as-is
         assert _try_restore_from_dslr(ctx, skip_dslr=False) is True
-        assert len(migrate_calls) == 2
 
     def test_falls_back_when_all_snapshots_fail(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(

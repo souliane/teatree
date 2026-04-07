@@ -415,8 +415,10 @@ def _try_restore_from_dslr(ctx: _RestoreContext, *, skip_dslr: bool) -> bool:
             continue
         migrate_result = _migrate_reference_db(ctx.cfg.main_repo_path, ctx.cfg.ref_db_name, ctx.cfg.migrate_env_extra)
         if migrate_result is _MigrateResult.FAILED:
-            print(f"  WARNING: Migration failed after DSLR restore of {snap_name} (not marking snapshot bad)")  # noqa: T201
-            continue
+            # Migration config errors (missing settings, wrong env) won't be fixed by
+            # trying other snapshots or fallback sources. The DSLR data is good — use it
+            # as-is rather than overwriting with an empty schema from fallback paths.
+            print(f"  WARNING: Migration failed after DSLR restore of {snap_name}, using data as-is.")  # noqa: T201
         if migrate_result is _MigrateResult.APPLIED:
             _take_dslr_snapshot(ctx.dslr_cmd, ctx.dslr_env, ctx.cfg.ref_db_name)
         else:
