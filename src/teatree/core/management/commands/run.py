@@ -73,7 +73,12 @@ class Command(TyperCommand):
         results: dict[str, dict[str, object]] = {}
 
         overlay = get_overlay()
-        health_paths = overlay.get_verify_endpoints(worktree)
+        health_paths = dict(overlay.get_verify_endpoints(worktree))
+        # Merge T3_HEALTH_ENDPOINTS env var (format: "service:path,service:path")
+        for entry in os.environ.get("T3_HEALTH_ENDPOINTS", "").split(","):
+            if ":" in entry:
+                svc, path = entry.split(":", 1)
+                health_paths[svc.strip()] = path.strip()
         endpoints = {
             name: f"http://localhost:{port}{health_paths.get(name, '/')}"
             for name, port in ports.items()

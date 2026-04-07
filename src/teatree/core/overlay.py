@@ -236,6 +236,10 @@ class OverlayMetadata:
     def get_tool_commands(self) -> list[ToolCommand]:
         return []
 
+    def get_issue_title(self, url: str) -> str:
+        """Fetch the title of an issue from its URL. Returns empty string on failure."""
+        return ""
+
 
 # ── Overlay base class ───────────────────────────────────────────────
 
