@@ -236,8 +236,10 @@ TOKEN=$(glab config get token --host gitlab.com)
 curl -s --request POST \
   --header "PRIVATE-TOKEN: $TOKEN" \
   --form "file=@<screenshot-path>" \
-  "https://gitlab.com/api/v4/projects/<PROJECT_ID>/uploads" | jq '.markdown'
+  "https://gitlab.com/api/v4/projects/<PROJECT_ID>/uploads" | jq -r '.markdown'
 ```
+
+**Path format (Non-Negotiable):** Use the `.markdown` or `.url` field from the response (format: `/uploads/<hash>/<filename>`). **Never use `.full_path`** (format: `/-/project/<id>/uploads/...`) — it does NOT render in MR notes or comments.
 
 ## Reply to Discussion
 
