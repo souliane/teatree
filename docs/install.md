@@ -68,6 +68,28 @@ uv run t3 doctor check           # verify both are editable
 
 Now changes to teatree source files are picked up immediately.
 
+#### CI compatibility
+
+The local editable path won't exist in CI. Add this step **before** `uv sync`
+in your CI workflow to override the source:
+
+```yaml
+- run: uv add teatree --no-editable --git https://github.com/souliane/teatree.git
+```
+
+This replaces the local path with a git install for that CI run only.
+The committed `pyproject.toml` is unchanged.
+
+When teatree is published to an index, replace the override with:
+
+```yaml
+env:
+  UV_NO_SOURCES_PACKAGE: teatree
+```
+
+This tells uv to ignore `[tool.uv.sources]` for teatree and resolve
+from the index instead.
+
 ### Contribute to both
 
 Same as above — both the overlay and teatree are editable:

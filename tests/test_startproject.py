@@ -20,6 +20,7 @@ def test_startoverlay_creates_lightweight_package(tmp_path: Path) -> None:
     assert (project_root / "pyproject.toml").is_file()
     assert (project_root / ".editorconfig").is_file()
     assert (project_root / ".gitignore").is_file()
+    assert (project_root / ".github" / "workflows" / "ci.yml").is_file()
 
     # No Django project files
     assert not (project_root / "manage.py").exists()
