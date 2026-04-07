@@ -183,14 +183,37 @@ class Command(TyperCommand):
         subprocess.run(run_args, check=True)  # noqa: S603
         return "Frontend built."
 
-    @command()
-    def tests(self, path: str = typer.Option("", help="Worktree path (auto-detects from PWD if empty).")) -> str:
-        """Run the project test suite."""
+    @command(context_settings={"allow_extra_args": True, "allow_interspersed_args": False})
+    def tests(
+        self,
+        ctx: typer.Context,
+        path: str = typer.Option("", help="Worktree path (auto-detects from PWD if empty)."),
+    ) -> str:
+        """Run the project test suite.
+
+        Extra arguments after ``--`` are appended to the test command
+        (e.g. ``t3 <overlay> run tests -- path/to/test.py -k name``).
+        """
         worktree = resolve_worktree(path)
-        cmd = get_overlay().get_test_command(worktree)
-        if not cmd:
+        overlay = get_overlay()
+        test_cmd = overlay.get_test_command(worktree)
+        if not test_cmd:
             return "No test command configured in the overlay."
-        subprocess.run(cmd, check=True)  # noqa: S603
+
+        if isinstance(test_cmd, RunCommand):
+            args = list(test_cmd.args)
+            cwd: Path | str | None = test_cmd.cwd
+        else:
+            args = list(test_cmd)
+            cwd = None
+
+        args.extend(ctx.args)
+        env = {**os.environ, **overlay.get_env_extra(worktree)}
+        env.pop("VIRTUAL_ENV", None)
+
+        result = subprocess.run(args, cwd=cwd, env=env, check=False)  # noqa: S603
+        if result.returncode != 0:
+            return f"Tests failed (exit {result.returncode})."
         return "Tests completed."
 
     @command()
