@@ -49,7 +49,17 @@ def _resolve_private_tests_path() -> Path | None:
 
 
 def _discover_frontend_port(project: str, default: int = 4200) -> int | None:
-    """Try docker-compose service, then fall back to local port check."""
+    """Try .env.worktree FRONTEND_PORT, then docker-compose, then local port check."""
+    from teatree.core.resolve import _find_env_worktree, _get_user_cwd, _parse_env_file  # noqa: PLC0415
+
+    envfile = _find_env_worktree(_get_user_cwd())
+    if envfile is not None:
+        wt_env = _parse_env_file(envfile)
+        wt_port = wt_env.get("FRONTEND_PORT") or wt_env.get("FRONTEND_HOST_PORT")
+        if wt_port:
+            port = int(wt_port)
+            if _detect_local_port(port) is not None:
+                return port
     port = get_service_port(project, "frontend", default)
     if port is not None:
         return port
