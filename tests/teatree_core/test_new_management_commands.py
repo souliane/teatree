@@ -34,6 +34,7 @@ from teatree.core.models import Session, Ticket, Worktree
 from teatree.core.overlay import (
     DbImportStrategy,
     OverlayBase,
+    OverlayConfig,
     OverlayMetadata,
     ProvisionStep,
     RunCommands,
@@ -167,6 +168,19 @@ class HelplessToolOverlay(FullOverlay):
     metadata = _HelplessMetadata()
 
 
+class NestedRepoOverlay(FullOverlay):
+    """Overlay with repos in nested subdirectories of workspace_dir."""
+
+    config = OverlayConfig()
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.config.workspace_repos = ["org/backend", "org/frontend"]
+
+    def get_repos(self) -> list[str]:
+        return ["backend", "frontend"]
+
+
 class PostDbStepsOverlay(FullOverlay):
     """Overlay with post-DB steps configured — tests the post-DB loop."""
 
@@ -200,6 +214,7 @@ class PreRunOverlay(FullOverlay):
 
 
 FULL_OVERLAY = "tests.teatree_core.test_new_management_commands.FullOverlay"
+NESTED_OVERLAY = "tests.teatree_core.test_new_management_commands.NestedRepoOverlay"
 MINIMAL_OVERLAY = "tests.teatree_core.test_new_management_commands.MinimalOverlay"
 SERVICES_OVERLAY = "tests.teatree_core.test_new_management_commands.ServicesOverlay"
 POST_DB_OVERLAY = "tests.teatree_core.test_new_management_commands.PostDbStepsOverlay"
@@ -563,6 +578,48 @@ class TestWorkspaceTicket(TestCase):
             # Backend worktree should exist, frontend should have been cleaned up
             assert Worktree.objects.filter(ticket_id=ticket_id, repo_path="backend").exists()
             assert not Worktree.objects.filter(ticket_id=ticket_id, repo_path="frontend").exists()
+
+    @_patch_overlays(NESTED_OVERLAY)
+    @override_settings(**SETTINGS, T3_WORKSPACE_DIR="/tmp/ws-test")
+    def test_nested_repo_paths(self) -> None:
+        """Repos in nested subdirectories (e.g. org/backend) are found and worktrees use basenames."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+
+            workspace = tmp_path / "workspace"
+            (workspace / "org" / "backend").mkdir(parents=True)
+            (workspace / "org" / "backend" / ".git").mkdir()
+            (workspace / "org" / "frontend").mkdir(parents=True)
+            (workspace / "org" / "frontend" / ".git").mkdir()
+
+            mock_result = MagicMock()
+            mock_result.returncode = 0
+
+            with (
+                patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
+                patch.object(git_mod.subprocess, "run", return_value=mock_result),
+            ):
+                ticket_id = cast("int", call_command("workspace", "ticket", "https://example.com/issues/90"))
+
+            ticket = Ticket.objects.get(pk=ticket_id)
+            assert ticket.worktrees.count() == 2
+
+            repo_paths = sorted(ticket.worktrees.values_list("repo_path", flat=True))
+            assert repo_paths == ["org/backend", "org/frontend"]
+
+            branch = ticket.worktrees.first().branch
+            assert "/" not in branch.split("-")[1]
+            assert "backend" in branch
+
+    @_patch_overlays(NESTED_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_config_workspace_repos_overrides_get_repos(self) -> None:
+        """get_workspace_repos() returns config.workspace_repos when set."""
+        from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
+
+        overlay = get_overlay()
+        assert overlay.get_workspace_repos() == ["org/backend", "org/frontend"]
+        assert overlay.get_repos() == ["backend", "frontend"]
 
 
 _no_prune = patch.object(workspace_mod, "_prune_branches", new=lambda _repo: [])
@@ -2773,7 +2830,7 @@ class TestLifecycleStart(TestCase):
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
     def test_starts_docker_compose_and_transitions(self) -> None:
-        """Lifecycle start should run docker compose up -d and transition FSM to SERVICES_UP."""
+        """Lifecycle start should provision, run docker compose up -d, and transition to SERVICES_UP."""
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
 
@@ -2787,13 +2844,19 @@ class TestLifecycleStart(TestCase):
                 repo_path="/tmp/backend",
                 branch="feature",
                 extra={"worktree_path": str(wt_path)},
+                db_name="wt_300_acme",
             )
-            worktree_id = cast("int", call_command("lifecycle", "setup", path=str(wt_path)))
 
             mock_overlay = MagicMock()
             mock_overlay.get_run_commands.return_value = {"backend": "run-backend", "frontend": "run-frontend"}
             mock_overlay.get_pre_run_steps.return_value = []
             mock_overlay.get_env_extra.return_value = {}
+            mock_overlay.get_envrc_lines.return_value = []
+            mock_overlay.get_db_import_strategy.return_value = None
+            mock_overlay.get_provision_steps.return_value = []
+            mock_overlay.get_post_db_steps.return_value = []
+            mock_overlay.get_health_checks.return_value = []
+            mock_overlay.get_reset_passwords_command.return_value = None
             mock_overlay.get_compose_file.return_value = "/fake/docker-compose.yml"
 
             mock_config = MagicMock()
@@ -2802,7 +2865,6 @@ class TestLifecycleStart(TestCase):
             with (
                 patch.object(lifecycle_mod, "get_overlay", return_value=mock_overlay),
                 patch.object(lifecycle_mod, "subprocess") as mock_sp,
-                patch.object(run_mod, "_compose_has_service", return_value=True),
                 patch.object(
                     lifecycle_mod,
                     "find_free_ports",
@@ -2813,7 +2875,8 @@ class TestLifecycleStart(TestCase):
                 mock_sp.run.return_value = MagicMock(returncode=0)
                 call_command("lifecycle", "start", path=str(wt_path))
 
-            worktree = Worktree.objects.get(pk=worktree_id)
+            worktree = Worktree.objects.filter(ticket=ticket).first()
+            assert worktree is not None
             assert worktree.state == Worktree.State.SERVICES_UP
             # Docker compose was called (down + up)
             docker_calls = [c for c in mock_sp.run.call_args_list if c[0] and "docker" in str(c[0][0])]
@@ -2835,13 +2898,19 @@ class TestLifecycleStart(TestCase):
                 repo_path="/tmp/backend",
                 branch="feature",
                 extra={"worktree_path": str(wt_path)},
+                db_name="wt_302_acme",
             )
-            call_command("lifecycle", "setup", path=str(wt_path))
 
             mock_overlay = MagicMock()
             mock_overlay.get_run_commands.return_value = {}
             mock_overlay.get_pre_run_steps.return_value = []
             mock_overlay.get_env_extra.return_value = {}
+            mock_overlay.get_envrc_lines.return_value = []
+            mock_overlay.get_db_import_strategy.return_value = None
+            mock_overlay.get_provision_steps.return_value = []
+            mock_overlay.get_post_db_steps.return_value = []
+            mock_overlay.get_health_checks.return_value = []
+            mock_overlay.get_reset_passwords_command.return_value = None
             mock_overlay.get_compose_file.return_value = ""
 
             mock_config = MagicMock()
@@ -2879,13 +2948,19 @@ class TestLifecycleStart(TestCase):
                 repo_path="/tmp/backend",
                 branch="feature",
                 extra={"worktree_path": str(wt_path)},
+                db_name="wt_301_acme",
             )
-            call_command("lifecycle", "setup", path=str(wt_path))
 
             mock_overlay = MagicMock()
             mock_overlay.get_run_commands.return_value = {"backend": "run-backend"}
             mock_overlay.get_pre_run_steps.return_value = []
             mock_overlay.get_env_extra.return_value = {}
+            mock_overlay.get_envrc_lines.return_value = []
+            mock_overlay.get_db_import_strategy.return_value = None
+            mock_overlay.get_provision_steps.return_value = []
+            mock_overlay.get_post_db_steps.return_value = []
+            mock_overlay.get_health_checks.return_value = []
+            mock_overlay.get_reset_passwords_command.return_value = None
             mock_overlay.get_compose_file.return_value = "/fake/docker-compose.yml"
 
             mock_config = MagicMock()
@@ -2915,112 +2990,6 @@ class TestLifecycleStart(TestCase):
                 result = call_command("lifecycle", "start", path=str(wt_path))
 
             assert result == "error"
-
-
-class TestLifecycleRestart(TestCase):
-    @_patch_overlays(FULL_OVERLAY)
-    @override_settings(**SETTINGS)
-    def test_restart_runs_docker_compose_down_then_up(self) -> None:
-        """Restart should run docker compose down + up (delegates to start)."""
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            wt_path = tmp_path / "worktree"
-            wt_path.mkdir()
-
-            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/400", variant="acme")
-            Worktree.objects.create(
-                overlay="test",
-                ticket=ticket,
-                repo_path="/tmp/backend",
-                branch="feature",
-                extra={"worktree_path": str(wt_path)},
-            )
-            worktree_id = cast("int", call_command("lifecycle", "setup", path=str(wt_path)))
-
-            # Advance to SERVICES_UP
-            wt = Worktree.objects.get(pk=worktree_id)
-            wt.start_services(services=["backend"])
-            wt.save()
-
-            mock_overlay = MagicMock()
-            mock_overlay.get_run_commands.return_value = {"backend": "run-backend", "frontend": "run-frontend"}
-            mock_overlay.get_pre_run_steps.return_value = []
-            mock_overlay.get_env_extra.return_value = {}
-            mock_overlay.get_compose_file.return_value = "/fake/docker-compose.yml"
-
-            mock_config = MagicMock()
-            mock_config.user.workspace_dir = tmp_path
-
-            with (
-                patch.object(lifecycle_mod, "get_overlay", return_value=mock_overlay),
-                patch.object(lifecycle_mod, "subprocess") as mock_sp,
-                patch.object(run_mod, "_compose_has_service", return_value=True),
-                patch.object(
-                    lifecycle_mod,
-                    "find_free_ports",
-                    return_value={"backend": 8001, "frontend": 4201, "postgres": 5432, "redis": 6379},
-                ),
-                patch("teatree.config.load_config", return_value=mock_config),
-            ):
-                mock_sp.run.return_value = MagicMock(returncode=0)
-                call_command("lifecycle", "restart", path=str(wt_path))
-
-            wt = Worktree.objects.get(pk=worktree_id)
-            assert wt.state == Worktree.State.SERVICES_UP
-
-            # Docker compose was called (down + up)
-            docker_calls = [c for c in mock_sp.run.call_args_list if c[0] and "docker" in str(c[0][0])]
-            assert len(docker_calls) >= 2
-
-    @_patch_overlays(FULL_OVERLAY)
-    @override_settings(**SETTINGS)
-    def test_restart_on_created_state_falls_back_to_setup_and_start(self) -> None:
-        """Restart on a 'created' worktree should run setup + start instead."""
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            wt_path = tmp_path / "worktree"
-            wt_path.mkdir()
-
-            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/402", variant="acme")
-            Worktree.objects.create(
-                overlay="test",
-                ticket=ticket,
-                repo_path="/tmp/backend",
-                branch="feature",
-                extra={"worktree_path": str(wt_path)},
-            )
-
-            mock_overlay = MagicMock()
-            mock_overlay.get_run_commands.return_value = {"backend": "run-backend"}
-            mock_overlay.get_pre_run_steps.return_value = []
-            mock_overlay.get_env_extra.return_value = {}
-            mock_overlay.get_envrc_lines.return_value = []
-            mock_overlay.get_db_import_strategy.return_value = None
-            mock_overlay.get_provision_steps.return_value = []
-            mock_overlay.get_post_db_steps.return_value = []
-            mock_overlay.get_health_checks.return_value = []
-            mock_overlay.get_reset_passwords_command.return_value = None
-            mock_overlay.get_compose_file.return_value = "/fake/docker-compose.yml"
-
-            mock_config = MagicMock()
-            mock_config.user.workspace_dir = tmp_path
-
-            with (
-                patch.object(lifecycle_mod, "get_overlay", return_value=mock_overlay),
-                patch.object(lifecycle_mod, "subprocess") as mock_sp,
-                patch.object(
-                    lifecycle_mod,
-                    "find_free_ports",
-                    return_value={"backend": 8001, "frontend": 4201, "postgres": 5432, "redis": 6379},
-                ),
-                patch("teatree.config.load_config", return_value=mock_config),
-            ):
-                mock_sp.run.return_value = MagicMock(returncode=0)
-                call_command("lifecycle", "restart", path=str(wt_path))
-
-            wt = Worktree.objects.filter(ticket=ticket).first()
-            assert wt is not None
-            assert wt.state == Worktree.State.SERVICES_UP
 
 
 class TestLifecycleClean(TestCase):

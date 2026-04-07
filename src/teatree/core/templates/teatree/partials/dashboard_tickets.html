@@ -3,6 +3,9 @@
   <table class="mx-auto border-collapse text-sm">
     <thead>
       <tr>
+        <th class="border-b border-bark/10 px-3 py-3 text-center font-sans text-[11px] font-semibold uppercase tracking-[0.2em] text-bark/55">
+          <input type="checkbox" class="accent-moss" onchange="toggleAllMRs(this)" title="Select all">
+        </th>
         <th class="border-b border-bark/10 px-3 py-3 text-left font-sans text-[11px] font-semibold uppercase tracking-[0.2em] text-bark/55">Ticket</th>
         <th class="border-b border-bark/10 px-3 py-3 text-left font-sans text-[11px] font-semibold uppercase tracking-[0.2em] text-bark/55">Status</th>
         <th class="border-b border-bark/10 px-3 py-3 text-left font-sans text-[11px] font-semibold uppercase tracking-[0.2em] text-bark/55">MR</th>
@@ -18,7 +21,21 @@
       {% for ticket in tickets %}
         {% with mr_count=ticket.mrs|length %}
         {% for mr in ticket.mrs %}
-          <tr>
+          <tr
+            data-ticket-group="{{ ticket.ticket_id }}"
+            data-mr-row="true"
+            data-mr-title="{{ mr.title }}"
+            data-mr-url="{{ mr.url }}"
+            data-mr-draft="{% if mr.draft %}true{% else %}false{% endif %}"
+            data-mr-approved="{% if mr.approval_count >= mr.approval_required and mr.approval_required > 0 %}true{% else %}false{% endif %}"
+            data-ticket-id="{{ ticket.display_id }}"
+            data-ticket-title="{{ ticket.issue_title }}"
+          >
+            <td class="border-b border-bark/10 px-3 py-3 align-top text-center">
+              {% if mr.url %}
+                <input type="checkbox" class="mr-select accent-moss" onchange="updateCopyButton()">
+              {% endif %}
+            </td>
             {% if forloop.first %}
               <td class="cell-wrap border-b border-bark/10 px-3 py-3 align-top" {% if mr_count > 1 %}rowspan="{{ mr_count }}"{% endif %}>
                 {% if ticket.has_issue %}
@@ -192,7 +209,13 @@
             {% endif %}
           </tr>
         {% empty %}
-          <tr>
+          <tr
+            data-ticket-group="{{ ticket.ticket_id }}"
+            data-ticket-row="true"
+            data-ticket-id="{{ ticket.display_id }}"
+            data-ticket-title="{{ ticket.issue_title }}"
+          >
+            <td class="border-b border-bark/10 px-3 py-3 align-top text-center"></td>
             <td class="cell-wrap border-b border-bark/10 px-3 py-3 align-top">
               {% if ticket.has_issue %}
                 <a class="font-sans font-semibold text-moss hover:underline" href="{{ ticket.issue_url }}">#{{ ticket.display_id }}</a>
@@ -279,12 +302,12 @@
           </tr>
         {% endfor %}
         <!-- Inline task graph container (toggled by Graph button) -->
-        <tr id="task-graph-{{ ticket.ticket_id }}" class="hidden">
-          <td colspan="9" class="border-b border-bark/10 bg-parchment/50 px-5 py-3"></td>
+        <tr id="task-graph-{{ ticket.ticket_id }}" class="hidden" data-ticket-group="{{ ticket.ticket_id }}">
+          <td colspan="10" class="border-b border-bark/10 bg-parchment/50 px-5 py-3"></td>
         </tr>
         <!-- Inline lifecycle diagram container (toggled by Lifecycle button) -->
-        <tr id="lifecycle-{{ ticket.ticket_id }}" class="hidden">
-          <td colspan="9" class="border-b border-bark/10 bg-parchment/50 px-5 py-3"></td>
+        <tr id="lifecycle-{{ ticket.ticket_id }}" class="hidden" data-ticket-group="{{ ticket.ticket_id }}">
+          <td colspan="10" class="border-b border-bark/10 bg-parchment/50 px-5 py-3"></td>
         </tr>
         {% endwith %}
       {% endfor %}
