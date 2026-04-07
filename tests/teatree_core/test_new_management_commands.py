@@ -2884,8 +2884,8 @@ class TestLifecycleStart(TestCase):
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_returns_error_without_compose_file(self) -> None:
-        """Start returns 'error' when overlay has no compose file."""
+    def test_skips_worktree_without_compose_file(self) -> None:
+        """Start skips worktrees with no compose file (e.g. frontend-only)."""
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
 
@@ -2929,7 +2929,7 @@ class TestLifecycleStart(TestCase):
                 mock_sp.run.return_value = MagicMock(returncode=0)
                 result = call_command("lifecycle", "start", path=str(wt_path))
 
-            assert result == "error"
+            assert result != "error"  # skipped, not failed
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)

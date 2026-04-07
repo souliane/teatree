@@ -200,12 +200,13 @@ class TestFindDslrSnapshots:
 class TestRestoreRefFromDslr:
     def test_returns_success_tuple_on_success(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(mod.subprocess, "run", _ok_run)
-        assert _restore_ref_from_dslr(["/bin/dslr"], {}, "snap1") == (True, False)
+        assert _restore_ref_from_dslr(["/bin/dslr"], {}, "snap1") == (True, False, "")
 
-    def test_returns_failure_tuple_on_failure(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_returns_failure_tuple_with_stderr(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(mod.subprocess, "run", _fail_run)
-        ok, _is_env = _restore_ref_from_dslr(["/bin/dslr"], {}, "snap1")
+        ok, _is_env, stderr = _restore_ref_from_dslr(["/bin/dslr"], {}, "snap1")
         assert ok is False
+        assert isinstance(stderr, str)
 
 
 class TestTakeDslrSnapshot:
@@ -437,7 +438,7 @@ class TestTryRestoreFromDslr:
 
     def test_succeeds_with_snapshot_and_runs_migrate(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(mod, "_find_dslr_snapshots", lambda *a: ["20260326_development-acme"])
-        monkeypatch.setattr(mod, "_restore_ref_from_dslr", lambda *a: (True, False))
+        monkeypatch.setattr(mod, "_restore_ref_from_dslr", lambda *a: (True, False, ""))
         monkeypatch.setattr(mod, "_migrate_reference_db", lambda *a: True)
         monkeypatch.setattr(mod, "_take_dslr_snapshot", lambda *a: None)
         monkeypatch.setattr(mod, "_copy_ref_to_ticket", lambda ctx: True)
@@ -451,7 +452,7 @@ class TestTryRestoreFromDslr:
         def fake_restore(_cmd, _env, snap):
             attempts.append(snap)
             ok = snap != "20260326_development-acme"
-            return (ok, False)
+            return (ok, False, "" if ok else "mock restore error")
 
         monkeypatch.setattr(
             mod, "_find_dslr_snapshots", lambda *a: ["20260326_development-acme", "20260320_development-acme"]
@@ -475,7 +476,7 @@ class TestTryRestoreFromDslr:
         monkeypatch.setattr(
             mod, "_find_dslr_snapshots", lambda *a: ["20260326_development-acme", "20260320_development-acme"]
         )
-        monkeypatch.setattr(mod, "_restore_ref_from_dslr", lambda *a: (True, False))
+        monkeypatch.setattr(mod, "_restore_ref_from_dslr", lambda *a: (True, False, ""))
         monkeypatch.setattr(mod, "_migrate_reference_db", fake_migrate)
         monkeypatch.setattr(mod, "_take_dslr_snapshot", lambda *a: None)
         monkeypatch.setattr(mod, "_copy_ref_to_ticket", lambda ctx: True)
@@ -488,7 +489,7 @@ class TestTryRestoreFromDslr:
         monkeypatch.setattr(
             mod, "_find_dslr_snapshots", lambda *a: ["20260326_development-acme", "20260320_development-acme"]
         )
-        monkeypatch.setattr(mod, "_restore_ref_from_dslr", lambda *a: (False, False))
+        monkeypatch.setattr(mod, "_restore_ref_from_dslr", lambda *a: (False, False, "mock error"))
         monkeypatch.setattr(mod.subprocess, "run", _ok_run)
         ctx = _make_ctx(tmp_path)
         assert _try_restore_from_dslr(ctx, skip_dslr=False) is False
@@ -497,7 +498,7 @@ class TestTryRestoreFromDslr:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(mod, "_find_dslr_snapshots", lambda *a: ["20260326_development-acme"])
-        monkeypatch.setattr(mod, "_restore_ref_from_dslr", lambda *a: (True, False))
+        monkeypatch.setattr(mod, "_restore_ref_from_dslr", lambda *a: (True, False, ""))
         monkeypatch.setattr(mod, "_migrate_reference_db", lambda *a: True)
         monkeypatch.setattr(mod, "_take_dslr_snapshot", lambda *a: None)
         monkeypatch.setattr(mod, "_copy_ref_to_ticket", lambda ctx: False)
