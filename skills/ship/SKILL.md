@@ -65,7 +65,7 @@ When the active overlay has `require_ticket = True`, refuse to commit or push wi
 - Run in each repo that has changes.
 - Verify the commit message follows the project's format.
 
-**Squash rules:** Follow the canonical squash rules from `ac-managing-repos` § Workflow 2 — Squash & Prepare. Key points: never rewrite pushed history, group by topic, keep human-sized, squash integrity check (`OLD_TIP` before/after diff), respect `T3_AUTO_SQUASH`.
+**Squash rules:** Follow the canonical squash rules from `ac-reviewing-codebase` § `references/repo-management.md`. Key points: never rewrite pushed history, group by topic, keep human-sized, squash integrity check (`OLD_TIP` before/after diff), respect `T3_AUTO_SQUASH`.
 
 **Squash base (Non-Negotiable):** Always compute the squash target with `git merge-base origin/<default-branch> HEAD`. NEVER use `origin/master` or `origin/main` directly — the branch may have been created from a stale local copy, causing the squash to include unrelated commits from other authors. The `t3 workspace finalize` command handles this correctly.
 

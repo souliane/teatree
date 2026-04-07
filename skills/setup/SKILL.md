@@ -86,7 +86,7 @@ Useful optional values:
 | `T3_BRANCH_PREFIX` | Branch prefix for generated worktrees | derived from git user |
 | `T3_ISSUE_TRACKER` | `gitlab` or `github` | detected |
 | `T3_CHAT_PLATFORM` | `slack`, `teams`, or `none` | `none` |
-| `T3_SKILL_OWNERSHIP_FILE` | Ownership config for skill editing | `$HOME/.ac-reviewing-skills` |
+| `T3_SKILL_OWNERSHIP_FILE` | Ownership config for skill editing | `$HOME/.ac-reviewing-codebase` |
 
 Do not require `T3_OVERLAY`. The active overlay is discovered via entry points.
 
@@ -103,7 +103,7 @@ T3_PUSH=false
 T3_UPSTREAM=""
 T3_PRIVATE_TESTS=""
 T3_BRANCH_PREFIX="ac"
-T3_SKILL_OWNERSHIP_FILE="$HOME/.ac-reviewing-skills"
+T3_SKILL_OWNERSHIP_FILE="$HOME/.ac-reviewing-codebase"
 EOF
 ```
 
@@ -287,6 +287,7 @@ If the user already has a project-local virtualenv, using that is fine too. The 
 
 Offer companion skills by stack, but install them only if they are missing:
 
+- All stacks: `ac-reviewing-codebase`
 - Django: `ac-django`, `ac-python`
 - Python only: `ac-python`
 - Ruff migration work: `ac-adopting-ruff`

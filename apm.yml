@@ -12,6 +12,11 @@ keywords:
   - django
 agents:
   - claude-code
+dependencies:
+  apm:
+    - souliane/skills/ac-reviewing-codebase
+    - souliane/skills/ac-python
+    - souliane/skills/ac-django
 install:
   pip: teatree
   post_install: uv run t3 config write-skill-cache
