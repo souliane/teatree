@@ -211,7 +211,6 @@ class TestLifecycleProvision(TestCase):
         with (
             _patch_overlay(),
             patch.object(lifecycle_mod, "subprocess") as mock_start_sp,
-            patch.object(run_mod, "_compose_has_service", return_value=True),
             patch.object(
                 lifecycle_mod,
                 "find_free_ports",

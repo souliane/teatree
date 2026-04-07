@@ -389,12 +389,12 @@ class OverlayAppBuilder:
 
             if follow:
                 subprocess.run(  # noqa: S603
-                    ["tail", "-f", "-n", str(lines), str(log_file)],  # noqa: S607
+                    ["tail", "-f", "-n", str(lines), str(log_file)],
                     check=False,
                 )
             else:
                 subprocess.run(  # noqa: S603
-                    ["tail", "-n", str(lines), str(log_file)],  # noqa: S607
+                    ["tail", "-n", str(lines), str(log_file)],
                     check=False,
                 )
 

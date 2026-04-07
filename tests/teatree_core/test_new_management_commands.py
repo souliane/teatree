@@ -1803,7 +1803,8 @@ class TestRunBackend(TestCase):
 class TestRunFrontend(TestCase):
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_starts_via_docker_compose_when_service_exists(self) -> None:
+    def test_starts_locally_on_host(self) -> None:
+        """Frontend always runs on host (nx serve needs 6GB+ RAM, exceeds Docker limits)."""
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             wt_dir = tmp_path / "frontend"
@@ -1817,43 +1818,7 @@ class TestRunFrontend(TestCase):
                 extra={"worktree_path": str(wt_dir)},
             )
 
-            mock_config = MagicMock()
-            mock_config.user.workspace_dir = tmp_path
-            with (
-                patch.object(run_mod, "_compose_has_service", return_value=True),
-                patch.object(run_mod.subprocess, "run") as mock_run,
-                patch("teatree.config.load_config", return_value=mock_config),
-                patch.object(
-                    run_mod,
-                    "find_free_ports",
-                    return_value={"backend": 8001, "frontend": 4201, "postgres": 5432, "redis": 6379},
-                ),
-            ):
-                result = cast("str", call_command("run", "frontend", path=str(wt_dir)))
-
-            mock_run.assert_called_once()
-            assert "docker-compose" in result.lower()
-
-    @_patch_overlays(FULL_OVERLAY)
-    @override_settings(**SETTINGS)
-    def test_falls_back_to_local_when_no_docker_service(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            wt_dir = tmp_path / "frontend"
-            wt_dir.mkdir()
-            ticket = Ticket.objects.create(overlay="test")
-            Worktree.objects.create(
-                overlay="test",
-                ticket=ticket,
-                repo_path="/tmp/frontend",
-                branch="feature",
-                extra={"worktree_path": str(wt_dir)},
-            )
-
-            with (
-                patch.object(run_mod, "_compose_has_service", return_value=False),
-                patch.object(run_mod.subprocess, "Popen") as mock_popen,
-            ):
+            with patch.object(run_mod.subprocess, "Popen") as mock_popen:
                 result = cast("str", call_command("run", "frontend", path=str(wt_dir)))
 
             mock_popen.assert_called_once()
