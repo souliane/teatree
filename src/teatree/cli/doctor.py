@@ -101,11 +101,9 @@ class DoctorService:
     def check_editable_sanity() -> list[str]:
         """Verify editable status matches declared intent.
 
-        Settings can declare:
-            TEATREE_EDITABLE = True   # contributing to teatree
-            OVERLAY_EDITABLE = True   # contributing to overlay
-
-        If not set, defaults to False (normal install expected).
+        When ``contribute = true`` in ``.teatree.toml`` and teatree is not
+        installed as editable, auto-fixes by running
+        ``uv pip install -e <teatree-repo>``.
         """
         problems: list[str] = []
 
@@ -126,16 +124,22 @@ class DoctorService:
         except Exception:  # noqa: BLE001 — Django may not be installed
             return problems
 
-        # Check teatree
-        teatree_should_be_editable = getattr(django_settings, "TEATREE_EDITABLE", False)
+        # Use contribute flag from config (takes precedence over Django settings)
+        from teatree.config import load_config  # noqa: PLC0415
+
+        contribute = load_config().user.contribute
+        teatree_should_be_editable = contribute or getattr(django_settings, "TEATREE_EDITABLE", False)
         teatree_is_editable, _ = IntrospectionHelpers.editable_info("teatree")
 
         if teatree_should_be_editable and not teatree_is_editable:
-            problems.append(
-                "TEATREE_EDITABLE=True but teatree is not editable. "
-                "Changes to teatree source will be lost. "
-                "Fix: add `teatree = { path = '...', editable = true }` to [tool.uv.sources]",
-            )
+            teatree_repo = DoctorService._find_teatree_repo()
+            if teatree_repo:
+                DoctorService._make_editable("teatree", teatree_repo)
+            else:
+                problems.append(
+                    "contribute=true but teatree is not editable and local repo not found. "
+                    "Fix: set T3_REPO env var or run `uv pip install -e <teatree-path>`",
+                )
         elif not teatree_should_be_editable and teatree_is_editable:
             problems.append(
                 "teatree is editable but TEATREE_EDITABLE is not set. "
@@ -173,6 +177,35 @@ class DoctorService:
                 )
 
         return problems
+
+    @staticmethod
+    def _find_teatree_repo() -> Path | None:
+        env_path = os.environ.get("T3_REPO", "")
+        if env_path:
+            p = Path(env_path).expanduser()
+            if (p / "pyproject.toml").is_file():
+                return p
+        # Auto-detect from package location (editable or source checkout)
+        pkg_root = Path(__file__).resolve().parents[4]
+        if (pkg_root / ".git").is_dir() and (pkg_root / "pyproject.toml").is_file():
+            return pkg_root
+        return None
+
+    @staticmethod
+    def _make_editable(package: str, repo_path: Path) -> None:
+        import subprocess  # noqa: PLC0415, S404
+
+        typer.echo(f"WARN  {package} is not editable (contribute=true). Installing from {repo_path}...")
+        result = subprocess.run(  # noqa: S603
+            ["uv", "pip", "install", "--quiet", "-e", str(repo_path)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode == 0:
+            typer.echo(f"OK    {package} is now editable from {repo_path}")
+        else:
+            typer.echo(f"FAIL  Could not install {package} as editable: {result.stderr.strip()}")
 
 
 class IntrospectionHelpers:

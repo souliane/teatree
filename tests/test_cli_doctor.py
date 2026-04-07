@@ -1,6 +1,7 @@
 """Tests for doctor-related CLI commands, extracted from test_cli.py."""
 
 import json
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from typer.testing import CliRunner
@@ -199,20 +200,47 @@ class TestDoctorService:
             result = DoctorService.check_editable_sanity()
             assert result == []
 
-    def test_warns_teatree_should_be_editable(self, monkeypatch):
-        """Warns when TEATREE_EDITABLE=True but teatree is not editable."""
+    def test_auto_fixes_when_contribute_true_and_not_editable(self, monkeypatch):
+        """Auto-installs editable teatree when contribute=true and repo is found."""
         monkeypatch.setenv("DJANGO_SETTINGS_MODULE", "tests.django_settings")
         mock_settings = MagicMock()
-        mock_settings.TEATREE_EDITABLE = True
+        mock_settings.TEATREE_EDITABLE = False
+
+        mock_config = MagicMock()
+        mock_config.user.contribute = True
 
         with (
             patch("django.setup"),
             patch("django.conf.settings", mock_settings),
             patch.object(IntrospectionHelpers, "editable_info", return_value=(False, "")),
             patch.object(teatree_overlay_loader, "get_all_overlays", return_value={}),
+            patch("teatree.config.load_config", return_value=mock_config),
+            patch.object(DoctorService, "_find_teatree_repo", return_value=Path("/tmp/teatree")),
+            patch.object(DoctorService, "_make_editable") as mock_fix,
         ):
             result = DoctorService.check_editable_sanity()
-            assert any("TEATREE_EDITABLE=True" in p for p in result)
+            mock_fix.assert_called_once_with("teatree", Path("/tmp/teatree"))
+            assert result == []
+
+    def test_warns_when_contribute_true_and_repo_not_found(self, monkeypatch):
+        """Warns when contribute=true, teatree not editable, and repo path not found."""
+        monkeypatch.setenv("DJANGO_SETTINGS_MODULE", "tests.django_settings")
+        mock_settings = MagicMock()
+        mock_settings.TEATREE_EDITABLE = False
+
+        mock_config = MagicMock()
+        mock_config.user.contribute = True
+
+        with (
+            patch("django.setup"),
+            patch("django.conf.settings", mock_settings),
+            patch.object(IntrospectionHelpers, "editable_info", return_value=(False, "")),
+            patch.object(teatree_overlay_loader, "get_all_overlays", return_value={}),
+            patch("teatree.config.load_config", return_value=mock_config),
+            patch.object(DoctorService, "_find_teatree_repo", return_value=None),
+        ):
+            result = DoctorService.check_editable_sanity()
+            assert any("contribute=true" in p for p in result)
 
     def test_warns_teatree_unexpectedly_editable(self, monkeypatch):
         """Warns when teatree is editable but not declared."""
@@ -220,11 +248,15 @@ class TestDoctorService:
         mock_settings = MagicMock()
         mock_settings.TEATREE_EDITABLE = False
 
+        mock_config = MagicMock()
+        mock_config.user.contribute = False
+
         with (
             patch("django.setup"),
             patch("django.conf.settings", mock_settings),
             patch.object(IntrospectionHelpers, "editable_info", return_value=(True, "file:///src")),
             patch.object(teatree_overlay_loader, "get_all_overlays", return_value={}),
+            patch("teatree.config.load_config", return_value=mock_config),
         ):
             result = DoctorService.check_editable_sanity()
             assert any("TEATREE_EDITABLE is not set" in p for p in result)
@@ -289,12 +321,16 @@ class TestDoctorService:
         mock_overlay = MagicMock()
         mock_overlay.__module__ = "my_overlay.overlay"
 
+        mock_config = MagicMock()
+        mock_config.user.contribute = False
+
         with (
             patch("django.setup"),
             patch("django.conf.settings", mock_settings),
             patch.object(IntrospectionHelpers, "editable_info", return_value=(False, "")),
             patch.object(teatree_overlay_loader, "get_all_overlays", return_value={"test": mock_overlay}),
             patch("importlib.metadata.packages_distributions", return_value={"my_overlay": ["my-overlay"]}),
+            patch("teatree.config.load_config", return_value=mock_config),
         ):
             result = DoctorService.check_editable_sanity()
             assert result == []
