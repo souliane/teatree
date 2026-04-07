@@ -124,7 +124,7 @@ If the environment seems incomplete (missing `uv`, hooks not firing, overlay abs
 
 ### Cleanup
 
-- `t3 workspace clean-all` — prune merged worktrees, drop orphan DBs, remove stale directories.
+- `t3 workspace clean-all` — prune merged worktrees, drop orphan DBs, remove stale directories. Detects squash-merged branches via GitHub API (`gh pr list --state merged`). Warns about branches with no merged PR (possible forgotten work).
 
 ## Rules
 

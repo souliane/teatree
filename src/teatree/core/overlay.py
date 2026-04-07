@@ -293,7 +293,7 @@ class OverlayBase(ABC):
     def get_pre_run_steps(self, worktree: "Worktree", service: str) -> list[ProvisionStep]:
         return []
 
-    def get_test_command(self, worktree: "Worktree") -> list[str]:
+    def get_test_command(self, worktree: "Worktree") -> list[str] | RunCommand:
         return []
 
     def get_verify_endpoints(self, worktree: "Worktree") -> dict[str, str]:
