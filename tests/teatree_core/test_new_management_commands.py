@@ -1834,11 +1834,19 @@ class TestRunFrontend(TestCase):
                 extra={"worktree_path": str(wt_dir)},
             )
 
-            with patch.object(run_mod.subprocess, "Popen") as mock_popen:
+            mock_config = MagicMock()
+            mock_config.user.workspace_dir = tmp_path
+
+            with (
+                patch.object(run_mod.subprocess, "Popen") as mock_popen,
+                patch.object(run_mod, "find_free_ports", return_value={"frontend": 4201, "backend": 8001}),
+                patch("teatree.config.load_config", return_value=mock_config),
+                patch("teatree.utils.ports.free_port", return_value=None),
+            ):
                 result = cast("str", call_command("run", "frontend", path=str(wt_dir)))
 
             mock_popen.assert_called_once()
-            assert "locally" in result.lower()
+            assert "4201" in result
 
     @_patch_overlays(MINIMAL_OVERLAY)
     @override_settings(**SETTINGS)
