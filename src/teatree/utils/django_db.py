@@ -34,6 +34,8 @@ class DjangoDbImportConfig:
     remote_db_url: str = ""
     migrate_env_extra: dict[str, str] = field(default_factory=dict)
     dump_timeout: int = 1800
+    dslr_snapshot: str = ""  # Force a specific DSLR snapshot name (skip auto-discovery)
+    dump_path: str = ""  # Force a specific .pgsql dump file (skip DSLR and dump discovery)
 
 
 @dataclass(frozen=True)
@@ -346,6 +348,31 @@ def _restore_ref_and_copy(ctx: _RestoreContext, dump_path: str, label: str) -> b
 _remote_dump_failed: bool = False
 
 
+def _try_restore_from_dump_path(ctx: _RestoreContext) -> bool:
+    """Restore from an explicit dump file path (skip all auto-discovery)."""
+    from teatree.utils.db import db_restore  # noqa: PLC0415
+
+    dump = Path(ctx.cfg.dump_path)
+    if not dump.is_file():
+        print(f"  ERROR: Dump file not found: {dump}")  # noqa: T201
+        return False
+    print(f"  Restoring from explicit dump: {dump}")  # noqa: T201
+    _ensure_ref_db(ctx.cfg.ref_db_name, ctx.pg_host, ctx.pg_user, ctx.pg_env)
+    if db_restore(ctx.cfg.ref_db_name, str(dump)) and _migrate_reference_db(
+        ctx.cfg.main_repo_path,
+        ctx.cfg.ref_db_name,
+        ctx.cfg.migrate_env_extra,
+    ):
+        return _copy_ref_to_ticket(ctx)
+    return False
+
+
+def _resolve_dslr_snapshots(ctx: _RestoreContext) -> list[str]:
+    if ctx.cfg.dslr_snapshot:
+        return [ctx.cfg.dslr_snapshot]
+    return _find_dslr_snapshots(ctx.dslr_cmd, ctx.dslr_env, ctx.cfg.ref_db_name)
+
+
 def _try_restore_from_dslr(ctx: _RestoreContext, *, skip_dslr: bool) -> bool:
     if skip_dslr:
         logger.info("DSLR restore skipped (skip_dslr=True)")
@@ -354,7 +381,7 @@ def _try_restore_from_dslr(ctx: _RestoreContext, *, skip_dslr: bool) -> bool:
         logger.info("DSLR restore skipped (no snapshot tool configured)")
         return False
     _ensure_ref_db(ctx.cfg.ref_db_name, ctx.pg_host, ctx.pg_user, ctx.pg_env)
-    snapshots = _find_dslr_snapshots(ctx.dslr_cmd, ctx.dslr_env, ctx.cfg.ref_db_name)
+    snapshots = _resolve_dslr_snapshots(ctx)
     if not snapshots:
         return False
     for snap_name in snapshots:
@@ -516,7 +543,9 @@ def django_db_import(
         pg_env=pg_env,
     )
 
-    if _try_restore_from_dslr(ctx, skip_dslr=skip_dslr):
+    if (cfg.dump_path and _try_restore_from_dump_path(ctx)) or (
+        not cfg.dump_path and _try_restore_from_dslr(ctx, skip_dslr=skip_dslr)
+    ):
         return True
 
     # --- Non-DSLR fallbacks (slow) — gated behind --slow-import --------
