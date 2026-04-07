@@ -340,30 +340,6 @@ class TestOverlayCommands:
             assert result.exit_code == 0
             mock_manage.assert_called_once_with(tmp_path, "followup", "refresh", overlay_name="test")
 
-    def test_start_ticket(self, tmp_path):
-        """start-ticket delegates to lifecycle start-full."""
-        overlay_app = OverlayAppBuilder("test", tmp_path, "test.settings").build()
-        test_runner = CliRunner()
-
-        with patch.object(cli_overlay_mod, "managepy") as mock_manage:
-            result = test_runner.invoke(overlay_app, ["start-ticket", "https://issue/123"])
-            assert result.exit_code == 0
-            mock_manage.assert_called_once_with(
-                tmp_path, "lifecycle", "start-full", "https://issue/123", overlay_name="test"
-            )
-
-    def test_start_ticket_with_variant(self, tmp_path):
-        """start-ticket passes variant when specified."""
-        overlay_app = OverlayAppBuilder("test", tmp_path, "test.settings").build()
-        test_runner = CliRunner()
-
-        with patch.object(cli_overlay_mod, "managepy") as mock_manage:
-            result = test_runner.invoke(overlay_app, ["start-ticket", "https://issue/123", "--variant", "tenant-a"])
-            assert result.exit_code == 0
-            mock_manage.assert_called_once_with(
-                tmp_path, "lifecycle", "start-full", "https://issue/123", "--variant", "tenant-a", overlay_name="test"
-            )
-
     def test_ship(self, tmp_path):
         """Ship delegates to pr create."""
         overlay_app = OverlayAppBuilder("test", tmp_path, "test.settings").build()

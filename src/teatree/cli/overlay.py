@@ -17,12 +17,10 @@ DJANGO_GROUPS: dict[str, tuple[str, list[tuple[str, str]]]] = {
         "Worktree lifecycle.",
         [
             ("setup", "Create and provision a worktree."),
-            ("start", "Start services for a worktree."),
-            ("restart", "Kill existing processes and restart all services."),
+            ("start", "Provision (if needed) and start all services."),
             ("status", "Return worktree state information."),
             ("teardown", "Tear down a worktree."),
             ("clean", "Teardown worktree — stop services, drop DB, clean state."),
-            ("start-full", "Zero to coding — create ticket, provision, start services."),
             ("diagram", "Print the lifecycle state diagram as Mermaid."),
         ],
     ),
@@ -269,20 +267,6 @@ class OverlayAppBuilder:
         def full_status() -> None:
             """Show ticket, worktree, and session state summary."""
             managepy(project_path, "followup", "refresh", overlay_name=overlay_name)
-
-        @overlay_app.command(name="start-ticket")
-        def start_ticket(
-            issue_url: str = typer.Argument(help="Issue/ticket URL"),
-            variant: str = typer.Option("", help="Tenant variant"),
-            description: str = typer.Option("", help="Short description for branch name"),
-        ) -> None:
-            """Zero to coding — create ticket, provision worktree, start services."""
-            args = ["lifecycle", "start-full", issue_url]
-            if variant:
-                args.extend(["--variant", variant])
-            if description:
-                args.extend(["--description", description])
-            managepy(project_path, *args, overlay_name=overlay_name)
 
         @overlay_app.command(name="ship")
         def ship(
