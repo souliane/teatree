@@ -30,7 +30,7 @@ metadata:
 - **rules** (required) — cross-cutting agent safety rules. Auto-loaded via `requires:`.
 - **workspace** (required) — provides worktree context and `t3` CLI commands. **Load `/t3:workspace` now** if not already loaded.
 
-Optional: If `T3_REVIEW_SKILL` is configured (e.g., `ac-reviewing-skills`), retro recommends running it after skill modifications for deeper architectural quality assurance. Retro is lightweight and tactical; the review skill is methodical and systematic.
+Optional: If `T3_REVIEW_SKILL` is configured (e.g., `ac-reviewing-codebase`), retro recommends running it after skill modifications for deeper architectural quality assurance. Retro is lightweight and tactical; the review skill is methodical and systematic.
 
 ## Configuration
 
@@ -43,7 +43,7 @@ Retro's behavior depends on these `~/.teatree` variables and on whether the curr
 - **`T3_PUSH`** — `false` (default) or `true`. When `false`, retro never asks about pushing — it only commits locally and reminds the user to run `/t3:contribute` later. Set to `true` to be prompted about pushing after each retro commit.
 - **`T3_UPSTREAM`** — upstream GitHub repo (e.g., `souliane/teatree`). Used by `/t3:contribute` to open issues upstream after pushing. When `origin` matches `T3_UPSTREAM`, pushes already land directly on upstream.
 - **`T3_PRIVACY`** — privacy check strictness: `strict` (default) or `relaxed`. See § Privacy Scan.
-- **`T3_REVIEW_SKILL`** — name of an external skill review tool (e.g., `ac-reviewing-skills`). If set, retro recommends running it after skill improvements. If not set, retro suggests installing one during first run and storing the preference.
+- **`T3_REVIEW_SKILL`** — name of an external skill review tool (e.g., `ac-reviewing-codebase`). If set, retro recommends running it after skill improvements. If not set, retro suggests installing one during first run and storing the preference.
 
 ### Agent Compatibility
 
@@ -361,7 +361,7 @@ git commit -m "fix(<skill>): <what was learned>"
 
 ### Squashing Retro Commits
 
-Squash retro commits into clean, human-sized units **before chaining to the review skill**. Follow the canonical squash rules from `ac-managing-repos` § Workflow 2 — Squash & Prepare:
+Squash retro commits into clean, human-sized units **before chaining to the review skill**. Follow the canonical squash rules from `ac-reviewing-codebase` § `references/repo-management.md`:
 
 - Never rewrite pushed history (`git log origin/<branch>..HEAD` to identify safe range).
 - Group by topic (e.g., all retro fixes to the same skill become one commit).
@@ -395,10 +395,10 @@ Squash retro commits into clean, human-sized units **before chaining to the revi
 After committing and squashing, if `T3_REVIEW_SKILL` is configured in `~/.teatree`, offer to chain into the review skill:
 
 ```text
-Retro complete. Chain to cross-repo review? (T3_REVIEW_SKILL=ac-reviewing-skills)
+Retro complete. Chain to cross-repo review? (T3_REVIEW_SKILL=ac-reviewing-codebase)
 ```
 
-The review skill will then squash its own commits and chain into its `DELIVERY_SKILL` (e.g., `ac-managing-repos`) for infrastructure audit and final delivery status.
+The review skill will then squash its own commits and chain into its `DELIVERY_SKILL` (e.g., `ac-reviewing-codebase`) for infrastructure audit and final delivery status.
 
 ## Privacy Scan
 
