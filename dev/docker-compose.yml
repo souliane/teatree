@@ -3,7 +3,7 @@
 #
 # Usage (prefer t3 CLI wrappers):
 #   t3 teatree run tests          # unit tests
-#   t3 teatree run e2e-local      # E2E with parallel Playwright workers
+#   t3 teatree e2e project      # E2E with parallel Playwright workers
 
 x-base: &base
   build:

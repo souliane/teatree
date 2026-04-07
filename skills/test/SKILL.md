@@ -264,12 +264,13 @@ Evidence screenshots must always use a **side-by-side comparison table**. Minimu
 | Command | Purpose |
 |---------|---------|
 | `t3 <overlay> run tests` | Run project tests |
-| `t3 <overlay> run e2e` | Run E2E tests |
+| `t3 <overlay> e2e trigger-ci` | Trigger E2E tests on a remote CI pipeline |
+| `t3 <overlay> e2e external` | Run Playwright tests from external test repo |
+| `t3 <overlay> e2e project` | Run E2E tests from the project's own test directory |
 | `t3 <overlay> pr post-evidence` | Post test evidence as MR comment |
 | `t3 ci fetch-failed-tests` | Extract failed test IDs from CI |
 | `t3 ci fetch-errors` | Extract error logs from CI |
 | `t3 ci quality-check` | Quality analysis |
-| `t3 ci trigger-e2e` | Trigger E2E tests on CI |
 
 ## Re-Read Before Debugging (Non-Negotiable)
 

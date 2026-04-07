@@ -143,7 +143,14 @@ Each registered overlay (e.g., `acme`) adds a subcommand group. These commands r
 | `t3 <overlay> run tests` | Run project tests |
 | `t3 <overlay> run verify` | Verify dev services respond via HTTP |
 | `t3 <overlay> run services` | Show configured run commands |
-| `t3 <overlay> run e2e` | Run E2E tests via CI or overlay config |
+
+### `e2e` — E2E test commands
+
+| Command | Purpose |
+|---------|---------|
+| `t3 <overlay> e2e trigger-ci` | Trigger E2E tests on a remote CI pipeline |
+| `t3 <overlay> e2e external` | Run Playwright tests from external test repo (T3_PRIVATE_TESTS) |
+| `t3 <overlay> e2e project` | Run E2E tests from the project's own test directory |
 
 ### `db` — Database operations
 

@@ -17,6 +17,7 @@ from django.utils.module_loading import import_string
 
 import teatree.backends.loader as backends_loader_mod
 import teatree.config as config_mod
+import teatree.core.management.commands.e2e as e2e_mod
 import teatree.core.management.commands.lifecycle as lifecycle_mod
 import teatree.core.management.commands.pr as pr_mod
 import teatree.core.management.commands.run as run_mod
@@ -2095,7 +2096,7 @@ class TestRunServices(TestCase):
     pass  # No standalone services tests in the original file — placeholder for future tests
 
 
-class TestRunE2e(TestCase):
+class TestE2eTriggerCi(TestCase):
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
     def test_triggers_pipeline(self) -> None:
@@ -2103,7 +2104,7 @@ class TestRunE2e(TestCase):
         mock_ci.trigger_pipeline.return_value = {"pipeline_id": 123}
 
         with patch.object(backends_loader_mod, "get_ci_service", return_value=mock_ci):
-            result = cast("dict[str, object]", call_command("run", "e2e"))
+            result = cast("dict[str, object]", call_command("e2e", "trigger-ci"))
 
         assert result == {"pipeline_id": 123}
         mock_ci.trigger_pipeline.assert_called_once_with(
@@ -2119,7 +2120,7 @@ class TestRunE2e(TestCase):
         mock_ci.trigger_pipeline.return_value = {"pipeline_id": 456}
 
         with patch.object(backends_loader_mod, "get_ci_service", return_value=mock_ci):
-            cast("dict[str, object]", call_command("run", "e2e", branch="feature-branch"))
+            cast("dict[str, object]", call_command("e2e", "trigger-ci", branch="feature-branch"))
 
         mock_ci.trigger_pipeline.assert_called_once_with(
             project="test/e2e-project",
@@ -2130,7 +2131,7 @@ class TestRunE2e(TestCase):
     @_patch_overlays(MINIMAL_OVERLAY)
     @override_settings(**SETTINGS)
     def test_no_config_returns_error(self) -> None:
-        result = cast("dict[str, object]", call_command("run", "e2e"))
+        result = cast("dict[str, object]", call_command("e2e", "trigger-ci"))
 
         assert "error" in result
 
@@ -2138,21 +2139,21 @@ class TestRunE2e(TestCase):
     @override_settings(**SETTINGS)
     def test_no_ci_service_returns_error(self) -> None:
         with patch.object(backends_loader_mod, "get_ci_service", return_value=None):
-            result = cast("dict[str, object]", call_command("run", "e2e"))
+            result = cast("dict[str, object]", call_command("e2e", "trigger-ci"))
 
         assert "error" in result
 
 
-class TestRunE2eLocal(TestCase):
+class TestE2eProject(TestCase):
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
     def test_runs_playwright_locally(self) -> None:
         mock_result = MagicMock(returncode=0)
         with (
-            patch.object(run_mod, "resolve_worktree", return_value=None),
-            patch.object(run_mod.subprocess, "run", return_value=mock_result) as mock_run,
+            patch.object(e2e_mod, "resolve_worktree", return_value=None),
+            patch.object(e2e_mod.subprocess, "run", return_value=mock_result) as mock_run,
         ):
-            result = cast("str", call_command("run", "e2e-local", docker=False))
+            result = cast("str", call_command("e2e", "project", docker=False))
 
         assert "passed" in result
         cmd = mock_run.call_args[0][0]
@@ -2164,10 +2165,10 @@ class TestRunE2eLocal(TestCase):
     def test_reports_failure(self) -> None:
         mock_result = MagicMock(returncode=1)
         with (
-            patch.object(run_mod, "resolve_worktree", return_value=None),
-            patch.object(run_mod.subprocess, "run", return_value=mock_result),
+            patch.object(e2e_mod, "resolve_worktree", return_value=None),
+            patch.object(e2e_mod.subprocess, "run", return_value=mock_result),
         ):
-            result = cast("str", call_command("run", "e2e-local", docker=False))
+            result = cast("str", call_command("e2e", "project", docker=False))
 
         assert "failed" in result
 
@@ -2177,10 +2178,10 @@ class TestRunE2eLocal(TestCase):
         """--headed does not set CI=1 in the environment."""
         mock_result = MagicMock(returncode=0)
         with (
-            patch.object(run_mod, "resolve_worktree", return_value=None),
-            patch.object(run_mod.subprocess, "run", return_value=mock_result) as mock_run,
+            patch.object(e2e_mod, "resolve_worktree", return_value=None),
+            patch.object(e2e_mod.subprocess, "run", return_value=mock_result) as mock_run,
         ):
-            call_command("run", "e2e-local", headed=True, docker=False)
+            call_command("e2e", "project", headed=True, docker=False)
 
         env = mock_run.call_args[1].get("env", {})
         assert env.get("CI") != "1"
@@ -2188,20 +2189,20 @@ class TestRunE2eLocal(TestCase):
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
     def test_custom_test_path(self) -> None:
-        """e2e-local uses the specified test path instead of e2e/."""
+        """e2e project uses the specified test path instead of e2e/."""
         mock_result = MagicMock(returncode=0)
         with (
-            patch.object(run_mod, "resolve_worktree", return_value=None),
-            patch.object(run_mod.subprocess, "run", return_value=mock_result) as mock_run,
+            patch.object(e2e_mod, "resolve_worktree", return_value=None),
+            patch.object(e2e_mod.subprocess, "run", return_value=mock_result) as mock_run,
         ):
-            call_command("run", "e2e-local", test_path="tests/e2e/test_login.py", docker=False)
+            call_command("e2e", "project", test_path="tests/e2e/test_login.py", docker=False)
 
         cmd = mock_run.call_args[0][0]
         assert "tests/e2e/test_login.py" in cmd
         assert "e2e/" not in cmd
 
 
-class TestRunE2ePrivate(TestCase):
+class TestE2eExternal(TestCase):
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
     def test_no_private_tests_configured(self) -> None:
@@ -2211,7 +2212,7 @@ class TestRunE2ePrivate(TestCase):
         ):
             mock_cfg.return_value.raw = {}
             os.environ.pop("T3_PRIVATE_TESTS", None)
-            result = cast("str", call_command("run", "e2e-private"))
+            result = cast("str", call_command("e2e", "external"))
         assert "not configured" in result
 
     @_patch_overlays(FULL_OVERLAY)
@@ -2238,12 +2239,12 @@ class TestRunE2ePrivate(TestCase):
             with (
                 patch.dict("os.environ", {"T3_ORIG_CWD": str(wt_dir)}, clear=False),
                 patch.object(config_mod, "load_config") as mock_cfg,
-                patch.object(run_mod, "get_service_port", return_value=4200),
-                patch.object(run_mod.subprocess, "run", return_value=mock_result),
+                patch.object(e2e_mod, "get_service_port", return_value=4200),
+                patch.object(e2e_mod.subprocess, "run", return_value=mock_result),
             ):
                 mock_cfg.return_value.raw = {"teatree": {"private_tests": str(private_dir)}}
                 os.environ.pop("T3_PRIVATE_TESTS", None)
-                result = cast("str", call_command("run", "e2e-private"))
+                result = cast("str", call_command("e2e", "external"))
             assert "passed" in result
 
     @_patch_overlays(FULL_OVERLAY)
@@ -2252,12 +2253,12 @@ class TestRunE2ePrivate(TestCase):
         with (
             patch.dict("os.environ", {"T3_PRIVATE_TESTS": "/nonexistent/path"}),
         ):
-            result = cast("str", call_command("run", "e2e-private"))
+            result = cast("str", call_command("e2e", "external"))
         assert "not configured" in result or "directory missing" in result
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_runs_private_tests_with_variant(self) -> None:
+    def test_runs_external_tests_with_variant(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             wt_dir = tmp_path / "worktree"
@@ -2280,10 +2281,10 @@ class TestRunE2ePrivate(TestCase):
             mock_result = MagicMock(returncode=0)
             with (
                 patch.dict("os.environ", {"T3_PRIVATE_TESTS": str(private_dir), "T3_ORIG_CWD": str(wt_dir)}),
-                patch.object(run_mod, "get_service_port", return_value=5555),
-                patch.object(run_mod.subprocess, "run", return_value=mock_result) as mock_run,
+                patch.object(e2e_mod, "get_service_port", return_value=5555),
+                patch.object(e2e_mod.subprocess, "run", return_value=mock_result) as mock_run,
             ):
-                result = cast("str", call_command("run", "e2e-private"))
+                result = cast("str", call_command("e2e", "external"))
             assert "passed" in result
             env = mock_run.call_args[1]["env"]
             assert env["BASE_URL"] == "http://localhost:5555"
@@ -2312,10 +2313,10 @@ class TestRunE2ePrivate(TestCase):
             mock_result = MagicMock(returncode=1)
             with (
                 patch.dict("os.environ", {"T3_PRIVATE_TESTS": str(private_dir), "T3_ORIG_CWD": str(wt_dir)}),
-                patch.object(run_mod, "get_service_port", return_value=4200),
-                patch.object(run_mod.subprocess, "run", return_value=mock_result) as mock_run,
+                patch.object(e2e_mod, "get_service_port", return_value=4200),
+                patch.object(e2e_mod.subprocess, "run", return_value=mock_result) as mock_run,
             ):
-                result = cast("str", call_command("run", "e2e-private", headed=True))
+                result = cast("str", call_command("e2e", "external", headed=True))
             assert "failed" in result
             cmd = mock_run.call_args[0][0]
             assert "--headed" in cmd
@@ -2344,10 +2345,10 @@ class TestRunE2ePrivate(TestCase):
             mock_result = MagicMock(returncode=0)
             with (
                 patch.dict("os.environ", {"T3_PRIVATE_TESTS": str(private_dir), "T3_ORIG_CWD": str(wt_dir)}),
-                patch.object(run_mod, "get_service_port", return_value=4200),
-                patch.object(run_mod.subprocess, "run", return_value=mock_result) as mock_run,
+                patch.object(e2e_mod, "get_service_port", return_value=4200),
+                patch.object(e2e_mod.subprocess, "run", return_value=mock_result) as mock_run,
             ):
-                call_command("run", "e2e-private", test_path="tests/login.py")
+                call_command("e2e", "external", test_path="tests/login.py")
             cmd = mock_run.call_args[0][0]
             assert "tests/login.py" in cmd
 
@@ -2372,10 +2373,10 @@ class TestRunE2ePrivate(TestCase):
             )
             with (
                 patch.dict("os.environ", {"T3_PRIVATE_TESTS": str(private_dir), "T3_ORIG_CWD": str(wt_dir)}),
-                patch.object(run_mod, "get_service_port", return_value=None),
-                patch.object(run_mod, "_detect_local_port", return_value=None),
+                patch.object(e2e_mod, "get_service_port", return_value=None),
+                patch.object(e2e_mod, "_detect_local_port", return_value=None),
             ):
-                result = cast("str", call_command("run", "e2e-private"))
+                result = cast("str", call_command("e2e", "external"))
             assert "not running" in result
 
 

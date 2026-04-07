@@ -8,6 +8,7 @@ from django.core.management import call_command
 from django.test import TestCase, override_settings
 
 import teatree.cli.overlay as cli_overlay_mod
+import teatree.core.management.commands.e2e as e2e_mod
 import teatree.core.management.commands.run as run_mod
 import teatree.core.overlay_loader as overlay_loader_mod
 from teatree.core.models import Ticket, Worktree
@@ -195,10 +196,10 @@ class TestRunCommand(TestCase):
             assert any("docker" in str(c[0]) and "web" in str(c[0]) for c in commands)
 
 
-class TestE2ePrivateCommand(TestCase):
+class TestE2eExternalCommand(TestCase):
     @override_settings(**COMMAND_SETTINGS)
     def test_reads_port_from_docker_compose_and_variant_from_env(self) -> None:
-        """e2e_private reads frontend port from docker compose and variant from .env.worktree."""
+        """e2e external reads frontend port from docker compose and variant from .env.worktree."""
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             private_tests_dir = tmp_path / "private-tests"
@@ -235,10 +236,10 @@ class TestE2ePrivateCommand(TestCase):
                         "T3_ORIG_CWD": str(worktree_dir),
                     },
                 ),
-                patch.object(run_mod, "get_service_port", return_value=4299),
-                patch.object(run_mod.subprocess, "run", side_effect=fake_run),
+                patch.object(e2e_mod, "get_service_port", return_value=4299),
+                patch.object(e2e_mod.subprocess, "run", side_effect=fake_run),
             ):
-                result = cast("str", call_command("run", "e2e-private"))
+                result = cast("str", call_command("e2e", "external"))
 
             assert result == "E2E passed."
             assert captured_envs
@@ -247,7 +248,7 @@ class TestE2ePrivateCommand(TestCase):
 
     @override_settings(**COMMAND_SETTINGS)
     def test_returns_error_when_frontend_not_running(self) -> None:
-        """e2e_private returns error when frontend service is not running."""
+        """e2e external returns error when frontend service is not running."""
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             private_tests_dir = tmp_path / "private-tests"
@@ -275,10 +276,10 @@ class TestE2ePrivateCommand(TestCase):
                         "T3_ORIG_CWD": str(worktree_dir),
                     },
                 ),
-                patch.object(run_mod, "get_service_port", return_value=None),
-                patch.object(run_mod, "_detect_local_port", return_value=None),
+                patch.object(e2e_mod, "get_service_port", return_value=None),
+                patch.object(e2e_mod, "_detect_local_port", return_value=None),
             ):
-                result = cast("str", call_command("run", "e2e-private"))
+                result = cast("str", call_command("e2e", "external"))
 
             assert "not running" in result
 
