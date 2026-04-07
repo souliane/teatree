@@ -93,7 +93,7 @@ def claude_handover(
         help="Current CLI runtime. Defaults to the highest-priority configured runtime.",
     ),
     session_id: str = typer.Option("", help="Claude session ID to inspect. Defaults to latest telemetry."),
-    state_dir: Path | None = typer.Option(None, help="Override the Claude statusline telemetry directory."),  # noqa: B008
+    state_dir: Path | None = typer.Option(None, help="Override the Claude statusline telemetry directory."),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON."),
 ) -> None:
     """Show Claude handover telemetry and runtime recommendations."""
