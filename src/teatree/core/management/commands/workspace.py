@@ -210,13 +210,17 @@ def _slugify(text: str, max_length: int = 40) -> str:
 def _build_branch_name(repo_names: list[str], ticket_number: str, description: str) -> str:
     """Build the git branch name from repo list, ticket number, and description."""
     prefix = _branch_prefix()
-    first_repo = repo_names[0] if repo_names else "repo"
+    first_repo = Path(repo_names[0]).name if repo_names else "repo"
     slug = _slugify(description) if description else "ticket"
     return f"{prefix}-{first_repo}-{ticket_number}-{slug}"
 
 
 def _create_git_worktree(workspace: Path, repo_name: str, ticket_dir: Path, branch: str) -> Path | None:
     """Run ``git worktree add`` for a single repo and return the worktree path.
+
+    ``repo_name`` may be a nested path relative to ``workspace`` (e.g.
+    ``souliane/teatree``).  The worktree subdirectory uses the basename
+    (``teatree``) to keep the ticket directory flat.
 
     Returns ``_WORKTREE_SKIPPED`` when the repo doesn't exist or has no ``.git``,
     the existing ``wt_path`` when it already exists, and ``None`` on actual failure.
@@ -230,7 +234,7 @@ def _create_git_worktree(workspace: Path, repo_name: str, ticket_dir: Path, bran
         print(f"  Skipping {repo_name}: not a git repository", file=sys.stderr)  # noqa: T201
         return _WORKTREE_SKIPPED
 
-    wt_path = ticket_dir / repo_name
+    wt_path = ticket_dir / Path(repo_name).name
     if wt_path.exists():
         print(f"  Skipping {repo_name}: {wt_path} already exists", file=sys.stderr)  # noqa: T201
         return wt_path
