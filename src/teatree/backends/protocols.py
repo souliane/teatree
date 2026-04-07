@@ -23,6 +23,7 @@ class CodeHost(Protocol):
         description: str,
         target_branch: str = "",
         labels: list[str] | None = None,
+        assignee: str = "",
     ) -> dict[str, object]: ...  # pragma: no branch
 
     def list_open_prs(self, repo: str, author: str) -> list[dict[str, object]]: ...  # pragma: no branch

@@ -87,6 +87,34 @@ def find_free_ports(workspace_dir: str) -> Ports:
         handle.close()
 
 
+def revalidate_ports(ports: Ports, workspace_dir: str) -> Ports:
+    """Check allocated ports and replace any that became occupied.
+
+    Returns a new ``Ports`` dict with the same keys. Ports that are still
+    free are kept; occupied ports are replaced with fresh allocations.
+    """
+    lock_file = Path(workspace_dir) / ".port-allocation.lock"
+    lock_file.parent.mkdir(parents=True, exist_ok=True)
+
+    handle = lock_file.open("w", encoding="utf-8")
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        used: set[int] = set(ports.values())
+        result: Ports = {}
+        for name, port in ports.items():
+            if not port_in_use(port):
+                result[name] = port
+            else:
+                start = CONTAINER_PORTS.get(name, port) + 1
+                new_port = _next_free_port(start, used=used)
+                used.add(new_port)
+                result[name] = new_port
+        return result
+    finally:
+        fcntl.flock(handle, fcntl.LOCK_UN)
+        handle.close()
+
+
 # ── Docker Compose port discovery ────────────────────────────────────
 
 

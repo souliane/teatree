@@ -183,6 +183,7 @@ class GitHubCodeHost:
         description: str,
         target_branch: str = "",
         labels: list[str] | None = None,
+        assignee: str = "",
     ) -> dict[str, object]:
         cmd = [
             "gh",
@@ -201,6 +202,8 @@ class GitHubCodeHost:
             cmd.extend(["--base", target_branch])
         if labels:
             cmd.extend(["--label", ",".join(labels)])
+        if assignee:
+            cmd.extend(["--assignee", assignee])
 
         result = _run_gh(*cmd, token=self._token)
         return {"url": result.stdout.strip()}

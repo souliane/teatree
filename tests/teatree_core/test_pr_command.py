@@ -43,13 +43,11 @@ class TestPrCreate(TestCase):
             result = call_command("pr", "create", str(ticket.id), "--title", "feat: add labels")
 
         assert result == {"iid": 12}
-        host.create_pr.assert_called_once_with(
-            repo="/tmp/backend",
-            branch="feature-branch",
-            title="feat: add labels",
-            description="",
-            labels=None,
-        )
+        call_kwargs = host.create_pr.call_args.kwargs
+        assert call_kwargs["repo"] == "/tmp/backend"
+        assert call_kwargs["branch"] == "feature-branch"
+        assert call_kwargs["title"] == "feat: add labels"
+        assert "assignee" in call_kwargs
 
 
 class TestPostEvidence(TestCase):

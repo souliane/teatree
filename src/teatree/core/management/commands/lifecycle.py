@@ -1,6 +1,7 @@
 import os
 import subprocess  # noqa: S404
 from pathlib import Path
+from typing import cast
 
 import typer
 from django.core.management.base import OutputWrapper
@@ -593,6 +594,21 @@ class Command(TyperCommand):
                 checks["hooks"] = {"status": "error", "detail": str(exc)}
         else:
             checks["hooks"] = {"status": "skipped", "detail": "no .pre-commit-config.yaml"}
+
+        # Validate core Python imports
+        import_errors: list[str] = []
+        for module in ("teatree.core.overlay", "teatree.core.models", "teatree.utils.git", "teatree.utils.ports"):
+            try:
+                __import__(module)
+            except ImportError as exc:
+                import_errors.append(f"{module}: {exc}")
+        checks["imports"] = {"status": "ok" if not import_errors else "error", "errors": import_errors}
+
+        # Print human-readable summary
+        for name, check_val in checks.items():
+            detail = cast("dict[str, object]", check_val) if isinstance(check_val, dict) else {}
+            status = str(detail.get("status", "unknown"))
+            self.stdout.write(f"  [{status.upper()}] {name}")
 
         return checks
 

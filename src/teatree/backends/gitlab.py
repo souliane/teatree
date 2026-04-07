@@ -28,6 +28,7 @@ class GitLabCodeHost:
         description: str,
         target_branch: str = "",
         labels: list[str] | None = None,
+        assignee: str = "",
     ) -> dict[str, object]:
         project = self._resolve_project(repo)
         if project is None:
@@ -41,6 +42,8 @@ class GitLabCodeHost:
         }
         if labels:
             payload["labels"] = ",".join(labels)
+        if assignee:
+            payload["assignee_username"] = assignee
 
         return self._client.post_json(f"projects/{project.project_id}/merge_requests", payload) or {}
 
