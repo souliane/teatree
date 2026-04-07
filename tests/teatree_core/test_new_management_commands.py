@@ -326,6 +326,41 @@ class TestWorkspaceTicket(TestCase):
         assert "ticket" not in worktree.branch
 
     @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_auto_derives_slug_from_issue_title(self) -> None:
+        """When no description given, uses overlay.metadata.get_issue_title to derive slug."""
+        overlay = import_string(FULL_OVERLAY)()
+        overlay.metadata.get_issue_title = lambda url: "Fix Login Flow"
+
+        with patch.object(overlay_loader_mod, "_discover_overlays", return_value={"test": overlay}):
+            ticket_id = cast(
+                "int",
+                call_command("workspace", "ticket", "https://example.com/issues/130"),
+            )
+
+        ticket = Ticket.objects.get(pk=ticket_id)
+        worktree = ticket.worktrees.first()
+        assert worktree.branch.endswith("-fix-login-flow")
+        assert "ticket" not in worktree.branch
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_falls_back_to_ticket_when_title_fetch_fails(self) -> None:
+        """When get_issue_title returns empty, falls back to 'ticket' slug."""
+        overlay = import_string(FULL_OVERLAY)()
+        overlay.metadata.get_issue_title = lambda url: ""
+
+        with patch.object(overlay_loader_mod, "_discover_overlays", return_value={"test": overlay}):
+            ticket_id = cast(
+                "int",
+                call_command("workspace", "ticket", "https://example.com/issues/131"),
+            )
+
+        ticket = Ticket.objects.get(pk=ticket_id)
+        worktree = ticket.worktrees.first()
+        assert worktree.branch.endswith("-ticket")
+
+    @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS, T3_WORKSPACE_DIR="/tmp/ws-test")
     def test_skips_non_git_repo(self) -> None:
         """Repos without .git directory are skipped."""
@@ -421,6 +456,112 @@ class TestWorkspaceTicket(TestCase):
             assert result == 0
             assert Ticket.objects.filter(issue_url="https://example.com/issues/83").count() == 0
             assert Worktree.objects.count() == 0
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_reruns_without_duplicates(self) -> None:
+        """Running ticket twice with the same issue_url does not duplicate Worktree entries."""
+        call_command("workspace", "ticket", "https://example.com/issues/100")
+        first_count = Worktree.objects.filter(ticket__issue_url="https://example.com/issues/100").count()
+
+        call_command("workspace", "ticket", "https://example.com/issues/100")
+        second_count = Worktree.objects.filter(ticket__issue_url="https://example.com/issues/100").count()
+
+        assert first_count == second_count
+        assert Ticket.objects.filter(issue_url="https://example.com/issues/100").count() == 1
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_adds_missing_repo_to_existing_ticket(self) -> None:
+        """Re-running ticket with additional repos adds them without duplicating existing ones."""
+        ticket_id = cast(
+            "int",
+            call_command("workspace", "ticket", "https://example.com/issues/101", repos="backend"),
+        )
+        assert Worktree.objects.filter(ticket_id=ticket_id).count() == 1
+
+        call_command("workspace", "ticket", "https://example.com/issues/101", repos="backend,frontend")
+        assert Worktree.objects.filter(ticket_id=ticket_id).count() == 2
+        assert Worktree.objects.filter(ticket_id=ticket_id, repo_path="frontend").exists()
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS, T3_WORKSPACE_DIR="/tmp/ws-test")
+    def test_recovers_from_branch_already_exists(self) -> None:
+        """When 'git worktree add -b' fails with 'already exists', retry without -b."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+
+            workspace = tmp_path / "workspace"
+            workspace.mkdir()
+            (workspace / "backend").mkdir()
+            (workspace / "backend" / ".git").mkdir()
+
+            mock_pull = MagicMock(returncode=0)
+            mock_add_b_fail = MagicMock(returncode=1, stderr="fatal: a branch named 'x' already exists")
+            mock_add_ok = MagicMock(returncode=0)
+
+            call_count = {"worktree": 0}
+
+            def side_effect(cmd, **kwargs):
+                if "worktree" in cmd:
+                    call_count["worktree"] += 1
+                    if call_count["worktree"] == 1:
+                        return mock_add_b_fail  # first try with -b fails
+                    return mock_add_ok  # retry without -b succeeds
+                return mock_pull
+
+            with (
+                patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
+                patch.object(git_mod.subprocess, "run", side_effect=side_effect),
+            ):
+                ticket_id = cast(
+                    "int",
+                    call_command("workspace", "ticket", "https://example.com/issues/102", repos="backend"),
+                )
+
+            assert ticket_id > 0
+            wt = Worktree.objects.get(ticket_id=ticket_id)
+            assert wt.extra.get("worktree_path")
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS, T3_WORKSPACE_DIR="/tmp/ws-test")
+    def test_cleans_up_failed_worktrees_on_partial_failure(self) -> None:
+        """When some repos fail, their Worktree DB entries are deleted but successful ones remain."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+
+            workspace = tmp_path / "workspace"
+            workspace.mkdir()
+            (workspace / "backend").mkdir()
+            (workspace / "backend" / ".git").mkdir()
+            (workspace / "frontend").mkdir()
+            (workspace / "frontend" / ".git").mkdir()
+
+            mock_pull = MagicMock(returncode=0)
+            mock_add_ok = MagicMock(returncode=0)
+            mock_add_fail = MagicMock(returncode=1, stderr="fatal: some error")
+
+            def side_effect(cmd, **kwargs):
+                if "worktree" not in cmd:
+                    return mock_pull
+                # backend succeeds, frontend fails
+                cwd = kwargs.get("cwd", Path())
+                if hasattr(cwd, "name") and cwd.name == "frontend":
+                    return mock_add_fail
+                if str(cwd).endswith("frontend"):
+                    return mock_add_fail
+                return mock_add_ok
+
+            with (
+                patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
+                patch.object(git_mod.subprocess, "run", side_effect=side_effect),
+            ):
+                ticket_id = cast("int", call_command("workspace", "ticket", "https://example.com/issues/103"))
+
+            assert ticket_id > 0
+            # Backend worktree should exist, frontend should have been cleaned up
+            assert Worktree.objects.filter(ticket_id=ticket_id, repo_path="backend").exists()
+            assert not Worktree.objects.filter(ticket_id=ticket_id, repo_path="frontend").exists()
 
 
 _no_prune = patch.object(workspace_mod, "_prune_branches", new=lambda _repo: [])
@@ -764,7 +905,9 @@ class TestWorkspaceFinalize(TestCase):
         ):
             result = cast("str", call_command("workspace", "finalize", str(ticket.pk)))
 
-        assert "failed" in result.lower()
+        assert "rebase failed" in result.lower()
+        assert "rebase --abort" in result
+        assert "rebase --continue" in result
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
@@ -1076,13 +1219,12 @@ class TestPrCreate(TestCase):
             )
 
         assert result == {"url": "https://example.com/mr/1"}
-        mock_host.create_pr.assert_called_once_with(
-            repo="my-repo",
-            branch="feature-70",
-            title="Fix bug",
-            description="Fixes the thing",
-            labels=None,
-        )
+        call_kwargs = mock_host.create_pr.call_args.kwargs
+        assert call_kwargs["repo"] == "my-repo"
+        assert call_kwargs["branch"] == "feature-70"
+        assert call_kwargs["title"] == "Fix bug"
+        assert call_kwargs["description"] == "Fixes the thing"
+        assert "assignee" in call_kwargs
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
@@ -1769,7 +1911,127 @@ class TestRunTests(TestCase):
 
 
 class TestRunVerify(TestCase):
-    pass  # No verify tests in the original file — placeholder for future tests
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_verifies_endpoints_and_advances_fsm(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            wt_dir = tmp_path / "backend"
+            wt_dir.mkdir()
+            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/110")
+            wt = Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="/tmp/backend",
+                branch="feature-110",
+                extra={"worktree_path": str(wt_dir)},
+            )
+            wt.provision()
+            wt.start_services(services=["backend"])
+            wt.save()
+
+            mock_response = MagicMock()
+            mock_response.status = 200
+            mock_response.__enter__ = MagicMock(return_value=mock_response)
+            mock_response.__exit__ = MagicMock(return_value=False)
+
+            with (
+                patch.object(run_mod, "get_worktree_ports", return_value={"backend": 8001}),
+                patch.object(run_mod, "resolve_worktree", return_value=wt),
+                patch.object(run_mod.urllib.request, "urlopen", return_value=mock_response),
+            ):
+                result = cast("dict[str, object]", call_command("run", "verify", path=str(wt_dir)))
+
+            wt.refresh_from_db()
+            assert wt.state == Worktree.State.READY
+            assert result["state"] == Worktree.State.READY
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_merges_env_health_endpoints(self) -> None:
+        """T3_HEALTH_ENDPOINTS env var overrides overlay-provided endpoints."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            wt_dir = tmp_path / "backend"
+            wt_dir.mkdir()
+            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/111")
+            wt = Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="/tmp/backend",
+                branch="feature-111",
+                extra={"worktree_path": str(wt_dir)},
+            )
+            wt.provision()
+            wt.start_services(services=["backend"])
+            wt.save()
+
+            mock_response = MagicMock()
+            mock_response.status = 200
+            mock_response.__enter__ = MagicMock(return_value=mock_response)
+            mock_response.__exit__ = MagicMock(return_value=False)
+
+            urls_checked: list[str] = []
+
+            def capture_urlopen(url, **kwargs):
+                urls_checked.append(url)
+                return mock_response
+
+            with (
+                patch.object(run_mod, "get_worktree_ports", return_value={"backend": 8001}),
+                patch.object(run_mod, "resolve_worktree", return_value=wt),
+                patch.object(run_mod.urllib.request, "urlopen", side_effect=capture_urlopen),
+                patch.dict(os.environ, {"T3_HEALTH_ENDPOINTS": "backend:/api/health"}),
+            ):
+                call_command("run", "verify", path=str(wt_dir))
+
+            # Should use the env var path, not the overlay default
+            assert any("/api/health" in url for url in urls_checked)
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_skips_postgres_and_redis(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            wt_dir = tmp_path / "backend"
+            wt_dir.mkdir()
+            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/112")
+            wt = Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="/tmp/backend",
+                branch="feature-112",
+                extra={"worktree_path": str(wt_dir)},
+            )
+            wt.provision()
+            wt.start_services(services=["backend"])
+            wt.save()
+
+            urls_checked: list[str] = []
+
+            mock_response = MagicMock()
+            mock_response.status = 200
+            mock_response.__enter__ = MagicMock(return_value=mock_response)
+            mock_response.__exit__ = MagicMock(return_value=False)
+
+            def capture_urlopen(url, **kwargs):
+                urls_checked.append(url)
+                return mock_response
+
+            with (
+                patch.object(
+                    run_mod,
+                    "get_worktree_ports",
+                    return_value={"backend": 8001, "postgres": 5432, "redis": 6379},
+                ),
+                patch.object(run_mod, "resolve_worktree", return_value=wt),
+                patch.object(run_mod.urllib.request, "urlopen", side_effect=capture_urlopen),
+            ):
+                call_command("run", "verify", path=str(wt_dir))
+
+            # Only backend should be checked, not postgres/redis
+            assert len(urls_checked) == 1
+            assert "8001" in urls_checked[0]
 
 
 class TestRunServices(TestCase):
@@ -2428,6 +2690,48 @@ class TestLifecycleSetup(TestCase):
                 mock_sp.run.return_value = MagicMock(returncode=0)
                 call_command("lifecycle", "setup", path=str(wt_path))
 
+    @override_settings(**SETTINGS)
+    def test_prints_diagnostic_summary(self) -> None:
+        """_print_diagnostics outputs a structured checklist with [OK]/[FAIL] markers."""
+        from teatree.core.step_runner import ProvisionReport, StepResult  # noqa: PLC0415
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            wt_dir = tmp_path / "backend"
+            wt_dir.mkdir()
+            # Create .env.worktree in parent (ticket dir)
+            (tmp_path / ".env.worktree").write_text("WT_DB_NAME=test\n")
+
+            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/115")
+            wt = Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="backend",
+                branch="feature-115",
+                extra={"worktree_path": str(wt_dir)},
+                db_name="wt_115",
+            )
+
+            report = ProvisionReport(
+                steps=[
+                    StepResult(name="migrations", success=True, duration=1.0),
+                    StepResult(name="docker-up", success=False, duration=0.5, error="exit 1"),
+                ]
+            )
+
+            buf = StringIO()
+            cmd = lifecycle_mod.Command()
+            cmd.stdout = OutputWrapper(buf)
+            cmd._print_diagnostics(wt, report)
+
+            output = buf.getvalue()
+            assert "[OK] worktree dir" in output
+            assert "[OK] .env.worktree" in output
+            assert "[OK] DB name" in output
+            assert "[OK] migrations" in output
+            assert "[FAIL] docker-up" in output
+            assert "4/5 checks passed" in output
+
 
 class TestLifecycleSetupHelpers(TestCase):
     @_patch_overlays(FULL_OVERLAY)
@@ -2831,6 +3135,65 @@ class TestDropOrphanDatabases(TestCase):
 
 class TestLifecycleStatus(TestCase):
     pass  # No status tests in the original file — placeholder for future tests
+
+
+class TestLifecycleDiagnose(TestCase):
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_healthy_worktree(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            wt_dir = tmp_path / "backend"
+            wt_dir.mkdir()
+            # .git file marks this as a worktree (not a main clone)
+            (wt_dir / ".git").write_text("gitdir: /tmp/.git/worktrees/backend")
+            (tmp_path / ".env.worktree").write_text("WT_DB_NAME=wt_120\n")
+
+            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/120")
+            wt = Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="backend",
+                branch="feature-120",
+                extra={"worktree_path": str(wt_dir)},
+                db_name="wt_120",
+            )
+            wt.provision()
+            wt.save()
+
+            with patch.object(lifecycle_mod, "subprocess") as mock_sp:
+                # Mock docker compose ps (returns running services)
+                mock_sp.run.return_value = MagicMock(returncode=0, stdout="backend  running\n")
+                result = cast("dict[str, object]", call_command("lifecycle", "diagnose", path=str(wt_dir)))
+
+            assert result["worktree_dir"] is True
+            assert result["env_file"] is True
+            assert result["db_name"] == "wt_120"
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_missing_db_name(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            wt_dir = tmp_path / "backend"
+            wt_dir.mkdir()
+            (wt_dir / ".git").write_text("gitdir: /tmp/.git/worktrees/backend")
+
+            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/121")
+            Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="backend",
+                branch="feature-121",
+                extra={"worktree_path": str(wt_dir)},
+            )
+
+            with patch.object(lifecycle_mod, "subprocess") as mock_sp:
+                mock_sp.run.return_value = MagicMock(returncode=0, stdout="")
+                result = cast("dict[str, object]", call_command("lifecycle", "diagnose", path=str(wt_dir)))
+
+            assert result["db_name"] == ""
+            assert result["worktree_dir"] is True
 
 
 @patch("subprocess.run", return_value=MagicMock(returncode=0))

@@ -15,6 +15,17 @@ _IMAGE_URL_RE = re.compile(r"!\[([^\]]*)\]\((/uploads/[^\)]+)\)")
 _EXTERNAL_LINK_RE = re.compile(r"https?://(?:www\.)?(?:notion\.so|linear\.app|jira\.\S+)/\S+")
 
 
+def _current_user() -> str:
+    """Return the git user name for MR auto-assignment."""
+    result = subprocess.run(
+        ["git", "config", "user.name"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
 def _last_commit_message(cwd: str) -> tuple[str, str]:
     """Return ``(subject, body)`` from the last git commit in *cwd*."""
     result = subprocess.run(
@@ -109,12 +120,14 @@ class Command(TyperCommand):
                 "labels": _mr_auto_labels(),
             }
 
+        assignee = _current_user()
         return host.create_pr(
             repo=repo_path,
             branch=branch,
             title=title,
             description=description,
             labels=_mr_auto_labels() or None,
+            assignee=assignee,
         )
 
     @command(name="check-gates")

@@ -33,6 +33,25 @@ def test_find_free_ports_skips_occupied(tmp_path: Path, monkeypatch: pytest.Monk
     assert result["frontend"] > 4201  # skipped 4201
 
 
+def test_revalidate_ports_keeps_free_ports(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """revalidate_ports keeps ports that are still free."""
+    monkeypatch.setattr(ports, "port_in_use", lambda port: False)
+    original = {"backend": 8001, "frontend": 4201, "postgres": 5432, "redis": 6379}
+    result = ports.revalidate_ports(original, str(tmp_path))
+    assert result == original
+
+
+def test_revalidate_ports_replaces_occupied(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """revalidate_ports replaces ports that became occupied."""
+    occupied = {8001}
+    monkeypatch.setattr(ports, "port_in_use", lambda port: port in occupied)
+    original = {"backend": 8001, "frontend": 4201, "postgres": 5432, "redis": 6379}
+    result = ports.revalidate_ports(original, str(tmp_path))
+    assert result["backend"] != 8001
+    assert result["backend"] > 8000
+    assert result["frontend"] == 4201  # unchanged
+
+
 def test_port_in_use_detects_bound_socket() -> None:
     """port_in_use returns True for a bound port and False for an unbound one."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
