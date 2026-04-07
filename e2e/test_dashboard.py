@@ -1,7 +1,7 @@
 """E2E tests for the TeaTree dashboard.
 
 Run with:
-    t3 teatree run e2e-local
+    t3 teatree e2e project
 """
 
 import re
