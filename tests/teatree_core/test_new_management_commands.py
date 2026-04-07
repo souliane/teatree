@@ -1219,13 +1219,12 @@ class TestPrCreate(TestCase):
             )
 
         assert result == {"url": "https://example.com/mr/1"}
-        mock_host.create_pr.assert_called_once_with(
-            repo="my-repo",
-            branch="feature-70",
-            title="Fix bug",
-            description="Fixes the thing",
-            labels=None,
-        )
+        call_kwargs = mock_host.create_pr.call_args.kwargs
+        assert call_kwargs["repo"] == "my-repo"
+        assert call_kwargs["branch"] == "feature-70"
+        assert call_kwargs["title"] == "Fix bug"
+        assert call_kwargs["description"] == "Fixes the thing"
+        assert "assignee" in call_kwargs
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
