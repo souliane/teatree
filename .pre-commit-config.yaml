@@ -113,6 +113,12 @@ repos:
   # Phase 7 - Project-specific
   - repo: local
     hooks:
+      - id: validate-skill-md
+        name: Validate SKILL.md frontmatter
+        language: system
+        entry: uv run python -m teatree.skill_schema
+        files: 'SKILL\.md$'
+        types: [markdown]
       - id: update-readme-skills
         name: Update README skills catalogue
         language: system

@@ -118,8 +118,9 @@ def _detect_agent_ticket_status(project_root: Path) -> str:
         from teatree.core.resolve import resolve_worktree  # noqa: PLC0415
 
         return str(resolve_worktree().ticket.state)
-    except Exception:  # noqa: BLE001
-        return ""
+    except Exception:
+        logger.debug("Failed to detect agent ticket status", exc_info=True)
+        return "(error)"
 
 
 def _launch_claude(
