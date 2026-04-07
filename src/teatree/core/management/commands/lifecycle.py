@@ -410,13 +410,13 @@ class Command(TyperCommand):
         verbose: bool = typer.Option(default=True, help="Show step stdout/stderr."),  # noqa: FBT001
         no_timeout: bool = typer.Option(default=False, help="Disable operation timeouts."),  # noqa: FBT001
     ) -> str:
-        """Provision (if needed) and start all services. The one command that always works.
+        """Provision (if needed) and start all services for the ticket.
 
-        Runs setup to ensure provisioning is complete, then allocates
-        free host ports, starts docker-compose, and transitions the FSM.
+        Runs setup for all worktrees in the ticket, then starts docker-compose
+        services for each. Allocates free host ports at runtime.
         Safe to re-run — stops previous containers first.
         """
-        # 0. Always run setup first (idempotent)
+        # 0. Always run setup first (idempotent — provisions all ticket worktrees)
         self.setup(path=path, variant=variant, overlay=overlay, verbose=verbose, no_timeout=no_timeout)
 
         _, overlay_str, verbose_bool = _resolve_typer_defaults(variant, overlay, verbose)
@@ -426,16 +426,45 @@ class Command(TyperCommand):
         worktree = resolve_worktree(path)
         resolved_overlay = get_overlay()
         self._init_timeouts(resolved_overlay, no_timeout=no_timeout)
-        project = _compose_project(worktree)
 
-        # 1. Stop previous containers
+        # Allocate one set of ports shared across the ticket
+        from teatree.config import load_config  # noqa: PLC0415
+
+        workspace_dir = str(load_config().user.workspace_dir)
+        ports = find_free_ports(workspace_dir)
+        self.stdout.write(f"  Ports: {ports}")
+
+        # Start services for every worktree in the ticket
+        ticket = Ticket.objects.get(pk=worktree.ticket.pk)
+        failed_repos: list[str] = []
+        for wt in ticket.worktrees.all():
+            try:
+                self._start_worktree(wt, resolved_overlay, ports)
+            except Exception as exc:  # noqa: BLE001
+                failed_repos.append(wt.repo_path)
+                self.stderr.write(f"  ERROR starting {wt.repo_path}: {exc}")
+
+        if failed_repos:
+            self.stderr.write(f"  {len(failed_repos)} worktree(s) failed: {', '.join(failed_repos)}")
+
+        self.stdout.write(f"  Ports: {ports}")
+        if failed_repos:
+            return "error"
+        return worktree.state
+
+    def _start_worktree(self, worktree: Worktree, overlay: "OverlayBase", ports: dict[str, int]) -> None:
+        """Start docker-compose services for a single worktree."""
+        project = _compose_project(worktree)
+        self.stdout.write(f"\n  ── Starting {worktree.repo_path} ──")
+
+        # Stop previous containers
         _docker_compose_down(project, self.stdout, timeout=self._timeouts.get("docker_compose_down"))
 
-        # 2. Run pre-run steps (translation sync, customer.json patch, etc.)
-        commands = resolved_overlay.get_run_commands(worktree)
+        # Run pre-run steps
+        commands = overlay.get_run_commands(worktree)
         pre_run_steps = []
         for service_name in commands:
-            pre_run_steps.extend(resolved_overlay.get_pre_run_steps(worktree, service_name))
+            pre_run_steps.extend(overlay.get_pre_run_steps(worktree, service_name))
         run_provision_steps(
             pre_run_steps,
             verbose=self._verbose,
@@ -444,23 +473,16 @@ class Command(TyperCommand):
             stop_on_required_failure=False,
         )
 
-        # 3. Write non-port env file (variant, DB name, compose project)
+        # Write non-port env file
         write_env_worktree(worktree)
 
-        # 4. Allocate free host ports at runtime
-        from teatree.config import load_config  # noqa: PLC0415
-
-        workspace_dir = str(load_config().user.workspace_dir)
-        ports = find_free_ports(workspace_dir)
-        self.stdout.write(f"  Ports: {ports}")
-
-        # 5. Start all services via docker-compose
-        compose_file = resolved_overlay.get_compose_file(worktree)
+        # Start services via docker-compose
+        compose_file = overlay.get_compose_file(worktree)
         if not compose_file:
-            self.stderr.write("  ERROR: No docker-compose file found.")
-            return "error"
+            self.stdout.write(f"    No docker-compose file for {worktree.repo_path} — skipping.")
+            return
 
-        env = {**os.environ, **resolved_overlay.get_env_extra(worktree), **_compose_env(ports)}
+        env = {**os.environ, **overlay.get_env_extra(worktree), **_compose_env(ports)}
         env.pop("VIRTUAL_ENV", None)
         ok = _docker_compose_up(
             project,
@@ -472,13 +494,13 @@ class Command(TyperCommand):
         )
 
         if not ok:
-            return "error"
+            msg = f"docker compose up failed for {worktree.repo_path}"
+            raise RuntimeError(msg)
 
-        # 6. FSM transition
+        # FSM transition
         worktree.start_services(services=list(commands))
         worktree.save()
-
-        return worktree.state
+        self.stdout.write("  docker compose up -d: OK")
 
     @command()
     def status(
