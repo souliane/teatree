@@ -2497,6 +2497,7 @@ class TestLifecycleStart(TestCase):
             with (
                 patch.object(lifecycle_mod, "get_overlay", return_value=mock_overlay),
                 patch.object(lifecycle_mod, "subprocess") as mock_sp,
+                patch.object(run_mod, "_compose_has_service", return_value=True),
                 patch.object(
                     lifecycle_mod,
                     "find_free_ports",
@@ -2648,6 +2649,7 @@ class TestLifecycleRestart(TestCase):
             with (
                 patch.object(lifecycle_mod, "get_overlay", return_value=mock_overlay),
                 patch.object(lifecycle_mod, "subprocess") as mock_sp,
+                patch.object(run_mod, "_compose_has_service", return_value=True),
                 patch.object(
                     lifecycle_mod,
                     "find_free_ports",
