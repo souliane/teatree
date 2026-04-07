@@ -1147,7 +1147,7 @@ Dev dependencies: ruff, pytest, pytest-cov, pytest-django, ty, import-linter, pr
 - Management commands use `django-typer`, not `BaseCommand`.
 - Package is `teatree` (double-e), repo/CLI is `teatree`/`t3`.
 - `DJANGO_SETTINGS_MODULE` is stripped from env when running `_managepy()` so the overlay's own settings win.
-- **Port allocation is ephemeral (Non-Negotiable).** Ports are allocated at `lifecycle start` via `find_free_ports()` (file-locked in `teatree.utils.ports`), passed as env vars to `docker compose`, and discovered at runtime via `docker compose port`. Ports are **never** written to `.env.worktree`, the database, or any other persistent store. All services — including the frontend — must be discoverable via `docker compose port`. This is the single source of truth for port mappings.
+- **Port allocation is ephemeral (Non-Negotiable).** Ports are allocated at `lifecycle start` via `find_free_ports()` (file-locked in `teatree.utils.ports`), passed as env vars to `docker compose`, and discovered at runtime via `docker compose port`. Ports are **never** written to `.env.worktree`, the database, or any other persistent store. Docker services are discoverable via `docker compose port` (single source of truth). Host-process services (e.g. frontend dev servers) use the allocated port directly.
 - Coverage omits only migrations. Everything else must be covered.
 - ttyd without `--writable` = read-only terminal = agent can't work.
 - `claude -p` is headless (exits immediately). Interactive sessions use `claude` without `-p`.

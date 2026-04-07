@@ -137,6 +137,7 @@ lint.per-file-ignores."scripts/**/*.py" = [
 ]
 lint.per-file-ignores."src/teatree/cli/*.py" = [
   "FBT003", # boolean positional/default (typer CLI flags)
+  "S607",   # partial executable paths (uv is a trusted internal tool)
 ]
 lint.per-file-ignores."src/teatree/cli/__init__.py" = [
   "FBT003",

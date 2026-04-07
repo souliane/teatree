@@ -16,17 +16,6 @@ from teatree.core.resolve import resolve_worktree
 from teatree.utils.ports import find_free_ports, get_worktree_ports
 
 
-def _compose_has_service(compose_file: str, service: str) -> bool:
-    """Check if a service is defined in docker-compose (uses ``docker compose config``)."""
-    result = subprocess.run(  # noqa: S603
-        ["docker", "compose", "-f", compose_file, "config", "--services"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    return service in result.stdout.splitlines()
-
-
 class Command(TyperCommand):
     @command()
     def verify(
@@ -112,30 +101,18 @@ class Command(TyperCommand):
 
     @command()
     def frontend(self, path: str = typer.Option("", help="Worktree path (auto-detects from PWD if empty).")) -> str:
-        """Start the frontend (docker-compose if available, otherwise local)."""
+        """Start the frontend dev server on the host.
+
+        Angular's nx serve needs 6GB+ RAM which exceeds typical Docker memory
+        limits. The frontend always runs on the host; backend/redis stay in Docker.
+        In CI, use build-frontend + nginx instead (see docker-compose.e2e.yml).
+        """
         worktree = resolve_worktree(path)
         overlay = get_overlay()
-
-        # Check if "frontend" service exists in docker-compose.
-        compose_file = overlay.get_compose_file(worktree)
-        if compose_file and _compose_has_service(compose_file, "frontend"):
-            from teatree.config import load_config  # noqa: PLC0415
-            from teatree.core.management.commands.lifecycle import _compose_env  # noqa: PLC0415
-
-            ports = find_free_ports(str(load_config().user.workspace_dir))
-            env = {**os.environ, **overlay.get_env_extra(worktree), **_compose_env(ports)}
-            env.pop("VIRTUAL_ENV", None)
-
-            project = _compose_project(worktree)
-            cmd = ["docker", "compose", "-p", project, "-f", compose_file, "up", "-d", "frontend"]
-            subprocess.run(cmd, env=env, check=False)  # noqa: S603
-            return "Frontend started via docker-compose."
-
-        # Fall back to overlay's local run command.
         commands = overlay.get_run_commands(worktree)
         run_cmd = commands.get("frontend")
         if not run_cmd:
-            return "No frontend command configured in overlay or docker-compose."
+            return "No frontend command configured in overlay."
         args = run_cmd.args if isinstance(run_cmd, RunCommand) else list(run_cmd)
         cwd = run_cmd.cwd if isinstance(run_cmd, RunCommand) else None
         self.stdout.write(f"  Starting frontend locally: {' '.join(args)}")
@@ -156,7 +133,8 @@ class Command(TyperCommand):
         if not cmd:
             return "No build-frontend command configured in the overlay."
         run_args = cmd.args if isinstance(cmd, RunCommand) else list(cmd)
-        subprocess.run(run_args, check=True)  # noqa: S603
+        cwd = cmd.cwd if isinstance(cmd, RunCommand) else None
+        subprocess.run(run_args, cwd=cwd, check=True)  # noqa: S603
         return "Frontend built."
 
     @command(context_settings={"allow_extra_args": True, "allow_interspersed_args": False})

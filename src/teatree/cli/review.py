@@ -24,7 +24,7 @@ class ReviewService:
         if token:
             return token
         result = subprocess.run(
-            ["glab", "auth", "status", "-t"],  # noqa: S607
+            ["glab", "auth", "status", "-t"],
             capture_output=True,
             text=True,
             check=False,
