@@ -2,12 +2,21 @@
 
 Run with:
     t3 teatree e2e project
+
+Golden screenshots live in ``e2e/snapshots/test_dashboard/``.
+To update them after intentional UI changes::
+
+    uv run pytest e2e/ --ds e2e.settings --no-cov -v --update-snapshots
 """
 
 import re
+from collections.abc import Callable
 
 import pytest
 from playwright.sync_api import Page, expect
+
+# Threshold for pixel-level comparison (0.0 = exact, 0.1 = tolerant).
+_SNAPSHOT_THRESHOLD = 0.1
 
 # ── Dashboard structure ─────────────────────────────────────────────
 
@@ -29,12 +38,19 @@ def test_summary_counters(e2e_server: str, page: Page) -> None:
 # ── Tickets table ───────────────────────────────────────────────────
 
 
-def test_tickets_with_mrs(e2e_server: str, page: Page) -> None:
+def test_tickets_with_mrs(e2e_server: str, page: Page, assert_snapshot: Callable) -> None:
     page.goto(e2e_server)
     expect(page.locator("body")).to_contain_text("#42")
     expect(page.locator("body")).to_contain_text("Fix the login bug")
     expect(page.locator("body")).to_contain_text("backend")
     expect(page.locator("body")).to_contain_text("frontend")
+
+    tickets_section = page.locator("h2", has_text="In-Flight Tickets").locator("..")
+    assert_snapshot(
+        tickets_section.screenshot(animations="disabled"),
+        name="tickets-section.png",
+        threshold=_SNAPSHOT_THRESHOLD,
+    )
 
 
 def test_tickets_pipeline_and_approvals(e2e_server: str, page: Page) -> None:
@@ -60,17 +76,31 @@ def test_ticket_action_buttons(e2e_server: str, page: Page) -> None:
 # ── Task queues ─────────────────────────────────────────────────────
 
 
-def test_headless_queue_content(e2e_server: str, page: Page) -> None:
+def test_headless_queue_content(e2e_server: str, page: Page, assert_snapshot: Callable) -> None:
     page.goto(e2e_server)
     page.locator("summary", has_text="Automated").click()
     expect(page.locator("body")).to_contain_text("Automated code review")
     expect(page.locator("button", has_text="Execute").first).to_be_visible()
 
+    automation_section = page.locator("h2", has_text="Automation").locator("..")
+    assert_snapshot(
+        automation_section.screenshot(animations="disabled"),
+        name="automation-expanded.png",
+        threshold=_SNAPSHOT_THRESHOLD,
+    )
 
-def test_interactive_queue_content(e2e_server: str, page: Page) -> None:
+
+def test_interactive_queue_content(e2e_server: str, page: Page, assert_snapshot: Callable) -> None:
     page.goto(e2e_server)
     expect(page.locator("body")).to_contain_text("Needs manual verification")
     expect(page.locator("button", has_text="Launch").first).to_be_visible()
+
+    queue_section = page.locator("h2", has_text="Interactive Queue").locator("..")
+    assert_snapshot(
+        queue_section.screenshot(animations="disabled"),
+        name="interactive-queue.png",
+        threshold=_SNAPSHOT_THRESHOLD,
+    )
 
 
 # ── Sessions ────────────────────────────────────────────────────────
@@ -160,9 +190,16 @@ def test_htmx_panels_present(e2e_server: str, page: Page) -> None:
 # ── Additional panels ──────────────────────────────────────────────
 
 
-def test_action_required_panel(e2e_server: str, page: Page) -> None:
+def test_action_required_panel(e2e_server: str, page: Page, assert_snapshot: Callable) -> None:
     page.goto(e2e_server)
     expect(page.locator("h2", has_text="Action Required")).to_be_visible()
+
+    action_section = page.locator("h2", has_text="Action Required").locator("..")
+    assert_snapshot(
+        action_section.screenshot(animations="disabled"),
+        name="action-required.png",
+        threshold=_SNAPSHOT_THRESHOLD,
+    )
 
 
 def test_review_comments_panel(e2e_server: str, page: Page) -> None:

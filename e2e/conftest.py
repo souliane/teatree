@@ -25,6 +25,12 @@ def pytest_configure(config: pytest.Config) -> None:
     os.environ["DJANGO_SETTINGS_MODULE"] = "e2e.settings"
 
 
+@pytest.fixture(scope="session")
+def browser_context_args(browser_context_args: dict[str, object]) -> dict[str, object]:
+    """Fix viewport size for deterministic screenshots."""
+    return {**browser_context_args, "viewport": {"width": 1280, "height": 900}}
+
+
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     """Exempt fixture setup/teardown from pytest-timeout for E2E tests.
 
