@@ -185,9 +185,9 @@ class DbOverlay(CommandOverlay):
 _DB_MOCK_OVERLAY = {"test": DbOverlay()}
 
 
-class TestDbImportCircuitBreaker(TestCase):
+class TestDbImportAutoRepair(TestCase):
     @override_settings(**COMMAND_SETTINGS)
-    def test_skips_db_import_after_max_failures(self) -> None:
+    def test_skips_db_import_when_db_exists(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             wt_path = str(tmp_path / "backend")
@@ -198,21 +198,23 @@ class TestDbImportCircuitBreaker(TestCase):
                 overlay="test",
                 repo_path="/tmp/backend",
                 branch="feature",
-                extra={"worktree_path": wt_path, "db_import_failures": 3},
+                extra={"worktree_path": wt_path},
+                db_name="wt_99_acme",
             )
 
             with (
                 patch.dict("os.environ", {"T3_ORIG_CWD": wt_path}),
                 patch.object(overlay_loader_mod, "_discover_overlays", return_value=_DB_MOCK_OVERLAY),
+                patch("teatree.utils.db.db_exists", return_value=True),
             ):
                 call_command("lifecycle", "setup")
 
-            # db_import was NOT called — failure count unchanged
+            # db_import was NOT called — DB already exists
             wt = Worktree.objects.get(ticket=ticket)
-            assert wt.extra["db_import_failures"] == 3
+            assert "db_import_failures" not in (wt.extra or {})
 
     @override_settings(**COMMAND_SETTINGS)
-    def test_force_bypasses_circuit_breaker(self) -> None:
+    def test_retries_db_import_when_db_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             wt_path = str(tmp_path / "backend")
@@ -223,18 +225,21 @@ class TestDbImportCircuitBreaker(TestCase):
                 overlay="test",
                 repo_path="/tmp/backend",
                 branch="feature",
-                extra={"worktree_path": wt_path, "db_import_failures": 3},
+                extra={"worktree_path": wt_path},
+                db_name="wt_100_acme",
             )
 
             with (
                 patch.dict("os.environ", {"T3_ORIG_CWD": wt_path}),
                 patch.object(overlay_loader_mod, "_discover_overlays", return_value=_DB_MOCK_OVERLAY),
+                patch("teatree.utils.db.db_exists", return_value=False),
             ):
-                call_command("lifecycle", "setup", "--force")
+                call_command("lifecycle", "setup")
 
-            # db_import WAS called and failed again — count incremented
+            # db_import WAS called (and failed — DbOverlay always returns False)
             wt = Worktree.objects.get(ticket=ticket)
-            assert wt.extra["db_import_failures"] == 4
+            # No circuit breaker counter — just a warning in stderr
+            assert "db_import_failures" not in (wt.extra or {})
 
 
 class TestUpdateTicketVariant(TestCase):

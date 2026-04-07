@@ -4,6 +4,7 @@ __pycache__/
 .venv/
 .ruff_cache/
 .pytest_cache/
+e2e/snapshot_tests_failures/
 .coverage
 *.egg-info/
 dist/

@@ -8,7 +8,7 @@ from django.core.management.base import OutputWrapper
 from django_typer.management import TyperCommand, command
 
 from teatree.core.models import Ticket, Worktree
-from teatree.core.overlay import OverlayBase, RunCommand
+from teatree.core.overlay import OverlayBase
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.resolve import resolve_worktree
 from teatree.core.step_runner import ProvisionReport, run_provision_steps, run_step
@@ -183,7 +183,6 @@ def _docker_compose_up(  # noqa: PLR0913
 
 
 class Command(TyperCommand):
-    _DB_IMPORT_MAX_FAILURES = 3
     _verbose: bool = True
     _timeouts: TimeoutConfig = TimeoutConfig()
 
@@ -199,16 +198,17 @@ class Command(TyperCommand):
         path: str = typer.Option("", help="Worktree path (auto-detects from PWD if empty)."),
         variant: str = typer.Option("", help="Tenant variant. Updates ticket if provided."),
         overlay: str = typer.Option("", help="Overlay name (auto-detects if empty)."),
-        force: bool = typer.Option(  # noqa: FBT001
-            default=False, help="Reset DB import circuit breaker (retry after repeated failures)."
-        ),
         slow_import: bool = typer.Option(  # noqa: FBT001
             default=False, help="Allow slow DB fallbacks (pg_restore, remote dump). DSLR-only by default."
         ),
         verbose: bool = typer.Option(default=True, help="Show step stdout/stderr."),  # noqa: FBT001
         no_timeout: bool = typer.Option(default=False, help="Disable operation timeouts."),  # noqa: FBT001
     ) -> int:
-        """Provision a worktree (DB name, env file, overlay steps). No port allocation."""
+        """Provision a worktree (DB name, env file, overlay steps). No port allocation.
+
+        Idempotent — safe to re-run. Auto-retries DB import when the DB
+        doesn't exist, regardless of previous failure count.
+        """
         variant, overlay, verbose = _resolve_typer_defaults(variant, overlay, verbose)
         self._verbose = verbose
         if overlay:
@@ -225,7 +225,7 @@ class Command(TyperCommand):
         failed_repos: list[str] = []
         for wt in ticket.worktrees.all():
             try:
-                report = self._provision_worktree(wt, resolved_overlay, force=force, slow_import=slow_import)
+                report = self._provision_worktree(wt, resolved_overlay, slow_import=slow_import)
                 if not report.success:
                     failed_repos.append(wt.repo_path)
             except Exception as exc:  # noqa: BLE001
@@ -239,7 +239,7 @@ class Command(TyperCommand):
         return int(worktree.pk)
 
     def _provision_worktree(
-        self, worktree: Worktree, overlay: "OverlayBase", *, force: bool = False, slow_import: bool = False
+        self, worktree: Worktree, overlay: "OverlayBase", *, slow_import: bool = False
     ) -> ProvisionReport:
         self.stdout.write(f"  Provisioning: {worktree.repo_path}")
 
@@ -254,7 +254,7 @@ class Command(TyperCommand):
         _setup_worktree_dir((worktree.extra or {}).get("worktree_path", ""), worktree, overlay, self.stdout)
 
         if overlay.get_db_import_strategy(worktree) is not None:
-            self._run_db_import(worktree, overlay, force=force, slow_import=slow_import)
+            self._run_db_import(worktree, overlay, slow_import=slow_import)
 
         provision_report = run_provision_steps(
             overlay.get_provision_steps(worktree),
@@ -284,26 +284,27 @@ class Command(TyperCommand):
         self._print_diagnostics(worktree, combined)
         return combined
 
-    def _run_db_import(
-        self, worktree: Worktree, overlay: OverlayBase, *, force: bool = False, slow_import: bool = False
-    ) -> None:
-        extra = worktree.extra or {}
-        failures = extra.get("db_import_failures", 0)
-        if failures >= self._DB_IMPORT_MAX_FAILURES and not force:
-            self.stderr.write(f"  SKIPPED: DB import (failed {failures} consecutive times). Use --force to retry.")
-            return
+    def _run_db_import(self, worktree: Worktree, overlay: OverlayBase, *, slow_import: bool = False) -> None:
+        from teatree.utils.db import db_exists  # noqa: PLC0415
+
+        if worktree.db_name:
+            try:
+                if db_exists(worktree.db_name):
+                    self.stdout.write(f"  DB exists: {worktree.db_name} — skipping import")
+                    return
+            except FileNotFoundError:
+                pass  # psql not available — proceed with import attempt
+
         self.stdout.write("  Running: db-import")
         env = {**os.environ, **overlay.get_env_extra(worktree)}
         env.pop("VIRTUAL_ENV", None)
         os.environ.update(env)
         if overlay.db_import(worktree, slow_import=slow_import):
+            extra = worktree.extra or {}
             extra.pop("db_import_failures", None)
             worktree.extra = extra
             worktree.save(update_fields=["extra"])
         else:
-            extra["db_import_failures"] = failures + 1
-            worktree.extra = extra
-            worktree.save(update_fields=["extra"])
             self.stderr.write("  WARNING: DB import failed. Continuing with provision steps...")
 
     def _run_post_db_steps(self, overlay: OverlayBase, worktree: Worktree) -> ProvisionReport:
@@ -396,19 +397,24 @@ class Command(TyperCommand):
     def start(
         self,
         path: str = typer.Option("", help="Worktree path (auto-detects from PWD if empty)."),
+        variant: str = typer.Option("", help="Tenant variant (passed to setup if needed)."),
         overlay: str = typer.Option("", help="Overlay name (auto-detects if empty)."),
         verbose: bool = typer.Option(default=True, help="Show step stdout/stderr."),  # noqa: FBT001
         no_timeout: bool = typer.Option(default=False, help="Disable operation timeouts."),  # noqa: FBT001
     ) -> str:
-        """Start all services via docker-compose with dynamically allocated ports.
+        """Provision (if needed) and start all services. The one command that always works.
 
-        Finds free host ports at runtime, passes them to docker-compose,
-        and starts all containers.  Safe to re-run (runs compose down first).
+        Runs setup to ensure provisioning is complete, then allocates
+        free host ports, starts docker-compose, and transitions the FSM.
+        Safe to re-run — stops previous containers first.
         """
-        if isinstance(verbose, bool):
-            self._verbose = verbose
-        if overlay:
-            os.environ["T3_OVERLAY_NAME"] = overlay
+        # 0. Always run setup first (idempotent)
+        self.setup(path=path, variant=variant, overlay=overlay, verbose=verbose, no_timeout=no_timeout)
+
+        _, overlay_str, verbose_bool = _resolve_typer_defaults(variant, overlay, verbose)
+        self._verbose = verbose_bool
+        if overlay_str:
+            os.environ["T3_OVERLAY_NAME"] = overlay_str
         worktree = resolve_worktree(path)
         resolved_overlay = get_overlay()
         self._init_timeouts(resolved_overlay, no_timeout=no_timeout)
@@ -460,25 +466,6 @@ class Command(TyperCommand):
         if not ok:
             return "error"
 
-        # 5b. Start local frontend if not covered by docker-compose
-        from teatree.core.management.commands.run import _compose_has_service  # noqa: PLC0415
-
-        if "frontend" in commands and not _compose_has_service(compose_file, "frontend"):
-            os.environ.update(_compose_env(ports))
-            fresh_commands = resolved_overlay.get_run_commands(worktree)
-            frontend_cmd = fresh_commands.get("frontend")
-            if frontend_cmd:
-                run_cmd = frontend_cmd if isinstance(frontend_cmd, RunCommand) else RunCommand(args=list(frontend_cmd))
-                if run_cmd.args:
-                    self.stdout.write(f"  Starting frontend locally: {' '.join(run_cmd.args)}")
-                    subprocess.Popen(  # noqa: S603
-                        run_cmd.args,
-                        cwd=run_cmd.cwd,
-                        env=env,
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                    )
-
         # 6. FSM transition
         worktree.start_services(services=list(commands))
         worktree.save()
@@ -499,28 +486,6 @@ class Command(TyperCommand):
             "branch": worktree.branch,
             "ports": ports,
         }
-
-    @command()
-    def restart(
-        self,
-        path: str = typer.Option("", help="Worktree path (auto-detects from PWD if empty)."),
-        overlay: str = typer.Option("", help="Overlay name (auto-detects if empty)."),
-        verbose: bool = typer.Option(default=True, help="Show step stdout/stderr."),  # noqa: FBT001
-        no_timeout: bool = typer.Option(default=False, help="Disable operation timeouts."),  # noqa: FBT001
-    ) -> str:
-        """Stop containers, allocate fresh ports, and restart all services."""
-        if isinstance(verbose, bool):
-            self._verbose = verbose
-        if overlay:
-            os.environ["T3_OVERLAY_NAME"] = overlay
-        worktree = resolve_worktree(path)
-
-        if worktree.state == Worktree.State.CREATED:
-            self.stdout.write("  Worktree not provisioned — running setup + start instead.")
-            self.setup(path=path, variant="", overlay=overlay, no_timeout=no_timeout)
-            return self.start(path=path, overlay=overlay, no_timeout=no_timeout)
-
-        return self.start(path=path, overlay=overlay, no_timeout=no_timeout)
 
     @command()
     def teardown(self, path: str = typer.Option("", help="Worktree path (auto-detects from PWD if empty).")) -> str:
@@ -611,35 +576,6 @@ class Command(TyperCommand):
             self.stdout.write(f"  [{status.upper()}] {name}")
 
         return checks
-
-    @command(name="start-full")
-    def start_full(
-        self,
-        issue_url: str = typer.Argument(help="Issue/ticket URL."),
-        variant: str = typer.Option("", help="Tenant variant."),
-        repos: str = typer.Option("", help="Comma-separated repo names (default: overlay repos)."),
-        description: str = typer.Option("", help="Short description for the branch name."),
-    ) -> str:
-        """Zero to coding — create ticket, provision worktrees, start services."""
-        from teatree.core.management.commands.workspace import Command as WorkspaceCommand  # noqa: PLC0415
-
-        ws = WorkspaceCommand()
-        ws.stdout = self.stdout
-        ws.stderr = self.stderr
-        ticket_id = ws.ticket(issue_url, variant=variant, repos=repos, description=description)
-        if not ticket_id:
-            return "Failed to create ticket."
-
-        ticket = Ticket.objects.get(pk=ticket_id)
-        first_wt = ticket.worktrees.first()
-        if not first_wt:
-            return f"Ticket #{ticket_id} created but no worktrees."
-
-        wt_path = (first_wt.extra or {}).get("worktree_path", "")
-        self.setup(path=wt_path, variant=variant)
-        self.start(path=wt_path)
-
-        return f"Ticket #{ticket_id} ready — services running in {wt_path}"
 
     @command(name="visit-phase")
     def visit_phase(self, ticket_id: int, phase: str) -> str:
