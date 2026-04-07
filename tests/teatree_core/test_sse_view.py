@@ -205,3 +205,79 @@ class TestDashboardSSEView(TestCase):
         all_data = b"".join(chunks)
         assert b"event: summary" in all_data
         assert b": heartbeat" in all_data
+
+    def test_max_duration_terminates_stream(self):
+        """TEATREE_SSE_MAX_DURATION causes stream to end after the set duration."""
+
+        def fake_detect(last_mtime, last_hashes):
+            return [], last_mtime, last_hashes
+
+        view = DashboardSSEView()
+        view._poll_interval = 0.01
+        with (
+            patch("teatree.core.views.sse._detect_changed_panels", side_effect=fake_detect),
+            patch("teatree.core.views.sse.settings") as mock_settings,
+        ):
+            mock_settings.TEATREE_SSE_MAX_DURATION = 0.05
+            chunks = _collect_stream(view)
+
+        # Stream should have terminated (not loop forever)
+        assert len(chunks) >= 1
+        assert chunks[0] == b'event: connected\ndata: {"status": "ok"}\n\n'
+
+    def test_max_duration_expires_during_detect(self):
+        """Stream exits via the pre-sleep check when detect takes long enough."""
+        real_monotonic = time.monotonic
+        call_count = 0
+        base = real_monotonic()
+
+        def advancing_monotonic():
+            """First calls return base, then jump past max_duration."""
+            nonlocal call_count
+            call_count += 1
+            # Calls 1-2: started + top-of-loop check (within budget)
+            if call_count <= 2:
+                return base
+            # Call 3: pre-sleep check — past the deadline
+            return base + 10.0
+
+        def fake_detect(last_mtime, last_hashes):
+            return [], last_mtime, last_hashes
+
+        view = DashboardSSEView()
+        view._poll_interval = 0.01
+        with (
+            patch("teatree.core.views.sse._detect_changed_panels", side_effect=fake_detect),
+            patch("teatree.core.views.sse.settings") as mock_settings,
+            patch("teatree.core.views.sse.time") as mock_time,
+        ):
+            mock_settings.TEATREE_SSE_MAX_DURATION = 1.0
+            mock_time.monotonic = advancing_monotonic
+            chunks = _collect_stream(view)
+
+        assert chunks[0] == b'event: connected\ndata: {"status": "ok"}\n\n'
+        # Stream terminated after just one detect iteration (pre-sleep break)
+        assert len(chunks) == 1
+
+    def test_max_duration_zero_means_unlimited(self):
+        """When TEATREE_SSE_MAX_DURATION is 0 (default), stream runs until cancelled."""
+        call_count = 0
+
+        def fake_detect(last_mtime, last_hashes):
+            nonlocal call_count
+            call_count += 1
+            if call_count > 3:
+                raise asyncio.CancelledError
+            return [], last_mtime, last_hashes
+
+        view = DashboardSSEView()
+        view._poll_interval = 0.01
+        with (
+            patch("teatree.core.views.sse._detect_changed_panels", side_effect=fake_detect),
+            patch("teatree.core.views.sse.settings") as mock_settings,
+        ):
+            mock_settings.TEATREE_SSE_MAX_DURATION = 0
+            _collect_stream(view)
+
+        # Should have run until CancelledError (4 iterations)
+        assert call_count == 4
