@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import json
+import time
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 
@@ -49,11 +50,17 @@ class DashboardSSEView(View):
         return response
 
     async def _event_stream(self) -> AsyncIterator[bytes]:
+        max_duration: float = getattr(settings, "TEATREE_SSE_MAX_DURATION", 0)
         yield _format_sse("connected", {"status": "ok"})
+        started = time.monotonic()
         last_mtime = 0.0
         last_hashes: dict[str, str] = {}
         ticks_since_event = 0
         while True:
+            if max_duration:
+                remaining = max_duration - (time.monotonic() - started)
+                if remaining <= 0:
+                    break
             try:
                 detect = sync_to_async(_detect_changed_panels)
                 changed_panels, last_mtime, last_hashes = await detect(last_mtime, last_hashes)
@@ -68,7 +75,13 @@ class DashboardSSEView(View):
                         yield b": heartbeat\n\n"
             except asyncio.CancelledError:
                 break
-            await asyncio.sleep(self._poll_interval)
+            sleep_time = self._poll_interval
+            if max_duration:
+                remaining = max_duration - (time.monotonic() - started)
+                if remaining <= 0:
+                    break
+                sleep_time = min(sleep_time, remaining)
+            await asyncio.sleep(sleep_time)
 
 
 def _detect_changed_panels(

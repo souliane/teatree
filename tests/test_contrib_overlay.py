@@ -37,9 +37,15 @@ class TestGetRepos:
 
 
 class TestGetWorkspaceRepos:
-    def test_returns_teatree(self) -> None:
+    def test_falls_back_to_get_repos(self) -> None:
         overlay = TeatreeOverlay()
+        overlay.config.workspace_repos = []
         assert overlay.get_workspace_repos() == ["teatree"]
+
+    def test_returns_configured_workspace_repos(self) -> None:
+        overlay = TeatreeOverlay()
+        overlay.config.workspace_repos = ["souliane/teatree"]
+        assert overlay.get_workspace_repos() == ["souliane/teatree"]
 
 
 class TestGetFollowupRepos:
