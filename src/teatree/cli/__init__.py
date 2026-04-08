@@ -614,7 +614,30 @@ def _register_overlay_commands() -> None:
 # ── Entry point ──────────────────────────────────────────────────────
 
 
+def _ensure_editable_if_contributing() -> None:
+    """Auto-fix teatree to editable install when contribute=true.
+
+    When the user has ``contribute = true`` in ``~/.teatree.toml``, teatree
+    should be installed as editable so local changes take effect immediately.
+    ``uv sync`` in overlay projects reinstalls teatree from git, undoing this.
+    This check runs once per CLI invocation and re-installs editable if needed.
+    """
+    try:
+        from teatree.config import load_config  # noqa: PLC0415
+
+        if not load_config().user.contribute:
+            return
+        if IntrospectionHelpers.editable_info("teatree")[0]:
+            return  # already editable
+        repo = DoctorService.find_teatree_repo()
+        if repo:
+            DoctorService.make_editable("teatree", repo)
+    except Exception:
+        logger.debug("editable check skipped", exc_info=True)
+
+
 def main() -> None:
     """Entry point for the ``t3`` console script."""
+    _ensure_editable_if_contributing()
     _register_overlay_commands()
     app(standalone_mode=True)

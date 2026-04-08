@@ -215,8 +215,8 @@ class TestDoctorService:
             patch.object(IntrospectionHelpers, "editable_info", return_value=(False, "")),
             patch.object(teatree_overlay_loader, "get_all_overlays", return_value={}),
             patch("teatree.config.load_config", return_value=mock_config),
-            patch.object(DoctorService, "_find_teatree_repo", return_value=Path("/tmp/teatree")),
-            patch.object(DoctorService, "_make_editable") as mock_fix,
+            patch.object(DoctorService, "find_teatree_repo", return_value=Path("/tmp/teatree")),
+            patch.object(DoctorService, "make_editable") as mock_fix,
         ):
             result = DoctorService.check_editable_sanity()
             mock_fix.assert_called_once_with("teatree", Path("/tmp/teatree"))
@@ -237,7 +237,7 @@ class TestDoctorService:
             patch.object(IntrospectionHelpers, "editable_info", return_value=(False, "")),
             patch.object(teatree_overlay_loader, "get_all_overlays", return_value={}),
             patch("teatree.config.load_config", return_value=mock_config),
-            patch.object(DoctorService, "_find_teatree_repo", return_value=None),
+            patch.object(DoctorService, "find_teatree_repo", return_value=None),
         ):
             result = DoctorService.check_editable_sanity()
             assert any("contribute=true" in p for p in result)

@@ -132,9 +132,9 @@ class DoctorService:
         teatree_is_editable, _ = IntrospectionHelpers.editable_info("teatree")
 
         if teatree_should_be_editable and not teatree_is_editable:
-            teatree_repo = DoctorService._find_teatree_repo()
+            teatree_repo = DoctorService.find_teatree_repo()
             if teatree_repo:
-                DoctorService._make_editable("teatree", teatree_repo)
+                DoctorService.make_editable("teatree", teatree_repo)
             else:
                 problems.append(
                     "contribute=true but teatree is not editable and local repo not found. "
@@ -179,7 +179,7 @@ class DoctorService:
         return problems
 
     @staticmethod
-    def _find_teatree_repo() -> Path | None:
+    def find_teatree_repo() -> Path | None:
         env_path = os.environ.get("T3_REPO", "")
         if env_path:
             p = Path(env_path).expanduser()
@@ -192,7 +192,7 @@ class DoctorService:
         return None
 
     @staticmethod
-    def _make_editable(package: str, repo_path: Path) -> None:
+    def make_editable(package: str, repo_path: Path) -> None:
         import subprocess  # noqa: PLC0415, S404
 
         typer.echo(f"WARN  {package} is not editable (contribute=true). Installing from {repo_path}...")
