@@ -614,7 +614,51 @@ def _register_overlay_commands() -> None:
 # ── Entry point ──────────────────────────────────────────────────────
 
 
+def _ensure_editable_if_contributing() -> None:
+    """Auto-fix teatree and overlay to editable when contribute=true.
+
+    When the user has ``contribute = true`` in ``~/.teatree.toml``, both
+    teatree and the active overlay should be editable so local changes take
+    effect immediately.  ``uv sync`` reinstalls from git, undoing this.
+    This check runs on every CLI invocation and re-installs if needed.
+    """
+    try:
+        from teatree.config import load_config  # noqa: PLC0415
+
+        if not load_config().user.contribute:
+            return
+
+        # Teatree itself
+        if not IntrospectionHelpers.editable_info("teatree")[0]:
+            repo = DoctorService.find_teatree_repo()
+            if repo:
+                DoctorService.make_editable("teatree", repo)
+
+        # Active overlay
+        from teatree.core.overlay_loader import get_all_overlays  # noqa: PLC0415
+
+        for overlay_inst in get_all_overlays().values():
+            overlay_module = type(overlay_inst).__module__
+            top_package = overlay_module.split(".", maxsplit=1)[0]
+            from importlib.metadata import packages_distributions  # noqa: PLC0415
+
+            dist_map = packages_distributions()
+            dist_names = dist_map.get(top_package, [top_package])
+            overlay_dist = dist_names[0] if dist_names else top_package
+
+            is_editable, _ = IntrospectionHelpers.editable_info(overlay_dist)
+            if is_editable:
+                continue
+            # Try to find the overlay repo in the workspace
+            overlay_repo = DoctorService.find_overlay_repo(overlay_dist)
+            if overlay_repo:
+                DoctorService.make_editable(overlay_dist, overlay_repo)
+    except Exception:
+        logger.debug("editable check skipped", exc_info=True)
+
+
 def main() -> None:
     """Entry point for the ``t3`` console script."""
+    _ensure_editable_if_contributing()
     _register_overlay_commands()
     app(standalone_mode=True)
