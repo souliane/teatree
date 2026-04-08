@@ -611,7 +611,7 @@ Each registered overlay gets a subcommand group (e.g., `t3 acme`). Commands dele
 - `t3 <overlay> daily` — sync MRs, check gates, remind reviewers
 - `t3 <overlay> full-status` — ticket/worktree/session summary
 - `t3 <overlay> agent [TASK]` — launch Claude Code with overlay context
-- `t3 <overlay> dashboard` — start dashboard via uvicorn (auto-finds free port)
+- `t3 dashboard [--project PATH]` — start dashboard via uvicorn (use `--project` to serve from a worktree)
 - `t3 <overlay> resetdb` — drop and recreate SQLite database
 - `t3 <overlay> worker` — start background task workers
 

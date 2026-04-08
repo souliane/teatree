@@ -470,6 +470,7 @@ def dashboard(
     host: str = typer.Option("127.0.0.1", help="Host to bind to"),
     port: int = typer.Option(8000, help="Port to serve on"),
     *,
+    project: Path | None = typer.Option(None, help="Project root to serve from (worktree path)."),
     workers: int = typer.Option(1, help="Number of background task workers to start (0 to disable)"),
 ) -> None:
     """Migrate the database and start the dashboard dev server."""
@@ -477,7 +478,7 @@ def dashboard(
 
     from teatree.cli.overlay import uv_cmd  # noqa: PLC0415
 
-    project_path, overlay_name, settings_module = _resolve_overlay_for_server()
+    project_path, overlay_name, settings_module = _resolve_overlay_for_server(project=project)
     managepy(project_path, "migrate", "--no-input", overlay_name=overlay_name)
     actual_port = port
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -517,29 +518,56 @@ def dashboard(
             p.wait(timeout=5)
 
 
-def _resolve_overlay_for_server() -> tuple[Path, str, str]:
-    """Resolve the active overlay's project path, name, and settings module.
+def _resolve_overlay_for_server(*, project: Path | None = None) -> tuple[Path, str, str]:
+    """Resolve the project path, overlay name, and settings module.
 
-    Prefers entry-point overlays over cwd-based discovery, since cwd may be a
-    worktree whose directory name doesn't match the overlay.
+    When *project* is provided it is used as-is — no auto-detection.  Without
+    it, auto-detection succeeds only when the result is unambiguous (exactly
+    one entry-point overlay, or CWD inside a single project root).  Ambiguous
+    situations abort with a clear error asking for ``--project``.
     """
     from teatree.config import discover_overlays  # noqa: PLC0415
 
-    # Entry-point overlays (overlay_class contains ":") are the canonical
-    # installed overlays.  TOML-only entries without a class are config
-    # supplements, not standalone overlays.
     installed = discover_overlays()
     ep_overlays = [e for e in installed if ":" in (e.overlay_class or "")]
-    active = ep_overlays[0] if len(ep_overlays) == 1 else discover_active_overlay()
-    if not active:
-        typer.echo("No active overlay found. Add one to ~/.teatree.toml.")
-        raise typer.Exit(code=1)
-    project_path = active.project_path or _find_project_root()
-    overlay_name = active.name
-    if project_path and ":" not in active.overlay_class and active.overlay_class:
-        settings_module = active.overlay_class
-    else:
+
+    # --- explicit --project: skip auto-detection entirely ---
+    if project is not None:
+        project_path = project.resolve()
+        if not (project_path / "pyproject.toml").is_file():
+            typer.echo(f"--project {project_path} does not contain pyproject.toml")
+            raise typer.Exit(code=1)
+        active = ep_overlays[0] if len(ep_overlays) == 1 else discover_active_overlay()
+        overlay_name = active.name if active else ""
         settings_module = "teatree.settings"
+        if active and ":" not in (active.overlay_class or "") and active.overlay_class:
+            settings_module = active.overlay_class
+        return project_path, overlay_name, settings_module
+
+    # --- auto-detection: only when unambiguous ---
+    if len(ep_overlays) > 1:
+        names = ", ".join(e.name for e in ep_overlays)
+        typer.echo(
+            f"Multiple overlays installed ({names}). Pass --project <path> to specify which source tree to serve."
+        )
+        raise typer.Exit(code=1)
+
+    active = ep_overlays[0] if ep_overlays else discover_active_overlay()
+    if not active:
+        typer.echo("No overlay found. Add one to ~/.teatree.toml or pass --project <path>.")
+        raise typer.Exit(code=1)
+
+    project_path = active.project_path
+    if not project_path:
+        typer.echo(
+            f"Overlay '{active.name}' has no project_path configured. Pass --project <path> to specify the source tree."
+        )
+        raise typer.Exit(code=1)
+
+    overlay_name = active.name
+    settings_module = "teatree.settings"
+    if ":" not in (active.overlay_class or "") and active.overlay_class:
+        settings_module = active.overlay_class
     return project_path, overlay_name, settings_module
 
 
