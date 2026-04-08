@@ -1,11 +1,14 @@
-"""Tests for skill tracking in the hook router (handle_track_skill_usage)."""
+"""Tests for skill tracking and session-end retro in the hook router."""
 
+import json
+from io import StringIO
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
 import hooks.scripts.hook_router as router
-from hooks.scripts.hook_router import handle_track_skill_usage
+from hooks.scripts.hook_router import handle_session_end, handle_track_skill_usage
 
 
 @pytest.fixture(autouse=True)
@@ -148,3 +151,56 @@ class TestPostToolUsePrecedence:
         )
         # Only the PostToolUse path fires — t3:debug from InstructionsLoaded is NOT tracked
         assert _read_skills("sess-20") == ["t3:code"]
+
+
+class TestSessionEndRetro:
+    """SessionEnd hook suggests retro when lifecycle skills were loaded."""
+
+    def test_suggests_retro_when_lifecycle_skills_loaded(self) -> None:
+        skills_file = router.STATE_DIR / "sess-end-1.skills"
+        skills_file.write_text("t3:code\nt3:test\n", encoding="utf-8")
+
+        stdout = StringIO()
+        with patch("sys.stdout", stdout):
+            handle_session_end({"session_id": "sess-end-1"})
+
+        output = json.loads(stdout.getvalue())
+        assert "retro" in output["additionalContext"].lower()
+        assert "t3:code" in output["additionalContext"]
+
+    def test_no_output_when_no_lifecycle_skills(self) -> None:
+        skills_file = router.STATE_DIR / "sess-end-2.skills"
+        skills_file.write_text("ac-python\nac-django\n", encoding="utf-8")
+
+        stdout = StringIO()
+        with patch("sys.stdout", stdout):
+            handle_session_end({"session_id": "sess-end-2"})
+
+        assert stdout.getvalue() == ""
+
+    def test_no_output_when_no_skills_file(self) -> None:
+        stdout = StringIO()
+        with patch("sys.stdout", stdout):
+            handle_session_end({"session_id": "sess-end-3"})
+
+        assert stdout.getvalue() == ""
+
+    def test_no_output_when_empty_session_id(self) -> None:
+        stdout = StringIO()
+        with patch("sys.stdout", stdout):
+            handle_session_end({"session_id": ""})
+
+        assert stdout.getvalue() == ""
+
+    def test_includes_only_lifecycle_skills_in_message(self) -> None:
+        skills_file = router.STATE_DIR / "sess-end-5.skills"
+        skills_file.write_text("t3:code\nac-python\nt3:review\n", encoding="utf-8")
+
+        stdout = StringIO()
+        with patch("sys.stdout", stdout):
+            handle_session_end({"session_id": "sess-end-5"})
+
+        output = json.loads(stdout.getvalue())
+        assert "t3:code" in output["additionalContext"]
+        assert "t3:review" in output["additionalContext"]
+        assert "ac-python" not in output["additionalContext"]
