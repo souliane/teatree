@@ -192,6 +192,18 @@ class DoctorService:
         return None
 
     @staticmethod
+    def find_overlay_repo(dist_name: str) -> Path | None:
+        """Find the overlay repo in the workspace directory."""
+        from teatree.config import load_config  # noqa: PLC0415
+
+        workspace = Path(load_config().user.workspace_dir).expanduser()
+        # Try common layouts: workspace/<dist>, workspace/*/<dist>
+        for candidate in [workspace / dist_name, *workspace.glob(f"*/{dist_name}")]:
+            if (candidate / "pyproject.toml").is_file():
+                return candidate
+        return None
+
+    @staticmethod
     def make_editable(package: str, repo_path: Path) -> None:
         import subprocess  # noqa: PLC0415, S404
 
