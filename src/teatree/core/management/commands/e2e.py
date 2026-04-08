@@ -5,6 +5,7 @@ import socket
 import subprocess  # noqa: S404
 from pathlib import Path
 
+import typer
 from django_typer.management import TyperCommand, command
 
 from teatree.core.management.commands.lifecycle import _compose_project
@@ -64,7 +65,13 @@ class Command(TyperCommand):
         return ci.trigger_pipeline(project=project, ref=ref, variables=variables)
 
     @command()
-    def external(self, test_path: str = "", *, headed: bool = False) -> str:
+    def external(
+        self,
+        test_path: str = "",
+        *,
+        headed: bool = False,
+        update_snapshots: bool = typer.Option(default=False, help="Generate or update golden screenshots"),
+    ) -> str:
         """Run Playwright tests from the external test repo (T3_PRIVATE_TESTS).
 
         Discovers the frontend port from docker-compose (or local process)
@@ -95,6 +102,8 @@ class Command(TyperCommand):
         if test_path:
             cmd.append(test_path)
         cmd.extend(["--reporter=list"])
+        if update_snapshots:
+            cmd.append("--update-snapshots")
 
         env = {**os.environ}
         env["BASE_URL"] = f"http://localhost:{frontend_port}"
