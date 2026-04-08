@@ -19,7 +19,7 @@ metadata:
 
 ## Delegation
 
-This skill reuses `verification-before-completion` for the final send/no-send gate.
+This skill reuses `verification-before-completion` (from [obra/superpowers](https://github.com/obra/superpowers), optional) for the final send/no-send gate.
 TeaTree keeps the rest locally because MR discovery, chat deduplication, routing, and transition updates are project workflow rather than generic doctrine.
 
 From "MRs exist" to "reviewers are notified." Operates across all user's open MRs, not just the current branch.

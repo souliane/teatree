@@ -32,7 +32,7 @@ This skill delegates the generic branch-finalization doctrine to:
 - `finishing-a-development-branch` — decide how to wrap up a ready branch
 - `verification-before-completion` — fresh verification before claiming the branch is ready
 
-TeaTree keeps the delivery-specific mechanics locally: ticket-aware commit metadata, MR creation rules, CI cancellation, and post-review branch policy.
+These are optional companion skills from [obra/superpowers](https://github.com/obra/superpowers). If not installed, this skill still works — you just won't get the external branch-finalization and verification guidelines. TeaTree keeps the delivery-specific mechanics locally: ticket-aware commit metadata, MR creation rules, CI cancellation, and post-review branch policy.
 
 From "code is done" to "MR is merged."
 
