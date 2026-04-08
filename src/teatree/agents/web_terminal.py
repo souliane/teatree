@@ -13,7 +13,7 @@ from teatree.agents.services import get_terminal_mode
 from teatree.agents.skill_bundle import resolve_skill_bundle
 from teatree.agents.terminal_launcher import launch as terminal_launch
 from teatree.core.models import Task, TaskAttempt
-from teatree.core.overlay import SkillMetadata
+from teatree.types import SkillMetadata
 
 logger = logging.getLogger(__name__)
 

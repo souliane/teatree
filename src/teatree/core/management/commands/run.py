@@ -10,9 +10,9 @@ import typer
 from django_typer.management import TyperCommand, command
 
 from teatree.core.management.commands.lifecycle import _compose_project
-from teatree.core.overlay import RunCommand, RunCommands
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.resolve import resolve_worktree
+from teatree.types import RunCommand, RunCommands
 from teatree.utils.ports import find_free_ports, get_worktree_ports
 
 

@@ -16,8 +16,8 @@ from django.utils import timezone
 from teatree.agents.result_schema import RESULT_JSON_SCHEMA
 from teatree.agents.skill_bundle import resolve_skill_bundle
 from teatree.core.models import Task, TaskAttempt
-from teatree.core.overlay import SkillMetadata
 from teatree.skill_loading import SkillLoadingPolicy
+from teatree.types import SkillMetadata
 
 logger = logging.getLogger(__name__)
 
