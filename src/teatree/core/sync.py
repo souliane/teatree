@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 
 LAST_SYNC_CACHE_KEY = "teatree_followup_last_sync"
 
-_REPO_PATH_RE = re.compile(r"gitlab\.com/(.+?)/-/merge_requests/")
+_REPO_PATH_RE = re.compile(r"https?://[^/]+/(.+?)/-/merge_requests/")
 
 logger = logging.getLogger(__name__)
 
@@ -147,7 +147,7 @@ def _sync_gitlab(overlay: object) -> SyncResult:
 
     overlay_name = _overlay_name(overlay)
     token = overlay.config.get_gitlab_token()
-    client = GitLabAPI(token=token)
+    client = GitLabAPI(token=token, base_url=overlay.config.gitlab_url)
     username = overlay.config.get_gitlab_username() or client.current_username()
     if not username:
         return SyncResult(errors=["GitLab username is not configured in overlay"])
@@ -450,7 +450,7 @@ def _detect_merged_mrs(
         _apply_merged_status(ticket, merged_urls, result)
 
 
-_ISSUE_PARTS_RE = re.compile(r"gitlab\.com/(.+?)/-/(?:issues|work_items)/(\d+)")
+_ISSUE_PARTS_RE = re.compile(r"https?://[^/]+/(.+?)/-/(?:issues|work_items)/(\d+)")
 
 
 def _resolve_issue(client: "GitLabAPI", issue_url: str) -> tuple[dict, str, int] | None:
@@ -647,7 +647,7 @@ def _infer_state_from_mrs(mrs_data: dict[str, dict[str, object]]) -> str:
     return best
 
 
-_ISSUE_URL_RE = re.compile(r"(https://gitlab\.com/[^\s)]+/-/(?:issues|work_items)/\d+)")
+_ISSUE_URL_RE = re.compile(r"(https://[^\s)]+/-/(?:issues|work_items)/\d+)")
 
 
 def _extract_issue_url(mr: dict[str, object]) -> str:

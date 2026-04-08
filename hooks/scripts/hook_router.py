@@ -21,7 +21,12 @@ import subprocess  # noqa: S404
 import sys
 from pathlib import Path
 
-STATE_DIR = Path(os.environ.get("T3_HOOK_STATE_DIR", "/tmp/claude-statusline"))  # noqa: S108
+STATE_DIR = Path(
+    os.environ.get(
+        "TEATREE_CLAUDE_STATUSLINE_STATE_DIR",
+        os.environ.get("T3_HOOK_STATE_DIR", "/tmp/claude-statusline"),  # noqa: S108
+    )
+)
 
 _FILE_PATH_TOOLS = {"Read", "Edit", "Write"}
 _PATH_TOOLS = {"Grep", "Glob"}
@@ -372,9 +377,14 @@ def handle_track_skill_usage(data: dict) -> None:
             _append_line(skills_file, skill_name)
         return
 
-    # InstructionsLoaded: array of skill objects
+    # InstructionsLoaded: array of skill objects or skill name strings
     for skill_obj in data.get("skills", []):
-        name = skill_obj.get("name", "") if isinstance(skill_obj, dict) else ""
+        if isinstance(skill_obj, dict):
+            name = skill_obj.get("name", "")
+        elif isinstance(skill_obj, str):
+            name = skill_obj
+        else:
+            continue
         if name and name not in existing:
             existing.add(name)
             _append_line(skills_file, name)

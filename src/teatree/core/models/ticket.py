@@ -35,6 +35,7 @@ class Ticket(models.Model):
     objects = TicketManager()
 
     class Meta:
+        db_table = "teatree_ticket"
         constraints: ClassVar = [
             models.UniqueConstraint(
                 fields=["issue_url"],
