@@ -31,6 +31,9 @@ class Worktree(models.Model):
 
     objects = WorktreeManager()
 
+    class Meta:
+        db_table = "teatree_worktree"
+
     def __str__(self) -> str:
         return str(self.repo_path)
 

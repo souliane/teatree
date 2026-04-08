@@ -1303,10 +1303,10 @@ class TestSyncFollowupLabels(TestCase):
         assert result.labels_fetched == 0
 
     def test_skips_non_gitlab_url(self) -> None:
-        """Issue URL not containing gitlab.com should not match the Python regex (line 278)."""
+        """Issue URL without GitLab /-/ pattern should not match the regex."""
         Ticket.objects.create(
             overlay="test",
-            issue_url="https://example.com/org/repo/-/issues/5",
+            issue_url="https://github.com/org/repo/issues/5",
             repos=["repo"],
             state=Ticket.State.STARTED,
             extra={},

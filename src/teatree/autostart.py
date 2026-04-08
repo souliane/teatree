@@ -4,6 +4,7 @@ No Django imports — works without django.setup().
 """
 
 import logging
+import os
 import subprocess  # noqa: S404
 import sys
 from importlib.resources import files
@@ -49,6 +50,24 @@ def _log_dir(overlay_name: str) -> Path:
     return log_dir
 
 
+# ── Python discovery ─────────────────────────────────────────────────
+
+
+def _discover_python() -> str:
+    """Find the best Python interpreter.
+
+    Resolution order:
+    1. ``$VIRTUAL_ENV/bin/python`` — honours an already-activated venv.
+    2. ``sys.executable`` — the interpreter running teatree itself.
+    """
+    virtual_env = os.environ.get("VIRTUAL_ENV")
+    if virtual_env:
+        venv_python = Path(virtual_env) / "bin" / "python"
+        if venv_python.is_file():
+            return str(venv_python)
+    return sys.executable
+
+
 # ── Context resolution ────────────────────────────────────────────────
 
 
@@ -59,8 +78,7 @@ def _resolve_context(
     host: str,
     port: int,
 ) -> dict[str, str]:
-    venv_python = project_path / ".venv" / "bin" / "python"
-    python = str(venv_python) if venv_python.is_file() else sys.executable
+    python = _discover_python()
     asgi_module = settings_module.rsplit(".", 1)[0] + ".asgi:application"
     manage_py = str(project_path / "manage.py")
     logs = _log_dir(overlay_name)

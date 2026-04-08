@@ -39,7 +39,19 @@ class ReviewService:
     def _get_api(self):  # noqa: ANN202
         from teatree.backends.gitlab_api import GitLabAPI  # noqa: PLC0415
 
-        return GitLabAPI(token=self.token)
+        return GitLabAPI(token=self.token, base_url=self._resolve_base_url())
+
+    @staticmethod
+    def _resolve_base_url() -> str:
+        """Resolve GitLab API base URL from overlay config or env, defaulting to gitlab.com."""
+        import os  # noqa: PLC0415
+
+        try:
+            from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
+
+            return get_overlay().config.gitlab_url
+        except Exception:  # noqa: BLE001
+            return os.environ.get("GITLAB_URL", "https://gitlab.com/api/v4")
 
     def post_draft_note(self, repo: str, mr: int, note: str, *, file: str = "", line: int = 0) -> tuple[str, int]:
         """Post a draft note. Returns (message, exit_code)."""
@@ -93,9 +105,10 @@ class ReviewService:
         """Delete a draft note. Returns (message, exit_code)."""
         import httpx  # noqa: PLC0415
 
+        api = self._get_api()
         encoded = repo.replace("/", "%2F")
         response = httpx.delete(
-            f"https://gitlab.com/api/v4/projects/{encoded}/merge_requests/{mr}/draft_notes/{note_id}",
+            f"{api.base_url}/projects/{encoded}/merge_requests/{mr}/draft_notes/{note_id}",
             headers={"PRIVATE-TOKEN": self.token},
             timeout=10.0,
         )

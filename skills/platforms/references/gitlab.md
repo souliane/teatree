@@ -4,6 +4,24 @@
 
 ---
 
+## Self-Hosted GitLab
+
+TeaTree supports self-hosted GitLab instances. Set the base URL via the overlay config:
+
+```python
+# overlay_settings.py
+GITLAB_URL = "https://gitlab.example.com/api/v4"
+```
+
+Or in `~/.teatree.toml`:
+
+```toml
+[overlays.my-overlay]
+gitlab_url = "https://gitlab.example.com/api/v4"
+```
+
+The default is `https://gitlab.com/api/v4`. All URL parsing (MR links, issue links, Slack review matching) works with any GitLab hostname.
+
 ## CLI Tool
 
 `glab` — the GitLab CLI. Install via `brew install glab` or see [glab docs](https://gitlab.com/gitlab-org/cli).

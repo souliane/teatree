@@ -18,7 +18,7 @@ class SlackReviewMatch:
     channel: str
 
 
-_MR_URL_RE = re.compile(r"https://gitlab\.com/[^\s|>]+/merge_requests/\d+")
+_MR_URL_RE = re.compile(r"https://[^\s|>]+/merge_requests/\d+")
 
 
 def _resolve_workspace_domain(client: httpx.Client) -> str:

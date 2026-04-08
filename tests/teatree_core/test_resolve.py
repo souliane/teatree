@@ -14,6 +14,7 @@ from teatree.core.resolve import (
     _find_env_worktree,
     _match_worktree_by_path,
     _parse_env_file,
+    _warn_cwd_mismatch,
     resolve_worktree,
 )
 
@@ -222,6 +223,88 @@ class TestResolveWorktree(TestCase):
 
         with pytest.raises(WorktreeNotFoundError):
             resolve_worktree()
+
+
+class TestWarnCwdMismatch(TestCase):
+    @pytest.fixture(autouse=True)
+    def _inject_fixtures(self, caplog: pytest.LogCaptureFixture) -> None:
+        self._caplog = caplog
+
+    def test_no_warning_when_cwd_inside_worktree(self) -> None:
+        """No warning when CWD is inside the worktree path."""
+        ticket = Ticket.objects.create()
+        wt = Worktree.objects.create(
+            ticket=ticket,
+            repo_path="backend",
+            branch="feature",
+            extra={"worktree_path": "/workspace/ticket-42/backend"},
+        )
+
+        with self._caplog.at_level("WARNING", logger="teatree.core.resolve"):
+            _warn_cwd_mismatch(wt, "/workspace/ticket-42/backend/src")
+
+        assert not self._caplog.records
+
+    def test_no_warning_when_cwd_matches_exactly(self) -> None:
+        """No warning when CWD matches worktree path exactly."""
+        ticket = Ticket.objects.create()
+        wt = Worktree.objects.create(
+            ticket=ticket,
+            repo_path="backend",
+            branch="feature",
+            extra={"worktree_path": "/workspace/ticket-42/backend"},
+        )
+
+        with self._caplog.at_level("WARNING", logger="teatree.core.resolve"):
+            _warn_cwd_mismatch(wt, "/workspace/ticket-42/backend")
+
+        assert not self._caplog.records
+
+    def test_warning_when_cwd_outside_worktree(self) -> None:
+        """Warning when CWD doesn't match the resolved worktree path."""
+        ticket = Ticket.objects.create()
+        wt = Worktree.objects.create(
+            ticket=ticket,
+            repo_path="backend",
+            branch="feature",
+            extra={"worktree_path": "/workspace/ticket-42/backend"},
+        )
+
+        with self._caplog.at_level("WARNING", logger="teatree.core.resolve"):
+            _warn_cwd_mismatch(wt, "/totally/different/path")
+
+        assert len(self._caplog.records) == 1
+        assert "does not match CWD" in self._caplog.records[0].message
+
+    def test_no_warning_when_worktree_inside_cwd(self) -> None:
+        """No warning when the worktree path is a subdirectory of CWD (ticket dir)."""
+        ticket = Ticket.objects.create()
+        wt = Worktree.objects.create(
+            ticket=ticket,
+            repo_path="backend",
+            branch="feature",
+            extra={"worktree_path": "/workspace/ticket-42/backend"},
+        )
+
+        with self._caplog.at_level("WARNING", logger="teatree.core.resolve"):
+            _warn_cwd_mismatch(wt, "/workspace/ticket-42")
+
+        assert not self._caplog.records
+
+    def test_no_warning_when_no_worktree_path(self) -> None:
+        """No warning when worktree has no stored path."""
+        ticket = Ticket.objects.create()
+        wt = Worktree.objects.create(
+            ticket=ticket,
+            repo_path="backend",
+            branch="feature",
+            extra={},
+        )
+
+        with self._caplog.at_level("WARNING", logger="teatree.core.resolve"):
+            _warn_cwd_mismatch(wt, "/some/path")
+
+        assert not self._caplog.records
 
 
 class TestAutoRegisterFromGit:
