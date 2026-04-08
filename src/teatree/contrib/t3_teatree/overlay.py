@@ -8,7 +8,8 @@ from pathlib import Path
 from typing import override
 
 from teatree.core.models import Worktree
-from teatree.core.overlay import OverlayBase, OverlayConfig, OverlayMetadata, ProvisionStep, RunCommands, SkillMetadata
+from teatree.core.overlay import OverlayBase, OverlayConfig, OverlayMetadata
+from teatree.types import ProvisionStep, RunCommands, SkillMetadata
 
 _SETTINGS_MODULE = "teatree.contrib.t3_teatree.overlay_settings"
 

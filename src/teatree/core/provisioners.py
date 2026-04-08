@@ -12,7 +12,7 @@ import shutil
 import subprocess  # noqa: S404
 from pathlib import Path
 
-from teatree.core.overlay import ServiceSpec, SymlinkSpec
+from teatree.types import ServiceSpec, SymlinkSpec
 
 logger = logging.getLogger(__name__)
 

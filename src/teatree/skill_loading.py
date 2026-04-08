@@ -12,8 +12,8 @@ from dataclasses import dataclass
 from fnmatch import fnmatch
 from pathlib import Path
 
-from teatree.core.overlay import SkillMetadata
 from teatree.skill_deps import resolve_requires
+from teatree.types import SkillMetadata
 
 DEFAULT_SKILLS_DIR = Path(__file__).resolve().parents[2] / "skills"
 

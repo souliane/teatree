@@ -9,7 +9,11 @@ exclude = [
 source_roots = ["tests", "src", "e2e"]
 
 [[modules]]
-path = "teatree.utils"
+path = "teatree.types"
+depends_on = []
+
+[[modules]]
+path = "teatree.config"
 depends_on = []
 
 [[modules]]
@@ -17,21 +21,75 @@ path = "teatree.templates"
 depends_on = []
 
 [[modules]]
+path = "teatree.claude_sessions"
+depends_on = []
+
+[[modules]]
 path = "teatree.overlay_init"
 depends_on = []
 
 [[modules]]
-path = "teatree.backends"
-depends_on = ["teatree.utils"]
+path = "teatree.utils"
+depends_on = ["teatree.config"]
 
 [[modules]]
-path = "teatree.agents"
-depends_on = ["teatree.core", "teatree.utils"]
+path = "teatree.autostart"
+depends_on = ["teatree.config"]
+
+[[modules]]
+path = "teatree.timeouts"
+depends_on = ["teatree.config"]
+
+[[modules]]
+path = "teatree.skill_loading"
+depends_on = ["teatree.types"]
+
+[[modules]]
+path = "teatree.skill_schema"
+depends_on = []
 
 [[modules]]
 path = "teatree.core"
-depends_on = ["teatree.backends", "teatree.utils", "teatree.agents"]
+depends_on = [
+  "teatree.types",
+  "teatree.config",
+  "teatree.utils",
+  "teatree.timeouts",
+  "teatree.skill_schema",
+  "teatree.agents",
+  "teatree.backends"
+]
+
+[[modules]]
+path = "teatree.agents"
+depends_on = [
+  "teatree.types",
+  "teatree.core",
+  "teatree.skill_loading",
+  "teatree.utils"
+]
+
+[[modules]]
+path = "teatree.backends"
+depends_on = [
+  "teatree.utils"
+]
 
 [[modules]]
 path = "teatree.contrib"
-depends_on = ["teatree.core"]
+depends_on = ["teatree.types", "teatree.core"]
+
+[[modules]]
+path = "teatree.cli"
+depends_on = [
+  "teatree.config",
+  "teatree.core",
+  "teatree.agents",
+  "teatree.backends",
+  "teatree.skill_loading",
+  "teatree.skill_schema",
+  "teatree.claude_sessions",
+  "teatree.overlay_init",
+  "teatree.autostart",
+  "teatree.utils"
+]

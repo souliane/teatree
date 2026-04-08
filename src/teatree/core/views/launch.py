@@ -7,8 +7,8 @@ from django.views import View
 from django.views.decorators.csrf import csrf_exempt
 
 from teatree.core.models import InvalidTransitionError, Task
-from teatree.core.overlay import SkillMetadata
 from teatree.core.overlay_loader import get_overlay
+from teatree.types import SkillMetadata
 
 logger = logging.getLogger(__name__)
 
