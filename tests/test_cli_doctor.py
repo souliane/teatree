@@ -184,30 +184,29 @@ class TestDoctorService:
 
     # ── check_editable_sanity ────────────────────────────────────────
 
-    def test_returns_empty_when_no_settings(self, monkeypatch):
-        """Returns empty when no settings module configured."""
-        monkeypatch.delenv("DJANGO_SETTINGS_MODULE", raising=False)
-        with patch.object(teatree_config, "discover_active_overlay", return_value=None):
+    def test_returns_empty_when_contribute_false_and_nothing_editable(self):
+        """Returns empty when contribute=false and nothing is editable."""
+        mock_config = MagicMock()
+        mock_config.user.contribute = False
+
+        with (
+            patch("teatree.config.load_config", return_value=mock_config),
+            patch.object(IntrospectionHelpers, "editable_info", return_value=(False, "")),
+            patch.object(teatree_overlay_loader, "get_all_overlays", return_value={}),
+        ):
             result = DoctorService.check_editable_sanity()
             assert result == []
 
-    def test_sets_dsm_from_active_overlay(self, monkeypatch):
-        """Sets DJANGO_SETTINGS_MODULE from active overlay when not in env."""
-        from teatree.config import OverlayEntry  # noqa: PLC0415
+    def test_returns_empty_when_contribute_true_and_all_editable(self):
+        """Returns empty when contribute=true and everything is already editable."""
+        mock_config = MagicMock()
+        mock_config.user.contribute = True
 
-        monkeypatch.delenv("DJANGO_SETTINGS_MODULE", raising=False)
-        active = OverlayEntry(name="test", overlay_class="tests.teatree_core.conftest.CommandOverlay")
         with (
-            patch.object(teatree_config, "discover_active_overlay", return_value=active),
-            patch.object(IntrospectionHelpers, "editable_info", return_value=(False, "")),
+            patch("teatree.config.load_config", return_value=mock_config),
+            patch.object(IntrospectionHelpers, "editable_info", return_value=(True, "file:///src")),
+            patch.object(teatree_overlay_loader, "get_all_overlays", return_value={}),
         ):
-            result = DoctorService.check_editable_sanity()
-            assert isinstance(result, list)
-
-    def test_returns_empty_when_django_fails(self, monkeypatch):
-        """Returns empty when Django setup fails."""
-        monkeypatch.setenv("DJANGO_SETTINGS_MODULE", "nonexistent.settings")
-        with patch("django.setup", side_effect=Exception("bad setup")):
             result = DoctorService.check_editable_sanity()
             assert result == []
 
