@@ -45,7 +45,7 @@ Running tests, analyzing failures, quality checks, CI interaction, test plans, a
 
 ### Frontend Lint
 
-- `nx run-many --target=lint` — lint all frontend projects.
+- Run the project's frontend lint command (extension point: `wt_lint_frontend`).
 - Fix lint errors before pushing.
 
 ### E2E Testing
@@ -121,7 +121,7 @@ When reviewing open MRs, test all MRs that change visible behavior — not just 
 3. Skip MRs that only change CI config, linting, or non-visible code.
 4. Post test evidence on each MR after a green run.
 
-### SonarQube Quality Check
+### Quality Check
 
 - `t3 ci quality-check` — quality analysis.
 - Run before finalizing to catch quality issues early.
@@ -278,7 +278,7 @@ When an E2E test fails or the environment misbehaves, **re-read this skill's ver
 
 ### Browser Console First (Non-Negotiable)
 
-When an E2E test shows missing UI elements (empty form, blank section, component not rendering), **capture browser console errors before investigating component code.** Add `page.on('console', ...)` and `page.on('pageerror', ...)` listeners to your test. Runtime errors like `"Undefined form configuration!"` or `"Cannot read property of undefined"` reveal the root cause in seconds — investigating Angular change detection, signal timing, or template rendering without this context wastes hours.
+When an E2E test shows missing UI elements (empty form, blank section, component not rendering), **capture browser console errors before investigating component code.** Add `page.on('console', ...)` and `page.on('pageerror', ...)` listeners to your test. Runtime errors like `"Undefined form configuration!"` or `"Cannot read property of undefined"` reveal the root cause in seconds — investigating framework internals (change detection, signal timing, template rendering) without this context wastes hours.
 
 ### Screenshot Sanity Check (Non-Negotiable)
 
@@ -293,8 +293,8 @@ A screenshot with raw translation keys is **not valid evidence** — it proves t
 
 ### Store Contamination Check (Non-Negotiable)
 
-E2E tests for features that load data via store dispatches (e.g., NgRx `loadResources`) must verify the data is loaded **from the tested page**, not from a prior navigation. If you visit page A (which loads resources into the store) and then navigate to page B (which reads from the store but never dispatches the load), page B will appear to work — but only because page A pre-populated the store.
+E2E tests for features that load data via a state management store must verify the data is loaded **from the tested page**, not from a prior navigation. If you visit page A (which dispatches a data load into the store) and then navigate to page B (which reads from the store but never dispatches the load itself), page B will appear to work — but only because page A pre-populated the store.
 
 - **Each test must start from a clean state** — navigate directly to the page under test without visiting other pages first.
-- **Verify the page dispatches its own data load** — check the component source for the relevant dispatch call. If missing, the feature has a bug (empty dropdown, missing data), regardless of what the screenshot shows.
+- **Verify the page dispatches its own data load** — check the component source for the relevant dispatch/action call. If missing, the feature has a bug (empty dropdown, missing data), regardless of what the screenshot shows.
 - **Empty dropdowns/lists are a red flag** — if a modal or form shows "No items found", do NOT mark the test as passing. Investigate whether the data load is missing.
