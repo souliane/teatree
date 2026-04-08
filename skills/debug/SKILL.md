@@ -34,7 +34,7 @@ This skill delegates the generic debugging doctrine to:
 - `systematic-debugging` — root-cause-first investigation
 - `verification-before-completion` — evidence before claiming the fix worked
 
-TeaTree keeps the workflow-specific parts locally: service/worktree failure modes, repo scripts, and when to bounce back into lifecycle commands.
+These are optional companion skills from [obra/superpowers](https://github.com/obra/superpowers). If not installed, this skill still works — you just won't get the external debugging and verification guidelines. TeaTree keeps the workflow-specific parts locally: service/worktree failure modes, repo scripts, and when to bounce back into lifecycle commands.
 
 Reactive mode — something is wrong, find and fix it.
 
