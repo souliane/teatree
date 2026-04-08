@@ -9,6 +9,7 @@ triggers:
     - '\b(teatree|t3)\b'
     - '\b(lifecycle|overlay|worktree|provision|headless)\b'
     - '\b(plan(ning)?|prioriti[zs]e|backlog|project board|sprint|roadmap)\b'
+    - '\b(batch mode|work unattended|tackle tickets|quick wins)\b'
   exclude: '\b(t3:code|t3:test|t3:ship|t3:debug|t3:review)\b'
 search_hints:
   - teatree
@@ -23,6 +24,9 @@ search_hints:
   - prioritize
   - backlog
   - project board
+  - batch mode
+  - unattended
+  - quick wins
 ---
 
 # TeaTree — Agent Lifecycle Platform
@@ -189,6 +193,34 @@ After prioritization, the agent knows the backlog order. When the user asks "wha
 3. Suggest it: "Next up: #X — *title*. Load `/t3:ticket` to start?"
 
 This replaces guessing or asking the user what to work on — the board is the queue.
+
+### 7. Batch Mode (Unattended Ticket Processing)
+
+Follows after prioritization (steps 1-6 above). When the user says "batch mode", "work unattended", "tackle tickets", or "quick wins":
+
+**Prerequisites:** Load `ac-python` and `ac-django` — all code must follow their review checklists. If the overlay has a companion skill, load it too.
+
+1. **Run a codebase health audit** (load `ac-reviewing-codebase` in a sub-agent). Scope: all repos in the user's workspace directories. This finds actionable items beyond the issue tracker: god-modules, broken CI gates, missing coverage, stale branches.
+2. **Fetch the prioritized board** (from step 6) and sort by effort (quick wins first).
+3. **For each ticket**, in order:
+   - Read the issue. If it requires design decisions or user input, **skip it** and move to the next.
+   - Create a worktree at `~/workspace/souliane/tickets/<slug>`.
+   - Implement following `ac-python`/`ac-django` standards. When a teatree change affects the overlay API, make the corresponding overlay fix in the same session.
+   - Run tests + lint, self-review with a `t3:reviewer` sub-agent.
+   - Push, create PR, wait for CI, merge.
+   - Clean up worktree, update main.
+   - **Merge each PR before starting the next** (sequential, not parallel).
+4. **Close stale issues** that are already resolved in the codebase.
+5. **Report** what was done and what was skipped (with reasons) at the end.
+
+**Rules:**
+
+- Never edit the main clone — always use worktrees.
+- Never create issues/PRs without implementing them.
+- Skip tickets needing architectural decisions — collect them for the user.
+- Self-review every PR before merging.
+- Commit progressively at stable states.
+- Fix overlays together with core changes — don't leave them broken.
 
 ## Configuration
 
