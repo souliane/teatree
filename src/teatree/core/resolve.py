@@ -13,10 +13,10 @@ across the ``uv --directory`` subprocess chain.
 
 import logging
 import os
-import subprocess  # noqa: S404
 from pathlib import Path
 
 from teatree.core.models import Ticket, Worktree
+from teatree.utils import git
 
 logger = logging.getLogger(__name__)
 
@@ -112,16 +112,7 @@ def _auto_register_from_git(cwd: str) -> Worktree | None:
     if not git_file.is_file():
         return None  # Not a git worktree (worktrees have .git as a file, not dir)
 
-    try:
-        branch = subprocess.check_output(
-            ["git", "branch", "--show-current"],  # noqa: S607
-            cwd=cwd,
-            text=True,
-            timeout=5,
-        ).strip()
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
-        return None
-
+    branch = git.current_branch(repo=cwd)
     if not branch:
         return None
 

@@ -1,7 +1,6 @@
 """Pull request helpers: create, check gates, fetch issue, detect tenant."""
 
 import re
-import subprocess  # noqa: S404
 from collections.abc import Iterable
 from typing import cast
 
@@ -10,6 +9,7 @@ from django_typer.management import TyperCommand, command
 from teatree.core.backend_factory import code_host_from_overlay, get_issue_tracker
 from teatree.core.models import Ticket
 from teatree.core.overlay_loader import get_overlay
+from teatree.utils import git
 
 _IMAGE_URL_RE = re.compile(r"!\[([^\]]*)\]\((/uploads/[^\)]+)\)")
 _EXTERNAL_LINK_RE = re.compile(r"https?://(?:www\.)?(?:notion\.so|linear\.app|jira\.\S+)/\S+")
@@ -17,30 +17,12 @@ _EXTERNAL_LINK_RE = re.compile(r"https?://(?:www\.)?(?:notion\.so|linear\.app|ji
 
 def _current_user() -> str:
     """Return the git user name for MR auto-assignment."""
-    result = subprocess.run(
-        ["git", "config", "user.name"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    return result.stdout.strip() if result.returncode == 0 else ""
+    return git.config_value(key="user.name")
 
 
 def _last_commit_message(cwd: str) -> tuple[str, str]:
     """Return ``(subject, body)`` from the last git commit in *cwd*."""
-    result = subprocess.run(
-        ["git", "log", "-1", "--format=%s%n%n%b"],
-        cwd=cwd,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if result.returncode != 0:
-        return ("", "")
-    lines = result.stdout.strip().split("\n", 1)
-    subject = lines[0].strip()
-    body = lines[1].strip() if len(lines) > 1 else ""
-    return (subject, body)
+    return git.last_commit_message(repo=cwd)
 
 
 def _check_shipping_gate(ticket: Ticket) -> dict[str, object] | None:

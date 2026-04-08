@@ -42,7 +42,7 @@ depends_on = ["teatree.config"]
 
 [[modules]]
 path = "teatree.skill_loading"
-depends_on = ["teatree.types"]
+depends_on = ["teatree.types", "teatree.utils"]
 
 [[modules]]
 path = "teatree.skill_schema"

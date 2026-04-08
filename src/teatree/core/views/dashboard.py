@@ -23,6 +23,7 @@ from teatree.core.selectors import (
     build_task_graph,
     build_worktree_rows,
 )
+from teatree.utils import git as git_utils
 
 _PANEL_TEMPLATES = {
     "summary": "teatree/partials/dashboard_summary.html",
@@ -47,13 +48,11 @@ def _extract_overlay(request: HttpRequest) -> str | None:
 class DashboardView(View):
     def get(self, request: HttpRequest) -> HttpResponse:
         import json  # noqa: PLC0415
-        import subprocess  # noqa: PLC0415, S404
 
         overlay = _extract_overlay(request)
         try:
-            run = lambda cmd: subprocess.check_output(cmd, text=True, timeout=2).strip()  # noqa: E731, S603
-            git_sha = run(["git", "rev-parse", "--short", "HEAD"])
-            git_branch = run(["git", "rev-parse", "--abbrev-ref", "HEAD"])
+            git_sha = git_utils.run(args=["rev-parse", "--short", "HEAD"])
+            git_branch = git_utils.current_branch()
         except Exception:  # noqa: BLE001
             git_sha, git_branch = "", ""
         all_overlays = get_all_overlays()

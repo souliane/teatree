@@ -262,6 +262,65 @@ def test_fetch_without_ref(monkeypatch: pytest.MonkeyPatch) -> None:
     assert calls[-1] == ["git", "-C", "/tmp/r", "fetch", "origin"]
 
 
+def test_remote_url_returns_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        git.subprocess,
+        "run",
+        lambda *a, **kw: CompletedProcess(a[0], 0, "git@github.com:acme/repo.git\n", ""),
+    )
+    assert git.remote_url(repo="/tmp/r", remote="origin") == "git@github.com:acme/repo.git"
+
+
+def test_config_value_returns_value(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        git.subprocess,
+        "run",
+        lambda *a, **kw: CompletedProcess(a[0], 0, "Jane Doe\n", ""),
+    )
+    assert git.config_value(key="user.name") == "Jane Doe"
+
+
+def test_last_commit_message_parses_subject_and_body(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        git.subprocess,
+        "run",
+        lambda *a, **kw: CompletedProcess(a[0], 0, "fix: bug\n\nDetailed body\n", ""),
+    )
+    subject, body = git.last_commit_message(repo="/tmp/r")
+    assert subject == "fix: bug"
+    assert body == "Detailed body"
+
+
+def test_last_commit_message_subject_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        git.subprocess,
+        "run",
+        lambda *a, **kw: CompletedProcess(a[0], 0, "feat: add feature", ""),
+    )
+    subject, body = git.last_commit_message()
+    assert subject == "feat: add feature"
+    assert body == ""
+
+
+def test_worktree_add_with_and_without_create_branch(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(
+        args: list[str], *, capture_output: bool, text: bool = False, check: bool = False
+    ) -> CompletedProcess[str]:
+        calls.append(list(args))
+        return CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr(git.subprocess, "run", fake_run)
+
+    assert git.worktree_add("/tmp/r", "/tmp/wt", "feat-1", create_branch=True) is True
+    assert "-b" in calls[-1]
+
+    assert git.worktree_add("/tmp/r", "/tmp/wt2", "feat-1", create_branch=False) is True
+    assert "-b" not in calls[-1]
+    assert "feat-1" in calls[-1]
+
+
 def test_free_port_kills_process(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(ports, "port_in_use", lambda _port: True)
     monkeypatch.setattr(
@@ -442,16 +501,7 @@ def test_db_restore_detects_truncated_psql(monkeypatch: pytest.MonkeyPatch) -> N
 
 
 def test_gitlab_api_resolves_remote_project(monkeypatch: pytest.MonkeyPatch) -> None:
-    def fake_run(
-        args: list[str],
-        *,
-        capture_output: bool,
-        text: bool,
-        check: bool = False,
-    ) -> CompletedProcess[str]:
-        return CompletedProcess(args, 0, "git@gitlab.com:acme/platform.git\n", "")
-
-    monkeypatch.setattr(gitlab_api.subprocess, "run", fake_run)
+    monkeypatch.setattr(git, "remote_url", lambda **kwargs: "git@gitlab.com:acme/platform.git")
 
     client = gitlab_api.GitLabAPI(token="test-token")
     monkeypatch.setattr(
@@ -515,11 +565,8 @@ def test_gitlab_api_helpers_cover_http_paths_and_failures(monkeypatch: pytest.Mo
 
     monkeypatch.setattr(gitlab_api.httpx, "get", fake_get)
     monkeypatch.setattr(gitlab_api.httpx, "post", fake_post)
-    monkeypatch.setattr(
-        gitlab_api.subprocess,
-        "run",
-        lambda *args, **kwargs: CompletedProcess(list(args[0]), 1, "", ""),
-    )
+    monkeypatch.setattr(git, "remote_url", lambda **kwargs: "")
+    monkeypatch.setattr(git, "current_branch", lambda **kwargs: "")
 
     client = gitlab_api.GitLabAPI(token="")
     assert client.get_json("projects/x") is None
@@ -541,11 +588,7 @@ def test_gitlab_api_helpers_cover_http_paths_and_failures(monkeypatch: pytest.Mo
 
 
 def test_gitlab_api_returns_none_for_non_gitlab_remote(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        gitlab_api.subprocess,
-        "run",
-        lambda *args, **kwargs: CompletedProcess(list(args[0]), 0, "https://example.com/acme/repo.git\n", ""),
-    )
+    monkeypatch.setattr(git, "remote_url", lambda **kwargs: "https://example.com/acme/repo.git")
 
     assert gitlab_api.GitLabAPI(token="test-token").resolve_project_from_remote("/tmp/repo") is None
 

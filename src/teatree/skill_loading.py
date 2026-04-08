@@ -7,13 +7,13 @@ Two callers route through ``SkillLoadingPolicy``:
 """
 
 import re
-import subprocess  # noqa: S404
 from dataclasses import dataclass
 from fnmatch import fnmatch
 from pathlib import Path
 
 from teatree.skill_deps import resolve_requires
 from teatree.types import SkillMetadata
+from teatree.utils import git
 
 DEFAULT_SKILLS_DIR = Path(__file__).resolve().parents[2] / "skills"
 
@@ -277,32 +277,17 @@ def _matches_any_remote(cwd: Path, patterns: list[str]) -> bool:
 
 
 def _git_remote_urls(cwd: Path) -> list[str]:
-    origin_url = _git_remote_url(cwd, "origin")
+    origin_url = git.remote_url(repo=str(cwd), remote="origin")
     if origin_url:
         return [origin_url]
-    command = ["git", "-C", str(cwd), "remote", "-v"]
-    try:
-        proc = subprocess.run(command, capture_output=True, text=True, check=False)  # noqa: S603
-    except OSError:
-        return []
-    if proc.returncode != 0:
+    raw = git.run(repo=str(cwd), args=["remote", "-v"])
+    if not raw:
         return []
     seen: set[str] = set()
     urls: list[str] = []
-    for raw_line in proc.stdout.splitlines():
+    for raw_line in raw.splitlines():
         parts = raw_line.split()
         if len(parts) >= 2 and parts[1] not in seen:  # noqa: PLR2004
             seen.add(parts[1])
             urls.append(parts[1])
     return urls
-
-
-def _git_remote_url(cwd: Path, remote_name: str) -> str:
-    command = ["git", "-C", str(cwd), "remote", "get-url", remote_name]
-    try:
-        proc = subprocess.run(command, capture_output=True, text=True, check=False)  # noqa: S603
-    except OSError:
-        return ""
-    if proc.returncode != 0:
-        return ""
-    return proc.stdout.strip()
