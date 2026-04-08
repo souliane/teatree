@@ -196,14 +196,17 @@ This replaces guessing or asking the user what to work on — the board is the q
 
 ### 7. Batch Mode (Unattended Ticket Processing)
 
-When the user says "batch mode", "work unattended", "tackle tickets", or "quick wins":
+Follows after prioritization (steps 1-6 above). When the user says "batch mode", "work unattended", "tackle tickets", or "quick wins":
 
-1. **Run a codebase health audit first** (load `ac-reviewing-codebase`). This finds actionable items beyond the issue tracker: god-modules, broken CI gates, missing coverage, stale branches.
-2. **Fetch the project board** and sort by effort (quick wins first).
+**Prerequisites:** Load `ac-python` and `ac-django` — all code must follow their review checklists. If the overlay has a companion skill, load it too.
+
+1. **Run a codebase health audit** (load `ac-reviewing-codebase` in a sub-agent). Scope: all repos in the user's workspace directories. This finds actionable items beyond the issue tracker: god-modules, broken CI gates, missing coverage, stale branches.
+2. **Fetch the prioritized board** (from step 6) and sort by effort (quick wins first).
 3. **For each ticket**, in order:
    - Read the issue. If it requires design decisions or user input, **skip it** and move to the next.
    - Create a worktree at `~/workspace/souliane/tickets/<slug>`.
-   - Implement the fix, run tests + lint, self-review with a sub-agent.
+   - Implement following `ac-python`/`ac-django` standards. When a teatree change affects the overlay API, make the corresponding overlay fix in the same session.
+   - Run tests + lint, self-review with a `t3:reviewer` sub-agent.
    - Push, create PR, wait for CI, merge.
    - Clean up worktree, update main.
    - **Merge each PR before starting the next** (sequential, not parallel).
@@ -217,6 +220,7 @@ When the user says "batch mode", "work unattended", "tackle tickets", or "quick 
 - Skip tickets needing architectural decisions — collect them for the user.
 - Self-review every PR before merging.
 - Commit progressively at stable states.
+- Fix overlays together with core changes — don't leave them broken.
 
 ## Configuration
 
