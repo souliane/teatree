@@ -273,6 +273,62 @@ class TestSession(TestCase):
 
         assert session.visited_phases == ["testing"]
 
+    def test_visit_phase_records_agent_id(self) -> None:
+        session = Session.objects.create(ticket=Ticket.objects.create(), agent_id="agent-1")
+
+        session.visit_phase("coding", agent_id="agent-1")
+        session.refresh_from_db()
+
+        assert "coding" in session.phase_visits
+        assert session.phase_visits["coding"]["agent_id"] == "agent-1"
+        assert "timestamp" in session.phase_visits["coding"]
+
+    def test_visit_phase_without_agent_id_skips_phase_visits(self) -> None:
+        session = Session.objects.create(ticket=Ticket.objects.create())
+
+        session.visit_phase("coding")
+        session.refresh_from_db()
+
+        assert session.phase_visits == {}
+        assert "coding" in session.visited_phases
+
+    def test_maker_checker_rejects_same_agent(self) -> None:
+        session = Session.objects.create(ticket=Ticket.objects.create())
+
+        session.visit_phase("testing", agent_id="agent-1")
+        session.visit_phase("coding", agent_id="agent-1")
+        session.visit_phase("reviewing", agent_id="agent-1")
+
+        with pytest.raises(QualityGateError, match="Maker≠checker violation"):
+            session.check_gate("shipping")
+
+    def test_maker_checker_allows_different_agents(self) -> None:
+        session = Session.objects.create(ticket=Ticket.objects.create())
+
+        session.visit_phase("testing", agent_id="agent-1")
+        session.visit_phase("coding", agent_id="agent-1")
+        session.visit_phase("reviewing", agent_id="agent-2")
+
+        session.check_gate("shipping")  # should not raise
+
+    def test_maker_checker_skipped_without_phase_visits(self) -> None:
+        session = Session.objects.create(ticket=Ticket.objects.create())
+
+        session.visit_phase("testing")
+        session.visit_phase("coding")
+        session.visit_phase("reviewing")
+
+        session.check_gate("shipping")  # no agent_ids recorded → no enforcement
+
+    def test_maker_checker_bypassed_with_force(self) -> None:
+        session = Session.objects.create(ticket=Ticket.objects.create())
+
+        session.visit_phase("testing", agent_id="agent-1")
+        session.visit_phase("coding", agent_id="agent-1")
+        session.visit_phase("reviewing", agent_id="agent-1")
+
+        session.check_gate("shipping", force=True)  # force bypasses all checks
+
     def test_repo_tracking(self) -> None:
         session = Session.objects.create(ticket=Ticket.objects.create())
 
