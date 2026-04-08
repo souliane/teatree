@@ -1153,3 +1153,48 @@ Dev dependencies: ruff, pytest, pytest-cov, pytest-django, ty, import-linter, pr
 - `claude -p` is headless (exits immediately). Interactive sessions use `claude` without `-p`.
 - Dashboard requires uvicorn (ASGI) for SSE streaming — overlays must add `uvicorn[standard]` to their dependencies.
 - E2E tests use file-based SQLite (not `:memory:`) because Playwright spawns a separate server process.
+
+## Module Dependency Graph
+
+<!-- tach-dependency-graph:start -->
+
+```mermaid
+graph TD
+    teatree.utils --> teatree.config
+    teatree.autostart --> teatree.config
+    teatree.timeouts --> teatree.config
+    teatree.skill_loading --> teatree.types
+    teatree.skill_loading --> teatree.utils
+    teatree.core --> teatree.types
+    teatree.core --> teatree.config
+    teatree.core --> teatree.utils
+    teatree.core --> teatree.timeouts
+    teatree.core --> teatree.skill_schema
+    teatree.core --> teatree.agents
+    teatree.core --> teatree.backends
+    teatree.agents --> teatree.types
+    teatree.agents --> teatree.core
+    teatree.agents --> teatree.skill_loading
+    teatree.agents --> teatree.utils
+    teatree.backends --> teatree.utils
+    teatree.contrib --> teatree.types
+    teatree.contrib --> teatree.core
+    teatree.cli --> teatree.config
+    teatree.cli --> teatree.core
+    teatree.cli --> teatree.agents
+    teatree.cli --> teatree.backends
+    teatree.cli --> teatree.skill_loading
+    teatree.cli --> teatree.skill_schema
+    teatree.cli --> teatree.claude_sessions
+    teatree.cli --> teatree.overlay_init
+    teatree.cli --> teatree.autostart
+    teatree.cli --> teatree.utils
+    teatree.types
+    teatree.config
+    teatree.templates
+    teatree.claude_sessions
+    teatree.overlay_init
+    teatree.skill_schema
+```
+
+<!-- tach-dependency-graph:end -->
