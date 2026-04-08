@@ -500,6 +500,43 @@
           {% include "teatree/partials/dashboard_action_required.html" with action_items=snapshot.action_required only %}
         </div>
       </details>
+      <!-- Active Sessions -->
+      <details open class="group overflow-hidden rounded-[1.5rem] border border-bark/10 bg-cream/90 shadow-soft backdrop-blur">
+        <summary class="flex cursor-pointer items-center gap-2 border-b border-bark/10 px-5 py-4">
+          <span class="group-open:hidden">&#9654;</span><span class="hidden group-open:inline">&#9660;</span>
+          <h2 class="font-display text-2xl">Active Sessions</h2>
+          <span class="font-sans text-sm text-bark/60">Running Claude processes on this machine.</span>
+        </summary>
+        <div
+          class="px-5 py-5"
+          hx-get="{% url 'teatree:dashboard-panel' 'sessions' %}"
+          hx-trigger="load, every 60s, refreshPanels from:body, sse:sessions"
+          hx-swap="innerHTML"
+        >
+          {% include "teatree/partials/dashboard_sessions.html" with sessions=snapshot.active_sessions only %}
+        </div>
+      </details>
+      <!-- Headless Queue -->
+      <details open class="group overflow-hidden rounded-[1.5rem] border border-bark/10 bg-cream/90 shadow-soft backdrop-blur">
+        <summary class="flex cursor-pointer items-center gap-2 border-b border-bark/10 px-5 py-4">
+          <span class="group-open:hidden">&#9654;</span><span class="hidden group-open:inline">&#9660;</span>
+          <h2 class="font-display text-2xl">Headless Queue</h2>
+          <span class="font-sans text-sm text-bark/60">Automated task execution.</span>
+          <label class="ml-auto flex cursor-pointer items-center gap-1 font-sans text-[10px] uppercase tracking-[0.18em] text-bark/40" onclick="event.stopPropagation()">
+            <input type="checkbox" data-filter="headless_queue" onchange="toggleDismissed(this, 'headless_queue')" class="accent-bark/40">
+            Show dismissed
+          </label>
+        </summary>
+        <div
+          id="panel-headless_queue"
+          class="px-5 py-5"
+          hx-get="{% url 'teatree:dashboard-panel' 'headless_queue' %}"
+          hx-trigger="load, every 600s, refreshPanels from:body, sse:headless_queue"
+          hx-swap="innerHTML"
+        >
+          {% include "teatree/partials/dashboard_headless_queue.html" with headless_queue=snapshot.headless_queue only %}
+        </div>
+      </details>
       <!-- Interactive Queue -->
       <details open class="group overflow-hidden rounded-[1.5rem] border border-bark/10 bg-cream/90 shadow-soft backdrop-blur">
         <summary class="flex cursor-pointer items-center gap-2 border-b border-bark/10 px-5 py-4">
@@ -514,6 +551,38 @@
           hx-swap="innerHTML"
         >
           {% include "teatree/partials/dashboard_queue.html" with queue=snapshot.interactive_queue only %}
+        </div>
+      </details>
+      <!-- Review Comments -->
+      <details open class="group overflow-hidden rounded-[1.5rem] border border-bark/10 bg-cream/90 shadow-soft backdrop-blur">
+        <summary class="flex cursor-pointer items-center gap-2 border-b border-bark/10 px-5 py-4">
+          <span class="group-open:hidden">&#9654;</span><span class="hidden group-open:inline">&#9660;</span>
+          <h2 class="font-display text-2xl">Review Comments</h2>
+          <span class="font-sans text-sm text-bark/60">Discussion thread status across open MRs.</span>
+        </summary>
+        <div
+          class="px-5 py-5"
+          hx-get="{% url 'teatree:dashboard-panel' 'review_comments' %}"
+          hx-trigger="load, every 600s, refreshPanels from:body, sse:review_comments"
+          hx-swap="innerHTML"
+        >
+          {% include "teatree/partials/dashboard_review_comments.html" with review_comments=snapshot.review_comments only %}
+        </div>
+      </details>
+      <!-- Recent Activity -->
+      <details open class="group overflow-hidden rounded-[1.5rem] border border-bark/10 bg-cream/90 shadow-soft backdrop-blur">
+        <summary class="flex cursor-pointer items-center gap-2 border-b border-bark/10 px-5 py-4">
+          <span class="group-open:hidden">&#9654;</span><span class="hidden group-open:inline">&#9660;</span>
+          <h2 class="font-display text-2xl">Recent Activity</h2>
+          <span class="font-sans text-sm text-bark/60">Last completed task attempts.</span>
+        </summary>
+        <div
+          class="px-5 py-5"
+          hx-get="{% url 'teatree:dashboard-panel' 'activity' %}"
+          hx-trigger="load, every 120s, refreshPanels from:body, sse:activity"
+          hx-swap="innerHTML"
+        >
+          {% include "teatree/partials/dashboard_activity.html" with activity=snapshot.recent_activity only %}
         </div>
       </details>
       <!-- In-Flight Tickets -->
@@ -564,86 +633,6 @@
           hx-on::after-settle="filterTickets()"
         >
           {% include "teatree/partials/dashboard_tickets.html" with tickets=snapshot.tickets only %}
-        </div>
-      </details>
-      <!-- Active Sessions -->
-      <details open class="group overflow-hidden rounded-[1.5rem] border border-bark/10 bg-cream/90 shadow-soft backdrop-blur">
-        <summary class="flex cursor-pointer items-center gap-2 border-b border-bark/10 px-5 py-4">
-          <span class="group-open:hidden">&#9654;</span><span class="hidden group-open:inline">&#9660;</span>
-          <h2 class="font-display text-2xl">Active Sessions</h2>
-          <span class="font-sans text-sm text-bark/60">Running Claude processes on this machine.</span>
-        </summary>
-        <div
-          class="px-5 py-5"
-          hx-get="{% url 'teatree:dashboard-panel' 'sessions' %}"
-          hx-trigger="load, every 60s, refreshPanels from:body, sse:sessions"
-          hx-swap="innerHTML"
-        >
-          {% include "teatree/partials/dashboard_sessions.html" with sessions=snapshot.active_sessions only %}
-        </div>
-      </details>
-      <!-- Recent Activity -->
-      <details open class="group overflow-hidden rounded-[1.5rem] border border-bark/10 bg-cream/90 shadow-soft backdrop-blur">
-        <summary class="flex cursor-pointer items-center gap-2 border-b border-bark/10 px-5 py-4">
-          <span class="group-open:hidden">&#9654;</span><span class="hidden group-open:inline">&#9660;</span>
-          <h2 class="font-display text-2xl">Recent Activity</h2>
-          <span class="font-sans text-sm text-bark/60">Last completed task attempts.</span>
-        </summary>
-        <div
-          class="px-5 py-5"
-          hx-get="{% url 'teatree:dashboard-panel' 'activity' %}"
-          hx-trigger="load, every 120s, refreshPanels from:body, sse:activity"
-          hx-swap="innerHTML"
-        >
-          {% include "teatree/partials/dashboard_activity.html" with activity=snapshot.recent_activity only %}
-        </div>
-      </details>
-      <!-- Automated (collapsed by default) -->
-      <details class="group">
-        <summary class="cursor-pointer list-none rounded-[1rem] border border-bark/10 bg-cream/90 px-5 py-3 font-sans text-sm font-semibold text-bark/50 shadow-soft backdrop-blur hover:text-bark">
-          <span class="group-open:hidden">&#9654;</span><span class="hidden group-open:inline">&#9660;</span>
-          Automated — Headless queue, Review comments
-        </summary>
-        <div class="mt-4 grid gap-4">
-          <section class="overflow-hidden rounded-[1.5rem] border border-bark/10 bg-cream/90 shadow-soft backdrop-blur">
-            <div class="flex flex-col gap-2 border-b border-bark/10 px-5 py-4 sm:flex-row sm:items-end sm:justify-between">
-              <div>
-                <h2 class="font-display text-2xl">Headless Queue</h2>
-                <p class="font-sans text-sm text-bark/60">Automated task execution.</p>
-              </div>
-              <div class="flex items-center gap-2">
-                <label class="flex cursor-pointer items-center gap-1 font-sans text-[10px] uppercase tracking-[0.18em] text-bark/40">
-                  <input type="checkbox" data-filter="headless_queue" onchange="toggleDismissed(this, 'headless_queue')" class="accent-bark/40">
-                  Show dismissed
-                </label>
-              </div>
-            </div>
-            <div
-              id="panel-headless_queue"
-              class="px-5 py-5"
-              hx-get="{% url 'teatree:dashboard-panel' 'headless_queue' %}"
-              hx-trigger="load, every 600s, refreshPanels from:body, sse:headless_queue"
-              hx-swap="innerHTML"
-            >
-              {% include "teatree/partials/dashboard_headless_queue.html" with headless_queue=snapshot.headless_queue only %}
-            </div>
-          </section>
-          <section class="overflow-hidden rounded-[1.5rem] border border-bark/10 bg-cream/90 shadow-soft backdrop-blur">
-            <div class="flex flex-col gap-2 border-b border-bark/10 px-5 py-4 sm:flex-row sm:items-end sm:justify-between">
-              <div>
-                <h2 class="font-display text-2xl">Review Comments</h2>
-                <p class="font-sans text-sm text-bark/60">Discussion thread status across open MRs.</p>
-              </div>
-            </div>
-            <div
-              class="px-5 py-5"
-              hx-get="{% url 'teatree:dashboard-panel' 'review_comments' %}"
-              hx-trigger="load, every 600s, refreshPanels from:body, sse:review_comments"
-              hx-swap="innerHTML"
-            >
-              {% include "teatree/partials/dashboard_review_comments.html" with review_comments=snapshot.review_comments only %}
-            </div>
-          </section>
         </div>
       </details>
     </div>
