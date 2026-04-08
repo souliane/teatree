@@ -59,7 +59,7 @@ Show the commit log to the user.
 
 ### 1b. Squash Option
 
-If there is **more than one** unpushed commit, offer to squash following the canonical squash rules from `ac-reviewing-codebase` § `references/repo-management.md`. Key points: group by topic, keep human-sized, never rewrite pushed history, squash integrity check. Respect `T3_AUTO_SQUASH`.
+If there is **more than one** unpushed commit, offer to squash following the squash rules in [`../t3:ship/SKILL.md`](../t3:ship/SKILL.md) § "Finalize Branch".
 
 ### 2. Pre-Flight Checks (all must pass)
 

@@ -361,13 +361,7 @@ git commit -m "fix(<skill>): <what was learned>"
 
 ### Squashing Retro Commits
 
-Squash retro commits into clean, human-sized units **before chaining to the review skill**. Follow the canonical squash rules from `ac-reviewing-codebase` § `references/repo-management.md`:
-
-- Never rewrite pushed history (`git log origin/<branch>..HEAD` to identify safe range).
-- Group by topic (e.g., all retro fixes to the same skill become one commit).
-- Keep human-sized commits.
-- Squash integrity check: save `OLD_TIP=$(git rev-parse HEAD)`, verify `git diff $OLD_TIP..HEAD` is empty after rewrite.
-- Respect `T3_AUTO_SQUASH` (`true` = auto, `false` = ask first).
+Squash retro commits into clean, human-sized units **before chaining to the review skill**. Follow the squash rules in [`../t3:ship/SKILL.md`](../t3:ship/SKILL.md) § "Finalize Branch".
 
 ### After Committing
 
