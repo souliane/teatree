@@ -24,8 +24,11 @@ import teatree.core.management.commands.run as run_mod
 import teatree.core.management.commands.tool as tool_mod
 import teatree.core.management.commands.workspace as workspace_mod
 import teatree.core.overlay_loader as overlay_loader_mod
+import teatree.core.provisioners as provisioners_mod
+import teatree.core.step_runner as step_runner_mod
 import teatree.core.views._startup as startup_mod
 import teatree.utils.db as db_mod
+import teatree.utils.django_db as django_db_mod
 import teatree.utils.git as git_mod
 from teatree.core.management.commands.lifecycle import _register_new_repos
 from teatree.core.management.commands.pr import _last_commit_message
@@ -288,6 +291,12 @@ class TestWorkspaceDirHelper(TestCase):
 
 
 class TestWorkspaceTicket(TestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        self.enterContext(
+            patch.object(git_mod.subprocess, "run", return_value=MagicMock(returncode=0, stdout="dev", stderr="")),
+        )
+
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
     def test_creates_ticket_and_worktrees(self) -> None:
@@ -1270,6 +1279,12 @@ class TestDbResetPasswords(TestCase):
 
 
 class TestPrCreate(TestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        self.enterContext(
+            patch.object(pr_mod.subprocess, "run", return_value=MagicMock(returncode=0, stdout="dev", stderr="")),
+        )
+
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
     def test_without_code_host_returns_error(self) -> None:
@@ -2381,6 +2396,15 @@ class TestE2eExternal(TestCase):
 
 
 class TestLifecycleSetup(TestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        mock_sp = MagicMock()
+        mock_sp.run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        mock_sp.TimeoutExpired = subprocess.TimeoutExpired
+        mock_sp.CompletedProcess = subprocess.CompletedProcess
+        for mod in (lifecycle_mod, provisioners_mod, step_runner_mod, db_mod, django_db_mod, git_mod):
+            self.enterContext(patch.object(mod, "subprocess", mock_sp))
+
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
     def test_runs_reset_passwords(self) -> None:
@@ -2552,9 +2576,7 @@ class TestLifecycleSetup(TestCase):
                 extra={"worktree_path": str(wt_dir)},
             )
 
-            with patch.object(lifecycle_mod, "subprocess") as mock_sp:
-                mock_sp.run.return_value = MagicMock(returncode=0)
-                call_command("lifecycle", "setup", path=str(wt_dir))
+            call_command("lifecycle", "setup", path=str(wt_dir))
 
             # PreRunOverlay.get_run_commands returns backend, frontend, build-frontend
             wt.refresh_from_db()
@@ -2578,10 +2600,7 @@ class TestLifecycleSetup(TestCase):
                 extra={"worktree_path": str(wt_dir)},
             )
 
-            with (
-                patch.object(lifecycle_mod.subprocess, "run"),
-                patch.object(startup_mod, "DATA_DIR", tmp_path),
-            ):
+            with patch.object(startup_mod, "DATA_DIR", tmp_path):
                 call_command("lifecycle", "setup", path=str(wt_dir))
 
             cache_file = tmp_path / "skill-metadata.json"

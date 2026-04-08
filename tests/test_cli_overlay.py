@@ -198,6 +198,7 @@ class TestOverlayCommands:
         with (
             patch.object(cli_mod, "managepy") as mock_manage,
             patch.object(cli_mod, "_uvicorn") as mock_uvicorn,
+            patch.object(cli_mod, "subprocess"),
             patch("teatree.cli.discover_active_overlay", return_value=self._mock_active_overlay(tmp_path)),
             patch("socket.socket") as mock_socket_cls,
         ):
@@ -241,6 +242,7 @@ class TestOverlayCommands:
         with (
             patch.object(cli_mod, "managepy"),
             patch.object(cli_mod, "_uvicorn") as mock_uvicorn,
+            patch.object(cli_mod, "subprocess"),
             patch("teatree.cli.discover_active_overlay", return_value=self._mock_active_overlay(tmp_path)),
             patch("socket.socket", side_effect=socket_factory),
         ):

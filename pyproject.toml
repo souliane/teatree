@@ -186,6 +186,7 @@ lint.per-file-ignores."tests/**/*.py" = [
   "S106",
   "S108",    # hardcoded-temp-file (test fixtures)
   "S404",    # subprocess-import
+  "S603",    # subprocess call with trusted test inputs (integration tests)
   "SLF001",  # private-member-access (testing internals)
 ]
 lint.fixable = [ "ALL" ]
@@ -226,6 +227,9 @@ filterwarnings = [
   "ignore:In Typer, only the parameter 'autocompletion' is supported.*:DeprecationWarning",
 ]
 xfail_strict = true
+markers = [
+  "integration: tests that run real subprocesses (shell scripts, git, etc.)",
+]
 
 # --- Coverage ---
 

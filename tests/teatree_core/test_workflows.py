@@ -5,6 +5,7 @@ through the Django ORM, management commands, and test client, mocking only exter
 dependencies (subprocess, filesystem, HTTP).
 """
 
+import subprocess
 from collections.abc import Iterator
 from pathlib import Path
 from typing import cast
@@ -19,7 +20,11 @@ import teatree.core.management.commands.run as run_mod
 import teatree.core.management.commands.tool as tool_mod
 import teatree.core.management.commands.workspace as workspace_mod
 import teatree.core.overlay_loader as overlay_loader_mod
+import teatree.core.provisioners as provisioners_mod
+import teatree.core.step_runner as step_runner_mod
 import teatree.core.tasks as tasks_mod
+import teatree.utils.db as db_mod
+import teatree.utils.git as git_mod
 from teatree.core.models import Session, Task, Ticket, Worktree
 from teatree.core.overlay import OverlayBase, OverlayMetadata, ProvisionStep, RunCommands, ServiceSpec, ToolCommand
 from teatree.core.overlay_loader import reset_overlay_cache
@@ -120,6 +125,15 @@ def _clear_overlay() -> Iterator[None]:
 
 
 class TestLifecycleProvision(TestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        mock_sp = MagicMock()
+        mock_sp.run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        mock_sp.TimeoutExpired = subprocess.TimeoutExpired
+        mock_sp.CompletedProcess = subprocess.CompletedProcess
+        for mod in (lifecycle_mod, provisioners_mod, step_runner_mod, db_mod, git_mod):
+            self.enterContext(patch.object(mod, "subprocess", mock_sp))
+
     @pytest.fixture(autouse=True)
     def _inject_fixtures(self, tmp_path: Path) -> None:
         self._tmp_path = tmp_path
@@ -693,6 +707,17 @@ class TestRunBackend(TestCase):
 
 
 class TestToolAndCleanCommands(TestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        import teatree.utils.django_db as django_db_mod  # noqa: PLC0415
+
+        mock_sp = MagicMock()
+        mock_sp.run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        mock_sp.TimeoutExpired = subprocess.TimeoutExpired
+        mock_sp.CompletedProcess = subprocess.CompletedProcess
+        for mod in (lifecycle_mod, step_runner_mod, db_mod, django_db_mod, git_mod):
+            self.enterContext(patch.object(mod, "subprocess", mock_sp))
+
     @override_settings(**WORKFLOW_SETTINGS)
     def test_tool_list_and_run_dispatches_overlay_commands(self) -> None:
         """Test the tool management command lists and runs overlay tools."""

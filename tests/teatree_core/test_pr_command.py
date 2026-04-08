@@ -23,6 +23,12 @@ _MOCK_OVERLAY = {"test": CommandOverlay()}
 
 
 class TestPrCreate(TestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        self.enterContext(
+            patch.object(pr_command.subprocess, "run", return_value=MagicMock(returncode=0, stdout="dev", stderr="")),
+        )
+
     @pytest.fixture(autouse=True)
     def _inject_fixtures(self, monkeypatch: pytest.MonkeyPatch) -> None:
         self._monkeypatch = monkeypatch

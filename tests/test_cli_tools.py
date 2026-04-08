@@ -22,7 +22,11 @@ class TestToolRunner:
         """ToolRunner.run_script succeeds for a passing script."""
         script = tmp_path / "ok_script.py"
         script.write_text("pass")
-        with patch.object(ToolRunner, "scripts_dir", return_value=tmp_path):
+        with (
+            patch.object(ToolRunner, "scripts_dir", return_value=tmp_path),
+            patch.object(teatree_cli_tools, "subprocess") as mock_sp,
+        ):
+            mock_sp.run.return_value = subprocess.CompletedProcess([], 0)
             ToolRunner.run_script("ok_script")
 
     def test_run_script_failure(self, tmp_path):
@@ -31,7 +35,11 @@ class TestToolRunner:
 
         script = tmp_path / "test_script.py"
         script.write_text("import sys; sys.exit(2)")
-        with patch.object(ToolRunner, "scripts_dir", return_value=tmp_path):
+        with (
+            patch.object(ToolRunner, "scripts_dir", return_value=tmp_path),
+            patch.object(teatree_cli_tools, "subprocess") as mock_sp,
+        ):
+            mock_sp.run.return_value = subprocess.CompletedProcess([], 2)
             try:
                 ToolRunner.run_script("test_script")
                 msg = "Expected Exit"
