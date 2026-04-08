@@ -484,6 +484,34 @@ def handle_post_compact(data: dict) -> None:
     json.dump({"additionalContext": context}, sys.stdout)
 
 
+def handle_session_end(data: dict) -> None:
+    """Suggest retro when lifecycle skills were loaded during the session."""
+    session_id = data.get("session_id", "")
+    if not session_id:
+        return
+
+    skills_file = STATE_DIR / f"{session_id}.skills"
+    if not skills_file.is_file():
+        return
+
+    loaded = {line.strip() for line in skills_file.read_text(encoding="utf-8").splitlines() if line.strip()}
+
+    lifecycle_skills = {"t3:code", "t3:debug", "t3:test", "t3:ship", "t3:review", "t3:ticket"}
+    if not loaded & lifecycle_skills:
+        return
+
+    json.dump(
+        {
+            "additionalContext": (
+                "SESSION ENDING — lifecycle skills were loaded during this session "
+                f"({', '.join(sorted(loaded & lifecycle_skills))}). "
+                "Consider running /t3:retro to capture learnings before the session ends."
+            ),
+        },
+        sys.stdout,
+    )
+
+
 # ── Router ──────────────────────────────────────────────────────────
 
 _HANDLERS: dict[str, list] = {
@@ -492,6 +520,7 @@ _HANDLERS: dict[str, list] = {
     "PostToolUse": [handle_track_active_repo, handle_track_skill_usage, handle_read_dedup],
     "InstructionsLoaded": [handle_track_skill_usage],
     "PostCompact": [handle_post_compact],
+    "SessionEnd": [handle_session_end],
 }
 
 
