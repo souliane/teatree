@@ -25,7 +25,16 @@ def test_dashboard_loads(e2e_server: str, page: Page) -> None:
     """Page loads, summary counters and section headings are visible."""
     page.goto(e2e_server)
     expect(page.locator("body")).to_contain_text("In Flight Tickets")
-    for heading in ["Automation", "Action Required", "In-Flight Tickets", "Interactive Queue", "Active Sessions"]:
+    for heading in [
+        "Automation",
+        "Action Required",
+        "Active Sessions",
+        "Headless Queue",
+        "Interactive Queue",
+        "Review Comments",
+        "Recent Activity",
+        "In-Flight Tickets",
+    ]:
         expect(page.locator("h2", has_text=heading)).to_be_visible()
 
 
@@ -78,14 +87,13 @@ def test_ticket_action_buttons(e2e_server: str, page: Page) -> None:
 
 def test_headless_queue_content(e2e_server: str, page: Page, assert_snapshot: Callable) -> None:
     page.goto(e2e_server)
-    page.locator("summary", has_text="Automated").click()
     expect(page.locator("body")).to_contain_text("Automated code review")
     expect(page.locator("button", has_text="Execute").first).to_be_visible()
 
-    automation_section = page.locator("h2", has_text="Automation").locator("..")
+    headless_section = page.locator("h2", has_text="Headless Queue").locator("..")
     assert_snapshot(
-        automation_section.screenshot(animations="disabled"),
-        name="automation-expanded.png",
+        headless_section.screenshot(animations="disabled"),
+        name="headless-queue.png",
         threshold=_SNAPSHOT_THRESHOLD,
     )
 
@@ -155,7 +163,6 @@ def test_dismiss_pending_task(e2e_server: str, page: Page) -> None:
 
 def test_cancel_claimed_task(e2e_server: str, page: Page) -> None:
     page.goto(e2e_server)
-    page.locator("summary", has_text="Automated").click()
     execute_btn = page.locator("button", has_text="Execute").first
     expect(execute_btn).to_be_visible()
     execute_btn.click()
@@ -179,12 +186,18 @@ def test_unknown_panel_404(e2e_server: str, page: Page) -> None:
 
 def test_htmx_panels_present(e2e_server: str, page: Page) -> None:
     page.goto(e2e_server)
-    for panel in ["summary", "tickets", "queue", "sessions", "action_required", "automation"]:
+    for panel in [
+        "summary",
+        "automation",
+        "action_required",
+        "sessions",
+        "headless_queue",
+        "queue",
+        "review_comments",
+        "activity",
+        "tickets",
+    ]:
         expect(page.locator(f"[hx-get*='{panel}']").first).to_be_visible()
-    page.locator("summary", has_text="Automated").click()
-    for panel in ["headless_queue", "review_comments"]:
-        expect(page.locator(f"[hx-get*='{panel}']").first).to_be_visible()
-    expect(page.locator("[hx-get*='activity']").first).to_be_attached()
 
 
 # ── Additional panels ──────────────────────────────────────────────
@@ -204,7 +217,6 @@ def test_action_required_panel(e2e_server: str, page: Page, assert_snapshot: Cal
 
 def test_review_comments_panel(e2e_server: str, page: Page) -> None:
     page.goto(e2e_server)
-    page.locator("summary", has_text="Automated").click()
     expect(page.locator("h2", has_text="Review Comments")).to_be_visible()
 
 
