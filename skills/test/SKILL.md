@@ -38,7 +38,7 @@ Running tests, analyzing failures, quality checks, CI interaction, test plans, a
 
 **Prerequisites:** Docker services (Postgres, Redis) must be running. Start them via `t3 lifecycle start` (see `/t3:workspace`) rather than raw `docker compose`. Read the project's test reference (e.g. `references/running-tests-and-lint.md`) for the full setup steps.
 
-- `t3 run tests` — run the project test suite (extension point: `wt_run_tests`).
+- `t3 run tests` — run the project test suite.
 - Flags: `--reuse-db`, `--failed-first`, optional `--parallel`.
 - Always run with `--reuse-db` for speed unless schema changed.
 - Use `--failed-first` to quickly re-verify fixes.
@@ -52,7 +52,7 @@ Running tests, analyzing failures, quality checks, CI interaction, test plans, a
 
 - Playwright-based E2E tests.
 - **Always run headless** with `CI=1`.
-- `t3 ci trigger-e2e` — trigger E2E tests on CI (extension point: `wt_trigger_e2e`).
+- `t3 ci trigger-e2e` — trigger E2E tests on CI.
 
 **Full worktree per MR (Non-Negotiable):** Each MR under test MUST have its own full worktree setup (backend + frontend via `t3 lifecycle setup` + `t3 lifecycle start`). Never mix backends from one worktree with frontends from another. Never patch an incomplete worktree by hand — if it's missing repos, env files, or DB, delete it and start over with `t3 workspace ticket`. Anti-pattern: manually adding repos with `git worktree add`, copying env files, editing `.env.worktree` by hand.
 
@@ -123,13 +123,13 @@ When reviewing open MRs, test all MRs that change visible behavior — not just 
 
 ### SonarQube Quality Check
 
-- `t3 ci quality-check` — quality analysis (extension point: `wt_quality_check`).
+- `t3 ci quality-check` — quality analysis.
 - Run before finalizing to catch quality issues early.
 
 ### CI Interaction
 
-- `t3 ci fetch-failed-tests` — extract failed test node IDs from CI (extension point: `wt_fetch_failed_tests`).
-- `t3 ci fetch-errors` — extract error logs from CI (extension point: `wt_fetch_ci_errors`).
+- `t3 ci fetch-failed-tests` — extract failed test node IDs from CI.
+- `t3 ci fetch-errors` — extract error logs from CI.
 - Run failed tests locally to reproduce before fixing.
 
 ### CI Pipeline Monitoring
