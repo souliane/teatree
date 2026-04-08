@@ -7,7 +7,7 @@ from django.test import TestCase
 
 import teatree.core.overlay_loader as overlay_loader_mod
 from teatree.backends.gitlab_api import ProjectInfo
-from teatree.core.models import Ticket
+from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay import OverlayBase, OverlayConfig, ProvisionStep
 from teatree.core.overlay_loader import reset_overlay_cache
 from teatree.core.sync import (
@@ -784,7 +784,8 @@ class TestDetectE2EEvidence:
 
 
 class TestApplyMergedStatusAllMerged(TestCase):
-    def test_advances_state_when_all_merged_no_discussions(self) -> None:
+    @patch("teatree.core.sync.cleanup_worktree")
+    def test_advances_state_when_all_merged_no_discussions(self, mock_cleanup: MagicMock) -> None:
         """All MRs merged but none have discussions — state should still advance."""
         ticket = Ticket.objects.create(
             issue_url="https://gitlab.com/org/repo/-/issues/1",
@@ -806,6 +807,44 @@ class TestApplyMergedStatusAllMerged(TestCase):
         _apply_merged_status(ticket, {"url1"}, result)
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.IN_REVIEW
+
+    @patch("teatree.core.sync.cleanup_worktree")
+    def test_auto_cleans_worktrees_on_merge(self, mock_cleanup: MagicMock) -> None:
+        ticket = Ticket.objects.create(
+            issue_url="https://gitlab.com/org/repo/-/issues/3",
+            state=Ticket.State.IN_REVIEW,
+            extra={"mrs": {"url1": {"title": "MR1"}}},
+        )
+        Worktree.objects.create(
+            overlay="test",
+            ticket=ticket,
+            repo_path="org/repo",
+            branch="fix-3",
+        )
+        result = SyncResult()
+        _apply_merged_status(ticket, {"url1"}, result)
+        mock_cleanup.assert_called_once()
+        assert result.worktrees_cleaned == 1
+
+    @patch("teatree.core.sync.cleanup_worktree", side_effect=RuntimeError("cleanup failed"))
+    def test_cleanup_failure_does_not_block_merge(self, mock_cleanup: MagicMock) -> None:
+        ticket = Ticket.objects.create(
+            issue_url="https://gitlab.com/org/repo/-/issues/4",
+            state=Ticket.State.IN_REVIEW,
+            extra={"mrs": {"url1": {"title": "MR1"}}},
+        )
+        Worktree.objects.create(
+            overlay="test",
+            ticket=ticket,
+            repo_path="org/repo",
+            branch="fix-4",
+        )
+        result = SyncResult()
+        _apply_merged_status(ticket, {"url1"}, result)
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.MERGED
+        assert result.worktrees_cleaned == 0
+        assert any("cleanup failed" in e for e in result.errors)
 
 
 class TestSyncFollowup(TestCase):

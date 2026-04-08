@@ -11,6 +11,7 @@ import typer
 from django_typer.management import TyperCommand, command
 
 from teatree.config import load_config
+from teatree.core.cleanup import cleanup_worktree
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay_loader import get_overlay
 from teatree.utils import git
@@ -383,38 +384,6 @@ class Command(TyperCommand):
                 )
         return "\n".join(results)
 
-    def _clean_one_worktree(self, worktree: Worktree, workspace: Path) -> str:
-        """Remove a single DB-tracked worktree: git worktree, branch, DB, overlay cleanup."""
-        wt_path = (worktree.extra or {}).get("worktree_path", "")
-        overlay = get_overlay()
-
-        if wt_path and Path(wt_path).is_dir() and git.status_porcelain(wt_path):
-            self.stderr.write(f"  WARNING: {worktree.repo_path} has uncommitted changes")
-
-        for step in overlay.get_cleanup_steps(worktree):
-            with suppress(Exception):
-                step.callable()
-
-        if wt_path:
-            repo_main = workspace / worktree.repo_path
-            if repo_main.is_dir():  # pragma: no branch
-                git.worktree_remove(str(repo_main), wt_path)
-                git.branch_delete(str(repo_main), worktree.branch)
-
-        if worktree.db_name:
-            from teatree.utils.db import pg_env, pg_host, pg_user  # noqa: PLC0415
-
-            subprocess.run(  # noqa: S603
-                ["dropdb", "-h", pg_host(), "-U", pg_user(), "--if-exists", worktree.db_name],
-                env=pg_env(),
-                capture_output=True,
-                check=False,
-            )
-
-        label = f"Cleaned: {worktree.repo_path} ({worktree.branch})"
-        worktree.delete()
-        return label
-
     @command(name="clean-all")
     def clean_all(
         self,
@@ -422,9 +391,7 @@ class Command(TyperCommand):
     ) -> list[str]:
         """Prune merged worktrees, stale branches, orphaned stashes, orphan databases, and old DSLR snapshots."""
         workspace = _workspace_dir()
-        cleaned = [
-            self._clean_one_worktree(wt, workspace) for wt in Worktree.objects.filter(state=Worktree.State.CREATED)
-        ]
+        cleaned = [cleanup_worktree(wt) for wt in Worktree.objects.filter(state=Worktree.State.CREATED)]
 
         for entry in workspace.iterdir():
             if entry.is_dir() and not any(entry.iterdir()):
