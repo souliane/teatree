@@ -56,6 +56,12 @@ def _make_cfg(tmp_path: Path, **overrides: str) -> DjangoDbImportConfig:
     return DjangoDbImportConfig(**defaults)
 
 
+def _stub_dslr_cmd(cmd: list[str] | None = None):
+    """Return a stub for ``_find_dslr_cmd`` that always returns *cmd*."""
+    result = cmd if cmd is not None else []
+    return lambda tool, main_repo="": result
+
+
 def _make_ctx(tmp_path: Path, *, dslr_cmd: str = "/usr/bin/dslr") -> _RestoreContext:
     cfg = _make_cfg(tmp_path)
     return _RestoreContext(
@@ -156,6 +162,16 @@ class TestFindDslrCmd:
         monkeypatch.delenv("DSLR_CMD", raising=False)
         monkeypatch.setattr(mod.shutil, "which", lambda _: None)
         assert _find_dslr_cmd("dslr") == []
+
+    def test_includes_directory_flag_with_main_repo(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("DSLR_CMD", raising=False)
+        monkeypatch.setattr(mod.shutil, "which", lambda p: p)
+        assert _find_dslr_cmd("dslr", "/repo/main") == ["uv", "--directory", "/repo/main", "run", "dslr"]
+
+    def test_no_directory_flag_without_main_repo(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("DSLR_CMD", raising=False)
+        monkeypatch.setattr(mod.shutil, "which", lambda p: p)
+        assert _find_dslr_cmd("dslr", "") == ["uv", "run", "dslr"]
 
 
 class TestDslrEnv:
@@ -688,14 +704,14 @@ class TestTryRestoreFromCiDump:
 class TestDjangoDbImport:
     def test_succeeds_via_dslr(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         reset_remote_dump_state()
-        monkeypatch.setattr(mod, "_find_dslr_cmd", lambda tool: [["/bin/dslr"]])
+        monkeypatch.setattr(mod, "_find_dslr_cmd", _stub_dslr_cmd([["/bin/dslr"]]))
         monkeypatch.setattr(mod, "_try_restore_from_dslr", lambda ctx, *, skip_dslr: True)
         cfg = _make_cfg(tmp_path)
         assert django_db_import(cfg) is True
 
     def test_falls_through_to_local_dump(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         reset_remote_dump_state()
-        monkeypatch.setattr(mod, "_find_dslr_cmd", lambda tool: [])
+        monkeypatch.setattr(mod, "_find_dslr_cmd", _stub_dslr_cmd())
         monkeypatch.setattr(mod, "_try_restore_from_dslr", lambda ctx, *, skip_dslr: False)
         monkeypatch.setattr(mod, "_try_restore_from_local_dump", lambda ctx: True)
         cfg = _make_cfg(tmp_path)
@@ -704,7 +720,7 @@ class TestDjangoDbImport:
     def test_blocks_fallback_without_slow_import(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """Non-DSLR fallbacks require --slow-import."""
         reset_remote_dump_state()
-        monkeypatch.setattr(mod, "_find_dslr_cmd", lambda tool: [])
+        monkeypatch.setattr(mod, "_find_dslr_cmd", _stub_dslr_cmd())
         monkeypatch.setattr(mod, "_try_restore_from_dslr", lambda ctx, *, skip_dslr: False)
         monkeypatch.setattr(mod, "_try_restore_from_local_dump", lambda ctx: True)
         cfg = _make_cfg(tmp_path)
@@ -713,7 +729,7 @@ class TestDjangoDbImport:
     def test_falls_through_to_remote_fetch_then_local(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         reset_remote_dump_state()
         local_calls: list[int] = []
-        monkeypatch.setattr(mod, "_find_dslr_cmd", lambda tool: [])
+        monkeypatch.setattr(mod, "_find_dslr_cmd", _stub_dslr_cmd())
         monkeypatch.setattr(mod, "_try_restore_from_dslr", lambda ctx, *, skip_dslr: False)
 
         def local_dump(ctx):
@@ -729,7 +745,7 @@ class TestDjangoDbImport:
     def test_skips_remote_when_not_allowed(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         reset_remote_dump_state()
         remote_called: list[int] = []
-        monkeypatch.setattr(mod, "_find_dslr_cmd", lambda tool: [])
+        monkeypatch.setattr(mod, "_find_dslr_cmd", _stub_dslr_cmd())
         monkeypatch.setattr(mod, "_try_restore_from_dslr", lambda ctx, *, skip_dslr: False)
         monkeypatch.setattr(mod, "_try_restore_from_local_dump", lambda ctx: False)
         monkeypatch.setattr(mod, "_try_fetch_remote_dump", lambda ctx: remote_called.append(1) or True)
@@ -740,7 +756,7 @@ class TestDjangoDbImport:
 
     def test_falls_through_to_ci(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         reset_remote_dump_state()
-        monkeypatch.setattr(mod, "_find_dslr_cmd", lambda tool: [])
+        monkeypatch.setattr(mod, "_find_dslr_cmd", _stub_dslr_cmd())
         monkeypatch.setattr(mod, "_try_restore_from_dslr", lambda ctx, *, skip_dslr: False)
         monkeypatch.setattr(mod, "_try_restore_from_local_dump", lambda ctx: False)
         monkeypatch.setattr(mod, "_try_fetch_remote_dump", lambda ctx: False)
@@ -750,7 +766,7 @@ class TestDjangoDbImport:
 
     def test_fails_when_all_strategies_fail(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         reset_remote_dump_state()
-        monkeypatch.setattr(mod, "_find_dslr_cmd", lambda tool: [])
+        monkeypatch.setattr(mod, "_find_dslr_cmd", _stub_dslr_cmd())
         monkeypatch.setattr(mod, "_try_restore_from_dslr", lambda ctx, *, skip_dslr: False)
         monkeypatch.setattr(mod, "_try_restore_from_local_dump", lambda ctx: False)
         monkeypatch.setattr(mod, "_try_fetch_remote_dump", lambda ctx: False)
@@ -762,7 +778,7 @@ class TestDjangoDbImport:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
     ) -> None:
         reset_remote_dump_state()
-        monkeypatch.setattr(mod, "_find_dslr_cmd", lambda tool: [])
+        monkeypatch.setattr(mod, "_find_dslr_cmd", _stub_dslr_cmd())
         monkeypatch.setattr(mod, "_try_restore_from_dslr", lambda ctx, *, skip_dslr: False)
         monkeypatch.setattr(mod, "_try_restore_from_local_dump", lambda ctx: False)
         monkeypatch.setattr(mod, "_try_fetch_remote_dump", lambda ctx: False)
@@ -775,7 +791,7 @@ class TestDjangoDbImport:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
     ) -> None:
         reset_remote_dump_state()
-        monkeypatch.setattr(mod, "_find_dslr_cmd", lambda tool: [])
+        monkeypatch.setattr(mod, "_find_dslr_cmd", _stub_dslr_cmd())
         monkeypatch.setattr(mod, "_try_restore_from_dslr", lambda ctx, *, skip_dslr: False)
         monkeypatch.setattr(mod, "_try_restore_from_local_dump", lambda ctx: False)
         monkeypatch.setattr(mod, "_try_fetch_remote_dump", lambda ctx: False)
@@ -787,7 +803,7 @@ class TestDjangoDbImport:
     def test_skip_dslr_passed_through(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         reset_remote_dump_state()
         captured_skip: list[bool] = []
-        monkeypatch.setattr(mod, "_find_dslr_cmd", lambda tool: [["/bin/dslr"]])
+        monkeypatch.setattr(mod, "_find_dslr_cmd", _stub_dslr_cmd([["/bin/dslr"]]))
 
         def capture_dslr(ctx, *, skip_dslr):
             captured_skip.append(skip_dslr)
@@ -822,16 +838,16 @@ class TestDjangoDbImport:
 class TestParseDslrSnapshots:
     def test_groups_by_tenant(self) -> None:
         stdout = (
-            "20260402_development-finporta  125MB\n"
-            "20260401_development-finporta  123MB\n"
+            "20260402_development-acme  125MB\n"
+            "20260401_development-acme  123MB\n"
             "20260315_development-volksbank  98MB\n"
             "20260320_development-volksbank  100MB\n"
         )
         result = _parse_dslr_snapshots(stdout)
-        assert set(result) == {"development-finporta", "development-volksbank"}
-        assert result["development-finporta"] == [
-            "20260402_development-finporta",
-            "20260401_development-finporta",
+        assert set(result) == {"development-acme", "development-volksbank"}
+        assert result["development-acme"] == [
+            "20260402_development-acme",
+            "20260401_development-acme",
         ]
         assert result["development-volksbank"] == [
             "20260320_development-volksbank",
@@ -849,9 +865,7 @@ class TestParseDslrSnapshots:
 class TestPruneDslrSnapshots:
     def test_deletes_old_keeps_newest(self, monkeypatch: pytest.MonkeyPatch) -> None:
         dslr_output = (
-            "20260402_development-finporta  125MB\n"
-            "20260401_development-finporta  123MB\n"
-            "20260320_development-finporta  120MB\n"
+            "20260402_development-acme  125MB\n20260401_development-acme  123MB\n20260320_development-acme  120MB\n"
         )
         deleted: list[str] = []
 
@@ -864,8 +878,8 @@ class TestPruneDslrSnapshots:
         monkeypatch.setattr(mod.shutil, "which", lambda _: "/usr/bin/uv")
         result = prune_dslr_snapshots(keep=1)
 
-        assert result == ["20260401_development-finporta", "20260320_development-finporta"]
-        assert deleted == ["20260401_development-finporta", "20260320_development-finporta"]
+        assert result == ["20260401_development-acme", "20260320_development-acme"]
+        assert deleted == ["20260401_development-acme", "20260320_development-acme"]
 
     def test_keeps_n_snapshots(self, monkeypatch: pytest.MonkeyPatch) -> None:
         dslr_output = "20260403_dev-a  10MB\n20260402_dev-a  10MB\n20260401_dev-a  10MB\n"

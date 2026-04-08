@@ -130,10 +130,13 @@ def _copy_ref_to_ticket(ctx: _RestoreContext) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def _find_dslr_cmd(tool_name: str) -> list[str]:
+def _find_dslr_cmd(tool_name: str, main_repo_path: str = "") -> list[str]:
     """Return a command prefix for invoking dslr.
 
     Prefers ``uv run`` (resolves project venv where dslr + psycopg live).
+    When *main_repo_path* is provided, passes ``--directory`` so uv
+    resolves from the project that actually has dslr as a dependency,
+    not from the current working directory.
     Bare ``dslr`` on PATH is unreliable (pyenv shims, missing deps).
     Honour ``DSLR_CMD`` env var as an explicit override.
     """
@@ -141,7 +144,11 @@ def _find_dslr_cmd(tool_name: str) -> list[str]:
     if dslr and shutil.which(dslr):
         return [dslr]
     if shutil.which("uv"):
-        return ["uv", "run", tool_name]
+        cmd = ["uv"]
+        if main_repo_path:
+            cmd.extend(["--directory", main_repo_path])
+        cmd.extend(["run", tool_name])
+        return cmd
     return []
 
 
@@ -532,7 +539,7 @@ def _parse_dslr_snapshots(stdout: str) -> dict[str, list[str]]:
         token = line.strip().split()[0] if line.strip() else ""
         if not token:
             continue
-        # Snapshot names: <date>_<tenant>  e.g. "20260401_development-finporta"
+        # Snapshot names: <date>_<tenant>  e.g. "20260401_development-acme"
         if "_" in token:
             tenant = token.split("_", maxsplit=1)[1]
             by_tenant.setdefault(tenant, []).append(token)
@@ -541,12 +548,12 @@ def _parse_dslr_snapshots(stdout: str) -> dict[str, list[str]]:
     return by_tenant
 
 
-def prune_dslr_snapshots(*, keep: int = 1, snapshot_tool: str = "dslr") -> list[str]:
+def prune_dslr_snapshots(*, keep: int = 1, snapshot_tool: str = "dslr", main_repo_path: str = "") -> list[str]:
     """Delete old DSLR snapshots, keeping the *keep* newest per tenant.
 
     Returns a list of deleted snapshot names.
     """
-    dslr_cmd = _find_dslr_cmd(snapshot_tool)
+    dslr_cmd = _find_dslr_cmd(snapshot_tool, main_repo_path)
     if not dslr_cmd:
         return []
     result = subprocess.run([*dslr_cmd, "list"], capture_output=True, text=True, check=False)
@@ -586,7 +593,7 @@ def django_db_import(
 
     Returns True on success, False if no source was available.
     """
-    dslr_cmd = _find_dslr_cmd(cfg.snapshot_tool) if cfg.snapshot_tool else []
+    dslr_cmd = _find_dslr_cmd(cfg.snapshot_tool, cfg.main_repo_path) if cfg.snapshot_tool else []
     pg_host, pg_user, pg_env = _pg_args()
     dslr_e = _dslr_env(cfg.ref_db_name) if dslr_cmd else {}
     ctx = _RestoreContext(
