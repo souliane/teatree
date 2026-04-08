@@ -65,9 +65,14 @@ When the active overlay has `require_ticket = True`, refuse to commit or push wi
 - Run in each repo that has changes.
 - Verify the commit message follows the project's format.
 
-**Squash rules:** Follow the canonical squash rules from `ac-reviewing-codebase` § `references/repo-management.md`. Key points: never rewrite pushed history, group by topic, keep human-sized, squash integrity check (`OLD_TIP` before/after diff), respect `T3_AUTO_SQUASH`.
+**Squash rules:**
 
-**Squash base (Non-Negotiable):** Always compute the squash target with `git merge-base origin/<default-branch> HEAD`. NEVER use `origin/master` or `origin/main` directly — the branch may have been created from a stale local copy, causing the squash to include unrelated commits from other authors. The `t3 workspace finalize` command handles this correctly.
+- **Use `git reset --soft`, not interactive rebase.** `git rebase -i` with custom editors is fragile when pre-commit hooks run on each commit. Use `git reset --soft $(git merge-base origin/<default-branch> HEAD) && git commit` to squash, or cherry-pick for non-adjacent commits.
+- **Never rewrite pushed history.** Check `git log origin/<branch>..HEAD` to confirm which commits are local-only before squashing.
+- Group by topic, keep human-sized commits.
+- Squash integrity check: save `OLD_TIP=$(git rev-parse HEAD)`, verify `git diff $OLD_TIP..HEAD` is empty after rewrite.
+- Respect `T3_AUTO_SQUASH` (`true` = auto, `false` = ask first).
+- **Always use `git merge-base`** for the squash target. NEVER use `origin/master` or `origin/main` directly — the branch may have been created from a stale local copy, causing the squash to include unrelated commits. The `t3 workspace finalize` command handles this correctly.
 
 ### 3. Local Verification
 
@@ -162,9 +167,8 @@ After delivery is complete (MR created, pipeline green), run `/t3:retro` to capt
 - **Cancel stale pipelines** before every push to a branch with an existing MR.
 - **Cancel running pipelines when closing an MR/PR.** When an MR is closed (abandoned, superseded, or replaced), cancel any running or pending pipelines for that branch immediately — they waste CI resources on code that will never be merged.
 - **Clickable references:** Every MR, ticket, or note reference must be a markdown link — see [`../t3:rules/SKILL.md`](../t3:rules/SKILL.md) § "Clickable References".
-- **Commit early, commit often (Non-Negotiable).** Never accumulate more than 1-2 tickets of uncommitted changes. Commit after completing each ticket or logical unit of work. Use `--no-verify` if pre-commit hooks are slow — small frequent commits are always safer than one big commit. Squash later with `git rebase`.
+- **Commit early, commit often (Non-Negotiable).** Never accumulate more than 1-2 tickets of uncommitted changes. Commit after completing each ticket or logical unit of work. Use `--no-verify` if pre-commit hooks are slow — small frequent commits are always safer than one big commit. Squash later with `t3 workspace finalize`.
 - **Never push without explicit approval (Non-Negotiable).** Squash approval ≠ push approval. "All done" ≠ push approval. Rebase approval ≠ force-push approval. Always present the final state and ask "Push?" before running `git push`. For force-push (`--force-with-lease`), get **separate explicit confirmation** even if the user already approved the rebase — force-push is destructive and warrants its own approval step. This applies to ALL repos, ALL contexts.
-- **Squash with `git reset --soft`, not interactive rebase.** `git rebase -i` with custom editors is fragile when pre-commit hooks run on each commit. Use `git reset --soft HEAD~N && git commit` for adjacent commits, or cherry-pick for non-adjacent ones.
 - **Respect commit trailer preferences.** Check the user's global agent config for rules about `Co-Authored-By` trailers before committing. Some users explicitly opt out. When in doubt, **do not add trailers** — the user can always configure their agent to add them.
 
 ### Git History Rewriting
