@@ -34,11 +34,14 @@ def cleanup_worktree(worktree: Worktree) -> str:
     if wt_path:
         repo_main = workspace / worktree.repo_path
         if repo_main.is_dir():
-            git.worktree_remove(str(repo_main), wt_path)
-            git.branch_delete(str(repo_main), worktree.branch)
+            with suppress(Exception):
+                git.worktree_remove(str(repo_main), wt_path)
+            with suppress(Exception):
+                git.branch_delete(str(repo_main), worktree.branch)
 
-    if worktree.db_name:
-        drop_db(worktree.db_name)
+    with suppress(Exception):
+        if worktree.db_name:
+            drop_db(worktree.db_name)
 
     label = f"Cleaned: {worktree.repo_path} ({worktree.branch})"
     worktree.delete()

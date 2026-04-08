@@ -347,6 +347,23 @@ def test_free_port_returns_none_when_lsof_finds_nothing(monkeypatch: pytest.Monk
     assert ports.free_port(8001) is None
 
 
+def test_drop_db_calls_dropdb_with_if_exists(monkeypatch: pytest.MonkeyPatch) -> None:
+    commands: list[list[str]] = []
+    monkeypatch.setenv("POSTGRES_HOST", "db.internal")
+    monkeypatch.setenv("POSTGRES_USER", "admin")
+
+    def fake_run(args: list[str], **_kw: object) -> CompletedProcess[str]:
+        commands.append(args)
+        return CompletedProcess(args, 0)
+
+    monkeypatch.setattr(db, "subprocess", type("FakeSub", (), {"run": staticmethod(fake_run)}))
+
+    db.drop_db("wt_42")
+
+    assert len(commands) == 1
+    assert commands[0] == ["dropdb", "-h", "db.internal", "-U", "admin", "--if-exists", "wt_42"]
+
+
 def test_db_restore_uses_pg_restore_when_supported(monkeypatch: pytest.MonkeyPatch) -> None:
     commands: list[list[str]] = []
     monkeypatch.setenv("POSTGRES_HOST", "db.internal")

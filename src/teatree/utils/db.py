@@ -50,7 +50,7 @@ def db_restore(db_name: str, dump_path: str) -> None:
     host = pg_host()
     user = pg_user()
 
-    subprocess.run(["dropdb", "-h", host, "-U", user, "--if-exists", db_name], env=env, check=False)
+    drop_db(db_name)
     subprocess.run(["createdb", "-h", host, "-U", user, db_name], env=env, check=True)
 
     inspection = subprocess.run(["pg_restore", "-l", dump_path], capture_output=True, text=True, check=False)
