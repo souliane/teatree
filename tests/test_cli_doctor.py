@@ -312,6 +312,95 @@ class TestDoctorService:
             result = DoctorService.check_editable_sanity()
             assert result == []
 
+    def test_warns_overlay_contribute_true_repo_not_found(self):
+        """Warns when contribute=true, overlay not editable, and repo not found."""
+        mock_config = MagicMock()
+        mock_config.user.contribute = True
+
+        overlay_stub = _make_overlay_stub("my_overlay.overlay")
+
+        def editable_info(dist_name):
+            return (dist_name == "teatree", "")  # teatree editable, overlay not
+
+        with (
+            patch.object(IntrospectionHelpers, "editable_info", side_effect=editable_info),
+            patch.object(teatree_overlay_loader, "get_all_overlays", return_value={"test": overlay_stub}),
+            patch.object(teatree_cli_doctor, "packages_distributions", return_value={"my_overlay": ["my-overlay"]}),
+            patch("teatree.config.load_config", return_value=mock_config),
+            patch.object(DoctorService, "find_overlay_repo", return_value=None),
+        ):
+            result = DoctorService.check_editable_sanity()
+            assert any("overlay" in p and "repo not found" in p for p in result)
+
+    # ── find_teatree_repo ───────────────────────────────────────────
+
+    def test_find_teatree_repo_from_env(self, tmp_path, monkeypatch):
+        """Finds teatree repo via T3_REPO env var."""
+        (tmp_path / "pyproject.toml").write_text("[project]\nname = 'teatree'\n")
+        monkeypatch.setenv("T3_REPO", str(tmp_path))
+        assert DoctorService.find_teatree_repo() == tmp_path
+
+    def test_find_teatree_repo_auto_detect(self, tmp_path, monkeypatch):
+        """Auto-detects teatree repo from package __file__ location."""
+        monkeypatch.delenv("T3_REPO", raising=False)
+        # Create fake repo structure: tmp/a/b/c/d/doctor.py -> parents[4] = tmp
+        fake_pkg = tmp_path / "a" / "b" / "c" / "d"
+        fake_pkg.mkdir(parents=True)
+        (tmp_path / ".git").mkdir()
+        (tmp_path / "pyproject.toml").write_text("[project]\nname = 'teatree'\n")
+        with patch.object(teatree_cli_doctor, "__file__", str(fake_pkg / "doctor.py")):
+            assert DoctorService.find_teatree_repo() == tmp_path
+
+    def test_find_teatree_repo_returns_none(self, tmp_path, monkeypatch):
+        """Returns None when T3_REPO not set and auto-detect fails."""
+        monkeypatch.delenv("T3_REPO", raising=False)
+        # Fake __file__ in a dir without .git
+        fake_pkg = tmp_path / "a" / "b" / "c" / "d"
+        fake_pkg.mkdir(parents=True)
+        with patch.object(teatree_cli_doctor, "__file__", str(fake_pkg / "doctor.py")):
+            assert DoctorService.find_teatree_repo() is None
+
+    # ── find_overlay_repo ───────────────────────────────────────────
+
+    def test_find_overlay_repo_found(self, tmp_path):
+        """Finds overlay repo in workspace directory."""
+        overlay_dir = tmp_path / "my-overlay"
+        overlay_dir.mkdir()
+        (overlay_dir / "pyproject.toml").write_text("[project]\nname = 'my-overlay'\n")
+
+        mock_config = MagicMock()
+        mock_config.user.workspace_dir = str(tmp_path)
+        with patch("teatree.config.load_config", return_value=mock_config):
+            assert DoctorService.find_overlay_repo("my-overlay") == overlay_dir
+
+    def test_find_overlay_repo_not_found(self, tmp_path):
+        """Returns None when overlay repo not in workspace."""
+        mock_config = MagicMock()
+        mock_config.user.workspace_dir = str(tmp_path)
+        with patch("teatree.config.load_config", return_value=mock_config):
+            assert DoctorService.find_overlay_repo("nonexistent") is None
+
+    # ── make_editable ───────────────────────────────────────────────
+
+    def test_make_editable_success(self, capsys):
+        """Runs uv pip install -e and reports success."""
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        with patch("subprocess.run", return_value=mock_result):
+            DoctorService.make_editable("teatree", Path("/tmp/teatree"))
+        captured = capsys.readouterr()
+        assert "now editable" in captured.out
+
+    def test_make_editable_failure(self, capsys):
+        """Reports failure when uv pip install fails."""
+        mock_result = MagicMock()
+        mock_result.returncode = 1
+        mock_result.stderr = "error: package not found"
+        with patch("subprocess.run", return_value=mock_result):
+            DoctorService.make_editable("teatree", Path("/tmp/teatree"))
+        captured = capsys.readouterr()
+        assert "FAIL" in captured.out
+
 
 class TestIntrospectionHelpers:
     """Tests for IntrospectionHelpers methods (print_package_info, editable_info)."""
@@ -499,6 +588,30 @@ class TestDoctorCommands:
             result = runner.invoke(app, ["doctor", "check"])
             assert result.exit_code == 0
             assert "1 skill(s) validated" in result.output
+
+    def test_check_skill_validation_errors(self, tmp_path, monkeypatch):
+        """Doctor check reports skill validation errors."""
+        claude_skills = tmp_path / ".claude" / "skills"
+        bad = claude_skills / "bad-skill"
+        bad.mkdir(parents=True)
+        (bad / "SKILL.md").write_text("no frontmatter here")
+
+        monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: tmp_path))
+        with patch.object(DoctorService, "check_editable_sanity", return_value=[]):
+            result = runner.invoke(app, ["doctor", "check"])
+            assert "FAIL" in result.output
+
+    def test_check_skill_validation_warnings(self, tmp_path, monkeypatch):
+        """Doctor check reports skill validation warnings for unknown fields."""
+        claude_skills = tmp_path / ".claude" / "skills"
+        skill = claude_skills / "warn-skill"
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text("---\nname: warn-skill\ndescription: d\nunknown-field: x\n---\n")
+
+        monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: tmp_path))
+        with patch.object(DoctorService, "check_editable_sanity", return_value=[]):
+            result = runner.invoke(app, ["doctor", "check"])
+            assert "WARN" in result.output
 
     def test_check_import_failure(self):
         """Doctor check returns False on import failure."""
