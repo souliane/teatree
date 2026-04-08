@@ -6,6 +6,7 @@ import pytest
 
 from teatree.autostart import (
     UnsupportedPlatformError,
+    _discover_python,
     _launchd_plist_path,
     _render_template,
     _resolve_context,
@@ -42,14 +43,39 @@ class TestServicePaths:
         assert path == Path.home() / ".config" / "systemd" / "user" / "teatree-acme-dashboard.service"
 
 
-class TestResolveContext:
-    def test_uses_venv_python_when_present(self, tmp_path: Path) -> None:
-        project = tmp_path / "myproject"
-        project.mkdir()
-        venv_python = project / ".venv" / "bin" / "python"
+class TestDiscoverPython:
+    def test_uses_virtual_env_when_set(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        venv_dir = tmp_path / "some-venv"
+        venv_python = venv_dir / "bin" / "python"
         venv_python.parent.mkdir(parents=True)
         venv_python.touch()
+
+        monkeypatch.setenv("VIRTUAL_ENV", str(venv_dir))
+
+        assert _discover_python() == str(venv_python)
+
+    def test_ignores_virtual_env_when_python_missing(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("VIRTUAL_ENV", str(tmp_path / "nonexistent"))
+
+        assert _discover_python() == sys.executable
+
+    def test_falls_back_to_sys_executable(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("VIRTUAL_ENV", raising=False)
+
+        assert _discover_python() == sys.executable
+
+
+class TestResolveContext:
+    def test_uses_virtual_env_python_when_set(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        project = tmp_path / "myproject"
+        project.mkdir()
         (project / "manage.py").touch()
+
+        venv_dir = tmp_path / "my-venv"
+        venv_python = venv_dir / "bin" / "python"
+        venv_python.parent.mkdir(parents=True)
+        venv_python.touch()
+        monkeypatch.setenv("VIRTUAL_ENV", str(venv_dir))
 
         ctx = _resolve_context("acme", project, "acme.settings", "127.0.0.1", 8000)
 
@@ -59,10 +85,11 @@ class TestResolveContext:
         assert ctx["host"] == "127.0.0.1"
         assert ctx["port"] == "8000"
 
-    def test_falls_back_to_sys_executable(self, tmp_path: Path) -> None:
+    def test_falls_back_to_sys_executable(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         project = tmp_path / "myproject"
         project.mkdir()
         (project / "manage.py").touch()
+        monkeypatch.delenv("VIRTUAL_ENV", raising=False)
 
         ctx = _resolve_context("acme", project, "acme.settings", "0.0.0.0", 9000)  # noqa: S104
 
@@ -114,9 +141,8 @@ class TestEnable:
         monkeypatch.setattr("teatree.autostart.sys.platform", "darwin")
         project = tmp_path / "myproject"
         project.mkdir()
-        (project / ".venv" / "bin").mkdir(parents=True)
-        (project / ".venv" / "bin" / "python").touch()
         (project / "manage.py").touch()
+        monkeypatch.delenv("VIRTUAL_ENV", raising=False)
 
         commands_run: list[list[str]] = []
         monkeypatch.setattr(
