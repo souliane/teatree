@@ -20,6 +20,9 @@ class Session(models.Model):
 
     objects = SessionManager()
 
+    class Meta:
+        db_table = "teatree_session"
+
     _REQUIRED_PHASES: ClassVar[dict[str, list[str]]] = {
         "reviewing": ["testing"],
         "shipping": ["testing", "reviewing"],

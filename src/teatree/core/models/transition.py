@@ -20,6 +20,7 @@ class TicketTransition(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
+        db_table = "teatree_tickettransition"
         ordering: ClassVar = ["created_at"]
 
     def __str__(self) -> str:

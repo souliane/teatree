@@ -46,6 +46,9 @@ class Task(models.Model):
 
     objects = TaskManager()
 
+    class Meta:
+        db_table = "teatree_task"
+
     def __str__(self) -> str:
         return f"task-{self.pk}-{self.execution_target!s}"
 
@@ -234,6 +237,9 @@ class TaskAttempt(models.Model):
     num_turns = models.IntegerField(null=True, blank=True)
     launch_url = models.URLField(max_length=500, blank=True)
     agent_session_id = models.CharField(max_length=255, blank=True)
+
+    class Meta:
+        db_table = "teatree_taskattempt"
 
     def __str__(self) -> str:
         return f"attempt-{self.pk or 'new'!s}"
