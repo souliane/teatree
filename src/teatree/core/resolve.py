@@ -52,26 +52,53 @@ def _find_env_worktree(cwd: str) -> Path | None:
     return None
 
 
+def _candidate_paths(path: str) -> list[str]:
+    """Return de-duplicated list of path variants to try for DB lookups.
+
+    On macOS, ``/var`` is a symlink to ``/private/var``, so a path stored
+    as ``/var/folders/…`` won't match ``/private/var/folders/…`` (and vice
+    versa).  We try the original, the resolved form, and the ``/private``
+    prefix stripped/added variants.
+    """
+    candidates: list[str] = [path]
+    resolved = str(Path(path).resolve())
+    if resolved != path:
+        candidates.append(resolved)
+    # macOS: /private/var ↔ /var, /private/tmp ↔ /tmp, /private/etc ↔ /etc
+    if path.startswith("/private/"):
+        candidates.append(path.removeprefix("/private"))
+    else:
+        prefixed = "/private" + path
+        if Path(prefixed).exists():
+            candidates.append(prefixed)
+    return candidates
+
+
 def _match_worktree_by_path(path: str) -> Worktree | None:
     """Find a Worktree whose ``extra["worktree_path"]`` matches or contains *path*.
 
     First tries an exact DB-level JSON lookup, then falls back to a prefix
     match for when the user is in a subdirectory of the worktree.
+    Tries both the original and symlink-resolved path to handle macOS
+    ``/var`` → ``/private/var`` differences.
     """
     # Fast path: exact match via DB-level JSON lookup
-    exact = Worktree.objects.filter(extra__worktree_path=path).first()
-    if exact is not None:
-        return exact
+    for candidate in _candidate_paths(path):
+        exact = Worktree.objects.filter(extra__worktree_path=candidate).first()
+        if exact is not None:
+            return exact
 
     # Walk up from path to find a parent that matches a stored worktree_path.
     # This handles being inside a subdirectory of a worktree.
-    path_obj = Path(path)
+    resolved_path = str(Path(path).resolve())
+    path_obj = Path(resolved_path)
     for parent in path_obj.parents:
-        parent_str = str(parent)
-        match = Worktree.objects.filter(extra__worktree_path=parent_str).first()
-        if match is not None:
-            return match
+        for candidate in _candidate_paths(str(parent)):
+            match = Worktree.objects.filter(extra__worktree_path=candidate).first()
+            if match is not None:
+                return match
         # Stop at filesystem root or home directory to avoid excessive queries
+        parent_str = str(parent)
         if parent_str == str(Path.home()) or parent == parent.parent:
             break
 
@@ -80,7 +107,7 @@ def _match_worktree_by_path(path: str) -> Worktree | None:
 
 def _auto_register_from_git(cwd: str) -> Worktree | None:
     """Detect a git worktree from the filesystem and auto-register it in the DB."""
-    cwd_path = Path(cwd)
+    cwd_path = Path(cwd).resolve()
     git_file = cwd_path / ".git"
     if not git_file.is_file():
         return None  # Not a git worktree (worktrees have .git as a file, not dir)
@@ -108,7 +135,7 @@ def _auto_register_from_git(cwd: str) -> Worktree | None:
         repo_path=repo_name,
         defaults={
             "branch": branch,
-            "extra": {"worktree_path": cwd},
+            "extra": {"worktree_path": str(cwd_path)},
         },
     )
     return wt
