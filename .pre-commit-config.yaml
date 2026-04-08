@@ -126,6 +126,16 @@ repos:
         pass_filenames: false
         always_run: true
 
+  # Phase 7a - Auto-generated docs
+  - repo: local
+    hooks:
+      - id: dependency-graph
+        name: Update tach dependency graph in BLUEPRINT.md
+        language: system
+        entry: uv run python scripts/hooks/update_dependency_graph.py
+        pass_filenames: false
+        files: (tach\.toml|src/teatree/)
+
   # Phase 7b - Quality gate guard
   - repo: local
     hooks:
@@ -134,6 +144,13 @@ repos:
         language: system
         entry: uv run python scripts/hooks/check_quality_gates.py
         pass_filenames: false
+        always_run: true
+      - id: module-health
+        name: Enforce module health (LOC, OOP, typed data)
+        language: system
+        entry: uv run python scripts/hooks/check_module_health.py
+        pass_filenames: false
+        types: [python]
         always_run: true
 
   # Phase 7c - Version sync
