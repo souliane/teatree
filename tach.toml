@@ -22,7 +22,7 @@ depends_on = []
 
 [[modules]]
 path = "teatree.backends"
-depends_on = ["teatree.core", "teatree.utils"]
+depends_on = ["teatree.utils"]
 
 [[modules]]
 path = "teatree.agents"

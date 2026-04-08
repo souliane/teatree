@@ -47,14 +47,14 @@ class Command(TyperCommand):
     @command(name="trigger-ci")
     def trigger_ci(self, branch: str = "") -> dict[str, object]:
         """Trigger E2E tests on a remote CI pipeline."""
-        from teatree.backends.loader import get_ci_service  # noqa: PLC0415
+        from teatree.core.backend_factory import ci_service_from_overlay  # noqa: PLC0415
 
         overlay = get_overlay()
         config = overlay.metadata.get_e2e_config()
         if not config:
             return {"error": "No E2E config in the overlay (get_e2e_config)."}
 
-        ci = get_ci_service()
+        ci = ci_service_from_overlay()
         if ci is None:
             return {"error": "No CI service configured."}
 

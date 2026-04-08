@@ -45,32 +45,20 @@ def test_notion_backend_fetches_page_with_version_header(monkeypatch: pytest.Mon
     assert client.get_page("page-123") == {"id": "page-123"}
 
 
-def test_gitlab_backend_builds_client_from_overlay() -> None:
-    from unittest.mock import MagicMock, patch  # noqa: PLC0415
-
-    mock_overlay = MagicMock()
-    mock_overlay.config.get_gitlab_url.return_value = "https://gitlab.example.com/api/v4"
-    mock_overlay.config.get_gitlab_token.return_value = "gl-token"
-
-    with patch(
-        "teatree.core.overlay_loader._discover_overlays",
-        return_value={"test": mock_overlay},
-    ):
-        client = gitlab.get_client()
+def test_gitlab_backend_builds_client_with_explicit_args() -> None:
+    client = gitlab.get_client(
+        token="gl-token",
+        base_url="https://gitlab.example.com/api/v4",
+    )
 
     assert client.base_url == "https://gitlab.example.com/api/v4"
     assert client.token == "gl-token"
 
 
-def test_get_client_with_explicit_overlay():
-    mock_overlay = MagicMock()
-    mock_overlay.config.get_gitlab_url.return_value = "https://custom.gitlab/api/v4"
-    mock_overlay.config.get_gitlab_token.return_value = "custom-token"
+def test_get_client_defaults():
+    client = gitlab.get_client()
 
-    client = gitlab.get_client(overlay=mock_overlay)
-
-    assert client.base_url == "https://custom.gitlab/api/v4"
-    assert client.token == "custom-token"
+    assert client.base_url == "https://gitlab.com/api/v4"
 
 
 def test_gitlab_code_host_update_mr_note(monkeypatch: pytest.MonkeyPatch) -> None:
