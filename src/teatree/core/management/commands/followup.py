@@ -21,6 +21,7 @@ class Command(TyperCommand):
             "mrs_found": result.mrs_found,
             "tickets_created": result.tickets_created,
             "tickets_updated": result.tickets_updated,
+            "worktrees_cleaned": result.worktrees_cleaned,
             "errors": result.errors,
         }
 

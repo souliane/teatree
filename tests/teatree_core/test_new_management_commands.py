@@ -17,6 +17,7 @@ from django.utils.module_loading import import_string
 
 import teatree.config as config_mod
 import teatree.core.backend_factory as backend_factory_mod
+import teatree.core.cleanup as cleanup_mod
 import teatree.core.management.commands.e2e as e2e_mod
 import teatree.core.management.commands.lifecycle as lifecycle_mod
 import teatree.core.management.commands.pr as pr_mod
@@ -680,14 +681,13 @@ class TestWorkspaceCleanAll(TestCase):
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
     def test_removes_git_worktree_and_branch(self) -> None:
-        """clean-all calls 'git worktree remove' and 'git branch -D' when wt_path is set."""
+        """clean-all delegates to cleanup_worktree which calls git worktree remove + branch -D."""
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
 
             workspace = tmp_path / "workspace"
             repo_main = workspace / "backend"
             repo_main.mkdir(parents=True)
-            # Add a file so the dir is not empty (avoids empty-dir cleanup side-effect)
             (repo_main / ".git").mkdir()
 
             wt_dir = workspace / "ac-backend-80-ticket" / "backend"
@@ -702,25 +702,22 @@ class TestWorkspaceCleanAll(TestCase):
                 extra={"worktree_path": str(wt_dir)},
             )
 
-            mock_result = MagicMock(stdout="")
+            mock_config = MagicMock()
+            mock_config.user.workspace_dir = workspace
             with (
-                patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
-                patch.object(git_mod.subprocess, "run", return_value=mock_result) as mock_run,
+                patch.object(cleanup_mod, "load_config", return_value=mock_config),
+                patch.object(cleanup_mod, "git") as mock_git,
+                patch.object(cleanup_mod, "get_overlay") as mock_overlay,
             ):
+                mock_overlay.return_value.get_cleanup_steps.return_value = []
+                mock_git.status_porcelain.return_value = ""
                 cleaned = cast("list[str]", call_command("workspace", "clean-all"))
 
             assert any("Cleaned: backend" in c for c in cleaned)
             assert Worktree.objects.count() == 0
 
-            # Should have called git status, git worktree remove, and git branch -D
-            assert mock_run.call_count == 3
-            worktree_remove_call = mock_run.call_args_list[1]
-            branch_delete_call = mock_run.call_args_list[2]
-            assert "worktree" in worktree_remove_call[0][0]
-            assert "remove" in worktree_remove_call[0][0]
-            assert "branch" in branch_delete_call[0][0]
-            assert "-D" in branch_delete_call[0][0]
-            assert "ac-backend-80-ticket" in branch_delete_call[0][0]
+            mock_git.worktree_remove.assert_called_once()
+            mock_git.branch_delete.assert_called_once_with(str(repo_main), "ac-backend-80-ticket")
 
     @_no_prune
     @_no_stash
@@ -791,16 +788,19 @@ class TestWorkspaceCleanAll(TestCase):
                 extra={"worktree_path": str(wt_dir)},
             )
 
-            mock_result = MagicMock(stdout=" M dirty_file.py\n")
-            stderr = StringIO()
+            mock_config = MagicMock()
+            mock_config.user.workspace_dir = workspace
             with (
-                patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
-                patch.object(git_mod.subprocess, "run", return_value=mock_result),
+                patch.object(cleanup_mod, "load_config", return_value=mock_config),
+                patch.object(cleanup_mod, "git") as mock_git,
+                patch.object(cleanup_mod, "get_overlay") as mock_overlay,
+                self.assertLogs("teatree.core.cleanup", level="WARNING") as logs,
             ):
-                call_command("workspace", "clean-all", stderr=OutputWrapper(stderr))
+                mock_overlay.return_value.get_cleanup_steps.return_value = []
+                mock_git.status_porcelain.return_value = " M dirty_file.py"
+                call_command("workspace", "clean-all")
 
-            assert "WARNING" in stderr.getvalue()
-            assert "uncommitted changes" in stderr.getvalue()
+            assert any("uncommitted changes" in msg for msg in logs.output)
 
     @_no_prune
     @_no_stash

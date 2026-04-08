@@ -36,6 +36,15 @@ def _check_truncation(stderr: str, db_name: str, dump_path: str) -> None:
             raise RuntimeError(msg)
 
 
+def drop_db(db_name: str) -> None:
+    subprocess.run(
+        ["dropdb", "-h", pg_host(), "-U", pg_user(), "--if-exists", db_name],
+        env=pg_env(),
+        capture_output=True,
+        check=False,
+    )
+
+
 def db_restore(db_name: str, dump_path: str) -> None:
     env = pg_env()
     host = pg_host()
