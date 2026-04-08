@@ -1,23 +1,28 @@
 from pathlib import Path
 
 from teatree.backends.gitlab_api import GitLabAPI, ProjectInfo
-from teatree.core.overlay import OverlayBase
 
 
-def get_client(overlay: OverlayBase | None = None) -> GitLabAPI:
-    if overlay is None:
-        from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
+def get_client(*, token: str = "", base_url: str = "") -> GitLabAPI:
+    """Build a ``GitLabAPI`` from explicit credentials.
 
-        overlay = get_overlay()
+    When *token* is empty the ``GitLabAPI`` default (env-var fallback) is used.
+    """
     return GitLabAPI(
-        token=overlay.config.get_gitlab_token(),
-        base_url=overlay.config.get_gitlab_url(),
+        token=token,
+        base_url=base_url or "https://gitlab.com/api/v4",
     )
 
 
 class GitLabCodeHost:
-    def __init__(self, client: GitLabAPI | None = None) -> None:
-        self._client = client or get_client()
+    def __init__(
+        self,
+        *,
+        client: GitLabAPI | None = None,
+        token: str = "",
+        base_url: str = "",
+    ) -> None:
+        self._client = client or get_client(token=token, base_url=base_url)
 
     def create_pr(  # noqa: PLR0913
         self,
