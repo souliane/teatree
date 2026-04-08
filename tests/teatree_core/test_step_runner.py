@@ -4,6 +4,7 @@ import subprocess
 from functools import partial
 from unittest.mock import MagicMock, patch
 
+import pytest
 from django.test import TestCase
 
 from teatree.core.overlay import ProvisionStep
@@ -99,6 +100,7 @@ class TestRunStep(TestCase):
         assert result.success is False
         assert "timed out" in result.error
 
+    @pytest.mark.integration
     def test_command_not_found(self) -> None:
         result = run_step("missing", ["nonexistent_binary_xyz123"])
         assert result.success is False
