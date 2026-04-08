@@ -28,7 +28,7 @@ for py in "${versions[@]}"; do
         -e UV_PROJECT_ENVIRONMENT=/tmp/.venv \
         -e COVERAGE_FILE=/tmp/.coverage \
         "$IMAGE" \
-        uv run -p "$py" pytest --no-header --no-cov -q --tb=short \
+        uv run -p "$py" pytest --no-header -q --tb=short \
             -o cache_dir=/tmp/.pytest_cache > "$tmpout" 2>&1; then
         # Show only the summary line (last non-empty line)
         tail -3 "$tmpout"
