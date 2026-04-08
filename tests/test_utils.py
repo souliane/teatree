@@ -163,8 +163,6 @@ def test_git_helpers_cover_run_check_current_branch_and_failure(monkeypatch: pyt
             return CompletedProcess(args, 0, " M pyproject.toml\n", "")
         if args[-2:] == ["rev-parse", "--abbrev-ref"]:
             return CompletedProcess(args, 0, "", "")
-        if args[-1] == "refs/remotes/origin/HEAD":
-            raise git.subprocess.CalledProcessError(1, args)
         return CompletedProcess(args, 1, "", "")
 
     monkeypatch.setattr(git.subprocess, "run", fake_run)
