@@ -14,6 +14,7 @@ agents:
   - claude-code
 dependencies:
   apm:
+    - obra/superpowers
     - souliane/skills/ac-reviewing-codebase
     - souliane/skills/ac-python
     - souliane/skills/ac-django
