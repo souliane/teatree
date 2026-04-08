@@ -126,7 +126,17 @@ repos:
         pass_filenames: false
         always_run: true
 
-  # Phase 7b - Version sync
+  # Phase 7b - Quality gate guard
+  - repo: local
+    hooks:
+      - id: quality-gates
+        name: Detect quality gate relaxations
+        language: system
+        entry: uv run python scripts/hooks/check_quality_gates.py
+        pass_filenames: false
+        always_run: true
+
+  # Phase 7c - Version sync
   - repo: local
     hooks:
       - id: version-sync
@@ -180,4 +190,4 @@ repos:
     hooks:
       - id: conventional-pre-commit
         stages: [commit-msg]
-        args: [--verbose]
+        args: [--verbose, relax]
