@@ -87,27 +87,13 @@ def pull_ff_only(repo: str = ".") -> bool:
 
 
 def default_branch(repo: str = ".") -> str:
-    try:
-        result = subprocess.run(
-            ["git", "-C", repo, "symbolic-ref", "refs/remotes/origin/HEAD"],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        branch = result.stdout.strip().replace("refs/remotes/origin/", "")
-        if branch:
-            return branch
-    except subprocess.CalledProcessError:
-        pass
+    ref = run(repo=repo, args=["symbolic-ref", "refs/remotes/origin/HEAD"])
+    branch = ref.replace("refs/remotes/origin/", "")
+    if branch:
+        return branch
 
     for candidate in ("main", "master", "development"):
-        result = subprocess.run(
-            ["git", "-C", repo, "show-ref", "--verify", "--quiet", f"refs/remotes/origin/{candidate}"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if result.returncode == 0:
+        if check(repo=repo, args=["show-ref", "--verify", "--quiet", f"refs/remotes/origin/{candidate}"]):
             return candidate
 
     msg = f"Could not detect default branch for {repo}"
@@ -121,13 +107,7 @@ def branch_merged(repo: str, branch: str, target: str = "origin/main") -> bool:
 
 
 def current_branch(repo: str = ".") -> str:
-    result = subprocess.run(
-        ["git", "-C", repo, "rev-parse", "--abbrev-ref", "HEAD"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    return result.stdout.strip() if result.returncode == 0 else ""
+    return run(repo=repo, args=["rev-parse", "--abbrev-ref", "HEAD"])
 
 
 def remote_url(repo: str = ".", remote: str = "origin") -> str:
