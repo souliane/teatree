@@ -25,8 +25,9 @@ _MOCK_OVERLAY = {"test": CommandOverlay()}
 class TestPrCreate(TestCase):
     def setUp(self) -> None:
         super().setUp()
+        self.enterContext(patch.object(pr_command.git, "config_value", return_value="dev"))
         self.enterContext(
-            patch.object(pr_command.subprocess, "run", return_value=MagicMock(returncode=0, stdout="dev", stderr="")),
+            patch.object(pr_command.git, "last_commit_message", return_value=("commit subject", "commit body")),
         )
 
     @pytest.fixture(autouse=True)

@@ -586,10 +586,14 @@ class TestWorkspaceTicket(TestCase):
                 if "worktree" not in cmd:
                     return mock_pull
                 # backend succeeds, frontend fails
-                cwd = kwargs.get("cwd", Path())
-                if hasattr(cwd, "name") and cwd.name == "frontend":
-                    return mock_add_fail
-                if str(cwd).endswith("frontend"):
+                # Check -C argument for repo path (git.worktree_add uses -C instead of cwd)
+                repo = ""
+                if "-C" in cmd:
+                    repo = cmd[cmd.index("-C") + 1]
+                else:
+                    cwd = kwargs.get("cwd", Path())
+                    repo = str(cwd)
+                if "frontend" in repo:
                     return mock_add_fail
                 return mock_add_ok
 
@@ -1281,8 +1285,9 @@ class TestDbResetPasswords(TestCase):
 class TestPrCreate(TestCase):
     def setUp(self) -> None:
         super().setUp()
+        self.enterContext(patch.object(pr_mod.git, "config_value", return_value="dev"))
         self.enterContext(
-            patch.object(pr_mod.subprocess, "run", return_value=MagicMock(returncode=0, stdout="dev", stderr="")),
+            patch.object(pr_mod.git, "last_commit_message", return_value=("commit subject", "commit body")),
         )
 
     @_patch_overlays(FULL_OVERLAY)
@@ -1525,29 +1530,17 @@ class TestPrCheckGates(TestCase):
 
 class TestLastCommitMessage:
     def test_parses_subject_and_body(self) -> None:
-        with patch.object(
-            pr_mod.subprocess,
-            "run",
-            return_value=MagicMock(returncode=0, stdout="fix: bug\n\nDetailed body"),
-        ):
+        with patch.object(pr_mod.git, "last_commit_message", return_value=("fix: bug", "Detailed body")):
             subject, body = _last_commit_message("/tmp")
         assert subject == "fix: bug"
         assert body == "Detailed body"
 
     def test_returns_empty_on_failure(self) -> None:
-        with patch.object(
-            pr_mod.subprocess,
-            "run",
-            return_value=MagicMock(returncode=128, stdout=""),
-        ):
+        with patch.object(pr_mod.git, "last_commit_message", return_value=("", "")):
             assert _last_commit_message("/tmp") == ("", "")
 
     def test_subject_only(self) -> None:
-        with patch.object(
-            pr_mod.subprocess,
-            "run",
-            return_value=MagicMock(returncode=0, stdout="feat: add feature"),
-        ):
+        with patch.object(pr_mod.git, "last_commit_message", return_value=("feat: add feature", "")):
             subject, body = _last_commit_message("/tmp")
         assert subject == "feat: add feature"
         assert body == ""

@@ -442,16 +442,7 @@ def test_db_restore_detects_truncated_psql(monkeypatch: pytest.MonkeyPatch) -> N
 
 
 def test_gitlab_api_resolves_remote_project(monkeypatch: pytest.MonkeyPatch) -> None:
-    def fake_run(
-        args: list[str],
-        *,
-        capture_output: bool,
-        text: bool,
-        check: bool = False,
-    ) -> CompletedProcess[str]:
-        return CompletedProcess(args, 0, "git@gitlab.com:acme/platform.git\n", "")
-
-    monkeypatch.setattr(gitlab_api.subprocess, "run", fake_run)
+    monkeypatch.setattr(git, "remote_url", lambda **kwargs: "git@gitlab.com:acme/platform.git")
 
     client = gitlab_api.GitLabAPI(token="test-token")
     monkeypatch.setattr(
@@ -515,11 +506,8 @@ def test_gitlab_api_helpers_cover_http_paths_and_failures(monkeypatch: pytest.Mo
 
     monkeypatch.setattr(gitlab_api.httpx, "get", fake_get)
     monkeypatch.setattr(gitlab_api.httpx, "post", fake_post)
-    monkeypatch.setattr(
-        gitlab_api.subprocess,
-        "run",
-        lambda *args, **kwargs: CompletedProcess(list(args[0]), 1, "", ""),
-    )
+    monkeypatch.setattr(git, "remote_url", lambda **kwargs: "")
+    monkeypatch.setattr(git, "current_branch", lambda **kwargs: "")
 
     client = gitlab_api.GitLabAPI(token="")
     assert client.get_json("projects/x") is None
@@ -541,11 +529,7 @@ def test_gitlab_api_helpers_cover_http_paths_and_failures(monkeypatch: pytest.Mo
 
 
 def test_gitlab_api_returns_none_for_non_gitlab_remote(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        gitlab_api.subprocess,
-        "run",
-        lambda *args, **kwargs: CompletedProcess(list(args[0]), 0, "https://example.com/acme/repo.git\n", ""),
-    )
+    monkeypatch.setattr(git, "remote_url", lambda **kwargs: "https://example.com/acme/repo.git")
 
     assert gitlab_api.GitLabAPI(token="test-token").resolve_project_from_remote("/tmp/repo") is None
 

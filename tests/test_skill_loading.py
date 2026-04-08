@@ -1,13 +1,13 @@
 from pathlib import Path
-from subprocess import CompletedProcess
+from unittest.mock import patch
 
 import pytest
 
+import teatree.skill_loading as skill_loading_mod
 from teatree.skill_loading import (
     SkillLoadingPolicy,
     SkillSelectionResult,
     _dedupe,
-    _git_remote_url,
     _git_remote_urls,
     _matches_any_remote,
 )
@@ -461,107 +461,42 @@ def test_matches_any_remote_no_urls(tmp_path: Path, monkeypatch):
 # ── _git_remote_urls ────────────────────────────────────────────────
 
 
-def _mock_remote_url(origin_url):
-    def _fake(cwd, remote_name):
-        if remote_name == "origin":
-            return origin_url
-        return ""
-
-    return _fake
+def test_git_remote_urls_with_origin(tmp_path: Path) -> None:
+    with patch.object(skill_loading_mod.git, "remote_url", return_value="git@github.com:acme/repo.git"):
+        assert _git_remote_urls(tmp_path) == ["git@github.com:acme/repo.git"]
 
 
-def test_git_remote_urls_with_origin(tmp_path: Path, monkeypatch):
-    monkeypatch.setattr(
-        "teatree.skill_loading._git_remote_url",
-        _mock_remote_url("git@github.com:acme/repo.git"),
-    )
-    assert _git_remote_urls(tmp_path) == ["git@github.com:acme/repo.git"]
-
-
-def test_git_remote_urls_fallback_to_remote_v(tmp_path: Path, monkeypatch):
-    monkeypatch.setattr(
-        "teatree.skill_loading._git_remote_url",
-        _mock_remote_url(""),
-    )
-    monkeypatch.setattr(
-        "teatree.skill_loading.subprocess.run",
-        lambda *_a, **_kw: CompletedProcess(
-            args=[],
-            returncode=0,
-            stdout="upstream\tgit@github.com:acme/repo.git (fetch)\nupstream\tgit@github.com:acme/repo.git (push)\n",
+def test_git_remote_urls_fallback_to_remote_v(tmp_path: Path) -> None:
+    with (
+        patch.object(skill_loading_mod.git, "remote_url", return_value=""),
+        patch.object(
+            skill_loading_mod.git,
+            "run",
+            return_value=(
+                "upstream\tgit@github.com:acme/repo.git (fetch)\nupstream\tgit@github.com:acme/repo.git (push)"
+            ),
         ),
-    )
-    result = _git_remote_urls(tmp_path)
+    ):
+        result = _git_remote_urls(tmp_path)
     assert result == ["git@github.com:acme/repo.git"]
 
 
-def test_git_remote_urls_fallback_multiple_remotes(tmp_path: Path, monkeypatch):
-    monkeypatch.setattr(
-        "teatree.skill_loading._git_remote_url",
-        _mock_remote_url(""),
-    )
-    monkeypatch.setattr(
-        "teatree.skill_loading.subprocess.run",
-        lambda *_a, **_kw: CompletedProcess(
-            args=[],
-            returncode=0,
-            stdout="fork\tgit@github.com:me/repo.git (fetch)\nupstream\tgit@github.com:acme/repo.git (fetch)\n",
+def test_git_remote_urls_fallback_multiple_remotes(tmp_path: Path) -> None:
+    with (
+        patch.object(skill_loading_mod.git, "remote_url", return_value=""),
+        patch.object(
+            skill_loading_mod.git,
+            "run",
+            return_value="fork\tgit@github.com:me/repo.git (fetch)\nupstream\tgit@github.com:acme/repo.git (fetch)",
         ),
-    )
-    result = _git_remote_urls(tmp_path)
+    ):
+        result = _git_remote_urls(tmp_path)
     assert result == ["git@github.com:me/repo.git", "git@github.com:acme/repo.git"]
 
 
-def test_git_remote_urls_fallback_oserror(tmp_path: Path, monkeypatch):
-    monkeypatch.setattr(
-        "teatree.skill_loading._git_remote_url",
-        _mock_remote_url(""),
-    )
-    monkeypatch.setattr(
-        "teatree.skill_loading.subprocess.run",
-        _raise_oserror,
-    )
-    assert _git_remote_urls(tmp_path) == []
-
-
-def test_git_remote_urls_fallback_nonzero_returncode(tmp_path: Path, monkeypatch):
-    monkeypatch.setattr(
-        "teatree.skill_loading._git_remote_url",
-        _mock_remote_url(""),
-    )
-    monkeypatch.setattr(
-        "teatree.skill_loading.subprocess.run",
-        lambda *_a, **_kw: CompletedProcess(args=[], returncode=128, stdout="", stderr="fatal"),
-    )
-    assert _git_remote_urls(tmp_path) == []
-
-
-# ── _git_remote_url ─────────────────────────────────────────────────
-
-
-def test_git_remote_url_success(tmp_path: Path, monkeypatch):
-    monkeypatch.setattr(
-        "teatree.skill_loading.subprocess.run",
-        lambda *_a, **_kw: CompletedProcess(
-            args=[],
-            returncode=0,
-            stdout="git@github.com:acme/repo.git\n",
-        ),
-    )
-    assert _git_remote_url(tmp_path, "origin") == "git@github.com:acme/repo.git"
-
-
-def test_git_remote_url_oserror(tmp_path: Path, monkeypatch):
-    monkeypatch.setattr(
-        "teatree.skill_loading.subprocess.run",
-        _raise_oserror,
-    )
-    assert _git_remote_url(tmp_path, "origin") == ""
-
-
-def test_git_remote_url_nonzero_returncode(tmp_path: Path, monkeypatch):
-    monkeypatch.setattr(
-        "teatree.skill_loading.subprocess.run",
-        lambda *_a, **_kw: CompletedProcess(args=[], returncode=1, stdout="", stderr=""),
-    )
-    assert _git_remote_url(tmp_path, "origin") == ""
+def test_git_remote_urls_fallback_empty(tmp_path: Path) -> None:
+    with (
+        patch.object(skill_loading_mod.git, "remote_url", return_value=""),
+        patch.object(skill_loading_mod.git, "run", return_value=""),
+    ):
+        assert _git_remote_urls(tmp_path) == []
