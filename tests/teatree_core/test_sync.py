@@ -12,6 +12,10 @@ from teatree.core.overlay import OverlayBase, OverlayConfig, ProvisionStep
 from teatree.core.overlay_loader import reset_overlay_cache
 from teatree.core.sync import (
     LAST_SYNC_CACHE_KEY,
+    DiscussionSummary,
+    MREntry,
+    MREntryDict,
+    RawAPIDict,
     SyncResult,
     _apply_merged_status,
     _classify_discussions,
@@ -165,6 +169,122 @@ class TestSyncResult:
         assert result.errors == []
 
 
+class TestDiscussionSummary:
+    def test_to_dict(self) -> None:
+        ds = DiscussionSummary(status="addressed", detail="Fix this")
+        assert ds.to_dict() == {"status": "addressed", "detail": "Fix this"}
+
+    def test_frozen(self) -> None:
+        ds = DiscussionSummary(status="addressed", detail="Fix this")
+        with pytest.raises(AttributeError):
+            ds.status = "needs_reply"  # type: ignore[misc]
+
+
+class TestMREntry:
+    def test_required_fields(self) -> None:
+        entry = MREntry(
+            url="https://example.com/mr/1",
+            title="feat: add feature",
+            branch="feat/add-feature",
+            draft=False,
+            repo="backend",
+            iid=42,
+            updated_at="2026-01-01T00:00:00Z",
+        )
+        assert entry.url == "https://example.com/mr/1"
+        assert entry.iid == 42
+
+    def test_optional_fields_default_to_none(self) -> None:
+        entry = MREntry(
+            url="u",
+            title="t",
+            branch="b",
+            draft=False,
+            repo="r",
+            iid=1,
+            updated_at="x",
+        )
+        assert entry.pipeline_status is None
+        assert entry.approvals is None
+        assert entry.discussions is None
+        assert entry.review_permalink is None
+
+    def test_to_dict_omits_none_values(self) -> None:
+        entry = MREntry(
+            url="u",
+            title="t",
+            branch="b",
+            draft=False,
+            repo="r",
+            iid=1,
+            updated_at="x",
+        )
+        d = entry.to_dict()
+        assert "pipeline_status" not in d
+        assert "approvals" not in d
+        assert d == {
+            "url": "u",
+            "title": "t",
+            "branch": "b",
+            "draft": False,
+            "repo": "r",
+            "iid": 1,
+            "updated_at": "x",
+        }
+
+    def test_to_dict_includes_set_optional_fields(self) -> None:
+        entry = MREntry(
+            url="u",
+            title="t",
+            branch="b",
+            draft=False,
+            repo="r",
+            iid=1,
+            updated_at="x",
+            pipeline_status="success",
+            pipeline_url="https://pipeline/1",
+            review_requested=True,
+            reviewer_names=["alice"],
+        )
+        d = entry.to_dict()
+        assert d["pipeline_status"] == "success"
+        assert d["review_requested"] is True
+        assert d["reviewer_names"] == ["alice"]
+
+    def test_to_dict_serializes_discussions(self) -> None:
+        entry = MREntry(
+            url="u",
+            title="t",
+            branch="b",
+            draft=False,
+            repo="r",
+            iid=1,
+            updated_at="x",
+            discussions=[
+                DiscussionSummary(status="addressed", detail="Fix this"),
+                DiscussionSummary(status="needs_reply", detail="Please fix"),
+            ],
+        )
+        d = entry.to_dict()
+        assert d["discussions"] == [
+            {"status": "addressed", "detail": "Fix this"},
+            {"status": "needs_reply", "detail": "Please fix"},
+        ]
+
+    def test_mutable(self) -> None:
+        entry = MREntry(
+            url="u",
+            title="t",
+            branch="b",
+            draft=False,
+            repo="r",
+            iid=1,
+            updated_at="x",
+        )
+        entry.pipeline_status = "success"
+        assert entry.pipeline_status == "success"
+
+
 class TestExtractIssueUrl:
     def test_from_description(self) -> None:
         assert _extract_issue_url(_MR_WITH_ISSUE) == "https://gitlab.com/org/repo/-/issues/100"
@@ -265,8 +385,7 @@ class TestClassifyDiscussions:
         ]
         result = _classify_discussions(discussions, "me")
         assert len(result) == 1
-        assert result[0]["status"] == "addressed"
-        assert result[0]["detail"] == "Fix this"
+        assert result[0] == DiscussionSummary(status="addressed", detail="Fix this")
 
     def test_waiting_reviewer_when_last_author_is_mr_author(self) -> None:
         discussions = [
@@ -279,7 +398,7 @@ class TestClassifyDiscussions:
         ]
         result = _classify_discussions(discussions, "me")
         assert len(result) == 1
-        assert result[0]["status"] == "waiting_reviewer"
+        assert result[0].status == "waiting_reviewer"
 
     def test_needs_reply_when_last_author_is_not_mr_author(self) -> None:
         discussions = [
@@ -291,7 +410,7 @@ class TestClassifyDiscussions:
         ]
         result = _classify_discussions(discussions, "me")
         assert len(result) == 1
-        assert result[0]["status"] == "needs_reply"
+        assert result[0].status == "needs_reply"
 
     def test_non_dict_last_note_author(self) -> None:
         """When the last note is not a dict, the author should be empty -> needs_reply."""
@@ -304,7 +423,7 @@ class TestClassifyDiscussions:
             }
         ]
         result = _classify_discussions(discussions, "me")
-        assert result[0]["status"] == "needs_reply"
+        assert result[0].status == "needs_reply"
 
     def test_non_dict_first_note_body(self) -> None:
         """When the first note is not a dict, first_body should be empty string."""
@@ -317,7 +436,7 @@ class TestClassifyDiscussions:
             }
         ]
         result = _classify_discussions(discussions, "me")
-        assert result[0]["detail"] == ""  # first_body from non-dict is ""
+        assert result[0].detail == ""  # first_body from non-dict is ""
 
 
 class TestUpdateTicket(TestCase):
@@ -342,7 +461,7 @@ class TestUpdateTicket(TestCase):
         )
 
         # Simulate a sync update that doesn't include the skill-written fields
-        new_mr_entry: dict[str, object] = {
+        new_mr_entry: MREntryDict = {
             "url": "https://gitlab.com/org/repo/-/merge_requests/50",
             "repo": "repo",
             "title": "feat: new title",
@@ -660,7 +779,7 @@ class TestDetectE2EEvidence:
         assert _detect_e2e_evidence([], "https://example.com") == ""
 
     def test_non_dict_entries_skipped(self) -> None:
-        bad_input: list[dict[str, object]] = ["not-a-dict"]  # type: ignore[list-item]
+        bad_input: list[RawAPIDict] = ["not-a-dict"]  # type: ignore[list-item]
         assert _detect_e2e_evidence(bad_input, "https://example.com") == ""
 
 

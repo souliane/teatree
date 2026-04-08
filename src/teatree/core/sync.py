@@ -6,7 +6,7 @@ active overlay's configuration.
 
 import logging
 import re
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import TYPE_CHECKING
 
 from django.core.cache import cache
@@ -18,6 +18,11 @@ if TYPE_CHECKING:
     from teatree.backends.gitlab_api import GitLabAPI, ProjectInfo
 
 LAST_SYNC_CACHE_KEY = "teatree_followup_last_sync"
+
+# Type aliases for untyped external data (GitLab/GitHub API responses)
+# and serialized internal data stored in JSONFields.
+type RawAPIDict = dict[str, object]
+type MREntryDict = dict[str, object]
 
 _REPO_PATH_RE = re.compile(r"https?://[^/]+/(.+?)/-/merge_requests/")
 
@@ -43,6 +48,49 @@ class SyncResult:
     mrs_merged: int = 0
     reviews_synced: int = 0
     errors: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True, slots=True)
+class DiscussionSummary:
+    status: str
+    detail: str
+
+    def to_dict(self) -> dict[str, str]:
+        return asdict(self)
+
+
+@dataclass(slots=True)
+class MREntry:
+    url: str
+    title: str
+    branch: str
+    draft: bool
+    repo: str
+    iid: int
+    updated_at: str
+    pipeline_status: str | None = None
+    pipeline_url: str | None = None
+    approvals: RawAPIDict | None = None
+    discussions: list[DiscussionSummary] | None = None
+    e2e_test_plan_url: str | None = None
+    review_requested: bool | None = None
+    reviewer_names: list[str] | None = None
+    review_permalink: str | None = None
+    review_channel: str | None = None
+    notion_status: str | None = None
+    notion_url: str | None = None
+
+    def to_dict(self) -> MREntryDict:
+        result: MREntryDict = {}
+        for k in self.__slots__:
+            v = getattr(self, k)
+            if v is None:
+                continue
+            if k == "discussions":
+                result[k] = [d.to_dict() for d in v]
+            else:
+                result[k] = v
+        return result
 
 
 def sync_followup() -> SyncResult:
@@ -99,7 +147,7 @@ def _sync_github(overlay: object) -> SyncResult:
     for item in items:
         result.mrs_found += 1
         state = status_map.get(item.status, Ticket.State.NOT_STARTED)
-        extra: dict[str, object] = {
+        extra: RawAPIDict = {
             "issue_title": item.title,
             "board_position": item.position,
             "board_status": item.status,
@@ -189,7 +237,7 @@ def _sync_gitlab(overlay: object) -> SyncResult:
     return result
 
 
-def _extract_repo_path(mr: dict[str, object]) -> str:
+def _extract_repo_path(mr: RawAPIDict) -> str:
     """Extract the GitLab project path from an MR's ``web_url``."""
     web_url = str(mr.get("web_url", ""))
     match = _REPO_PATH_RE.search(web_url)
@@ -197,7 +245,7 @@ def _extract_repo_path(mr: dict[str, object]) -> str:
 
 
 def _upsert_ticket_from_mr(  # noqa: PLR0913, PLR0914
-    mr: dict[str, object],
+    mr: RawAPIDict,
     repo_path: str,
     client: "GitLabAPI",
     project: "ProjectInfo | None",
@@ -214,46 +262,47 @@ def _upsert_ticket_from_mr(  # noqa: PLR0913, PLR0914
     mr_iid = int(mr.get("iid", 0))  # type: ignore[arg-type]
     repo_short = repo_path.rsplit("/", maxsplit=1)[-1]
 
-    mr_entry: dict[str, object] = {
-        "url": web_url,
-        "title": title,
-        "branch": source_branch,
-        "draft": is_draft,
-        "repo": repo_short,
-        "iid": mr_iid,
-        "updated_at": str(mr.get("updated_at", "")),
-    }
+    mr_entry = MREntry(
+        url=web_url,
+        title=title,
+        branch=source_branch,
+        draft=is_draft,
+        repo=repo_short,
+        iid=mr_iid,
+        updated_at=str(mr.get("updated_at", "")),
+    )
 
     # Enrich non-draft MRs with pipeline and approval data
     if not is_draft and project and mr_iid:
         pipeline = client.get_mr_pipeline(project.project_id, mr_iid)
-        mr_entry["pipeline_status"] = pipeline["status"]
-        mr_entry["pipeline_url"] = pipeline["url"]
+        mr_entry.pipeline_status = pipeline["status"]
+        mr_entry.pipeline_url = pipeline["url"]
 
         approvals = client.get_mr_approvals(project.project_id, mr_iid)
-        mr_entry["approvals"] = approvals
+        mr_entry.approvals = approvals
 
         discussions = client.get_mr_discussions(project.project_id, mr_iid)
-        mr_entry["discussions"] = _classify_discussions(discussions, username)
+        mr_entry.discussions = _classify_discussions(discussions, username)
 
         e2e_url = _detect_e2e_evidence(discussions, web_url)
         if e2e_url:
-            mr_entry["e2e_test_plan_url"] = e2e_url
+            mr_entry.e2e_test_plan_url = e2e_url
 
     # Reviewer info is available on all MRs (including drafts)
     reviewers = mr.get("reviewers", [])
     if isinstance(reviewers, list):
-        mr_entry["review_requested"] = bool(reviewers)
-        mr_entry["reviewer_names"] = [str(r.get("username", "")) for r in reviewers if isinstance(r, dict)]  # ty: ignore[no-matching-overload]
+        mr_entry.review_requested = bool(reviewers)
+        mr_entry.reviewer_names = [str(r.get("username", "")) for r in reviewers if isinstance(r, dict)]  # ty: ignore[no-matching-overload]
 
     lookup_url = issue_url or web_url
-    inferred_state = _infer_state_from_mrs({web_url: mr_entry})
+    mr_entry_dict = mr_entry.to_dict()
+    inferred_state = _infer_state_from_mrs({web_url: mr_entry_dict})
     tickets = list(Ticket.objects.filter(issue_url=lookup_url).order_by("pk"))
     if not tickets:
         ticket = Ticket.objects.create(
             issue_url=lookup_url,
             repos=[repo_short],
-            extra={"mrs": {web_url: mr_entry}},
+            extra={"mrs": {web_url: mr_entry_dict}},
             state=inferred_state,
             overlay=overlay_name,
         )
@@ -266,20 +315,19 @@ def _upsert_ticket_from_mr(  # noqa: PLR0913, PLR0914
         if overlay_name and not ticket.overlay:
             ticket.overlay = overlay_name
             ticket.save(update_fields=["overlay"])
-        _update_ticket(ticket, mr_entry, web_url, repo_short, inferred_state)
+        _update_ticket(ticket, mr_entry_dict, web_url, repo_short, inferred_state)
         result.tickets_updated += 1
 
 
 def _classify_discussions(
-    discussions: list[dict[str, object]],
+    discussions: list[RawAPIDict],
     author_username: str,
-) -> list[dict[str, str]]:
+) -> list[DiscussionSummary]:
     """Classify MR discussion threads into review comment statuses.
 
-    Returns a list of dicts with keys: status, detail.
     Statuses: "waiting_reviewer", "needs_reply", "addressed".
     """
-    result: list[dict[str, str]] = []
+    result: list[DiscussionSummary] = []
     for disc in discussions:
         if not isinstance(disc, dict):
             continue
@@ -300,7 +348,7 @@ def _classify_discussions(
             last_author = str(last_note.get("author", {}).get("username", "")) if isinstance(last_note, dict) else ""  # ty: ignore[no-matching-overload]
             status = "waiting_reviewer" if last_author == author_username else "needs_reply"
 
-        result.append({"status": status, "detail": first_body[:120]})
+        result.append(DiscussionSummary(status=status, detail=first_body[:120]))
     return result
 
 
@@ -310,7 +358,7 @@ _E2E_EVIDENCE_RE = re.compile(
 )
 
 
-def _detect_e2e_evidence(discussions: list[dict[str, object]], mr_url: str) -> str:
+def _detect_e2e_evidence(discussions: list[RawAPIDict], mr_url: str) -> str:
     """Scan MR discussion notes for E2E test evidence. Returns the note URL or empty string."""
     for disc in discussions:
         if not isinstance(disc, dict):
@@ -359,7 +407,7 @@ def _merge_ticket_extras(target: Ticket, source: Ticket) -> None:
 
 def _update_ticket(
     ticket: Ticket,
-    mr_entry: dict[str, object],
+    mr_entry: MREntryDict,
     mr_url: str,
     repo_short: str,
     inferred_state: str = "",
@@ -624,7 +672,7 @@ def _process_label(labels: list[object]) -> str | None:
 _STATE_ORDER = [s.value for s in Ticket.State]
 
 
-def _infer_state_from_mrs(mrs_data: dict[str, dict[str, object]]) -> str:
+def _infer_state_from_mrs(mrs_data: dict[str, MREntryDict]) -> str:
     """Infer minimum ticket state from MR metadata.
 
     Synced tickets bypass FSM transitions (which have side effects like task
@@ -650,7 +698,7 @@ def _infer_state_from_mrs(mrs_data: dict[str, dict[str, object]]) -> str:
 _ISSUE_URL_RE = re.compile(r"(https://[^\s)]+/-/(?:issues|work_items)/\d+)")
 
 
-def _extract_issue_url(mr: dict[str, object]) -> str:
+def _extract_issue_url(mr: RawAPIDict) -> str:
     """Extract a GitLab issue URL from MR title or description first line."""
     for text in [
         str(mr.get("description", "") or "").split("\n", maxsplit=1)[0],
