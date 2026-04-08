@@ -7,12 +7,13 @@ active overlay's configuration.
 import logging
 import re
 from dataclasses import asdict, dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from django.core.cache import cache
 from django.utils import timezone
 
-from teatree.core.models import Ticket
+from teatree.core.cleanup import cleanup_worktree
+from teatree.core.models import Ticket, Worktree
 
 if TYPE_CHECKING:
     from teatree.backends.gitlab_api import GitLabAPI, ProjectInfo
@@ -47,6 +48,7 @@ class SyncResult:
     labels_fetched: int = 0
     mrs_merged: int = 0
     reviews_synced: int = 0
+    worktrees_cleaned: int = 0
     errors: list[str] = field(default_factory=list)
 
 
@@ -443,6 +445,27 @@ def _update_ticket(
     ticket.save(update_fields=update_fields)
 
 
+def _scan_merged_mrs(
+    mrs: RawAPIDict,
+    merged_urls: set[str],
+    result: SyncResult,
+) -> tuple[bool, bool]:
+    """Scan MR entries, strip discussions from merged ones. Returns (changed, all_merged)."""
+    changed = False
+    unmerged = False
+    for mr_url, mr_entry in mrs.items():
+        if not isinstance(mr_entry, dict):
+            continue
+        if mr_url not in merged_urls:
+            unmerged = True
+            continue
+        entry = cast("MREntryDict", mr_entry)
+        if entry.pop("discussions", None) is not None:
+            changed = True
+        result.mrs_merged += 1
+    return changed, not unmerged
+
+
 def _apply_merged_status(ticket: Ticket, merged_urls: set[str], result: SyncResult) -> None:
     """Clean stale discussion data and advance ticket state when all MRs are merged."""
     extra = ticket.extra if isinstance(ticket.extra, dict) else {}
@@ -450,17 +473,7 @@ def _apply_merged_status(ticket: Ticket, merged_urls: set[str], result: SyncResu
     if not isinstance(mrs, dict) or not mrs:
         return
 
-    changed = False
-    all_merged = True
-    for mr_url, mr_entry in mrs.items():
-        if not isinstance(mr_entry, dict):
-            continue
-        if mr_url in merged_urls:
-            if mr_entry.pop("discussions", None) is not None:
-                changed = True
-            result.mrs_merged += 1
-        else:
-            all_merged = False
+    changed, all_merged = _scan_merged_mrs(mrs, merged_urls, result)
 
     if not changed and not all_merged:
         return
@@ -475,6 +488,20 @@ def _apply_merged_status(ticket: Ticket, merged_urls: set[str], result: SyncResu
         update_fields.append("state")
     if update_fields:
         ticket.save(update_fields=update_fields)
+
+    if all_merged:
+        _cleanup_merged_worktrees(ticket, result)
+
+
+def _cleanup_merged_worktrees(ticket: Ticket, result: SyncResult) -> None:
+    """Auto-clean worktrees associated with a fully-merged ticket."""
+    for worktree in Worktree.objects.filter(ticket=ticket):
+        try:
+            cleanup_worktree(worktree)
+            result.worktrees_cleaned += 1
+        except Exception:
+            logger.exception("Failed to clean worktree %s", worktree.repo_path)
+            result.errors.append(f"Worktree cleanup failed: {worktree.repo_path}")
 
 
 def _detect_merged_mrs(
