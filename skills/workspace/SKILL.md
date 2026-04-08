@@ -172,7 +172,7 @@ Project skills define the specific endpoints to check (e.g., admin login, API ve
 
 For the full extension points table, override chain, and project skill creation guide, see [`references/extension-points.md`](references/extension-points.md).
 
-Summary: 23 extension points with 3-layer priority (**default** < **framework** < **project**). Key points: `wt_db_import`, `wt_post_db`, `wt_env_extra`, `wt_run_backend`, `wt_run_frontend`, `wt_create_mr`, `wt_monitor_pipeline`, `wt_send_review_request`.
+Key methods on `OverlayBase`: `get_repos()`, `get_provision_steps()`, `get_db_import_strategy()`, `get_env_extra()`, `get_run_commands()`, `get_services_config()`, `get_verify_endpoints()`. See the reference for the full list.
 
 ## Lifecycle State Machine
 
