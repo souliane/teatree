@@ -15,8 +15,8 @@ from django.core.management.base import OutputWrapper
 from django.test import TestCase, override_settings
 from django.utils.module_loading import import_string
 
-import teatree.backends.loader as backends_loader_mod
 import teatree.config as config_mod
+import teatree.core.backend_factory as backend_factory_mod
 import teatree.core.management.commands.e2e as e2e_mod
 import teatree.core.management.commands.lifecycle as lifecycle_mod
 import teatree.core.management.commands.pr as pr_mod
@@ -1288,7 +1288,7 @@ class TestPrCreate(TestCase):
         mock_host = MagicMock()
         mock_host.create_pr.return_value = {"url": "https://example.com/mr/1"}
 
-        with patch.object(pr_mod, "get_code_host", return_value=mock_host):
+        with patch.object(pr_mod, "code_host_from_overlay", return_value=mock_host):
             result = cast(
                 "dict[str, object]",
                 call_command(
@@ -1319,7 +1319,7 @@ class TestPrCreate(TestCase):
         mock_validate = MagicMock(return_value={"errors": ["Bad title"], "warnings": []})
 
         with (
-            patch.object(pr_mod, "get_code_host", return_value=mock_host),
+            patch.object(pr_mod, "code_host_from_overlay", return_value=mock_host),
             patch.object(pr_mod, "_last_commit_message", return_value=("Bad Title", "")),
             patch.object(pr_mod, "get_overlay") as mock_overlay,
         ):
@@ -1342,7 +1342,7 @@ class TestPrCreate(TestCase):
         mock_host.create_pr.return_value = {"url": "https://example.com/mr/2"}
 
         with (
-            patch.object(pr_mod, "get_code_host", return_value=mock_host),
+            patch.object(pr_mod, "code_host_from_overlay", return_value=mock_host),
             patch.object(pr_mod, "_last_commit_message", return_value=("", "")),
         ):
             cast(
@@ -1370,7 +1370,7 @@ class TestPrCreate(TestCase):
         mock_host.create_pr.return_value = {"url": "https://example.com/mr/3"}
 
         with (
-            patch.object(pr_mod, "get_code_host", return_value=mock_host),
+            patch.object(pr_mod, "code_host_from_overlay", return_value=mock_host),
             patch.object(pr_mod, "_last_commit_message", return_value=("", "")),
         ):
             call_command("pr", "create", str(ticket.pk), skip_validation=True)
@@ -1389,7 +1389,7 @@ class TestPrCreate(TestCase):
         mock_host.create_pr.return_value = {"url": "https://example.com/mr/7"}
 
         with (
-            patch.object(pr_mod, "get_code_host", return_value=mock_host),
+            patch.object(pr_mod, "code_host_from_overlay", return_value=mock_host),
             patch.object(pr_mod, "_last_commit_message", return_value=("commit title", "commit body")),
         ):
             call_command("pr", "create", str(ticket.pk), description="user desc", skip_validation=True)
@@ -1407,7 +1407,7 @@ class TestPrCreate(TestCase):
 
         mock_host = MagicMock()
         with (
-            patch.object(pr_mod, "get_code_host", return_value=mock_host),
+            patch.object(pr_mod, "code_host_from_overlay", return_value=mock_host),
             patch.object(pr_mod, "_last_commit_message", return_value=("", "")),
         ):
             result = cast(
@@ -1430,7 +1430,7 @@ class TestPrCreate(TestCase):
         mock_host.create_pr.return_value = {"url": "https://example.com/mr/5"}
 
         with (
-            patch.object(pr_mod, "get_code_host", return_value=mock_host),
+            patch.object(pr_mod, "code_host_from_overlay", return_value=mock_host),
             patch.object(pr_mod, "_last_commit_message", return_value=("", "")),
         ):
             result = cast(
@@ -1458,7 +1458,7 @@ class TestPrCreate(TestCase):
         mock_host.create_pr.return_value = {"url": "https://example.com/mr/6"}
 
         with (
-            patch.object(pr_mod, "get_code_host", return_value=mock_host),
+            patch.object(pr_mod, "code_host_from_overlay", return_value=mock_host),
             patch.object(
                 pr_mod,
                 "_last_commit_message",
@@ -1631,7 +1631,7 @@ class TestPrPostEvidence(TestCase):
         mock_host.post_mr_note.return_value = {"id": 42}
         mock_host.list_mr_notes.return_value = []  # no existing note
 
-        with patch.object(pr_mod, "get_code_host", return_value=mock_host):
+        with patch.object(pr_mod, "code_host_from_overlay", return_value=mock_host):
             result = cast(
                 "dict[str, object]",
                 call_command(
@@ -1659,7 +1659,7 @@ class TestPrPostEvidence(TestCase):
         ]
         mock_host.update_mr_note.return_value = {"id": 999}
 
-        with patch.object(pr_mod, "get_code_host", return_value=mock_host):
+        with patch.object(pr_mod, "code_host_from_overlay", return_value=mock_host):
             result = cast(
                 "dict[str, object]",
                 call_command(
@@ -1686,7 +1686,7 @@ class TestPrPostEvidence(TestCase):
         mock_host.list_mr_notes.return_value = []
         mock_host.post_mr_note.return_value = {"id": 55}
 
-        with patch.object(pr_mod, "get_code_host", return_value=mock_host):
+        with patch.object(pr_mod, "code_host_from_overlay", return_value=mock_host):
             cast(
                 "dict[str, object]",
                 call_command(
@@ -1712,7 +1712,7 @@ class TestPrPostEvidence(TestCase):
         mock_host.list_mr_notes.return_value = []
         mock_host.post_mr_note.return_value = {"id": 56}
 
-        with patch.object(pr_mod, "get_code_host", return_value=mock_host):
+        with patch.object(pr_mod, "code_host_from_overlay", return_value=mock_host):
             cast(
                 "dict[str, object]",
                 call_command("pr", "post-evidence", "100", repo="my/repo", body="x", files=["/tmp/bad.png"]),
@@ -1728,7 +1728,7 @@ class TestPrPostEvidence(TestCase):
         mock_host.post_mr_note.return_value = {"id": 43}
         mock_host.list_mr_notes.return_value = []
 
-        with patch.object(pr_mod, "get_code_host", return_value=mock_host):
+        with patch.object(pr_mod, "code_host_from_overlay", return_value=mock_host):
             cast(
                 "dict[str, object]",
                 call_command(
@@ -1750,7 +1750,7 @@ class TestPrPostEvidence(TestCase):
         mock_host.post_mr_note.return_value = {"id": 44}
         mock_host.list_mr_notes.return_value = []
 
-        with patch.object(pr_mod, "get_code_host", return_value=mock_host):
+        with patch.object(pr_mod, "code_host_from_overlay", return_value=mock_host):
             call_command("pr", "post-evidence", "102", title="T")
 
         call_kwargs = mock_host.post_mr_note.call_args[1]
@@ -2100,7 +2100,7 @@ class TestE2eTriggerCi(TestCase):
         mock_ci = MagicMock()
         mock_ci.trigger_pipeline.return_value = {"pipeline_id": 123}
 
-        with patch.object(backends_loader_mod, "get_ci_service", return_value=mock_ci):
+        with patch.object(backend_factory_mod, "ci_service_from_overlay", return_value=mock_ci):
             result = cast("dict[str, object]", call_command("e2e", "trigger-ci"))
 
         assert result == {"pipeline_id": 123}
@@ -2116,7 +2116,7 @@ class TestE2eTriggerCi(TestCase):
         mock_ci = MagicMock()
         mock_ci.trigger_pipeline.return_value = {"pipeline_id": 456}
 
-        with patch.object(backends_loader_mod, "get_ci_service", return_value=mock_ci):
+        with patch.object(backend_factory_mod, "ci_service_from_overlay", return_value=mock_ci):
             cast("dict[str, object]", call_command("e2e", "trigger-ci", branch="feature-branch"))
 
         mock_ci.trigger_pipeline.assert_called_once_with(
@@ -2135,7 +2135,7 @@ class TestE2eTriggerCi(TestCase):
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
     def test_no_ci_service_returns_error(self) -> None:
-        with patch.object(backends_loader_mod, "get_ci_service", return_value=None):
+        with patch.object(backend_factory_mod, "ci_service_from_overlay", return_value=None):
             result = cast("dict[str, object]", call_command("e2e", "trigger-ci"))
 
         assert "error" in result

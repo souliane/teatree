@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 from typer.testing import CliRunner
 
 import teatree.backends.gitlab_api as gitlab_api_mod
-import teatree.backends.loader as backends_loader_mod
+import teatree.core.backend_factory as backend_factory_mod
 import teatree.core.overlay_loader as overlay_loader_mod
 import teatree.utils.git as git_mod
 from teatree.cli import app
@@ -19,16 +19,15 @@ runner = CliRunner()
 
 class TestGetCIService:
     def test_from_env(self, monkeypatch):
-        """Creates service from env when Django fails."""
+        """Creates service from env when overlay fails."""
         monkeypatch.setenv("GITLAB_TOKEN", "token")
-        with patch.object(backends_loader_mod, "get_ci_service", side_effect=Exception("no django")):
+        with patch.object(backend_factory_mod, "ci_service_from_overlay", side_effect=Exception("no django")):
             service = CICommands.get_ci_service()
             assert service is not None
 
     def test_no_token(self, monkeypatch):
         monkeypatch.delenv("GITLAB_TOKEN", raising=False)
-        monkeypatch.delenv("GITLAB_TOKEN", raising=False)
-        with patch.object(backends_loader_mod, "get_ci_service", side_effect=Exception("no django")):
+        with patch.object(backend_factory_mod, "ci_service_from_overlay", side_effect=Exception("no django")):
             assert CICommands.get_ci_service() is None
 
 

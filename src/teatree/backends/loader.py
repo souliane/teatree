@@ -1,4 +1,8 @@
-"""Backend loader — auto-configures code host, CI, chat from overlay config."""
+"""Backend loader — builds code host / CI from explicit credentials.
+
+The functions here do NOT import from ``teatree.core``; callers are
+responsible for resolving overlay config and passing tokens / URLs.
+"""
 
 from functools import lru_cache
 
@@ -6,23 +10,25 @@ from teatree.backends.protocols import ChatNotifier, CIService, CodeHost, ErrorT
 
 
 @lru_cache(maxsize=1)
-def get_code_host() -> CodeHost | None:
-    from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
+def get_code_host(
+    *,
+    github_token: str = "",
+    gitlab_token: str = "",
+    gitlab_url: str = "",
+) -> CodeHost | None:
+    """Return a configured code-host backend, or ``None``.
 
-    try:
-        overlay = get_overlay()
-    except Exception:  # noqa: BLE001
-        return None
-
-    if overlay.config.get_github_token():
+    Callers should resolve tokens from the overlay and pass them explicitly.
+    """
+    if github_token:
         from teatree.backends.github import GitHubCodeHost  # noqa: PLC0415
 
-        return GitHubCodeHost(token=overlay.config.get_github_token())
+        return GitHubCodeHost(token=github_token)
 
-    if overlay.config.get_gitlab_token():
+    if gitlab_token:
         from teatree.backends.gitlab import GitLabCodeHost  # noqa: PLC0415
 
-        return GitLabCodeHost()
+        return GitLabCodeHost(token=gitlab_token, base_url=gitlab_url)
     return None
 
 
@@ -42,18 +48,20 @@ def get_error_tracker() -> ErrorTracker | None:
 
 
 @lru_cache(maxsize=1)
-def get_ci_service() -> CIService | None:
-    from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
+def get_ci_service(
+    *,
+    gitlab_token: str = "",
+    gitlab_url: str = "",
+) -> CIService | None:
+    """Return a configured CI-service backend, or ``None``.
 
-    try:
-        overlay = get_overlay()
-    except Exception:  # noqa: BLE001
-        return None
-
-    if overlay.config.get_gitlab_token():
+    Callers should resolve tokens from the overlay and pass them explicitly.
+    """
+    if gitlab_token:
+        from teatree.backends.gitlab_api import GitLabAPI  # noqa: PLC0415
         from teatree.backends.gitlab_ci import GitLabCIService  # noqa: PLC0415
 
-        return GitLabCIService()
+        return GitLabCIService(client=GitLabAPI(token=gitlab_token, base_url=gitlab_url or "https://gitlab.com/api/v4"))
     return None
 
 

@@ -14,21 +14,22 @@ class CICommands:
 
     @staticmethod
     def get_ci_service() -> CIService | None:
-        """Get CI service — tries Django settings first, falls back to env vars."""
+        """Get CI service — tries overlay first, falls back to env vars."""
         try:
-            from teatree.backends.loader import get_ci_service  # noqa: PLC0415
+            from teatree.core.backend_factory import ci_service_from_overlay  # noqa: PLC0415
 
-            return get_ci_service()
+            result = ci_service_from_overlay()
+            if result is not None:
+                return result
         except Exception:  # noqa: BLE001, S110 — fallback to env-based config
             pass
 
         token = os.environ.get("GITLAB_TOKEN", "")
         if token:
-            from teatree.backends.gitlab_api import GitLabAPI  # noqa: PLC0415
-            from teatree.backends.gitlab_ci import GitLabCIService  # noqa: PLC0415
+            from teatree.backends.loader import get_ci_service  # noqa: PLC0415
 
             base_url = os.environ.get("GITLAB_URL", "https://gitlab.com/api/v4")
-            return GitLabCIService(client=GitLabAPI(token=token, base_url=base_url))
+            return get_ci_service(gitlab_token=token, gitlab_url=base_url)
         return None
 
     @staticmethod

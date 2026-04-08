@@ -30,7 +30,7 @@ class TestPrCreate(TestCase):
     def test_reads_auto_labels_from_overlay(self) -> None:
         host = MagicMock()
         host.create_pr.return_value = {"iid": 12}
-        self._monkeypatch.setattr(pr_command, "get_code_host", lambda: host)
+        self._monkeypatch.setattr(pr_command, "code_host_from_overlay", lambda: host)
 
         ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/55")
         Worktree.objects.create(ticket=ticket, overlay="test", repo_path="/tmp/backend", branch="feature-branch")
@@ -59,7 +59,7 @@ class TestPostEvidence(TestCase):
         """post-evidence posts an MR note via the code host."""
         host = MagicMock()
         host.post_mr_note.return_value = {"id": 55}
-        self._monkeypatch.setattr(pr_command, "get_code_host", lambda: host)
+        self._monkeypatch.setattr(pr_command, "code_host_from_overlay", lambda: host)
 
         with patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY):
             result = call_command("pr", "post-evidence", "10", "--body", "All tests pass")
@@ -72,7 +72,7 @@ class TestPostEvidence(TestCase):
 
     def test_returns_error_without_code_host(self) -> None:
         """post-evidence returns error when no code host configured."""
-        self._monkeypatch.setattr(pr_command, "get_code_host", lambda: None)
+        self._monkeypatch.setattr(pr_command, "code_host_from_overlay", lambda: None)
 
         with patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY):
             result = call_command("pr", "post-evidence", "10")

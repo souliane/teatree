@@ -7,7 +7,7 @@ from typing import cast
 
 from django_typer.management import TyperCommand, command
 
-from teatree.backends.loader import get_code_host, get_issue_tracker
+from teatree.core.backend_factory import code_host_from_overlay, get_issue_tracker
 from teatree.core.models import Ticket
 from teatree.core.overlay_loader import get_overlay
 
@@ -83,7 +83,7 @@ class Command(TyperCommand):
     ) -> dict[str, object]:
         """Create a merge request for the ticket's branch."""
         ticket = Ticket.objects.get(pk=ticket_id)
-        host = get_code_host()
+        host = code_host_from_overlay()
         if host is None:
             return {"error": "No code host configured (check overlay GitLab token)"}
 
@@ -203,7 +203,7 @@ class Command(TyperCommand):
         Files (screenshots, videos) are uploaded and embedded as ``![name](url)`` in the body.
         If an existing note contains ``## Test Plan``, it is updated instead of creating a new one.
         """
-        host = get_code_host()
+        host = code_host_from_overlay()
         if host is None:
             return {"error": "No code host configured (check overlay GitLab token)"}
 
