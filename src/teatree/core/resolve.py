@@ -131,7 +131,7 @@ def resolve_worktree(path: str = "") -> Worktree:
     Raises ``WorktreeNotFoundError`` if no worktree can be found or if
     the resolved path is a main repo clone (not a worktree).
     """
-    cwd = path or _get_user_cwd()
+    cwd = str(Path(path).resolve()) if path else _get_user_cwd()
 
     # 1. Walk up from CWD to find .env.worktree
     envfile = _find_env_worktree(cwd)

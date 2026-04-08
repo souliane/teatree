@@ -3,12 +3,24 @@
 import os
 import shutil
 import sys
+from importlib.metadata import PackageNotFoundError, distribution, packages_distributions
 from pathlib import Path
 
 import typer
 
 doctor_app = typer.Typer(no_args_is_help=True, help="Smoke-test hooks, imports, services.")
 _REQUIRED_TOOLS = ("direnv", "git", "jq")
+
+
+def _resolve_overlay_dists(overlays: dict) -> list[str]:
+    """Map overlay instances to their distribution package names."""
+    dist_map = packages_distributions()
+    result: list[str] = []
+    for overlay_inst in overlays.values():
+        top_package = type(overlay_inst).__module__.split(".", maxsplit=1)[0]
+        dist_names = dist_map.get(top_package, [top_package])
+        result.append(dist_names[0] if dist_names else top_package)
+    return result
 
 
 class DoctorService:
@@ -99,39 +111,21 @@ class DoctorService:
 
     @staticmethod
     def check_editable_sanity() -> list[str]:
-        """Verify editable status matches declared intent.
+        """Verify editable status matches ``contribute = true`` in config.
 
-        When ``contribute = true`` in ``.teatree.toml`` and teatree is not
-        installed as editable, auto-fixes by running
-        ``uv pip install -e <teatree-repo>``.
+        When ``contribute = true`` in ``~/.teatree.toml``, both teatree core
+        and the active overlay should be editable.  Auto-fixes by running
+        ``uv pip install -e <repo>``.
         """
         problems: list[str] = []
 
-        try:
-            if "DJANGO_SETTINGS_MODULE" not in os.environ:
-                from teatree.config import discover_active_overlay  # noqa: PLC0415
-
-                active = discover_active_overlay()
-                if active:
-                    os.environ["DJANGO_SETTINGS_MODULE"] = "teatree.settings"
-                else:
-                    return problems  # no overlay, no settings to check
-
-            import django  # noqa: PLC0415
-
-            django.setup()
-            from django.conf import settings as django_settings  # noqa: PLC0415
-        except Exception:  # noqa: BLE001 — Django may not be installed
-            return problems
-
-        # Use contribute flag from config (takes precedence over Django settings)
         from teatree.config import load_config  # noqa: PLC0415
 
         contribute = load_config().user.contribute
-        teatree_should_be_editable = contribute or getattr(django_settings, "TEATREE_EDITABLE", False)
-        teatree_is_editable, _ = IntrospectionHelpers.editable_info("teatree")
 
-        if teatree_should_be_editable and not teatree_is_editable:
+        # Teatree core
+        teatree_is_editable, _ = IntrospectionHelpers.editable_info("teatree")
+        if contribute and not teatree_is_editable:
             teatree_repo = DoctorService.find_teatree_repo()
             if teatree_repo:
                 DoctorService.make_editable("teatree", teatree_repo)
@@ -140,41 +134,36 @@ class DoctorService:
                     "contribute=true but teatree is not editable and local repo not found. "
                     "Fix: set T3_REPO env var or run `uv pip install -e <teatree-path>`",
                 )
-        elif not teatree_should_be_editable and teatree_is_editable:
-            problems.append(
-                "teatree is editable but TEATREE_EDITABLE is not set. "
-                "You risk accidentally modifying framework code. "
-                "Fix: set TEATREE_EDITABLE = True in settings.py if contributing, "
-                "or remove the editable source.",
-            )
 
-        # Check overlay discoverability via entry points
+        # Overlays — resolve dist names once, check both directions
         from teatree.core.overlay_loader import get_all_overlays  # noqa: PLC0415
 
-        overlays = get_all_overlays()
-        for overlay_inst in overlays.values():
-            overlay_module = type(overlay_inst).__module__
-            top_package = overlay_module.split(".", maxsplit=1)[0]
-            from importlib.metadata import packages_distributions  # noqa: PLC0415
+        overlay_dists = _resolve_overlay_dists(get_all_overlays())
 
-            dist_map = packages_distributions()
-            dist_names = dist_map.get(top_package, [top_package])
-            overlay_dist = dist_names[0] if dist_names else top_package
-
-            overlay_should_be_editable = getattr(django_settings, "OVERLAY_EDITABLE", False)
+        for overlay_dist in overlay_dists:
             overlay_is_editable, _ = IntrospectionHelpers.editable_info(overlay_dist)
+            if contribute and not overlay_is_editable:
+                overlay_repo = DoctorService.find_overlay_repo(overlay_dist)
+                if overlay_repo:
+                    DoctorService.make_editable(overlay_dist, overlay_repo)
+                else:
+                    problems.append(
+                        f"contribute=true but overlay ({overlay_dist}) is not editable and repo not found. "
+                        f"Fix: run `uv pip install -e <{overlay_dist}-path>`",
+                    )
+            elif not contribute and overlay_is_editable:
+                problems.append(
+                    f"Overlay ({overlay_dist}) is editable but contribute=false. "
+                    f"Fix: set contribute=true or run `uv pip install {overlay_dist}`.",
+                )
 
-            if overlay_should_be_editable and not overlay_is_editable:
-                problems.append(
-                    f"OVERLAY_EDITABLE=True but overlay ({overlay_dist}) is not editable. "
-                    "Agent changes to overlay code will be lost. "
-                    "Fix: run `uv pip install -e .`",
-                )
-            elif not overlay_should_be_editable and overlay_is_editable:
-                problems.append(
-                    f"Overlay ({overlay_dist}) is editable but OVERLAY_EDITABLE is not set. "
-                    "Fix: set OVERLAY_EDITABLE = True in settings.py if contributing.",
-                )
+        # Reverse check: teatree editable but contribute=false
+        if not contribute and teatree_is_editable:
+            problems.append(
+                "teatree is editable but contribute=false in ~/.teatree.toml. "
+                "You risk accidentally modifying framework code. "
+                "Fix: set contribute=true or run `uv pip install teatree`.",
+            )
 
         return problems
 
@@ -249,7 +238,6 @@ class IntrospectionHelpers:
     def editable_info(dist_name: str) -> tuple[bool, str]:
         """Return (is_editable, source_url) for a distribution."""
         import json  # noqa: PLC0415
-        from importlib.metadata import PackageNotFoundError, distribution  # noqa: PLC0415
 
         try:
             dist = distribution(dist_name)
