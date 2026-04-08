@@ -1,12 +1,13 @@
 import os
 import re
-import subprocess  # noqa: S404
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import SupportsInt, cast
 
 import httpx
+
+from teatree.utils import git
 
 # TTL constants for response caching (seconds)
 _TTL_PIPELINE = 60
@@ -185,16 +186,9 @@ class GitLabAPI:
         return info
 
     def resolve_project_from_remote(self, repo_dir: str = ".") -> ProjectInfo | None:
-        result = subprocess.run(  # noqa: S603
-            ["git", "-C", repo_dir, "remote", "get-url", "origin"],  # noqa: S607
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if result.returncode != 0:
+        remote = git.remote_url(repo=repo_dir)
+        if not remote:
             return None
-
-        remote = result.stdout.strip()
         hostname = re.sub(r"https?://|/api/v\d+/?$", "", self.base_url)
         escaped = re.escape(hostname)
         match = re.search(escaped + r"[:/](.+?)(?:\.git)?$", remote)
@@ -361,10 +355,4 @@ class GitLabAPI:
 
     @staticmethod
     def current_branch(repo_dir: str = ".") -> str:
-        result = subprocess.run(  # noqa: S603
-            ["git", "-C", repo_dir, "rev-parse", "--abbrev-ref", "HEAD"],  # noqa: S607
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        return result.stdout.strip() if result.returncode == 0 else ""
+        return git.current_branch(repo=repo_dir)

@@ -457,9 +457,9 @@ class TestSuggestSkills:
         with (
             mock.patch.object(skill_loader_mod, "SKILL_METADATA_CACHE", cache),
             mock.patch.object(
-                skill_loading_mod.subprocess,
-                "run",
-                return_value=mock.Mock(returncode=0, stdout="git@gitlab.com:acme-engineering/platform-product\n"),
+                skill_loading_mod.git,
+                "remote_url",
+                return_value="git@gitlab.com:acme-engineering/platform-product",
             ),
         ):
             result = suggest_skills(

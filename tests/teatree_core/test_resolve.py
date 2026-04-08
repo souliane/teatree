@@ -1,6 +1,5 @@
 """Tests for teatree.core.resolve — worktree resolution from CWD."""
 
-import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
@@ -186,7 +185,7 @@ class TestResolveWorktree(TestCase):
         (wt_dir / ".git").write_text("gitdir: /some/main/.git/worktrees/my-repo\n")
         self._monkeypatch.setenv("T3_ORIG_CWD", str(wt_dir))
 
-        with patch("teatree.core.resolve.subprocess.check_output", return_value="feat/branch\n"):
+        with patch("teatree.core.resolve.git.current_branch", return_value="feat/branch"):
             result = resolve_worktree()
 
         assert result.branch == "feat/branch"
@@ -314,10 +313,7 @@ class TestAutoRegisterFromGit:
         wt_dir.mkdir()
         (wt_dir / ".git").write_text("gitdir: /some/.git/worktrees/my-repo\n")
 
-        with patch(
-            "teatree.core.resolve.subprocess.check_output",
-            side_effect=subprocess.CalledProcessError(1, "git"),
-        ):
+        with patch("teatree.core.resolve.git.current_branch", return_value=""):
             assert _auto_register_from_git(str(wt_dir)) is None
 
     def test_returns_none_when_branch_empty(self, tmp_path: Path) -> None:
@@ -326,5 +322,5 @@ class TestAutoRegisterFromGit:
         wt_dir.mkdir()
         (wt_dir / ".git").write_text("gitdir: /some/.git/worktrees/my-repo\n")
 
-        with patch("teatree.core.resolve.subprocess.check_output", return_value="\n"):
+        with patch("teatree.core.resolve.git.current_branch", return_value=""):
             assert _auto_register_from_git(str(wt_dir)) is None

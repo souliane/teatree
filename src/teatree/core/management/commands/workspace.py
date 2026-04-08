@@ -243,24 +243,12 @@ def _create_git_worktree(workspace: Path, repo_name: str, ticket_dir: Path, bran
     # Pull latest before branching
     git.pull_ff_only(str(repo_path))
 
-    result = subprocess.run(  # noqa: S603
-        ["git", "worktree", "add", "-b", branch, str(wt_path)],
-        cwd=repo_path,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    # Retry without -b if branch already exists (partial failure recovery)
-    if result.returncode != 0 and "already exists" in result.stderr:
-        result = subprocess.run(  # noqa: S603
-            ["git", "worktree", "add", str(wt_path), branch],
-            cwd=repo_path,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-    if result.returncode != 0:
-        print(f"  Error creating worktree for {repo_name}: {result.stderr.strip()}", file=sys.stderr)  # noqa: T201
+    success = git.worktree_add(str(repo_path), str(wt_path), branch, create_branch=True)
+    if not success:
+        # Retry without -b if branch already exists (partial failure recovery)
+        success = git.worktree_add(str(repo_path), str(wt_path), branch, create_branch=False)
+    if not success:
+        sys.stderr.write(f"  Error creating worktree for {repo_name}\n")
         return None
 
     # Symlink .python-version from main repo
