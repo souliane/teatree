@@ -190,4 +190,17 @@ repos:
     hooks:
       - id: conventional-pre-commit
         stages: [commit-msg]
-        args: [--verbose, relax]
+        args:
+          - --verbose
+          - build
+          - chore
+          - ci
+          - docs
+          - feat
+          - fix
+          - perf
+          - refactor
+          - relax
+          - revert
+          - style
+          - test

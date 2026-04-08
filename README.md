@@ -1,6 +1,12 @@
-<!-- markdownlint-disable MD041 -->
+<!-- markdownlint-disable MD041 MD033 -->
 <p align="center">
   <img src="docs/logo.jpg" alt="teatree logo" width="300">
+</p>
+
+<p align="center">
+  <a href="https://github.com/souliane/teatree/actions/workflows/ci.yml"><img src="https://github.com/souliane/teatree/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <img src="https://img.shields.io/badge/python-3.13%2B-blue" alt="Python 3.13+">
+  <a href="https://github.com/souliane/teatree/blob/main/LICENSE"><img src="https://img.shields.io/github/license/souliane/teatree" alt="License"></a>
 </p>
 
 Multi-repo worktree lifecycle manager for AI-assisted development — with distributed self-improvement.
