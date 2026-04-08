@@ -589,7 +589,7 @@ class TestBuildActiveSessions(TestCase):
 
         sessions_dir = self.tmp_path / "sessions"
         sessions_dir.mkdir()
-        self.monkeypatch.setattr("teatree.core.selectors._CLAUDE_SESSIONS_DIR", sessions_dir)
+        self.monkeypatch.setattr("teatree.core.selectors.activity._CLAUDE_SESSIONS_DIR", sessions_dir)
 
         # Create a session file with current process PID (guaranteed alive)
         current_pid = os.getpid()
@@ -650,7 +650,7 @@ class TestBuildActiveSessions(TestCase):
 
         sessions_dir = self.tmp_path / "sessions"
         sessions_dir.mkdir()
-        self.monkeypatch.setattr("teatree.core.selectors._CLAUDE_SESSIONS_DIR", sessions_dir)
+        self.monkeypatch.setattr("teatree.core.selectors.activity._CLAUDE_SESSIONS_DIR", sessions_dir)
 
         # Invalid JSON file
         (sessions_dir / "bad.json").write_text("not valid json", encoding="utf-8")
@@ -665,7 +665,7 @@ class TestBuildActiveSessions(TestCase):
 
     def test_no_sessions_dir(self) -> None:
         """When _CLAUDE_SESSIONS_DIR is not a directory, return empty list."""
-        self.monkeypatch.setattr("teatree.core.selectors._CLAUDE_SESSIONS_DIR", self.tmp_path / "nonexistent")
+        self.monkeypatch.setattr("teatree.core.selectors.activity._CLAUDE_SESSIONS_DIR", self.tmp_path / "nonexistent")
 
         result = build_active_sessions()
 
@@ -677,7 +677,7 @@ class TestBuildActiveSessions(TestCase):
 
         sessions_dir = self.tmp_path / "sessions"
         sessions_dir.mkdir()
-        self.monkeypatch.setattr("teatree.core.selectors._CLAUDE_SESSIONS_DIR", sessions_dir)
+        self.monkeypatch.setattr("teatree.core.selectors.activity._CLAUDE_SESSIONS_DIR", sessions_dir)
 
         current_pid = os.getpid()
         session_data = {"pid": current_pid, "sessionId": "done-session", "startedAt": 0}
