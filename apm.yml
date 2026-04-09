@@ -4,20 +4,21 @@ description: Multi-repo worktree lifecycle manager for AI-assisted development
 homepage: https://github.com/souliane/teatree
 license: MIT
 keywords:
-  - development
-  - lifecycle
-  - worktree
-  - multi-repo
-  - tdd
-  - django
+- development
+- lifecycle
+- worktree
+- multi-repo
+- tdd
+- django
 agents:
-  - claude-code
+- claude-code
 dependencies:
   apm:
-    - obra/superpowers
-    - souliane/skills/ac-reviewing-codebase
-    - souliane/skills/ac-python
-    - souliane/skills/ac-django
+  - obra/superpowers
+  - souliane/skills/ac-reviewing-codebase
+  - souliane/skills/ac-python
+  - souliane/skills/ac-django
+  - souliane/teatree
 install:
   pip: teatree
   post_install: uv run t3 config write-skill-cache
