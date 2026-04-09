@@ -147,6 +147,13 @@ class Task(models.Model):
         self._clear_claim()
         self.save(update_fields=["status", "claimed_at", "claimed_by", "lease_expires_at", "heartbeat_at"])
 
+    def reopen(self) -> None:
+        if self.status != self.Status.FAILED:
+            msg = f"Can only reopen failed tasks, got '{self.status}'"
+            raise InvalidTransitionError(msg)
+        self.status = self.Status.PENDING
+        self.save(update_fields=["status"])
+
     def complete_with_attempt(
         self,
         *,
