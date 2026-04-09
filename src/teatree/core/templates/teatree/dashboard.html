@@ -141,6 +141,24 @@
       if (e.key === 'Escape') closeTaskModal();
     });
 
+    function toggleTicketDetails(ticketId) {
+      var row = document.getElementById('ticket-details-' + ticketId);
+      if (!row) return;
+      if (row.classList.contains('hidden')) {
+        row.classList.remove('hidden');
+        var graphTarget = document.getElementById('ticket-details-graph-' + ticketId);
+        var lifecycleTarget = document.getElementById('ticket-details-lifecycle-' + ticketId);
+        if (graphTarget && graphTarget.querySelector('.animate-pulse')) {
+          htmx.ajax('GET', '/tickets/' + ticketId + '/task-graph/', {target: graphTarget, swap: 'innerHTML'});
+        }
+        if (lifecycleTarget && lifecycleTarget.querySelector('.animate-pulse')) {
+          htmx.ajax('GET', '/tickets/' + ticketId + '/lifecycle/', {target: lifecycleTarget, swap: 'innerHTML'});
+        }
+      } else {
+        row.classList.add('hidden');
+      }
+    }
+
     function toggleSplitMenu(arrowBtn) {
       var menu = arrowBtn.parentElement.querySelector('.split-menu');
       document.querySelectorAll('.split-menu').forEach(function(m) {

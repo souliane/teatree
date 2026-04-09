@@ -162,9 +162,17 @@
             </td>
             <td class="border-b border-bark/10 px-3 py-3 align-top">
               {% if mr.approval_count >= mr.approval_required and mr.approval_required > 0 %}
-                <a href="{{ mr.url }}" class="pill pill-sm bg-purple-100 text-purple-700 hover:brightness-110" target="_blank" title="{{ mr.approved_by|join:', ' }}">&#x2705; {{ mr.approval_count }}/{{ mr.approval_required }}</a>
+                <button
+                  class="pill pill-sm bg-purple-100 text-purple-700 hover:brightness-110 cursor-pointer"
+                  title="{{ mr.approved_by|join:', ' }} — click for details"
+                  onclick="toggleTicketDetails('{{ ticket.ticket_id }}')"
+                >&#x2705; {{ mr.approval_count }}/{{ mr.approval_required }}</button>
               {% else %}
-                <a href="{{ mr.url }}" class="pill pill-sm bg-clay/10 text-clay hover:brightness-95" target="_blank">{{ mr.approval_count }}/{{ mr.approval_required }}</a>
+                <button
+                  class="pill pill-sm bg-clay/10 text-clay hover:brightness-95 cursor-pointer"
+                  title="Click for task graph &amp; lifecycle"
+                  onclick="toggleTicketDetails('{{ ticket.ticket_id }}')"
+                >{{ mr.approval_count }}/{{ mr.approval_required }}</button>
               {% endif %}
             </td>
             {% if forloop.first %}
@@ -204,22 +212,6 @@
                 <div class="flex flex-col gap-1">
                   {% if ticket.total_tasks > 0 %}
                     <span class="pill pill-xs bg-clay/10 text-clay">{{ ticket.ongoing_tasks }}/{{ ticket.total_tasks }}</span>
-                    <button
-                      class="pill-btn pill-xs border border-bark/20 bg-bark/5 text-bark/60 hover:bg-bark/10"
-                      hx-get="/tickets/{{ ticket.ticket_id }}/task-graph/"
-                      hx-target="#task-graph-{{ ticket.ticket_id }} td"
-                      hx-swap="innerHTML"
-                      onclick="var t=document.getElementById('task-graph-{{ ticket.ticket_id }}');if(!t.classList.contains('hidden')&&t.querySelector('td').innerHTML.trim()){t.classList.add('hidden');t.querySelector('td').innerHTML='';return false}else{t.classList.remove('hidden')}"
-                      title="View task graph"
-                    >Graph</button>
-                    <button
-                      class="pill-btn pill-xs border border-bark/20 bg-bark/5 text-bark/60 hover:bg-bark/10"
-                      hx-get="/tickets/{{ ticket.ticket_id }}/lifecycle/"
-                      hx-target="#lifecycle-{{ ticket.ticket_id }} td"
-                      hx-swap="innerHTML"
-                      onclick="var t=document.getElementById('lifecycle-{{ ticket.ticket_id }}');if(!t.classList.contains('hidden')&&t.querySelector('td').innerHTML.trim()){t.classList.add('hidden');t.querySelector('td').innerHTML='';return false}else{t.classList.remove('hidden')}"
-                      title="View lifecycle transitions"
-                    >Lifecycle</button>
                   {% endif %}
                   <button
                     class="pill-btn pill-xs border border-moss/30 bg-moss/10 uppercase tracking-[0.18em] text-moss hover:bg-moss/20"
@@ -350,13 +342,24 @@
             </td>
           </tr>
         {% endfor %}
-        <!-- Inline task graph container (toggled by Graph button) -->
-        <tr id="task-graph-{{ ticket.ticket_id }}" class="hidden" data-ticket-group="{{ ticket.ticket_id }}">
-          <td colspan="10" class="border-b border-bark/10 bg-parchment/50 px-5 py-3"></td>
-        </tr>
-        <!-- Inline lifecycle diagram container (toggled by Lifecycle button) -->
-        <tr id="lifecycle-{{ ticket.ticket_id }}" class="hidden" data-ticket-group="{{ ticket.ticket_id }}">
-          <td colspan="10" class="border-b border-bark/10 bg-parchment/50 px-5 py-3"></td>
+        <!-- Combined task graph + lifecycle (toggled by approval count click) -->
+        <tr id="ticket-details-{{ ticket.ticket_id }}" class="hidden" data-ticket-group="{{ ticket.ticket_id }}">
+          <td colspan="10" class="border-b border-bark/10 bg-parchment/50 px-5 py-3">
+            <div class="grid gap-4 md:grid-cols-2">
+              <div>
+                <div class="font-sans text-[10px] font-semibold uppercase tracking-[0.18em] text-bark/40 mb-2">Task Graph</div>
+                <div id="ticket-details-graph-{{ ticket.ticket_id }}">
+                  <p class="font-sans text-sm text-bark/50 animate-pulse">Loading...</p>
+                </div>
+              </div>
+              <div>
+                <div class="font-sans text-[10px] font-semibold uppercase tracking-[0.18em] text-bark/40 mb-2">Lifecycle</div>
+                <div id="ticket-details-lifecycle-{{ ticket.ticket_id }}">
+                  <p class="font-sans text-sm text-bark/50 animate-pulse">Loading...</p>
+                </div>
+              </div>
+            </div>
+          </td>
         </tr>
         {% endwith %}
       {% endfor %}
