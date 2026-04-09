@@ -32,6 +32,7 @@ from ._types import (
     TaskDetail,
     TaskGraphNode,
     TaskRelatedRow,
+    UnifiedSessionRow,
 )
 from .activity import build_active_sessions, build_recent_activity
 from .automation import _check_mr, build_action_required, build_automation_summary
@@ -52,6 +53,7 @@ from .queues import (
     build_interactive_queue,
 )
 from .tasks import build_task_detail, build_task_graph, build_ticket_lifecycle_mermaid
+from .unified import build_unified_sessions
 
 __all__ = [
     "_CLAUDE_SESSIONS_DIR",
@@ -72,6 +74,7 @@ __all__ = [
     "TaskDetail",
     "TaskGraphNode",
     "TaskRelatedRow",
+    "UnifiedSessionRow",
     "_build_mr_rows",
     "_cached",
     "_check_mr",
@@ -100,6 +103,7 @@ __all__ = [
     "build_task_detail",
     "build_task_graph",
     "build_ticket_lifecycle_mermaid",
+    "build_unified_sessions",
     "build_worktree_rows",
     "invalidate_panel_cache",
 ]
