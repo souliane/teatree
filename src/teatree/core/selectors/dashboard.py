@@ -18,6 +18,7 @@ from ._types import (
     DashboardSummary,
     DashboardTicketRow,
     DashboardWorktreeRow,
+    PendingReviewRow,
 )
 from .activity import build_active_sessions, build_recent_activity
 from .automation import build_action_required, build_automation_summary
@@ -43,12 +44,41 @@ _TICKET_TRANSITIONS = [
 ]
 
 
+def build_pending_reviews() -> list[PendingReviewRow]:
+    """Build pending review rows from cached sync data."""
+    from django.core.cache import cache  # noqa: PLC0415
+
+    from teatree.core.sync import PENDING_REVIEWS_CACHE_KEY  # noqa: PLC0415
+
+    raw = cache.get(PENDING_REVIEWS_CACHE_KEY) or []
+    if not isinstance(raw, list):
+        return []
+    return [
+        PendingReviewRow(
+            url=str(r.get("url", "")),
+            title=str(r.get("title", "")),
+            repo=str(r.get("repo", "")),
+            iid=str(r.get("iid", "")),
+            author=str(r.get("author", "")),
+            draft=str(r.get("draft", "")).lower() == "true",
+            pipeline_status="",
+            pipeline_css="",
+            pipeline_icon="",
+            pipeline_url="",
+            updated_at=str(r.get("updated_at", "")),
+        )
+        for r in raw
+        if isinstance(r, dict)
+    ]
+
+
 def build_dashboard_summary(overlay: str | None = None) -> DashboardSummary:
     return DashboardSummary(
         in_flight_tickets=Ticket.objects.in_flight(overlay=overlay).count(),
         active_worktrees=Worktree.objects.active(overlay=overlay).count(),
         pending_headless_tasks=Task.objects.claimable_for_headless(overlay=overlay).count(),
         pending_interactive_tasks=Task.objects.claimable_for_interactive(overlay=overlay).count(),
+        pending_reviews=len(build_pending_reviews()),
     )
 
 
@@ -168,6 +198,7 @@ def build_dashboard_snapshot(overlay: str | None = None) -> DashboardSnapshot:
         tickets=_cached(f"tickets{sfx}", lambda: build_dashboard_ticket_rows(overlay)),
         worktrees=_cached(f"worktrees{sfx}", lambda: build_worktree_rows(overlay)),
         headless_queue=_cached(f"headless_queue{sfx}", lambda: build_headless_queue(overlay=overlay)),
+        pending_reviews=_cached("pending_reviews", build_pending_reviews),
         interactive_queue=_cached(f"queue{sfx}", lambda: build_interactive_queue(pending_only=True, overlay=overlay)),
         active_sessions=_cached("sessions", build_active_sessions, ttl=_SESSIONS_PANEL_TTL),
         recent_activity=_cached(f"activity{sfx}", lambda: build_recent_activity(overlay)),

@@ -9,6 +9,8 @@ import httpx
 
 from teatree.utils import git
 
+type RawMR = dict[str, object]
+
 # TTL constants for response caching (seconds)
 _TTL_PIPELINE = 60
 _TTL_APPROVALS = 60
@@ -222,6 +224,28 @@ class GitLabAPI:
         if include_draft:
             return data
         return [mr for mr in data if not mr.get("draft")]
+
+    def list_open_mrs_as_reviewer(
+        self,
+        reviewer: str,
+        *,
+        per_page: int = 100,
+    ) -> list[RawMR]:
+        """Fetch all open MRs where *reviewer* is assigned as reviewer (not author)."""
+        from urllib.parse import urlencode  # noqa: PLC0415
+
+        query: dict[str, str | int] = {
+            "state": "opened",
+            "reviewer_username": reviewer,
+            "scope": "all",
+            "per_page": per_page,
+            "not[author_username]": reviewer,
+        }
+        params = urlencode(query)
+        data = self.get_json(f"merge_requests?{params}")
+        if not isinstance(data, list):
+            return []
+        return data
 
     def list_recently_merged_mrs(
         self,

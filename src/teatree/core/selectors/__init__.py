@@ -25,6 +25,7 @@ from ._types import (
     DashboardTicketRow,
     DashboardWorktreeRow,
     DiscussionData,
+    PendingReviewRow,
     RecentActivityRow,
     ReviewCommentDetail,
     TaskAttemptDetail,
@@ -42,6 +43,7 @@ from .dashboard import (
     build_dashboard_snapshot,
     build_dashboard_summary,
     build_dashboard_ticket_rows,
+    build_pending_reviews,
     build_worktree_rows,
 )
 from .queues import (
@@ -63,6 +65,7 @@ __all__ = [
     "DashboardTicketRow",
     "DashboardWorktreeRow",
     "DiscussionData",
+    "PendingReviewRow",
     "RecentActivityRow",
     "ReviewCommentDetail",
     "TaskAttemptDetail",
@@ -92,6 +95,7 @@ __all__ = [
     "build_dashboard_ticket_rows",
     "build_headless_queue",
     "build_interactive_queue",
+    "build_pending_reviews",
     "build_recent_activity",
     "build_task_detail",
     "build_task_graph",

@@ -3,6 +3,7 @@ from datetime import timedelta
 from pathlib import Path
 
 import pytest
+from django.core.cache import cache as django_cache
 from django.test import TestCase
 from django.utils import timezone
 
@@ -26,11 +27,13 @@ from teatree.core.selectors import (
     build_dashboard_ticket_rows,
     build_headless_queue,
     build_interactive_queue,
+    build_pending_reviews,
     build_recent_activity,
     build_task_detail,
     build_worktree_rows,
     invalidate_panel_cache,
 )
+from teatree.core.sync import PENDING_REVIEWS_CACHE_KEY
 
 
 class TestCached:
@@ -115,6 +118,48 @@ class TestBuildDashboardSummary(TestCase):
         assert summary.active_worktrees == 1
         assert summary.pending_headless_tasks == 1
         assert summary.pending_interactive_tasks == 1
+
+
+class TestBuildPendingReviews(TestCase):
+    def test_returns_empty_when_no_cache(self) -> None:
+        assert build_pending_reviews() == []
+
+    def test_returns_rows_from_cache(self) -> None:
+        django_cache.set(
+            PENDING_REVIEWS_CACHE_KEY,
+            [
+                {
+                    "url": "https://github.com/org/repo/pull/1",
+                    "title": "Add feature",
+                    "repo": "repo",
+                    "iid": "1",
+                    "author": "bob",
+                    "draft": "False",
+                    "updated_at": "2026-04-09",
+                },
+            ],
+        )
+
+        rows = build_pending_reviews()
+
+        assert len(rows) == 1
+        assert rows[0].repo == "repo"
+        assert rows[0].author == "bob"
+        assert not rows[0].draft
+
+        django_cache.delete(PENDING_REVIEWS_CACHE_KEY)
+
+    def test_summary_includes_pending_reviews_count(self) -> None:
+        django_cache.set(
+            PENDING_REVIEWS_CACHE_KEY,
+            [{"url": "u", "title": "t", "repo": "r", "iid": "1", "author": "a", "draft": "False", "updated_at": ""}],
+        )
+
+        summary = build_dashboard_summary()
+
+        assert summary.pending_reviews == 1
+
+        django_cache.delete(PENDING_REVIEWS_CACHE_KEY)
 
 
 class TestBuildDashboardTicketRows(TestCase):

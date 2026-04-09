@@ -771,6 +771,24 @@
           {% include "teatree/partials/dashboard_tickets.html" with tickets=snapshot.tickets debug=debug only %}
         </div>
       </details>
+      <!-- Pending Reviews -->
+      <details open class="group overflow-hidden rounded-[1.5rem] border border-bark/10 bg-cream/90 shadow-soft backdrop-blur">
+        <summary class="flex cursor-pointer items-center gap-2 border-b border-bark/10 px-5 py-4">
+          <span class="group-open:hidden">&#9654;</span><span class="hidden group-open:inline">&#9660;</span>
+          <h2 class="font-display text-2xl">Pending Reviews</h2>
+          {% if snapshot.summary.pending_reviews %}
+            <span class="pill pill-xs bg-purple-100 text-purple-700">{{ snapshot.summary.pending_reviews }}</span>
+          {% endif %}
+        </summary>
+        <div
+          class="px-5 py-5"
+          hx-get="{% url 'teatree:dashboard-panel' 'pending_reviews' %}"
+          hx-trigger="load, every 600s, refreshPanels from:body, sse:pending_reviews"
+          hx-swap="innerHTML"
+        >
+          {% include "teatree/partials/dashboard_pending_reviews.html" with pending_reviews=snapshot.pending_reviews only %}
+        </div>
+      </details>
     </div>
   </main>
   </div><!-- /sse wrapper -->
