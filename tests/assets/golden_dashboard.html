@@ -39,7 +39,7 @@ code { background: rgba(122,162,247,0.1); padding: 0.1rem 0.3rem; border-radius:
 <div class="section">
 <h2>&#x1F4CB; In-Flight Work</h2>
 <table>
-<tr><th>Ticket</th><th>Status</th><th>Feature Flag</th><th>MR</th><th>Pipeline</th><th>E2E</th><th>Review Request</th><th>Approved</th></tr>
+<tr><th>Ticket</th><th>Status</th><th>Feature Flag</th><th>PR</th><th>Pipeline</th><th>E2E</th><th>Review Request</th><th>Approved</th></tr>
 <tr>
   <td class="ticket-cell">
     <a href="https://example.com/issues/100">#100</a><br>
@@ -49,7 +49,7 @@ code { background: rgba(122,162,247,0.1); padding: 0.1rem 0.3rem; border-radius:
     <a href="https://example.com/issues/100" class="pill running">&#x1F527; Doing</a>
   </td>
   <td class="ticket-cell"><code>postal_code_v2</code></td>
-  <td><a href="https://example.com/merge_requests/101">backend !101</a></td>
+  <td><a href="https://example.com/merge_requests/101">backend #101</a></td>
   <td><a href="https://example.com/pipelines/999" class="pill success">&#x2705; success</a></td>
   <td>&mdash;</td>
   <td><span class="pill success">&#x2705; <a href="https://chat.example.com/msg/123" style="color:var(--green)">#backend-review</a></span></td>
@@ -67,14 +67,14 @@ code { background: rgba(122,162,247,0.1); padding: 0.1rem 0.3rem; border-radius:
     </div>
   </td>
   <td class="ticket-cell" rowspan="2"><code>community_prop</code></td>
-  <td><a href="https://example.com/merge_requests/201">backend !201</a></td>
+  <td><a href="https://example.com/merge_requests/201">backend #201</a></td>
   <td><a href="https://example.com/pipelines/1001" class="pill running">&#x1F504; running</a></td>
   <td><a href="https://example.com/merge_requests/201#note_55" class="pill success">&#x2705; test plan</a></td>
   <td><span class="pill pending">&#x23F3; waiting pipeline</span></td>
   <td><span class="pill pending">0/2</span></td>
 </tr>
 <tr>
-  <td><a href="https://example.com/merge_requests/202">frontend !202</a></td>
+  <td><a href="https://example.com/merge_requests/202">frontend #202</a></td>
   <td><a href="https://example.com/merge_requests/202/pipelines" class="pill failed">&#x274C; lint + sonarqube</a></td>
   <td>&mdash;</td>
   <td><span class="pill skipped">&#x23ED;&#xFE0F; skipped</span></td>
@@ -89,7 +89,7 @@ code { background: rgba(122,162,247,0.1); padding: 0.1rem 0.3rem; border-radius:
     <span class="pill skipped">&mdash;</span>
   </td>
   <td class="ticket-cell">&mdash;</td>
-  <td><a href="https://example.com/merge_requests/301">backend !301</a></td>
+  <td><a href="https://example.com/merge_requests/301">backend #301</a></td>
   <td><a href="https://example.com/merge_requests/301/pipelines" class="pill pending">&#x23F3; canceled</a></td>
   <td>&mdash;</td>
   <td><span class="pill pending">&#x23F3; not sent</span></td>
@@ -102,12 +102,12 @@ code { background: rgba(122,162,247,0.1); padding: 0.1rem 0.3rem; border-radius:
 <div class="section">
 <h2>&#x1F4DD; Draft MRs</h2>
 <table>
-<tr><th>Ticket</th><th>Status</th><th>Feature Flag</th><th>MR</th><th>Pipeline</th><th>E2E</th><th>Review Request</th><th>Approved</th></tr>
+<tr><th>Ticket</th><th>Status</th><th>Feature Flag</th><th>PR</th><th>Pipeline</th><th>E2E</th><th>Review Request</th><th>Approved</th></tr>
 <tr>
   <td class="ticket-cell">&mdash;<br><span class="ticket-title">WIP: refactor auth module</span></td>
   <td class="ticket-cell"><span class="pill skipped">&mdash;</span></td>
   <td class="ticket-cell">&mdash;</td>
-  <td><a href="https://example.com/merge_requests/401">backend !401</a></td>
+  <td><a href="https://example.com/merge_requests/401">backend #401</a></td>
   <td><a href="https://example.com/pipelines/2000" class="pill success">&#x2705; success</a></td>
   <td>&mdash;</td>
   <td>&mdash;</td>
@@ -117,7 +117,7 @@ code { background: rgba(122,162,247,0.1); padding: 0.1rem 0.3rem; border-radius:
   <td class="ticket-cell">&mdash;<br><span class="ticket-title">WIP: new settings page</span></td>
   <td class="ticket-cell"><span class="pill skipped">&mdash;</span></td>
   <td class="ticket-cell">&mdash;</td>
-  <td><a href="https://example.com/merge_requests/402">frontend !402</a></td>
+  <td><a href="https://example.com/merge_requests/402">frontend #402</a></td>
   <td><a href="https://example.com/merge_requests/402/pipelines" class="pill pending">&#x23F3; pending</a></td>
   <td>&mdash;</td>
   <td>&mdash;</td>

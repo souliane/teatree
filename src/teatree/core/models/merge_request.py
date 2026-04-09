@@ -31,7 +31,7 @@ class MergeRequest(models.Model):
         ]
 
     def __str__(self) -> str:
-        return f"{self.repo} !{self.iid}"
+        return f"{self.repo} #{self.iid}"
 
     @transition(field=state, source=State.OPEN, target=State.REVIEW_REQUESTED)
     def request_review(self, *, slack_url: str = "", review_requested_at: "models.DateTimeField | None" = None) -> None:

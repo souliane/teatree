@@ -313,7 +313,7 @@ class TestSyncFollowupView(TestCase):
             response = Client().post(reverse("teatree:dashboard-sync"))
 
         assert response.status_code == 200
-        assert b"Synced 3 MRs" in response.content
+        assert b"Synced 3 PRs" in response.content
         assert b"1 new" in response.content
 
     def test_shows_errors(self) -> None:

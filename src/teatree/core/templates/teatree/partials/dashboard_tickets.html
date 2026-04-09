@@ -8,7 +8,7 @@
         </th>
         <th class="border-b border-bark/10 px-3 py-3 text-left font-sans text-[11px] font-semibold uppercase tracking-[0.2em] text-bark/55">Ticket</th>
         <th class="border-b border-bark/10 px-3 py-3 text-left font-sans text-[11px] font-semibold uppercase tracking-[0.2em] text-bark/55">Status</th>
-        <th class="border-b border-bark/10 px-3 py-3 text-left font-sans text-[11px] font-semibold uppercase tracking-[0.2em] text-bark/55">MR</th>
+        <th class="border-b border-bark/10 px-3 py-3 text-left font-sans text-[11px] font-semibold uppercase tracking-[0.2em] text-bark/55">PR</th>
         <th class="border-b border-bark/10 px-3 py-3 text-left font-sans text-[11px] font-semibold uppercase tracking-[0.2em] text-bark/55">E2E</th>
         <th class="border-b border-bark/10 px-3 py-3 text-left font-sans text-[11px] font-semibold uppercase tracking-[0.2em] text-bark/55">CI</th>
         <th class="border-b border-bark/10 px-3 py-3 text-left font-sans text-[11px] font-semibold uppercase tracking-[0.2em] text-bark/55">Review</th>
@@ -73,7 +73,7 @@
             {% endif %}
             <td class="border-b border-bark/10 px-3 py-3 align-top">
               {% if mr.url %}
-                <a class="font-sans text-moss hover:underline" href="{{ mr.url }}" title="{{ mr.title }}">{{ mr.repo }}&nbsp;!{{ mr.iid }}</a>
+                <a class="font-sans text-moss hover:underline" href="{{ mr.url }}" title="{{ mr.title }}">{{ mr.repo }}&nbsp;#{{ mr.iid }}</a>
               {% else %}
                 {{ mr.repo }}
               {% endif %}

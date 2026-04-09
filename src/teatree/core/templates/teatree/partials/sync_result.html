@@ -5,7 +5,7 @@
     </span>
   {% else %}
     <span class="inline-flex items-center gap-1 rounded-full bg-moss/10 px-3 py-1 font-semibold text-moss">
-      Synced {{ result.mrs_found }} MR{{ result.mrs_found|pluralize }} across {{ result.repos_scanned }} repo{{ result.repos_scanned|pluralize }}
+      Synced {{ result.mrs_found }} PR{{ result.mrs_found|pluralize }} across {{ result.repos_scanned }} repo{{ result.repos_scanned|pluralize }}
       &middot; {{ result.tickets_created }} new &middot; {{ result.tickets_updated }} updated
     </span>
   {% endif %}

@@ -102,7 +102,7 @@ def _check_mr(mr: dict, ticket: "Ticket") -> list[ActionRequiredItem]:
     repo = str(mr.get("repo", ""))
     iid = str(mr.get("iid", ""))
     mr_url = str(mr.get("url", ""))
-    mr_label = f"{repo} !{iid}"
+    mr_label = f"{repo} #{iid}"
     pipeline = mr.get("pipeline_status")
     slack_url = str(mr.get("review_permalink", ""))
     approvals = mr.get("approvals", {})

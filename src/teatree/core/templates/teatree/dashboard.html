@@ -263,11 +263,11 @@
         var hasMRs = mrRows.length > 0;
         var show = true;
 
-        // "Has MR" filter: hide tickets without MRs
+        // "Has PR" filter: hide tickets without PRs
         if (hasMR && !hasMRs) show = false;
 
         if (show && hasMRs) {
-          // Check if at least one MR in this group matches all active filters
+          // Check if at least one PR in this group matches all active filters
           var anyMatch = mrRows.some(function(row) {
             var text = (row.dataset.mrTitle || '').toLowerCase() + ' ' + (row.dataset.ticketId || '').toLowerCase() + ' ' + (row.dataset.ticketTitle || '').toLowerCase();
             if (query && text.indexOf(query) === -1) return false;
@@ -318,7 +318,7 @@
       navigator.clipboard.writeText(lines.join('\n')).then(function() {
         var toast = document.getElementById('toast-msg');
         if (toast) {
-          toast.textContent = lines.length + ' MR(s) copied to clipboard';
+          toast.textContent = lines.length + ' PR(s) copied to clipboard';
           toast.parentElement.classList.remove('hidden');
           setTimeout(function(){ toast.parentElement.classList.add('hidden'); }, 3000);
         }
@@ -338,7 +338,7 @@
         el.dataset.processed = 'true';
       }
     };
-    document.body.addEventListener('htmx:afterSettle', () => window.renderMermaid());
+    document.body.addEventListener('htmx:afterSettle', () => { window.renderMermaid(); if (typeof filterTickets === 'function') filterTickets(); });
     window.renderMermaid();
   </script>
 </head>
@@ -588,15 +588,15 @@
           <input
             id="ticket-search"
             type="search"
-            placeholder="Search tickets / MRs…"
+            placeholder="Search tickets / PRs…"
             class="w-48 rounded-lg border border-bark/15 bg-cream/80 px-3 py-1 font-sans text-xs text-bark/70 placeholder:text-bark/40 focus:border-moss focus:outline-none"
             oninput="filterTickets()"
           >
           <label class="flex cursor-pointer items-center gap-1 font-sans text-[10px] uppercase tracking-[0.18em] text-bark/50">
-            <input type="checkbox" id="filter-has-mr" class="accent-moss" onchange="filterTickets()"> Has MR
+            <input type="checkbox" id="filter-has-mr" class="accent-moss" onchange="filterTickets()" checked> Has PR
           </label>
           <label class="flex cursor-pointer items-center gap-1 font-sans text-[10px] uppercase tracking-[0.18em] text-bark/50">
-            <input type="checkbox" id="filter-non-draft" class="accent-moss" onchange="filterTickets()"> Non-draft
+            <input type="checkbox" id="filter-non-draft" class="accent-moss" onchange="filterTickets()" checked> Non-draft
           </label>
           <label class="flex cursor-pointer items-center gap-1 font-sans text-[10px] uppercase tracking-[0.18em] text-bark/50">
             <input type="checkbox" id="filter-unapproved" class="accent-moss" onchange="filterTickets()"> Unapproved
