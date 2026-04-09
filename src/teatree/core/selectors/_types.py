@@ -81,6 +81,7 @@ class DashboardTicketRow:
     repos: list[str]
     ongoing_tasks: int
     total_tasks: int
+    labels: list[str]
     mrs: list[DashboardMRRow]
     transitions: list[tuple[str, str]]  # (method_name, label)
 
