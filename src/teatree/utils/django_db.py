@@ -272,9 +272,10 @@ def _migrate_reference_db(main_repo: str, ref_db: str, extra_env: dict[str, str]
     run_env = {**os.environ, "DATABASE_URL": ref_db_url, "DISABLE_DATABASE_SSL": "True", **extra_env}
 
     print(f"  Migrating reference DB ({ref_db}) using main repo...")  # noqa: T201
+    migrate_cmd = ["uv", "--directory", main_repo, "run", "python", "manage.py", "migrate", "--no-input"]
     for _attempt in range(_MAX_MIGRATE_RETRIES):
         result = subprocess.run(
-            ["python", "manage.py", "migrate", "--no-input"],
+            migrate_cmd,
             cwd=main_repo,
             env=run_env,
             capture_output=True,
@@ -315,7 +316,7 @@ def _try_fake_failing_migration(combined: str, stdout: str, main_repo: str, run_
     reason = "schema already exists" if "already exists" in combined else "table absent from dump"
     print(f"  Faking {failing} on reference DB ({reason})...")  # noqa: T201
     subprocess.run(
-        ["python", "manage.py", "migrate", app_label, migration_name, "--fake"],
+        ["uv", "--directory", main_repo, "run", "python", "manage.py", "migrate", app_label, migration_name, "--fake"],
         cwd=main_repo,
         env=run_env,
         capture_output=True,
