@@ -46,6 +46,7 @@ def _build_task_queue(
     pending_only: bool = False,
     overlay: str | None = None,
 ) -> list[DashboardTaskRow]:
+    Task.objects.reap_stale_claims()
     qs = Task.objects.filter(execution_target=target).select_related("ticket", "session")
     if overlay:
         qs = qs.filter(_overlay_q(overlay))
