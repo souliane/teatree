@@ -534,7 +534,7 @@
           hx-trigger="load, every 600s, refreshPanels from:body, sse:headless_queue"
           hx-swap="innerHTML"
         >
-          {% include "teatree/partials/dashboard_headless_queue.html" with headless_queue=snapshot.headless_queue only %}
+          {% include "teatree/partials/dashboard_headless_queue.html" with headless_queue=snapshot.headless_queue debug=debug only %}
         </div>
       </details>
       <!-- Interactive Queue -->
@@ -550,7 +550,7 @@
           hx-trigger="load, every 600s, refreshPanels from:body, sse:queue"
           hx-swap="innerHTML"
         >
-          {% include "teatree/partials/dashboard_queue.html" with queue=snapshot.interactive_queue only %}
+          {% include "teatree/partials/dashboard_queue.html" with queue=snapshot.interactive_queue debug=debug only %}
         </div>
       </details>
       <!-- Recent Activity -->
@@ -616,7 +616,7 @@
           hx-swap="innerHTML"
           hx-on::after-settle="filterTickets()"
         >
-          {% include "teatree/partials/dashboard_tickets.html" with tickets=snapshot.tickets only %}
+          {% include "teatree/partials/dashboard_tickets.html" with tickets=snapshot.tickets debug=debug only %}
         </div>
       </details>
     </div>
