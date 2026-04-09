@@ -37,7 +37,7 @@ _TICKET_TRANSITIONS = [
     ("review", "Review"),
     ("ship", "Ship"),
     ("request_review", "Request review"),
-    ("mark_merged", "Mark merged"),
+    ("mark_merged", "Merge"),
     ("mark_delivered", "Mark delivered"),
     ("rework", "Rework"),
 ]
