@@ -134,16 +134,29 @@
                 <span class="text-bark/30">&mdash;</span>
               {% endif %}
               {% if mr.needs_reply_count %}
-                <button
-                  class="pill-btn pill-xs border border-red-300 bg-red-50 text-red-600 hover:bg-red-100"
-                  hx-post="/tickets/{{ ticket.ticket_id }}/create-task/"
-                  hx-vals='{"target": "headless", "reason": "Address {{ mr.needs_reply_count }} review comment(s) on !{{ mr.iid }}"}'
-                  hx-swap="none"
-                  hx-on::after-request="htmx.trigger(document.body, 'refreshPanels')"
-                  hx-disable-elt="this"
-                  hx-confirm="Start agent to address {{ mr.needs_reply_count }} review comment(s) on {{ mr.repo }} #{{ mr.iid }}?"
-                  title="Address review comments"
-                >Address ({{ mr.needs_reply_count }})</button>
+                <span class="inline-flex">
+                  <button
+                    class="pill-btn pill-xs border border-red-300 bg-red-50 text-red-600 hover:bg-red-100 rounded-r-none border-r-0"
+                    hx-post="/tickets/{{ ticket.ticket_id }}/create-task/"
+                    hx-vals='{"target": "headless", "reason": "Address {{ mr.needs_reply_count }} review comment(s) on !{{ mr.iid }}"}'
+                    hx-swap="none"
+                    hx-on::after-request="handleActionResponse(event)"
+                    hx-disable-elt="this"
+                    hx-confirm="Start agent to address {{ mr.needs_reply_count }} review comment(s) on {{ mr.repo }} #{{ mr.iid }}?"
+                    title="Address review comments (headless)"
+                  >Address ({{ mr.needs_reply_count }})</button>
+                  <button
+                    class="pill-btn pill-xs border border-red-300 bg-red-50 text-red-600 hover:bg-red-100 rounded-l-none px-1"
+                    hx-post="/tickets/{{ ticket.ticket_id }}/create-task/"
+                    hx-vals='{"target": "interactive", "reason": "Address {{ mr.needs_reply_count }} review comment(s) on !{{ mr.iid }}"}'
+                    hx-swap="none"
+                    hx-on::before-request="event.detail.requestConfig.parameters['terminal_mode'] = document.getElementById('terminal-mode-selector').value; event.detail.requestConfig.parameters['terminal_app'] = document.getElementById('terminal-app-selector').value"
+                    hx-on::after-request="handleActionResponse(event)"
+                    hx-disable-elt="this"
+                    hx-confirm="Open interactive session to address {{ mr.needs_reply_count }} review comment(s)?"
+                    title="Address review comments (interactive)"
+                  >&#9662;</button>
+                </span>
               {% endif %}
               </div>
             </td>

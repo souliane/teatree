@@ -204,9 +204,11 @@ class DoctorService:
             if (p / "pyproject.toml").is_file():
                 return p
         # Auto-detect from package location (editable or source checkout)
-        pkg_root = Path(__file__).resolve().parents[4]
-        if (pkg_root / ".git").is_dir() and (pkg_root / "pyproject.toml").is_file():
-            return pkg_root
+        current = Path(__file__).resolve().parent
+        while current != current.parent:
+            if (current / ".git").exists() and (current / "pyproject.toml").is_file():
+                return current
+            current = current.parent
         return None
 
     @staticmethod
