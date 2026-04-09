@@ -940,7 +940,7 @@ class TestVariantUrl:
         from unittest.mock import MagicMock, patch  # noqa: PLC0415
 
         mock_overlay = MagicMock()
-        mock_overlay.config.get_dev_env_url.return_value = "https://{variant}.dev.example.com"
+        mock_overlay.config.dev_env_url = "https://{variant}.dev.example.com"
         with patch(
             "teatree.core.overlay_loader._discover_overlays",
             return_value={"test": mock_overlay},
@@ -951,7 +951,7 @@ class TestVariantUrl:
         from unittest.mock import MagicMock, patch  # noqa: PLC0415
 
         mock_overlay = MagicMock()
-        mock_overlay.config.get_dev_env_url.return_value = ""
+        mock_overlay.config.dev_env_url = ""
         with patch(
             "teatree.core.overlay_loader._discover_overlays",
             return_value={"test": mock_overlay},
@@ -971,7 +971,7 @@ class TestVariantUrl:
         from unittest.mock import MagicMock, patch  # noqa: PLC0415
 
         mock_overlay = MagicMock()
-        mock_overlay.config.get_dev_env_url.return_value = "{missing_key}"
+        mock_overlay.config.dev_env_url = "{missing_key}"
         with patch(
             "teatree.core.overlay_loader._discover_overlays",
             return_value={"test": mock_overlay},

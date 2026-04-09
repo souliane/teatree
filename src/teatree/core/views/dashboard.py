@@ -58,9 +58,9 @@ class DashboardView(View):
         overlay_branches = _build_overlay_branches(all_overlays)
         overlays = get_all_overlay_names()
         teatree_logo = static("teatree/img/teatree-logo.jpg")
-        overlay_logos = {name: ov.config.get_dashboard_logo() or teatree_logo for name, ov in all_overlays.items()}
+        overlay_logos = {name: ov.config.dashboard_logo or teatree_logo for name, ov in all_overlays.items()}
         if overlay and overlay in all_overlays:
-            logo_url = all_overlays[overlay].config.get_dashboard_logo() or teatree_logo
+            logo_url = all_overlays[overlay].config.dashboard_logo or teatree_logo
         else:
             logo_url = teatree_logo
         from teatree.agents.services import get_terminal_mode  # noqa: PLC0415

@@ -81,6 +81,19 @@ def _is_pyproject_relaxation(line: str) -> bool:
     return bool(_RULE_CODE_RE.match(line))
 
 
+def _find_git_dir() -> pathlib.Path | None:
+    """Resolve the real .git directory (handles worktrees)."""
+    dot_git = pathlib.Path(".git")
+    if dot_git.is_dir():
+        return dot_git
+    if dot_git.is_file():
+        # Worktree: .git is a file pointing to the real git dir
+        text = dot_git.read_text(encoding="utf-8").strip()
+        if text.startswith("gitdir: "):
+            return pathlib.Path(text.removeprefix("gitdir: "))
+    return None
+
+
 def _commit_message_has_relax(msg_file: str) -> bool:
     """Check if the commit message starts with ``relax:`` (conventional commit type)."""
     try:
@@ -116,8 +129,15 @@ def main() -> int:
     if not violations:
         return 0
 
-    # At commit-msg stage, sys.argv[1] is the commit message file
+    # At commit-msg stage, sys.argv[1] is the commit message file.
+    # Fallback: read .git/COMMIT_EDITMSG directly (prek may not pass the file).
     msg_file = sys.argv[1] if len(sys.argv) > 1 else ""
+    if not msg_file:
+        git_dir = _find_git_dir()
+        if git_dir:
+            candidate = git_dir / "COMMIT_EDITMSG"
+            if candidate.is_file():
+                msg_file = str(candidate)
     if msg_file and _commit_message_has_relax(msg_file):
         print(f"Quality gate relaxation acknowledged via relax: commit type ({len(violations)} item(s)).")
         return 0

@@ -223,7 +223,7 @@ class Command(TyperCommand):
 
 
 def _mr_auto_labels() -> list[str]:
-    raw = get_overlay().config.get_mr_auto_labels()
+    raw = get_overlay().config.mr_auto_labels
     if isinstance(raw, str):
         values = raw.split(",")
     elif isinstance(raw, Iterable):

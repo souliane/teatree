@@ -4,6 +4,9 @@ description: Troubleshooting and fixing — something is broken, find and fix it
 compatibility: macOS/Linux, any language/framework supported by the project.
 requires:
   - workspace
+companions:
+  - systematic-debugging
+  - verification-before-completion
 triggers:
   priority: 50
   keywords:

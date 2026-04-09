@@ -25,7 +25,7 @@ def test_overlay_config_defaults():
     assert overlay.config.get_gitlab_username() == ""
     assert overlay.config.get_slack_token() == ""
     assert overlay.config.get_review_channel() == ("", "")
-    assert overlay.config.get_known_variants() == []
+    assert overlay.config.known_variants == []
 
 
 def test_get_env_extra_returns_empty_dict():

@@ -6,6 +6,8 @@ requires:
   - workspace
   - platforms
   - followup
+companions:
+  - verification-before-completion
 triggers:
   priority: 30
   keywords:

@@ -6,6 +6,9 @@ requires:
   - workspace
   - platforms
   - code
+companions:
+  - requesting-code-review
+  - verification-before-completion
 triggers:
   priority: 40
   keywords:

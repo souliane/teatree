@@ -19,6 +19,7 @@ from teatree.cli.doctor import DoctorService, IntrospectionHelpers, doctor_app
 from teatree.cli.overlay import OverlayAppBuilder, _uvicorn, managepy
 from teatree.cli.plugin import plugin_app
 from teatree.cli.review import review_app
+from teatree.cli.setup import setup_app
 from teatree.cli.tools import tool_app
 from teatree.config import discover_active_overlay
 
@@ -593,6 +594,8 @@ app.add_typer(doctor_app, name="doctor")
 app.add_typer(tool_app, name="tool")
 
 app.add_typer(plugin_app, name="plugin")
+
+app.add_typer(setup_app, name="setup")
 
 app.add_typer(assess_app, name="assess")
 

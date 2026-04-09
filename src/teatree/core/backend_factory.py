@@ -28,7 +28,7 @@ def code_host_from_overlay() -> CodeHost | None:
     return get_code_host(
         github_token=overlay.config.get_github_token(),
         gitlab_token=overlay.config.get_gitlab_token(),
-        gitlab_url=overlay.config.get_gitlab_url(),
+        gitlab_url=overlay.config.gitlab_url,
     )
 
 
@@ -43,7 +43,7 @@ def ci_service_from_overlay() -> CIService | None:
 
     return get_ci_service(
         gitlab_token=overlay.config.get_gitlab_token(),
-        gitlab_url=overlay.config.get_gitlab_url(),
+        gitlab_url=overlay.config.gitlab_url,
     )
 
 

@@ -14,10 +14,10 @@ agents:
 - claude-code
 dependencies:
   apm:
-  - obra/superpowers
-  - souliane/skills/ac-reviewing-codebase
-  - souliane/skills/ac-python
-  - souliane/skills/ac-django
+  - obra/superpowers#1f20bef3f59b85ad7b52718f822e37c4478a3ff5  # v5.0.7
+  - souliane/skills/ac-reviewing-codebase#b5348f4d334a48c552a64c710e722e34107e6402
+  - souliane/skills/ac-python#b5348f4d334a48c552a64c710e722e34107e6402
+  - souliane/skills/ac-django#b5348f4d334a48c552a64c710e722e34107e6402
   - souliane/teatree
 install:
   pip: teatree

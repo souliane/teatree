@@ -181,7 +181,7 @@ def _variant_url(variant: str) -> str:
     if not variant:
         return ""
     try:
-        url_template = get_overlay().config.get_dev_env_url()
+        url_template = get_overlay().config.dev_env_url
     except ImproperlyConfigured:
         return ""
     if not url_template:
@@ -212,7 +212,7 @@ def _tracker_status_label(ticket: Ticket) -> str:
 
 
 def _build_mr_rows(ticket: Ticket) -> list[DashboardMRRow]:
-    frontend_repos = get_overlay().config.get_frontend_repos()
+    frontend_repos = get_overlay().config.frontend_repos
     extra = ticket.extra if isinstance(ticket.extra, dict) else {}
     mrs_data = extra.get("mrs", {})
     if not isinstance(mrs_data, dict):

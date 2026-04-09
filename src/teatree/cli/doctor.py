@@ -101,7 +101,6 @@ class DoctorService:
             if not entry.project_path or not entry.project_path.is_dir():
                 continue
             project = entry.project_path.expanduser()
-            overlay_name = entry.name
 
             # New convention: skills/ directory
             project_skills = project / "skills"
@@ -110,11 +109,6 @@ class DoctorService:
                     (skill, skill.name) for skill in sorted(project_skills.iterdir()) if (skill / "SKILL.md").is_file()
                 )
 
-            # Legacy convention: overlay app dir with SKILL.md
-            for subdir in sorted(project.iterdir()):
-                if subdir.is_dir() and subdir.name != "skills" and (subdir / "SKILL.md").is_file():
-                    results.append((subdir, overlay_name))
-                    break  # one overlay skill per project
         return results
 
     @staticmethod
@@ -358,35 +352,6 @@ class IntrospectionHelpers:
             editable = data.get("dir_info", {}).get("editable", False)
             url = data.get("url", "")
             return editable, url
-
-
-@doctor_app.command()
-def repair() -> None:
-    """Repair skill symlinks and verify installation health."""
-    from teatree.agents.skill_bundle import DEFAULT_SKILLS_DIR  # noqa: PLC0415
-
-    skills_dir = DEFAULT_SKILLS_DIR
-    if not skills_dir.is_dir():
-        typer.echo(f"Skills directory not found: {skills_dir}")
-        raise typer.Exit(code=1)
-
-    claude_skills = Path.home() / ".claude" / "skills"
-    claude_skills.mkdir(parents=True, exist_ok=True)
-
-    created, fixed = DoctorService.repair_symlinks(skills_dir, claude_skills)
-
-    # Clean broken symlinks
-    removed = 0
-    for link in claude_skills.iterdir():
-        if link.is_symlink() and not link.exists():
-            link.unlink()
-            removed += 1
-
-    typer.echo(f"Skills: {created} created, {fixed} fixed, {removed} broken removed")
-    typer.echo(f"Source: {skills_dir}")
-    overlay_skills = DoctorService.collect_overlay_skills()
-    if overlay_skills:
-        typer.echo(f"Overlays: {len(overlay_skills)} overlay skill(s) managed")
 
 
 @doctor_app.command()

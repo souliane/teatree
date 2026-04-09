@@ -142,6 +142,46 @@ class TestParseRequires:
         assert result["requires"] == ["workspace"]
 
 
+class TestParseCompanions:
+    def test_companions_standalone(self):
+        md = "---\nname: t3-code\ncompanions:\n  - test-driven-development\n  - verification-before-completion\n---\n"
+        result = parse_triggers(md)
+        assert result is not None
+        assert result["companions"] == ["test-driven-development", "verification-before-completion"]
+
+    def test_no_companions_returns_empty_list(self):
+        md = "---\nname: test\ntriggers:\n  keywords:\n    - '\\btest\\b'\n---\n"
+        result = parse_triggers(md)
+        assert result is not None
+        assert result["companions"] == []
+
+    def test_companions_with_requires_and_triggers(self):
+        md = (
+            "---\nname: t3-ship\ntriggers:\n  priority: 10\n  keywords:\n"
+            "    - '\\bcommit\\b'\nrequires:\n  - workspace\n  - rules\n"
+            "companions:\n  - finishing-a-development-branch\n---\n"
+        )
+        result = parse_triggers(md)
+        assert result is not None
+        assert result["keywords"] == [r"\bcommit\b"]
+        assert result["requires"] == ["workspace", "rules"]
+        assert result["companions"] == ["finishing-a-development-branch"]
+        assert result["priority"] == 10
+
+    def test_companions_before_requires(self):
+        md = "---\nname: test\ncompanions:\n  - skill-a\nrequires:\n  - rules\n---\n"
+        result = parse_triggers(md)
+        assert result is not None
+        assert result["companions"] == ["skill-a"]
+        assert result["requires"] == ["rules"]
+
+    def test_companions_only_marks_found(self):
+        md = "---\nname: test\ncompanions:\n  - writing-plans\n---\n"
+        result = parse_triggers(md)
+        assert result is not None
+        assert result["companions"] == ["writing-plans"]
+
+
 class TestParseTriggerLine:
     def test_priority(self):
         triggers: dict = {"priority": 50, "keywords": [], "urls": [], "exclude": "", "end_of_session": False}
