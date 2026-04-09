@@ -278,27 +278,26 @@
 
     function handleGitPullResponse(event) {
       var xhr = event.detail.xhr;
-      var errorSpan = document.getElementById('git-pull-error');
-      if (xhr.status >= 400) {
-        try {
-          var data = JSON.parse(xhr.responseText);
-          if (errorSpan && data.error) {
-            errorSpan.textContent = data.error;
-            errorSpan.title = data.error;
-            errorSpan.classList.remove('hidden');
+      try {
+        var data = JSON.parse(xhr.responseText);
+        if (xhr.status >= 400) {
+          var errors = data.errors || {};
+          for (var repo in errors) {
+            var msg = errors[repo].error || 'Pull failed';
+            var isConflict = errors[repo].conflict;
+            showToast(repo + ': ' + (isConflict ? 'Merge conflict (aborted)' : msg), 'error');
           }
-          if (data.task_created) {
-            showToast('Git pull failed — interactive task created', 'error');
+          htmx.trigger(document.body, 'refreshPanels');
+        } else {
+          var results = data.results || {};
+          var parts = [];
+          for (var repo in results) {
+            var out = results[repo].output || 'up to date';
+            parts.push(repo + ': ' + out);
           }
-        } catch(e) { console.warn('Failed to parse git pull error:', e); }
-        htmx.trigger(document.body, 'refreshPanels');
-      } else {
-        if (errorSpan) { errorSpan.classList.add('hidden'); errorSpan.textContent = ''; }
-        try {
-          var data = JSON.parse(xhr.responseText);
-          showToast(data.output || 'Git pull complete', 'success');
-        } catch(e) {}
-      }
+          showToast(parts.join('\n') || 'Update complete', 'success');
+        }
+      } catch(e) { showToast('Update failed', 'error'); }
     }
 
     document.body.addEventListener('htmx:sseOpen', function() {
@@ -599,11 +598,11 @@
           hx-post="{% url 'teatree:dashboard-git-pull' %}"
           hx-swap="none"
           hx-on::after-request="handleGitPullResponse(event)"
+          hx-disable-elt="this"
         >
           <span id="git-pull-spinner" class="htmx-indicator mr-1">&#8635;</span>
-          Git Pull
+          Update TeaTree
         </button>
-        <span id="git-pull-error" class="hidden font-sans text-xs text-red-600 max-w-xs truncate" title=""></span>
         {% endif %}
         <div class="relative inline-flex items-center">
           <button
