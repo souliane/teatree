@@ -11,7 +11,7 @@
 
 Multi-repo worktree lifecycle manager for AI-assisted development.
 
-Teatree coordinates development work across multiple repositories: creating worktrees, provisioning databases, allocating ports, running services, syncing with GitLab, and tracking tickets through their entire lifecycle. It's a Django project — overlays are lightweight Python packages that plug in project-specific behaviour via entry points.
+Teatree coordinates development work across multiple repositories: creating worktrees, provisioning databases, allocating ports, running services, syncing with code hosts, and tracking tickets through their entire lifecycle. It's a Django project — overlays are lightweight Python packages that plug in project-specific behaviour via entry points.
 
 ```mermaid
 graph TB
@@ -21,8 +21,8 @@ graph TB
     workspace["workspace<br/>multi-repo setup"]
     db["db<br/>database operations"]
     run["run<br/>service management"]
-    pr["pr<br/>MR creation"]
-    followup["followup<br/>GitLab sync"]
+    pr["pr<br/>PR creation"]
+    followup["followup<br/>code host sync"]
   end
 
   subgraph "Dashboard"
@@ -49,15 +49,15 @@ graph TB
 
 ### 1. t3 CLI
 
-The core of teatree. Django management commands handle everything deterministic: state machines, port allocation, database provisioning, worktree creation, MR validation, CI sync. These are tested with 100% branch coverage — no prose, no model variance.
+The core of teatree. Django management commands handle everything deterministic: state machines, port allocation, database provisioning, worktree creation, PR validation, code host sync. These are tested with >90% branch coverage — no prose, no model variance.
 
 ```bash
 t3 lifecycle setup   # provision worktrees, DBs, ports for a ticket
 t3 lifecycle start   # start all services
 t3 workspace ticket  # create multi-repo worktrees from a ticket URL
 t3 db refresh        # restore a database dump
-t3 pr create         # create a merge request with metadata validation
-t3 followup sync     # sync tickets and MRs from GitLab
+t3 pr create         # create a pull request with metadata validation
+t3 followup sync     # sync tickets and PRs from code host
 ```
 
 ### 2. Dashboard
