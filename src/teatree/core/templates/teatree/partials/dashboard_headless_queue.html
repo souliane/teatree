@@ -60,6 +60,7 @@
                 hx-swap="none"
                 hx-on::after-request="handleActionResponse(event)"
                 hx-disable-elt="this"
+                hx-confirm="Execute headless task #{{ task.task_id }} for ticket #{{ task.ticket_display_id }}?"
               >
                 Execute
               </button>
