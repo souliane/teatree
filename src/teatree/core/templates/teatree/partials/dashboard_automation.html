@@ -1,17 +1,17 @@
 {% if automation.running or automation.completed_24h %}
 <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-  <article class="rounded-xl border border-bark/10 bg-gradient-to-b from-moss/10 to-white px-4 py-3">
+  <a href="#section-headless-queue" class="rounded-xl border border-bark/10 bg-gradient-to-b from-moss/10 to-white px-4 py-3 block hover:brightness-95 transition cursor-pointer" onclick="document.getElementById('section-headless-queue').open=true">
     <span class="font-sans text-[10px] font-semibold uppercase tracking-[0.2em] text-bark/50">Running</span>
     <div class="mt-2 font-display text-3xl leading-none">{{ automation.running }}</div>
-  </article>
-  <article class="rounded-xl border border-bark/10 bg-gradient-to-b from-green-50 to-white px-4 py-3">
+  </a>
+  <a href="#section-recent-activity" class="rounded-xl border border-bark/10 bg-gradient-to-b from-green-50 to-white px-4 py-3 block hover:brightness-95 transition cursor-pointer" onclick="document.getElementById('section-recent-activity').open=true">
     <span class="font-sans text-[10px] font-semibold uppercase tracking-[0.2em] text-bark/50">Succeeded (24h)</span>
     <div class="mt-2 font-display text-3xl leading-none text-green-700">{{ automation.succeeded_24h }}</div>
-  </article>
-  <article class="rounded-xl border border-bark/10 bg-gradient-to-b from-red-50 to-white px-4 py-3">
+  </a>
+  <a href="#section-recent-activity" class="rounded-xl border border-bark/10 bg-gradient-to-b from-red-50 to-white px-4 py-3 block hover:brightness-95 transition cursor-pointer" onclick="document.getElementById('section-recent-activity').open=true">
     <span class="font-sans text-[10px] font-semibold uppercase tracking-[0.2em] text-bark/50">Failed (24h)</span>
     <div class="mt-2 font-display text-3xl leading-none {% if automation.failed_24h %}text-red-600{% else %}text-bark{% endif %}">{{ automation.failed_24h }}</div>
-  </article>
+  </a>
 </div>
 {% if automation.total_tokens_24h or automation.total_cost_24h %}
 <div class="mt-3 flex gap-4 font-sans text-xs text-bark/50">
