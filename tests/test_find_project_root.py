@@ -3,13 +3,14 @@
 from pathlib import Path
 from unittest.mock import patch
 
-import teatree
+import teatree.project
+from teatree import find_project_root
 
 
 class TestFindProjectRoot:
     def test_finds_root_from_package(self) -> None:
         """find_project_root returns the actual teatree project root."""
-        root = teatree.find_project_root()
+        root = find_project_root()
         assert root is not None
         assert (root / "pyproject.toml").is_file()
         assert (root / ".git").exists()
@@ -19,8 +20,8 @@ class TestFindProjectRoot:
         fake_init = tmp_path / "a" / "b" / "__init__.py"
         fake_init.parent.mkdir(parents=True)
         fake_init.touch()
-        with patch.object(teatree, "__file__", str(fake_init)):
-            assert teatree.find_project_root() is None
+        with patch.object(teatree.project, "__file__", str(fake_init)):
+            assert find_project_root() is None
 
     def test_walks_up_to_correct_depth(self, tmp_path: Path) -> None:
         """Finds root regardless of how deeply nested the file is."""
@@ -29,5 +30,5 @@ class TestFindProjectRoot:
         deep = tmp_path / "a" / "b" / "c" / "d" / "e" / "__init__.py"
         deep.parent.mkdir(parents=True)
         deep.touch()
-        with patch.object(teatree, "__file__", str(deep)):
-            assert teatree.find_project_root() == tmp_path
+        with patch.object(teatree.project, "__file__", str(deep)):
+            assert find_project_root() == tmp_path
