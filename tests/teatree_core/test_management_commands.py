@@ -376,3 +376,120 @@ class TestTicketCommand(TestCase):
         )
         assert len(result) == 1
         assert result[0]["overlay"] == "alpha"
+
+
+class TestTasksCancelCommand(TestCase):
+    """Tests for the tasks cancel subcommand."""
+
+    def test_cancel_pending_task(self) -> None:
+        ticket = Ticket.objects.create(overlay="test")
+        session = Session.objects.create(ticket=ticket, overlay="test")
+        task = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            execution_target=Task.ExecutionTarget.INTERACTIVE,
+        )
+        call_command("tasks", "cancel", task.pk)
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+
+    def test_cancel_claimed_task_without_confirm(self) -> None:
+        ticket = Ticket.objects.create(overlay="test")
+        session = Session.objects.create(ticket=ticket, overlay="test")
+        task = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            execution_target=Task.ExecutionTarget.INTERACTIVE,
+        )
+        task.claim(claimed_by="worker-1")
+        with pytest.raises(SystemExit):
+            call_command("tasks", "cancel", task.pk)
+
+    def test_cancel_claimed_task_with_confirm(self) -> None:
+        ticket = Ticket.objects.create(overlay="test")
+        session = Session.objects.create(ticket=ticket, overlay="test")
+        task = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            execution_target=Task.ExecutionTarget.INTERACTIVE,
+        )
+        task.claim(claimed_by="worker-1")
+        call_command("tasks", "cancel", task.pk, confirm=True)
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+
+    def test_cancel_completed_task(self) -> None:
+        ticket = Ticket.objects.create(overlay="test")
+        session = Session.objects.create(ticket=ticket, overlay="test")
+        task = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            status=Task.Status.COMPLETED,
+            execution_target=Task.ExecutionTarget.INTERACTIVE,
+        )
+        with pytest.raises(SystemExit):
+            call_command("tasks", "cancel", task.pk)
+
+    def test_cancel_nonexistent_task(self) -> None:
+        with pytest.raises(SystemExit):
+            call_command("tasks", "cancel", 99999)
+
+
+class TestTasksListCommand(TestCase):
+    """Tests for the tasks list subcommand."""
+
+    def test_list_all_tasks(self) -> None:
+        ticket = Ticket.objects.create(overlay="test")
+        session = Session.objects.create(ticket=ticket, overlay="test")
+        Task.objects.create(
+            ticket=ticket,
+            session=session,
+            execution_target=Task.ExecutionTarget.INTERACTIVE,
+        )
+        Task.objects.create(
+            ticket=ticket,
+            session=session,
+            execution_target=Task.ExecutionTarget.HEADLESS,
+        )
+        result = cast("list[dict[str, object]]", call_command("tasks", "list"))
+        assert len(result) == 2
+
+    def test_list_filters_by_status(self) -> None:
+        ticket = Ticket.objects.create(overlay="test")
+        session = Session.objects.create(ticket=ticket, overlay="test")
+        Task.objects.create(
+            ticket=ticket,
+            session=session,
+            status=Task.Status.COMPLETED,
+            execution_target=Task.ExecutionTarget.INTERACTIVE,
+        )
+        Task.objects.create(
+            ticket=ticket,
+            session=session,
+            execution_target=Task.ExecutionTarget.INTERACTIVE,
+        )
+        result = cast(
+            "list[dict[str, object]]",
+            call_command("tasks", "list", status="completed"),
+        )
+        assert len(result) == 1
+
+    def test_list_filters_by_execution_target(self) -> None:
+        ticket = Ticket.objects.create(overlay="test")
+        session = Session.objects.create(ticket=ticket, overlay="test")
+        Task.objects.create(
+            ticket=ticket,
+            session=session,
+            execution_target=Task.ExecutionTarget.INTERACTIVE,
+        )
+        Task.objects.create(
+            ticket=ticket,
+            session=session,
+            execution_target=Task.ExecutionTarget.HEADLESS,
+        )
+        result = cast(
+            "list[dict[str, object]]",
+            call_command("tasks", "list", execution_target="interactive"),
+        )
+        assert len(result) == 1
+        assert result[0]["execution_target"] == "interactive"
