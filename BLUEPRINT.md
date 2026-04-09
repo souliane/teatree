@@ -633,12 +633,31 @@ Selector-backed views with django-htmx. **No domain logic in views** — all dat
 | `GET /dashboard/events/` | SSE | Server-Sent Events stream for real-time updates |
 | `GET /dashboard/panels/<panel>/` | HTMX | Panel refresh (requires HX-Request header) |
 | `POST /dashboard/sync/` | — | Trigger followup sync |
+| `POST /dashboard/git-pull/` | — | Pull latest teatree code |
+| `POST /dashboard/launch-terminal/` | — | Open a terminal session |
+| `POST /dashboard/launch-agent/` | — | Launch Claude CLI interactively |
 | `POST /tasks/<id>/launch/` | — | Claim + execute (headless) or launch ttyd (interactive) |
 | `POST /tasks/<id>/cancel/` | — | Cancel task (sets to FAILED) |
+| `POST /tasks/<id>/reopen/` | — | Reopen failed/cancelled task |
+| `POST /tickets/<id>/transition/` | — | Trigger ticket state transition |
 | `POST /tickets/<id>/create-task/` | — | Create headless or interactive task |
+| `GET /tasks/<id>/detail/` | HTMX | Task detail panel |
+| `GET /tickets/<id>/task-graph/` | HTMX | Task dependency graph |
+| `GET /tickets/<id>/lifecycle/` | HTMX | Ticket lifecycle diagram |
 | `GET /sessions/<id>/history/` | HTMX | Session history |
 
-### 9.2 Real-Time Updates (SSE)
+### 9.2 Security Posture
+
+The dashboard is designed for **localhost-only** use. Defence-in-depth layers:
+
+1. **`LocalhostOnlyMiddleware`** — rejects POST/PUT/DELETE from non-localhost addresses with 403
+2. **Django CSRF middleware** — all mutating views require a valid CSRF token (no `csrf_exempt`)
+3. **`ALLOWED_HOSTS`** — restricted to `["localhost", "127.0.0.1", "[::1]"]`
+4. **HTMX auto-headers** — `<body hx-headers='{"X-CSRFToken": "..."}'>` injects the CSRF token on all HTMX requests
+
+The server binds to `127.0.0.1` only. There is no authentication — the threat model assumes trusted localhost access.
+
+### 9.3 Real-Time Updates (SSE)
 
 The dashboard uses Server-Sent Events for push-based updates instead of blind polling. Zero additional dependencies — built on Django's async `StreamingHttpResponse`.
 
@@ -656,7 +675,7 @@ The dashboard uses Server-Sent Events for push-based updates instead of blind po
 
 **ASGI requirement:** SSE requires an ASGI server (uvicorn) to stream async generators. The `t3 <overlay> dashboard` CLI launches uvicorn instead of `manage.py runserver`. The `_uvicorn()` helper derives the ASGI module from `DJANGO_SETTINGS_MODULE` and launches with `--reload` for file-watching DX.
 
-### 9.3 Panels
+### 9.4 Panels
 
 | Panel | Selector | Content | SSE Event | Fallback Interval |
 |-------|----------|---------|-----------|-------------------|
