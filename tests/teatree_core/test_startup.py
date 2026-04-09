@@ -1,6 +1,7 @@
 """Tests for teatree.core.views._startup — perform_sync and _write_skill_metadata_cache."""
 
 import json
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -190,6 +191,84 @@ class TestBuildTriggerIndex:
         from teatree.core.views._startup import _build_trigger_index  # noqa: PLC0415
 
         assert _build_trigger_index() == []
+
+
+class TestCollectSkillMtimes:
+    def test_returns_empty_when_dir_missing(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: pytest.TempPathFactory
+    ) -> None:
+        monkeypatch.setattr("teatree.core.views._startup._CLAUDE_SKILLS_DIR", tmp_path / "nonexistent")
+
+        from teatree.core.views._startup import _collect_skill_mtimes  # noqa: PLC0415
+
+        assert _collect_skill_mtimes() == {}
+
+    def test_skips_non_directory_entries(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: pytest.TempPathFactory
+    ) -> None:
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+        (skills_dir / "file.txt").write_text("not a dir")
+        monkeypatch.setattr("teatree.core.views._startup._CLAUDE_SKILLS_DIR", skills_dir)
+
+        from teatree.core.views._startup import _collect_skill_mtimes  # noqa: PLC0415
+
+        assert _collect_skill_mtimes() == {}
+
+    def test_collects_mtime_from_skill_md(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: pytest.TempPathFactory
+    ) -> None:
+        skills_dir = tmp_path / "skills"
+        skill = skills_dir / "my-skill"
+        skill.mkdir(parents=True)
+        skill_md = skill / "SKILL.md"
+        skill_md.write_text("---\nname: my-skill\n---\n")
+        monkeypatch.setattr("teatree.core.views._startup._CLAUDE_SKILLS_DIR", skills_dir)
+
+        from teatree.core.views._startup import _collect_skill_mtimes  # noqa: PLC0415
+
+        result = _collect_skill_mtimes()
+        assert "my-skill" in result
+        assert result["my-skill"] == skill_md.stat().st_mtime_ns
+
+    def test_skips_dir_without_skill_md(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: pytest.TempPathFactory
+    ) -> None:
+        skills_dir = tmp_path / "skills"
+        (skills_dir / "empty").mkdir(parents=True)
+        monkeypatch.setattr("teatree.core.views._startup._CLAUDE_SKILLS_DIR", skills_dir)
+
+        from teatree.core.views._startup import _collect_skill_mtimes  # noqa: PLC0415
+
+        assert _collect_skill_mtimes() == {}
+
+    def test_handles_oserror_gracefully(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: pytest.TempPathFactory
+    ) -> None:
+        skills_dir = tmp_path / "skills"
+        skill = skills_dir / "broken"
+        skill.mkdir(parents=True)
+        skill_md = skill / "SKILL.md"
+        skill_md.write_text("content")
+        monkeypatch.setattr("teatree.core.views._startup._CLAUDE_SKILLS_DIR", skills_dir)
+
+        from teatree.core.views._startup import _collect_skill_mtimes  # noqa: PLC0415
+
+        original_stat = Path.stat
+        call_count = 0
+
+        def _raising_stat(self: Path, *args: object, **kwargs: object) -> object:
+            nonlocal call_count
+            if self.name == "SKILL.md":
+                call_count += 1
+                # First call is from is_file() — let it pass.
+                # Second call is the explicit stat() in the try block.
+                if call_count > 1:
+                    raise OSError
+            return original_stat(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "stat", _raising_stat)
+        assert _collect_skill_mtimes() == {}
 
 
 # Parser unit tests live in tests/test_trigger_parser.py (single source of truth).
