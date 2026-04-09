@@ -10,6 +10,8 @@
           <span class="pill pill-xs bg-red-100 text-red-700">Reply</span>
         {% elif item.kind == "needs_approval" %}
           <span class="pill pill-xs bg-purple-100 text-purple-700">Approval</span>
+        {% elif item.kind == "review_draft" %}
+          <span class="pill pill-xs bg-amber-100 text-amber-700">Draft</span>
         {% endif %}
         <div class="flex flex-1 items-center gap-2 overflow-hidden">
           {% if item.url %}
@@ -63,6 +65,14 @@
             >
               Remind on Slack
             </button>
+          {% elif item.kind == "review_draft" %}
+            <a
+              href="{{ item.url }}"
+              target="_blank"
+              class="rounded-full border border-amber-300 bg-amber-50 px-3 py-1 font-sans text-[10px] font-semibold uppercase tracking-[0.18em] text-amber-700 transition hover:bg-amber-100 no-underline"
+            >
+              Review
+            </a>
           {% endif %}
         </div>
         {% if item.review_comments %}
