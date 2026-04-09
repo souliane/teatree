@@ -1,7 +1,7 @@
 import os
 import subprocess as subprocess_mod
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from django.core.cache import cache as django_cache
@@ -868,61 +868,178 @@ class TestTaskGraphView(TestCase):
         assert response.status_code == 404
 
 
+class TestGitPullRepo:
+    """Tests for _git_pull_repo helper."""
+
+    def test_success(self, tmp_path: Path) -> None:
+        completed = subprocess_mod.CompletedProcess([], 0, "Already up to date.\n", "")
+        with patch("teatree.core.views.actions.subprocess") as mock_sub:
+            mock_sub.run.return_value = completed
+            mock_sub.TimeoutExpired = subprocess_mod.TimeoutExpired
+            result = actions_views._git_pull_repo(tmp_path)
+
+        assert result["ok"] is True
+        assert "Already up to date" in str(result["output"])
+
+    def test_timeout(self, tmp_path: Path) -> None:
+        with patch("teatree.core.views.actions.subprocess") as mock_sub:
+            mock_sub.TimeoutExpired = subprocess_mod.TimeoutExpired
+            mock_sub.run.side_effect = subprocess_mod.TimeoutExpired(["git"], 30)
+            result = actions_views._git_pull_repo(tmp_path)
+
+        assert result["ok"] is False
+        assert "timed out" in str(result["error"])
+
+    def test_merge_conflict_aborts(self, tmp_path: Path) -> None:
+        fail = subprocess_mod.CompletedProcess([], 1, "", "CONFLICT (content): Merge conflict in f.py")
+        abort_ok = subprocess_mod.CompletedProcess([], 0, "", "")
+        with patch("teatree.core.views.actions.subprocess") as mock_sub:
+            mock_sub.run.side_effect = [fail, abort_ok]
+            mock_sub.TimeoutExpired = subprocess_mod.TimeoutExpired
+            result = actions_views._git_pull_repo(tmp_path)
+
+        assert result["ok"] is False
+        assert result.get("conflict") is True
+        assert "Merge conflict" in str(result["error"])
+
+    def test_stale_branch_switches_to_main(self, tmp_path: Path) -> None:
+        fail = subprocess_mod.CompletedProcess([], 1, "", "no tracking information")
+        branch = subprocess_mod.CompletedProcess([], 0, "old-branch\n", "")
+        switch = subprocess_mod.CompletedProcess([], 0, "", "")
+        pull_ok = subprocess_mod.CompletedProcess([], 0, "Updating abc..def\n", "")
+        delete = subprocess_mod.CompletedProcess([], 0, "", "")
+        with patch("teatree.core.views.actions.subprocess") as mock_sub:
+            mock_sub.run.side_effect = [fail, branch, switch, pull_ok, delete]
+            mock_sub.TimeoutExpired = subprocess_mod.TimeoutExpired
+            result = actions_views._git_pull_repo(tmp_path)
+
+        assert result["ok"] is True
+        assert "Switched to main" in str(result["output"])
+        assert "deleted stale branch 'old-branch'" in str(result["output"])
+
+    def test_generic_failure(self, tmp_path: Path) -> None:
+        fail = subprocess_mod.CompletedProcess([], 128, "", "fatal: bad repo")
+        with patch("teatree.core.views.actions.subprocess") as mock_sub:
+            mock_sub.run.return_value = fail
+            mock_sub.TimeoutExpired = subprocess_mod.TimeoutExpired
+            result = actions_views._git_pull_repo(tmp_path)
+
+        assert result["ok"] is False
+        assert "fatal" in str(result["error"])
+
+
 class TestGitPullView(TestCase):
     @pytest.fixture(autouse=True)
     def _inject_tmp_path(self, tmp_path: Path) -> None:
         self.tmp_path = tmp_path
 
-    def test_success_returns_output(self) -> None:
-        completed = __import__("subprocess").CompletedProcess([], 0, "Already up to date.\n", "")
+    def test_success_returns_results(self) -> None:
         with (
             patch.object(actions_views, "_get_t3_repo", return_value=self.tmp_path),
-            patch("teatree.core.views.actions.subprocess") as mock_subprocess,
+            patch.object(actions_views, "_find_overlay_repo_dirs", return_value=[]),
+            patch.object(actions_views, "_git_pull_repo", return_value={"ok": True, "output": "Already up to date."}),
         ):
-            mock_subprocess.run.return_value = completed
-            mock_subprocess.TimeoutExpired = __import__("subprocess").TimeoutExpired
             response = Client().post(reverse("teatree:dashboard-git-pull"))
 
         assert response.status_code == 200
         data = response.json()
         assert data["ok"] is True
-        assert "Already up to date" in data["output"]
+        assert "teatree" in data["results"]
 
-    def test_failure_returns_error_and_creates_task(self) -> None:
-        completed = __import__("subprocess").CompletedProcess([], 1, "", "fatal: not a git repository\n")
+    def test_pulls_overlay_repos(self) -> None:
+        overlay_dir = self.tmp_path / "overlay"
+        overlay_dir.mkdir()
+        results = [
+            {"ok": True, "output": "teatree updated"},
+            {"ok": True, "output": "overlay updated"},
+        ]
         with (
             patch.object(actions_views, "_get_t3_repo", return_value=self.tmp_path),
-            patch("teatree.core.views.actions.subprocess") as mock_subprocess,
+            patch.object(actions_views, "_find_overlay_repo_dirs", return_value=[("my-overlay", overlay_dir)]),
+            patch.object(actions_views, "_git_pull_repo", side_effect=results),
         ):
-            mock_subprocess.run.return_value = completed
-            mock_subprocess.TimeoutExpired = __import__("subprocess").TimeoutExpired
+            response = Client().post(reverse("teatree:dashboard-git-pull"))
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "teatree" in data["results"]
+        assert "my-overlay" in data["results"]
+
+    def test_failure_returns_errors_and_creates_task(self) -> None:
+        with (
+            patch.object(actions_views, "_get_t3_repo", return_value=self.tmp_path),
+            patch.object(actions_views, "_find_overlay_repo_dirs", return_value=[]),
+            patch.object(actions_views, "_git_pull_repo", return_value={"ok": False, "error": "fatal: bad repo"}),
+        ):
             response = Client().post(reverse("teatree:dashboard-git-pull"))
 
         assert response.status_code == 500
         data = response.json()
-        assert "fatal" in data["error"]
-        assert data["task_created"] is True
+        assert "teatree" in data["errors"]
         task = Task.objects.get(phase="maintenance")
-        assert task.execution_target == Task.ExecutionTarget.INTERACTIVE
         assert "git pull failed" in task.execution_reason
 
-    def test_timeout_returns_500(self) -> None:
+    def test_skips_overlay_same_as_teatree(self) -> None:
         with (
             patch.object(actions_views, "_get_t3_repo", return_value=self.tmp_path),
-            patch("teatree.core.views.actions.subprocess") as mock_subprocess,
+            patch.object(actions_views, "_find_overlay_repo_dirs", return_value=[("teatree", self.tmp_path)]),
+            patch.object(
+                actions_views, "_git_pull_repo", return_value={"ok": True, "output": "up to date"}
+            ) as mock_pull,
         ):
-            mock_subprocess.TimeoutExpired = subprocess_mod.TimeoutExpired
-            mock_subprocess.run.side_effect = subprocess_mod.TimeoutExpired(["git", "pull"], 30)
-            response = Client().post(reverse("teatree:dashboard-git-pull"))
+            Client().post(reverse("teatree:dashboard-git-pull"))
 
-        assert response.status_code == 500
-        assert "timed out" in response.json()["error"]
+        mock_pull.assert_called_once()
 
     def test_missing_repo_returns_400(self) -> None:
         with patch.object(actions_views, "_get_t3_repo", return_value=None):
             response = Client().post(reverse("teatree:dashboard-git-pull"))
 
         assert response.status_code == 400
+
+
+class TestFindOverlayRepoDirs:
+    def test_finds_overlay_with_git_dir(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        git_dir = tmp_path / "overlay-repo"
+        git_dir.mkdir()
+        (git_dir / ".git").mkdir()
+        pkg_dir = git_dir / "src" / "my_overlay"
+        pkg_dir.mkdir(parents=True)
+        mod_file = pkg_dir / "__init__.py"
+        mod_file.write_text("")
+
+        import types  # noqa: PLC0415
+
+        fake_mod = types.ModuleType("my_overlay")
+        fake_mod.__file__ = str(mod_file)
+
+        fake_overlay = MagicMock()
+        type(fake_overlay).__module__ = "my_overlay"
+
+        monkeypatch.setitem(__import__("sys").modules, "my_overlay", fake_mod)
+        with patch("teatree.core.overlay_loader.get_all_overlays", return_value={"test": fake_overlay}):
+            results = actions_views._find_overlay_repo_dirs()
+
+        assert len(results) == 1
+        assert results[0] == ("test", git_dir)
+
+    def test_returns_empty_on_error(self) -> None:
+        with patch("teatree.core.overlay_loader.get_all_overlays", side_effect=RuntimeError("fail")):
+            assert actions_views._find_overlay_repo_dirs() == []
+
+    def test_skips_overlay_without_file(self) -> None:
+        import types  # noqa: PLC0415
+
+        fake_mod = types.ModuleType("no_file")
+
+        fake_overlay = MagicMock()
+        type(fake_overlay).__module__ = "no_file"
+
+        with (
+            patch.dict(__import__("sys").modules, {"no_file": fake_mod}),
+            patch("teatree.core.overlay_loader.get_all_overlays", return_value={"test": fake_overlay}),
+        ):
+            assert actions_views._find_overlay_repo_dirs() == []
 
 
 # ---------------------------------------------------------------------------
