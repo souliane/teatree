@@ -3,14 +3,37 @@
 import os
 import socket
 import subprocess  # noqa: S404
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from django_typer.management import TyperCommand, command
 
 from teatree.core.management.commands.lifecycle import _compose_project
 from teatree.core.overlay_loader import get_overlay
-from teatree.core.resolve import resolve_worktree
+from teatree.core.resolve import _find_env_worktree, _get_user_cwd, _parse_env_file, resolve_worktree
 from teatree.utils.ports import get_service_port
+
+
+@dataclass
+class PlaywrightOptions:
+    """Flags forwarded to the Playwright CLI."""
+
+    test_path: str = ""
+    update_snapshots: bool = False
+    headed: bool = False
+    extra: list[str] = field(default_factory=list)
+
+    def to_args(self) -> list[str]:
+        args: list[str] = []
+        if self.test_path:
+            args.append(self.test_path)
+        args.append("--reporter=list")
+        if self.update_snapshots:
+            args.append("--update-snapshots")
+        if self.headed:
+            args.append("--headed")
+        args.extend(self.extra)
+        return args
 
 
 def _detect_local_port(port: int) -> int | None:
@@ -43,6 +66,24 @@ def _discover_frontend_port(project: str, default: int = 4200) -> int | None:
     return _detect_local_port(default)
 
 
+def _build_e2e_env(frontend_port: int, *, headed: bool) -> dict[str, str]:
+    """Build environment dict for Playwright: BASE_URL, CUSTOMER, CI."""
+    env = {**os.environ}
+    env["BASE_URL"] = f"http://localhost:{frontend_port}"
+
+    envfile = _find_env_worktree(_get_user_cwd())
+    if envfile is not None:
+        variant = _parse_env_file(envfile).get("WT_VARIANT", "")
+        if variant:
+            env["CUSTOMER"] = variant
+
+    if headed:
+        env.pop("CI", None)
+    else:
+        env["CI"] = "1"
+    return env
+
+
 class Command(TyperCommand):
     @command(name="trigger-ci")
     def trigger_ci(self, branch: str = "") -> dict[str, object]:
@@ -70,11 +111,15 @@ class Command(TyperCommand):
         *,
         headed: bool = False,
         update_snapshots: bool = False,
+        playwright_args: str = "",
     ) -> str:
         """Run Playwright tests from the external test repo (T3_PRIVATE_TESTS).
 
         Discovers the frontend port from docker-compose (or local process)
         and reads the tenant variant from .env.worktree.
+
+        Extra Playwright flags (--config, --timeout, --grep, etc.) can be
+        passed via --playwright-args: ``--playwright-args="--config x.ts --timeout 120000"``
         """
         private_tests_path = _resolve_private_tests_path()
         if not private_tests_path:
@@ -89,36 +134,21 @@ class Command(TyperCommand):
                 "Run `t3 run frontend` first."
             )
 
-        from teatree.core.resolve import _find_env_worktree, _get_user_cwd, _parse_env_file  # noqa: PLC0415
-
-        variant = ""
-        envfile = _find_env_worktree(_get_user_cwd())
-        if envfile is not None:
-            wt_env = _parse_env_file(envfile)
-            variant = wt_env.get("WT_VARIANT", "")
-
-        cmd = ["npx", "playwright", "test"]
-        if test_path:
-            cmd.append(test_path)
-        cmd.extend(["--reporter=list"])
-        if update_snapshots:
-            cmd.append("--update-snapshots")
-
-        env = {**os.environ}
-        env["BASE_URL"] = f"http://localhost:{frontend_port}"
-        if variant:
-            env["CUSTOMER"] = variant
-        if headed:
-            env.pop("CI", None)
-            cmd.append("--headed")
-        else:
-            env["CI"] = "1"
+        extra = playwright_args.split() if playwright_args else []
+        opts = PlaywrightOptions(
+            test_path=test_path,
+            update_snapshots=update_snapshots,
+            headed=headed,
+            extra=extra,
+        )
+        env = _build_e2e_env(frontend_port, headed=headed)
 
         self.stdout.write(f"  Running from: {private_tests_path}")
         self.stdout.write(f"  BASE_URL: {env['BASE_URL']}")
-        if variant:
-            self.stdout.write(f"  CUSTOMER: {variant}")
+        if env.get("CUSTOMER"):
+            self.stdout.write(f"  CUSTOMER: {env['CUSTOMER']}")
 
+        cmd = ["npx", "playwright", "test", *opts.to_args()]
         result = subprocess.run(cmd, cwd=private_tests_path, check=False, env=env)  # noqa: S603
         return "E2E passed." if result.returncode == 0 else f"E2E failed (exit {result.returncode})."
 
