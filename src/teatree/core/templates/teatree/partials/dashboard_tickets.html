@@ -95,6 +95,7 @@
                   hx-swap="none"
                   hx-on::after-request="htmx.trigger(document.body, 'refreshPanels')"
                   hx-disable-elt="this"
+                  hx-confirm="Start headless agent to add E2E tests for {{ mr.repo }} #{{ mr.iid }}?"
                   title="Start headless agent to add E2E tests"
                 >Add E2E</button>
               {% else %}
@@ -125,6 +126,7 @@
                   hx-swap="none"
                   hx-on::after-request="htmx.trigger(document.body, 'refreshPanels')"
                   hx-disable-elt="this"
+                  hx-confirm="Post review request to Slack for {{ mr.repo }} #{{ mr.iid }}?"
                   title="Post review request to Slack"
                 >Request</button>
               {% else %}
@@ -166,6 +168,7 @@
                     hx-swap="none"
                     hx-on::after-request="htmx.trigger(document.body, 'refreshPanels')"
                     hx-disable-elt="this"
+                    hx-confirm="Start headless code review for ticket #{{ ticket.display_id }}?"
                     title="Trigger headless review"
                   >Review</button>
                 {% endif %}
@@ -198,6 +201,7 @@
                     hx-swap="none"
                     hx-on::after-request="htmx.trigger(document.body, 'refreshPanels')"
                     hx-disable-elt="this"
+                    hx-confirm="Start headless agent for ticket #{{ ticket.display_id }}?"
                     title="Start headless agent"
                   >Headless</button>
                   <button
@@ -207,6 +211,7 @@
                     hx-swap="none"
                     hx-on::after-request="handleActionResponse(event)"
                     hx-disable-elt="this"
+                    hx-confirm="Start interactive session for ticket #{{ ticket.display_id }}?"
                     title="Start interactive session"
                   >Interactive</button>
                 </div>
@@ -291,6 +296,7 @@
                   hx-swap="none"
                   hx-on::after-request="htmx.trigger(document.body, 'refreshPanels')"
                   hx-disable-elt="this"
+                  hx-confirm="Start headless agent for ticket #{{ ticket.display_id }}?"
                   title="Start headless agent"
                 >Auto</button>
                 <button
@@ -300,6 +306,7 @@
                   hx-swap="none"
                   hx-on::after-request="htmx.trigger(document.body, 'refreshPanels')"
                   hx-disable-elt="this"
+                  hx-confirm="Start interactive session for ticket #{{ ticket.display_id }}?"
                   title="Start interactive session"
                 >Interactive</button>
               </div>

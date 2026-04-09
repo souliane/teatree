@@ -235,6 +235,49 @@ for n in added_lines:
 
 If the target `new_line` does not appear in the output, pick the nearest added line instead.
 
+### Posting Inline Draft Notes (API Recipe)
+
+Until the `t3 review post-draft-note` CLI exists, use this recipe to post inline draft notes with position data.
+
+**Step 1 — Get diff version SHAs:**
+
+```bash
+glab api "projects/<URL_ENCODED_REPO>/merge_requests/<IID>/versions" 2>/dev/null \
+  | python3 -c "
+import sys, json
+v = json.load(sys.stdin)[0]
+print(f'base_sha={v[\"base_commit_sha\"]}')
+print(f'start_sha={v[\"start_commit_sha\"]}')
+print(f'head_sha={v[\"head_commit_sha\"]}')
+"
+```
+
+**Step 2 — Write JSON payload and POST:**
+
+```bash
+python3 -c "
+import json
+json.dump({
+    'note': '<comment text>',
+    'position': {
+        'base_sha': '<base_sha>',
+        'start_sha': '<start_sha>',
+        'head_sha': '<head_sha>',
+        'position_type': 'text',
+        'new_path': '<file/path.ts>',
+        'old_path': '<file/path.ts>',
+        'new_line': <line_number>
+    }
+}, open('/tmp/draft_note.json', 'w'))
+"
+glab api "projects/<URL_ENCODED_REPO>/merge_requests/<IID>/draft_notes" \
+  --method POST -H 'Content-Type: application/json' --input /tmp/draft_note.json
+```
+
+**Critical:** `glab api -f 'position[field]=value'` does NOT produce nested JSON — the position fields will be `null`. Always use `-H 'Content-Type: application/json' --input <file>` with a JSON file written by Python.
+
+**General (non-inline) draft notes** don't need the `position` object — just `--raw-field note='...'` is sufficient.
+
 ### JSON Escaping for Draft Notes
 
 When the note body contains backticks, single quotes, or other special characters, prefer **direct shell JSON** (single-quoted `--data '{...}'`) over Python `json.dumps` with embedded strings. Python's nested quoting layers (shell → Python string → JSON) are fragile and commonly mangle backticks into `""` or drop them entirely.
