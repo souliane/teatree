@@ -39,7 +39,7 @@
             {% if forloop.first %}
               <td class="cell-wrap border-b border-bark/10 px-3 py-3 align-top" {% if mr_count > 1 %}rowspan="{{ mr_count }}"{% endif %}>
                 {% if ticket.has_issue %}
-                  <a class="font-sans font-semibold text-moss hover:underline" href="{{ ticket.issue_url }}">#{{ ticket.display_id }}</a>{% if debug %}<a href="/admin/core/ticket/{{ ticket.ticket_id }}/change/" class="ml-0.5 text-bark/25 hover:text-bark/50 text-[9px]" title="Admin">&#9881;</a>{% endif %}
+                  <a class="font-sans font-semibold text-moss hover:underline" href="{{ ticket.issue_url }}">#{{ ticket.display_id }}</a><button class="ml-0.5 text-bark/20 hover:text-bark/50 text-[10px] align-middle" onclick="copyUrl('{{ ticket.issue_url }}', event)" title="Copy issue URL">&#x2398;</button>{% if debug %}<a href="/admin/core/ticket/{{ ticket.ticket_id }}/change/" class="ml-0.5 text-bark/25 hover:text-bark/50 text-[9px]" title="Admin">&#9881;</a>{% endif %}
                   {% if ticket.variant and ticket.variant_url %}
                     <a href="{{ ticket.variant_url }}" class="ml-1 pill pill-xs bg-clay/10 text-clay hover:brightness-95" target="_blank">{{ ticket.variant }}</a>
                   {% elif ticket.variant %}
@@ -76,7 +76,7 @@
             {% endif %}
             <td class="border-b border-bark/10 px-3 py-3 align-top">
               {% if mr.url %}
-                <a class="font-sans text-moss hover:underline" href="{{ mr.url }}" title="{{ mr.title }}">{{ mr.repo }}&nbsp;#{{ mr.iid }}</a>
+                <a class="font-sans text-moss hover:underline" href="{{ mr.url }}" title="{{ mr.title }}">{{ mr.repo }}&nbsp;#{{ mr.iid }}</a><button class="ml-0.5 text-bark/20 hover:text-bark/50 text-[10px] align-middle" onclick="copyUrl('{{ mr.url }}', event)" title="Copy PR URL">&#x2398;</button>
               {% else %}
                 {{ mr.repo }}
               {% endif %}
@@ -223,7 +223,7 @@
             <td class="border-b border-bark/10 px-3 py-3 align-top text-center"></td>
             <td class="cell-wrap border-b border-bark/10 px-3 py-3 align-top">
               {% if ticket.has_issue %}
-                <a class="font-sans font-semibold text-moss hover:underline" href="{{ ticket.issue_url }}">#{{ ticket.display_id }}</a>
+                <a class="font-sans font-semibold text-moss hover:underline" href="{{ ticket.issue_url }}">#{{ ticket.display_id }}</a><button class="ml-0.5 text-bark/20 hover:text-bark/50 text-[10px] align-middle" onclick="copyUrl('{{ ticket.issue_url }}', event)" title="Copy issue URL">&#x2398;</button>
                 {% if ticket.variant and ticket.variant_url %}
                   <a href="{{ ticket.variant_url }}" class="ml-1 pill pill-xs bg-clay/10 text-clay hover:brightness-95" target="_blank">{{ ticket.variant }}</a>
                 {% elif ticket.variant %}

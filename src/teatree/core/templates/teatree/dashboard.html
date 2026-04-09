@@ -308,6 +308,22 @@
       updateCopyButton();
     }
 
+    function showToast(msg) {
+      var toast = document.getElementById('toast-msg');
+      if (toast) {
+        toast.textContent = msg;
+        toast.parentElement.classList.remove('hidden');
+        setTimeout(function(){ toast.parentElement.classList.add('hidden'); }, 3000);
+      }
+    }
+
+    function copyUrl(url, event) {
+      if (event) event.preventDefault();
+      navigator.clipboard.writeText(url).then(function() {
+        showToast('Copied to clipboard');
+      });
+    }
+
     function copySelectedMRs() {
       var lines = [];
       document.querySelectorAll('input.mr-select:checked').forEach(function(cb) {
@@ -316,12 +332,7 @@
       });
       if (lines.length === 0) return;
       navigator.clipboard.writeText(lines.join('\n')).then(function() {
-        var toast = document.getElementById('toast-msg');
-        if (toast) {
-          toast.textContent = lines.length + ' PR(s) copied to clipboard';
-          toast.parentElement.classList.remove('hidden');
-          setTimeout(function(){ toast.parentElement.classList.add('hidden'); }, 3000);
-        }
+        showToast(lines.length + ' PR(s) copied to clipboard');
       });
     }
   </script>
