@@ -15,6 +15,7 @@ from teatree.cli.setup import (
     _remove_excluded_skills,
     _run_apm_install,
     _strip_apm_hooks,
+    _sync_skill_symlinks,
     _validate_repo,
 )
 
@@ -210,6 +211,53 @@ class TestEnsureSkillLink:
         assert fixed == 0
         assert link.is_dir()
         assert not link.is_symlink()
+
+
+class TestSyncSkillSymlinks:
+    def test_creates_symlinks_for_core_skills(self, tmp_path: Path) -> None:
+        skills_src = tmp_path / "core_skills"
+        skills_src.mkdir()
+        (skills_src / "code").mkdir()
+        (skills_src / "code" / "SKILL.md").touch()
+        (skills_src / "test").mkdir()
+        (skills_src / "test" / "SKILL.md").touch()
+        (skills_src / "no-skill").mkdir()  # No SKILL.md — should be skipped
+
+        claude_skills = tmp_path / "claude_skills"
+        claude_skills.mkdir()
+
+        with (
+            patch("teatree.agents.skill_bundle.DEFAULT_SKILLS_DIR", skills_src),
+            patch("teatree.cli.setup.DoctorService") as mock_svc,
+        ):
+            mock_svc.collect_overlay_skills.return_value = []
+            created, fixed = _sync_skill_symlinks(claude_skills, tmp_path / "workspace")
+
+        assert created == 2
+        assert fixed == 0
+        assert (claude_skills / "code").is_symlink()
+        assert (claude_skills / "test").is_symlink()
+        assert not (claude_skills / "no-skill").exists()
+
+    def test_includes_overlay_skills(self, tmp_path: Path) -> None:
+        skills_src = tmp_path / "core_skills"
+        skills_src.mkdir()
+
+        overlay_skill = tmp_path / "overlay" / "my-skill"
+        overlay_skill.mkdir(parents=True)
+
+        claude_skills = tmp_path / "claude_skills"
+        claude_skills.mkdir()
+
+        with (
+            patch("teatree.agents.skill_bundle.DEFAULT_SKILLS_DIR", skills_src),
+            patch("teatree.cli.setup.DoctorService") as mock_svc,
+        ):
+            mock_svc.collect_overlay_skills.return_value = [(overlay_skill, "my-skill")]
+            created, _fixed = _sync_skill_symlinks(claude_skills, tmp_path / "workspace")
+
+        assert created == 1
+        assert (claude_skills / "my-skill").is_symlink()
 
 
 class TestCleanBrokenSymlinks:
