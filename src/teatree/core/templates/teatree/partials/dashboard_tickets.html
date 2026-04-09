@@ -45,6 +45,9 @@
                   {% elif ticket.variant %}
                     <span class="ml-1 pill pill-xs bg-clay/10 text-clay">{{ ticket.variant }}</span>
                   {% endif %}
+                  {% for label in ticket.labels %}
+                    <span class="ml-1 pill pill-xs bg-bark/8 text-bark/60">{{ label }}</span>
+                  {% endfor %}
                   {% if ticket.issue_title %}
                     <br><span class="font-sans text-xs text-bark/60">{{ ticket.issue_title }}</span>
                   {% endif %}
