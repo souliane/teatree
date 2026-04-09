@@ -681,6 +681,49 @@ class TestCreateTaskView(TestCase):
         task = Task.objects.get(ticket=ticket, phase="coding")
         assert task.status == Task.Status.FAILED
 
+    def test_interactive_with_terminal_mode_auto_launches(self) -> None:
+        """When terminal_mode is provided, interactive task is created, claimed, and launched."""
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.STARTED)
+        Session.objects.create(ticket=ticket, overlay="test", agent_id="agent")
+
+        mock_attempt = type("Attempt", (), {"launch_url": "http://localhost:7681", "pk": 42})()
+        with (
+            patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.agents.web_terminal.launch_web_session", return_value=mock_attempt),
+        ):
+            response = Client().post(
+                reverse("teatree:ticket-create-task", args=[ticket.pk]),
+                {
+                    "target": Task.ExecutionTarget.INTERACTIVE,
+                    "terminal_mode": "ttyd",
+                    "terminal_app": "iterm2",
+                },
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["launch_url"] == "http://localhost:7681"
+
+        task = Task.objects.latest("pk")
+        assert task.status == Task.Status.CLAIMED
+        assert task.claimed_by == "dashboard-auto-launch"
+
+    def test_interactive_without_terminal_mode_no_auto_launch(self) -> None:
+        """Without terminal_mode, interactive task is created but NOT auto-launched."""
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.STARTED)
+
+        response = Client().post(
+            reverse("teatree:ticket-create-task", args=[ticket.pk]),
+            {"target": Task.ExecutionTarget.INTERACTIVE},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "launch_url" not in data
+
+        task = Task.objects.get(pk=data["task_id"])
+        assert task.status == Task.Status.PENDING
+
 
 # ---------------------------------------------------------------------------
 # TicketLifecycleView

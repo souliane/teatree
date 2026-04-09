@@ -1,3 +1,4 @@
+import logging
 import os
 import subprocess  # noqa: S404
 from pathlib import Path
@@ -118,6 +119,7 @@ class CreateTaskView(View):
 
         phase = request.POST.get("phase", "coding")
         target = request.POST.get("target", Task.ExecutionTarget.HEADLESS)
+        reason = request.POST.get("reason", "")
 
         session = Session.objects.filter(ticket=ticket).order_by("-pk").first()
         if session is None:
@@ -128,7 +130,7 @@ class CreateTaskView(View):
             session=session,
             phase=phase,
             execution_target=target,
-            execution_reason=f"Started from dashboard ({phase})",
+            execution_reason=reason or f"Started from dashboard ({phase})",
         )
 
         if target == Task.ExecutionTarget.HEADLESS:
@@ -142,7 +144,40 @@ class CreateTaskView(View):
 
             return JsonResponse({"task_id": task.pk, "status": task.status})
 
+        # Interactive: auto-launch if terminal params are provided
+        terminal_mode = request.POST.get("terminal_mode", "")
+        terminal_app = request.POST.get("terminal_app", "")
+        if terminal_mode:
+            return self._auto_launch(task, terminal_mode, terminal_app)
+
         return JsonResponse({"task_id": task.pk, "status": task.status})
+
+    @staticmethod
+    def _auto_launch(task: Task, terminal_mode: str, terminal_app: str) -> JsonResponse:
+        try:
+            task.claim(claimed_by="dashboard-auto-launch")
+        except InvalidTransitionError as exc:
+            return JsonResponse(
+                {"task_id": task.pk, "status": task.status, "error": str(exc)},
+                status=409,
+            )
+
+        try:
+            from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
+            from teatree.core.views.launch import launch_interactive_task  # noqa: PLC0415
+
+            overlay = get_overlay()
+            skill_metadata = overlay.metadata.get_skill_metadata()
+            return launch_interactive_task(
+                task,
+                skill_metadata,
+                terminal_mode=terminal_mode,
+                terminal_app=terminal_app,
+            )
+        except Exception:
+            logging.getLogger(__name__).exception("Auto-launch failed for task %s", task.pk)
+            task.complete_with_attempt(exit_code=1, error="Auto-launch failed")
+            return JsonResponse({"error": "Auto-launch failed"}, status=500)
 
 
 def _get_t3_repo() -> Path | None:
