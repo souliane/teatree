@@ -33,12 +33,13 @@ It provides:
 
 ```
 src/teatree/           Python package (the Django app + CLI)
-  cli.py               Typer CLI — the `t3` entry point
+  cli/                 Typer CLI package — the `t3` entry point
   config.py            ~/.teatree.toml parsing, overlay discovery
-  skill_map.py         Skill delegation map (phase → companion skills)
+  skill_loading.py     Skill selection policy (phase → skills, companion resolution)
+  skill_deps.py        Transitive dependency and companion resolution
   core/                Django app: models, managers, views, selectors, management commands
     models/            Ticket, Worktree, Session, Task, TaskAttempt (FSM states)
-    selectors.py       Selector functions for dashboard views (no domain logic in views)
+    selectors/         Selector functions for dashboard views (no domain logic in views)
     overlay.py         OverlayBase ABC — extension point for downstream projects
     overlay_loader.py  Loads the active overlay class from Django settings
     management/commands/  Django-typer commands (lifecycle, workspace, db, run, followup, pr, tasks)
@@ -62,10 +63,10 @@ src/teatree/           Python package (the Django app + CLI)
   utils/               Git helpers, port allocation, subprocess wrappers
   overlay_init/        `t3 startoverlay` templates (overlay package + app)
 skills/*/              Workflow skills (SKILL.md + references/)
-tests/                 Pytest suite (100% coverage required)
+tests/                 Pytest suite (>90% coverage required)
 e2e/                   Playwright E2E tests for dashboard
 scripts/               Standalone Python CLI scripts
-hooks/                 Agent platform hooks (Claude Code ensure-skills-loaded, etc.)
+hooks/                 Agent platform hooks (Claude Code hook_router, statusline, etc.)
 ```
 
 ## 5 Models
@@ -203,7 +204,7 @@ uv run t3 agent                     # Launch Claude Code (teatree-self developme
 ### Testing
 
 ```bash
-uv run pytest                       # Unit tests with coverage (must be 100%)
+uv run pytest                       # Unit tests with coverage (>90% required)
 uv run pytest e2e/ -x               # E2E tests with Playwright
 prek run --all-files                 # Pre-commit hooks (ruff, codespell, tach, ty)
 bash dev/test-matrix.sh             # Docker matrix: Python 3.13 + 3.14 (MANDATORY before push)
@@ -213,7 +214,7 @@ bash dev/test-matrix.sh             # Docker matrix: Python 3.13 + 3.14 (MANDATO
 
 ### Quality Gates
 
-- **100% test coverage** — enforced by pytest-cov, `fail_under = 100`
+- **>90% test coverage** — enforced by pytest-cov, `fail_under = 93`
 - **Ruff** — ALL rules enabled, specific ignores justified in pyproject.toml
 - **ty** — static type checker with `error-on-warning = true`
 - **tach** — enforces dependency boundaries

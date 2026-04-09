@@ -699,7 +699,7 @@ def _extract_variant(labels: list[object]) -> str:
     """
     from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
 
-    known = get_overlay().config.get_known_variants()
+    known = get_overlay().config.known_variants
     known_lower = {v.lower(): v for v in known}
     for label in labels:
         text = str(label)

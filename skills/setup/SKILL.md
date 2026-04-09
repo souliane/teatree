@@ -134,82 +134,26 @@ done
 
 Do not overwrite existing contributor-mode symlinks for third-party companion skills.
 
-## Step 4: Optional Claude Code Hooks
+## Step 4: Claude Code Plugin Hooks
 
-If the user uses Claude Code, validate `~/.claude/settings.json` for the hooks below.
-Show the JSON patch the user should apply, but **do not edit the file without consent**.
+Teatree ships a `hooks.json` that Claude Code loads automatically when the plugin is installed. All hooks route through `hook_router.py`, a unified Python router that handles event dispatch.
 
-Required hooks (all paths relative to `$T3_REPO/hooks/claude-code-statusline/`):
+If the user installed via `apm install -g souliane/teatree`, hooks are already configured. For manual installs or troubleshooting, verify the plugin is registered in `~/.claude/plugins.json`.
 
-| Hook | Event | Matcher | Script | Purpose |
-| --- | --- | --- | --- | --- |
-| Skill suggestion | `UserPromptSubmit` | *(none)* | `ensure-skills-loaded.sh` | Detect intent from prompt keywords and suggest skills to load |
-| Active repo tracking | `PostToolUse` | `Read\|Edit\|Write\|Grep\|Glob\|Bash` | `track-active-repo.sh` | Track which repos are touched |
-| Skill usage (PostToolUse) | `PostToolUse` | `Skill` | `track-skill-usage.sh` | Track loaded skills via tool call |
-| Skill usage (InstructionsLoaded) | `InstructionsLoaded` | `skills` | `track-skill-usage.sh` | Track loaded skills via instructions (belt-and-suspenders fallback) |
-| Status line | `statusLine` | — | `statusline-command.sh` | Render the status bar |
+The hooks cover these events:
 
-JSON patch to merge into `~/.claude/settings.json`:
+| Event | Matcher | Purpose |
+| --- | --- | --- |
+| `SessionStart` | *(none)* | Bootstrap CLI availability |
+| `UserPromptSubmit` | *(none)* | Detect intent from prompt keywords and suggest skills to load |
+| `PreToolUse` | `Bash\|Edit\|Write` | Branch protection, skill enforcement |
+| `PostToolUse` | `Bash\|Write\|Edit\|Read\|Grep\|Glob` | Track which repos are touched |
+| `PostToolUse` | `Skill` | Track loaded skills |
+| `InstructionsLoaded` | *(none)* | Track loaded skills (belt-and-suspenders fallback) |
+| `PostCompact` | *(none)* | Restore state after context compaction |
+| `SessionEnd` | *(none)* | Session cleanup |
 
-```json
-{
-  "hooks": {
-    "UserPromptSubmit": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "~/path/to/teatree/hooks/claude-code-statusline/ensure-skills-loaded.sh",
-            "timeout": 5
-          }
-        ]
-      }
-    ],
-    "PostToolUse": [
-      {
-        "matcher": "Read|Edit|Write|Grep|Glob|Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "~/path/to/teatree/hooks/claude-code-statusline/track-active-repo.sh",
-            "timeout": 5
-          }
-        ]
-      },
-      {
-        "matcher": "Skill",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "~/path/to/teatree/hooks/claude-code-statusline/track-skill-usage.sh",
-            "timeout": 5
-          }
-        ]
-      }
-    ],
-    "InstructionsLoaded": [
-      {
-        "matcher": "skills",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "~/path/to/teatree/hooks/claude-code-statusline/track-skill-usage.sh",
-            "timeout": 5
-          }
-        ]
-      }
-    ]
-  },
-  "statusLine": {
-    "type": "command",
-    "command": "~/path/to/teatree/hooks/claude-code-statusline/statusline-command.sh"
-  }
-}
-```
-
-Replace `~/path/to/teatree` with the actual `$T3_REPO` value from `~/.teatree`.
-
-When validating an existing installation, check that **all five hooks** are present. The `InstructionsLoaded` hook was added as a fallback because the `PostToolUse` `Skill` matcher is intermittently unreliable in some Claude Code sessions.
+All hook scripts live in `$T3_REPO/hooks/scripts/`. The `hooks.json` at `$T3_REPO/hooks/hooks.json` defines the routing table.
 
 ## Step 4b: Recommended Global Agent Config
 

@@ -92,6 +92,7 @@ class TestMainDetection:
             return ""
 
         monkeypatch.setattr(mod, "_staged_diff", fake_diff)
+        monkeypatch.setattr(mod, "_find_git_dir", lambda: None)
         monkeypatch.setattr("sys.argv", ["check_quality_gates.py"])
         assert mod.main() == 1
 
@@ -104,6 +105,7 @@ class TestMainDetection:
             return _NOQA_DIFF
 
         monkeypatch.setattr(mod, "_staged_diff", fake_diff)
+        monkeypatch.setattr(mod, "_find_git_dir", lambda: None)
         monkeypatch.setattr("sys.argv", ["check_quality_gates.py"])
         assert mod.main() == 1
 

@@ -42,7 +42,7 @@ class TestPrCreate(TestCase):
         ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/55")
         Worktree.objects.create(ticket=ticket, overlay="test", repo_path="/tmp/backend", branch="feature-branch")
 
-        # CommandOverlay.get_mr_auto_labels() returns [] (default), so labels=None
+        # CommandOverlay.config.mr_auto_labels returns [] (default), so labels=None
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             patch("teatree.core.management.commands.pr._last_commit_message", return_value=("", "")),
@@ -122,7 +122,7 @@ class TestMrAutoLabels:
     def test_overlay_with_string_labels(self) -> None:
         """When overlay returns a comma-separated string, it's split."""
         mock_overlay = MagicMock()
-        mock_overlay.config.get_mr_auto_labels.return_value = "label-a, label-b"
+        mock_overlay.config.mr_auto_labels = "label-a, label-b"
         with patch(
             "teatree.core.overlay_loader._discover_overlays",
             return_value={"test": mock_overlay},
@@ -133,7 +133,7 @@ class TestMrAutoLabels:
     def test_non_iterable_returns_empty(self) -> None:
         """_mr_auto_labels returns [] for non-iterable value."""
         mock_overlay = MagicMock()
-        mock_overlay.config.get_mr_auto_labels.return_value = 42
+        mock_overlay.config.mr_auto_labels = 42
         with patch(
             "teatree.core.overlay_loader._discover_overlays",
             return_value={"test": mock_overlay},

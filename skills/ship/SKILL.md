@@ -5,6 +5,9 @@ compatibility: macOS/Linux, git, glab or gh CLI, CI system.
 requires:
   - workspace
   - rules
+companions:
+  - finishing-a-development-branch
+  - verification-before-completion
 triggers:
   priority: 10
   exclude: '\breview\b'

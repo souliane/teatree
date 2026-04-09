@@ -4,6 +4,9 @@ description: Writing code with TDD methodology. Use when user says "implement", 
 compatibility: macOS/Linux, any language/framework supported by the project.
 requires:
   - workspace
+companions:
+  - test-driven-development
+  - verification-before-completion
 triggers:
   priority: 70
   keywords:

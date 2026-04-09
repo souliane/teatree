@@ -6,14 +6,17 @@ Two callers route through ``SkillLoadingPolicy``:
 * ``scripts/lib/skill_loader.py`` (UserPromptSubmit hook)
 """
 
+import logging
 import re
 from dataclasses import dataclass
 from fnmatch import fnmatch
 from pathlib import Path
 
-from teatree.skill_deps import resolve_requires
+from teatree.skill_deps import TriggerIndex, resolve_companions
 from teatree.types import SkillMetadata
 from teatree.utils import git
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_SKILLS_DIR = Path(__file__).resolve().parents[2] / "skills"
 
@@ -69,6 +72,17 @@ type OverlaySkillMetadata = SkillMetadata | dict[str, object]
 class SkillLoadingPolicy:
     """Single source of truth for skill selection decisions."""
 
+    @staticmethod
+    def _resolve_with_companions(
+        skills: list[str],
+        trigger_index: TriggerIndex,
+    ) -> list[str]:
+        """Resolve requires and companions, logging warnings for missing companions."""
+        resolved, missing = resolve_companions(skills, trigger_index)
+        for comp in missing:
+            logger.warning("Companion skill %r not installed — skipping", comp)
+        return resolved
+
     def select_for_agent_launch(  # noqa: PLR0913
         self,
         *,
@@ -79,7 +93,7 @@ class SkillLoadingPolicy:
         explicit_phase: str,
         explicit_skills: list[str],
         overlay_active: bool,
-        trigger_index: list[dict[str, object]] | None = None,
+        trigger_index: TriggerIndex | None = None,
     ) -> SkillSelectionResult:
         if explicit_phase and explicit_skills:
             msg = "--phase and --skill cannot be used together"
@@ -115,7 +129,7 @@ class SkillLoadingPolicy:
         elif lifecycle_skill:
             ordered.append(lifecycle_skill)
 
-        resolved = resolve_requires(ordered, trigger_index or [])
+        resolved = self._resolve_with_companions(ordered, trigger_index or [])
         return SkillSelectionResult(
             skills=_dedupe(resolved),
             lifecycle_skill=lifecycle_skill,
@@ -130,7 +144,7 @@ class SkillLoadingPolicy:
         overlay_skill_metadata: OverlaySkillMetadata,
         loaded_skills: set[str],
         supplementary_skills: list[str] | None = None,
-        trigger_index: list[dict[str, object]] | None = None,
+        trigger_index: TriggerIndex | None = None,
     ) -> SkillSelectionResult:
         ordered = self._base_detected_skills(
             cwd=cwd,
@@ -142,7 +156,7 @@ class SkillLoadingPolicy:
             ordered.append(intent)
         if supplementary_skills:
             ordered.extend(supplementary_skills)
-        resolved = _dedupe(resolve_requires(ordered, trigger_index or []))
+        resolved = _dedupe(self._resolve_with_companions(ordered, trigger_index or []))
         suggestions = [skill for skill in resolved if skill not in loaded_skills]
         return SkillSelectionResult(skills=suggestions, lifecycle_skill=intent)
 
@@ -152,7 +166,7 @@ class SkillLoadingPolicy:
         cwd: Path,
         phase: str,
         overlay_skill_metadata: OverlaySkillMetadata,
-        trigger_index: list[dict[str, object]] | None = None,
+        trigger_index: TriggerIndex | None = None,
     ) -> SkillSelectionResult:
         lifecycle_skill = self.lifecycle_for_phase(phase)
         ordered = self._base_detected_skills(
@@ -163,7 +177,7 @@ class SkillLoadingPolicy:
         )
         if lifecycle_skill:
             ordered.append(lifecycle_skill)
-        resolved = resolve_requires(ordered, trigger_index or [])
+        resolved = self._resolve_with_companions(ordered, trigger_index or [])
         return SkillSelectionResult(
             skills=_dedupe(resolved),
             lifecycle_skill=lifecycle_skill,
@@ -181,7 +195,7 @@ class SkillLoadingPolicy:
     def lifecycle_for_task_text(
         task: str,
         *,
-        trigger_index: list[dict[str, object]] | None = None,
+        trigger_index: TriggerIndex | None = None,
     ) -> str:
         lowered = task.lower()
         # Pass 1: hardcoded keywords (fast, no I/O).

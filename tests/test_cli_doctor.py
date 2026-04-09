@@ -6,7 +6,6 @@ from unittest.mock import MagicMock, patch
 
 from typer.testing import CliRunner
 
-import teatree.agents.skill_bundle as teatree_skill_bundle
 import teatree.cli.doctor as teatree_cli_doctor
 import teatree.config as teatree_config
 import teatree.core.overlay_loader as teatree_overlay_loader
@@ -74,8 +73,8 @@ class TestDoctorService:
             assert len(results) == 1
             assert results[0][1] == "custom"
 
-    def test_returns_legacy_overlay_skills(self, tmp_path):
-        """Overlay skills from legacy convention (subdir with SKILL.md)."""
+    def test_ignores_legacy_overlay_convention(self, tmp_path):
+        """Overlay skills only found via skills/ directory, not legacy subdir convention."""
         from teatree.config import OverlayEntry  # noqa: PLC0415
 
         project = tmp_path / "my-overlay"
@@ -87,8 +86,7 @@ class TestDoctorService:
         entry = OverlayEntry(name="my-overlay", overlay_class="test.overlay.TestOverlay", project_path=project)
         with patch.object(teatree_config, "discover_overlays", return_value=[entry]):
             results = DoctorService.collect_overlay_skills()
-            assert len(results) == 1
-            assert results[0][1] == "my-overlay"
+            assert results == []
 
     def test_returns_empty_when_no_project_path(self):
         from teatree.config import OverlayEntry  # noqa: PLC0415
@@ -499,67 +497,6 @@ class TestIntrospectionHelpers:
 
 class TestDoctorCommands:
     """Tests for CLI command wrappers (using CliRunner)."""
-
-    # ── repair ───────────────────────────────────────────────────────
-
-    def test_repair(self, tmp_path, monkeypatch):
-        """Doctor repair creates/fixes symlinks."""
-        skills_dir = tmp_path / "skills"
-        skills_dir.mkdir()
-        (skills_dir / "code").mkdir()
-        (skills_dir / "code" / "SKILL.md").touch()
-
-        claude_skills = tmp_path / "claude_skills"
-        claude_skills.mkdir()
-        # Create a broken symlink
-        broken = claude_skills / "broken-link"
-        broken.symlink_to(tmp_path / "nonexistent")
-
-        with (
-            patch.object(teatree_skill_bundle, "DEFAULT_SKILLS_DIR", skills_dir),
-            patch("pathlib.Path.home", return_value=tmp_path),
-            patch.object(DoctorService, "collect_overlay_skills", return_value=[]),
-        ):
-            # Create the .claude/skills dir where the command expects it
-            real_claude_skills = tmp_path / ".claude" / "skills"
-            real_claude_skills.mkdir(parents=True)
-            # Add a broken symlink
-            broken2 = real_claude_skills / "broken-link"
-            broken2.symlink_to(tmp_path / "nonexistent2")
-
-            result = runner.invoke(app, ["doctor", "repair"])
-            assert result.exit_code == 0
-            assert "Skills:" in result.output
-
-    def test_repair_no_skills_dir(self, tmp_path):
-        """Doctor repair fails when skills dir not found."""
-        with patch.object(teatree_skill_bundle, "DEFAULT_SKILLS_DIR", tmp_path / "nonexistent"):
-            result = runner.invoke(app, ["doctor", "repair"])
-            assert result.exit_code == 1
-            assert "Skills directory not found" in result.output
-
-    def test_repair_with_overlay_skills(self, tmp_path):
-        """Repair reports overlay skill count."""
-        skills_dir = tmp_path / "skills"
-        skills_dir.mkdir()
-        (skills_dir / "core").mkdir()
-        (skills_dir / "core" / "SKILL.md").touch()
-
-        overlay_skill = tmp_path / "overlay-skill"
-        overlay_skill.mkdir()
-        (overlay_skill / "SKILL.md").touch()
-
-        with (
-            patch.object(teatree_skill_bundle, "DEFAULT_SKILLS_DIR", skills_dir),
-            patch("pathlib.Path.home", return_value=tmp_path),
-            patch.object(DoctorService, "collect_overlay_skills", return_value=[(overlay_skill, "t3-overlay")]),
-        ):
-            claude_skills = tmp_path / ".claude" / "skills"
-            claude_skills.mkdir(parents=True)
-
-            result = runner.invoke(app, ["doctor", "repair"])
-            assert result.exit_code == 0
-            assert "overlay skill(s)" in result.output
 
     # ── check ────────────────────────────────────────────────────────
 

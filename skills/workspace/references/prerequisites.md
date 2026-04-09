@@ -26,7 +26,7 @@ Scripts that need Bash 5+ features (associative arrays) include a version guard 
 - `uv` (used only to auto-install `dslr` when missing)
 - `jq` (required only by agent platform integration scripts, e.g., statusline hooks)
 - `md5sum` or `md5` (dirty-state hashing in statusline; auto-detected per platform)
-- Agent platform hook support (e.g., Claude Code hooks in `hooks/claude-code-statusline/*`)
+- Agent platform hook support (e.g., Claude Code hooks in `hooks/scripts/`)
 
 ## Shell Script Portability Checklist
 

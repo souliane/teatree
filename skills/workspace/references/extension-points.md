@@ -35,12 +35,12 @@ Settings are defined in `overlay_settings.py` and overridden per-user in `~/.tea
 | `get_github_token()` | `GITHUB_TOKEN_PASS_KEY` | GitHub API authentication |
 | `get_slack_token()` | `SLACK_TOKEN_PASS_KEY` | Slack notifications |
 | `get_review_channel()` | `REVIEW_CHANNEL_ID/NAME` | Review request target |
-| `get_gitlab_url()` | `GITLAB_URL` | GitLab instance base URL |
-| `get_known_variants()` | `KNOWN_VARIANTS` | Multi-tenant variant list |
-| `get_mr_auto_labels()` | `MR_AUTO_LABELS` | Labels applied to new MRs |
-| `get_frontend_repos()` | `FRONTEND_REPOS` | Repos that need E2E tests |
-| `get_dev_env_url()` | `DEV_ENV_URL` | Development environment URL |
-| `get_dashboard_logo()` | `DASHBOARD_LOGO` | Custom dashboard branding |
+| `gitlab_url` | `GITLAB_URL` | GitLab instance base URL |
+| `known_variants` | `KNOWN_VARIANTS` | Multi-tenant variant list |
+| `mr_auto_labels` | `MR_AUTO_LABELS` | Labels applied to new MRs |
+| `frontend_repos` | `FRONTEND_REPOS` | Repos that need E2E tests |
+| `dev_env_url` | `DEV_ENV_URL` | Development environment URL |
+| `dashboard_logo` | `DASHBOARD_LOGO` | Custom dashboard branding |
 | `github_owner` | `GITHUB_OWNER` | GitHub org/user for API calls |
 | `github_project_number` | `GITHUB_PROJECT_NUMBER` | GitHub Projects v2 board number |
 | `require_ticket` | `REQUIRE_TICKET` | Enforce ticket for all changes |

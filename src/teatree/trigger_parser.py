@@ -28,6 +28,7 @@ class _ParserState:
             "end_of_session": False,
             "search_hints": [],
             "requires": [],
+            "companions": [],
         }
     )
 
@@ -50,7 +51,7 @@ def _handle_top_level_key(key: str, state: _ParserState) -> bool:
         state.current_key = ""
         state.found = True
         return True
-    if key in {"search_hints", "requires"}:
+    if key in {"search_hints", "requires", "companions"}:
         state.in_list_key = key
         state.in_triggers = False
         state.found = True
@@ -89,11 +90,11 @@ def _parse_trigger_line(stripped: str, triggers: dict, current_key: str) -> str:
 
 
 def parse_triggers(skill_md_text: str) -> dict | None:
-    """Extract ``triggers:``, ``search_hints:``, and ``requires:`` from SKILL.md frontmatter.
+    """Extract ``triggers:``, ``search_hints:``, ``requires:``, and ``companions:`` from SKILL.md frontmatter.
 
     Returns a dict with keys ``priority``, ``keywords``, ``urls``,
-    ``exclude``, ``end_of_session``, ``search_hints``, ``requires``
-    — or ``None`` if none of these top-level fields is defined.
+    ``exclude``, ``end_of_session``, ``search_hints``, ``requires``,
+    ``companions`` — or ``None`` if none of these top-level fields is defined.
     """
     frontmatter = _extract_frontmatter(skill_md_text)
     if frontmatter is None:

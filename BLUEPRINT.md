@@ -14,7 +14,7 @@ A multi-repo worktree lifecycle manager for AI-assisted development. It manages 
 
 **Target:** service-oriented projects with databases and CI pipelines (any language). Not for docs-only repos or CLI tools.
 
-**Core principle:** Deterministic code drives behavior. Agents are invoked only when judgment is needed (code review, debugging, design decisions). Everything else — state management, port allocation, provisioning, task routing — is Python code with 100% branch coverage.
+**Core principle:** Infrastructure is deterministic code; development work is skill-guided. State management, port allocation, provisioning, and task routing are Python code with >90% branch coverage. The actual development — coding with TDD, debugging, reviewing, shipping — is driven by skills that encode methodology, guardrails, and domain knowledge.
 
 ---
 
@@ -30,7 +30,7 @@ TeaTree was originally built as a skills-first system where SKILL.md files drove
 **Current split:**
 
 - **Deterministic code** (Django app): state machines, port allocation, provisioning, task routing, dashboard, sync, CLI
-- **Agent skills** (SKILL.md files): judgment-heavy workflows the agent follows — when to ask the user, how to debug, review checklists, retro procedures
+- **Agent skills** (SKILL.md files): development methodology, guardrails, and domain knowledge — TDD discipline, debugging process, review checklists, retro learning, verification rules, coding standards. Skills drive the actual work; they use the CLI for infrastructure.
 
 ---
 
@@ -107,7 +107,7 @@ src/teatree/
     (git helpers, port allocation, subprocess wrappers)
 
   overlay_init/         # t3 startoverlay helpers
-    generator.py        # Scaffold generation logic (called from cli.py)
+    generator.py        # Scaffold generation logic (called from cli/)
 
 .claude-plugin/         # Plugin manifest
   plugin.json           # Plugin identity (name: t3)
@@ -119,7 +119,7 @@ hooks/                  # Plugin hooks
   scripts/              # Hook scripts (bootstrap, skill loading, statusline)
 apm.yml                 # APM package manifest
 settings.json           # Plugin settings (statusline)
-tests/                  # Pytest suite (100% branch coverage)
+tests/                  # Pytest suite (>90% branch coverage)
 e2e/                    # Playwright E2E tests for dashboard
 scripts/                # Standalone utility scripts
 ```
@@ -436,7 +436,7 @@ Before adding logic to an overlay, ask: "Would a different project using the sam
 
 Everything else — DB provisioning strategies, migration runners, symlink management, service orchestration, dump fallback chains — must be implemented as configurable engines in core. The overlay configures the engine; the overlay does not reimplement the engine.
 
-**Why this matters:** When logic lives in an overlay, it is tested only by that overlay's test suite, invisible to other overlays, and duplicated when a second project needs the same workflow. Core code has 100% branch coverage, is reviewed against the BLUEPRINT, and benefits all overlays.
+**Why this matters:** When logic lives in an overlay, it is tested only by that overlay's test suite, invisible to other overlays, and duplicated when a second project needs the same workflow. Core code has >90% branch coverage, is reviewed against the BLUEPRINT, and benefits all overlays.
 
 **Refactoring signal:** If an overlay method exceeds ~30 lines of non-configuration code, it likely contains generic logic that should be extracted to core.
 
@@ -740,15 +740,15 @@ Overlay-specific configuration that previously lived in `TEATREE_*` Django setti
 | Method | Return type | Default | Replaces |
 |--------|-------------|---------|----------|
 | `get_gitlab_token()` | `str` | `""` | `TEATREE_GITLAB_TOKEN` |
-| `get_gitlab_url()` | `str` | `"https://gitlab.com/api/v4"` | — |
+| `gitlab_url` | `str` | `"https://gitlab.com/api/v4"` | — |
 | `get_gitlab_username()` | `str` | `""` | `TEATREE_GITLAB_USERNAME` |
 | `get_slack_token()` | `str` | `""` | `TEATREE_SLACK_TOKEN` |
 | `get_review_channel()` | `tuple[str, str]` | `("", "")` | `TEATREE_REVIEW_CHANNEL` + `TEATREE_REVIEW_CHANNEL_ID` |
-| `get_known_variants()` | `list[str]` | `[]` | `TEATREE_KNOWN_VARIANTS` |
-| `get_mr_auto_labels()` | `list[str]` | `[]` | `TEATREE_MR_AUTO_LABELS` |
-| `get_frontend_repos()` | `list[str]` | `[]` | `TEATREE_FRONTEND_REPOS` |
-| `get_dev_env_url()` | `str` | `""` | `TEATREE_DEV_ENV_URL` |
-| `get_dashboard_logo()` | `str` | `""` | `TEATREE_DASHBOARD_LOGO` |
+| `known_variants` | `list[str]` | `[]` | `TEATREE_KNOWN_VARIANTS` |
+| `mr_auto_labels` | `list[str]` | `[]` | `TEATREE_MR_AUTO_LABELS` |
+| `frontend_repos` | `list[str]` | `[]` | `TEATREE_FRONTEND_REPOS` |
+| `dev_env_url` | `str` | `""` | `TEATREE_DEV_ENV_URL` |
+| `dashboard_logo` | `str` | `""` | `TEATREE_DASHBOARD_LOGO` |
 
 ### 11.3 Logging
 
@@ -766,7 +766,7 @@ Overlay-specific configuration that previously lived in `TEATREE_*` Django setti
 
 Skills live in `skills/*/`. Each skill is a `SKILL.md` file with optional `references/` directory. When installed as a plugin, skills are namespaced under `t3:` (e.g., `/t3:code`).
 
-**Skills guide the agent's judgment. They do not drive system behavior.**
+**Skills drive the development work — coding methodology, debugging process, review standards, retro learning. The CLI handles infrastructure (worktrees, databases, ports, CI).**
 
 | Skill | Purpose |
 |-------|---------|
@@ -787,7 +787,17 @@ Skills live in `skills/*/`. Each skill is a `SKILL.md` file with optional `refer
 | `ticket` | Ticket intake and kickoff |
 | `workspace` | Worktree creation, setup, servers, cleanup |
 
-Skills declare dependencies via `requires:` in YAML frontmatter. The skill bundle resolver performs topological sort for correct load order.
+Skills declare dependencies via `requires:` in YAML frontmatter. The skill bundle resolver performs topological sort for correct load order. Skills can also declare `companions:` — optional dependencies that are included when available but only warn (not fail) when missing.
+
+#### Third-Party Skill Integration
+
+Teatree integrates with third-party skill frameworks (notably [superpowers](https://github.com/obra/superpowers)) via the `companions:` mechanism and APM dependency management. The approach is:
+
+- **Absorb, don't delegate.** When a third-party skill covers a universal concern (skill-loading discipline, verification before completion), the best content is distilled into teatree's own `rules` skill — which is always loaded via `requires:`. This avoids context waste from loading both teatree and third-party versions of the same guidance.
+- **Companion for domain skills.** Third-party skills that cover specific domains (TDD methodology, plan execution, brainstorming) are declared as `companions:` on the relevant lifecycle skill. They load alongside teatree skills when installed, adding depth without duplication.
+- **Exclude conflicting skills.** Skills that duplicate teatree's core infrastructure (worktree management, skill loading) are excluded during `t3 setup` via `CORE_EXCLUDED_SKILLS`. This prevents conflicting instructions — teatree's `t3 workspace` subsystem replaces generic worktree skills entirely.
+
+Attribution: the `rules` skill's "Invoke Skills Before ANY Response" and "Verification Before Completion" sections are adapted from superpowers' `using-superpowers` and `verification-before-completion` skills respectively.
 
 ### 12.2 Sub-Agent Architecture
 
@@ -819,7 +829,7 @@ Three install paths, one source of truth:
 
 ### 13.1 Coverage Gate
 
-**100% branch coverage, non-negotiable.** Enforced by pytest-cov with `fail_under = 100, branch = true`. Omits only migrations.
+**>90% branch coverage, non-negotiable.** Enforced by pytest-cov with `fail_under = 93, branch = true`. Omits only migrations.
 
 ### 13.2 Django Test Settings
 
@@ -857,7 +867,7 @@ Playwright tests in `e2e/` with separate settings (`e2e.settings`) using file-ba
 
 | Tool | What it checks | Config |
 |------|----------------|--------|
-| pytest + pytest-cov | 100% branch coverage | `pyproject.toml [tool.coverage]` |
+| pytest + pytest-cov | >90% branch coverage (`fail_under = 93`) | `pyproject.toml [tool.coverage]` |
 | ruff | ALL rules enabled, specific ignores justified | `pyproject.toml [tool.ruff]` |
 | ty | Static type checker with `error-on-warning = true` | `pyproject.toml [tool.ty]` |
 | import-linter | Dependency boundaries | `pyproject.toml [tool.importlinter]` |

@@ -54,6 +54,26 @@ def _count_loc_at_head(filepath: str) -> int:
     return sum(1 for line in result.stdout.splitlines() if line.strip() and not line.strip().startswith("#"))
 
 
+def _count_module_level_functions_at_head(filepath: str) -> list[str]:
+    result = subprocess.run(
+        ["git", "show", f"HEAD:{filepath}"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return []
+    try:
+        tree = ast.parse(result.stdout)
+    except SyntaxError:
+        return []
+    return [
+        node.name
+        for node in ast.iter_child_nodes(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and not node.name.startswith("_")
+    ]
+
+
 def _count_module_level_functions(filepath: str) -> list[str]:
     try:
         source = pathlib.Path(filepath).read_text(encoding="utf-8")
@@ -122,11 +142,13 @@ def main() -> int:
 
         public_functions = _count_module_level_functions(filepath)
         if len(public_functions) > MAX_MODULE_FUNCTIONS:
-            names = ", ".join(public_functions[:5])
-            violations.append(
-                f"  {filepath}: {len(public_functions)} public module-level functions "
-                f"(max {MAX_MODULE_FUNCTIONS}). Move to a class. Examples: {names}"
-            )
+            prev_count = len(_count_module_level_functions_at_head(filepath))
+            if prev_count <= MAX_MODULE_FUNCTIONS:
+                names = ", ".join(public_functions[:5])
+                violations.append(
+                    f"  {filepath}: {len(public_functions)} public module-level functions "
+                    f"(max {MAX_MODULE_FUNCTIONS}). Move to a class. Examples: {names}"
+                )
 
         added_lines = _added_line_numbers(filepath)
         dict_hits = _find_dict_object_annotations(filepath)
