@@ -154,6 +154,19 @@ def _check_mr(mr: dict, ticket: "Ticket") -> list[ActionRequiredItem]:
             ),
         )
 
+    draft_count = mr.get("draft_comments_count")
+    if mr.get("draft_comments_pending") and isinstance(draft_count, int) and draft_count > 0:
+        items.append(
+            ActionRequiredItem(
+                kind="review_draft",
+                label=f"{mr_label} — agent posted review comments",
+                url=mr_url,
+                ticket_id=ticket.pk,
+                detail=f"{draft_count} draft comment{'s' if draft_count > 1 else ''}"
+                " need your review before publishing",
+            ),
+        )
+
     return items
 
 
