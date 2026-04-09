@@ -167,8 +167,11 @@ def _launch_claude(
     cmd = [claude_bin, "--append-system-prompt", context]
 
     if os.environ.get("T3_CONTRIBUTE", "").lower() == "true":
-        teatree_root = Path(__file__).resolve().parents[3]
-        cmd.extend(["--plugin-dir", str(teatree_root)])
+        from teatree import find_project_root  # noqa: PLC0415
+
+        teatree_root = find_project_root()
+        if teatree_root:
+            cmd.extend(["--plugin-dir", str(teatree_root)])
 
     if task:
         cmd.extend(["-p", task])
@@ -440,7 +443,10 @@ def test_trigger(prompt: str) -> None:
     from teatree.config import DATA_DIR  # noqa: PLC0415
 
     # Import from scripts/lib (same pattern as _startup.py).
-    scripts_lib = Path(__file__).resolve().parents[3] / "scripts" / "lib"
+    from teatree import find_project_root as _find_root  # noqa: PLC0415
+
+    _root = _find_root()
+    scripts_lib = _root / "scripts" / "lib" if _root else Path(__file__).resolve().parent
     if str(scripts_lib) not in _sys.path:
         _sys.path.insert(0, str(scripts_lib))
 

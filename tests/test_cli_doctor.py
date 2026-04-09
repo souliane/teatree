@@ -339,23 +339,15 @@ class TestDoctorService:
         assert DoctorService.find_teatree_repo() == tmp_path
 
     def test_find_teatree_repo_auto_detect(self, tmp_path, monkeypatch):
-        """Auto-detects teatree repo from package __file__ location."""
+        """Auto-detects teatree repo via find_project_root."""
         monkeypatch.delenv("T3_REPO", raising=False)
-        # Create fake repo structure: tmp/a/b/c/d/doctor.py -> parents[4] = tmp
-        fake_pkg = tmp_path / "a" / "b" / "c" / "d"
-        fake_pkg.mkdir(parents=True)
-        (tmp_path / ".git").mkdir()
-        (tmp_path / "pyproject.toml").write_text("[project]\nname = 'teatree'\n")
-        with patch.object(teatree_cli_doctor, "__file__", str(fake_pkg / "doctor.py")):
+        with patch("teatree.find_project_root", return_value=tmp_path):
             assert DoctorService.find_teatree_repo() == tmp_path
 
     def test_find_teatree_repo_returns_none(self, tmp_path, monkeypatch):
         """Returns None when T3_REPO not set and auto-detect fails."""
         monkeypatch.delenv("T3_REPO", raising=False)
-        # Fake __file__ in a dir without .git
-        fake_pkg = tmp_path / "a" / "b" / "c" / "d"
-        fake_pkg.mkdir(parents=True)
-        with patch.object(teatree_cli_doctor, "__file__", str(fake_pkg / "doctor.py")):
+        with patch("teatree.find_project_root", return_value=None):
             assert DoctorService.find_teatree_repo() is None
 
     # ── find_overlay_repo ───────────────────────────────────────────
