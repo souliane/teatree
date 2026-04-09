@@ -183,15 +183,23 @@ glab ci status --branch <source_branch> -R <repo>
 
 **Always use draft notes**, not direct discussions. Draft notes are only visible to the reviewer until explicitly submitted — this lets the user review, edit, and submit as a batch.
 
-### Post Draft Notes via CLI (Planned — Not Yet Implemented)
+### Post Draft Notes via CLI (Preferred)
 
-> **Status:** The `t3 review` management command group does not exist yet. Use the API recipes below until it is implemented.
+**Always use the `t3 review` CLI** — it handles token extraction, diff refs, position serialization, and added-line validation automatically.
 
-<!-- When implemented, the CLI will handle token extraction, diff refs, and position serialization:
-uv run t3 review post-draft-note <REPO> <MR_IID> "Comment text" --file <path/to/file> --line <line_number>
-uv run t3 review list-draft-notes <REPO> <MR_IID>
-uv run t3 review delete-draft-note <REPO> <MR_IID> <NOTE_ID>
--->
+```bash
+# Inline comment on a specific file and line
+t3 review post-draft-note <REPO> <MR_IID> "Comment text" --file <path/to/file> --line <line_number>
+
+# General (non-inline) comment
+t3 review post-draft-note <REPO> <MR_IID> "Comment text"
+
+# List existing draft notes
+t3 review list-draft-notes <REPO> <MR_IID>
+
+# Delete a draft note
+t3 review delete-draft-note <REPO> <MR_IID> <NOTE_ID>
+```
 
 ### Key Differences from `/discussions`
 
@@ -235,9 +243,9 @@ for n in added_lines:
 
 If the target `new_line` does not appear in the output, pick the nearest added line instead.
 
-### Posting Inline Draft Notes (API Recipe)
+### Posting Inline Draft Notes (API Fallback)
 
-Until the `t3 review post-draft-note` CLI exists, use this recipe to post inline draft notes with position data.
+If `t3 review post-draft-note` is unavailable, use this manual recipe:
 
 **Step 1 — Get diff version SHAs:**
 

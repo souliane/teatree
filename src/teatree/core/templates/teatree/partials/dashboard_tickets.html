@@ -112,6 +112,7 @@
               {% endif %}
             </td>
             <td class="border-b border-bark/10 px-3 py-3 align-top">
+              <div class="flex flex-col gap-1">
               {% if mr.review_permalink and mr.review_requested %}
                 <a href="{{ mr.review_permalink }}" class="pill pill-sm bg-purple-100 text-purple-700 hover:brightness-110" target="_blank" title="{{ mr.reviewer_names|join:', ' }}">&#x23F3;</a>
               {% elif mr.review_permalink %}
@@ -132,6 +133,19 @@
               {% else %}
                 <span class="text-bark/30">&mdash;</span>
               {% endif %}
+              {% if mr.needs_reply_count %}
+                <button
+                  class="pill-btn pill-xs border border-red-300 bg-red-50 text-red-600 hover:bg-red-100"
+                  hx-post="/tickets/{{ ticket.ticket_id }}/create-task/"
+                  hx-vals='{"target": "headless", "reason": "Address {{ mr.needs_reply_count }} review comment(s) on !{{ mr.iid }}"}'
+                  hx-swap="none"
+                  hx-on::after-request="htmx.trigger(document.body, 'refreshPanels')"
+                  hx-disable-elt="this"
+                  hx-confirm="Start agent to address {{ mr.needs_reply_count }} review comment(s) on {{ mr.repo }} #{{ mr.iid }}?"
+                  title="Address review comments"
+                >Address ({{ mr.needs_reply_count }})</button>
+              {% endif %}
+              </div>
             </td>
             <td class="border-b border-bark/10 px-3 py-3 align-top">
               {% if mr.approval_count >= mr.approval_required and mr.approval_required > 0 %}
