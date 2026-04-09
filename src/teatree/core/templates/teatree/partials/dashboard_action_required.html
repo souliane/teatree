@@ -13,7 +13,7 @@
         {% endif %}
         <div class="flex flex-1 items-center gap-2 overflow-hidden">
           {% if item.url %}
-            <a href="{{ item.url }}" class="font-sans text-sm text-moss hover:underline truncate" target="_blank">{{ item.label }}</a>
+            <a href="{{ item.url }}" class="font-sans text-sm text-moss hover:underline truncate" target="_blank">{{ item.label }}</a><button class="ml-0.5 text-bark/20 hover:text-bark/50 text-[10px] shrink-0" onclick="copyUrl('{{ item.url }}', event)" title="Copy URL">&#x2398;</button>
           {% else %}
             <span class="font-sans text-sm text-bark truncate">{{ item.label }}</span>
           {% endif %}
