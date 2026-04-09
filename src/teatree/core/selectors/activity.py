@@ -4,7 +4,7 @@ import os
 from teatree.core.models import Task, TaskAttempt
 
 from ._filters import _task_overlay_q
-from ._helpers import _CLAUDE_SESSIONS_DIR, _uptime_from_epoch_ms
+from ._helpers import _CLAUDE_SESSIONS_DIR, _display_id, _uptime_from_epoch_ms
 from ._types import ActiveSessionRow, RecentActivityRow
 
 _RECENT_ACTIVITY_LIMIT = 10
@@ -88,6 +88,8 @@ def build_recent_activity(overlay: str | None = None) -> list[RecentActivityRow]
                 attempt_id=attempt.pk,
                 task_id=attempt.task_id,
                 ticket_id=attempt.task.ticket_id,
+                ticket_display_id=_display_id(attempt.task.ticket),
+                issue_url=attempt.task.ticket.issue_url,
                 phase=attempt.task.phase,
                 exit_code=attempt.exit_code,
                 result_summary=str(result_data.get("summary", "")),

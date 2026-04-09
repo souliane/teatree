@@ -141,6 +141,8 @@ class RecentActivityRow:
     attempt_id: int
     task_id: int
     ticket_id: int
+    ticket_display_id: str
+    issue_url: str
     phase: str
     exit_code: int | None
     result_summary: str
