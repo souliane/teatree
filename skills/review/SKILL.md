@@ -205,13 +205,11 @@ This prevents noise from multiple review passes or multiple reviewers covering t
 
 When reviewing an external MR/PR, **always post comments inline on the correct file and line** in the diff view. For comments that aren't tied to a specific line (e.g., description feedback), post a general note without position data.
 
-**Preferred: use `t3 review post-draft-note`** — it handles token extraction, diff refs, position serialization, and added-line validation automatically:
+**Use `t3 review post-draft-note` (Mandatory).** It handles token extraction, diff refs, position serialization, and added-line validation. Never use raw API calls.
 
 ```bash
 t3 review post-draft-note <REPO> <MR_IID> "Comment text" --file <path/to/file> --line <line_number>
 ```
-
-For manual fallback and platform-specific gotchas, see the [platform reference](../t3:platforms/references/) § "Code Review — Draft Notes".
 
 **Pre-flight: verify target line is an added line (Non-Negotiable).** Before posting each inline note, confirm the target `new_line` corresponds to an added (`+`) or modified line in the diff — never a context (unchanged) line. Targeting a context line causes GitLab to render the comment in **every hunk** that references that line, creating duplicates. When the finding is about an unchanged line, target the nearest added line and reference the unchanged line in the comment text instead.
 
