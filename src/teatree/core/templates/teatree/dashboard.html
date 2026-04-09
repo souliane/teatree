@@ -491,7 +491,8 @@
     window.renderMermaid();
   </script>
 </head>
-<body class="min-h-screen bg-[radial-gradient(circle_at_top_left,_rgba(66,104,85,0.18),_transparent_30%),linear-gradient(180deg,_#fbf4e8_0%,_#f5ecdd_55%,_#eadbc6_100%)] text-bark">
+<body class="min-h-screen bg-[radial-gradient(circle_at_top_left,_rgba(66,104,85,0.18),_transparent_30%),linear-gradient(180deg,_#fbf4e8_0%,_#f5ecdd_55%,_#eadbc6_100%)] text-bark"
+      hx-headers='{"X-CSRFToken": "{{ csrf_token }}"}'>
   <div hx-ext="sse" sse-connect="{% url 'teatree:dashboard-events' %}">
   <!-- Auto-sync on page load: same as "Sync Now" button -->
   <div

@@ -5,9 +5,7 @@ from pathlib import Path
 
 from django.http import Http404, HttpRequest, HttpResponse, JsonResponse
 from django.template.response import TemplateResponse
-from django.utils.decorators import method_decorator
 from django.views import View
-from django.views.decorators.csrf import csrf_exempt
 from django_fsm import TransitionNotAllowed
 
 from teatree.core.models import Session, Task, Ticket
@@ -15,7 +13,6 @@ from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.views._startup import perform_sync
 
 
-@method_decorator(csrf_exempt, name="dispatch")
 class CancelTaskView(View):
     def post(self, request: HttpRequest, task_id: int) -> HttpResponse:
         from django.db import transaction  # noqa: PLC0415
@@ -37,7 +34,6 @@ class CancelTaskView(View):
         return JsonResponse({"task_id": task.pk, "status": task.status})
 
 
-@method_decorator(csrf_exempt, name="dispatch")
 class ReopenTaskView(View):
     def post(self, _request: HttpRequest, task_id: int) -> HttpResponse:
         from django.db import transaction  # noqa: PLC0415
@@ -54,7 +50,6 @@ class ReopenTaskView(View):
         return JsonResponse({"task_id": task.pk, "status": task.status})
 
 
-@method_decorator(csrf_exempt, name="dispatch")
 class SyncFollowupView(View):
     def post(self, _request: HttpRequest) -> HttpResponse:
         result = perform_sync()
@@ -81,7 +76,6 @@ _ALLOWED_TRANSITIONS = {
 }
 
 
-@method_decorator(csrf_exempt, name="dispatch")
 class TicketTransitionView(View):
     def post(self, request: HttpRequest, ticket_id: int) -> HttpResponse:
         transition_name = request.POST.get("transition", "")
@@ -109,7 +103,6 @@ class TicketTransitionView(View):
         return JsonResponse({"ticket_id": ticket.pk, "state": ticket.get_state_display()})
 
 
-@method_decorator(csrf_exempt, name="dispatch")
 class CreateTaskView(View):
     def post(self, request: HttpRequest, ticket_id: int) -> HttpResponse:
         try:
@@ -183,7 +176,6 @@ def _get_t3_repo() -> Path | None:
     return find_project_root()
 
 
-@method_decorator(csrf_exempt, name="dispatch")
 class GitPullView(View):
     def post(self, _request: HttpRequest) -> HttpResponse:
         t3_repo = _get_t3_repo()
