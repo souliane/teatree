@@ -1,5 +1,6 @@
 """Tests for the backend loader (no overlay dependency)."""
 
+from teatree.backends.github import GitHubCodeHost
 from teatree.backends.gitlab import GitLabCodeHost
 from teatree.backends.gitlab_ci import GitLabCIService
 from teatree.backends.loader import (
@@ -22,6 +23,11 @@ def teardown_function() -> None:
 
 def test_get_code_host_returns_none_when_no_token() -> None:
     assert get_code_host() is None
+
+
+def test_get_code_host_returns_github_when_token_present() -> None:
+    result = get_code_host(github_token="gh-test-token")
+    assert isinstance(result, GitHubCodeHost)
 
 
 def test_get_code_host_returns_gitlab_when_token_present() -> None:
