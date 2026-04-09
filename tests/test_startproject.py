@@ -16,7 +16,7 @@ def test_startoverlay_creates_lightweight_package(tmp_path: Path) -> None:
     assert (project_root / "src" / "t3_overlay" / "__init__.py").is_file()
     assert (project_root / "src" / "t3_overlay" / "overlay.py").is_file()
     assert (project_root / "src" / "t3_overlay" / "apps.py").is_file()
-    assert (project_root / "skills" / "t3-overlay" / "SKILL.md").is_file()
+    assert (project_root / "skills" / "t3:overlay" / "SKILL.md").is_file()
     assert (project_root / "pyproject.toml").is_file()
     assert (project_root / ".editorconfig").is_file()
     assert (project_root / ".gitignore").is_file()
@@ -46,7 +46,7 @@ def test_startoverlay_with_explicit_options(tmp_path: Path) -> None:
 
     project_root = tmp_path / "t3-acme"
     assert (project_root / "src" / "acme_overlay" / "overlay.py").is_file()
-    assert (project_root / "skills" / "t3-acme" / "SKILL.md").is_file()
+    assert (project_root / "skills" / "t3:acme" / "SKILL.md").is_file()
 
 
 def test_startoverlay_rejects_existing_destination(tmp_path: Path) -> None:

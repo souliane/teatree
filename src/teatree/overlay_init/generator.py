@@ -110,7 +110,7 @@ class OverlayScaffolder:
         """Run the full scaffolding pipeline."""
         self.project_root.mkdir(parents=True, exist_ok=True)
         skill_base = self.overlay_app.removeprefix("t3_").removesuffix("_overlay") or "overlay"
-        skill_name = f"t3-{skill_base.replace('_', '-')}"
+        skill_name = f"t3:{skill_base.replace('_', '-')}"
         skill_dir = self.project_root / "skills" / skill_name
 
         self.write_overlay(skill_name)

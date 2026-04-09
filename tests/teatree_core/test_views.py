@@ -417,6 +417,64 @@ class TestCancelTaskView(TestCase):
 
 
 # ---------------------------------------------------------------------------
+# ReopenTaskView
+# ---------------------------------------------------------------------------
+
+
+class TestReopenTaskView(TestCase):
+    @classmethod
+    def setUpTestData(cls) -> None:
+        cls.ticket = Ticket.objects.create(overlay="test", state=Ticket.State.STARTED)
+        cls.session = Session.objects.create(ticket=cls.ticket, overlay="test", agent_id="agent")
+
+    def test_reopen_failed_task_returns_pending(self) -> None:
+        task = Task.objects.create(
+            ticket=self.ticket,
+            session=self.session,
+            execution_target=Task.ExecutionTarget.HEADLESS,
+            status=Task.Status.FAILED,
+        )
+
+        response = Client().post(reverse("teatree:task-reopen", args=[task.pk]))
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["task_id"] == task.pk
+        assert data["status"] == "pending"
+        task.refresh_from_db()
+        assert task.status == Task.Status.PENDING
+
+    def test_reopen_pending_task_returns_409(self) -> None:
+        task = Task.objects.create(
+            ticket=self.ticket,
+            session=self.session,
+            execution_target=Task.ExecutionTarget.HEADLESS,
+            status=Task.Status.PENDING,
+        )
+
+        response = Client().post(reverse("teatree:task-reopen", args=[task.pk]))
+
+        assert response.status_code == 409
+
+    def test_reopen_completed_task_returns_409(self) -> None:
+        task = Task.objects.create(
+            ticket=self.ticket,
+            session=self.session,
+            execution_target=Task.ExecutionTarget.HEADLESS,
+            status=Task.Status.COMPLETED,
+        )
+
+        response = Client().post(reverse("teatree:task-reopen", args=[task.pk]))
+
+        assert response.status_code == 409
+
+    def test_nonexistent_task_returns_404(self) -> None:
+        response = Client().post(reverse("teatree:task-reopen", args=[999999]))
+
+        assert response.status_code == 404
+
+
+# ---------------------------------------------------------------------------
 # TicketTransitionView
 # ---------------------------------------------------------------------------
 

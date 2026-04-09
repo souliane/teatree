@@ -174,11 +174,11 @@ def test_select_for_agent_launch_ask_user_when_no_lifecycle_no_explicit(tmp_path
 def test_select_for_agent_launch_overlay_active(tmp_path: Path):
     result = _launch(
         tmp_path,
-        overlay_skill_metadata={"skill_path": "t3-acme"},
+        overlay_skill_metadata={"skill_path": "t3:acme"},
         overlay_active=True,
         task="debug this",
     )
-    assert "t3-acme" in result.skills
+    assert "t3:acme" in result.skills
     assert "debug" in result.skills
 
 
@@ -262,7 +262,7 @@ def test_select_for_runtime_phase_with_overlay(tmp_path: Path):
     result = policy.select_for_runtime_phase(
         cwd=tmp_path,
         phase="coding",
-        overlay_skill_metadata={"skill_path": "t3-overlay"},
+        overlay_skill_metadata={"skill_path": "t3:overlay"},
     )
     assert result.lifecycle_skill == "code"
 
@@ -293,17 +293,17 @@ def test_overlay_empty_skill_path(tmp_path: Path):
 def test_overlay_active_returns_skill_path(tmp_path: Path):
     result = SkillLoadingPolicy._overlay_skill_for_context(
         cwd=tmp_path,
-        overlay_skill_metadata={"skill_path": "t3-acme"},
+        overlay_skill_metadata={"skill_path": "t3:acme"},
         overlay_active=True,
         lifecycle_skill="code",
     )
-    assert result == "t3-acme"
+    assert result == "t3:acme"
 
 
 def test_overlay_no_lifecycle_returns_empty(tmp_path: Path):
     result = SkillLoadingPolicy._overlay_skill_for_context(
         cwd=tmp_path,
-        overlay_skill_metadata={"skill_path": "t3-acme", "remote_patterns": ["*acme*"]},
+        overlay_skill_metadata={"skill_path": "t3:acme", "remote_patterns": ["*acme*"]},
         overlay_active=False,
         lifecycle_skill="",
     )
@@ -313,7 +313,7 @@ def test_overlay_no_lifecycle_returns_empty(tmp_path: Path):
 def test_overlay_remote_patterns_not_a_list(tmp_path: Path):
     result = SkillLoadingPolicy._overlay_skill_for_context(
         cwd=tmp_path,
-        overlay_skill_metadata={"skill_path": "t3-acme", "remote_patterns": "not-a-list"},
+        overlay_skill_metadata={"skill_path": "t3:acme", "remote_patterns": "not-a-list"},
         overlay_active=False,
         lifecycle_skill="code",
     )
@@ -323,7 +323,7 @@ def test_overlay_remote_patterns_not_a_list(tmp_path: Path):
 def test_overlay_remote_patterns_empty_list(tmp_path: Path):
     result = SkillLoadingPolicy._overlay_skill_for_context(
         cwd=tmp_path,
-        overlay_skill_metadata={"skill_path": "t3-acme", "remote_patterns": []},
+        overlay_skill_metadata={"skill_path": "t3:acme", "remote_patterns": []},
         overlay_active=False,
         lifecycle_skill="code",
     )
@@ -333,7 +333,7 @@ def test_overlay_remote_patterns_empty_list(tmp_path: Path):
 def test_overlay_remote_patterns_with_non_string_entries(tmp_path: Path):
     result = SkillLoadingPolicy._overlay_skill_for_context(
         cwd=tmp_path,
-        overlay_skill_metadata={"skill_path": "t3-acme", "remote_patterns": [123, None, ""]},
+        overlay_skill_metadata={"skill_path": "t3:acme", "remote_patterns": [123, None, ""]},
         overlay_active=False,
         lifecycle_skill="code",
     )
@@ -347,11 +347,11 @@ def test_overlay_remote_match(tmp_path: Path, monkeypatch):
     )
     result = SkillLoadingPolicy._overlay_skill_for_context(
         cwd=tmp_path,
-        overlay_skill_metadata={"skill_path": "t3-acme", "remote_patterns": ["*acme*"]},
+        overlay_skill_metadata={"skill_path": "t3:acme", "remote_patterns": ["*acme*"]},
         overlay_active=False,
         lifecycle_skill="code",
     )
-    assert result == "t3-acme"
+    assert result == "t3:acme"
 
 
 def test_overlay_remote_no_match(tmp_path: Path, monkeypatch):
@@ -361,7 +361,7 @@ def test_overlay_remote_no_match(tmp_path: Path, monkeypatch):
     )
     result = SkillLoadingPolicy._overlay_skill_for_context(
         cwd=tmp_path,
-        overlay_skill_metadata={"skill_path": "t3-acme", "remote_patterns": ["*acme*"]},
+        overlay_skill_metadata={"skill_path": "t3:acme", "remote_patterns": ["*acme*"]},
         overlay_active=False,
         lifecycle_skill="code",
     )

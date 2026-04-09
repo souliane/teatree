@@ -17,7 +17,7 @@ Verified failures from issue #3 shipping. Every item below caused a real breakag
 
 When renaming directories (e.g., `skills/t3:code/` → `skills/code/`):
 
-- Check for **symlinks outside the repo** (e.g., `~/.claude/skills/t3-*`) — these break silently
+- Check for **symlinks outside the repo** (e.g., `~/.claude/skills/t3:*`) — these break silently
 - Use `command rm` (not bare `rm`) on macOS/zsh — aliases may prevent deletion
 - Grep ALL consumers: settings.json hook paths, skill symlinks, tests, scripts
 

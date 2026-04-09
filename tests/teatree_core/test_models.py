@@ -490,6 +490,24 @@ class TestTask(TestCase):
         assert child.parent_task_id == parent.pk
         assert list(parent.child_tasks.values_list("pk", flat=True)) == [child.pk]
 
+    def test_reopen_failed_task_resets_to_pending(self) -> None:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session, status=Task.Status.FAILED)
+
+        task.reopen()
+        task.refresh_from_db()
+
+        assert task.status == Task.Status.PENDING
+
+    def test_reopen_non_failed_task_raises(self) -> None:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session, status=Task.Status.PENDING)
+
+        with pytest.raises(InvalidTransitionError, match="Can only reopen failed tasks"):
+            task.reopen()
+
 
 class TestChildTaskSpawning(TestCase):
     def test_spawn_child_tasks_creates_per_repo_tasks(self) -> None:

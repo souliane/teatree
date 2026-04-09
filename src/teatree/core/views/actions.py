@@ -10,6 +10,7 @@ from django.views.decorators.csrf import csrf_exempt
 from django_fsm import TransitionNotAllowed
 
 from teatree.core.models import Session, Task, Ticket
+from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.views._startup import perform_sync
 
 
@@ -31,6 +32,23 @@ class CancelTaskView(View):
                 task.fail()
         except Task.DoesNotExist:
             raise Http404 from None
+
+        return JsonResponse({"task_id": task.pk, "status": task.status})
+
+
+@method_decorator(csrf_exempt, name="dispatch")
+class ReopenTaskView(View):
+    def post(self, _request: HttpRequest, task_id: int) -> HttpResponse:
+        from django.db import transaction  # noqa: PLC0415
+
+        try:
+            with transaction.atomic():
+                task = Task.objects.select_for_update().get(pk=task_id)
+                task.reopen()
+        except Task.DoesNotExist:
+            raise Http404 from None
+        except InvalidTransitionError as exc:
+            return JsonResponse({"error": str(exc)}, status=409)
 
         return JsonResponse({"task_id": task.pk, "status": task.status})
 

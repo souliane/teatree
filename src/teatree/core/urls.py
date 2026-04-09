@@ -4,6 +4,7 @@ from teatree.core.views.actions import (
     CancelTaskView,
     CreateTaskView,
     GitPullView,
+    ReopenTaskView,
     SyncFollowupView,
     TicketTransitionView,
 )
@@ -30,6 +31,7 @@ urlpatterns = [
     path("tickets/<int:ticket_id>/lifecycle/", TicketLifecycleView.as_view(), name="ticket-lifecycle"),
     path("tasks/<int:task_id>/launch/", LaunchAgentView.as_view(), name="task-launch"),
     path("tasks/<int:task_id>/cancel/", CancelTaskView.as_view(), name="task-cancel"),
+    path("tasks/<int:task_id>/reopen/", ReopenTaskView.as_view(), name="task-reopen"),
     path("tickets/<int:ticket_id>/transition/", TicketTransitionView.as_view(), name="ticket-transition"),
     path("tickets/<int:ticket_id>/create-task/", CreateTaskView.as_view(), name="ticket-create-task"),
     path("dashboard/launch-terminal/", LaunchTerminalView.as_view(), name="launch-terminal"),

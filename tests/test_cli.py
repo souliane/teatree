@@ -575,12 +575,12 @@ class TestOverlayScaffolder:
         assert '"skill_path": "skills/test/SKILL.md"' in text
 
     def test_write_skill_md(self, tmp_path):
-        skill_dir = tmp_path / "skills" / "t3-acme"
+        skill_dir = tmp_path / "skills" / "t3:acme"
         s = OverlayScaffolder(tmp_path, "t3_overlay", "pkg")
-        s.write_skill_md(skill_dir, "t3-acme", "t3-acme")
+        s.write_skill_md(skill_dir, "t3-acme", "t3:acme")
         text = (skill_dir / "SKILL.md").read_text()
-        assert "name: t3-acme" in text
-        assert "t3-workspace" not in text
+        assert "name: t3:acme" in text
+        assert "t3:workspace" not in text
 
     def test_copy_config_templates(self, tmp_path):
         s = OverlayScaffolder(tmp_path, "t3_overlay", "pkg")

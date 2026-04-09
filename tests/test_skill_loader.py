@@ -84,7 +84,7 @@ class TestBuildTriggerIndex:
         if not SKILLS_DIR.is_dir():
             pytest.skip("skills directory not found")
         index = build_trigger_index([SKILLS_DIR])
-        # At minimum, t3-ship (priority 10) should be first
+        # At minimum, t3:ship (priority 10) should be first
         assert len(index) > 0
         assert index[0]["skill"] == "ship"
         assert index[0]["priority"] == 10
@@ -439,7 +439,7 @@ class TestSuggestSkills:
         cache.write_text(
             json.dumps(
                 {
-                    "skill_path": "skills/t3-acme/SKILL.md",
+                    "skill_path": "skills/t3:acme/SKILL.md",
                     "remote_patterns": ["git@gitlab.com:acme-engineering/*"],
                     "trigger_index": [
                         {
@@ -471,14 +471,14 @@ class TestSuggestSkills:
                     "supplementary_config": "",
                 }
             )
-        assert "skills/t3-acme/SKILL.md" in result["suggestions"]
+        assert "skills/t3:acme/SKILL.md" in result["suggestions"]
 
     def test_vague_prompt_does_not_load_overlay_skill(self, tmp_path):
         cache = tmp_path / "skill-metadata.json"
         cache.write_text(
             json.dumps(
                 {
-                    "skill_path": "skills/t3-acme/SKILL.md",
+                    "skill_path": "skills/t3:acme/SKILL.md",
                     "remote_patterns": ["git@gitlab.com:acme-engineering/*"],
                     "trigger_index": [],
                 }

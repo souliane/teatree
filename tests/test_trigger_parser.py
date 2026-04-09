@@ -16,7 +16,7 @@ from lib.trigger_parser import _parse_trigger_line, parse_triggers  # noqa: E402
 class TestParseTriggers:
     def test_full_triggers(self):
         md = (
-            "---\nname: t3-ship\ntriggers:\n  priority: 10\n  exclude: '\\breview\\b'\n"
+            "---\nname: t3:ship\ntriggers:\n  priority: 10\n  exclude: '\\breview\\b'\n"
             "  keywords:\n    - '\\bcommit\\b'\n    - '\\bpush\\b'\n  urls:\n"
             "    - 'https?://example.com'\n---\n# Ship"
         )
@@ -30,7 +30,7 @@ class TestParseTriggers:
 
     def test_end_of_session(self):
         md = (
-            "---\nname: t3-retro\ntriggers:\n  priority: 100\n"
+            "---\nname: t3:retro\ntriggers:\n  priority: 100\n"
             "  end_of_session: true\n  keywords:\n    - '\\bretro\\b'\n---\n"
         )
         result = parse_triggers(md)
@@ -38,7 +38,7 @@ class TestParseTriggers:
         assert result["end_of_session"] is True
 
     def test_no_triggers(self):
-        assert parse_triggers("---\nname: t3-rules\n---\n# Rules") is None
+        assert parse_triggers("---\nname: t3:rules\n---\n# Rules") is None
 
     def test_no_frontmatter(self):
         assert parse_triggers("# No frontmatter") is None
@@ -106,7 +106,7 @@ class TestParseTriggers:
 
 class TestParseRequires:
     def test_requires_standalone(self):
-        md = "---\nname: t3-review\nrequires:\n  - workspace\n  - platforms\n  - code\n---\n"
+        md = "---\nname: t3:review\nrequires:\n  - workspace\n  - platforms\n  - code\n---\n"
         result = parse_triggers(md)
         assert result is not None
         assert result["requires"] == ["workspace", "platforms", "code"]
@@ -119,7 +119,7 @@ class TestParseRequires:
 
     def test_requires_with_triggers(self):
         md = (
-            "---\nname: t3-ship\ntriggers:\n  priority: 10\n  keywords:\n"
+            "---\nname: t3:ship\ntriggers:\n  priority: 10\n  keywords:\n"
             "    - '\\bcommit\\b'\nrequires:\n  - workspace\n  - rules\n---\n"
         )
         result = parse_triggers(md)
@@ -144,7 +144,7 @@ class TestParseRequires:
 
 class TestParseCompanions:
     def test_companions_standalone(self):
-        md = "---\nname: t3-code\ncompanions:\n  - test-driven-development\n  - verification-before-completion\n---\n"
+        md = "---\nname: t3:code\ncompanions:\n  - test-driven-development\n  - verification-before-completion\n---\n"
         result = parse_triggers(md)
         assert result is not None
         assert result["companions"] == ["test-driven-development", "verification-before-completion"]
@@ -157,7 +157,7 @@ class TestParseCompanions:
 
     def test_companions_with_requires_and_triggers(self):
         md = (
-            "---\nname: t3-ship\ntriggers:\n  priority: 10\n  keywords:\n"
+            "---\nname: t3:ship\ntriggers:\n  priority: 10\n  keywords:\n"
             "    - '\\bcommit\\b'\nrequires:\n  - workspace\n  - rules\n"
             "companions:\n  - finishing-a-development-branch\n---\n"
         )
