@@ -191,3 +191,38 @@ class TestRunProvisionSteps(TestCase):
             stderr_writer=output.append,
         )
         assert any("verbose-step" in line for line in output)
+
+    def test_verbose_shows_stdout_from_subprocess(self) -> None:
+        stdout_lines: list[str] = []
+
+        def step_with_stdout() -> subprocess.CompletedProcess[str]:
+            return subprocess.CompletedProcess(args=[], returncode=0, stdout="line1\nline2", stderr="")
+
+        steps = [ProvisionStep(name="stdout-step", callable=step_with_stdout)]
+        run_provision_steps(steps, verbose=True, stdout_writer=stdout_lines.append)
+        assert any("line1" in line for line in stdout_lines)
+        assert any("line2" in line for line in stdout_lines)
+
+    def test_verbose_shows_stderr_from_failed_subprocess(self) -> None:
+        stderr_lines: list[str] = []
+
+        def step_with_stderr() -> subprocess.CompletedProcess[str]:
+            return subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="err1\nerr2")
+
+        steps = [ProvisionStep(name="stderr-step", callable=step_with_stderr)]
+        run_provision_steps(steps, verbose=True, stderr_writer=stderr_lines.append)
+        assert any("err1" in line for line in stderr_lines)
+        assert any("err2" in line for line in stderr_lines)
+
+    def test_failed_required_step_property(self) -> None:
+        report = ProvisionReport(
+            steps=[
+                StepResult(name="ok", success=True),
+                StepResult(name="broken", success=False, error="fail"),
+            ]
+        )
+        assert report.failed_required_step == "broken"
+
+    def test_failed_required_step_none_when_all_pass(self) -> None:
+        report = ProvisionReport(steps=[StepResult(name="ok", success=True)])
+        assert report.failed_required_step is None
