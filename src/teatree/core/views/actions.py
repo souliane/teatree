@@ -133,15 +133,8 @@ class CreateTaskView(View):
             execution_reason=reason or f"Started from dashboard ({phase})",
         )
 
+        # Headless tasks auto-enqueue via post_save signal
         if target == Task.ExecutionTarget.HEADLESS:
-            from teatree.core.tasks import execute_headless_task  # noqa: PLC0415
-
-            try:
-                execute_headless_task.enqueue(int(task.pk), phase)
-            except Exception as exc:  # noqa: BLE001
-                task.complete_with_attempt(exit_code=1, error=str(exc))
-                return JsonResponse({"error": str(exc)}, status=500)
-
             return JsonResponse({"task_id": task.pk, "status": task.status})
 
         # Interactive: auto-launch if terminal params are provided

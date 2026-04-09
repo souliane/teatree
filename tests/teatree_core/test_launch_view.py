@@ -53,15 +53,9 @@ class TestLaunchTaskView(TestCase):
             },
         },
     )
-    def test_headless_task_enqueues_background_job(self) -> None:
+    def test_headless_task_auto_executes_on_creation(self) -> None:
+        """Headless tasks are auto-enqueued via post_save signal — no manual launch needed."""
         import subprocess as _sp  # noqa: PLC0415
-
-        task = Task.objects.create(
-            ticket=self.ticket,
-            session=self.session,
-            execution_target=Task.ExecutionTarget.HEADLESS,
-            phase="coding",
-        )
 
         with (
             patch.object(headless_mod.shutil, "which", return_value="/usr/bin/claude-code"),
@@ -72,11 +66,31 @@ class TestLaunchTaskView(TestCase):
             ),
             patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
         ):
-            response = Client().post(f"/tasks/{task.pk}/launch/")
+            task = Task.objects.create(
+                ticket=self.ticket,
+                session=self.session,
+                execution_target=Task.ExecutionTarget.HEADLESS,
+                phase="coding",
+            )
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.COMPLETED
+
+    def test_launch_returns_409_for_already_executed_headless_task(self) -> None:
+        """Manually launching an already-completed headless task returns 409."""
+        task = Task.objects.create(
+            ticket=self.ticket,
+            session=self.session,
+            execution_target=Task.ExecutionTarget.HEADLESS,
+            phase="coding",
+            status=Task.Status.COMPLETED,
+        )
+
+        response = Client().post(f"/tasks/{task.pk}/launch/")
         data = json.loads(response.content)
 
-        assert response.status_code == 200
-        assert data["status"] == "queued"
+        assert response.status_code == 409
+        assert data["error"] == "Task already finished"
 
     def test_returns_404_for_missing_task(self) -> None:
         response = Client().post("/tasks/99999/launch/")

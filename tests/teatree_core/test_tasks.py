@@ -5,7 +5,7 @@ from django.test import TestCase, override_settings
 
 import teatree.core.overlay_loader as overlay_loader_mod
 from teatree.core.models import Session, Task, TaskAttempt, Ticket
-from teatree.core.tasks import drain_headless_queue, execute_headless_task, refresh_followup_snapshot, sync_followup
+from teatree.core.tasks import drain_headless_queue, refresh_followup_snapshot, sync_followup
 from tests.teatree_core.conftest import CommandOverlay
 
 IMMEDIATE_BACKEND = {
@@ -47,6 +47,18 @@ class TestSyncFollowup(TestCase):
 
 
 class TestDrainHeadlessQueue(TestCase):
+    """Drain is a safety net for tasks that missed the post_save auto-enqueue."""
+
+    def setUp(self) -> None:
+        from django.db.models.signals import post_save  # noqa: PLC0415
+
+        from teatree.core.signals import _auto_enqueue_headless_task  # noqa: PLC0415
+
+        post_save.disconnect(_auto_enqueue_headless_task, sender=Task, dispatch_uid="auto_enqueue_headless")
+        self.addCleanup(
+            post_save.connect, _auto_enqueue_headless_task, sender=Task, dispatch_uid="auto_enqueue_headless"
+        )
+
     @override_settings(**IMMEDIATE_BACKEND)
     def test_enqueues_pending_headless_tasks(self) -> None:
         ticket = Ticket.objects.create(overlay="test")
@@ -87,10 +99,9 @@ class TestExecuteHeadlessTask(TestCase):
 
     @override_settings(**IMMEDIATE_BACKEND)
     def test_records_failure_on_exception(self) -> None:
-        """When run_headless raises, execute_headless_task marks the task as failed and re-raises."""
+        """When run_headless raises, execute_headless_task marks the task as failed."""
         ticket = Ticket.objects.create(overlay="test")
         session = Session.objects.create(ticket=ticket, overlay="test", agent_id="agent-1")
-        task = Task.objects.create(ticket=ticket, session=session, phase="coding")
 
         def _raise(*_args: object, **_kwargs: object) -> None:
             msg = "headless runtime crashed"
@@ -98,8 +109,9 @@ class TestExecuteHeadlessTask(TestCase):
 
         self.monkeypatch.setattr("teatree.agents.headless.run_headless", _raise)
 
+        # Signal auto-enqueues on creation; ImmediateBackend runs it synchronously
         with patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY):
-            execute_headless_task.enqueue(int(task.pk), "coding")
+            task = Task.objects.create(ticket=ticket, session=session, phase="coding")
 
         task.refresh_from_db()
         assert task.status == Task.Status.FAILED
