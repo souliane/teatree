@@ -43,6 +43,18 @@ class TaskQuerySet(models.QuerySet):
 
         return self._claimable_for_target(Task.ExecutionTarget.INTERACTIVE, overlay)
 
+    def reap_stale_claims(self) -> int:
+        """Fail CLAIMED tasks whose lease has expired. Returns number of reaped tasks."""
+        from teatree.core.models.task import Task  # noqa: PLC0415
+
+        now = timezone.now()
+        stale = self.filter(status=Task.Status.CLAIMED, lease_expires_at__lt=now)
+        count = 0
+        for task in stale:
+            task.fail()
+            count += 1
+        return count
+
     def _claimable_for_target(self, target: str, overlay: str | None = None) -> models.QuerySet:
         from teatree.core.models.task import Task  # noqa: PLC0415
 
