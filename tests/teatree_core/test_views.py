@@ -821,31 +821,19 @@ class TestGetT3Repo:
         assert result == Path("~/my-teatree").expanduser()
 
     def test_auto_detects_from_package_location(self, tmp_path: Path) -> None:
-        fake_file = tmp_path / "src" / "teatree" / "core" / "views" / "actions.py"
-        fake_file.parent.mkdir(parents=True)
-        fake_file.touch()
-        # Create .git dir at the repo root (4 parents up from actions.py)
-        (tmp_path / ".git").mkdir()
-
         with (
             patch.dict(os.environ, {"T3_REPO": ""}, clear=False),
-            patch("teatree.core.views.actions.Path") as mock_path_cls,
+            patch("teatree.find_project_root", return_value=tmp_path),
         ):
-            # Make Path(__file__).resolve().parents[4] return tmp_path
-            mock_file_path = mock_path_cls.return_value.resolve.return_value
-            mock_file_path.parents.__getitem__ = lambda self, i: tmp_path if i == 4 else None
             result = actions_views._get_t3_repo()
 
         assert result == tmp_path
 
-    def test_returns_none_when_no_git_dir(self, tmp_path: Path) -> None:
-        # No .git directory at the computed package root
+    def test_returns_none_when_no_git_dir(self) -> None:
         with (
             patch.dict(os.environ, {"T3_REPO": ""}, clear=False),
-            patch("teatree.core.views.actions.Path") as mock_path_cls,
+            patch("teatree.find_project_root", return_value=None),
         ):
-            mock_file_path = mock_path_cls.return_value.resolve.return_value
-            mock_file_path.parents.__getitem__ = lambda self, i: tmp_path if i == 4 else None
             result = actions_views._get_t3_repo()
 
         assert result is None

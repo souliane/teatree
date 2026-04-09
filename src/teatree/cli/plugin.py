@@ -13,7 +13,13 @@ _MARKETPLACE_NAME = "souliane"
 
 
 def _teatree_root() -> Path:
-    return Path(__file__).resolve().parents[3]
+    from teatree import find_project_root  # noqa: PLC0415
+
+    root = find_project_root()
+    if root is None:
+        msg = "Cannot find teatree project root"
+        raise RuntimeError(msg)
+    return root
 
 
 def _try_apm_install() -> bool:

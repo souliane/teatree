@@ -24,12 +24,31 @@
         </div>
         <div class="flex items-center gap-2 shrink-0">
           {% if item.kind == "needs_reply" %}
-            <button
-              class="rounded-full border border-moss/30 bg-moss/10 px-3 py-1 font-sans text-[10px] font-semibold uppercase tracking-[0.18em] text-moss transition hover:bg-moss/20"
-              title="Spawn an agent to address review comments"
-            >
-              Address
-            </button>
+            <span class="inline-flex">
+              <button
+                class="rounded-full border border-moss/30 bg-moss/10 px-3 py-1 font-sans text-[10px] font-semibold uppercase tracking-[0.18em] text-moss transition hover:bg-moss/20 rounded-r-none border-r-0"
+                hx-post="/tickets/{{ item.ticket_id }}/create-task/"
+                hx-vals='{"target": "headless", "reason": "Address review comments"}'
+                hx-swap="none"
+                hx-on::after-request="handleActionResponse(event)"
+                hx-disable-elt="this"
+                hx-confirm="Start agent to address review comments?"
+                title="Address review comments (headless)"
+              >
+                Address
+              </button>
+              <button
+                class="rounded-full border border-moss/30 bg-moss/10 px-1 py-1 font-sans text-[10px] text-moss transition hover:bg-moss/20 rounded-l-none"
+                hx-post="/tickets/{{ item.ticket_id }}/create-task/"
+                hx-vals='{"target": "interactive", "reason": "Address review comments"}'
+                hx-swap="none"
+                hx-on::before-request="event.detail.requestConfig.parameters['terminal_mode'] = document.getElementById('terminal-mode-selector').value; event.detail.requestConfig.parameters['terminal_app'] = document.getElementById('terminal-app-selector').value"
+                hx-on::after-request="handleActionResponse(event)"
+                hx-disable-elt="this"
+                hx-confirm="Open interactive session to address review comments?"
+                title="Address review comments (interactive)"
+              >&#9662;</button>
+            </span>
           {% elif item.kind == "needs_review_request" %}
             <button
               class="rounded-full border border-sky-300 bg-sky-50 px-3 py-1 font-sans text-[10px] font-semibold uppercase tracking-[0.18em] text-sky-600 transition hover:bg-sky-100"

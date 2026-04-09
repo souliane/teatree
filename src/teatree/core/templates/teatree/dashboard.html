@@ -171,10 +171,12 @@
       var article = btn.closest('article');
       if (!article) { handleActionResponse(event); return; }
       if (xhr.status >= 400) {
-        var errorSpan = btn.closest('.flex').querySelector('[data-error-msg]');
+        var fp = btn.closest('.flex');
+        var errorSpan = fp ? fp.querySelector('[data-error-msg]') : null;
         try {
           var data = JSON.parse(xhr.responseText);
           if (errorSpan && data.error) { errorSpan.textContent = data.error; errorSpan.classList.remove('hidden'); }
+          showToast(data.error || 'Action failed', 'error');
         } catch(e) {}
         return;
       }
@@ -184,8 +186,7 @@
       if (badge) { badge.textContent = 'Cancelled'; badge.className = 'rounded-full px-2 py-0.5 font-sans text-[10px] font-bold uppercase tracking-wider bg-red-100 text-red-600'; }
       var actions = article.querySelector('.flex.items-center.gap-2');
       if (actions && taskId) {
-        actions.innerHTML = '<button class="rounded-full border border-moss/30 bg-moss/10 px-4 py-1.5 font-sans text-xs font-semibold uppercase tracking-[0.18em] text-moss transition hover:bg-moss/20" hx-post="/tasks/' + taskId + '/reopen/" hx-swap="none" hx-on::after-request="handleActionResponse(event)">Reopen</button>';
-        htmx.process(actions);
+        actions.innerHTML = '<button class="rounded-full border border-moss/30 bg-moss/10 px-4 py-1.5 font-sans text-xs font-semibold uppercase tracking-[0.18em] text-moss transition hover:bg-moss/20 cursor-pointer" onclick="reopenTask(' + taskId + ', this)">Reopen</button>';
       }
       article.style.opacity = '0.6';
       setTimeout(function() {
@@ -201,10 +202,34 @@
     }
 
 
+    function reopenTask(taskId, btn) {
+      btn.disabled = true;
+      btn.textContent = 'Reopening...';
+      fetch('/tasks/' + taskId + '/reopen/', { method: 'POST', headers: { 'X-CSRFToken': '{{ csrf_token }}' } })
+        .then(function(r) { return r.json().then(function(d) { return { ok: r.ok, data: d }; }); })
+        .then(function(res) {
+          if (res.ok) {
+            showToast('Task reopened', 'success');
+            htmx.trigger(document.body, 'refreshPanels');
+          } else {
+            showToast(res.data.error || 'Reopen failed', 'error');
+            btn.disabled = false;
+            btn.textContent = 'Reopen';
+          }
+        })
+        .catch(function() {
+          showToast('Reopen failed', 'error');
+          btn.disabled = false;
+          btn.textContent = 'Reopen';
+        });
+    }
+
+
     function handleActionResponse(event) {
       var xhr = event.detail.xhr;
       var btn = event.detail.elt;
-      var errorSpan = btn.closest('.flex').querySelector('[data-error-msg]');
+      var flexParent = btn.closest('.flex');
+      var errorSpan = flexParent ? flexParent.querySelector('[data-error-msg]') : null;
       if (!xhr.responseText) {
         if (errorSpan) { errorSpan.textContent = 'Empty response'; errorSpan.classList.remove('hidden'); }
         htmx.trigger(document.body, 'refreshPanels');
