@@ -163,15 +163,11 @@ class TestFindDslrCmd:
         monkeypatch.setattr(mod.shutil, "which", lambda _: None)
         assert _find_dslr_cmd("dslr") == []
 
-    def test_includes_directory_flag_with_main_repo(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_ignores_main_repo_path(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Dslr runs from the host project venv, not the target repo."""
         monkeypatch.delenv("DSLR_CMD", raising=False)
         monkeypatch.setattr(mod.shutil, "which", lambda p: p)
-        assert _find_dslr_cmd("dslr", "/repo/main") == ["uv", "--directory", "/repo/main", "run", "dslr"]
-
-    def test_no_directory_flag_without_main_repo(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("DSLR_CMD", raising=False)
-        monkeypatch.setattr(mod.shutil, "which", lambda p: p)
-        assert _find_dslr_cmd("dslr", "") == ["uv", "run", "dslr"]
+        assert _find_dslr_cmd("dslr", "/repo/main") == ["uv", "run", "dslr"]
 
 
 class TestDslrEnv:

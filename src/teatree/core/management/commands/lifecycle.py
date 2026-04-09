@@ -460,7 +460,12 @@ class Command(TyperCommand):
         # Stop previous containers
         _docker_compose_down(project, self.stdout, timeout=self._timeouts.get("docker_compose_down"))
 
-        # Run pre-run steps
+        # Inject allocated ports into process env so overlay steps can read them
+        port_env = _compose_env(ports)
+        for key, value in port_env.items():
+            os.environ[key] = value
+
+        # Run pre-run steps (need port env for patch-customer-json etc.)
         commands = overlay.get_run_commands(worktree)
         pre_run_steps = []
         for service_name in commands:
@@ -473,7 +478,7 @@ class Command(TyperCommand):
             stop_on_required_failure=False,
         )
 
-        # Write non-port env file
+        # Write env file (includes overlay extras which now see correct ports)
         write_env_worktree(worktree)
 
         # Start services via docker-compose

@@ -1,14 +1,16 @@
-"""Pre-commit hook: detect quality gate relaxations in staged changes.
+"""Commit-msg hook: detect quality gate relaxations in staged changes.
 
 Flags additions to lint ignore lists, coverage omit patterns, new ``# noqa`` /
 ``# pragma: no cover`` annotations, and ``fail_under`` decreases.  Exits non-zero
-when relaxations are found so the author must acknowledge them explicitly.
+when relaxations are found **unless** the commit message starts with ``relax:``.
 
 See: souliane/teatree#17
 """
 
+import pathlib
 import re
 import subprocess
+import sys
 
 # Patterns in pyproject.toml that indicate structural config relaxation.
 _PYPROJECT_KEYWORD_PATTERNS: list[str] = [
@@ -79,6 +81,16 @@ def _is_pyproject_relaxation(line: str) -> bool:
     return bool(_RULE_CODE_RE.match(line))
 
 
+def _commit_message_has_relax(msg_file: str) -> bool:
+    """Check if the commit message starts with ``relax:`` (conventional commit type)."""
+    try:
+        msg = pathlib.Path(msg_file).read_text(encoding="utf-8").strip()
+    except (FileNotFoundError, PermissionError):
+        return False
+    # Match: "relax:" or "relax(scope):" at the start of the message
+    return bool(re.match(r"^relax(\(.+\))?:", msg))
+
+
 def main() -> int:
     violations: list[str] = []
 
@@ -101,19 +113,25 @@ def main() -> int:
             if pattern in line
         )
 
-    if violations:
-        print("Quality gate relaxation detected:")
-        print()
-        for v in violations:
-            print(v)
-        print()
-        print(
-            "If intentional, add 'relax:' to your commit message explaining why.\n"
-            "Example: relax: add S404 to test ignores — subprocess in test fixtures is trusted"
-        )
-        return 1
+    if not violations:
+        return 0
 
-    return 0
+    # At commit-msg stage, sys.argv[1] is the commit message file
+    msg_file = sys.argv[1] if len(sys.argv) > 1 else ""
+    if msg_file and _commit_message_has_relax(msg_file):
+        print(f"Quality gate relaxation acknowledged via relax: commit type ({len(violations)} item(s)).")
+        return 0
+
+    print("Quality gate relaxation detected:")
+    print()
+    for v in violations:
+        print(v)
+    print()
+    print(
+        "If intentional, use 'relax:' as the commit type to acknowledge.\n"
+        "Example: relax: add S404 to test ignores — subprocess in test fixtures is trusted"
+    )
+    return 1
 
 
 if __name__ == "__main__":

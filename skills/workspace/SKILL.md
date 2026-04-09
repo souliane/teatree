@@ -40,7 +40,7 @@ graph TD
         wt_be["acme-backend/<br/>(worktree)"]
         wt_fe["acme-frontend/<br/>(worktree)"]
         wt_tr["acme-translations/<br/>(worktree)"]
-        envfile[".env.worktree<br/>(shared ports, DB, variant)"]
+        envfile[".env.worktree<br/>(shared DB, variant)"]
       end
       subgraph "ac/5678/"
         wt2_be["acme-backend/<br/>(worktree)"]
@@ -56,7 +56,7 @@ graph TD
   main_fe -.->|"git worktree"| wt2_fe
 ```
 
-Each ticket gets its own directory with one git worktree per affected repo and a shared `.env.worktree` for port allocation, database name, and variant configuration. Worktrees share the `.git` directory with the main clone but have their own branch and working tree.
+Each ticket gets its own directory with one git worktree per affected repo and a shared `.env.worktree` for database name and variant configuration. Ports are ephemeral — allocated at `lifecycle start` time and passed via runtime env only. Worktrees share the `.git` directory with the main clone but have their own branch and working tree.
 
 ## Dependencies
 

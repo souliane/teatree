@@ -382,21 +382,42 @@ class TestDoctorService:
 
     # ── make_editable ───────────────────────────────────────────────
 
-    def test_make_editable_success(self, capsys):
-        """Runs uv pip install -e and reports success."""
+    def test_make_editable_success(self, capsys, tmp_path):
+        """Patches pyproject.toml sources and reports success."""
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text('[tool.uv.sources]\nteatree = { git = "https://example.com", branch = "main" }\n')
+        (tmp_path / "manage.py").write_text("")  # host project marker
+
         mock_result = MagicMock()
         mock_result.returncode = 0
-        with patch("subprocess.run", return_value=mock_result):
+        with (
+            patch("teatree.cli.doctor._find_host_project_root", return_value=tmp_path),
+            patch("subprocess.run", return_value=mock_result),
+        ):
             DoctorService.make_editable("teatree", Path("/tmp/teatree"))
         captured = capsys.readouterr()
         assert "now editable" in captured.out
+        assert (tmp_path / ".t3-dev-sources").is_file()
 
-    def test_make_editable_failure(self, capsys):
-        """Reports failure when uv pip install fails."""
+    def test_make_editable_no_host_project(self, capsys):
+        """Falls back to ephemeral uv pip install when no host project found."""
         mock_result = MagicMock()
-        mock_result.returncode = 1
-        mock_result.stderr = "error: package not found"
-        with patch("subprocess.run", return_value=mock_result):
+        mock_result.returncode = 0
+        with (
+            patch("teatree.cli.doctor._find_host_project_root", return_value=None),
+            patch("subprocess.run", return_value=mock_result),
+        ):
+            DoctorService.make_editable("teatree", Path("/tmp/teatree"))
+        captured = capsys.readouterr()
+        assert "ephemeral" in captured.out
+
+    def test_make_editable_patch_failure(self, capsys, tmp_path):
+        """Reports failure when pyproject.toml has no matching source entry."""
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text("[project]\nname = 'myproject'\n")
+        (tmp_path / "manage.py").write_text("")
+
+        with patch("teatree.cli.doctor._find_host_project_root", return_value=tmp_path):
             DoctorService.make_editable("teatree", Path("/tmp/teatree"))
         captured = capsys.readouterr()
         assert "FAIL" in captured.out

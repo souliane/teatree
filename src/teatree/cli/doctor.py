@@ -1,6 +1,7 @@
 """Doctor CLI commands — smoke-test hooks, imports, services."""
 
 import os
+import re
 import shutil
 import sys
 from importlib.metadata import PackageNotFoundError, distribution, packages_distributions
@@ -21,6 +22,40 @@ def _resolve_overlay_dists(overlays: dict) -> list[str]:
         dist_names = dist_map.get(top_package, [top_package])
         result.append(dist_names[0] if dist_names else top_package)
     return result
+
+
+_DEV_SOURCES_FILE = ".t3-dev-sources"
+
+
+def _find_host_project_root() -> Path | None:
+    """Walk up from cwd to find the host project (directory with manage.py + pyproject.toml)."""
+    for directory in [Path.cwd(), *Path.cwd().parents]:
+        if (directory / "manage.py").is_file() and (directory / "pyproject.toml").is_file():
+            return directory
+    return None
+
+
+def _patch_uv_source(pyproject: Path, package: str, repo_path: Path) -> bool:
+    """Rewrite the ``[tool.uv.sources]`` entry for *package* to a local editable path."""
+    text = pyproject.read_text(encoding="utf-8")
+    # Match: package = { git = "...", branch = "..." } or package = { ... }
+    pattern = rf"^({re.escape(package)}\s*=\s*)\{{[^}}]+\}}"
+    relative = os.path.relpath(repo_path, pyproject.parent)
+    replacement = rf'\g<1>{{ path = "{relative}", editable = true }}'
+    new_text, count = re.subn(pattern, replacement, text, count=1, flags=re.MULTILINE)
+    if count == 0:
+        return False
+    pyproject.write_text(new_text, encoding="utf-8")
+    return True
+
+
+def _write_dev_sources_marker(marker: Path, package: str, repo_path: Path) -> None:
+    """Append or update a line in the ``.t3-dev-sources`` marker file."""
+    lines: list[str] = []
+    if marker.is_file():
+        lines = [ln for ln in marker.read_text(encoding="utf-8").splitlines() if not ln.startswith(f"{package}=")]
+    lines.append(f"{package}={repo_path}")
+    marker.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 class DoctorService:
@@ -194,19 +229,86 @@ class DoctorService:
 
     @staticmethod
     def make_editable(package: str, repo_path: Path) -> None:
+        """Install *package* as editable from *repo_path*, persisting through ``uv run``.
+
+        ``uv pip install -e`` is ephemeral — ``uv run`` re-syncs from the lock file
+        and overwrites it.  To persist, we patch ``[tool.uv.sources]`` in the host
+        project's ``pyproject.toml`` and hide the change from git via
+        ``--assume-unchanged``.  A gitignored ``.t3-dev-sources`` marker records the
+        override so worktree cleanup can restore the original state.
+        """
         import subprocess  # noqa: PLC0415, S404
 
         typer.echo(f"WARN  {package} is not editable (contribute=true). Installing from {repo_path}...")
-        result = subprocess.run(  # noqa: S603
-            ["uv", "pip", "install", "--quiet", "-e", str(repo_path)],
+
+        project_root = _find_host_project_root()
+        if project_root is None:
+            # Fallback: ephemeral pip install (will be overwritten by uv run)
+            result = subprocess.run(  # noqa: S603
+                ["uv", "pip", "install", "--quiet", "-e", str(repo_path)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if result.returncode == 0:
+                typer.echo(f"OK    {package} is now editable from {repo_path} (ephemeral — no host project found)")
+            else:
+                typer.echo(f"FAIL  Could not install {package} as editable: {result.stderr.strip()}")
+            return
+
+        pyproject = project_root / "pyproject.toml"
+        marker = project_root / ".t3-dev-sources"
+
+        if _patch_uv_source(pyproject, package, repo_path):
+            # Record the override in the gitignored marker
+            _write_dev_sources_marker(marker, package, repo_path)
+            # Hide pyproject.toml from git
+            subprocess.run(
+                ["git", "update-index", "--assume-unchanged", "pyproject.toml"],
+                cwd=project_root,
+                capture_output=True,
+                check=False,
+            )
+            # Sync to apply
+            result = subprocess.run(
+                ["uv", "sync", "--quiet"],
+                cwd=project_root,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if result.returncode == 0:
+                typer.echo(f"OK    {package} is now editable from {repo_path} (persisted in .t3-dev-sources)")
+            else:
+                typer.echo(f"FAIL  uv sync failed after patching sources: {result.stderr.strip()}")
+        else:
+            typer.echo(f"FAIL  Could not patch [tool.uv.sources] for {package}")
+
+    @staticmethod
+    def restore_sources(project_root: Path) -> None:
+        """Revert editable source overrides recorded in ``.t3-dev-sources``."""
+        import subprocess  # noqa: PLC0415, S404
+
+        marker = project_root / ".t3-dev-sources"
+        if not marker.is_file():
+            return
+
+        # Un-hide pyproject.toml first
+        subprocess.run(
+            ["git", "update-index", "--no-assume-unchanged", "pyproject.toml"],
+            cwd=project_root,
             capture_output=True,
-            text=True,
             check=False,
         )
-        if result.returncode == 0:
-            typer.echo(f"OK    {package} is now editable from {repo_path}")
-        else:
-            typer.echo(f"FAIL  Could not install {package} as editable: {result.stderr.strip()}")
+        # Restore pyproject.toml from git
+        subprocess.run(
+            ["git", "checkout", "--", "pyproject.toml"],
+            cwd=project_root,
+            capture_output=True,
+            check=False,
+        )
+        marker.unlink(missing_ok=True)
+        typer.echo("OK    Restored original [tool.uv.sources] from git")
 
 
 class IntrospectionHelpers:
