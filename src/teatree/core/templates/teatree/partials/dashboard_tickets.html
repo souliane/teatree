@@ -162,11 +162,11 @@
                   <button
                     class="pill-btn pill-xs border border-purple-300 bg-purple-50 text-purple-700 hover:bg-purple-100"
                     hx-post="/tickets/{{ ticket.ticket_id }}/create-task/"
-                    hx-vals='{"phase": "reviewing", "target": "headless", "reason": "Auto-review before shipping"}'
+                    hx-vals='{"phase": "reviewing", "target": "headless", "reason": "Headless review before shipping"}'
                     hx-swap="none"
                     hx-on::after-request="htmx.trigger(document.body, 'refreshPanels')"
                     hx-disable-elt="this"
-                    title="Trigger auto-review"
+                    title="Trigger headless review"
                   >Review</button>
                 {% endif %}
               </td>
@@ -199,7 +199,7 @@
                     hx-on::after-request="htmx.trigger(document.body, 'refreshPanels')"
                     hx-disable-elt="this"
                     title="Start headless agent"
-                  >Auto</button>
+                  >Headless</button>
                   <button
                     class="pill-btn pill-xs border border-clay/30 bg-clay/10 uppercase tracking-[0.18em] text-clay hover:bg-clay/20"
                     hx-post="/tickets/{{ ticket.ticket_id }}/create-task/"
