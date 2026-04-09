@@ -161,6 +161,7 @@ def _make_mock_client(mrs: list[dict]) -> MagicMock:
     mock.get_mr_pipeline.return_value = {"status": "success", "url": "https://gitlab.com/pipelines/1"}
     mock.get_mr_approvals.return_value = {"count": 0, "required": 1}
     mock.get_issue.return_value = {"labels": ["Process::Doing"], "title": "Issue title"}
+    mock.get_draft_notes_count.return_value = 0
     return mock
 
 
@@ -292,6 +293,35 @@ class TestMREntry:
         )
         entry.pipeline_status = "success"
         assert entry.pipeline_status == "success"
+
+    def test_draft_comments_fields_default_to_none(self) -> None:
+        entry = MREntry(
+            url="u",
+            title="t",
+            branch="b",
+            draft=False,
+            repo="r",
+            iid=1,
+            updated_at="x",
+        )
+        assert entry.draft_comments_pending is None
+        assert entry.draft_comments_count is None
+
+    def test_draft_comments_in_to_dict(self) -> None:
+        entry = MREntry(
+            url="u",
+            title="t",
+            branch="b",
+            draft=False,
+            repo="r",
+            iid=1,
+            updated_at="x",
+            draft_comments_pending=True,
+            draft_comments_count=3,
+        )
+        d = entry.to_dict()
+        assert d["draft_comments_pending"] is True
+        assert d["draft_comments_count"] == 3
 
 
 class TestExtractIssueUrl:
@@ -886,6 +916,30 @@ class TestSyncFollowup(TestCase):
 
         mr_ticket = Ticket.objects.get(issue_url=_MR_WITHOUT_ISSUE["web_url"])
         assert mr_ticket.extra["mrs"][_MR_WITHOUT_ISSUE["web_url"]]["draft"] is True
+
+    def test_sync_sets_draft_comments_pending(self) -> None:
+        mock_client = _make_mock_client([_MR_WITH_ISSUE])
+        mock_client.get_draft_notes_count.return_value = 5
+        self._monkeypatch.setattr("teatree.backends.gitlab_api.GitLabAPI", lambda **_kw: mock_client)
+
+        sync_followup()
+
+        ticket = Ticket.objects.get(issue_url="https://gitlab.com/org/repo/-/issues/100")
+        mr_data = ticket.extra["mrs"][_MR_WITH_ISSUE["web_url"]]
+        assert mr_data["draft_comments_pending"] is True
+        assert mr_data["draft_comments_count"] == 5
+
+    def test_sync_clears_draft_comments_when_zero(self) -> None:
+        mock_client = _make_mock_client([_MR_WITH_ISSUE])
+        mock_client.get_draft_notes_count.return_value = 0
+        self._monkeypatch.setattr("teatree.backends.gitlab_api.GitLabAPI", lambda **_kw: mock_client)
+
+        sync_followup()
+
+        ticket = Ticket.objects.get(issue_url="https://gitlab.com/org/repo/-/issues/100")
+        mr_data = ticket.extra["mrs"][_MR_WITH_ISSUE["web_url"]]
+        assert mr_data["draft_comments_pending"] is False
+        assert "draft_comments_count" not in mr_data
 
     def test_fetches_issue_labels(self) -> None:
         mock_client = _make_mock_client([_MR_WITH_ISSUE])

@@ -199,6 +199,7 @@ lint.pylint.max-bool-expr = 5
 lint.pylint.max-branches = 12
 lint.pylint.max-locals = 15
 lint.pylint.max-nested-blocks = 5
+lint.pylint.max-public-methods = 25
 lint.pylint.max-returns = 6
 lint.pylint.max-statements = 50
 lint.preview = true
