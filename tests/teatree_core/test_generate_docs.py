@@ -1,14 +1,20 @@
 import json
+import subprocess
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from django.core.management import call_command
 
+import teatree.core.docgen as docgen_mod
 from teatree.core.docgen import (
+    _extract_subcommands,
+    build_cli_reference,
     build_overlay_doc_payload,
     build_skill_doc_payload,
     render_overlay_markdown,
     render_skill_markdown,
+    write_generated_doc,
 )
 from teatree.skill_map import load_skill_delegation, parse_skill_delegation_map, render_skill_delegation_map
 
@@ -136,3 +142,93 @@ class TestGenerateDocCommands:
         payload = json.loads((output_dir / "skill-delegation-matrix.json").read_text(encoding="utf-8"))
 
         assert payload["skill_map_path"] == "teatree.skill_map.DEFAULT_SKILL_DELEGATION"
+
+
+class TestExtractSubcommands:
+    def test_parses_click_format(self) -> None:
+        help_text = """\
+Usage: t3 [OPTIONS] COMMAND [ARGS]...
+
+Commands:
+    dashboard   Start the dashboard
+    config      Configuration and autoloading
+    doctor      Health checks
+"""
+        commands = _extract_subcommands(help_text)
+        assert commands == ["dashboard", "config", "doctor"]
+
+    def test_parses_typer_box_format(self) -> None:
+        help_text = """\
+Usage: t3 [OPTIONS] COMMAND [ARGS]...
+
+╭─ Commands ─────────────────────────────────╮
+│ dashboard   Start the dashboard             │
+│ config      Configuration and autoloading   │
+╰─────────────────────────────────────────────╯
+"""
+        commands = _extract_subcommands(help_text)
+        assert commands == ["dashboard", "config"]
+
+    def test_returns_empty_for_no_commands(self) -> None:
+        help_text = "Usage: t3 [OPTIONS]\n\nSome description."
+        commands = _extract_subcommands(help_text)
+        assert commands == []
+
+
+class TestRunHelp:
+    def test_returns_stdout(self) -> None:
+        with patch.object(
+            docgen_mod.subprocess,
+            "run",
+            return_value=subprocess.CompletedProcess([], 0, "Usage: t3 --help", ""),
+        ):
+            result = docgen_mod._run_help(["t3"])
+        assert result == "Usage: t3 --help"
+
+
+class TestBuildCliReference:
+    def test_generates_markdown(self) -> None:
+        def mock_run_help(cmd: list[str]) -> str:
+            if cmd == ["t3"]:
+                return "Usage: t3\n\nCommands:\n  config   Config commands"
+            if cmd == ["t3", "config"]:
+                return "Usage: t3 config\n\nNo subcommands."
+            return ""
+
+        with patch.object(docgen_mod, "_run_help", side_effect=mock_run_help):
+            result = build_cli_reference(["t3"])
+        assert "# CLI Reference" in result
+        assert "`t3`" in result
+        assert "`t3 config`" in result
+
+
+class TestWriteGeneratedDoc:
+    def test_creates_files(self, tmp_path: Path) -> None:
+        json_path = tmp_path / "out" / "data.json"
+        md_path = tmp_path / "out" / "doc.md"
+        payload = build_overlay_doc_payload()
+        markdown = render_overlay_markdown(payload)
+        write_generated_doc(json_path, md_path, payload, markdown)
+        assert json_path.is_file()
+        assert md_path.is_file()
+        data = json.loads(json_path.read_text(encoding="utf-8"))
+        assert data["overlay_base"] == "teatree.core.overlay.OverlayBase"
+
+
+class TestGenerateCliDocsCommand:
+    def test_writes_cli_reference(self, tmp_path: Path) -> None:
+        output = tmp_path / "cli-reference.md"
+        with patch.object(docgen_mod, "build_cli_reference", return_value="# CLI Reference\n"):
+            call_command("generate_cli_docs", output=str(output))
+        assert output.is_file()
+        assert output.read_text(encoding="utf-8") == "# CLI Reference\n"
+
+
+class TestGenerateAllDocsCommand:
+    def test_generates_all_three_docs(self, tmp_path: Path) -> None:
+        output_dir = tmp_path / "generated"
+        with patch.object(docgen_mod, "build_cli_reference", return_value="# CLI\n"):
+            call_command("generate_all_docs", output_dir=str(output_dir))
+        assert (output_dir / "overlay-extension-points.md").is_file()
+        assert (output_dir / "skill-delegation-matrix.md").is_file()
+        assert (output_dir / "cli-reference.md").is_file()
