@@ -3,6 +3,7 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 
 from django.http import Http404, HttpRequest, HttpResponse
+from django.shortcuts import get_object_or_404
 from django.template.response import TemplateResponse
 from django.templatetags.static import static
 from django.views import View
@@ -54,7 +55,7 @@ class DashboardView(View):
         except Exception:  # noqa: BLE001
             git_sha, git_branch = "", ""
         all_overlays = get_all_overlays()
-        overlay_paths = _build_overlay_paths(all_overlays)
+        overlay_branches = _build_overlay_branches(all_overlays)
         overlays = get_all_overlay_names()
         teatree_logo = static("teatree/img/teatree-logo.jpg")
         overlay_logos = {name: ov.config.dashboard_logo or teatree_logo for name, ov in all_overlays.items()}
@@ -80,7 +81,7 @@ class DashboardView(View):
                 "default_logo": teatree_logo,
                 "git_sha": git_sha,
                 "git_branch": git_branch,
-                "overlay_paths": overlay_paths,
+                "overlay_branches": overlay_branches,
                 "terminal_apps": detect_available_apps(),
                 "contribute_mode": load_config().user.contribute,
             },
@@ -119,13 +120,12 @@ class TaskGraphView(View):
     def get(self, request: HttpRequest, ticket_id: int) -> HttpResponse:
         from teatree.core.models import Ticket  # noqa: PLC0415
 
-        if not Ticket.objects.filter(pk=ticket_id).exists():
-            raise Http404
+        ticket = get_object_or_404(Ticket, pk=ticket_id)
         graph = build_task_graph(ticket_id)
         return TemplateResponse(
             request,
             "teatree/partials/task_graph.html",
-            {"ticket_id": ticket_id, "graph": graph},
+            {"ticket_id": ticket.ticket_number, "graph": graph},
         )
 
 
@@ -134,13 +134,12 @@ class TicketLifecycleView(View):
         from teatree.core.models import Ticket  # noqa: PLC0415
         from teatree.core.selectors import build_ticket_lifecycle_mermaid  # noqa: PLC0415
 
-        if not Ticket.objects.filter(pk=ticket_id).exists():
-            raise Http404
+        ticket = get_object_or_404(Ticket, pk=ticket_id)
         mermaid = build_ticket_lifecycle_mermaid(ticket_id)
         return TemplateResponse(
             request,
             "teatree/partials/ticket_lifecycle.html",
-            {"ticket_id": ticket_id, "mermaid": mermaid},
+            {"ticket_id": ticket.ticket_number, "mermaid": mermaid},
         )
 
 
@@ -165,24 +164,29 @@ _PANEL_BUILDERS: dict[str, _PanelBuilder] = {
 }
 
 
-def _build_overlay_paths(all_overlays: Mapping[str, object]) -> dict[str, str]:
-    """Build overlay name -> filesystem path mapping for all overlays."""
+def _build_overlay_branches(all_overlays: Mapping[str, object]) -> dict[str, str]:
+    """Build overlay name -> git branch mapping for all overlays."""
     from teatree.config import discover_overlays  # noqa: PLC0415
 
-    paths: dict[str, str] = {}
+    branches: dict[str, str] = {}
     for entry in discover_overlays():
+        repo_path = None
         if entry.project_path:
-            paths[entry.name] = str(entry.project_path)
+            repo_path = Path(entry.project_path)
         elif entry.name in all_overlays:
             ov = all_overlays[entry.name]
             mod = importlib.import_module(type(ov).__module__)
             if hasattr(mod, "__file__") and mod.__file__:
-                paths[entry.name] = str(Path(mod.__file__).resolve().parent)
-            else:
-                paths[entry.name] = type(ov).__module__
+                repo_path = Path(mod.__file__).resolve().parent
+        if repo_path:
+            try:
+                branch = git_utils.current_branch(repo=str(repo_path))
+            except OSError:
+                branch = ""
+            branches[entry.name] = branch or "unknown"
         else:
-            paths[entry.name] = entry.overlay_class or "unknown"
-    return paths
+            branches[entry.name] = "unknown"
+    return branches
 
 
 def _panel_context(panel: str, *, show_dismissed: bool = False, overlay: str | None = None) -> dict[str, object]:

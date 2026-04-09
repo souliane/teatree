@@ -37,7 +37,7 @@ _TICKET_TRANSITIONS = [
     ("review", "Review"),
     ("ship", "Ship"),
     ("request_review", "Request review"),
-    ("mark_merged", "Mark merged"),
+    ("mark_merged", "Merge"),
     ("mark_delivered", "Mark delivered"),
     ("rework", "Rework"),
 ]
@@ -98,6 +98,10 @@ def build_dashboard_ticket_rows(overlay: str | None = None) -> list[DashboardTic
         # no title, and no MR data.
         if not has_issue and not mrs and not title:
             continue
+        extra = ticket.extra if isinstance(ticket.extra, dict) else {}
+        raw_labels = _list_of_str(extra.get("labels", []))
+        variant_lower = ticket.variant.lower()
+        display_labels = [lbl for lbl in raw_labels if not lbl.startswith("Process::") and lbl.lower() != variant_lower]
         rows.append(
             DashboardTicketRow(
                 ticket_id=ticket.pk,
@@ -114,6 +118,7 @@ def build_dashboard_ticket_rows(overlay: str | None = None) -> list[DashboardTic
                 repos=list(ticket.repos),
                 ongoing_tasks=ticket.ongoing_tasks,
                 total_tasks=ticket.total_tasks,
+                labels=display_labels,
                 mrs=mrs,
                 transitions=available_ticket_transitions(ticket),
             ),

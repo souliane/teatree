@@ -81,6 +81,7 @@ class DashboardTicketRow:
     repos: list[str]
     ongoing_tasks: int
     total_tasks: int
+    labels: list[str]
     mrs: list[DashboardMRRow]
     transitions: list[tuple[str, str]]  # (method_name, label)
 
@@ -89,6 +90,7 @@ class DashboardTicketRow:
 class DashboardTaskRow:
     task_id: int
     ticket_id: int
+    ticket_display_id: str
     execution_reason: str
     status: str
     claimed_by: str
@@ -107,6 +109,7 @@ class ActiveSessionRow:
     kind: str  # "headless", "interactive", "ttyd", "manual"
     task_id: int | None
     ticket_id: int | None
+    ticket_display_id: str
     phase: str
     launch_url: str
     session_id: str = ""
@@ -179,6 +182,7 @@ class TaskRelatedRow:
 class TaskDetail:
     task_id: int
     ticket_id: int
+    ticket_display_id: str
     phase: str
     status: str
     execution_target: str

@@ -8,7 +8,7 @@
         </th>
         <th class="border-b border-bark/10 px-3 py-3 text-left font-sans text-[11px] font-semibold uppercase tracking-[0.2em] text-bark/55">Ticket</th>
         <th class="border-b border-bark/10 px-3 py-3 text-left font-sans text-[11px] font-semibold uppercase tracking-[0.2em] text-bark/55">Status</th>
-        <th class="border-b border-bark/10 px-3 py-3 text-left font-sans text-[11px] font-semibold uppercase tracking-[0.2em] text-bark/55">MR</th>
+        <th class="border-b border-bark/10 px-3 py-3 text-left font-sans text-[11px] font-semibold uppercase tracking-[0.2em] text-bark/55">PR</th>
         <th class="border-b border-bark/10 px-3 py-3 text-left font-sans text-[11px] font-semibold uppercase tracking-[0.2em] text-bark/55">E2E</th>
         <th class="border-b border-bark/10 px-3 py-3 text-left font-sans text-[11px] font-semibold uppercase tracking-[0.2em] text-bark/55">CI</th>
         <th class="border-b border-bark/10 px-3 py-3 text-left font-sans text-[11px] font-semibold uppercase tracking-[0.2em] text-bark/55">Review</th>
@@ -39,12 +39,15 @@
             {% if forloop.first %}
               <td class="cell-wrap border-b border-bark/10 px-3 py-3 align-top" {% if mr_count > 1 %}rowspan="{{ mr_count }}"{% endif %}>
                 {% if ticket.has_issue %}
-                  <a class="font-sans font-semibold text-moss hover:underline" href="{{ ticket.issue_url }}">#{{ ticket.display_id }}</a>
+                  <a class="font-sans font-semibold text-moss hover:underline" href="{{ ticket.issue_url }}">#{{ ticket.display_id }}</a>{% if debug %}<a href="/admin/core/ticket/{{ ticket.ticket_id }}/change/" class="ml-0.5 text-bark/25 hover:text-bark/50 text-[9px]" title="Admin">&#9881;</a>{% endif %}
                   {% if ticket.variant and ticket.variant_url %}
                     <a href="{{ ticket.variant_url }}" class="ml-1 pill pill-xs bg-clay/10 text-clay hover:brightness-95" target="_blank">{{ ticket.variant }}</a>
                   {% elif ticket.variant %}
                     <span class="ml-1 pill pill-xs bg-clay/10 text-clay">{{ ticket.variant }}</span>
                   {% endif %}
+                  {% for label in ticket.labels %}
+                    <span class="ml-1 pill pill-xs bg-bark/8 text-bark/60">{{ label }}</span>
+                  {% endfor %}
                   {% if ticket.issue_title %}
                     <br><span class="font-sans text-xs text-bark/60">{{ ticket.issue_title }}</span>
                   {% endif %}
@@ -73,7 +76,7 @@
             {% endif %}
             <td class="border-b border-bark/10 px-3 py-3 align-top">
               {% if mr.url %}
-                <a class="font-sans text-moss hover:underline" href="{{ mr.url }}" title="{{ mr.title }}">{{ mr.repo }}&nbsp;!{{ mr.iid }}</a>
+                <a class="font-sans text-moss hover:underline" href="{{ mr.url }}" title="{{ mr.title }}">{{ mr.repo }}&nbsp;#{{ mr.iid }}</a>
               {% else %}
                 {{ mr.repo }}
               {% endif %}
@@ -108,7 +111,9 @@
               {% endif %}
             </td>
             <td class="border-b border-bark/10 px-3 py-3 align-top">
-              {% if mr.review_permalink %}
+              {% if mr.review_permalink and mr.review_requested %}
+                <a href="{{ mr.review_permalink }}" class="pill pill-sm bg-purple-100 text-purple-700 hover:brightness-110" target="_blank" title="{{ mr.reviewer_names|join:', ' }}">&#x23F3;</a>
+              {% elif mr.review_permalink %}
                 <a href="{{ mr.review_permalink }}" class="pill pill-sm bg-green-100 text-green-700 hover:brightness-110" target="_blank" title="{{ mr.reviewer_names|join:', ' }}">&#x2705;</a>
               {% elif mr.review_requested %}
                 <span class="pill pill-sm bg-purple-100 text-purple-700" title="{{ mr.reviewer_names|join:', ' }}">&#x23F3;</span>
@@ -121,7 +126,7 @@
                   hx-on::after-request="htmx.trigger(document.body, 'refreshPanels')"
                   hx-disable-elt="this"
                   title="Post review request to Slack"
-                >Ask</button>
+                >Request</button>
               {% else %}
                 <span class="text-bark/30">&mdash;</span>
               {% endif %}
@@ -157,11 +162,11 @@
                   <button
                     class="pill-btn pill-xs border border-purple-300 bg-purple-50 text-purple-700 hover:bg-purple-100"
                     hx-post="/tickets/{{ ticket.ticket_id }}/create-task/"
-                    hx-vals='{"phase": "reviewing", "target": "headless", "reason": "Auto-review before shipping"}'
+                    hx-vals='{"phase": "reviewing", "target": "headless", "reason": "Headless review before shipping"}'
                     hx-swap="none"
                     hx-on::after-request="htmx.trigger(document.body, 'refreshPanels')"
                     hx-disable-elt="this"
-                    title="Trigger auto-review"
+                    title="Trigger headless review"
                   >Review</button>
                 {% endif %}
               </td>
@@ -194,7 +199,7 @@
                     hx-on::after-request="htmx.trigger(document.body, 'refreshPanels')"
                     hx-disable-elt="this"
                     title="Start headless agent"
-                  >Auto</button>
+                  >Headless</button>
                   <button
                     class="pill-btn pill-xs border border-clay/30 bg-clay/10 uppercase tracking-[0.18em] text-clay hover:bg-clay/20"
                     hx-post="/tickets/{{ ticket.ticket_id }}/create-task/"

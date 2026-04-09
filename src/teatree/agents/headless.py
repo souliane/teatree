@@ -10,12 +10,14 @@ import re
 import shutil
 import subprocess  # noqa: S404
 import threading
+from pathlib import Path
 
 from django.utils import timezone
 
 from teatree.agents.result_schema import RESULT_JSON_SCHEMA
 from teatree.agents.skill_bundle import resolve_skill_bundle
 from teatree.core.models import Task, TaskAttempt
+from teatree.core.models.worktree import Worktree
 from teatree.skill_loading import SkillLoadingPolicy
 from teatree.types import SkillMetadata
 
@@ -66,7 +68,8 @@ def run_headless(
     resume_session_id = _get_resume_session_id(task)
     command = _build_headless_command(binary, prompt, system_context, resume_session_id=resume_session_id)
 
-    stdout, stderr, returncode = _run_with_heartbeat(task, command)
+    cwd = _resolve_task_cwd(task)
+    stdout, stderr, returncode = _run_with_heartbeat(task, command, cwd=cwd)
 
     if returncode != 0:
         return _record_failure(task, exit_code=returncode, error=stderr[:2000])
@@ -75,7 +78,18 @@ def run_headless(
     return _record_success(task, envelope)
 
 
-def _run_with_heartbeat(task: Task, command: list[str]) -> tuple[str, str, int]:
+def _resolve_task_cwd(task: Task) -> str | None:
+    """Determine the working directory for a task from its ticket's worktrees."""
+    ticket = task.ticket
+    if ticket is None:
+        return None
+    worktree = Worktree.objects.filter(ticket=ticket).order_by("pk").first()
+    if worktree and Path(worktree.repo_path).is_dir():
+        return str(worktree.repo_path)
+    return None
+
+
+def _run_with_heartbeat(task: Task, command: list[str], *, cwd: str | None = None) -> tuple[str, str, int]:
     """Run *command* as a subprocess while sending lease heartbeats.
 
     Returns ``(stdout, stderr, returncode)``.
@@ -97,6 +111,7 @@ def _run_with_heartbeat(task: Task, command: list[str]) -> tuple[str, str, int]:
             capture_output=True,
             text=True,
             check=False,
+            cwd=cwd,
         )
     finally:
         stop_event.set()
