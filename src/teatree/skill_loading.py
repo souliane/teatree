@@ -18,7 +18,17 @@ from teatree.utils import git
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_SKILLS_DIR = Path(__file__).resolve().parents[2] / "skills"
+def _default_skills_dir() -> Path:
+    from teatree import find_project_root  # noqa: PLC0415
+
+    root = find_project_root()
+    if root:
+        return root / "skills"
+    # Fallback for non-source installs: skills/ next to src/
+    return Path(__file__).resolve().parent.parent.parent / "skills"
+
+
+DEFAULT_SKILLS_DIR = _default_skills_dir()
 
 _AGENT_TASK_KEYWORDS: dict[str, tuple[str, ...]] = {
     "debug": ("debug", "fix", "error", "broken", "crash", "not working", "bug", "trace"),

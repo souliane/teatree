@@ -150,11 +150,9 @@ def _get_t3_repo() -> Path | None:
     env_path = os.environ.get("T3_REPO", "")
     if env_path:
         return Path(env_path).expanduser()
-    # Fall back to auto-detect from package location
-    pkg_root = Path(__file__).resolve().parents[4]
-    if (pkg_root / ".git").is_dir():
-        return pkg_root
-    return None
+    from teatree import find_project_root  # noqa: PLC0415
+
+    return find_project_root()
 
 
 @method_decorator(csrf_exempt, name="dispatch")

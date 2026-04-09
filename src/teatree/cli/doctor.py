@@ -204,12 +204,9 @@ class DoctorService:
             if (p / "pyproject.toml").is_file():
                 return p
         # Auto-detect from package location (editable or source checkout)
-        current = Path(__file__).resolve().parent
-        while current != current.parent:
-            if (current / ".git").exists() and (current / "pyproject.toml").is_file():
-                return current
-            current = current.parent
-        return None
+        from teatree import find_project_root  # noqa: PLC0415
+
+        return find_project_root()
 
     @staticmethod
     def find_overlay_repo(dist_name: str) -> Path | None:

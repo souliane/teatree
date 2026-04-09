@@ -2,6 +2,8 @@ import os
 import subprocess
 from pathlib import Path
 
+from teatree import find_project_root
+
 import pytest
 
 
@@ -15,7 +17,9 @@ def test_banned_terms_hook_expands_tilde_config_path(tmp_path: Path) -> None:
     sample = tmp_path / "README.md"
     sample.write_text("acme overlay\n", encoding="utf-8")
 
-    script = Path(__file__).resolve().parents[1] / "scripts" / "hooks" / "check-banned-terms.sh"
+    root = find_project_root()
+    assert root is not None
+    script = root / "scripts" / "hooks" / "check-banned-terms.sh"
     env = dict(os.environ)
     env["HOME"] = str(home)
 
@@ -41,7 +45,9 @@ def test_banned_terms_hook_ignores_matches_inside_email_addresses(tmp_path: Path
     sample = tmp_path / "AGENTS.md"
     sample.write_text("Git author: adrien <adrien.cossa@internalterm.example>\n", encoding="utf-8")
 
-    script = Path(__file__).resolve().parents[1] / "scripts" / "hooks" / "check-banned-terms.sh"
+    root = find_project_root()
+    assert root is not None
+    script = root / "scripts" / "hooks" / "check-banned-terms.sh"
     env = dict(os.environ)
     env["HOME"] = str(home)
 
