@@ -55,7 +55,7 @@ class DashboardView(View):
         except Exception:  # noqa: BLE001
             git_sha, git_branch = "", ""
         all_overlays = get_all_overlays()
-        overlay_paths = _build_overlay_paths(all_overlays)
+        overlay_branches = _build_overlay_branches(all_overlays)
         overlays = get_all_overlay_names()
         teatree_logo = static("teatree/img/teatree-logo.jpg")
         overlay_logos = {name: ov.config.get_dashboard_logo() or teatree_logo for name, ov in all_overlays.items()}
@@ -81,7 +81,7 @@ class DashboardView(View):
                 "default_logo": teatree_logo,
                 "git_sha": git_sha,
                 "git_branch": git_branch,
-                "overlay_paths": overlay_paths,
+                "overlay_branches": overlay_branches,
                 "terminal_apps": detect_available_apps(),
                 "contribute_mode": load_config().user.contribute,
             },
@@ -164,24 +164,26 @@ _PANEL_BUILDERS: dict[str, _PanelBuilder] = {
 }
 
 
-def _build_overlay_paths(all_overlays: Mapping[str, object]) -> dict[str, str]:
-    """Build overlay name -> filesystem path mapping for all overlays."""
+def _build_overlay_branches(all_overlays: Mapping[str, object]) -> dict[str, str]:
+    """Build overlay name -> git branch mapping for all overlays."""
     from teatree.config import discover_overlays  # noqa: PLC0415
 
-    paths: dict[str, str] = {}
+    branches: dict[str, str] = {}
     for entry in discover_overlays():
+        repo_path = None
         if entry.project_path:
-            paths[entry.name] = str(entry.project_path)
+            repo_path = Path(entry.project_path)
         elif entry.name in all_overlays:
             ov = all_overlays[entry.name]
             mod = importlib.import_module(type(ov).__module__)
             if hasattr(mod, "__file__") and mod.__file__:
-                paths[entry.name] = str(Path(mod.__file__).resolve().parent)
-            else:
-                paths[entry.name] = type(ov).__module__
+                repo_path = Path(mod.__file__).resolve().parent
+        if repo_path:
+            branch = git_utils.current_branch(repo=str(repo_path))
+            branches[entry.name] = branch or "unknown"
         else:
-            paths[entry.name] = entry.overlay_class or "unknown"
-    return paths
+            branches[entry.name] = "unknown"
+    return branches
 
 
 def _panel_context(panel: str, *, show_dismissed: bool = False, overlay: str | None = None) -> dict[str, object]:

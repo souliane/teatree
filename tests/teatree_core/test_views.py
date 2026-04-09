@@ -14,7 +14,7 @@ import teatree.core.views.actions as actions_views
 from teatree.config import OverlayEntry
 from teatree.core.models import Session, Task, Ticket, Worktree
 from teatree.core.sync import SyncResult
-from teatree.core.views.dashboard import _build_overlay_paths, _panel_context
+from teatree.core.views.dashboard import _build_overlay_branches, _panel_context
 from tests.teatree_core.conftest import CommandOverlay
 
 _MOCK_OVERLAY = {"test": CommandOverlay()}
@@ -235,32 +235,37 @@ class TestOverlaySelector(TestCase):
         assert len(response.context["tickets"]) == 1
 
 
-class TestBuildOverlayPaths:
-    def test_uses_project_path_from_discover_overlays(self) -> None:
+class TestBuildOverlayBranches:
+    def test_returns_branch_for_overlay_with_project_path(self) -> None:
         entries = [OverlayEntry(name="my-overlay", overlay_class="", project_path=Path("/opt/my-overlay"))]
-        with patch("teatree.config.discover_overlays", return_value=entries):
-            result = _build_overlay_paths({})
+        with (
+            patch("teatree.config.discover_overlays", return_value=entries),
+            patch("teatree.utils.git.current_branch", return_value="main"),
+        ):
+            result = _build_overlay_branches({})
 
-        assert result == {"my-overlay": "/opt/my-overlay"}
+        assert result == {"my-overlay": "main"}
 
-    def test_includes_path_only_toml_overlays(self) -> None:
-        entries = [
-            OverlayEntry(name="ep-overlay", overlay_class="mod:Cls", project_path=Path("/opt/ep")),
-            OverlayEntry(name="toml-only", overlay_class="", project_path=Path("/opt/toml")),
-        ]
-        with patch("teatree.config.discover_overlays", return_value=entries):
-            result = _build_overlay_paths({"ep-overlay": CommandOverlay()})
+    def test_returns_unknown_when_git_returns_empty(self) -> None:
+        entries = [OverlayEntry(name="broken", overlay_class="", project_path=Path("/nonexistent"))]
+        with (
+            patch("teatree.config.discover_overlays", return_value=entries),
+            patch("teatree.utils.git.current_branch", return_value=""),
+        ):
+            result = _build_overlay_branches({})
 
-        assert result["ep-overlay"] == "/opt/ep"
-        assert result["toml-only"] == "/opt/toml"
+        assert result == {"broken": "unknown"}
 
-    def test_falls_back_to_module_file_when_no_project_path(self) -> None:
+    def test_resolves_branch_from_module_when_no_project_path(self) -> None:
         overlay = CommandOverlay()
         entries = [OverlayEntry(name="test", overlay_class="", project_path=None)]
-        with patch("teatree.config.discover_overlays", return_value=entries):
-            result = _build_overlay_paths({"test": overlay})
+        with (
+            patch("teatree.config.discover_overlays", return_value=entries),
+            patch("teatree.utils.git.current_branch", return_value="feature-branch"),
+        ):
+            result = _build_overlay_branches({"test": overlay})
 
-        assert "conftest" in result["test"] or "test_overlay" in result["test"] or "/" in result["test"]
+        assert result["test"] == "feature-branch"
 
 
 class TestPanelContext(TestCase):
