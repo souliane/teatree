@@ -179,7 +179,10 @@ def _build_overlay_branches(all_overlays: Mapping[str, object]) -> dict[str, str
             if hasattr(mod, "__file__") and mod.__file__:
                 repo_path = Path(mod.__file__).resolve().parent
         if repo_path:
-            branch = git_utils.current_branch(repo=str(repo_path))
+            try:
+                branch = git_utils.current_branch(repo=str(repo_path))
+            except OSError:
+                branch = ""
             branches[entry.name] = branch or "unknown"
         else:
             branches[entry.name] = "unknown"

@@ -256,6 +256,16 @@ class TestBuildOverlayBranches:
 
         assert result == {"broken": "unknown"}
 
+    def test_returns_unknown_when_git_not_found(self) -> None:
+        entries = [OverlayEntry(name="no-git", overlay_class="", project_path=Path("/opt/repo"))]
+        with (
+            patch("teatree.config.discover_overlays", return_value=entries),
+            patch("teatree.utils.git.current_branch", side_effect=FileNotFoundError("git not found")),
+        ):
+            result = _build_overlay_branches({})
+
+        assert result == {"no-git": "unknown"}
+
     def test_resolves_branch_from_module_when_no_project_path(self) -> None:
         overlay = CommandOverlay()
         entries = [OverlayEntry(name="test", overlay_class="", project_path=None)]
