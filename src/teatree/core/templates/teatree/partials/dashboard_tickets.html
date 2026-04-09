@@ -111,7 +111,9 @@
               {% endif %}
             </td>
             <td class="border-b border-bark/10 px-3 py-3 align-top">
-              {% if mr.review_permalink %}
+              {% if mr.review_permalink and mr.review_requested %}
+                <a href="{{ mr.review_permalink }}" class="pill pill-sm bg-purple-100 text-purple-700 hover:brightness-110" target="_blank" title="{{ mr.reviewer_names|join:', ' }}">&#x23F3;</a>
+              {% elif mr.review_permalink %}
                 <a href="{{ mr.review_permalink }}" class="pill pill-sm bg-green-100 text-green-700 hover:brightness-110" target="_blank" title="{{ mr.reviewer_names|join:', ' }}">&#x2705;</a>
               {% elif mr.review_requested %}
                 <span class="pill pill-sm bg-purple-100 text-purple-700" title="{{ mr.reviewer_names|join:', ' }}">&#x23F3;</span>
@@ -124,7 +126,7 @@
                   hx-on::after-request="htmx.trigger(document.body, 'refreshPanels')"
                   hx-disable-elt="this"
                   title="Post review request to Slack"
-                >Ask</button>
+                >Request</button>
               {% else %}
                 <span class="text-bark/30">&mdash;</span>
               {% endif %}
