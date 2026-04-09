@@ -879,6 +879,22 @@ class TestWorkspaceCleanAll(TestCase):
             assert not empty_dir.exists()
             assert nonempty_dir.exists()
 
+    @_no_prune
+    @_no_stash
+    @_no_orphan_dbs
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_includes_dslr_snapshot_pruning(self) -> None:
+        """clean-all includes DSLR snapshot pruning results."""
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch.object(workspace_mod, "_workspace_dir", return_value=Path(tmp)),
+            patch("teatree.utils.django_db.prune_dslr_snapshots", return_value=["old-snapshot-2025"]),
+        ):
+            cleaned = cast("list[str]", call_command("workspace", "clean-all"))
+
+        assert any("old-snapshot-2025" in c for c in cleaned)
+
 
 _gh_no_pr = patch(
     "teatree.core.management.commands.workspace.subprocess.run",
@@ -955,6 +971,196 @@ class TestPruneBranches(TestCase):
         assert any("squash-merged" in c for c in cleaned)
         mock_wt_rm.assert_called_once_with("/repo", "/tmp/old-worktree")
         mock_br_del.assert_called_once_with("/repo", "gone-branch")
+
+
+class TestPruneBranchesPassOneAndTwo(TestCase):
+    """Cover Pass 1 (gone branches) and Pass 2 (merged branches) in _prune_branches."""
+
+    def test_pass1_deletes_gone_branch_not_in_worktree(self) -> None:
+        def fake_run(*, repo: str = ".", args: list[str]) -> str:
+            if args == ["branch", "-v", "--no-color"]:
+                return "  active abc123 some work\n  stale-feature def456 [gone] old work"
+            if args == ["branch", "--merged", "origin/main", "--no-color"]:
+                return ""
+            if args == ["branch", "--no-color"]:
+                return "* main"
+            return ""
+
+        with (
+            patch.object(git_mod, "run", side_effect=fake_run),
+            patch.object(git_mod, "current_branch", return_value="main"),
+            patch.object(git_mod, "default_branch", return_value="main"),
+            patch.object(git_mod, "branch_delete") as mock_del,
+            patch.object(workspace_mod, "_worktree_branches", return_value=set()),
+            patch.object(workspace_mod, "_worktree_map", return_value={}),
+        ):
+            cleaned = workspace_mod._prune_branches("/repo")
+
+        mock_del.assert_called_once_with("/repo", "stale-feature")
+        assert any("gone" in c and "stale-feature" in c for c in cleaned)
+
+    def test_pass2_deletes_merged_branch_and_skips_protected(self) -> None:
+        def fake_run(*, repo: str = ".", args: list[str]) -> str:
+            if args == ["branch", "-v", "--no-color"]:
+                return ""
+            if args == ["branch", "--merged", "origin/main", "--no-color"]:
+                return "  main\n  merged-feature"
+            if args == ["branch", "--no-color"]:
+                return "* main"
+            return ""
+
+        with (
+            patch.object(git_mod, "run", side_effect=fake_run),
+            patch.object(git_mod, "current_branch", return_value="main"),
+            patch.object(git_mod, "default_branch", return_value="main"),
+            patch.object(git_mod, "branch_delete") as mock_del,
+            patch.object(workspace_mod, "_worktree_branches", return_value=set()),
+            patch.object(workspace_mod, "_worktree_map", return_value={}),
+        ):
+            cleaned = workspace_mod._prune_branches("/repo")
+
+        mock_del.assert_called_once_with("/repo", "merged-feature")
+        assert any("merged" in c and "merged-feature" in c for c in cleaned)
+
+    def test_pass3_warns_non_squash_merged_branch(self) -> None:
+        def fake_run(*, repo: str = ".", args: list[str]) -> str:
+            if args == ["branch", "-v", "--no-color"]:
+                return ""
+            if args == ["branch", "--merged", "origin/main", "--no-color"]:
+                return ""
+            if args == ["branch", "--no-color"]:
+                return "* main\n  unmerged-feature"
+            if "diff" in args:
+                return " file.py | 1 +"
+            if "rev-list" in args:
+                return "5"
+            return ""
+
+        gh_no_pr = subprocess.CompletedProcess([], 0, stdout="[]")
+        with (
+            patch.object(git_mod, "run", side_effect=fake_run),
+            patch.object(git_mod, "current_branch", return_value="main"),
+            patch.object(git_mod, "default_branch", return_value="main"),
+            patch.object(git_mod, "branch_delete") as mock_del,
+            patch.object(workspace_mod, "_worktree_branches", return_value=set()),
+            patch.object(workspace_mod, "_worktree_map", return_value={}),
+            patch("teatree.core.management.commands.workspace.subprocess.run", return_value=gh_no_pr),
+        ):
+            cleaned = workspace_mod._prune_branches("/repo")
+
+        mock_del.assert_not_called()
+        assert any("WARNING" in c and "unmerged-feature" in c for c in cleaned)
+
+    def test_pass1_skips_protected_and_worktree_branches(self) -> None:
+        def fake_run(*, repo: str = ".", args: list[str]) -> str:
+            if args == ["branch", "-v", "--no-color"]:
+                return "  main abc123 [gone]\n  wt-branch def456 [gone]"
+            if args == ["branch", "--merged", "origin/main", "--no-color"]:
+                return ""
+            if args == ["branch", "--no-color"]:
+                return "* main"
+            return ""
+
+        with (
+            patch.object(git_mod, "run", side_effect=fake_run),
+            patch.object(git_mod, "current_branch", return_value="main"),
+            patch.object(git_mod, "default_branch", return_value="main"),
+            patch.object(git_mod, "branch_delete") as mock_del,
+            patch.object(workspace_mod, "_worktree_branches", return_value={"wt-branch"}),
+            patch.object(workspace_mod, "_worktree_map", return_value={}),
+        ):
+            workspace_mod._prune_branches("/repo")
+
+        mock_del.assert_not_called()
+
+
+class TestDropOrphanedStashes(TestCase):
+    def test_drops_stash_for_deleted_branch(self) -> None:
+        stash_output = "stash@{0}: WIP on deleted-branch: abc123 some work"
+        branches_output = "* main\n  other-branch"
+        calls: list[list[str]] = []
+
+        def fake_run(*, repo: str = ".", args: list[str]) -> str:
+            calls.append(args)
+            if args == ["stash", "list"]:
+                return stash_output
+            if args == ["branch", "--no-color"]:
+                return branches_output
+            return ""
+
+        with patch.object(git_mod, "run", side_effect=fake_run):
+            result = workspace_mod._drop_orphaned_stashes("/repo")
+
+        assert len(result) == 1
+        assert "deleted-branch" in result[0]
+        assert ["stash", "drop", "stash@{0}"] in calls
+
+    def test_keeps_stash_for_existing_branch(self) -> None:
+        stash_output = "stash@{0}: WIP on main: abc123 some work"
+        branches_output = "* main"
+
+        def fake_run(*, repo: str = ".", args: list[str]) -> str:
+            if args == ["stash", "list"]:
+                return stash_output
+            if args == ["branch", "--no-color"]:
+                return branches_output
+            return ""
+
+        with patch.object(git_mod, "run", side_effect=fake_run):
+            result = workspace_mod._drop_orphaned_stashes("/repo")
+
+        assert result == []
+
+    def test_returns_empty_when_no_stashes(self) -> None:
+        with patch.object(git_mod, "run", return_value=""):
+            result = workspace_mod._drop_orphaned_stashes("/repo")
+        assert result == []
+
+    def test_skips_stash_without_on_keyword(self) -> None:
+        stash_output = "stash@{0}: Some unusual format"
+        branches_output = "* main"
+
+        def fake_run(*, repo: str = ".", args: list[str]) -> str:
+            if args == ["stash", "list"]:
+                return stash_output
+            if args == ["branch", "--no-color"]:
+                return branches_output
+            return ""
+
+        with patch.object(git_mod, "run", side_effect=fake_run):
+            result = workspace_mod._drop_orphaned_stashes("/repo")
+
+        assert result == []
+
+
+class TestDropOrphanDatabasesFailure(TestCase):
+    def test_returns_empty_when_psql_fails(self) -> None:
+        with (
+            patch.object(workspace_mod, "subprocess") as mock_sp,
+            patch.object(db_mod, "pg_env", return_value={}),
+            patch.object(db_mod, "pg_host", return_value="localhost"),
+            patch.object(db_mod, "pg_user", return_value="postgres"),
+        ):
+            mock_sp.run.return_value = MagicMock(returncode=1)
+            result = workspace_mod._drop_orphan_databases()
+
+        assert result == []
+
+
+class TestWorktreeBranches(TestCase):
+    def test_returns_branch_names_from_worktree_map(self) -> None:
+        porcelain = (
+            "worktree /home/user/main\n"
+            "HEAD abc123\n"
+            "branch refs/heads/main\n"
+            "\n"
+            "worktree /home/user/wt-feature\n"
+            "HEAD def456\n"
+            "branch refs/heads/feature-branch\n"
+        )
+        with patch.object(git_mod, "run", return_value=porcelain):
+            result = workspace_mod._worktree_branches("/repo")
+        assert result == {"main", "feature-branch"}
 
 
 class TestWorkspaceFinalize(TestCase):
