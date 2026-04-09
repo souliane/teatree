@@ -9,6 +9,7 @@ and OverlayConfig will read it at runtime.
 GITHUB_OWNER: str = "souliane"
 GITHUB_PROJECT_NUMBER: int = 2
 GITHUB_TOKEN_PASS_KEY: str = "github/token"  # noqa: S105 — pass key name, not a secret
+GITLAB_TOKEN_PASS_KEY: str = "gitlab/pat"  # noqa: S105 — pass key name, not a secret
 
 # ── Workflow ────────────────────────────────────────────────────────
 
