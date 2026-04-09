@@ -33,16 +33,19 @@
           <div class="flex items-center gap-2">
             <span class="hidden font-sans text-xs text-red-600" data-error-msg></span>
             {% if task.claimed_by %}
+              <span class="rounded-full bg-amber-50 border border-amber-200 px-3 py-1.5 font-sans text-[10px] font-semibold uppercase tracking-[0.18em] text-amber-600">
+                Running
+              </span>
               <button
-                class="rounded-full border border-red-300 bg-red-50 px-4 py-1.5 font-sans text-xs font-semibold uppercase tracking-[0.18em] text-red-600 transition hover:bg-red-100"
+                class="font-sans text-[10px] text-bark/30 underline decoration-bark/15 hover:text-red-500 hover:decoration-red-300 transition cursor-pointer"
                 hx-post="/tasks/{{ task.task_id }}/cancel/"
                 hx-swap="none"
                 hx-on::after-request="handleCancelResponse(event)"
                 hx-disable-elt="this"
-                hx-confirm="This task is in progress. Are you sure?"
+                hx-confirm="This will cancel a running headless task. The agent process may need to be stopped separately. Continue?"
                 hx-vals='{"confirm": "true"}'
               >
-                Cancel
+                force cancel
               </button>
             {% else %}
               <button
