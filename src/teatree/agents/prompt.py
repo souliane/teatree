@@ -1,6 +1,7 @@
 """Build agent prompts from ticket and task context."""
 
 from pathlib import Path
+from typing import cast
 
 from teatree.core.models import Task, Ticket
 from teatree.skill_loading import DEFAULT_SKILLS_DIR
@@ -213,6 +214,30 @@ def build_system_context(task: Task, *, skills: list[str], lifecycle_skill: str 
     return "\n".join(lines)
 
 
+type _TicketExtra = dict[str, object]
+type _MrDict = dict[str, object]
+
+
+def _format_mr_context(extra: _TicketExtra) -> list[str]:
+    mrs = extra.get("mrs", {})
+    if not isinstance(mrs, dict) or not mrs:
+        return []
+    lines = ["", "Open merge requests:"]
+    for raw_mr in mrs.values():
+        if not isinstance(raw_mr, dict):
+            continue
+        mr = cast("_MrDict", raw_mr)
+        url = mr.get("url", "")
+        mr_title = mr.get("title", "")
+        draft = " (draft)" if mr.get("draft") else ""
+        pipeline = mr.get("pipeline_status", "")
+        pipeline_info = f" — pipeline: {pipeline}" if pipeline else ""
+        lines.append(f"  - {url}{draft}{pipeline_info}")
+        if mr_title:
+            lines.append(f"    {mr_title}")
+    return lines
+
+
 def build_interactive_context(task: Task, *, skills: list[str]) -> str:
     """Build the system context for interactive (ttyd) sessions."""
     ticket: Ticket = task.ticket
@@ -243,31 +268,27 @@ def build_interactive_context(task: Task, *, skills: list[str]) -> str:
             ),
         )
 
-    # MR context
-    mrs = extra.get("mrs", {})
-    if isinstance(mrs, dict) and mrs:
-        lines.extend(("", "Open merge requests:"))
-        for mr in mrs.values():
-            if not isinstance(mr, dict):
-                continue
-            url = mr.get("url", "")
-            mr_title = mr.get("title", "")
-            draft = " (draft)" if mr.get("draft") else ""
-            pipeline = mr.get("pipeline_status", "")
-            pipeline_info = f" — pipeline: {pipeline}" if pipeline else ""
-            lines.append(f"  - {url}{draft}{pipeline_info}")
-            if mr_title:
-                lines.append(f"    {mr_title}")
+    lines.extend(_format_mr_context(extra))
 
-    lines.extend(
-        (
-            "",
-            "This is an interactive session — the user is present.",
-            "Your FIRST message must acknowledge the project and ticket you are working on.",
-            "Summarize: ticket number, current state, what was done so far, and what you plan to do next.",
-            "Then either begin working or ask the user for guidance.",
-            "Before ending, run /t3:next — it handles retro, result reporting, and pipeline handoff.",
-        ),
-    )
+    lines.extend(("", "This is an interactive session — the user is present."))
+
+    if task.execution_reason:
+        lines.extend(
+            (
+                "Your FIRST message must present your diagnosis of the problem described above",
+                "and your proposed fix. Do NOT ask the user what happened — you already have",
+                "the error context. Lead with the analysis, then act.",
+                "Before ending, run /t3:next — it handles retro, result reporting, and pipeline handoff.",
+            ),
+        )
+    else:
+        lines.extend(
+            (
+                "Your FIRST message must acknowledge the project and ticket you are working on.",
+                "Summarize: ticket number, current state, what was done so far, and what you plan to do next.",
+                "Then either begin working or ask the user for guidance.",
+                "Before ending, run /t3:next — it handles retro, result reporting, and pipeline handoff.",
+            ),
+        )
 
     return "\n".join(lines)
