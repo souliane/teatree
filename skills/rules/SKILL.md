@@ -13,7 +13,7 @@ Cross-cutting rules that apply to all teatree skills. Loaded automatically via `
 
 ## Invoke Skills Before ANY Response (Non-Negotiable)
 
-_Adapted from [superpowers/using-superpowers](https://github.com/jesses-code-adventures/superpowers)._
+_Adapted from [superpowers/using-superpowers](https://github.com/obra/superpowers)._
 
 When a skill might apply — even a 1% chance — **invoke it BEFORE responding, exploring, or asking clarifying questions.** The `UserPromptSubmit` hook suggests skills; you must load every suggestion. If the hook doesn't fire, pick the right skill yourself.
 
@@ -32,7 +32,7 @@ When a skill might apply — even a 1% chance — **invoke it BEFORE responding,
 
 ## Verification Before Completion (Non-Negotiable)
 
-_Adapted from [superpowers/verification-before-completion](https://github.com/jesses-code-adventures/superpowers)._
+_Adapted from [superpowers/verification-before-completion](https://github.com/obra/superpowers)._
 
 **No completion claims without fresh verification evidence in the same response.** If you haven't run the command and read its output in this message, you cannot claim it passes.
 

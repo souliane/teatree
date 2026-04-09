@@ -119,7 +119,7 @@ hooks/                  # Plugin hooks
   scripts/              # Hook scripts (bootstrap, skill loading, statusline)
 apm.yml                 # APM package manifest
 settings.json           # Plugin settings (statusline)
-tests/                  # Pytest suite (100% branch coverage)
+tests/                  # Pytest suite (>90% branch coverage)
 e2e/                    # Playwright E2E tests for dashboard
 scripts/                # Standalone utility scripts
 ```
@@ -436,7 +436,7 @@ Before adding logic to an overlay, ask: "Would a different project using the sam
 
 Everything else — DB provisioning strategies, migration runners, symlink management, service orchestration, dump fallback chains — must be implemented as configurable engines in core. The overlay configures the engine; the overlay does not reimplement the engine.
 
-**Why this matters:** When logic lives in an overlay, it is tested only by that overlay's test suite, invisible to other overlays, and duplicated when a second project needs the same workflow. Core code has 100% branch coverage, is reviewed against the BLUEPRINT, and benefits all overlays.
+**Why this matters:** When logic lives in an overlay, it is tested only by that overlay's test suite, invisible to other overlays, and duplicated when a second project needs the same workflow. Core code has >90% branch coverage, is reviewed against the BLUEPRINT, and benefits all overlays.
 
 **Refactoring signal:** If an overlay method exceeds ~30 lines of non-configuration code, it likely contains generic logic that should be extracted to core.
 
@@ -791,7 +791,7 @@ Skills declare dependencies via `requires:` in YAML frontmatter. The skill bundl
 
 #### Third-Party Skill Integration
 
-Teatree integrates with third-party skill frameworks (notably [superpowers](https://github.com/jesses-code-adventures/superpowers)) via the `companions:` mechanism and APM dependency management. The approach is:
+Teatree integrates with third-party skill frameworks (notably [superpowers](https://github.com/obra/superpowers)) via the `companions:` mechanism and APM dependency management. The approach is:
 
 - **Absorb, don't delegate.** When a third-party skill covers a universal concern (skill-loading discipline, verification before completion), the best content is distilled into teatree's own `rules` skill — which is always loaded via `requires:`. This avoids context waste from loading both teatree and third-party versions of the same guidance.
 - **Companion for domain skills.** Third-party skills that cover specific domains (TDD methodology, plan execution, brainstorming) are declared as `companions:` on the relevant lifecycle skill. They load alongside teatree skills when installed, adding depth without duplication.
@@ -829,7 +829,7 @@ Three install paths, one source of truth:
 
 ### 13.1 Coverage Gate
 
-**100% branch coverage, non-negotiable.** Enforced by pytest-cov with `fail_under = 100, branch = true`. Omits only migrations.
+**>90% branch coverage, non-negotiable.** Enforced by pytest-cov with `fail_under = 93, branch = true`. Omits only migrations.
 
 ### 13.2 Django Test Settings
 
@@ -867,7 +867,7 @@ Playwright tests in `e2e/` with separate settings (`e2e.settings`) using file-ba
 
 | Tool | What it checks | Config |
 |------|----------------|--------|
-| pytest + pytest-cov | 100% branch coverage | `pyproject.toml [tool.coverage]` |
+| pytest + pytest-cov | >90% branch coverage (`fail_under = 93`) | `pyproject.toml [tool.coverage]` |
 | ruff | ALL rules enabled, specific ignores justified | `pyproject.toml [tool.ruff]` |
 | ty | Static type checker with `error-on-warning = true` | `pyproject.toml [tool.ty]` |
 | import-linter | Dependency boundaries | `pyproject.toml [tool.importlinter]` |

@@ -62,7 +62,7 @@ t3 followup sync     # sync tickets and PRs from code host
 
 ### 2. Dashboard
 
-A Django/HTMX web UI that surfaces everything the CLI manages: tickets, merge requests, pipeline statuses, agent sessions, and available actions. Launch it with `t3 dashboard` (auto-finds a free port). Supports SSE for live updates.
+A Django/HTMX web UI that surfaces everything the CLI manages: tickets, pull requests, pipeline statuses, agent sessions, and available actions. Launch it with `t3 dashboard` (auto-finds a free port). Supports SSE for live updates.
 
 ### 3. Claude Plugin
 
@@ -74,21 +74,21 @@ Skills use the CLI for infrastructure (worktrees, databases, ports, CI), but the
 
 Tell your AI agent what you want:
 
-> `https://gitlab.com/org/repo/-/issues/1234`
+> `https://github.com/org/repo/issues/1234`
 
-The agent fetches the ticket, creates synchronized worktrees across all repos, provisions isolated databases and ports, implements the feature with TDD, writes a test plan, runs E2E tests, self-reviews, then pushes and creates the merge request.
+The agent fetches the ticket, creates synchronized worktrees across all repos, provisions isolated databases and ports, implements the feature with TDD, writes a test plan, runs E2E tests, self-reviews, then pushes and creates the pull request.
 
 > `Fix PROJ-5678`
 
 The agent fetches the failed test report from CI, reproduces locally, fixes, pushes, and monitors the pipeline until green.
 
-> `Review https://gitlab.com/org/repo/-/merge_requests/456`
+> `Review https://github.com/org/repo/pull/456`
 
 The agent fetches the ticket for context, inspects every commit individually, and posts draft review comments inline on the correct file and line.
 
 > `Follow up on my open tickets`
 
-The agent batch-processes your assigned tickets, checks CI statuses, nudges stale MRs, and starts work on anything that's ready.
+The agent batch-processes your assigned tickets, checks CI statuses, nudges stale PRs, and starts work on anything that's ready.
 
 ## Get Started
 
@@ -229,7 +229,7 @@ Nothing is ever pushed without explicit consent. The `contribute` skill shows ex
 
 ```bash
 # Run tests locally
-uv run pytest               # 100% coverage required
+uv run pytest               # >90% coverage required
 
 # Pre-commit checks
 prek run --all-files         # ruff, pytest, codespell, banned-terms
@@ -257,23 +257,23 @@ teatree/
   skills/              # AI agent skills (SKILL.md + references)
   hooks/               # Agent platform hooks (routing, guards, statusline)
   scripts/             # Pre-commit hooks, utility scripts
-  tests/               # Unit tests (100% branch coverage)
+  tests/               # Unit tests (>90% branch coverage)
   docs/                # MkDocs documentation site
 ```
 
 ## FAQ
 
-**Why Django management commands instead of just skills?**
+**Why not just use [superpowers](https://github.com/obra/superpowers) or [oh-my-claudecode](https://github.com/anthropics/oh-my-claudecode)?**
 
-Skills tell the agent *what to do*. Commands *do it*. A 15-step procedure for setting up a worktree is fragile — the model might skip a step, reorder things, or improvise. `t3 lifecycle setup` handles the complexity internally; the model just calls it.
+Teatree uses superpowers as a companion — its methodology skills (TDD, debugging, verification) load alongside teatree's lifecycle skills via the `companions:` mechanism. But teatree solves a different problem: multi-repo worktree provisioning, database lifecycle, port allocation, service management, and CI sync. These require deterministic code, not prose. Skill frameworks give agents knowledge; teatree gives them infrastructure.
 
 **Is this overkill for my project?**
 
 If you work in a single repo with a simple setup, probably. Teatree shines when your workflow has friction that the model can't solve from first principles: multi-repo synchronization, tenant-specific configuration, isolated worktree environments, or a CI/CD pipeline with project-specific quirks.
 
-**Why do skills live in the same repo as the Django code?**
+**Why do skills live in the same repo as the CLI?**
 
-Because skills call management commands, reference the overlay API, and depend on the CLI. Keeping them together means a single `git clone` gives you everything, and skill improvements can be tested against the actual code in the same PR.
+Because skills reference the CLI and the overlay API. Keeping them together means a single `git clone` gives you everything, and skill improvements can be tested against the actual code in the same PR.
 
 **Why "teatree"?**
 
