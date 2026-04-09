@@ -475,6 +475,71 @@
         }
       });
     })();
+
+    /* Branch switcher */
+    var _branchesLoaded = false;
+    function toggleBranchSelector() {
+      var popup = document.getElementById('branch-selector-popup');
+      if (!popup) return;
+      var isHidden = popup.classList.contains('hidden');
+      popup.classList.toggle('hidden');
+      if (isHidden && !_branchesLoaded) loadBranches();
+    }
+    function loadBranches() {
+      fetch('{% url "teatree:dashboard-switch-branch" %}', { headers: { 'X-CSRFToken': '{{ csrf_token }}' } })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+          _branchesLoaded = true;
+          var list = document.getElementById('branch-list');
+          if (!list || !data.branches) return;
+          list.innerHTML = '';
+          data.branches.forEach(function(branch) {
+            var isCurrent = branch === data.current;
+            var btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'block w-full text-left px-2 py-1 rounded font-mono text-[11px] transition-colors '
+              + (isCurrent ? 'bg-moss/15 text-moss font-bold cursor-default' : 'text-bark/70 hover:bg-moss/10 hover:text-moss cursor-pointer');
+            btn.textContent = (isCurrent ? '* ' : '  ') + branch;
+            if (!isCurrent) {
+              btn.onclick = function() { switchBranch(branch); };
+            }
+            list.appendChild(btn);
+          });
+        })
+        .catch(function() {
+          var list = document.getElementById('branch-list');
+          if (list) list.innerHTML = '<div class="font-mono text-[11px] text-red-500 py-1">Failed to load branches</div>';
+        });
+    }
+    function switchBranch(branch) {
+      var popup = document.getElementById('branch-selector-popup');
+      if (popup) popup.classList.add('hidden');
+      showToast('Switching to ' + branch + '...', 'info');
+      fetch('{% url "teatree:dashboard-switch-branch" %}', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-CSRFToken': '{{ csrf_token }}' },
+        body: 'branch=' + encodeURIComponent(branch),
+      })
+        .then(function(r) { return r.json().then(function(d) { return { ok: r.ok, data: d }; }); })
+        .then(function(result) {
+          if (result.ok) {
+            showToast('Switched to ' + branch + ' — server restarting...', 'success');
+            var label = document.getElementById('branch-current-label');
+            if (label) label.textContent = branch;
+            _branchesLoaded = false;
+          } else {
+            showToast(result.data.error || 'Switch failed', 'error');
+          }
+        })
+        .catch(function() { showToast('Network error switching branch', 'error'); });
+    }
+    document.addEventListener('click', function(e) {
+      var switcher = document.getElementById('branch-switcher');
+      var popup = document.getElementById('branch-selector-popup');
+      if (switcher && popup && !popup.classList.contains('hidden') && !e.target.closest('#branch-switcher')) {
+        popup.classList.add('hidden');
+      }
+    });
   </script>
   <div class="fixed bottom-4 right-4 z-50 flex flex-col gap-2 items-end" id="toast-stack"></div>
   <script type="module">
@@ -503,11 +568,23 @@
     hx-on::after-request="htmx.trigger(document.body, 'refreshPanels')"
   ></div>
   {% if git_sha %}
-  <div class="fixed top-2 right-3 z-40 group">
-    <div class="rounded-full border border-bark/10 bg-cream/90 px-2.5 py-0.5 font-mono text-[10px] text-bark/40 backdrop-blur cursor-help">{{ git_sha }}</div>
-    <div class="hidden group-hover:block absolute right-0 mt-1 rounded-lg border border-bark/10 bg-cream px-3 py-2 font-mono text-[11px] text-bark/70 shadow-soft whitespace-pre">teatree: {{ git_branch }}
+  <div class="fixed top-2 right-3 z-40" id="branch-switcher">
+    <button
+      class="rounded-full border border-bark/10 bg-cream/90 px-2.5 py-0.5 font-mono text-[10px] text-bark/40 backdrop-blur cursor-pointer hover:border-moss/30 hover:text-bark/60 transition-colors"
+      onclick="toggleBranchSelector()"
+      title="Switch branch"
+    >{{ git_sha }} <span class="text-bark/25">&#9662;</span></button>
+    <div id="branch-selector-popup" class="hidden absolute right-0 mt-1 rounded-lg border border-bark/10 bg-cream shadow-soft min-w-[14rem] z-50">
+      <div class="px-3 py-2 font-mono text-[11px] text-bark/70 border-b border-bark/10 whitespace-pre">teatree: <span id="branch-current-label">{{ git_branch }}</span>
 {% for name, branch in overlay_branches.items %}{{ name }}: {{ branch }}
 {% endfor %}</div>
+      <div class="px-3 py-2">
+        <div class="font-sans text-[10px] uppercase tracking-[0.18em] text-bark/40 mb-1">Switch teatree branch</div>
+        <div id="branch-list" class="max-h-48 overflow-y-auto">
+          <div class="font-mono text-[11px] text-bark/40 py-1">Loading...</div>
+        </div>
+      </div>
+    </div>
   </div>
   {% endif %}
   <main class="mx-auto max-w-7xl px-4 py-10 sm:px-6 lg:px-8">

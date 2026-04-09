@@ -634,6 +634,8 @@ Selector-backed views with django-htmx. **No domain logic in views** — all dat
 | `GET /dashboard/panels/<panel>/` | HTMX | Panel refresh (requires HX-Request header) |
 | `POST /dashboard/sync/` | — | Trigger followup sync |
 | `POST /dashboard/git-pull/` | — | Pull latest teatree code |
+| `GET /dashboard/switch-branch/` | JSON | List local branches + current branch |
+| `POST /dashboard/switch-branch/` | JSON | Switch teatree repo to specified branch (uvicorn auto-reloads) |
 | `POST /dashboard/launch-terminal/` | — | Open a terminal session |
 | `POST /dashboard/launch-agent/` | — | Launch Claude CLI interactively |
 | `POST /tasks/<id>/launch/` | — | Claim + execute (headless) or launch ttyd (interactive) |
