@@ -66,9 +66,9 @@ A Django/HTMX web UI that surfaces everything the CLI manages: tickets, merge re
 
 ### 3. Claude Plugin
 
-Skills and hooks that teach AI agents how to use the CLI. Each skill covers one phase of the development lifecycle — ticket intake, coding, testing, review, shipping. Skills declare dependencies (`requires:`) and optional companion skills (`companions:`) from third-party packages like [superpowers](https://github.com/obra/superpowers). Hooks handle automatic skill routing, branch protection, and session tracking.
+Skills and hooks that drive AI-assisted development. Each skill covers one phase of the development lifecycle — ticket intake, coding, testing, review, shipping — and contains the methodology, guardrails, and domain knowledge the agent needs to do the work well: TDD discipline, debugging process, review checklists, retro learning, verification rules. Skills declare dependencies (`requires:`) and optional companion skills (`companions:`) from third-party packages like [superpowers](https://github.com/obra/superpowers). Hooks handle automatic skill routing, branch protection, and session tracking.
 
-Skills don't replace the CLI — they delegate to it. The agent reads the skill, then calls `t3 lifecycle setup` instead of manually running `docker compose`, `createdb`, `npm install` across five repos.
+Skills use the CLI for infrastructure (worktrees, databases, ports, CI), but the actual development work — writing code, reasoning about architecture, reviewing diffs, running retros — is guided by skill content, not CLI commands.
 
 ## What It Looks Like
 

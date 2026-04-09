@@ -14,7 +14,7 @@ A multi-repo worktree lifecycle manager for AI-assisted development. It manages 
 
 **Target:** service-oriented projects with databases and CI pipelines (any language). Not for docs-only repos or CLI tools.
 
-**Core principle:** Deterministic code drives behavior. Agents are invoked only when judgment is needed (code review, debugging, design decisions). Everything else — state management, port allocation, provisioning, task routing — is Python code with 100% branch coverage.
+**Core principle:** Infrastructure is deterministic code; development work is skill-guided. State management, port allocation, provisioning, and task routing are Python code with >90% branch coverage. The actual development — coding with TDD, debugging, reviewing, shipping — is driven by skills that encode methodology, guardrails, and domain knowledge.
 
 ---
 
@@ -30,7 +30,7 @@ TeaTree was originally built as a skills-first system where SKILL.md files drove
 **Current split:**
 
 - **Deterministic code** (Django app): state machines, port allocation, provisioning, task routing, dashboard, sync, CLI
-- **Agent skills** (SKILL.md files): judgment-heavy workflows the agent follows — when to ask the user, how to debug, review checklists, retro procedures
+- **Agent skills** (SKILL.md files): development methodology, guardrails, and domain knowledge — TDD discipline, debugging process, review checklists, retro learning, verification rules, coding standards. Skills drive the actual work; they use the CLI for infrastructure.
 
 ---
 
@@ -766,7 +766,7 @@ Overlay-specific configuration that previously lived in `TEATREE_*` Django setti
 
 Skills live in `skills/*/`. Each skill is a `SKILL.md` file with optional `references/` directory. When installed as a plugin, skills are namespaced under `t3:` (e.g., `/t3:code`).
 
-**Skills guide the agent's judgment. They do not drive system behavior.**
+**Skills drive the development work — coding methodology, debugging process, review standards, retro learning. The CLI handles infrastructure (worktrees, databases, ports, CI).**
 
 | Skill | Purpose |
 |-------|---------|
