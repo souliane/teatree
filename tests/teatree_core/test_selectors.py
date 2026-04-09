@@ -486,6 +486,54 @@ class TestHumanizeDuration:
         assert _humanize_duration(-5) == "0s"
 
 
+class TestReapStaleClaims(TestCase):
+    def test_reaps_claimed_tasks_with_expired_lease(self) -> None:
+        ticket = Ticket.objects.create(state=Ticket.State.STARTED)
+        session = Session.objects.create(ticket=ticket, agent_id="agent")
+        now = timezone.now()
+        stale = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            execution_target=Task.ExecutionTarget.HEADLESS,
+            status=Task.Status.CLAIMED,
+            claimed_by="dead-worker",
+            lease_expires_at=now - timedelta(minutes=5),
+        )
+        active = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            execution_target=Task.ExecutionTarget.HEADLESS,
+            status=Task.Status.CLAIMED,
+            claimed_by="live-worker",
+            lease_expires_at=now + timedelta(minutes=5),
+        )
+
+        reaped = Task.objects.reap_stale_claims()
+
+        assert reaped == 1
+        stale.refresh_from_db()
+        active.refresh_from_db()
+        assert stale.status == Task.Status.FAILED
+        assert active.status == Task.Status.CLAIMED
+
+    def test_queue_reaps_before_building(self) -> None:
+        ticket = Ticket.objects.create(state=Ticket.State.STARTED)
+        session = Session.objects.create(ticket=ticket, agent_id="agent")
+        now = timezone.now()
+        Task.objects.create(
+            ticket=ticket,
+            session=session,
+            execution_target=Task.ExecutionTarget.HEADLESS,
+            status=Task.Status.CLAIMED,
+            claimed_by="dead-worker",
+            lease_expires_at=now - timedelta(minutes=5),
+        )
+
+        queue = build_headless_queue()
+
+        assert len(queue) == 0
+
+
 class TestHeadlessQueueElapsedTime(TestCase):
     def test_claimed_task_shows_elapsed_and_heartbeat(self) -> None:
         ticket = Ticket.objects.create(state=Ticket.State.STARTED)
