@@ -59,11 +59,15 @@ def _resolve_private_tests_path() -> Path | None:
 
 
 def _discover_frontend_port(project: str, default: int = 4200) -> int | None:
-    """Try docker-compose service, then fall back to local port check."""
+    """Discover frontend port: docker-compose → local port scan (4200-4210)."""
     port = get_service_port(project, "frontend", default)
     if port is not None:
         return port
-    return _detect_local_port(default)
+    # Scan the allocation range — ports start at 4200 and go up
+    for candidate in range(4200, 4211):
+        if _detect_local_port(candidate) is not None:
+            return candidate
+    return None
 
 
 def _build_e2e_env(frontend_port: int, *, headed: bool) -> dict[str, str]:
