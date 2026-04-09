@@ -130,25 +130,21 @@ def _copy_ref_to_ticket(ctx: _RestoreContext) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def _find_dslr_cmd(tool_name: str, main_repo_path: str = "") -> list[str]:
+def _find_dslr_cmd(tool_name: str, _main_repo_path: str = "") -> list[str]:
     """Return a command prefix for invoking dslr.
 
-    Prefers ``uv run`` (resolves project venv where dslr + psycopg live).
-    When *main_repo_path* is provided, passes ``--directory`` so uv
-    resolves from the project that actually has dslr as a dependency,
-    not from the current working directory.
-    Bare ``dslr`` on PATH is unreliable (pyenv shims, missing deps).
+    Uses ``uv run`` from the **host project** (where dslr + psycopg live as
+    hard dependencies), not from the target repo.  The *main_repo_path* arg
+    is accepted for backward compatibility but ignored — dslr must be in the
+    teatree host project's venv.
+
     Honour ``DSLR_CMD`` env var as an explicit override.
     """
     dslr = os.environ.get("DSLR_CMD", "")
     if dslr and shutil.which(dslr):
         return [dslr]
     if shutil.which("uv"):
-        cmd = ["uv"]
-        if main_repo_path:
-            cmd.extend(["--directory", main_repo_path])
-        cmd.extend(["run", tool_name])
-        return cmd
+        return ["uv", "run", tool_name]
     return []
 
 
