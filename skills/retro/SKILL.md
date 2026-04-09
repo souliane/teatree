@@ -255,7 +255,7 @@ Retro can also modify core teatree skills in the user's fork:
 | What to fix | Where to write |
 |---|---|
 | Infrastructure/worktree failure | `$T3_REPO/skills/workspace/references/troubleshooting.md` |
-| Hook should have triggered | `$T3_REPO/hooks/.../ensure-skills-loaded.sh` |
+| Hook should have triggered | `$T3_REPO/hooks/scripts/hook_router.py` or the relevant hook script |
 | Missing verification step | The core skill that owns that workflow phase |
 | Stale or incorrect guidance in a core skill | The affected skill's `SKILL.md` or reference file |
 

@@ -1,6 +1,6 @@
 """Skill suggestion engine for the UserPromptSubmit hook.
 
-Called by ensure-skills-loaded.sh to detect user intent and return a
+Called by hook_router.py (UserPromptSubmit event) to detect user intent and return a
 deduped suggestion list via ``SkillLoadingPolicy``.
 
 Trigger patterns are read from SKILL.md frontmatter (``triggers:`` field),

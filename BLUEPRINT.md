@@ -107,7 +107,7 @@ src/teatree/
     (git helpers, port allocation, subprocess wrappers)
 
   overlay_init/         # t3 startoverlay helpers
-    generator.py        # Scaffold generation logic (called from cli.py)
+    generator.py        # Scaffold generation logic (called from cli/)
 
 .claude-plugin/         # Plugin manifest
   plugin.json           # Plugin identity (name: t3)
@@ -740,15 +740,15 @@ Overlay-specific configuration that previously lived in `TEATREE_*` Django setti
 | Method | Return type | Default | Replaces |
 |--------|-------------|---------|----------|
 | `get_gitlab_token()` | `str` | `""` | `TEATREE_GITLAB_TOKEN` |
-| `get_gitlab_url()` | `str` | `"https://gitlab.com/api/v4"` | — |
+| `gitlab_url` | `str` | `"https://gitlab.com/api/v4"` | — |
 | `get_gitlab_username()` | `str` | `""` | `TEATREE_GITLAB_USERNAME` |
 | `get_slack_token()` | `str` | `""` | `TEATREE_SLACK_TOKEN` |
 | `get_review_channel()` | `tuple[str, str]` | `("", "")` | `TEATREE_REVIEW_CHANNEL` + `TEATREE_REVIEW_CHANNEL_ID` |
-| `get_known_variants()` | `list[str]` | `[]` | `TEATREE_KNOWN_VARIANTS` |
-| `get_mr_auto_labels()` | `list[str]` | `[]` | `TEATREE_MR_AUTO_LABELS` |
-| `get_frontend_repos()` | `list[str]` | `[]` | `TEATREE_FRONTEND_REPOS` |
-| `get_dev_env_url()` | `str` | `""` | `TEATREE_DEV_ENV_URL` |
-| `get_dashboard_logo()` | `str` | `""` | `TEATREE_DASHBOARD_LOGO` |
+| `known_variants` | `list[str]` | `[]` | `TEATREE_KNOWN_VARIANTS` |
+| `mr_auto_labels` | `list[str]` | `[]` | `TEATREE_MR_AUTO_LABELS` |
+| `frontend_repos` | `list[str]` | `[]` | `TEATREE_FRONTEND_REPOS` |
+| `dev_env_url` | `str` | `""` | `TEATREE_DEV_ENV_URL` |
+| `dashboard_logo` | `str` | `""` | `TEATREE_DASHBOARD_LOGO` |
 
 ### 11.3 Logging
 

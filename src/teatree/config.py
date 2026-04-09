@@ -76,6 +76,7 @@ class UserSettings:
     check_updates: bool = True
     timezone: str = ""
     contribute: bool = False
+    excluded_skills: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -95,6 +96,9 @@ def load_config(path: Path = CONFIG_PATH) -> TeaTreeConfig:
     workspace_dir = Path(teatree.get("workspace_dir", "~/workspace")).expanduser()
     worktrees_dir = Path(teatree.get("worktrees_dir", str(DATA_DIR / "worktrees"))).expanduser()
 
+    raw_excluded = teatree.get("excluded_skills", [])
+    excluded_skills = [str(s) for s in raw_excluded] if isinstance(raw_excluded, list) else []
+
     user = UserSettings(
         workspace_dir=workspace_dir,
         worktrees_dir=worktrees_dir,
@@ -103,6 +107,7 @@ def load_config(path: Path = CONFIG_PATH) -> TeaTreeConfig:
         check_updates=teatree.get("check_updates", True),
         timezone=teatree.get("timezone", ""),
         contribute=bool(teatree.get("contribute", False)),
+        excluded_skills=excluded_skills,
     )
 
     return TeaTreeConfig(user=user, raw=raw)

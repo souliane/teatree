@@ -61,7 +61,7 @@ class SyncConfig(OverlayConfig):
         self.github_project_number = github_project_number
         self._slack_token = slack_token
         self._review_channel = review_channel
-        self._known_variants = known_variants or []
+        self.known_variants = known_variants or []
 
     def get_gitlab_token(self) -> str:
         return self._gitlab_token
@@ -77,9 +77,6 @@ class SyncConfig(OverlayConfig):
 
     def get_review_channel(self) -> tuple[str, str]:
         return self._review_channel
-
-    def get_known_variants(self) -> list[str]:
-        return self._known_variants
 
 
 class SyncOverlay(OverlayBase):

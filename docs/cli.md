@@ -90,12 +90,17 @@ Standalone utilities (no overlay needed).
 |------------|-------------|
 | `write-skill-cache` | Write overlay skill metadata to cache |
 
+### `t3 setup`
+
+Install and configure teatree skills globally. Runs APM to install companion dependencies, symlinks core and overlay skills, strips APM-injected hooks, removes excluded skills, and writes the skill metadata cache.
+
+Must be run from the teatree main clone (not a worktree). For consumers without a local clone: use `apm install -g souliane/teatree`.
+
 ### `t3 doctor`
 
 | Subcommand | Description |
 |------------|-------------|
 | `check` | Verify imports and editable-install sanity |
-| `repair` | Repair skill symlinks and verify installation health |
 
 ## Overlay Commands (`t3 <overlay> ...`)
 

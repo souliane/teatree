@@ -150,27 +150,6 @@ class OverlayConfig:
         """Return (channel_name, channel_id) for review notifications."""
         return ("", "")
 
-    # ── Deprecated method accessors (use attributes instead) ─────────
-    # Kept for backwards compatibility with existing overlay code.
-
-    def get_gitlab_url(self) -> str:
-        return self.gitlab_url
-
-    def get_known_variants(self) -> list[str]:
-        return self.known_variants
-
-    def get_mr_auto_labels(self) -> list[str]:
-        return self.mr_auto_labels
-
-    def get_frontend_repos(self) -> list[str]:
-        return self.frontend_repos
-
-    def get_dev_env_url(self) -> str:
-        return self.dev_env_url
-
-    def get_dashboard_logo(self) -> str:
-        return self.dashboard_logo
-
 
 # ── Overlay metadata ─────────────────────────────────────────────────
 

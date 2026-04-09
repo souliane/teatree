@@ -50,8 +50,28 @@ triggers:
 ## How It Works
 
 1. At startup (or via `t3 config write-skill-cache`), teatree scans `~/.claude/skills/*/SKILL.md`, extracts `triggers:`, and writes a trigger index to `~/.local/share/teatree/skill-metadata.json`.
-2. On every user prompt, the `UserPromptSubmit` hook reads the cached index, matches patterns, resolves `requires:` dependencies, and injects `"LOAD THESE SKILLS NOW: /skill1, /skill2"`.
+2. On every user prompt, the `UserPromptSubmit` hook reads the cached index, matches patterns, resolves `requires:` dependencies and `companions:` (optional third-party skills), and injects `"LOAD THESE SKILLS NOW: /skill1, /skill2"`.
 3. If no cache exists, the hook falls back to scanning `skill_search_dirs` on the fly.
+
+## Skill Dependencies
+
+Skills can declare two types of dependencies in their frontmatter:
+
+```yaml
+---
+name: code
+requires:
+  - workspace
+companions:
+  - test-driven-development
+  - verification-before-completion
+---
+```
+
+- **`requires:`** — hard dependencies. If a required skill is missing, loading fails with an error.
+- **`companions:`** — optional third-party skills (e.g., from [superpowers](https://github.com/obra/superpowers)). If a companion is missing, a warning is logged but loading continues. Companion skills are never modified by teatree — the `companions:` field lives in the teatree skill's frontmatter, not in the companion's.
+
+Hard dependencies (`requires:`) are resolved transitively using topological sort with cycle detection. Companions are resolved one level deep — their own `requires:` are resolved transitively, but companions-of-companions are not.
 
 ## Adding Triggers to a New Skill
 
@@ -61,4 +81,4 @@ Add the `triggers:` block to your `SKILL.md` frontmatter, then rebuild the cache
 t3 config write-skill-cache
 ```
 
-Skills without `triggers:` are not matched by the hook — they can still be loaded manually via `/skill-name` or as dependencies of other skills via `requires:`.
+Skills without `triggers:` are not matched by the hook — they can still be loaded manually via `/skill-name` or as dependencies of other skills via `requires:` / `companions:`.

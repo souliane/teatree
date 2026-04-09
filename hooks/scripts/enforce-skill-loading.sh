@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # PreToolUse hook: blocks Bash/Edit/Write when suggested skills haven't been
-# loaded yet.  Works with ensure-skills-loaded.sh which writes a .pending
+# loaded yet.  Works with hook_router.py (UserPromptSubmit) which writes a .pending
 # file listing the skills it told the agent to load.
 #
 # Exit 0 silently            → allow the tool call.

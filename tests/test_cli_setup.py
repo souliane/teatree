@@ -1,0 +1,261 @@
+"""Tests for t3 setup — global skill installation command."""
+
+import json
+from pathlib import Path
+from unittest.mock import patch
+
+import click
+import pytest
+
+from teatree.cli.setup import (
+    CORE_EXCLUDED_SKILLS,
+    _clean_broken_symlinks,
+    _ensure_skill_link,
+    _find_main_clone,
+    _remove_excluded_skills,
+    _run_apm_install,
+    _strip_apm_hooks,
+    _validate_repo,
+)
+
+
+class TestFindMainClone:
+    def test_returns_none_when_no_repo(self) -> None:
+        with patch("teatree.cli.setup.DoctorService") as mock_svc:
+            mock_svc.find_teatree_repo.return_value = None
+            assert _find_main_clone() is None
+
+    def test_returns_none_when_worktree(self, tmp_path: Path) -> None:
+        repo = tmp_path / "teatree"
+        repo.mkdir()
+        (repo / ".git").write_text("gitdir: /some/other/path\n")
+        with patch("teatree.cli.setup.DoctorService") as mock_svc:
+            mock_svc.find_teatree_repo.return_value = repo
+            assert _find_main_clone() is None
+
+    def test_returns_repo_when_main_clone(self, tmp_path: Path) -> None:
+        repo = tmp_path / "teatree"
+        repo.mkdir()
+        (repo / ".git").mkdir()
+        with patch("teatree.cli.setup.DoctorService") as mock_svc:
+            mock_svc.find_teatree_repo.return_value = repo
+            result = _find_main_clone()
+            assert result == repo
+
+
+class TestRunApmInstall:
+    def test_returns_false_when_apm_not_found(self) -> None:
+        with patch("shutil.which", return_value=None):
+            assert _run_apm_install(Path("/fake")) is False
+
+    def test_returns_false_on_failure(self, tmp_path: Path) -> None:
+        with (
+            patch("shutil.which", return_value="/usr/bin/apm"),
+            patch("subprocess.run") as mock_run,
+        ):
+            mock_run.return_value.returncode = 1
+            mock_run.return_value.stderr = "some error"
+            assert _run_apm_install(tmp_path) is False
+
+    def test_returns_true_on_success(self, tmp_path: Path) -> None:
+        with (
+            patch("shutil.which", return_value="/usr/bin/apm"),
+            patch("subprocess.run") as mock_run,
+        ):
+            mock_run.return_value.returncode = 0
+            assert _run_apm_install(tmp_path) is True
+            mock_run.assert_called_once()
+            args = mock_run.call_args
+            assert args[0][0] == ["/usr/bin/apm", "install", "-g", "--target", "claude"]
+
+
+class TestStripApmHooks:
+    def test_no_file(self, tmp_path: Path) -> None:
+        assert _strip_apm_hooks(tmp_path / "nonexistent.json") == 0
+
+    def test_no_hooks(self, tmp_path: Path) -> None:
+        settings = tmp_path / "settings.json"
+        settings.write_text(json.dumps({"key": "value"}))
+        assert _strip_apm_hooks(settings) == 0
+
+    def test_removes_apm_entries(self, tmp_path: Path) -> None:
+        settings = tmp_path / "settings.json"
+        data = {
+            "hooks": {
+                "UserPromptSubmit": [
+                    {"type": "command", "command": "my-hook"},
+                    {"type": "command", "command": "apm-hook", "_apm_source": "teatree"},
+                ],
+            },
+        }
+        settings.write_text(json.dumps(data))
+        removed = _strip_apm_hooks(settings)
+        assert removed == 1
+        result = json.loads(settings.read_text())
+        assert len(result["hooks"]["UserPromptSubmit"]) == 1
+        assert result["hooks"]["UserPromptSubmit"][0]["command"] == "my-hook"
+
+    def test_removes_empty_hook_keys(self, tmp_path: Path) -> None:
+        settings = tmp_path / "settings.json"
+        data = {
+            "hooks": {
+                "UserPromptSubmit": [
+                    {"type": "command", "_apm_source": "teatree"},
+                ],
+            },
+        }
+        settings.write_text(json.dumps(data))
+        removed = _strip_apm_hooks(settings)
+        assert removed == 1
+        result = json.loads(settings.read_text())
+        assert "hooks" not in result
+
+    def test_invalid_json(self, tmp_path: Path) -> None:
+        settings = tmp_path / "settings.json"
+        settings.write_text("not json")
+        assert _strip_apm_hooks(settings) == 0
+
+    def test_hooks_not_a_dict(self, tmp_path: Path) -> None:
+        settings = tmp_path / "settings.json"
+        settings.write_text(json.dumps({"hooks": "not-a-dict"}))
+        assert _strip_apm_hooks(settings) == 0
+
+
+class TestRemoveExcludedSkills:
+    def test_removes_symlinks(self, tmp_path: Path) -> None:
+        target = tmp_path / "target"
+        target.mkdir()
+        link = tmp_path / "using-superpowers"
+        link.symlink_to(target)
+        assert _remove_excluded_skills(tmp_path, ["using-superpowers"]) == 1
+        assert not link.exists()
+
+    def test_removes_directories(self, tmp_path: Path) -> None:
+        skill_dir = tmp_path / "using-git-worktrees"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").touch()
+        assert _remove_excluded_skills(tmp_path, ["using-git-worktrees"]) == 1
+        assert not skill_dir.exists()
+
+    def test_ignores_nonexistent(self, tmp_path: Path) -> None:
+        assert _remove_excluded_skills(tmp_path, ["nonexistent"]) == 0
+
+    def test_multiple_excluded(self, tmp_path: Path) -> None:
+        target = tmp_path / "target"
+        target.mkdir()
+        (tmp_path / "skill-a").symlink_to(target)
+        (tmp_path / "skill-b").mkdir()
+        assert _remove_excluded_skills(tmp_path, ["skill-a", "skill-b", "skill-c"]) == 2
+
+    def test_rejects_path_traversal(self, tmp_path: Path) -> None:
+        assert _remove_excluded_skills(tmp_path, ["../etc", ".hidden"]) == 0
+
+    def test_rejects_nested_path(self, tmp_path: Path) -> None:
+        assert _remove_excluded_skills(tmp_path, ["foo/bar"]) == 0
+
+
+class TestEnsureSkillLink:
+    def test_creates_new_link(self, tmp_path: Path) -> None:
+        target = tmp_path / "source"
+        target.mkdir()
+        link = tmp_path / "link"
+        created, fixed = _ensure_skill_link(target, link, tmp_path / "workspace")
+        assert created == 1
+        assert fixed == 0
+        assert link.is_symlink()
+        assert link.resolve() == target.resolve()
+
+    def test_leaves_correct_link(self, tmp_path: Path) -> None:
+        target = tmp_path / "source"
+        target.mkdir()
+        link = tmp_path / "link"
+        link.symlink_to(target)
+        created, fixed = _ensure_skill_link(target, link, tmp_path / "workspace")
+        assert created == 0
+        assert fixed == 0
+
+    def test_fixes_wrong_link(self, tmp_path: Path) -> None:
+        target = tmp_path / "source"
+        target.mkdir()
+        wrong = tmp_path / "wrong"
+        wrong.mkdir()
+        link = tmp_path / "link"
+        link.symlink_to(wrong)
+        created, fixed = _ensure_skill_link(target, link, tmp_path / "workspace")
+        assert created == 0
+        assert fixed == 1
+        assert link.resolve() == target.resolve()
+
+    def test_preserves_contribute_mode_link(self, tmp_path: Path) -> None:
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        contrib_target = workspace / "my-fork" / "skills" / "code"
+        contrib_target.mkdir(parents=True)
+        link = tmp_path / "link"
+        link.symlink_to(contrib_target)
+        target = tmp_path / "source"
+        target.mkdir()
+        created, fixed = _ensure_skill_link(target, link, workspace)
+        assert created == 0
+        assert fixed == 0
+        assert link.resolve() == contrib_target.resolve()
+
+    def test_leaves_real_directory(self, tmp_path: Path) -> None:
+        target = tmp_path / "source"
+        target.mkdir()
+        link = tmp_path / "link"
+        link.mkdir()
+        created, fixed = _ensure_skill_link(target, link, tmp_path / "workspace")
+        assert created == 0
+        assert fixed == 0
+        assert link.is_dir()
+        assert not link.is_symlink()
+
+
+class TestCleanBrokenSymlinks:
+    def test_removes_broken(self, tmp_path: Path) -> None:
+        (tmp_path / "broken").symlink_to(tmp_path / "nonexistent")
+        assert _clean_broken_symlinks(tmp_path) == 1
+
+    def test_leaves_valid(self, tmp_path: Path) -> None:
+        target = tmp_path / "target"
+        target.mkdir()
+        (tmp_path / "valid").symlink_to(target)
+        assert _clean_broken_symlinks(tmp_path) == 0
+
+
+class TestValidateRepo:
+    def test_exits_when_no_repo(self) -> None:
+        with patch("teatree.cli.setup.DoctorService") as mock_svc:
+            mock_svc.find_teatree_repo.return_value = None
+            with pytest.raises(click.exceptions.Exit):
+                _validate_repo(None)
+
+    def test_exits_when_worktree(self, tmp_path: Path) -> None:
+        repo = tmp_path / "teatree"
+        repo.mkdir()
+        (repo / ".git").write_text("gitdir: /other\n")
+        with patch("teatree.cli.setup.DoctorService") as mock_svc:
+            mock_svc.find_teatree_repo.return_value = repo
+            with pytest.raises(click.exceptions.Exit):
+                _validate_repo(None)
+
+    def test_exits_when_no_apm_yml(self, tmp_path: Path) -> None:
+        repo = tmp_path / "teatree"
+        repo.mkdir()
+        (repo / ".git").mkdir()
+        with pytest.raises(click.exceptions.Exit):
+            _validate_repo(repo)
+
+    def test_returns_repo_when_valid(self, tmp_path: Path) -> None:
+        repo = tmp_path / "teatree"
+        repo.mkdir()
+        (repo / ".git").mkdir()
+        (repo / "apm.yml").touch()
+        assert _validate_repo(repo) == repo
+
+
+class TestCoreExcludedSkills:
+    def test_default_exclusions_present(self) -> None:
+        assert "using-superpowers" in CORE_EXCLUDED_SKILLS
+        assert "using-git-worktrees" in CORE_EXCLUDED_SKILLS
