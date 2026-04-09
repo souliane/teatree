@@ -2,9 +2,7 @@ import logging
 import shutil
 
 from django.http import Http404, HttpRequest, HttpResponse, JsonResponse
-from django.utils.decorators import method_decorator
 from django.views import View
-from django.views.decorators.csrf import csrf_exempt
 
 from teatree.core.models import InvalidTransitionError, Task
 from teatree.core.overlay_loader import get_overlay
@@ -13,7 +11,6 @@ from teatree.types import SkillMetadata
 logger = logging.getLogger(__name__)
 
 
-@method_decorator(csrf_exempt, name="dispatch")
 class LaunchAgentView(View):
     def post(self, request: HttpRequest, task_id: int) -> HttpResponse:
         try:
@@ -63,7 +60,6 @@ def launch_interactive_task(
     return JsonResponse({"launch_url": attempt.launch_url, "attempt_id": attempt.pk})
 
 
-@method_decorator(csrf_exempt, name="dispatch")
 class LaunchTerminalView(View):
     def post(self, request: HttpRequest) -> HttpResponse:
         import os  # noqa: PLC0415
@@ -95,7 +91,6 @@ def launch_interactive_for_task(task: "Task") -> str:
     return result.launch_url
 
 
-@method_decorator(csrf_exempt, name="dispatch")
 class LaunchInteractiveAgentView(View):
     def post(self, request: HttpRequest) -> HttpResponse:
         from teatree.agents.services import get_terminal_mode  # noqa: PLC0415
