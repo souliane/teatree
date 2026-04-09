@@ -82,6 +82,8 @@ class MREntry:
     review_channel: str | None = None
     notion_status: str | None = None
     notion_url: str | None = None
+    draft_comments_pending: bool | None = None
+    draft_comments_count: int | None = None
 
     def to_dict(self) -> MREntryDict:
         result: MREntryDict = {}
@@ -387,6 +389,10 @@ def _upsert_ticket_from_mr(  # noqa: PLR0913, PLR0914
         e2e_url = _detect_e2e_evidence(discussions, web_url)
         if e2e_url:
             mr_entry.e2e_test_plan_url = e2e_url
+
+        draft_count = client.get_draft_notes_count(project.project_id, mr_iid)
+        mr_entry.draft_comments_pending = draft_count > 0
+        mr_entry.draft_comments_count = draft_count if draft_count > 0 else None
 
     # Reviewer info is available on all MRs (including drafts)
     reviewers = mr.get("reviewers", [])

@@ -686,6 +686,7 @@ The dashboard uses Server-Sent Events for push-based updates instead of blind po
 | headless_queue | `build_headless_queue()` | Pending headless tasks | `headless_queue` | 600s |
 | queue | `build_interactive_queue()` | Pending interactive tasks | `queue` | 600s |
 | sessions | `build_active_sessions()` | Running Claude processes | `sessions` | 60s |
+| action_required | `build_action_required()` | Items needing human attention (interactive tasks, review requests, draft comments) | `action_required` | 120s |
 | activity | `build_recent_activity()` | Recent task completions/failures | `activity` | 120s |
 
 ---
@@ -722,6 +723,8 @@ Runs all configured backends and merges results via `_merge_results()`. When bot
 Multiple MRs: the highest inferred state wins.
 
 **Discussion classification:** `_classify_discussions()` categorizes MR threads as `waiting_reviewer` (last comment is mine), `needs_reply` (last comment is theirs), or `addressed` (all resolved).
+
+**Draft comments detection:** During sync, `get_draft_notes_count()` checks each non-draft MR for unpublished draft notes. When present, `draft_comments_pending: true` and `draft_comments_count: N` are set on the MR entry. The Action Required panel shows a `review_draft` item prompting the user to review and publish the agent's draft comments.
 
 ---
 

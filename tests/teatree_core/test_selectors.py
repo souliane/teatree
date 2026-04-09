@@ -998,6 +998,58 @@ class TestCheckMr(TestCase):
         # No crash; no needs_reply item
         assert all(i.kind != "needs_reply" for i in items)
 
+    def test_review_draft_pending(self) -> None:
+        mr = {
+            "draft": False,
+            "repo": "backend",
+            "iid": 10,
+            "url": "https://gitlab.com/org/backend/-/merge_requests/10",
+            "draft_comments_pending": True,
+            "draft_comments_count": 3,
+        }
+        items = _check_mr(mr, self.ticket)
+        assert any(item.kind == "review_draft" for item in items)
+        draft_item = next(i for i in items if i.kind == "review_draft")
+        assert "3 draft comments" in draft_item.detail
+        assert "agent posted review comments" in draft_item.label
+
+    def test_review_draft_singular(self) -> None:
+        mr = {
+            "draft": False,
+            "repo": "backend",
+            "iid": 10,
+            "url": "https://gitlab.com/org/backend/-/merge_requests/10",
+            "draft_comments_pending": True,
+            "draft_comments_count": 1,
+        }
+        items = _check_mr(mr, self.ticket)
+        draft_item = next(i for i in items if i.kind == "review_draft")
+        assert "1 draft comment need" in draft_item.detail
+
+    def test_review_draft_not_pending(self) -> None:
+        mr = {
+            "draft": False,
+            "repo": "backend",
+            "iid": 10,
+            "url": "https://gitlab.com/org/backend/-/merge_requests/10",
+            "draft_comments_pending": False,
+            "draft_comments_count": 0,
+        }
+        items = _check_mr(mr, self.ticket)
+        assert all(i.kind != "review_draft" for i in items)
+
+    def test_review_draft_missing_count(self) -> None:
+        """When draft_comments_pending is True but count is missing, no item."""
+        mr = {
+            "draft": False,
+            "repo": "backend",
+            "iid": 10,
+            "url": "https://gitlab.com/org/backend/-/merge_requests/10",
+            "draft_comments_pending": True,
+        }
+        items = _check_mr(mr, self.ticket)
+        assert all(i.kind != "review_draft" for i in items)
+
 
 class TestBuildActionRequired(TestCase):
     def test_skips_non_dict_mrs(self) -> None:
