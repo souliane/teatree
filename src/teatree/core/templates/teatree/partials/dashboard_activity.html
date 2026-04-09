@@ -4,7 +4,7 @@
       <article class="rounded-2xl border border-bark/10 bg-white/80 px-4 py-4">
         <div class="flex items-center justify-between">
           <div class="font-sans text-[11px] font-semibold uppercase tracking-[0.2em] text-bark/55">
-            <button onclick="openTaskModal({{ row.task_id }})" class="underline decoration-bark/20 hover:decoration-bark/50 transition cursor-pointer">Task {{ row.task_id }}</button> · Ticket {{ row.ticket_id }}{% if row.phase %} · {{ row.phase }}{% endif %}
+            <button onclick="openTaskModal({{ row.task_id }})" class="underline decoration-bark/20 hover:decoration-bark/50 transition cursor-pointer">Task {{ row.task_id }}</button> · {% if row.issue_url %}<a href="{{ row.issue_url }}" target="_blank" class="underline decoration-bark/20 hover:decoration-bark/50 transition">#{{ row.ticket_display_id }}</a>{% else %}#{{ row.ticket_display_id }}{% endif %}{% if row.phase %} · {{ row.phase }}{% endif %}
           </div>
           {% if row.exit_code == 0 %}
             <span class="rounded-full bg-green-100 px-2 py-0.5 font-sans text-[10px] font-bold uppercase tracking-wider text-green-700">Success</span>
