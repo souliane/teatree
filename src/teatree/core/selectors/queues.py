@@ -66,6 +66,7 @@ def _build_task_queue(
         DashboardTaskRow(
             task_id=task.pk,
             ticket_id=task.ticket_id,
+            ticket_display_id=task.ticket.ticket_number,
             execution_reason=task.execution_reason,
             status=task.get_status_display(),
             claimed_by=task.claimed_by,

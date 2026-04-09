@@ -4,7 +4,7 @@
       <article class="rounded-2xl border border-bark/10 bg-white/80 px-4 py-4">
         <div class="flex items-center justify-between">
           <div class="font-sans text-[11px] font-semibold uppercase tracking-[0.2em] text-bark/55">
-            <button onclick="openTaskModal({{ task.task_id }})" class="underline decoration-bark/20 hover:decoration-bark/50 transition cursor-pointer">Task {{ task.task_id }}</button> · Ticket {{ task.ticket_id }}{% if task.phase %} · {{ task.phase }}{% endif %}
+            <button onclick="openTaskModal({{ task.task_id }})" class="underline decoration-bark/20 hover:decoration-bark/50 transition cursor-pointer">Task {{ task.task_id }}</button> · Ticket #{{ task.ticket_display_id }}{% if task.phase %} · {{ task.phase }}{% endif %}
           </div>
           <span class="rounded-full px-2 py-0.5 font-sans text-[10px] font-bold uppercase tracking-wider
             {% if task.status == 'Claimed' %}bg-amber-100 text-amber-700

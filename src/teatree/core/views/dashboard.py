@@ -3,6 +3,7 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 
 from django.http import Http404, HttpRequest, HttpResponse
+from django.shortcuts import get_object_or_404
 from django.template.response import TemplateResponse
 from django.templatetags.static import static
 from django.views import View
@@ -119,13 +120,12 @@ class TaskGraphView(View):
     def get(self, request: HttpRequest, ticket_id: int) -> HttpResponse:
         from teatree.core.models import Ticket  # noqa: PLC0415
 
-        if not Ticket.objects.filter(pk=ticket_id).exists():
-            raise Http404
+        ticket = get_object_or_404(Ticket, pk=ticket_id)
         graph = build_task_graph(ticket_id)
         return TemplateResponse(
             request,
             "teatree/partials/task_graph.html",
-            {"ticket_id": ticket_id, "graph": graph},
+            {"ticket_id": ticket.ticket_number, "graph": graph},
         )
 
 
@@ -134,13 +134,12 @@ class TicketLifecycleView(View):
         from teatree.core.models import Ticket  # noqa: PLC0415
         from teatree.core.selectors import build_ticket_lifecycle_mermaid  # noqa: PLC0415
 
-        if not Ticket.objects.filter(pk=ticket_id).exists():
-            raise Http404
+        ticket = get_object_or_404(Ticket, pk=ticket_id)
         mermaid = build_ticket_lifecycle_mermaid(ticket_id)
         return TemplateResponse(
             request,
             "teatree/partials/ticket_lifecycle.html",
-            {"ticket_id": ticket_id, "mermaid": mermaid},
+            {"ticket_id": ticket.ticket_number, "mermaid": mermaid},
         )
 
 

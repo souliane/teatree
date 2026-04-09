@@ -17,7 +17,7 @@
         <div class="mt-2 flex items-center justify-between">
           <p class="font-sans text-sm leading-6 text-bark/65">
             {% if s.task_id %}
-              <button onclick="openTaskModal({{ s.task_id }})" class="underline decoration-bark/20 hover:decoration-bark/50 transition cursor-pointer">Task {{ s.task_id }}</button>{% if s.ticket_id %} · Ticket {{ s.ticket_id }}{% endif %}{% if s.phase %} · {{ s.phase }}{% endif %}
+              <button onclick="openTaskModal({{ s.task_id }})" class="underline decoration-bark/20 hover:decoration-bark/50 transition cursor-pointer">Task {{ s.task_id }}</button>{% if s.ticket_display_id %} · Ticket #{{ s.ticket_display_id }}{% endif %}{% if s.phase %} · {{ s.phase }}{% endif %}
             {% else %}
               Standalone session (no linked task)
             {% endif %}

@@ -4,7 +4,7 @@
     <div>
       <h3 class="font-display text-2xl">Task {{ detail.task_id }}</h3>
       <p class="font-sans text-sm text-bark/60">
-        Ticket {{ detail.ticket_id }} · {{ detail.phase }} ·
+        Ticket #{{ detail.ticket_display_id }} · {{ detail.phase }} ·
         <span class="inline-block rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider
           {% if detail.status == 'Completed' %}bg-green-100 text-green-700
           {% elif detail.status == 'Failed' %}bg-red-100 text-red-700
