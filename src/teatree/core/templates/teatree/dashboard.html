@@ -556,7 +556,7 @@
             class="pill-btn pill-xs split-main border border-clay/30 bg-clay/10 uppercase tracking-[0.18em] text-clay hover:bg-clay/20"
             hx-post="{% url 'teatree:launch-terminal' %}"
             hx-swap="none"
-            hx-on::before-request="event.detail.requestConfig.parameters['terminal_mode'] = document.getElementById('terminal-mode-selector').value; event.detail.requestConfig.parameters['terminal_app'] = document.getElementById('terminal-app-selector').value"
+            hx-on::before-request="event.detail.requestConfig.parameters['terminal_mode'] = localStorage.getItem('teatree_terminal_mode') || 'new-window'; event.detail.requestConfig.parameters['terminal_app'] = localStorage.getItem('teatree_terminal_app') || ''"
             hx-on::after-request="handleActionResponse(event)"
           >Terminal</button>
           <button type="button" class="pill-btn pill-xs split-arrow border border-clay/30 bg-clay/10 text-clay hover:bg-clay/20" onclick="toggleSplitMenu(this)">&#9662;</button>
@@ -567,7 +567,7 @@
             class="pill-btn pill-xs split-main border border-moss/30 bg-moss/10 uppercase tracking-[0.18em] text-moss hover:bg-moss/20"
             hx-post="{% url 'teatree:launch-interactive-agent' %}"
             hx-swap="none"
-            hx-on::before-request="event.detail.requestConfig.parameters['terminal_mode'] = document.getElementById('terminal-mode-selector').value; event.detail.requestConfig.parameters['terminal_app'] = document.getElementById('terminal-app-selector').value"
+            hx-on::before-request="event.detail.requestConfig.parameters['terminal_mode'] = localStorage.getItem('teatree_terminal_mode') || 'new-window'; event.detail.requestConfig.parameters['terminal_app'] = localStorage.getItem('teatree_terminal_app') || ''"
             hx-on::after-request="handleActionResponse(event)"
           >Agent</button>
           <button type="button" class="pill-btn pill-xs split-arrow border border-moss/30 bg-moss/10 text-moss hover:bg-moss/20" onclick="toggleSplitMenu(this)">&#9662;</button>

@@ -150,7 +150,7 @@
                     hx-post="/tickets/{{ ticket.ticket_id }}/create-task/"
                     hx-vals='{"target": "interactive", "reason": "Address {{ mr.needs_reply_count }} review comment(s) on !{{ mr.iid }}"}'
                     hx-swap="none"
-                    hx-on::before-request="event.detail.requestConfig.parameters['terminal_mode'] = document.getElementById('terminal-mode-selector').value; event.detail.requestConfig.parameters['terminal_app'] = document.getElementById('terminal-app-selector').value"
+                    hx-on::before-request="event.detail.requestConfig.parameters['terminal_mode'] = localStorage.getItem('teatree_terminal_mode') || 'new-window'; event.detail.requestConfig.parameters['terminal_app'] = localStorage.getItem('teatree_terminal_app') || ''"
                     hx-on::after-request="handleActionResponse(event)"
                     hx-disable-elt="this"
                     hx-confirm="Open interactive session to address {{ mr.needs_reply_count }} review comment(s)?"
@@ -231,16 +231,21 @@
                     hx-confirm="Start headless agent for ticket #{{ ticket.display_id }}?"
                     title="Start headless agent"
                   >Headless</button>
-                  <button
-                    class="pill-btn pill-xs border border-clay/30 bg-clay/10 uppercase tracking-[0.18em] text-clay hover:bg-clay/20"
-                    hx-post="/tickets/{{ ticket.ticket_id }}/create-task/"
-                    hx-vals='{"target": "interactive"}'
-                    hx-swap="none"
-                    hx-on::after-request="handleActionResponse(event)"
-                    hx-disable-elt="this"
-                    hx-confirm="Start interactive session for ticket #{{ ticket.display_id }}?"
-                    title="Start interactive session"
-                  >Interactive</button>
+                  <div class="split-btn">
+                    <button
+                      class="pill-btn pill-xs split-main border border-clay/30 bg-clay/10 uppercase tracking-[0.18em] text-clay hover:bg-clay/20"
+                      hx-post="/tickets/{{ ticket.ticket_id }}/create-task/"
+                      hx-vals='{"target": "interactive"}'
+                      hx-swap="none"
+                      hx-on::before-request="event.detail.requestConfig.parameters['terminal_mode'] = localStorage.getItem('teatree_terminal_mode') || 'new-window'; event.detail.requestConfig.parameters['terminal_app'] = localStorage.getItem('teatree_terminal_app') || ''"
+                      hx-on::after-request="handleActionResponse(event)"
+                      hx-disable-elt="this"
+                      hx-confirm="Start interactive session for ticket #{{ ticket.display_id }}?"
+                      title="Start interactive session"
+                    >Interactive</button>
+                    <button type="button" class="pill-btn pill-xs split-arrow border border-clay/30 bg-clay/10 text-clay hover:bg-clay/20" onclick="toggleSplitMenu(this)">&#9662;</button>
+                    <div class="split-menu hidden">{% include "teatree/partials/_terminal_options_menu.html" %}</div>
+                  </div>
                 </div>
               </td>
             {% endif %}
@@ -326,16 +331,21 @@
                   hx-confirm="Start headless agent for ticket #{{ ticket.display_id }}?"
                   title="Start headless agent"
                 >Auto</button>
-                <button
-                  class="pill-btn pill-xs border border-clay/30 bg-clay/10 uppercase tracking-[0.18em] text-clay hover:bg-clay/20"
-                  hx-post="/tickets/{{ ticket.ticket_id }}/create-task/"
-                  hx-vals='{"target": "interactive"}'
-                  hx-swap="none"
-                  hx-on::after-request="htmx.trigger(document.body, 'refreshPanels')"
-                  hx-disable-elt="this"
-                  hx-confirm="Start interactive session for ticket #{{ ticket.display_id }}?"
-                  title="Start interactive session"
-                >Interactive</button>
+                <div class="split-btn">
+                  <button
+                    class="pill-btn pill-xs split-main border border-clay/30 bg-clay/10 uppercase tracking-[0.18em] text-clay hover:bg-clay/20"
+                    hx-post="/tickets/{{ ticket.ticket_id }}/create-task/"
+                    hx-vals='{"target": "interactive"}'
+                    hx-swap="none"
+                    hx-on::before-request="event.detail.requestConfig.parameters['terminal_mode'] = localStorage.getItem('teatree_terminal_mode') || 'new-window'; event.detail.requestConfig.parameters['terminal_app'] = localStorage.getItem('teatree_terminal_app') || ''"
+                    hx-on::after-request="handleActionResponse(event)"
+                    hx-disable-elt="this"
+                    hx-confirm="Start interactive session for ticket #{{ ticket.display_id }}?"
+                    title="Start interactive session"
+                  >Interactive</button>
+                  <button type="button" class="pill-btn pill-xs split-arrow border border-clay/30 bg-clay/10 text-clay hover:bg-clay/20" onclick="toggleSplitMenu(this)">&#9662;</button>
+                  <div class="split-menu hidden">{% include "teatree/partials/_terminal_options_menu.html" %}</div>
+                </div>
               </div>
             </td>
           </tr>
