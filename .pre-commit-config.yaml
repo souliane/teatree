@@ -145,6 +145,7 @@ repos:
         entry: uv run python scripts/hooks/check_quality_gates.py
         pass_filenames: false
         always_run: true
+        stages: [commit-msg]
       - id: module-health
         name: Enforce module health (LOC, OOP, typed data)
         language: system
