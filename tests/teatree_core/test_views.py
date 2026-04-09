@@ -690,7 +690,8 @@ class TestCreateTaskView(TestCase):
         task = Task.objects.latest("pk")
         assert task.status == Task.Status.PENDING  # Not claimed until worker picks it up
 
-    def test_headless_enqueue_failure_fails_task(self) -> None:
+    def test_headless_enqueue_failure_leaves_task_pending(self) -> None:
+        """If the auto-enqueue signal fails, the task stays PENDING for drain to retry."""
         ticket = Ticket.objects.create(overlay="test", state=Ticket.State.STARTED)
         Session.objects.create(ticket=ticket, overlay="test", agent_id="agent")
 
@@ -709,11 +710,10 @@ class TestCreateTaskView(TestCase):
                 {"phase": "coding", "target": Task.ExecutionTarget.HEADLESS},
             )
 
-        assert response.status_code == 500
-        assert response.json()["error"] == "queue unavailable"
+        assert response.status_code == 200
 
         task = Task.objects.get(ticket=ticket, phase="coding")
-        assert task.status == Task.Status.FAILED
+        assert task.status == Task.Status.PENDING
 
     def test_interactive_with_terminal_mode_auto_launches(self) -> None:
         """When terminal_mode is provided, interactive task is created, claimed, and launched."""

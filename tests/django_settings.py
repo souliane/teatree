@@ -50,7 +50,7 @@ TEMPLATES = [
 
 TASKS = {
     "default": {
-        "BACKEND": "django_tasks.backends.immediate.ImmediateBackend",
+        "BACKEND": "django_tasks.backends.dummy.DummyBackend",
     },
 }
 

@@ -10,7 +10,7 @@
             {% if task.status == 'Claimed' %}bg-amber-100 text-amber-700
             {% elif task.status == 'Pending' %}bg-sky-100 text-sky-700
             {% else %}bg-bark/10 text-bark/60{% endif %}">
-            {{ task.status }}
+            {% if task.status == 'Pending' %}Queued{% else %}{{ task.status }}{% endif %}
           </span>
         </div>
         <p class="mt-2 font-display text-lg">{{ task.execution_reason|default:"Headless execution pending" }}</p>
@@ -27,7 +27,7 @@
             {% elif task.session_agent_id %}
               Agent: {{ task.session_agent_id }}
             {% else %}
-              Ready for headless runtime.
+              Queued for auto-execution.
             {% endif %}
           </p>
           <div class="flex items-center gap-2">
@@ -53,16 +53,6 @@
                 hx-disable-elt="this"
               >
                 Dismiss
-              </button>
-              <button
-                class="rounded-full border border-moss/30 bg-moss/10 px-4 py-1.5 font-sans text-xs font-semibold uppercase tracking-[0.18em] text-moss transition hover:bg-moss/20"
-                hx-post="/tasks/{{ task.task_id }}/launch/"
-                hx-swap="none"
-                hx-on::after-request="handleActionResponse(event)"
-                hx-disable-elt="this"
-                hx-confirm="Execute headless task #{{ task.task_id }} for ticket #{{ task.ticket_display_id }}?"
-              >
-                Execute
               </button>
             {% endif %}
           </div>
