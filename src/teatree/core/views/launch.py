@@ -53,16 +53,12 @@ class LaunchAgentView(View):
         terminal_mode: str = "",
         terminal_app: str = "",
     ) -> JsonResponse:
-        from teatree.agents.web_terminal import launch_web_session  # noqa: PLC0415
-
-        attempt = launch_web_session(
+        return launch_interactive_task(
             task,
-            phase=task.phase,
-            overlay_skill_metadata=skill_metadata,
+            skill_metadata,
             terminal_mode=terminal_mode,
             terminal_app=terminal_app,
         )
-        return JsonResponse({"launch_url": attempt.launch_url, "attempt_id": attempt.pk})
 
     def _launch_headless(self, task: Task) -> JsonResponse:
         from teatree.core.tasks import execute_headless_task  # noqa: PLC0415
@@ -74,6 +70,25 @@ class LaunchAgentView(View):
                 "django_task_id": str(django_task_result.id),
             },
         )
+
+
+def launch_interactive_task(
+    task: Task,
+    skill_metadata: SkillMetadata,
+    *,
+    terminal_mode: str = "",
+    terminal_app: str = "",
+) -> JsonResponse:
+    from teatree.agents.web_terminal import launch_web_session  # noqa: PLC0415
+
+    attempt = launch_web_session(
+        task,
+        phase=task.phase,
+        overlay_skill_metadata=skill_metadata,
+        terminal_mode=terminal_mode,
+        terminal_app=terminal_app,
+    )
+    return JsonResponse({"launch_url": attempt.launch_url, "attempt_id": attempt.pk})
 
 
 @method_decorator(csrf_exempt, name="dispatch")

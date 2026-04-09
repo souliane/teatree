@@ -42,7 +42,7 @@
                 hx-post="/tickets/{{ item.ticket_id }}/create-task/"
                 hx-vals='{"target": "interactive", "reason": "Address review comments"}'
                 hx-swap="none"
-                hx-on::before-request="event.detail.requestConfig.parameters['terminal_mode'] = document.getElementById('terminal-mode-selector').value; event.detail.requestConfig.parameters['terminal_app'] = document.getElementById('terminal-app-selector').value"
+                hx-on::before-request="event.detail.requestConfig.parameters['terminal_mode'] = localStorage.getItem('teatree_terminal_mode') || 'new-window'; event.detail.requestConfig.parameters['terminal_app'] = localStorage.getItem('teatree_terminal_app') || ''"
                 hx-on::after-request="handleActionResponse(event)"
                 hx-disable-elt="this"
                 hx-confirm="Open interactive session to address review comments?"
