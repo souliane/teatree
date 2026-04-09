@@ -987,6 +987,28 @@ def test_get_mr_discussions_returns_empty_when_not_a_list(monkeypatch: pytest.Mo
     assert result == []
 
 
+def test_get_draft_notes_count_returns_count(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = gitlab_api.GitLabAPI(token="test-token")
+    monkeypatch.setattr(
+        client,
+        "get_json",
+        lambda endpoint: [{"id": 1}, {"id": 2}, {"id": 3}],
+    )
+
+    result = client.get_draft_notes_count(42, 1)
+
+    assert result == 3
+
+
+def test_get_draft_notes_count_returns_zero_when_not_a_list(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = gitlab_api.GitLabAPI(token="test-token")
+    monkeypatch.setattr(client, "get_json", lambda endpoint: None)
+
+    result = client.get_draft_notes_count(42, 1)
+
+    assert result == 0
+
+
 def test_current_username_returns_username(monkeypatch: pytest.MonkeyPatch) -> None:
     client = gitlab_api.GitLabAPI(token="test-token")
     monkeypatch.setattr(
@@ -1111,6 +1133,15 @@ class TestGitLabAPICacheHits:
         client.get_mr_discussions(1, 1)
         result = client.get_mr_discussions(1, 1)
         assert result == [{"id": "d1"}]
+        assert len(calls) == 1
+
+    def test_get_draft_notes_count_returns_cached(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        client = gitlab_api.GitLabAPI(token="t")
+        calls = []
+        monkeypatch.setattr(client, "get_json", lambda ep: calls.append(1) or [{"id": 1}, {"id": 2}])
+        client.get_draft_notes_count(1, 1)
+        result = client.get_draft_notes_count(1, 1)
+        assert result == 2
         assert len(calls) == 1
 
     def test_current_username_returns_cached(self, monkeypatch: pytest.MonkeyPatch) -> None:

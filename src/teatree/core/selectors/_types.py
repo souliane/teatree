@@ -132,7 +132,7 @@ class ReviewCommentDetail:
 
 @dataclass(frozen=True, slots=True)
 class ActionRequiredItem:
-    kind: str  # "interactive_task", "needs_review_request", "needs_reply", "needs_approval"
+    kind: str  # "interactive_task", "needs_review_request", "needs_reply", "needs_approval", "review_draft"
     label: str
     url: str
     ticket_id: int

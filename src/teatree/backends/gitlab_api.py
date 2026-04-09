@@ -349,6 +349,17 @@ class GitLabAPI:
         self._set_cached(cache_key, result)
         return result
 
+    def get_draft_notes_count(self, project_id: int, mr_iid: int) -> int:
+        """Return the number of unpublished draft notes on a merge request."""
+        cache_key = f"draft_notes:{project_id}:{mr_iid}"
+        cached = self._get_cached(cache_key, _TTL_DISCUSSIONS)
+        if cached is not None:
+            return cached  # type: ignore[return-value]
+        data = self.get_json(f"projects/{project_id}/merge_requests/{mr_iid}/draft_notes?per_page=100")
+        count = len(data) if isinstance(data, list) else 0
+        self._set_cached(cache_key, count)
+        return count
+
     def cancel_pipelines(
         self,
         project_id: int,
