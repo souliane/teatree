@@ -2307,6 +2307,57 @@ class TestRunServices(TestCase):
     pass  # No standalone services tests in the original file — placeholder for future tests
 
 
+class TestPlaywrightOptions:
+    def test_update_snapshots_flag(self) -> None:
+        opts = e2e_mod.PlaywrightOptions(update_snapshots=True)
+        args = opts.to_args()
+        assert "--update-snapshots" in args
+        assert "--reporter=list" in args
+
+    def test_no_update_snapshots(self) -> None:
+        opts = e2e_mod.PlaywrightOptions()
+        args = opts.to_args()
+        assert "--update-snapshots" not in args
+
+
+class TestDetectLocalPort:
+    def test_returns_port_when_listening(self) -> None:
+        with patch("teatree.core.management.commands.e2e.socket.socket") as mock_sock_cls:
+            mock_sock = MagicMock()
+            mock_sock_cls.return_value.__enter__ = MagicMock(return_value=mock_sock)
+            mock_sock_cls.return_value.__exit__ = MagicMock(return_value=False)
+            mock_sock.connect_ex.return_value = 0
+            assert e2e_mod._detect_local_port(8080) == 8080
+
+    def test_returns_none_when_not_listening(self) -> None:
+        with patch("teatree.core.management.commands.e2e.socket.socket") as mock_sock_cls:
+            mock_sock = MagicMock()
+            mock_sock_cls.return_value.__enter__ = MagicMock(return_value=mock_sock)
+            mock_sock_cls.return_value.__exit__ = MagicMock(return_value=False)
+            mock_sock.connect_ex.return_value = 1
+            assert e2e_mod._detect_local_port(8080) is None
+
+
+class TestDiscoverFrontendPort:
+    def test_returns_docker_port_when_available(self) -> None:
+        with patch.object(e2e_mod, "get_service_port", return_value=4201):
+            assert e2e_mod._discover_frontend_port("project") == 4201
+
+    def test_scans_local_ports_as_fallback(self) -> None:
+        with (
+            patch.object(e2e_mod, "get_service_port", return_value=None),
+            patch.object(e2e_mod, "_detect_local_port", side_effect=lambda p: 4203 if p == 4203 else None),
+        ):
+            assert e2e_mod._discover_frontend_port("project") == 4203
+
+    def test_returns_none_when_no_port_found(self) -> None:
+        with (
+            patch.object(e2e_mod, "get_service_port", return_value=None),
+            patch.object(e2e_mod, "_detect_local_port", return_value=None),
+        ):
+            assert e2e_mod._discover_frontend_port("project") is None
+
+
 class TestE2eTriggerCi(TestCase):
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
@@ -3509,6 +3560,114 @@ class TestLifecycleDiagram(TestCase):
         result = cast("str", call_command("lifecycle", "diagram", model="unknown"))
 
         assert "Unknown model: unknown" in result
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_ticket_lifecycle_diagram(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/d1")
+        with patch(
+            "teatree.core.selectors.build_ticket_lifecycle_mermaid",
+            return_value="mermaid-output",
+        ) as mock_build:
+            result = cast("str", call_command("lifecycle", "diagram", ticket=ticket.pk))
+
+        mock_build.assert_called_once_with(ticket.pk)
+        assert result == "mermaid-output"
+
+
+class TestLifecycleVisitPhase(TestCase):
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_creates_session_and_visits_phase(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/vp1")
+        result = cast("str", call_command("lifecycle", "visit-phase", str(ticket.pk), "coding"))
+
+        assert "coding" in result
+        assert ticket.sessions.count() == 1
+        session = ticket.sessions.first()
+        assert "coding" in session.visited_phases
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_reuses_existing_session(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/vp2")
+        session = Session.objects.create(ticket=ticket)
+        session.visit_phase("testing")
+
+        result = cast("str", call_command("lifecycle", "visit-phase", str(ticket.pk), "reviewing"))
+
+        assert ticket.sessions.count() == 1
+        session.refresh_from_db()
+        assert "testing" in session.visited_phases
+        assert "reviewing" in session.visited_phases
+        assert str(session.pk) in result
+
+
+class TestRunHealthChecks(TestCase):
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_failed_health_check_reports_failure(self) -> None:
+        from teatree.core.overlay import HealthCheck  # noqa: PLC0415
+
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/hc1")
+        worktree = Worktree.objects.create(
+            overlay="test",
+            ticket=ticket,
+            repo_path="/tmp/backend",
+            branch="feature-hc1",
+        )
+
+        cmd = lifecycle_mod.Command()
+        cmd.stderr = OutputWrapper(StringIO())
+        cmd.stdout = OutputWrapper(StringIO())
+        cmd._verbose = True
+
+        failing_check = HealthCheck(name="db-exists", check=lambda: False, description="Database exists")
+        passing_check = HealthCheck(name="dir-exists", check=lambda: True, description="Dir exists")
+
+        mock_overlay = MagicMock()
+        mock_overlay.get_health_checks.return_value = [failing_check, passing_check]
+
+        cmd._run_health_checks(worktree, mock_overlay)
+
+        stderr_output = cmd.stderr._out.getvalue()
+        stdout_output = cmd.stdout._out.getvalue()
+        assert "HEALTH CHECK FAILED: db-exists" in stderr_output
+        assert "1/2 health check(s) failed" in stderr_output
+        assert "HEALTH CHECK OK: dir-exists" in stdout_output
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_health_check_exception_reports_error(self) -> None:
+        from teatree.core.overlay import HealthCheck  # noqa: PLC0415
+
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/hc2")
+        worktree = Worktree.objects.create(
+            overlay="test",
+            ticket=ticket,
+            repo_path="/tmp/backend",
+            branch="feature-hc2",
+        )
+
+        cmd = lifecycle_mod.Command()
+        cmd.stderr = OutputWrapper(StringIO())
+        cmd.stdout = OutputWrapper(StringIO())
+        cmd._verbose = True
+
+        def _boom() -> bool:
+            msg = "connection refused"
+            raise ConnectionError(msg)
+
+        error_check = HealthCheck(name="network", check=_boom, description="Network check")
+        mock_overlay = MagicMock()
+        mock_overlay.get_health_checks.return_value = [error_check]
+
+        cmd._run_health_checks(worktree, mock_overlay)
+
+        stderr_output = cmd.stderr._out.getvalue()
+        assert "HEALTH CHECK ERROR: network" in stderr_output
+        assert "connection refused" in stderr_output
+        assert "1/1 health check(s) failed" in stderr_output
 
 
 # ── Tool commands ──────────────────────────────────────────────────
