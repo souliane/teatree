@@ -188,10 +188,6 @@ def _workspace_dir() -> Path:
     return load_config().user.workspace_dir
 
 
-def _worktrees_dir() -> Path:
-    return load_config().user.worktrees_dir
-
-
 def _branch_prefix() -> str:
     prefix = os.environ.get("T3_BRANCH_PREFIX", "")
     if not prefix:

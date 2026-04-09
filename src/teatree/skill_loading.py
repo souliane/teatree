@@ -18,6 +18,7 @@ from teatree.utils import git
 
 logger = logging.getLogger(__name__)
 
+
 def _default_skills_dir() -> Path:
     from teatree import find_project_root  # noqa: PLC0415
 

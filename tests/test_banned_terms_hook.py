@@ -2,9 +2,9 @@ import os
 import subprocess
 from pathlib import Path
 
-from teatree import find_project_root
-
 import pytest
+
+from teatree import find_project_root
 
 
 @pytest.mark.integration

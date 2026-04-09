@@ -440,13 +440,12 @@ def test_trigger(prompt: str) -> None:
     import json as _json  # noqa: PLC0415
     import sys as _sys  # noqa: PLC0415
 
-    from teatree.config import DATA_DIR  # noqa: PLC0415
-
     # Import from scripts/lib (same pattern as _startup.py).
     from teatree import find_project_root as _find_root  # noqa: PLC0415
+    from teatree.config import DATA_DIR  # noqa: PLC0415
 
-    _root = _find_root()
-    scripts_lib = _root / "scripts" / "lib" if _root else Path(__file__).resolve().parent
+    root = _find_root()
+    scripts_lib = root / "scripts" / "lib" if root else Path(__file__).resolve().parent
     if str(scripts_lib) not in _sys.path:
         _sys.path.insert(0, str(scripts_lib))
 

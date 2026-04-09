@@ -879,6 +879,22 @@ class TestWorkspaceCleanAll(TestCase):
             assert not empty_dir.exists()
             assert nonempty_dir.exists()
 
+    @_no_prune
+    @_no_stash
+    @_no_orphan_dbs
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_includes_dslr_snapshot_pruning(self) -> None:
+        """clean-all includes DSLR snapshot pruning results."""
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch.object(workspace_mod, "_workspace_dir", return_value=Path(tmp)),
+            patch("teatree.utils.django_db.prune_dslr_snapshots", return_value=["old-snapshot-2025"]),
+        ):
+            cleaned = cast("list[str]", call_command("workspace", "clean-all"))
+
+        assert any("old-snapshot-2025" in c for c in cleaned)
+
 
 _gh_no_pr = patch(
     "teatree.core.management.commands.workspace.subprocess.run",
@@ -955,6 +971,196 @@ class TestPruneBranches(TestCase):
         assert any("squash-merged" in c for c in cleaned)
         mock_wt_rm.assert_called_once_with("/repo", "/tmp/old-worktree")
         mock_br_del.assert_called_once_with("/repo", "gone-branch")
+
+
+class TestPruneBranchesPassOneAndTwo(TestCase):
+    """Cover Pass 1 (gone branches) and Pass 2 (merged branches) in _prune_branches."""
+
+    def test_pass1_deletes_gone_branch_not_in_worktree(self) -> None:
+        def fake_run(*, repo: str = ".", args: list[str]) -> str:
+            if args == ["branch", "-v", "--no-color"]:
+                return "  active abc123 some work\n  stale-feature def456 [gone] old work"
+            if args == ["branch", "--merged", "origin/main", "--no-color"]:
+                return ""
+            if args == ["branch", "--no-color"]:
+                return "* main"
+            return ""
+
+        with (
+            patch.object(git_mod, "run", side_effect=fake_run),
+            patch.object(git_mod, "current_branch", return_value="main"),
+            patch.object(git_mod, "default_branch", return_value="main"),
+            patch.object(git_mod, "branch_delete") as mock_del,
+            patch.object(workspace_mod, "_worktree_branches", return_value=set()),
+            patch.object(workspace_mod, "_worktree_map", return_value={}),
+        ):
+            cleaned = workspace_mod._prune_branches("/repo")
+
+        mock_del.assert_called_once_with("/repo", "stale-feature")
+        assert any("gone" in c and "stale-feature" in c for c in cleaned)
+
+    def test_pass2_deletes_merged_branch_and_skips_protected(self) -> None:
+        def fake_run(*, repo: str = ".", args: list[str]) -> str:
+            if args == ["branch", "-v", "--no-color"]:
+                return ""
+            if args == ["branch", "--merged", "origin/main", "--no-color"]:
+                return "  main\n  merged-feature"
+            if args == ["branch", "--no-color"]:
+                return "* main"
+            return ""
+
+        with (
+            patch.object(git_mod, "run", side_effect=fake_run),
+            patch.object(git_mod, "current_branch", return_value="main"),
+            patch.object(git_mod, "default_branch", return_value="main"),
+            patch.object(git_mod, "branch_delete") as mock_del,
+            patch.object(workspace_mod, "_worktree_branches", return_value=set()),
+            patch.object(workspace_mod, "_worktree_map", return_value={}),
+        ):
+            cleaned = workspace_mod._prune_branches("/repo")
+
+        mock_del.assert_called_once_with("/repo", "merged-feature")
+        assert any("merged" in c and "merged-feature" in c for c in cleaned)
+
+    def test_pass3_warns_non_squash_merged_branch(self) -> None:
+        def fake_run(*, repo: str = ".", args: list[str]) -> str:
+            if args == ["branch", "-v", "--no-color"]:
+                return ""
+            if args == ["branch", "--merged", "origin/main", "--no-color"]:
+                return ""
+            if args == ["branch", "--no-color"]:
+                return "* main\n  unmerged-feature"
+            if "diff" in args:
+                return " file.py | 1 +"
+            if "rev-list" in args:
+                return "5"
+            return ""
+
+        gh_no_pr = subprocess.CompletedProcess([], 0, stdout="[]")
+        with (
+            patch.object(git_mod, "run", side_effect=fake_run),
+            patch.object(git_mod, "current_branch", return_value="main"),
+            patch.object(git_mod, "default_branch", return_value="main"),
+            patch.object(git_mod, "branch_delete") as mock_del,
+            patch.object(workspace_mod, "_worktree_branches", return_value=set()),
+            patch.object(workspace_mod, "_worktree_map", return_value={}),
+            patch("teatree.core.management.commands.workspace.subprocess.run", return_value=gh_no_pr),
+        ):
+            cleaned = workspace_mod._prune_branches("/repo")
+
+        mock_del.assert_not_called()
+        assert any("WARNING" in c and "unmerged-feature" in c for c in cleaned)
+
+    def test_pass1_skips_protected_and_worktree_branches(self) -> None:
+        def fake_run(*, repo: str = ".", args: list[str]) -> str:
+            if args == ["branch", "-v", "--no-color"]:
+                return "  main abc123 [gone]\n  wt-branch def456 [gone]"
+            if args == ["branch", "--merged", "origin/main", "--no-color"]:
+                return ""
+            if args == ["branch", "--no-color"]:
+                return "* main"
+            return ""
+
+        with (
+            patch.object(git_mod, "run", side_effect=fake_run),
+            patch.object(git_mod, "current_branch", return_value="main"),
+            patch.object(git_mod, "default_branch", return_value="main"),
+            patch.object(git_mod, "branch_delete") as mock_del,
+            patch.object(workspace_mod, "_worktree_branches", return_value={"wt-branch"}),
+            patch.object(workspace_mod, "_worktree_map", return_value={}),
+        ):
+            workspace_mod._prune_branches("/repo")
+
+        mock_del.assert_not_called()
+
+
+class TestDropOrphanedStashes(TestCase):
+    def test_drops_stash_for_deleted_branch(self) -> None:
+        stash_output = "stash@{0}: WIP on deleted-branch: abc123 some work"
+        branches_output = "* main\n  other-branch"
+        calls: list[list[str]] = []
+
+        def fake_run(*, repo: str = ".", args: list[str]) -> str:
+            calls.append(args)
+            if args == ["stash", "list"]:
+                return stash_output
+            if args == ["branch", "--no-color"]:
+                return branches_output
+            return ""
+
+        with patch.object(git_mod, "run", side_effect=fake_run):
+            result = workspace_mod._drop_orphaned_stashes("/repo")
+
+        assert len(result) == 1
+        assert "deleted-branch" in result[0]
+        assert ["stash", "drop", "stash@{0}"] in calls
+
+    def test_keeps_stash_for_existing_branch(self) -> None:
+        stash_output = "stash@{0}: WIP on main: abc123 some work"
+        branches_output = "* main"
+
+        def fake_run(*, repo: str = ".", args: list[str]) -> str:
+            if args == ["stash", "list"]:
+                return stash_output
+            if args == ["branch", "--no-color"]:
+                return branches_output
+            return ""
+
+        with patch.object(git_mod, "run", side_effect=fake_run):
+            result = workspace_mod._drop_orphaned_stashes("/repo")
+
+        assert result == []
+
+    def test_returns_empty_when_no_stashes(self) -> None:
+        with patch.object(git_mod, "run", return_value=""):
+            result = workspace_mod._drop_orphaned_stashes("/repo")
+        assert result == []
+
+    def test_skips_stash_without_on_keyword(self) -> None:
+        stash_output = "stash@{0}: Some unusual format"
+        branches_output = "* main"
+
+        def fake_run(*, repo: str = ".", args: list[str]) -> str:
+            if args == ["stash", "list"]:
+                return stash_output
+            if args == ["branch", "--no-color"]:
+                return branches_output
+            return ""
+
+        with patch.object(git_mod, "run", side_effect=fake_run):
+            result = workspace_mod._drop_orphaned_stashes("/repo")
+
+        assert result == []
+
+
+class TestDropOrphanDatabasesFailure(TestCase):
+    def test_returns_empty_when_psql_fails(self) -> None:
+        with (
+            patch.object(workspace_mod, "subprocess") as mock_sp,
+            patch.object(db_mod, "pg_env", return_value={}),
+            patch.object(db_mod, "pg_host", return_value="localhost"),
+            patch.object(db_mod, "pg_user", return_value="postgres"),
+        ):
+            mock_sp.run.return_value = MagicMock(returncode=1)
+            result = workspace_mod._drop_orphan_databases()
+
+        assert result == []
+
+
+class TestWorktreeBranches(TestCase):
+    def test_returns_branch_names_from_worktree_map(self) -> None:
+        porcelain = (
+            "worktree /home/user/main\n"
+            "HEAD abc123\n"
+            "branch refs/heads/main\n"
+            "\n"
+            "worktree /home/user/wt-feature\n"
+            "HEAD def456\n"
+            "branch refs/heads/feature-branch\n"
+        )
+        with patch.object(git_mod, "run", return_value=porcelain):
+            result = workspace_mod._worktree_branches("/repo")
+        assert result == {"main", "feature-branch"}
 
 
 class TestWorkspaceFinalize(TestCase):
@@ -2099,6 +2305,57 @@ class TestRunVerify(TestCase):
 
 class TestRunServices(TestCase):
     pass  # No standalone services tests in the original file — placeholder for future tests
+
+
+class TestPlaywrightOptions:
+    def test_update_snapshots_flag(self) -> None:
+        opts = e2e_mod.PlaywrightOptions(update_snapshots=True)
+        args = opts.to_args()
+        assert "--update-snapshots" in args
+        assert "--reporter=list" in args
+
+    def test_no_update_snapshots(self) -> None:
+        opts = e2e_mod.PlaywrightOptions()
+        args = opts.to_args()
+        assert "--update-snapshots" not in args
+
+
+class TestDetectLocalPort:
+    def test_returns_port_when_listening(self) -> None:
+        with patch("teatree.core.management.commands.e2e.socket.socket") as mock_sock_cls:
+            mock_sock = MagicMock()
+            mock_sock_cls.return_value.__enter__ = MagicMock(return_value=mock_sock)
+            mock_sock_cls.return_value.__exit__ = MagicMock(return_value=False)
+            mock_sock.connect_ex.return_value = 0
+            assert e2e_mod._detect_local_port(8080) == 8080
+
+    def test_returns_none_when_not_listening(self) -> None:
+        with patch("teatree.core.management.commands.e2e.socket.socket") as mock_sock_cls:
+            mock_sock = MagicMock()
+            mock_sock_cls.return_value.__enter__ = MagicMock(return_value=mock_sock)
+            mock_sock_cls.return_value.__exit__ = MagicMock(return_value=False)
+            mock_sock.connect_ex.return_value = 1
+            assert e2e_mod._detect_local_port(8080) is None
+
+
+class TestDiscoverFrontendPort:
+    def test_returns_docker_port_when_available(self) -> None:
+        with patch.object(e2e_mod, "get_service_port", return_value=4201):
+            assert e2e_mod._discover_frontend_port("project") == 4201
+
+    def test_scans_local_ports_as_fallback(self) -> None:
+        with (
+            patch.object(e2e_mod, "get_service_port", return_value=None),
+            patch.object(e2e_mod, "_detect_local_port", side_effect=lambda p: 4203 if p == 4203 else None),
+        ):
+            assert e2e_mod._discover_frontend_port("project") == 4203
+
+    def test_returns_none_when_no_port_found(self) -> None:
+        with (
+            patch.object(e2e_mod, "get_service_port", return_value=None),
+            patch.object(e2e_mod, "_detect_local_port", return_value=None),
+        ):
+            assert e2e_mod._discover_frontend_port("project") is None
 
 
 class TestE2eTriggerCi(TestCase):
@@ -3303,6 +3560,114 @@ class TestLifecycleDiagram(TestCase):
         result = cast("str", call_command("lifecycle", "diagram", model="unknown"))
 
         assert "Unknown model: unknown" in result
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_ticket_lifecycle_diagram(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/d1")
+        with patch(
+            "teatree.core.selectors.build_ticket_lifecycle_mermaid",
+            return_value="mermaid-output",
+        ) as mock_build:
+            result = cast("str", call_command("lifecycle", "diagram", ticket=ticket.pk))
+
+        mock_build.assert_called_once_with(ticket.pk)
+        assert result == "mermaid-output"
+
+
+class TestLifecycleVisitPhase(TestCase):
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_creates_session_and_visits_phase(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/vp1")
+        result = cast("str", call_command("lifecycle", "visit-phase", str(ticket.pk), "coding"))
+
+        assert "coding" in result
+        assert ticket.sessions.count() == 1
+        session = ticket.sessions.first()
+        assert "coding" in session.visited_phases
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_reuses_existing_session(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/vp2")
+        session = Session.objects.create(ticket=ticket)
+        session.visit_phase("testing")
+
+        result = cast("str", call_command("lifecycle", "visit-phase", str(ticket.pk), "reviewing"))
+
+        assert ticket.sessions.count() == 1
+        session.refresh_from_db()
+        assert "testing" in session.visited_phases
+        assert "reviewing" in session.visited_phases
+        assert str(session.pk) in result
+
+
+class TestRunHealthChecks(TestCase):
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_failed_health_check_reports_failure(self) -> None:
+        from teatree.core.overlay import HealthCheck  # noqa: PLC0415
+
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/hc1")
+        worktree = Worktree.objects.create(
+            overlay="test",
+            ticket=ticket,
+            repo_path="/tmp/backend",
+            branch="feature-hc1",
+        )
+
+        cmd = lifecycle_mod.Command()
+        cmd.stderr = OutputWrapper(StringIO())
+        cmd.stdout = OutputWrapper(StringIO())
+        cmd._verbose = True
+
+        failing_check = HealthCheck(name="db-exists", check=lambda: False, description="Database exists")
+        passing_check = HealthCheck(name="dir-exists", check=lambda: True, description="Dir exists")
+
+        mock_overlay = MagicMock()
+        mock_overlay.get_health_checks.return_value = [failing_check, passing_check]
+
+        cmd._run_health_checks(worktree, mock_overlay)
+
+        stderr_output = cmd.stderr._out.getvalue()
+        stdout_output = cmd.stdout._out.getvalue()
+        assert "HEALTH CHECK FAILED: db-exists" in stderr_output
+        assert "1/2 health check(s) failed" in stderr_output
+        assert "HEALTH CHECK OK: dir-exists" in stdout_output
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_health_check_exception_reports_error(self) -> None:
+        from teatree.core.overlay import HealthCheck  # noqa: PLC0415
+
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/hc2")
+        worktree = Worktree.objects.create(
+            overlay="test",
+            ticket=ticket,
+            repo_path="/tmp/backend",
+            branch="feature-hc2",
+        )
+
+        cmd = lifecycle_mod.Command()
+        cmd.stderr = OutputWrapper(StringIO())
+        cmd.stdout = OutputWrapper(StringIO())
+        cmd._verbose = True
+
+        def _boom() -> bool:
+            msg = "connection refused"
+            raise ConnectionError(msg)
+
+        error_check = HealthCheck(name="network", check=_boom, description="Network check")
+        mock_overlay = MagicMock()
+        mock_overlay.get_health_checks.return_value = [error_check]
+
+        cmd._run_health_checks(worktree, mock_overlay)
+
+        stderr_output = cmd.stderr._out.getvalue()
+        assert "HEALTH CHECK ERROR: network" in stderr_output
+        assert "connection refused" in stderr_output
+        assert "1/1 health check(s) failed" in stderr_output
 
 
 # ── Tool commands ──────────────────────────────────────────────────

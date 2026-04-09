@@ -758,6 +758,52 @@ class TestCreateTaskView(TestCase):
         task = Task.objects.get(pk=data["task_id"])
         assert task.status == Task.Status.PENDING
 
+    def test_auto_launch_conflict_returns_409(self) -> None:
+        """When task is already completed, auto-launch claim fails with 409."""
+        from teatree.core.views.actions import CreateTaskView  # noqa: PLC0415
+
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.STARTED)
+        session = Session.objects.create(ticket=ticket, overlay="test")
+        task = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            execution_target=Task.ExecutionTarget.INTERACTIVE,
+            status=Task.Status.COMPLETED,
+        )
+
+        result = CreateTaskView._auto_launch(task, "ttyd", "")
+        assert result.status_code == 409
+
+        import json  # noqa: PLC0415
+
+        data = json.loads(result.content)
+        assert "error" in data
+
+    def test_auto_launch_exception_returns_500(self) -> None:
+        """When launch_interactive_task raises, returns 500 and marks task failed."""
+        from teatree.core.views.actions import CreateTaskView  # noqa: PLC0415
+
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.STARTED)
+        session = Session.objects.create(ticket=ticket, overlay="test")
+        task = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            execution_target=Task.ExecutionTarget.INTERACTIVE,
+        )
+
+        with (
+            patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
+            patch(
+                "teatree.core.views.launch.launch_interactive_task",
+                side_effect=RuntimeError("boom"),
+            ),
+        ):
+            result = CreateTaskView._auto_launch(task, "ttyd", "")
+
+        assert result.status_code == 500
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+
 
 # ---------------------------------------------------------------------------
 # TicketLifecycleView
