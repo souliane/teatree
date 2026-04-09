@@ -212,6 +212,34 @@ class TestEnsureSkillLink:
         assert link.is_dir()
         assert not link.is_symlink()
 
+    def test_handles_oserror_on_resolve(self, tmp_path: Path) -> None:
+        """When resolve() raises OSError, the link is treated as non-contribute and gets fixed."""
+        target = tmp_path / "source"
+        target.mkdir()
+        wrong = tmp_path / "wrong"
+        wrong.mkdir()
+        link = tmp_path / "link"
+        link.symlink_to(wrong)
+
+        original_resolve = Path.resolve
+
+        call_count = 0
+
+        def patched_resolve(self: Path, *args: object, **kwargs: object) -> Path:
+            nonlocal call_count
+            # First resolve call is inside the try block — raise OSError
+            if self == link:
+                call_count += 1
+                if call_count == 1:
+                    msg = "simulated"
+                    raise OSError(msg)
+            return original_resolve(self, *args, **kwargs)
+
+        with patch.object(Path, "resolve", patched_resolve):
+            created, fixed = _ensure_skill_link(target, link, tmp_path / "workspace")
+        assert created == 0
+        assert fixed == 1
+
 
 class TestSyncSkillSymlinks:
     def test_creates_symlinks_for_core_skills(self, tmp_path: Path) -> None:

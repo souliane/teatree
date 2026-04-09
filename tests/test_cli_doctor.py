@@ -1,6 +1,7 @@
 """Tests for doctor-related CLI commands, extracted from test_cli.py."""
 
 import json
+import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -591,3 +592,81 @@ class TestDoctorCommands:
         ):
             result = runner.invoke(app, ["doctor", "info"])
             assert result.exit_code == 0
+
+
+class TestFindHostProjectRoot:
+    def test_finds_project_in_current_dir(self, tmp_path: Path) -> None:
+        (tmp_path / "manage.py").write_text("", encoding="utf-8")
+        (tmp_path / "pyproject.toml").write_text("", encoding="utf-8")
+        with patch("teatree.cli.doctor.Path") as mock_path:
+            mock_path.cwd.return_value = tmp_path
+            result = teatree_cli_doctor._find_host_project_root()
+        assert result == tmp_path
+
+    def test_returns_none_when_not_found(self, tmp_path: Path) -> None:
+        with patch("teatree.cli.doctor.Path") as mock_path:
+            mock_path.cwd.return_value = tmp_path
+            result = teatree_cli_doctor._find_host_project_root()
+        assert result is None
+
+
+class TestWriteDevSourcesMarker:
+    def test_creates_new_marker(self, tmp_path: Path) -> None:
+        marker = tmp_path / ".t3-dev-sources"
+        teatree_cli_doctor._write_dev_sources_marker(marker, "teatree", Path("/repos/teatree"))
+        content = marker.read_text(encoding="utf-8")
+        assert "teatree=/repos/teatree" in content
+
+    def test_updates_existing_entry(self, tmp_path: Path) -> None:
+        marker = tmp_path / ".t3-dev-sources"
+        marker.write_text("teatree=/old/path\nother=/other/path\n", encoding="utf-8")
+        teatree_cli_doctor._write_dev_sources_marker(marker, "teatree", Path("/new/path"))
+        content = marker.read_text(encoding="utf-8")
+        assert "teatree=/new/path" in content
+        assert "other=/other/path" in content
+        assert "/old/path" not in content
+
+
+class TestRestoreSources:
+    def test_restores_from_marker(self, tmp_path: Path) -> None:
+        marker = tmp_path / ".t3-dev-sources"
+        marker.write_text("teatree=/repos/teatree\n", encoding="utf-8")
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text("[project]\nname = 'test'\n", encoding="utf-8")
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = subprocess.CompletedProcess([], 0)
+            DoctorService.restore_sources(tmp_path)
+        assert not marker.exists()
+        assert mock_run.call_count == 2  # git update-index + git checkout
+
+    def test_noop_when_no_marker(self, tmp_path: Path) -> None:
+        # No marker file — nothing should happen
+        DoctorService.restore_sources(tmp_path)
+
+
+class TestMakeEditableFailure:
+    def test_reports_failure_without_host_project(self, tmp_path: Path) -> None:
+        with (
+            patch("teatree.cli.doctor._find_host_project_root", return_value=None),
+            patch(
+                "subprocess.run",
+                return_value=subprocess.CompletedProcess([], 1, "", "install failed"),
+            ),
+        ):
+            DoctorService.make_editable("teatree", tmp_path)
+
+    def test_reports_failure_on_uv_sync(self, tmp_path: Path) -> None:
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text(
+            '[project]\nname = "test"\n\n[tool.uv.sources]\nteatree = { git = "https://x" }\n',
+            encoding="utf-8",
+        )
+        with (
+            patch("teatree.cli.doctor._find_host_project_root", return_value=tmp_path),
+            patch(
+                "subprocess.run",
+                return_value=subprocess.CompletedProcess([], 1, "", "sync failed"),
+            ),
+        ):
+            DoctorService.make_editable("teatree", Path("/repos/teatree"))
