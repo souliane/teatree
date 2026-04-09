@@ -12,6 +12,7 @@ from teatree.core.overlay import OverlayBase, OverlayConfig, ProvisionStep
 from teatree.core.overlay_loader import reset_overlay_cache
 from teatree.core.sync import (
     LAST_SYNC_CACHE_KEY,
+    PENDING_REVIEWS_CACHE_KEY,
     DiscussionSummary,
     MREntry,
     MREntryDict,
@@ -29,6 +30,7 @@ from teatree.core.sync import (
     _overlay_name,
     _process_label,
     _resolve_issue,
+    _sync_reviewer_mrs,
     _update_ticket,
     fetch_notion_statuses,
     sync_followup,
@@ -1583,3 +1585,40 @@ class TestDualSync(TestCase):
 
         assert len(result.errors) == 1
         assert "No code host token" in result.errors[0]
+
+
+class TestSyncReviewerMRs(TestCase):
+    def test_caches_reviewer_mrs(self) -> None:
+        mock_client = MagicMock()
+        mock_client.list_open_mrs_as_reviewer.return_value = [
+            {
+                "web_url": "https://gitlab.com/org/repo/-/merge_requests/99",
+                "title": "Fix widget",
+                "iid": 99,
+                "draft": False,
+                "updated_at": "2026-04-09T10:00:00Z",
+                "author": {"username": "alice"},
+            },
+        ]
+        result = SyncResult()
+
+        _sync_reviewer_mrs(mock_client, "testuser", result)
+
+        cached = cache.get(PENDING_REVIEWS_CACHE_KEY)
+        assert cached is not None
+        assert len(cached) == 1
+        assert cached[0]["author"] == "alice"
+        assert cached[0]["repo"] == "repo"
+        assert result.reviews_synced == 1
+
+        cache.delete(PENDING_REVIEWS_CACHE_KEY)
+
+    def test_handles_api_failure_gracefully(self) -> None:
+        mock_client = MagicMock()
+        mock_client.list_open_mrs_as_reviewer.side_effect = RuntimeError("API down")
+        result = SyncResult()
+
+        _sync_reviewer_mrs(mock_client, "testuser", result)
+
+        assert len(result.errors) == 1
+        assert "Reviewer MR fetch failed" in result.errors[0]

@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from django.core.cache import cache as django_cache
 from django.test import Client, TestCase, override_settings
 from django.urls import reverse
 
@@ -13,7 +14,7 @@ import teatree.core.tasks as tasks_mod
 import teatree.core.views.actions as actions_views
 from teatree.config import OverlayEntry
 from teatree.core.models import Session, Task, Ticket, Worktree
-from teatree.core.sync import SyncResult
+from teatree.core.sync import PENDING_REVIEWS_CACHE_KEY, SyncResult
 from teatree.core.views.dashboard import _build_overlay_branches, _panel_context
 from tests.teatree_core.conftest import CommandOverlay
 
@@ -194,6 +195,39 @@ class TestDashboardPanelView(TestCase):
         response = Client().get(reverse("teatree:dashboard-panel", args=["activity"]), HTTP_HX_REQUEST="true")
 
         assert response.status_code == 200
+
+    def test_pending_reviews_empty(self) -> None:
+        """Pending reviews panel renders even when cache is empty."""
+        response = Client().get(reverse("teatree:dashboard-panel", args=["pending_reviews"]), HTTP_HX_REQUEST="true")
+
+        assert response.status_code == 200
+        assert b"No pending reviews" in response.content
+
+    def test_pending_reviews_with_cached_data(self) -> None:
+        """Pending reviews panel renders cached review data."""
+        django_cache.set(
+            PENDING_REVIEWS_CACHE_KEY,
+            [
+                {
+                    "url": "https://github.com/org/repo/pull/42",
+                    "title": "Fix the thing",
+                    "repo": "repo",
+                    "iid": "42",
+                    "author": "alice",
+                    "draft": "False",
+                    "updated_at": "2026-04-09T12:00:00Z",
+                },
+            ],
+        )
+
+        response = Client().get(reverse("teatree:dashboard-panel", args=["pending_reviews"]), HTTP_HX_REQUEST="true")
+
+        assert response.status_code == 200
+        assert b"repo" in response.content
+        assert b"#42" in response.content
+        assert b"alice" in response.content
+
+        django_cache.delete(PENDING_REVIEWS_CACHE_KEY)
 
 
 # ---------------------------------------------------------------------------

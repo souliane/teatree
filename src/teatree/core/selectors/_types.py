@@ -20,6 +20,7 @@ class DashboardSummary:
     active_worktrees: int
     pending_headless_tasks: int
     pending_interactive_tasks: int
+    pending_reviews: int = 0
 
 
 _PIPELINE_DISPLAY: dict[str, tuple[str, str]] = {
@@ -207,6 +208,21 @@ class TaskGraphNode:
 
 
 @dataclass(frozen=True, slots=True)
+class PendingReviewRow:
+    url: str
+    title: str
+    repo: str
+    iid: str
+    author: str
+    draft: bool
+    pipeline_status: str
+    pipeline_css: str
+    pipeline_icon: str
+    pipeline_url: str
+    updated_at: str
+
+
+@dataclass(frozen=True, slots=True)
 class DashboardSnapshot:
     summary: DashboardSummary
     automation: AutomationSummary
@@ -215,5 +231,6 @@ class DashboardSnapshot:
     worktrees: list[DashboardWorktreeRow]
     headless_queue: list[DashboardTaskRow]
     interactive_queue: list[DashboardTaskRow]
+    pending_reviews: list[PendingReviewRow]
     active_sessions: list[ActiveSessionRow]
     recent_activity: list[RecentActivityRow]

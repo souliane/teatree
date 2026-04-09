@@ -18,6 +18,7 @@ from teatree.core.selectors import (
     build_dashboard_ticket_rows,
     build_headless_queue,
     build_interactive_queue,
+    build_pending_reviews,
     build_recent_activity,
     build_task_detail,
     build_task_graph,
@@ -31,6 +32,7 @@ _PANEL_TEMPLATES = {
     "action_required": "teatree/partials/dashboard_action_required.html",
     "tickets": "teatree/partials/dashboard_tickets.html",
     "worktrees": "teatree/partials/dashboard_worktrees.html",
+    "pending_reviews": "teatree/partials/dashboard_pending_reviews.html",
     "headless_queue": "teatree/partials/dashboard_headless_queue.html",
     "queue": "teatree/partials/dashboard_queue.html",
     "sessions": "teatree/partials/dashboard_sessions.html",
@@ -151,6 +153,7 @@ _PANEL_BUILDERS: dict[str, _PanelBuilder] = {
     "action_required": lambda _d, o: {"action_items": build_action_required(overlay=o)},
     "tickets": lambda _d, o: {"tickets": build_dashboard_ticket_rows(overlay=o)},
     "worktrees": lambda _d, o: {"worktrees": build_worktree_rows(overlay=o)},
+    "pending_reviews": lambda _d, _o: {"pending_reviews": build_pending_reviews()},
     "headless_queue": lambda d, o: {
         "headless_queue": build_headless_queue(include_dismissed=d, overlay=o),
         "show_dismissed": d,
