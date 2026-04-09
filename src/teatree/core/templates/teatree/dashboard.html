@@ -398,6 +398,40 @@
         showToast(lines.length + ' PR(s) copied to clipboard');
       });
     }
+
+    var _syncTimer = null;
+    function setSyncInterval(minutes) {
+      document.getElementById('sync-interval-menu').classList.add('hidden');
+      localStorage.setItem('teatree_sync_interval', minutes);
+      _applySyncInterval(minutes);
+    }
+    function _applySyncInterval(minutes) {
+      if (_syncTimer) { clearInterval(_syncTimer); _syncTimer = null; }
+      var label = document.getElementById('sync-label');
+      document.querySelectorAll('.sync-interval-opt').forEach(function(btn) {
+        btn.classList.toggle('font-bold', parseInt(btn.dataset.interval) === minutes);
+        btn.classList.toggle('text-moss', parseInt(btn.dataset.interval) === minutes);
+      });
+      if (minutes > 0) {
+        if (label) label.textContent = 'Auto: ' + minutes + 'm';
+        _syncTimer = setInterval(function() {
+          var btn = document.getElementById('sync-all-btn');
+          if (btn && !btn.disabled) htmx.trigger(btn, 'click');
+        }, minutes * 60000);
+      } else {
+        if (label) label.textContent = 'Sync All';
+      }
+    }
+    (function() {
+      var saved = parseInt(localStorage.getItem('teatree_sync_interval') || '0');
+      if (saved > 0) _applySyncInterval(saved);
+      document.addEventListener('click', function(e) {
+        var menu = document.getElementById('sync-interval-menu');
+        if (menu && !menu.classList.contains('hidden') && !e.target.closest('#sync-interval-menu') && !e.target.closest('[onclick*="sync-interval-menu"]')) {
+          menu.classList.add('hidden');
+        }
+      });
+    })();
   </script>
   <div class="hidden fixed bottom-4 right-4 rounded-lg bg-moss/90 px-4 py-2 text-sm text-white shadow-lg" id="toast-container">
     <span id="toast-msg"></span>
@@ -529,17 +563,33 @@
         </button>
         <span id="git-pull-error" class="hidden font-sans text-xs text-red-600 max-w-xs truncate" title=""></span>
         {% endif %}
-        <button
-          class="pill-btn pill-xs border border-moss/30 bg-moss/10 uppercase tracking-[0.18em] text-moss hover:bg-moss/20"
-          hx-post="{% url 'teatree:dashboard-sync' %}"
-          hx-target="#sync-status"
-          hx-swap="outerHTML"
-          hx-indicator="#sync-spinner"
-          hx-on::after-request="htmx.trigger(document.body, 'refreshPanels')"
-        >
-          <span id="sync-spinner" class="htmx-indicator mr-1">&#8635;</span>
-          Sync All
-        </button>
+        <div class="relative inline-flex items-center">
+          <button
+            id="sync-all-btn"
+            class="pill-btn pill-xs border border-moss/30 bg-moss/10 uppercase tracking-[0.18em] text-moss hover:bg-moss/20 rounded-r-none border-r-0"
+            hx-post="{% url 'teatree:dashboard-sync' %}"
+            hx-target="#sync-status"
+            hx-swap="outerHTML"
+            hx-indicator="#sync-spinner"
+            hx-on::after-request="htmx.trigger(document.body, 'refreshPanels')"
+          >
+            <span id="sync-spinner" class="htmx-indicator mr-1">&#8635;</span>
+            <span id="sync-label">Sync All</span>
+          </button>
+          <button
+            class="pill-btn pill-xs border border-moss/30 bg-moss/10 text-moss hover:bg-moss/20 rounded-l-none px-1.5"
+            onclick="document.getElementById('sync-interval-menu').classList.toggle('hidden')"
+          >&#9662;</button>
+          <div id="sync-interval-menu" class="hidden absolute right-0 top-full mt-1 z-50 rounded-lg border border-bark/10 bg-white shadow-lg py-1 min-w-[10rem]">
+            <button class="sync-interval-opt block w-full px-3 py-1.5 text-left font-sans text-xs hover:bg-moss/10" data-interval="0" onclick="setSyncInterval(0)">Manual</button>
+            <button class="sync-interval-opt block w-full px-3 py-1.5 text-left font-sans text-xs hover:bg-moss/10" data-interval="1" onclick="setSyncInterval(1)">Every 1 min</button>
+            <button class="sync-interval-opt block w-full px-3 py-1.5 text-left font-sans text-xs hover:bg-moss/10" data-interval="2" onclick="setSyncInterval(2)">Every 2 min</button>
+            <button class="sync-interval-opt block w-full px-3 py-1.5 text-left font-sans text-xs hover:bg-moss/10" data-interval="3" onclick="setSyncInterval(3)">Every 3 min</button>
+            <button class="sync-interval-opt block w-full px-3 py-1.5 text-left font-sans text-xs hover:bg-moss/10" data-interval="5" onclick="setSyncInterval(5)">Every 5 min</button>
+            <button class="sync-interval-opt block w-full px-3 py-1.5 text-left font-sans text-xs hover:bg-moss/10" data-interval="8" onclick="setSyncInterval(8)">Every 8 min</button>
+            <button class="sync-interval-opt block w-full px-3 py-1.5 text-left font-sans text-xs hover:bg-moss/10" data-interval="13" onclick="setSyncInterval(13)">Every 13 min</button>
+          </div>
+        </div>
       </div>
     </div>
     <div class="grid gap-4">
