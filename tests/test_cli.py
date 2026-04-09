@@ -21,12 +21,14 @@ import teatree.core.overlay_loader as overlay_loader_mod
 import teatree.core.resolve as resolve_mod
 from teatree.cli import (
     _detect_agent_ticket_status,
+    _ensure_editable_if_contributing,
     _find_overlay_project,
     _find_project_root,
     _resolve_overlay_for_server,
     app,
 )
 from teatree.cli import doctor as cli_doctor_mod
+from teatree.cli.doctor import DoctorService, IntrospectionHelpers
 from teatree.overlay_init.generator import OverlayScaffolder, camelize
 
 runner = CliRunner()
@@ -798,3 +800,88 @@ class TestResolveOverlayForServer:
         ):
             _, _, settings = _resolve_overlay_for_server()
         assert settings == "custom.settings"
+
+
+class TestCheckUpdateCommand:
+    def test_shows_update_message(self) -> None:
+        with patch.object(config_mod, "check_for_updates", return_value="New version 1.2.3 available"):
+            result = runner.invoke(app, ["config", "check-update"])
+        assert result.exit_code == 0
+        assert "New version 1.2.3 available" in result.output
+
+    def test_shows_up_to_date(self) -> None:
+        with patch.object(config_mod, "check_for_updates", return_value=None):
+            result = runner.invoke(app, ["config", "check-update"])
+        assert result.exit_code == 0
+        assert "You are up to date" in result.output
+
+
+class TestMaybeShowUpdateNotice:
+    def test_shows_notice_on_stderr(self) -> None:
+        with patch.object(config_mod, "check_for_updates", return_value="Update available"):
+            cli_mod._maybe_show_update_notice()
+            # No assertion needed — just verifying it doesn't crash
+
+    def test_suppresses_exceptions(self) -> None:
+        with patch.object(config_mod, "check_for_updates", side_effect=RuntimeError("boom")):
+            cli_mod._maybe_show_update_notice()  # should not raise
+
+
+class TestEnsureEditableIfContributing:
+    def test_skips_when_contribute_false(self) -> None:
+        mock_config = MagicMock()
+        mock_config.user.contribute = False
+        with patch.object(config_mod, "load_config", return_value=mock_config):
+            _ensure_editable_if_contributing()
+        # Should return early without calling editable_info
+
+    def test_makes_teatree_editable(self) -> None:
+        mock_config = MagicMock()
+        mock_config.user.contribute = True
+        with (
+            patch.object(config_mod, "load_config", return_value=mock_config),
+            patch.object(IntrospectionHelpers, "editable_info", return_value=(False, "")),
+            patch.object(DoctorService, "find_teatree_repo", return_value=Path("/fake/teatree")),
+            patch.object(DoctorService, "make_editable") as mock_make,
+            patch.object(overlay_loader_mod, "get_all_overlays", return_value={}),
+        ):
+            _ensure_editable_if_contributing()
+        mock_make.assert_called_once_with("teatree", Path("/fake/teatree"))
+
+    def test_skips_teatree_when_already_editable(self) -> None:
+        mock_config = MagicMock()
+        mock_config.user.contribute = True
+        with (
+            patch.object(config_mod, "load_config", return_value=mock_config),
+            patch.object(IntrospectionHelpers, "editable_info", return_value=(True, "/fake")),
+            patch.object(DoctorService, "find_teatree_repo") as mock_find,
+            patch.object(overlay_loader_mod, "get_all_overlays", return_value={}),
+        ):
+            _ensure_editable_if_contributing()
+        mock_find.assert_not_called()
+
+    def test_makes_overlay_editable(self) -> None:
+        mock_config = MagicMock()
+        mock_config.user.contribute = True
+
+        mock_overlay = MagicMock()
+        type(mock_overlay).__module__ = "myoverlay.overlay"
+
+        with (
+            patch.object(config_mod, "load_config", return_value=mock_config),
+            patch.object(
+                IntrospectionHelpers,
+                "editable_info",
+                side_effect=[(True, "/teatree"), (False, "")],
+            ),
+            patch.object(overlay_loader_mod, "get_all_overlays", return_value={"my": mock_overlay}),
+            patch("importlib.metadata.packages_distributions", return_value={"myoverlay": ["myoverlay-dist"]}),
+            patch.object(DoctorService, "find_overlay_repo", return_value=Path("/fake/overlay")),
+            patch.object(DoctorService, "make_editable") as mock_make,
+        ):
+            _ensure_editable_if_contributing()
+        mock_make.assert_called_once_with("myoverlay-dist", Path("/fake/overlay"))
+
+    def test_suppresses_exceptions(self) -> None:
+        with patch.object(config_mod, "load_config", side_effect=RuntimeError("boom")):
+            _ensure_editable_if_contributing()  # should not raise
