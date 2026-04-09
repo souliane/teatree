@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from teatree.core.models import Session, Task, TaskAttempt, Ticket, Worktree
+from teatree.core.models import MergeRequest, Session, Task, TaskAttempt, Ticket, Worktree
 
 
 @admin.register(Ticket)
@@ -26,3 +26,8 @@ class TaskAdmin(admin.ModelAdmin):
 @admin.register(TaskAttempt)
 class TaskAttemptAdmin(admin.ModelAdmin):
     list_display = ("id", "task", "execution_target", "exit_code", "ended_at")
+
+
+@admin.register(MergeRequest)
+class MergeRequestAdmin(admin.ModelAdmin):
+    list_display = ("id", "ticket", "repo", "iid", "state")

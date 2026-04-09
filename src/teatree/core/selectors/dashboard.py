@@ -19,7 +19,7 @@ from ._types import (
     DashboardTicketRow,
     DashboardWorktreeRow,
 )
-from .activity import build_active_sessions, build_recent_activity, build_review_comments
+from .activity import build_active_sessions, build_recent_activity
 from .automation import build_action_required, build_automation_summary
 from .queues import build_headless_queue, build_interactive_queue
 
@@ -163,7 +163,6 @@ def build_dashboard_snapshot(overlay: str | None = None) -> DashboardSnapshot:
         headless_queue=_cached(f"headless_queue{sfx}", lambda: build_headless_queue(overlay=overlay)),
         interactive_queue=_cached(f"queue{sfx}", lambda: build_interactive_queue(pending_only=True, overlay=overlay)),
         active_sessions=_cached("sessions", build_active_sessions, ttl=_SESSIONS_PANEL_TTL),
-        review_comments=_cached(f"review_comments{sfx}", lambda: build_review_comments(overlay)),
         recent_activity=_cached(f"activity{sfx}", lambda: build_recent_activity(overlay)),
     )
 
