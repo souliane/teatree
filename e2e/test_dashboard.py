@@ -31,7 +31,6 @@ def test_dashboard_loads(e2e_server: str, page: Page) -> None:
         "Active Sessions",
         "Headless Queue",
         "Interactive Queue",
-        "Review Comments",
         "Recent Activity",
         "In-Flight Tickets",
     ]:
@@ -193,7 +192,6 @@ def test_htmx_panels_present(e2e_server: str, page: Page) -> None:
         "sessions",
         "headless_queue",
         "queue",
-        "review_comments",
         "activity",
         "tickets",
     ]:
@@ -213,11 +211,6 @@ def test_action_required_panel(e2e_server: str, page: Page, assert_snapshot: Cal
         name="action-required.png",
         threshold=_SNAPSHOT_THRESHOLD,
     )
-
-
-def test_review_comments_panel(e2e_server: str, page: Page) -> None:
-    page.goto(e2e_server)
-    expect(page.locator("h2", has_text="Review Comments")).to_be_visible()
 
 
 def test_activity_panel(e2e_server: str, page: Page) -> None:

@@ -1,5 +1,6 @@
 from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import TypedDict
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,13 +114,15 @@ class ActiveSessionRow:
     name: str = ""
 
 
+class DiscussionData(TypedDict, total=False):
+    status: str
+    detail: str
+
+
 @dataclass(frozen=True, slots=True)
-class DashboardReviewCommentRow:
-    mr_url: str
-    mr_label: str
+class ReviewCommentDetail:
     status: str
     detail_text: str
-    ticket_id: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,6 +132,8 @@ class ActionRequiredItem:
     url: str
     ticket_id: int
     detail: str
+    slack_url: str = ""
+    review_comments: tuple[ReviewCommentDetail, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -204,5 +209,4 @@ class DashboardSnapshot:
     headless_queue: list[DashboardTaskRow]
     interactive_queue: list[DashboardTaskRow]
     active_sessions: list[ActiveSessionRow]
-    review_comments: list[DashboardReviewCommentRow]
     recent_activity: list[RecentActivityRow]

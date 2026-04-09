@@ -1,17 +1,11 @@
 import json
 import os
 
-from teatree.core.models import Task, TaskAttempt, Ticket
+from teatree.core.models import Task, TaskAttempt
 
 from ._filters import _task_overlay_q
 from ._helpers import _CLAUDE_SESSIONS_DIR, _uptime_from_epoch_ms
-from ._types import ActiveSessionRow, DashboardReviewCommentRow, RecentActivityRow
-
-_DISCUSSION_STATUS_DISPLAY = {
-    "waiting_reviewer": "Waiting reviewer",
-    "needs_reply": "Needs reply",
-    "addressed": "Addressed",
-}
+from ._types import ActiveSessionRow, RecentActivityRow
 
 _RECENT_ACTIVITY_LIMIT = 10
 
@@ -79,39 +73,6 @@ def build_active_sessions() -> list[ActiveSessionRow]:
         )
 
     return sessions
-
-
-def build_review_comments(overlay: str | None = None) -> list[DashboardReviewCommentRow]:
-    rows: list[DashboardReviewCommentRow] = []
-    for ticket in Ticket.objects.in_flight(overlay=overlay):
-        extra = ticket.extra if isinstance(ticket.extra, dict) else {}
-        mrs_data = extra.get("mrs", {})
-        if not isinstance(mrs_data, dict):
-            continue
-        for mr in mrs_data.values():
-            if not isinstance(mr, dict):
-                continue
-            discussions = mr.get("discussions", [])
-            if not isinstance(discussions, list):
-                continue
-            repo = str(mr.get("repo", ""))
-            iid = str(mr.get("iid", ""))
-            mr_label = f"{repo} !{iid}" if repo and iid else str(mr.get("url", ""))
-            mr_url = str(mr.get("url", ""))
-            for disc in discussions:
-                if not isinstance(disc, dict):
-                    continue
-                status_key = str(disc.get("status", ""))
-                rows.append(
-                    DashboardReviewCommentRow(
-                        mr_url=mr_url,
-                        mr_label=mr_label,
-                        status=_DISCUSSION_STATUS_DISPLAY.get(status_key, status_key),
-                        detail_text=str(disc.get("detail", ""))[:120],
-                        ticket_id=ticket.pk,
-                    ),
-                )
-    return rows
 
 
 def build_recent_activity(overlay: str | None = None) -> list[RecentActivityRow]:

@@ -178,11 +178,11 @@ class TestDashboardPanelView(TestCase):
 
         assert response.status_code == 200
 
-    def test_review_comments(self) -> None:
-        """Cover the 'review_comments' branch of _panel_context."""
+    def test_review_comments_panel_removed(self) -> None:
+        """review_comments panel was merged into action_required — returns 404."""
         response = Client().get(reverse("teatree:dashboard-panel", args=["review_comments"]), HTTP_HX_REQUEST="true")
 
-        assert response.status_code == 200
+        assert response.status_code == 404
 
     def test_automation(self) -> None:
         response = Client().get(reverse("teatree:dashboard-panel", args=["automation"]), HTTP_HX_REQUEST="true")

@@ -667,7 +667,6 @@ The dashboard uses Server-Sent Events for push-based updates instead of blind po
 | headless_queue | `build_headless_queue()` | Pending headless tasks | `headless_queue` | 600s |
 | queue | `build_interactive_queue()` | Pending interactive tasks | `queue` | 600s |
 | sessions | `build_active_sessions()` | Running Claude processes | `sessions` | 60s |
-| review_comments | — | Outstanding review discussions | `review_comments` | 600s |
 | activity | `build_recent_activity()` | Recent task completions/failures | `activity` | 120s |
 
 ---

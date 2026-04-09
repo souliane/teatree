@@ -553,22 +553,6 @@
           {% include "teatree/partials/dashboard_queue.html" with queue=snapshot.interactive_queue only %}
         </div>
       </details>
-      <!-- Review Comments -->
-      <details open class="group overflow-hidden rounded-[1.5rem] border border-bark/10 bg-cream/90 shadow-soft backdrop-blur">
-        <summary class="flex cursor-pointer items-center gap-2 border-b border-bark/10 px-5 py-4">
-          <span class="group-open:hidden">&#9654;</span><span class="hidden group-open:inline">&#9660;</span>
-          <h2 class="font-display text-2xl">Review Comments</h2>
-          <span class="font-sans text-sm text-bark/60">Discussion thread status across open MRs.</span>
-        </summary>
-        <div
-          class="px-5 py-5"
-          hx-get="{% url 'teatree:dashboard-panel' 'review_comments' %}"
-          hx-trigger="load, every 600s, refreshPanels from:body, sse:review_comments"
-          hx-swap="innerHTML"
-        >
-          {% include "teatree/partials/dashboard_review_comments.html" with review_comments=snapshot.review_comments only %}
-        </div>
-      </details>
       <!-- Recent Activity -->
       <details open class="group overflow-hidden rounded-[1.5rem] border border-bark/10 bg-cream/90 shadow-soft backdrop-blur">
         <summary class="flex cursor-pointer items-center gap-2 border-b border-bark/10 px-5 py-4">
