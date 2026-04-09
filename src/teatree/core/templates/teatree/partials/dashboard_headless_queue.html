@@ -37,7 +37,7 @@
                 class="rounded-full border border-red-300 bg-red-50 px-4 py-1.5 font-sans text-xs font-semibold uppercase tracking-[0.18em] text-red-600 transition hover:bg-red-100"
                 hx-post="/tasks/{{ task.task_id }}/cancel/"
                 hx-swap="none"
-                hx-on::after-request="handleActionResponse(event)"
+                hx-on::after-request="handleCancelResponse(event)"
                 hx-disable-elt="this"
                 hx-confirm="This task is in progress. Are you sure?"
                 hx-vals='{"confirm": "true"}'
@@ -49,7 +49,7 @@
                 class="rounded-full border border-red-300/50 bg-red-50/50 px-3 py-1.5 font-sans text-[10px] font-semibold uppercase tracking-[0.18em] text-red-400 transition hover:bg-red-100"
                 hx-post="/tasks/{{ task.task_id }}/cancel/"
                 hx-swap="none"
-                hx-on::after-request="handleActionResponse(event)"
+                hx-on::after-request="handleCancelResponse(event)"
                 hx-disable-elt="this"
               >
                 Dismiss

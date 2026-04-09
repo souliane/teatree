@@ -165,6 +165,42 @@
     }
 
 
+    function handleCancelResponse(event) {
+      var xhr = event.detail.xhr;
+      var btn = event.detail.elt;
+      var article = btn.closest('article');
+      if (!article) { handleActionResponse(event); return; }
+      if (xhr.status >= 400) {
+        var errorSpan = btn.closest('.flex').querySelector('[data-error-msg]');
+        try {
+          var data = JSON.parse(xhr.responseText);
+          if (errorSpan && data.error) { errorSpan.textContent = data.error; errorSpan.classList.remove('hidden'); }
+        } catch(e) {}
+        return;
+      }
+      var taskId = null;
+      try { taskId = JSON.parse(xhr.responseText).task_id; } catch(e) {}
+      var badge = article.querySelector('[class*="rounded-full"][class*="uppercase"][class*="tracking-wider"]');
+      if (badge) { badge.textContent = 'Cancelled'; badge.className = 'rounded-full px-2 py-0.5 font-sans text-[10px] font-bold uppercase tracking-wider bg-red-100 text-red-600'; }
+      var actions = article.querySelector('.flex.items-center.gap-2');
+      if (actions && taskId) {
+        actions.innerHTML = '<button class="rounded-full border border-moss/30 bg-moss/10 px-4 py-1.5 font-sans text-xs font-semibold uppercase tracking-[0.18em] text-moss transition hover:bg-moss/20" hx-post="/tasks/' + taskId + '/reopen/" hx-swap="none" hx-on::after-request="handleActionResponse(event)">Reopen</button>';
+        htmx.process(actions);
+      }
+      article.style.opacity = '0.6';
+      setTimeout(function() {
+        article.style.transition = 'opacity 0.5s, max-height 0.5s';
+        article.style.opacity = '0';
+        article.style.maxHeight = '0';
+        article.style.overflow = 'hidden';
+        article.style.padding = '0';
+        article.style.margin = '0';
+        article.style.border = 'none';
+        setTimeout(function() { article.remove(); }, 600);
+      }, 30000);
+    }
+
+
     function handleActionResponse(event) {
       var xhr = event.detail.xhr;
       var btn = event.detail.elt;
