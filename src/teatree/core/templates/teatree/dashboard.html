@@ -217,6 +217,7 @@
             errorSpan.textContent = data.error;
             errorSpan.classList.remove('hidden');
           }
+          showToast(data.error || 'Action failed', 'error');
         } catch(e) { console.warn('Failed to parse error response:', e); }
       } else {
         if (errorSpan) { errorSpan.classList.add('hidden'); errorSpan.textContent = ''; }
@@ -225,8 +226,7 @@
           if (data.launch_url) {
             window.open(data.launch_url, '_blank');
           } else if (data.launched) {
-            var toast = document.getElementById('toast-msg');
-            if (toast) { toast.textContent = 'Launched in ' + (data.mode || 'terminal'); toast.parentElement.classList.remove('hidden'); setTimeout(function(){ toast.parentElement.classList.add('hidden'); }, 3000); }
+            showToast('Launched in ' + (data.mode || 'terminal'), 'success');
           }
         } catch(e) { console.warn('Failed to parse success response:', e); }
       }
@@ -236,7 +236,6 @@
     function handleGitPullResponse(event) {
       var xhr = event.detail.xhr;
       var errorSpan = document.getElementById('git-pull-error');
-      var toast = document.getElementById('toast-msg');
       if (xhr.status >= 400) {
         try {
           var data = JSON.parse(xhr.responseText);
@@ -245,10 +244,8 @@
             errorSpan.title = data.error;
             errorSpan.classList.remove('hidden');
           }
-          if (data.task_created && toast) {
-            toast.textContent = 'Git pull failed — interactive task created';
-            toast.parentElement.classList.remove('hidden');
-            setTimeout(function(){ toast.parentElement.classList.add('hidden'); }, 5000);
+          if (data.task_created) {
+            showToast('Git pull failed — interactive task created', 'error');
           }
         } catch(e) { console.warn('Failed to parse git pull error:', e); }
         htmx.trigger(document.body, 'refreshPanels');
@@ -256,11 +253,7 @@
         if (errorSpan) { errorSpan.classList.add('hidden'); errorSpan.textContent = ''; }
         try {
           var data = JSON.parse(xhr.responseText);
-          if (toast) {
-            toast.textContent = data.output || 'Git pull complete';
-            toast.parentElement.classList.remove('hidden');
-            setTimeout(function(){ toast.parentElement.classList.add('hidden'); }, 3000);
-          }
+          showToast(data.output || 'Git pull complete', 'success');
         } catch(e) {}
       }
     }
@@ -347,13 +340,20 @@
       updateCopyButton();
     }
 
-    function showToast(msg) {
-      var toast = document.getElementById('toast-msg');
-      if (toast) {
-        toast.textContent = msg;
-        toast.parentElement.classList.remove('hidden');
-        setTimeout(function(){ toast.parentElement.classList.add('hidden'); }, 3000);
-      }
+    function showToast(msg, variant) {
+      var container = document.getElementById('toast-stack');
+      if (!container) return;
+      var colors = {
+        success: 'bg-moss/90 text-white',
+        error: 'bg-red-600/90 text-white',
+        info: 'bg-sky-600/90 text-white',
+      };
+      var el = document.createElement('div');
+      el.className = 'rounded-lg px-4 py-2 text-sm shadow-lg transition-opacity duration-300 ' + (colors[variant] || colors.success);
+      el.textContent = msg;
+      el.onclick = function() { el.style.opacity = '0'; setTimeout(function(){ el.remove(); }, 300); };
+      container.appendChild(el);
+      setTimeout(function() { el.style.opacity = '0'; setTimeout(function(){ el.remove(); }, 300); }, 4000);
     }
 
     function copyUrl(url, event) {
@@ -433,9 +433,7 @@
       });
     })();
   </script>
-  <div class="hidden fixed bottom-4 right-4 rounded-lg bg-moss/90 px-4 py-2 text-sm text-white shadow-lg" id="toast-container">
-    <span id="toast-msg"></span>
-  </div>
+  <div class="fixed bottom-4 right-4 z-50 flex flex-col gap-2 items-end" id="toast-stack"></div>
   <script type="module">
     import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
     mermaid.initialize({ startOnLoad: false, theme: 'neutral', securityLevel: 'loose' });
