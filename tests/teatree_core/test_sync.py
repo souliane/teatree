@@ -24,6 +24,7 @@ from teatree.core.sync import (
     _extract_variant,
     _fetch_review_permalinks,
     _infer_state_from_mrs,
+    _merge_results,
     _merge_ticket_extras,
     _overlay_name,
     _process_label,
@@ -41,23 +42,32 @@ from teatree.core.sync import (
 class SyncConfig(OverlayConfig):
     """Configurable overlay config for sync tests."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         *,
         gitlab_token: str = "test-token",  # noqa: S107
         gitlab_username: str = "testuser",
+        github_token: str = "",
+        github_owner: str = "",
+        github_project_number: int = 0,
         slack_token: str = "",
         review_channel: tuple[str, str] = ("", ""),
         known_variants: list[str] | None = None,
     ) -> None:
         self._gitlab_token = gitlab_token
         self._gitlab_username = gitlab_username
+        self._github_token = github_token
+        self.github_owner = github_owner
+        self.github_project_number = github_project_number
         self._slack_token = slack_token
         self._review_channel = review_channel
         self._known_variants = known_variants or []
 
     def get_gitlab_token(self) -> str:
         return self._gitlab_token
+
+    def get_github_token(self) -> str:
+        return self._github_token
 
     def get_gitlab_username(self) -> str:
         return self._gitlab_username
@@ -1497,3 +1507,82 @@ class TestSyncFollowupLabels(TestCase):
 
         ticket = Ticket.objects.get(issue_url="https://gitlab.com/org/repo/-/issues/600")
         assert ticket.variant == "Acme"
+
+
+class TestMergeResults:
+    def test_sums_counts_and_concatenates_errors(self) -> None:
+        a = SyncResult(mrs_found=3, tickets_created=1, errors=["err-a"])
+        b = SyncResult(mrs_found=5, tickets_updated=2, errors=["err-b"])
+        merged = _merge_results(a, b)
+        assert merged.mrs_found == 8
+        assert merged.tickets_created == 1
+        assert merged.tickets_updated == 2
+        assert merged.errors == ["err-a", "err-b"]
+
+    def test_merges_empty_results(self) -> None:
+        merged = _merge_results(SyncResult(), SyncResult())
+        assert merged.mrs_found == 0
+        assert merged.errors == []
+
+
+_GITHUB_ITEM_URL = "https://github.com/souliane/teatree/issues/10"
+
+
+class TestDualSync(TestCase):
+    """When both GitHub and GitLab tokens are present, sync_followup runs both."""
+
+    @pytest.fixture(autouse=True)
+    def _with_overlay(self, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+        self._monkeypatch = monkeypatch
+        overlay = SyncOverlay(
+            github_token="gh-token",
+            github_owner="org",
+            github_project_number=1,
+            gitlab_token="gl-token",
+        )
+        with _patch_overlay(overlay):
+            yield
+
+    def test_runs_both_syncs(self) -> None:
+        """Both GitHub and GitLab results are merged into one SyncResult."""
+        github_item = MagicMock()
+        github_item.url = _GITHUB_ITEM_URL
+        github_item.title = "Fix issue"
+        github_item.status = "In Progress"
+        github_item.position = 1
+        github_item.labels = []
+        github_item.updated_at = "2026-04-01T00:00:00Z"
+
+        self._monkeypatch.setattr(
+            "teatree.backends.github.fetch_project_items",
+            lambda *_a, **_kw: [github_item],
+        )
+
+        mock_client = _make_mock_client([_MR_WITH_ISSUE])
+        self._monkeypatch.setattr("teatree.backends.gitlab_api.GitLabAPI", lambda **_kw: mock_client)
+
+        result = sync_followup()
+
+        assert result.mrs_found == 2  # 1 GitHub + 1 GitLab
+        assert result.tickets_created == 2
+        assert result.errors == []
+        assert Ticket.objects.count() == 2
+
+    def test_gitlab_only_when_no_github_token(self) -> None:
+        overlay = SyncOverlay(github_token="", gitlab_token="gl-token")
+        mock_client = _make_mock_client([_MR_WITHOUT_ISSUE])
+        self._monkeypatch.setattr("teatree.backends.gitlab_api.GitLabAPI", lambda **_kw: mock_client)
+
+        with _patch_overlay(overlay):
+            result = sync_followup()
+
+        assert result.mrs_found == 1
+        assert result.tickets_created == 1
+
+    def test_no_tokens_returns_error(self) -> None:
+        overlay = SyncOverlay(github_token="", gitlab_token="")
+        with _patch_overlay(overlay):
+            result = sync_followup()
+
+        assert len(result.errors) == 1
+        assert "No code host token" in result.errors[0]
