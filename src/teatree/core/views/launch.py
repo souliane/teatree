@@ -29,47 +29,19 @@ class LaunchAgentView(View):
         try:
             overlay = get_overlay()
             skill_metadata = overlay.metadata.get_skill_metadata()
-            if task.execution_target == Task.ExecutionTarget.INTERACTIVE:
-                terminal_mode = request.POST.get("terminal_mode", "")
-                terminal_app = request.POST.get("terminal_app", "")
-                return self._launch_interactive(
-                    task,
-                    skill_metadata,
-                    terminal_mode=terminal_mode,
-                    terminal_app=terminal_app,
-                )
-            return self._launch_headless(task)
+            terminal_mode = request.POST.get("terminal_mode", "")
+            terminal_app = request.POST.get("terminal_app", "")
+            return launch_interactive_task(
+                task,
+                skill_metadata,
+                terminal_mode=terminal_mode,
+                terminal_app=terminal_app,
+            )
         except Exception as exc:
             logger.exception("Launch failed for task %s", task_id)
             error_msg = str(exc)
             task.complete_with_attempt(exit_code=1, error=error_msg)
             return JsonResponse({"error": error_msg}, status=500)
-
-    def _launch_interactive(
-        self,
-        task: Task,
-        skill_metadata: SkillMetadata,
-        *,
-        terminal_mode: str = "",
-        terminal_app: str = "",
-    ) -> JsonResponse:
-        return launch_interactive_task(
-            task,
-            skill_metadata,
-            terminal_mode=terminal_mode,
-            terminal_app=terminal_app,
-        )
-
-    def _launch_headless(self, task: Task) -> JsonResponse:
-        from teatree.core.tasks import execute_headless_task  # noqa: PLC0415
-
-        django_task_result = execute_headless_task.enqueue(int(task.pk), task.phase)
-        return JsonResponse(
-            {
-                "status": "queued",
-                "django_task_id": str(django_task_result.id),
-            },
-        )
 
 
 def launch_interactive_task(
