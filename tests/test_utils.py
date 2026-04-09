@@ -799,6 +799,23 @@ def test_list_all_open_mrs_with_updated_after(monkeypatch: pytest.MonkeyPatch) -
     assert result == [{"iid": 1, "draft": False}]
 
 
+def test_list_open_mrs_as_reviewer(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = gitlab_api.GitLabAPI(token="test-token")
+    captured_endpoints: list[str] = []
+
+    def _capture(endpoint: str) -> list[dict[str, object]]:
+        captured_endpoints.append(endpoint)
+        return [{"iid": 5, "web_url": "https://gitlab.com/org/repo/-/merge_requests/5"}]
+
+    monkeypatch.setattr(client, "get_json", _capture)
+
+    result = client.list_open_mrs_as_reviewer("adrien")
+
+    assert result == [{"iid": 5, "web_url": "https://gitlab.com/org/repo/-/merge_requests/5"}]
+    assert "reviewer_username=adrien" in captured_endpoints[0]
+    assert "not%5Bauthor_username%5D=adrien" in captured_endpoints[0]
+
+
 def test_list_recently_merged_mrs_returns_data(monkeypatch: pytest.MonkeyPatch) -> None:
     client = gitlab_api.GitLabAPI(token="test-token")
     monkeypatch.setattr(

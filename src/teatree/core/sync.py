@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     from teatree.backends.gitlab_api import GitLabAPI, ProjectInfo
 
 LAST_SYNC_CACHE_KEY = "teatree_followup_last_sync"
+PENDING_REVIEWS_CACHE_KEY = "teatree_pending_reviews"
 
 # Type aliases for untyped external data (GitLab/GitHub API responses)
 # and serialized internal data stored in JSONFields.
@@ -197,7 +198,82 @@ def _sync_github(overlay: object) -> SyncResult:
             ticket.save(update_fields=["extra", "state"])
             result.tickets_updated += 1
 
+    _sync_github_reviewer_prs(token, result)
+
     return result
+
+
+def _sync_github_reviewer_prs(token: str, result: SyncResult) -> None:
+    """Fetch GitHub PRs where user is requested reviewer and cache them."""
+    import shutil  # noqa: PLC0415
+    import subprocess  # noqa: PLC0415, S404
+
+    gh_bin = shutil.which("gh")
+    if not gh_bin:
+        return
+
+    try:
+        out = subprocess.run(  # noqa: S603
+            [
+                gh_bin,
+                "search",
+                "prs",
+                "--review-requested=@me",
+                "--state=open",
+                "--json",
+                "url,title,repository,number,author,isDraft,updatedAt",
+                "--limit",
+                "50",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+            env={
+                **__import__("os").environ,
+                "GH_TOKEN": token,
+            },
+        )
+    except Exception as exc:  # noqa: BLE001
+        result.errors.append(f"GitHub reviewer PR fetch failed: {exc}")
+        return
+
+    if out.returncode != 0:
+        return
+
+    import json  # noqa: PLC0415
+
+    try:
+        prs = json.loads(out.stdout)
+    except json.JSONDecodeError:
+        return
+
+    reviews: list[dict[str, str]] = []
+    for pr in prs:
+        repo = pr.get("repository", {})
+        repo_name = repo.get("name", "") if isinstance(repo, dict) else ""
+        author = pr.get("author", {})
+        author_login = author.get("login", "") if isinstance(author, dict) else ""
+        reviews.append(
+            {
+                "url": str(pr.get("url", "")),
+                "title": str(pr.get("title", "")),
+                "repo": repo_name,
+                "iid": str(pr.get("number", "")),
+                "author": author_login,
+                "draft": str(pr.get("isDraft", False)),
+                "updated_at": str(pr.get("updatedAt", "")),
+            }
+        )
+
+    # Merge with any GitLab reviews already cached
+    existing = cache.get(PENDING_REVIEWS_CACHE_KEY) or []
+    existing_urls = {r["url"] for r in existing}
+    for r in reviews:
+        if r["url"] not in existing_urls:
+            existing.append(r)
+    cache.set(PENDING_REVIEWS_CACHE_KEY, existing, timeout=None)
+    result.reviews_synced += len(reviews)
 
 
 # ── GitLab sync ──────────────────────────────────────────────────────
@@ -254,6 +330,7 @@ def _sync_gitlab(overlay: object) -> SyncResult:
     _fetch_issue_labels(client, result)
     _detect_merged_mrs(client, username, result, last_sync)
     _fetch_review_permalinks(result)
+    _sync_reviewer_mrs(client, username, result)
 
     cache.set(LAST_SYNC_CACHE_KEY, sync_started_at.isoformat(), timeout=None)
 
@@ -690,6 +767,38 @@ def _fetch_review_permalinks(result: SyncResult) -> None:
         ticket.extra = extra
         ticket.save(update_fields=["extra"])
         result.reviews_synced += 1
+
+
+def _sync_reviewer_mrs(client: "GitLabAPI", username: str, result: SyncResult) -> None:
+    """Fetch MRs where user is reviewer (not author) and cache for dashboard display."""
+    try:
+        reviewer_mrs = client.list_open_mrs_as_reviewer(username)
+    except Exception as exc:  # noqa: BLE001
+        result.errors.append(f"Reviewer MR fetch failed: {exc}")
+        return
+
+    reviews: list[dict[str, str]] = []
+    for mr in reviewer_mrs:
+        web_url = str(mr.get("web_url", ""))
+        author_info = mr.get("author", {})
+        author_name = str(author_info.get("username", "")) if isinstance(author_info, dict) else ""  # ty: ignore[no-matching-overload]
+        repo_path = _extract_repo_path(mr)
+        repo_short = repo_path.rsplit("/", maxsplit=1)[-1]
+        iid = str(mr.get("iid", ""))
+        reviews.append(
+            {
+                "url": web_url,
+                "title": str(mr.get("title", "")),
+                "repo": repo_short,
+                "iid": iid,
+                "author": author_name,
+                "draft": str(mr.get("draft", False)),
+                "updated_at": str(mr.get("updated_at", "")),
+            }
+        )
+
+    cache.set(PENDING_REVIEWS_CACHE_KEY, reviews, timeout=None)
+    result.reviews_synced += len(reviews)
 
 
 def _extract_variant(labels: list[object]) -> str:
