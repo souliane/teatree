@@ -7,6 +7,7 @@ __pycache__/
 .coverage
 *.egg-info/
 db.sqlite3
+.t3-dev-sources
 dist/
 build/
 site/
