@@ -6,6 +6,7 @@ from django.utils import timezone
 from teatree.core import admin as core_admin
 from teatree.core.models import (
     InvalidTransitionError,
+    MergeRequest,
     QualityGateError,
     Session,
     Task,
@@ -589,3 +590,55 @@ class TestAdmin(TestCase):
         assert Task in registry
         assert TaskAttempt in registry
         assert core_admin is not None
+
+
+class TestMergeRequestModel(TestCase):
+    def test_str_representation(self) -> None:
+        ticket = Ticket.objects.create(overlay="test")
+        mr = MergeRequest.objects.create(
+            ticket=ticket,
+            url="https://example.com/repo/-/merge_requests/1",
+            repo="my-repo",
+            iid="42",
+        )
+        assert str(mr) == "my-repo #42"
+
+    def test_request_review_transition(self) -> None:
+        ticket = Ticket.objects.create(overlay="test")
+        mr = MergeRequest.objects.create(
+            ticket=ticket,
+            url="https://example.com/repo/-/merge_requests/2",
+            repo="my-repo",
+            iid="43",
+        )
+        mr.request_review(slack_url="https://slack.com/msg/123")
+        mr.save()
+        mr.refresh_from_db()
+        assert mr.state == MergeRequest.State.REVIEW_REQUESTED
+        assert mr.slack_url == "https://slack.com/msg/123"
+        assert mr.review_requested_at is not None
+
+    def test_approve_transition(self) -> None:
+        ticket = Ticket.objects.create(overlay="test")
+        mr = MergeRequest.objects.create(
+            ticket=ticket,
+            url="https://example.com/repo/-/merge_requests/3",
+            repo="my-repo",
+            iid="44",
+            state=MergeRequest.State.REVIEW_REQUESTED,
+        )
+        mr.approve()
+        mr.save()
+        assert mr.state == MergeRequest.State.APPROVED
+
+    def test_mark_merged_transition(self) -> None:
+        ticket = Ticket.objects.create(overlay="test")
+        mr = MergeRequest.objects.create(
+            ticket=ticket,
+            url="https://example.com/repo/-/merge_requests/4",
+            repo="my-repo",
+            iid="45",
+        )
+        mr.mark_merged()
+        mr.save()
+        assert mr.state == MergeRequest.State.MERGED
