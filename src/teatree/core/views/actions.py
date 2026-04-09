@@ -57,6 +57,8 @@ _ALLOWED_TRANSITIONS = {
     "mark_merged",
     "mark_delivered",
     "rework",
+    "ignore",
+    "unignore",
 }
 
 

@@ -53,7 +53,9 @@ def build_dashboard_summary(overlay: str | None = None) -> DashboardSummary:
 
 
 def build_worktree_rows(overlay: str | None = None) -> list[DashboardWorktreeRow]:
-    qs = Worktree.objects.select_related("ticket").exclude(ticket__state=Ticket.State.DELIVERED)
+    qs = Worktree.objects.select_related("ticket").exclude(
+        ticket__state__in=[Ticket.State.DELIVERED, Ticket.State.IGNORED],
+    )
     if overlay:
         qs = qs.filter(Q(overlay=overlay) | Q(overlay=""))
     worktrees = qs.order_by("ticket__pk", "pk")

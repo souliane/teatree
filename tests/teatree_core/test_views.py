@@ -486,6 +486,28 @@ class TestTicketTransitionView(TestCase):
         assert response.status_code == 400
         assert "Invalid transition" in response.json()["error"]
 
+    def test_ignore_hides_ticket(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.STARTED)
+        response = Client().post(
+            reverse("teatree:ticket-transition", args=[ticket.pk]),
+            {"transition": "ignore"},
+        )
+
+        assert response.status_code == 200
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.IGNORED
+
+    def test_unignore_restores_ticket(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.IGNORED, extra={"ignored_from": "coded"})
+        response = Client().post(
+            reverse("teatree:ticket-transition", args=[ticket.pk]),
+            {"transition": "unignore"},
+        )
+
+        assert response.status_code == 200
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.CODED
+
 
 # ---------------------------------------------------------------------------
 # CreateTaskView

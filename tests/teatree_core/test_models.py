@@ -164,6 +164,43 @@ class TestTicketTransitions(TestCase):
         assert ticket.state == Ticket.State.STARTED
         assert "tests_passed" not in ticket.extra
 
+    def test_ignore_hides_ticket_from_in_flight(self) -> None:
+        ticket = Ticket.objects.create()
+        ticket.scope()
+        ticket.save()
+        ticket.start()
+        ticket.save()
+
+        assert ticket in Ticket.objects.in_flight()
+
+        ticket.ignore()
+        ticket.save()
+        ticket.refresh_from_db()
+
+        assert ticket.state == Ticket.State.IGNORED
+        assert ticket.extra["ignored_from"] == "started"
+        assert ticket not in Ticket.objects.in_flight()
+
+    def test_unignore_restores_previous_state(self) -> None:
+        ticket = Ticket.objects.create()
+        ticket.scope()
+        ticket.save()
+        ticket.start()
+        ticket.save()
+        ticket.code()
+        ticket.save()
+
+        ticket.ignore()
+        ticket.save()
+        assert ticket.state == Ticket.State.IGNORED
+
+        ticket.unignore()
+        ticket.save()
+        ticket.refresh_from_db()
+
+        assert ticket.state == Ticket.State.CODED
+        assert "ignored_from" not in ticket.extra
+
     def test_rejects_invalid_transition(self) -> None:
         ticket = Ticket.objects.create()
 

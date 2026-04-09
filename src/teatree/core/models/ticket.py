@@ -2,7 +2,7 @@ import re
 from typing import TYPE_CHECKING, ClassVar, cast
 
 from django.db import models
-from django_fsm import FSMField, transition
+from django_fsm import FSMField, TransitionNotAllowed, transition
 
 from teatree.core.managers import TicketManager
 
@@ -24,6 +24,7 @@ class Ticket(models.Model):
         IN_REVIEW = "in_review", "In review"
         MERGED = "merged", "Merged"
         DELIVERED = "delivered", "Delivered"
+        IGNORED = "ignored", "Ignored"
 
     overlay = models.CharField(max_length=255)
     issue_url = models.URLField(max_length=500, blank=True)
@@ -158,6 +159,35 @@ class Ticket(models.Model):
         extra.pop("tests_passed", None)
         self.extra = extra
         self._cancel_pending_tasks()
+
+    @transition(
+        field=state,
+        source=[
+            State.NOT_STARTED,
+            State.SCOPED,
+            State.STARTED,
+            State.CODED,
+            State.TESTED,
+            State.REVIEWED,
+            State.SHIPPED,
+            State.IN_REVIEW,
+            State.MERGED,
+        ],
+        target=State.IGNORED,
+    )
+    def ignore(self) -> None:
+        extra = self._extra()
+        extra["ignored_from"] = self.state
+        self.extra = extra
+
+    def unignore(self) -> None:
+        if self.state != self.State.IGNORED:
+            msg = f"Can't unignore from state '{self.state}'"
+            raise TransitionNotAllowed(msg)
+        extra = self._extra()
+        previous = extra.pop("ignored_from", self.State.NOT_STARTED)
+        self.extra = extra
+        self.state = str(previous)
 
     def _cancel_pending_tasks(self) -> None:
         """Fail all pending/claimed tasks when reworking."""

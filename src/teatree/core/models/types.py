@@ -6,6 +6,7 @@ type Ports = dict[str, int]
 class TicketExtra(TypedDict, total=False):
     tests_passed: bool
     mr_urls: list[str]
+    ignored_from: str
 
 
 class WorktreeExtra(TypedDict, total=False):
