@@ -487,7 +487,7 @@ class Command(TyperCommand):
             self.stdout.write(f"    No docker-compose file for {worktree.repo_path} — skipping.")
             return
 
-        env = {**os.environ, **overlay.get_env_extra(worktree), **_compose_env(ports)}
+        env = {**os.environ, **_compose_env(ports), **overlay.get_env_extra(worktree)}
         env.pop("VIRTUAL_ENV", None)
         ok = _docker_compose_up(
             project,
