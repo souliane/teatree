@@ -672,21 +672,26 @@ The dashboard uses Server-Sent Events for push-based updates instead of blind po
 
 ---
 
-## 10. GitLab Sync (sync.py)
+## 10. Code Host Sync (sync.py)
 
 `sync_followup()` → `SyncResult`:
 
-1. Gets repos from `get_overlay().get_followup_repos()`
-2. Creates GitLab API client from `overlay.get_gitlab_token()`
-3. For each repo: fetches open MRs (incremental via cached `updated_after` timestamp)
-4. For each MR: `_upsert_ticket_from_mr()`:
+Runs all configured backends and merges results via `_merge_results()`. When both GitHub and GitLab tokens are present, both syncs run.
+
+**GitHub path** (`_sync_github`): fetches items from a GitHub Projects v2 board and upserts tickets by issue URL.
+
+**GitLab path** (`_sync_gitlab`):
+
+1. Creates GitLab API client from `overlay.config.get_gitlab_token()`
+2. Fetches all open MRs for the current user (incremental via cached `updated_after` timestamp)
+3. For each MR: `_upsert_ticket_from_mr()`:
    - Extracts `issue_url` from MR description/title via regex
    - Enriches non-draft MRs with pipeline status, approvals, discussions
    - Infers ticket state from MR data via `_infer_state_from_mrs()`
    - Upserts ticket by issue_url (or web_url if no issue linked)
-5. `_fetch_issue_labels()`: fetches issue details from GitLab work items, stores `tracker_status` (from `Process::` labels or Status widget) and `issue_title`
-6. `_detect_merged_mrs()`: finds recently merged MRs and advances matching tickets to `merged`
-7. Returns `SyncResult(mrs_found, tickets_created, tickets_updated, labels_fetched, mrs_merged, errors)`
+4. `_fetch_issue_labels()`: fetches issue details from GitLab work items, stores `tracker_status` (from `Process::` labels or Status widget) and `issue_title`
+5. `_detect_merged_mrs()`: finds recently merged MRs and advances matching tickets to `merged`
+6. Returns `SyncResult(mrs_found, tickets_created, tickets_updated, labels_fetched, mrs_merged, errors)`
 
 **State inference:** `_infer_state_from_mrs()` derives a minimum ticket state from MR metadata, bypassing FSM transitions (which have side effects like task creation). On creation, the inferred state becomes the default. On update, the ticket advances forward only — never regresses.
 

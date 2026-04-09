@@ -95,24 +95,45 @@ class MREntry:
         return result
 
 
-def sync_followup() -> SyncResult:
-    """Dispatch sync to the configured code host backend.
+def _merge_results(a: SyncResult, b: SyncResult) -> SyncResult:
+    """Merge two SyncResult instances, summing counts and concatenating lists."""
+    return SyncResult(
+        mrs_found=a.mrs_found + b.mrs_found,
+        tickets_created=a.tickets_created + b.tickets_created,
+        tickets_updated=a.tickets_updated + b.tickets_updated,
+        labels_fetched=a.labels_fetched + b.labels_fetched,
+        mrs_merged=a.mrs_merged + b.mrs_merged,
+        reviews_synced=a.reviews_synced + b.reviews_synced,
+        worktrees_cleaned=a.worktrees_cleaned + b.worktrees_cleaned,
+        errors=[*a.errors, *b.errors],
+    )
 
-    Routes to GitHub project board sync or GitLab MR sync based on
-    which credentials are configured in the active overlay.
+
+def sync_followup() -> SyncResult:
+    """Sync from all configured code host backends.
+
+    Runs GitHub project board sync and/or GitLab MR sync based on
+    which credentials are configured in the active overlay.  When both
+    tokens are present, both syncs run and results are merged.
     """
     from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
 
     overlay = get_overlay()
+    result = SyncResult()
+    ran_any = False
 
     if overlay.config.get_github_token():
-        return _sync_github(overlay)
+        result = _merge_results(result, _sync_github(overlay))
+        ran_any = True
     if overlay.config.get_gitlab_token():
-        return _sync_gitlab(overlay)
-    overlay_label = _overlay_name(overlay) or "active overlay"
-    return SyncResult(
-        errors=[f"No code host token for {overlay_label}"],
-    )
+        result = _merge_results(result, _sync_gitlab(overlay))
+        ran_any = True
+
+    if not ran_any:
+        overlay_label = _overlay_name(overlay) or "active overlay"
+        result.errors.append(f"No code host token for {overlay_label}")
+
+    return result
 
 
 # ── GitHub sync ──────────────────────────────────────────────────────
