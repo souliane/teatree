@@ -33,6 +33,11 @@ from teatree.core.selectors import (
     build_worktree_rows,
     invalidate_panel_cache,
 )
+from teatree.core.selectors._types import DashboardTicketRow
+from teatree.core.selectors.dashboard import (
+    _count_needs_reply,
+    _mr_latest_updated_at,
+)
 from teatree.core.sync import PENDING_REVIEWS_CACHE_KEY
 
 
@@ -1627,3 +1632,50 @@ class TestOverlayFiltering(TestCase):
         assert all_snap.summary.in_flight_tickets == 2
         assert alpha_snap.summary.in_flight_tickets == 1
         _panel_cache.clear()
+
+
+class TestBuildPendingReviewsEdgeCases(TestCase):
+    def test_returns_empty_when_cache_is_not_a_list(self) -> None:
+        django_cache.set(PENDING_REVIEWS_CACHE_KEY, "not-a-list")
+        assert build_pending_reviews() == []
+
+
+def _make_ticket_row(ticket_id: int) -> DashboardTicketRow:
+    return DashboardTicketRow(
+        ticket_id=ticket_id,
+        display_id="",
+        issue_url="",
+        has_issue=False,
+        issue_title="",
+        state="started",
+        tracker_status="",
+        notion_status="",
+        notion_url="",
+        variant="",
+        variant_url="",
+        repos=[],
+        ongoing_tasks=0,
+        total_tasks=0,
+        labels=[],
+        mrs=[],
+        transitions=[],
+    )
+
+
+class TestMrLatestUpdatedAt(TestCase):
+    def test_returns_empty_when_extra_is_not_dict(self) -> None:
+        ticket = Ticket.objects.create(overlay="test")
+        ticket.extra = "not-a-dict"
+        ticket.save()
+        assert _mr_latest_updated_at(_make_ticket_row(ticket.pk)) == ""
+
+    def test_returns_fallback_updated_at_when_mrs_is_not_dict(self) -> None:
+        ticket = Ticket.objects.create(overlay="test")
+        ticket.extra = {"mrs": "not-a-dict", "updated_at": "2026-01-01"}
+        ticket.save()
+        assert _mr_latest_updated_at(_make_ticket_row(ticket.pk)) == "2026-01-01"
+
+
+class TestCountNeedsReply:
+    def test_returns_zero_when_discussions_not_a_list(self) -> None:
+        assert _count_needs_reply({"discussions": "not-a-list"}) == 0
