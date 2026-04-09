@@ -52,6 +52,7 @@ class DashboardMRRow:
     review_permalink: str
     e2e_test_plan_url: str
     is_frontend: bool
+    needs_reply_count: int = 0
 
 
 @dataclass(frozen=True, slots=True)

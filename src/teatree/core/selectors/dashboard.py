@@ -253,6 +253,14 @@ def _build_mr_rows(ticket: Ticket) -> list[DashboardMRRow]:
                 review_permalink=str(mr.get("review_permalink", "")),
                 e2e_test_plan_url=str(mr.get("e2e_test_plan_url", "")),
                 is_frontend=str(mr.get("repo", "")) in frontend_repos,
+                needs_reply_count=_count_needs_reply(mr),
             ),
         )
     return rows
+
+
+def _count_needs_reply(mr: dict) -> int:
+    raw = mr.get("discussions", [])
+    if not isinstance(raw, list):
+        return 0
+    return sum(1 for d in raw if isinstance(d, dict) and d.get("status") == "needs_reply")
