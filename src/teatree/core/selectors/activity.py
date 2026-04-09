@@ -64,6 +64,7 @@ def build_active_sessions() -> list[ActiveSessionRow]:
                 kind="headless" if task and task.execution_target == Task.ExecutionTarget.HEADLESS else "interactive",
                 task_id=task.pk if task else None,
                 ticket_id=task.ticket.pk if task else None,
+                ticket_display_id=task.ticket.ticket_number if task else "",
                 phase=task.phase if task else "",
                 launch_url="",
                 session_id=session_id,

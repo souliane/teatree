@@ -52,6 +52,7 @@ def build_task_detail(task_id: int) -> TaskDetail | None:
     return TaskDetail(
         task_id=task.pk,
         ticket_id=task.ticket_id,
+        ticket_display_id=task.ticket.ticket_number,
         phase=task.phase,
         status=task.get_status_display(),
         execution_target=task.get_execution_target_display(),
