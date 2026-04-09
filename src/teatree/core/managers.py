@@ -15,7 +15,9 @@ class TicketQuerySet(_OverlayFilterMixin, models.QuerySet):
     def in_flight(self, overlay: str | None = None) -> models.QuerySet:
         from teatree.core.models.ticket import Ticket  # noqa: PLC0415
 
-        return self.for_overlay(overlay).exclude(state=Ticket.State.DELIVERED).order_by("pk")
+        return (
+            self.for_overlay(overlay).exclude(state__in=[Ticket.State.DELIVERED, Ticket.State.IGNORED]).order_by("pk")
+        )
 
 
 class WorktreeQuerySet(_OverlayFilterMixin, models.QuerySet):
