@@ -23,6 +23,7 @@ from ._types import (
 from .activity import build_active_sessions, build_recent_activity
 from .automation import build_action_required, build_automation_summary
 from .queues import build_headless_queue, build_interactive_queue
+from .unified import build_unified_sessions
 
 _ACTIVE_WORKTREE_STATES = (
     Worktree.State.PROVISIONED,
@@ -201,6 +202,7 @@ def build_dashboard_snapshot(overlay: str | None = None) -> DashboardSnapshot:
         interactive_queue=_cached(f"queue{sfx}", lambda: build_interactive_queue(pending_only=True, overlay=overlay)),
         active_sessions=_cached("sessions", build_active_sessions, ttl=_SESSIONS_PANEL_TTL),
         recent_activity=_cached(f"activity{sfx}", lambda: build_recent_activity(overlay)),
+        unified_sessions=_cached(f"unified_sessions{sfx}", lambda: build_unified_sessions(overlay=overlay)),
     )
 
 
