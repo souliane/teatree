@@ -47,7 +47,7 @@ jobs:
           uv run -p ${{ matrix.python-version }} pytest --no-header -q
           -o cache_dir=/tmp/.pytest_cache
           --cov-report=xml:/app/coverage.xml
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: coverage-${{ matrix.python-version }}
