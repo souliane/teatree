@@ -295,8 +295,11 @@
 
     function updateCopyButton() {
       var checked = document.querySelectorAll('input.mr-select:checked');
+      var hasChecked = checked.length > 0;
       var btn = document.getElementById('copy-selected-btn');
-      if (btn) btn.classList.toggle('hidden', checked.length === 0);
+      if (btn) btn.classList.toggle('hidden', !hasChecked);
+      var hideBtn = document.getElementById('hide-selected-btn');
+      if (hideBtn) hideBtn.classList.toggle('hidden', !hasChecked);
     }
 
     function toggleAllMRs(master) {
@@ -321,6 +324,30 @@
       if (event) event.preventDefault();
       navigator.clipboard.writeText(url).then(function() {
         showToast('Copied to clipboard');
+      });
+    }
+
+    function hideSelectedTickets() {
+      var ticketIds = new Set();
+      document.querySelectorAll('input.mr-select:checked').forEach(function(cb) {
+        var row = cb.closest('tr');
+        var group = row.dataset.ticketGroup;
+        if (group) ticketIds.add(group);
+      });
+      if (ticketIds.size === 0) return;
+      var promises = [];
+      ticketIds.forEach(function(id) {
+        promises.push(
+          fetch('/tickets/' + id + '/transition/', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+            body: 'transition=ignore'
+          })
+        );
+      });
+      Promise.all(promises).then(function() {
+        showToast(ticketIds.size + ' ticket(s) hidden');
+        htmx.trigger(document.body, 'refreshPanels');
       });
     }
 
@@ -613,6 +640,11 @@
             <input type="checkbox" id="filter-unapproved" class="accent-moss" onchange="filterTickets()"> Unapproved
           </label>
           <div class="ml-auto flex items-center gap-2">
+            <button
+              id="hide-selected-btn"
+              class="pill-btn pill-xs border border-bark/20 bg-bark/5 uppercase tracking-[0.18em] text-bark/60 hover:bg-bark/10 hidden"
+              onclick="hideSelectedTickets()"
+            >Hide from dashboard</button>
             <button
               id="copy-selected-btn"
               class="pill-btn pill-xs border border-bark/20 bg-bark/5 uppercase tracking-[0.18em] text-bark/60 hover:bg-bark/10 hidden"
