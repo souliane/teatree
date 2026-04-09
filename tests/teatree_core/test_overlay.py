@@ -1,13 +1,15 @@
+import tempfile
 from collections.abc import Iterator
+from pathlib import Path
 from typing import cast
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from django.core.exceptions import ImproperlyConfigured
 from django.test import TestCase
 
 from teatree.core.models import Ticket, Worktree
-from teatree.core.overlay import OverlayBase, ProvisionStep
+from teatree.core.overlay import OverlayBase, OverlayConfig, ProvisionStep
 from teatree.core.overlay_loader import get_all_overlay_names, get_overlay, reset_overlay_cache
 
 
@@ -177,3 +179,69 @@ class TestGetAllOverlayNames(TestCase):
         assert "ep-overlay" in names
         assert "toml-path-only" in names
         assert "toml-config-only" not in names
+
+
+class TestOverlayConfig(TestCase):
+    def test_toml_skips_reserved_keys(self) -> None:
+        mock_config = MagicMock()
+        mock_config.raw = {
+            "overlays": {
+                "test-overlay": {
+                    "class": "my.overlay.Class",
+                    "path": "/some/path",
+                    "custom_setting": "value",
+                },
+            },
+        }
+        with patch("teatree.config.load_config", return_value=mock_config):
+            config = OverlayConfig(overlay_name="test-overlay")
+        assert config.custom_setting == "value"
+        assert not hasattr(config, "class")  # reserved, skipped
+
+    def test_toml_pass_key_registers_secret_reader(self) -> None:
+        mock_config = MagicMock()
+        mock_config.raw = {
+            "overlays": {
+                "test-overlay": {
+                    "github_token_pass_key": "my/secret/key",
+                },
+            },
+        }
+        with patch("teatree.config.load_config", return_value=mock_config):
+            config = OverlayConfig(overlay_name="test-overlay")
+        assert hasattr(config, "get_github_token")
+        with patch("teatree.utils.secrets.read_pass", return_value="secret-value"):
+            assert config.get_github_token() == "secret-value"
+
+
+class TestDefaultHealthChecks(TestCase):
+    def test_includes_worktree_symlink_and_db_checks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            wt_path = Path(tmp) / "worktree"
+            wt_path.mkdir()
+            source = Path(tmp) / "source"
+            source.mkdir()
+
+            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/1")
+            worktree = Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="backend",
+                branch="feature",
+                db_name="test_db",
+                extra={"worktree_path": str(wt_path)},
+            )
+
+            overlay = DummyOverlay()
+            with patch.object(
+                overlay,
+                "get_symlinks",
+                return_value=[
+                    {"path": "link", "source": str(source), "mode": "symlink"},
+                ],
+            ):
+                checks = overlay.get_health_checks(worktree)
+            names = [c.name for c in checks]
+            assert "worktree-exists" in names
+            assert "symlink-link" in names
+            assert "db-name-set" in names
