@@ -11,6 +11,38 @@ metadata:
 
 Cross-cutting rules that apply to all teatree skills. Loaded automatically via `requires:`.
 
+## Invoke Skills Before ANY Response (Non-Negotiable)
+
+_Adapted from [superpowers/using-superpowers](https://github.com/jesses-code-adventures/superpowers)._
+
+When a skill might apply — even a 1% chance — **invoke it BEFORE responding, exploring, or asking clarifying questions.** The `UserPromptSubmit` hook suggests skills; you must load every suggestion. If the hook doesn't fire, pick the right skill yourself.
+
+**Stop rationalizing.** These thoughts mean you're skipping a skill:
+
+| Thought | Reality |
+|---------|---------|
+| "This is just a simple question" | Questions are tasks. Check for skills. |
+| "Let me explore the codebase first" | Skills tell you HOW to explore. Load first. |
+| "I need more context first" | Skill check comes BEFORE clarifying questions. |
+| "The skill is overkill for this" | Simple tasks become complex. Use it. |
+| "I already know how to do this" | Skills evolve. Load the current version. |
+| "I'll just do this one thing first" | Load skills BEFORE doing anything. |
+
+**Announce at start:** State which skill(s) you loaded and why, so the user can verify you're on the right track.
+
+## Verification Before Completion (Non-Negotiable)
+
+_Adapted from [superpowers/verification-before-completion](https://github.com/jesses-code-adventures/superpowers)._
+
+**No completion claims without fresh verification evidence in the same response.** If you haven't run the command and read its output in this message, you cannot claim it passes.
+
+1. **Identify** — what command proves this claim? (tests, lint, build, manual check)
+2. **Run** — execute it fresh and completely
+3. **Read** — full output, check exit code, count failures
+4. **Claim** — state the result WITH evidence
+
+**Banned language without evidence:** "should pass", "probably works", "seems correct", "looks good", "I'm confident". These words without a command output are lies, not claims.
+
 ## User Instructions Are Priority 1 (Non-Negotiable)
 
 When the user gives a direct, explicit instruction (`--no-verify`, skip tests, push now, use this approach), execute it IMMEDIATELY. Do not try a "better" approach first, do not retry the same failing approach hoping it works, and do not silently substitute your own plan. Execute the instruction first (it's fast and safe), then suggest an alternative if you have one.
@@ -152,7 +184,7 @@ When a pre-commit hook runs the full test suite and fails on tests **unrelated t
 
 1. Before writing to a file, run `git status`. If you see unexpected modifications to files you did not touch, **another agent is working in the same directory**.
 2. **If you are NOT in a worktree:** STOP writing code. Move all your work to a worktree immediately (`t3 workspace ticket` or `EnterWorktree`), then continue there.
-3. **If you ARE in a worktree and see someone else's changes:** STOP ALL WORK IMMEDIATELY. Alert the user: *"ALERT: Another agent is modifying files in my worktree at `<path>`. I've stopped all work to avoid conflicts. Please resolve before I continue."* Do NOT attempt to continue, merge, or work around the collision.
+3. **If you ARE in a worktree and see someone else's changes:** STOP ALL WORK IMMEDIATELY. Alert the user: _"ALERT: Another agent is modifying files in my worktree at `<path>`. I've stopped all work to avoid conflicts. Please resolve before I continue."_ Do NOT attempt to continue, merge, or work around the collision.
 
 **Why:** Parallel agents modifying the same checkout cause silent data loss — commits overwrite each other, stashes destroy in-progress work, and merge conflicts go undetected. This has cost hours of wasted work. Worktrees give each agent an isolated copy. The rules below are secondary defenses.
 

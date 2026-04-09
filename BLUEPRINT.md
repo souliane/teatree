@@ -787,7 +787,17 @@ Skills live in `skills/*/`. Each skill is a `SKILL.md` file with optional `refer
 | `ticket` | Ticket intake and kickoff |
 | `workspace` | Worktree creation, setup, servers, cleanup |
 
-Skills declare dependencies via `requires:` in YAML frontmatter. The skill bundle resolver performs topological sort for correct load order.
+Skills declare dependencies via `requires:` in YAML frontmatter. The skill bundle resolver performs topological sort for correct load order. Skills can also declare `companions:` — optional dependencies that are included when available but only warn (not fail) when missing.
+
+#### Third-Party Skill Integration
+
+Teatree integrates with third-party skill frameworks (notably [superpowers](https://github.com/jesses-code-adventures/superpowers)) via the `companions:` mechanism and APM dependency management. The approach is:
+
+- **Absorb, don't delegate.** When a third-party skill covers a universal concern (skill-loading discipline, verification before completion), the best content is distilled into teatree's own `rules` skill — which is always loaded via `requires:`. This avoids context waste from loading both teatree and third-party versions of the same guidance.
+- **Companion for domain skills.** Third-party skills that cover specific domains (TDD methodology, plan execution, brainstorming) are declared as `companions:` on the relevant lifecycle skill. They load alongside teatree skills when installed, adding depth without duplication.
+- **Exclude conflicting skills.** Skills that duplicate teatree's core infrastructure (worktree management, skill loading) are excluded during `t3 setup` via `CORE_EXCLUDED_SKILLS`. This prevents conflicting instructions — teatree's `t3 workspace` subsystem replaces generic worktree skills entirely.
+
+Attribution: the `rules` skill's "Invoke Skills Before ANY Response" and "Verification Before Completion" sections are adapted from superpowers' `using-superpowers` and `verification-before-completion` skills respectively.
 
 ### 12.2 Sub-Agent Architecture
 
