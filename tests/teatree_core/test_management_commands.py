@@ -312,3 +312,67 @@ class TestFollowupCommands(TestCase):
         assert isinstance(errors, list)
         assert len(errors) == 1
         assert "No code host token for" in errors[0]
+
+
+class TestTicketCommand(TestCase):
+    """Tests for the ticket management command (transition + list)."""
+
+    def test_transition_scopes_ticket(self) -> None:
+        ticket = Ticket.objects.create(overlay="test")
+        result = cast(
+            "dict[str, object]",
+            call_command("ticket", "transition", ticket.pk, "scope"),
+        )
+        assert result["state"] == Ticket.State.SCOPED
+
+    def test_transition_unknown_returns_error(self) -> None:
+        ticket = Ticket.objects.create(overlay="test")
+        result = cast(
+            "dict[str, object]",
+            call_command("ticket", "transition", ticket.pk, "nonexistent"),
+        )
+        assert "Unknown transition" in str(result["error"])
+
+    def test_transition_not_found_returns_error(self) -> None:
+        result = cast(
+            "dict[str, object]",
+            call_command("ticket", "transition", 99999, "scope"),
+        )
+        assert "not found" in str(result["error"])
+
+    def test_transition_not_allowed_returns_error(self) -> None:
+        ticket = Ticket.objects.create(overlay="test")
+        result = cast(
+            "dict[str, object]",
+            call_command("ticket", "transition", ticket.pk, "code"),
+        )
+        assert "not allowed" in str(result["error"])
+
+    def test_list_returns_all_tickets(self) -> None:
+        Ticket.objects.create(overlay="test")
+        Ticket.objects.create(overlay="other")
+        result = cast(
+            "list[dict[str, object]]",
+            call_command("ticket", "list"),
+        )
+        assert len(result) == 2
+
+    def test_list_filters_by_state(self) -> None:
+        Ticket.objects.create(overlay="test", state=Ticket.State.SCOPED)
+        Ticket.objects.create(overlay="test", state=Ticket.State.NOT_STARTED)
+        result = cast(
+            "list[dict[str, object]]",
+            call_command("ticket", "list", state="scoped"),
+        )
+        assert len(result) == 1
+        assert result[0]["state"] == "scoped"
+
+    def test_list_filters_by_overlay(self) -> None:
+        Ticket.objects.create(overlay="alpha")
+        Ticket.objects.create(overlay="beta")
+        result = cast(
+            "list[dict[str, object]]",
+            call_command("ticket", "list", overlay="alpha"),
+        )
+        assert len(result) == 1
+        assert result[0]["overlay"] == "alpha"
