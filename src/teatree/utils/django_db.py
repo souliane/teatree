@@ -130,25 +130,21 @@ def _copy_ref_to_ticket(ctx: _RestoreContext) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def _find_dslr_cmd(tool_name: str, main_repo_path: str = "") -> list[str]:
+def _find_dslr_cmd(tool_name: str, _main_repo_path: str = "") -> list[str]:
     """Return a command prefix for invoking dslr.
 
-    Prefers ``uv run`` (resolves project venv where dslr + psycopg live).
-    When *main_repo_path* is provided, passes ``--directory`` so uv
-    resolves from the project that actually has dslr as a dependency,
-    not from the current working directory.
-    Bare ``dslr`` on PATH is unreliable (pyenv shims, missing deps).
+    Uses ``uv run`` from the **host project** (where dslr + psycopg live as
+    hard dependencies), not from the target repo.  The *main_repo_path* arg
+    is accepted for backward compatibility but ignored — dslr must be in the
+    teatree host project's venv.
+
     Honour ``DSLR_CMD`` env var as an explicit override.
     """
     dslr = os.environ.get("DSLR_CMD", "")
     if dslr and shutil.which(dslr):
         return [dslr]
     if shutil.which("uv"):
-        cmd = ["uv"]
-        if main_repo_path:
-            cmd.extend(["--directory", main_repo_path])
-        cmd.extend(["run", tool_name])
-        return cmd
+        return ["uv", "run", tool_name]
     return []
 
 
@@ -276,9 +272,10 @@ def _migrate_reference_db(main_repo: str, ref_db: str, extra_env: dict[str, str]
     run_env = {**os.environ, "DATABASE_URL": ref_db_url, "DISABLE_DATABASE_SSL": "True", **extra_env}
 
     print(f"  Migrating reference DB ({ref_db}) using main repo...")  # noqa: T201
+    migrate_cmd = ["uv", "--directory", main_repo, "run", "python", "manage.py", "migrate", "--no-input"]
     for _attempt in range(_MAX_MIGRATE_RETRIES):
         result = subprocess.run(
-            ["python", "manage.py", "migrate", "--no-input"],
+            migrate_cmd,
             cwd=main_repo,
             env=run_env,
             capture_output=True,
@@ -319,7 +316,7 @@ def _try_fake_failing_migration(combined: str, stdout: str, main_repo: str, run_
     reason = "schema already exists" if "already exists" in combined else "table absent from dump"
     print(f"  Faking {failing} on reference DB ({reason})...")  # noqa: T201
     subprocess.run(
-        ["python", "manage.py", "migrate", app_label, migration_name, "--fake"],
+        ["uv", "--directory", main_repo, "run", "python", "manage.py", "migrate", app_label, migration_name, "--fake"],
         cwd=main_repo,
         env=run_env,
         capture_output=True,
