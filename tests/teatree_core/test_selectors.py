@@ -27,7 +27,6 @@ from teatree.core.selectors import (
     build_headless_queue,
     build_interactive_queue,
     build_recent_activity,
-    build_review_comments,
     build_task_detail,
     build_worktree_rows,
     invalidate_panel_cache,
@@ -1066,8 +1065,10 @@ class TestListOfStr:
         assert _list_of_str([1, "two", 3]) == ["1", "two", "3"]
 
 
-class TestBuildReviewComments(TestCase):
-    def test_with_discussions(self) -> None:
+class TestReviewCommentsInActionRequired(TestCase):
+    """Review comments are now embedded in ActionRequiredItem via build_action_required."""
+
+    def test_needs_reply_includes_review_comments(self) -> None:
         Ticket.objects.create(
             state=Ticket.State.STARTED,
             extra={
@@ -1085,32 +1086,39 @@ class TestBuildReviewComments(TestCase):
             },
         )
 
-        rows = build_review_comments()
+        items = build_action_required()
 
-        assert len(rows) == 2
-        assert rows[0].mr_label == "backend !10"
-        assert rows[0].status == "Needs reply"
-        assert rows[1].status == "Addressed"
+        reply_items = [i for i in items if i.kind == "needs_reply"]
+        assert len(reply_items) == 1
+        assert len(reply_items[0].review_comments) == 2
+        assert reply_items[0].review_comments[0].status == "Needs reply"
+        assert reply_items[0].review_comments[1].status == "Addressed"
 
-    def test_skips_non_dict_mrs(self) -> None:
+    def test_needs_reply_includes_slack_url(self) -> None:
         Ticket.objects.create(
             state=Ticket.State.STARTED,
-            extra={"mrs": "not-a-dict"},
+            extra={
+                "mrs": {
+                    "url1": {
+                        "url": "https://gitlab.com/org/backend/-/merge_requests/10",
+                        "repo": "backend",
+                        "iid": "10",
+                        "review_permalink": "https://slack.com/archives/C123/p456",
+                        "discussions": [
+                            {"status": "needs_reply", "detail": "Fix it"},
+                        ],
+                    },
+                },
+            },
         )
 
-        rows = build_review_comments()
-        assert rows == []
+        items = build_action_required()
 
-    def test_skips_non_dict_mr(self) -> None:
-        Ticket.objects.create(
-            state=Ticket.State.STARTED,
-            extra={"mrs": {"url1": "not-a-dict"}},
-        )
+        reply_items = [i for i in items if i.kind == "needs_reply"]
+        assert len(reply_items) == 1
+        assert reply_items[0].slack_url == "https://slack.com/archives/C123/p456"
 
-        rows = build_review_comments()
-        assert rows == []
-
-    def test_skips_non_list_discussions(self) -> None:
+    def test_skips_non_dict_discussions(self) -> None:
         Ticket.objects.create(
             state=Ticket.State.STARTED,
             extra={
@@ -1125,10 +1133,11 @@ class TestBuildReviewComments(TestCase):
             },
         )
 
-        rows = build_review_comments()
-        assert rows == []
+        items = build_action_required()
+        reply_items = [i for i in items if i.kind == "needs_reply"]
+        assert reply_items == []
 
-    def test_skips_non_dict_discussion(self) -> None:
+    def test_skips_non_dict_discussion_entries(self) -> None:
         Ticket.objects.create(
             state=Ticket.State.STARTED,
             extra={
@@ -1143,26 +1152,9 @@ class TestBuildReviewComments(TestCase):
             },
         )
 
-        rows = build_review_comments()
-        assert rows == []
-
-    def test_uses_url_as_label_when_no_repo_iid(self) -> None:
-        Ticket.objects.create(
-            state=Ticket.State.STARTED,
-            extra={
-                "mrs": {
-                    "url1": {
-                        "url": "https://gitlab.com/org/x/-/merge_requests/1",
-                        # No repo or iid
-                        "discussions": [{"status": "waiting_reviewer", "detail": "note"}],
-                    },
-                },
-            },
-        )
-
-        rows = build_review_comments()
-        assert len(rows) == 1
-        assert rows[0].mr_label == "https://gitlab.com/org/x/-/merge_requests/1"
+        items = build_action_required()
+        reply_items = [i for i in items if i.kind == "needs_reply"]
+        assert reply_items == []
 
 
 class TestBuildRecentActivity(TestCase):

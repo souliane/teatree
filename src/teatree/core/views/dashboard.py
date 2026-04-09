@@ -18,7 +18,6 @@ from teatree.core.selectors import (
     build_headless_queue,
     build_interactive_queue,
     build_recent_activity,
-    build_review_comments,
     build_task_detail,
     build_task_graph,
     build_worktree_rows,
@@ -34,7 +33,6 @@ _PANEL_TEMPLATES = {
     "headless_queue": "teatree/partials/dashboard_headless_queue.html",
     "queue": "teatree/partials/dashboard_queue.html",
     "sessions": "teatree/partials/dashboard_sessions.html",
-    "review_comments": "teatree/partials/dashboard_review_comments.html",
     "activity": "teatree/partials/dashboard_activity.html",
 }
 
@@ -163,7 +161,6 @@ _PANEL_BUILDERS: dict[str, _PanelBuilder] = {
         "show_dismissed": d,
     },
     "sessions": lambda _d, _o: {"sessions": build_active_sessions()},
-    "review_comments": lambda _d, o: {"review_comments": build_review_comments(overlay=o)},
     "activity": lambda _d, o: {"activity": build_recent_activity(overlay=o)},
 }
 

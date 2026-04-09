@@ -1,7 +1,7 @@
 {% if action_items %}
   <div class="flex flex-col gap-2">
     {% for item in action_items %}
-      <div class="flex items-center gap-3 rounded-lg border border-bark/10 bg-cream px-4 py-3">
+      <div class="group/item relative flex items-center gap-3 rounded-lg border border-bark/10 bg-cream px-4 py-3">
         {% if item.kind == "interactive_task" %}
           <span class="pill pill-xs bg-clay/10 text-clay">Interactive</span>
         {% elif item.kind == "needs_review_request" %}
@@ -11,12 +11,60 @@
         {% elif item.kind == "needs_approval" %}
           <span class="pill pill-xs bg-purple-100 text-purple-700">Approval</span>
         {% endif %}
-        {% if item.url %}
-          <a href="{{ item.url }}" class="font-sans text-sm text-moss hover:underline" target="_blank">{{ item.label }}</a>
-        {% else %}
-          <span class="font-sans text-sm text-bark">{{ item.label }}</span>
+        <div class="flex flex-1 items-center gap-2 overflow-hidden">
+          {% if item.url %}
+            <a href="{{ item.url }}" class="font-sans text-sm text-moss hover:underline truncate" target="_blank">{{ item.label }}</a>
+          {% else %}
+            <span class="font-sans text-sm text-bark truncate">{{ item.label }}</span>
+          {% endif %}
+          {% if item.slack_url %}
+            <a href="{{ item.slack_url }}" class="font-sans text-[10px] text-sky-600 hover:underline" target="_blank">Slack</a>
+          {% endif %}
+          <span class="font-sans text-xs text-bark/40 truncate">{{ item.detail }}</span>
+        </div>
+        <div class="flex items-center gap-2 shrink-0">
+          {% if item.kind == "needs_reply" %}
+            <button
+              class="rounded-full border border-moss/30 bg-moss/10 px-3 py-1 font-sans text-[10px] font-semibold uppercase tracking-[0.18em] text-moss transition hover:bg-moss/20"
+              title="Spawn an agent to address review comments"
+            >
+              Address
+            </button>
+          {% elif item.kind == "needs_review_request" %}
+            <button
+              class="rounded-full border border-sky-300 bg-sky-50 px-3 py-1 font-sans text-[10px] font-semibold uppercase tracking-[0.18em] text-sky-600 transition hover:bg-sky-100"
+              title="Post review request to Slack"
+            >
+              Post to Slack
+            </button>
+          {% elif item.kind == "needs_approval" %}
+            <button
+              class="rounded-full border border-purple-300 bg-purple-50 px-3 py-1 font-sans text-[10px] font-semibold uppercase tracking-[0.18em] text-purple-600 transition hover:bg-purple-100"
+              title="Post approval reminder to Slack"
+            >
+              Remind on Slack
+            </button>
+          {% endif %}
+        </div>
+        {% if item.review_comments %}
+          <div class="absolute left-0 top-full z-10 mt-1 hidden w-full rounded-lg border border-bark/10 bg-white p-3 shadow-lg group-hover/item:block">
+            <div class="font-sans text-[10px] font-semibold uppercase tracking-[0.18em] text-bark/40 mb-2">Review Comments</div>
+            {% for comment in item.review_comments %}
+              <div class="flex items-start gap-2 py-1 border-b border-bark/5 last:border-0">
+                {% if comment.status == "Needs reply" %}
+                  <span class="inline-flex rounded-full bg-red-100 px-2 py-0.5 font-sans text-[10px] font-semibold text-red-700 shrink-0">{{ comment.status }}</span>
+                {% elif comment.status == "Waiting reviewer" %}
+                  <span class="inline-flex rounded-full bg-sky-100 px-2 py-0.5 font-sans text-[10px] font-semibold text-sky-700 shrink-0">{{ comment.status }}</span>
+                {% elif comment.status == "Addressed" %}
+                  <span class="inline-flex rounded-full bg-green-100 px-2 py-0.5 font-sans text-[10px] font-semibold text-green-700 shrink-0">{{ comment.status }}</span>
+                {% else %}
+                  <span class="inline-flex rounded-full bg-bark/5 px-2 py-0.5 font-sans text-[10px] font-semibold text-bark/40 shrink-0">{{ comment.status }}</span>
+                {% endif %}
+                <span class="font-sans text-xs text-bark/65 break-words">{{ comment.detail_text }}</span>
+              </div>
+            {% endfor %}
+          </div>
         {% endif %}
-        <span class="font-sans text-xs text-bark/40">{{ item.detail }}</span>
       </div>
     {% endfor %}
   </div>

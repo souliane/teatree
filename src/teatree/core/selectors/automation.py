@@ -4,7 +4,7 @@ from django.utils import timezone
 from teatree.core.models import Task, TaskAttempt, Ticket
 
 from ._filters import _overlay_q, _task_overlay_q
-from ._types import ActionRequiredItem, AutomationSummary
+from ._types import ActionRequiredItem, AutomationSummary, DiscussionData, ReviewCommentDetail
 
 _AUTOMATION_WINDOW_HOURS = 24
 
@@ -88,6 +88,13 @@ def _action_items_from_mrs(overlay: str | None = None) -> list[ActionRequiredIte
     return items
 
 
+_DISCUSSION_STATUS_DISPLAY = {
+    "waiting_reviewer": "Waiting reviewer",
+    "needs_reply": "Needs reply",
+    "addressed": "Addressed",
+}
+
+
 def _check_mr(mr: dict, ticket: "Ticket") -> list[ActionRequiredItem]:
     """Return action items for a single MR dict."""
     if not isinstance(mr, dict) or mr.get("draft"):
@@ -97,6 +104,7 @@ def _check_mr(mr: dict, ticket: "Ticket") -> list[ActionRequiredItem]:
     mr_url = str(mr.get("url", ""))
     mr_label = f"{repo} !{iid}"
     pipeline = mr.get("pipeline_status")
+    slack_url = str(mr.get("review_permalink", ""))
     approvals = mr.get("approvals", {})
     if not isinstance(approvals, dict):
         approvals = {}
@@ -115,19 +123,24 @@ def _check_mr(mr: dict, ticket: "Ticket") -> list[ActionRequiredItem]:
             ),
         )
 
-    discussions = mr.get("discussions", [])
-    if isinstance(discussions, list):
-        needs_reply = sum(1 for d in discussions if isinstance(d, dict) and d.get("status") == "needs_reply")
-        if needs_reply:
-            items.append(
-                ActionRequiredItem(
-                    kind="needs_reply",
-                    label=f"{mr_label} — {needs_reply} comment{'s' if needs_reply > 1 else ''} need reply",
-                    url=mr_url,
-                    ticket_id=ticket.pk,
-                    detail="Review threads waiting for your response",
-                ),
-            )
+    raw_discussions = mr.get("discussions", [])
+    discussions: list[DiscussionData] = (
+        [d for d in raw_discussions if isinstance(d, dict)] if isinstance(raw_discussions, list) else []
+    )
+    comment_details = _extract_review_comments(discussions)
+    needs_reply = sum(1 for c in comment_details if c.status == "Needs reply")
+    if needs_reply:
+        items.append(
+            ActionRequiredItem(
+                kind="needs_reply",
+                label=f"{mr_label} — {needs_reply} comment{'s' if needs_reply > 1 else ''} need reply",
+                url=mr_url,
+                ticket_id=ticket.pk,
+                detail="Review threads waiting for your response",
+                slack_url=slack_url,
+                review_comments=tuple(comment_details),
+            ),
+        )
 
     if pipeline == "success" and mr.get("review_requested") and count < required:
         items.append(
@@ -137,7 +150,22 @@ def _check_mr(mr: dict, ticket: "Ticket") -> list[ActionRequiredItem]:
                 url=mr_url,
                 ticket_id=ticket.pk,
                 detail="Review requested, approval pending",
+                slack_url=slack_url,
             ),
         )
 
     return items
+
+
+def _extract_review_comments(discussions: list[DiscussionData]) -> tuple[ReviewCommentDetail, ...]:
+    """Extract review comment details from MR discussion data."""
+    comments: list[ReviewCommentDetail] = []
+    for disc in discussions:
+        status_key = str(disc.get("status", ""))
+        comments.append(
+            ReviewCommentDetail(
+                status=_DISCUSSION_STATUS_DISPLAY.get(status_key, status_key),
+                detail_text=str(disc.get("detail", ""))[:120],
+            ),
+        )
+    return tuple(comments)
