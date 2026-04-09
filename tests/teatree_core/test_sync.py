@@ -1622,3 +1622,206 @@ class TestSyncReviewerMRs(TestCase):
 
         assert len(result.errors) == 1
         assert "Reviewer MR fetch failed" in result.errors[0]
+
+
+# ── GitHub sync ──────────────────────────────────────────────────────
+
+
+class TestSyncGitHub(TestCase):
+    def _make_overlay(self, **kwargs: object) -> SyncOverlay:
+        return SyncOverlay(
+            gitlab_token="",
+            gitlab_username="",
+            github_token="gh-test-token",
+            github_owner="souliane",
+            github_project_number=1,
+            **kwargs,
+        )
+
+    def test_creates_ticket_from_project_item(self) -> None:
+        from teatree.backends.github import ProjectItem  # noqa: PLC0415
+        from teatree.core.sync import _sync_github  # noqa: PLC0415
+
+        overlay = self._make_overlay()
+        item = ProjectItem(
+            issue_number=42,
+            title="Test issue",
+            url="https://github.com/souliane/teatree/issues/42",
+            status="In Progress",
+            position=1,
+            labels=["bug"],
+            updated_at="2026-04-01T00:00:00Z",
+        )
+
+        with (
+            _patch_overlay(overlay),
+            patch("teatree.backends.github.fetch_project_items", return_value=[item]),
+            patch("teatree.core.sync._sync_github_reviewer_prs"),
+        ):
+            result = _sync_github(overlay)
+
+        assert result.tickets_created == 1
+        assert result.mrs_found == 1
+        ticket = Ticket.objects.get(issue_url="https://github.com/souliane/teatree/issues/42")
+        assert ticket.state == Ticket.State.STARTED
+        assert ticket.extra["issue_title"] == "Test issue"
+
+    def test_updates_existing_ticket(self) -> None:
+        from teatree.backends.github import ProjectItem  # noqa: PLC0415
+        from teatree.core.sync import _sync_github  # noqa: PLC0415
+
+        overlay = self._make_overlay()
+        Ticket.objects.create(
+            issue_url="https://github.com/souliane/teatree/issues/43",
+            state=Ticket.State.NOT_STARTED,
+            extra={"custom_key": "preserved"},
+        )
+
+        item = ProjectItem(
+            issue_number=43,
+            title="Updated issue",
+            url="https://github.com/souliane/teatree/issues/43",
+            status="Done",
+            position=2,
+            labels=["enhancement"],
+        )
+
+        with (
+            _patch_overlay(overlay),
+            patch("teatree.backends.github.fetch_project_items", return_value=[item]),
+            patch("teatree.core.sync._sync_github_reviewer_prs"),
+        ):
+            result = _sync_github(overlay)
+
+        assert result.tickets_updated == 1
+        ticket = Ticket.objects.get(issue_url="https://github.com/souliane/teatree/issues/43")
+        assert ticket.state == Ticket.State.DELIVERED
+        assert ticket.extra["custom_key"] == "preserved"
+        assert ticket.extra["issue_title"] == "Updated issue"
+
+    def test_returns_error_for_non_overlay(self) -> None:
+        from teatree.core.sync import _sync_github  # noqa: PLC0415
+
+        result = _sync_github("not an overlay")
+        assert any("Invalid overlay" in e for e in result.errors)
+
+    def test_returns_error_when_config_missing(self) -> None:
+        from teatree.core.sync import _sync_github  # noqa: PLC0415
+
+        overlay = SyncOverlay(
+            gitlab_token="",
+            gitlab_username="",
+            github_token="gh-token",
+            github_owner="",
+            github_project_number=0,
+        )
+
+        with _patch_overlay(overlay):
+            result = _sync_github(overlay)
+
+        assert any("not configured" in e for e in result.errors)
+
+    def test_handles_fetch_exception(self) -> None:
+        from teatree.core.sync import _sync_github  # noqa: PLC0415
+
+        overlay = self._make_overlay()
+
+        with (
+            _patch_overlay(overlay),
+            patch("teatree.backends.github.fetch_project_items", side_effect=RuntimeError("API error")),
+        ):
+            result = _sync_github(overlay)
+
+        assert any("fetch failed" in e for e in result.errors)
+
+
+class TestSyncGitHubReviewerPrs(TestCase):
+    def test_caches_reviewer_prs(self) -> None:
+        import json  # noqa: PLC0415
+        import subprocess  # noqa: PLC0415
+
+        from teatree.core.sync import _sync_github_reviewer_prs  # noqa: PLC0415
+
+        prs = [
+            {
+                "url": "https://github.com/org/repo/pull/10",
+                "title": "Fix bug",
+                "repository": {"name": "repo"},
+                "number": 10,
+                "author": {"login": "alice"},
+                "isDraft": False,
+                "updatedAt": "2026-04-01T00:00:00Z",
+            },
+        ]
+        mock_run = MagicMock(
+            return_value=subprocess.CompletedProcess([], 0, stdout=json.dumps(prs)),
+        )
+        result = SyncResult()
+
+        with (
+            patch("shutil.which", return_value="/usr/bin/gh"),
+            patch("subprocess.run", mock_run),
+        ):
+            _sync_github_reviewer_prs("gh-token", result)
+
+        assert result.reviews_synced == 1
+        cached = cache.get(PENDING_REVIEWS_CACHE_KEY)
+        assert cached is not None
+        assert len(cached) == 1
+        assert cached[0]["author"] == "alice"
+        cache.delete(PENDING_REVIEWS_CACHE_KEY)
+
+    def test_skips_when_gh_not_found(self) -> None:
+        from teatree.core.sync import _sync_github_reviewer_prs  # noqa: PLC0415
+
+        result = SyncResult()
+        with patch("shutil.which", return_value=None):
+            _sync_github_reviewer_prs("gh-token", result)
+
+        assert result.reviews_synced == 0
+
+    def test_handles_subprocess_exception(self) -> None:
+        from teatree.core.sync import _sync_github_reviewer_prs  # noqa: PLC0415
+
+        result = SyncResult()
+        with (
+            patch("shutil.which", return_value="/usr/bin/gh"),
+            patch("subprocess.run", side_effect=OSError("spawn failed")),
+        ):
+            _sync_github_reviewer_prs("gh-token", result)
+
+        assert any("reviewer PR fetch failed" in e for e in result.errors)
+
+    def test_returns_early_on_nonzero_exit(self) -> None:
+        import subprocess  # noqa: PLC0415
+
+        from teatree.core.sync import _sync_github_reviewer_prs  # noqa: PLC0415
+
+        result = SyncResult()
+        mock_run = MagicMock(
+            return_value=subprocess.CompletedProcess([], 1, stdout=""),
+        )
+        with (
+            patch("shutil.which", return_value="/usr/bin/gh"),
+            patch("subprocess.run", mock_run),
+        ):
+            _sync_github_reviewer_prs("gh-token", result)
+
+        assert result.reviews_synced == 0
+
+    def test_handles_invalid_json(self) -> None:
+        import subprocess  # noqa: PLC0415
+
+        from teatree.core.sync import _sync_github_reviewer_prs  # noqa: PLC0415
+
+        result = SyncResult()
+        mock_run = MagicMock(
+            return_value=subprocess.CompletedProcess([], 0, stdout="not json"),
+        )
+        with (
+            patch("shutil.which", return_value="/usr/bin/gh"),
+            patch("subprocess.run", mock_run),
+        ):
+            _sync_github_reviewer_prs("gh-token", result)
+
+        assert result.reviews_synced == 0
