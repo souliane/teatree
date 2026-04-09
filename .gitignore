@@ -21,3 +21,7 @@ htmlcov/
 *.min.js
 *.min.css
 *.map
+
+
+# APM dependencies
+apm_modules/

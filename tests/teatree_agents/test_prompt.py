@@ -353,7 +353,7 @@ class TestBuildInteractiveContext(TestCase):
         assert "Implement feature X" in ctx
         assert "Phase: coding" in ctx
 
-    def test_with_reason(self) -> None:
+    def test_with_reason_shows_diagnosis_prompt(self) -> None:
         ticket = Ticket.objects.create()
         session = Session.objects.create(ticket=ticket)
         task = Task.objects.create(
@@ -364,6 +364,20 @@ class TestBuildInteractiveContext(TestCase):
 
         ctx = build_interactive_context(task, skills=[])
         assert "Agent needs guidance on API design" in ctx
+        assert "diagnosis" in ctx
+        assert "Do NOT ask the user what happened" in ctx
+        # Should NOT contain the generic acknowledgment prompt
+        assert "acknowledge the project" not in ctx
+
+    def test_without_reason_shows_acknowledgment_prompt(self) -> None:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session)
+
+        ctx = build_interactive_context(task, skills=[])
+        assert "acknowledge the project" in ctx
+        # Should NOT contain the diagnosis prompt
+        assert "diagnosis" not in ctx
 
     def test_with_skills(self) -> None:
         ticket = Ticket.objects.create()

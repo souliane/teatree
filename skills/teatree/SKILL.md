@@ -213,6 +213,15 @@ Follows after prioritization (steps 1-6 above). When the user says "batch mode",
 4. **Close stale issues** that are already resolved in the codebase.
 5. **Report** what was done and what was skipped (with reasons) at the end.
 
+**Handling user requests mid-session:**
+
+During batch/quickwin sessions, the user may send new requests (bug reports, feature ideas, feedback) while you're implementing a ticket. When this happens:
+
+1. **Create a GitHub issue immediately** for the new request — don't defer or forget it.
+2. **Resume the current ticket** without losing progress.
+3. If the request is a quick rename or one-line fix in a file you're already editing, fold it into the current PR.
+4. If the request requires its own worktree/branch, add it to your ticket queue and implement it in order after the current ticket.
+
 **Rules:**
 
 - Never edit the main clone — always use worktrees.

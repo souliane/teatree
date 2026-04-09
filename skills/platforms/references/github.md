@@ -47,7 +47,10 @@ gh pr view <NUMBER> --repo <OWNER>/<REPO> --json title,body,headRefName,baseRefN
 
 ### Create PR
 
+**Push first** — `gh pr create` requires the branch to exist on the remote:
+
 ```bash
+git push -u origin HEAD
 gh pr create --repo <OWNER>/<REPO> --title "<title>" --body "<body>" --base main --head <branch> --assignee @me
 ```
 
