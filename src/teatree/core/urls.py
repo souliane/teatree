@@ -5,6 +5,7 @@ from teatree.core.views.actions import (
     CreateTaskView,
     GitPullView,
     ReopenTaskView,
+    SwitchBranchView,
     SyncFollowupView,
     TicketTransitionView,
 )
@@ -38,4 +39,5 @@ urlpatterns = [
     path("dashboard/launch-agent/", LaunchInteractiveAgentView.as_view(), name="launch-interactive-agent"),
     path("sessions/<str:session_id>/history/", SessionHistoryView.as_view(), name="session-history"),
     path("dashboard/git-pull/", GitPullView.as_view(), name="dashboard-git-pull"),
+    path("dashboard/switch-branch/", SwitchBranchView.as_view(), name="dashboard-switch-branch"),
 ]

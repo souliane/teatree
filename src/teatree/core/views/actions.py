@@ -348,3 +348,67 @@ class GitPullView(View):
             execution_target=Task.ExecutionTarget.INTERACTIVE,
             execution_reason=f"git pull failed for {repo_name}:\n{error}",
         )
+
+
+class SwitchBranchView(View):
+    """Switch the teatree repo to a different branch. Uvicorn auto-reloads on file changes."""
+
+    def get(self, _request: HttpRequest) -> HttpResponse:
+        """Return list of local branches for the branch selector."""
+        t3_repo = _get_t3_repo()
+        if t3_repo is None or not t3_repo.is_dir():
+            return JsonResponse({"error": "T3_REPO not found"}, status=400)
+
+        try:
+            result = subprocess.run(
+                ["git", "branch", "--format=%(refname:short)"],  # noqa: S607
+                cwd=t3_repo,
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+            branches = [b.strip() for b in result.stdout.strip().split("\n") if b.strip()]
+            current = subprocess.run(
+                ["git", "rev-parse", "--abbrev-ref", "HEAD"],  # noqa: S607
+                cwd=t3_repo,
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+            current_branch = current.stdout.strip()
+        except subprocess.TimeoutExpired:
+            return JsonResponse({"error": "timeout"}, status=500)
+
+        return JsonResponse({"branches": branches, "current": current_branch})
+
+    def post(self, request: HttpRequest) -> HttpResponse:
+        """Switch to the specified branch."""
+        branch = request.POST.get("branch", "").strip()
+        if not branch:
+            return JsonResponse({"error": "No branch specified"}, status=400)
+
+        t3_repo = _get_t3_repo()
+        if t3_repo is None or not t3_repo.is_dir():
+            return JsonResponse({"error": "T3_REPO not found"}, status=400)
+
+        env = {**os.environ, "GIT_EDITOR": "true", "GIT_SEQUENCE_EDITOR": "true"}
+        try:
+            result = subprocess.run(  # noqa: S603
+                ["git", "checkout", branch],  # noqa: S607
+                cwd=t3_repo,
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=False,
+                env=env,
+            )
+        except subprocess.TimeoutExpired:
+            return JsonResponse({"error": "checkout timed out"}, status=500)
+
+        if result.returncode != 0:
+            error = (result.stderr or result.stdout).strip()
+            return JsonResponse({"error": error}, status=500)
+
+        return JsonResponse({"ok": True, "branch": branch})
