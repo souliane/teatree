@@ -1077,3 +1077,114 @@ class TestGetT3Repo:
             result = actions_views._get_t3_repo()
 
         assert result is None
+
+
+# ---------------------------------------------------------------------------
+# SwitchBranchView
+# ---------------------------------------------------------------------------
+
+
+class TestSwitchBranchView(TestCase):
+    @pytest.fixture(autouse=True)
+    def _inject_tmp_path(self, tmp_path: Path) -> None:
+        self.tmp_path = tmp_path
+
+    def test_get_returns_branches(self) -> None:
+        branch_result = subprocess_mod.CompletedProcess([], 0, "main\ndev\nfeature-x\n", "")
+        current_result = subprocess_mod.CompletedProcess([], 0, "dev\n", "")
+        with (
+            patch.object(actions_views, "_get_t3_repo", return_value=self.tmp_path),
+            patch("teatree.core.views.actions.subprocess") as mock_subprocess,
+        ):
+            mock_subprocess.run.side_effect = [branch_result, current_result]
+            mock_subprocess.TimeoutExpired = subprocess_mod.TimeoutExpired
+            response = Client().get(reverse("teatree:dashboard-switch-branch"))
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["branches"] == ["main", "dev", "feature-x"]
+        assert data["current"] == "dev"
+
+    def test_get_missing_repo_returns_400(self) -> None:
+        with patch.object(actions_views, "_get_t3_repo", return_value=None):
+            response = Client().get(reverse("teatree:dashboard-switch-branch"))
+
+        assert response.status_code == 400
+
+    def test_get_timeout_returns_500(self) -> None:
+        with (
+            patch.object(actions_views, "_get_t3_repo", return_value=self.tmp_path),
+            patch("teatree.core.views.actions.subprocess") as mock_subprocess,
+        ):
+            mock_subprocess.TimeoutExpired = subprocess_mod.TimeoutExpired
+            mock_subprocess.run.side_effect = subprocess_mod.TimeoutExpired(["git", "branch"], 10)
+            response = Client().get(reverse("teatree:dashboard-switch-branch"))
+
+        assert response.status_code == 500
+        assert "timeout" in response.json()["error"]
+
+    def test_post_switches_branch(self) -> None:
+        completed = subprocess_mod.CompletedProcess([], 0, "Switched to branch 'main'\n", "")
+        with (
+            patch.object(actions_views, "_get_t3_repo", return_value=self.tmp_path),
+            patch("teatree.core.views.actions.subprocess") as mock_subprocess,
+        ):
+            mock_subprocess.run.return_value = completed
+            mock_subprocess.TimeoutExpired = subprocess_mod.TimeoutExpired
+            response = Client().post(
+                reverse("teatree:dashboard-switch-branch"),
+                {"branch": "main"},
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["ok"] is True
+        assert data["branch"] == "main"
+
+    def test_post_empty_branch_returns_400(self) -> None:
+        response = Client().post(reverse("teatree:dashboard-switch-branch"), {"branch": ""})
+
+        assert response.status_code == 400
+        assert "No branch" in response.json()["error"]
+
+    def test_post_missing_repo_returns_400(self) -> None:
+        with patch.object(actions_views, "_get_t3_repo", return_value=None):
+            response = Client().post(
+                reverse("teatree:dashboard-switch-branch"),
+                {"branch": "main"},
+            )
+
+        assert response.status_code == 400
+
+    def test_post_checkout_failure_returns_500(self) -> None:
+        completed = subprocess_mod.CompletedProcess(
+            [], 1, "", "error: pathspec 'nonexistent' did not match any file(s)\n"
+        )
+        with (
+            patch.object(actions_views, "_get_t3_repo", return_value=self.tmp_path),
+            patch("teatree.core.views.actions.subprocess") as mock_subprocess,
+        ):
+            mock_subprocess.run.return_value = completed
+            mock_subprocess.TimeoutExpired = subprocess_mod.TimeoutExpired
+            response = Client().post(
+                reverse("teatree:dashboard-switch-branch"),
+                {"branch": "nonexistent"},
+            )
+
+        assert response.status_code == 500
+        assert "pathspec" in response.json()["error"]
+
+    def test_post_timeout_returns_500(self) -> None:
+        with (
+            patch.object(actions_views, "_get_t3_repo", return_value=self.tmp_path),
+            patch("teatree.core.views.actions.subprocess") as mock_subprocess,
+        ):
+            mock_subprocess.TimeoutExpired = subprocess_mod.TimeoutExpired
+            mock_subprocess.run.side_effect = subprocess_mod.TimeoutExpired(["git", "checkout"], 15)
+            response = Client().post(
+                reverse("teatree:dashboard-switch-branch"),
+                {"branch": "main"},
+            )
+
+        assert response.status_code == 500
+        assert "timed out" in response.json()["error"]
