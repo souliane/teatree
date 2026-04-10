@@ -22,6 +22,7 @@ from teatree.core.selectors import (
     build_recent_activity,
     build_task_detail,
     build_task_graph,
+    build_unified_sessions,
     build_worktree_rows,
 )
 from teatree.utils import git as git_utils
@@ -37,6 +38,7 @@ _PANEL_TEMPLATES = {
     "queue": "teatree/partials/dashboard_queue.html",
     "sessions": "teatree/partials/dashboard_sessions.html",
     "activity": "teatree/partials/dashboard_activity.html",
+    "unified_sessions": "teatree/partials/dashboard_sessions_unified.html",
 }
 
 
@@ -164,6 +166,9 @@ _PANEL_BUILDERS: dict[str, _PanelBuilder] = {
     },
     "sessions": lambda _d, _o: {"sessions": build_active_sessions()},
     "activity": lambda _d, o: {"activity": build_recent_activity(overlay=o)},
+    "unified_sessions": lambda d, o: {
+        "unified_sessions": build_unified_sessions(include_dismissed=d, overlay=o),
+    },
 }
 
 

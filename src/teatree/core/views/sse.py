@@ -18,6 +18,7 @@ from teatree.core.selectors import (
     build_headless_queue,
     build_interactive_queue,
     build_recent_activity,
+    build_unified_sessions,
     build_worktree_rows,
     invalidate_panel_cache,
 )
@@ -31,6 +32,7 @@ _PANEL_BUILDERS: dict[str, Callable[[], object]] = {
     "queue": lambda: build_interactive_queue(pending_only=True),
     "sessions": build_active_sessions,
     "activity": build_recent_activity,
+    "unified_sessions": build_unified_sessions,
 }
 
 

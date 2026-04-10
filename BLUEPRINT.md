@@ -633,7 +633,7 @@ Selector-backed views with django-htmx. **No domain logic in views** — all dat
 | `GET /dashboard/events/` | SSE | Server-Sent Events stream for real-time updates |
 | `GET /dashboard/panels/<panel>/` | HTMX | Panel refresh (requires HX-Request header) |
 | `POST /dashboard/sync/` | — | Trigger followup sync |
-| `POST /dashboard/git-pull/` | — | Pull latest teatree code |
+| `POST /dashboard/git-pull/` | — | Pull teatree + all overlay repos; aborts on conflict, auto-switches stale branches |
 | `GET /dashboard/switch-branch/` | JSON | List local branches + current branch |
 | `POST /dashboard/switch-branch/` | JSON | Switch teatree repo to specified branch (uvicorn auto-reloads) |
 | `POST /dashboard/launch-terminal/` | — | Open a terminal session |
@@ -685,11 +685,12 @@ The dashboard uses Server-Sent Events for push-based updates instead of blind po
 | automation | `build_automation_summary()` | Headless task stats (running, completed/succeeded/failed 24h) | `automation` | 120s |
 | tickets | `build_dashboard_ticket_rows()` | In-flight tickets table | `tickets` | 600s |
 | worktrees | — | Active worktrees with state and ports | `worktrees` | 600s |
-| headless_queue | `build_headless_queue()` | Pending headless tasks | `headless_queue` | 600s |
-| queue | `build_interactive_queue()` | Pending interactive tasks | `queue` | 600s |
-| sessions | `build_active_sessions()` | Running Claude processes | `sessions` | 60s |
+| unified_sessions | `build_unified_sessions()` | Merged view: running sessions, queued tasks, completed activity with tab filters | `unified_sessions` | 60s |
 | action_required | `build_action_required()` | Items needing human attention (interactive tasks, review requests, draft comments) | `action_required` | 120s |
-| activity | `build_recent_activity()` | Recent task completions/failures | `activity` | 120s |
+| headless_queue | `build_headless_queue()` | Pending headless tasks (legacy, kept for API compat) | `headless_queue` | 600s |
+| queue | `build_interactive_queue()` | Pending interactive tasks (legacy, kept for API compat) | `queue` | 600s |
+| sessions | `build_active_sessions()` | Running Claude processes (legacy, kept for API compat) | `sessions` | 60s |
+| activity | `build_recent_activity()` | Recent task completions/failures (legacy, kept for API compat) | `activity` | 120s |
 
 ---
 

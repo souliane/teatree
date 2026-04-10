@@ -125,6 +125,25 @@
       htmx.trigger(panel, 'refreshPanels');
     }
 
+    function filterSessions(btn, status) {
+      var container = btn.closest('.mb-3');
+      container.querySelectorAll('button').forEach(function(b) {
+        b.className = b.className.replace('bg-bark/10 text-bark/60', 'bg-bark/5 text-bark/40');
+        b.removeAttribute('data-active');
+      });
+      btn.className = btn.className.replace('bg-bark/5 text-bark/40', 'bg-bark/10 text-bark/60');
+      btn.setAttribute('data-active', 'true');
+      var grid = document.getElementById('unified-sessions-grid');
+      if (!grid) return;
+      grid.querySelectorAll('article').forEach(function(row) {
+        if (status === 'all' || row.getAttribute('data-session-status') === status) {
+          row.style.display = '';
+        } else {
+          row.style.display = 'none';
+        }
+      });
+    }
+
     function openTaskModal(taskId) {
       var modal = document.getElementById('task-modal');
       var body = document.getElementById('task-modal-body');
@@ -278,27 +297,26 @@
 
     function handleGitPullResponse(event) {
       var xhr = event.detail.xhr;
-      var errorSpan = document.getElementById('git-pull-error');
-      if (xhr.status >= 400) {
-        try {
-          var data = JSON.parse(xhr.responseText);
-          if (errorSpan && data.error) {
-            errorSpan.textContent = data.error;
-            errorSpan.title = data.error;
-            errorSpan.classList.remove('hidden');
+      try {
+        var data = JSON.parse(xhr.responseText);
+        if (xhr.status >= 400) {
+          var errors = data.errors || {};
+          for (var repo in errors) {
+            var msg = errors[repo].error || 'Pull failed';
+            var isConflict = errors[repo].conflict;
+            showToast(repo + ': ' + (isConflict ? 'Merge conflict (aborted)' : msg), 'error');
           }
-          if (data.task_created) {
-            showToast('Git pull failed — interactive task created', 'error');
+          htmx.trigger(document.body, 'refreshPanels');
+        } else {
+          var results = data.results || {};
+          var parts = [];
+          for (var repo in results) {
+            var out = results[repo].output || 'up to date';
+            parts.push(repo + ': ' + out);
           }
-        } catch(e) { console.warn('Failed to parse git pull error:', e); }
-        htmx.trigger(document.body, 'refreshPanels');
-      } else {
-        if (errorSpan) { errorSpan.classList.add('hidden'); errorSpan.textContent = ''; }
-        try {
-          var data = JSON.parse(xhr.responseText);
-          showToast(data.output || 'Git pull complete', 'success');
-        } catch(e) {}
-      }
+          showToast(parts.join('\n') || 'Update complete', 'success');
+        }
+      } catch(e) { showToast('Update failed', 'error'); }
     }
 
     document.body.addEventListener('htmx:sseOpen', function() {
@@ -676,11 +694,11 @@
           hx-post="{% url 'teatree:dashboard-git-pull' %}"
           hx-swap="none"
           hx-on::after-request="handleGitPullResponse(event)"
+          hx-disable-elt="this"
         >
           <span id="git-pull-spinner" class="htmx-indicator mr-1">&#8635;</span>
-          Git Pull
+          Update TeaTree
         </button>
-        <span id="git-pull-error" class="hidden font-sans text-xs text-red-600 max-w-xs truncate" title=""></span>
         {% endif %}
         <div class="relative inline-flex items-center">
           <button
@@ -743,73 +761,21 @@
           {% include "teatree/partials/dashboard_action_required.html" with action_items=snapshot.action_required only %}
         </div>
       </details>
-      <!-- Active Sessions -->
-      <details open class="group overflow-hidden rounded-[1.5rem] border border-bark/10 bg-cream/90 shadow-soft backdrop-blur">
+      <!-- Unified Sessions -->
+      <details id="section-sessions" open class="group overflow-hidden rounded-[1.5rem] border border-bark/10 bg-cream/90 shadow-soft backdrop-blur">
         <summary class="flex cursor-pointer items-center gap-2 border-b border-bark/10 px-5 py-4">
           <span class="group-open:hidden">&#9654;</span><span class="hidden group-open:inline">&#9660;</span>
-          <h2 class="font-display text-2xl">Active Sessions</h2>
-          <span class="font-sans text-sm text-bark/60">Running Claude processes on this machine.</span>
+          <h2 class="font-display text-2xl">Sessions</h2>
+          <span class="font-sans text-sm text-bark/60">Tasks, processes, and activity.</span>
         </summary>
         <div
+          id="panel-unified_sessions"
           class="px-5 py-5"
-          hx-get="{% url 'teatree:dashboard-panel' 'sessions' %}"
-          hx-trigger="load, every 60s, refreshPanels from:body, sse:sessions"
+          hx-get="{% url 'teatree:dashboard-panel' 'unified_sessions' %}"
+          hx-trigger="load, every 60s, refreshPanels from:body, sse:unified_sessions"
           hx-swap="innerHTML"
         >
-          {% include "teatree/partials/dashboard_sessions.html" with sessions=snapshot.active_sessions only %}
-        </div>
-      </details>
-      <!-- Headless Queue -->
-      <details id="section-headless-queue" open class="group overflow-hidden rounded-[1.5rem] border border-bark/10 bg-cream/90 shadow-soft backdrop-blur">
-        <summary class="flex cursor-pointer items-center gap-2 border-b border-bark/10 px-5 py-4">
-          <span class="group-open:hidden">&#9654;</span><span class="hidden group-open:inline">&#9660;</span>
-          <h2 class="font-display text-2xl">Headless Queue</h2>
-          <span class="font-sans text-sm text-bark/60">Headless task execution.</span>
-          <label class="ml-auto flex cursor-pointer items-center gap-1 font-sans text-[10px] uppercase tracking-[0.18em] text-bark/40" onclick="event.stopPropagation()">
-            <input type="checkbox" data-filter="headless_queue" onchange="toggleDismissed(this, 'headless_queue')" class="accent-bark/40">
-            Show dismissed
-          </label>
-        </summary>
-        <div
-          id="panel-headless_queue"
-          class="px-5 py-5"
-          hx-get="{% url 'teatree:dashboard-panel' 'headless_queue' %}"
-          hx-trigger="load, every 600s, refreshPanels from:body, sse:headless_queue"
-          hx-swap="innerHTML"
-        >
-          {% include "teatree/partials/dashboard_headless_queue.html" with headless_queue=snapshot.headless_queue debug=debug only %}
-        </div>
-      </details>
-      <!-- Interactive Queue -->
-      <details open class="group overflow-hidden rounded-[1.5rem] border border-bark/10 bg-cream/90 shadow-soft backdrop-blur">
-        <summary class="flex cursor-pointer items-center gap-2 border-b border-bark/10 px-5 py-4">
-          <span class="group-open:hidden">&#9654;</span><span class="hidden group-open:inline">&#9660;</span>
-          <h2 class="font-display text-2xl">Interactive Queue</h2>
-        </summary>
-        <div
-          id="panel-queue"
-          class="px-5 py-5"
-          hx-get="{% url 'teatree:dashboard-panel' 'queue' %}"
-          hx-trigger="load, every 600s, refreshPanels from:body, sse:queue"
-          hx-swap="innerHTML"
-        >
-          {% include "teatree/partials/dashboard_queue.html" with queue=snapshot.interactive_queue debug=debug only %}
-        </div>
-      </details>
-      <!-- Recent Activity -->
-      <details id="section-recent-activity" open class="group overflow-hidden rounded-[1.5rem] border border-bark/10 bg-cream/90 shadow-soft backdrop-blur">
-        <summary class="flex cursor-pointer items-center gap-2 border-b border-bark/10 px-5 py-4">
-          <span class="group-open:hidden">&#9654;</span><span class="hidden group-open:inline">&#9660;</span>
-          <h2 class="font-display text-2xl">Recent Activity</h2>
-          <span class="font-sans text-sm text-bark/60">Last completed task attempts.</span>
-        </summary>
-        <div
-          class="px-5 py-5"
-          hx-get="{% url 'teatree:dashboard-panel' 'activity' %}"
-          hx-trigger="load, every 120s, refreshPanels from:body, sse:activity"
-          hx-swap="innerHTML"
-        >
-          {% include "teatree/partials/dashboard_activity.html" with activity=snapshot.recent_activity only %}
+          {% include "teatree/partials/dashboard_sessions_unified.html" with unified_sessions=snapshot.unified_sessions only %}
         </div>
       </details>
       <!-- In-Flight Tickets -->

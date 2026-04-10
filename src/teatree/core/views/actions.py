@@ -2,6 +2,7 @@ import logging
 import os
 import subprocess  # noqa: S404
 from pathlib import Path
+from typing import TypedDict
 
 from django.http import Http404, HttpRequest, HttpResponse, JsonResponse
 from django.template.response import TemplateResponse
@@ -166,6 +167,13 @@ class CreateTaskView(View):
             return JsonResponse({"error": "Auto-launch failed"}, status=500)
 
 
+class _PullResult(TypedDict, total=False):
+    ok: bool
+    output: str
+    error: str
+    conflict: bool
+
+
 def _get_t3_repo() -> Path | None:
     """Resolve the teatree repo root from T3_REPO env var or package location."""
     env_path = os.environ.get("T3_REPO", "")
@@ -176,37 +184,157 @@ def _get_t3_repo() -> Path | None:
     return find_project_root()
 
 
+def _find_overlay_repo_dirs() -> list[tuple[str, Path]]:
+    """Return (name, repo_root) for each loaded overlay with a local git repo."""
+    import sys  # noqa: PLC0415
+
+    from teatree.core.overlay_loader import get_all_overlays  # noqa: PLC0415
+
+    repos: list[tuple[str, Path]] = []
+    try:
+        overlays = get_all_overlays()
+    except Exception:  # noqa: BLE001
+        return repos
+    for name, overlay in overlays.items():
+        mod = sys.modules.get(type(overlay).__module__)
+        if not mod or not getattr(mod, "__file__", None):
+            continue
+        mod_dir = Path(mod.__file__).parent  # type: ignore[arg-type]
+        for parent in (mod_dir, *mod_dir.parents):
+            if (parent / ".git").exists() or (parent / ".git").is_file():
+                repos.append((name, parent))
+                break
+    return repos
+
+
+_GIT_ENV = {**os.environ, "GIT_EDITOR": "true", "GIT_SEQUENCE_EDITOR": "true"}
+
+_TIMEOUT = 30
+
+
+def _git_pull_repo(repo_dir: Path) -> _PullResult:
+    """Pull a single repo and return a result dict.
+
+    Handles merge conflicts (aborts) and stale tracking branches
+    (switches to main and retries).
+    """
+    try:
+        result = subprocess.run(
+            ["git", "pull"],  # noqa: S607
+            cwd=repo_dir,
+            capture_output=True,
+            text=True,
+            timeout=_TIMEOUT,
+            check=False,
+            env=_GIT_ENV,
+        )
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": "timed out after 30s"}
+
+    if result.returncode == 0:
+        output = result.stdout.strip()
+        return {"ok": True, "output": output or "Already up to date."}
+
+    stderr = (result.stderr or result.stdout).strip()
+
+    # Merge conflict — abort and report
+    if "CONFLICT" in stderr or "fix conflicts" in stderr.lower():
+        subprocess.run(
+            ["git", "merge", "--abort"],  # noqa: S607
+            cwd=repo_dir,
+            capture_output=True,
+            timeout=10,
+            check=False,
+            env=_GIT_ENV,
+        )
+        return {"ok": False, "error": f"Merge conflict:\n{stderr}", "conflict": True}
+
+    # Stale tracking branch — switch to main, pull, clean up
+    if "no tracking information" in stderr or "doesn't have any remote" in stderr:
+        switched = _switch_to_main_and_pull(repo_dir)
+        if switched:
+            return switched
+
+    return {"ok": False, "error": stderr}
+
+
+def _switch_to_main_and_pull(repo_dir: Path) -> _PullResult | None:
+    """Switch to main branch, pull, and delete stale local branch."""
+    # Find the stale branch name
+    branch_result = subprocess.run(
+        ["git", "rev-parse", "--abbrev-ref", "HEAD"],  # noqa: S607
+        cwd=repo_dir,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    stale_branch = branch_result.stdout.strip() if branch_result.returncode == 0 else ""
+
+    for main_name in ("main", "master"):
+        switch = subprocess.run(  # noqa: S603
+            ["git", "checkout", main_name],  # noqa: S607
+            cwd=repo_dir,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+            env=_GIT_ENV,
+        )
+        if switch.returncode == 0:
+            pull = subprocess.run(
+                ["git", "pull"],  # noqa: S607
+                cwd=repo_dir,
+                capture_output=True,
+                text=True,
+                timeout=_TIMEOUT,
+                check=False,
+                env=_GIT_ENV,
+            )
+            output = pull.stdout.strip() if pull.returncode == 0 else ""
+            msg = f"Switched to {main_name}"
+            if stale_branch and stale_branch != main_name:
+                subprocess.run(  # noqa: S603
+                    ["git", "branch", "-d", stale_branch],  # noqa: S607
+                    cwd=repo_dir,
+                    capture_output=True,
+                    timeout=10,
+                    check=False,
+                )
+                msg += f", deleted stale branch '{stale_branch}'"
+            return {"ok": True, "output": f"{msg}. {output}".strip()}
+    return None
+
+
 class GitPullView(View):
     def post(self, _request: HttpRequest) -> HttpResponse:
         t3_repo = _get_t3_repo()
         if t3_repo is None or not t3_repo.is_dir():
             return JsonResponse({"error": "T3_REPO not found"}, status=400)
 
-        # Override editor so pull.rebase=interactive doesn't open a TTY editor
-        env = {**os.environ, "GIT_EDITOR": "true", "GIT_SEQUENCE_EDITOR": "true"}
-        try:
-            result = subprocess.run(
-                ["git", "pull"],  # noqa: S607
-                cwd=t3_repo,
-                capture_output=True,
-                text=True,
-                timeout=30,
-                check=False,
-                env=env,
-            )
-        except subprocess.TimeoutExpired:
-            return JsonResponse({"error": "git pull timed out after 30s"}, status=500)
+        results: dict[str, _PullResult] = {}
 
-        if result.returncode != 0:
-            error = (result.stderr or result.stdout).strip()
-            self._create_interactive_task(error, t3_repo)
-            return JsonResponse({"error": error, "task_created": True}, status=500)
+        # Pull teatree
+        results["teatree"] = _git_pull_repo(t3_repo)
 
-        output = result.stdout.strip()
-        return JsonResponse({"ok": True, "output": output})
+        # Pull overlay repos (skip if same as teatree)
+        t3_resolved = t3_repo.resolve()
+        for name, repo_dir in _find_overlay_repo_dirs():
+            if repo_dir.resolve() == t3_resolved:
+                continue
+            results[name] = _git_pull_repo(repo_dir)
+
+        # Build summary
+        errors = {k: v for k, v in results.items() if not v.get("ok")}
+        if errors:
+            for name, err in errors.items():
+                self._create_interactive_task(str(err.get("error", "")), name)
+            return JsonResponse({"results": results, "errors": errors}, status=500)
+
+        return JsonResponse({"ok": True, "results": results})
 
     @staticmethod
-    def _create_interactive_task(error: str, t3_repo: Path) -> None:
+    def _create_interactive_task(error: str, repo_name: str) -> None:
         ticket, _created = Ticket.objects.get_or_create(
             overlay="teatree",
             issue_url="",
@@ -218,7 +346,7 @@ class GitPullView(View):
             session=session,
             phase="maintenance",
             execution_target=Task.ExecutionTarget.INTERACTIVE,
-            execution_reason=f"git pull failed in {t3_repo}:\n{error}",
+            execution_reason=f"git pull failed for {repo_name}:\n{error}",
         )
 
 

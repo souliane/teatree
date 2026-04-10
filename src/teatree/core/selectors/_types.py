@@ -1,5 +1,5 @@
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TypedDict
 
 
@@ -160,6 +160,40 @@ class RecentActivityRow:
 
 
 @dataclass(frozen=True, slots=True)
+class UnifiedSessionRow:
+    """A single row in the unified Sessions panel."""
+
+    row_status: str  # "running", "queued", "completed", "failed", "manual"
+    execution_target: str  # "headless", "interactive", "manual"
+    task_id: int | None
+    ticket_id: int | None
+    ticket_display_id: str
+    issue_url: str
+    phase: str
+    execution_reason: str
+    result_summary: str
+    error: str
+    # Timing
+    queued_at: str
+    started_at: str
+    stopped_at: str
+    elapsed_time: str
+    heartbeat_age: str
+    # Process info (running sessions)
+    pid: int | None = None
+    session_id: str = ""
+    cwd: str = ""
+    launch_url: str = ""
+    # Task action context
+    claimed_by: str = ""
+    # Activity details
+    exit_code: int | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cost_usd: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class TaskAttemptDetail:
     attempt_id: int
     started_at: str
@@ -234,3 +268,4 @@ class DashboardSnapshot:
     pending_reviews: list[PendingReviewRow]
     active_sessions: list[ActiveSessionRow]
     recent_activity: list[RecentActivityRow]
+    unified_sessions: list[UnifiedSessionRow] = field(default_factory=list)
