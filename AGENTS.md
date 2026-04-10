@@ -175,9 +175,7 @@ Selector-backed views with django-htmx. No domain logic in views.
 
 - Runtime Summary — counter cards (in-flight tickets, active worktrees, pending SDK/user-input tasks)
 - In-Flight Tickets — table with MR data, pipeline status, approvals, Auto/Interactive task creation buttons
-- SDK Task Queue — pending/claimed SDK tasks with Execute/Cancel buttons, result summaries
-- User-Input Queue — pending/claimed interactive tasks with Launch/Cancel buttons
-- Active Sessions — running Claude processes on this machine
+- Sessions — unified panel showing tasks, running processes, and activity with filter tabs (All/Running/Queued/Completed/Failed)
 
 **CSS conventions:** Use `.pill` / `.pill-btn` classes defined in `dashboard.html <style>` for all badges and buttons. These enforce `whitespace-nowrap` globally. Sizes: `pill pill-sm` (standard badges), `pill pill-xs` (small badges), `pill-btn pill-xs` (action buttons). Only add color/border as Tailwind utilities alongside the CSS class — never inline the full utility pattern.
 
