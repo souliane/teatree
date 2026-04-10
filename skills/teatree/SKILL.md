@@ -98,13 +98,15 @@ When modifying CLI commands, dashboard views, or server startup:
 
 1. **Run the command yourself** — don't rely on unit tests alone. `uv run t3 <command>` from a worktree (not the main clone) to catch cwd-dependent bugs.
 2. **Verify HTTP 200** — for dashboard/server changes: `curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:<port>/` must return 200.
-3. **Run E2E tests** — dashboard changes require Playwright E2E tests in `e2e/test_dashboard.py`. Start the server with `t3 dashboard` and run: `DJANGO_SETTINGS_MODULE=e2e.settings uv run --group e2e pytest e2e/ --ds e2e.settings --no-cov -v`.
+3. **Run E2E tests** — dashboard changes require Playwright E2E tests in `e2e/test_dashboard.py`. **Pre-flight:** kill any zombie servers first (`pkill -9 -f "uvicorn teatree.asgi"; pkill -9 -f "chrome-headless"; pkill -9 -f "playwright/driver"`). Then: `DJANGO_SETTINGS_MODULE=e2e.settings uv run pytest e2e/ --ds e2e.settings --no-cov -v`. Each timed-out run leaves zombie processes — kill before retrying. For full-suite validation prefer CI (clean environment, ~seconds/test vs. 7+ min locally on a loaded machine).
 4. **Test the full flow** — if the change involves task execution, create a task and verify the worker picks it up. Don't declare "auto-start works" without observing a task transition from PENDING to CLAIMED.
 5. **Check overlay resolution from worktrees** — `discover_active_overlay()` uses cwd-based discovery. Worktree directory names don't match overlay names. Always test from a worktree path, not the main clone.
 
 **Known pitfall:** `discover_active_overlay()` returns the directory name when `manage.py` is found via cwd walk. In worktrees, this gives names like `move-dashboard-to-general-cli` instead of `t3-teatree`. The `_resolve_overlay_for_server()` function in `cli/__init__.py` works around this by preferring entry-point overlays.
 
 **Known pitfall:** `uv run` rebuilds editable installs and can silently revert uncommitted source edits. See `workspace/references/troubleshooting.md` § "uv run Silently Reverts Edits". Commit changes before running `uv run pytest`, or verify file content after test runs.
+
+**Known pitfall (git stash + checkout to switch branches):** Using `git stash` + `git checkout <other-branch>` to temporarily commit on another branch causes silent edit loss — stash pop can restore a stale file version that appears to be the current one (because inode mtime doesn't change) but isn't. The symptom: edits appear gone, or tests run against in-memory-cached version while disk has old content. Fix: always use separate worktrees, never git stash. See `feedback_always_use_worktree.md` in memory.
 
 ## Planning & Backlog Prioritization
 
