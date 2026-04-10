@@ -18,6 +18,19 @@ from playwright.sync_api import Page, expect
 # Threshold for pixel-level comparison (0.0 = exact, 0.1 = tolerant).
 _SNAPSHOT_THRESHOLD = 0.1
 
+# ── Full-page screenshot (for README) ─────────────────────────────
+
+
+def test_full_dashboard_screenshot(e2e_server: str, page: Page, assert_snapshot: Callable) -> None:
+    page.goto(e2e_server)
+    page.wait_for_timeout(2000)  # let HTMX panels finish loading
+    assert_snapshot(
+        page.screenshot(full_page=True, animations="disabled"),
+        name="dashboard-full.png",
+        threshold=_SNAPSHOT_THRESHOLD,
+    )
+
+
 # ── Dashboard structure ─────────────────────────────────────────────
 
 
@@ -28,10 +41,7 @@ def test_dashboard_loads(e2e_server: str, page: Page) -> None:
     for heading in [
         "Automation",
         "Action Required",
-        "Active Sessions",
-        "Headless Queue",
-        "Interactive Queue",
-        "Recent Activity",
+        "Sessions",
         "In-Flight Tickets",
     ]:
         expect(page.locator("h2", has_text=heading)).to_be_visible()
@@ -81,41 +91,37 @@ def test_ticket_action_buttons(e2e_server: str, page: Page) -> None:
     expect(page.locator("button", has_text="Interactive").first).to_be_visible()
 
 
-# ── Task queues ─────────────────────────────────────────────────────
+# ── Unified Sessions panel ─────────────────────────────────────────
 
 
-def test_headless_queue_content(e2e_server: str, page: Page, assert_snapshot: Callable) -> None:
+def test_sessions_panel_shows_tasks(e2e_server: str, page: Page, assert_snapshot: Callable) -> None:
     page.goto(e2e_server)
     expect(page.locator("body")).to_contain_text("Automated code review")
-    expect(page.locator("button", has_text="Execute").first).to_be_visible()
-
-    headless_section = page.locator("h2", has_text="Headless Queue").locator("..")
-    assert_snapshot(
-        headless_section.screenshot(animations="disabled"),
-        name="headless-queue.png",
-        threshold=_SNAPSHOT_THRESHOLD,
-    )
-
-
-def test_interactive_queue_content(e2e_server: str, page: Page, assert_snapshot: Callable) -> None:
-    page.goto(e2e_server)
     expect(page.locator("body")).to_contain_text("Needs manual verification")
-    expect(page.locator("button", has_text="Launch").first).to_be_visible()
 
-    queue_section = page.locator("h2", has_text="Interactive Queue").locator("..")
+    sessions_section = page.locator("h2", has_text="Sessions").locator("..")
     assert_snapshot(
-        queue_section.screenshot(animations="disabled"),
-        name="interactive-queue.png",
+        sessions_section.screenshot(animations="disabled"),
+        name="sessions-panel.png",
         threshold=_SNAPSHOT_THRESHOLD,
     )
 
 
-# ── Sessions ────────────────────────────────────────────────────────
-
-
-def test_sessions_empty(e2e_server: str, page: Page) -> None:
+def test_sessions_filter_tabs(e2e_server: str, page: Page) -> None:
     page.goto(e2e_server)
-    expect(page.locator("body")).to_contain_text(re.compile(r"No active Claude sessions detected|PID \d+"))
+    sessions_section = page.locator("h2", has_text="Sessions").locator("..")
+    for tab in ["All", "Running", "Queued", "Completed", "Failed"]:
+        expect(sessions_section.locator("button", has_text=tab)).to_be_visible()
+
+
+# ── Sessions status ────────────────────────────────────────────────
+
+
+def test_sessions_shows_status_pills(e2e_server: str, page: Page) -> None:
+    page.goto(e2e_server)
+    # Status pills are inside session cards (articles), not the filter bar
+    sessions_grid = page.locator("#unified-sessions-grid")
+    expect(sessions_grid.locator("text=queued").first).to_be_visible()
 
 
 # ── Sync ────────────────────────────────────────────────────────────
@@ -146,7 +152,7 @@ def test_create_interactive_task(e2e_server: str, page: Page) -> None:
     page.goto(e2e_server)
     page.locator("button", has_text="Interactive").first.click()
     page.wait_for_timeout(500)
-    expect(page.locator("h2", has_text="Interactive Queue")).to_be_visible()
+    expect(page.locator("h2", has_text="Sessions")).to_be_visible()
 
 
 # ── Cancel ──────────────────────────────────────────────────────────
@@ -160,11 +166,12 @@ def test_dismiss_pending_task(e2e_server: str, page: Page) -> None:
     page.wait_for_timeout(500)
 
 
-def test_cancel_claimed_task(e2e_server: str, page: Page) -> None:
+def test_dismiss_task_from_sessions(e2e_server: str, page: Page) -> None:
     page.goto(e2e_server)
-    execute_btn = page.locator("button", has_text="Execute").first
-    expect(execute_btn).to_be_visible()
-    execute_btn.click()
+    sessions_section = page.locator("#section-sessions")
+    dismiss_btn = sessions_section.locator("button", has_text="Dismiss").first
+    expect(dismiss_btn).to_be_visible()
+    dismiss_btn.click()
     page.wait_for_timeout(1000)
 
 
@@ -189,10 +196,7 @@ def test_htmx_panels_present(e2e_server: str, page: Page) -> None:
         "summary",
         "automation",
         "action_required",
-        "sessions",
-        "headless_queue",
-        "queue",
-        "activity",
+        "unified_sessions",
         "tickets",
     ]:
         expect(page.locator(f"[hx-get*='{panel}']").first).to_be_visible()
@@ -213,9 +217,9 @@ def test_action_required_panel(e2e_server: str, page: Page, assert_snapshot: Cal
     )
 
 
-def test_activity_panel(e2e_server: str, page: Page) -> None:
+def test_sessions_panel_visible(e2e_server: str, page: Page) -> None:
     page.goto(e2e_server)
-    expect(page.locator("h2", has_text="Recent Activity")).to_be_visible()
+    expect(page.locator("h2", has_text="Sessions")).to_be_visible()
 
 
 def test_automation_panel(e2e_server: str, page: Page) -> None:
