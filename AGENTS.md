@@ -261,3 +261,6 @@ After any dashboard fix, verify the full flow before declaring done:
 - ttyd without `--writable` = read-only terminal = claude can't work.
 - `claude -p` is headless (exits immediately). Interactive sessions use `claude` without `-p`.
 - E2E tests use a separate settings module (`e2e.settings`) with file-based SQLite.
+- **E2E pre-flight: kill zombie servers before running.** Long-lived `uvicorn --reload` processes (from `t3 dashboard`) pin CPU at ~93% each and cause Playwright timeouts (7+ min/test). Before any e2e run: `pkill -9 -f "uvicorn teatree.asgi" 2>/dev/null; pkill -9 -f "chrome-headless" 2>/dev/null; pkill -9 -f "playwright/driver" 2>/dev/null`. Verify with `ps aux | grep uvicorn | grep -v grep`.
+- **Each timed-out e2e run leaves zombie processes.** Kill them before retrying — otherwise the next run competes for CPU with its predecessors. Same kill commands as above.
+- **E2E tests take ~7 minutes each locally on a loaded machine.** For full suite validation, prefer CI (fast, clean environment) over local runs. Run a single focused test locally to check a specific assertion, then push and let CI validate the rest.
