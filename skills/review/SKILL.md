@@ -156,7 +156,7 @@ When raising concerns about caching, stale data, or side effects: **investigate 
 
 1. **Correctness** — does the code do what the ticket requires? Are all acceptance criteria met? When a change tightens a public contract (e.g., serializer field becomes required, API parameter becomes mandatory), trace all callers — the change affects every flow that uses that interface, not just the one the ticket describes.
 2. **Completeness** — are there missing production code changes that the tests assume? Do test expectation changes have matching implementation changes?
-3. **Feature flag** — follow the review checklist in [`references/multi-tenant-development.md`](../t3:code/references/multi-tenant-development.md).
+3. **Feature flag** — follow the review checklist in [`references/multi-tenant-development.md`](../t3:code/references/multi-tenant-development.md). **Before raising a "missing feature flag" finding, trace the full gating chain upward** — the component under review may not have a flag itself but could be hidden/disabled at the container or routing level (e.g., `hidden: !featureFlagService.hasFeatureFlag(...)` in the parent that renders it). A finding is only valid if the feature is reachable without the flag.
 4. **Style** — follows project conventions?
 5. **Tests** — adequate coverage of new behavior?
 6. **Safety** — no security issues, no data loss risks?
@@ -216,6 +216,10 @@ t3 review post-draft-note <REPO> <MR_IID> "Comment text" --file <path/to/file> -
 **Post-flight: verify response.** Response must confirm the comment landed on the correct file/line — if position data is missing in the response, the comment landed as a general comment (wrong). After posting all notes, list them via the API and confirm the count and positions match expectations.
 
 **Do NOT submit the review.** The user will review the draft notes in the platform's UI, edit if needed, and submit manually.
+
+**`WARNING: line_code is null` is a false positive.** GitLab's draft notes API never returns `line_code` in the creation response — it is computed server-side at submission time. A note is correctly positioned if the response contains `position.new_path` and `position.new_line`. Ignore this warning; the note will render inline. Tracked in [souliane/teatree#310](https://github.com/souliane/teatree/issues/310).
+
+**If `t3 review delete-draft-note` returns 404** — the draft was already submitted (published to regular notes) by the user from the GitLab UI. Use `DELETE projects/{encoded_repo}/merge_requests/{iid}/notes/{note_id}` via the regular notes endpoint instead.
 
 #### Position field reference
 
