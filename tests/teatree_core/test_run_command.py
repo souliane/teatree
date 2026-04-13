@@ -328,3 +328,68 @@ class TestCliOverlay:
         cmd = mock_run.call_args[0][0]
         assert "-m" in cmd
         assert "uvicorn" in cmd
+
+
+class TestDetectNxServePort:
+    def _ps_output(self, lines: list[str]) -> MagicMock:
+        result = MagicMock()
+        result.stdout = "\n".join(lines)
+        return result
+
+    def test_returns_port_when_nx_serve_matches_worktree_path(self) -> None:
+        ps_output = self._ps_output(
+            [
+                "node nx serve --port=4210 /home/user/tickets/my-ticket/frontend",
+            ]
+        )
+        with patch.object(run_mod.subprocess, "run", return_value=ps_output):
+            assert run_mod._detect_nx_serve_port("/home/user/tickets/my-ticket/frontend") == 4210
+
+    def test_returns_none_when_worktree_path_does_not_match(self) -> None:
+        ps_output = self._ps_output(
+            [
+                "node nx serve --port=4210 /home/user/tickets/other-ticket/frontend",
+            ]
+        )
+        with patch.object(run_mod.subprocess, "run", return_value=ps_output):
+            assert run_mod._detect_nx_serve_port("/home/user/tickets/my-ticket/frontend") is None
+
+    def test_returns_none_when_no_nx_serve_running(self) -> None:
+        ps_output = self._ps_output(["python manage.py runserver"])
+        with patch.object(run_mod.subprocess, "run", return_value=ps_output):
+            assert run_mod._detect_nx_serve_port("/any/path") is None
+
+
+class TestDiscoverFrontendPort:
+    def test_returns_nx_port_when_envfile_found_and_nx_running(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            envfile = Path(tmp) / ".env.worktree"
+            envfile.write_text("WT_VARIANT=acme\n", encoding="utf-8")
+            with (
+                patch("teatree.core.resolve._get_user_cwd", return_value=Path(tmp)),
+                patch("teatree.core.resolve._find_env_worktree", return_value=envfile),
+                patch.object(run_mod, "_detect_nx_serve_port", return_value=4215),
+            ):
+                assert run_mod._discover_frontend_port("my-project") == 4215
+
+    def test_falls_through_to_docker_port_when_nx_not_running(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            envfile = Path(tmp) / ".env.worktree"
+            envfile.write_text("WT_VARIANT=acme\n", encoding="utf-8")
+            with (
+                patch("teatree.core.resolve._get_user_cwd", return_value=Path(tmp)),
+                patch("teatree.core.resolve._find_env_worktree", return_value=envfile),
+                patch.object(run_mod, "_detect_nx_serve_port", return_value=None),
+                patch.object(run_mod, "get_service_port", return_value=4201),
+            ):
+                assert run_mod._discover_frontend_port("my-project") == 4201
+
+    def test_falls_through_to_local_port_when_no_envfile_and_no_docker(self) -> None:
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch("teatree.core.resolve._get_user_cwd", return_value=Path(tmp)),
+            patch("teatree.core.resolve._find_env_worktree", return_value=None),
+            patch.object(run_mod, "get_service_port", return_value=None),
+            patch.object(run_mod, "_detect_local_port", return_value=4200),
+        ):
+            assert run_mod._discover_frontend_port("my-project") == 4200
