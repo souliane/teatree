@@ -13,6 +13,19 @@ from teatree.utils import git
 
 _IMAGE_URL_RE = re.compile(r"!\[([^\]]*)\]\((/uploads/[^\)]+)\)")
 _EXTERNAL_LINK_RE = re.compile(r"https?://(?:www\.)?(?:notion\.so|linear\.app|jira\.\S+)/\S+")
+_CLOSE_KEYWORD_RE = re.compile(r"\b(closes?|fixes?|resolves?)\s+(#\d+)", re.IGNORECASE)
+
+
+def _sanitize_close_keywords(description: str, *, close_ticket: bool) -> str:
+    """Replace GitLab auto-close keywords with a non-closing reference.
+
+    When *close_ticket* is ``False``, replaces ``Closes #N``, ``Fixes #N``,
+    ``Resolves #N`` (and their variants) with ``Relates to #N`` so the MR
+    does not auto-close the issue on merge.
+    """
+    if close_ticket:
+        return description
+    return _CLOSE_KEYWORD_RE.sub(r"Relates to \2", description)
 
 
 def _current_user() -> str:
@@ -83,6 +96,7 @@ class Command(TyperCommand):
                 description = commit_body
 
         overlay = get_overlay()
+        description = _sanitize_close_keywords(description, close_ticket=overlay.config.mr_close_ticket)
 
         if not skip_validation:
             gate_error = _check_shipping_gate(ticket)
