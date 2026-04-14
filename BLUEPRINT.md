@@ -61,7 +61,9 @@ src/teatree/
     selectors.py        # Dashboard data selectors (no domain logic in views)
     overlay.py          # OverlayBase ABC (see §6)
     overlay_loader.py   # Settings-driven overlay instantiation
-    sync.py             # GitLab MR sync and ticket upsert
+    sync.py             # Shared types + orchestrator (sync_followup)
+    sync_github.py      # GitHub Projects v2 board + reviewer PR sync
+    sync_gitlab.py      # GitLab MR upsert, issue labels, merged MR cleanup, Slack review permalinks
     tasks.py            # django-tasks integration
     docgen.py           # Overlay/skill documentation generation
     urls.py             # URL routing

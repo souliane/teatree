@@ -823,7 +823,7 @@ class TestDetectE2EEvidence:
 
 
 class TestApplyMergedStatusAllMerged(TestCase):
-    @patch("teatree.core.sync.cleanup_worktree")
+    @patch("teatree.core.sync_gitlab.cleanup_worktree")
     def test_advances_state_when_all_merged_no_discussions(self, mock_cleanup: MagicMock) -> None:
         """All MRs merged but none have discussions — state should still advance."""
         ticket = Ticket.objects.create(
@@ -847,7 +847,7 @@ class TestApplyMergedStatusAllMerged(TestCase):
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.IN_REVIEW
 
-    @patch("teatree.core.sync.cleanup_worktree")
+    @patch("teatree.core.sync_gitlab.cleanup_worktree")
     def test_auto_cleans_worktrees_on_merge(self, mock_cleanup: MagicMock) -> None:
         ticket = Ticket.objects.create(
             issue_url="https://gitlab.com/org/repo/-/issues/3",
@@ -865,7 +865,7 @@ class TestApplyMergedStatusAllMerged(TestCase):
         mock_cleanup.assert_called_once()
         assert result.worktrees_cleaned == 1
 
-    @patch("teatree.core.sync.cleanup_worktree", side_effect=RuntimeError("cleanup failed"))
+    @patch("teatree.core.sync_gitlab.cleanup_worktree", side_effect=RuntimeError("cleanup failed"))
     def test_cleanup_failure_does_not_block_merge(self, mock_cleanup: MagicMock) -> None:
         ticket = Ticket.objects.create(
             issue_url="https://gitlab.com/org/repo/-/issues/4",
