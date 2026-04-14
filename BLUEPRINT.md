@@ -580,7 +580,7 @@ Each external concern is a `@runtime_checkable Protocol` in `teatree.backends.pr
 
 **workspace** — Workspace operations
 **db** — Database operations
-**run** — Service runner
+**run** — Service runner (uses `lifecycle.compose_project()` shared helper)
 **pr** — MR creation and validation
 
 ### 8.2 Global CLI Commands (`t3`)

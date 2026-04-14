@@ -4,11 +4,16 @@ Dispatches to the appropriate backend (GitLab or GitHub) based on the
 active overlay's configuration.
 """
 
+import json
 import logging
+import os
 import re
+import shutil
+import subprocess  # noqa: S404
 from dataclasses import asdict, dataclass, field
 from typing import TYPE_CHECKING, cast
 
+import httpx
 from django.core.cache import cache
 from django.utils import timezone
 
@@ -207,9 +212,6 @@ def _sync_github(overlay: object) -> SyncResult:
 
 def _sync_github_reviewer_prs(token: str, result: SyncResult) -> None:
     """Fetch GitHub PRs where user is requested reviewer and cache them."""
-    import shutil  # noqa: PLC0415
-    import subprocess  # noqa: PLC0415, S404
-
     gh_bin = shutil.which("gh")
     if not gh_bin:
         return
@@ -231,10 +233,7 @@ def _sync_github_reviewer_prs(token: str, result: SyncResult) -> None:
             text=True,
             timeout=30,
             check=False,
-            env={
-                **__import__("os").environ,
-                "GH_TOKEN": token,
-            },
+            env={**os.environ, "GH_TOKEN": token},
         )
     except Exception as exc:  # noqa: BLE001
         result.errors.append(f"GitHub reviewer PR fetch failed: {exc}")
@@ -242,8 +241,6 @@ def _sync_github_reviewer_prs(token: str, result: SyncResult) -> None:
 
     if out.returncode != 0:
         return
-
-    import json  # noqa: PLC0415
 
     try:
         prs = json.loads(out.stdout)
@@ -634,8 +631,6 @@ _ISSUE_PARTS_RE = re.compile(r"https?://[^/]+/(.+?)/-/(?:issues|work_items)/(\d+
 
 def _resolve_issue(client: "GitLabAPI", issue_url: str) -> tuple[dict, str, int] | None:
     """Parse a GitLab issue/work-item URL and fetch the issue. Returns (issue, project_path, iid) or None."""
-    import httpx  # noqa: PLC0415
-
     match = _ISSUE_PARTS_RE.search(issue_url)
     if not match:
         return None
