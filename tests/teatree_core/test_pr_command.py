@@ -6,7 +6,7 @@ from django.core.management import call_command
 from django.test import TestCase
 
 from teatree.core.management.commands import pr as pr_command
-from teatree.core.management.commands.pr import _check_shipping_gate, _mr_auto_labels
+from teatree.core.management.commands.pr import _check_shipping_gate, _mr_auto_labels, _sanitize_close_keywords
 from teatree.core.models import Session, Ticket, Worktree
 from teatree.core.overlay_loader import reset_overlay_cache
 from tests.teatree_core.conftest import CommandOverlay
@@ -110,6 +110,28 @@ class TestCheckShippingGate(TestCase):
         assert "reviewing" in result["missing"]
         assert "testing" in result["missing"]
         assert "hint" in result
+
+
+class TestSanitizeCloseKeywords:
+    @pytest.mark.parametrize(
+        ("description", "expected"),
+        [
+            ("Closes #123", "Relates to #123"),
+            ("Fixes #42", "Relates to #42"),
+            ("Resolves #7", "Relates to #7"),
+            ("closes #123", "Relates to #123"),
+            ("fixes #42", "Relates to #42"),
+            ("resolves #7", "Relates to #7"),
+            ("See Closes #1 and Fixes #2", "See Relates to #1 and Relates to #2"),
+            ("No ticket ref here", "No ticket ref here"),
+            ("", ""),
+        ],
+    )
+    def test_replaces_close_keywords_when_close_ticket_false(self, description: str, expected: str) -> None:
+        assert _sanitize_close_keywords(description, close_ticket=False) == expected
+
+    def test_leaves_description_unchanged_when_close_ticket_true(self) -> None:
+        assert _sanitize_close_keywords("Closes #123", close_ticket=True) == "Closes #123"
 
 
 class TestMrAutoLabels:
