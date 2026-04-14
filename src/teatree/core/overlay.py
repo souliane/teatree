@@ -61,6 +61,12 @@ class OverlayConfig:
     """GitHub Projects v2 board number (0 = not configured)."""
     require_ticket: bool = False
     """Whether to enforce a tracked issue before coding/shipping."""
+    mr_close_ticket: bool = False
+    """Whether MR descriptions should use auto-closing keywords (Closes #N).
+
+    When ``False`` (default), close keywords are replaced with ``Relates to #N``
+    so merging the MR does not auto-close the linked issue.
+    """
     known_variants: list[str]
     mr_auto_labels: list[str]
     frontend_repos: list[str]
