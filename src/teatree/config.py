@@ -61,6 +61,16 @@ def default_logging(namespace: str) -> dict:
 
 
 @dataclass
+class E2ERepo:
+    """An external git repository containing Playwright E2E tests."""
+
+    name: str
+    url: str
+    branch: str
+    e2e_dir: str = "e2e"
+
+
+@dataclass
 class OverlayEntry:
     name: str
     overlay_class: str
@@ -111,6 +121,26 @@ def load_config(path: Path = CONFIG_PATH) -> TeaTreeConfig:
     )
 
     return TeaTreeConfig(user=user, raw=raw)
+
+
+def load_e2e_repos(path: Path = CONFIG_PATH) -> list[E2ERepo]:
+    """Load named E2E repos from ``[e2e_repos.<name>]`` sections in ``~/.teatree.toml``.
+
+    Each entry may specify ``url``, ``branch``, and optionally ``e2e_dir``
+    (the subdirectory containing ``playwright.config.ts``, default ``"e2e"``).
+    """
+    config = load_config(path)
+    repos = []
+    for name, entry in config.raw.get("e2e_repos", {}).items():
+        repos.append(
+            E2ERepo(
+                name=name,
+                url=entry.get("url", ""),
+                branch=entry.get("branch", "main"),
+                e2e_dir=entry.get("e2e_dir", "e2e"),
+            )
+        )
+    return repos
 
 
 def workspace_dir() -> Path:

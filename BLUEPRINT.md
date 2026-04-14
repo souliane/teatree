@@ -743,6 +743,14 @@ privacy = "strict"
 
 [overlays.myproject]
 path = "~/workspace/myproject"
+
+# External Playwright E2E repos — used by `t3 e2e external --repo <name>`
+# Teatree clones/updates the repo to ~/.local/share/teatree/e2e-repos/<name>/
+# and runs Playwright from <clone>/<e2e_dir>.
+[e2e_repos.my-service]
+url = "git@gitlab.com:org/my-service.git"
+branch = "feature/e2e-tests"
+e2e_dir = "e2e"  # subdirectory containing playwright.config.ts (default: "e2e")
 ```
 
 ### 11.2 Django Settings (framework-level, in teatree's settings.py)

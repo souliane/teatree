@@ -8,6 +8,7 @@ from pathlib import Path
 
 from django_typer.management import TyperCommand, command
 
+from teatree.config import E2ERepo, get_data_dir, load_e2e_repos
 from teatree.core.management.commands.lifecycle import _compose_project
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.resolve import _find_env_worktree, _get_user_cwd, _parse_env_file, resolve_worktree
@@ -43,6 +44,26 @@ def _detect_local_port(port: int) -> int | None:
         if s.connect_ex(("127.0.0.1", port)) == 0:
             return port
     return None
+
+
+def _clone_or_update_e2e_repo(repo: E2ERepo) -> Path:
+    """Clone or update an external E2E repo to the local cache and return the playwright root.
+
+    On first run: ``git clone --branch <branch> --depth 1 <url> <cache_path>``.
+    On subsequent runs: ``git fetch origin <branch>`` + ``git reset --hard FETCH_HEAD``.
+
+    Returns ``cache_path / repo.e2e_dir`` — the directory passed as ``cwd`` to Playwright.
+    """
+    cache_path = get_data_dir("e2e-repos") / repo.name
+    if not cache_path.exists():
+        subprocess.run(  # noqa: S603
+            ["git", "clone", "--branch", repo.branch, "--depth", "1", repo.url, str(cache_path)],
+            check=True,
+        )
+    else:
+        subprocess.run(["git", "-C", str(cache_path), "fetch", "origin", repo.branch], check=True)  # noqa: S603
+        subprocess.run(["git", "-C", str(cache_path), "reset", "--hard", "FETCH_HEAD"], check=True)  # noqa: S603
+    return cache_path / repo.e2e_dir
 
 
 def _resolve_private_tests_path() -> Path | None:
@@ -113,11 +134,19 @@ class Command(TyperCommand):
         self,
         test_path: str = "",
         *,
+        repo: str = "",
         headed: bool = False,
         update_snapshots: bool = False,
         playwright_args: str = "",
     ) -> str:
-        """Run Playwright tests from the external test repo (T3_PRIVATE_TESTS).
+        """Run Playwright tests from the external test repo (T3_PRIVATE_TESTS or --repo).
+
+        Two sources for the Playwright working directory:
+
+        - ``--repo <name>``: clone/update the named repo from ``[e2e_repos.<name>]`` in
+            ``~/.teatree.toml`` and use its ``e2e_dir`` subdirectory.
+        - Default: resolve from ``T3_PRIVATE_TESTS`` env var or ``[teatree].private_tests``
+            config key.
 
         Discovers the frontend port from docker-compose (or local process)
         and reads the tenant variant from .env.worktree.
@@ -125,9 +154,15 @@ class Command(TyperCommand):
         Extra Playwright flags (--config, --timeout, --grep, etc.) can be
         passed via --playwright-args: ``--playwright-args="--config x.ts --timeout 120000"``
         """
-        private_tests_path = _resolve_private_tests_path()
-        if not private_tests_path:
-            return "private_tests not configured in ~/.teatree.toml / T3_PRIVATE_TESTS, or directory missing."
+        if repo:
+            repos_by_name = {r.name: r for r in load_e2e_repos()}
+            if repo not in repos_by_name:
+                return f"E2E repo '{repo}' not found in ~/.teatree.toml [e2e_repos]."
+            private_tests_path = _clone_or_update_e2e_repo(repos_by_name[repo])
+        else:
+            private_tests_path = _resolve_private_tests_path()
+            if not private_tests_path:
+                return "private_tests not configured in ~/.teatree.toml / T3_PRIVATE_TESTS, or directory missing."
 
         worktree = resolve_worktree()
         project = _compose_project(worktree)
