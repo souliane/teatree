@@ -594,6 +594,7 @@ Typer-based, work without Django:
 - `t3 overlays` — list discovered overlays
 - `t3 docs` — serve mkdocs documentation (requires `docs` dependency group)
 - `t3 ci {cancel,divergence,fetch-errors,fetch-failed-tests,trigger-e2e,quality-check}` — CI helpers
+- `t3 e2e external [--repo <name>] [--test-path <path>]` — run Playwright tests from `T3_PRIVATE_TESTS` or a named `[e2e_repos.<name>]` git repo; skips port discovery when `BASE_URL` is already set (DEV/staging mode)
 - `t3 review {post-draft-note,delete-draft-note,list-draft-notes}` — GitLab draft notes
 - `t3 review-request discover` — discover open MRs
 - `t3 tool {privacy-scan,analyze-video,bump-deps}` — standalone utilities

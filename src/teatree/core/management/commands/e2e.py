@@ -91,16 +91,22 @@ def _discover_frontend_port(project: str, default: int = 4200) -> int | None:
     return None
 
 
-def _build_e2e_env(frontend_port: int, *, headed: bool) -> dict[str, str]:
-    """Build environment dict for Playwright: BASE_URL, CUSTOMER, CI."""
-    env = {**os.environ}
-    env["BASE_URL"] = f"http://localhost:{frontend_port}"
+def _build_e2e_env(frontend_url: str | None = None, *, headed: bool) -> dict[str, str]:
+    """Build environment dict for Playwright: BASE_URL, CUSTOMER, CI.
 
-    envfile = _find_env_worktree(_get_user_cwd())
-    if envfile is not None:
-        variant = _parse_env_file(envfile).get("WT_VARIANT", "")
-        if variant:
-            env["CUSTOMER"] = variant
+    When *frontend_url* is given it overrides ``BASE_URL``.
+    When it is ``None`` the existing ``BASE_URL`` env var is preserved (DEV / staging mode).
+    """
+    env = {**os.environ}
+    if frontend_url is not None:
+        env["BASE_URL"] = frontend_url
+
+    if "CUSTOMER" not in env:
+        envfile = _find_env_worktree(_get_user_cwd())
+        if envfile is not None:
+            variant = _parse_env_file(envfile).get("WT_VARIANT", "")
+            if variant:
+                env["CUSTOMER"] = variant
 
     if headed:
         env.pop("CI", None)
@@ -164,14 +170,19 @@ class Command(TyperCommand):
             if not private_tests_path:
                 return "private_tests not configured in ~/.teatree.toml / T3_PRIVATE_TESTS, or directory missing."
 
-        worktree = resolve_worktree()
-        project = _compose_project(worktree)
-        frontend_port = _discover_frontend_port(project)
-        if frontend_port is None:
-            return (
-                f"Frontend not running (no docker service in '{project}', no local process on 4200). "
-                "Run `t3 run frontend` first."
-            )
+        # When BASE_URL is already set (DEV / staging target), skip local port discovery.
+        if os.environ.get("BASE_URL"):
+            frontend_url = None  # preserve existing BASE_URL
+        else:
+            worktree = resolve_worktree()
+            project = _compose_project(worktree)
+            frontend_port = _discover_frontend_port(project)
+            if frontend_port is None:
+                return (
+                    f"Frontend not running (no docker service in '{project}', no local process on 4200). "
+                    "Run `t3 run frontend` first."
+                )
+            frontend_url = f"http://localhost:{frontend_port}"
 
         extra = playwright_args.split() if playwright_args else []
         opts = PlaywrightOptions(
@@ -180,7 +191,7 @@ class Command(TyperCommand):
             headed=headed,
             extra=extra,
         )
-        env = _build_e2e_env(frontend_port, headed=headed)
+        env = _build_e2e_env(frontend_url, headed=headed)
 
         self.stdout.write(f"  Running from: {private_tests_path}")
         self.stdout.write(f"  BASE_URL: {env['BASE_URL']}")

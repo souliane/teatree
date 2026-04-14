@@ -2641,6 +2641,55 @@ class TestE2eExternal(TestCase):
                 result = cast("str", call_command("e2e", "external"))
             assert "not running" in result
 
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_base_url_env_skips_port_discovery(self) -> None:
+        """When BASE_URL is set, port discovery is skipped and BASE_URL is preserved."""
+        with tempfile.TemporaryDirectory() as tmp:
+            private_dir = Path(tmp) / "private"
+            private_dir.mkdir()
+
+            mock_result = MagicMock(returncode=0)
+            with (
+                patch.dict(
+                    "os.environ",
+                    {"T3_PRIVATE_TESTS": str(private_dir), "BASE_URL": "https://dev.example.com"},
+                    clear=False,
+                ),
+                patch.object(e2e_mod, "_discover_frontend_port") as mock_discover,
+                patch.object(e2e_mod.subprocess, "run", return_value=mock_result) as mock_run,
+            ):
+                result = cast("str", call_command("e2e", "external"))
+
+        assert "passed" in result
+        mock_discover.assert_not_called()
+        env = mock_run.call_args[1]["env"]
+        assert env["BASE_URL"] == "https://dev.example.com"
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_base_url_env_with_repo_flag(self) -> None:
+        """BASE_URL + --repo: clones repo and skips port discovery."""
+        with tempfile.TemporaryDirectory() as tmp:
+            playwright_root = Path(tmp) / "clone" / "e2e"
+            playwright_root.mkdir(parents=True)
+
+            repo = config_mod.E2ERepo(name="svc", url="git@example.com:org/svc.git", branch="main")
+            mock_result = MagicMock(returncode=0)
+            with (
+                patch.dict("os.environ", {"BASE_URL": "https://dev.example.com"}, clear=False),
+                patch.object(e2e_mod, "load_e2e_repos", return_value=[repo]),
+                patch.object(e2e_mod, "_clone_or_update_e2e_repo", return_value=playwright_root),
+                patch.object(e2e_mod, "_discover_frontend_port") as mock_discover,
+                patch.object(e2e_mod.subprocess, "run", return_value=mock_result) as mock_run,
+            ):
+                result = cast("str", call_command("e2e", "external", repo="svc"))
+
+        assert "passed" in result
+        mock_discover.assert_not_called()
+        env = mock_run.call_args[1]["env"]
+        assert env["BASE_URL"] == "https://dev.example.com"
+
 
 # ── Lifecycle commands ──────────────────────────────────────────────
 
@@ -4012,7 +4061,7 @@ class TestE2eExternalRepo(TestCase):
     @override_settings(**SETTINGS)
     def test_external_repo_not_found_in_config(self) -> None:
         """Returns error message when named repo is not in config."""
-        with patch.object(config_mod, "load_e2e_repos", return_value=[]):
+        with patch.object(e2e_mod, "load_e2e_repos", return_value=[]):
             result = cast("str", call_command("e2e", "external", repo="nonexistent"))
         assert "not found" in result
 
@@ -4041,7 +4090,7 @@ class TestE2eExternalRepo(TestCase):
             mock_result = MagicMock(returncode=0)
             with (
                 patch.dict("os.environ", {"T3_ORIG_CWD": str(wt_dir)}),
-                patch.object(config_mod, "load_e2e_repos", return_value=[repo]),
+                patch.object(e2e_mod, "load_e2e_repos", return_value=[repo]),
                 patch.object(e2e_mod, "_clone_or_update_e2e_repo", return_value=playwright_root),
                 patch.object(e2e_mod, "get_service_port", return_value=4200),
                 patch.object(e2e_mod.subprocess, "run", return_value=mock_result) as mock_run,
@@ -4058,7 +4107,7 @@ class TestE2eExternalRepo(TestCase):
         """subprocess.CalledProcessError from git is raised to the caller."""
         repo = config_mod.E2ERepo(name="home-savings", url="git@example.com:org/svc.git", branch="feature/e2e")
         with (
-            patch.object(config_mod, "load_e2e_repos", return_value=[repo]),
+            patch.object(e2e_mod, "load_e2e_repos", return_value=[repo]),
             patch.object(e2e_mod, "_clone_or_update_e2e_repo", side_effect=subprocess.CalledProcessError(1, "git")),
             pytest.raises(subprocess.CalledProcessError),
         ):
