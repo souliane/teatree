@@ -57,6 +57,7 @@ When the active overlay has `require_ticket = True`, refuse to commit or push wi
 ### 1. Commit
 
 - **Run `prek install` before the first commit in any worktree (Non-Negotiable).** This wires prek as the git pre-commit hook runner. Without it, whatever hook runner the repo happens to have (or nothing) runs on `git commit` — you cannot rely on prek's quality gates. This applies in every worktree, including colleagues' worktrees and review worktrees.
+- **Never commit to the default branch (Non-Negotiable).** Run `git branch --show-current` before every commit. If you are on `main`, `master`, `development`, or `release`, STOP — create a feature branch first (`git checkout -b <prefix>-<repo>-<topic>`), then commit there. This applies even for "quick fixes" and hotfixes with no ticket.
 - **Verify branch matches ticket** before committing. If on the wrong branch, create a clean branch from the default branch and cherry-pick.
 - **Check for pre-existing changes before staging.** If the diff includes changes you did not make in this session, **warn the user** — either stage only your hunks or ask how to proceed.
 - Format commit message following the project's commit format reference.
@@ -117,6 +118,16 @@ Before creating an MR, the `pr create` command automatically checks the session 
 - Use `--skip-validation` only when explicitly told to bypass gates
 
 ### 5. Create MR/PR
+
+**STOP — resolve the ticket URL before typing the glab command (Non-Negotiable).**
+
+Before composing any `glab mr create` or `glab mr update` call, answer these three questions:
+
+1. **What is the ticket URL?** Find the GitLab issue/work item URL from context. If none exists, create one now (`glab issue create`) and copy the URL. Do NOT proceed without a URL.
+2. **What is the feature flag?** Use `[none]` if there is no flag.
+3. **Is the title in the exact format?** `type(scope): description [flag] (ticket_url)` — both `--title` and the first line of `--description` must be identical and match this format exactly.
+
+This gate exists because the CI `validate_mr_title_and_description` job fails on every MR that skips the ticket URL, causing a red pipeline that requires a separate fix push. The CI validator is the safety net — not the first line of defence. **Always resolve the URL before creating the MR.**
 
 **Read the project's delivery hooks reference** (e.g. `references/delivery-hooks.md`) for the concrete MR creation template. Critical rules:
 

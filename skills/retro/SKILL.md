@@ -343,18 +343,24 @@ When `T3_CONTRIBUTE=true` and retro modified files under `$T3_REPO`, **proceed t
 
 **NEVER commit to the default branch (`main`/`master`) directly. NEVER push to it.** Always work on a feature branch in a worktree. This applies to retro commits, skill edits, "quick fixes" — everything. No exceptions.
 
+### Worktree for Retro Commits (Non-Negotiable)
+
+**All retro commits MUST happen in a worktree — never in the main clone.** Even for "small" skill fixes. Use `t3 workspace ticket` or `EnterWorktree` to get a worktree before touching any file.
+
+If you are already in a worktree from the session, commit there. If not, create one now. When unsure which worktree to use, **ask the user** with `AskUserQuestion`.
+
 ### Branch Selection for Retro Commits
 
 Retro commits go on the **teatree branch that was already used during the session** — never on a dedicated `retro-findings` or `retro/*` branch. Rules:
 
-1. **Session used a teatree branch** (e.g., `feat/dashboard-fix`) → commit there.
-2. **Session's branch was already merged** → create a new branch from `main` (e.g., `fix/retro-<topic>`) and open an MR.
-3. **Session didn't touch any teatree branch** → create a new branch from `main` and open an MR.
+1. **Session used a teatree branch in a worktree** (e.g., `feat/dashboard-fix`) → commit there.
+2. **Session's branch was already merged** → create a new worktree from `main` (e.g., `fix/retro-<topic>`) and open an MR.
+3. **Session didn't touch any teatree branch** → create a new worktree from `main`, commit, and open an MR.
 
-### Commit (No Push)
+### Commit
 
 ```bash
-cd "$T3_REPO"
+cd "$T3_REPO_WORKTREE"   # the worktree path, NOT the main clone
 git add <changed files>
 git commit -m "fix(<skill>): <what was learned>"
 ```
@@ -380,9 +386,7 @@ Squash retro commits into clean, human-sized units **before chaining to the revi
 ════════════════════════════════════════════════════════════════
 ```
 
-**If `T3_PUSH=false` (default):** do not ask about pushing.
-
-**If `T3_PUSH=true`:** ask the user if they'd like to push now. If they say yes, load `/t3:contribute` and run it. If they decline, remind them to run `/t3:contribute` later.
+**Always ask the user whether to push** using `AskUserQuestion` — even when `T3_PUSH=false`. Show the branch name and commit hash so the user can make an informed decision. If they say yes, load `/t3:contribute` and run it. If they decline, remind them to run `/t3:contribute` later.
 
 ### Chain to Review Skill
 
