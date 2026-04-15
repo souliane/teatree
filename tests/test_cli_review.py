@@ -179,6 +179,22 @@ class TestReviewService:
             assert result.exit_code == 0
             assert "No draft notes" in result.output
 
+    def test_publish_success(self, monkeypatch):
+        monkeypatch.setenv("GITLAB_TOKEN", "test-token")
+        mock_response = MagicMock(status_code=204)
+        with patch.object(httpx, "post", return_value=mock_response):
+            result = runner.invoke(app, ["review", "publish-draft-notes", "org/repo", "1"])
+            assert result.exit_code == 0
+            assert "OK" in result.output
+
+    def test_publish_failure(self, monkeypatch):
+        monkeypatch.setenv("GITLAB_TOKEN", "test-token")
+        mock_response = MagicMock(status_code=403)
+        with patch.object(httpx, "post", return_value=mock_response):
+            result = runner.invoke(app, ["review", "publish-draft-notes", "org/repo", "1"])
+            assert result.exit_code == 1
+            assert "Failed: HTTP 403" in result.output
+
 
 # -- _require_token helper -----------------------------------------------------
 
@@ -199,6 +215,14 @@ class TestRequireToken:
         with patch.object(cli_review_mod.subprocess, "run") as mock_run:
             mock_run.return_value = MagicMock(stderr="", returncode=1)
             result = runner.invoke(app, ["review", "delete-draft-note", "org/repo", "1", "42"])
+            assert result.exit_code == 1
+            assert "No GitLab token" in result.output
+
+    def test_publish_draft_notes_rejected(self, monkeypatch):
+        monkeypatch.delenv("GITLAB_TOKEN", raising=False)
+        with patch.object(cli_review_mod.subprocess, "run") as mock_run:
+            mock_run.return_value = MagicMock(stderr="", returncode=1)
+            result = runner.invoke(app, ["review", "publish-draft-notes", "org/repo", "1"])
             assert result.exit_code == 1
             assert "No GitLab token" in result.output
 
