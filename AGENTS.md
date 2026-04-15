@@ -48,8 +48,11 @@ src/teatree/           Python package (the Django app + CLI)
   backends/            Pluggable service integrations
     protocols.py       Protocol classes (CodeHost, CIService, IssueTracker, ChatNotifier, ErrorTracker)
     loader.py          Settings-driven backend loader (import_string, lru_cache)
+    github.py          GitHub API client
+    github_sync.py     GitHubSyncBackend — implements SyncBackend ABC from core/sync.py
     gitlab.py          GitLab API client
     gitlab_ci.py       GitLab CI pipeline operations
+    gitlab_sync.py     GitLabSyncBackend — implements SyncBackend ABC from core/sync.py
     slack.py, notion.py, sentry.py  Other integrations
   agents/              Agent runtime
     headless.py        SDK tasks via `claude -p` (capture JSON output)
@@ -118,9 +121,11 @@ An overlay is a lightweight Python package that customizes teatree. It:
 4. Registers via a `teatree.overlays` entry point in `pyproject.toml` (e.g., `my-overlay = "myapp.overlay:MyOverlay"`)
 5. Gets auto-discovered by the overlay loader from `importlib.metadata.entry_points(group="teatree.overlays")`
 
-## Backend Protocols
+## Backend Architecture
 
-Each external concern is a `Protocol` in `teatree.backends.protocols`:
+### API Protocols (`backends/protocols.py`)
+
+Each external API concern is a `@runtime_checkable Protocol` in `teatree.backends.protocols`:
 
 | Protocol | Purpose |
 |---|---|
@@ -130,7 +135,21 @@ Each external concern is a `Protocol` in `teatree.backends.protocols`:
 | `ChatNotifier` | Team notifications |
 | `ErrorTracker` | Sentry-like error tracking |
 
-Backends are auto-configured from overlay methods. For example, `get_gitlab_token()` and `get_gitlab_url()` on the overlay class drive the GitLab backend; `get_slack_token()` and `get_review_channel()` drive Slack. No individual `TEATREE_*` Django settings are needed -- each overlay carries its own configuration.
+Backends are auto-configured from overlay methods. For example, `get_gitlab_token()` and `get_gitlab_url()` on the overlay class drive the GitLab backend; `get_slack_token()` and `get_review_channel()` drive Slack. No individual `TEATREE_*` Django settings are needed — each overlay carries its own configuration.
+
+### Sync ABC (`core/sync.py`)
+
+Every file under `backends/` that syncs external data into the Django DB must subclass `SyncBackend` from `teatree.core.sync`:
+
+```python
+class SyncBackend(ABC):
+    def is_configured(self, overlay: object) -> bool: ...  # has credentials?
+    def sync(self, overlay: object) -> SyncResult: ...     # run the sync
+```
+
+Convention: `sync()` and `is_configured()` are instance methods decorated with `@override`. All internal helpers are `@classmethod`. No module-level functions in backend files — all logic lives on the class.
+
+Current implementations: `GitHubSyncBackend` (`backends/github_sync.py`), `GitLabSyncBackend` (`backends/gitlab_sync.py`).
 
 ## Runtime Abstraction
 

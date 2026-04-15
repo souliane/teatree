@@ -61,7 +61,7 @@ src/teatree/
     selectors.py        # Dashboard data selectors (no domain logic in views)
     overlay.py          # OverlayBase ABC (see §6)
     overlay_loader.py   # Settings-driven overlay instantiation
-    sync.py             # GitLab MR sync and ticket upsert
+    sync.py             # Shared types, SyncBackend ABC, orchestrator (sync_followup)
     tasks.py            # django-tasks integration
     docgen.py           # Overlay/skill documentation generation
     urls.py             # URL routing
@@ -97,8 +97,11 @@ src/teatree/
   backends/             # Pluggable external service integrations
     protocols.py        # Protocol classes (see §7)
     loader.py           # Settings-driven backend loader with lru_cache
+    github.py           # GitHub API client
+    github_sync.py      # GitHubSyncBackend — Projects v2 board + reviewer PR sync
     gitlab.py           # GitLab API client (httpx)
     gitlab_ci.py        # GitLab CI pipeline operations
+    gitlab_sync.py      # GitLabSyncBackend — MR upsert, issue labels, merged MR cleanup, Slack review permalinks
     slack.py            # Slack notifications
     notion.py           # Notion integration
     sentry.py           # Sentry error tracking
@@ -525,9 +528,11 @@ No manage.py, settings.py, urls.py, or wsgi/asgi — teatree is the Django proje
 
 ---
 
-## 7. Backend Protocols
+## 7. Backend Protocols and ABCs
 
-Each external concern is a `@runtime_checkable Protocol` in `teatree.backends.protocols`.
+### 7.1 API Protocols (`backends/protocols.py`)
+
+Each external API concern is a `@runtime_checkable Protocol` in `teatree.backends.protocols`.
 
 | Protocol | Methods |
 |----------|---------|
@@ -536,6 +541,20 @@ Each external concern is a `@runtime_checkable Protocol` in `teatree.backends.pr
 | `IssueTracker` | `get_issue()` |
 | `ChatNotifier` | `send()` |
 | `ErrorTracker` | `get_top_issues()` |
+
+### 7.2 Sync ABC (`core/sync.py`)
+
+`SyncBackend` is an ABC defined in `teatree.core.sync`. Every file under `backends/` that performs data sync into the Django DB must implement it.
+
+```python
+class SyncBackend(ABC):
+    def is_configured(self, overlay: object) -> bool: ...   # has credentials?
+    def sync(self, overlay: object) -> SyncResult: ...      # run the sync
+```
+
+Implementations: `GitHubSyncBackend` (`backends/github_sync.py`), `GitLabSyncBackend` (`backends/gitlab_sync.py`).
+
+**Convention:** `sync()` and `is_configured()` are instance methods. All internal helpers are `@classmethod` (no instance state needed).
 
 **Loading** (`loader.py`): Each backend has a `get_<concern>()` function decorated with `@lru_cache(maxsize=1)`. These functions auto-configure from overlay methods — e.g., `get_code_host()` calls `get_overlay()` and checks `overlay.get_gitlab_token()` to decide whether to instantiate `GitLabCodeHost`. No `TEATREE_*` settings or `import_string()` involved.
 
@@ -580,7 +599,7 @@ Each external concern is a `@runtime_checkable Protocol` in `teatree.backends.pr
 
 **workspace** — Workspace operations
 **db** — Database operations
-**run** — Service runner
+**run** — Service runner (uses `lifecycle.compose_project()` shared helper)
 **pr** — MR creation and validation
 
 ### 8.2 Global CLI Commands (`t3`)
@@ -594,7 +613,8 @@ Typer-based, work without Django:
 - `t3 overlays` — list discovered overlays
 - `t3 docs` — serve mkdocs documentation (requires `docs` dependency group)
 - `t3 ci {cancel,divergence,fetch-errors,fetch-failed-tests,trigger-e2e,quality-check}` — CI helpers
-- `t3 review {post-draft-note,delete-draft-note,list-draft-notes}` — GitLab draft notes
+- `t3 e2e external [--repo <name>] [--test-path <path>]` — run Playwright tests from `T3_PRIVATE_TESTS` or a named `[e2e_repos.<name>]` git repo; skips port discovery when `BASE_URL` is already set (DEV/staging mode)
+- `t3 review {post-draft-note,delete-draft-note,list-draft-notes,publish-draft-notes}` — GitLab draft notes
 - `t3 review-request discover` — discover open MRs
 - `t3 tool {privacy-scan,analyze-video,bump-deps}` — standalone utilities
 - `t3 config write-skill-cache` — write overlay skill metadata to cache
@@ -743,6 +763,14 @@ privacy = "strict"
 
 [overlays.myproject]
 path = "~/workspace/myproject"
+
+# External Playwright E2E repos — used by `t3 e2e external --repo <name>`
+# Teatree clones/updates the repo to ~/.local/share/teatree/e2e-repos/<name>/
+# and runs Playwright from <clone>/<e2e_dir>.
+[e2e_repos.my-service]
+url = "git@gitlab.com:org/my-service.git"
+branch = "feature/e2e-tests"
+e2e_dir = "e2e"  # subdirectory containing playwright.config.ts (default: "e2e")
 ```
 
 ### 11.2 Django Settings (framework-level, in teatree's settings.py)
@@ -1217,6 +1245,7 @@ graph TD
     teatree.agents --> teatree.skill_loading
     teatree.agents --> teatree.utils
     teatree.backends --> teatree.utils
+    teatree.backends --> teatree.core
     teatree.contrib --> teatree.types
     teatree.contrib --> teatree.core
     teatree.cli --> teatree.config

@@ -215,7 +215,11 @@ t3 review post-draft-note <REPO> <MR_IID> "Comment text" --file <path/to/file> -
 
 **Post-flight: verify response.** Response must confirm the comment landed on the correct file/line — if position data is missing in the response, the comment landed as a general comment (wrong). After posting all notes, list them via the API and confirm the count and positions match expectations.
 
-**Do NOT submit the review.** The user will review the draft notes in the platform's UI, edit if needed, and submit manually.
+**Do NOT submit the review without explicit user instruction.** By default, the user reviews draft notes in the platform's UI, edits if needed, and submits manually. If the user explicitly asks to publish (e.g., "post with t3 cli", "submit the review"), use:
+
+```bash
+t3 review publish-draft-notes <REPO> <MR_IID>
+```
 
 **`WARNING: line_code is null` is a false positive.** GitLab's draft notes API never returns `line_code` in the creation response — it is computed server-side at submission time. A note is correctly positioned if the response contains `position.new_path` and `position.new_line`. Ignore this warning; the note will render inline. Tracked in [souliane/teatree#310](https://github.com/souliane/teatree/issues/310).
 

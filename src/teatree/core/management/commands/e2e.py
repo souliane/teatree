@@ -8,7 +8,8 @@ from pathlib import Path
 
 from django_typer.management import TyperCommand, command
 
-from teatree.core.management.commands.lifecycle import _compose_project
+from teatree.config import E2ERepo, get_data_dir, load_e2e_repos
+from teatree.core.management.commands.lifecycle import compose_project
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.resolve import _find_env_worktree, _get_user_cwd, _parse_env_file, resolve_worktree
 from teatree.utils.ports import get_service_port
@@ -45,6 +46,26 @@ def _detect_local_port(port: int) -> int | None:
     return None
 
 
+def _clone_or_update_e2e_repo(repo: E2ERepo) -> Path:
+    """Clone or update an external E2E repo to the local cache and return the playwright root.
+
+    On first run: ``git clone --branch <branch> --depth 1 <url> <cache_path>``.
+    On subsequent runs: ``git fetch origin <branch>`` + ``git reset --hard FETCH_HEAD``.
+
+    Returns ``cache_path / repo.e2e_dir`` — the directory passed as ``cwd`` to Playwright.
+    """
+    cache_path = get_data_dir("e2e-repos") / repo.name
+    if not cache_path.exists():
+        subprocess.run(  # noqa: S603
+            ["git", "clone", "--branch", repo.branch, "--depth", "1", repo.url, str(cache_path)],
+            check=True,
+        )
+    else:
+        subprocess.run(["git", "-C", str(cache_path), "fetch", "origin", repo.branch], check=True)  # noqa: S603
+        subprocess.run(["git", "-C", str(cache_path), "reset", "--hard", "FETCH_HEAD"], check=True)  # noqa: S603
+    return cache_path / repo.e2e_dir
+
+
 def _resolve_private_tests_path() -> Path | None:
     """Resolve the private tests directory from env or config."""
     from teatree.config import load_config  # noqa: PLC0415
@@ -70,16 +91,22 @@ def _discover_frontend_port(project: str, default: int = 4200) -> int | None:
     return None
 
 
-def _build_e2e_env(frontend_port: int, *, headed: bool) -> dict[str, str]:
-    """Build environment dict for Playwright: BASE_URL, CUSTOMER, CI."""
-    env = {**os.environ}
-    env["BASE_URL"] = f"http://localhost:{frontend_port}"
+def _build_e2e_env(frontend_url: str | None = None, *, headed: bool) -> dict[str, str]:
+    """Build environment dict for Playwright: BASE_URL, CUSTOMER, CI.
 
-    envfile = _find_env_worktree(_get_user_cwd())
-    if envfile is not None:
-        variant = _parse_env_file(envfile).get("WT_VARIANT", "")
-        if variant:
-            env["CUSTOMER"] = variant
+    When *frontend_url* is given it overrides ``BASE_URL``.
+    When it is ``None`` the existing ``BASE_URL`` env var is preserved (DEV / staging mode).
+    """
+    env = {**os.environ}
+    if frontend_url is not None:
+        env["BASE_URL"] = frontend_url
+
+    if "CUSTOMER" not in env:
+        envfile = _find_env_worktree(_get_user_cwd())
+        if envfile is not None:
+            variant = _parse_env_file(envfile).get("WT_VARIANT", "")
+            if variant:
+                env["CUSTOMER"] = variant
 
     if headed:
         env.pop("CI", None)
@@ -113,11 +140,19 @@ class Command(TyperCommand):
         self,
         test_path: str = "",
         *,
+        repo: str = "",
         headed: bool = False,
         update_snapshots: bool = False,
         playwright_args: str = "",
     ) -> str:
-        """Run Playwright tests from the external test repo (T3_PRIVATE_TESTS).
+        """Run Playwright tests from the external test repo (T3_PRIVATE_TESTS or --repo).
+
+        Two sources for the Playwright working directory:
+
+        - ``--repo <name>``: clone/update the named repo from ``[e2e_repos.<name>]`` in
+            ``~/.teatree.toml`` and use its ``e2e_dir`` subdirectory.
+        - Default: resolve from ``T3_PRIVATE_TESTS`` env var or ``[teatree].private_tests``
+            config key.
 
         Discovers the frontend port from docker-compose (or local process)
         and reads the tenant variant from .env.worktree.
@@ -125,18 +160,29 @@ class Command(TyperCommand):
         Extra Playwright flags (--config, --timeout, --grep, etc.) can be
         passed via --playwright-args: ``--playwright-args="--config x.ts --timeout 120000"``
         """
-        private_tests_path = _resolve_private_tests_path()
-        if not private_tests_path:
-            return "private_tests not configured in ~/.teatree.toml / T3_PRIVATE_TESTS, or directory missing."
+        if repo:
+            repos_by_name = {r.name: r for r in load_e2e_repos()}
+            if repo not in repos_by_name:
+                return f"E2E repo '{repo}' not found in ~/.teatree.toml [e2e_repos]."
+            private_tests_path = _clone_or_update_e2e_repo(repos_by_name[repo])
+        else:
+            private_tests_path = _resolve_private_tests_path()
+            if not private_tests_path:
+                return "private_tests not configured in ~/.teatree.toml / T3_PRIVATE_TESTS, or directory missing."
 
-        worktree = resolve_worktree()
-        project = _compose_project(worktree)
-        frontend_port = _discover_frontend_port(project)
-        if frontend_port is None:
-            return (
-                f"Frontend not running (no docker service in '{project}', no local process on 4200). "
-                "Run `t3 run frontend` first."
-            )
+        # When BASE_URL is already set (DEV / staging target), skip local port discovery.
+        if os.environ.get("BASE_URL"):
+            frontend_url = None  # preserve existing BASE_URL
+        else:
+            worktree = resolve_worktree()
+            project = compose_project(worktree)
+            frontend_port = _discover_frontend_port(project)
+            if frontend_port is None:
+                return (
+                    f"Frontend not running (no docker service in '{project}', no local process on 4200). "
+                    "Run `t3 run frontend` first."
+                )
+            frontend_url = f"http://localhost:{frontend_port}"
 
         extra = playwright_args.split() if playwright_args else []
         opts = PlaywrightOptions(
@@ -145,7 +191,7 @@ class Command(TyperCommand):
             headed=headed,
             extra=extra,
         )
-        env = _build_e2e_env(frontend_port, headed=headed)
+        env = _build_e2e_env(frontend_url, headed=headed)
 
         self.stdout.write(f"  Running from: {private_tests_path}")
         self.stdout.write(f"  BASE_URL: {env['BASE_URL']}")
