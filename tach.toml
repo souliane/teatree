@@ -72,7 +72,8 @@ depends_on = [
 [[modules]]
 path = "teatree.backends"
 depends_on = [
-  "teatree.utils"
+  "teatree.utils",
+  "teatree.core"
 ]
 
 [[modules]]
