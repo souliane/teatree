@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from teatree.config import (
+    E2ERepo,
     _extract_settings_module,
     _resolve_ep_project_path,
     _write_update_cache,
@@ -17,6 +18,7 @@ from teatree.config import (
     discover_overlays,
     get_data_dir,
     load_config,
+    load_e2e_repos,
     workspace_dir,
     worktrees_dir,
 )
@@ -573,3 +575,76 @@ class TestWriteUpdateCache:
         assert data["message"] == "test message"
         assert "ts" in data
         assert isinstance(data["ts"], float)
+
+
+# ── load_e2e_repos ────────────────────────────────────────────────────
+
+
+def test_load_e2e_repos_from_toml(tmp_path):
+    config_path = tmp_path / ".teatree.toml"
+    _write_toml(
+        config_path,
+        """
+[e2e_repos.home-savings]
+url = "git@gitlab.com:org/microservice-home-savings.git"
+branch = "ac/mhs-e2e"
+e2e_dir = "e2e"
+""",
+    )
+    repos = load_e2e_repos(config_path)
+    assert len(repos) == 1
+    assert repos[0].name == "home-savings"
+    assert repos[0].url == "git@gitlab.com:org/microservice-home-savings.git"
+    assert repos[0].branch == "ac/mhs-e2e"
+    assert repos[0].e2e_dir == "e2e"
+
+
+def test_load_e2e_repos_missing_section(tmp_path):
+    config_path = tmp_path / ".teatree.toml"
+    _write_toml(config_path, '[teatree]\nbranch_prefix = "ac-"\n')
+    assert load_e2e_repos(config_path) == []
+
+
+def test_load_e2e_repos_default_e2e_dir(tmp_path):
+    config_path = tmp_path / ".teatree.toml"
+    _write_toml(
+        config_path,
+        """
+[e2e_repos.my-service]
+url = "git@github.com:org/my-service.git"
+branch = "feature/e2e"
+""",
+    )
+    repos = load_e2e_repos(config_path)
+    assert repos[0].e2e_dir == "e2e"
+
+
+def test_load_e2e_repos_multiple(tmp_path):
+    config_path = tmp_path / ".teatree.toml"
+    _write_toml(
+        config_path,
+        """
+[e2e_repos.service-a]
+url = "git@github.com:org/service-a.git"
+branch = "main"
+
+[e2e_repos.service-b]
+url = "git@github.com:org/service-b.git"
+branch = "feature/tests"
+e2e_dir = "playwright"
+""",
+    )
+    repos = load_e2e_repos(config_path)
+    by_name = {r.name: r for r in repos}
+    assert set(by_name) == {"service-a", "service-b"}
+    assert by_name["service-b"].e2e_dir == "playwright"
+
+
+def test_load_e2e_repos_missing_toml(tmp_path):
+    assert load_e2e_repos(tmp_path / "nonexistent.toml") == []
+
+
+def test_e2e_repo_is_dataclass():
+    repo = E2ERepo(name="x", url="u", branch="b")
+    assert repo.name == "x"
+    assert repo.e2e_dir == "e2e"  # default

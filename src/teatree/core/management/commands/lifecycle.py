@@ -106,7 +106,7 @@ def _update_ticket_variant(ticket: "Ticket", variant: str) -> None:
             wt.save(update_fields=["db_name"])
 
 
-def _compose_project(worktree: Worktree) -> str:
+def compose_project(worktree: Worktree) -> str:
     """Return the docker-compose project name for this worktree."""
     ticket = worktree.ticket
     return f"{worktree.repo_path}-wt{ticket.ticket_number}" if ticket else worktree.repo_path
@@ -382,7 +382,7 @@ class Command(TyperCommand):
         }
 
         # Docker compose status
-        project = _compose_project(worktree)
+        project = compose_project(worktree)
         result = subprocess.run(  # noqa: S603
             ["docker", "compose", "-p", project, "ps", "--format", "{{.Name}} {{.State}}"],
             capture_output=True,
@@ -454,7 +454,7 @@ class Command(TyperCommand):
 
     def _start_worktree(self, worktree: Worktree, overlay: "OverlayBase", ports: dict[str, int]) -> None:
         """Start docker-compose services for a single worktree."""
-        project = _compose_project(worktree)
+        project = compose_project(worktree)
         self.stdout.write(f"\n  ── Starting {worktree.repo_path} ──")
 
         # Stop previous containers
@@ -513,7 +513,7 @@ class Command(TyperCommand):
         path: str = typer.Option("", help="Worktree path (auto-detects from PWD if empty)."),
     ) -> dict[str, object]:
         worktree = resolve_worktree(path)
-        project = _compose_project(worktree)
+        project = compose_project(worktree)
         ports = get_worktree_ports(project)
         return {
             "state": worktree.state,
@@ -525,7 +525,7 @@ class Command(TyperCommand):
     @command()
     def teardown(self, path: str = typer.Option("", help="Worktree path (auto-detects from PWD if empty).")) -> str:
         worktree = resolve_worktree(path)
-        project = _compose_project(worktree)
+        project = compose_project(worktree)
         _docker_compose_down(project, self.stdout)
         worktree.teardown()
         worktree.save()
@@ -535,7 +535,7 @@ class Command(TyperCommand):
     def clean(self, path: str = typer.Option("", help="Worktree path (auto-detects from PWD if empty).")) -> str:
         """Teardown worktree — stop containers, drop DB, clean state."""
         worktree = resolve_worktree(path)
-        project = _compose_project(worktree)
+        project = compose_project(worktree)
         _docker_compose_down(project, self.stdout)
 
         if worktree.db_name:

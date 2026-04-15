@@ -9,7 +9,7 @@ if TYPE_CHECKING:
 import typer
 from django_typer.management import TyperCommand, command
 
-from teatree.core.management.commands.lifecycle import _compose_project
+from teatree.core.management.commands.lifecycle import compose_project
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.resolve import resolve_worktree
 from teatree.types import RunCommand, RunCommands
@@ -28,7 +28,7 @@ class Command(TyperCommand):
         ``docker compose port``.
         """
         worktree = resolve_worktree(path)
-        project = _compose_project(worktree)
+        project = compose_project(worktree)
         ports = get_worktree_ports(project)
         results: dict[str, dict[str, object]] = {}
 
@@ -82,7 +82,7 @@ class Command(TyperCommand):
     def backend(self, path: str = typer.Option("", help="Worktree path (auto-detects from PWD if empty).")) -> str:
         """Start the backend via docker-compose."""
         worktree = resolve_worktree(path)
-        project = _compose_project(worktree)
+        project = compose_project(worktree)
         overlay = get_overlay()
         compose_file = overlay.get_compose_file(worktree)
         if not compose_file:
