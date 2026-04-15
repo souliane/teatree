@@ -9,7 +9,7 @@ from pathlib import Path
 from django_typer.management import TyperCommand, command
 
 from teatree.config import E2ERepo, get_data_dir, load_e2e_repos
-from teatree.core.management.commands.lifecycle import _compose_project
+from teatree.core.management.commands.lifecycle import compose_project
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.resolve import _find_env_worktree, _get_user_cwd, _parse_env_file, resolve_worktree
 from teatree.utils.ports import get_service_port
@@ -175,7 +175,7 @@ class Command(TyperCommand):
             frontend_url = None  # preserve existing BASE_URL
         else:
             worktree = resolve_worktree()
-            project = _compose_project(worktree)
+            project = compose_project(worktree)
             frontend_port = _discover_frontend_port(project)
             if frontend_port is None:
                 return (

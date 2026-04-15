@@ -116,6 +116,20 @@ class ReviewService:
             return f"OK deleted draft_note_id={note_id}", 0
         return f"Failed: HTTP {response.status_code}", 1
 
+    def publish_draft_notes(self, repo: str, mr: int) -> tuple[str, int]:
+        import httpx  # noqa: PLC0415
+
+        api = self._get_api()
+        encoded = repo.replace("/", "%2F")
+        response = httpx.post(
+            f"{api.base_url}/projects/{encoded}/merge_requests/{mr}/draft_notes/bulk_publish",
+            headers={"PRIVATE-TOKEN": self.token},
+            timeout=10.0,
+        )
+        if response.status_code in {HTTPStatus.OK, HTTPStatus.NO_CONTENT}:
+            return "OK — all draft notes published", 0
+        return f"Failed: HTTP {response.status_code}", 1
+
     def list_draft_notes(self, repo: str, mr: int) -> tuple[str, int]:
         """List draft notes. Returns (message, exit_code)."""
         api = self._get_api()
@@ -172,6 +186,19 @@ def delete_draft_note(
     """Delete a draft note from a GitLab MR."""
     service = _require_token()
     msg, code = service.delete_draft_note(repo, mr, note_id)
+    typer.echo(msg)
+    if code:
+        raise typer.Exit(code=code)
+
+
+@review_app.command(name="publish-draft-notes")
+def publish_draft_notes(
+    repo: str = typer.Argument(help="GitLab project path (e.g., my-org/my-repo)"),
+    mr: int = typer.Argument(help="Merge request IID"),
+) -> None:
+    """Publish all draft notes on a GitLab MR (bulk submit)."""
+    service = _require_token()
+    msg, code = service.publish_draft_notes(repo, mr)
     typer.echo(msg)
     if code:
         raise typer.Exit(code=code)

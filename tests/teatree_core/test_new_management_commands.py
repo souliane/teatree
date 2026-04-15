@@ -896,19 +896,38 @@ class TestWorkspaceCleanAll(TestCase):
         assert any("old-snapshot-2025" in c for c in cleaned)
 
 
+def _subprocess_side_effect(gh_stdout: str, glab_stdout: str):
+    """Return a side_effect function that dispatches mock stdout based on the CLI command."""
+
+    def _side_effect(args, **kwargs):
+        cmd = args[0] if args else ""
+        stdout = gh_stdout if cmd == "gh" else glab_stdout
+        return subprocess.CompletedProcess([], 0, stdout=stdout)
+
+    return _side_effect
+
+
 _gh_no_pr = patch(
     "teatree.core.management.commands.workspace.subprocess.run",
-    return_value=subprocess.CompletedProcess([], 0, stdout="[]"),
+    side_effect=_subprocess_side_effect(gh_stdout="[]", glab_stdout=""),
 )
 _gh_merged_pr = patch(
     "teatree.core.management.commands.workspace.subprocess.run",
     return_value=subprocess.CompletedProcess([], 0, stdout='[{"number":1}]'),
+)
+_glab_merged_mr = patch(
+    "teatree.core.management.commands.workspace.subprocess.run",
+    side_effect=_subprocess_side_effect(gh_stdout="[]", glab_stdout="!5\tMR title\t(feature)\t1 hour ago"),
 )
 
 
 class TestPruneBranches(TestCase):
     def test_squash_merged_detected_via_gh_api(self) -> None:
         with _gh_merged_pr:
+            assert workspace_mod._is_squash_merged("/repo", "feature", "main") is True
+
+    def test_squash_merged_detected_via_glab_api(self) -> None:
+        with _glab_merged_mr:
             assert workspace_mod._is_squash_merged("/repo", "feature", "main") is True
 
     def test_squash_merged_fallback_via_empty_diff(self) -> None:

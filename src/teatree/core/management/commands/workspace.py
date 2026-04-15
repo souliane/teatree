@@ -36,16 +36,7 @@ def _worktree_branches(repo: str) -> set[str]:
 
 
 def _is_squash_merged(repo: str, branch: str, default: str) -> bool:
-    """Check if *branch* was squash-merged into *default*.
-
-    A squash-merge rewrites history so ``git branch --merged`` won't detect it.
-
-    Strategy: merge the branch into a temporary tree-only merge with main.
-    If ``git merge-tree`` reports no conflicts and ``git cherry`` shows all
-    commits as applied, the branch is merged. As a fast fallback, check if
-    ``gh pr list`` reports the branch's PR as merged.
-    """
-    # Fast path: ask GitHub if a PR for this branch was merged.
+    # GitHub: ask if a PR for this branch was merged.
     result = subprocess.run(  # noqa: S603
         ["gh", "pr", "list", "--head", branch, "--state", "merged", "--json", "number", "--limit", "1"],
         capture_output=True,
@@ -54,6 +45,17 @@ def _is_squash_merged(repo: str, branch: str, default: str) -> bool:
         cwd=repo,
     )
     if result.returncode == 0 and result.stdout.strip() not in {"", "[]"}:
+        return True
+
+    # GitLab: glab mr list output lines for found MRs start with "!" (e.g. "!5  Title  (branch)").
+    result = subprocess.run(  # noqa: S603
+        ["glab", "mr", "list", "--merged", "--source-branch", branch, "--limit", "1"],
+        capture_output=True,
+        text=True,
+        check=False,
+        cwd=repo,
+    )
+    if result.returncode == 0 and any(line.lstrip().startswith("!") for line in result.stdout.splitlines()):
         return True
 
     # Fallback: empty diff means all changes are already in main.
