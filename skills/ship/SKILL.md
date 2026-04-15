@@ -148,6 +148,24 @@ When fixing review comments on an already-existing MR:
 5. **Reply to the review comments on the MR.**
 6. **Do NOT send a review request notification** — reviewers are already watching.
 
+## Merging the Default Branch into an MR (Non-Negotiable)
+
+Before touching the MR branch to "prepare" it for a merge, reason through what a clean 3-way merge would produce on its own:
+
+- **Default branch removed keys/lines the MR still has?** The merge will apply those removals automatically — no preemptive cleanup commit needed. Adding one creates noise and risks side effects (e.g., `json.dumps` round-tripping normalizes unrelated formatting).
+- **Both branches independently added the same key/line with different values?** That is a true add/add conflict. But verify the merge result first — the merge may have already resolved it correctly. Only surface it to the user if the result actually needs to change.
+
+**Merge conflict resolution for JSON files:**
+
+- Use proper 3-way semantics: `result = theirs + (ours_keys − base_keys)`. This correctly applies the default branch's removals while keeping the MR's own additions.
+- Do NOT use `json.dumps` to serialise back — it normalises indentation and whitespace across the entire file, producing a noisy diff far beyond the intended change. Remove keys surgically (line-by-line) to preserve original formatting.
+- Do NOT use `git checkout --ours` on whole files — this discards the default branch's removals and reintroduces whatever it had cleaned up.
+
+**After resolving conflicts, verify before asking anything:**
+
+1. Check that all MR-own additions (keys in ours but not in the merge base) are present in the result.
+2. Check that any values that differ between ours and theirs are already at the correct value per the merge strategy. If the result is already correct, do not ask the user — they made no decision to make.
+
 ## Isolate Unrelated Fixes (Non-Negotiable)
 
 When a CI failure (or any bug found during work) is **pre-existing** — not introduced by the current branch:
