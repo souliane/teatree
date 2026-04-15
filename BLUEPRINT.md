@@ -799,6 +799,7 @@ Overlay-specific configuration that previously lived in `TEATREE_*` Django setti
 | `get_review_channel()` | `tuple[str, str]` | `("", "")` | `TEATREE_REVIEW_CHANNEL` + `TEATREE_REVIEW_CHANNEL_ID` |
 | `known_variants` | `list[str]` | `[]` | `TEATREE_KNOWN_VARIANTS` |
 | `mr_auto_labels` | `list[str]` | `[]` | `TEATREE_MR_AUTO_LABELS` |
+| `mr_close_ticket` | `bool` | `False` | `TEATREE_MR_CLOSE_TICKET` |
 | `frontend_repos` | `list[str]` | `[]` | `TEATREE_FRONTEND_REPOS` |
 | `dev_env_url` | `str` | `""` | `TEATREE_DEV_ENV_URL` |
 | `dashboard_logo` | `str` | `""` | `TEATREE_DASHBOARD_LOGO` |
