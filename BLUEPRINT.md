@@ -61,9 +61,7 @@ src/teatree/
     selectors.py        # Dashboard data selectors (no domain logic in views)
     overlay.py          # OverlayBase ABC (see §6)
     overlay_loader.py   # Settings-driven overlay instantiation
-    sync.py             # Shared types + orchestrator (sync_followup)
-    sync_github.py      # GitHub Projects v2 board + reviewer PR sync
-    sync_gitlab.py      # GitLab MR upsert, issue labels, merged MR cleanup, Slack review permalinks
+    sync.py             # Shared types, SyncBackend ABC, orchestrator (sync_followup)
     tasks.py            # django-tasks integration
     docgen.py           # Overlay/skill documentation generation
     urls.py             # URL routing
@@ -99,8 +97,11 @@ src/teatree/
   backends/             # Pluggable external service integrations
     protocols.py        # Protocol classes (see §7)
     loader.py           # Settings-driven backend loader with lru_cache
+    github.py           # GitHub API client
+    github_sync.py      # GitHubSyncBackend — Projects v2 board + reviewer PR sync
     gitlab.py           # GitLab API client (httpx)
     gitlab_ci.py        # GitLab CI pipeline operations
+    gitlab_sync.py      # GitLabSyncBackend — MR upsert, issue labels, merged MR cleanup, Slack review permalinks
     slack.py            # Slack notifications
     notion.py           # Notion integration
     sentry.py           # Sentry error tracking
@@ -527,9 +528,11 @@ No manage.py, settings.py, urls.py, or wsgi/asgi — teatree is the Django proje
 
 ---
 
-## 7. Backend Protocols
+## 7. Backend Protocols and ABCs
 
-Each external concern is a `@runtime_checkable Protocol` in `teatree.backends.protocols`.
+### 7.1 API Protocols (`backends/protocols.py`)
+
+Each external API concern is a `@runtime_checkable Protocol` in `teatree.backends.protocols`.
 
 | Protocol | Methods |
 |----------|---------|
@@ -538,6 +541,20 @@ Each external concern is a `@runtime_checkable Protocol` in `teatree.backends.pr
 | `IssueTracker` | `get_issue()` |
 | `ChatNotifier` | `send()` |
 | `ErrorTracker` | `get_top_issues()` |
+
+### 7.2 Sync ABC (`core/sync.py`)
+
+`SyncBackend` is an ABC defined in `teatree.core.sync`. Every file under `backends/` that performs data sync into the Django DB must implement it.
+
+```python
+class SyncBackend(ABC):
+    def is_configured(self, overlay: object) -> bool: ...   # has credentials?
+    def sync(self, overlay: object) -> SyncResult: ...      # run the sync
+```
+
+Implementations: `GitHubSyncBackend` (`backends/github_sync.py`), `GitLabSyncBackend` (`backends/gitlab_sync.py`).
+
+**Convention:** `sync()` and `is_configured()` are instance methods. All internal helpers are `@classmethod` (no instance state needed).
 
 **Loading** (`loader.py`): Each backend has a `get_<concern>()` function decorated with `@lru_cache(maxsize=1)`. These functions auto-configure from overlay methods — e.g., `get_code_host()` calls `get_overlay()` and checks `overlay.get_gitlab_token()` to decide whether to instantiate `GitLabCodeHost`. No `TEATREE_*` settings or `import_string()` involved.
 
@@ -1227,6 +1244,7 @@ graph TD
     teatree.agents --> teatree.skill_loading
     teatree.agents --> teatree.utils
     teatree.backends --> teatree.utils
+    teatree.backends --> teatree.core
     teatree.contrib --> teatree.types
     teatree.contrib --> teatree.core
     teatree.cli --> teatree.config

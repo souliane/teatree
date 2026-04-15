@@ -5,7 +5,7 @@ active overlay's configuration.
 """
 
 import logging
-import re
+from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass, field
 
 LAST_SYNC_CACHE_KEY = "teatree_followup_last_sync"
@@ -15,8 +15,6 @@ PENDING_REVIEWS_CACHE_KEY = "teatree_pending_reviews"
 # and serialized internal data stored in JSONFields.
 type RawAPIDict = dict[str, object]
 type MREntryDict = dict[str, object]
-
-_REPO_PATH_RE = re.compile(r"https?://[^/]+/(.+?)/-/merge_requests/")
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +76,23 @@ class MREntry:
         return result
 
 
+class SyncBackend(ABC):
+    """Abstract base for code host sync backends.
+
+    Implementations live in ``teatree.backends.*_sync`` and are iterated by
+    ``sync_followup()``.  A single backend is responsible for one code host
+    (GitHub, GitLab, …).
+    """
+
+    @abstractmethod
+    def is_configured(self, overlay: object) -> bool:
+        """Return True if this backend has valid credentials in *overlay*."""
+
+    @abstractmethod
+    def sync(self, overlay: object) -> SyncResult:
+        """Sync from this code host into the local database."""
+
+
 def _merge_results(a: SyncResult, b: SyncResult) -> SyncResult:
     """Merge two SyncResult instances, summing counts and concatenating lists."""
     return SyncResult(
@@ -92,6 +107,16 @@ def _merge_results(a: SyncResult, b: SyncResult) -> SyncResult:
     )
 
 
+def _overlay_name(overlay: object) -> str:
+    """Reverse-lookup the registered name for an overlay instance."""
+    from teatree.core.overlay_loader import get_all_overlays  # noqa: PLC0415
+
+    for name, ov in get_all_overlays().items():
+        if ov is overlay:
+            return name
+    return ""
+
+
 def sync_followup() -> SyncResult:
     """Sync from all configured code host backends.
 
@@ -99,18 +124,19 @@ def sync_followup() -> SyncResult:
     which credentials are configured in the active overlay.  When both
     tokens are present, both syncs run and results are merged.
     """
+    from teatree.backends.github_sync import GitHubSyncBackend  # noqa: PLC0415
+    from teatree.backends.gitlab_sync import GitLabSyncBackend  # noqa: PLC0415
     from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
 
     overlay = get_overlay()
+    backends: list[SyncBackend] = [GitHubSyncBackend(), GitLabSyncBackend()]
     result = SyncResult()
     ran_any = False
 
-    if overlay.config.get_github_token():
-        result = _merge_results(result, _sync_github(overlay))
-        ran_any = True
-    if overlay.config.get_gitlab_token():
-        result = _merge_results(result, _sync_gitlab(overlay))
-        ran_any = True
+    for backend in backends:
+        if backend.is_configured(overlay):
+            result = _merge_results(result, backend.sync(overlay))
+            ran_any = True
 
     if not ran_any:
         overlay_label = _overlay_name(overlay) or "active overlay"
@@ -133,35 +159,6 @@ def fetch_notion_statuses() -> None:
     raise NotImplementedError(msg)
 
 
-# ---------------------------------------------------------------------------
-# Re-exports from submodules — keeps the public API stable for callers that
-# import directly from ``teatree.core.sync`` (including test suite).
-# These must come after the type definitions above so the partially-loaded
-# module already has SyncResult/MREntry/etc. when the submodules import them.
-# ---------------------------------------------------------------------------
-
-from teatree.core.sync_github import (  # noqa: E402
-    _sync_github,
-    _sync_github_reviewer_prs,
-)
-from teatree.core.sync_gitlab import (  # noqa: E402
-    _apply_merged_status,
-    _classify_discussions,
-    _collect_reviewable_mr_urls,
-    _detect_e2e_evidence,
-    _extract_issue_url,
-    _extract_variant,
-    _fetch_review_permalinks,
-    _infer_state_from_mrs,
-    _merge_ticket_extras,
-    _overlay_name,
-    _process_label,
-    _resolve_issue,
-    _sync_gitlab,
-    _sync_reviewer_mrs,
-    _update_ticket,
-)
-
 __all__ = [
     "LAST_SYNC_CACHE_KEY",
     "PENDING_REVIEWS_CACHE_KEY",
@@ -169,25 +166,10 @@ __all__ = [
     "MREntry",
     "MREntryDict",
     "RawAPIDict",
+    "SyncBackend",
     "SyncResult",
-    "_apply_merged_status",
-    "_classify_discussions",
-    "_collect_reviewable_mr_urls",
-    "_detect_e2e_evidence",
-    "_extract_issue_url",
-    "_extract_variant",
-    "_fetch_review_permalinks",
-    "_infer_state_from_mrs",
     "_merge_results",
-    "_merge_ticket_extras",
     "_overlay_name",
-    "_process_label",
-    "_resolve_issue",
-    "_sync_github",
-    "_sync_github_reviewer_prs",
-    "_sync_gitlab",
-    "_sync_reviewer_mrs",
-    "_update_ticket",
     "fetch_notion_statuses",
     "sync_followup",
 ]

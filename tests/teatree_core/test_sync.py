@@ -7,6 +7,7 @@ from django.test import TestCase
 
 import teatree.core.overlay_loader as overlay_loader_mod
 from teatree.backends.gitlab_api import ProjectInfo
+from teatree.backends.gitlab_sync import GitLabSyncBackend
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay import OverlayBase, OverlayConfig, ProvisionStep
 from teatree.core.overlay_loader import reset_overlay_cache
@@ -18,20 +19,8 @@ from teatree.core.sync import (
     MREntryDict,
     RawAPIDict,
     SyncResult,
-    _apply_merged_status,
-    _classify_discussions,
-    _detect_e2e_evidence,
-    _extract_issue_url,
-    _extract_variant,
-    _fetch_review_permalinks,
-    _infer_state_from_mrs,
     _merge_results,
-    _merge_ticket_extras,
     _overlay_name,
-    _process_label,
-    _resolve_issue,
-    _sync_reviewer_mrs,
-    _update_ticket,
     fetch_notion_statuses,
     sync_followup,
 )
@@ -326,10 +315,10 @@ class TestMREntry:
 
 class TestExtractIssueUrl:
     def test_from_description(self) -> None:
-        assert _extract_issue_url(_MR_WITH_ISSUE) == "https://gitlab.com/org/repo/-/issues/100"
+        assert GitLabSyncBackend._extract_issue_url(_MR_WITH_ISSUE) == "https://gitlab.com/org/repo/-/issues/100"
 
     def test_returns_empty_when_none(self) -> None:
-        assert _extract_issue_url(_MR_WITHOUT_ISSUE) == ""
+        assert GitLabSyncBackend._extract_issue_url(_MR_WITHOUT_ISSUE) == ""
 
 
 class TestExtractVariant:
@@ -337,55 +326,55 @@ class TestExtractVariant:
         """_extract_variant returns the matching known variant (line 424)."""
         overlay = SyncOverlay(known_variants=["Acme", "BigCorp"])
         with _patch_overlay(overlay):
-            result = _extract_variant(["Bug", "acme", "Priority::High"])
+            result = GitLabSyncBackend._extract_variant(["Bug", "acme", "Priority::High"])
         assert result == "Acme"
 
     def test_returns_empty_for_unknown(self) -> None:
         """_extract_variant returns '' when no label matches."""
         overlay = SyncOverlay(known_variants=["Acme"])
         with _patch_overlay(overlay):
-            result = _extract_variant(["Bug", "Priority::High"])
+            result = GitLabSyncBackend._extract_variant(["Bug", "Priority::High"])
         assert result == ""
 
 
 class TestProcessLabel:
     def test_returns_none_for_non_process_labels(self) -> None:
         """Labels without Process:: prefix should yield None."""
-        assert _process_label(["Priority::High", "Bug"]) is None
+        assert GitLabSyncBackend._process_label(["Priority::High", "Bug"]) is None
 
     def test_returns_none_for_empty_labels(self) -> None:
-        assert _process_label([]) is None
+        assert GitLabSyncBackend._process_label([]) is None
 
 
 class TestInferStateFromMrs:
     def test_empty_mrs(self) -> None:
-        assert _infer_state_from_mrs({}) == Ticket.State.NOT_STARTED
+        assert GitLabSyncBackend._infer_state_from_mrs({}) == Ticket.State.NOT_STARTED
 
     def test_corrupted_mrs(self) -> None:
-        assert _infer_state_from_mrs({"x": "not-a-dict"}) == Ticket.State.NOT_STARTED
+        assert GitLabSyncBackend._infer_state_from_mrs({"x": "not-a-dict"}) == Ticket.State.NOT_STARTED
 
     def test_draft_mr(self) -> None:
         mrs = {"url1": {"draft": True}}
-        assert _infer_state_from_mrs(mrs) == Ticket.State.STARTED
+        assert GitLabSyncBackend._infer_state_from_mrs(mrs) == Ticket.State.STARTED
 
     def test_non_draft_mr(self) -> None:
         mrs = {"url1": {"draft": False}}
-        assert _infer_state_from_mrs(mrs) == Ticket.State.SHIPPED
+        assert GitLabSyncBackend._infer_state_from_mrs(mrs) == Ticket.State.SHIPPED
 
     def test_mr_with_approvals(self) -> None:
         mrs = {"url1": {"draft": False, "approvals": {"count": 1, "required": 1}}}
-        assert _infer_state_from_mrs(mrs) == Ticket.State.IN_REVIEW
+        assert GitLabSyncBackend._infer_state_from_mrs(mrs) == Ticket.State.IN_REVIEW
 
     def test_mr_with_review_requested(self) -> None:
         mrs = {"url1": {"draft": False, "review_requested": True}}
-        assert _infer_state_from_mrs(mrs) == Ticket.State.IN_REVIEW
+        assert GitLabSyncBackend._infer_state_from_mrs(mrs) == Ticket.State.IN_REVIEW
 
     def test_picks_highest_across_mrs(self) -> None:
         mrs = {
             "url1": {"draft": True},  # STARTED
             "url2": {"draft": False, "approvals": {"count": 1, "required": 1}},  # IN_REVIEW
         }
-        assert _infer_state_from_mrs(mrs) == Ticket.State.IN_REVIEW
+        assert GitLabSyncBackend._infer_state_from_mrs(mrs) == Ticket.State.IN_REVIEW
 
     def test_second_mr_does_not_advance_when_lower(self) -> None:
         """When second MR infers a lower state than the first, best stays unchanged."""
@@ -394,24 +383,24 @@ class TestInferStateFromMrs:
             "url2": {"draft": True},  # STARTED (lower)
         }
         # Should pick the highest: IN_REVIEW
-        assert _infer_state_from_mrs(mrs) == Ticket.State.IN_REVIEW
+        assert GitLabSyncBackend._infer_state_from_mrs(mrs) == Ticket.State.IN_REVIEW
 
 
 class TestClassifyDiscussions:
     def test_skips_non_dict_entries(self) -> None:
-        result = _classify_discussions(["not-a-dict", 42], "me")
+        result = GitLabSyncBackend._classify_discussions(["not-a-dict", 42], "me")
         assert result == []
 
     def test_skips_individual_notes(self) -> None:
-        result = _classify_discussions([{"individual_note": True, "notes": [{"body": "x"}]}], "me")
+        result = GitLabSyncBackend._classify_discussions([{"individual_note": True, "notes": [{"body": "x"}]}], "me")
         assert result == []
 
     def test_skips_empty_notes(self) -> None:
-        result = _classify_discussions([{"notes": []}], "me")
+        result = GitLabSyncBackend._classify_discussions([{"notes": []}], "me")
         assert result == []
 
     def test_skips_non_list_notes(self) -> None:
-        result = _classify_discussions([{"notes": "not-a-list"}], "me")
+        result = GitLabSyncBackend._classify_discussions([{"notes": "not-a-list"}], "me")
         assert result == []
 
     def test_addressed_when_all_resolved(self) -> None:
@@ -422,7 +411,7 @@ class TestClassifyDiscussions:
                 ],
             }
         ]
-        result = _classify_discussions(discussions, "me")
+        result = GitLabSyncBackend._classify_discussions(discussions, "me")
         assert len(result) == 1
         assert result[0] == DiscussionSummary(status="addressed", detail="Fix this")
 
@@ -435,7 +424,7 @@ class TestClassifyDiscussions:
                 ],
             }
         ]
-        result = _classify_discussions(discussions, "me")
+        result = GitLabSyncBackend._classify_discussions(discussions, "me")
         assert len(result) == 1
         assert result[0].status == "waiting_reviewer"
 
@@ -447,7 +436,7 @@ class TestClassifyDiscussions:
                 ],
             }
         ]
-        result = _classify_discussions(discussions, "me")
+        result = GitLabSyncBackend._classify_discussions(discussions, "me")
         assert len(result) == 1
         assert result[0].status == "needs_reply"
 
@@ -461,7 +450,7 @@ class TestClassifyDiscussions:
                 ],
             }
         ]
-        result = _classify_discussions(discussions, "me")
+        result = GitLabSyncBackend._classify_discussions(discussions, "me")
         assert result[0].status == "needs_reply"
 
     def test_non_dict_first_note_body(self) -> None:
@@ -474,7 +463,7 @@ class TestClassifyDiscussions:
                 ],
             }
         ]
-        result = _classify_discussions(discussions, "me")
+        result = GitLabSyncBackend._classify_discussions(discussions, "me")
         assert result[0].detail == ""  # first_body from non-dict is ""
 
 
@@ -507,7 +496,8 @@ class TestUpdateTicket(TestCase):
             "pipeline_status": "success",
         }
 
-        _update_ticket(ticket, new_mr_entry, "https://gitlab.com/org/repo/-/merge_requests/50", "repo")
+        mr_url = "https://gitlab.com/org/repo/-/merge_requests/50"
+        GitLabSyncBackend._update_ticket(ticket, new_mr_entry, mr_url, "repo")
 
         ticket.refresh_from_db()
         mr = ticket.extra["mrs"]["https://gitlab.com/org/repo/-/merge_requests/50"]
@@ -532,7 +522,7 @@ class TestMergeTicketExtras(TestCase):
             repos=["repo-b"],
             extra={"mrs": {"https://mr/2": {"title": "MR 2"}}},
         )
-        _merge_ticket_extras(target, source)
+        GitLabSyncBackend._merge_ticket_extras(target, source)
         target.refresh_from_db()
 
         assert "https://mr/1" in target.extra["mrs"]
@@ -554,7 +544,7 @@ class TestMergeTicketExtras(TestCase):
             repos=["repo-b"],
             extra={"mrs": ["also-corrupt"]},
         )
-        _merge_ticket_extras(target, source)
+        GitLabSyncBackend._merge_ticket_extras(target, source)
         target.refresh_from_db()
         assert target.repos == ["repo-a", "repo-b"]
 
@@ -572,7 +562,7 @@ class TestMergeTicketExtras(TestCase):
             repos=["repo-b", "repo-c"],
             extra={"mrs": {"https://mr/1": {"title": "MR 1 dup"}, "https://mr/3": {"title": "MR 3"}}},
         )
-        _merge_ticket_extras(target, source)
+        GitLabSyncBackend._merge_ticket_extras(target, source)
         target.refresh_from_db()
 
         assert target.extra["mrs"]["https://mr/1"]["title"] == "MR 1"
@@ -595,7 +585,7 @@ class TestFetchReviewPermalinks(TestCase):
         overlay = SyncOverlay(slack_token="", review_channel=("", ""))
         with _patch_overlay(overlay):
             result = SyncResult()
-            _fetch_review_permalinks(result)
+            GitLabSyncBackend._fetch_review_permalinks(result)
         assert result.reviews_synced == 0
         assert result.errors == []
 
@@ -618,7 +608,7 @@ class TestFetchReviewPermalinks(TestCase):
 
         with _patch_overlay(self._SLACK_OVERLAY):
             result = SyncResult()
-            _fetch_review_permalinks(result)
+            GitLabSyncBackend._fetch_review_permalinks(result)
         # No non-draft MRs -> no Slack call
         assert result.reviews_synced == 0
 
@@ -641,14 +631,14 @@ class TestFetchReviewPermalinks(TestCase):
 
         with _patch_overlay(self._SLACK_OVERLAY):
             result = SyncResult()
-            _fetch_review_permalinks(result)
+            GitLabSyncBackend._fetch_review_permalinks(result)
         assert result.reviews_synced == 0
 
     def test_returns_early_when_no_urls(self) -> None:
         """_fetch_review_permalinks returns early when no eligible MR URLs (line 382-383)."""
         with _patch_overlay(self._SLACK_OVERLAY):
             result = SyncResult()
-            _fetch_review_permalinks(result)
+            GitLabSyncBackend._fetch_review_permalinks(result)
         assert result.reviews_synced == 0
 
     def test_handles_search_exception(self) -> None:
@@ -675,7 +665,7 @@ class TestFetchReviewPermalinks(TestCase):
 
         with _patch_overlay(self._SLACK_OVERLAY):
             result = SyncResult()
-            _fetch_review_permalinks(result)
+            GitLabSyncBackend._fetch_review_permalinks(result)
         assert any("Slack review sync" in e for e in result.errors)
 
     def test_stores_matches(self) -> None:
@@ -704,7 +694,7 @@ class TestFetchReviewPermalinks(TestCase):
 
         with _patch_overlay(self._SLACK_OVERLAY):
             result = SyncResult()
-            _fetch_review_permalinks(result)
+            GitLabSyncBackend._fetch_review_permalinks(result)
 
         assert result.reviews_synced == 1
         ticket = Ticket.objects.get(issue_url="https://gitlab.com/org/repo/-/issues/503")
@@ -725,7 +715,7 @@ class TestFetchReviewPermalinks(TestCase):
 
         with _patch_overlay(self._SLACK_OVERLAY):
             result = SyncResult()
-            _fetch_review_permalinks(result)
+            GitLabSyncBackend._fetch_review_permalinks(result)
         assert result.reviews_synced == 0
 
     def test_skips_non_dict_mr_entry_in_collection(self) -> None:
@@ -741,7 +731,7 @@ class TestFetchReviewPermalinks(TestCase):
 
         with _patch_overlay(self._SLACK_OVERLAY):
             result = SyncResult()
-            _fetch_review_permalinks(result)
+            GitLabSyncBackend._fetch_review_permalinks(result)
         assert result.reviews_synced == 0
 
 
@@ -777,7 +767,7 @@ class TestResolveIssueHandles404:
             request=MagicMock(),
             response=MagicMock(status_code=404),
         )
-        result = _resolve_issue(client, "https://gitlab.com/org/repo/-/issues/123")
+        result = GitLabSyncBackend._resolve_issue(client, "https://gitlab.com/org/repo/-/issues/123")
         assert result is None
 
     def test_returns_issue_on_success(self) -> None:
@@ -786,7 +776,7 @@ class TestResolveIssueHandles404:
             project_id=1, path_with_namespace="org/repo", short_name="repo"
         )
         client.get_issue.return_value = {"id": 123, "title": "Test issue", "labels": []}
-        result = _resolve_issue(client, "https://gitlab.com/org/repo/-/issues/123")
+        result = GitLabSyncBackend._resolve_issue(client, "https://gitlab.com/org/repo/-/issues/123")
         assert result is not None
         assert result[0]["title"] == "Test issue"
 
@@ -803,27 +793,27 @@ class TestDetectE2EEvidence:
                 ],
             },
         ]
-        url = _detect_e2e_evidence(discussions, "https://gitlab.com/org/repo/-/merge_requests/1")
+        url = GitLabSyncBackend._detect_e2e_evidence(discussions, "https://gitlab.com/org/repo/-/merge_requests/1")
         assert url == "https://gitlab.com/org/repo/-/merge_requests/1#note_42"
 
     def test_skips_keyword_without_image(self) -> None:
         discussions = [{"notes": [{"id": 1, "body": "E2E tests look good"}]}]
-        assert _detect_e2e_evidence(discussions, "https://example.com") == ""
+        assert GitLabSyncBackend._detect_e2e_evidence(discussions, "https://example.com") == ""
 
     def test_skips_image_without_keyword(self) -> None:
         discussions = [{"notes": [{"id": 1, "body": "![logo](/uploads/logo.png)"}]}]
-        assert _detect_e2e_evidence(discussions, "https://example.com") == ""
+        assert GitLabSyncBackend._detect_e2e_evidence(discussions, "https://example.com") == ""
 
     def test_empty_discussions(self) -> None:
-        assert _detect_e2e_evidence([], "https://example.com") == ""
+        assert GitLabSyncBackend._detect_e2e_evidence([], "https://example.com") == ""
 
     def test_non_dict_entries_skipped(self) -> None:
         bad_input: list[RawAPIDict] = ["not-a-dict"]  # type: ignore[list-item]
-        assert _detect_e2e_evidence(bad_input, "https://example.com") == ""
+        assert GitLabSyncBackend._detect_e2e_evidence(bad_input, "https://example.com") == ""
 
 
 class TestApplyMergedStatusAllMerged(TestCase):
-    @patch("teatree.core.sync_gitlab.cleanup_worktree")
+    @patch("teatree.backends.gitlab_sync.cleanup_worktree")
     def test_advances_state_when_all_merged_no_discussions(self, mock_cleanup: MagicMock) -> None:
         """All MRs merged but none have discussions — state should still advance."""
         ticket = Ticket.objects.create(
@@ -832,7 +822,7 @@ class TestApplyMergedStatusAllMerged(TestCase):
             extra={"mrs": {"url1": {"title": "MR1"}, "url2": {"title": "MR2"}}},
         )
         result = SyncResult()
-        _apply_merged_status(ticket, {"url1", "url2"}, result)
+        GitLabSyncBackend._apply_merged_status(ticket, {"url1", "url2"}, result)
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.MERGED
 
@@ -843,11 +833,11 @@ class TestApplyMergedStatusAllMerged(TestCase):
             extra={"mrs": {"url1": {"title": "MR1"}, "url2": {"title": "MR2"}}},
         )
         result = SyncResult()
-        _apply_merged_status(ticket, {"url1"}, result)
+        GitLabSyncBackend._apply_merged_status(ticket, {"url1"}, result)
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.IN_REVIEW
 
-    @patch("teatree.core.sync_gitlab.cleanup_worktree")
+    @patch("teatree.backends.gitlab_sync.cleanup_worktree")
     def test_auto_cleans_worktrees_on_merge(self, mock_cleanup: MagicMock) -> None:
         ticket = Ticket.objects.create(
             issue_url="https://gitlab.com/org/repo/-/issues/3",
@@ -861,11 +851,11 @@ class TestApplyMergedStatusAllMerged(TestCase):
             branch="fix-3",
         )
         result = SyncResult()
-        _apply_merged_status(ticket, {"url1"}, result)
+        GitLabSyncBackend._apply_merged_status(ticket, {"url1"}, result)
         mock_cleanup.assert_called_once()
         assert result.worktrees_cleaned == 1
 
-    @patch("teatree.core.sync_gitlab.cleanup_worktree", side_effect=RuntimeError("cleanup failed"))
+    @patch("teatree.backends.gitlab_sync.cleanup_worktree", side_effect=RuntimeError("cleanup failed"))
     def test_cleanup_failure_does_not_block_merge(self, mock_cleanup: MagicMock) -> None:
         ticket = Ticket.objects.create(
             issue_url="https://gitlab.com/org/repo/-/issues/4",
@@ -879,7 +869,7 @@ class TestApplyMergedStatusAllMerged(TestCase):
             branch="fix-4",
         )
         result = SyncResult()
-        _apply_merged_status(ticket, {"url1"}, result)
+        GitLabSyncBackend._apply_merged_status(ticket, {"url1"}, result)
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.MERGED
         assert result.worktrees_cleaned == 0
@@ -1656,7 +1646,7 @@ class TestSyncReviewerMRs(TestCase):
         ]
         result = SyncResult()
 
-        _sync_reviewer_mrs(mock_client, "testuser", result)
+        GitLabSyncBackend._sync_reviewer_mrs(mock_client, "testuser", result)
 
         cached = cache.get(PENDING_REVIEWS_CACHE_KEY)
         assert cached is not None
@@ -1672,7 +1662,7 @@ class TestSyncReviewerMRs(TestCase):
         mock_client.list_open_mrs_as_reviewer.side_effect = RuntimeError("API down")
         result = SyncResult()
 
-        _sync_reviewer_mrs(mock_client, "testuser", result)
+        GitLabSyncBackend._sync_reviewer_mrs(mock_client, "testuser", result)
 
         assert len(result.errors) == 1
         assert "Reviewer MR fetch failed" in result.errors[0]
@@ -1694,7 +1684,7 @@ class TestSyncGitHub(TestCase):
 
     def test_creates_ticket_from_project_item(self) -> None:
         from teatree.backends.github import ProjectItem  # noqa: PLC0415
-        from teatree.core.sync import _sync_github  # noqa: PLC0415
+        from teatree.backends.github_sync import GitHubSyncBackend  # noqa: PLC0415
 
         overlay = self._make_overlay()
         item = ProjectItem(
@@ -1710,9 +1700,9 @@ class TestSyncGitHub(TestCase):
         with (
             _patch_overlay(overlay),
             patch("teatree.backends.github.fetch_project_items", return_value=[item]),
-            patch("teatree.core.sync._sync_github_reviewer_prs"),
+            patch.object(GitHubSyncBackend, "_sync_reviewer_prs"),
         ):
-            result = _sync_github(overlay)
+            result = GitHubSyncBackend().sync(overlay)
 
         assert result.tickets_created == 1
         assert result.mrs_found == 1
@@ -1722,7 +1712,7 @@ class TestSyncGitHub(TestCase):
 
     def test_updates_existing_ticket(self) -> None:
         from teatree.backends.github import ProjectItem  # noqa: PLC0415
-        from teatree.core.sync import _sync_github  # noqa: PLC0415
+        from teatree.backends.github_sync import GitHubSyncBackend  # noqa: PLC0415
 
         overlay = self._make_overlay()
         Ticket.objects.create(
@@ -1743,9 +1733,9 @@ class TestSyncGitHub(TestCase):
         with (
             _patch_overlay(overlay),
             patch("teatree.backends.github.fetch_project_items", return_value=[item]),
-            patch("teatree.core.sync._sync_github_reviewer_prs"),
+            patch.object(GitHubSyncBackend, "_sync_reviewer_prs"),
         ):
-            result = _sync_github(overlay)
+            result = GitHubSyncBackend().sync(overlay)
 
         assert result.tickets_updated == 1
         ticket = Ticket.objects.get(issue_url="https://github.com/souliane/teatree/issues/43")
@@ -1754,13 +1744,13 @@ class TestSyncGitHub(TestCase):
         assert ticket.extra["issue_title"] == "Updated issue"
 
     def test_returns_error_for_non_overlay(self) -> None:
-        from teatree.core.sync import _sync_github  # noqa: PLC0415
+        from teatree.backends.github_sync import GitHubSyncBackend  # noqa: PLC0415
 
-        result = _sync_github("not an overlay")
+        result = GitHubSyncBackend().sync("not an overlay")
         assert any("Invalid overlay" in e for e in result.errors)
 
     def test_returns_error_when_config_missing(self) -> None:
-        from teatree.core.sync import _sync_github  # noqa: PLC0415
+        from teatree.backends.github_sync import GitHubSyncBackend  # noqa: PLC0415
 
         overlay = SyncOverlay(
             gitlab_token="",
@@ -1771,12 +1761,12 @@ class TestSyncGitHub(TestCase):
         )
 
         with _patch_overlay(overlay):
-            result = _sync_github(overlay)
+            result = GitHubSyncBackend().sync(overlay)
 
         assert any("not configured" in e for e in result.errors)
 
     def test_handles_fetch_exception(self) -> None:
-        from teatree.core.sync import _sync_github  # noqa: PLC0415
+        from teatree.backends.github_sync import GitHubSyncBackend  # noqa: PLC0415
 
         overlay = self._make_overlay()
 
@@ -1784,7 +1774,7 @@ class TestSyncGitHub(TestCase):
             _patch_overlay(overlay),
             patch("teatree.backends.github.fetch_project_items", side_effect=RuntimeError("API error")),
         ):
-            result = _sync_github(overlay)
+            result = GitHubSyncBackend().sync(overlay)
 
         assert any("fetch failed" in e for e in result.errors)
 
@@ -1794,7 +1784,7 @@ class TestSyncGitHubReviewerPrs(TestCase):
         import json  # noqa: PLC0415
         import subprocess  # noqa: PLC0415
 
-        from teatree.core.sync import _sync_github_reviewer_prs  # noqa: PLC0415
+        from teatree.backends.github_sync import GitHubSyncBackend  # noqa: PLC0415
 
         prs = [
             {
@@ -1816,7 +1806,7 @@ class TestSyncGitHubReviewerPrs(TestCase):
             patch("shutil.which", return_value="/usr/bin/gh"),
             patch("subprocess.run", mock_run),
         ):
-            _sync_github_reviewer_prs("gh-token", result)
+            GitHubSyncBackend._sync_reviewer_prs("gh-token", result)
 
         assert result.reviews_synced == 1
         cached = cache.get(PENDING_REVIEWS_CACHE_KEY)
@@ -1826,30 +1816,30 @@ class TestSyncGitHubReviewerPrs(TestCase):
         cache.delete(PENDING_REVIEWS_CACHE_KEY)
 
     def test_skips_when_gh_not_found(self) -> None:
-        from teatree.core.sync import _sync_github_reviewer_prs  # noqa: PLC0415
+        from teatree.backends.github_sync import GitHubSyncBackend  # noqa: PLC0415
 
         result = SyncResult()
         with patch("shutil.which", return_value=None):
-            _sync_github_reviewer_prs("gh-token", result)
+            GitHubSyncBackend._sync_reviewer_prs("gh-token", result)
 
         assert result.reviews_synced == 0
 
     def test_handles_subprocess_exception(self) -> None:
-        from teatree.core.sync import _sync_github_reviewer_prs  # noqa: PLC0415
+        from teatree.backends.github_sync import GitHubSyncBackend  # noqa: PLC0415
 
         result = SyncResult()
         with (
             patch("shutil.which", return_value="/usr/bin/gh"),
             patch("subprocess.run", side_effect=OSError("spawn failed")),
         ):
-            _sync_github_reviewer_prs("gh-token", result)
+            GitHubSyncBackend._sync_reviewer_prs("gh-token", result)
 
         assert any("reviewer PR fetch failed" in e for e in result.errors)
 
     def test_returns_early_on_nonzero_exit(self) -> None:
         import subprocess  # noqa: PLC0415
 
-        from teatree.core.sync import _sync_github_reviewer_prs  # noqa: PLC0415
+        from teatree.backends.github_sync import GitHubSyncBackend  # noqa: PLC0415
 
         result = SyncResult()
         mock_run = MagicMock(
@@ -1859,14 +1849,14 @@ class TestSyncGitHubReviewerPrs(TestCase):
             patch("shutil.which", return_value="/usr/bin/gh"),
             patch("subprocess.run", mock_run),
         ):
-            _sync_github_reviewer_prs("gh-token", result)
+            GitHubSyncBackend._sync_reviewer_prs("gh-token", result)
 
         assert result.reviews_synced == 0
 
     def test_handles_invalid_json(self) -> None:
         import subprocess  # noqa: PLC0415
 
-        from teatree.core.sync import _sync_github_reviewer_prs  # noqa: PLC0415
+        from teatree.backends.github_sync import GitHubSyncBackend  # noqa: PLC0415
 
         result = SyncResult()
         mock_run = MagicMock(
@@ -1876,6 +1866,6 @@ class TestSyncGitHubReviewerPrs(TestCase):
             patch("shutil.which", return_value="/usr/bin/gh"),
             patch("subprocess.run", mock_run),
         ):
-            _sync_github_reviewer_prs("gh-token", result)
+            GitHubSyncBackend._sync_reviewer_prs("gh-token", result)
 
         assert result.reviews_synced == 0
