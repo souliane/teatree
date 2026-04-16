@@ -54,7 +54,7 @@ def _detect_nx_serve_port(worktree_path: str) -> int | None:
     listening process and can pick up another worktree's frontend. Matching by
     worktree path ensures we discover the right ``nx serve`` instance.
     """
-    result = subprocess.run(  # noqa: S603
+    result = subprocess.run(
         ["ps", "axo", "args"],
         capture_output=True,
         text=True,
