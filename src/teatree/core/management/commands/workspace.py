@@ -109,6 +109,13 @@ def _prune_branches(repo: str) -> list[str]:
     for name in sorted(all_branches - protected):
         if not _is_squash_merged(repo, name, default):
             continue
+        unsynced = git.unsynced_commits(repo, name)
+        if unsynced:
+            cleaned.append(
+                f"SKIPPED '{name}': {len(unsynced)} unsynced commit(s) — "
+                "push to a new branch:\n  " + "\n  ".join(unsynced)
+            )
+            continue
         wt_path = wt_map.get(name, "")
         if wt_path:
             git.worktree_remove(repo, wt_path)

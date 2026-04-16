@@ -1161,3 +1161,33 @@ class TestGitLabAPICacheHits:
         client.clear_response_cache()
         client.current_username()
         assert len(calls) == 2
+
+
+class TestUnsyncedCommits:
+    def test_returns_empty_list_when_fully_synced(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            git.subprocess,
+            "run",
+            lambda *_a, **_k: CompletedProcess([], 0, stdout="", stderr=""),
+        )
+        assert git.unsynced_commits("/repo", "feature") == []
+
+    def test_returns_commit_lines_when_commits_exist(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        output = "abc123 chore: cve fix\ndef456 feat: add something\n"
+        monkeypatch.setattr(
+            git.subprocess,
+            "run",
+            lambda *_a, **_k: CompletedProcess([], 0, stdout=output, stderr=""),
+        )
+        result = git.unsynced_commits("/repo", "feature")
+        assert result == ["abc123 chore: cve fix", "def456 feat: add something"]
+
+    def test_filters_blank_lines_from_output(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        output = "abc123 fix something\n\n   \ndef456 another fix\n"
+        monkeypatch.setattr(
+            git.subprocess,
+            "run",
+            lambda *_a, **_k: CompletedProcess([], 0, stdout=output, stderr=""),
+        )
+        result = git.unsynced_commits("/repo", "feature")
+        assert result == ["abc123 fix something", "def456 another fix"]

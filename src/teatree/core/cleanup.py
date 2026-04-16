@@ -13,12 +13,16 @@ from teatree.utils.db import drop_db
 logger = logging.getLogger(__name__)
 
 
-def cleanup_worktree(worktree: Worktree) -> str:
+def cleanup_worktree(worktree: Worktree, *, force: bool = False) -> str:
     """Remove a single worktree: git worktree, branch, DB, overlay cleanup.
 
     Deletes the Worktree record from the database and returns a summary label.
     Errors in individual cleanup steps are suppressed so that partial cleanup
     still succeeds.
+
+    Raises ``RuntimeError`` when *force* is ``False`` and the branch has local
+    commits unreachable from any remote (unsynced work that would be lost).
+    Pass ``force=True`` only from trusted callers (e.g. tests, programmatic API).
     """
     workspace = load_config().user.workspace_dir
     wt_path = (worktree.extra or {}).get("worktree_path", "")
@@ -34,6 +38,15 @@ def cleanup_worktree(worktree: Worktree) -> str:
     if wt_path:
         repo_main = workspace / worktree.repo_path
         if repo_main.is_dir():
+            if not force:
+                unsynced = git.unsynced_commits(str(repo_main), worktree.branch)
+                if unsynced:
+                    msg = (
+                        f"{worktree.repo_path} ({worktree.branch}): "
+                        f"refused cleanup — {len(unsynced)} unsynced commit(s). "
+                        "Push them to a new branch or pass force=True."
+                    )
+                    raise RuntimeError(msg)
             git.worktree_remove(str(repo_main), wt_path)
             git.branch_delete(str(repo_main), worktree.branch)
 

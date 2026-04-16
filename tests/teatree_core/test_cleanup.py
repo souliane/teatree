@@ -42,6 +42,7 @@ class TestCleanupWorktree(TestCase):
         _mock_workspace(mock_config)
         mock_overlay.return_value.get_cleanup_steps.return_value = []
         mock_git.status_porcelain.return_value = ""
+        mock_git.unsynced_commits.return_value = []
 
         wt = self._make_worktree(wt_path="/tmp/wt/org/repo")
         wt_id = wt.pk
@@ -106,3 +107,64 @@ class TestCleanupWorktree(TestCase):
         cleanup_worktree(wt)
 
         assert not Worktree.objects.filter(pk=wt_id).exists()
+
+    @_patch_overlay
+    @_patch_git
+    @_patch_config
+    def test_raises_when_unsynced_commits_present(
+        self,
+        mock_config: MagicMock,
+        mock_git: MagicMock,
+        mock_overlay: MagicMock,
+    ) -> None:
+        _mock_workspace(mock_config)
+        mock_overlay.return_value.get_cleanup_steps.return_value = []
+        mock_git.status_porcelain.return_value = ""
+        mock_git.unsynced_commits.return_value = ["abc123 chore: cve fix"]
+
+        wt = self._make_worktree(wt_path="/tmp/wt/org/repo")
+        with self.assertRaises(RuntimeError, msg="unsynced commit"):
+            cleanup_worktree(wt)
+
+        mock_git.worktree_remove.assert_not_called()
+        mock_git.branch_delete.assert_not_called()
+
+    @_patch_overlay
+    @_patch_git
+    @_patch_config
+    def test_force_bypasses_unsynced_check(
+        self,
+        mock_config: MagicMock,
+        mock_git: MagicMock,
+        mock_overlay: MagicMock,
+    ) -> None:
+        _mock_workspace(mock_config)
+        mock_overlay.return_value.get_cleanup_steps.return_value = []
+        mock_git.status_porcelain.return_value = ""
+        mock_git.unsynced_commits.return_value = ["abc123 chore: cve fix"]
+
+        wt = self._make_worktree(wt_path="/tmp/wt/org/repo")
+        cleanup_worktree(wt, force=True)
+
+        mock_git.worktree_remove.assert_called_once()
+        mock_git.branch_delete.assert_called_once()
+
+    @_patch_overlay
+    @_patch_git
+    @_patch_config
+    def test_proceeds_normally_when_fully_synced(
+        self,
+        mock_config: MagicMock,
+        mock_git: MagicMock,
+        mock_overlay: MagicMock,
+    ) -> None:
+        _mock_workspace(mock_config)
+        mock_overlay.return_value.get_cleanup_steps.return_value = []
+        mock_git.status_porcelain.return_value = ""
+        mock_git.unsynced_commits.return_value = []
+
+        wt = self._make_worktree(wt_path="/tmp/wt/org/repo")
+        cleanup_worktree(wt)
+
+        mock_git.worktree_remove.assert_called_once()
+        mock_git.branch_delete.assert_called_once()
