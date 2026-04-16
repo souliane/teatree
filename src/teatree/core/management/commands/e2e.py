@@ -1,6 +1,7 @@
 """E2E test commands: trigger CI, run from external repo, run from project."""
 
 import os
+import re
 import socket
 import subprocess  # noqa: S404
 from dataclasses import dataclass, field
@@ -46,6 +47,30 @@ def _detect_local_port(port: int) -> int | None:
     return None
 
 
+def _detect_nx_serve_port(worktree_path: str) -> int | None:
+    """Find a running ``nx serve`` whose args contain *worktree_path* and extract ``--port``.
+
+    Prevents multi-worktree port collisions: a plain port scan finds the first
+    listening process and can pick up another worktree's frontend. Matching by
+    worktree path ensures we discover the right ``nx serve`` instance.
+    """
+    result = subprocess.run(  # noqa: S603
+        ["ps", "axo", "args"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    for line in result.stdout.splitlines():
+        if "nx serve" not in line or "--port=" not in line:
+            continue
+        if worktree_path not in line:
+            continue
+        match = re.search(r"--port=(\d+)", line)
+        if match:
+            return int(match.group(1))
+    return None
+
+
 def _clone_or_update_e2e_repo(repo: E2ERepo) -> Path:
     """Clone or update an external E2E repo to the local cache and return the playwright root.
 
@@ -80,7 +105,18 @@ def _resolve_private_tests_path() -> Path | None:
 
 
 def _discover_frontend_port(project: str, default: int = 4200) -> int | None:
-    """Discover frontend port: docker-compose → local port scan (4200-4210)."""
+    """Discover frontend port: nx serve match → docker-compose → local port scan.
+
+    nx serve process matching is tried first when a worktree env file is found.
+    A plain port scan would return the first listening port in the range, which
+    in multi-worktree setups can be another worktree's frontend.
+    """
+    cwd = _get_user_cwd()
+    envfile = _find_env_worktree(cwd)
+    if envfile is not None:
+        nx_port = _detect_nx_serve_port(str(envfile.parent))
+        if nx_port is not None:
+            return nx_port
     port = get_service_port(project, "frontend", default)
     if port is not None:
         return port
