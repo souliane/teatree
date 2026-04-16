@@ -2431,16 +2431,12 @@ class TestDetectNxServePort:
         return result
 
     def test_returns_port_when_nx_serve_matches_worktree_path(self) -> None:
-        ps_output = self._ps_output(
-            ["node nx serve --port=4210 /home/user/tickets/my-ticket/frontend"]
-        )
+        ps_output = self._ps_output(["node nx serve --port=4210 /home/user/tickets/my-ticket/frontend"])
         with patch.object(e2e_mod.subprocess, "run", return_value=ps_output):
             assert e2e_mod._detect_nx_serve_port("/home/user/tickets/my-ticket/frontend") == 4210
 
     def test_returns_none_when_worktree_path_does_not_match(self) -> None:
-        ps_output = self._ps_output(
-            ["node nx serve --port=4210 /home/user/tickets/other-ticket/frontend"]
-        )
+        ps_output = self._ps_output(["node nx serve --port=4210 /home/user/tickets/other-ticket/frontend"])
         with patch.object(e2e_mod.subprocess, "run", return_value=ps_output):
             assert e2e_mod._detect_nx_serve_port("/home/user/tickets/my-ticket/frontend") is None
 
