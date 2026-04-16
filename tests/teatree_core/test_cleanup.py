@@ -1,5 +1,6 @@
 from unittest.mock import MagicMock, patch
 
+import pytest
 from django.test import TestCase
 
 from teatree.core.cleanup import cleanup_worktree
@@ -123,7 +124,7 @@ class TestCleanupWorktree(TestCase):
         mock_git.unsynced_commits.return_value = ["abc123 chore: cve fix"]
 
         wt = self._make_worktree(wt_path="/tmp/wt/org/repo")
-        with self.assertRaises(RuntimeError, msg="unsynced commit"):
+        with pytest.raises(RuntimeError, match="unsynced commit"):
             cleanup_worktree(wt)
 
         mock_git.worktree_remove.assert_not_called()

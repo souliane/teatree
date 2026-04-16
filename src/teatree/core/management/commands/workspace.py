@@ -63,6 +63,26 @@ def _is_squash_merged(repo: str, branch: str, default: str) -> bool:
     return not diff
 
 
+def _prune_squash_merged(repo: str, name: str, wt_map: dict[str, str]) -> str:
+    """Remove a confirmed squash-merged branch (and its worktree if linked).
+
+    Returns a status message — either a SKIPPED notice when unsynced commits
+    are present or a confirmation that the branch was pruned.
+    """
+    unsynced = git.unsynced_commits(repo, name)
+    if unsynced:
+        return (
+            f"SKIPPED '{name}': {len(unsynced)} unsynced commit(s) — "
+            "push to a new branch:\n  " + "\n  ".join(unsynced)
+        )
+    wt_path = wt_map.get(name, "")
+    if wt_path:
+        git.worktree_remove(repo, wt_path)
+        git.run(repo=repo, args=["worktree", "prune"])
+    git.branch_delete(repo, name)
+    return f"Pruned squash-merged branch: {name}"
+
+
 def _prune_branches(repo: str) -> list[str]:
     """Delete local branches that are gone or merged.
 
@@ -109,19 +129,7 @@ def _prune_branches(repo: str) -> list[str]:
     for name in sorted(all_branches - protected):
         if not _is_squash_merged(repo, name, default):
             continue
-        unsynced = git.unsynced_commits(repo, name)
-        if unsynced:
-            cleaned.append(
-                f"SKIPPED '{name}': {len(unsynced)} unsynced commit(s) — "
-                "push to a new branch:\n  " + "\n  ".join(unsynced)
-            )
-            continue
-        wt_path = wt_map.get(name, "")
-        if wt_path:
-            git.worktree_remove(repo, wt_path)
-            git.run(repo=repo, args=["worktree", "prune"])
-        git.branch_delete(repo, name)
-        cleaned.append(f"Pruned squash-merged branch: {name}")
+        cleaned.append(_prune_squash_merged(repo, name, wt_map))
 
     # Pass 4: warn about remaining non-protected branches with no merged PR.
     # Re-read after deletions above.
