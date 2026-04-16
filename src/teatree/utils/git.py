@@ -48,6 +48,16 @@ def log_oneline(repo: str = ".", range_spec: str = "") -> str:
     return run(repo=repo, args=["log", "--oneline", range_spec])
 
 
+def unsynced_commits(repo: str, branch: str) -> list[str]:
+    """Return one-line commit descriptions on *branch* not reachable from any remote.
+
+    An empty list means the branch is fully synced.
+    Uses ``git log <branch> --not --remotes --oneline``.
+    """
+    output = run(repo=repo, args=["log", branch, "--not", "--remotes", "--oneline"])
+    return [line for line in output.splitlines() if line.strip()]
+
+
 def status_porcelain(repo: str = ".") -> str:
     return run(repo=repo, args=["status", "--porcelain"])
 
