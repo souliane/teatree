@@ -711,6 +711,7 @@ class TestWorkspaceCleanAll(TestCase):
             ):
                 mock_overlay.return_value.get_cleanup_steps.return_value = []
                 mock_git.status_porcelain.return_value = ""
+                mock_git.unsynced_commits.return_value = []
                 cleaned = cast("list[str]", call_command("workspace", "clean-all"))
 
             assert any("Cleaned: backend" in c for c in cleaned)
@@ -990,6 +991,72 @@ class TestPruneBranches(TestCase):
         assert any("squash-merged" in c for c in cleaned)
         mock_wt_rm.assert_called_once_with("/repo", "/tmp/old-worktree")
         mock_br_del.assert_called_once_with("/repo", "gone-branch")
+
+    def test_pass3_blocks_squash_merged_branch_with_unsynced_commits(self) -> None:
+        wt_map = {"gone-branch": "/tmp/old-worktree"}
+
+        def fake_run(*, repo: str = ".", args: list[str]) -> str:
+            if args == ["branch", "-v", "--no-color"]:
+                return "  gone-branch abc123 [gone] some msg"
+            if args == ["branch", "--merged", "origin/main", "--no-color"]:
+                return ""
+            if args == ["branch", "--no-color"]:
+                return "* main\n  gone-branch"
+            if args == ["worktree", "list", "--porcelain"]:
+                return "worktree /tmp/old-worktree\nHEAD abc123\nbranch refs/heads/gone-branch\n"
+            return ""
+
+        gh_merged = subprocess.CompletedProcess([], 0, stdout='[{"number":1}]')
+        with (
+            patch.object(workspace_mod, "_workspace_dir", return_value=Path("/tmp/ws")),
+            patch.object(workspace_mod, "_worktree_map", return_value=wt_map),
+            patch.object(workspace_mod, "_worktree_branches", return_value={"gone-branch"}),
+            patch.object(git_mod, "run", side_effect=fake_run),
+            patch.object(git_mod, "current_branch", return_value="main"),
+            patch.object(git_mod, "default_branch", return_value="main"),
+            patch.object(git_mod, "unsynced_commits", return_value=["abc123 chore: cve fix"]),
+            patch.object(git_mod, "worktree_remove", return_value=True) as mock_wt_rm,
+            patch.object(git_mod, "branch_delete", return_value=True) as mock_br_del,
+            patch("teatree.core.management.commands.workspace.subprocess.run", return_value=gh_merged),
+        ):
+            cleaned = workspace_mod._prune_branches("/repo")
+
+        assert any("SKIPPED" in c and "gone-branch" in c for c in cleaned)
+        mock_wt_rm.assert_not_called()
+        mock_br_del.assert_not_called()
+
+    def test_pass3_proceeds_normally_when_fully_synced(self) -> None:
+        wt_map = {"gone-branch": "/tmp/old-worktree"}
+
+        def fake_run(*, repo: str = ".", args: list[str]) -> str:
+            if args == ["branch", "-v", "--no-color"]:
+                return "  gone-branch abc123 [gone] some msg"
+            if args == ["branch", "--merged", "origin/main", "--no-color"]:
+                return ""
+            if args == ["branch", "--no-color"]:
+                return "* main\n  gone-branch"
+            if args == ["worktree", "list", "--porcelain"]:
+                return "worktree /tmp/old-worktree\nHEAD abc123\nbranch refs/heads/gone-branch\n"
+            return ""
+
+        gh_merged = subprocess.CompletedProcess([], 0, stdout='[{"number":1}]')
+        with (
+            patch.object(workspace_mod, "_workspace_dir", return_value=Path("/tmp/ws")),
+            patch.object(workspace_mod, "_worktree_map", return_value=wt_map),
+            patch.object(workspace_mod, "_worktree_branches", return_value={"gone-branch"}),
+            patch.object(git_mod, "run", side_effect=fake_run),
+            patch.object(git_mod, "current_branch", return_value="main"),
+            patch.object(git_mod, "default_branch", return_value="main"),
+            patch.object(git_mod, "unsynced_commits", return_value=[]),
+            patch.object(git_mod, "worktree_remove", return_value=True) as mock_wt_rm,
+            patch.object(git_mod, "branch_delete", return_value=True) as mock_br_del,
+            patch("teatree.core.management.commands.workspace.subprocess.run", return_value=gh_merged),
+        ):
+            cleaned = workspace_mod._prune_branches("/repo")
+
+        assert any("squash-merged" in c for c in cleaned)
+        mock_wt_rm.assert_called_once()
+        mock_br_del.assert_called_once()
 
 
 class TestPruneBranchesPassOneAndTwo(TestCase):
