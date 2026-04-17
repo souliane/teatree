@@ -106,7 +106,7 @@ class TestUvicorn:
             _uvicorn_fn(tmp_path, "127.0.0.1", 8000, "myapp.settings")
             mock_run.assert_called_once()
             call_args = mock_run.call_args[0][0]
-            assert call_args[0].endswith("/uv")
+            assert Path(call_args[0]).name == "uv"
             assert call_args[1:3] == ["--directory", str(tmp_path)]
             assert "uvicorn" in str(call_args)
             assert "teatree.asgi:application" in str(call_args)
