@@ -30,6 +30,7 @@ for py in "${versions[@]}"; do
     mkdir -p "$venv_dir"
     if docker run --rm \
         --user "$(id -u):$(id -g)" \
+        -e HOME=/tmp \
         -v "$PWD":/app:ro \
         -v "${venv_dir}":/tmp/.venv \
         -v "${CACHE_DIR}/uv":/tmp/.uv \
