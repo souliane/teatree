@@ -19,9 +19,9 @@ jobs:
       - run: uv sync
       - uses: j178/prek-action@v2
         env:
-          SKIP: pytest,safety
+          SKIP: pytest,pip-audit
 
-  safety:
+  pip-audit:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -35,7 +35,7 @@ jobs:
       - run: |
           tmp=$(mktemp)
           uv export --no-hashes --dev -o "$tmp"
-          uv run safety check -r "$tmp" --full-report
+          uv run pip-audit -r "$tmp"
 
   test:
     runs-on: ubuntu-latest
