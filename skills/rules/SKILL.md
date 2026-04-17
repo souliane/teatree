@@ -45,7 +45,7 @@ _Adapted from [superpowers/verification-before-completion](https://github.com/ob
 
 ## User Instructions Are Priority 1 (Non-Negotiable)
 
-When the user gives a direct, explicit instruction (`--no-verify`, skip tests, push now, use this approach), execute it IMMEDIATELY. Do not try a "better" approach first, do not retry the same failing approach hoping it works, and do not silently substitute your own plan. Execute the instruction first (it's fast and safe), then suggest an alternative if you have one.
+When the user gives a direct, explicit instruction (skip tests, push now, use this approach), execute it IMMEDIATELY. Do not try a "better" approach first, do not retry the same failing approach hoping it works, and do not silently substitute your own plan. Execute the instruction first (it's fast and safe), then suggest an alternative if you have one.
 
 ## Context Transparency (Non-Negotiable)
 
@@ -174,7 +174,7 @@ When implementation is complete (all files written, tests pass or verified), **c
 
 ## Pre-Commit Hook Failures on Unrelated Tests (Non-Negotiable)
 
-When a pre-commit hook runs the full test suite and fails on tests **unrelated to your changes** (pre-existing failures), do not fix them one by one in a loop. After the **second** unrelated failure, stop and tell the user: the hook is failing on pre-existing test issues, recommend `--no-verify` for this commit, and list the failing tests so they can be fixed separately.
+When a pre-commit hook runs the full test suite and fails on tests **unrelated to your changes** (pre-existing failures), do not fix them one by one in a loop. After the **second** unrelated failure, stop and tell the user: the hook is failing on pre-existing test issues, and list the failing tests so they can be fixed separately. Never suggest or use `--no-verify` — see `t3:ship § Never use --no-verify`.
 
 ## Worktree-First Work (Non-Negotiable)
 
