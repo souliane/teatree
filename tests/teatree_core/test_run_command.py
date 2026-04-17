@@ -294,7 +294,7 @@ class TestCliOverlay:
 
         assert mock_run.call_count == 1
         cmd = mock_run.call_args[0][0]
-        assert cmd[0].endswith("/uv")
+        assert Path(cmd[0]).name == "uv"
         assert cmd[1:3] == ["--directory", str(tmp_path)]
         assert cmd[-2:] == ["migrate", "--no-input"]
 
@@ -308,7 +308,7 @@ class TestCliOverlay:
 
         assert mock_run.call_count == 1
         cmd = mock_run.call_args[0][0]
-        assert cmd[0].endswith("/uv")
+        assert Path(cmd[0]).name == "uv"
         assert cmd[1:3] == ["--directory", str(tmp_path)]
         assert "uvicorn" in cmd
         assert "teatree.asgi:application" in cmd

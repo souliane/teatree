@@ -51,6 +51,58 @@ _T3_CLI_REMINDER = (
     "If a `t3` command fails, fix the `t3` code — do not work around it."
 )
 
+# Commands that are legitimate t3 CLI invocations — never block these.
+_T3_CMD_PREFIX_RE = re.compile(
+    r"^(?:\w+=\S+\s+)*(?:uv\s+run\s+)?t3\s",
+)
+
+# Read-only commands that may mention infrastructure tools as arguments
+# (e.g. grep for 'playwright', echo about manage.py) — never block these.
+_READONLY_CMD_PREFIX_RE = re.compile(
+    r"^(?:echo|printf|cat|grep|rg|awk|sed|head|tail|less|wc|file|#)",
+)
+
+# Forbidden command patterns → deny messages.  Each entry is
+# (compiled regex matching the Bash command, human-readable deny reason).
+_BLOCKED_COMMANDS: list[tuple[re.Pattern[str], str]] = [
+    (
+        re.compile(r"manage\.py\s+runserver"),
+        "BLOCKED: `manage.py runserver` — use `t3 <overlay> lifecycle start` instead.",
+    ),
+    (
+        re.compile(r"manage\.py\s+migrate"),
+        "BLOCKED: `manage.py migrate` — use `t3 <overlay> lifecycle setup` instead.",
+    ),
+    (
+        re.compile(r"\bnx\s+serve\b"),
+        "BLOCKED: `nx serve` — use `t3 <overlay> lifecycle start` instead.",
+    ),
+    (
+        re.compile(r"\bdocker\s+compose\s+(?:up|start)\b"),
+        "BLOCKED: `docker compose up/start` — use `t3 <overlay> lifecycle start` instead.",
+    ),
+    (
+        re.compile(r"\b(?:createdb|dropdb)\b"),
+        "BLOCKED: `createdb`/`dropdb` — use `t3 <overlay> db reset` instead.",
+    ),
+    (
+        re.compile(r"\b(?:npx\s+)?playwright\s+test\b"),
+        "BLOCKED: `playwright test` — use `t3 <overlay> e2e` instead.",
+    ),
+    (
+        re.compile(r"\bnpm\s+run\b"),
+        "BLOCKED: `npm run` — use `t3 <overlay> run frontend` instead.",
+    ),
+    (
+        re.compile(r"\b(?:pipenv|pip)\s+install\b"),
+        "BLOCKED: `pip/pipenv install` — use `t3 <overlay> lifecycle setup` instead.",
+    ),
+    (
+        re.compile(r"\b(?:pg_restore|pg_dump|dslr)\b"),
+        "BLOCKED: `pg_restore`/`pg_dump`/`dslr` — use `t3 <overlay> db refresh` instead.",
+    ),
+]
+
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Unified hook router")
@@ -154,26 +206,27 @@ def handle_user_prompt_submit(data: dict) -> None:
 # ── PreToolUse: enforce-skill-loading ───────────────────────────────
 
 
-def handle_enforce_skill_loading(data: dict) -> None:
+def handle_enforce_skill_loading(data: dict) -> bool:
     """Block Bash/Edit/Write when suggested skills haven't been loaded."""
     session_id = data.get("session_id", "")
     if not session_id:
-        return
+        return False
 
     pending_lines = _read_lines(_state_file(session_id, "pending"))
     if not pending_lines:
-        return
+        return False
 
     loaded = set(_read_lines(_state_file(session_id, "skills")))
     unloaded = [f"/{s}" for s in pending_lines if s not in loaded]
     if not unloaded:
-        return
+        return False
 
     reason = (
         f"SKILL LOADING ENFORCEMENT: You MUST load these skills first: {' '.join(unloaded)}. "
         "Call the Skill tool for each one BEFORE calling Bash/Edit/Write."
     )
     json.dump({"permissionDecision": "deny", "permissionDecisionReason": reason}, sys.stdout)
+    return True
 
 
 # ── PreToolUse: protect-default-branch ─────────────────────────────
@@ -200,15 +253,15 @@ def _load_protected_branches() -> set[str]:
     return branches
 
 
-def handle_protect_default_branch(data: dict) -> None:
+def handle_protect_default_branch(data: dict) -> bool:
     """Block Edit/Write on files that live on a protected branch."""
     tool_name = data.get("tool_name", "")
     if tool_name not in _FILE_PATH_TOOLS:
-        return
+        return False
 
     file_path = data.get("tool_input", {}).get("file_path", "")
     if not file_path:
-        return
+        return False
 
     parent = str(Path(file_path).parent)
     try:
@@ -219,7 +272,7 @@ def handle_protect_default_branch(data: dict) -> None:
             stderr=subprocess.DEVNULL,
         ).strip()
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
-        return
+        return False
 
     if branch in _load_protected_branches():
         json.dump(
@@ -232,6 +285,8 @@ def handle_protect_default_branch(data: dict) -> None:
             },
             sys.stdout,
         )
+        return True
+    return False
 
 
 # ── PreToolUse: validate-mr-metadata ────────────────────────────────
@@ -255,15 +310,15 @@ def _extract_mr_fields(data: dict) -> tuple[str, str]:
     return "", ""
 
 
-def handle_validate_mr_metadata(data: dict) -> None:
+def handle_validate_mr_metadata(data: dict) -> bool:
     """Validate MR title/description against project-specific rules."""
     validate_script = os.environ.get("T3_MR_VALIDATE_SCRIPT", "")
     if not validate_script or not Path(validate_script).is_file():
-        return
+        return False
 
     title, description = _extract_mr_fields(data)
     if not title:
-        return
+        return False
 
     try:
         subprocess.run(  # noqa: S603
@@ -278,8 +333,10 @@ def handle_validate_mr_metadata(data: dict) -> None:
             {"permissionDecision": "deny", "permissionDecisionReason": exc.stdout or exc.stderr},
             sys.stdout,
         )
+        return True
     except (subprocess.TimeoutExpired, FileNotFoundError):
         pass
+    return False
 
 
 # ── PostToolUse: track-active-repo ──────────────────────────────────
@@ -512,11 +569,53 @@ def handle_session_end(data: dict) -> None:
     )
 
 
+# ── PreToolUse: block-direct-commands ────────────────────────────────
+
+
+def handle_block_direct_commands(data: dict) -> bool:
+    """Block Bash commands that bypass the t3 CLI.
+
+    Returns True when a deny was emitted (caller should stop the handler chain).
+    """
+    if data.get("tool_name") != "Bash":
+        return False
+
+    command = data.get("tool_input", {}).get("command", "")
+    if not command:
+        return False
+
+    stripped = command.lstrip()
+
+    # Never block legitimate t3 invocations.
+    if _T3_CMD_PREFIX_RE.match(stripped):
+        return False
+
+    # Never block read-only commands that may mention tools in arguments.
+    if _READONLY_CMD_PREFIX_RE.match(stripped):
+        return False
+
+    for pattern, reason in _BLOCKED_COMMANDS:
+        if pattern.search(command):
+            suffix = " If `t3` fails, fix the CLI — do not work around it."
+            json.dump(
+                {"permissionDecision": "deny", "permissionDecisionReason": reason + suffix},
+                sys.stdout,
+            )
+            return True
+
+    return False
+
+
 # ── Router ──────────────────────────────────────────────────────────
 
 _HANDLERS: dict[str, list] = {
     "UserPromptSubmit": [handle_user_prompt_submit],
-    "PreToolUse": [handle_protect_default_branch, handle_enforce_skill_loading, handle_validate_mr_metadata],
+    "PreToolUse": [
+        handle_protect_default_branch,
+        handle_enforce_skill_loading,
+        handle_block_direct_commands,
+        handle_validate_mr_metadata,
+    ],
     "PostToolUse": [handle_track_active_repo, handle_track_skill_usage, handle_read_dedup],
     "InstructionsLoaded": [handle_track_skill_usage],
     "PostCompact": [handle_post_compact],
@@ -535,7 +634,10 @@ def main() -> None:
         return
 
     for handler in handlers:
-        handler(data)
+        # Handlers that return True emitted a deny — stop the chain to avoid
+        # writing multiple JSON objects to stdout (which would be invalid JSON).
+        if handler(data) is True:
+            break
 
 
 if __name__ == "__main__":
