@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 # Run tests in Docker across all supported Python versions (mirrors CI).
 # Uses a cached image with apt packages + uv pre-installed.
+# Caches uv data (Python installs) and venvs between runs to avoid re-downloading.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 IMAGE="teatree-test"
+CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/teatree-test"
+mkdir -p "${CACHE_DIR}/uv"
 failed=0
 versions=(3.13)
 total=${#versions[@]}
@@ -23,9 +26,15 @@ for py in "${versions[@]}"; do
     # Capture output to a temp file — piping 1600+ test lines through
     # Docker → git pre-push hook overflows the stderr buffer (Rust panic).
     tmpout=$(mktemp)
+    venv_dir="${CACHE_DIR}/venv-${py}"
+    mkdir -p "$venv_dir"
     if docker run --rm \
         -v "$PWD":/app:ro \
+        -v "${venv_dir}":/tmp/.venv \
+        -v "${CACHE_DIR}/uv":/tmp/.uv \
         -e UV_PROJECT_ENVIRONMENT=/tmp/.venv \
+        -e UV_CACHE_DIR=/tmp/.uv/cache \
+        -e UV_PYTHON_INSTALL_DIR=/tmp/.uv/python \
         -e COVERAGE_FILE=/tmp/.coverage \
         "$IMAGE" \
         uv run -p "$py" pytest --no-header --no-cov -q --tb=short \
