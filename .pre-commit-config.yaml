@@ -189,11 +189,11 @@ repos:
         pass_filenames: false
         always_run: true
 
-  # Phase 8 - Slow (safety)
+  # Phase 8 - Slow (pip-audit)
   - repo: local
     hooks:
-      - id: safety
-        name: safety
+      - id: pip-audit
+        name: pip-audit
         language: system
         entry: >
           bash -c "
@@ -201,7 +201,7 @@ repos:
           tmp=$(mktemp)
           trap 'rm -f \"$tmp\"' EXIT
           uv export --no-hashes --dev -o \"$tmp\"
-          uv run safety check -r \"$tmp\" --full-report
+          uv run pip-audit -r \"$tmp\"
           "
         pass_filenames: false
         files: ^(pyproject\.toml|uv\.lock)$
