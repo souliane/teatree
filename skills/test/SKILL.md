@@ -56,7 +56,7 @@ Running tests, analyzing failures, quality checks, CI interaction, test plans, a
 
 **Full worktree per MR (Non-Negotiable):** Each MR under test MUST have its own full worktree setup (backend + frontend via `t3 lifecycle setup` + `t3 lifecycle start`). Never mix backends from one worktree with frontends from another. Never patch an incomplete worktree by hand — if it's missing repos, env files, or DB, delete it and start over with `t3 workspace ticket`. Anti-pattern: manually adding repos with `git worktree add`, copying env files, editing `.env.worktree` by hand.
 
-**E2E for backend/API changes (Non-Negotiable):** When backend or microservice changes affect data visible in the frontend (e.g., webhook payload fields, API serializer fields, new model fields exposed via API), E2E tests are still required even if there is no frontend MR. The frontend form already has the fields — E2E proves the end-to-end data flow. Do NOT skip E2E just because the change is "backend-only."
+**E2E for backend/API changes:** When backend or microservice changes affect data visible in the frontend (e.g., webhook payload fields, API serializer fields, new model fields exposed via API), E2E tests are still required even if there is no frontend MR. The frontend form already has the fields — E2E proves the end-to-end data flow. Do NOT skip E2E just because the change is "backend-only."
 
 **`storageState` in Playwright:** `test.use({ storageState: undefined })` means "use default" (inherits global setup state). For truly unauthenticated tests, use `test.use({ storageState: { cookies: [], origins: [] } })`.
 
@@ -74,9 +74,9 @@ E2E and integration tests ideally live in the project repo they test (e.g., the 
 
 **Prerequisites:** Always start dev servers via `t3 lifecycle start` (see `/t3:workspace`) before running tests. Never start services manually. Before running E2E tests, verify that **translations are loaded** — the frontend i18n directory is gitignored and only populated at startup (by `t3 lifecycle start`). If the frontend was started manually, translations will be missing. Quick check: open any page and confirm labels show human-readable text, not raw keys like `app.feature.xxx.label`.
 
-**Test depth (Non-Negotiable):** Don't just verify "page loads with 200". Read the source code to understand what the feature does, then test specific behaviors: form fields, filters, CRUD operations, access control, edge cases.
+**Test depth:** Don't just verify "page loads with 200". Read the source code to understand what the feature does, then test specific behaviors: form fields, filters, CRUD operations, access control, edge cases.
 
-**Component placement (Non-Negotiable):** Before writing E2E tests for a UI component, check the **routing module** to find which page/route renders it. Components may only appear at specific wizard steps or behind navigation — not on the page you'd naively navigate to. Grep for the component selector in `.html` templates to find its host, then check the routing module for the URL path.
+**Component placement:** Before writing E2E tests for a UI component, check the **routing module** to find which page/route renders it. Components may only appear at specific wizard steps or behind navigation — not on the page you'd naively navigate to. Grep for the component selector in `.html` templates to find its host, then check the routing module for the URL path.
 
 **Test integrity (Non-Negotiable):** Never weaken, simplify, or remove test cases to work around failures. If a test fails, fix the underlying issue (environment, selectors, timing) — don't dilute the test. Tests must cover both happy paths and edge cases.
 
@@ -214,13 +214,13 @@ Upload via the platform's file upload API and get the markdown embed syntax. See
 
 **Video embedding:** Use the same `![alt](url)` markdown syntax as images. GitLab auto-detects video formats (.webm, .mov, .mp4) and renders an inline player. Do NOT use `<video>` HTML tags — they don't work in GitLab markdown.
 
-### 2. Post or Update Comment — Always Use Python (Non-Negotiable)
+### 2. Post or Update Comment — Always Use Python
 
 Shell variable interpolation and `jq --arg` both escape `!` to `\!`, breaking image syntax `![alt](url)`. **Always** use inline Python with the note body as a heredoc string — see [`../t3:rules/SKILL.md`](../t3:rules/SKILL.md) § "Temp File Safety" for the full rules. See your [issue tracker platform reference](../t3:platforms/references/) § "MR Notes (Comments)" for the complete Python recipe.
 
 When editing: check the verified boxes (`- [ ]` → `- [x]`), insert screenshot markdown below the relevant section, leave unchecked items as-is.
 
-### Visual Comparison Format (Non-Negotiable)
+### Visual Comparison Format
 
 Evidence screenshots must always use a **side-by-side comparison table**. Minimum 2 columns, up to 3 when a design mockup is available.
 
@@ -254,12 +254,12 @@ Evidence screenshots must always use a **side-by-side comparison table**. Minimu
 - **Clickable references:** Every MR, ticket, or note reference must be a markdown link — see [`../t3:rules/SKILL.md`](../t3:rules/SKILL.md) § "Clickable References".
 - Write in first person, casual tone ("Tested on local...", "Works as expected")
 - **Never mention automation, E2E, Playwright, or scripts** — must read as manual testing
-- **Update the existing test plan (Non-Negotiable)** — never post a second evidence comment. Always GET existing notes first, find the test plan, and PUT to update it.
+- **Update the existing test plan** — never post a second evidence comment. Always GET existing notes first, find the test plan, and PUT to update it.
 - If a separate evidence comment already exists, delete it after merging evidence into the test plan
 - **Don't post code findings as bugs without asking the user first.** Behavior that looks like a bug may be intentional. Ask "Is this expected?" before posting a finding on the MR.
-- **Match evidence type to MR type (Non-Negotiable).** UI screenshots are evidence for frontend MRs. Backend MRs need backend evidence: unit test output, API response diffs, or logs. Don't post frontend screenshots on a backend-only MR — they prove the frontend works, not the backend fix. When both MRs exist, put screenshots on the frontend MR and reference it from the backend MR.
+- **Match evidence type to MR type.** UI screenshots are evidence for frontend MRs. Backend MRs need backend evidence: unit test output, API response diffs, or logs. Don't post frontend screenshots on a backend-only MR — they prove the frontend works, not the backend fix. When both MRs exist, put screenshots on the frontend MR and reference it from the backend MR.
 
-## Re-Read Before Debugging (Non-Negotiable)
+## Re-Read Before Debugging
 
 When an E2E test fails or the environment misbehaves, **re-read this skill's verification sections** (Screenshot Sanity Check, Store Contamination Check, Establish Baseline) before spending more than 2 minutes on ad-hoc debugging. Skill guidance loaded at the start of a long session gets compressed out of active context — re-reading takes 10 seconds and prevents 30-minute debugging detours.
 
@@ -291,7 +291,7 @@ Before claiming E2E success or posting screenshots as evidence, **visually inspe
 
 A screenshot with raw translation keys is **not valid evidence** — it proves the environment was broken, not that the feature works. A screenshot that doesn't show the tested element is **not valid evidence** either — it proves nothing.
 
-### Store Contamination Check (Non-Negotiable)
+### Store Contamination Check
 
 E2E tests for features that load data via a state management store must verify the data is loaded **from the tested page**, not from a prior navigation. If you visit page A (which dispatches a data load into the store) and then navigate to page B (which reads from the store but never dispatches the load itself), page B will appear to work — but only because page A pre-populated the store.
 
