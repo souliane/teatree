@@ -140,13 +140,21 @@ Destroying MR dependency chains wastes hours of carefully organized work.
 
 On **every prompt**, use `TaskCreate` to create tasks before doing any work — even for a single task. Mark each task `in_progress` when starting, `completed` when done. Never skip this. Visible task tracking prevents forgotten steps and shows the user your progress.
 
+- **Simple tasks** (1-2 steps): a brief bullet list in the response is sufficient.
+- **Complex tasks** (3+ steps): use the task tracking tools for each step, update status as you go.
+- **Never skip this.** If you find yourself doing 3+ things without a plan, stop and create one.
+
 ## Always Use AskUserQuestion for Questions (Non-Negotiable)
 
 **Never ask questions inline in text responses.** Always use the `AskUserQuestion` tool — it gives the user a structured UI to respond and prevents questions from being buried in output. One question at a time; wait for the answer before asking the next.
 
 ## Never Push Without Separate Explicit Approval (Non-Negotiable)
 
-Commit approval ≠ push approval. Always ask "Push?" as a **separate question** after committing. This applies to all repos, all contexts — even when the user said "yes" to committing. (Safety net — source: `t3:ship § Never push without explicit approval`)
+Commit approval ≠ push approval. **Squash approval ≠ push approval. "All done" ≠ push approval. Rebase approval ≠ force-push approval.** Always present the final state and ask "Push?" as a **separate question** after committing, squashing, or rebasing — use `AskUserQuestion`, not an inline question.
+
+- **Force-push (`--force-with-lease`)**: get separate explicit confirmation even if the user already approved the rebase. A rebase and a force-push are two decisions.
+- **Never use `--no-verify`** on any git command — commit, push, nothing. If a hook fails, fix the underlying issue.
+- Applies to all repos, all contexts, all branches.
 
 ## Run Retro Before Ending Non-Trivial Sessions (Non-Negotiable)
 
@@ -179,6 +187,8 @@ When a pre-commit hook runs the full test suite and fails on tests **unrelated t
 ## Worktree-First Work (Non-Negotiable)
 
 **All development work MUST happen in a worktree**, never on the main clone. Use `t3 workspace ticket` or the `using-git-worktrees` skill to create one before writing any code.
+
+**Pre-edit check — before editing ANY project file:** If the file path lives directly under `$T3_WORKSPACE_DIR/<repo>/` (not under a ticket subdirectory like `$T3_WORKSPACE_DIR/<ticket>/<repo>/`), **stop** — you are in the main clone. Find or create the correct worktree first via `t3 workspace ticket`. The main clone may happen to be on the MR branch (from a previous checkout) — editing there "works" but pollutes the shared clone, risks merge conflicts for other worktrees, and violates isolation.
 
 **Collision detection — check on EVERY file write or git operation:**
 

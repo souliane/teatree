@@ -94,13 +94,9 @@ All workspace operations go through the `t3` CLI. Run `t3 <overlay> --help` for 
 
 ## Rules
 
-### Plan Before Executing (Non-Negotiable)
+### Plan Before Executing
 
-Before starting any multi-step task, **create a TODO list** using the task tracking tools. This applies to all phases (setup, coding, testing, shipping) — not just coding. Never tackle work without a visible plan. The plan keeps the user informed and prevents forgetting steps.
-
-- **Simple tasks** (1-2 steps): a brief bullet list in the response is sufficient.
-- **Complex tasks** (3+ steps): use the agent's task tracking tools for each step, update status as you go.
-- **Never skip this.** If you find yourself doing 3+ things without a plan, stop and create one.
+Canonical rule: see [`../t3:rules/SKILL.md`](../t3:rules/SKILL.md) § "Always Create Tasks". Covers simple vs complex task thresholds and the "never skip" clause.
 
 ### Fix the CLI, Never Work Around It (Non-Negotiable)
 
@@ -128,13 +124,9 @@ Use the `t3` CLI (`t3 lifecycle start`, `t3 run backend`, `t3 run frontend`, etc
 
 Direct commands bypass these safeguards, causing subtle failures (wrong DB, port collisions, missing migrations).
 
-### Never Edit Files in the Main Clone (Non-Negotiable)
+### Never Edit Files in the Main Clone
 
-Before editing **any** project file, verify you are working in a **worktree**, not the main clone. The main repo clone (the directory directly under `$T3_WORKSPACE_DIR` with the default branch) is for `git fetch`, branch management, and worktree creation — never for code changes.
-
-**Pre-edit check:** If the file you are about to edit lives directly under `$T3_WORKSPACE_DIR/<repo>/` (not under a ticket subdirectory like `$T3_WORKSPACE_DIR/<ticket>/<repo>/`), **stop** — you are in the main clone. Find or create the correct worktree first via `t3 workspace ticket`.
-
-Common failure: the main clone happens to be on the MR branch (from a previous checkout). Editing there "works" but pollutes the shared clone, risks merge conflicts for other worktrees, and violates isolation.
+Canonical rule: see [`../t3:rules/SKILL.md`](../t3:rules/SKILL.md) § "Worktree-First Work". Covers the pre-edit path check and collision detection.
 
 ### Full Worktree Isolation (Non-Negotiable)
 
