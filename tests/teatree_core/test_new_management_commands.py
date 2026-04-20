@@ -896,6 +896,61 @@ class TestWorkspaceCleanAll(TestCase):
 
         assert any("old-snapshot-2025" in c for c in cleaned)
 
+    @_no_prune
+    @_no_stash
+    @_no_orphan_dbs
+    @_no_dslr_prune
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_continues_when_one_worktree_refuses_cleanup(self) -> None:
+        """clean-all skips worktrees with unsynced commits and still cleans the rest."""
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp) / "workspace"
+            for repo in ("frontend", "backend"):
+                repo_main = workspace / repo
+                repo_main.mkdir(parents=True)
+                (repo_main / ".git").mkdir()
+
+            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/360")
+            stuck_wt_dir = workspace / "ac-frontend-360-ticket" / "frontend"
+            stuck_wt_dir.mkdir(parents=True)
+            Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="frontend",
+                branch="ac-frontend-360-ticket",
+                extra={"worktree_path": str(stuck_wt_dir)},
+            )
+            clean_wt_dir = workspace / "ac-backend-360-ticket" / "backend"
+            clean_wt_dir.mkdir(parents=True)
+            Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="backend",
+                branch="ac-backend-360-ticket",
+                extra={"worktree_path": str(clean_wt_dir)},
+            )
+
+            def _unsynced(_repo: str, branch: str) -> list[str]:
+                return ["abc123 chore: unpushed"] if branch == "ac-frontend-360-ticket" else []
+
+            mock_config = MagicMock()
+            mock_config.user.workspace_dir = workspace
+            with (
+                patch.object(cleanup_mod, "load_config", return_value=mock_config),
+                patch.object(cleanup_mod, "git") as mock_git,
+                patch.object(cleanup_mod, "get_overlay") as mock_overlay,
+            ):
+                mock_overlay.return_value.get_cleanup_steps.return_value = []
+                mock_git.status_porcelain.return_value = ""
+                mock_git.unsynced_commits.side_effect = _unsynced
+                cleaned = cast("list[str]", call_command("workspace", "clean-all"))
+
+            assert any("Cleaned: backend" in c for c in cleaned)
+            assert any("ac-frontend-360-ticket" in c and "unsynced" in c.lower() for c in cleaned)
+            assert Worktree.objects.filter(branch="ac-backend-360-ticket").count() == 0
+            assert Worktree.objects.filter(branch="ac-frontend-360-ticket").count() == 1
+
 
 def _subprocess_side_effect(gh_stdout: str, glab_stdout: str):
     """Return a side_effect function that dispatches mock stdout based on the CLI command."""
