@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 @dataclass(slots=True)
 class SyncResult:
     mrs_found: int = 0
+    issues_found: int = 0
     tickets_created: int = 0
     tickets_updated: int = 0
     labels_fetched: int = 0
@@ -97,6 +98,7 @@ def _merge_results(a: SyncResult, b: SyncResult) -> SyncResult:
     """Merge two SyncResult instances, summing counts and concatenating lists."""
     return SyncResult(
         mrs_found=a.mrs_found + b.mrs_found,
+        issues_found=a.issues_found + b.issues_found,
         tickets_created=a.tickets_created + b.tickets_created,
         tickets_updated=a.tickets_updated + b.tickets_updated,
         labels_fetched=a.labels_fetched + b.labels_fetched,

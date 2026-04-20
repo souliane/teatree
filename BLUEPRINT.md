@@ -102,7 +102,7 @@ src/teatree/
     github_sync.py      # GitHubSyncBackend — Projects v2 board + reviewer PR sync
     gitlab.py           # GitLab API client (httpx)
     gitlab_ci.py        # GitLab CI pipeline operations
-    gitlab_sync.py      # GitLabSyncBackend — MR upsert, issue labels, merged MR cleanup, Slack review permalinks
+    gitlab_sync.py      # GitLabSyncBackend — MR upsert, assigned-issue upsert, labels, merged MR cleanup, Slack review permalinks
     slack.py            # Slack notifications
     notion.py           # Notion integration
     sentry.py           # Sentry error tracking

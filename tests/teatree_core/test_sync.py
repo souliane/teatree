@@ -1,6 +1,7 @@
 from collections.abc import Iterator
 from unittest.mock import MagicMock, patch
 
+import httpx
 import pytest
 from django.core.cache import cache
 from django.test import TestCase
@@ -8,6 +9,7 @@ from django.test import TestCase
 import teatree.core.overlay_loader as overlay_loader_mod
 from teatree.backends.gitlab_api import ProjectInfo
 from teatree.backends.gitlab_sync import GitLabSyncBackend
+from teatree.backends.slack_review_sync import fetch_review_permalinks
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay import OverlayBase, OverlayConfig, ProvisionStep
 from teatree.core.overlay_loader import reset_overlay_cache
@@ -145,6 +147,7 @@ def _make_mock_client(mrs: list[dict]) -> MagicMock:
     mock = MagicMock()
     mock.list_open_mrs.return_value = mrs
     mock.list_all_open_mrs.return_value = mrs
+    mock.list_open_issues_for_assignee.return_value = []
     mock.list_recently_merged_mrs.return_value = []
     mock.resolve_project.return_value = _PROJECT
     mock.get_mr_pipeline.return_value = {"status": "success", "url": "https://gitlab.com/pipelines/1"}
@@ -585,7 +588,7 @@ class TestFetchReviewPermalinks(TestCase):
         overlay = SyncOverlay(slack_token="", review_channel=("", ""))
         with _patch_overlay(overlay):
             result = SyncResult()
-            GitLabSyncBackend._fetch_review_permalinks(result)
+            fetch_review_permalinks(result)
         assert result.reviews_synced == 0
         assert result.errors == []
 
@@ -608,7 +611,7 @@ class TestFetchReviewPermalinks(TestCase):
 
         with _patch_overlay(self._SLACK_OVERLAY):
             result = SyncResult()
-            GitLabSyncBackend._fetch_review_permalinks(result)
+            fetch_review_permalinks(result)
         # No non-draft MRs -> no Slack call
         assert result.reviews_synced == 0
 
@@ -631,14 +634,14 @@ class TestFetchReviewPermalinks(TestCase):
 
         with _patch_overlay(self._SLACK_OVERLAY):
             result = SyncResult()
-            GitLabSyncBackend._fetch_review_permalinks(result)
+            fetch_review_permalinks(result)
         assert result.reviews_synced == 0
 
     def test_returns_early_when_no_urls(self) -> None:
         """_fetch_review_permalinks returns early when no eligible MR URLs (line 382-383)."""
         with _patch_overlay(self._SLACK_OVERLAY):
             result = SyncResult()
-            GitLabSyncBackend._fetch_review_permalinks(result)
+            fetch_review_permalinks(result)
         assert result.reviews_synced == 0
 
     def test_handles_search_exception(self) -> None:
@@ -661,11 +664,11 @@ class TestFetchReviewPermalinks(TestCase):
             msg = "Slack timeout"
             raise RuntimeError(msg)
 
-        self._monkeypatch.setattr("teatree.backends.slack.search_review_permalinks", _explode)
+        self._monkeypatch.setattr("teatree.backends.slack_review_sync.search_review_permalinks", _explode)
 
         with _patch_overlay(self._SLACK_OVERLAY):
             result = SyncResult()
-            GitLabSyncBackend._fetch_review_permalinks(result)
+            fetch_review_permalinks(result)
         assert any("Slack review sync" in e for e in result.errors)
 
     def test_stores_matches(self) -> None:
@@ -682,7 +685,7 @@ class TestFetchReviewPermalinks(TestCase):
         )
 
         self._monkeypatch.setattr(
-            "teatree.backends.slack.search_review_permalinks",
+            "teatree.backends.slack_review_sync.search_review_permalinks",
             lambda **kw: [
                 SlackReviewMatch(
                     mr_url=mr_url,
@@ -694,7 +697,7 @@ class TestFetchReviewPermalinks(TestCase):
 
         with _patch_overlay(self._SLACK_OVERLAY):
             result = SyncResult()
-            GitLabSyncBackend._fetch_review_permalinks(result)
+            fetch_review_permalinks(result)
 
         assert result.reviews_synced == 1
         ticket = Ticket.objects.get(issue_url="https://gitlab.com/org/repo/-/issues/503")
@@ -711,11 +714,11 @@ class TestFetchReviewPermalinks(TestCase):
             state=Ticket.State.SHIPPED,
             extra={"mrs": "not-a-dict"},
         )
-        self._monkeypatch.setattr("teatree.backends.slack.search_review_permalinks", lambda **kw: [])
+        self._monkeypatch.setattr("teatree.backends.slack_review_sync.search_review_permalinks", lambda **kw: [])
 
         with _patch_overlay(self._SLACK_OVERLAY):
             result = SyncResult()
-            GitLabSyncBackend._fetch_review_permalinks(result)
+            fetch_review_permalinks(result)
         assert result.reviews_synced == 0
 
     def test_skips_non_dict_mr_entry_in_collection(self) -> None:
@@ -727,11 +730,11 @@ class TestFetchReviewPermalinks(TestCase):
             state=Ticket.State.SHIPPED,
             extra={"mrs": {"https://gitlab.com/mr/1": "not-a-dict"}},
         )
-        self._monkeypatch.setattr("teatree.backends.slack.search_review_permalinks", lambda **kw: [])
+        self._monkeypatch.setattr("teatree.backends.slack_review_sync.search_review_permalinks", lambda **kw: [])
 
         with _patch_overlay(self._SLACK_OVERLAY):
             result = SyncResult()
-            GitLabSyncBackend._fetch_review_permalinks(result)
+            fetch_review_permalinks(result)
         assert result.reviews_synced == 0
 
 
@@ -1180,6 +1183,92 @@ class TestSyncFollowup(TestCase):
         ticket_a.refresh_from_db()
         assert "https://mr/dup" in ticket_a.extra["mrs"]
         assert "other-repo" in ticket_a.repos
+
+
+_ASSIGNED_ISSUE = {
+    "web_url": "https://gitlab.com/org/repo/-/issues/500",
+    "title": "Some assigned task",
+    "state": "opened",
+}
+
+_ASSIGNED_WORK_ITEM = {
+    "web_url": "https://gitlab.com/org/repo/-/work_items/501",
+    "title": "Assigned work item",
+    "state": "opened",
+}
+
+
+class TestSyncFollowupAssignedIssues(TestCase):
+    _OVERLAY = SyncOverlay()
+
+    @pytest.fixture(autouse=True)
+    def _with_overlay(self, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+        self._monkeypatch = monkeypatch
+        with _patch_overlay(self._OVERLAY):
+            yield
+
+    def test_creates_ticket_from_assigned_issue_without_mr(self) -> None:
+        mock_client = _make_mock_client([])
+        mock_client.list_open_issues_for_assignee.return_value = [_ASSIGNED_ISSUE]
+        self._monkeypatch.setattr("teatree.backends.gitlab_api.GitLabAPI", lambda **_kw: mock_client)
+
+        result = sync_followup()
+
+        assert result.issues_found == 1
+        assert result.tickets_created == 1
+        ticket = Ticket.objects.get(issue_url=_ASSIGNED_ISSUE["web_url"])
+        assert ticket.state == Ticket.State.NOT_STARTED
+        assert ticket.repos == ["repo"]
+        # issue_title starts from the list response then gets refreshed by _fetch_issue_labels
+        assert ticket.extra["issue_title"]
+        assert "mrs" not in ticket.extra or ticket.extra["mrs"] == {}
+
+    def test_skips_duplicate_when_mr_already_created_ticket(self) -> None:
+        mock_client = _make_mock_client([_MR_WITH_ISSUE])
+        mock_client.list_open_issues_for_assignee.return_value = [
+            {
+                "web_url": "https://gitlab.com/org/repo/-/issues/100",
+                "title": "Issue title",
+                "state": "opened",
+            },
+        ]
+        self._monkeypatch.setattr("teatree.backends.gitlab_api.GitLabAPI", lambda **_kw: mock_client)
+
+        sync_followup()
+
+        tickets = Ticket.objects.filter(issue_url="https://gitlab.com/org/repo/-/issues/100")
+        assert tickets.count() == 1
+        assert _MR_WITH_ISSUE["web_url"] in tickets.first().extra["mrs"]
+
+    def test_captures_api_errors(self) -> None:
+        mock_client = _make_mock_client([])
+        mock_client.list_open_issues_for_assignee.side_effect = httpx.RequestError("boom")
+        self._monkeypatch.setattr("teatree.backends.gitlab_api.GitLabAPI", lambda **_kw: mock_client)
+
+        result = sync_followup()
+
+        assert any("Assigned issues fetch failed: boom" in e for e in result.errors)
+        assert result.issues_found == 0
+
+    def test_creates_work_item_ticket(self) -> None:
+        mock_client = _make_mock_client([])
+        mock_client.list_open_issues_for_assignee.return_value = [_ASSIGNED_WORK_ITEM]
+        self._monkeypatch.setattr("teatree.backends.gitlab_api.GitLabAPI", lambda **_kw: mock_client)
+
+        sync_followup()
+
+        ticket = Ticket.objects.get(issue_url=_ASSIGNED_WORK_ITEM["web_url"])
+        assert ticket.repos == ["repo"]
+
+    def test_skips_entries_missing_url(self) -> None:
+        mock_client = _make_mock_client([])
+        mock_client.list_open_issues_for_assignee.return_value = [{"title": "no url"}]
+        self._monkeypatch.setattr("teatree.backends.gitlab_api.GitLabAPI", lambda **_kw: mock_client)
+
+        result = sync_followup()
+
+        assert result.tickets_created == 0
+        assert result.issues_found == 0
 
 
 class TestSyncFollowupWorkItems(TestCase):

@@ -13,6 +13,12 @@ class TestTicketQuerySet(TestCase):
 
         assert list(Ticket.objects.in_flight()) == [active]
 
+    def test_in_flight_excludes_done_tracker_status(self) -> None:
+        active = Ticket.objects.create(state=Ticket.State.STARTED, extra={"tracker_status": "In progress"})
+        Ticket.objects.create(state=Ticket.State.STARTED, extra={"tracker_status": "Done"})
+
+        assert list(Ticket.objects.in_flight()) == [active]
+
 
 class TestWorktreeQuerySet(TestCase):
     def test_active_excludes_created_items(self) -> None:
