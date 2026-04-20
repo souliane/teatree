@@ -60,6 +60,13 @@ def _clear_overlay_cache() -> Iterator[None]:
     reset_overlay_cache()
 
 
+@pytest.fixture(autouse=True)
+def _mock_redis_container() -> Iterator[None]:
+    """Prevent tests from shelling out to docker for the shared Redis container."""
+    with patch("teatree.utils.redis_container.ensure_running"):
+        yield
+
+
 @pytest.fixture
 def mock_command_overlay() -> Iterator[None]:
     """Patch _discover_overlays to return a CommandOverlay instance."""

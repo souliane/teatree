@@ -57,6 +57,38 @@ COMMAND_SETTINGS = {
 
 class TestLifecycleCommands(TestCase):
     @override_settings(**COMMAND_SETTINGS)
+    def test_setup_ensures_shared_redis_and_allocates_slot(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            wt_path = str(tmp_path / "wt-backend")
+            Path(wt_path).mkdir()
+            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/77")
+            Worktree.objects.create(
+                ticket=ticket,
+                overlay="test",
+                repo_path="/tmp/backend",
+                branch="feature",
+                extra={"worktree_path": wt_path},
+            )
+
+            mock_config = MagicMock()
+            mock_config.user.workspace_dir = tmp_path
+
+            with (
+                patch.dict("os.environ", {"T3_ORIG_CWD": wt_path}),
+                patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
+                patch.object(lifecycle_cmd, "subprocess") as mock_sp,
+                patch("teatree.utils.redis_container.ensure_running") as mock_ensure,
+                patch("teatree.config.load_config", return_value=mock_config),
+            ):
+                mock_sp.run.return_value = MagicMock(returncode=0)
+                call_command("lifecycle", "setup")
+
+            mock_ensure.assert_called_once_with()
+            ticket.refresh_from_db()
+            assert ticket.redis_db_index == 0
+
+    @override_settings(**COMMAND_SETTINGS)
     def test_create_start_report_and_teardown_worktrees(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -84,6 +116,7 @@ class TestLifecycleCommands(TestCase):
                     return_value={"backend": 8001, "frontend": 4201, "postgres": 5432, "redis": 6379},
                 ),
                 patch.object(lifecycle_cmd, "get_worktree_ports", return_value={"backend": 8001, "frontend": 4201}),
+                patch("teatree.utils.redis_container.ensure_running"),
                 patch("teatree.config.load_config", return_value=mock_config),
             ):
                 mock_sp.run.return_value = MagicMock(returncode=0)
@@ -214,6 +247,7 @@ class TestDbImportAutoRepair(TestCase):
                 patch.dict("os.environ", {"T3_ORIG_CWD": wt_path}),
                 patch.object(overlay_loader_mod, "_discover_overlays", return_value=_DB_MOCK_OVERLAY),
                 patch("teatree.utils.db.db_exists", return_value=True),
+                patch("teatree.utils.redis_container.ensure_running"),
             ):
                 call_command("lifecycle", "setup")
 
@@ -241,6 +275,7 @@ class TestDbImportAutoRepair(TestCase):
                 patch.dict("os.environ", {"T3_ORIG_CWD": wt_path}),
                 patch.object(overlay_loader_mod, "_discover_overlays", return_value=_DB_MOCK_OVERLAY),
                 patch("teatree.utils.db.db_exists", return_value=False),
+                patch("teatree.utils.redis_container.ensure_running"),
             ):
                 call_command("lifecycle", "setup")
 
