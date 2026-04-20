@@ -579,20 +579,6 @@ class TestDoctorCommands:
             result = runner.invoke(app, ["doctor", "check"])
             assert "FAIL" in result.output
 
-    # ── info ─────────────────────────────────────────────────────────
-
-    def test_info(self):
-        """Doctor info delegates to _show_info."""
-        with (
-            patch("shutil.which", return_value="/usr/local/bin/t3"),
-            patch.object(IntrospectionHelpers, "editable_info", return_value=(False, "")),
-            patch.object(IntrospectionHelpers, "print_package_info"),
-            patch.object(teatree_config, "discover_active_overlay", return_value=None),
-            patch.object(teatree_config, "discover_overlays", return_value=[]),
-        ):
-            result = runner.invoke(app, ["doctor", "info"])
-            assert result.exit_code == 0
-
 
 class TestFindHostProjectRoot:
     def test_finds_project_in_current_dir(self, tmp_path: Path) -> None:

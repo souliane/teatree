@@ -108,7 +108,7 @@ hooks/                 Agent platform hooks (Claude Code hook_router, statusline
 | Tier | Tool | Examples | Needs Django? |
 |------|------|----------|---------------|
 | Runtime commands | Django management commands (django-typer) | `lifecycle setup`, `tasks work-next-sdk`, `followup refresh` | Yes |
-| Bootstrap commands | `t3` Typer CLI | `t3 startoverlay`, `t3 agent`, `t3 overlays` | No |
+| Bootstrap commands | `t3` Typer CLI | `t3 startoverlay`, `t3 agent`, `t3 info` | No |
 | Internal utilities | Python modules in `utils/` | Port allocation, git helpers, DB ops | Imported by commands |
 
 ## Overlay System

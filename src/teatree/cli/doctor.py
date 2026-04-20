@@ -393,9 +393,3 @@ def check() -> bool:
     if ok:
         typer.echo("All checks passed")
     return ok
-
-
-@doctor_app.command(name="info")
-def doctor_info() -> None:
-    """Show t3 path, teatree/overlay sources, and editable status."""
-    DoctorService.show_info()
