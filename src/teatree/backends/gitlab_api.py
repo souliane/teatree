@@ -4,6 +4,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import SupportsInt, cast
+from urllib.parse import urlencode
 
 import httpx
 
@@ -224,6 +225,26 @@ class GitLabAPI:
         if include_draft:
             return data
         return [mr for mr in data if not mr.get("draft")]
+
+    def list_open_issues_for_assignee(
+        self,
+        assignee: str,
+        *,
+        per_page: int = 100,
+        updated_after: str | None = None,
+    ) -> list[RawMR]:
+        """Fetch all open issues (and work items) assigned to *assignee* across accessible projects."""
+        query: dict[str, str | int] = {
+            "state": "opened",
+            "assignee_username": assignee,
+            "scope": "all",
+            "per_page": per_page,
+        }
+        if updated_after:
+            query["updated_after"] = updated_after
+        params = urlencode(query)
+        data = self.get_json(f"issues?{params}")
+        return data if isinstance(data, list) else []
 
     def list_open_mrs_as_reviewer(
         self,
