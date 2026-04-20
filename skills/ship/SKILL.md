@@ -73,7 +73,7 @@ When the active overlay has `require_ticket = True`, refuse to commit or push wi
 **Squash rules:**
 
 - **Use `git reset --soft`, not interactive rebase.** `git rebase -i` with custom editors is fragile when pre-commit hooks run on each commit. Use `git reset --soft $(git merge-base origin/<default-branch> HEAD) && git commit` to squash, or cherry-pick for non-adjacent commits.
-- **Never rewrite pushed history.** Check `git log origin/<branch>..HEAD` to confirm which commits are local-only before squashing.
+- **Never rewrite pushed history** — see § Rules below for the full statement. Before any squash, check `git log origin/<branch>..HEAD` to confirm which commits are local-only.
 - Group by topic, keep human-sized commits.
 - Squash integrity check: save `OLD_TIP=$(git rev-parse HEAD)`, verify `git diff $OLD_TIP..HEAD` is empty after rewrite.
 - Respect `T3_AUTO_SQUASH` (`true` = auto, `false` = ask first).
@@ -106,8 +106,7 @@ Skipping this step is the #1 cause of wasted push-fix-push cycles. The rules exi
 
 ### 4. Push
 
-- Cancel stale pipelines before pushing (if branch has an existing MR).
-- Push to remote.
+- Push to remote. Cancel stale pipelines first if the branch has an existing MR (see § Rules).
 
 ### 4b. Review Gate
 
