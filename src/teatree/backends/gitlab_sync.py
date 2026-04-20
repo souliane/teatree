@@ -1,4 +1,4 @@
-"""GitLab sync backend — MR upsert, issue labels, merged MR cleanup, Slack review permalinks."""
+"""GitLab sync backend — MR upsert, issue labels, merged MR cleanup, assigned issues."""
 
 import logging
 import re
@@ -8,6 +8,7 @@ import httpx
 from django.core.cache import cache
 from django.utils import timezone
 
+from teatree.backends.slack_review_sync import fetch_review_permalinks
 from teatree.core.cleanup import cleanup_worktree
 from teatree.core.models import Ticket, Worktree
 from teatree.core.sync import (
@@ -86,13 +87,15 @@ class GitLabSyncBackend(SyncBackend):
                 mr, repo_path, client, project, result, username=username, overlay_name=overlay_name
             )
 
+        self._fetch_assigned_issues(client, username, result, overlay_name=overlay_name)
+
         # Backfill overlay on any in-flight tickets that still have it empty
         if overlay_name:
             Ticket.objects.in_flight().filter(overlay="").update(overlay=overlay_name)
 
         self._fetch_issue_labels(client, result)
         self._detect_merged_mrs(client, username, result, last_sync)
-        self._fetch_review_permalinks(result)
+        fetch_review_permalinks(result)
         self._sync_reviewer_mrs(client, username, result)
 
         cache.set(LAST_SYNC_CACHE_KEY, sync_started_at.isoformat(), timeout=None)
@@ -354,6 +357,58 @@ class GitLabSyncBackend(SyncBackend):
                 result.errors.append(f"Worktree cleanup failed: {worktree.repo_path}")
 
     @classmethod
+    def _fetch_assigned_issues(
+        cls,
+        client: "GitLabAPI",
+        username: str,
+        result: SyncResult,
+        *,
+        overlay_name: str = "",
+    ) -> None:
+        """Upsert tickets for issues assigned to *username* that have no MR yet.
+
+        Tickets keyed by the same ``issue_url`` are consolidated with MR-based
+        tickets so each ticket renders as a single dashboard row.
+        """
+        try:
+            issues = client.list_open_issues_for_assignee(username)
+        except httpx.HTTPError as exc:
+            result.errors.append(f"Assigned issues fetch failed: {exc}")
+            return
+
+        for issue in issues:
+            if not isinstance(issue, dict):
+                continue
+            issue_url = str(issue.get("web_url", ""))
+            if not issue_url:
+                continue
+            result.issues_found += 1
+            repo_path = cls._extract_issue_repo_path(issue_url)
+            repo_short = repo_path.rsplit("/", maxsplit=1)[-1] if repo_path else ""
+
+            existing = Ticket.objects.filter(issue_url=issue_url).first()
+            if existing is not None:
+                if repo_short and isinstance(existing.repos, list) and repo_short not in existing.repos:
+                    existing.repos = [*existing.repos, repo_short]
+                    existing.save(update_fields=["repos"])
+                    result.tickets_updated += 1
+                continue
+
+            Ticket.objects.create(
+                issue_url=issue_url,
+                repos=[repo_short] if repo_short else [],
+                extra={"issue_title": str(issue.get("title", ""))},
+                state=Ticket.State.NOT_STARTED,
+                overlay=overlay_name,
+            )
+            result.tickets_created += 1
+
+    @classmethod
+    def _extract_issue_repo_path(cls, issue_url: str) -> str:
+        match = _ISSUE_PARTS_RE.search(issue_url)
+        return match.group(1) if match else ""
+
+    @classmethod
     def _detect_merged_mrs(
         cls,
         client: "GitLabAPI",
@@ -486,65 +541,6 @@ class GitLabSyncBackend(SyncBackend):
             if match:
                 return match.group(1)
         return ""
-
-    @classmethod
-    def _collect_reviewable_mr_urls(cls) -> tuple[list[str], dict[str, tuple[Ticket, str]]]:
-        mr_urls: list[str] = []
-        url_to_ticket: dict[str, tuple[Ticket, str]] = {}
-        for ticket in Ticket.objects.in_flight():
-            extra = ticket.extra if isinstance(ticket.extra, dict) else {}
-            mrs = extra.get("mrs", {})
-            if not isinstance(mrs, dict):
-                continue
-            for mr_url, mr in mrs.items():
-                if not isinstance(mr, dict) or mr.get("draft") or mr.get("review_permalink"):
-                    continue
-                clean_url = mr_url.rstrip("/").split("#")[0]
-                mr_urls.append(clean_url)
-                url_to_ticket[clean_url] = (ticket, mr_url)
-        return mr_urls, url_to_ticket
-
-    @classmethod
-    def _fetch_review_permalinks(cls, result: SyncResult) -> None:
-        from teatree.backends.slack import search_review_permalinks  # noqa: PLC0415
-        from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
-
-        overlay = get_overlay()
-        token = overlay.config.get_slack_token()
-        channel_name, channel_id = overlay.config.get_review_channel()
-        if not token or not channel_id:
-            return
-
-        mr_urls, url_to_ticket = cls._collect_reviewable_mr_urls()
-        if not mr_urls:
-            return
-
-        try:
-            matches = search_review_permalinks(
-                token=token,
-                channel_id=channel_id,
-                channel_name=channel_name,
-                mr_urls=mr_urls,
-            )
-        except Exception as exc:  # noqa: BLE001
-            result.errors.append(f"Slack review sync: {exc}")
-            return
-
-        for match in matches:
-            ticket, mr_url = url_to_ticket[match.mr_url]
-            extra = ticket.extra if isinstance(ticket.extra, dict) else {}
-            mrs = extra.get("mrs", {})
-            if not isinstance(mrs, dict):  # pragma: no cover — defensive against concurrent extra mutation
-                continue
-            mr = mrs.get(mr_url)
-            if not isinstance(mr, dict):  # pragma: no cover — defensive against concurrent extra mutation
-                continue
-            mr["review_permalink"] = match.permalink
-            mr["review_channel"] = match.channel
-            extra["mrs"] = mrs
-            ticket.extra = extra
-            ticket.save(update_fields=["extra"])
-            result.reviews_synced += 1
 
     @classmethod
     def _sync_reviewer_mrs(cls, client: "GitLabAPI", username: str, result: SyncResult) -> None:
