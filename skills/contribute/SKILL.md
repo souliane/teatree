@@ -29,6 +29,7 @@ Uses these `~/.teatree` variables (set by `/t3:setup`):
 
 - **`T3_CONTRIBUTE`** — must be `true` for this skill to do anything.
 - **`T3_PUSH`** — `false` (default) or `true`. When `false`, this skill refuses to push and tells the user to push manually. Exists as a safety stop for privacy/secret review.
+- **`T3_AUTO_PUSH_FORK`** — `false` (default) or `true`. When `true`, step 4 (push confirmation) is skipped **only** when the push target is the user's fork (`origin` push URL differs from `T3_UPSTREAM`). Upstream issue creation (step 6) always requires confirmation.
 - **`T3_UPSTREAM`** — upstream repo (e.g., `souliane/teatree`). Controls where the PR is created:
   - **Empty** → push to branch on `origin`, create PR on `origin` (same repo).
   - **Set** → push to branch on `origin` (your fork), create PR targeting `T3_UPSTREAM`.
@@ -87,9 +88,18 @@ BRANCH="fix/retro-$(date +%Y%m%d)-$(git log -1 --format=%s | sed 's/[^a-zA-Z0-9]
 git checkout -b "$BRANCH"
 ```
 
-### 4. Push Confirmation (Non-Negotiable)
+### 4. Push Confirmation
 
-**Every push requires explicit user consent.** No exceptions, no config to bypass this.
+**Default: every push requires explicit user consent.**
+
+**Auto-push exception** (`T3_AUTO_PUSH_FORK=true`): skip the confirmation below and proceed directly to push when **all** of the following hold:
+
+1. `T3_CONTRIBUTE=true` and `T3_PUSH=true` (already required to reach this step).
+2. `T3_AUTO_PUSH_FORK=true`.
+3. `origin`'s push URL does **not** match `T3_UPSTREAM` — the push lands on the user's fork, not upstream.
+4. Pre-flight checks in § 2 all passed, including the privacy scan.
+
+When any of the above fail, fall back to the confirmation flow below.
 
 Show:
 
@@ -284,8 +294,9 @@ After creation, print the issue URL.
 
 ## What NOT to Do
 
-- Do not push without explicit user consent — ever.
+- Do not push without explicit user consent — except when `T3_AUTO_PUSH_FORK=true` and the push target is the user's fork (see § 4).
 - Do not push to main — always use a branch.
+- Do not auto-create upstream issues — § 6 always requires confirmation, regardless of `T3_AUTO_PUSH_FORK`.
 - Do not create upstream issues from heavily diverged forks — they're not useful.
 - Do not use `git push` directly — always go through this skill for retro commits.
 - Do not create duplicate upstream issues — check for existing ones first.
