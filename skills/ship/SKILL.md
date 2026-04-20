@@ -50,7 +50,7 @@ From "code is done" to "MR is merged."
 When the active overlay has `require_ticket = True`, refuse to commit or push without a ticket reference.
 
 - **Detection:** check `overlay.config.require_ticket`. Overlays that dogfood their own workflow enable this flag.
-- **Every commit must include** `Fixes #<number>`, `Closes #<number>`, or `Relates-to #<number>` in the message body.
+- **Every commit must include** an issue reference in the message body. Run `t3 overlay config --key mr_close_ticket` to check the setting: when `true`, use `Fixes #<number>` or `Closes #<number>` (auto-closes on merge); when `false`, use `Relates-to #<number>` (links without closing).
 - **If no ticket context exists:** ask "Which ticket is this for?" Do not proceed without a ticket reference.
 - **Exception:** commits from `/t3:retro` (format `fix(<skill>): ...`) are exempt — retro findings are small tactical fixes committed directly on the current branch.
 
@@ -61,7 +61,7 @@ When the active overlay has `require_ticket = True`, refuse to commit or push wi
 - **Verify branch matches ticket** before committing. If on the wrong branch, create a clean branch from the default branch and cherry-pick.
 - **Check for pre-existing changes before staging.** If the diff includes changes you did not make in this session, **warn the user** — either stage only your hunks or ask how to proceed.
 - Format commit message following the project's commit format reference.
-- **Link commits to issues (Non-Negotiable).** Include `Fixes #<number>` or `Closes #<number>` in the commit message body (not the first line) to auto-close on merge. Use `Relates-to #<number>` for partial progress. This applies to ALL repos.
+- **Link commits to issues (Non-Negotiable).** Check `t3 overlay config --key mr_close_ticket`: when `true`, use `Fixes #<number>` or `Closes #<number>` in the commit message body (auto-closes on merge); when `false`, use `Relates-to #<number>` (links without closing). This applies to ALL repos.
 - Read `TICKET_URL` from `.env.worktree` — never construct it from the branch name.
 
 ### 2. Finalize Branch
