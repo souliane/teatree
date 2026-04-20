@@ -23,6 +23,7 @@ def main(argv: list[str] | None = None) -> int:
     from teatree.cli_reference import build_cli_reference_from_app
 
     markdown = build_cli_reference_from_app(app)
+    markdown = "\n".join(line.rstrip() for line in markdown.splitlines()).rstrip("\n") + "\n"
 
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(markdown, encoding="utf-8")
