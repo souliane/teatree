@@ -113,27 +113,21 @@ lint.per-file-ignores."e2e/**/*.py" = [
   "S404",    # subprocess
   "TRY300",  # try/return in server wait loop
 ]
-# Scripts use typer (default args = B008), deferred imports (E402), boolean
-# params (FBT), subprocess (S4xx/S6xx), and print (T201).
+# Scripts use typer (default args), deferred imports (E402), boolean params
+# (FBT), subprocess (S4xx/S6xx), and print (T201).
 lint.per-file-ignores."scripts/**/*.py" = [
-  "B008",    # function-call-in-default-argument (typer.Argument/Option)
   "C901",    # too-complex (intent detection is inherently branchy)
   "E402",    # module-import-not-at-top (deferred after lib.init)
   "FBT001",
   "FBT003",  # boolean positional/default (CLI flags)
   "PLC0415", # import-outside-top-level (deferred imports)
-  "PLC2701", # import-private-name (lib._internal)
-  "PLR0911", # too-many-return-statements (intent detection)
   "PLR0912", # too-many-branches (intent detection)
-  "PLR6201", # use-set-literal (readability preference)
   "PLW1510", # subprocess-run-without-check (intentional)
   "PLW2901", # redefined-loop-variable (intentional strip pattern)
   "S404",
   "S603",
   "S607",    # subprocess security (trusted internal calls)
-  "SIM102",  # collapsible-if (readability preference)
   "T201",    # print (CLI output)
-  "TRY300",  # try-consider-else (readability preference)
 ]
 lint.per-file-ignores."src/teatree/cli/*.py" = [
   "B008",   # function-call-in-default-argument (typer.Option/Argument is idiomatic)
@@ -171,13 +165,11 @@ lint.per-file-ignores."tests/**/*.py" = [
   "ARG001",
   "ARG002",  # unused method arguments (overlay stubs)
   "ARG005",
-  "FLY002",
   "PLC1901", # compare-to-empty-string
   "PLC2701", # import-private-name
   "PLR0904", # too-many-public-methods (test classes)
   "PLR2004", # magic-value-comparison
   "PLR6301", # no-self-use (test methods)
-  "PYI034",
   "S101",    # assert (expected in tests)
   "S105",
   "S106",
