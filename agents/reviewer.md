@@ -11,6 +11,7 @@ skills:
   - platforms
   - review
   - code
+model: opusplan
 ---
 
 # Reviewer Agent

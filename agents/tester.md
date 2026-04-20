@@ -15,6 +15,7 @@ skills:
   - workspace
   - test
   - platforms
+model: opusplan
 ---
 
 # Tester Agent

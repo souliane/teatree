@@ -13,7 +13,7 @@ tools:
 skills:
   - rules
   - workspace
-model: sonnet
+model: opusplan
 maxTurns: 50
 ---
 

@@ -16,6 +16,7 @@ skills:
   - platforms
   - ship
   - review-request
+model: opusplan
 ---
 
 # Shipper Agent

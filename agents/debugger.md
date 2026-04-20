@@ -14,6 +14,7 @@ skills:
   - rules
   - workspace
   - debug
+model: opusplan
 ---
 
 # Debugger Agent

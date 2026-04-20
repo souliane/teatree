@@ -10,6 +10,7 @@ skills:
   - rules
   - platforms
   - followup
+model: opusplan
 ---
 
 # Followup Agent

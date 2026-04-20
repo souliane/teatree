@@ -14,6 +14,7 @@ skills:
   - rules
   - workspace
   - code
+model: opusplan
 ---
 
 # Coder Agent
