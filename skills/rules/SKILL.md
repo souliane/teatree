@@ -11,7 +11,7 @@ metadata:
 
 Cross-cutting rules that apply to all teatree skills. Loaded automatically via `requires:`.
 
-## Invoke Skills Before ANY Response (Non-Negotiable)
+## Invoke Skills Before ANY Response
 
 _Adapted from [superpowers/using-superpowers](https://github.com/obra/superpowers)._
 
@@ -43,17 +43,17 @@ _Adapted from [superpowers/verification-before-completion](https://github.com/ob
 
 **Banned language without evidence:** "should pass", "probably works", "seems correct", "looks good", "I'm confident". These words without a command output are lies, not claims.
 
-## User Instructions Are Priority 1 (Non-Negotiable)
+## User Instructions Are Priority 1
 
 When the user gives a direct, explicit instruction (skip tests, push now, use this approach), execute it IMMEDIATELY. Do not try a "better" approach first, do not retry the same failing approach hoping it works, and do not silently substitute your own plan. Execute the instruction first (it's fast and safe), then suggest an alternative if you have one.
 
-## Context Transparency (Non-Negotiable)
+## Context Transparency
 
 The user cannot see system-reminders, memory content, or hook output injected into your context. When your response is influenced by any of this invisible context, **briefly state what you received** so the user can follow your reasoning. For example: "Teatree suggested loading `/t3:code`. Memory mentions X."
 
 If the user's message is ambiguous (references "this", "it", a link they forgot to paste, etc.) — **ask for clarification**. Do NOT guess based on context the user can't see. Guessing leads to confusing exchanges where the user has no idea what you're talking about.
 
-## Clickable References (Non-Negotiable)
+## Clickable References
 
 Every MR, ticket, issue, or note reference — in markdown files, platform comments, **and** agent responses — must be a clickable markdown link.
 
@@ -62,13 +62,13 @@ Every MR, ticket, issue, or note reference — in markdown files, platform comme
 
 This applies everywhere: MR/PR descriptions, inline comments, test evidence, chat messages, and responses to the user.
 
-## Token Extraction (Non-Negotiable)
+## Token Extraction
 
 When extracting an API token from a CLI tool, always extract to a variable first — never inline in curl. See your platform reference (`t3:platforms`) § "Token Extraction" for the platform-specific recipe.
 
 **In Python heredocs:** shell variables are NOT inherited. Use `os.popen(...)` inside Python or `export TOKEN` before the heredoc.
 
-## Temp File Safety (Non-Negotiable)
+## Temp File Safety
 
 When using temporary files (for MR note bodies, test data, etc.):
 
@@ -78,13 +78,13 @@ When using temporary files (for MR note bodies, test data, etc.):
 - **Always clean up** the temp file immediately after use (`os.unlink()` in Python, `rm` in shell).
 - **Exception: pre-compaction snapshots** — files matching `/tmp/t3-snapshot-*.md` are recovered automatically by the `PostCompact` hook. Use `t3-snapshot-${CLAUDE_SESSION_ID:-manual}-$(date +%Y%m%d-%H%M).md` for the filename. Delete after persisting findings to durable storage.
 
-## Complex API Payloads: Use curl or Python (Non-Negotiable)
+## Complex API Payloads: Use curl or Python
 
 Some issue tracker CLIs cannot serialize nested JSON. **Always use `curl`** with `-H "Content-Type: application/json"` and a proper JSON `-d` body for payloads containing nested objects.
 
 For note bodies containing markdown images (`![alt](url)`), shell variable interpolation and `jq --arg` both escape `!` to `\!`. **Always use Python** (`urllib.request` or `requests`) to serialize the JSON payload.
 
-## Preserve Existing UX Patterns (Non-Negotiable)
+## Preserve Existing UX Patterns
 
 When fixing a broken UX mechanism (web terminal, browser launch, notification method), fix it **in-kind** — do not replace it with a different mechanism without asking. If proposing a different approach, ask the user first: "Currently this uses X. Want to keep that or switch to Y?"
 
@@ -92,7 +92,7 @@ When fixing a broken UX mechanism (web terminal, browser launch, notification me
 
 MR/PR comment posting (test plans, evidence, review notes) must be **serialized** — never dispatch two parallel agents that both post comments on MRs. Parallel agents cannot check for each other's posts, resulting in duplicate comments. Post all MR comments from the main conversation thread, or serialize agent tasks so only one posts at a time.
 
-## Sub-Agent Limitations (Non-Negotiable)
+## Sub-Agent Limitations
 
 Sub-agents (Agent tool) **lose all loaded skills, MCP access, and shell functions**. By default, never dispatch sub-agents for skill-dependent work. Do all skill-dependent work sequentially in the main conversation.
 
@@ -118,11 +118,11 @@ Use `command rm`, `command cp`, `command mv` in Bash tool calls to avoid zsh int
 
 Never modify skill files outside a git repo. Resolve real path with `readlink -f`, verify `git rev-parse --git-dir` succeeds. Changes to non-git copies are silently lost.
 
-## Fix TeaTree/Skill Bugs Immediately (Non-Negotiable)
+## Fix TeaTree/Skill Bugs Immediately
 
 When a teatree or skill infrastructure bug is discovered during any task, fix it immediately as first priority. Never defer to focus on the user's task — broken infrastructure causes cascading failures.
 
-## Ask About Auth Before External Service Integrations (Non-Negotiable)
+## Ask About Auth Before External Service Integrations
 
 When implementing features that require an external service (Notion, Slack, CI, etc.), ask "how do you authenticate with this service?" BEFORE writing any code. The answer (direct API token, CLI auth, MCP tool, OAuth, etc.) determines the entire architecture. Skipping this question leads to multiple implementation pivots.
 
@@ -136,26 +136,34 @@ When an MR targets a non-default branch, that is intentional — it means the MR
 
 Destroying MR dependency chains wastes hours of carefully organized work.
 
-## Always Create Tasks (Non-Negotiable)
+## Always Create Tasks
 
 On **every prompt**, use `TaskCreate` to create tasks before doing any work — even for a single task. Mark each task `in_progress` when starting, `completed` when done. Never skip this. Visible task tracking prevents forgotten steps and shows the user your progress.
 
-## Always Use AskUserQuestion for Questions (Non-Negotiable)
+- **Simple tasks** (1-2 steps): a brief bullet list in the response is sufficient.
+- **Complex tasks** (3+ steps): use the task tracking tools for each step, update status as you go.
+- **Never skip this.** If you find yourself doing 3+ things without a plan, stop and create one.
+
+## Always Use AskUserQuestion for Questions
 
 **Never ask questions inline in text responses.** Always use the `AskUserQuestion` tool — it gives the user a structured UI to respond and prevents questions from being buried in output. One question at a time; wait for the answer before asking the next.
 
 ## Never Push Without Separate Explicit Approval (Non-Negotiable)
 
-Commit approval ≠ push approval. Always ask "Push?" as a **separate question** after committing. This applies to all repos, all contexts — even when the user said "yes" to committing. (Safety net — source: `t3:ship § Never push without explicit approval`)
+Commit approval ≠ push approval. **Squash approval ≠ push approval. "All done" ≠ push approval. Rebase approval ≠ force-push approval.** Always present the final state and ask "Push?" as a **separate question** after committing, squashing, or rebasing — use `AskUserQuestion`, not an inline question.
 
-## Run Retro Before Ending Non-Trivial Sessions (Non-Negotiable)
+- **Force-push (`--force-with-lease`)**: get separate explicit confirmation even if the user already approved the rebase. A rebase and a force-push are two decisions.
+- **Never use `--no-verify`** on any git command — commit, push, nothing. If a hook fails, fix the underlying issue.
+- Applies to all repos, all contexts, all branches.
+
+## Run Retro Before Ending Non-Trivial Sessions
 
 Before ending any session that involved multi-file edits, debugging, or implementation work, run `/t3:next` (which includes `/t3:retro`). Do NOT wait for the user to ask — self-trigger this. A session without retro loses compound learning.
 
 - **Trivial sessions** (single question, quick lookup, one-line fix): skip.
 - **Everything else**: run `/t3:next` before your final response.
 
-## Verify Imports Before Applying External Code (Non-Negotiable)
+## Verify Imports Before Applying External Code
 
 When cherry-picking code from orphan commits, stashes, snapshots, or other branches, verify every import and function call exists in the target codebase before applying. Snapshot code assumes a different state — modules, classes, and function signatures may not exist in HEAD. Apply each change surgically and run the type checker (`ty-check`) before moving on.
 
@@ -172,13 +180,15 @@ Long sessions lose context to automatic compaction. Proactively manage session l
 
 When implementation is complete (all files written, tests pass or verified), **commit immediately** in the same response — do not wait for the user to ask. An uncommitted change is not "done"; it is in-progress work at risk of being lost to context compaction, parallel agents, or session timeout.
 
-## Pre-Commit Hook Failures on Unrelated Tests (Non-Negotiable)
+## Pre-Commit Hook Failures on Unrelated Tests
 
 When a pre-commit hook runs the full test suite and fails on tests **unrelated to your changes** (pre-existing failures), do not fix them one by one in a loop. After the **second** unrelated failure, stop and tell the user: the hook is failing on pre-existing test issues, and list the failing tests so they can be fixed separately. Never suggest or use `--no-verify` — see `t3:ship § Never use --no-verify`.
 
 ## Worktree-First Work (Non-Negotiable)
 
 **All development work MUST happen in a worktree**, never on the main clone. Use `t3 workspace ticket` or the `using-git-worktrees` skill to create one before writing any code.
+
+**Pre-edit check — before editing ANY project file:** If the file path lives directly under `$T3_WORKSPACE_DIR/<repo>/` (not under a ticket subdirectory like `$T3_WORKSPACE_DIR/<ticket>/<repo>/`), **stop** — you are in the main clone. Find or create the correct worktree first via `t3 workspace ticket`. The main clone may happen to be on the MR branch (from a previous checkout) — editing there "works" but pollutes the shared clone, risks merge conflicts for other worktrees, and violates isolation.
 
 **Collision detection — check on EVERY file write or git operation:**
 

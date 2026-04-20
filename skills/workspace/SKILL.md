@@ -94,13 +94,9 @@ All workspace operations go through the `t3` CLI. Run `t3 <overlay> --help` for 
 
 ## Rules
 
-### Plan Before Executing (Non-Negotiable)
+### Plan Before Executing
 
-Before starting any multi-step task, **create a TODO list** using the task tracking tools. This applies to all phases (setup, coding, testing, shipping) — not just coding. Never tackle work without a visible plan. The plan keeps the user informed and prevents forgetting steps.
-
-- **Simple tasks** (1-2 steps): a brief bullet list in the response is sufficient.
-- **Complex tasks** (3+ steps): use the agent's task tracking tools for each step, update status as you go.
-- **Never skip this.** If you find yourself doing 3+ things without a plan, stop and create one.
+Canonical rule: see [`../t3:rules/SKILL.md`](../t3:rules/SKILL.md) § "Always Create Tasks". Covers simple vs complex task thresholds and the "never skip" clause.
 
 ### Fix the CLI, Never Work Around It (Non-Negotiable)
 
@@ -111,13 +107,13 @@ When a `t3` command fails, **fix the CLI code first** — never manually run the
 3. **Fix** the code, add a test, and commit.
 4. **Re-run** the `t3` command to verify the fix.
 
-### Never Hand-Edit Generated Files (Non-Negotiable)
+### Never Hand-Edit Generated Files
 
 Setup tools (`t3 lifecycle setup`, etc.) generate configuration files (`.env.worktree`, docker overrides, port allocations). **Manual edits create drift** and are overwritten on the next setup run.
 
 When a generated file is wrong or incomplete, **re-run the setup tool** — don't manually patch the file. If setup fails, diagnose the root cause in the setup script (see `/t3:debug`), don't work around it.
 
-### Never Run Infrastructure Commands Directly (Non-Negotiable)
+### Never Run Infrastructure Commands Directly
 
 Use the `t3` CLI (`t3 lifecycle start`, `t3 run backend`, `t3 run frontend`, etc.) instead of running `docker compose`, language-specific dev servers, or build tools directly. The CLI commands handle:
 
@@ -128,13 +124,9 @@ Use the `t3` CLI (`t3 lifecycle start`, `t3 run backend`, `t3 run frontend`, etc
 
 Direct commands bypass these safeguards, causing subtle failures (wrong DB, port collisions, missing migrations).
 
-### Never Edit Files in the Main Clone (Non-Negotiable)
+### Never Edit Files in the Main Clone
 
-Before editing **any** project file, verify you are working in a **worktree**, not the main clone. The main repo clone (the directory directly under `$T3_WORKSPACE_DIR` with the default branch) is for `git fetch`, branch management, and worktree creation — never for code changes.
-
-**Pre-edit check:** If the file you are about to edit lives directly under `$T3_WORKSPACE_DIR/<repo>/` (not under a ticket subdirectory like `$T3_WORKSPACE_DIR/<ticket>/<repo>/`), **stop** — you are in the main clone. Find or create the correct worktree first via `t3 workspace ticket`.
-
-Common failure: the main clone happens to be on the MR branch (from a previous checkout). Editing there "works" but pollutes the shared clone, risks merge conflicts for other worktrees, and violates isolation.
+Canonical rule: see [`../t3:rules/SKILL.md`](../t3:rules/SKILL.md) § "Worktree-First Work". Covers the pre-edit path check and collision detection.
 
 ### Full Worktree Isolation (Non-Negotiable)
 
@@ -154,15 +146,15 @@ After importing a database or downloading an artifact, always validate it:
 - **Spot-check data** — empty seed/reference tables indicate a corrupt import; the application will crash on every request with lookup errors
 - If validation fails, **delete the corrupt artifact and re-run provisioning**. Never try to manually fix corrupt data — interdependent reference tables make this a losing game.
 
-### Service Startup Ordering (Non-Negotiable)
+### Service Startup Ordering
 
 Setup tools enforce ordering: **data store → migrations → application server**. Starting the application before migrations causes "relation does not exist" errors. Always use the orchestration functions (`t3 lifecycle start`) rather than starting services individually.
 
-### Never Delegate Skill-Dependent Work to Sub-Agents (Non-Negotiable)
+### Never Delegate Skill-Dependent Work to Sub-Agents
 
 See [`../t3:rules/SKILL.md`](../t3:rules/SKILL.md) § "Sub-Agent Limitations". If parallelism is needed, pass the **full skill file contents** in the sub-agent prompt — but prefer sequential main-conversation execution.
 
-### Verify Services Before Declaring Running (Non-Negotiable)
+### Verify Services Before Declaring Running
 
 After starting dev servers, **verify each service responds via HTTP** before reporting success. Check that frontend, backend, and API endpoints return expected status codes (2xx/3xx). If any check fails (000, 500, connection refused), diagnose before reporting — see troubleshooting docs.
 
