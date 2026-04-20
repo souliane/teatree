@@ -11,6 +11,6 @@ nav:
   - Home: index.md
   - Installation: install.md
   - Architecture: architecture.md
-  - CLI Reference: cli.md
+  - CLI Reference: generated/cli-reference.md
   - Overlay API: overlay-api.md
   - Management Commands: management-commands.md
