@@ -45,7 +45,7 @@ From "code is done" to "MR is merged."
 
 ## Workflow
 
-### 0. Ticket-Required Overlay Gate (Non-Negotiable)
+### 0. Ticket-Required Overlay Gate
 
 When the active overlay has `require_ticket = True`, refuse to commit or push without a ticket reference.
 
@@ -61,7 +61,7 @@ When the active overlay has `require_ticket = True`, refuse to commit or push wi
 - **Verify branch matches ticket** before committing. If on the wrong branch, create a clean branch from the default branch and cherry-pick.
 - **Check for pre-existing changes before staging.** If the diff includes changes you did not make in this session, **warn the user** — either stage only your hunks or ask how to proceed.
 - Format commit message following the project's commit format reference.
-- **Link commits to issues (Non-Negotiable).** Check `t3 overlay config --key mr_close_ticket`: when `true`, use `Fixes #<number>` or `Closes #<number>` in the commit message body (auto-closes on merge); when `false`, use `Relates-to #<number>` (links without closing). This applies to ALL repos.
+- **Link commits to issues.** Check `t3 overlay config --key mr_close_ticket`: when `true`, use `Fixes #<number>` or `Closes #<number>` in the commit message body (auto-closes on merge); when `false`, use `Relates-to #<number>` (links without closing). This applies to ALL repos.
 - Read `TICKET_URL` from `.env.worktree` — never construct it from the branch name.
 
 ### 2. Finalize Branch
@@ -85,7 +85,7 @@ When the active overlay has `require_ticket = True`, refuse to commit or push wi
 - **E2E gate:** If the project requires E2E tests for the type of changes made (UI, forms, user flows), those tests must be written and passing BEFORE proceeding. E2E is part of implementation, not a post-push activity.
 - **Wait for user feedback.** Do NOT proceed to push without user approval.
 
-### 3a. BLUEPRINT.md Sync (Non-Negotiable)
+### 3a. BLUEPRINT.md Sync
 
 If the changes touch architecture, add new modules, rename commands, or change extension points:
 
@@ -93,7 +93,7 @@ If the changes touch architecture, add new modules, rename commands, or change e
 2. If it doesn't, update it **before** pushing. Ask the user before modifying.
 3. This applies to all repos that have a `BLUEPRINT.md`.
 
-### 3b. Self-Review Against Repo Rules (Non-Negotiable)
+### 3b. Self-Review Against Repo Rules
 
 **Before every push**, run the self-review gate from [`../t3:review/SKILL.md`](../t3:review/SKILL.md) § "Active Verification Against Repo Rules":
 
@@ -109,7 +109,7 @@ Skipping this step is the #1 cause of wasted push-fix-push cycles. The rules exi
 - Cancel stale pipelines before pushing (if branch has an existing MR).
 - Push to remote.
 
-### 4b. Review Gate (Non-Negotiable)
+### 4b. Review Gate
 
 Before creating an MR, the `pr create` command automatically checks the session gate:
 
@@ -119,7 +119,7 @@ Before creating an MR, the `pr create` command automatically checks the session 
 
 ### 5. Create MR/PR
 
-**STOP — resolve the ticket URL before typing the glab command (Non-Negotiable).**
+**STOP — resolve the ticket URL before typing the glab command.**
 
 Before composing any `glab mr create` or `glab mr update` call, answer these three questions:
 
@@ -200,7 +200,7 @@ After delivery is complete (MR created, pipeline green), run `/t3:retro` to capt
 - **Cancel stale pipelines** before every push to a branch with an existing MR.
 - **Cancel running pipelines when closing an MR/PR.** When an MR is closed (abandoned, superseded, or replaced), cancel any running or pending pipelines for that branch immediately — they waste CI resources on code that will never be merged.
 - **Clickable references:** Every MR, ticket, or note reference must be a markdown link — see [`../t3:rules/SKILL.md`](../t3:rules/SKILL.md) § "Clickable References".
-- **Commit early, commit often (Non-Negotiable).** Never accumulate more than 1-2 tickets of uncommitted changes. Commit after completing each ticket or logical unit of work. Squash later with `t3 workspace finalize`.
+- **Commit early, commit often.** Never accumulate more than 1-2 tickets of uncommitted changes. Commit after completing each ticket or logical unit of work. Squash later with `t3 workspace finalize`.
 - **Never push without explicit approval.** Canonical rule: see [`../t3:rules/SKILL.md`](../t3:rules/SKILL.md) § "Never Push Without Separate Explicit Approval". Covers commit/squash/rebase/force-push approval boundaries and the `--no-verify` ban.
 - **Respect commit trailer preferences.** Check the user's global agent config for rules about `Co-Authored-By` trailers before committing. Some users explicitly opt out. When in doubt, **do not add trailers** — the user can always configure their agent to add them.
 
