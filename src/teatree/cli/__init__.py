@@ -299,28 +299,6 @@ def sessions(
     typer.echo("")
 
 
-@app.command()
-def overlays() -> None:
-    """List overlays (from ~/.teatree.toml and installed entry points)."""
-    from teatree.config import discover_active_overlay, discover_overlays  # noqa: PLC0415
-
-    installed = discover_overlays()
-    active = discover_active_overlay()
-
-    if not installed:
-        typer.echo("No overlays found.")
-        typer.echo("Add one to ~/.teatree.toml:")
-        typer.echo("")
-        typer.echo("  [overlays.my-project]")
-        typer.echo('  path = "~/workspace/my-project"')
-        return
-
-    typer.echo("Installed overlays:")
-    for entry in installed:
-        marker = " (active)" if active and entry.name == active.name else ""
-        typer.echo(f"  {entry.name:<20}{entry.overlay_class or '(local)'}{marker}")
-
-
 # ── Top-level info ─────────────────────────────────────────────────────
 
 

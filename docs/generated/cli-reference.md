@@ -16,8 +16,6 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │ agent           Launch Claude Code with auto-detected project context.       │
 │ sessions        List recent Claude conversation sessions with resume         │
 │                 commands.                                                    │
-│ overlays        List overlays (from ~/.teatree.toml and installed entry      │
-│                 points).                                                     │
 │ info            Show t3 installation, teatree/overlay sources, and editable  │
 │                 status.                                                      │
 │ dashboard       Migrate the database and start the dashboard dev server.     │
@@ -103,18 +101,6 @@ Usage: t3 sessions [OPTIONS]
 │ --limit    -n      INTEGER  Max sessions to show [default: 20]               │
 │ --all      -a               Show sessions from all projects                  │
 │ --help                      Show this message and exit.                      │
-╰──────────────────────────────────────────────────────────────────────────────╯
-```
-
-### `t3 overlays`
-
-```
-Usage: t3 overlays [OPTIONS]
-
- List overlays (from ~/.teatree.toml and installed entry points).
-
-╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -485,7 +471,6 @@ Usage: t3 doctor [OPTIONS] COMMAND [ARGS]...
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
 │ check  Verify imports, required tools, and editable-install sanity.          │
-│ info   Show t3 path, teatree/overlay sources, and editable status.           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -495,18 +480,6 @@ Usage: t3 doctor [OPTIONS] COMMAND [ARGS]...
 Usage: t3 doctor check [OPTIONS]
 
  Verify imports, required tools, and editable-install sanity.
-
-╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --help          Show this message and exit.                                  │
-╰──────────────────────────────────────────────────────────────────────────────╯
-```
-
-#### `t3 doctor info`
-
-```
-Usage: t3 doctor info [OPTIONS]
-
- Show t3 path, teatree/overlay sources, and editable status.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
