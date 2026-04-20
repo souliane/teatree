@@ -5,7 +5,7 @@ from contextlib import suppress
 from pathlib import Path
 
 from teatree.config import load_config
-from teatree.core.models import Worktree
+from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay_loader import get_overlay
 from teatree.utils import git
 from teatree.utils.db import drop_db
@@ -54,5 +54,8 @@ def cleanup_worktree(worktree: Worktree, *, force: bool = False) -> str:
         drop_db(worktree.db_name)
 
     label = f"Cleaned: {worktree.repo_path} ({worktree.branch})"
+    ticket_id = worktree.ticket.pk
     worktree.delete()
+    if not Worktree.objects.filter(ticket_id=ticket_id).exists():
+        Ticket.objects.get(pk=ticket_id).release_redis_slot()
     return label

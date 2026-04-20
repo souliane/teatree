@@ -18,6 +18,7 @@ import typer
 from teatree.cli.assess import assess_app
 from teatree.cli.ci import ci_app
 from teatree.cli.doctor import DoctorService, IntrospectionHelpers, doctor_app
+from teatree.cli.infra import infra_app
 from teatree.cli.overlay import OverlayAppBuilder, _uvicorn, managepy
 from teatree.cli.review import review_app
 from teatree.cli.setup import setup_app
@@ -641,6 +642,8 @@ app.add_typer(tool_app, name="tool")
 app.add_typer(setup_app, name="setup")
 
 app.add_typer(assess_app, name="assess")
+
+app.add_typer(infra_app, name="infra")
 
 
 # ── Review-request commands ──────────────────────────────────────────

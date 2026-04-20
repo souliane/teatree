@@ -14,6 +14,7 @@ from teatree.core.resolve import resolve_worktree
 from teatree.core.step_runner import ProvisionReport, run_provision_steps, run_step
 from teatree.core.worktree_env import write_env_worktree
 from teatree.timeouts import TimeoutConfig, load_timeouts
+from teatree.utils import redis_container
 from teatree.utils.ports import find_free_ports, get_worktree_ports
 
 
@@ -125,7 +126,6 @@ def _compose_env(ports: dict[str, int]) -> dict[str, str]:
         "FRONTEND_HOST_PORT": str(frontend),
         "POSTGRES_HOST_PORT": str(ports.get("postgres", 5432)),
         "POSTGRES_PORT": str(ports.get("postgres", 5432)),
-        "REDIS_HOST_PORT": str(ports.get("redis", 6379)),
         "CORS_WHITE_FRONT": f"http://localhost:{frontend}",
     }
 
@@ -224,6 +224,9 @@ class Command(TyperCommand):
 
         _update_ticket_variant(ticket, variant)
         _register_new_repos(worktree, self.stdout)
+
+        redis_container.ensure_running()
+        Ticket.objects.allocate_redis_slot(ticket)
 
         resolved_overlay = get_overlay()
         self._init_timeouts(resolved_overlay, no_timeout=no_timeout)
