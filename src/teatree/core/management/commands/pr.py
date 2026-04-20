@@ -6,6 +6,7 @@ from typing import cast
 
 from django_typer.management import TyperCommand, command
 
+from teatree.backends.protocols import PullRequestSpec
 from teatree.core.backend_factory import code_host_from_overlay, get_issue_tracker
 from teatree.core.models import Ticket
 from teatree.core.overlay_loader import get_overlay
@@ -121,12 +122,14 @@ class Command(TyperCommand):
 
         assignee = _current_user()
         return host.create_pr(
-            repo=repo_path,
-            branch=branch,
-            title=title,
-            description=description,
-            labels=_mr_auto_labels() or None,
-            assignee=assignee,
+            PullRequestSpec(
+                repo=repo_path,
+                branch=branch,
+                title=title,
+                description=description,
+                labels=_mr_auto_labels(),
+                assignee=assignee,
+            ),
         )
 
     @command(name="check-gates")
