@@ -55,7 +55,7 @@ def main() -> int:
         print("    If this change adds/removes/renames endpoints, models,")
         print("    commands, or config, please update BLUEPRINT.md too.")
         print()
-        print("    To skip: use a test/docs/style/chore/ci commit type.")
+        print("    To skip: use a fix/test/docs/style/chore/ci commit type.")
         print()
         return 1
 
