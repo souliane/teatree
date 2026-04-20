@@ -25,7 +25,6 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │ review-request  Batch review requests.                                       │
 │ doctor          Smoke-test hooks, imports, services.                         │
 │ tool            Standalone utilities.                                        │
-│ plugin          Plugin installation and management.                          │
 │ setup           First-time setup and global skill management.                │
 │ assess          Codebase health assessment.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
@@ -589,37 +588,6 @@ Usage: t3 tool claude-handover [OPTIONS]
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
-### `t3 plugin`
-
-```
-Usage: t3 plugin [OPTIONS] COMMAND [ARGS]...
-
- Plugin installation and management.
-
-╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --help          Show this message and exit.                                  │
-╰──────────────────────────────────────────────────────────────────────────────╯
-╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ install  Install the t3 plugin for Claude Code.                              │
-╰──────────────────────────────────────────────────────────────────────────────╯
-```
-
-#### `t3 plugin install`
-
-```
-Usage: t3 plugin install [OPTIONS]
-
- Install the t3 plugin for Claude Code.
-
- Tries APM first, then Claude CLI (registers local marketplace + installs).
-
-╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --scope        TEXT  Installation scope: user or project. [default: user]    │
-│ --dev                Development mode: use --plugin-dir.                     │
-│ --help               Show this message and exit.                             │
-╰──────────────────────────────────────────────────────────────────────────────╯
-```
-
 ### `t3 setup`
 
 ```
@@ -628,7 +596,10 @@ Usage: t3 setup [OPTIONS] COMMAND [ARGS]...
  First-time setup and global skill management.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --help          Show this message and exit.                                  │
+│ --claude-scope        TEXT  Claude plugin install scope: user or project.    │
+│                             [default: user]                                  │
+│ --skip-plugin               Skip Claude CLI plugin registration.             │
+│ --help                      Show this message and exit.                      │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
