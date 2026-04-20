@@ -1613,12 +1613,12 @@ class TestPrCreate(TestCase):
             )
 
         assert result == {"url": "https://example.com/mr/1"}
-        call_kwargs = mock_host.create_pr.call_args.kwargs
-        assert call_kwargs["repo"] == "my-repo"
-        assert call_kwargs["branch"] == "feature-70"
-        assert call_kwargs["title"] == "Fix bug"
-        assert call_kwargs["description"] == "Fixes the thing"
-        assert "assignee" in call_kwargs
+        (spec,) = mock_host.create_pr.call_args.args
+        assert spec.repo == "my-repo"
+        assert spec.branch == "feature-70"
+        assert spec.title == "Fix bug"
+        assert spec.description == "Fixes the thing"
+        assert spec.assignee
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
@@ -1667,9 +1667,9 @@ class TestPrCreate(TestCase):
                 ),
             )
 
-        call_kwargs = mock_host.create_pr.call_args[1]
-        assert call_kwargs["branch"] == "ticket-72"
-        assert call_kwargs["repo"] == ""
+        (spec,) = mock_host.create_pr.call_args.args
+        assert spec.branch == "ticket-72"
+        assert spec.repo == ""
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
@@ -1687,8 +1687,8 @@ class TestPrCreate(TestCase):
         ):
             call_command("pr", "create", str(ticket.pk), skip_validation=True)
 
-        call_kwargs = mock_host.create_pr.call_args[1]
-        assert call_kwargs["title"] == "Resolve https://example.com/issues/73"
+        (spec,) = mock_host.create_pr.call_args.args
+        assert spec.title == "Resolve https://example.com/issues/73"
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
@@ -1706,9 +1706,9 @@ class TestPrCreate(TestCase):
         ):
             call_command("pr", "create", str(ticket.pk), description="user desc", skip_validation=True)
 
-        call_kwargs = mock_host.create_pr.call_args[1]
-        assert call_kwargs["title"] == "commit title"
-        assert call_kwargs["description"] == "user desc"
+        (spec,) = mock_host.create_pr.call_args.args
+        assert spec.title == "commit title"
+        assert spec.description == "user desc"
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
@@ -1779,9 +1779,9 @@ class TestPrCreate(TestCase):
         ):
             call_command("pr", "create", str(ticket.pk), skip_validation=True)
 
-        call_kwargs = mock_host.create_pr.call_args[1]
-        assert call_kwargs["title"] == "fix(api): handle nulls"
-        assert call_kwargs["description"] == "Detailed body here"
+        (spec,) = mock_host.create_pr.call_args.args
+        assert spec.title == "fix(api): handle nulls"
+        assert spec.description == "Detailed body here"
 
 
 class TestPrCheckGates(TestCase):

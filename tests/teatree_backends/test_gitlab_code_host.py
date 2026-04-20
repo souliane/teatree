@@ -2,6 +2,7 @@ from unittest.mock import MagicMock
 
 from teatree.backends.gitlab import GitLabCodeHost
 from teatree.backends.gitlab_api import GitLabAPI, ProjectInfo
+from teatree.backends.protocols import PullRequestSpec
 
 
 def _project() -> ProjectInfo:
@@ -17,11 +18,13 @@ def test_create_pr_uses_repo_remote_and_auto_labels(tmp_path) -> None:
     repo_path.mkdir()
 
     result = host.create_pr(
-        repo=str(repo_path),
-        branch="feature-branch",
-        title="feat: add labels",
-        description="body",
-        labels=["Process::Technical review", "customer::foo"],
+        PullRequestSpec(
+            repo=str(repo_path),
+            branch="feature-branch",
+            title="feat: add labels",
+            description="body",
+            labels=["Process::Technical review", "customer::foo"],
+        ),
     )
 
     assert result == {"iid": 7}
@@ -45,11 +48,13 @@ def test_create_pr_uses_explicit_target_branch() -> None:
     host = GitLabCodeHost(client=client)
 
     host.create_pr(
-        repo="org/repo",
-        branch="feature-branch",
-        title="feat: add labels",
-        description="body",
-        target_branch="develop",
+        PullRequestSpec(
+            repo="org/repo",
+            branch="feature-branch",
+            title="feat: add labels",
+            description="body",
+            target_branch="develop",
+        ),
     )
 
     client.resolve_project.assert_called_once_with("org/repo")
@@ -79,10 +84,12 @@ def test_create_pr_returns_error_when_project_not_resolved() -> None:
     host = GitLabCodeHost(client=client)
 
     result = host.create_pr(
-        repo="org/unknown",
-        branch="feat",
-        title="test",
-        description="desc",
+        PullRequestSpec(
+            repo="org/unknown",
+            branch="feat",
+            title="test",
+            description="desc",
+        ),
     )
 
     assert result == {"error": "Could not resolve project: org/unknown"}
