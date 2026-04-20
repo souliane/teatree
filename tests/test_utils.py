@@ -816,6 +816,32 @@ def test_list_open_mrs_as_reviewer(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "not%5Bauthor_username%5D=adrien" in captured_endpoints[0]
 
 
+def test_list_open_issues_for_assignee(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = gitlab_api.GitLabAPI(token="test-token")
+    captured_endpoints: list[str] = []
+
+    def _capture(endpoint: str) -> list[dict[str, object]]:
+        captured_endpoints.append(endpoint)
+        return [{"iid": 42, "web_url": "https://gitlab.com/org/repo/-/issues/42"}]
+
+    monkeypatch.setattr(client, "get_json", _capture)
+
+    result = client.list_open_issues_for_assignee("adrien", updated_after="2024-01-01T00:00:00Z")
+
+    assert result == [{"iid": 42, "web_url": "https://gitlab.com/org/repo/-/issues/42"}]
+    assert captured_endpoints[0].startswith("issues?")
+    assert "assignee_username=adrien" in captured_endpoints[0]
+    assert "state=opened" in captured_endpoints[0]
+    assert "updated_after=2024-01-01T00%3A00%3A00Z" in captured_endpoints[0]
+
+
+def test_list_open_issues_for_assignee_returns_empty_on_non_list(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = gitlab_api.GitLabAPI(token="test-token")
+    monkeypatch.setattr(client, "get_json", lambda _endpoint: None)
+
+    assert client.list_open_issues_for_assignee("adrien") == []
+
+
 def test_list_recently_merged_mrs_returns_data(monkeypatch: pytest.MonkeyPatch) -> None:
     client = gitlab_api.GitLabAPI(token="test-token")
     monkeypatch.setattr(

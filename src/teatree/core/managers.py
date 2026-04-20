@@ -16,7 +16,10 @@ class TicketQuerySet(_OverlayFilterMixin, models.QuerySet):
         from teatree.core.models.ticket import Ticket  # noqa: PLC0415
 
         return (
-            self.for_overlay(overlay).exclude(state__in=[Ticket.State.DELIVERED, Ticket.State.IGNORED]).order_by("pk")
+            self.for_overlay(overlay)
+            .exclude(state__in=[Ticket.State.DELIVERED, Ticket.State.IGNORED])
+            .filter(Q(extra__tracker_status__isnull=True) | ~Q(extra__tracker_status="Done"))
+            .order_by("pk")
         )
 
 
