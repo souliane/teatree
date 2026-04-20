@@ -3,6 +3,7 @@ from unittest.mock import patch
 from django.test import TestCase, override_settings
 
 import teatree.core.overlay_loader as overlay_loader_mod
+import teatree.core.signals as signals_mod
 from teatree.core.models import Session, Task, Ticket
 from tests.teatree_core.conftest import CommandOverlay
 
@@ -133,3 +134,72 @@ class TestAutoEnqueueHeadlessSignal(TestCase):
 
         task.refresh_from_db()
         assert task.status == Task.Status.COMPLETED
+
+
+class TestSlackReactionsOnTransition(TestCase):
+    """post_transition signal triggers Slack reactions via the overlay config."""
+
+    def _ticket_with_mr(self) -> Ticket:
+        return Ticket.objects.create(
+            overlay="test",
+            state=Ticket.State.IN_REVIEW,
+            extra={
+                "mrs": {
+                    "https://gitlab.com/org/repo/-/merge_requests/1": {
+                        "review_permalink": "https://team.slack.com/archives/C999/p1700000000000100",
+                    }
+                }
+            },
+        )
+
+    def test_mark_merged_invokes_reactions(self) -> None:
+        ticket = self._ticket_with_mr()
+        called: list[tuple[object, str]] = []
+
+        def _fake(t: object, name: str) -> int:
+            called.append((t, name))
+            return 1
+
+        with patch.object(signals_mod, "add_reactions_for_transition", _fake):
+            ticket.mark_merged()
+            ticket.save()
+
+        assert len(called) == 1
+        assert called[0][1] == "mark_merged"
+
+    def test_transition_survives_reaction_failure(self) -> None:
+        ticket = self._ticket_with_mr()
+
+        def _boom(*_a: object, **_kw: object) -> int:
+            msg = "slack down"
+            raise RuntimeError(msg)
+
+        with patch.object(signals_mod, "add_reactions_for_transition", _boom):
+            ticket.mark_merged()
+            ticket.save()
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.MERGED
+
+    def test_different_transitions_forward_their_name(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.REVIEWED, extra={"mrs": {}})
+        names: list[str] = []
+
+        def _record(_ticket: object, name: str) -> int:
+            names.append(name)
+            return 0
+
+        with patch.object(signals_mod, "add_reactions_for_transition", _record):
+            ticket.rework()
+            ticket.save()
+
+        assert names == ["rework"]
+
+    def test_ticket_without_mrs_is_noop(self) -> None:
+        """The real handler is a silent no-op when the ticket has no MRs."""
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.IN_REVIEW, extra={})
+        # No patching — the real code path must not raise.
+        ticket.mark_merged()
+        ticket.save()
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.MERGED

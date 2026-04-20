@@ -3,6 +3,7 @@ import logging
 from django.db.models.signals import post_save
 from django_fsm.signals import post_transition
 
+from teatree.backends.slack_reactions import add_reactions_for_transition
 from teatree.core.models.task import Task
 from teatree.core.models.ticket import Ticket
 
@@ -29,6 +30,18 @@ def _log_ticket_transition(
     )
 
 
+def _add_slack_reactions_on_transition(
+    instance: Ticket,
+    name: str,
+    **_kwargs: object,
+) -> None:
+    """Post a Slack emoji reaction on the MR review message for this transition."""
+    try:
+        add_reactions_for_transition(instance, name)
+    except Exception:
+        logger.exception("Failed to add Slack reactions for ticket %s transition %s", instance.pk, name)
+
+
 def _auto_enqueue_headless_task(
     sender: type,  # noqa: ARG001
     instance: Task,
@@ -50,4 +63,7 @@ def _auto_enqueue_headless_task(
 
 def register_signals() -> None:
     post_transition.connect(_log_ticket_transition, sender=Ticket, dispatch_uid="ticket_transition_audit")
+    post_transition.connect(
+        _add_slack_reactions_on_transition, sender=Ticket, dispatch_uid="ticket_transition_slack_reactions"
+    )
     post_save.connect(_auto_enqueue_headless_task, sender=Task, dispatch_uid="auto_enqueue_headless")
