@@ -65,6 +65,8 @@ class TestBlocksForbiddenCommands:
             ("uv run t3 teatree lifecycle setup", "install teatree"),
             ("uv run --no-sync t3 dashboard", "install teatree"),
             ("cd /tmp && uv run t3 info", "install teatree"),
+            ("dslr restore my_snap", "db"),
+            ("T3_ALLOW_REMOTE_DUMP=1 t3 myapp db refresh", "T3_ALLOW_REMOTE_DUMP"),
         ],
     )
     def test_denies_with_t3_alternative(
@@ -109,6 +111,8 @@ class TestAllowsLegitimateCommands:
             "echo 'run uv run t3 command'",
             "cat README.md",
             "grep -r 'playwright' .",
+            "dslr list",
+            "dslr delete old_snap",
         ],
     )
     def test_allows_command(

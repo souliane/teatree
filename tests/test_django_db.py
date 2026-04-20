@@ -614,11 +614,24 @@ class TestTryRestoreFromLocalDump:
 
 
 class TestTryFetchRemoteDump:
-    def test_skips_when_no_remote_url(self, tmp_path: Path) -> None:
+    def test_blocks_when_env_gate_not_set(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Regression guard: even with remote_url configured, the env gate must block.
+
+        2026-04-20 incident: agent-triggered lifecycle path auto-fetched gigabyte
+        dumps over VPN. The env gate is the final safety net.
+        """
+        monkeypatch.delenv("T3_ALLOW_REMOTE_DUMP", raising=False)
+        cfg = _make_cfg(tmp_path, remote_db_url="postgres://u:p@host/db")
+        ctx = _RestoreContext(cfg=cfg, dslr_cmd="", dslr_env={}, pg_host="h", pg_user="u", pg_env={})
+        assert _try_fetch_remote_dump(ctx) is False
+
+    def test_skips_when_no_remote_url(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("T3_ALLOW_REMOTE_DUMP", "1")
         ctx = _make_ctx(tmp_path)
         assert _try_fetch_remote_dump(ctx) is False
 
     def test_skips_when_already_failed(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("T3_ALLOW_REMOTE_DUMP", "1")
         mod._remote_dump_failed = True
         cfg = _make_cfg(tmp_path, remote_db_url="postgres://u:p@host/db")
         ctx = _RestoreContext(cfg=cfg, dslr_cmd="", dslr_env={}, pg_host="h", pg_user="u", pg_env={})
@@ -626,6 +639,7 @@ class TestTryFetchRemoteDump:
         reset_remote_dump_state()
 
     def test_handles_timeout(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("T3_ALLOW_REMOTE_DUMP", "1")
         reset_remote_dump_state()
         (tmp_path / ".data").mkdir()
         cfg = _make_cfg(tmp_path, remote_db_url="postgres://u:p@host/db")
@@ -639,6 +653,7 @@ class TestTryFetchRemoteDump:
         reset_remote_dump_state()
 
     def test_handles_pg_dump_failure(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("T3_ALLOW_REMOTE_DUMP", "1")
         reset_remote_dump_state()
         (tmp_path / ".data").mkdir()
         cfg = _make_cfg(tmp_path, remote_db_url="postgres://u:p@host/db")
@@ -648,6 +663,7 @@ class TestTryFetchRemoteDump:
         reset_remote_dump_state()
 
     def test_returns_true_after_successful_fetch(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("T3_ALLOW_REMOTE_DUMP", "1")
         reset_remote_dump_state()
         data_dir = tmp_path / ".data"
         data_dir.mkdir()
