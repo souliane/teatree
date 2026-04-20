@@ -4,8 +4,10 @@ DB-touching commands are django-typer management commands, exposed here after
 ``django.setup()``.  Django-free commands live as plain Typer groups.
 """
 
+import contextlib
 import logging
 import os
+import signal
 import subprocess  # noqa: S404
 import sys
 from datetime import UTC
@@ -471,6 +473,44 @@ def _find_overlay_project() -> Path:
     return _find_project_root()
 
 
+class DashboardGuard:
+    """Singleton guard for the dashboard server using a PID file."""
+
+    def __init__(self, pid_file: Path) -> None:
+        self._pid_file = pid_file
+
+    def _read_pid(self) -> int | None:
+        try:
+            pid = int(self._pid_file.read_text().strip())
+        except (FileNotFoundError, ValueError):
+            return None
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            self._pid_file.unlink(missing_ok=True)
+            return None
+        return pid
+
+    def stop_existing(self) -> bool:
+        """Kill an existing dashboard process. Returns True if one was stopped."""
+        pid = self._read_pid()
+        if pid is None:
+            return False
+        typer.echo(f"Stopping existing dashboard (PID {pid})...")
+        os.kill(pid, signal.SIGTERM)
+        with contextlib.suppress(ChildProcessError):
+            os.waitpid(pid, 0)
+        self._pid_file.unlink(missing_ok=True)
+        return True
+
+    def write_pid(self) -> None:
+        self._pid_file.parent.mkdir(parents=True, exist_ok=True)
+        self._pid_file.write_text(str(os.getpid()))
+
+    def cleanup(self) -> None:
+        self._pid_file.unlink(missing_ok=True)
+
+
 @app.command()
 def dashboard(
     host: str = typer.Option("127.0.0.1", help="Host to bind to"),
@@ -478,11 +518,24 @@ def dashboard(
     *,
     project: Path | None = typer.Option(None, help="Project root to serve from (worktree path)."),
     workers: int = typer.Option(1, help="Number of background task workers to start (0 to disable)"),
+    stop: bool = typer.Option(False, "--stop", help="Stop the running dashboard and exit."),
 ) -> None:
     """Migrate the database and start the dashboard dev server."""
     import socket  # noqa: PLC0415
 
     from teatree.cli.overlay import uv_cmd  # noqa: PLC0415
+    from teatree.config import DATA_DIR  # noqa: PLC0415
+
+    guard = DashboardGuard(DATA_DIR / "dashboard.pid")
+
+    if stop:
+        if guard.stop_existing():
+            typer.echo("Dashboard stopped.")
+        else:
+            typer.echo("No running dashboard found.")
+        return
+
+    guard.stop_existing()
 
     project_path, overlay_name, settings_module = _resolve_overlay_for_server(project=project)
     managepy(project_path, "migrate", "--no-input", overlay_name=overlay_name)
@@ -495,6 +548,8 @@ def dashboard(
             actual_port = s2.getsockname()[1]
             s2.close()
             typer.echo(f"Port {port} in use, using {actual_port}")
+
+    guard.write_pid()
 
     worker_procs: list[subprocess.Popen] = []
     if workers > 0 and project_path:
@@ -522,6 +577,7 @@ def dashboard(
             p.terminate()
         for p in worker_procs:
             p.wait(timeout=5)
+        guard.cleanup()
 
 
 def _resolve_overlay_for_server(*, project: Path | None = None) -> tuple[Path, str, str]:
