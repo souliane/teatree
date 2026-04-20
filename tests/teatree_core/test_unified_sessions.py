@@ -33,6 +33,25 @@ class TestBuildUnifiedSessions(TestCase):
         assert rows[0].row_status == "queued"
         assert rows[0].execution_reason == "Test task"
 
+    def test_queued_task_exposes_issue_url(self) -> None:
+        ticket = Ticket.objects.create(
+            state=Ticket.State.STARTED,
+            issue_url="https://example.com/issues/42",
+        )
+        session = Session.objects.create(ticket=ticket, agent_id="test")
+        Task.objects.create(
+            ticket=ticket,
+            session=session,
+            phase="coding",
+            execution_target=Task.ExecutionTarget.INTERACTIVE,
+        )
+
+        with patch("teatree.core.selectors.unified.build_active_sessions", return_value=[]):
+            rows = build_unified_sessions()
+
+        assert len(rows) == 1
+        assert rows[0].issue_url == "https://example.com/issues/42"
+
     def test_includes_completed_activity(self) -> None:
         ticket = Ticket.objects.create(state=Ticket.State.STARTED)
         session = Session.objects.create(ticket=ticket, agent_id="test")

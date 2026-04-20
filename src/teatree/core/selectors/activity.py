@@ -67,6 +67,7 @@ def build_active_sessions() -> list[ActiveSessionRow]:
                 ticket_display_id=task.ticket.ticket_number if task else "",
                 phase=task.phase if task else "",
                 launch_url="",
+                issue_url=task.ticket.issue_url if task else "",
                 session_id=session_id,
                 cwd=str(data.get("cwd", "")),
                 name=str(data.get("name", "")),
