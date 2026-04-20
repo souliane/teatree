@@ -27,6 +27,7 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │ tool            Standalone utilities.                                        │
 │ setup           First-time setup and global skill management.                │
 │ assess          Codebase health assessment.                                  │
+│ infra           Teatree-wide infrastructure services.                        │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -646,5 +647,73 @@ Usage: t3 assess history [OPTIONS]
 │ --root           PATH     Repository root                                    │
 │ --limit  -n      INTEGER  Number of recent assessments to show [default: 10] │
 │ --help                    Show this message and exit.                        │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+### `t3 infra`
+
+```
+Usage: t3 infra [OPTIONS] COMMAND [ARGS]...
+
+ Teatree-wide infrastructure services.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ redis  Shared Redis container (teatree-redis).                               │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 infra redis`
+
+```
+Usage: t3 infra redis [OPTIONS] COMMAND [ARGS]...
+
+ Shared Redis container (teatree-redis).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ up      Start the shared Redis container (idempotent).                       │
+│ down    Stop the shared Redis container.                                     │
+│ status  Print the shared Redis container status.                             │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 infra redis up`
+
+```
+Usage: t3 infra redis up [OPTIONS]
+
+ Start the shared Redis container (idempotent).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 infra redis down`
+
+```
+Usage: t3 infra redis down [OPTIONS]
+
+ Stop the shared Redis container.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 infra redis status`
+
+```
+Usage: t3 infra redis status [OPTIONS]
+
+ Print the shared Redis container status.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```

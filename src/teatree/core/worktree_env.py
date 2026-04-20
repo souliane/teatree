@@ -44,6 +44,8 @@ def write_env_worktree(worktree: Worktree) -> str | None:
         f"WT_DB_NAME={worktree.db_name}",
         f"COMPOSE_PROJECT_NAME={worktree.repo_path}-wt{ticket.ticket_number}",
     ]
+    if ticket.redis_db_index is not None:
+        lines.append(f"REDIS_DB_INDEX={ticket.redis_db_index}")
 
     # When the overlay declares shared_postgres, containers must reach the
     # host's Postgres (not a per-worktree container).  Set POSTGRES_HOST to

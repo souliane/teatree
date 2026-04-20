@@ -1,6 +1,14 @@
+from typing import TYPE_CHECKING
+
 from django.db import models
 from django.db.models import Q
 from django.utils import timezone
+
+from teatree.core.models.errors import RedisSlotsExhaustedError
+from teatree.utils.redis_container import redis_db_count
+
+if TYPE_CHECKING:
+    from teatree.core.models.ticket import Ticket
 
 
 class _OverlayFilterMixin:
@@ -21,6 +29,24 @@ class TicketQuerySet(_OverlayFilterMixin, models.QuerySet):
             .filter(Q(extra__tracker_status__isnull=True) | ~Q(extra__tracker_status="Done"))
             .order_by("pk")
         )
+
+    def allocate_redis_slot(self, ticket: "Ticket") -> int:
+        """Pick the lowest free Redis DB index for the ticket.
+
+        Idempotent: returns the existing index if the ticket already has one.
+        Raises RedisSlotsExhaustedError when every slot is in use.
+        """
+        if ticket.redis_db_index is not None:
+            return int(ticket.redis_db_index)
+        count = redis_db_count()
+        taken = set(self.filter(redis_db_index__isnull=False).values_list("redis_db_index", flat=True))
+        for index in range(count):
+            if index not in taken:
+                ticket.redis_db_index = index
+                ticket.save(update_fields=["redis_db_index"])
+                return index
+        msg = f"All {count} Redis DB slots are in use — release a ticket's slot first"
+        raise RedisSlotsExhaustedError(msg)
 
 
 class WorktreeQuerySet(_OverlayFilterMixin, models.QuerySet):

@@ -166,6 +166,58 @@ class TestWriteEnvWorktree(TestCase):
             # New key should be appended
             assert "EXTRA_KEY=extra_value" in content
 
+    def test_emits_redis_db_index_when_allocated(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ticket_dir = Path(tmp) / "ticket-5"
+            ticket_dir.mkdir()
+            wt_path = ticket_dir / "backend"
+            wt_path.mkdir()
+
+            ticket = Ticket.objects.create(
+                overlay="test",
+                issue_url="https://example.com/issues/5",
+                redis_db_index=7,
+            )
+            wt = Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="backend",
+                branch="feature",
+                db_name="wt_5",
+                extra={"worktree_path": str(wt_path)},
+            )
+
+            with patch.object(overlay_loader_mod, "_discover_overlays", return_value=_COMMAND):
+                result = worktree_env_mod.write_env_worktree(wt)
+
+            assert result is not None
+            content = Path(result).read_text(encoding="utf-8")
+            assert "REDIS_DB_INDEX=7" in content
+
+    def test_omits_redis_db_index_when_unallocated(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ticket_dir = Path(tmp) / "ticket-6"
+            ticket_dir.mkdir()
+            wt_path = ticket_dir / "backend"
+            wt_path.mkdir()
+
+            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/6")
+            wt = Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="backend",
+                branch="feature",
+                db_name="wt_6",
+                extra={"worktree_path": str(wt_path)},
+            )
+
+            with patch.object(overlay_loader_mod, "_discover_overlays", return_value=_COMMAND):
+                result = worktree_env_mod.write_env_worktree(wt)
+
+            assert result is not None
+            content = Path(result).read_text(encoding="utf-8")
+            assert "REDIS_DB_INDEX" not in content
+
     def test_overwrites_existing_symlink(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             ticket_dir = Path(tmp) / "ticket-4"

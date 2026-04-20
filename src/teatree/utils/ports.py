@@ -8,11 +8,12 @@ from pathlib import Path
 type Ports = dict[str, int]
 
 # Container-internal ports (fixed). Only host ports vary per worktree.
+# Redis is shared across all tickets via the `teatree-redis` container on
+# localhost:6379 with a per-ticket DB index — never per-worktree.
 CONTAINER_PORTS: dict[str, int] = {
     "backend": 8000,
     "frontend": 4200,
     "postgres": 5432,
-    "redis": 6379,
 }
 
 # Default compose service → container port mapping.
@@ -20,7 +21,6 @@ COMPOSE_SERVICE_MAP: dict[str, tuple[str, int]] = {
     "web": ("backend", 8000),
     "frontend": ("frontend", 4200),
     "db": ("postgres", 5432),
-    "rd": ("redis", 6379),
 }
 
 
@@ -55,7 +55,7 @@ def _next_free_port(start: int, *, used: set[int]) -> int:
 
 
 def find_free_ports(workspace_dir: str) -> Ports:
-    """Find four free host ports for backend, frontend, postgres, redis.
+    """Find three free host ports for backend, frontend, postgres.
 
     Uses a file lock in *workspace_dir* to prevent concurrent allocations
     from picking the same ports.  Port availability is checked via socket
@@ -74,13 +74,10 @@ def find_free_ports(workspace_dir: str) -> Ports:
         used.add(frontend)
         # Postgres: default 5432 for shared server, 5433+ for isolated
         postgres = _next_free_port(5432, used=used)
-        used.add(postgres)
-        redis = _next_free_port(6379, used=used)
         return {
             "backend": backend,
             "frontend": frontend,
             "postgres": postgres,
-            "redis": redis,
         }
     finally:
         fcntl.flock(handle, fcntl.LOCK_UN)
