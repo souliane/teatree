@@ -13,7 +13,6 @@ tools:
 skills:
   - rules
   - workspace
-model: sonnet
 maxTurns: 50
 ---
 
