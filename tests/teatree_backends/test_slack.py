@@ -7,6 +7,7 @@ import pytest
 
 from teatree.backends.slack import (
     SlackReviewMatch,
+    SlackReviewSearchRequest,
     _resolve_workspace_domain,
     search_review_permalinks,
 )
@@ -70,10 +71,12 @@ def test_resolve_workspace_domain_failed_auth() -> None:
 def test_search_review_permalinks_returns_empty_when_no_token() -> None:
     """search_review_permalinks returns [] when token is empty (line 47)."""
     result = search_review_permalinks(
-        token="",
-        channel_id="C123",
-        channel_name="review",
-        mr_urls=["https://gitlab.com/org/repo/-/merge_requests/1"],
+        SlackReviewSearchRequest(
+            token="",
+            channel_id="C123",
+            channel_name="review",
+            mr_urls=["https://gitlab.com/org/repo/-/merge_requests/1"],
+        )
     )
     assert result == []
 
@@ -81,10 +84,12 @@ def test_search_review_permalinks_returns_empty_when_no_token() -> None:
 def test_search_review_permalinks_returns_empty_when_no_channel_id() -> None:
     """search_review_permalinks returns [] when channel_id is empty (line 47)."""
     result = search_review_permalinks(
-        token="xoxb-token",
-        channel_id="",
-        channel_name="review",
-        mr_urls=["https://gitlab.com/org/repo/-/merge_requests/1"],
+        SlackReviewSearchRequest(
+            token="xoxb-token",
+            channel_id="",
+            channel_name="review",
+            mr_urls=["https://gitlab.com/org/repo/-/merge_requests/1"],
+        )
     )
     assert result == []
 
@@ -92,10 +97,12 @@ def test_search_review_permalinks_returns_empty_when_no_channel_id() -> None:
 def test_search_review_permalinks_returns_empty_when_no_mr_urls() -> None:
     """search_review_permalinks returns [] when mr_urls is empty (line 47)."""
     result = search_review_permalinks(
-        token="xoxb-token",
-        channel_id="C123",
-        channel_name="review",
-        mr_urls=[],
+        SlackReviewSearchRequest(
+            token="xoxb-token",
+            channel_id="C123",
+            channel_name="review",
+            mr_urls=[],
+        )
     )
     assert result == []
 
@@ -117,10 +124,12 @@ def test_search_review_permalinks_finds_matching_mr(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr("teatree.backends.slack.httpx.Client", lambda **kw: fake_client)
 
     result = search_review_permalinks(
-        token="xoxb-token",
-        channel_id="C123",
-        channel_name="review-crew",
-        mr_urls=[mr_url],
+        SlackReviewSearchRequest(
+            token="xoxb-token",
+            channel_id="C123",
+            channel_name="review-crew",
+            mr_urls=[mr_url],
+        )
     )
 
     assert len(result) == 1
@@ -149,10 +158,12 @@ def test_search_review_permalinks_stops_when_all_found(monkeypatch: pytest.Monke
     monkeypatch.setattr("teatree.backends.slack.httpx.Client", lambda **kw: fake_client)
 
     result = search_review_permalinks(
-        token="xoxb-token",
-        channel_id="C456",
-        channel_name="reviews",
-        mr_urls=[mr_url],
+        SlackReviewSearchRequest(
+            token="xoxb-token",
+            channel_id="C456",
+            channel_name="reviews",
+            mr_urls=[mr_url],
+        )
     )
 
     assert len(result) == 1
@@ -179,10 +190,12 @@ def test_search_review_permalinks_paginates(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setattr("teatree.backends.slack.httpx.Client", lambda **kw: fake_client)
 
     result = search_review_permalinks(
-        token="xoxb-token",
-        channel_id="C789",
-        channel_name="review",
-        mr_urls=[mr_url1, mr_url2],
+        SlackReviewSearchRequest(
+            token="xoxb-token",
+            channel_id="C789",
+            channel_name="review",
+            mr_urls=[mr_url1, mr_url2],
+        )
     )
 
     assert len(result) == 2
@@ -196,10 +209,12 @@ def test_search_review_permalinks_stops_on_not_ok(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr("teatree.backends.slack.httpx.Client", lambda **kw: fake_client)
 
     result = search_review_permalinks(
-        token="xoxb-token",
-        channel_id="C999",
-        channel_name="review",
-        mr_urls=["https://gitlab.com/org/repo/-/merge_requests/1"],
+        SlackReviewSearchRequest(
+            token="xoxb-token",
+            channel_id="C999",
+            channel_name="review",
+            mr_urls=["https://gitlab.com/org/repo/-/merge_requests/1"],
+        )
     )
 
     assert result == []
@@ -220,10 +235,12 @@ def test_search_review_permalinks_skips_messages_without_ts(monkeypatch: pytest.
     monkeypatch.setattr("teatree.backends.slack.httpx.Client", lambda **kw: fake_client)
 
     result = search_review_permalinks(
-        token="xoxb-token",
-        channel_id="C111",
-        channel_name="review",
-        mr_urls=[mr_url],
+        SlackReviewSearchRequest(
+            token="xoxb-token",
+            channel_id="C111",
+            channel_name="review",
+            mr_urls=[mr_url],
+        )
     )
 
     assert len(result) == 1
@@ -242,11 +259,13 @@ def test_search_review_permalinks_uses_provided_workspace_domain(monkeypatch: py
     monkeypatch.setattr("teatree.backends.slack.httpx.Client", lambda **kw: fake_client)
 
     result = search_review_permalinks(
-        token="xoxb-token",
-        channel_id="C222",
-        channel_name="review",
-        mr_urls=[mr_url],
-        workspace_domain="custom.slack.com",
+        SlackReviewSearchRequest(
+            token="xoxb-token",
+            channel_id="C222",
+            channel_name="review",
+            mr_urls=[mr_url],
+            workspace_domain="custom.slack.com",
+        )
     )
 
     assert len(result) == 1
@@ -268,10 +287,12 @@ def test_search_review_permalinks_deduplicates_same_mr(monkeypatch: pytest.Monke
     monkeypatch.setattr("teatree.backends.slack.httpx.Client", lambda **kw: fake_client)
 
     result = search_review_permalinks(
-        token="xoxb-token",
-        channel_id="C333",
-        channel_name="review",
-        mr_urls=[mr_url],
+        SlackReviewSearchRequest(
+            token="xoxb-token",
+            channel_id="C333",
+            channel_name="review",
+            mr_urls=[mr_url],
+        )
     )
 
     assert len(result) == 1
@@ -289,10 +310,12 @@ def test_search_review_permalinks_stops_when_no_cursor(monkeypatch: pytest.Monke
     monkeypatch.setattr("teatree.backends.slack.httpx.Client", lambda **kw: fake_client)
 
     result = search_review_permalinks(
-        token="xoxb-token",
-        channel_id="C444",
-        channel_name="review",
-        mr_urls=["https://gitlab.com/org/repo/-/merge_requests/99"],
+        SlackReviewSearchRequest(
+            token="xoxb-token",
+            channel_id="C444",
+            channel_name="review",
+            mr_urls=["https://gitlab.com/org/repo/-/merge_requests/99"],
+        )
     )
 
     assert result == []

@@ -2,6 +2,7 @@
 
 import logging
 import re
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast, override
 
 import httpx
@@ -39,6 +40,14 @@ _SKILL_WRITTEN_FIELDS = ("review_channel", "review_permalink", "e2e_test_plan_ur
 _STATE_ORDER = [s.value for s in Ticket.State]
 
 
+@dataclass(frozen=True, slots=True)
+class _MRContext:
+    mr: RawAPIDict
+    repo_short: str
+    client: "GitLabAPI"
+    project: "ProjectInfo | None"
+
+
 class GitLabSyncBackend(SyncBackend):
     @override
     def is_configured(self, overlay: object) -> bool:
@@ -73,19 +82,15 @@ class GitLabSyncBackend(SyncBackend):
         for mr in mrs:
             result.mrs_found += 1
             repo_path = self._extract_repo_path(mr)
+            repo_short = repo_path.rsplit("/", maxsplit=1)[-1]
             project_id = int(mr.get("project_id", 0))  # type: ignore[arg-type]
             project = (
-                ProjectInfo(
-                    project_id=project_id,
-                    path_with_namespace=repo_path,
-                    short_name=repo_path.rsplit("/", maxsplit=1)[-1],
-                )
+                ProjectInfo(project_id=project_id, path_with_namespace=repo_path, short_name=repo_short)
                 if project_id
                 else None
             )
-            self._upsert_ticket_from_mr(
-                mr, repo_path, client, project, result, username=username, overlay_name=overlay_name
-            )
+            ctx = _MRContext(mr=mr, repo_short=repo_short, client=client, project=project)
+            self._upsert_ticket_from_mr(ctx, result, username=username, overlay_name=overlay_name)
 
         self._fetch_assigned_issues(client, username, result, overlay_name=overlay_name)
 
@@ -109,69 +114,66 @@ class GitLabSyncBackend(SyncBackend):
         return match.group(1) if match else ""
 
     @classmethod
-    def _upsert_ticket_from_mr(  # noqa: PLR0913, PLR0914
-        cls,
-        mr: RawAPIDict,
-        repo_path: str,
-        client: "GitLabAPI",
-        project: "ProjectInfo | None",
-        result: SyncResult,
-        *,
-        username: str = "",
-        overlay_name: str = "",
-    ) -> None:
-        issue_url = cls._extract_issue_url(mr)
+    def _build_mr_entry(cls, ctx: "_MRContext", *, username: str) -> MREntry:
+        """Build a fully enriched MREntry from a raw MR dict."""
+        mr = ctx.mr
         web_url = str(mr.get("web_url", ""))
-        title = str(mr.get("title", ""))
-        source_branch = str(mr.get("source_branch", ""))
         is_draft = bool(mr.get("draft"))
         mr_iid = int(mr.get("iid", 0))  # type: ignore[arg-type]
-        repo_short = repo_path.rsplit("/", maxsplit=1)[-1]
 
         mr_entry = MREntry(
             url=web_url,
-            title=title,
-            branch=source_branch,
+            title=str(mr.get("title", "")),
+            branch=str(mr.get("source_branch", "")),
             draft=is_draft,
-            repo=repo_short,
+            repo=ctx.repo_short,
             iid=mr_iid,
             updated_at=str(mr.get("updated_at", "")),
         )
 
-        # Enrich non-draft MRs with pipeline and approval data
-        if not is_draft and project and mr_iid:
-            pipeline = client.get_mr_pipeline(project.project_id, mr_iid)
+        if not is_draft and ctx.project and mr_iid:
+            pipeline = ctx.client.get_mr_pipeline(ctx.project.project_id, mr_iid)
             mr_entry.pipeline_status = pipeline["status"]
             mr_entry.pipeline_url = pipeline["url"]
+            mr_entry.approvals = ctx.client.get_mr_approvals(ctx.project.project_id, mr_iid)
 
-            approvals = client.get_mr_approvals(project.project_id, mr_iid)
-            mr_entry.approvals = approvals
-
-            discussions = client.get_mr_discussions(project.project_id, mr_iid)
+            discussions = ctx.client.get_mr_discussions(ctx.project.project_id, mr_iid)
             mr_entry.discussions = cls._classify_discussions(discussions, username)
-
             e2e_url = cls._detect_e2e_evidence(discussions, web_url)
             if e2e_url:
                 mr_entry.e2e_test_plan_url = e2e_url
 
-            draft_count = client.get_draft_notes_count(project.project_id, mr_iid)
+            draft_count = ctx.client.get_draft_notes_count(ctx.project.project_id, mr_iid)
             mr_entry.draft_comments_pending = draft_count > 0
             mr_entry.draft_comments_count = draft_count if draft_count > 0 else None
 
-        # Reviewer info is available on all MRs (including drafts)
         reviewers = mr.get("reviewers", [])
         if isinstance(reviewers, list):
             mr_entry.review_requested = bool(reviewers)
             mr_entry.reviewer_names = [str(r.get("username", "")) for r in reviewers if isinstance(r, dict)]  # ty: ignore[no-matching-overload]
 
-        lookup_url = issue_url or web_url
+        return mr_entry
+
+    @classmethod
+    def _upsert_ticket_from_mr(
+        cls,
+        ctx: "_MRContext",
+        result: SyncResult,
+        *,
+        username: str = "",
+        overlay_name: str = "",
+    ) -> None:
+        mr_entry = cls._build_mr_entry(ctx, username=username)
+        web_url = mr_entry.url
+        lookup_url = cls._extract_issue_url(ctx.mr) or web_url
         mr_entry_dict = mr_entry.to_dict()
         inferred_state = cls._infer_state_from_mrs({web_url: mr_entry_dict})
+
         tickets = list(Ticket.objects.filter(issue_url=lookup_url).order_by("pk"))
         if not tickets:
             Ticket.objects.create(
                 issue_url=lookup_url,
-                repos=[repo_short],
+                repos=[ctx.repo_short],
                 extra={"mrs": {web_url: mr_entry_dict}},
                 state=inferred_state,
                 overlay=overlay_name,
@@ -185,7 +187,7 @@ class GitLabSyncBackend(SyncBackend):
             if overlay_name and not ticket.overlay:
                 ticket.overlay = overlay_name
                 ticket.save(update_fields=["overlay"])
-            cls._update_ticket(ticket, mr_entry_dict, web_url, repo_short, inferred_state)
+            cls._update_ticket(ticket, mr_entry_dict, web_url, ctx.repo_short, inferred_state)
             result.tickets_updated += 1
 
     @classmethod
