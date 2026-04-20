@@ -350,6 +350,100 @@ class TestSyncSkillSymlinks:
         assert (claude_skills / "my-skill").is_symlink()
 
 
+class TestAgentSkillDirs:
+    def test_includes_claude_and_codex(self) -> None:
+        from teatree.cli.setup import AGENT_SKILL_RUNTIMES  # noqa: PLC0415
+
+        assert "claude" in AGENT_SKILL_RUNTIMES
+        assert "codex" in AGENT_SKILL_RUNTIMES
+
+    def test_factory_resolves_against_home(self, tmp_path, monkeypatch) -> None:
+        from teatree.cli.setup import agent_skill_dirs  # noqa: PLC0415
+
+        monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: tmp_path))
+        dirs = dict(agent_skill_dirs())
+        assert dirs["codex"] == tmp_path / ".codex" / "skills"
+        assert dirs["claude"] == tmp_path / ".claude" / "skills"
+
+
+class TestSetupSyncsCodexWhenDirExists:
+    def test_syncs_to_both_claude_and_codex(self, tmp_path: Path, monkeypatch) -> None:
+        """Setup mirrors skill symlinks into ~/.codex/skills when it exists."""
+        from teatree.cli import setup as setup_module  # noqa: PLC0415
+
+        skills_src = tmp_path / "core_skills"
+        skills_src.mkdir()
+        (skills_src / "code").mkdir()
+        (skills_src / "code" / "SKILL.md").touch()
+
+        # Simulate home layout: both dirs already exist so setup should target both
+        home = tmp_path / "home"
+        claude_skills = home / ".claude" / "skills"
+        codex_skills = home / ".codex" / "skills"
+        claude_skills.mkdir(parents=True)
+        codex_skills.mkdir(parents=True)
+
+        monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: home))
+
+        repo = tmp_path / "teatree"
+        repo.mkdir()
+        (repo / "apm.yml").touch()
+        (repo / ".git").mkdir()
+
+        with (
+            patch("teatree.agents.skill_bundle.DEFAULT_SKILLS_DIR", skills_src),
+            patch.object(setup_module, "_find_main_clone", return_value=repo),
+            patch.object(setup_module, "_run_apm_install", return_value=True),
+            patch.object(setup_module, "_install_claude_plugin", return_value=True),
+            patch.object(setup_module, "DoctorService") as mock_svc,
+            patch("teatree.config.load_config") as mock_load,
+        ):
+            mock_svc.collect_overlay_skills.return_value = []
+            mock_load.return_value.user.contribute = False
+            mock_load.return_value.user.excluded_skills = []
+            mock_load.return_value.user.workspace_dir = str(tmp_path / "workspace")
+            setup_module.run(claude_scope="user", skip_plugin=True)
+
+        assert (claude_skills / "code").is_symlink()
+        assert (codex_skills / "code").is_symlink()
+
+    def test_skips_codex_when_dir_missing(self, tmp_path: Path, monkeypatch) -> None:
+        """Setup does not create ~/.codex/skills if it doesn't already exist."""
+        from teatree.cli import setup as setup_module  # noqa: PLC0415
+
+        skills_src = tmp_path / "core_skills"
+        skills_src.mkdir()
+        (skills_src / "code").mkdir()
+        (skills_src / "code" / "SKILL.md").touch()
+
+        home = tmp_path / "home"
+        (home / ".claude" / "skills").mkdir(parents=True)
+        # No ~/.codex dir
+
+        monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: home))
+
+        repo = tmp_path / "teatree"
+        repo.mkdir()
+        (repo / "apm.yml").touch()
+        (repo / ".git").mkdir()
+
+        with (
+            patch("teatree.agents.skill_bundle.DEFAULT_SKILLS_DIR", skills_src),
+            patch.object(setup_module, "_find_main_clone", return_value=repo),
+            patch.object(setup_module, "_run_apm_install", return_value=True),
+            patch.object(setup_module, "_install_claude_plugin", return_value=True),
+            patch.object(setup_module, "DoctorService") as mock_svc,
+            patch("teatree.config.load_config") as mock_load,
+        ):
+            mock_svc.collect_overlay_skills.return_value = []
+            mock_load.return_value.user.contribute = False
+            mock_load.return_value.user.excluded_skills = []
+            mock_load.return_value.user.workspace_dir = str(tmp_path / "workspace")
+            setup_module.run(claude_scope="user", skip_plugin=True)
+
+        assert not (home / ".codex").exists()
+
+
 class TestCleanBrokenSymlinks:
     def test_removes_broken(self, tmp_path: Path) -> None:
         (tmp_path / "broken").symlink_to(tmp_path / "nonexistent")

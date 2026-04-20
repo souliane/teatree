@@ -612,7 +612,7 @@ Typer-based, work without Django:
 
 - `t3 startoverlay` — scaffold a new overlay package (see §6.3)
 - `t3 agent` — launch Claude Code with teatree context (for developing teatree itself)
-- `t3 info` — show entry point, sources, editable status, and discovered overlays
+- `t3 info` — show entry point, sources, editable status, discovered overlays (with project paths), Claude plugin install, and agent runtime skill dirs
 - `t3 sessions` — list/resume Claude conversation sessions
 - `t3 docs` — serve mkdocs documentation (requires `docs` dependency group)
 - `t3 ci {cancel,divergence,fetch-errors,fetch-failed-tests,trigger-e2e,quality-check}` — CI helpers

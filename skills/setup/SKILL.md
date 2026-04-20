@@ -111,30 +111,15 @@ EOF
 
 ## Step 3: Install Skills
 
-Create symlinks from each agent runtime's skills directory to the teatree skills:
+`t3 setup` creates symlinks from each supported agent runtime's skills
+directory to the teatree skills.  Claude is always targeted (the directory is
+created if missing); other runtimes listed in
+`teatree.cli.setup.AGENT_SKILL_RUNTIMES` are targeted only when their home
+directory already exists.  Contributor-mode symlinks that point inside the
+configured `workspace_dir` are preserved.
 
-```bash
-for root in "$HOME/.claude/skills" "$HOME/.codex/skills" "$HOME/.cursor/skills" "$HOME/.copilot/skills" "$HOME/.agents/skills"; do
-  [ -d "$root" ] || continue
-  for skill in "$T3_REPO"/skills/*/; do
-    [ -f "$skill/SKILL.md" ] || continue  # skip non-skill dirs
-    name="$(basename "$skill")"
-    [ -L "$root/$name" ] && continue  # already symlinked
-    ln -s "$skill" "$root/$name"
-  done
-done
-```
-
-Verify that each teatree skill is symlinked into the active runtime skill directory:
-
-```bash
-for root in "$HOME/.claude/skills" "$HOME/.codex/skills" "$HOME/.cursor/skills" "$HOME/.copilot/skills" "$HOME/.agents/skills"; do
-  [ -d "$root" ] || continue
-  find "$root" -maxdepth 1 -type l | sort
-done
-```
-
-Do not overwrite existing contributor-mode symlinks for third-party companion skills.
+Inspect the result with `t3 info` — the "Skills installed to" section lists
+every runtime dir teatree detected along with the count of managed symlinks.
 
 ## Step 4: Claude Code Plugin Hooks
 
