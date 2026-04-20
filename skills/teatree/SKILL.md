@@ -83,6 +83,7 @@ Overlays subclass `OverlayBase` and override methods:
 - `get_run_commands(worktree)` — dev server commands
 - `get_db_import_strategy(worktree)` — DSLR/dump import config
 - `get_services_config(worktree)` — Docker services
+- `get_visual_qa_targets(changed_files)` — URL paths the pre-push browser sanity gate should load (default: `[]` — opt in by mapping diff paths to URLs)
 
 ## Skill Loading
 

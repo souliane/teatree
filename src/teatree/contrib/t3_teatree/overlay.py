@@ -10,6 +10,7 @@ from typing import override
 from teatree.core.models import Worktree
 from teatree.core.overlay import OverlayBase, OverlayConfig, OverlayMetadata
 from teatree.types import ProvisionStep, RunCommands, SkillMetadata
+from teatree.visual_qa import matches_triggers
 
 _SETTINGS_MODULE = "teatree.contrib.t3_teatree.overlay_settings"
 
@@ -85,3 +86,13 @@ class TeatreeOverlay(OverlayBase):
     @override
     def get_test_command(self, worktree: Worktree) -> list[str]:
         return ["uv", "run", "pytest"]
+
+    @override
+    def get_visual_qa_targets(self, changed_files: list[str]) -> list[str]:
+        teatree_globs = (
+            "src/teatree/**/templates/**",
+            "src/teatree/**/static/**",
+            "src/teatree/core/views/**",
+            "src/teatree/core/urls.py",
+        )
+        return ["/"] if matches_triggers(changed_files, teatree_globs) else []

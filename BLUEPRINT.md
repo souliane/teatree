@@ -475,6 +475,7 @@ Defined in `teatree.core.overlay`. All methods receive the `worktree` instance f
 | `detect_variant()` | `→ str` | `""` | Tenant detection |
 | `get_workspace_repos()` | `→ list[str]` | `get_repos()` | Repos for workspace ticket creation |
 | `get_tool_commands()` | `→ list[ToolCommand]` | `[]` | Overlay-specific CLI tools |
+| `get_visual_qa_targets(changed_files)` | `→ list[str]` | `[]` | URL paths the pre-push browser sanity gate should load |
 
 ### 6.2 Supporting TypedDicts
 
