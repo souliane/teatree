@@ -15,6 +15,7 @@ from teatree.backends.github import (
     _run_gh,
     fetch_project_items,
 )
+from teatree.backends.protocols import PullRequestSpec
 
 
 class TestRunGh:
@@ -208,10 +209,12 @@ class TestGitHubCodeHost:
             mock_run.return_value = MagicMock(stdout="https://github.com/org/repo/pull/1\n")
             host = GitHubCodeHost(token="tok")
             result = host.create_pr(
-                repo="org/repo",
-                branch="feature",
-                title="Add feature",
-                description="Description",
+                PullRequestSpec(
+                    repo="org/repo",
+                    branch="feature",
+                    title="Add feature",
+                    description="Description",
+                ),
             )
         assert result == {"url": "https://github.com/org/repo/pull/1"}
 
@@ -220,13 +223,15 @@ class TestGitHubCodeHost:
             mock_run.return_value = MagicMock(stdout="https://github.com/org/repo/pull/2\n")
             host = GitHubCodeHost()
             host.create_pr(
-                repo="org/repo",
-                branch="feature",
-                title="Title",
-                description="Desc",
-                target_branch="develop",
-                labels=["bug", "urgent"],
-                assignee="user1",
+                PullRequestSpec(
+                    repo="org/repo",
+                    branch="feature",
+                    title="Title",
+                    description="Desc",
+                    target_branch="develop",
+                    labels=["bug", "urgent"],
+                    assignee="user1",
+                ),
             )
         args = mock_run.call_args[0]
         cmd = list(args)

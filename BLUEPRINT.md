@@ -533,11 +533,11 @@ No manage.py, settings.py, urls.py, or wsgi/asgi — teatree is the Django proje
 
 ### 7.1 API Protocols (`backends/protocols.py`)
 
-Each external API concern is a `@runtime_checkable Protocol` in `teatree.backends.protocols`.
+Each external API concern is a `@runtime_checkable Protocol` in `teatree.backends.protocols`. Request parameters are grouped into frozen dataclasses (e.g. `PullRequestSpec`) so that signatures stay small and extensible.
 
 | Protocol | Methods |
 |----------|---------|
-| `CodeHost` | `create_pr()`, `list_open_prs()`, `post_mr_note()` |
+| `CodeHost` | `create_pr(PullRequestSpec)`, `list_open_prs()`, `post_mr_note()` |
 | `CIService` | `cancel_pipelines()`, `fetch_pipeline_errors()`, `fetch_failed_tests()`, `trigger_pipeline()`, `quality_check()` |
 | `IssueTracker` | `get_issue()` |
 | `ChatNotifier` | `send()` |

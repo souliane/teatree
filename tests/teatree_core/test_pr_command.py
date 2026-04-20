@@ -42,7 +42,7 @@ class TestPrCreate(TestCase):
         ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/55")
         Worktree.objects.create(ticket=ticket, overlay="test", repo_path="/tmp/backend", branch="feature-branch")
 
-        # CommandOverlay.config.mr_auto_labels returns [] (default), so labels=None
+        # CommandOverlay.config.mr_auto_labels returns [] (default), so labels=[]
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             patch("teatree.core.management.commands.pr._last_commit_message", return_value=("", "")),
@@ -50,11 +50,11 @@ class TestPrCreate(TestCase):
             result = call_command("pr", "create", str(ticket.id), "--title", "feat: add labels")
 
         assert result == {"iid": 12}
-        call_kwargs = host.create_pr.call_args.kwargs
-        assert call_kwargs["repo"] == "/tmp/backend"
-        assert call_kwargs["branch"] == "feature-branch"
-        assert call_kwargs["title"] == "feat: add labels"
-        assert "assignee" in call_kwargs
+        (spec,) = host.create_pr.call_args.args
+        assert spec.repo == "/tmp/backend"
+        assert spec.branch == "feature-branch"
+        assert spec.title == "feat: add labels"
+        assert spec.assignee == "dev"
 
 
 class TestPostEvidence(TestCase):
