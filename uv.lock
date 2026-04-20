@@ -1366,7 +1366,6 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
-    { name = "django-rich" },
     { name = "django-types" },
     { name = "pip-audit" },
     { name = "prek" },
@@ -1402,7 +1401,6 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "django-rich", specifier = ">=2.2" },
     { name = "django-types", specifier = ">=0.23" },
     { name = "pip-audit", specifier = ">=2" },
     { name = "prek", specifier = ">=0.2.12" },
