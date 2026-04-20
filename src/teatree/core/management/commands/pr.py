@@ -13,7 +13,10 @@ from teatree.utils import git
 
 _IMAGE_URL_RE = re.compile(r"!\[([^\]]*)\]\((/uploads/[^\)]+)\)")
 _EXTERNAL_LINK_RE = re.compile(r"https?://(?:www\.)?(?:notion\.so|linear\.app|jira\.\S+)/\S+")
-_CLOSE_KEYWORD_RE = re.compile(r"\b(closes?|fixes?|resolves?)\s+(#\d+)", re.IGNORECASE)
+_CLOSE_KEYWORD_RE = re.compile(
+    r"\b(closes?|fixes?|resolves?)\s+((?:[\w./-]+)?#\d+|https?://\S+/issues/\d+)",
+    re.IGNORECASE,
+)
 
 
 def _sanitize_close_keywords(description: str, *, close_ticket: bool) -> str:

@@ -12,7 +12,7 @@ import subprocess
 import sys
 
 # Commit types that don't require BLUEPRINT updates.
-_EXEMPT_PREFIXES = ("test", "docs", "style", "chore", "relax", "ci")
+_EXEMPT_PREFIXES = ("test", "docs", "style", "chore", "relax", "ci", "fix")
 
 
 def _staged_files() -> list[str]:
