@@ -149,6 +149,12 @@ repos:
         entry: uv run python scripts/hooks/update_dependency_graph.py
         pass_filenames: false
         files: (tach\.toml|src/teatree/)
+      - id: generate-cli-reference
+        name: Generate CLI reference docs
+        language: system
+        entry: uv run python scripts/hooks/generate_cli_reference.py
+        pass_filenames: false
+        files: ^src/teatree/cli/
 
   # Phase 7b - Quality gate guard
   - repo: local
