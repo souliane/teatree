@@ -12,6 +12,8 @@ from teatree.cli.setup import (
     _clean_broken_symlinks,
     _ensure_skill_link,
     _find_main_clone,
+    _install_claude_plugin,
+    _register_claude_marketplace,
     _remove_excluded_skills,
     _run_apm_install,
     _strip_apm_hooks,
@@ -68,6 +70,66 @@ class TestRunApmInstall:
             mock_run.assert_called_once()
             args = mock_run.call_args
             assert args[0][0] == ["/usr/bin/apm", "install", "-g", "--target", "claude"]
+
+
+class TestRegisterClaudeMarketplace:
+    def test_returns_true_on_success(self, tmp_path: Path) -> None:
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value.returncode = 0
+            mock_run.return_value.stderr = ""
+            assert _register_claude_marketplace("/usr/bin/claude", tmp_path) is True
+
+    def test_treats_already_registered_as_success(self, tmp_path: Path) -> None:
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value.returncode = 1
+            mock_run.return_value.stderr = "marketplace already added"
+            assert _register_claude_marketplace("/usr/bin/claude", tmp_path) is True
+
+    def test_returns_false_on_other_failure(self, tmp_path: Path) -> None:
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value.returncode = 1
+            mock_run.return_value.stderr = "permission denied"
+            assert _register_claude_marketplace("/usr/bin/claude", tmp_path) is False
+
+
+class TestInstallClaudePlugin:
+    def test_skips_when_claude_missing(self, tmp_path: Path) -> None:
+        with patch("shutil.which", return_value=None):
+            assert _install_claude_plugin(tmp_path, scope="user") is False
+
+    def test_returns_false_when_marketplace_fails(self, tmp_path: Path) -> None:
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch("subprocess.run") as mock_run,
+        ):
+            mock_run.return_value.returncode = 1
+            mock_run.return_value.stderr = "boom"
+            assert _install_claude_plugin(tmp_path, scope="user") is False
+
+    def test_installs_via_claude_cli(self, tmp_path: Path) -> None:
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch("subprocess.run") as mock_run,
+        ):
+            mock_run.return_value.returncode = 0
+            mock_run.return_value.stderr = ""
+            assert _install_claude_plugin(tmp_path, scope="user") is True
+            assert mock_run.call_count == 2  # marketplace add + plugin install
+
+    def test_returns_false_when_plugin_install_fails(self, tmp_path: Path) -> None:
+        from subprocess import CompletedProcess  # noqa: PLC0415
+
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch(
+                "subprocess.run",
+                side_effect=[
+                    CompletedProcess(args=[], returncode=0, stderr=""),
+                    CompletedProcess(args=[], returncode=1, stderr="install failed"),
+                ],
+            ),
+        ):
+            assert _install_claude_plugin(tmp_path, scope="user") is False
 
 
 class TestStripApmHooks:
