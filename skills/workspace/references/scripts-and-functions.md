@@ -20,9 +20,8 @@ uv run t3 <overlay> --help     # overlay-specific commands (from overlay project
 | `t3 ship <TICKET_ID>` | Code to MR — create merge request |
 | `t3 daily` | Daily followup — sync MRs, check gates, remind reviewers |
 | `t3 agent` | Launch agent with project context |
-| `t3 overlays` | List installed overlays |
 | `t3 full-status` | Show ticket, worktree, and session state summary |
-| `t3 doctor info` | Show binary, source paths, editable status |
+| `t3 info` | Show binary, source paths, editable status, and installed overlays |
 | `t3 doctor check` | Verify imports and editable-install sanity |
 | `t3 config autoload` | List skill auto-loading rules |
 | `t3 ci cancel` | Cancel stale CI pipelines |

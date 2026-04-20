@@ -612,9 +612,8 @@ Typer-based, work without Django:
 
 - `t3 startoverlay` — scaffold a new overlay package (see §6.3)
 - `t3 agent` — launch Claude Code with teatree context (for developing teatree itself)
-- `t3 info` — show entry point, sources, editable status
+- `t3 info` — show entry point, sources, editable status, and discovered overlays
 - `t3 sessions` — list/resume Claude conversation sessions
-- `t3 overlays` — list discovered overlays
 - `t3 docs` — serve mkdocs documentation (requires `docs` dependency group)
 - `t3 ci {cancel,divergence,fetch-errors,fetch-failed-tests,trigger-e2e,quality-check}` — CI helpers
 - `t3 e2e external [--repo <name>] [--test-path <path>]` — run Playwright tests from `T3_PRIVATE_TESTS` or a named `[e2e_repos.<name>]` git repo; skips port discovery when `BASE_URL` is already set (DEV/staging mode)
