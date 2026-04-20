@@ -202,6 +202,12 @@ Post the test plan as a comment on the MR. If a test plan comment already exists
 
 See your [issue tracker platform reference](../t3:platforms/references/) § "MR Notes" for the posting recipe.
 
+## Pre-Push Browser Sanity Gate (Visual QA)
+
+`t3 pr create` runs a pre-push browser sanity gate as a side effect of the shipping flow. It loads the page(s) the branch diff touches, captures silent-render regressions (crashes, console errors, raw `app.*` keys, blocking 404s), and records the summary on `Ticket.extra['visual_qa']`. See [`../t3:ship/SKILL.md`](../t3:ship/SKILL.md) § "4c. Visual QA Gate" for the blocking behavior and bypass flags.
+
+This gate is **not a replacement for manual E2E evidence** — it only catches silent-render regressions before push. Feature verification still requires the workflows below.
+
 ## Post Testing Evidence on MR
 
 **Use `t3 pr post-evidence` first.** If the CLI command handles uploading and posting, use it instead of manual API calls. Only fall back to manual posting if the CLI doesn't support the required operation.

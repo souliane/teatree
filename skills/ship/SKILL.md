@@ -117,6 +117,15 @@ Before creating an MR, the `pr create` command automatically checks the session 
 - If no review session ran for this ticket, `pr create` returns an error with a hint to run `/t3:review`
 - Use `--skip-validation` only when explicitly told to bypass gates
 
+### 4c. Visual QA Gate
+
+`pr create` also runs a pre-push browser sanity gate as a side effect of the shipping flow. It loads the page(s) the branch diff actually touches and reports silent-render regressions (page crashes, console errors, raw `app.*` translation keys, blocking asset 404s). Target URLs come from the overlay's `get_visual_qa_targets(changed_files)` — overlays opt in by mapping diff paths to URLs.
+
+- Runs automatically before MR creation; the report is recorded on `Ticket.extra['visual_qa']`.
+- Blocks MR creation when findings exist; the error payload includes `report_markdown` for a `## Visual QA` section.
+- Bypass: `t3 pr create <ticket> --skip-visual-qa "<reason>"` or `T3_VISUAL_QA=disabled` in the environment.
+- Skipped when Playwright cannot start — fails open with a clear message rather than blocking the push.
+
 ### 5. Create MR/PR
 
 **STOP — resolve the ticket URL before typing the glab command.**
