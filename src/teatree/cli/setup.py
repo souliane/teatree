@@ -81,6 +81,31 @@ def _install_claude_plugin(repo: Path, *, scope: str) -> bool:
     return True
 
 
+def _ensure_t3_installed(repo: Path) -> bool:
+    """Install ``t3`` globally via ``uv tool install`` when it's not on PATH.
+
+    Returns True when the binary is (already, or now) available.  When ``uv``
+    itself is missing, prints guidance and returns False rather than raising.
+    """
+    if shutil.which("t3"):
+        return True
+
+    uv_bin = shutil.which("uv")
+    if not uv_bin:
+        typer.echo("WARN  `t3` not on PATH and `uv` is missing — skipping global install.")
+        typer.echo("      Install uv: https://docs.astral.sh/uv/getting-started/installation/")
+        return False
+
+    result = _run_captured([uv_bin, "tool", "install", "--editable", str(repo)])
+    if result.returncode != 0:
+        typer.echo(f"WARN  `uv tool install` failed: {result.stderr.strip()}")
+        return False
+    typer.echo("OK    Installed `t3` globally via `uv tool install --editable`.")
+    if not shutil.which("t3"):
+        typer.echo("NOTE  Ensure `~/.local/bin` is on your PATH (see `uv tool dir --bin`).")
+    return True
+
+
 def _run_apm_install(repo: Path) -> bool:
     """Run apm install -g --target claude from the teatree repo."""
     apm_path = shutil.which("apm")
@@ -245,6 +270,8 @@ def run(
     """
     repo = _validate_repo(_find_main_clone())
     typer.echo(f"Teatree repo: {repo}")
+
+    _ensure_t3_installed(repo)
 
     _run_apm_install(repo)
 

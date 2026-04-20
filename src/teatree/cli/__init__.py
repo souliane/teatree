@@ -160,7 +160,7 @@ def _launch_claude(
                 "Before doing any work, ask the user which lifecycle skill to load.",
             ),
         )
-    context_lines.extend(("", "Run `uv run t3 --help` to see available commands.", "Run `uv run pytest` to run tests."))
+    context_lines.extend(("", "Run `t3 --help` to see available commands.", "Run `uv run pytest` to run tests."))
     if task:
         context_lines.extend(("", f"Task: {task}"))
 
@@ -384,7 +384,7 @@ def cache() -> None:
     cache_path = DATA_DIR / "skill-metadata.json"
     if not cache_path.is_file():
         typer.echo(f"No cache found at {cache_path}")
-        typer.echo("Run: uv run t3 config write-skill-cache")
+        typer.echo("Run: t3 config write-skill-cache")
         raise typer.Exit(code=1)
 
     data = _json.loads(cache_path.read_text(encoding="utf-8"))
@@ -403,7 +403,7 @@ def deps(skill: str) -> None:
     cache_path = DATA_DIR / "skill-metadata.json"
     if not cache_path.is_file():
         typer.echo(f"No cache found at {cache_path}")
-        typer.echo("Run: uv run t3 config write-skill-cache")
+        typer.echo("Run: t3 config write-skill-cache")
         raise typer.Exit(code=1)
 
     data = _json.loads(cache_path.read_text(encoding="utf-8"))

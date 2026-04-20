@@ -879,7 +879,9 @@ Three install paths, one source of truth:
 
 - **APM**: `apm install souliane/teatree` — deploys to any supported agent
 - **Claude Code plugin**: `/plugin install t3@souliane-teatree` — Claude-specific
-- **CLI-first**: `uv tool install teatree && t3 setup` — bootstraps from Python (runs APM install, syncs skill symlinks, and registers the Claude plugin in one step)
+- **CLI-first**: `uv tool install teatree && t3 setup` — bootstraps from Python (runs APM install, syncs skill symlinks, and registers the Claude plugin in one step). `t3 setup` also auto-runs `uv tool install --editable <repo>` when the global `t3` binary is missing, so `uv run t3 setup` from a fresh checkout upgrades itself in-place.
+
+The agent-facing hook layer (`hooks/scripts/hook_router.py`) blocks `uv run t3` Bash invocations and directs agents to call the globally installed `t3` instead.
 
 ---
 

@@ -21,4 +21,4 @@ dependencies:
   - souliane/teatree
 install:
   pip: teatree
-  post_install: uv run t3 config write-skill-cache
+  post_install: t3 config write-skill-cache

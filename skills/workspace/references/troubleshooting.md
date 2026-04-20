@@ -59,7 +59,7 @@
 
 - **Symptom:** `TypeError: unsupported operand type(s) for |: 'type' and 'NoneType'` on `str | None` type hints, or other 3.10+ syntax errors.
 - **Cause:** The shell wrapper or direct command resolved a Python outside the TeaTree `uv` environment.
-- **Fix:** Run `uv run t3 ...` from the TeaTree repo, or source the legacy bootstrap wrapper which now delegates to `uv run t3`.
+- **Fix:** Ensure the globally-installed `t3` was installed with `uv tool install --editable <teatree-repo>` so it picks up the 3.13 interpreter, then call `t3 ...` directly.
 - **Prevention:** Never patch syntax to accommodate older Python (e.g. `from __future__ import annotations`). Fix the Python resolution instead.
 
 ## Issue Tracker CLI Quirks
