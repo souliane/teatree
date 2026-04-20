@@ -41,6 +41,7 @@ Retro's behavior depends on these `~/.teatree` variables and on whether the curr
   - `false`: only improve the active project overlay. Core skill gaps are noted in conversation but not acted on.
   - `true`: also improve core skills in the user's fork at `$T3_REPO`. Retro creates a local commit but **never pushes automatically**. Use `/t3:contribute` to review and push when ready.
 - **`T3_PUSH`** — `false` (default) or `true`. When `false`, retro never asks about pushing — it only commits locally and reminds the user to run `/t3:contribute` later. Set to `true` to be prompted about pushing after each retro commit.
+- **`T3_AUTO_PUSH_FORK`** — `false` (default) or `true`. When `true` **and** `T3_PUSH=true` **and** `origin` differs from `T3_UPSTREAM` (i.e. pushing lands on the user's fork, not upstream), retro pushes automatically after the privacy scan passes, without prompting. Upstream issue creation still requires explicit confirmation.
 - **`T3_UPSTREAM`** — upstream GitHub repo (e.g., `souliane/teatree`). Used by `/t3:contribute` to open issues upstream after pushing. When `origin` matches `T3_UPSTREAM`, pushes already land directly on upstream.
 - **`T3_PRIVACY`** — privacy check strictness: `strict` (default) or `relaxed`. See § Privacy Scan.
 - **`T3_REVIEW_SKILL`** — name of an external skill review tool (e.g., `ac-reviewing-codebase`). If set, retro recommends running it after skill improvements. If not set, retro suggests installing one during first run and storing the preference.
@@ -386,7 +387,16 @@ Squash retro commits into clean, human-sized units **before chaining to the revi
 ════════════════════════════════════════════════════════════════
 ```
 
-**Always ask the user whether to push** using `AskUserQuestion` — even when `T3_PUSH=false`. Show the branch name and commit hash so the user can make an informed decision. If they say yes, load `/t3:contribute` and run it. If they decline, remind them to run `/t3:contribute` later.
+**Ask the user whether to push** using `AskUserQuestion` — even when `T3_PUSH=false`. Show the branch name and commit hash so the user can make an informed decision. If they say yes, load `/t3:contribute` and run it. If they decline, remind them to run `/t3:contribute` later.
+
+**Auto-push exception** (`T3_AUTO_PUSH_FORK=true`): skip the confirmation above and chain directly into `/t3:contribute` when **all** of the following hold:
+
+1. `T3_PUSH=true` — pushing is globally enabled.
+2. `T3_AUTO_PUSH_FORK=true` — auto-push to fork is opted in.
+3. `origin`'s push URL does **not** match `T3_UPSTREAM` — the push lands on the user's fork, not upstream.
+4. The privacy scan (§ Privacy Scan) passed.
+
+When any of these fail, fall back to the confirmation flow. Upstream issue creation always requires explicit confirmation regardless of `T3_AUTO_PUSH_FORK`.
 
 ### Chain to Review Skill
 
