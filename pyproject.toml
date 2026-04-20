@@ -141,10 +141,7 @@ lint.per-file-ignores."src/teatree/cli/*.py" = [
   "S607",   # partial executable paths (uv is a trusted internal tool)
 ]
 lint.per-file-ignores."src/teatree/cli/__init__.py" = [
-  "FBT003",
-  "PLR2004",
-  "RSE102",
-  "RUF067",  # __init__ contains the full CLI app, not just re-exports
+  "RUF067", # __init__ contains the full CLI app, not just re-exports
 ]
 lint.per-file-ignores."src/teatree/core/management/commands/*.py" = [
   "PLR6301", # django-typer command methods intentionally live on Command classes
