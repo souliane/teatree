@@ -879,7 +879,7 @@ Three install paths, one source of truth:
 
 - **APM**: `apm install souliane/teatree` — deploys to any supported agent
 - **Claude Code plugin**: `/plugin install t3@souliane-teatree` — Claude-specific
-- **CLI-first**: `uv tool install teatree && t3 plugin install` — bootstraps from Python
+- **CLI-first**: `uv tool install teatree && t3 setup` — bootstraps from Python (runs APM install, syncs skill symlinks, and registers the Claude plugin in one step)
 
 ---
 

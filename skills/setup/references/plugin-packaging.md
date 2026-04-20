@@ -37,4 +37,4 @@ Changes that affect external state (outside the git repo) require manual verific
 |------|---------|----------|
 | Dev (live edits) | `claude --plugin-dir <repo>` | Loads from source, no copy |
 | Dev via `t3 agent` | Set `T3_CONTRIBUTE=true` | Adds `--plugin-dir` automatically |
-| Production | `t3 plugin install` | Registers marketplace + installs copy |
+| Production | `t3 setup` | Runs APM install, syncs skills, registers marketplace + installs copy |
