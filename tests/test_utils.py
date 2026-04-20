@@ -10,17 +10,20 @@ from teatree.backends import gitlab_api
 from teatree.utils import db, git, ports
 
 
-def test_find_free_ports_returns_dict_of_four_ports(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """find_free_ports returns a dict with backend, frontend, postgres, redis keys."""
+def test_find_free_ports_returns_dict_of_three_ports(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """find_free_ports returns a dict with backend, frontend, postgres keys.
+
+    Redis is not allocated per-worktree: a single shared teatree-redis
+    container on localhost:6379 serves every ticket.
+    """
     monkeypatch.setattr(ports, "port_in_use", lambda port: False)
 
     result = ports.find_free_ports(str(tmp_path))
     assert isinstance(result, dict)
-    assert set(result.keys()) == {"backend", "frontend", "postgres", "redis"}
+    assert set(result.keys()) == {"backend", "frontend", "postgres"}
     assert result["backend"] >= 8001
     assert result["frontend"] >= 4201
     assert result["postgres"] >= 5432
-    assert result["redis"] >= 6379
 
 
 def test_find_free_ports_skips_occupied(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -36,7 +39,7 @@ def test_find_free_ports_skips_occupied(tmp_path: Path, monkeypatch: pytest.Monk
 def test_revalidate_ports_keeps_free_ports(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """revalidate_ports keeps ports that are still free."""
     monkeypatch.setattr(ports, "port_in_use", lambda port: False)
-    original = {"backend": 8001, "frontend": 4201, "postgres": 5432, "redis": 6379}
+    original = {"backend": 8001, "frontend": 4201, "postgres": 5432}
     result = ports.revalidate_ports(original, str(tmp_path))
     assert result == original
 
@@ -45,7 +48,7 @@ def test_revalidate_ports_replaces_occupied(tmp_path: Path, monkeypatch: pytest.
     """revalidate_ports replaces ports that became occupied."""
     occupied = {8001}
     monkeypatch.setattr(ports, "port_in_use", lambda port: port in occupied)
-    original = {"backend": 8001, "frontend": 4201, "postgres": 5432, "redis": 6379}
+    original = {"backend": 8001, "frontend": 4201, "postgres": 5432}
     result = ports.revalidate_ports(original, str(tmp_path))
     assert result["backend"] != 8001
     assert result["backend"] > 8000
@@ -101,7 +104,6 @@ def test_get_worktree_ports_queries_all_services(monkeypatch: pytest.MonkeyPatch
         ("web", 8000): "0.0.0.0:8042\n",
         ("frontend", 4200): "0.0.0.0:4242\n",
         ("db", 5432): "",  # not running
-        ("rd", 6379): "0.0.0.0:6380\n",
     }
 
     def fake_run(cmd: list[str], **kwargs: object) -> CompletedProcess[str]:
@@ -114,7 +116,7 @@ def test_get_worktree_ports_queries_all_services(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr(ports.subprocess, "run", fake_run)
 
     result = ports.get_worktree_ports("myproject")
-    assert result == {"backend": 8042, "frontend": 4242, "redis": 6380}
+    assert result == {"backend": 8042, "frontend": 4242}
     assert "postgres" not in result  # db service was not running
 
 

@@ -5,6 +5,7 @@ from django.db import models
 from django_fsm import FSMField, TransitionNotAllowed, transition
 
 from teatree.core.managers import TicketManager
+from teatree.utils import redis_container
 
 if TYPE_CHECKING:
     from teatree.core.models.session import Session
@@ -32,6 +33,7 @@ class Ticket(models.Model):
     repos = models.JSONField(default=list, blank=True)
     state = FSMField(max_length=32, choices=State.choices, default=State.NOT_STARTED)
     extra = models.JSONField(default=dict, blank=True)
+    redis_db_index = models.IntegerField(null=True, blank=True, unique=True)
 
     objects = TicketManager()
 
@@ -188,6 +190,15 @@ class Ticket(models.Model):
         previous = extra.pop("ignored_from", self.State.NOT_STARTED)
         self.extra = extra
         self.state = str(previous)
+
+    def release_redis_slot(self) -> None:
+        """FLUSHDB on the ticket's Redis DB index and clear the field."""
+        if self.redis_db_index is None:
+            return
+        index = self.redis_db_index
+        redis_container.flushdb(index)
+        self.redis_db_index = None
+        self.save(update_fields=["redis_db_index"])
 
     def _cancel_pending_tasks(self) -> None:
         """Fail all pending/claimed tasks when reworking."""

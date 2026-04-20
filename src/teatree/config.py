@@ -87,6 +87,7 @@ class UserSettings:
     timezone: str = ""
     contribute: bool = False
     excluded_skills: list[str] = field(default_factory=list)
+    redis_db_count: int = 16
 
 
 @dataclass
@@ -118,6 +119,7 @@ def load_config(path: Path = CONFIG_PATH) -> TeaTreeConfig:
         timezone=teatree.get("timezone", ""),
         contribute=bool(teatree.get("contribute", False)),
         excluded_skills=excluded_skills,
+        redis_db_count=int(teatree.get("redis_db_count", 16)),
     )
 
     return TeaTreeConfig(user=user, raw=raw)
