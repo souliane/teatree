@@ -45,7 +45,7 @@ The implementation phase. Follow test-driven development and project conventions
 
 ## Workflow
 
-### 0. Ticket-Required Overlay Check (Non-Negotiable)
+### 0. Ticket-Required Overlay Check
 
 When the active overlay has `require_ticket = True` in its configuration, a tracked issue must exist before writing any code.
 
@@ -118,7 +118,7 @@ Any frontend change that affects UI behavior (new fields, form logic, visibility
 
 ### 6. Quality Gates During Development
 
-- **When adding a prek hook, check for CI duplication (Non-Negotiable).** After adding a new hook to `.pre-commit-config.yaml`, grep the repo's `.gitlab-ci.yml` (or equivalent) for any job that runs the same script directly. If found, remove the standalone CI job — having the check run twice wastes CI time and creates maintenance confusion. One source of truth: prek.
+- **When adding a prek hook, check for CI duplication.** After adding a new hook to `.pre-commit-config.yaml`, grep the repo's `.gitlab-ci.yml` (or equivalent) for any job that runs the same script directly. If found, remove the standalone CI job — having the check run twice wastes CI time and creates maintenance confusion. One source of truth: prek.
 - Run linting after each significant change.
 - Run type checking if the project uses it.
 - Run the relevant test suite frequently — don't batch test runs.

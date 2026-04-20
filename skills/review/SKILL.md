@@ -114,7 +114,7 @@ Run gates → Any failure? → Fix → Re-run gates → Repeat until clean
 
 ### Giving Code Review
 
-**Pre-flight gate (Non-Negotiable) — complete BEFORE reading any diff:**
+**Pre-flight gate — complete BEFORE reading any diff:**
 
 1. Determine own vs external MR (Step -1)
 2. Fetch ticket context for every MR (Step 0) — without this you cannot judge correctness
@@ -123,11 +123,11 @@ Run gates → Any failure? → Fix → Re-run gates → Repeat until clean
 
 Do NOT skip these steps to "save time" when reviewing multiple MRs. Each step exists because skipping it caused missed findings in real reviews.
 
-**Step -1 — Own MR vs External MR (Non-Negotiable):**
+**Step -1 — Own MR vs External MR:**
 
 When the MR under review belongs to the **user themselves**, do NOT post review comments. Instead, **implement the fixes directly** on the branch — commit and push. Present findings to the user as a summary of what you fixed, not as review comments to post. The user is asking you to take over and improve their code, not to leave notes for themselves.
 
-**Step 0 — Gather Ticket Context (Non-Negotiable):**
+**Step 0 — Gather Ticket Context:**
 
 Before reading any code, fetch the referenced ticket/issue to understand the *intended* behavior:
 
@@ -138,7 +138,7 @@ Before reading any code, fetch the referenced ticket/issue to understand the *in
 
 Without ticket context you cannot judge whether the implementation is correct — only whether it compiles.
 
-**Step 0b — Review All Commits, Not Just the Final Diff (Non-Negotiable):**
+**Step 0b — Review All Commits, Not Just the Final Diff:**
 
 The combined diff can hide mistakes. Always check individual commits:
 
@@ -146,7 +146,7 @@ The combined diff can hide mistakes. Always check individual commits:
 2. Inspect each commit's diff individually — a later commit may accidentally revert an earlier fix.
 3. Look for "Tests fix" / "Fix tests" follow-up commits that change production code alongside test adjustments.
 
-**Step 0c — Discuss Before Posting (Non-Negotiable):**
+**Step 0c — Discuss Before Posting:**
 
 Present ALL findings to the user before posting any comments. Never silently drop findings between the discussion phase and the posting phase — if a finding was discussed, it gets posted unless the user explicitly removes it. The user curates; you surface.
 
@@ -164,7 +164,7 @@ When raising concerns about caching, stale data, or side effects: **investigate 
 8. **Scope** — are unrelated changes bundled in? Flag only if genuinely unrelated; small related fixes alongside the main change are normal practice.
 9. **MR metadata** — title and description comply with the overlay's commit message format? If the overlay provides `validate_pr()`, run it programmatically rather than checking by eye.
 
-**Step 2 — Review Tone & Formatting (Non-Negotiable):**
+**Step 2 — Review Tone & Formatting:**
 
 Follow the [Google Engineering Practices — Code Review Standard](https://google.github.io/eng-practices/review/reviewer/standard.html): approve if the CL improves overall code health, even if it isn't perfect. Don't block on style preferences or theoretical improvements. The bar is "does this improve the codebase?" — not "is this how I would have written it?"
 
@@ -188,7 +188,7 @@ Comments are posted under the user's name. They must sound like a **real human c
 - **Readable structure for longer comments.** Use empty lines to separate distinct sections (problem, suggestion, example). Within a section, use line breaks between sentences (without empty lines) to keep things scannable. Short comments stay on one line — don't over-structure a one-liner.
 - **No walls of text.** If a comment needs more than ~5 lines, break it up visually. Paragraphs, not monoliths.
 
-**Step 3 — Post Draft Review Comments (Non-Negotiable):**
+**Step 3 — Post Draft Review Comments:**
 
 **Always use draft notes** (or the platform's equivalent "pending review" feature), not direct/immediate comments. Draft notes are only visible to the reviewer until explicitly submitted — this lets the user review, edit, and submit all comments as a batch.
 
@@ -205,7 +205,7 @@ This prevents noise from multiple review passes or multiple reviewers covering t
 
 When reviewing an external MR/PR, **always post comments inline on the correct file and line** in the diff view. For comments that aren't tied to a specific line (e.g., description feedback), post a general note without position data.
 
-**Extend the CLI, never inline API recipes (Non-Negotiable).** If a `t3 review` operation is missing (e.g., bulk-publish, reply, resolve), implement it in `src/teatree/cli/review.py` — do NOT document a raw API snippet or inline script here. Skills describe what command to run, not how to replicate missing CLI functionality.
+**Extend the CLI, never inline API recipes.** If a `t3 review` operation is missing (e.g., bulk-publish, reply, resolve), implement it in `src/teatree/cli/review.py` — do NOT document a raw API snippet or inline script here. Skills describe what command to run, not how to replicate missing CLI functionality.
 
 **Use `t3 review post-draft-note` (Mandatory).** It handles token extraction, diff refs, position serialization, and added-line validation. Never use raw API calls.
 
@@ -213,7 +213,7 @@ When reviewing an external MR/PR, **always post comments inline on the correct f
 t3 review post-draft-note <REPO> <MR_IID> "Comment text" --file <path/to/file> --line <line_number>
 ```
 
-**Pre-flight: verify target line is an added line (Non-Negotiable).** Before posting each inline note, confirm the target `new_line` corresponds to an added (`+`) or modified line in the diff — never a context (unchanged) line. Targeting a context line causes GitLab to render the comment in **every hunk** that references that line, creating duplicates. When the finding is about an unchanged line, target the nearest added line and reference the unchanged line in the comment text instead.
+**Pre-flight: verify target line is an added line.** Before posting each inline note, confirm the target `new_line` corresponds to an added (`+`) or modified line in the diff — never a context (unchanged) line. Targeting a context line causes GitLab to render the comment in **every hunk** that references that line, creating duplicates. When the finding is about an unchanged line, target the nearest added line and reference the unchanged line in the comment text instead.
 
 **Post-flight: verify response.** Response must confirm the comment landed on the correct file/line — if position data is missing in the response, the comment landed as a general comment (wrong). After posting all notes, list them via the API and confirm the count and positions match expectations.
 
@@ -243,7 +243,7 @@ t3 review publish-draft-notes <REPO> <MR_IID>
 - **Anti-performative:** No "You're absolutely right!" — just state the fix or the technical disagreement.
 - **Technical rigor:** verify reviewer suggestions against the actual codebase before implementing.
 
-#### Replying to Review Discussions (Non-Negotiable)
+#### Replying to Review Discussions
 
 When posting replies to reviewer discussions (e.g., "Done in `<commit>`"):
 

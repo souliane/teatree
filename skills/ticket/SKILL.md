@@ -58,7 +58,7 @@ From zero to ready-to-code. Combines understanding the ticket with setting up th
 - Extract and list acceptance criteria before coding.
 - If the ticket is vague, clarify with the user.
 
-### 2b. Infer Deliverables (Non-Negotiable)
+### 2b. Infer Deliverables
 
 After extracting acceptance criteria, **proactively list all required artifacts** — don't wait for the user to tell you. Common deliverables to infer:
 
@@ -82,7 +82,7 @@ Present the inferred list and let the user confirm or adjust before proceeding. 
 - Determine which repos are affected by the ticket.
 - Load repository-specific references for each repo in scope.
 
-### 5. Detect Variant/Tenant (Non-Negotiable for Multi-Tenant Projects)
+### 5. Detect Variant/Tenant (Multi-Tenant Projects)
 
 **Always detect the target tenant before coding.** This determines environment setup, feature flag scope, and config repos.
 
