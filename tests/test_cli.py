@@ -262,39 +262,6 @@ class TestSessionsCommand:
             assert "done" in result.output
 
 
-# ── overlays command ──────────────────────────────────────────────────
-
-
-class TestOverlaysCommand:
-    def test_none_found(self):
-        """Overlays command shows help when no overlays found."""
-        with (
-            patch.object(config_mod, "discover_overlays", return_value=[]),
-            patch.object(config_mod, "discover_active_overlay", return_value=None),
-        ):
-            result = runner.invoke(app, ["overlays"])
-            assert result.exit_code == 0
-            assert "No overlays found" in result.output
-
-    def test_lists_installed(self):
-        """Overlays command lists installed overlays."""
-        from teatree.config import OverlayEntry  # noqa: PLC0415
-
-        entries = [
-            OverlayEntry(name="acme", overlay_class="acme.overlay.AcmeOverlay"),
-            OverlayEntry(name="demo", overlay_class="demo.overlay.DemoOverlay"),
-        ]
-        active = OverlayEntry(name="acme", overlay_class="acme.overlay.AcmeOverlay")
-        with (
-            patch.object(config_mod, "discover_overlays", return_value=entries),
-            patch.object(config_mod, "discover_active_overlay", return_value=active),
-        ):
-            result = runner.invoke(app, ["overlays"])
-            assert result.exit_code == 0
-            assert "acme" in result.output
-            assert "(active)" in result.output
-
-
 # ── info command ──────────────────────────────────────────────────────
 
 
@@ -310,6 +277,27 @@ class TestInfoCommand:
         ):
             result = runner.invoke(app, ["info"])
             assert result.exit_code == 0
+
+    def test_info_lists_overlays(self):
+        """Info command includes installed overlays, replacing the removed top-level `overlays` command."""
+        from teatree.config import OverlayEntry  # noqa: PLC0415
+
+        entries = [
+            OverlayEntry(name="acme", overlay_class="acme.overlay.AcmeOverlay"),
+            OverlayEntry(name="demo", overlay_class="demo.overlay.DemoOverlay"),
+        ]
+        active = OverlayEntry(name="acme", overlay_class="acme.overlay.AcmeOverlay")
+        with (
+            patch("shutil.which", return_value="/usr/local/bin/t3"),
+            patch.object(cli_doctor_mod.IntrospectionHelpers, "editable_info", return_value=(True, "file:///home/src")),
+            patch.object(cli_doctor_mod.IntrospectionHelpers, "print_package_info"),
+            patch.object(config_mod, "discover_active_overlay", return_value=active),
+            patch.object(config_mod, "discover_overlays", return_value=entries),
+        ):
+            result = runner.invoke(app, ["info"])
+            assert result.exit_code == 0
+            assert "acme" in result.output
+            assert "demo" in result.output
 
 
 # ── config subcommands ────────────────────────────────────────────────
