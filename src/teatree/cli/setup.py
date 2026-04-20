@@ -15,6 +15,9 @@ from teatree.cli.doctor import DoctorService
 # exclusions via ``excluded_skills`` in ``~/.teatree.toml``.
 CORE_EXCLUDED_SKILLS = ["using-superpowers", "using-git-worktrees"]
 
+_PLUGIN_NAME = "t3"
+_MARKETPLACE_NAME = "souliane"
+
 logger = logging.getLogger(__name__)
 
 setup_app = typer.Typer(
@@ -34,6 +37,44 @@ def _find_main_clone() -> Path | None:
     return repo
 
 
+def _run_captured(args: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
+    """Run a subprocess, capturing stdout/stderr and never raising on non-zero exit."""
+    return subprocess.run(  # noqa: S603
+        args,
+        capture_output=True,
+        text=True,
+        check=False,
+        cwd=str(cwd) if cwd else None,
+    )
+
+
+def _register_claude_marketplace(claude_bin: str, repo: Path) -> bool:
+    """Register the teatree repo as a local Claude Code marketplace (idempotent)."""
+    result = _run_captured([claude_bin, "plugin", "marketplace", "add", str(repo)])
+    return result.returncode == 0 or "already" in result.stderr.lower()
+
+
+def _install_claude_plugin(repo: Path, *, scope: str) -> bool:
+    """Register the marketplace and install the t3 plugin via the Claude CLI."""
+    claude_bin = shutil.which("claude")
+    if not claude_bin:
+        typer.echo("WARN  Claude CLI not found — skipping plugin install.")
+        typer.echo("      Install: https://github.com/anthropics/claude-code")
+        return False
+
+    if not _register_claude_marketplace(claude_bin, repo):
+        typer.echo("WARN  Failed to register local marketplace — skipping plugin install.")
+        return False
+
+    plugin_id = f"{_PLUGIN_NAME}@{_MARKETPLACE_NAME}"
+    result = _run_captured([claude_bin, "plugin", "install", plugin_id, "--scope", scope])
+    if result.returncode != 0:
+        typer.echo(f"WARN  Claude plugin install failed: {result.stderr.strip()}")
+        return False
+    typer.echo(f"OK    Installed {plugin_id} via Claude CLI ({scope} scope).")
+    return True
+
+
 def _run_apm_install(repo: Path) -> bool:
     """Run apm install -g --target claude from the teatree repo."""
     apm_path = shutil.which("apm")
@@ -42,13 +83,7 @@ def _run_apm_install(repo: Path) -> bool:
         typer.echo("      Install: pip install apm-cli (or brew install microsoft/apm/apm)")
         return False
 
-    result = subprocess.run(  # noqa: S603
-        [apm_path, "install", "-g", "--target", "claude"],
-        capture_output=True,
-        text=True,
-        check=False,
-        cwd=str(repo),
-    )
+    result = _run_captured([apm_path, "install", "-g", "--target", "claude"], cwd=repo)
     if result.returncode != 0:
         typer.echo(f"WARN  apm install failed: {result.stderr.strip()}")
         return False
@@ -190,11 +225,17 @@ def _validate_repo(repo: Path | None) -> Path:
 
 
 @setup_app.callback()
-def run() -> None:
+def run(
+    *,
+    claude_scope: str = typer.Option("user", help="Claude plugin install scope: user or project."),
+    skip_plugin: bool = typer.Option(False, "--skip-plugin", help="Skip Claude CLI plugin registration."),
+) -> None:
     """Install and configure teatree skills globally.
 
-    Must be run from the teatree main clone (not a worktree).
-    For consumers without a local clone: use ``apm install -g souliane/teatree``.
+    Runs APM dependency install, syncs skill symlinks, and registers the
+    t3 plugin with Claude Code.  Must be run from the teatree main clone
+    (not a worktree).  Consumers without a local clone can bootstrap via
+    ``apm install -g souliane/teatree``.
     """
     repo = _validate_repo(_find_main_clone())
     typer.echo(f"Teatree repo: {repo}")
@@ -224,5 +265,8 @@ def run() -> None:
     broken = _clean_broken_symlinks(claude_skills)
     if broken:
         typer.echo(f"OK    Removed {broken} broken symlink(s).")
+
+    if not skip_plugin:
+        _install_claude_plugin(repo, scope=claude_scope)
 
     typer.echo("Done.")
