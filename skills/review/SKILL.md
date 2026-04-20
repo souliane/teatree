@@ -223,7 +223,7 @@ t3 review post-draft-note <REPO> <MR_IID> "Comment text" --file <path/to/file> -
 t3 review publish-draft-notes <REPO> <MR_IID>
 ```
 
-**`WARNING: line_code is null` is a false positive.** GitLab's draft notes API never returns `line_code` in the creation response — it is computed server-side at submission time. A note is correctly positioned if the response contains `position.new_path` and `position.new_line`. Ignore this warning; the note will render inline. Tracked in [souliane/teatree#310](https://github.com/souliane/teatree/issues/310).
+**`WARNING: inline position was not accepted`** means GitLab did not store the `position` data — the note will render as a general comment, not inline on the diff. Check that `--file` matches a path in the MR diff and `--line` is within the changed range.
 
 **If `t3 review delete-draft-note` returns 404** — the draft was already submitted (published to regular notes) by the user from the GitLab UI. Use `DELETE projects/{encoded_repo}/merge_requests/{iid}/notes/{note_id}` via the regular notes endpoint instead.
 
