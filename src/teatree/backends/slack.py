@@ -4,11 +4,13 @@ from typing import cast
 
 import httpx
 
+from teatree.core.sync import RawAPIDict
 
-def post_webhook_message(webhook_url: str, text: str) -> dict[str, object]:
+
+def post_webhook_message(webhook_url: str, text: str) -> RawAPIDict:
     response = httpx.post(webhook_url, json={"text": text}, timeout=10.0)
     response.raise_for_status()
-    return cast("dict[str, object]", response.json())
+    return cast("RawAPIDict", response.json())
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,82 +31,97 @@ def _resolve_workspace_domain(client: httpx.Client) -> str:
     return url.removeprefix("https://") if url.startswith("https://") else url
 
 
-def search_review_permalinks(  # noqa: C901, PLR0912, PLR0913
-    *,
-    token: str,
-    channel_id: str,
-    channel_name: str,
-    mr_urls: list[str],
-    max_pages: int = 10,
-    workspace_domain: str = "",
+@dataclass(frozen=True, slots=True)
+class _ChannelContext:
+    channel_id: str
+    channel_name: str
+    workspace_domain: str
+
+
+def _iter_review_matches(
+    msg: RawAPIDict,
+    mr_url_set: set[str],
+    seen: set[str],
+    ctx: _ChannelContext,
 ) -> list[SlackReviewMatch]:
+    """Extract SlackReviewMatch entries from a single Slack message."""
+    text = str(msg.get("text", ""))
+    ts = str(msg.get("ts", ""))
+    if not ts:
+        return []
+    found_urls = _MR_URL_RE.findall(text)
+    if not found_urls:
+        return []
+
+    permalink = f"https://{ctx.workspace_domain}/archives/{ctx.channel_id}/p{ts.replace('.', '')}"
+    matches: list[SlackReviewMatch] = []
+    for url in found_urls:
+        clean_url = url.rstrip("/").split("#")[0]
+        if clean_url in mr_url_set and clean_url not in seen:
+            seen.add(clean_url)
+            matches.append(SlackReviewMatch(mr_url=clean_url, permalink=permalink, channel=ctx.channel_name))
+    return matches
+
+
+def _fetch_history_page(
+    client: httpx.Client,
+    channel_id: str,
+    cursor: str | None,
+) -> RawAPIDict:
+    """Fetch one page of conversations.history. Returns {} on non-ok response."""
+    params: dict[str, str | int] = {"channel": channel_id, "limit": 100}
+    if cursor:
+        params["cursor"] = cursor
+    response = client.get("https://slack.com/api/conversations.history", params=params)
+    response.raise_for_status()
+    data = response.json()
+    return data if data.get("ok") else {}
+
+
+@dataclass(frozen=True, slots=True)
+class SlackReviewSearchRequest:
+    token: str
+    channel_id: str
+    channel_name: str
+    mr_urls: list[str]
+    max_pages: int = 10
+    workspace_domain: str = ""
+
+
+def search_review_permalinks(request: SlackReviewSearchRequest) -> list[SlackReviewMatch]:
     """Read recent messages from a Slack channel and match MR URLs.
 
     Uses conversations.history (no search:read scope needed).
     Matching is deterministic: exact MR URL substring match, no AI.
     """
-    if not token or not channel_id or not mr_urls:
+    if not request.token or not request.channel_id or not request.mr_urls:
         return []
 
-    mr_url_set = set(mr_urls)
+    mr_url_set = set(request.mr_urls)
     matches: list[SlackReviewMatch] = []
     seen: set[str] = set()
 
-    with httpx.Client(
-        headers={"Authorization": f"Bearer {token}"},
-        timeout=15.0,
-    ) as client:
-        if not workspace_domain:
-            workspace_domain = _resolve_workspace_domain(client)
+    with httpx.Client(headers={"Authorization": f"Bearer {request.token}"}, timeout=15.0) as client:
+        workspace_domain = request.workspace_domain or _resolve_workspace_domain(client)
+        ctx = _ChannelContext(
+            channel_id=request.channel_id,
+            channel_name=request.channel_name,
+            workspace_domain=workspace_domain,
+        )
 
-        cursor = None
-        for _ in range(max_pages):  # pragma: no branch
-            params: dict[str, str | int] = {"channel": channel_id, "limit": 100}
-            if cursor:
-                params["cursor"] = cursor
-
-            response = client.get(
-                "https://slack.com/api/conversations.history",
-                params=params,
-            )
-            response.raise_for_status()
-            data = response.json()
-
-            if not data.get("ok"):
+        cursor: str | None = None
+        for _ in range(request.max_pages):  # pragma: no branch
+            data = _fetch_history_page(client, request.channel_id, cursor)
+            if not data:
                 break
 
-            for msg in data.get("messages", []):
-                text = str(msg.get("text", ""))
-                ts = str(msg.get("ts", ""))
-                if not ts:
-                    continue
+            for msg in data.get("messages", []):  # ty: ignore[not-iterable]
+                matches.extend(_iter_review_matches(msg, mr_url_set, seen, ctx))
 
-                found_urls = _MR_URL_RE.findall(text)
-                if not found_urls:
-                    continue
-
-                # Build permalink: https://workspace.slack.com/archives/CHANNEL/pTIMESTAMP
-                ts_clean = ts.replace(".", "")
-                permalink = f"https://{workspace_domain}/archives/{channel_id}/p{ts_clean}"
-
-                for url in found_urls:
-                    clean_url = url.rstrip("/").split("#")[0]
-                    if clean_url in mr_url_set and clean_url not in seen:
-                        seen.add(clean_url)
-                        matches.append(
-                            SlackReviewMatch(
-                                mr_url=clean_url,
-                                permalink=permalink,
-                                channel=channel_name,
-                            ),
-                        )
-
-            if seen == mr_url_set:
+            if seen == mr_url_set or not data.get("has_more"):
                 break
-            if not data.get("has_more"):
-                break  # pragma: no cover — always exits via seen==mr_url_set or no cursor
             meta = data.get("response_metadata", {})
-            cursor = meta.get("next_cursor")
+            cursor = meta.get("next_cursor") if isinstance(meta, dict) else None  # ty: ignore[invalid-argument-type]
             if not cursor:
                 break
 
