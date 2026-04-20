@@ -155,41 +155,6 @@ def _compose_files(compose_file: str) -> list[str]:
     return flags
 
 
-def _docker_compose_up(  # noqa: PLR0913
-    project: str,
-    compose_file: str,
-    env: dict[str, str],
-    stdout: OutputWrapper,
-    stderr: OutputWrapper,
-    *,
-    timeout: int | None = 60,
-) -> bool:
-    """Start all services via docker-compose."""
-    cmd = [
-        "docker",
-        "compose",
-        "-p",
-        project,
-        *_compose_files(compose_file),
-        "up",
-        "-d",
-        "--no-build",
-        "--pull=never",
-    ]
-    try:
-        result = subprocess.run(cmd, env=env, capture_output=True, text=True, check=False, timeout=timeout)  # noqa: S603
-    except subprocess.TimeoutExpired:
-        stderr.write(f"  docker compose up: timed out after {timeout}s")
-        return False
-    if result.returncode != 0:
-        stderr.write(f"  docker compose up failed (exit {result.returncode}):")
-        stderr.write(f"  stderr: {result.stderr.strip()}")
-        stderr.write(f"  stdout: {result.stdout.strip()[:500]}")
-        return False
-    stdout.write("  docker compose up -d: OK")
-    return True
-
-
 class Command(TyperCommand):
     _verbose: bool = True
     _timeouts: TimeoutConfig = TimeoutConfig()
@@ -199,6 +164,39 @@ class Command(TyperCommand):
             self._timeouts = TimeoutConfig(values=dict.fromkeys(self._timeouts.values, 0))
         else:
             self._timeouts = load_timeouts(overlay)
+
+    def _docker_compose_up(
+        self,
+        project: str,
+        compose_file: str,
+        env: dict[str, str],
+        *,
+        timeout: int | None = 60,
+    ) -> bool:
+        """Start all services via docker-compose."""
+        cmd = [
+            "docker",
+            "compose",
+            "-p",
+            project,
+            *_compose_files(compose_file),
+            "up",
+            "-d",
+            "--no-build",
+            "--pull=never",
+        ]
+        try:
+            result = subprocess.run(cmd, env=env, capture_output=True, text=True, check=False, timeout=timeout)  # noqa: S603
+        except subprocess.TimeoutExpired:
+            self.stderr.write(f"  docker compose up: timed out after {timeout}s")
+            return False
+        if result.returncode != 0:
+            self.stderr.write(f"  docker compose up failed (exit {result.returncode}):")
+            self.stderr.write(f"  stderr: {result.stderr.strip()}")
+            self.stderr.write(f"  stdout: {result.stdout.strip()[:500]}")
+            return False
+        self.stdout.write("  docker compose up -d: OK")
+        return True
 
     @command()
     def setup(  # noqa: PLR0913, PLR0917
@@ -489,12 +487,10 @@ class Command(TyperCommand):
 
         env = {**os.environ, **_compose_env(ports), **overlay.get_env_extra(worktree)}
         env.pop("VIRTUAL_ENV", None)
-        ok = _docker_compose_up(
+        ok = self._docker_compose_up(
             project,
             compose_file,
             env,
-            self.stdout,
-            self.stderr,
             timeout=self._timeouts.get("docker_compose_up"),
         )
 

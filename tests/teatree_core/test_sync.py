@@ -660,7 +660,7 @@ class TestFetchReviewPermalinks(TestCase):
             },
         )
 
-        def _explode(**kw: object) -> list:
+        def _explode(request: object) -> list:
             msg = "Slack timeout"
             raise RuntimeError(msg)
 
@@ -686,7 +686,7 @@ class TestFetchReviewPermalinks(TestCase):
 
         self._monkeypatch.setattr(
             "teatree.backends.slack_review_sync.search_review_permalinks",
-            lambda **kw: [
+            lambda _request: [
                 SlackReviewMatch(
                     mr_url=mr_url,
                     permalink="https://team.slack.com/archives/C123/p170000",
@@ -714,7 +714,7 @@ class TestFetchReviewPermalinks(TestCase):
             state=Ticket.State.SHIPPED,
             extra={"mrs": "not-a-dict"},
         )
-        self._monkeypatch.setattr("teatree.backends.slack_review_sync.search_review_permalinks", lambda **kw: [])
+        self._monkeypatch.setattr("teatree.backends.slack_review_sync.search_review_permalinks", lambda _request: [])
 
         with _patch_overlay(self._SLACK_OVERLAY):
             result = SyncResult()
@@ -730,7 +730,7 @@ class TestFetchReviewPermalinks(TestCase):
             state=Ticket.State.SHIPPED,
             extra={"mrs": {"https://gitlab.com/mr/1": "not-a-dict"}},
         )
-        self._monkeypatch.setattr("teatree.backends.slack_review_sync.search_review_permalinks", lambda **kw: [])
+        self._monkeypatch.setattr("teatree.backends.slack_review_sync.search_review_permalinks", lambda _request: [])
 
         with _patch_overlay(self._SLACK_OVERLAY):
             result = SyncResult()

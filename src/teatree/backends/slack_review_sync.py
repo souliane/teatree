@@ -4,7 +4,7 @@ import logging
 
 import httpx
 
-from teatree.backends.slack import search_review_permalinks
+from teatree.backends.slack import SlackReviewSearchRequest, search_review_permalinks
 from teatree.core.models import Ticket
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.sync import SyncResult
@@ -58,10 +58,12 @@ def fetch_review_permalinks(result: SyncResult) -> None:
 
     try:
         matches = search_review_permalinks(
-            token=token,
-            channel_id=channel_id,
-            channel_name=channel_name,
-            mr_urls=mr_urls,
+            SlackReviewSearchRequest(
+                token=token,
+                channel_id=channel_id,
+                channel_name=channel_name,
+                mr_urls=mr_urls,
+            )
         )
     except (httpx.HTTPError, RuntimeError, ValueError) as exc:
         result.errors.append(f"Slack review sync: {exc}")
