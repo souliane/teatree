@@ -96,8 +96,9 @@ class ReviewService:
         parts = [f"OK draft_note_id={note_id}"]
         if line_code:
             parts.append(f"line_code={line_code}")
-        if file and line and not line_code:
-            parts.insert(0, f"WARNING: line_code is null — note may not render inline (line {line} in {file}).")
+        position_stored = bool(position.get("new_path"))
+        if file and line and not position_stored:
+            parts.insert(0, f"WARNING: inline position was not accepted by GitLab (line {line} in {file}).")
 
         return "\n".join(parts), 0
 

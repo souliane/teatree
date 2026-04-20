@@ -85,8 +85,26 @@ class TestReviewService:
             assert "OK draft_note_id=99" in result.output
             assert "line_code=abc_1_1" in result.output
 
-    def test_post_inline_no_line_code(self, monkeypatch):
-        """post-draft-note warns when line_code is null."""
+    def test_post_inline_position_accepted_without_line_code(self, monkeypatch):
+        """post-draft-note succeeds without warning when position has new_path."""
+        monkeypatch.setenv("GITLAB_TOKEN", "test-token")
+        mock_api = MagicMock()
+        mock_api.get_json.return_value = {
+            "diff_refs": {"base_sha": "a", "head_sha": "b", "start_sha": "c"},
+        }
+        mock_api.post_json.return_value = {"id": 100, "position": {"new_path": "a.py", "new_line": "5"}}
+
+        with patch.object(gitlab_api_mod, "GitLabAPI", return_value=mock_api):
+            result = runner.invoke(
+                app,
+                ["review", "post-draft-note", "org/repo", "1", "fix this", "--file", "a.py", "--line", "5"],
+            )
+            assert result.exit_code == 0
+            assert "OK draft_note_id=100" in result.output
+            assert "WARNING" not in result.output
+
+    def test_post_inline_position_not_accepted(self, monkeypatch):
+        """post-draft-note warns when GitLab returns empty position (inline placement rejected)."""
         monkeypatch.setenv("GITLAB_TOKEN", "test-token")
         mock_api = MagicMock()
         mock_api.get_json.return_value = {
@@ -100,7 +118,7 @@ class TestReviewService:
                 ["review", "post-draft-note", "org/repo", "1", "fix this", "--file", "a.py", "--line", "5"],
             )
             assert result.exit_code == 0
-            assert "WARNING: line_code is null" in result.output
+            assert "WARNING: inline position was not accepted" in result.output
 
     def test_post_mr_fetch_fails(self, monkeypatch):
         """post-draft-note fails when MR data cannot be fetched."""
