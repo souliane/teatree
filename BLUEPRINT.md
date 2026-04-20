@@ -104,6 +104,7 @@ src/teatree/
     gitlab_ci.py        # GitLab CI pipeline operations
     gitlab_sync.py      # GitLabSyncBackend — MR upsert, assigned-issue upsert, labels, merged MR cleanup, Slack review permalinks
     slack.py            # Slack notifications
+    slack_reactions.py  # Emoji reactions on MR permalinks (ticket state transitions)
     notion.py           # Notion integration
     sentry.py           # Sentry error tracking
 
@@ -800,6 +801,7 @@ Overlay-specific configuration that previously lived in `TEATREE_*` Django setti
 | `get_gitlab_username()` | `str` | `""` | `TEATREE_GITLAB_USERNAME` |
 | `get_slack_token()` | `str` | `""` | `TEATREE_SLACK_TOKEN` |
 | `get_review_channel()` | `tuple[str, str]` | `("", "")` | `TEATREE_REVIEW_CHANNEL` + `TEATREE_REVIEW_CHANNEL_ID` |
+| `get_transition_emojis()` | `dict[str, str]` | `DEFAULT_TRANSITION_EMOJIS` | — (overlay override merges onto defaults) |
 | `known_variants` | `list[str]` | `[]` | `TEATREE_KNOWN_VARIANTS` |
 | `mr_auto_labels` | `list[str]` | `[]` | `TEATREE_MR_AUTO_LABELS` |
 | `mr_close_ticket` | `bool` | `False` | `TEATREE_MR_CLOSE_TICKET` |

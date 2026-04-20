@@ -22,6 +22,7 @@ if TYPE_CHECKING:
 
 # Re-export all types so existing ``from teatree.core.overlay import X`` still works.
 __all__ = [
+    "DEFAULT_TRANSITION_EMOJIS",
     "DbImportStrategy",
     "OverlayBase",
     "OverlayConfig",
@@ -38,6 +39,16 @@ __all__ = [
 
 
 # ── Overlay configuration ────────────────────────────────────────────
+
+
+DEFAULT_TRANSITION_EMOJIS: dict[str, str] = {
+    "test": "white_check_mark",
+    "request_review": "eyes",
+    "mark_merged": "tada",
+    "mark_delivered": "white_check_mark",
+    "rework": "arrows_counterclockwise",
+    "ignore": "wastebasket",
+}
 
 
 class OverlayConfig:
@@ -155,6 +166,18 @@ class OverlayConfig:
     def get_review_channel(self) -> tuple[str, str]:
         """Return (channel_name, channel_id) for review notifications."""
         return ("", "")
+
+    def get_transition_emojis(self) -> dict[str, str]:
+        """Map FSM transition names to Slack emoji reactions.
+
+        Override via the settings module (``TRANSITION_EMOJIS = {...}``) or
+        by subclassing. The override is *merged* on top of the defaults so
+        overlays only need to specify the keys they change.
+        """
+        override = getattr(self, "transition_emojis", None)
+        if isinstance(override, dict):
+            return {**DEFAULT_TRANSITION_EMOJIS, **override}
+        return dict(DEFAULT_TRANSITION_EMOJIS)
 
 
 # ── Overlay metadata ─────────────────────────────────────────────────
