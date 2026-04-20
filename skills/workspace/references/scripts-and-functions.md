@@ -7,8 +7,8 @@
 ## CLI Entry Point
 
 ```bash
-uv run t3 --help               # from any project with teatree installed
-uv run t3 <overlay> --help     # overlay-specific commands (from overlay project)
+t3 --help                      # from any project with teatree installed
+t3 <overlay> --help            # overlay-specific commands (from overlay project)
 ```
 
 ## Global Commands (no overlay needed)

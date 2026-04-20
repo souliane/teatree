@@ -52,8 +52,10 @@ _T3_CLI_REMINDER = (
 )
 
 # Commands that are legitimate t3 CLI invocations — never block these.
+# `uv run t3 ...` is intentionally NOT whitelisted here: it is caught by the
+# blocked-commands list below so agents switch to the globally-installed t3.
 _T3_CMD_PREFIX_RE = re.compile(
-    r"^(?:\w+=\S+\s+)*(?:uv\s+run\s+)?t3\s",
+    r"^(?:\w+=\S+\s+)*t3\s",
 )
 
 # Read-only commands that may mention infrastructure tools as arguments
@@ -100,6 +102,14 @@ _BLOCKED_COMMANDS: list[tuple[re.Pattern[str], str]] = [
     (
         re.compile(r"\b(?:pg_restore|pg_dump|dslr)\b"),
         "BLOCKED: `pg_restore`/`pg_dump`/`dslr` — use `t3 <overlay> db refresh` instead.",
+    ),
+    (
+        re.compile(r"\buv\s+run\s+(?:\S+\s+)*?t3(?:\s|$)"),
+        (
+            "BLOCKED: `uv run t3` — teatree is installed globally; call `t3` directly. "
+            "If `t3` is missing on this machine, install teatree (`uv tool install teatree` "
+            "or `uv tool install --editable <teatree-repo>`)."
+        ),
     ),
 ]
 

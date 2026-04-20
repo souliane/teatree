@@ -40,7 +40,7 @@ and you see the changes immediately):
 
 ```sh
 uv pip install -e .              # install overlay itself as editable
-uv run t3 doctor check           # verify editable status
+t3 doctor check                    # verify editable status
 ```
 
 ### Contribute to teatree
@@ -63,7 +63,7 @@ Then:
 
 ```sh
 uv sync                          # teatree installed as editable
-uv run t3 doctor check           # verify both are editable
+t3 doctor check                    # verify both are editable
 ```
 
 Now changes to teatree source files are picked up immediately.
@@ -99,7 +99,7 @@ cd ~/workspace/t3-acme
 uv pip install -e .              # overlay editable
 # pyproject.toml already points teatree to editable path
 uv sync
-uv run t3 doctor check           # both show as editable
+t3 doctor check                    # both show as editable
 ```
 
 ## Overlay discovery

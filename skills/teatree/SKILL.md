@@ -101,7 +101,7 @@ Hooks are registered in `hooks/hooks.json` (shipped with the plugin). This is th
 
 When modifying CLI commands, dashboard views, or server startup:
 
-1. **Run the command yourself** — don't rely on unit tests alone. `uv run t3 <command>` from a worktree (not the main clone) to catch cwd-dependent bugs.
+1. **Run the command yourself** — don't rely on unit tests alone. `t3 <command>` from a worktree (not the main clone) to catch cwd-dependent bugs.
 2. **Verify HTTP 200** — for dashboard/server changes: `curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:<port>/` must return 200.
 3. **Run E2E tests** — dashboard changes require Playwright E2E tests in `e2e/test_dashboard.py`. **Pre-flight:** kill any zombie servers first (`pkill -9 -f "uvicorn teatree.asgi"; pkill -9 -f "chrome-headless"; pkill -9 -f "playwright/driver"`). Then: `DJANGO_SETTINGS_MODULE=e2e.settings uv run pytest e2e/ --ds e2e.settings --no-cov -v`. Each timed-out run leaves zombie processes — kill before retrying. For full-suite validation prefer CI (clean environment, ~seconds/test vs. 7+ min locally on a loaded machine).
 4. **Test the full flow** — if the change involves task execution, create a task and verify the worker picks it up. Don't declare "auto-start works" without observing a task transition from PENDING to CLAIMED.

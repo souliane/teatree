@@ -81,4 +81,5 @@ jobs:
           python-version: "3.13"
       - run: uv sync
       - run: uv run playwright install --with-deps chromium
-      - run: uv run t3 teatree e2e project --no-docker
+      - run: uv tool install --editable .
+      - run: t3 teatree e2e project --no-docker

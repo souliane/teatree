@@ -170,13 +170,13 @@ Use the TeaTree bootstrap CLI, not shell overlay scaffolding.
 Basic form:
 
 ```bash
-uv run t3 startoverlay <overlay-name> <destination-dir>
+t3 startoverlay <overlay-name> <destination-dir>
 ```
 
 When the filesystem directory and Python package should differ, also pass:
 
 ```bash
-uv run t3 startoverlay my-overlay ~/workspace/my-org --overlay-package my_overlay
+t3 startoverlay my-overlay ~/workspace/my-org --overlay-package my_overlay
 ```
 
 Generated shape:
@@ -233,5 +233,5 @@ npx skills add <upstream-owner>/skills --skill ac-django --skill ac-python -g -y
 
 - Do not reintroduce `T3_OVERLAY` as a required bootstrap concept.
 - Do not scaffold shell wrappers or `project_hooks.py`.
-- Prefer `uv run t3 ...` and Django settings over `PYTHONPATH` tricks.
+- Prefer `t3 ...` and Django settings over `PYTHONPATH` tricks.
 - Stop at the first broken prerequisite and fix that before continuing.

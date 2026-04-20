@@ -22,7 +22,7 @@ A multi-repo worktree lifecycle manager for AI-assisted development. Target: ser
 
 It provides:
 
-- A unified CLI (`uv run t3`) for worktree creation, provisioning, dev servers, CI, and delivery
+- A unified CLI (`t3`) for worktree creation, provisioning, dev servers, CI, and delivery
 - A Django app (`teatree.core`) with 5 models driven by `django-fsm` state machines
 - An overlay system for downstream project customization (`OverlayBase`)
 - Backend protocols for pluggable external integrations
@@ -212,10 +212,10 @@ Selector-backed views with django-htmx. No domain logic in views.
 ### Running
 
 ```bash
-uv run t3 --help                    # CLI help
-uv run t3 acme dashboard            # Start overlay dashboard (auto-finds free port)
-uv run t3 acme agent                # Launch Claude Code with overlay context
-uv run t3 agent                     # Launch Claude Code (teatree-self development)
+t3 --help                           # CLI help
+t3 acme dashboard                   # Start overlay dashboard (auto-finds free port)
+t3 acme agent                       # Launch Claude Code with overlay context
+t3 agent                            # Launch Claude Code (teatree-self development)
 ```
 
 ### Testing
