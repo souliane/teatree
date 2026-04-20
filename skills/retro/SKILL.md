@@ -63,7 +63,7 @@ Systematic review of the current conversation to extract failures, near-misses, 
 - After a failure mode that existing skills didn't prevent
 - **Before context compaction** — if the conversation is getting long, run retro first to capture lessons before they're lost to compression
 
-### Pre-Compaction Persistence (Non-Negotiable)
+### Pre-Compaction Persistence
 
 If retro is in progress when compaction is imminent (long conversation, many tool calls), **write findings to a temporary file immediately** before they are lost. Use the `t3-snapshot-` prefix so the `PostCompact` hook can find and inject the file back into context automatically:
 
@@ -104,7 +104,7 @@ When writing to fallback locations, clearly mark the entry as originating from a
 
 If you can't determine whether a skill is editable, or if you're unsure whether an improvement belongs in the skill vs. the agent config vs. memory — **ask the user**. Retro is meta-work; human-in-the-loop is expected.
 
-## Persistence First (Non-Negotiable)
+## Persistence First
 
 Retro is not complete until every confirmed finding is written to a durable home in the same retro pass. Conversation output is not durable storage.
 
@@ -220,7 +220,7 @@ For each issue, determine **why** it happened:
 
 ### 3. Fix Skills
 
-**Pre-write editability check (Non-Negotiable):** Before writing to ANY skill, verify it is editable (see § Scope & Editability). For teatree-specific paths:
+**Pre-write editability check:** Before writing to ANY skill, verify it is editable (see § Scope & Editability). For teatree-specific paths:
 
 ```bash
 # Check core (when T3_CONTRIBUTE=true)
@@ -229,7 +229,7 @@ git -C "$T3_REPO" rev-parse --git-dir >/dev/null 2>&1 || echo "STOP: T3_REPO is 
 
 If a skill is not editable (no local git repo), write improvements to the best fallback location — repo-level agent instructions, user config, or memory files. See § Scope & Editability for the full decision table. In standalone mode with no overlay project, skip the overlay check.
 
-**Load coding skills before implementing (Non-Negotiable):** Retro fixes often involve writing code (Python, Django, shell). Load the appropriate coding skill (`/ac-django`, `/ac-python`, etc.) before implementing — not just for model/view work but for any code: settings, logging, CLI commands, hook scripts. Retro is not exempt from coding standards.
+**Load coding skills before implementing:** Retro fixes often involve writing code (Python, Django, shell). Load the appropriate coding skill (`/ac-django`, `/ac-python`, etc.) before implementing — not just for model/view work but for any code: settings, logging, CLI commands, hook scripts. Retro is not exempt from coding standards.
 
 **Determine the target** based on `T3_CONTRIBUTE` and the nature of the fix:
 
@@ -261,9 +261,9 @@ Retro can also modify core teatree skills in the user's fork:
 
 **After modifying core skills:** follow § Commit to Fork.
 
-### 4. Quality Rules (Non-Negotiable)
+### 4. Quality Rules
 
-- **Ask when ambiguous (Non-Negotiable).** Retro involves design decisions (what to promote, where to put it, which repos to touch). When a choice has multiple valid options or the scope is unclear, **stop and ask the user**. Do not assume. Daily coding workflows can be autonomous; meta-work (retro, review, skill editing) requires human-in-the-loop.
+- **Ask when ambiguous.** Retro involves design decisions (what to promote, where to put it, which repos to touch). When a choice has multiple valid options or the scope is unclear, **stop and ask the user**. Do not assume. Daily coding workflows can be autonomous; meta-work (retro, review, skill editing) requires human-in-the-loop.
 - **No duplication.** Before writing, search all skills for existing coverage. Merge into existing sections.
 - **Single source of truth.** Each piece of guidance lives in exactly one place. Other skills reference it.
 - **Skills ≠ repo config.** Do not duplicate rules from a repo's agent instruction files into skill files. Reference the repo file instead. If the skill adds extra detail (rationale, examples, edge cases), write the detail in the skill and reference the repo file for the base rule. Duplication is tolerated ONLY when fully acknowledged — mark it with `(Source: AGENTS.md § <section>)` or equivalent. A duplicate without a reference is a duplication bug that will drift silently.
@@ -273,8 +273,8 @@ Retro can also modify core teatree skills in the user's fork:
 - **Never change `version:`** in YAML frontmatter — that's auto-managed.
 - **Respect content publication status.** Blog posts and articles with `draft: false` in frontmatter are published — never modify them. Draft content (`draft: true` or no frontmatter) may be improved.
 - **Defer structural changes to review skill.** When your fixes involve merging, splitting, or restructuring skills, suggest running the review skill first — retro is tactical; the review skill provides systematic analysis before structural changes.
-- **Never write CLI procedures into skills (Non-Negotiable).** Skills must contain WHEN/WHY/WHAT (judgment, guardrails, domain knowledge) — never HOW (step-by-step commands that `t3` already executes). Before writing a finding that includes a command or procedure, check: does `t3` already handle this? If yes, the skill should say "use `t3 <command>`" — not reproduce the steps the CLI performs internally. Procedural documentation belongs in BLUEPRINT.md, AGENTS.md, CLAUDE.md, README.md, or docs/ — not in skills. Violating this tempts agents to follow the documented manual steps instead of calling the CLI.
-- **Skills over personal config (Non-Negotiable).** When fixing an issue, always prefer updating **skill files** (`SKILL.md`, `references/`) over writing to user-specific config (the agent's personal config and memory files). Skills benefit ALL users; personal config only helps one machine. Memory/config files are only for: user preferences (formatting, tone), environment-specific facts (paths, usernames, credentials), and user-specific workflow choices. Guardrails, troubleshooting, patterns, and "do this not that" rules belong in skills. **Checklist before writing to memory/config:** "Would another user of these skills need this too?" — if yes, put it in a skill. When in doubt, prefer skill files over personal config — skills are portable, personal config is not.
+- **Never write CLI procedures into skills.** Skills must contain WHEN/WHY/WHAT (judgment, guardrails, domain knowledge) — never HOW (step-by-step commands that `t3` already executes). Before writing a finding that includes a command or procedure, check: does `t3` already handle this? If yes, the skill should say "use `t3 <command>`" — not reproduce the steps the CLI performs internally. Procedural documentation belongs in BLUEPRINT.md, AGENTS.md, CLAUDE.md, README.md, or docs/ — not in skills. Violating this tempts agents to follow the documented manual steps instead of calling the CLI.
+- **Skills over personal config.** When fixing an issue, always prefer updating **skill files** (`SKILL.md`, `references/`) over writing to user-specific config (the agent's personal config and memory files). Skills benefit ALL users; personal config only helps one machine. Memory/config files are only for: user preferences (formatting, tone), environment-specific facts (paths, usernames, credentials), and user-specific workflow choices. Guardrails, troubleshooting, patterns, and "do this not that" rules belong in skills. **Checklist before writing to memory/config:** "Would another user of these skills need this too?" — if yes, put it in a skill. When in doubt, prefer skill files over personal config — skills are portable, personal config is not.
 - **Scan personal config for promotable entries.** During every retro, read the agent's memory and personal config files. Any entry that encodes a guardrail, pattern, or "do this not that" rule (not a user preference or env-specific fact) should be **promoted to the appropriate skill file**. However, always-loaded agent config/memory files serve as a safety net — critical guardrails that are already in skills may still deserve a one-line reminder there, because skills are only available when loaded. When keeping a duplicate, mark it clearly as "Safety net — source: `<skill> § <section>`" to prevent drift. Only fully remove entries that are truly redundant (pure cross-references with no actionable content).
 - **Prefer deterministic helpers over repeated manual work.** If the same audit or extraction step is likely to recur, capture it in a shell/Python helper or reusable command snippet and document where it lives.
 - **Ask about backward compatibility before adding compat shims.** When a retro fix involves renaming, removing, or changing an API, ask the user whether backward compatibility matters before adding wrappers, re-exports, or deprecation paths. Clean code is preferred over compat shims unless the user explicitly needs them.
@@ -326,7 +326,7 @@ After applying all fixes:
 - If helper scripts were created or reused for recurring work, verify their paths and usage are recorded in the relevant durable docs
 - **Definition of Done check:** Re-run the conversation audit (§ 1) on your own changes. If the re-run produces new findings, you are not done — fix them before claiming completion.
 - **No “conversation-only” findings.** If a lesson exists only in the final response and not in a file, retro is not done.
-- **Commit before declaring done (Non-Negotiable).** After completing all retro changes, commit them immediately before declaring done. Never declare "done" with uncommitted skill modifications — this is the most common retro failure mode.
+- **Commit before declaring done.** After completing all retro changes, commit them immediately before declaring done. Never declare "done" with uncommitted skill modifications — this is the most common retro failure mode.
 
 ## Commit to Fork (`T3_CONTRIBUTE=true`) — Automatic
 

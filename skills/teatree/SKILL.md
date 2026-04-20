@@ -92,7 +92,7 @@ Hooks are registered in `hooks/hooks.json` (shipped with the plugin). This is th
 
 **Known failure (2026-04-02):** PR #109 moved hooks from `settings.json` to plugin `hooks.json` but didn't remove the old ones. This caused double hook execution on every tool call, accelerating context consumption and triggering aggressive microcompaction. Prevention: when migrating hooks to the plugin, always remove the `settings.json` equivalents in the same change.
 
-## Dogfooding Checklist (Non-Negotiable for CLI/Server Changes)
+## Dogfooding Checklist (CLI/Server Changes)
 
 When modifying CLI commands, dashboard views, or server startup:
 

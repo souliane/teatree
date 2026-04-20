@@ -147,7 +147,7 @@ After creating the PR, check if an upstream issue should also be created (for vi
 - **Fork's `origin` matches `T3_UPSTREAM`** → stop, the PR already landed upstream.
 - **Otherwise** → proceed with divergence analysis and issue creation.
 
-#### 6a. Divergence Analysis (Non-Negotiable)
+#### 6a. Divergence Analysis
 
 Before creating an issue, run the divergence check (requires an `upstream` git remote):
 
@@ -276,7 +276,7 @@ gh issue create -R "$T3_UPSTREAM" \
 
 After creation, print the issue URL.
 
-### Issue Body Rules (Non-Negotiable)
+### Issue Body Rules
 
 - **Never include:** personal names, email addresses, company names, internal URLs, project-specific repo names, API keys, hostnames, IP addresses, file paths outside `$T3_REPO`, customer/tenant names.
 - **Always include:** generic description of the problem, which core skill is affected, link to the fork branch, validation evidence, divergence status.

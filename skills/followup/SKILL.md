@@ -77,7 +77,7 @@ Parse the response to extract: issue ID, project ID, title, URL, and project pat
 
 Ask the user to pick "All" or specific ticket numbers. Use the agent platform's native question UI if it has one; otherwise ask plainly in the conversation. **Never start without explicit user approval.**
 
-### 4. Pre-Fetch External Context (Non-Negotiable)
+### 4. Pre-Fetch External Context
 
 For each confirmed ticket:
 
@@ -87,7 +87,7 @@ For each confirmed ticket:
 
 **c.** Download any embedded images from issues or external pages.
 
-### 5. Scope Analysis (Non-Negotiable)
+### 5. Scope Analysis
 
 For each confirmed ticket, analyze the external spec + issue description to determine:
 
@@ -264,7 +264,7 @@ The dashboard is a Django view served by teatree. Start it with `t3 <overlay> da
 
 **Extension point: `followup_enrich_data`** — project overlays can add project-specific fields to followup entries (e.g., Notion status, tenant info).
 
-### 13. Data Sync (Non-Negotiable — First Action on Every Load)
+### 13. Data Sync (First Action on Every Load)
 
 **Execute immediately when the skill is loaded** — before responding to the user, before asking what they want, before anything else. This is the first thing followup does on every invocation (both interactive and periodic). The user should never have to ask for a data refresh.
 
