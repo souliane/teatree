@@ -304,6 +304,20 @@ class OverlayBase(ABC):
             return list(self.config.workspace_repos)
         return self.get_repos()
 
+    def get_visual_qa_targets(self, changed_files: list[str]) -> list[str]:
+        """Return URL paths the pre-push browser sanity gate should load.
+
+        Each path is appended to the worktree base URL (e.g. ``"/"`` →
+        ``http://127.0.0.1:8000/``).  Return ``[]`` to skip the gate for
+        this diff.  Default: skip — overlays opt in by mapping diff paths
+        to the URLs they care about.
+
+        Called from the shipping gate as a side effect of MR creation;
+        results are recorded on ``Ticket.extra['visual_qa']``.
+        """
+        _ = changed_files
+        return []
+
 
 # ── Health checks ───────────────────────────────────────────────────
 

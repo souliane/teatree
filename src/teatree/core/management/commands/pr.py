@@ -2,15 +2,26 @@
 
 import re
 from collections.abc import Iterable
-from typing import cast
+from typing import TypedDict, cast
 
 from django_typer.management import TyperCommand, command
 
+from teatree import visual_qa
 from teatree.backends.protocols import PullRequestSpec
 from teatree.core.backend_factory import code_host_from_overlay, get_issue_tracker
-from teatree.core.models import Ticket
+from teatree.core.models import Ticket, Worktree
+from teatree.core.models.types import TicketExtra, VisualQASummary
 from teatree.core.overlay_loader import get_overlay
 from teatree.utils import git
+
+
+class VisualQAGateFailure(TypedDict):
+    allowed: bool
+    error: str
+    visual_qa: VisualQASummary
+    report_markdown: str
+    hint: str
+
 
 _IMAGE_URL_RE = re.compile(r"!\[([^\]]*)\]\((/uploads/[^\)]+)\)")
 _EXTERNAL_LINK_RE = re.compile(r"https?://(?:www\.)?(?:notion\.so|linear\.app|jira\.\S+)/\S+")
@@ -68,6 +79,54 @@ def _check_shipping_gate(ticket: Ticket) -> dict[str, object] | None:
     return None
 
 
+def _resolve_base_url(worktree: Worktree | None) -> str:
+    """Return the frontend URL recorded by ``Worktree.verify()``.
+
+    Prefers ``urls['frontend']`` (what users browse) over ``urls['backend']``.
+    Falls back to ``http://127.0.0.1:8000`` when no URLs are recorded yet.
+    """
+    if worktree is None:
+        return "http://127.0.0.1:8000"
+    urls = worktree.get_extra().get("urls", {})
+    return urls.get("frontend") or urls.get("backend") or "http://127.0.0.1:8000"
+
+
+def _run_visual_qa_gate(ticket: Ticket, *, skip_reason: str = "") -> VisualQAGateFailure | None:
+    """Run the pre-push browser sanity gate before MR creation.
+
+    Records a JSON summary on ``ticket.extra['visual_qa']`` when the gate
+    actually ran (i.e. not skipped for env/flag reasons) so the result
+    survives in the FSM history.  Returns an error dict when blocking
+    findings are present so the caller can refuse MR creation, or
+    ``None`` when the gate passes / is skipped.
+    """
+    worktree = ticket.worktrees.first()  # ty: ignore[unresolved-attribute]
+    repo_path = worktree.repo_path if worktree else "."
+    base_url = _resolve_base_url(worktree)
+
+    overlay = get_overlay()
+    diff = visual_qa.changed_files(repo=repo_path)
+    report = visual_qa.evaluate(diff=diff, overlay=overlay, base_url=base_url, skip_reason=skip_reason)
+
+    # Only persist when the gate produced a meaningful signal — skipping a
+    # no-op run keeps the FSM history readable.
+    if report.pages or report.has_errors:
+        extra = cast("TicketExtra", ticket.extra or {})
+        extra["visual_qa"] = report.summary()
+        ticket.extra = extra
+        ticket.save(update_fields=["extra"])
+
+    if not report.has_errors:
+        return None
+    return VisualQAGateFailure(
+        allowed=False,
+        error=f"Visual QA found {report.total_errors} blocking finding(s).",
+        visual_qa=report.summary(),
+        report_markdown=visual_qa.format_report(report),
+        hint="Fix the findings, or pass --skip-visual-qa <reason> to bypass.",
+    )
+
+
 class Command(TyperCommand):
     @command()
     def create(  # noqa: PLR0913
@@ -79,6 +138,7 @@ class Command(TyperCommand):
         *,
         dry_run: bool = False,
         skip_validation: bool = False,
+        skip_visual_qa: str = "",
     ) -> dict[str, object]:
         """Create a merge request for the ticket's branch."""
         ticket = Ticket.objects.get(pk=ticket_id)
@@ -106,6 +166,9 @@ class Command(TyperCommand):
             gate_error = _check_shipping_gate(ticket)
             if gate_error:
                 return gate_error
+            visual_qa_error = _run_visual_qa_gate(ticket, skip_reason=skip_visual_qa)
+            if visual_qa_error:
+                return {**visual_qa_error}
             validation = overlay.metadata.validate_mr(title, description)
             if validation["errors"]:
                 return {"error": "MR validation failed", "details": validation["errors"]}
