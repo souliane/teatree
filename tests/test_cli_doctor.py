@@ -54,8 +54,174 @@ class TestDoctorService:
             patch.object(IntrospectionHelpers, "print_package_info"),
             patch.object(teatree_config, "discover_active_overlay", return_value=None),
             patch.object(teatree_config, "discover_overlays", return_value=[]),
+            patch.object(DoctorService, "find_installed_claude_plugin", return_value=None),
         ):
             DoctorService.show_info()
+
+    def test_show_info_prints_overlay_project_path(self, capsys, tmp_path):
+        from teatree.config import OverlayEntry  # noqa: PLC0415
+
+        project = tmp_path / "my-overlay"
+        project.mkdir()
+        entries = [OverlayEntry(name="acme", overlay_class="acme.Overlay", project_path=project)]
+
+        with (
+            patch("shutil.which", return_value="/usr/bin/t3"),
+            patch.object(IntrospectionHelpers, "editable_info", return_value=(False, "")),
+            patch.object(IntrospectionHelpers, "print_package_info"),
+            patch.object(teatree_config, "discover_active_overlay", return_value=None),
+            patch.object(teatree_config, "discover_overlays", return_value=entries),
+            patch.object(DoctorService, "find_installed_claude_plugin", return_value=None),
+        ):
+            DoctorService.show_info()
+        out = capsys.readouterr().out
+        assert "acme" in out
+        assert str(project) in out
+
+    def test_show_info_omits_project_path_when_none(self, capsys):
+        from teatree.config import OverlayEntry  # noqa: PLC0415
+
+        entries = [OverlayEntry(name="acme", overlay_class="acme.Overlay", project_path=None)]
+
+        with (
+            patch("shutil.which", return_value="/usr/bin/t3"),
+            patch.object(IntrospectionHelpers, "editable_info", return_value=(False, "")),
+            patch.object(IntrospectionHelpers, "print_package_info"),
+            patch.object(teatree_config, "discover_active_overlay", return_value=None),
+            patch.object(teatree_config, "discover_overlays", return_value=entries),
+            patch.object(DoctorService, "find_installed_claude_plugin", return_value=None),
+        ):
+            DoctorService.show_info()
+        out = capsys.readouterr().out
+        lines = [line for line in out.splitlines() if "acme" in line]
+        assert len(lines) == 1  # overlay row, no project_path row
+
+    def test_show_info_shows_claude_plugin_when_installed(self, capsys):
+        plugin = {
+            "version": "0.0.1",
+            "installPath": "/Users/x/.claude/plugins/cache/souliane/t3/0.0.1",
+            "scope": "user",
+        }
+        with (
+            patch("shutil.which", return_value="/usr/bin/t3"),
+            patch.object(IntrospectionHelpers, "editable_info", return_value=(False, "")),
+            patch.object(IntrospectionHelpers, "print_package_info"),
+            patch.object(teatree_config, "discover_active_overlay", return_value=None),
+            patch.object(teatree_config, "discover_overlays", return_value=[]),
+            patch.object(DoctorService, "find_installed_claude_plugin", return_value=plugin),
+        ):
+            DoctorService.show_info()
+        out = capsys.readouterr().out
+        assert "Claude plugin:" in out
+        assert "0.0.1" in out
+        assert "user" in out
+        assert plugin["installPath"] in out
+
+    def test_show_info_says_not_installed_when_plugin_missing(self, capsys):
+        with (
+            patch("shutil.which", return_value="/usr/bin/t3"),
+            patch.object(IntrospectionHelpers, "editable_info", return_value=(False, "")),
+            patch.object(IntrospectionHelpers, "print_package_info"),
+            patch.object(teatree_config, "discover_active_overlay", return_value=None),
+            patch.object(teatree_config, "discover_overlays", return_value=[]),
+            patch.object(DoctorService, "find_installed_claude_plugin", return_value=None),
+        ):
+            DoctorService.show_info()
+        out = capsys.readouterr().out
+        assert "Claude plugin:" in out
+        assert "not installed" in out
+
+    # ── find_installed_claude_plugin ─────────────────────────────────
+
+    def test_find_installed_claude_plugin_returns_entry(self, tmp_path, monkeypatch):
+        plugins_file = tmp_path / ".claude" / "plugins" / "installed_plugins.json"
+        plugins_file.parent.mkdir(parents=True)
+        plugins_file.write_text(
+            json.dumps(
+                {
+                    "version": 2,
+                    "plugins": {
+                        "t3@souliane": [
+                            {
+                                "scope": "user",
+                                "installPath": "/path/to/t3/0.0.1",
+                                "version": "0.0.1",
+                            }
+                        ],
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: tmp_path))
+        result = DoctorService.find_installed_claude_plugin()
+        assert result == {
+            "version": "0.0.1",
+            "installPath": "/path/to/t3/0.0.1",
+            "scope": "user",
+        }
+
+    def test_find_installed_claude_plugin_missing_file(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: tmp_path))
+        assert DoctorService.find_installed_claude_plugin() is None
+
+    def test_find_installed_claude_plugin_entry_missing(self, tmp_path, monkeypatch):
+        plugins_file = tmp_path / ".claude" / "plugins" / "installed_plugins.json"
+        plugins_file.parent.mkdir(parents=True)
+        plugins_file.write_text(json.dumps({"version": 2, "plugins": {}}), encoding="utf-8")
+        monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: tmp_path))
+        assert DoctorService.find_installed_claude_plugin() is None
+
+    def test_find_installed_claude_plugin_malformed_json(self, tmp_path, monkeypatch):
+        plugins_file = tmp_path / ".claude" / "plugins" / "installed_plugins.json"
+        plugins_file.parent.mkdir(parents=True)
+        plugins_file.write_text("not json", encoding="utf-8")
+        monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: tmp_path))
+        assert DoctorService.find_installed_claude_plugin() is None
+
+    # ── show_info (skills installed-to section) ──────────────────────
+
+    def test_show_info_lists_existing_runtime_skill_dirs(self, capsys, tmp_path, monkeypatch):
+        (tmp_path / ".claude" / "skills").mkdir(parents=True)
+        (tmp_path / ".codex" / "skills").mkdir(parents=True)
+        # Populate one t3-managed symlink in each
+        fake_target = tmp_path / "source" / "code"
+        fake_target.mkdir(parents=True)
+        (tmp_path / ".claude" / "skills" / "code").symlink_to(fake_target)
+        (tmp_path / ".codex" / "skills" / "code").symlink_to(fake_target)
+        monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: tmp_path))
+
+        with (
+            patch("shutil.which", return_value="/usr/bin/t3"),
+            patch.object(IntrospectionHelpers, "editable_info", return_value=(False, "")),
+            patch.object(IntrospectionHelpers, "print_package_info"),
+            patch.object(teatree_config, "discover_active_overlay", return_value=None),
+            patch.object(teatree_config, "discover_overlays", return_value=[]),
+            patch.object(DoctorService, "find_installed_claude_plugin", return_value=None),
+        ):
+            DoctorService.show_info()
+        out = capsys.readouterr().out
+        assert "Skills installed to:" in out
+        assert str(tmp_path / ".claude" / "skills") in out
+        assert str(tmp_path / ".codex" / "skills") in out
+
+    def test_show_info_skips_missing_runtime_skill_dirs(self, capsys, tmp_path, monkeypatch):
+        (tmp_path / ".claude" / "skills").mkdir(parents=True)
+        # No ~/.codex
+        monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: tmp_path))
+
+        with (
+            patch("shutil.which", return_value="/usr/bin/t3"),
+            patch.object(IntrospectionHelpers, "editable_info", return_value=(False, "")),
+            patch.object(IntrospectionHelpers, "print_package_info"),
+            patch.object(teatree_config, "discover_active_overlay", return_value=None),
+            patch.object(teatree_config, "discover_overlays", return_value=[]),
+            patch.object(DoctorService, "find_installed_claude_plugin", return_value=None),
+        ):
+            DoctorService.show_info()
+        out = capsys.readouterr().out
+        assert str(tmp_path / ".claude" / "skills") in out
+        assert ".codex" not in out
 
     # ── collect_overlay_skills ───────────────────────────────────────
 
