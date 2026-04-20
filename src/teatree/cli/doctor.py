@@ -1,5 +1,6 @@
 """Doctor CLI commands — smoke-test hooks, imports, services."""
 
+import json
 import os
 import re
 import shutil
@@ -11,6 +12,17 @@ import typer
 
 doctor_app = typer.Typer(no_args_is_help=True, help="Smoke-test hooks, imports, services.")
 _REQUIRED_TOOLS = ("direnv", "git", "jq")
+_CLAUDE_PLUGIN_ID = "t3@souliane"
+
+# Agent runtimes that consume teatree skills.  ``t3 setup`` creates symlinks
+# into each runtime's skills directory that already exists — missing dirs are
+# skipped silently.  The Claude dir is always ensured by setup.
+AGENT_SKILL_RUNTIMES: tuple[str, ...] = ("claude", "codex")
+
+
+def agent_skill_dirs() -> list[tuple[str, Path]]:
+    """Return (runtime_label, skills_dir) pairs, resolved against the current HOME."""
+    return [(name, Path.home() / f".{name}" / "skills") for name in AGENT_SKILL_RUNTIMES]
 
 
 def _resolve_overlay_dists(overlays: dict) -> list[str]:
@@ -87,6 +99,44 @@ class DoctorService:
             typer.echo("Installed overlays:")
             for entry in installed:
                 typer.echo(f"  {entry.name:<20}{entry.overlay_class or '(local)'}")
+                if entry.project_path:
+                    typer.echo(f"  {'':<20}{entry.project_path}")
+
+        plugin = DoctorService.find_installed_claude_plugin()
+        typer.echo()
+        if plugin:
+            typer.echo(f"Claude plugin:    {_CLAUDE_PLUGIN_ID} v{plugin['version']}")
+            typer.echo(f"                  {plugin['installPath']} ({plugin['scope']} scope)")
+        else:
+            typer.echo(f"Claude plugin:    {_CLAUDE_PLUGIN_ID} (not installed)")
+
+        existing = [(label, path) for label, path in agent_skill_dirs() if path.is_dir()]
+        if existing:
+            typer.echo()
+            typer.echo("Skills installed to:")
+            for _label, path in existing:
+                count = sum(1 for link in path.iterdir() if link.is_symlink())
+                typer.echo(f"  {path} ({count} t3-managed)")
+
+    @staticmethod
+    def find_installed_claude_plugin() -> dict[str, str] | None:
+        """Return plugin version/installPath/scope, or None when not installed."""
+        plugins_json = Path.home() / ".claude" / "plugins" / "installed_plugins.json"
+        if not plugins_json.is_file():
+            return None
+        try:
+            data = json.loads(plugins_json.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return None
+        entries = (data.get("plugins") or {}).get(_CLAUDE_PLUGIN_ID) or []
+        if not entries:
+            return None
+        first = entries[0]
+        return {
+            "version": first.get("version", ""),
+            "installPath": first.get("installPath", ""),
+            "scope": first.get("scope", ""),
+        }
 
     @staticmethod
     def collect_overlay_skills() -> list[tuple[Path, str]]:

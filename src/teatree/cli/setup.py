@@ -8,7 +8,12 @@ from pathlib import Path
 
 import typer
 
-from teatree.cli.doctor import DoctorService
+from teatree.cli.doctor import AGENT_SKILL_RUNTIMES, DoctorService, agent_skill_dirs
+
+# Re-exported here so external callers and tests see a single import path for
+# setup-adjacent knobs; the canonical definition lives in ``doctor`` to keep
+# ``setup → doctor`` imports one-directional.
+__all__ = ["AGENT_SKILL_RUNTIMES", "agent_skill_dirs"]
 
 # Skills that conflict with teatree's multi-repo architecture.
 # Always excluded — not user-configurable.  Users can add extra
@@ -17,6 +22,7 @@ CORE_EXCLUDED_SKILLS = ["using-superpowers", "using-git-worktrees"]
 
 _PLUGIN_NAME = "t3"
 _MARKETPLACE_NAME = "souliane"
+
 
 logger = logging.getLogger(__name__)
 
@@ -250,21 +256,27 @@ def run(
 
     config = load_config()
 
+    all_excluded = list(dict.fromkeys(CORE_EXCLUDED_SKILLS + config.user.excluded_skills))
+    workspace_dir = Path(config.user.workspace_dir).expanduser()
+
+    # The Claude skills dir is always ensured (it's where the plugin looks for skills).
+    # Other runtimes are opt-in by the presence of their home directory.
     claude_skills = Path.home() / ".claude" / "skills"
     claude_skills.mkdir(parents=True, exist_ok=True)
 
-    all_excluded = list(dict.fromkeys(CORE_EXCLUDED_SKILLS + config.user.excluded_skills))
-    removed = _remove_excluded_skills(claude_skills, all_excluded)
-    if removed:
-        typer.echo(f"OK    Removed {removed} excluded skill(s).")
+    for label, skills_dir in agent_skill_dirs():
+        if not skills_dir.is_dir():
+            continue
+        removed = _remove_excluded_skills(skills_dir, all_excluded)
+        if removed:
+            typer.echo(f"OK    {label}: removed {removed} excluded skill(s).")
 
-    workspace_dir = Path(config.user.workspace_dir).expanduser()
-    created, fixed = _sync_skill_symlinks(claude_skills, workspace_dir)
-    typer.echo(f"OK    Skills: {created} created, {fixed} fixed.")
+        created, fixed = _sync_skill_symlinks(skills_dir, workspace_dir)
+        typer.echo(f"OK    {label}: {created} created, {fixed} fixed.")
 
-    broken = _clean_broken_symlinks(claude_skills)
-    if broken:
-        typer.echo(f"OK    Removed {broken} broken symlink(s).")
+        broken = _clean_broken_symlinks(skills_dir)
+        if broken:
+            typer.echo(f"OK    {label}: removed {broken} broken symlink(s).")
 
     if not skip_plugin:
         _install_claude_plugin(repo, scope=claude_scope)
