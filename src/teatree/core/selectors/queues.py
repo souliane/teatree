@@ -75,6 +75,7 @@ def _build_task_queue(
             result_summary=results.get(task.pk, ""),
             session_agent_id=task.session.agent_id if task.session_id else "",
             phase=task.phase,
+            issue_url=task.ticket.issue_url,
             elapsed_time=_humanize_duration((now - task.claimed_at).total_seconds()) if task.claimed_at else "",
             heartbeat_age=_humanize_duration((now - task.heartbeat_at).total_seconds()) if task.heartbeat_at else "",
         )
