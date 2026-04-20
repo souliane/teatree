@@ -7,6 +7,7 @@ lifecycle), overlay config subcommands, and overlay tool registration.
 """
 
 import json
+import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -188,6 +189,12 @@ class TestOverlayCommands:
         """Return a mock active overlay pointing at tmp_path."""
         return config_mod.OverlayEntry(name="test", overlay_class="test.settings", project_path=tmp_path)
 
+    def _mock_guard(self):
+        """Return a context manager that patches DashboardGuard to be a no-op."""
+        guard = MagicMock()
+        guard.stop_existing.return_value = False
+        return patch.object(cli_mod, "DashboardGuard", return_value=guard)
+
     def test_dashboard(self, tmp_path):
         """Dashboard command migrates and starts uvicorn."""
         from teatree.cli import app  # noqa: PLC0415
@@ -201,6 +208,7 @@ class TestOverlayCommands:
             patch.object(cli_mod, "subprocess"),
             patch("teatree.cli.discover_active_overlay", return_value=self._mock_active_overlay(tmp_path)),
             patch("socket.socket") as mock_socket_cls,
+            self._mock_guard(),
         ):
             mock_sock = MagicMock()
             mock_sock.connect_ex.return_value = 1
@@ -245,12 +253,109 @@ class TestOverlayCommands:
             patch.object(cli_mod, "subprocess"),
             patch("teatree.cli.discover_active_overlay", return_value=self._mock_active_overlay(tmp_path)),
             patch("socket.socket", side_effect=socket_factory),
+            self._mock_guard(),
         ):
             result = test_runner.invoke(app, ["dashboard"])
             assert result.exit_code == 0
             assert "Port 8000 in use" in result.output
             assert mock_uvicorn.call_args[0][2] == 9999
 
+    def test_dashboard_stop(self, tmp_path):
+        """Dashboard --stop kills existing server and exits."""
+        from teatree.cli import app  # noqa: PLC0415
+
+        test_runner = CliRunner()
+        guard = MagicMock()
+        guard.stop_existing.return_value = True
+
+        with patch.object(cli_mod, "DashboardGuard", return_value=guard):
+            result = test_runner.invoke(app, ["dashboard", "--stop"])
+            assert result.exit_code == 0
+            assert "Dashboard stopped" in result.output
+            guard.stop_existing.assert_called_once()
+
+    def test_dashboard_stop_no_server(self, tmp_path):
+        """Dashboard --stop reports when no server is running."""
+        from teatree.cli import app  # noqa: PLC0415
+
+        test_runner = CliRunner()
+        guard = MagicMock()
+        guard.stop_existing.return_value = False
+
+        with patch.object(cli_mod, "DashboardGuard", return_value=guard):
+            result = test_runner.invoke(app, ["dashboard", "--stop"])
+            assert result.exit_code == 0
+            assert "No running dashboard" in result.output
+
+    def test_dashboard_kills_existing_on_start(self, tmp_path):
+        """Dashboard startup kills any existing server before starting."""
+        from teatree.cli import app  # noqa: PLC0415
+
+        test_runner = CliRunner()
+        (tmp_path / "manage.py").write_text("pass\n")
+        guard = MagicMock()
+        guard.stop_existing.return_value = True
+
+        with (
+            patch.object(cli_mod, "managepy"),
+            patch.object(cli_mod, "_uvicorn"),
+            patch.object(cli_mod, "subprocess"),
+            patch("teatree.cli.discover_active_overlay", return_value=self._mock_active_overlay(tmp_path)),
+            patch("socket.socket") as mock_socket_cls,
+            patch.object(cli_mod, "DashboardGuard", return_value=guard),
+        ):
+            mock_sock = MagicMock()
+            mock_sock.connect_ex.return_value = 1
+            mock_socket_cls.return_value.__enter__ = MagicMock(return_value=mock_sock)
+            mock_socket_cls.return_value.__exit__ = MagicMock(return_value=False)
+
+            result = test_runner.invoke(app, ["dashboard"])
+            assert result.exit_code == 0
+            guard.stop_existing.assert_called_once()
+            guard.write_pid.assert_called_once()
+
+
+class TestDashboardGuard:
+    def test_write_and_read_pid(self, tmp_path):
+        """Guard writes and reads current process PID."""
+        from teatree.cli import DashboardGuard  # noqa: PLC0415
+
+        pid_file = tmp_path / "dashboard.pid"
+        guard = DashboardGuard(pid_file=pid_file)
+        guard.write_pid()
+        assert pid_file.exists()
+        assert pid_file.read_text().strip() == str(os.getpid())
+
+    def test_read_pid_stale(self, tmp_path):
+        """Guard cleans up PID file for a dead process."""
+        from teatree.cli import DashboardGuard  # noqa: PLC0415
+
+        pid_file = tmp_path / "dashboard.pid"
+        pid_file.write_text("99999999")  # unlikely to be a real PID
+        guard = DashboardGuard(pid_file=pid_file)
+        assert guard._read_pid() is None
+        assert not pid_file.exists()
+
+    def test_read_pid_missing(self, tmp_path):
+        """Guard returns None when no PID file exists."""
+        from teatree.cli import DashboardGuard  # noqa: PLC0415
+
+        guard = DashboardGuard(pid_file=tmp_path / "dashboard.pid")
+        assert guard._read_pid() is None
+
+    def test_cleanup(self, tmp_path):
+        """Guard removes PID file on cleanup."""
+        from teatree.cli import DashboardGuard  # noqa: PLC0415
+
+        pid_file = tmp_path / "dashboard.pid"
+        guard = DashboardGuard(pid_file=pid_file)
+        guard.write_pid()
+        assert pid_file.exists()
+        guard.cleanup()
+        assert not pid_file.exists()
+
+
+class TestOverlaySubcommands:
     def test_resetdb(self, tmp_path, monkeypatch):
         """Resetdb deletes DB and migrates."""
         monkeypatch.setattr("teatree.config.DATA_DIR", tmp_path / "data")
