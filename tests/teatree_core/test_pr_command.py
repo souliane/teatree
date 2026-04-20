@@ -116,6 +116,7 @@ class TestSanitizeCloseKeywords:
     @pytest.mark.parametrize(
         ("description", "expected"),
         [
+            # Same-project short refs
             ("Closes #123", "Relates to #123"),
             ("Fixes #42", "Relates to #42"),
             ("Resolves #7", "Relates to #7"),
@@ -123,6 +124,28 @@ class TestSanitizeCloseKeywords:
             ("fixes #42", "Relates to #42"),
             ("resolves #7", "Relates to #7"),
             ("See Closes #1 and Fixes #2", "See Relates to #1 and Relates to #2"),
+            # Cross-project short refs
+            ("Closes group/project#99", "Relates to group/project#99"),
+            ("Fixes org/sub/repo#5", "Relates to org/sub/repo#5"),
+            # Full URL refs
+            (
+                "Closes https://gitlab.com/org/project/-/issues/729",
+                "Relates to https://gitlab.com/org/project/-/issues/729",
+            ),
+            (
+                "Fixes https://gitlab.com/org/sub/repo/-/issues/42",
+                "Relates to https://gitlab.com/org/sub/repo/-/issues/42",
+            ),
+            (
+                "Resolves https://github.com/owner/repo/issues/10",
+                "Relates to https://github.com/owner/repo/issues/10",
+            ),
+            # Mixed refs in one description
+            (
+                "Closes #1\nFixes https://gitlab.com/g/p/-/issues/2\nResolves g/p#3",
+                "Relates to #1\nRelates to https://gitlab.com/g/p/-/issues/2\nRelates to g/p#3",
+            ),
+            # No ticket ref
             ("No ticket ref here", "No ticket ref here"),
             ("", ""),
         ],

@@ -73,6 +73,7 @@ src/teatree/
       run.py            # Service runner
       followup.py       # GitLab sync and notifications
       pr.py             # MR creation and validation
+      overlay.py        # Overlay inspection (config, info)
       tasks.py          # Task claiming and execution
     views/
       dashboard.py      # Dashboard page + HTMX panel refresh
@@ -601,6 +602,7 @@ Implementations: `GitHubSyncBackend` (`backends/github_sync.py`), `GitLabSyncBac
 **db** — Database operations
 **run** — Service runner (uses `lifecycle.compose_project()` shared helper)
 **pr** — MR creation and validation
+**overlay** — Overlay inspection (`config`, `info`)
 
 ### 8.2 Global CLI Commands (`t3`)
 
