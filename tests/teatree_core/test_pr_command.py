@@ -5,8 +5,15 @@ import pytest
 from django.core.management import call_command
 from django.test import TestCase
 
+from teatree import visual_qa
 from teatree.core.management.commands import pr as pr_command
-from teatree.core.management.commands.pr import _check_shipping_gate, _mr_auto_labels, _sanitize_close_keywords
+from teatree.core.management.commands.pr import (
+    _check_shipping_gate,
+    _mr_auto_labels,
+    _resolve_base_url,
+    _run_visual_qa_gate,
+    _sanitize_close_keywords,
+)
 from teatree.core.models import Session, Ticket, Worktree
 from teatree.core.overlay_loader import reset_overlay_cache
 from tests.teatree_core.conftest import CommandOverlay
@@ -185,3 +192,103 @@ class TestMrAutoLabels:
         ):
             result = _mr_auto_labels()
             assert result == []
+
+
+class TestResolveBaseUrl(TestCase):
+    def test_returns_default_when_worktree_is_none(self) -> None:
+        assert _resolve_base_url(None) == "http://127.0.0.1:8000"
+
+    def test_prefers_frontend_url(self) -> None:
+        ticket = Ticket.objects.create()
+        worktree = Worktree.objects.create(
+            ticket=ticket,
+            repo_path="/tmp/wt",
+            branch="feat",
+            extra={"urls": {"frontend": "http://localhost:4201", "backend": "http://localhost:8001"}},
+        )
+        assert _resolve_base_url(worktree) == "http://localhost:4201"
+
+    def test_falls_back_to_backend(self) -> None:
+        ticket = Ticket.objects.create()
+        worktree = Worktree.objects.create(
+            ticket=ticket,
+            repo_path="/tmp/wt",
+            branch="feat",
+            extra={"urls": {"backend": "http://localhost:8001"}},
+        )
+        assert _resolve_base_url(worktree) == "http://localhost:8001"
+
+    def test_falls_back_to_localhost_when_no_urls(self) -> None:
+        ticket = Ticket.objects.create()
+        worktree = Worktree.objects.create(ticket=ticket, repo_path="/tmp/wt", branch="feat")
+        assert _resolve_base_url(worktree) == "http://127.0.0.1:8000"
+
+
+class TestRunVisualQAGate(TestCase):
+    def _ticket(self) -> Ticket:
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/77")
+        Worktree.objects.create(ticket=ticket, overlay="test", repo_path="/tmp/wt", branch="feat-x")
+        return ticket
+
+    def test_skipped_run_does_not_pollute_extra(self) -> None:
+        ticket = self._ticket()
+        clean = visual_qa.VisualQAReport(targets=[], skipped_reason="no frontend changes")
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch.object(visual_qa, "evaluate", return_value=clean),
+        ):
+            assert _run_visual_qa_gate(ticket) is None
+
+        ticket.refresh_from_db()
+        assert "visual_qa" not in ticket.extra
+
+    def test_records_summary_when_pages_checked(self) -> None:
+        ticket = self._ticket()
+        page = visual_qa.PageResult(url="http://x/", screenshot_path=".t3/visual_qa/00-root.png")
+        report = visual_qa.VisualQAReport(targets=["/"], pages=[page], base_url="http://x")
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch.object(visual_qa, "evaluate", return_value=report),
+        ):
+            assert _run_visual_qa_gate(ticket) is None
+
+        ticket.refresh_from_db()
+        assert ticket.extra["visual_qa"]["pages_checked"] == 1
+        assert ticket.extra["visual_qa"]["errors"] == 0
+
+    def test_returns_error_when_findings(self) -> None:
+        ticket = self._ticket()
+        page = visual_qa.PageResult(
+            url="http://x/",
+            errors=[visual_qa.PageError(url="http://x/", kind="page", message="boom")],
+        )
+        report = visual_qa.VisualQAReport(targets=["/"], pages=[page], base_url="http://x")
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch.object(visual_qa, "evaluate", return_value=report),
+        ):
+            result = _run_visual_qa_gate(ticket)
+
+        assert result is not None
+        assert result["allowed"] is False
+        assert "1 blocking finding" in result["error"]
+        assert "## Visual QA" in result["report_markdown"]
+
+        ticket.refresh_from_db()
+        assert ticket.extra["visual_qa"]["errors"] == 1
+
+    def test_skip_reason_propagates(self) -> None:
+        ticket = self._ticket()
+        captured: dict[str, str] = {}
+
+        def fake_evaluate(**kwargs: object) -> visual_qa.VisualQAReport:
+            captured["skip_reason"] = str(kwargs.get("skip_reason", ""))
+            return visual_qa.VisualQAReport(targets=[], skipped_reason="--skip: my reason")
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch.object(visual_qa, "evaluate", side_effect=fake_evaluate),
+        ):
+            assert _run_visual_qa_gate(ticket, skip_reason="my reason") is None
+
+        assert captured["skip_reason"] == "my reason"

@@ -3,10 +3,30 @@ from typing import TypedDict
 type Ports = dict[str, int]
 
 
+class VisualQAPageError(TypedDict):
+    kind: str
+    message: str
+
+
+class VisualQAPageDetail(TypedDict):
+    url: str
+    errors: list[VisualQAPageError]
+
+
+class VisualQASummary(TypedDict, total=False):
+    targets: list[str]
+    skipped_reason: str
+    base_url: str
+    pages_checked: int
+    errors: int
+    details: list[VisualQAPageDetail]
+
+
 class TicketExtra(TypedDict, total=False):
     tests_passed: bool
     mr_urls: list[str]
     ignored_from: str
+    visual_qa: VisualQASummary
 
 
 class WorktreeExtra(TypedDict, total=False):
