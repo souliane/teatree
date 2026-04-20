@@ -169,7 +169,8 @@ flowchart TD
   G -->|"Core skill gap<br/>(T3_CONTRIBUTE=true)"| I["Write to $T3_REPO<br/>(skill files, references, hooks)"]
   G -->|"User preference"| J
 
-  H & I & J --> K["4. Quality Checks"]
+  H & I & J --> SIMP["3b. Simplification Pass<br/>(remove duplicate / stale /<br/>unused rules and checks)"]
+  SIMP --> K["4. Quality Checks"]
   K --> L["No duplication across skills?"]
   K --> M["Single source of truth?"]
   K --> N["Pre-commit hooks pass?"]
@@ -207,6 +208,7 @@ Review the full conversation and categorize every issue:
 | **Hook gap** | Auto-loading didn't trigger when it should have | Hook didn't suggest project overlay in matching context |
 | **Stale guidance** | Followed outdated instructions | Playbook described pre-refactoring patterns |
 | **Paradigm mismatch** | The architecture itself is the bottleneck, not a missing skill or guardrail | Repeatedly refining skill prose for a workflow that should be deterministic code; 3+ retro findings pointing to the same structural limitation; system untestable without an LLM |
+| **Overhead without value** | A rule, check, or procedure added friction this session without preventing a real failure | Verification step that never flagged anything; duplicated guardrail across skills; step-by-step commands the CLI already handles. Fed into § 3b Simplification Pass. |
 
 ### 2. Root Cause Analysis
 
@@ -261,6 +263,38 @@ Retro can also modify core teatree skills in the user's fork:
 | Stale or incorrect guidance in a core skill | The affected skill's `SKILL.md` or reference file |
 
 **After modifying core skills:** follow § Commit to Fork.
+
+### 3b. Simplification Pass (Auto-Cleaning)
+
+Retro should **remove** overhead with the same confidence it **adds** guardrails. Most skill drift comes from accumulation — rules layered on over time, each defensible in isolation, collectively expensive. Every retro must ask: **did any rule or check create friction this session without preventing a real failure?** If yes, simplify in the same commit as the other findings.
+
+#### Qualifies for removal / consolidation
+
+- **Duplicate rules** — the same guardrail stated in multiple skills, memory files, or `CLAUDE.md`. Keep one canonical home; replace others with a one-line cross-reference.
+- **Stale instructions** — steps describing a workflow the CLI now handles automatically, or referencing removed commands/flags/paths.
+- **Procedural sprawl** — step-by-step commands where `t3` already does the work (see § "Never write CLI procedures into skills" above).
+- **Unused checks** — verification steps that slowed the session down but did not catch a real issue, and never fired across prior retros.
+- **Over-verbose prose** — multi-paragraph explanations where a one-line rule suffices.
+
+#### Never remove
+
+- **Destructive-action rules** — push confirmations, force-push gates, `--no-verify` bans, deletion approvals. Cost is ~0 tokens per turn; blast radius is real.
+- **Rules that prevented a real failure** (this session or a prior retro). When uncertain, leave it.
+- **Rules backed by an explicit user preference** (saved feedback memory, `CLAUDE.md` entry). Ask before removing.
+
+#### How to simplify
+
+- **Prefer consolidation over deletion.** Move the rule to one canonical home (typically `rules/SKILL.md` or the most relevant dedicated skill); replace duplicates with one-line pointers (`See <skill>/SKILL.md § <anchor>`). Keep anchors stable so cross-references don't break.
+- **Delete only when the rule is stale or unused.** A deletion must be justified in the commit message: either "handled by `t3 <command>`" (stale) or "never triggered across N retros" (unused).
+- **Measure the change.** Include the before/after line count delta for touched files in the commit message.
+
+#### Commit convention
+
+Use `refactor(<skill>): simplify <what>` (not `fix(<skill>)`). One commit per coherent simplification so reverts stay surgical. Example: `refactor(ship): drop duplicate push-confirmation rule — canonical in rules/SKILL.md`.
+
+#### When in doubt, ask
+
+If a rule looks like overhead but you cannot confirm it is unused, ask with `AskUserQuestion`. Show the rule, show grep evidence of recent invocations, and propose remove vs. keep. The cost of asking is low; the cost of removing a load-bearing rule is high.
 
 ### 4. Quality Rules
 
