@@ -42,7 +42,7 @@ A Django/HTMX web UI served via uvicorn. Views in `teatree/core/views/` surface 
 
 ## Tier 3: Claude Plugin
 
-Skills and hooks that drive AI-assisted development. Skills encode the methodology, guardrails, and domain knowledge for each lifecycle phase — the agent uses the CLI for infrastructure, but skills guide the actual coding, debugging, reviewing, and shipping. Installed as a Claude Code plugin via `t3 plugin install` or `apm install souliane/teatree`.
+Skills and hooks that drive AI-assisted development. Skills encode the methodology, guardrails, and domain knowledge for each lifecycle phase — the agent uses the CLI for infrastructure, but skills guide the actual coding, debugging, reviewing, and shipping. Installed as a Claude Code plugin via `t3 setup` (from a local clone) or `apm install souliane/teatree` (from any directory).
 
 - **Skills** (`skills/`) — one per lifecycle phase, with `requires:` for hard dependencies and `companions:` for optional third-party skills
 - **Hooks** (`hooks/`) — `UserPromptSubmit` (skill routing), `PreToolUse` (branch protection, skill enforcement), `PostToolUse` (repo tracking, skill tracking), statusline
