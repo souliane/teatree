@@ -403,7 +403,12 @@ class Command(TyperCommand):
     ) -> list[str]:
         """Prune merged worktrees, stale branches, orphaned stashes, orphan databases, and old DSLR snapshots."""
         workspace = _workspace_dir()
-        cleaned = [cleanup_worktree(wt) for wt in Worktree.objects.filter(state=Worktree.State.CREATED)]
+        cleaned: list[str] = []
+        for wt in Worktree.objects.filter(state=Worktree.State.CREATED):
+            try:
+                cleaned.append(cleanup_worktree(wt))
+            except RuntimeError as exc:
+                cleaned.append(f"Skipped: {exc}")
 
         for entry in workspace.iterdir():
             if entry.is_dir() and not any(entry.iterdir()):
