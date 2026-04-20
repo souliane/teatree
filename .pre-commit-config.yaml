@@ -175,7 +175,6 @@ repos:
         name: Check BLUEPRINT.md updated with source changes
         language: system
         entry: uv run python scripts/hooks/check_blueprint_sync.py
-        pass_filenames: false
         always_run: true
         stages: [commit-msg]
 
