@@ -484,6 +484,23 @@ class TestBuildHeadlessQueue(TestCase):
         assert queue[0].session_agent_id == "claude-headless"
         assert queue[0].phase == "testing"
 
+    def test_includes_ticket_issue_url(self) -> None:
+        ticket = Ticket.objects.create(
+            state=Ticket.State.STARTED,
+            issue_url="https://example.com/issues/555",
+        )
+        session = Session.objects.create(ticket=ticket, agent_id="agent")
+        Task.objects.create(
+            ticket=ticket,
+            session=session,
+            execution_target=Task.ExecutionTarget.HEADLESS,
+        )
+
+        queue = build_headless_queue()
+
+        assert len(queue) == 1
+        assert queue[0].issue_url == "https://example.com/issues/555"
+
     def test_include_dismissed(self) -> None:
         """include_dismissed=True should include FAILED tasks but not COMPLETED."""
         ticket = Ticket.objects.create(state=Ticket.State.STARTED)

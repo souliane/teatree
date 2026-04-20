@@ -100,6 +100,7 @@ class DashboardTaskRow:
     result_summary: str
     session_agent_id: str
     phase: str
+    issue_url: str = ""
     elapsed_time: str = ""
     heartbeat_age: str = ""
 
@@ -114,6 +115,7 @@ class ActiveSessionRow:
     ticket_display_id: str
     phase: str
     launch_url: str
+    issue_url: str = ""
     session_id: str = ""
     cwd: str = ""
     name: str = ""
