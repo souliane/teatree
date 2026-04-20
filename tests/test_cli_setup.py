@@ -11,6 +11,7 @@ from teatree.cli.setup import (
     CORE_EXCLUDED_SKILLS,
     _clean_broken_symlinks,
     _ensure_skill_link,
+    _ensure_t3_installed,
     _find_main_clone,
     _install_claude_plugin,
     _register_claude_marketplace,
@@ -491,3 +492,46 @@ class TestCoreExcludedSkills:
     def test_default_exclusions_present(self) -> None:
         assert "using-superpowers" in CORE_EXCLUDED_SKILLS
         assert "using-git-worktrees" in CORE_EXCLUDED_SKILLS
+
+
+class TestEnsureT3Installed:
+    def test_skips_install_when_t3_on_path(self, tmp_path: Path) -> None:
+        with (
+            patch("teatree.cli.setup.shutil.which") as mock_which,
+            patch("teatree.cli.setup.subprocess.run") as mock_run,
+        ):
+            mock_which.side_effect = lambda name: "/usr/local/bin/t3" if name == "t3" else None
+            assert _ensure_t3_installed(tmp_path) is True
+            mock_run.assert_not_called()
+
+    def test_returns_false_when_uv_missing(self, tmp_path: Path) -> None:
+        with patch("teatree.cli.setup.shutil.which", return_value=None):
+            assert _ensure_t3_installed(tmp_path) is False
+
+    def test_installs_editable_when_t3_missing(self, tmp_path: Path) -> None:
+        repo = tmp_path / "teatree"
+        repo.mkdir()
+        with (
+            patch("teatree.cli.setup.shutil.which") as mock_which,
+            patch("teatree.cli.setup.subprocess.run") as mock_run,
+        ):
+            mock_which.side_effect = lambda name: "/usr/bin/uv" if name == "uv" else None
+            mock_run.return_value.returncode = 0
+            mock_run.return_value.stderr = ""
+            assert _ensure_t3_installed(repo) is True
+            args = mock_run.call_args[0][0]
+            assert args[:3] == ["/usr/bin/uv", "tool", "install"]
+            assert "--editable" in args
+            assert str(repo) in args
+
+    def test_returns_false_on_install_failure(self, tmp_path: Path) -> None:
+        repo = tmp_path / "teatree"
+        repo.mkdir()
+        with (
+            patch("teatree.cli.setup.shutil.which") as mock_which,
+            patch("teatree.cli.setup.subprocess.run") as mock_run,
+        ):
+            mock_which.side_effect = lambda name: "/usr/bin/uv" if name == "uv" else None
+            mock_run.return_value.returncode = 1
+            mock_run.return_value.stderr = "boom"
+            assert _ensure_t3_installed(repo) is False

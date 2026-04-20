@@ -61,6 +61,10 @@ class TestBlocksForbiddenCommands:
             ("pg_restore -d mydb dump.sql", "db"),
             ("pg_dump mydb > dump.sql", "db"),
             ("dslr snapshot mydb", "db"),
+            ("uv run t3 lifecycle start", "install teatree"),
+            ("uv run t3 teatree lifecycle setup", "install teatree"),
+            ("uv run --no-sync t3 dashboard", "install teatree"),
+            ("cd /tmp && uv run t3 info", "install teatree"),
         ],
     )
     def test_denies_with_t3_alternative(
@@ -93,14 +97,16 @@ class TestAllowsLegitimateCommands:
         "command",
         [
             "t3 myapp lifecycle start",
-            "uv run t3 teatree lifecycle setup",
+            "t3 teatree lifecycle setup",
             "PYENV_VERSION=3.13.11 t3 myapp e2e external",
             "git status",
             "git push origin main",
             "ruff check src/",
             "uv run pytest --no-cov -x",
+            "uv run pytest tests/test_t3_cli.py",
             "ls -la",
             "echo 'manage.py runserver is not allowed'",
+            "echo 'run uv run t3 command'",
             "cat README.md",
             "grep -r 'playwright' .",
         ],

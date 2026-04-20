@@ -21,7 +21,7 @@ The core idea: each workflow phase -- ticket intake, coding, testing, review, de
 pip install teatree   # or: uv add teatree
 
 # Create an overlay package for your project
-uv run t3 startoverlay my-overlay ~/workspace/my-overlay
+t3 startoverlay my-overlay ~/workspace/my-overlay
 ```
 
 Your overlay is a lightweight Python package with an `OverlayBase` subclass and a `teatree.overlays` entry point. Once installed alongside teatree, `t3 teatree dashboard` picks it up automatically -- no settings to configure.

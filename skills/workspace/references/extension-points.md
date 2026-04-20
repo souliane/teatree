@@ -79,7 +79,7 @@ Settings are defined in `overlay_settings.py` and overridden per-user in `~/.tea
 ## Creating an Overlay
 
 ```bash
-uv run t3 startoverlay my-project ~/workspace/
+t3 startoverlay my-project ~/workspace/
 ```
 
 This creates a minimal overlay package with:

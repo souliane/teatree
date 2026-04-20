@@ -18,7 +18,7 @@ Use this when the user wants to switch away from Claude without losing the threa
 Run:
 
 ```bash
-uv run t3 tool claude-handover --json --current-runtime <runtime>
+t3 tool claude-handover --json --current-runtime <runtime>
 ```
 
 Read these fields from the JSON:
