@@ -27,6 +27,7 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │ tool            Standalone utilities.                                        │
 │ setup           First-time setup and global skill management.                │
 │ assess          Codebase health assessment.                                  │
+│ overlay         Dev-mode overlay install/uninstall.                          │
 │ infra           Teatree-wide infrastructure services.                        │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -647,6 +648,67 @@ Usage: t3 assess history [OPTIONS]
 │ --root           PATH     Repository root                                    │
 │ --limit  -n      INTEGER  Number of recent assessments to show [default: 10] │
 │ --help                    Show this message and exit.                        │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+### `t3 overlay`
+
+```
+Usage: t3 overlay [OPTIONS] COMMAND [ARGS]...                                  
+                                                                                
+ Dev-mode overlay install/uninstall.                                            
+                                                                                
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ install    Install an overlay editable into the current teatree worktree for │
+│            dogfooding.                                                       │
+│ uninstall  Uninstall an overlay from the current teatree worktree venv.      │
+│ status     Show overlays currently installed into this teatree worktree.     │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 overlay install`
+
+```
+Usage: t3 overlay install [OPTIONS] NAME                                       
+                                                                                
+ Install an overlay editable into the current teatree worktree for dogfooding.  
+                                                                                
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    name      TEXT  Overlay name as configured in ~/.teatree.toml.          │
+│                      [required]                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 overlay uninstall`
+
+```
+Usage: t3 overlay uninstall [OPTIONS] NAME                                     
+                                                                                
+ Uninstall an overlay from the current teatree worktree venv.                   
+                                                                                
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    name      TEXT  Overlay name to uninstall. [required]                   │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 overlay status`
+
+```
+Usage: t3 overlay status [OPTIONS]                                             
+                                                                                
+ Show overlays currently installed into this teatree worktree.                  
+                                                                                
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

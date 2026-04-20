@@ -642,6 +642,16 @@ Each registered overlay gets a subcommand group (e.g., `t3 acme`). Commands dele
 
 `lifecycle`, `workspace`, `run`, `db`, `pr`, `tasks`, `followup` — see §8.1 for details.
 
+### 8.4 Overlay Dev Loop (`t3 overlay install|uninstall|status`)
+
+Ships alongside the three-tier split above. Purpose: in a teatree feature worktree (never the main clone), editable-install a sibling overlay checkout so `t3 dashboard` and agents immediately see unreleased teatree code plus the overlay that exercises it.
+
+- `install <name>` walks up from `cwd` to find the teatree worktree, resolves the overlay main clone via `[overlays.<name>].path` in `~/.teatree.toml`, adds a sibling `git worktree` matching the teatree branch (falls back to the overlay's default branch), then runs `uv pip install --editable --no-deps <sibling>` against the teatree worktree venv. State is persisted in `.t3.local.json` (gitignored).
+- `uninstall <name>` removes the overlay from the venv and state file.
+- `status` lists overlays tracked in `.t3.local.json`.
+
+Refuses to run in the main clone (detected via a real `.git` directory). Tests in the teatree worktree stay deterministic because `tests/conftest.py` pins `T3_OVERLAY_NAME=t3-teatree`.
+
 ---
 
 ## 9. Dashboard
