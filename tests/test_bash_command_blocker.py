@@ -61,6 +61,8 @@ class TestBlocksForbiddenCommands:
             ("pg_restore -d mydb dump.sql", "db"),
             ("pg_dump mydb > dump.sql", "db"),
             ("dslr snapshot mydb", "db"),
+            ("dslr restore my_snap", "db"),
+            ("T3_ALLOW_REMOTE_DUMP=1 t3 myapp db refresh", "T3_ALLOW_REMOTE_DUMP"),
         ],
     )
     def test_denies_with_t3_alternative(
@@ -103,6 +105,8 @@ class TestAllowsLegitimateCommands:
             "echo 'manage.py runserver is not allowed'",
             "cat README.md",
             "grep -r 'playwright' .",
+            "dslr list",
+            "dslr delete old_snap",
         ],
     )
     def test_allows_command(
