@@ -5,6 +5,9 @@ import subprocess  # noqa: S404
 from dataclasses import dataclass
 from typing import cast
 
+from teatree.backends.protocols import PullRequestSpec
+from teatree.core.sync import RawAPIDict
+
 
 @dataclass(frozen=True, slots=True)
 class ProjectItem:
@@ -174,36 +177,26 @@ class GitHubCodeHost:
     def __init__(self, *, token: str = "") -> None:
         self._token = token
 
-    def create_pr(  # noqa: PLR0913
-        self,
-        *,
-        repo: str,
-        branch: str,
-        title: str,
-        description: str,
-        target_branch: str = "",
-        labels: list[str] | None = None,
-        assignee: str = "",
-    ) -> dict[str, object]:
+    def create_pr(self, spec: PullRequestSpec) -> RawAPIDict:
         cmd = [
             "gh",
             "pr",
             "create",
             "--repo",
-            repo,
+            spec.repo,
             "--head",
-            branch,
+            spec.branch,
             "--title",
-            title,
+            spec.title,
             "--body",
-            description,
+            spec.description,
         ]
-        if target_branch:
-            cmd.extend(["--base", target_branch])
-        if labels:
-            cmd.extend(["--label", ",".join(labels)])
-        if assignee:
-            cmd.extend(["--assignee", assignee])
+        if spec.target_branch:
+            cmd.extend(["--base", spec.target_branch])
+        if spec.labels:
+            cmd.extend(["--label", ",".join(spec.labels)])
+        if spec.assignee:
+            cmd.extend(["--assignee", spec.assignee])
 
         result = _run_gh(*cmd, token=self._token)
         return {"url": result.stdout.strip()}

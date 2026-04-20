@@ -1,6 +1,8 @@
 from pathlib import Path
 
 from teatree.backends.gitlab_api import GitLabAPI, ProjectInfo
+from teatree.backends.protocols import PullRequestSpec
+from teatree.core.sync import RawAPIDict
 
 
 def get_client(*, token: str = "", base_url: str = "") -> GitLabAPI:
@@ -24,31 +26,21 @@ class GitLabCodeHost:
     ) -> None:
         self._client = client or get_client(token=token, base_url=base_url)
 
-    def create_pr(  # noqa: PLR0913
-        self,
-        *,
-        repo: str,
-        branch: str,
-        title: str,
-        description: str,
-        target_branch: str = "",
-        labels: list[str] | None = None,
-        assignee: str = "",
-    ) -> dict[str, object]:
-        project = self._resolve_project(repo)
+    def create_pr(self, spec: PullRequestSpec) -> RawAPIDict:
+        project = self._resolve_project(spec.repo)
         if project is None:
-            return {"error": f"Could not resolve project: {repo}"}
+            return {"error": f"Could not resolve project: {spec.repo}"}
 
-        payload: dict[str, object] = {
-            "source_branch": branch,
-            "target_branch": target_branch or project.default_branch,
-            "title": title,
-            "description": description,
+        payload: RawAPIDict = {
+            "source_branch": spec.branch,
+            "target_branch": spec.target_branch or project.default_branch,
+            "title": spec.title,
+            "description": spec.description,
         }
-        if labels:
-            payload["labels"] = ",".join(labels)
-        if assignee:
-            payload["assignee_username"] = assignee
+        if spec.labels:
+            payload["labels"] = ",".join(spec.labels)
+        if spec.assignee:
+            payload["assignee_username"] = spec.assignee
 
         return self._client.post_json(f"projects/{project.project_id}/merge_requests", payload) or {}
 

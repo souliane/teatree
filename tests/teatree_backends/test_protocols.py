@@ -1,6 +1,6 @@
 """Tests for backend protocol structural typing."""
 
-from teatree.backends.protocols import ChatNotifier, CIService, CodeHost, ErrorTracker, IssueTracker
+from teatree.backends.protocols import ChatNotifier, CIService, CodeHost, ErrorTracker, IssueTracker, PullRequestSpec
 
 
 def test_ci_service_protocol_is_structural() -> None:
@@ -31,15 +31,8 @@ def test_ci_service_protocol_is_structural() -> None:
 
 def test_code_host_protocol_is_structural() -> None:
     class MyCodeHost:
-        def create_pr(
-            self,
-            *,
-            repo: str,
-            branch: str,
-            title: str,
-            description: str,
-            target_branch: str = "",
-        ) -> dict[str, object]:
+        def create_pr(self, spec: PullRequestSpec) -> dict[str, object]:
+            _ = spec
             return {}
 
         def list_open_prs(self, repo: str, author: str) -> list[dict[str, object]]:
