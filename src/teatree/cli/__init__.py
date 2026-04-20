@@ -234,21 +234,28 @@ def agent(
     )
 
 
+_MILLISECOND_TIMESTAMP_THRESHOLD = 1e12
+_SECONDS_PER_HOUR = 3600
+_SECONDS_PER_DAY = 86400
+_PROMPT_DISPLAY_MAX = 80
+_PROMPT_DISPLAY_TRUNCATE = 77
+
+
 def _format_session_age(raw_ts: float | str, now: float) -> str:
     if isinstance(raw_ts, str):
         try:
             raw_ts = float(raw_ts)
         except (ValueError, TypeError):
             raw_ts = 0
-    ts = raw_ts / 1000 if raw_ts > 1e12 else raw_ts
+    ts = raw_ts / 1000 if raw_ts > _MILLISECOND_TIMESTAMP_THRESHOLD else raw_ts
     if not ts:
         return "?"
     age_s = now - ts
-    if age_s < 3600:
+    if age_s < _SECONDS_PER_HOUR:
         return f"{int(age_s / 60)}m ago"
-    if age_s < 86400:
-        return f"{int(age_s / 3600)}h ago"
-    return f"{int(age_s / 86400)}d ago"
+    if age_s < _SECONDS_PER_DAY:
+        return f"{int(age_s / _SECONDS_PER_HOUR)}h ago"
+    return f"{int(age_s / _SECONDS_PER_DAY)}d ago"
 
 
 @app.command()
@@ -277,14 +284,14 @@ def sessions(
 
     if not results:
         typer.echo("No sessions found.")
-        raise typer.Exit()
+        raise typer.Exit
 
     now = datetime.now(tz=UTC).timestamp()
     for r in results:
         age = _format_session_age(r.timestamp, now)
         prompt = r.first_prompt.replace("\n", " ").strip()
-        if len(prompt) > 80:
-            prompt = prompt[:77] + "..."
+        if len(prompt) > _PROMPT_DISPLAY_MAX:
+            prompt = prompt[:_PROMPT_DISPLAY_TRUNCATE] + "..."
 
         status_label = "done" if r.status == "finished" else r.status
 
