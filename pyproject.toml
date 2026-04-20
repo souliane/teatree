@@ -33,7 +33,6 @@ entry-points."teatree.overlays".t3-teatree = "teatree.contrib.t3_teatree.overlay
 # Strategy: enable ALL rules, then ignore specific ones with justification.
 # https://docs.astral.sh/ruff/rules/
 dev = [
-  "django-rich>=2.2",
   "django-types>=0.23",
   "pip-audit>=2",
   "prek>=0.2.12",
