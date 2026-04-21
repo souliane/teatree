@@ -877,6 +877,8 @@ class TestApplyMergedStatusAllMerged(TestCase):
         assert ticket.state == Ticket.State.MERGED
         assert result.worktrees_cleaned == 0
         assert any("cleanup failed" in e for e in result.errors)
+        # Error must carry the repo + branch so the dashboard can point at the stuck worktree.
+        assert any("org/repo" in e and "fix-4" in e for e in result.errors)
 
 
 class TestSyncFollowup(TestCase):
