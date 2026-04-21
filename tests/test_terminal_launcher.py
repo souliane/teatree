@@ -3,6 +3,7 @@
 from unittest.mock import MagicMock, patch
 
 import teatree.agents.terminal_launcher as launcher_mod
+import teatree.utils.run as utils_run_mod
 from teatree.agents.terminal_launcher import (
     LaunchResult,
     detect_available_apps,
@@ -37,7 +38,7 @@ class TestLaunchTtyd:
         with (
             patch.object(launcher_mod.shutil, "which", return_value="/usr/bin/ttyd"),
             patch.object(launcher_mod, "find_free_port", return_value=8080),
-            patch.object(launcher_mod.subprocess, "Popen", return_value=mock_proc),
+            patch.object(utils_run_mod.subprocess, "Popen", return_value=mock_proc),
             patch.object(launcher_mod, "register"),
         ):
             result = launcher_mod._launch_ttyd(["echo", "hi"])
@@ -75,20 +76,20 @@ class TestLaunchNativeWindow:
 class TestLaunchMacosWindow:
     def test_launches_iterm(self) -> None:
         mock_proc = MagicMock(pid=99)
-        with patch.object(launcher_mod.subprocess, "Popen", return_value=mock_proc):
+        with patch.object(utils_run_mod.subprocess, "Popen", return_value=mock_proc):
             result = launcher_mod._launch_macos_window("echo hi", app="iterm2")
         assert result.pid == 99
         assert result.mode == "new-window"
 
     def test_launches_terminal_default(self) -> None:
         mock_proc = MagicMock(pid=88)
-        with patch.object(launcher_mod.subprocess, "Popen", return_value=mock_proc):
+        with patch.object(utils_run_mod.subprocess, "Popen", return_value=mock_proc):
             result = launcher_mod._launch_macos_window("echo hi")
         assert result.pid == 88
 
     def test_includes_cwd(self) -> None:
         mock_proc = MagicMock(pid=77)
-        with patch.object(launcher_mod.subprocess, "Popen", return_value=mock_proc) as mock_popen:
+        with patch.object(utils_run_mod.subprocess, "Popen", return_value=mock_proc) as mock_popen:
             launcher_mod._launch_macos_window("echo hi", cwd="/work")
         script = mock_popen.call_args[0][0][2]  # osascript -e <script>
         assert "cd /work" in script
@@ -108,7 +109,7 @@ class TestLaunchLinuxWindow:
         mock_proc = MagicMock(pid=55)
         with (
             patch.object(launcher_mod.shutil, "which", return_value="/usr/bin/gnome-terminal"),
-            patch.object(launcher_mod.subprocess, "Popen", return_value=mock_proc) as mock_popen,
+            patch.object(utils_run_mod.subprocess, "Popen", return_value=mock_proc) as mock_popen,
         ):
             result = launcher_mod._launch_linux_window("echo hi", app="gnome-terminal")
             assert result.pid == 55
@@ -119,7 +120,7 @@ class TestLaunchLinuxWindow:
         mock_proc = MagicMock(pid=44)
         with (
             patch.object(launcher_mod.shutil, "which", return_value="/usr/bin/kitty"),
-            patch.object(launcher_mod.subprocess, "Popen", return_value=mock_proc) as mock_popen,
+            patch.object(utils_run_mod.subprocess, "Popen", return_value=mock_proc) as mock_popen,
         ):
             result = launcher_mod._launch_linux_window("echo hi", app="kitty")
             assert result.pid == 44
@@ -130,7 +131,7 @@ class TestLaunchLinuxWindow:
         mock_proc = MagicMock(pid=33)
         with (
             patch.object(launcher_mod.shutil, "which", return_value="/usr/bin/xterm"),
-            patch.object(launcher_mod.subprocess, "Popen", return_value=mock_proc) as mock_popen,
+            patch.object(utils_run_mod.subprocess, "Popen", return_value=mock_proc) as mock_popen,
         ):
             result = launcher_mod._launch_linux_window("echo hi", app="xterm")
             assert result.pid == 33
@@ -142,7 +143,7 @@ class TestLaunchLinuxWindow:
         with (
             patch.object(launcher_mod.shutil, "which", side_effect=[None]),  # app='' not found
             patch.object(launcher_mod, "_detect_linux_terminal", return_value="/usr/bin/xterm"),
-            patch.object(launcher_mod.subprocess, "Popen", return_value=mock_proc),
+            patch.object(utils_run_mod.subprocess, "Popen", return_value=mock_proc),
         ):
             result = launcher_mod._launch_linux_window("echo hi")
         assert result.pid == 22

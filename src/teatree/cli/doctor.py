@@ -10,6 +10,8 @@ from pathlib import Path
 
 import typer
 
+from teatree.utils.run import run_allowed_to_fail
+
 doctor_app = typer.Typer(no_args_is_help=True, help="Smoke-test hooks, imports, services.")
 _REQUIRED_TOOLS = ("direnv", "git", "jq")
 _CLAUDE_PLUGIN_ID = "t3@souliane"
@@ -302,18 +304,13 @@ class DoctorService:
         ``--assume-unchanged``.  A gitignored ``.t3-dev-sources`` marker records the
         override so worktree cleanup can restore the original state.
         """
-        import subprocess  # noqa: PLC0415, S404
-
         typer.echo(f"WARN  {package} is not editable (contribute=true). Installing from {repo_path}...")
 
         project_root = _find_host_project_root()
         if project_root is None:
-            # Fallback: ephemeral pip install (will be overwritten by uv run)
-            result = subprocess.run(  # noqa: S603
+            result = run_allowed_to_fail(
                 ["uv", "pip", "install", "--quiet", "-e", str(repo_path)],
-                capture_output=True,
-                text=True,
-                check=False,
+                expected_codes=None,
             )
             if result.returncode == 0:
                 typer.echo(f"OK    {package} is now editable from {repo_path} (ephemeral — no host project found)")
@@ -325,22 +322,16 @@ class DoctorService:
         marker = project_root / ".t3-dev-sources"
 
         if _patch_uv_source(pyproject, package, repo_path):
-            # Record the override in the gitignored marker
             _write_dev_sources_marker(marker, package, repo_path)
-            # Hide pyproject.toml from git
-            subprocess.run(
+            run_allowed_to_fail(
                 ["git", "update-index", "--assume-unchanged", "pyproject.toml"],
                 cwd=project_root,
-                capture_output=True,
-                check=False,
+                expected_codes=None,
             )
-            # Sync to apply
-            result = subprocess.run(
+            result = run_allowed_to_fail(
                 ["uv", "sync", "--quiet"],
                 cwd=project_root,
-                capture_output=True,
-                text=True,
-                check=False,
+                expected_codes=None,
             )
             if result.returncode == 0:
                 typer.echo(f"OK    {package} is now editable from {repo_path} (persisted in .t3-dev-sources)")
@@ -352,25 +343,19 @@ class DoctorService:
     @staticmethod
     def restore_sources(project_root: Path) -> None:
         """Revert editable source overrides recorded in ``.t3-dev-sources``."""
-        import subprocess  # noqa: PLC0415, S404
-
         marker = project_root / ".t3-dev-sources"
         if not marker.is_file():
             return
 
-        # Un-hide pyproject.toml first
-        subprocess.run(
+        run_allowed_to_fail(
             ["git", "update-index", "--no-assume-unchanged", "pyproject.toml"],
             cwd=project_root,
-            capture_output=True,
-            check=False,
+            expected_codes=None,
         )
-        # Restore pyproject.toml from git
-        subprocess.run(
+        run_allowed_to_fail(
             ["git", "checkout", "--", "pyproject.toml"],
             cwd=project_root,
-            capture_output=True,
-            check=False,
+            expected_codes=None,
         )
         marker.unlink(missing_ok=True)
         typer.echo("OK    Restored original [tool.uv.sources] from git")

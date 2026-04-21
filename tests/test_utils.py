@@ -8,6 +8,7 @@ import pytest
 
 from teatree.backends import gitlab_api
 from teatree.utils import db, git, ports
+from teatree.utils import run as utils_run_mod
 
 
 def test_find_free_ports_returns_dict_of_three_ports(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -81,7 +82,7 @@ def test_port_in_use_returns_false_for_dummy_socket(monkeypatch: pytest.MonkeyPa
 def test_get_service_port_parses_docker_compose_output(monkeypatch: pytest.MonkeyPatch) -> None:
     """get_service_port parses `docker compose port` output."""
     monkeypatch.setattr(
-        ports.subprocess,
+        utils_run_mod.subprocess,
         "run",
         lambda *_a, **_k: CompletedProcess([], 0, stdout="0.0.0.0:8042\n"),
     )
@@ -91,7 +92,7 @@ def test_get_service_port_parses_docker_compose_output(monkeypatch: pytest.Monke
 def test_get_service_port_returns_none_on_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     """get_service_port returns None when service is not running."""
     monkeypatch.setattr(
-        ports.subprocess,
+        utils_run_mod.subprocess,
         "run",
         lambda *_a, **_k: CompletedProcess([], 1, stdout=""),
     )
@@ -113,7 +114,7 @@ def test_get_worktree_ports_queries_all_services(monkeypatch: pytest.MonkeyPatch
         output = port_map.get(key, "")
         return CompletedProcess(cmd, 0 if output else 1, stdout=output)
 
-    monkeypatch.setattr(ports.subprocess, "run", fake_run)
+    monkeypatch.setattr(utils_run_mod.subprocess, "run", fake_run)
 
     result = ports.get_worktree_ports("myproject")
     assert result == {"backend": 8042, "frontend": 4242}
@@ -129,6 +130,7 @@ def test_default_branch_prefers_symbolic_ref_and_falls_back(monkeypatch: pytest.
         capture_output: bool,
         text: bool = False,
         check: bool = False,
+        **_kwargs: object,
     ) -> CompletedProcess[str]:
         calls.append(args)
         if args[-1] == "refs/remotes/origin/HEAD":
@@ -137,7 +139,7 @@ def test_default_branch_prefers_symbolic_ref_and_falls_back(monkeypatch: pytest.
             return CompletedProcess(args, 0, "", "")
         return CompletedProcess(args, 1, "", "")
 
-    monkeypatch.setattr(git.subprocess, "run", fake_run)
+    monkeypatch.setattr(utils_run_mod.subprocess, "run", fake_run)
 
     assert git.default_branch("/tmp/repo") == "main"
     assert calls[0][-1] == "refs/remotes/origin/HEAD"
@@ -145,7 +147,7 @@ def test_default_branch_prefers_symbolic_ref_and_falls_back(monkeypatch: pytest.
 
 def test_default_branch_returns_symbolic_ref_when_present(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        git.subprocess,
+        utils_run_mod.subprocess,
         "run",
         lambda *args, **kwargs: CompletedProcess(list(args[0]), 0, "refs/remotes/origin/main\n", ""),
     )
@@ -160,6 +162,7 @@ def test_git_helpers_cover_run_check_current_branch_and_failure(monkeypatch: pyt
         capture_output: bool,
         text: bool = False,
         check: bool = False,
+        **_kwargs: object,
     ) -> CompletedProcess[str]:
         if args[-2:] == ["status", "--short"]:
             return CompletedProcess(args, 0, " M pyproject.toml\n", "")
@@ -167,7 +170,7 @@ def test_git_helpers_cover_run_check_current_branch_and_failure(monkeypatch: pyt
             return CompletedProcess(args, 0, "", "")
         return CompletedProcess(args, 1, "", "")
 
-    monkeypatch.setattr(git.subprocess, "run", fake_run)
+    monkeypatch.setattr(utils_run_mod.subprocess, "run", fake_run)
 
     assert git.run(repo="/tmp/repo", args=["status", "--short"]) == "M pyproject.toml"
     assert git.check(repo="/tmp/repo", args=["status", "--short"]) is True
@@ -176,26 +179,26 @@ def test_git_helpers_cover_run_check_current_branch_and_failure(monkeypatch: pyt
         git.default_branch("/tmp/repo")
 
 
-def test_run_checked_raises_on_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_run_strict_raises_on_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     def fake_run(
-        args: list[str], *, capture_output: bool, text: bool = False, check: bool = False
+        args: list[str], *, capture_output: bool, text: bool = False, check: bool = False, **_: object
     ) -> CompletedProcess[str]:
-        if check:
-            raise git.subprocess.CalledProcessError(1, args)
+        if "bad" in args:
+            return CompletedProcess(args, 1, "", "fatal")
         return CompletedProcess(args, 0, "ok\n", "")
 
-    monkeypatch.setattr(git.subprocess, "run", fake_run)
+    monkeypatch.setattr(utils_run_mod.subprocess, "run", fake_run)
 
     assert git.run(repo="/tmp/r", args=["log"]) == "ok"
-    with pytest.raises(git.subprocess.CalledProcessError):
-        git.run_checked(repo="/tmp/r", args=["bad"])
+    with pytest.raises(utils_run_mod.CommandFailedError):
+        git.run_strict(repo="/tmp/r", args=["bad"])
 
 
 def test_git_high_level_operations(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[list[str]] = []
 
     def fake_run(
-        args: list[str], *, capture_output: bool, text: bool = False, check: bool = False
+        args: list[str], *, capture_output: bool, text: bool = False, check: bool = False, **_kwargs: object
     ) -> CompletedProcess[str]:
         calls.append(list(args))
         if "merge-base" in args:
@@ -208,7 +211,7 @@ def test_git_high_level_operations(monkeypatch: pytest.MonkeyPatch) -> None:
             return CompletedProcess(args, 0, " M file.py\n", "")
         return CompletedProcess(args, 0, "", "")
 
-    monkeypatch.setattr(git.subprocess, "run", fake_run)
+    monkeypatch.setattr(utils_run_mod.subprocess, "run", fake_run)
 
     assert git.merge_base("/tmp/r", "origin/main") == "abc123"
     assert git.rev_count("/tmp/r", "abc123..HEAD") == 3
@@ -230,7 +233,7 @@ def test_git_high_level_operations(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_git_worktree_and_branch_ops(monkeypatch: pytest.MonkeyPatch) -> None:
     def fake_run(
-        args: list[str], *, capture_output: bool, text: bool = False, check: bool = False
+        args: list[str], *, capture_output: bool, text: bool = False, check: bool = False, **_kwargs: object
     ) -> CompletedProcess[str]:
         if "worktree" in args:
             return CompletedProcess(args, 0, "", "")
@@ -240,7 +243,7 @@ def test_git_worktree_and_branch_ops(monkeypatch: pytest.MonkeyPatch) -> None:
             return CompletedProcess(args, 0, "", "")
         return CompletedProcess(args, 0, "", "")
 
-    monkeypatch.setattr(git.subprocess, "run", fake_run)
+    monkeypatch.setattr(utils_run_mod.subprocess, "run", fake_run)
 
     assert git.worktree_remove("/tmp/r", "/tmp/wt") is True
     assert git.branch_delete("/tmp/r", "old-branch") is False
@@ -251,12 +254,12 @@ def test_fetch_without_ref(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[list[str]] = []
 
     def fake_run(
-        args: list[str], *, capture_output: bool, text: bool = False, check: bool = False
+        args: list[str], *, capture_output: bool, text: bool = False, check: bool = False, **_kwargs: object
     ) -> CompletedProcess[str]:
         calls.append(list(args))
         return CompletedProcess(args, 0, "", "")
 
-    monkeypatch.setattr(git.subprocess, "run", fake_run)
+    monkeypatch.setattr(utils_run_mod.subprocess, "run", fake_run)
 
     git.fetch("/tmp/r")
     assert calls[-1] == ["git", "-C", "/tmp/r", "fetch", "origin"]
@@ -264,7 +267,7 @@ def test_fetch_without_ref(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_remote_url_returns_url(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        git.subprocess,
+        utils_run_mod.subprocess,
         "run",
         lambda *a, **kw: CompletedProcess(a[0], 0, "git@github.com:acme/repo.git\n", ""),
     )
@@ -273,7 +276,7 @@ def test_remote_url_returns_url(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_config_value_returns_value(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        git.subprocess,
+        utils_run_mod.subprocess,
         "run",
         lambda *a, **kw: CompletedProcess(a[0], 0, "Jane Doe\n", ""),
     )
@@ -282,7 +285,7 @@ def test_config_value_returns_value(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_last_commit_message_parses_subject_and_body(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        git.subprocess,
+        utils_run_mod.subprocess,
         "run",
         lambda *a, **kw: CompletedProcess(a[0], 0, "fix: bug\n\nDetailed body\n", ""),
     )
@@ -293,7 +296,7 @@ def test_last_commit_message_parses_subject_and_body(monkeypatch: pytest.MonkeyP
 
 def test_last_commit_message_subject_only(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        git.subprocess,
+        utils_run_mod.subprocess,
         "run",
         lambda *a, **kw: CompletedProcess(a[0], 0, "feat: add feature", ""),
     )
@@ -306,12 +309,12 @@ def test_worktree_add_with_and_without_create_branch(monkeypatch: pytest.MonkeyP
     calls: list[list[str]] = []
 
     def fake_run(
-        args: list[str], *, capture_output: bool, text: bool = False, check: bool = False
+        args: list[str], *, capture_output: bool, text: bool = False, check: bool = False, **_kwargs: object
     ) -> CompletedProcess[str]:
         calls.append(list(args))
         return CompletedProcess(args, 0, "", "")
 
-    monkeypatch.setattr(git.subprocess, "run", fake_run)
+    monkeypatch.setattr(utils_run_mod.subprocess, "run", fake_run)
 
     assert git.worktree_add("/tmp/r", "/tmp/wt", "feat-1", create_branch=True) is True
     assert "-b" in calls[-1]
@@ -324,7 +327,7 @@ def test_worktree_add_with_and_without_create_branch(monkeypatch: pytest.MonkeyP
 def test_free_port_kills_process(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(ports, "port_in_use", lambda _port: True)
     monkeypatch.setattr(
-        ports.subprocess,
+        utils_run_mod.subprocess,
         "run",
         lambda *_a, **_k: CompletedProcess([], 0, stdout="12345\n"),
     )
@@ -342,7 +345,7 @@ def test_free_port_returns_none_when_not_in_use(monkeypatch: pytest.MonkeyPatch)
 def test_free_port_returns_none_when_lsof_finds_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(ports, "port_in_use", lambda _port: True)
     monkeypatch.setattr(
-        ports.subprocess,
+        utils_run_mod.subprocess,
         "run",
         lambda *_a, **_k: CompletedProcess([], 1, stdout=""),
     )
@@ -362,6 +365,7 @@ def test_db_restore_uses_pg_restore_when_supported(monkeypatch: pytest.MonkeyPat
         capture_output: bool = False,
         text: bool = False,
         check: bool = False,
+        **_kwargs: object,
     ) -> CompletedProcess[str]:
         commands.append(args)
         if args[:2] == ["pg_restore", "-l"]:
@@ -370,7 +374,7 @@ def test_db_restore_uses_pg_restore_when_supported(monkeypatch: pytest.MonkeyPat
             return CompletedProcess(args, 0, "", "")
         return CompletedProcess(args, 0, "", "")
 
-    monkeypatch.setattr(db.subprocess, "run", fake_run)
+    monkeypatch.setattr(utils_run_mod.subprocess, "run", fake_run)
 
     db.db_restore("wt_123", "/tmp/dump.dump")
 
@@ -395,6 +399,7 @@ def test_db_helpers_cover_env_exists_and_psql_fallback(monkeypatch: pytest.Monke
         capture_output: bool = False,
         text: bool = False,
         check: bool = False,
+        **_kwargs: object,
     ) -> CompletedProcess[str]:
         commands.append(args)
         if args[:2] == ["pg_restore", "-l"]:
@@ -403,7 +408,7 @@ def test_db_helpers_cover_env_exists_and_psql_fallback(monkeypatch: pytest.Monke
             return CompletedProcess(args, 0, "wt_42 | owner\n", "")
         return CompletedProcess(args, 0, "", "")
 
-    monkeypatch.setattr(db.subprocess, "run", fake_run)
+    monkeypatch.setattr(utils_run_mod.subprocess, "run", fake_run)
 
     assert db.pg_env().get("PGPASSWORD") is None
     assert db.pg_host() == "db.internal"
@@ -422,6 +427,7 @@ def test_db_restore_raises_when_restore_commands_fail(monkeypatch: pytest.Monkey
         capture_output: bool = False,
         text: bool = False,
         check: bool = False,
+        **_kwargs: object,
     ) -> CompletedProcess[str]:
         if args[:2] == ["pg_restore", "-l"]:
             return CompletedProcess(args, 0, "toc", "")
@@ -431,7 +437,7 @@ def test_db_restore_raises_when_restore_commands_fail(monkeypatch: pytest.Monkey
             return CompletedProcess(args, 1, "", "")
         return CompletedProcess(args, 0, "", "")
 
-    monkeypatch.setattr(db.subprocess, "run", fake_run)
+    monkeypatch.setattr(utils_run_mod.subprocess, "run", fake_run)
 
     with pytest.raises(RuntimeError, match="pg_restore failed"):
         db.db_restore("wt_55", "/tmp/dump.dump")
@@ -445,6 +451,7 @@ def test_db_restore_raises_when_psql_restore_fails(monkeypatch: pytest.MonkeyPat
         capture_output: bool = False,
         text: bool = False,
         check: bool = False,
+        **_kwargs: object,
     ) -> CompletedProcess[str]:
         if args[:2] == ["pg_restore", "-l"]:
             return CompletedProcess(args, 1, "", "")
@@ -452,7 +459,7 @@ def test_db_restore_raises_when_psql_restore_fails(monkeypatch: pytest.MonkeyPat
             return CompletedProcess(args, 1, "", "")
         return CompletedProcess(args, 0, "", "")
 
-    monkeypatch.setattr(db.subprocess, "run", fake_run)
+    monkeypatch.setattr(utils_run_mod.subprocess, "run", fake_run)
 
     with pytest.raises(RuntimeError, match="psql restore failed"):
         db.db_restore("wt_56", "/tmp/dump.sql")
@@ -466,6 +473,7 @@ def test_db_restore_detects_truncated_pg_restore(monkeypatch: pytest.MonkeyPatch
         capture_output: bool = False,
         text: bool = False,
         check: bool = False,
+        **_kwargs: object,
     ) -> CompletedProcess[str]:
         if args[:2] == ["pg_restore", "-l"]:
             return CompletedProcess(args, 0, "TOC", "")
@@ -473,7 +481,7 @@ def test_db_restore_detects_truncated_pg_restore(monkeypatch: pytest.MonkeyPatch
             return CompletedProcess(args, 0, "", "WARNING: could not read data")
         return CompletedProcess(args, 0, "", "")
 
-    monkeypatch.setattr(db.subprocess, "run", fake_run)
+    monkeypatch.setattr(utils_run_mod.subprocess, "run", fake_run)
 
     with pytest.raises(RuntimeError, match="Corrupt or truncated dump"):
         db.db_restore("wt_70", "/tmp/dump.pgdump")
@@ -487,6 +495,7 @@ def test_db_restore_detects_truncated_psql(monkeypatch: pytest.MonkeyPatch) -> N
         capture_output: bool = False,
         text: bool = False,
         check: bool = False,
+        **_kwargs: object,
     ) -> CompletedProcess[str]:
         if args[:2] == ["pg_restore", "-l"]:
             return CompletedProcess(args, 1, "", "")
@@ -494,7 +503,7 @@ def test_db_restore_detects_truncated_psql(monkeypatch: pytest.MonkeyPatch) -> N
             return CompletedProcess(args, 0, "", "unexpected EOF on client connection")
         return CompletedProcess(args, 0, "", "")
 
-    monkeypatch.setattr(db.subprocess, "run", fake_run)
+    monkeypatch.setattr(utils_run_mod.subprocess, "run", fake_run)
 
     with pytest.raises(RuntimeError, match="Corrupt or truncated dump"):
         db.db_restore("wt_71", "/tmp/dump.sql")
@@ -1194,7 +1203,7 @@ class TestGitLabAPICacheHits:
 class TestUnsyncedCommits:
     def test_returns_empty_list_when_fully_synced(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(
-            git.subprocess,
+            utils_run_mod.subprocess,
             "run",
             lambda *_a, **_k: CompletedProcess([], 0, stdout="", stderr=""),
         )
@@ -1203,7 +1212,7 @@ class TestUnsyncedCommits:
     def test_returns_commit_lines_when_commits_exist(self, monkeypatch: pytest.MonkeyPatch) -> None:
         output = "abc123 chore: cve fix\ndef456 feat: add something\n"
         monkeypatch.setattr(
-            git.subprocess,
+            utils_run_mod.subprocess,
             "run",
             lambda *_a, **_k: CompletedProcess([], 0, stdout=output, stderr=""),
         )
@@ -1213,7 +1222,7 @@ class TestUnsyncedCommits:
     def test_filters_blank_lines_from_output(self, monkeypatch: pytest.MonkeyPatch) -> None:
         output = "abc123 fix something\n\n   \ndef456 another fix\n"
         monkeypatch.setattr(
-            git.subprocess,
+            utils_run_mod.subprocess,
             "run",
             lambda *_a, **_k: CompletedProcess([], 0, stdout=output, stderr=""),
         )

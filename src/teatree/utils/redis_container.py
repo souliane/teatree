@@ -9,9 +9,10 @@ allocated by `Ticket.objects.allocate_redis_slot()` and released (with
 
 import logging
 import shutil
-import subprocess
+from subprocess import CompletedProcess
 
 from teatree.config import load_config
+from teatree.utils.run import run_allowed_to_fail, run_checked
 
 logger = logging.getLogger(__name__)
 
@@ -33,23 +34,20 @@ def _docker() -> str:
     return path
 
 
-def _run(*args: str, check: bool = True, capture: bool = False) -> subprocess.CompletedProcess[bytes]:
-    return subprocess.run([_docker(), *args], check=check, capture_output=capture)
+def _docker_checked(*args: str) -> CompletedProcess[str]:
+    return run_checked([_docker(), *args])
+
+
+def _docker_tolerant(*args: str) -> CompletedProcess[str]:
+    return run_allowed_to_fail([_docker(), *args], expected_codes=None)
 
 
 def status() -> str:
     """Return 'running', 'stopped', or 'missing'."""
-    result = _run(
-        "inspect",
-        "-f",
-        "{{.State.Status}}",
-        CONTAINER_NAME,
-        check=False,
-        capture=True,
-    )
+    result = _docker_tolerant("inspect", "-f", "{{.State.Status}}", CONTAINER_NAME)
     if result.returncode != 0:
         return "missing"
-    return result.stdout.decode().strip() or "missing"
+    return result.stdout.strip() or "missing"
 
 
 def ensure_running() -> None:
@@ -59,7 +57,7 @@ def ensure_running() -> None:
         return
     if current == "missing":
         logger.info("Creating %s container on :%d", CONTAINER_NAME, HOST_PORT)
-        _run(
+        _docker_checked(
             "run",
             "-d",
             "--name",
@@ -75,14 +73,14 @@ def ensure_running() -> None:
         )
         return
     logger.info("Starting existing %s container (status=%s)", CONTAINER_NAME, current)
-    _run("start", CONTAINER_NAME)
+    _docker_checked("start", CONTAINER_NAME)
 
 
 def stop() -> None:
     """Stop the shared Redis container (no-op if missing)."""
     if status() == "missing":
         return
-    _run("stop", CONTAINER_NAME, check=False)
+    _docker_tolerant("stop", CONTAINER_NAME)
 
 
 def flushdb(index: int) -> None:
@@ -98,12 +96,4 @@ def flushdb(index: int) -> None:
     if status() != "running":
         logger.debug("Skipping flushdb(%d): %s not running", index, CONTAINER_NAME)
         return
-    _run(
-        "exec",
-        CONTAINER_NAME,
-        "redis-cli",
-        "-n",
-        str(index),
-        "FLUSHDB",
-        check=False,
-    )
+    _docker_tolerant("exec", CONTAINER_NAME, "redis-cli", "-n", str(index), "FLUSHDB")

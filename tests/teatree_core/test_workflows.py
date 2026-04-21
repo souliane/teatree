@@ -17,14 +17,10 @@ from django.test import Client, TestCase, override_settings
 
 import teatree.core.management.commands.lifecycle as lifecycle_mod
 import teatree.core.management.commands.run as run_mod
-import teatree.core.management.commands.tool as tool_mod
 import teatree.core.management.commands.workspace as workspace_mod
 import teatree.core.overlay_loader as overlay_loader_mod
-import teatree.core.provisioners as provisioners_mod
-import teatree.core.step_runner as step_runner_mod
 import teatree.core.tasks as tasks_mod
-import teatree.utils.db as db_mod
-import teatree.utils.git as git_mod
+import teatree.utils.run as utils_run_mod
 from teatree.core.models import Session, Task, Ticket, Worktree
 from teatree.core.overlay import OverlayBase, OverlayMetadata, ProvisionStep, RunCommands, ServiceSpec, ToolCommand
 from teatree.core.overlay_loader import reset_overlay_cache
@@ -131,8 +127,7 @@ class TestLifecycleProvision(TestCase):
         mock_sp.run.return_value = MagicMock(returncode=0, stdout="", stderr="")
         mock_sp.TimeoutExpired = subprocess.TimeoutExpired
         mock_sp.CompletedProcess = subprocess.CompletedProcess
-        for mod in (lifecycle_mod, provisioners_mod, step_runner_mod, db_mod, git_mod):
-            self.enterContext(patch.object(mod, "subprocess", mock_sp))
+        self.enterContext(patch.object(utils_run_mod, "subprocess", mock_sp))
 
     @pytest.fixture(autouse=True)
     def _inject_fixtures(self, tmp_path: Path) -> None:
@@ -180,7 +175,7 @@ class TestLifecycleProvision(TestCase):
 
         with (
             _patch_overlay(),
-            patch.object(lifecycle_mod, "subprocess") as mock_sp,
+            patch.object(utils_run_mod, "subprocess") as mock_sp,
         ):
             mock_sp.run.return_value = MagicMock(returncode=0)
             backend_id = cast("int", call_command("lifecycle", "setup", path=backend_path))
@@ -197,14 +192,14 @@ class TestLifecycleProvision(TestCase):
         assert wt_backend.extra.get("provisioned_by_overlay") is True
         assert wt_frontend.extra.get("provisioned_by_overlay") is True
 
-        envfile = ticket_dir / ".env.worktree"
-        assert envfile.is_file(), ".env.worktree should be generated during setup"
+        envfile = ticket_dir / ".t3-cache" / ".t3-env.cache"
+        assert envfile.is_file(), "env cache should be generated during setup"
         env_content = envfile.read_text()
         assert "WT_VARIANT=testclient" in env_content
         assert "WT_DB_NAME=wt_42_testclient" in env_content
         assert "DJANGO_SETTINGS_MODULE=" in env_content
-        assert (ticket_dir / "backend" / ".env.worktree").is_symlink()
-        assert (ticket_dir / "frontend" / ".env.worktree").is_symlink()
+        assert (ticket_dir / "backend" / ".t3-env.cache").is_symlink()
+        assert (ticket_dir / "frontend" / ".t3-env.cache").is_symlink()
 
     @override_settings(**WORKFLOW_SETTINGS)
     def test_start_transitions_to_services_up(self) -> None:
@@ -214,7 +209,7 @@ class TestLifecycleProvision(TestCase):
         # Provision first
         with (
             _patch_overlay(),
-            patch.object(lifecycle_mod, "subprocess") as mock_sp,
+            patch.object(utils_run_mod, "subprocess") as mock_sp,
         ):
             mock_sp.run.return_value = MagicMock(returncode=0)
             call_command("lifecycle", "setup", path=backend_path)
@@ -224,7 +219,7 @@ class TestLifecycleProvision(TestCase):
         mock_config.user.workspace_dir = self._tmp_path
         with (
             _patch_overlay(),
-            patch.object(lifecycle_mod, "subprocess") as mock_start_sp,
+            patch.object(utils_run_mod, "subprocess") as mock_start_sp,
             patch.object(
                 lifecycle_mod,
                 "find_free_ports",
@@ -251,13 +246,13 @@ class TestLifecycleProvision(TestCase):
         # Provision
         with (
             _patch_overlay(),
-            patch.object(lifecycle_mod, "subprocess") as mock_sp,
+            patch.object(utils_run_mod, "subprocess") as mock_sp,
         ):
             mock_sp.run.return_value = MagicMock(returncode=0)
             call_command("lifecycle", "setup", path=backend_path)
 
         # Teardown
-        with patch.object(lifecycle_mod, "subprocess") as mock_td_sp:
+        with patch.object(utils_run_mod, "subprocess") as mock_td_sp:
             mock_td_sp.run.return_value = MagicMock(returncode=0)
             call_command("lifecycle", "teardown", path=backend_path)
 
@@ -293,7 +288,7 @@ class TestLifecycleProvision(TestCase):
 
         with (
             _patch_overlay(),
-            patch.object(lifecycle_mod, "subprocess") as mock_sp,
+            patch.object(utils_run_mod, "subprocess") as mock_sp,
         ):
             mock_sp.run.return_value = MagicMock(returncode=0)
             call_command("lifecycle", "setup", path=str(wt1_dir))
@@ -336,7 +331,7 @@ class TestLifecycleProvision(TestCase):
                 "teatree.core.overlay_loader._discover_overlays",
                 return_value={"test": original_overlay},
             ),
-            patch.object(lifecycle_mod, "subprocess"),
+            patch.object(utils_run_mod, "subprocess"),
         ):
             call_command("lifecycle", "setup", path=str(wt_dir))
 
@@ -572,7 +567,7 @@ class TestRunBackend(TestCase):
 
         with (
             _patch_overlay(),
-            patch.object(lifecycle_mod, "subprocess") as mock_sp,
+            patch.object(utils_run_mod, "subprocess") as mock_sp,
         ):
             mock_sp.run.return_value = MagicMock(returncode=0)
             call_command("lifecycle", "setup", path=str(wt_dir))
@@ -583,7 +578,7 @@ class TestRunBackend(TestCase):
         mock_config.user.workspace_dir = self._tmp_path
         with (
             _patch_overlay(),
-            patch.object(run_mod.subprocess, "run", return_value=MagicMock(returncode=0)) as mock_sp_run,
+            patch.object(utils_run_mod.subprocess, "run", return_value=MagicMock(returncode=0)) as mock_sp_run,
             patch("teatree.config.load_config", return_value=mock_config),
             patch.object(
                 run_mod,
@@ -630,7 +625,7 @@ class TestRunBackend(TestCase):
             _patch_overlay(),
             patch.dict("os.environ", {"T3_WORKSPACE_DIR": str(workspace), "T3_BRANCH_PREFIX": "ac"}),
             patch.object(
-                workspace_mod.subprocess,
+                utils_run_mod.subprocess,
                 "run",
                 side_effect=fake_subprocess_run,
             ),
@@ -671,7 +666,7 @@ class TestRunBackend(TestCase):
 
         with (
             _patch_overlay(),
-            patch.object(lifecycle_mod, "subprocess") as mock_lc_sp,
+            patch.object(utils_run_mod, "subprocess") as mock_lc_sp,
         ):
             mock_lc_sp.run.return_value = MagicMock(returncode=0)
             setup_result = cast("int", call_command("lifecycle", "setup", path=backend_wt_path))
@@ -687,7 +682,7 @@ class TestRunBackend(TestCase):
         mock_config.user.workspace_dir = self._tmp_path
         with (
             _patch_overlay(),
-            patch.object(run_mod.subprocess, "run", return_value=MagicMock(returncode=0)) as mock_run_sp,
+            patch.object(utils_run_mod.subprocess, "run", return_value=MagicMock(returncode=0)) as mock_run_sp,
             patch("teatree.config.load_config", return_value=mock_config),
             patch.object(
                 run_mod,
@@ -712,14 +707,11 @@ class TestRunBackend(TestCase):
 class TestToolAndCleanCommands(TestCase):
     def setUp(self) -> None:
         super().setUp()
-        import teatree.utils.django_db as django_db_mod  # noqa: PLC0415
-
         mock_sp = MagicMock()
         mock_sp.run.return_value = MagicMock(returncode=0, stdout="", stderr="")
         mock_sp.TimeoutExpired = subprocess.TimeoutExpired
         mock_sp.CompletedProcess = subprocess.CompletedProcess
-        for mod in (lifecycle_mod, step_runner_mod, db_mod, django_db_mod, git_mod):
-            self.enterContext(patch.object(mod, "subprocess", mock_sp))
+        self.enterContext(patch.object(utils_run_mod, "subprocess", mock_sp))
 
     @override_settings(**WORKFLOW_SETTINGS)
     def test_tool_list_and_run_dispatches_overlay_commands(self) -> None:
@@ -731,7 +723,7 @@ class TestToolAndCleanCommands(TestCase):
 
         with (
             _patch_overlay(),
-            patch.object(tool_mod, "subprocess") as mock_sp,
+            patch.object(utils_run_mod, "subprocess") as mock_sp,
         ):
             mock_sp.run.return_value = MagicMock(returncode=0)
             result = cast("str", call_command("tool", "run", "check-translations"))

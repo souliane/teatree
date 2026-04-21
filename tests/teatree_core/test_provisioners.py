@@ -158,7 +158,7 @@ class TestStartServices(TestCase):
         mock_proc = MagicMock(returncode=0, stderr="", stdout="")
         specs = {"db": {"start_command": ["echo", "starting"]}}
 
-        with patch("teatree.core.provisioners.subprocess.run", return_value=mock_proc) as mock_run:
+        with patch("teatree.utils.run.subprocess.run", return_value=mock_proc) as mock_run:
             results = start_services(specs)
 
         assert results == {"db": True}
@@ -170,7 +170,7 @@ class TestStartServices(TestCase):
         mock_proc = MagicMock(returncode=0, stderr="", stdout="")
         specs = {"redis": {"compose_file": "/path/to/compose.yml", "service": "redis-svc"}}
 
-        with patch("teatree.core.provisioners.subprocess.run", return_value=mock_proc) as mock_run:
+        with patch("teatree.utils.run.subprocess.run", return_value=mock_proc) as mock_run:
             results = start_services(specs)
 
         assert results == {"redis": True}
@@ -182,7 +182,7 @@ class TestStartServices(TestCase):
         mock_proc = MagicMock(returncode=0, stderr="", stdout="")
         specs = {"postgres": {"compose_file": "/path/compose.yml"}}
 
-        with patch("teatree.core.provisioners.subprocess.run", return_value=mock_proc) as mock_run:
+        with patch("teatree.utils.run.subprocess.run", return_value=mock_proc) as mock_run:
             results = start_services(specs)
 
         assert results == {"postgres": True}
@@ -205,7 +205,7 @@ class TestStartServices(TestCase):
         specs = {"web": {"start_command": ["start-web"]}}
 
         with (
-            patch("teatree.core.provisioners.subprocess.run", return_value=mock_proc),
+            patch("teatree.utils.run.subprocess.run", return_value=mock_proc),
             patch.object(provisioners_mod.logger, "warning") as mock_warn,
         ):
             results = start_services(specs)
@@ -219,7 +219,7 @@ class TestStartServices(TestCase):
 
         with (
             patch(
-                "teatree.core.provisioners.subprocess.run",
+                "teatree.utils.run.subprocess.run",
                 side_effect=FileNotFoundError("not found"),
             ),
             patch.object(provisioners_mod.logger, "warning") as mock_warn,
@@ -234,7 +234,7 @@ class TestStartServices(TestCase):
         mock_proc = MagicMock(returncode=0, stderr="", stdout="")
         specs = {"svc": {"start_command": ["echo"]}}
 
-        with patch("teatree.core.provisioners.subprocess.run", return_value=mock_proc) as mock_run:
+        with patch("teatree.utils.run.subprocess.run", return_value=mock_proc) as mock_run:
             start_services(specs, env={"CUSTOM_VAR": "custom_val"})
 
         call_env = mock_run.call_args[1]["env"]
@@ -255,7 +255,7 @@ class TestStartServices(TestCase):
                 return ok_proc
             return fail_proc
 
-        with patch("teatree.core.provisioners.subprocess.run", side_effect=side_effect):
+        with patch("teatree.utils.run.subprocess.run", side_effect=side_effect):
             results = start_services(specs)
 
         assert results["good"] is True

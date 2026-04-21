@@ -8,7 +8,6 @@ import json
 import logging
 import re
 import shutil
-import subprocess  # noqa: S404
 import threading
 from pathlib import Path
 
@@ -20,6 +19,7 @@ from teatree.core.models import Task, TaskAttempt
 from teatree.core.models.worktree import Worktree
 from teatree.skill_loading import SkillLoadingPolicy
 from teatree.types import SkillMetadata
+from teatree.utils.run import run_allowed_to_fail
 
 logger = logging.getLogger(__name__)
 
@@ -106,13 +106,7 @@ def _run_with_heartbeat(task: Task, command: list[str], *, cwd: str | None = Non
     heartbeat_thread = threading.Thread(target=_heartbeat, daemon=True)
     heartbeat_thread.start()
     try:
-        proc = subprocess.run(  # noqa: S603
-            command,
-            capture_output=True,
-            text=True,
-            check=False,
-            cwd=cwd,
-        )
+        proc = run_allowed_to_fail(command, cwd=cwd, expected_codes=None)
     finally:
         stop_event.set()
         heartbeat_thread.join(timeout=5)

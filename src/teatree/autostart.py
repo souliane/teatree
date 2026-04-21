@@ -5,16 +5,13 @@ No Django imports — works without django.setup().
 
 import logging
 import os
-import subprocess  # noqa: S404
 import sys
 from importlib.resources import files
 from pathlib import Path
 
+from teatree.utils.run import CommandFailedError, run_allowed_to_fail, run_checked
+
 logger = logging.getLogger(__name__)
-
-
-def _stderr(result: subprocess.CompletedProcess[bytes]) -> str:
-    return result.stderr.decode(errors="replace") if result.stderr else ""
 
 
 class UnsupportedPlatformError(RuntimeError):
@@ -145,31 +142,29 @@ def log_paths(overlay_name: str) -> dict[str, Path]:
 # ── launchd backend ──────────────────────────────────────────────────
 
 
+def _launchctl_warn(args: list[str], label: str) -> None:
+    """Run ``launchctl <args>`` tolerantly; log stderr on non-zero rc."""
+    result = run_allowed_to_fail(["launchctl", *args], expected_codes=None)
+    if result.returncode:
+        logger.warning("%s failed (rc=%d): %s", label, result.returncode, result.stderr.strip())
+
+
 def _launchd_enable(overlay_name: str, context: dict[str, str]) -> str:
     plist_path = _launchd_plist_path(overlay_name)
     plist_path.parent.mkdir(parents=True, exist_ok=True)
 
     # Unload first if already installed
     if plist_path.is_file():
-        result = subprocess.run(  # noqa: S603
-            ["launchctl", "unload", str(plist_path)],  # noqa: S607
-            check=False,
-            capture_output=True,
-        )
-        if result.returncode:
-            logger.warning("launchctl unload failed (rc=%d): %s", result.returncode, _stderr(result))
+        _launchctl_warn(["unload", str(plist_path)], "launchctl unload")
 
     content = _render_template("launchd.plist.tmpl", context)
     plist_path.write_text(content, encoding="utf-8")
 
-    result = subprocess.run(  # noqa: S603
-        ["launchctl", "load", str(plist_path)],  # noqa: S607
-        check=False,
-        capture_output=True,
-    )
-    if result.returncode:
-        msg = f"launchctl load failed (rc={result.returncode}): {_stderr(result)}"
-        raise RuntimeError(msg)
+    try:
+        run_checked(["launchctl", "load", str(plist_path)])
+    except CommandFailedError as exc:
+        msg = f"launchctl load failed (rc={exc.returncode}): {exc.stderr.strip()}"
+        raise RuntimeError(msg) from exc
 
     return f"Dashboard daemon installed and started. URL: http://{context['host']}:{context['port']}/"
 
@@ -180,19 +175,20 @@ def _launchd_disable(overlay_name: str) -> str:
     if not plist_path.is_file():
         return f"Autostart not installed for {overlay_name}."
 
-    result = subprocess.run(  # noqa: S603
-        ["launchctl", "unload", str(plist_path)],  # noqa: S607
-        check=False,
-        capture_output=True,
-    )
-    if result.returncode:
-        logger.warning("launchctl unload failed (rc=%d): %s", result.returncode, _stderr(result))
+    _launchctl_warn(["unload", str(plist_path)], "launchctl unload")
     plist_path.unlink()
 
     return f"Dashboard daemon removed for {overlay_name}."
 
 
 # ── systemd backend ──────────────────────────────────────────────────
+
+
+def _systemctl_warn(args: list[str], label: str) -> None:
+    """Run ``systemctl --user <args>`` tolerantly; log stderr on non-zero rc."""
+    result = run_allowed_to_fail(["systemctl", "--user", *args], expected_codes=None)
+    if result.returncode:
+        logger.warning("%s failed (rc=%d): %s", label, result.returncode, result.stderr.strip())
 
 
 def _systemd_enable(overlay_name: str, context: dict[str, str]) -> str:
@@ -203,13 +199,12 @@ def _systemd_enable(overlay_name: str, context: dict[str, str]) -> str:
     content = _render_template("systemd.service.tmpl", context)
     unit_path.write_text(content, encoding="utf-8")
 
-    result = subprocess.run(["systemctl", "--user", "daemon-reload"], check=False, capture_output=True)  # noqa: S607
-    if result.returncode:
-        logger.warning("systemctl daemon-reload failed (rc=%d): %s", result.returncode, _stderr(result))
-    result = subprocess.run(["systemctl", "--user", "enable", "--now", unit_name], check=False, capture_output=True)  # noqa: S603, S607
-    if result.returncode:
-        msg = f"systemctl enable failed (rc={result.returncode}): {_stderr(result)}"
-        raise RuntimeError(msg)
+    _systemctl_warn(["daemon-reload"], "systemctl daemon-reload")
+    try:
+        run_checked(["systemctl", "--user", "enable", "--now", unit_name])
+    except CommandFailedError as exc:
+        msg = f"systemctl enable failed (rc={exc.returncode}): {exc.stderr.strip()}"
+        raise RuntimeError(msg) from exc
 
     return f"Dashboard daemon installed and started. URL: http://{context['host']}:{context['port']}/"
 
@@ -221,12 +216,8 @@ def _systemd_disable(overlay_name: str) -> str:
     if not unit_path.is_file():
         return f"Autostart not installed for {overlay_name}."
 
-    result = subprocess.run(["systemctl", "--user", "disable", "--now", unit_name], check=False, capture_output=True)  # noqa: S603, S607
-    if result.returncode:
-        logger.warning("systemctl disable failed (rc=%d): %s", result.returncode, _stderr(result))
+    _systemctl_warn(["disable", "--now", unit_name], "systemctl disable")
     unit_path.unlink()
-    result = subprocess.run(["systemctl", "--user", "daemon-reload"], check=False, capture_output=True)  # noqa: S607
-    if result.returncode:
-        logger.warning("systemctl daemon-reload failed (rc=%d): %s", result.returncode, _stderr(result))
+    _systemctl_warn(["daemon-reload"], "systemctl daemon-reload")
 
     return f"Dashboard daemon removed for {overlay_name}."

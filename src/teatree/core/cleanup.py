@@ -8,7 +8,6 @@ branch looks "unsynced" and blocks cleanup.
 
 import logging
 import re
-from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -153,9 +152,13 @@ def cleanup_worktree(worktree: Worktree, *, force: bool = False) -> str:
     if wt_path and Path(wt_path).is_dir() and git.status_porcelain(wt_path):
         logger.warning("%s has uncommitted changes — cleaning anyway (PR merged)", worktree.repo_path)
 
+    step_errors: list[str] = []
     for step in overlay.get_cleanup_steps(worktree):
-        with suppress(Exception):
+        try:
             step.callable()
+        except Exception as exc:
+            logger.exception("cleanup step failed for %s: %s", worktree.repo_path, step.description)
+            step_errors.append(f"{step.description}: {exc}")
 
     if wt_path:
         repo_main = workspace / worktree.repo_path
@@ -169,6 +172,8 @@ def cleanup_worktree(worktree: Worktree, *, force: bool = False) -> str:
         drop_db(worktree.db_name)
 
     label = f"Cleaned: {worktree.repo_path} ({worktree.branch})"
+    if step_errors:
+        label += f" [with errors: {'; '.join(step_errors)}]"
     ticket_id = worktree.ticket.pk
     worktree.delete()
     if not Worktree.objects.filter(ticket_id=ticket_id).exists():

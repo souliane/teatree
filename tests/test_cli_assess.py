@@ -8,6 +8,7 @@ import pytest
 from typer.testing import CliRunner
 
 import teatree.cli.assess as assess_mod
+import teatree.utils.run as utils_run_mod
 from teatree.cli import app
 
 runner = CliRunner()
@@ -33,7 +34,7 @@ class TestAssessRun:
         fake_cli.touch()
         with (
             patch.object(assess_mod, "_find_skill_cli", return_value=fake_cli),
-            patch.object(assess_mod.subprocess, "run") as mock_run,
+            patch.object(utils_run_mod.subprocess, "run") as mock_run,
         ):
             mock_run.return_value.returncode = 1
             mock_run.return_value.stderr = "ruff not found"
@@ -47,7 +48,7 @@ class TestAssessRun:
         fake_cli.touch()
         with (
             patch.object(assess_mod, "_find_skill_cli", return_value=fake_cli),
-            patch.object(assess_mod.subprocess, "run") as mock_run,
+            patch.object(utils_run_mod.subprocess, "run") as mock_run,
         ):
             mock_run.return_value.returncode = 0
             mock_run.return_value.stdout = "not json"
@@ -62,7 +63,7 @@ class TestAssessRun:
         metrics = {"lint": {"total": 5}, "todos": {"total": 3}}
         with (
             patch.object(assess_mod, "_find_skill_cli", return_value=fake_cli),
-            patch.object(assess_mod.subprocess, "run") as mock_run,
+            patch.object(utils_run_mod.subprocess, "run") as mock_run,
         ):
             mock_run.return_value.returncode = 0
             mock_run.return_value.stdout = json.dumps(metrics)
@@ -85,7 +86,7 @@ class TestAssessRun:
         }
         with (
             patch.object(assess_mod, "_find_skill_cli", return_value=fake_cli),
-            patch.object(assess_mod.subprocess, "run") as mock_run,
+            patch.object(utils_run_mod.subprocess, "run") as mock_run,
         ):
             mock_run.return_value.returncode = 0
             mock_run.return_value.stdout = json.dumps(metrics)
@@ -102,7 +103,7 @@ class TestAssessRun:
         metrics = {"lint": {"total": 0}, "todos": {"total": 0}}
         with (
             patch.object(assess_mod, "_find_skill_cli", return_value=fake_cli),
-            patch.object(assess_mod.subprocess, "run") as mock_run,
+            patch.object(utils_run_mod.subprocess, "run") as mock_run,
         ):
             mock_run.return_value.returncode = 0
             mock_run.return_value.stdout = json.dumps(metrics)

@@ -8,6 +8,7 @@ import teatree.backends.gitlab_api as gitlab_api_mod
 import teatree.core.backend_factory as backend_factory_mod
 import teatree.core.overlay_loader as overlay_loader_mod
 import teatree.utils.git as git_mod
+import teatree.utils.run as utils_run_mod
 from teatree.cli import app
 from teatree.cli.ci import CICommands
 
@@ -87,12 +88,12 @@ class TestGetCIProject:
 
 class TestCurrentGitBranch:
     def test_success(self):
-        with patch.object(git_mod.subprocess, "run") as mock_run:
+        with patch.object(utils_run_mod.subprocess, "run") as mock_run:
             mock_run.return_value = MagicMock(stdout="feature-branch\n", returncode=0)
             assert CICommands.current_git_branch() == "feature-branch"
 
     def test_failure(self):
-        with patch.object(git_mod.subprocess, "run") as mock_run:
+        with patch.object(utils_run_mod.subprocess, "run") as mock_run:
             mock_run.return_value = MagicMock(stdout="", returncode=128)
             assert CICommands.current_git_branch() == ""
 

@@ -2,8 +2,8 @@
 
 Resolution order:
 
-1. Walk up from CWD looking for ``.env.worktree`` → parse ``TICKET_DIR`` →
-    match against ``Worktree.extra["worktree_path"]`` in the DB
+1. Walk up from CWD looking for the env cache symlink → parse
+    ``TICKET_DIR`` → match against ``Worktree.extra["worktree_path"]``
 2. Match CWD directly against ``Worktree.extra["worktree_path"]``
 3. Detect git worktree from filesystem and auto-register in DB
 
@@ -16,6 +16,7 @@ import os
 from pathlib import Path
 
 from teatree.core.models import Ticket, Worktree
+from teatree.core.worktree_env import CACHE_FILENAME
 from teatree.utils import git
 
 logger = logging.getLogger(__name__)
@@ -42,12 +43,12 @@ def _parse_env_file(path: Path) -> dict[str, str]:
     return result
 
 
-def _find_env_worktree(cwd: str) -> Path | None:
-    """Walk up from *cwd* looking for ``.env.worktree``."""
+def _find_env_cache(cwd: str) -> Path | None:
+    """Walk up from *cwd* looking for the env cache (file or symlink)."""
     cwd_path = Path(cwd)
     for parent in [cwd_path, *cwd_path.parents]:
-        candidate = parent / ".env.worktree"
-        if candidate.is_file():
+        candidate = parent / CACHE_FILENAME
+        if candidate.is_file() or candidate.is_symlink():
             return candidate
     return None
 
@@ -174,8 +175,9 @@ def resolve_worktree(path: str = "") -> Worktree:
     """
     cwd = str(Path(path).resolve()) if path else _get_user_cwd()
 
-    # 1. Walk up from CWD to find .env.worktree
-    envfile = _find_env_worktree(cwd)
+    # 1. Walk up from CWD to find the env cache (symlink resolves to
+    #    the canonical file in .t3-cache/).
+    envfile = _find_env_cache(cwd)
     if envfile is not None:
         env = _parse_env_file(envfile)
         ticket_dir = env.get("TICKET_DIR", "")

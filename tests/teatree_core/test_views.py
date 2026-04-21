@@ -12,6 +12,7 @@ import teatree.agents.headless as headless_mod
 import teatree.core.overlay_loader as overlay_loader_mod
 import teatree.core.tasks as tasks_mod
 import teatree.core.views.actions as actions_views
+import teatree.utils.run as utils_run_mod
 from teatree.config import OverlayEntry
 from teatree.core.models import Session, Task, Ticket, Worktree
 from teatree.core.sync import PENDING_REVIEWS_CACHE_KEY, SyncResult
@@ -621,7 +622,7 @@ class TestCreateTaskView(TestCase):
         with (
             patch.object(headless_mod.shutil, "which", return_value="/usr/bin/claude-code"),
             patch.object(
-                headless_mod.subprocess,
+                utils_run_mod.subprocess,
                 "run",
                 return_value=__import__("subprocess").CompletedProcess([], 0, '{"summary": "OK"}', ""),
             ),
@@ -873,7 +874,7 @@ class TestGitPullRepo:
 
     def test_success(self, tmp_path: Path) -> None:
         completed = subprocess_mod.CompletedProcess([], 0, "Already up to date.\n", "")
-        with patch("teatree.core.views.actions.subprocess") as mock_sub:
+        with patch("teatree.utils.run.subprocess") as mock_sub:
             mock_sub.run.return_value = completed
             mock_sub.TimeoutExpired = subprocess_mod.TimeoutExpired
             result = actions_views._git_pull_repo(tmp_path)
@@ -882,7 +883,7 @@ class TestGitPullRepo:
         assert "Already up to date" in str(result["output"])
 
     def test_timeout(self, tmp_path: Path) -> None:
-        with patch("teatree.core.views.actions.subprocess") as mock_sub:
+        with patch("teatree.utils.run.subprocess") as mock_sub:
             mock_sub.TimeoutExpired = subprocess_mod.TimeoutExpired
             mock_sub.run.side_effect = subprocess_mod.TimeoutExpired(["git"], 30)
             result = actions_views._git_pull_repo(tmp_path)
@@ -893,7 +894,7 @@ class TestGitPullRepo:
     def test_merge_conflict_aborts(self, tmp_path: Path) -> None:
         fail = subprocess_mod.CompletedProcess([], 1, "", "CONFLICT (content): Merge conflict in f.py")
         abort_ok = subprocess_mod.CompletedProcess([], 0, "", "")
-        with patch("teatree.core.views.actions.subprocess") as mock_sub:
+        with patch("teatree.utils.run.subprocess") as mock_sub:
             mock_sub.run.side_effect = [fail, abort_ok]
             mock_sub.TimeoutExpired = subprocess_mod.TimeoutExpired
             result = actions_views._git_pull_repo(tmp_path)
@@ -908,7 +909,7 @@ class TestGitPullRepo:
         switch = subprocess_mod.CompletedProcess([], 0, "", "")
         pull_ok = subprocess_mod.CompletedProcess([], 0, "Updating abc..def\n", "")
         delete = subprocess_mod.CompletedProcess([], 0, "", "")
-        with patch("teatree.core.views.actions.subprocess") as mock_sub:
+        with patch("teatree.utils.run.subprocess") as mock_sub:
             mock_sub.run.side_effect = [fail, branch, switch, pull_ok, delete]
             mock_sub.TimeoutExpired = subprocess_mod.TimeoutExpired
             result = actions_views._git_pull_repo(tmp_path)
@@ -919,7 +920,7 @@ class TestGitPullRepo:
 
     def test_generic_failure(self, tmp_path: Path) -> None:
         fail = subprocess_mod.CompletedProcess([], 128, "", "fatal: bad repo")
-        with patch("teatree.core.views.actions.subprocess") as mock_sub:
+        with patch("teatree.utils.run.subprocess") as mock_sub:
             mock_sub.run.return_value = fail
             mock_sub.TimeoutExpired = subprocess_mod.TimeoutExpired
             result = actions_views._git_pull_repo(tmp_path)
@@ -1094,7 +1095,7 @@ class TestSwitchBranchView(TestCase):
         current_result = subprocess_mod.CompletedProcess([], 0, "dev\n", "")
         with (
             patch.object(actions_views, "_get_t3_repo", return_value=self.tmp_path),
-            patch("teatree.core.views.actions.subprocess") as mock_subprocess,
+            patch("teatree.utils.run.subprocess") as mock_subprocess,
         ):
             mock_subprocess.run.side_effect = [branch_result, current_result]
             mock_subprocess.TimeoutExpired = subprocess_mod.TimeoutExpired
@@ -1114,7 +1115,7 @@ class TestSwitchBranchView(TestCase):
     def test_get_timeout_returns_500(self) -> None:
         with (
             patch.object(actions_views, "_get_t3_repo", return_value=self.tmp_path),
-            patch("teatree.core.views.actions.subprocess") as mock_subprocess,
+            patch("teatree.utils.run.subprocess") as mock_subprocess,
         ):
             mock_subprocess.TimeoutExpired = subprocess_mod.TimeoutExpired
             mock_subprocess.run.side_effect = subprocess_mod.TimeoutExpired(["git", "branch"], 10)
@@ -1127,7 +1128,7 @@ class TestSwitchBranchView(TestCase):
         completed = subprocess_mod.CompletedProcess([], 0, "Switched to branch 'main'\n", "")
         with (
             patch.object(actions_views, "_get_t3_repo", return_value=self.tmp_path),
-            patch("teatree.core.views.actions.subprocess") as mock_subprocess,
+            patch("teatree.utils.run.subprocess") as mock_subprocess,
         ):
             mock_subprocess.run.return_value = completed
             mock_subprocess.TimeoutExpired = subprocess_mod.TimeoutExpired
@@ -1162,7 +1163,7 @@ class TestSwitchBranchView(TestCase):
         )
         with (
             patch.object(actions_views, "_get_t3_repo", return_value=self.tmp_path),
-            patch("teatree.core.views.actions.subprocess") as mock_subprocess,
+            patch("teatree.utils.run.subprocess") as mock_subprocess,
         ):
             mock_subprocess.run.return_value = completed
             mock_subprocess.TimeoutExpired = subprocess_mod.TimeoutExpired
@@ -1177,7 +1178,7 @@ class TestSwitchBranchView(TestCase):
     def test_post_timeout_returns_500(self) -> None:
         with (
             patch.object(actions_views, "_get_t3_repo", return_value=self.tmp_path),
-            patch("teatree.core.views.actions.subprocess") as mock_subprocess,
+            patch("teatree.utils.run.subprocess") as mock_subprocess,
         ):
             mock_subprocess.TimeoutExpired = subprocess_mod.TimeoutExpired
             mock_subprocess.run.side_effect = subprocess_mod.TimeoutExpired(["git", "checkout"], 15)

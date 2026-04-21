@@ -2,11 +2,12 @@
 
 import json
 import os
-import subprocess  # noqa: S404
 import sys
 from pathlib import Path
 
 import typer
+
+from teatree.utils.run import run_allowed_to_fail
 
 tool_app = typer.Typer(no_args_is_help=True, help="Standalone utilities.")
 
@@ -28,7 +29,7 @@ class ToolRunner:
             typer.echo(f"Script not found: {script}")
             raise typer.Exit(code=1)
         cmd = [sys.executable, str(script), *args]
-        result = subprocess.run(cmd, check=False)  # noqa: S603
+        result = run_allowed_to_fail(cmd, expected_codes=None)
         if result.returncode != 0:
             raise typer.Exit(code=result.returncode)
 
@@ -81,7 +82,7 @@ def sonar_check(
         cmd.append("--remote")
     if remote_status:
         cmd.append("--remote-status")
-    result = subprocess.run(cmd, check=False)  # noqa: S603
+    result = run_allowed_to_fail(cmd, expected_codes=None)
     raise typer.Exit(code=result.returncode)
 
 

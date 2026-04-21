@@ -4,13 +4,13 @@ import json
 import logging
 import os
 import shutil
-import subprocess  # noqa: S404
 from typing import TYPE_CHECKING, override
 
 from django.core.cache import cache
 
 from teatree.core.cleanup import cleanup_worktree
 from teatree.core.sync import PENDING_REVIEWS_CACHE_KEY, RawAPIDict, SyncBackend, SyncResult
+from teatree.utils.run import run_allowed_to_fail
 
 if TYPE_CHECKING:
     from teatree.core.models import Ticket
@@ -116,7 +116,7 @@ class GitHubSyncBackend(SyncBackend):
         if not gh_bin:
             return []
 
-        out = subprocess.run(  # noqa: S603
+        out = run_allowed_to_fail(
             [
                 gh_bin,
                 "search",
@@ -128,11 +128,9 @@ class GitHubSyncBackend(SyncBackend):
                 "--limit",
                 "50",
             ],
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
             env={**os.environ, "GH_TOKEN": token},
+            expected_codes=None,
+            timeout=30,
         )
         if out.returncode != 0:
             return []

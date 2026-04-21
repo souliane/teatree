@@ -8,12 +8,15 @@ import contextlib
 import logging
 import os
 import signal
-import subprocess  # noqa: S404
 import sys
 from datetime import UTC
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import typer
+
+if TYPE_CHECKING:
+    from teatree.utils.run import Popen
 
 from teatree.cli.assess import assess_app
 from teatree.cli.ci import ci_app
@@ -25,6 +28,7 @@ from teatree.cli.review import review_app
 from teatree.cli.setup import setup_app
 from teatree.cli.tools import tool_app
 from teatree.config import discover_active_overlay
+from teatree.utils.run import run_streamed, spawn
 
 logger = logging.getLogger(__name__)
 
@@ -105,10 +109,9 @@ def docs(
     except ImportError:
         typer.echo("mkdocs is not installed. Run: uv sync --group docs")
         raise typer.Exit(code=1) from None
-    subprocess.run(  # noqa: S603
+    run_streamed(
         [sys.executable, "-m", "mkdocs", "serve", "-a", f"{host}:{port}"],
         cwd=project_root,
-        check=True,
     )
 
 
@@ -537,7 +540,7 @@ def dashboard(
 
     guard.write_pid()
 
-    worker_procs: list[subprocess.Popen] = []
+    worker_procs: list[Popen[str]] = []
     if workers > 0 and project_path:
         env = {k: v for k, v in os.environ.items() if k != "DJANGO_SETTINGS_MODULE"}
         if overlay_name:
@@ -550,10 +553,7 @@ def dashboard(
             "--no-startup-delay",
             "--no-reload",
         ]
-        worker_procs.extend(
-            subprocess.Popen(worker_cmd, cwd=project_path, env=env)  # noqa: S603
-            for _ in range(workers)
-        )
+        worker_procs.extend(spawn(worker_cmd, cwd=project_path, env=env) for _ in range(workers))
         typer.echo(f"Started {workers} background worker(s).")
 
     try:
