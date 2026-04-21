@@ -14,6 +14,7 @@ _ALLOWED_TRANSITIONS = {
     "ship",
     "request_review",
     "mark_merged",
+    "retrospect",
     "mark_delivered",
     "rework",
 }
@@ -25,7 +26,7 @@ class Command(TyperCommand):
         """Transition a ticket to a new state.
 
         Accepts any of the allowed transition names: scope, start, code, test,
-        review, ship, request_review, mark_merged, mark_delivered, rework.
+        review, ship, request_review, mark_merged, retrospect, mark_delivered, rework.
         """
         if transition_name not in _ALLOWED_TRANSITIONS:
             return {"error": f"Unknown transition: {transition_name}"}
