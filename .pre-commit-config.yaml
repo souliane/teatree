@@ -194,7 +194,7 @@ repos:
         pass_filenames: false
         always_run: true
 
-  # Phase 8 - Slow (pip-audit)
+  # Phase 8 - Slow (pip-audit, manual-only — CI runs it on every PR)
   - repo: local
     hooks:
       - id: pip-audit
@@ -210,7 +210,7 @@ repos:
           "
         pass_filenames: false
         files: ^(pyproject\.toml|uv\.lock)$
-        stages: [commit, manual]
+        stages: [manual]
 
   # Phase 8b - Pre-push (Docker)
   - repo: local
