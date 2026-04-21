@@ -21,6 +21,7 @@ from teatree.utils.db import drop_db
 logger = logging.getLogger(__name__)
 
 _PR_SUFFIX_RE = re.compile(r"(?:\s*\(#\d+\))+$")
+_RELEASE_NOTE_SUFFIX_RE = re.compile(r"\s*\[[^\]]*\]\s*\([^)]+\)\s*$")
 _TYPE_PREFIX_RE = re.compile(r"^[a-z]+(?:\([^)]+\))?!?:\s*", re.IGNORECASE)
 _BRANCH_LOG_FIELDS = 3
 _SUBJECT_PREVIEW_LIMIT = 3
@@ -58,12 +59,14 @@ class BranchClassification:
 def _canonicalize_subject(subject: str) -> str:
     """Normalize a commit subject for cross-branch matching.
 
-    Strips trailing ``(#NNN)`` suffixes (GitHub/GitLab adds these on squash-merge)
-    and the leading conventional-commit type prefix. Used to match a branch-local
-    commit against commits on the default branch whose subject was rewritten at
-    merge time (e.g. ``relax:`` -> ``feat(scope):``).
+    Strips, in order: trailing ``(#NNN)`` (added on squash-merge), trailing
+    ``[flag] (ticket_url)`` (release-note suffix enforced by the MR-metadata
+    hook — present on the merged title but usually absent from the local
+    commit), and leading ``type(scope):`` so the ``relax:`` → ``feat(scope):``
+    rewrite still matches.
     """
     stripped = _PR_SUFFIX_RE.sub("", subject).strip()
+    stripped = _RELEASE_NOTE_SUFFIX_RE.sub("", stripped).strip()
     stripped = _TYPE_PREFIX_RE.sub("", stripped).strip()
     return stripped.lower()
 

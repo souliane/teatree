@@ -360,3 +360,48 @@ class TestClassifyBranchCommits(TestCase):
 
         assert result.genuinely_ahead == []
         assert len(result.squash_merged) == 2
+
+    @patch("teatree.core.cleanup.git.run")
+    def test_release_note_suffix_on_target_matches_plain_local_subject(self, mock_run: MagicMock) -> None:
+        """Regression for #387 — target carries ``[flag] (url) (#NNN)``, local has only the plain subject."""
+        branch_log = "sha1\x00p1\x00fix(ship,workspace): pre-push main merge + t3 pr create over raw gh/glab"
+        target_log = (
+            "fix(ship,workspace): pre-push main merge + t3 pr create over raw gh/glab "
+            "[none] (https://github.com/souliane/teatree/issues/379) (#386)"
+        )
+        mock_run.side_effect = [branch_log, target_log]
+
+        result = classify_branch_commits("/repo", "feature")
+
+        assert [c.sha for c in result.squash_merged] == ["sha1"]
+        assert result.genuinely_ahead == []
+
+    @patch("teatree.core.cleanup.git.run")
+    def test_release_note_suffix_on_both_sides_matches(self, mock_run: MagicMock) -> None:
+        """Both local and target carry the release-note suffix — canonicalization must strip from both."""
+        branch_log = (
+            "sha1\x00p1\x00relax(workspace): squash-merge-aware cleanup "
+            "[none] (https://github.com/souliane/teatree/issues/379)"
+        )
+        target_log = (
+            "relax(workspace): squash-merge-aware cleanup "
+            "[none] (https://github.com/souliane/teatree/issues/379) (#384)"
+        )
+        mock_run.side_effect = [branch_log, target_log]
+
+        result = classify_branch_commits("/repo", "feature")
+
+        assert [c.sha for c in result.squash_merged] == ["sha1"]
+        assert result.genuinely_ahead == []
+
+    @patch("teatree.core.cleanup.git.run")
+    def test_plain_subjects_without_release_note_suffix_still_match(self, mock_run: MagicMock) -> None:
+        """Fallback case — neither title has a release-note suffix (e.g. ``chore:`` without ticket)."""
+        branch_log = "sha1\x00p1\x00chore(prek): move pip-audit to manual stage"
+        target_log = "chore(prek): move pip-audit to manual stage (#383)"
+        mock_run.side_effect = [branch_log, target_log]
+
+        result = classify_branch_commits("/repo", "feature")
+
+        assert [c.sha for c in result.squash_merged] == ["sha1"]
+        assert result.genuinely_ahead == []
