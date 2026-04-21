@@ -5,7 +5,7 @@ requires = [ "uv-build>=0.7,<0.12" ]
 [project]
 name = "teatree"
 version = "0.0.1"
-description = "Multi-repo worktree lifecycle manager for AI-assisted development"
+description = "Personal code factory for multi-repo projects"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.13"

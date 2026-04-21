@@ -1,6 +1,6 @@
 # Architecture
 
-Teatree is structured in three tiers:
+Teatree is a personal code factory: four state machines (`Ticket`, `Worktree`, `Task`, `MergeRequest`) coordinate the work; three interfaces (CLI, Dashboard, Claude plugin) let a human and an agent drive it. The implementation is layered into three tiers.
 
 ```mermaid
 graph TB
