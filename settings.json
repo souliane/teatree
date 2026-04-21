@@ -10,5 +10,68 @@
         ]
       }
     ]
+  },
+  "permissions": {
+    "allow": [
+      "Bash(t3:*)",
+      "Bash(prek:*)",
+      "Bash(uv:*)",
+      "Bash(uvx:*)",
+      "Bash(git:*)",
+      "Bash(gh:*)",
+      "Bash(glab:*)",
+      "Bash(npm:*)",
+      "Bash(npx:*)",
+      "Bash(yarn:*)",
+      "Bash(pnpm:*)",
+      "Bash(pytest:*)",
+      "Bash(python:*)",
+      "Bash(python3:*)",
+      "Bash(ruff:*)",
+      "Bash(mypy:*)",
+      "Bash(ty:*)",
+      "Bash(make:*)",
+      "Bash(curl:*)",
+      "Bash(psql:*)",
+      "Bash(redis-cli:*)",
+      "Bash(docker:*)",
+      "Bash(pass show:*)",
+      "Bash(command:*)",
+      "Skill(t3:*)"
+    ],
+    "deny": [
+      "Bash(git push * main:*)",
+      "Bash(git push * master:*)",
+      "Bash(git push * development:*)",
+      "Bash(git push * develop:*)",
+      "Bash(git push * release:*)",
+      "Bash(git push * trunk:*)",
+      "Bash(git push --force:*)",
+      "Bash(git push -f:*)",
+      "Bash(git * --no-verify:*)",
+      "Bash(git config --global:*)",
+      "Bash(git config --system:*)",
+      "Bash(git filter-branch:*)",
+      "Bash(git update-ref -d:*)",
+
+      "Bash(rm -rf /:*)",
+      "Bash(rm -rf /*)",
+      "Bash(rm -rf ~:*)",
+      "Bash(rm -rf $HOME:*)",
+      "Bash(rm -rf .:*)",
+
+      "Bash(gh repo delete:*)",
+      "Bash(gh release delete:*)",
+      "Bash(gh gist delete:*)",
+      "Bash(gh auth logout:*)",
+      "Bash(glab repo delete:*)",
+      "Bash(glab release delete:*)",
+      "Bash(glab auth logout:*)",
+
+      "Bash(curl * | bash:*)",
+      "Bash(curl * | sh:*)",
+      "Bash(wget * | bash:*)",
+      "Bash(wget * | sh:*)"
+    ]
   }
 }
