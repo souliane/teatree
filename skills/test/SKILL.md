@@ -216,11 +216,11 @@ Analyze MR changes and produce a manual test plan. Use when the user says "test 
 
 Post the test plan as a comment on the MR. If a test plan comment already exists, skip posting (don't duplicate).
 
-See your [issue tracker platform reference](../t3:platforms/references/) § "MR Notes" for the posting recipe.
+See your [issue tracker platform reference](../platforms/references/) § "MR Notes" for the posting recipe.
 
 ## Pre-Push Browser Sanity Gate (Visual QA)
 
-`t3 <overlay> pr create` runs a pre-push browser sanity gate as a side effect of the shipping flow. It loads the page(s) the branch diff touches, captures silent-render regressions (crashes, console errors, raw `app.*` keys, blocking 404s), and records the summary on `Ticket.extra['visual_qa']`. See [`../t3:ship/SKILL.md`](../t3:ship/SKILL.md) § "4c. Visual QA Gate" for the blocking behavior and bypass flags.
+`t3 <overlay> pr create` runs a pre-push browser sanity gate as a side effect of the shipping flow. It loads the page(s) the branch diff touches, captures silent-render regressions (crashes, console errors, raw `app.*` keys, blocking 404s), and records the summary on `Ticket.extra['visual_qa']`. See [`../ship/SKILL.md`](../ship/SKILL.md) § "4c. Visual QA Gate" for the blocking behavior and bypass flags.
 
 This gate is **not a replacement for manual E2E evidence** — it only catches silent-render regressions before push. Feature verification still requires the workflows below.
 
@@ -232,13 +232,13 @@ After confirming a feature works (via E2E or manual verification), embed screens
 
 ### 1. Upload Screenshot(s) and Video(s)
 
-Upload via the platform's file upload API and get the markdown embed syntax. See your [issue tracker platform reference](../t3:platforms/references/) § "File Uploads" for the recipe.
+Upload via the platform's file upload API and get the markdown embed syntax. See your [issue tracker platform reference](../platforms/references/) § "File Uploads" for the recipe.
 
 **Video embedding:** Use the same `![alt](url)` markdown syntax as images. GitLab auto-detects video formats (.webm, .mov, .mp4) and renders an inline player. Do NOT use `<video>` HTML tags — they don't work in GitLab markdown.
 
 ### 2. Post or Update Comment — Always Use Python
 
-Shell variable interpolation and `jq --arg` both escape `!` to `\!`, breaking image syntax `![alt](url)`. **Always** use inline Python with the note body as a heredoc string — see [`../t3:rules/SKILL.md`](../t3:rules/SKILL.md) § "Temp File Safety" for the full rules. See your [issue tracker platform reference](../t3:platforms/references/) § "MR Notes (Comments)" for the complete Python recipe.
+Shell variable interpolation and `jq --arg` both escape `!` to `\!`, breaking image syntax `![alt](url)`. **Always** use inline Python with the note body as a heredoc string — see [`../rules/SKILL.md`](../rules/SKILL.md) § "Temp File Safety" for the full rules. See your [issue tracker platform reference](../platforms/references/) § "MR Notes (Comments)" for the complete Python recipe.
 
 When editing: check the verified boxes (`- [ ]` → `- [x]`), insert screenshot markdown below the relevant section, leave unchecked items as-is.
 
@@ -273,7 +273,7 @@ Evidence screenshots must always use a **side-by-side comparison table**. Minimu
 - **One screenshot per verified section** — not per checkbox, not a flood. One image that proves the section works.
 - **Cover ALL sections on first post** — don't post a partial set and wait for the user to ask for more. Every verified section should have its screenshot from the start.
 - **Screenshots go below the section they verify**, not at the bottom of the comment
-- **Clickable references:** Every MR, ticket, or note reference must be a markdown link — see [`../t3:rules/SKILL.md`](../t3:rules/SKILL.md) § "Clickable References".
+- **Clickable references:** Every MR, ticket, or note reference must be a markdown link — see [`../rules/SKILL.md`](../rules/SKILL.md) § "Clickable References".
 - Write in first person, casual tone ("Tested on local...", "Works as expected")
 - **Never mention automation, E2E, Playwright, or scripts** — must read as manual testing
 - **Update the existing test plan** — never post a second evidence comment. Always GET existing notes first, find the test plan, and PUT to update it.

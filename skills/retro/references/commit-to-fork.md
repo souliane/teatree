@@ -37,7 +37,7 @@ git commit -m "fix(<skill>): <what was learned>"
 
 ## Squashing Retro Commits
 
-Squash retro commits into clean, human-sized units **before chaining to the review skill**. Follow the squash rules in `../t3:ship/SKILL.md` § "Finalize Branch".
+Squash retro commits into clean, human-sized units **before chaining to the review skill**. Follow the squash rules in `../ship/SKILL.md` § "Finalize Branch".
 
 ## After Committing
 

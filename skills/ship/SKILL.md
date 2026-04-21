@@ -95,7 +95,7 @@ If the changes touch architecture, add new modules, rename commands, or change e
 
 ### 3b. Self-Review Against Repo Rules
 
-**Before every push**, run the self-review gate from [`../t3:review/SKILL.md`](../t3:review/SKILL.md) § "Active Verification Against Repo Rules":
+**Before every push**, run the self-review gate from [`../review/SKILL.md`](../review/SKILL.md) § "Active Verification Against Repo Rules":
 
 1. **Load the project's code-review skill** (e.g., `/code-review`) if available. This skill contains the exact rules enforced by automated review bots — loading it prevents multi-round push-fix-push cycles.
 2. **Read** the repo's `AGENTS.md` (or equivalent agent instructions file).
@@ -237,9 +237,9 @@ When a session uncovers a small unique commit on a now-stale branch (typical dur
 - **No rebase / force push after review.** Once an MR has been reviewed, the branch history is shared. Only merge the default branch and push new commits.
 - **Cancel stale pipelines** before every push to a branch with an existing MR.
 - **Cancel running pipelines when closing an MR/PR.** When an MR is closed (abandoned, superseded, or replaced), cancel any running or pending pipelines for that branch immediately — they waste CI resources on code that will never be merged.
-- **Clickable references:** Every MR, ticket, or note reference must be a markdown link — see [`../t3:rules/SKILL.md`](../t3:rules/SKILL.md) § "Clickable References".
+- **Clickable references:** Every MR, ticket, or note reference must be a markdown link — see [`../rules/SKILL.md`](../rules/SKILL.md) § "Clickable References".
 - **Commit early, commit often.** Never accumulate more than 1-2 tickets of uncommitted changes. Commit after completing each ticket or logical unit of work. Squash later with `t3 <overlay> workspace finalize`.
-- **Publishing actions are mode-conditional.** Canonical rule: see [`../t3:rules/SKILL.md`](../t3:rules/SKILL.md) § "Publishing Actions Are Mode-Conditional". In `interactive` mode (default) every push/MR/merge/remote-delete needs separate explicit approval. In `auto` mode (`t3.mode = "auto"` or `T3_MODE=auto`) the agent ships end-to-end without confirm prompts; only the always-gated list (force-push to defaults, history rewrites on shared defaults, destructive shared-state ops, unauthorised external writes, `--no-verify`) remains confirm-gated.
+- **Publishing actions are mode-conditional.** Canonical rule: see [`../rules/SKILL.md`](../rules/SKILL.md) § "Publishing Actions Are Mode-Conditional". In `interactive` mode (default) every push/MR/merge/remote-delete needs separate explicit approval. In `auto` mode (`t3.mode = "auto"` or `T3_MODE=auto`) the agent ships end-to-end without confirm prompts; only the always-gated list (force-push to defaults, history rewrites on shared defaults, destructive shared-state ops, unauthorised external writes, `--no-verify`) remains confirm-gated.
 - **Respect commit trailer preferences.** Check the user's global agent config for rules about `Co-Authored-By` trailers before committing. Some users explicitly opt out. When in doubt, **do not add trailers** — the user can always configure their agent to add them.
 
 ### Git History Rewriting

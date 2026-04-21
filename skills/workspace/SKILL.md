@@ -124,7 +124,7 @@ When `clean-all` skips a branch with this warning, the branch has commits the cl
 2. **For each commit**, classify:
    - **Already on main via different SHA** — verify by grepping `git log --all --oneline --grep="<subject>"` or by comparing changed file paths. If the content is reachable from main, the branch is safe to delete.
    - **Already shipped via a different open PR** — search `gh pr list --search "<file path>"` or `git log --oneline --all -- <changed-file>`. If shipped, branch is safe to delete.
-   - **Unique unpushed work** — keep, then choose a delivery path: bundle into an open related PR (see [`../t3:ship/SKILL.md`](../t3:ship/SKILL.md) § "Bundle Into an Existing Open PR"), open a dedicated PR, or explicitly mark as a never-merge dev override.
+   - **Unique unpushed work** — keep, then choose a delivery path: bundle into an open related PR (see [`../ship/SKILL.md`](../ship/SKILL.md) § "Bundle Into an Existing Open PR"), open a dedicated PR, or explicitly mark as a never-merge dev override.
 3. **After verification**, force-delete: `git branch -D <branch>` and `git worktree remove --force <path>` if a worktree exists.
 
 ### Orphan stash verification
@@ -142,7 +142,7 @@ If the content is on `main` (typical for stashes that pre-date a squash-merged b
 
 ### Plan Before Executing
 
-Canonical rule: see [`../t3:rules/SKILL.md`](../t3:rules/SKILL.md) § "Always Create Tasks". Covers simple vs complex task thresholds and the "never skip" clause.
+Canonical rule: see [`../rules/SKILL.md`](../rules/SKILL.md) § "Always Create Tasks". Covers simple vs complex task thresholds and the "never skip" clause.
 
 ### Fix the CLI, Never Work Around It (Non-Negotiable)
 
@@ -172,7 +172,7 @@ Direct commands bypass these safeguards, causing subtle failures (wrong DB, port
 
 ### Never Edit Files in the Main Clone
 
-Canonical rule: see [`../t3:rules/SKILL.md`](../t3:rules/SKILL.md) § "Worktree-First Work". Covers the pre-edit path check and collision detection.
+Canonical rule: see [`../rules/SKILL.md`](../rules/SKILL.md) § "Worktree-First Work". Covers the pre-edit path check and collision detection.
 
 ### Full Worktree Isolation (Non-Negotiable)
 
@@ -198,7 +198,7 @@ Setup tools enforce ordering: **data store → migrations → application server
 
 ### Never Delegate Skill-Dependent Work to Sub-Agents
 
-See [`../t3:rules/SKILL.md`](../t3:rules/SKILL.md) § "Sub-Agent Limitations". If parallelism is needed, pass the **full skill file contents** in the sub-agent prompt — but prefer sequential main-conversation execution.
+See [`../rules/SKILL.md`](../rules/SKILL.md) § "Sub-Agent Limitations". If parallelism is needed, pass the **full skill file contents** in the sub-agent prompt — but prefer sequential main-conversation execution.
 
 ### Verify Services Before Declaring Running
 
@@ -252,4 +252,4 @@ The agent skills directory varies by platform (for example `~/.claude/skills/`, 
 | Find available shell functions, scripts, or COMPOSE_PROJECT_NAME details | [`references/scripts-and-functions.md`](references/scripts-and-functions.md) |
 | Understand extension points, override chain, or create a project skill | [`references/extension-points.md`](references/extension-points.md) |
 | Diagnose worktree setup failures, DB errors, port conflicts | [`references/troubleshooting.md`](references/troubleshooting.md) |
-| Cross-cutting agent rules (clickable refs, token extraction, temp files) | [`../t3:rules/SKILL.md`](../t3:rules/SKILL.md) |
+| Cross-cutting agent rules (clickable refs, token extraction, temp files) | [`../rules/SKILL.md`](../rules/SKILL.md) |

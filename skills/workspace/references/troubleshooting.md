@@ -103,7 +103,7 @@
 
 ## Issue Tracker CLI Quirks
 
-See your [issue tracker platform reference](../../t3:platforms/references/) § "Known CLI Quirks" for platform-specific CLI issues. Common gotcha: some CLIs cannot serialize nested JSON — use `curl` instead for complex payloads.
+See your [issue tracker platform reference](../../platforms/references/) § "Known CLI Quirks" for platform-specific CLI issues. Common gotcha: some CLIs cannot serialize nested JSON — use `curl` instead for complex payloads.
 
 ## Pre-Commit Hook Failure + Stash Cycle Destroys Uncommitted Work
 
