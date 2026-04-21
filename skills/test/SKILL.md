@@ -32,6 +32,22 @@ Running tests, analyzing failures, quality checks, CI interaction, test plans, a
 
 - **t3:workspace** (required) — provides server and environment context. **Load `/t3:workspace` now** if not already loaded.
 
+## Writing New Tests
+
+When adding a new test, default to an integration or E2E test — not a unit test. Concretely:
+
+- **Django test client** (`client.get(...)`, `client.post(...)`) for views, URL, HTMX endpoints.
+- **`call_command("name", ...)`** for management commands (Typer + Django glue).
+- **Real overlay against `tmp_path`** with real `git init` for provisioning, worktrees, env files.
+- **Playwright** (in `e2e/` or the project's E2E repo) for dashboard or browser-visible behavior.
+- **`subprocess.run(["t3", ...])`** (mark `@pytest.mark.integration`) when only the real CLI entry point reproduces the bug.
+
+**Mock only unstoppable externals:** network calls (GitHub / GitLab / Slack / Sentry), the clock (`time_machine`), third-party subprocesses. Don't mock teatree code, Django models, filesystem under `tmp_path`, or `git` — run the real thing. If setup is painful, that usually points at a design problem, not a need for mocks.
+
+**Unit tests** are reserved for pure logic: parsers, formatters, branch-name / slug builders, regex validators, anything with no I/O. A unit test for glue code that's already covered by an integration test is duplicate coverage — delete it.
+
+The repo's `AGENTS.md` § "Test-Writing Doctrine" carries the authoritative rule and the review gate. `t3:review` enforces it per-MR (§ "New-Test Shape Check"). When rebalancing existing tests, the coverage gate must not drop.
+
 ## Workflows
 
 ### Backend Tests

@@ -7,6 +7,7 @@ from unittest.mock import patch
 import pytest
 from django.test import TestCase
 
+import teatree.config as config_mod
 import teatree.contrib.t3_teatree.overlay as overlay_mod
 import teatree.core.overlay_loader as overlay_loader_mod
 from teatree.contrib.t3_teatree.apps import T3TeatreeConfig
@@ -14,6 +15,26 @@ from teatree.contrib.t3_teatree.overlay import TeatreeOverlay, _repo_root
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay import OverlayBase
 from teatree.core.overlay_loader import get_overlay
+
+
+@pytest.fixture
+def isolated_config(tmp_path: Path, monkeypatch) -> Path:
+    """Redirect overlay discovery to a fresh tmp toml, ignoring the user's real config.
+
+    ``CONFIG_PATH`` is baked into ``load_config`` / ``discover_overlays``
+    defaults at def-time, so monkeypatching the module constant alone is not
+    enough — we wrap both callables to always pass the tmp path explicitly.
+    """
+    from functools import partial  # noqa: PLC0415
+
+    toml_path = tmp_path / "teatree.toml"
+    monkeypatch.setattr(overlay_mod, "load_config", partial(config_mod.load_config, path=toml_path))
+    monkeypatch.setattr(
+        overlay_mod,
+        "discover_overlays",
+        partial(config_mod.discover_overlays, config_path=toml_path),
+    )
+    return toml_path
 
 
 class TestTeatreeOverlayIsValid:
@@ -37,7 +58,15 @@ class TestGetRepos:
 
 
 class TestGetWorkspaceRepos:
-    def test_falls_back_to_get_repos(self) -> None:
+    def test_falls_back_to_get_repos_when_discovery_empty(
+        self, tmp_path: Path, monkeypatch, isolated_config: Path
+    ) -> None:
+        """Discovery empty → final fallback is ``get_repos()``."""
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        isolated_config.write_text(f'[teatree]\nworkspace_dir = "{workspace}"\n', encoding="utf-8")
+        monkeypatch.setattr(overlay_mod, "_repo_root", lambda: tmp_path / "elsewhere")
+
         overlay = TeatreeOverlay()
         overlay.config.workspace_repos = []
         assert overlay.get_workspace_repos() == ["teatree"]
@@ -46,6 +75,47 @@ class TestGetWorkspaceRepos:
         overlay = TeatreeOverlay()
         overlay.config.workspace_repos = ["souliane/teatree"]
         assert overlay.get_workspace_repos() == ["souliane/teatree"]
+
+    def test_aggregates_teatree_and_toml_overlays(self, tmp_path: Path, monkeypatch, isolated_config: Path) -> None:
+        """Dynamic discovery aggregates teatree's repo + every ``[overlays.*].path``."""
+        workspace = tmp_path / "workspace"
+        (workspace / "souliane" / "teatree").mkdir(parents=True)
+        (workspace / "acme" / "t3-acme").mkdir(parents=True)
+
+        isolated_config.write_text(
+            f'[teatree]\nworkspace_dir = "{workspace}"\n\n'
+            f'[overlays.t3-acme]\npath = "{workspace / "acme" / "t3-acme"}"\n'
+            'class = "t3_acme.overlay:AcmeOverlay"\n',
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(overlay_mod, "_repo_root", lambda: workspace / "souliane" / "teatree")
+
+        overlay = TeatreeOverlay()
+        overlay.config.workspace_repos = []
+        repos = overlay.get_workspace_repos()
+
+        assert "souliane/teatree" in repos
+        assert "acme/t3-acme" in repos
+
+    def test_skips_overlays_outside_workspace_dir(self, tmp_path: Path, monkeypatch, isolated_config: Path) -> None:
+        """Overlays whose path sits outside ``workspace_dir`` are silently skipped."""
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        outside = tmp_path / "elsewhere" / "rogue"
+        outside.mkdir(parents=True)
+
+        isolated_config.write_text(
+            f'[teatree]\nworkspace_dir = "{workspace}"\n\n'
+            f'[overlays.rogue]\npath = "{outside}"\nclass = "rogue:Overlay"\n',
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(overlay_mod, "_repo_root", lambda: outside)
+
+        overlay = TeatreeOverlay()
+        overlay.config.workspace_repos = []
+        assert overlay.get_workspace_repos() == ["teatree"]
 
 
 class TestGetFollowupRepos:
