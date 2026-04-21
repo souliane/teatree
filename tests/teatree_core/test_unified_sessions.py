@@ -67,9 +67,11 @@ class TestBuildUnifiedSessions(TestCase):
         with patch("teatree.core.selectors.unified.build_active_sessions", return_value=[]):
             rows = build_unified_sessions()
 
-        assert len(rows) == 1
-        assert rows[0].row_status == "completed"
-        assert rows[0].result_summary == "Done"
+        # Completing the coding task auto-dispatches a testing task (issue #364),
+        # so the view contains both the completed coding row and the queued testing row.
+        completed = next(r for r in rows if r.task_id == task.pk)
+        assert completed.row_status == "completed"
+        assert completed.result_summary == "Done"
 
     def test_includes_failed_activity(self) -> None:
         ticket = Ticket.objects.create(state=Ticket.State.STARTED)

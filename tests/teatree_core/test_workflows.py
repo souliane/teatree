@@ -390,8 +390,11 @@ class TestTaskWorkflow(TestCase):
         ticket.save()
         assert ticket.state == Ticket.State.TESTED
 
-        review_task = Task.objects.filter(ticket=ticket, phase="reviewing").first()
-        assert review_task is not None
+        # start()/code()/test() each auto-schedule a task; the worker picks them
+        # up FIFO. Drain the coding + testing tasks (the "work" already happened
+        # above) so claim() returns the reviewing task we want to verify.
+        ticket.tasks.filter(phase__in=["coding", "testing"], status=Task.Status.PENDING).delete()
+        review_task = Task.objects.get(ticket=ticket, phase="reviewing")
         assert review_task.status == Task.Status.PENDING
 
         claimed_id = cast(

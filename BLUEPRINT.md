@@ -159,8 +159,8 @@ The central entity. One ticket per unit of work (maps to an issue/task in the tr
 | Method | Source → Target | Side effects |
 |--------|----------------|--------------|
 | `scope(issue_url=, variant=, repos=)` | not_started → scoped | Sets issue_url, variant, repos |
-| `start()` | scoped → started | — |
-| `code()` | started → coded | — |
+| `start()` | scoped → started | Calls `schedule_coding()` |
+| `code()` | started → coded | Calls `schedule_testing()` |
 | `test(passed=True)` | coded → tested | Stores `tests_passed` in extra; calls `schedule_review()` |
 | `review()` | tested → reviewed | Condition: reviewing task completed. Calls `schedule_shipping()` |
 | `ship(mr_urls=[])` | reviewed → shipped | Stores MR URLs in extra |
@@ -169,7 +169,14 @@ The central entity. One ticket per unit of work (maps to an issue/task in the tr
 | `mark_delivered()` | merged → delivered | — |
 | `rework()` | coded/tested/reviewed → started | Clears tests_passed, cancels pending tasks |
 
-**Auto-scheduling:** `test()` auto-creates a headless reviewing task. `review()` auto-creates a headless shipping task. Both use fresh sessions (bias-free evaluation).
+**Auto-scheduling:** each phase transition auto-creates the next-phase task in a fresh session (bias-free evaluation):
+
+- `start()` → headless coding task
+- `code()` → headless testing task
+- `test()` → headless reviewing task
+- `review()` → shipping task (execution target gated by `T3_AUTO_SHIP`)
+
+`schedule_shipping()` defaults to `ExecutionTarget.INTERACTIVE` so the user must explicitly approve the push. Set `T3_AUTO_SHIP=true` in the environment to make shipping headless.
 
 **`extra` structure:**
 
@@ -287,8 +294,13 @@ Represents a unit of work for an agent (headless or interactive).
 **Completion flow:** `complete()` → clears claim → calls `_advance_ticket()`:
 
 - If last attempt has `needs_user_input: true`: creates interactive followup task (same phase, parent_task linked, session carries the `agent_session_id` for resume)
-- If phase is "reviewing" and ticket is TESTED: calls `ticket.review()`
+- If phase is "scoping" and ticket is SCOPED: calls `ticket.start()` (→ schedules coding)
+- If phase is "coding" and ticket is STARTED: calls `ticket.code()` (→ schedules testing)
+- If phase is "testing" and ticket is CODED: calls `ticket.test(passed=True)` (→ schedules reviewing)
+- If phase is "reviewing" and ticket is TESTED: calls `ticket.review()` (→ schedules shipping)
 - If phase is "shipping" and ticket is REVIEWED: calls `ticket.ship()`
+
+Each guard is `phase + state` so repeat calls (e.g. from parallel child tasks) find the state mismatch and safely no-op after the first advance.
 
 **Session resume:** Both headless and interactive runners walk the `parent_task` chain to find a previous `agent_session_id`. When found, the CLI is invoked with `--resume <session_id>` to preserve full conversation context across execution mode switches.
 
