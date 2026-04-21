@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, patch
 from teatree.config import (
     E2ERepo,
     Mode,
+    OverlayEntry,
     _extract_settings_module,
     _resolve_ep_project_path,
     _write_update_cache,
@@ -18,7 +19,7 @@ from teatree.config import (
     discover_active_overlay,
     discover_overlays,
     get_data_dir,
-    get_mode,
+    get_effective_settings,
     load_config,
     load_e2e_repos,
     workspace_dir,
@@ -692,16 +693,28 @@ class TestMode:
         assert config.user.mode is Mode.AUTO
 
     def test_env_var_overrides_toml(self, tmp_path, monkeypatch):
+        """T3_MODE wins over the toml global — verified via get_effective_settings."""
         config_path = tmp_path / ".teatree.toml"
         _write_toml(config_path, '[teatree]\nmode = "auto"\n')
         monkeypatch.setenv("T3_MODE", "interactive")
-        config = load_config(config_path)
-        assert config.user.mode is Mode.INTERACTIVE
+        monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+        with (
+            patch("teatree.config.load_config", return_value=load_config(config_path)),
+            patch("teatree.config.discover_overlays", return_value=[]),
+            patch("teatree.config.discover_active_overlay", return_value=None),
+        ):
+            assert get_effective_settings().mode is Mode.INTERACTIVE
 
     def test_env_var_applies_without_toml(self, tmp_path, monkeypatch):
+        """T3_MODE applies even when no toml file exists."""
         monkeypatch.setenv("T3_MODE", "auto")
-        config = load_config(tmp_path / "nonexistent.toml")
-        assert config.user.mode is Mode.AUTO
+        monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+        with (
+            patch("teatree.config.load_config", return_value=load_config(tmp_path / "nonexistent.toml")),
+            patch("teatree.config.discover_overlays", return_value=[]),
+            patch("teatree.config.discover_active_overlay", return_value=None),
+        ):
+            assert get_effective_settings().mode is Mode.AUTO
 
     def test_load_config_invalid_mode_raises(self, tmp_path, monkeypatch):
         monkeypatch.delenv("T3_MODE", raising=False)
@@ -716,10 +729,134 @@ class TestMode:
     def test_get_mode_reflects_loaded_config(self, monkeypatch):
         from teatree.config import TeaTreeConfig, UserSettings  # noqa: PLC0415
 
+        monkeypatch.delenv("T3_MODE", raising=False)
+        monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+
         auto_config = TeaTreeConfig(user=UserSettings(mode=Mode.AUTO))
-        with patch("teatree.config.load_config", return_value=auto_config):
-            assert get_mode() is Mode.AUTO
+        with (
+            patch("teatree.config.load_config", return_value=auto_config),
+            patch("teatree.config.discover_overlays", return_value=[]),
+            patch("teatree.config.discover_active_overlay", return_value=None),
+        ):
+            assert get_effective_settings().mode is Mode.AUTO
 
         interactive_config = TeaTreeConfig(user=UserSettings(mode=Mode.INTERACTIVE))
-        with patch("teatree.config.load_config", return_value=interactive_config):
-            assert get_mode() is Mode.INTERACTIVE
+        with (
+            patch("teatree.config.load_config", return_value=interactive_config),
+            patch("teatree.config.discover_overlays", return_value=[]),
+            patch("teatree.config.discover_active_overlay", return_value=None),
+        ):
+            assert get_effective_settings().mode is Mode.INTERACTIVE
+
+
+# ── per-overlay override machinery ───────────────────────────────────
+
+
+class TestOverlayOverrides:
+    """Per-overlay overrides for any key in ``OVERLAY_OVERRIDABLE_SETTINGS``.
+
+    The resolution chain is env (where applicable) → active overlay override
+    → global → dataclass default. The active overlay is picked via
+    ``T3_OVERLAY_NAME`` when set, else cwd-based discovery.
+    """
+
+    def test_overlay_toml_mode_parsed(self, tmp_path):
+        config_path = tmp_path / ".teatree.toml"
+        _write_toml(
+            config_path,
+            """
+[teatree]
+mode = "interactive"
+
+[overlays.my-overlay]
+class = "x.y:Z"
+mode = "auto"
+""",
+        )
+        entries = discover_overlays(config_path=config_path)
+        by_name = {e.name: e for e in entries}
+        assert by_name["my-overlay"].overrides["mode"] is Mode.AUTO
+
+    def test_overlay_invalid_mode_raises(self, tmp_path):
+        config_path = tmp_path / ".teatree.toml"
+        _write_toml(
+            config_path,
+            """
+[overlays.my-overlay]
+class = "x.y:Z"
+mode = "nope"
+""",
+        )
+        import pytest  # noqa: PLC0415
+
+        with pytest.raises(ValueError, match="Invalid t3 mode"):
+            discover_overlays(config_path=config_path)
+
+    def test_overlay_override_wins_over_global(self, monkeypatch):
+        from teatree.config import TeaTreeConfig, UserSettings  # noqa: PLC0415
+
+        monkeypatch.delenv("T3_MODE", raising=False)
+        monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+
+        global_config = TeaTreeConfig(user=UserSettings(mode=Mode.INTERACTIVE, branch_prefix="ac"))
+        active = OverlayEntry(
+            name="my-overlay",
+            overlay_class="x",
+            overrides={"mode": Mode.AUTO, "branch_prefix": "xp"},
+        )
+        with (
+            patch("teatree.config.load_config", return_value=global_config),
+            patch("teatree.config.discover_overlays", return_value=[active]),
+            patch("teatree.config.discover_active_overlay", return_value=active),
+        ):
+            effective = get_effective_settings()
+            assert effective.mode is Mode.AUTO
+            assert effective.branch_prefix == "xp"
+            assert get_effective_settings().mode is Mode.AUTO
+
+    def test_overlay_without_override_inherits_global(self, monkeypatch):
+        from teatree.config import TeaTreeConfig, UserSettings  # noqa: PLC0415
+
+        monkeypatch.delenv("T3_MODE", raising=False)
+        monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+
+        global_config = TeaTreeConfig(user=UserSettings(mode=Mode.AUTO))
+        active = OverlayEntry(name="x", overlay_class="y", overrides={})
+        with (
+            patch("teatree.config.load_config", return_value=global_config),
+            patch("teatree.config.discover_overlays", return_value=[active]),
+            patch("teatree.config.discover_active_overlay", return_value=active),
+        ):
+            assert get_effective_settings().mode is Mode.AUTO
+
+    def test_env_var_beats_overlay_override(self, monkeypatch):
+        from teatree.config import TeaTreeConfig, UserSettings  # noqa: PLC0415
+
+        monkeypatch.setenv("T3_MODE", "interactive")
+        monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+
+        global_config = TeaTreeConfig(user=UserSettings(mode=Mode.INTERACTIVE))
+        active = OverlayEntry(name="x", overlay_class="y", overrides={"mode": Mode.AUTO})
+        with (
+            patch("teatree.config.load_config", return_value=global_config),
+            patch("teatree.config.discover_overlays", return_value=[active]),
+            patch("teatree.config.discover_active_overlay", return_value=active),
+        ):
+            assert get_effective_settings().mode is Mode.INTERACTIVE
+
+    def test_t3_overlay_name_selects_entry(self, monkeypatch):
+        from teatree.config import TeaTreeConfig, UserSettings  # noqa: PLC0415
+
+        monkeypatch.delenv("T3_MODE", raising=False)
+        monkeypatch.setenv("T3_OVERLAY_NAME", "b")
+
+        global_config = TeaTreeConfig(user=UserSettings(mode=Mode.INTERACTIVE))
+        entry_a = OverlayEntry(name="a", overlay_class="x", overrides={"mode": Mode.INTERACTIVE})
+        entry_b = OverlayEntry(name="b", overlay_class="y", overrides={"mode": Mode.AUTO})
+        with (
+            patch("teatree.config.load_config", return_value=global_config),
+            patch("teatree.config.discover_overlays", return_value=[entry_a, entry_b]),
+            # cwd-based fallback would pick "a" — but T3_OVERLAY_NAME must win.
+            patch("teatree.config.discover_active_overlay", return_value=entry_a),
+        ):
+            assert get_effective_settings().mode is Mode.AUTO
