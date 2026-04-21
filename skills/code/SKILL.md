@@ -6,7 +6,6 @@ requires:
   - workspace
 companions:
   - test-driven-development
-  - verification-before-completion
 triggers:
   priority: 70
   keywords:

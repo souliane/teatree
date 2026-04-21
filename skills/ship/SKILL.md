@@ -7,7 +7,6 @@ requires:
   - rules
 companions:
   - finishing-a-development-branch
-  - verification-before-completion
 triggers:
   priority: 10
   exclude: '\breview\b'
