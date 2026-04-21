@@ -92,6 +92,52 @@ If the environment seems incomplete (missing `uv`, hooks not firing, overlay abs
 
 All workspace operations go through the `t3` CLI. Run `t3 <overlay> --help` for the full command list. Key command groups: `lifecycle` (setup/start/restart/teardown), `workspace` (ticket/finalize/clean-all), `run` (backend/frontend/tests), `db` (refresh/restore-ci/reset-passwords).
 
+## Cleanup Patterns
+
+`t3 <overlay> workspace clean-all` is the entry point for all cleanup. It prunes merged worktrees, drops orphaned databases, classifies and removes stale local branches (gone-remote, fully-merged, **squash-merged via subject match**), drops orphaned stashes, removes empty workspace dirs, and prunes old DSLR snapshots. The squash-merge classifier handles `(#NNN)` suffixes and `relax:` → `feat(scope):` prefix rewrites, so squash-merged branches don't appear as "unsynced".
+
+### Single-repo cleanup
+
+From the overlay or main clone:
+
+```bash
+t3 <overlay> workspace clean-all
+```
+
+### Multi-repo cleanup
+
+`clean-all` operates on the current working directory for branch and stash pruning. When a session has touched multiple independent repos (overlay repo, `$T3_REPO`, skills/dotfiles repos), loop:
+
+```bash
+for repo in "$T3_REPO" ~/workspace/<overlay>/<overlay-repo> ~/workspace/<skills-repo>; do
+  (cd "$repo" && t3 <overlay> workspace clean-all)
+done
+```
+
+Worktree pruning, orphan databases, and DSLR snapshots are global to the overlay's DB and only need to run once. Branch and stash pruning needs to run **per repo**.
+
+### Triage of "WARNING: branch X has N unpushed commits" output
+
+When `clean-all` skips a branch with this warning, the branch has commits the classifier could not match to anything on `origin/main`. Triage manually:
+
+1. **Enumerate** the unique commits: `git log --oneline origin/main..<branch>`
+2. **For each commit**, classify:
+   - **Already on main via different SHA** — verify by grepping `git log --all --oneline --grep="<subject>"` or by comparing changed file paths. If the content is reachable from main, the branch is safe to delete.
+   - **Already shipped via a different open PR** — search `gh pr list --search "<file path>"` or `git log --oneline --all -- <changed-file>`. If shipped, branch is safe to delete.
+   - **Unique unpushed work** — keep, then choose a delivery path: bundle into an open related PR (see [`../t3:ship/SKILL.md`](../t3:ship/SKILL.md) § "Bundle Into an Existing Open PR"), open a dedicated PR, or explicitly mark as a never-merge dev override.
+3. **After verification**, force-delete: `git branch -D <branch>` and `git worktree remove --force <path>` if a worktree exists.
+
+### Orphan stash verification
+
+`clean-all` drops only stashes whose source branch is gone. For stashes you encounter on existing branches, verify before dropping:
+
+```bash
+git stash show -p stash@{N}  # inspect the diff
+# Grep main for the changed lines/sections to confirm content is on main
+```
+
+If the content is on `main` (typical for stashes that pre-date a squash-merged branch), drop with `git stash drop stash@{N}`.
+
 ## Rules
 
 ### Plan Before Executing
