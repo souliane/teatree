@@ -349,6 +349,42 @@ For each touched repo, collect and display:
 7. Suggest consolidating multiple commits targeting the same skill into one
 8. Present a concrete consolidation proposal and ask before acting
 
+#### Squash-merge cross-check (Non-Negotiable)
+
+Before treating any local branch or stash as "unpushed work", **cross-reference against merged PRs**. Squash merges create new commit hashes — ancestry checks return false even when the work is already on main. A false-positive here leads to pushing stale content or recommitting already-merged changes.
+
+For each candidate branch, run **both** checks:
+
+1. **Subject match** — does the branch's tip commit subject match a merged PR's title?
+
+   ```bash
+   gh pr list --repo <org>/<repo> --state merged --limit 80 --json number,title > /tmp/merged.json
+   ```
+
+   Strip `\s*\(#\d+\)$` from both `git log -1 --pretty=%s <branch>` and each `pr.title`. An exact match = squash-merged → safe to delete.
+
+2. **File existence check for stashes / orphan commits** — if the stash/branch edits a file, does that file still exist on main? `git show main:<path>` — if the file was deleted by a merged PR, the stash is obsolete regardless of subject.
+
+Any branch or stash that fails to match via (1) AND whose files still exist per (2) **must be treated as real unpushed work** and surfaced to the user with a concrete choice (push+PR / drop / show diff).
+
+Store the Python helper inline when needed — 20+ branches across 2 repos is repetitive enough to justify a script. Small script recipe (save output to `/tmp/` for session reuse):
+
+```python
+# Input: gh pr list --state merged JSON at /tmp/merged.json, list of branches to check
+# Output: classification per branch (SAFE_TO_DELETE / NEEDS_REVIEW / NO_COMMITS_AHEAD)
+import json, subprocess, re
+with open("/tmp/merged.json") as f:
+    merged = {re.sub(r"\s*\(#\d+\)$", "", p["title"]).strip() for p in json.load(f)}
+for b in branches:
+    subj = re.sub(r"\s*\(#\d+\)$", "",
+        subprocess.check_output(["git", "log", "-1", "--pretty=%s", b], text=True).strip()).strip()
+    ahead = subprocess.check_output(["git", "log", "origin/main..%s" % b, "--pretty=%s"], text=True).strip().splitlines()
+    status = "SAFE_TO_DELETE" if subj in merged else ("NEEDS_REVIEW" if ahead else "NO_COMMITS_AHEAD")
+    print(f"{status:20} {b}")
+```
+
+`NEEDS_REVIEW` branches may still be merged — the PR may have a retitled subject. Fall back to broader needle searches (`gh pr list --search "<keyword>"`) or ask the user before deleting.
+
 ### 6. Verification
 
 After applying all fixes:
