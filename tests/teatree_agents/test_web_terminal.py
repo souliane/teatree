@@ -7,6 +7,7 @@ from django.test import TestCase
 
 import teatree.agents.terminal_launcher as terminal_launcher_mod
 import teatree.agents.web_terminal as web_terminal_mod
+import teatree.utils.run as utils_run_mod
 from teatree.agents.web_terminal import (
     _get_resume_session_id,
     launch_web_session,
@@ -65,7 +66,7 @@ class TestLaunchWebSession(TestCase):
         with (
             patch.object(web_terminal_mod.shutil, "which", side_effect=lambda name: f"/usr/bin/{name}"),
             patch.object(terminal_launcher_mod, "find_free_port", return_value=8888),
-            patch.object(terminal_launcher_mod.subprocess, "Popen", new_callable=MagicMock),
+            patch.object(utils_run_mod.subprocess, "Popen", new_callable=MagicMock),
         ):
             session = Session.objects.create(ticket=self.ticket)
             task = Task.objects.create(ticket=self.ticket, session=session)
@@ -105,7 +106,7 @@ class TestLaunchWebSession(TestCase):
         with (
             patch.object(web_terminal_mod.shutil, "which", side_effect=lambda name: f"/usr/bin/{name}"),
             patch.object(terminal_launcher_mod, "find_free_port", return_value=7777),
-            patch.object(terminal_launcher_mod.subprocess, "Popen", new_callable=MagicMock) as popen_mock,
+            patch.object(utils_run_mod.subprocess, "Popen", new_callable=MagicMock) as popen_mock,
         ):
             session = Session.objects.create(
                 ticket=self.ticket,
@@ -127,7 +128,7 @@ class TestLaunchWebSession(TestCase):
         with (
             patch.object(web_terminal_mod.shutil, "which", side_effect=lambda name: f"/usr/bin/{name}"),
             patch.object(terminal_launcher_mod, "find_free_port", return_value=7777),
-            patch.object(terminal_launcher_mod.subprocess, "Popen", new_callable=MagicMock) as popen_mock,
+            patch.object(utils_run_mod.subprocess, "Popen", new_callable=MagicMock) as popen_mock,
         ):
             session = Session.objects.create(ticket=self.ticket, agent_id="not-a-uuid")
             task = Task.objects.create(ticket=self.ticket, session=session)

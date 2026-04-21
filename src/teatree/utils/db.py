@@ -1,5 +1,6 @@
 import os
-import subprocess
+
+from teatree.utils.run import CommandFailedError, run_allowed_to_fail, run_checked
 
 
 def pg_env() -> dict[str, str]:
@@ -37,11 +38,10 @@ def _check_truncation(stderr: str, db_name: str, dump_path: str) -> None:
 
 
 def drop_db(db_name: str) -> None:
-    subprocess.run(
+    # ``--if-exists`` makes dropdb tolerate missing DBs (rc=0); any other non-zero is a real error.
+    run_checked(
         ["dropdb", "-h", pg_host(), "-U", pg_user(), "--if-exists", db_name],
         env=pg_env(),
-        capture_output=True,
-        check=False,
     )
 
 
@@ -50,10 +50,10 @@ def db_restore(db_name: str, dump_path: str) -> None:
     host = pg_host()
     user = pg_user()
 
-    subprocess.run(["dropdb", "-h", host, "-U", user, "--if-exists", db_name], env=env, check=False)
-    subprocess.run(["createdb", "-h", host, "-U", user, db_name], env=env, check=True)
+    run_checked(["dropdb", "-h", host, "-U", user, "--if-exists", db_name], env=env)
+    run_checked(["createdb", "-h", host, "-U", user, db_name], env=env)
 
-    inspection = subprocess.run(["pg_restore", "-l", dump_path], capture_output=True, text=True, check=False)
+    inspection = run_allowed_to_fail(["pg_restore", "-l", dump_path], expected_codes=None)
     if inspection.returncode == 0:
         jobs = min(os.cpu_count() or 2, 4)
         cmd = [
@@ -69,38 +69,29 @@ def db_restore(db_name: str, dump_path: str) -> None:
             f"--jobs={jobs}",
             dump_path,
         ]
-        restore = subprocess.run(
-            cmd,
-            env=env,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if restore.returncode != 0:
+        try:
+            restore = run_checked(cmd, env=env)
+        except CommandFailedError as exc:
             msg = f"pg_restore failed for {db_name} from {dump_path}"
-            raise RuntimeError(msg)
+            raise RuntimeError(msg) from exc
         _check_truncation(restore.stderr, db_name, dump_path)
         return
 
-    restore = subprocess.run(
-        ["psql", "-h", host, "-U", user, "-d", db_name, "-f", dump_path],
-        env=env,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if restore.returncode != 0:
+    try:
+        restore = run_checked(
+            ["psql", "-h", host, "-U", user, "-d", db_name, "-f", dump_path],
+            env=env,
+        )
+    except CommandFailedError as exc:
         msg = f"psql restore failed for {db_name} from {dump_path}"
-        raise RuntimeError(msg)
+        raise RuntimeError(msg) from exc
     _check_truncation(restore.stderr, db_name, dump_path)
 
 
 def db_exists(db_name: str) -> bool:
-    result = subprocess.run(
+    result = run_allowed_to_fail(
         ["psql", "-h", pg_host(), "-U", pg_user(), "-lqt"],
         env=pg_env(),
-        capture_output=True,
-        text=True,
-        check=False,
+        expected_codes=None,
     )
     return any(line.split("|")[0].strip() == db_name for line in result.stdout.splitlines() if line)

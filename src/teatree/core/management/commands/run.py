@@ -1,5 +1,4 @@
 import os
-import subprocess  # noqa: S404
 import urllib.request
 from typing import TYPE_CHECKING, cast
 
@@ -14,6 +13,7 @@ from teatree.core.overlay_loader import get_overlay
 from teatree.core.resolve import resolve_worktree
 from teatree.types import RunCommand, RunCommands
 from teatree.utils.ports import find_free_ports, get_worktree_ports
+from teatree.utils.run import run_streamed, spawn
 
 
 class Command(TyperCommand):
@@ -96,7 +96,7 @@ class Command(TyperCommand):
         env.pop("VIRTUAL_ENV", None)
 
         cmd = ["docker", "compose", "-p", project, "-f", compose_file, "up", "-d", "web"]
-        subprocess.run(cmd, env=env, check=False)  # noqa: S603
+        run_streamed(cmd, env=env, check=False)
         return "Backend started via docker-compose."
 
     @command()
@@ -149,7 +149,7 @@ class Command(TyperCommand):
         self.stdout.write(f"  Starting frontend on port {frontend_port}: {' '.join(args)}")
         if cwd:
             self.stdout.write(f"  cwd: {cwd}")
-        subprocess.Popen(args, cwd=cwd, env=env)  # noqa: S603
+        spawn(args, cwd=cwd, env=env)
         return f"Frontend started on port {frontend_port} (background process)."
 
     @command(name="build-frontend")
@@ -165,7 +165,7 @@ class Command(TyperCommand):
             return "No build-frontend command configured in the overlay."
         run_args = cmd.args if isinstance(cmd, RunCommand) else list(cmd)
         cwd = cmd.cwd if isinstance(cmd, RunCommand) else None
-        subprocess.run(run_args, cwd=cwd, check=True)  # noqa: S603
+        run_streamed(run_args, cwd=cwd)
         return "Frontend built."
 
     @command(context_settings={"allow_extra_args": True, "allow_interspersed_args": False})
@@ -196,7 +196,7 @@ class Command(TyperCommand):
         env = {**os.environ, **overlay.get_env_extra(worktree)}
         env.pop("VIRTUAL_ENV", None)
 
-        result = subprocess.run(args, cwd=cwd, env=env, check=False)  # noqa: S603
-        if result.returncode != 0:
-            return f"Tests failed (exit {result.returncode})."
+        rc = run_streamed(args, cwd=cwd, env=env, check=False)
+        if rc != 0:
+            return f"Tests failed (exit {rc})."
         return "Tests completed."

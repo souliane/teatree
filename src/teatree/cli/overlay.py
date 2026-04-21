@@ -4,11 +4,12 @@ import json as _json
 import logging
 import os
 import shutil
-import subprocess  # noqa: S404
 import sys
 from pathlib import Path
 
 import typer
+
+from teatree.utils.run import run_streamed, spawn
 
 logger = logging.getLogger(__name__)
 
@@ -133,14 +134,10 @@ def managepy(project_path: Path | None, *args: str, overlay_name: str = "") -> N
 
     if project_path and (project_path / "manage.py").is_file():
         cmd = uv_cmd(project_path, "python", "manage.py", *args)
-        subprocess.run(cmd, cwd=project_path, env=env, check=True)  # noqa: S603
+        run_streamed(cmd, cwd=project_path, env=env)
     else:
         env.setdefault("DJANGO_SETTINGS_MODULE", "teatree.settings")
-        subprocess.run(  # noqa: S603
-            [sys.executable, "-m", "teatree", *args],
-            env=env,
-            check=True,
-        )
+        run_streamed([sys.executable, "-m", "teatree", *args], env=env)
 
 
 def _uvicorn(
@@ -165,9 +162,9 @@ def _uvicorn(
             str(port),
             "--reload",
         ]
-        subprocess.run(cmd, cwd=project_path, env=env, check=False)  # noqa: S603
+        run_streamed(cmd, cwd=project_path, env=env, check=False)
     else:
-        subprocess.run(  # noqa: S603
+        run_streamed(
             [
                 sys.executable,
                 "-m",
@@ -249,7 +246,7 @@ class OverlayAppBuilder:
                 env["T3_OVERLAY_NAME"] = overlay_name
             processes = []
             for _ in range(count):
-                p = subprocess.Popen(  # noqa: S603
+                p = spawn(
                     [
                         *uv_cmd(project_path, "python", manage_py, "db_worker"),
                         "--interval",
@@ -399,15 +396,9 @@ class OverlayAppBuilder:
                 raise typer.Exit(code=1)
 
             if follow:
-                subprocess.run(  # noqa: S603
-                    ["tail", "-f", "-n", str(lines), str(log_file)],
-                    check=False,
-                )
+                run_streamed(["tail", "-f", "-n", str(lines), str(log_file)], check=False)
             else:
-                subprocess.run(  # noqa: S603
-                    ["tail", "-n", str(lines), str(log_file)],
-                    check=False,
-                )
+                run_streamed(["tail", "-n", str(lines), str(log_file)], check=False)
 
         self.overlay_app.add_typer(config_group, name="config")
 

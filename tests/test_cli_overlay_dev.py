@@ -112,7 +112,7 @@ class TestEnsureSiblingWorktree:
         main_clone = tmp_path / "main" / "example-overlay"
         main_clone.mkdir(parents=True)
 
-        with patch("teatree.cli.overlay_dev.subprocess.run") as run:
+        with patch("teatree.utils.run.subprocess.run") as run:
             run.return_value = MagicMock(returncode=0, stdout="", stderr="")
             result = _ensure_sibling_worktree(teatree_wt, main_clone, branch="ac-teatree-120")
 
@@ -139,7 +139,7 @@ class TestEnsureSiblingWorktree:
                 return MagicMock(returncode=0, stdout="refs/remotes/origin/development\n", stderr="")
             return MagicMock(returncode=0, stdout="", stderr="")
 
-        with patch("teatree.cli.overlay_dev.subprocess.run", side_effect=fake_run):
+        with patch("teatree.utils.run.subprocess.run", side_effect=fake_run):
             _ensure_sibling_worktree(teatree_wt, main_clone, branch="missing-branch")
 
         add_cmd = next(c for c in calls if "add" in c)
@@ -154,7 +154,7 @@ class TestUvPipInstall:
         overlay = tmp_path / "example-overlay"
         overlay.mkdir()
 
-        with patch("teatree.cli.overlay_dev.subprocess.run") as run:
+        with patch("teatree.utils.run.subprocess.run") as run:
             run.return_value = MagicMock(returncode=0)
             _uv_pip_install_editable(worktree, overlay)
 
@@ -163,7 +163,7 @@ class TestUvPipInstall:
         assert "--editable" in cmd
         assert "--no-deps" in cmd
         assert str(overlay) in cmd
-        assert run.call_args.kwargs["cwd"] == worktree
+        assert str(run.call_args.kwargs["cwd"]) == str(worktree)
 
 
 class TestInstallCommand:
@@ -183,7 +183,7 @@ class TestInstallCommand:
             captured.append(cmd)
             return MagicMock(returncode=0, stdout="main\n", stderr="")
 
-        with patch("teatree.cli.overlay_dev.subprocess.run", side_effect=fake_run):
+        with patch("teatree.utils.run.subprocess.run", side_effect=fake_run):
             result = CliRunner().invoke(overlay_dev_app, ["install", "example-overlay"])
 
         assert result.exit_code == 0, result.output
@@ -209,7 +209,7 @@ class TestUninstallCommand:
             captured.append(cmd)
             return MagicMock(returncode=0)
 
-        with patch("teatree.cli.overlay_dev.subprocess.run", side_effect=fake_run):
+        with patch("teatree.utils.run.subprocess.run", side_effect=fake_run):
             result = CliRunner().invoke(overlay_dev_app, ["uninstall", "example-overlay"])
 
         assert result.exit_code == 0, result.output

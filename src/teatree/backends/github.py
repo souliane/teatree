@@ -1,12 +1,12 @@
 """GitHub backend — code host and project board sync via ``gh`` CLI."""
 
 import json
-import subprocess  # noqa: S404
 from dataclasses import dataclass
 from typing import cast
 
 from teatree.backends.protocols import PullRequestSpec
 from teatree.core.sync import RawAPIDict
+from teatree.utils.run import CompletedProcess, run_checked
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,12 +22,12 @@ class ProjectItem:
     updated_at: str = ""
 
 
-def _run_gh(*args: str, token: str = "") -> subprocess.CompletedProcess[str]:
+def _run_gh(*args: str, token: str = "") -> CompletedProcess[str]:
     """Run a ``gh`` CLI command and return the result."""
     cmd = list(args)
     if token:
         cmd.extend(["--header", f"Authorization: Bearer {token}"])
-    return subprocess.run(cmd, capture_output=True, text=True, check=True)  # noqa: S603
+    return run_checked(cmd)
 
 
 def _gh_api_get(endpoint: str, *, token: str = "") -> object:
@@ -58,13 +58,7 @@ def _gh_api_post(endpoint: str, payload: dict[str, object], *, token: str = "") 
     ]
     if token:
         cmd.extend(["--header", f"Authorization: Bearer {token}"])
-    result = subprocess.run(  # noqa: S603
-        cmd,
-        capture_output=True,
-        text=True,
-        check=True,
-        input=json.dumps(payload),
-    )
+    result = run_checked(cmd, stdin_text=json.dumps(payload))
     return json.loads(result.stdout)
 
 
@@ -83,13 +77,7 @@ def _gh_api_patch(endpoint: str, payload: dict[str, object], *, token: str = "")
     ]
     if token:
         cmd.extend(["--header", f"Authorization: Bearer {token}"])
-    result = subprocess.run(  # noqa: S603
-        cmd,
-        capture_output=True,
-        text=True,
-        check=True,
-        input=json.dumps(payload),
-    )
+    result = run_checked(cmd, stdin_text=json.dumps(payload))
     return json.loads(result.stdout)
 
 
@@ -98,7 +86,7 @@ def _gh_graphql(query: str, *, token: str = "") -> dict[str, object]:
     cmd = ["gh", "api", "graphql", "-f", f"query={query}"]
     if token:
         cmd.extend(["--header", f"Authorization: Bearer {token}"])
-    result = subprocess.run(cmd, capture_output=True, text=True, check=True)  # noqa: S603
+    result = run_checked(cmd)
     return json.loads(result.stdout)
 
 

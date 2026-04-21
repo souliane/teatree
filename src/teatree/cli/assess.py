@@ -1,7 +1,6 @@
 """Assess CLI — run deterministic codebase metrics and track history."""
 
 import json
-import subprocess  # noqa: S404
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -9,6 +8,8 @@ from pathlib import Path
 import typer
 from rich.console import Console
 from rich.table import Table
+
+from teatree.utils.run import run_allowed_to_fail
 
 assess_app = typer.Typer(no_args_is_help=True, help="Codebase health assessment.")
 console = Console()
@@ -41,12 +42,10 @@ def run_assessment(
         typer.echo("ac-reviewing-codebase skill not found. Install: apm install souliane/skills/ac-reviewing-codebase")
         raise typer.Exit(1)
 
-    result = subprocess.run(  # noqa: S603
+    result = run_allowed_to_fail(
         [sys.executable, str(cli_path), "assess", "--root", str(root), "--json"],
-        capture_output=True,
-        text=True,
+        expected_codes=None,
         timeout=120,
-        check=False,
     )
     if result.returncode != 0:
         typer.echo(f"Assessment failed: {result.stderr.strip()}")

@@ -240,6 +240,16 @@ class OverlayBase(ABC):
     def get_env_extra(self, worktree: "Worktree") -> dict[str, str]:
         return {}
 
+    def declared_env_keys(self) -> set[str]:
+        """Return every env key this overlay may contribute to the cache.
+
+        Used by ``tests/test_env_contract.py`` to assert that every
+        ``${VAR}`` reference in overlay compose templates has a declared
+        producer.  Default is the empty set — overlays that contribute
+        nothing extra need not override this.
+        """
+        return set()
+
     def get_db_import_strategy(self, worktree: "Worktree") -> DbImportStrategy | None:
         return None
 

@@ -19,6 +19,7 @@ import teatree.cli as cli_mod
 import teatree.config as config_mod
 import teatree.core.overlay_loader as overlay_loader_mod
 import teatree.core.resolve as resolve_mod
+import teatree.utils.run as utils_run_mod
 from teatree.cli import (
     _detect_agent_ticket_status,
     _ensure_editable_if_contributing,
@@ -81,7 +82,7 @@ class TestDocsCommand:
         monkeypatch.setitem(sys.modules, "mkdocs", fake_mkdocs)
 
         with (
-            patch.object(cli_mod.subprocess, "run") as mock_run,
+            patch.object(utils_run_mod.subprocess, "run") as mock_run,
             patch("teatree.cli._maybe_show_update_notice"),
         ):
             mock_run.return_value = MagicMock(returncode=0)

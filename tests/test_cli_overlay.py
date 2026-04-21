@@ -17,9 +17,9 @@ from typer.testing import CliRunner
 import teatree.autostart as autostart_mod
 import teatree.cli as cli_mod
 import teatree.cli.overlay as cli_overlay_mod
-import teatree.cli.review as cli_review_mod
 import teatree.config as config_mod
 import teatree.core.overlay_loader as overlay_loader_mod
+import teatree.utils.run as utils_run_mod
 from teatree.cli import register_overlay_commands
 from teatree.cli.overlay import OverlayAppBuilder, managepy, uv_cmd
 from teatree.cli.overlay import _uvicorn as _uvicorn_fn
@@ -45,7 +45,7 @@ class TestUvCmd:
 class TestManagepy:
     def test_none_path_falls_back_to_python_m_teatree(self):
         """managepy(None) falls back to ``python -m teatree``."""
-        with patch.object(cli_overlay_mod.subprocess, "run") as mock_run:
+        with patch.object(utils_run_mod.subprocess, "run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0)
             managepy(None, "migrate")
             mock_run.assert_called_once()
@@ -55,7 +55,7 @@ class TestManagepy:
 
     def test_no_manage_py_falls_back_to_python_m_teatree(self, tmp_path):
         """Managepy with no manage.py falls back to ``python -m teatree``."""
-        with patch.object(cli_overlay_mod.subprocess, "run") as mock_run:
+        with patch.object(utils_run_mod.subprocess, "run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0)
             managepy(tmp_path, "migrate")
             mock_run.assert_called_once()
@@ -65,7 +65,7 @@ class TestManagepy:
 
     def test_runs_subprocess(self, tmp_path):
         (tmp_path / "manage.py").write_text("pass\n")
-        with patch.object(cli_overlay_mod.subprocess, "run") as mock_run:
+        with patch.object(utils_run_mod.subprocess, "run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0)
             managepy(tmp_path, "migrate")
             mock_run.assert_called_once()
@@ -73,7 +73,7 @@ class TestManagepy:
     def test_sets_overlay_name_env_var(self, tmp_path):
         """Managepy propagates overlay_name as T3_OVERLAY_NAME in subprocess env."""
         (tmp_path / "manage.py").write_text("pass\n")
-        with patch.object(cli_overlay_mod.subprocess, "run") as mock_run:
+        with patch.object(utils_run_mod.subprocess, "run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0)
             managepy(tmp_path, "migrate", overlay_name="t3-acme")
             env = mock_run.call_args[1]["env"]
@@ -82,7 +82,7 @@ class TestManagepy:
     def test_omits_overlay_name_when_empty(self, tmp_path):
         """Managepy does not set T3_OVERLAY_NAME when overlay_name is empty."""
         (tmp_path / "manage.py").write_text("pass\n")
-        with patch.object(cli_overlay_mod.subprocess, "run") as mock_run:
+        with patch.object(utils_run_mod.subprocess, "run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0)
             managepy(tmp_path, "migrate")
             env = mock_run.call_args[1]["env"]
@@ -92,7 +92,7 @@ class TestManagepy:
 class TestUvicorn:
     def test_none_path_falls_back_to_python_m_uvicorn(self):
         """_uvicorn(None, ...) falls back to ``python -m uvicorn``."""
-        with patch.object(cli_overlay_mod.subprocess, "run") as mock_run:
+        with patch.object(utils_run_mod.subprocess, "run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0)
             _uvicorn_fn(None, "127.0.0.1", 8000)
             mock_run.assert_called_once()
@@ -102,7 +102,7 @@ class TestUvicorn:
 
     def test_runs_subprocess_with_project_path(self, tmp_path):
         (tmp_path / "manage.py").write_text("pass\n")
-        with patch.object(cli_overlay_mod.subprocess, "run") as mock_run:
+        with patch.object(utils_run_mod.subprocess, "run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0)
             _uvicorn_fn(tmp_path, "127.0.0.1", 8000, "myapp.settings")
             mock_run.assert_called_once()
@@ -113,7 +113,7 @@ class TestUvicorn:
             assert "teatree.asgi:application" in str(call_args)
 
     def test_sets_overlay_name_env_var_in_uvicorn(self):
-        with patch.object(cli_overlay_mod.subprocess, "run") as mock_run:
+        with patch.object(utils_run_mod.subprocess, "run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0)
             _uvicorn_fn(None, "127.0.0.1", 8000, overlay_name="t3-acme")
             env = mock_run.call_args[1]["env"]
@@ -223,7 +223,7 @@ class TestOverlayCommands:
         with (
             patch.object(cli_mod, "managepy") as mock_manage,
             patch.object(cli_mod, "_uvicorn") as mock_uvicorn,
-            patch.object(cli_mod, "subprocess"),
+            patch.object(utils_run_mod, "subprocess"),
             patch("teatree.cli.discover_active_overlay", return_value=self._mock_active_overlay(tmp_path)),
             patch("socket.socket") as mock_socket_cls,
             self._mock_guard(),
@@ -268,7 +268,7 @@ class TestOverlayCommands:
         with (
             patch.object(cli_mod, "managepy"),
             patch.object(cli_mod, "_uvicorn") as mock_uvicorn,
-            patch.object(cli_mod, "subprocess"),
+            patch.object(utils_run_mod, "subprocess"),
             patch("teatree.cli.discover_active_overlay", return_value=self._mock_active_overlay(tmp_path)),
             patch("socket.socket", side_effect=socket_factory),
             self._mock_guard(),
@@ -317,7 +317,7 @@ class TestOverlayCommands:
         with (
             patch.object(cli_mod, "managepy"),
             patch.object(cli_mod, "_uvicorn"),
-            patch.object(cli_mod, "subprocess"),
+            patch.object(utils_run_mod, "subprocess"),
             patch("teatree.cli.discover_active_overlay", return_value=self._mock_active_overlay(tmp_path)),
             patch("socket.socket") as mock_socket_cls,
             patch.object(cli_mod, "DashboardGuard", return_value=guard),
@@ -420,7 +420,7 @@ class TestOverlaySubcommands:
         mock_proc = MagicMock()
         mock_proc.wait.return_value = 0
 
-        with patch.object(cli_overlay_mod.subprocess, "Popen", return_value=mock_proc) as mock_popen:
+        with patch.object(utils_run_mod.subprocess, "Popen", return_value=mock_proc) as mock_popen:
             result = test_runner.invoke(overlay_app, ["worker", "--count", "2"])
             assert result.exit_code == 0
             assert mock_popen.call_count == 2
@@ -435,7 +435,7 @@ class TestOverlaySubcommands:
         mock_proc = MagicMock()
         mock_proc.wait.return_value = 0
 
-        with patch.object(cli_overlay_mod.subprocess, "Popen", return_value=mock_proc) as mock_popen:
+        with patch.object(utils_run_mod.subprocess, "Popen", return_value=mock_proc) as mock_popen:
             result = test_runner.invoke(overlay_app, ["worker", "--count", "1"])
             assert result.exit_code == 0
             env = mock_popen.call_args[1]["env"]
@@ -450,7 +450,7 @@ class TestOverlaySubcommands:
         mock_proc = MagicMock()
         mock_proc.wait.side_effect = KeyboardInterrupt
 
-        with patch.object(cli_overlay_mod.subprocess, "Popen", return_value=mock_proc):
+        with patch.object(utils_run_mod.subprocess, "Popen", return_value=mock_proc):
             result = test_runner.invoke(overlay_app, ["worker", "--count", "1"])
             assert "Shutting down" in result.output
             mock_proc.terminate.assert_called_once()
@@ -610,7 +610,7 @@ class TestOverlaySubcommands:
                 "log_paths",
                 return_value={"stdout": stdout_log, "stderr": tmp_path / "stderr.log"},
             ),
-            patch.object(cli_review_mod.subprocess, "run") as mock_run,
+            patch.object(utils_run_mod.subprocess, "run") as mock_run,
         ):
             mock_run.return_value = MagicMock(returncode=0)
             result = test_runner.invoke(overlay_app, ["config", "logs"])
@@ -633,7 +633,7 @@ class TestOverlaySubcommands:
                 "log_paths",
                 return_value={"stdout": stdout_log, "stderr": tmp_path / "stderr.log"},
             ),
-            patch.object(cli_review_mod.subprocess, "run") as mock_run,
+            patch.object(utils_run_mod.subprocess, "run") as mock_run,
         ):
             mock_run.return_value = MagicMock(returncode=0)
             result = test_runner.invoke(overlay_app, ["config", "logs", "--follow"])
@@ -669,7 +669,7 @@ class TestOverlaySubcommands:
                 "log_paths",
                 return_value={"stdout": tmp_path / "stdout.log", "stderr": stderr_log},
             ),
-            patch.object(cli_review_mod.subprocess, "run") as mock_run,
+            patch.object(utils_run_mod.subprocess, "run") as mock_run,
         ):
             mock_run.return_value = MagicMock(returncode=0)
             result = test_runner.invoke(overlay_app, ["config", "logs", "--stderr"])

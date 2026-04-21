@@ -5,7 +5,6 @@ from unittest.mock import patch
 from typer.testing import CliRunner
 
 import teatree.cli as teatree_cli
-import teatree.cli.tools as teatree_cli_tools
 from teatree.cli import app
 from teatree.cli.tools import ToolRunner
 
@@ -24,7 +23,7 @@ class TestToolRunner:
         script.write_text("pass")
         with (
             patch.object(ToolRunner, "scripts_dir", return_value=tmp_path),
-            patch.object(teatree_cli_tools, "subprocess") as mock_sp,
+            patch("teatree.utils.run.subprocess") as mock_sp,
         ):
             mock_sp.run.return_value = subprocess.CompletedProcess([], 0)
             ToolRunner.run_script("ok_script")
@@ -37,7 +36,7 @@ class TestToolRunner:
         script.write_text("import sys; sys.exit(2)")
         with (
             patch.object(ToolRunner, "scripts_dir", return_value=tmp_path),
-            patch.object(teatree_cli_tools, "subprocess") as mock_sp,
+            patch("teatree.utils.run.subprocess") as mock_sp,
         ):
             mock_sp.run.return_value = subprocess.CompletedProcess([], 2)
             try:
@@ -95,7 +94,7 @@ class TestSonarCheck:
         script.touch()
         with (
             patch.object(teatree_cli, "_find_overlay_project", return_value=tmp_path),
-            patch.object(teatree_cli_tools, "subprocess") as mock_sub,
+            patch("teatree.utils.run.subprocess") as mock_sub,
         ):
             mock_sub.run.return_value = subprocess.CompletedProcess([], 0)
             result = runner.invoke(app, ["tool", "sonar-check", "/tmp/repo"])
@@ -112,7 +111,7 @@ class TestSonarCheck:
         script.touch()
         with (
             patch.object(teatree_cli, "_find_overlay_project", return_value=tmp_path),
-            patch.object(teatree_cli_tools, "subprocess") as mock_sub,
+            patch("teatree.utils.run.subprocess") as mock_sub,
         ):
             mock_sub.run.return_value = subprocess.CompletedProcess([], 0)
             result = runner.invoke(app, ["tool", "sonar-check", "--skip-baseline", "--remote", "--remote-status"])
@@ -130,7 +129,7 @@ class TestSonarCheck:
         monkeypatch.setenv("PWD", "/original/worktree")
         with (
             patch.object(teatree_cli, "_find_overlay_project", return_value=tmp_path),
-            patch.object(teatree_cli_tools, "subprocess") as mock_sub,
+            patch("teatree.utils.run.subprocess") as mock_sub,
         ):
             mock_sub.run.return_value = subprocess.CompletedProcess([], 0)
             result = runner.invoke(app, ["tool", "sonar-check", "--remote"])

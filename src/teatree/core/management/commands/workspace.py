@@ -2,10 +2,10 @@
 
 import os
 import re
-import subprocess  # noqa: S404
 import sys
 from contextlib import suppress
 from pathlib import Path
+from typing import Annotated
 
 import typer
 from django_typer.management import TyperCommand, command
@@ -14,7 +14,11 @@ from teatree.config import load_config
 from teatree.core.cleanup import cleanup_worktree
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay_loader import get_overlay
+from teatree.core.reconcile import Drift, reconcile_all, reconcile_ticket
+from teatree.core.worktree_env import write_env_cache
 from teatree.utils import git
+from teatree.utils.db import drop_db
+from teatree.utils.run import CommandFailedError, run_allowed_to_fail, run_checked
 
 
 def _worktree_map(repo: str) -> dict[str, str]:
@@ -37,23 +41,19 @@ def _worktree_branches(repo: str) -> set[str]:
 
 def _is_squash_merged(repo: str, branch: str, default: str) -> bool:
     # GitHub: ask if a PR for this branch was merged.
-    result = subprocess.run(  # noqa: S603
+    result = run_allowed_to_fail(
         ["gh", "pr", "list", "--head", branch, "--state", "merged", "--json", "number", "--limit", "1"],
-        capture_output=True,
-        text=True,
-        check=False,
         cwd=repo,
+        expected_codes=None,
     )
     if result.returncode == 0 and result.stdout.strip() not in {"", "[]"}:
         return True
 
     # GitLab: glab mr list output lines for found MRs start with "!" (e.g. "!5  Title  (branch)").
-    result = subprocess.run(  # noqa: S603
+    result = run_allowed_to_fail(
         ["glab", "mr", "list", "--merged", "--source-branch", branch, "--limit", "1"],
-        capture_output=True,
-        text=True,
-        check=False,
         cwd=repo,
+        expected_codes=None,
     )
     if result.returncode == 0 and any(line.lstrip().startswith("!") for line in result.stdout.splitlines()):
         return True
@@ -172,12 +172,10 @@ def _drop_orphan_databases() -> list[str]:
     """Drop Postgres databases matching wt_* that don't belong to any worktree."""
     from teatree.utils.db import pg_env, pg_host, pg_user  # noqa: PLC0415
 
-    result = subprocess.run(  # noqa: S603
+    result = run_allowed_to_fail(
         ["psql", "-h", pg_host(), "-U", pg_user(), "-l", "-t", "-A"],
         env=pg_env(),
-        capture_output=True,
-        text=True,
-        check=False,
+        expected_codes=None,
     )
     if result.returncode != 0:
         return []
@@ -190,11 +188,10 @@ def _drop_orphan_databases() -> list[str]:
     orphans = wt_dbs - known_db_names
     cleaned: list[str] = []
     for db_name in sorted(orphans):
-        subprocess.run(  # noqa: S603
+        run_allowed_to_fail(
             ["dropdb", "-h", pg_host(), "-U", pg_user(), "--if-exists", db_name],
             env=pg_env(),
-            capture_output=True,
-            check=False,
+            expected_codes=None,
         )
         cleaned.append(f"Dropped orphan database: {db_name}")
     return cleaned
@@ -202,6 +199,49 @@ def _drop_orphan_databases() -> list[str]:
 
 def _workspace_dir() -> Path:
     return load_config().user.workspace_dir
+
+
+def _fix_drift(drift: Drift) -> list[str]:
+    """Apply reconciler fixes for one ticket's drift.
+
+    Each fix uses :func:`run_checked` so failures surface — no silent
+    swallow.  Called from ``t3 workspace doctor --fix``.
+    """
+    fixes: list[str] = []
+
+    for c in drift.orphan_containers:
+        run_checked(["docker", "rm", "-f", c.name])
+        fixes.append(f"removed orphan container {c.name}")
+
+    for d in drift.orphan_dbs:
+        drop_db(d.db_name)
+        fixes.append(f"dropped orphan DB {d.db_name}")
+
+    for missing_wt in drift.missing_worktree_dirs:
+        Worktree.objects.filter(pk=missing_wt.worktree_pk).update(extra={})
+        fixes.append(f"cleared worktree_path on wt#{missing_wt.worktree_pk} (path gone: {missing_wt.path})")
+
+    fixes.extend(
+        f"stale worktree dir {stale.path} — remove manually with `git worktree remove`"
+        for stale in drift.stale_worktree_dirs
+    )
+
+    for missing_cache in drift.missing_env_caches:
+        wt = Worktree.objects.get(pk=missing_cache.worktree_pk)
+        write_env_cache(wt)
+        fixes.append(f"regenerated env cache for wt#{missing_cache.worktree_pk}")
+
+    for cache_drift in drift.env_cache_drifts:
+        wt = Worktree.objects.get(pk=cache_drift.worktree_pk)
+        write_env_cache(wt)
+        fixes.append(f"rewrote drifted env cache for wt#{cache_drift.worktree_pk}")
+
+    fixes.extend(
+        f"missing DB {m.db_name} for wt#{m.worktree_pk} — run `t3 lifecycle setup` to re-provision"
+        for m in drift.missing_dbs
+    )
+
+    return fixes
 
 
 def _resolve_unsynced_worktree(worktree: Worktree, exc: RuntimeError, *, interactive: bool) -> str:
@@ -235,11 +275,9 @@ def _push_unsynced_branch(worktree: Worktree) -> str:
     wt_path = (worktree.extra or {}).get("worktree_path", "")
     if not wt_path or not Path(wt_path).is_dir():
         return f"Push failed: {worktree.repo_path} ({worktree.branch}) — worktree path missing"
-    result = subprocess.run(  # noqa: S603
+    result = run_allowed_to_fail(
         ["git", "-C", wt_path, "push", "-u", "origin", worktree.branch],
-        capture_output=True,
-        text=True,
-        check=False,
+        expected_codes=None,
     )
     if result.returncode != 0:
         return f"Push failed: {worktree.repo_path} ({worktree.branch}) — {result.stderr.strip()}"
@@ -439,7 +477,7 @@ class Command(TyperCommand):
 
                 git.rebase(repo_dir, f"origin/{default_br}")
                 results.append(f"{repo}: rebased on {default_br}")
-            except subprocess.CalledProcessError as exc:
+            except CommandFailedError as exc:
                 results.extend(
                     [
                         f"{repo}: rebase failed — {exc}",
@@ -471,6 +509,41 @@ class Command(TyperCommand):
         if not cleaned:
             return ["No merged tickets have lingering worktrees."]
         return cleaned
+
+    @command()
+    def doctor(
+        self,
+        ticket: Annotated[int, typer.Option(help="Reconcile just this ticket pk; 0 = all tickets.")] = 0,
+        *,
+        fix: Annotated[bool, typer.Option(help="Apply fixes instead of just listing drift.")] = False,
+    ) -> list[str]:
+        """Detect state drift across every store; optionally fix it.
+
+        Checks Django ↔ git worktrees, Postgres DBs, docker containers, redis
+        slots, env cache files.  Without ``--fix`` prints drift; with
+        ``--fix`` cleans orphan containers, drops orphan DBs, regenerates
+        missing env caches, and prunes stale worktree dirs.  Every action
+        uses :func:`run_checked` — no silent swallow.
+        """
+        if ticket:
+            drifts = {ticket: reconcile_ticket(Ticket.objects.get(pk=ticket))}
+            if not drifts[ticket].has_drift:
+                drifts = {}
+        else:
+            drifts = reconcile_all()
+
+        if not drifts:
+            return ["No drift detected."]
+
+        lines: list[str] = []
+        for ticket_pk, drift in sorted(drifts.items()):
+            lines.append(f"Ticket #{ticket_pk}:")
+            lines.extend(f"  {finding}" for finding in drift.format().splitlines())
+            if fix:
+                lines.extend(f"  [fix] {msg}" for msg in _fix_drift(drift))
+        if not fix:
+            lines.extend(("", "Rerun with --fix to apply fixes."))
+        return lines
 
     @command(name="clean-all")
     def clean_all(

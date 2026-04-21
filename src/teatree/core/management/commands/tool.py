@@ -2,12 +2,12 @@
 
 import os
 import shlex
-import subprocess  # noqa: S404
 
 import typer
 from django_typer.management import TyperCommand, command
 
 from teatree.core.overlay_loader import get_overlay
+from teatree.utils.run import run_streamed
 
 
 class Command(TyperCommand):
@@ -27,11 +27,10 @@ class Command(TyperCommand):
                 mgmt_cmd = tool_cmd.get("command", "")
                 if not mgmt_cmd:
                     return f"Tool '{name}' has no command defined."
-                if extra:
-                    mgmt_cmd = f"{mgmt_cmd} {shlex.join(extra)}"
+                argv = [*shlex.split(mgmt_cmd), *extra]
                 env = {**os.environ}
                 env.pop("VIRTUAL_ENV", None)
-                subprocess.run(mgmt_cmd, shell=True, check=True, env=env)  # noqa: S602
+                run_streamed(argv, env=env)
                 return f"Tool '{name}' completed."
         available = [t.get("name", "?") for t in overlay.metadata.get_tool_commands()]
         return f"Unknown tool: {name}. Available: {', '.join(available) or 'none'}"

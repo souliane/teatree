@@ -4,6 +4,7 @@ from django.test import TestCase, override_settings
 
 import teatree.core.overlay_loader as overlay_loader_mod
 import teatree.core.signals as signals_mod
+import teatree.utils.run as utils_run_mod
 from teatree.core.models import Session, Task, Ticket
 from tests.teatree_core.conftest import CommandOverlay
 
@@ -33,7 +34,7 @@ class TestAutoEnqueueHeadlessSignal(TestCase):
         with (
             patch.object(headless_mod.shutil, "which", return_value="/usr/bin/claude-code"),
             patch.object(
-                headless_mod.subprocess,
+                utils_run_mod.subprocess,
                 "run",
                 return_value=_sp.CompletedProcess([], 0, '{"summary": "OK"}', ""),
             ),
@@ -124,7 +125,7 @@ class TestAutoEnqueueHeadlessSignal(TestCase):
         with (
             patch.object(headless_mod.shutil, "which", return_value="/usr/bin/claude-code"),
             patch.object(
-                headless_mod.subprocess,
+                utils_run_mod.subprocess,
                 "run",
                 return_value=_sp.CompletedProcess([], 0, '{"summary": "OK"}', ""),
             ),

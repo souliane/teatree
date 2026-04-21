@@ -9,6 +9,8 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
+from teatree.utils.run import TimeoutExpired, run_allowed_to_fail
+
 CONFIG_PATH = Path.home() / ".teatree.toml"
 DATA_DIR = Path(os.environ.get("XDG_DATA_HOME", str(Path.home() / ".local" / "share"))) / "teatree"
 
@@ -293,7 +295,6 @@ def check_for_updates(*, force: bool = False) -> str | None:
     Results are cached for 24 h in ``DATA_DIR / "update-check.json"``.
     """
     import json  # noqa: PLC0415
-    import subprocess  # noqa: PLC0415, S404
     import time  # noqa: PLC0415
 
     config = load_config()
@@ -317,15 +318,13 @@ def check_for_updates(*, force: bool = False) -> str | None:
     current = importlib.metadata.version("teatree")
 
     try:
-        result = subprocess.run(
-            ["gh", "api", "repos/souliane/teatree/releases/latest", "--jq", ".tag_name"],  # noqa: S607
-            capture_output=True,
-            text=True,
-            check=False,
+        result = run_allowed_to_fail(
+            ["gh", "api", "repos/souliane/teatree/releases/latest", "--jq", ".tag_name"],
+            expected_codes=None,
             timeout=10,
         )
         tag = result.stdout.strip()
-    except (subprocess.TimeoutExpired, FileNotFoundError):
+    except (TimeoutExpired, FileNotFoundError):
         return None
 
     if not tag:

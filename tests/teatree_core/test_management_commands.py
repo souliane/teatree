@@ -12,6 +12,7 @@ import teatree.agents.headless as headless_mod
 import teatree.agents.web_terminal as web_terminal_mod
 import teatree.core.management.commands.lifecycle as lifecycle_cmd
 import teatree.core.overlay_loader as overlay_loader_mod
+import teatree.utils.run as utils_run_mod
 from teatree.core.models import Session, Task, TaskAttempt, Ticket, Worktree
 from teatree.core.overlay import DbImportStrategy, OverlayBase, ProvisionStep, RunCommands
 from teatree.core.overlay_loader import reset_overlay_cache
@@ -77,7 +78,7 @@ class TestLifecycleCommands(TestCase):
             with (
                 patch.dict("os.environ", {"T3_ORIG_CWD": wt_path}),
                 patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
-                patch.object(lifecycle_cmd, "subprocess") as mock_sp,
+                patch.object(utils_run_mod, "subprocess") as mock_sp,
                 patch("teatree.utils.redis_container.ensure_running") as mock_ensure,
                 patch("teatree.config.load_config", return_value=mock_config),
             ):
@@ -109,7 +110,7 @@ class TestLifecycleCommands(TestCase):
             with (
                 patch.dict("os.environ", {"T3_ORIG_CWD": wt_path}),
                 patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
-                patch.object(lifecycle_cmd, "subprocess") as mock_sp,
+                patch.object(utils_run_mod, "subprocess") as mock_sp,
                 patch.object(
                     lifecycle_cmd,
                     "find_free_ports",
@@ -158,7 +159,7 @@ class TestTaskCommands(TestCase):
         with (
             patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
             patch.object(
-                headless_mod.subprocess,
+                utils_run_mod.subprocess,
                 "run",
                 return_value=_sp.CompletedProcess(
                     [],
