@@ -204,6 +204,59 @@ def _workspace_dir() -> Path:
     return load_config().user.workspace_dir
 
 
+def _resolve_unsynced_worktree(worktree: Worktree, exc: RuntimeError, *, interactive: bool) -> str:
+    """Decide what to do with a worktree whose branch has genuinely-unpushed work.
+
+    In a TTY, prompt the user: push to remote, abandon (force-clean), or skip.
+    Non-interactive contexts (CI, scripts) preserve the old behaviour of
+    listing the skip and exiting so the user can investigate.
+    """
+    if not interactive:
+        return f"Skipped: {exc}"
+
+    prompt = (
+        f"\n{worktree.repo_path} ({worktree.branch}) — genuinely unpushed work.\n"
+        f"  {exc}\n"
+        "  [P]ush to remote / [A]bandon (force delete) / [S]kip (default): "
+    )
+    try:
+        choice = input(prompt).strip().lower()
+    except EOFError:
+        return f"Skipped: {exc}"
+
+    if choice == "p":
+        return _push_unsynced_branch(worktree)
+    if choice == "a":
+        return _abandon_unsynced_branch(worktree)
+    return f"Skipped: {exc}"
+
+
+def _push_unsynced_branch(worktree: Worktree) -> str:
+    wt_path = (worktree.extra or {}).get("worktree_path", "")
+    if not wt_path or not Path(wt_path).is_dir():
+        return f"Push failed: {worktree.repo_path} ({worktree.branch}) — worktree path missing"
+    result = subprocess.run(  # noqa: S603
+        ["git", "-C", wt_path, "push", "-u", "origin", worktree.branch],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return f"Push failed: {worktree.repo_path} ({worktree.branch}) — {result.stderr.strip()}"
+    overlay_name = worktree.ticket.overlay or "<overlay>"
+    return (
+        f"Pushed: {worktree.repo_path} ({worktree.branch}). "
+        f"Run `t3 {overlay_name} pr create {worktree.ticket.pk}` to open an MR."
+    )
+
+
+def _abandon_unsynced_branch(worktree: Worktree) -> str:
+    try:
+        return cleanup_worktree(worktree, force=True)
+    except Exception as exc:  # noqa: BLE001
+        return f"Abandon failed: {worktree.repo_path} ({worktree.branch}) — {exc}"
+
+
 def _branch_prefix() -> str:
     prefix = os.environ.get("T3_BRANCH_PREFIX", "")
     if not prefix:
@@ -427,11 +480,12 @@ class Command(TyperCommand):
         """Prune merged worktrees, stale branches, orphaned stashes, orphan databases, and old DSLR snapshots."""
         workspace = _workspace_dir()
         cleaned: list[str] = []
+        interactive = sys.stdin.isatty() and sys.stdout.isatty()
         for wt in Worktree.objects.filter(state=Worktree.State.CREATED):
             try:
                 cleaned.append(cleanup_worktree(wt))
             except RuntimeError as exc:
-                cleaned.append(f"Skipped: {exc}")
+                cleaned.append(_resolve_unsynced_worktree(wt, exc, interactive=interactive))
 
         for entry in workspace.iterdir():
             if entry.is_dir() and not any(entry.iterdir()):
