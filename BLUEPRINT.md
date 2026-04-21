@@ -124,7 +124,7 @@ hooks/                  # Plugin hooks
   hooks.json            # Event → script mapping
   scripts/              # Hook scripts (bootstrap, skill loading, statusline)
 apm.yml                 # APM package manifest
-settings.json           # Plugin settings (statusline)
+settings.json           # Plugin settings (statusline + permissions allow/deny)
 tests/                  # Pytest suite (>90% branch coverage)
 e2e/                    # Playwright E2E tests for dashboard
 scripts/                # Standalone utility scripts
@@ -965,6 +965,15 @@ Three install paths, one source of truth:
 - **CLI-first**: `uv tool install teatree && t3 setup` — bootstraps from Python (runs APM install, syncs skill symlinks, and registers the Claude plugin in one step). `t3 setup` also auto-runs `uv tool install --editable <repo>` when the global `t3` binary is missing, so `uv run t3 setup` from a fresh checkout upgrades itself in-place.
 
 The agent-facing hook layer (`hooks/scripts/hook_router.py`) blocks `uv run t3` Bash invocations and directs agents to call the globally installed `t3` instead.
+
+### 12.4 Bash Permission Defaults
+
+The plugin's `settings.json` ships a small `permissions.allow` / `permissions.deny` block so t3 lifecycle commands run end-to-end in auto mode without per-command prompts. The design is **broad allow, targeted deny**:
+
+- **Allow** — one wildcard per tool family the workflow needs: `t3:*`, `git:*`, `gh:*`, `glab:*`, `uv:*`, `prek:*`, `npm:*`, `pytest:*`, `python:*`, `curl:*`, `psql:*`, `docker:*`, etc. The `t3` CLI is the safety wrapper that enforces worktree isolation, branch naming, ticket gating, and push gating; denying it inside the CLI would be the wrong layer.
+- **Deny** — the load-bearing list. Mirrors the non-negotiable rules from `t3:rules` and `t3:ship`: pushes to default branches (`main`/`master`/`development`/`develop`/`release`/`trunk`), `--force` pushes, `--no-verify` on any git command, `git config --global`/`--system`, history rewrites with `filter-branch`, `gh/glab repo delete`, auth logout, `curl | bash`, and `rm -rf` on system roots or `$HOME`.
+
+Deny wins over allow, so a misbehaving agent — or a misclicked ticket — cannot bypass these guardrails even with broad allow wildcards in place. This complements but does not replace Claude Code's `autoMode` classifier, which remains the semantic safety net for novel patterns the static list cannot anticipate. The plugin permissions reduce the volume of classifier prompts, not the strictness of the trust boundary.
 
 ---
 
