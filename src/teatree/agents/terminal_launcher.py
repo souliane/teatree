@@ -7,13 +7,13 @@ based on ``TEATREE_TERMINAL_MODE``.
 import logging
 import os
 import shutil
-import subprocess  # noqa: S404
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 
 from teatree.agents.process_registry import register
 from teatree.utils.ports import find_free_port
+from teatree.utils.run import DEVNULL, PIPE, spawn
 
 logger = logging.getLogger(__name__)
 
@@ -39,11 +39,10 @@ def _launch_ttyd(command: list[str], *, cwd: str = "") -> LaunchResult:
         return LaunchResult(mode="ttyd")
 
     port = find_free_port()
-    proc = subprocess.Popen(  # noqa: S603
+    proc = spawn(
         [ttyd_bin, "--writable", "--port", str(port), "--once", *command],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
-        text=True,
+        stdout=DEVNULL,
+        stderr=PIPE,
         cwd=cwd or None,
     )
     register(proc, f"ttyd (port={port})")
@@ -120,11 +119,7 @@ def _launch_macos_window(cmd_str: str, *, cwd: str = "", app: str = "") -> Launc
     else:
         script = f'tell application "{app_name}" to do script "{cd_prefix}{cmd_str}"'
 
-    proc = subprocess.Popen(  # noqa: S603
-        ["osascript", "-e", script],  # noqa: S607
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
-    )
+    proc = spawn(["osascript", "-e", script], stdout=DEVNULL, stderr=PIPE)
     logger.info("Launched %s window (pid=%d)", app_name, proc.pid)
     return LaunchResult(pid=proc.pid, mode="new-window")
 
@@ -145,12 +140,7 @@ def _launch_linux_window(cmd_str: str, *, cwd: str = "", app: str = "") -> Launc
     else:
         args = [terminal, "-e", cmd_str]
 
-    proc = subprocess.Popen(  # noqa: S603
-        args,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
-        cwd=cwd or None,
-    )
+    proc = spawn(args, stdout=DEVNULL, stderr=PIPE, cwd=cwd or None)
     logger.info("Launched %s window (pid=%d)", name, proc.pid)
     return LaunchResult(pid=proc.pid, mode="new-window")
 

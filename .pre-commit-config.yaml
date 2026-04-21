@@ -173,6 +173,13 @@ repos:
         pass_filenames: false
         types: [python]
         always_run: true
+      - id: subprocess-ban
+        name: Ban raw subprocess calls in src/teatree/ (use teatree.utils.run)
+        language: system
+        entry: uv run python scripts/hooks/check_subprocess_ban.py
+        types: [python]
+        files: ^src/teatree/
+        exclude: ^src/teatree/utils/run\.py$
 
   # Phase 7b2 - BLUEPRINT sync
   - repo: local

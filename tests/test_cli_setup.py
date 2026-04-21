@@ -498,7 +498,7 @@ class TestEnsureT3Installed:
     def test_skips_install_when_t3_on_path(self, tmp_path: Path) -> None:
         with (
             patch("teatree.cli.setup.shutil.which") as mock_which,
-            patch("teatree.cli.setup.subprocess.run") as mock_run,
+            patch("teatree.utils.run.subprocess.run") as mock_run,
         ):
             mock_which.side_effect = lambda name: "/usr/local/bin/t3" if name == "t3" else None
             assert _ensure_t3_installed(tmp_path) is True
@@ -513,7 +513,7 @@ class TestEnsureT3Installed:
         repo.mkdir()
         with (
             patch("teatree.cli.setup.shutil.which") as mock_which,
-            patch("teatree.cli.setup.subprocess.run") as mock_run,
+            patch("teatree.utils.run.subprocess.run") as mock_run,
         ):
             mock_which.side_effect = lambda name: "/usr/bin/uv" if name == "uv" else None
             mock_run.return_value.returncode = 0
@@ -529,7 +529,7 @@ class TestEnsureT3Installed:
         repo.mkdir()
         with (
             patch("teatree.cli.setup.shutil.which") as mock_which,
-            patch("teatree.cli.setup.subprocess.run") as mock_run,
+            patch("teatree.utils.run.subprocess.run") as mock_run,
         ):
             mock_which.side_effect = lambda name: "/usr/bin/uv" if name == "uv" else None
             mock_run.return_value.returncode = 1

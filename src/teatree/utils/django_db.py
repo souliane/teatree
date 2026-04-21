@@ -12,13 +12,13 @@ import logging
 import os
 import re
 import shutil
-import subprocess
 import sys
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
 from teatree.utils import bad_artifacts
+from teatree.utils.run import CommandFailedError, TimeoutExpired, run_allowed_to_fail
 
 logger = logging.getLogger(__name__)
 
@@ -71,16 +71,15 @@ def _local_db_url(db_name: str) -> str:
 
 
 def _ensure_ref_db(ref_db: str, pg_host: str, pg_user: str, pg_env: dict[str, str]) -> None:
-    subprocess.run(
+    run_allowed_to_fail(
         ["createdb", "-h", pg_host, "-U", pg_user, ref_db],
         env=pg_env,
-        capture_output=True,
-        check=False,
+        expected_codes=None,
     )
 
 
 def _terminate_connections(db_name: str, pg_host: str, pg_user: str, pg_env: dict[str, str]) -> None:
-    subprocess.run(
+    run_allowed_to_fail(
         [
             "psql",
             "-h",
@@ -98,26 +97,25 @@ def _terminate_connections(db_name: str, pg_host: str, pg_user: str, pg_env: dic
             ),
         ],
         env=pg_env,
-        capture_output=True,
-        check=False,
+        expected_codes=None,
     )
 
 
 def _copy_ref_to_ticket(ctx: _RestoreContext) -> bool:
     cfg = ctx.cfg
-    subprocess.run(
+    # Terminate live connections to the ticket DB before dropping it — otherwise
+    # dropdb fails with "database is being accessed by other users" (#385).
+    _terminate_connections(cfg.ticket_db_name, ctx.pg_host, ctx.pg_user, ctx.pg_env)
+    run_allowed_to_fail(
         ["dropdb", "-h", ctx.pg_host, "-U", ctx.pg_user, "--if-exists", cfg.ticket_db_name],
         env=ctx.pg_env,
-        capture_output=True,
-        check=False,
+        expected_codes=None,
     )
     _terminate_connections(cfg.ref_db_name, ctx.pg_host, ctx.pg_user, ctx.pg_env)
-    result = subprocess.run(
+    result = run_allowed_to_fail(
         ["createdb", "-h", ctx.pg_host, "-U", ctx.pg_user, cfg.ticket_db_name, "-T", cfg.ref_db_name],
         env=ctx.pg_env,
-        capture_output=True,
-        text=True,
-        check=False,
+        expected_codes=None,
     )
     if result.returncode != 0:
         print(f"  WARNING: Template copy failed: {result.stderr.strip()}", file=sys.stderr)  # noqa: T201
@@ -165,7 +163,7 @@ def _dslr_artifact_key(snap_name: str) -> str:
 def _find_dslr_snapshots(dslr_cmd: list[str], env: dict[str, str], ref_db: str) -> list[str]:
     """Return matching DSLR snapshots sorted newest-first, excluding bad artifacts."""
     suffix = f"_{ref_db}"
-    result = subprocess.run([*dslr_cmd, "list"], env=env, capture_output=True, text=True, check=False)
+    result = run_allowed_to_fail([*dslr_cmd, "list"], env=env, expected_codes=None)
     if result.returncode != 0:
         return []
     names: list[str] = []
@@ -195,13 +193,7 @@ def _is_env_error(stderr: str) -> bool:
 
 def _restore_ref_from_dslr(dslr_cmd: list[str], env: dict[str, str], snap_name: str) -> tuple[bool, bool, str]:
     """Restore a DSLR snapshot. Returns (success, is_env_error, stderr)."""
-    result = subprocess.run(
-        [*dslr_cmd, "restore", snap_name],
-        env=env,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    result = run_allowed_to_fail([*dslr_cmd, "restore", snap_name], env=env, expected_codes=None)
     if result.returncode == 0:
         return True, False, ""
     return False, _is_env_error(result.stderr), result.stderr.strip()
@@ -210,12 +202,7 @@ def _restore_ref_from_dslr(dslr_cmd: list[str], env: dict[str, str], snap_name: 
 def _take_dslr_snapshot(dslr_cmd: list[str], env: dict[str, str], ref_db: str) -> None:
     snap_name = _dslr_snap_name(ref_db)
     print(f"  Taking DSLR snapshot: {snap_name}")  # noqa: T201
-    subprocess.run(
-        [*dslr_cmd, "snapshot", "-y", snap_name],
-        env=env,
-        capture_output=True,
-        check=False,
-    )
+    run_allowed_to_fail([*dslr_cmd, "snapshot", "-y", snap_name], env=env, expected_codes=None)
 
 
 # ---------------------------------------------------------------------------
@@ -226,12 +213,7 @@ def _take_dslr_snapshot(dslr_cmd: list[str], env: dict[str, str], ref_db: str) -
 def validate_dump(dump_path: Path) -> bool:
     if dump_path.stat().st_size == 0:
         return False
-    result = subprocess.run(
-        ["pg_restore", "-l", str(dump_path)],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    result = run_allowed_to_fail(["pg_restore", "-l", str(dump_path)], expected_codes=None)
     if "could not read" in (result.stderr or ""):
         print(f"  WARNING: Dump appears truncated: {dump_path.name} (delete and re-fetch)")  # noqa: T201
         return False
@@ -274,14 +256,7 @@ def _migrate_reference_db(main_repo: str, ref_db: str, extra_env: dict[str, str]
     print(f"  Migrating reference DB ({ref_db}) using main repo...")  # noqa: T201
     migrate_cmd = ["uv", "--directory", main_repo, "run", "python", "manage.py", "migrate", "--no-input"]
     for _attempt in range(_MAX_MIGRATE_RETRIES):
-        result = subprocess.run(
-            migrate_cmd,
-            cwd=main_repo,
-            env=run_env,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        result = run_allowed_to_fail(migrate_cmd, cwd=main_repo, env=run_env, expected_codes=None)
         if result.returncode == 0:
             if "No migrations to apply" in result.stdout:
                 print("  Reference DB already up to date (no migrations applied).")  # noqa: T201
@@ -315,13 +290,11 @@ def _try_fake_failing_migration(combined: str, stdout: str, main_repo: str, run_
     app_label, migration_name = failing.split(".", 1)
     reason = "schema already exists" if "already exists" in combined else "table absent from dump"
     print(f"  Faking {failing} on reference DB ({reason})...")  # noqa: T201
-    subprocess.run(
+    run_allowed_to_fail(
         ["uv", "--directory", main_repo, "run", "python", "manage.py", "migrate", app_label, migration_name, "--fake"],
         cwd=main_repo,
         env=run_env,
-        capture_output=True,
-        text=True,
-        check=False,
+        expected_codes=None,
     )
     return ""
 
@@ -337,7 +310,7 @@ def _restore_ref_and_copy(ctx: _RestoreContext, dump_path: str, label: str) -> b
     cfg = ctx.cfg
     try:
         db_restore(cfg.ref_db_name, dump_path)
-    except (RuntimeError, subprocess.CalledProcessError) as exc:
+    except (RuntimeError, CommandFailedError) as exc:
         bad_artifacts.mark_bad(dump_path)
         print(f"  BAD ARTIFACT: {label} marked bad (delete: rm {dump_path})")  # noqa: T201
         print(f"    Restore error: {exc}", file=sys.stderr)  # noqa: T201
@@ -373,7 +346,10 @@ def _try_restore_from_dump_path(ctx: _RestoreContext) -> bool:
         return False
     print(f"  Restoring from explicit dump: {dump}")  # noqa: T201
     _ensure_ref_db(ctx.cfg.ref_db_name, ctx.pg_host, ctx.pg_user, ctx.pg_env)
-    if not db_restore(ctx.cfg.ref_db_name, str(dump)):
+    try:
+        db_restore(ctx.cfg.ref_db_name, str(dump))
+    except (RuntimeError, CommandFailedError):
+        logger.exception("Restore failed for dump %s", dump)
         return False
     migrate_result = _migrate_reference_db(ctx.cfg.main_repo_path, ctx.cfg.ref_db_name, ctx.cfg.migrate_env_extra)
     if migrate_result is _MigrateResult.FAILED:
@@ -487,13 +463,12 @@ def _try_fetch_remote_dump(ctx: _RestoreContext) -> bool:
         dump_path = dump_dir / f"{today}_{cfg.ref_db_name}.pgsql"
         print(f"  Dumping from remote DB ({cfg.ref_db_name})...")  # noqa: T201
         dump_dir.mkdir(parents=True, exist_ok=True)
-        result = subprocess.run(
+        result = run_allowed_to_fail(
             ["pg_dump", "-Fc", "-f", str(dump_path), cfg.remote_db_url],
-            capture_output=True,
             timeout=cfg.dump_timeout,
-            check=False,
+            expected_codes=None,
         )
-    except subprocess.TimeoutExpired:
+    except TimeoutExpired:
         _remote_dump_failed = True
         print(f"  WARNING: pg_dump timed out after {cfg.dump_timeout}s.")  # noqa: T201
         return False
@@ -502,8 +477,7 @@ def _try_fetch_remote_dump(ctx: _RestoreContext) -> bool:
         print(f"  Saved {dump_path.name} ({size_mb:.0f}MB)")  # noqa: T201
         return True
     _remote_dump_failed = True
-    raw = result.stderr or b""
-    stderr_text = raw.decode(errors="replace").strip() if isinstance(raw, bytes) else raw.strip()
+    stderr_text = (result.stderr or "").strip()
     logger.warning("pg_dump failed (rc=%d) for %s: %s", result.returncode, cfg.ref_db_name, stderr_text)
     print(f"  WARNING: pg_dump failed: {stderr_text}")  # noqa: T201
     return False
@@ -561,7 +535,7 @@ def prune_dslr_snapshots(*, keep: int = 1, snapshot_tool: str = "dslr", main_rep
     dslr_cmd = _find_dslr_cmd(snapshot_tool, main_repo_path)
     if not dslr_cmd:
         return []
-    result = subprocess.run([*dslr_cmd, "list"], capture_output=True, text=True, check=False)
+    result = run_allowed_to_fail([*dslr_cmd, "list"], expected_codes=None)
     if result.returncode != 0:
         return []
     by_tenant = _parse_dslr_snapshots(result.stdout)
@@ -569,7 +543,7 @@ def prune_dslr_snapshots(*, keep: int = 1, snapshot_tool: str = "dslr", main_rep
     for tenant, names in by_tenant.items():
         for old in names[keep:]:
             print(f"  Pruning DSLR snapshot: {old} (tenant={tenant})")  # noqa: T201
-            subprocess.run([*dslr_cmd, "delete", "-y", old], capture_output=True, check=False)
+            run_allowed_to_fail([*dslr_cmd, "delete", "-y", old], expected_codes=None)
             deleted.append(old)
     return deleted
 

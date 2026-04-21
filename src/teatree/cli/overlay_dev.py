@@ -1,13 +1,13 @@
 """Dev-mode overlay install/uninstall for dogfooding teatree branches."""
 
 import json
-import subprocess  # noqa: S404
 import tomllib
 from pathlib import Path
 
 import typer
 
 from teatree.config import CONFIG_PATH, load_config
+from teatree.utils.run import run_allowed_to_fail, run_checked
 
 overlay_dev_app = typer.Typer(no_args_is_help=True, help="Dev-mode overlay install/uninstall.")
 
@@ -55,21 +55,17 @@ def _resolve_overlay_source(name: str, config_path: Path | None = None) -> Path:
 
 
 def _branch_exists(repo: Path, branch: str) -> bool:
-    result = subprocess.run(  # noqa: S603
+    result = run_allowed_to_fail(
         ["git", "-C", str(repo), "rev-parse", "--verify", branch],
-        capture_output=True,
-        text=True,
-        check=False,
+        expected_codes=None,
     )
     return result.returncode == 0
 
 
 def _default_branch(repo: Path) -> str:
-    result = subprocess.run(  # noqa: S603
+    result = run_allowed_to_fail(
         ["git", "-C", str(repo), "symbolic-ref", "refs/remotes/origin/HEAD"],
-        capture_output=True,
-        text=True,
-        check=False,
+        expected_codes=None,
     )
     if result.returncode == 0 and result.stdout.strip():
         return result.stdout.strip().rsplit("/", 1)[-1]
@@ -77,11 +73,9 @@ def _default_branch(repo: Path) -> str:
 
 
 def _current_branch(worktree: Path) -> str:
-    result = subprocess.run(  # noqa: S603
+    result = run_allowed_to_fail(
         ["git", "-C", str(worktree), "rev-parse", "--abbrev-ref", "HEAD"],
-        capture_output=True,
-        text=True,
-        check=False,
+        expected_codes=None,
     )
     return result.stdout.strip() or "main"
 
@@ -91,26 +85,22 @@ def _ensure_sibling_worktree(teatree_worktree: Path, main_clone: Path, *, branch
     if sibling.exists():
         return sibling
     target_branch = branch if _branch_exists(main_clone, branch) else _default_branch(main_clone)
-    subprocess.run(  # noqa: S603
-        ["git", "-C", str(main_clone), "worktree", "add", str(sibling), target_branch],
-        check=True,
-    )
+    run_checked(["git", "-C", str(main_clone), "worktree", "add", str(sibling), target_branch])
     return sibling
 
 
 def _uv_pip_install_editable(teatree_worktree: Path, overlay_path: Path) -> None:
-    subprocess.run(  # noqa: S603
+    run_checked(
         ["uv", "pip", "install", "--editable", "--no-deps", str(overlay_path)],
         cwd=teatree_worktree,
-        check=True,
     )
 
 
 def _uv_pip_uninstall(teatree_worktree: Path, name: str) -> None:
-    subprocess.run(  # noqa: S603
+    run_allowed_to_fail(
         ["uv", "pip", "uninstall", name],
         cwd=teatree_worktree,
-        check=False,
+        expected_codes=None,
     )
 
 

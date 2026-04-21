@@ -11,6 +11,7 @@ import teatree.agents.headless as headless_mod
 import teatree.agents.web_terminal as web_terminal_mod
 import teatree.core.overlay_loader as overlay_loader_mod
 import teatree.core.views.launch as launch_views
+import teatree.utils.run as utils_run_mod
 from teatree.core.models import Session, Task, TaskAttempt, Ticket
 from tests.teatree_core.conftest import CommandOverlay
 
@@ -60,7 +61,7 @@ class TestLaunchTaskView(TestCase):
         with (
             patch.object(headless_mod.shutil, "which", return_value="/usr/bin/claude-code"),
             patch.object(
-                headless_mod.subprocess,
+                utils_run_mod.subprocess,
                 "run",
                 return_value=_sp.CompletedProcess([], 0, '{"summary": "OK"}', ""),
             ),

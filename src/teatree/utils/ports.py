@@ -1,7 +1,8 @@
 import fcntl
 import socket
-import subprocess
 from pathlib import Path
+
+from teatree.utils.run import run_allowed_to_fail
 
 # Duplicated from teatree.core.models.types to avoid circular import
 # through Django model registration.
@@ -131,7 +132,7 @@ def get_service_port(
         cmd.extend(["-f", compose_file])
     cmd.extend(["port", service, str(container_port)])
 
-    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    result = run_allowed_to_fail(cmd, expected_codes=None)
     if result.returncode != 0:
         return None
     # Output format: "0.0.0.0:8002\n" or ":::8002\n"
@@ -165,12 +166,7 @@ def free_port(port: int) -> int | None:
 
     if not port_in_use(port):
         return None
-    result = subprocess.run(
-        ["lsof", "-ti", f":{port}"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    result = run_allowed_to_fail(["lsof", "-ti", f":{port}"], expected_codes=None)
     pids = [int(p) for p in result.stdout.split() if p.strip().isdigit()]
     if not pids:
         return None

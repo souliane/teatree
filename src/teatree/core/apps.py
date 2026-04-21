@@ -2,18 +2,19 @@ import atexit
 import contextlib
 import logging
 import os
-import subprocess as _subprocess  # noqa: S404
 import sys
 import threading
 
 from django.apps import AppConfig
 from django.conf import settings
 
+from teatree.utils.run import Popen, TimeoutExpired, spawn
+
 logger = logging.getLogger(__name__)
 
 _DRAIN_INTERVAL = 10  # seconds — check for pending headless tasks
 _SYNC_INTERVAL = 300  # 5 minutes — full followup sync
-_worker_processes: list[_subprocess.Popen] = []
+_worker_processes: list[Popen[str]] = []
 
 
 def _start_periodic_sync() -> None:
@@ -48,7 +49,7 @@ def _cleanup_workers() -> None:
     for p in _worker_processes:
         try:
             p.wait(timeout=5)
-        except _subprocess.TimeoutExpired:
+        except TimeoutExpired:
             p.kill()
     _worker_processes.clear()
 
@@ -59,7 +60,7 @@ def _start_workers() -> None:
     env = {**os.environ, "_TEETREE_WORKER": "1"}
 
     for _ in range(count):
-        p = _subprocess.Popen(  # noqa: S603
+        p = spawn(
             [sys.executable, "-m", "teatree", "db_worker", "--interval", "1", "--no-startup-delay", "--no-reload"],
             env=env,
         )

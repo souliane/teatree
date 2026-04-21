@@ -128,13 +128,13 @@ for d in "$WORKSPACE_ROOT"/*/; do
     done < <(git -C "$d" --no-optional-locks worktree list 2>/dev/null)
 done
 
-# --- Look up TICKET_URL from .env.worktree for a given branch ---
+# --- Look up TICKET_URL from the env cache for a given branch ---
 get_ticket_url_from_env() {
     local branch="$1"
     for key in "${!wt_dir_of[@]}"; do
         if [[ "$key" == "${branch}/"* ]]; then
             local wt_path="${wt_dir_of[$key]}"
-            local env_file="$(dirname "$wt_path")/.env.worktree"
+            local env_file="$(dirname "$wt_path")/.t3-cache/.t3-env.cache"
             if [ -f "$env_file" ]; then
                 local url
                 url=$(grep -m1 '^TICKET_URL=' "$env_file" | cut -d= -f2-)
@@ -191,7 +191,7 @@ format_ticket_header() {
 
         local header=""
         if [ -n "$t_num" ] && [ "$t_num" != "0000" ]; then
-            # Prefer TICKET_URL from .env.worktree (authoritative) over branch-name heuristic
+            # Prefer TICKET_URL from the env cache (authoritative) over branch-name heuristic
             local issue_url=""
             local env_url
             env_url=$(get_ticket_url_from_env "$branch")

@@ -4,7 +4,7 @@ import httpx
 from typer.testing import CliRunner
 
 import teatree.backends.gitlab_api as gitlab_api_mod
-import teatree.cli.review as cli_review_mod
+import teatree.utils.run as utils_run_mod
 from teatree.cli import app
 from teatree.cli.review import ReviewService
 
@@ -21,7 +21,7 @@ class TestGetGitlabToken:
 
     def test_from_glab(self, monkeypatch):
         monkeypatch.delenv("GITLAB_TOKEN", raising=False)
-        with patch.object(cli_review_mod.subprocess, "run") as mock_run:
+        with patch.object(utils_run_mod.subprocess, "run") as mock_run:
             mock_run.return_value = MagicMock(
                 stderr="  Token: glpat-ABCDEF\n  User: test\n",
                 returncode=0,
@@ -30,14 +30,14 @@ class TestGetGitlabToken:
 
     def test_returns_empty_when_not_found(self, monkeypatch):
         monkeypatch.delenv("GITLAB_TOKEN", raising=False)
-        with patch.object(cli_review_mod.subprocess, "run") as mock_run:
+        with patch.object(utils_run_mod.subprocess, "run") as mock_run:
             mock_run.return_value = MagicMock(stderr="", returncode=1)
             assert ReviewService.get_gitlab_token() == ""
 
     def test_returns_empty_when_glab_no_token_line(self, monkeypatch):
         """_get_gitlab_token returns empty when glab output has no Token line."""
         monkeypatch.delenv("GITLAB_TOKEN", raising=False)
-        with patch.object(cli_review_mod.subprocess, "run") as mock_run:
+        with patch.object(utils_run_mod.subprocess, "run") as mock_run:
             mock_run.return_value = MagicMock(
                 stderr="  User: test\n  Scopes: api\n",
                 returncode=0,
@@ -221,7 +221,7 @@ class TestRequireToken:
     def test_post_draft_note_rejected(self, monkeypatch):
         monkeypatch.delenv("GITLAB_TOKEN", raising=False)
         monkeypatch.delenv("GITLAB_TOKEN", raising=False)
-        with patch.object(cli_review_mod.subprocess, "run") as mock_run:
+        with patch.object(utils_run_mod.subprocess, "run") as mock_run:
             mock_run.return_value = MagicMock(stderr="", returncode=1)
             result = runner.invoke(app, ["review", "post-draft-note", "org/repo", "1", "note"])
             assert result.exit_code == 1
@@ -230,7 +230,7 @@ class TestRequireToken:
     def test_delete_draft_note_rejected(self, monkeypatch):
         monkeypatch.delenv("GITLAB_TOKEN", raising=False)
         monkeypatch.delenv("GITLAB_TOKEN", raising=False)
-        with patch.object(cli_review_mod.subprocess, "run") as mock_run:
+        with patch.object(utils_run_mod.subprocess, "run") as mock_run:
             mock_run.return_value = MagicMock(stderr="", returncode=1)
             result = runner.invoke(app, ["review", "delete-draft-note", "org/repo", "1", "42"])
             assert result.exit_code == 1
@@ -238,7 +238,7 @@ class TestRequireToken:
 
     def test_publish_draft_notes_rejected(self, monkeypatch):
         monkeypatch.delenv("GITLAB_TOKEN", raising=False)
-        with patch.object(cli_review_mod.subprocess, "run") as mock_run:
+        with patch.object(utils_run_mod.subprocess, "run") as mock_run:
             mock_run.return_value = MagicMock(stderr="", returncode=1)
             result = runner.invoke(app, ["review", "publish-draft-notes", "org/repo", "1"])
             assert result.exit_code == 1
@@ -247,7 +247,7 @@ class TestRequireToken:
     def test_list_draft_notes_rejected(self, monkeypatch):
         monkeypatch.delenv("GITLAB_TOKEN", raising=False)
         monkeypatch.delenv("GITLAB_TOKEN", raising=False)
-        with patch.object(cli_review_mod.subprocess, "run") as mock_run:
+        with patch.object(utils_run_mod.subprocess, "run") as mock_run:
             mock_run.return_value = MagicMock(stderr="", returncode=1)
             result = runner.invoke(app, ["review", "list-draft-notes", "org/repo", "1"])
             assert result.exit_code == 1

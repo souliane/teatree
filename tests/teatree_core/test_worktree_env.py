@@ -1,15 +1,26 @@
-"""Tests for teatree.core.worktree_env — .env.worktree generation."""
+"""Tests for teatree.core.worktree_env — env cache generation."""
 
+import stat
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from django.test import TestCase
 
 import teatree.core.overlay_loader as overlay_loader_mod
 import teatree.core.worktree_env as worktree_env_mod
-from teatree.core.models import Ticket, Worktree
+from teatree.core.models import Ticket, Worktree, WorktreeEnvOverride
 from teatree.core.overlay import OverlayBase, ProvisionStep
+from teatree.core.worktree_env import (
+    CACHE_DIRNAME,
+    CACHE_FILENAME,
+    detect_drift,
+    load_overrides,
+    render_env_cache,
+    set_override,
+    write_env_cache,
+)
 from teatree.types import DbImportStrategy
 from tests.teatree_core.conftest import CommandOverlay
 
@@ -29,8 +40,6 @@ class TestDockerHostAddress(TestCase):
 
 
 class SharedPostgresOverlay(OverlayBase):
-    """Overlay that declares shared_postgres in its DB import strategy."""
-
     def get_repos(self) -> list[str]:
         return ["backend"]
 
@@ -42,7 +51,7 @@ class SharedPostgresOverlay(OverlayBase):
 
 
 class EnvExtraOverrideOverlay(OverlayBase):
-    """Overlay that provides env extras overriding a core key."""
+    """Overlay whose get_env_extra collides with a core key."""
 
     def get_repos(self) -> list[str]:
         return ["backend"]
@@ -53,13 +62,57 @@ class EnvExtraOverrideOverlay(OverlayBase):
     def get_env_extra(self, worktree: Worktree) -> dict[str, str]:
         return {"WT_DB_NAME": "custom_db", "EXTRA_KEY": "extra_value"}
 
+    def declared_env_keys(self) -> set[str]:
+        return {"WT_DB_NAME", "EXTRA_KEY"}
+
+
+class ExtraOnlyOverlay(OverlayBase):
+    """Overlay that declares a non-colliding extra key."""
+
+    def get_repos(self) -> list[str]:
+        return ["backend"]
+
+    def get_provision_steps(self, worktree: Worktree) -> list[ProvisionStep]:
+        return []
+
+    def get_env_extra(self, worktree: Worktree) -> dict[str, str]:
+        return {"EXTRA_KEY": "extra_value"}
+
+    def declared_env_keys(self) -> set[str]:
+        return {"EXTRA_KEY"}
+
 
 _SHARED_PG = {"test": SharedPostgresOverlay()}
-_ENV_EXTRA = {"test": EnvExtraOverrideOverlay()}
+_ENV_EXTRA_COLLIDES = {"test": EnvExtraOverrideOverlay()}
+_EXTRA_ONLY = {"test": ExtraOnlyOverlay()}
 _COMMAND = {"test": CommandOverlay()}
 
 
-class TestWriteEnvWorktree(TestCase):
+def _make_worktree(
+    tmp: str,
+    *,
+    ticket_name: str,
+    ticket_url: str,
+    db_name: str = "wt_1",
+    **ticket_kwargs: object,
+) -> tuple[Worktree, Path]:
+    ticket_dir = Path(tmp) / ticket_name
+    ticket_dir.mkdir()
+    wt_path = ticket_dir / "backend"
+    wt_path.mkdir()
+    ticket = Ticket.objects.create(overlay="test", issue_url=ticket_url, **ticket_kwargs)
+    wt = Worktree.objects.create(
+        overlay="test",
+        ticket=ticket,
+        repo_path="backend",
+        branch="feature",
+        db_name=db_name,
+        extra={"worktree_path": str(wt_path)},
+    )
+    return wt, wt_path
+
+
+class TestRenderEnvCache(TestCase):
     def test_returns_none_when_no_worktree_path(self) -> None:
         ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/1")
         wt = Worktree.objects.create(
@@ -69,182 +122,147 @@ class TestWriteEnvWorktree(TestCase):
             branch="feature",
             extra={},
         )
-        assert worktree_env_mod.write_env_worktree(wt) is None
+        assert render_env_cache(wt) is None
 
-    def test_writes_basic_env_file(self) -> None:
+    def test_raises_when_overlay_collides_with_core(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            ticket_dir = Path(tmp) / "ticket-1"
-            ticket_dir.mkdir()
-            wt_path = ticket_dir / "backend"
-            wt_path.mkdir()
+            wt, _ = _make_worktree(tmp, ticket_name="t", ticket_url="https://ex.com/1", variant="acme")
+            with (
+                patch.object(overlay_loader_mod, "_discover_overlays", return_value=_ENV_EXTRA_COLLIDES),
+                pytest.raises(RuntimeError, match="core already owns"),
+            ):
+                render_env_cache(wt)
 
-            ticket = Ticket.objects.create(
-                overlay="test",
-                issue_url="https://example.com/issues/42",
+
+class TestWriteEnvCache(TestCase):
+    def test_writes_cache_in_hidden_dir(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            wt, wt_path = _make_worktree(
+                tmp,
+                ticket_name="ticket-1",
+                ticket_url="https://example.com/issues/42",
                 variant="acme",
-            )
-            wt = Worktree.objects.create(
-                overlay="test",
-                ticket=ticket,
-                repo_path="backend",
-                branch="feature",
                 db_name="wt_42_acme",
-                extra={"worktree_path": str(wt_path)},
             )
 
             with patch.object(overlay_loader_mod, "_discover_overlays", return_value=_COMMAND):
-                result = worktree_env_mod.write_env_worktree(wt)
+                spec = write_env_cache(wt)
 
-            assert result is not None
-            envfile = Path(result)
-            assert envfile.exists()
-            content = envfile.read_text(encoding="utf-8")
+            assert spec is not None
+            assert spec.path.name == CACHE_FILENAME
+            assert spec.path.parent.name == CACHE_DIRNAME
+            content = spec.path.read_text(encoding="utf-8")
+            assert "# GENERATED" in content
             assert "WT_VARIANT=acme" in content
-            assert f"TICKET_DIR={ticket_dir}" in content
-            assert "TICKET_URL=https://example.com/issues/42" in content
             assert "WT_DB_NAME=wt_42_acme" in content
-            assert f"COMPOSE_PROJECT_NAME=backend-wt{ticket.ticket_number}" in content
 
-            # Symlink created in repo worktree dir
-            repo_envwt = wt_path / ".env.worktree"
-            assert repo_envwt.is_symlink()
-            assert repo_envwt.resolve() == envfile.resolve()
+            # chmod 444
+            mode = stat.S_IMODE(spec.path.stat().st_mode)
+            assert mode == 0o444
+
+            # Symlink in repo
+            repo_link = wt_path / CACHE_FILENAME
+            assert repo_link.is_symlink()
+            assert repo_link.resolve() == spec.path.resolve()
 
     def test_shared_postgres_adds_host(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            ticket_dir = Path(tmp) / "ticket-2"
-            ticket_dir.mkdir()
-            wt_path = ticket_dir / "backend"
-            wt_path.mkdir()
-
-            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/2")
-            wt = Worktree.objects.create(
-                overlay="test",
-                ticket=ticket,
-                repo_path="backend",
-                branch="feature",
-                db_name="wt_2",
-                extra={"worktree_path": str(wt_path)},
-            )
-
+            wt, _ = _make_worktree(tmp, ticket_name="t2", ticket_url="https://ex.com/2", db_name="wt_2")
             with (
                 patch.object(overlay_loader_mod, "_discover_overlays", return_value=_SHARED_PG),
                 patch.object(worktree_env_mod.platform, "system", return_value="Darwin"),
             ):
-                result = worktree_env_mod.write_env_worktree(wt)
+                spec = write_env_cache(wt)
+            assert spec is not None
+            assert "POSTGRES_HOST=host.docker.internal" in spec.content
 
-            assert result is not None
-            content = Path(result).read_text(encoding="utf-8")
-            assert "POSTGRES_HOST=host.docker.internal" in content
-
-    def test_env_extra_overrides_core_key(self) -> None:
+    def test_extra_non_colliding_key_lands_in_cache(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            ticket_dir = Path(tmp) / "ticket-3"
-            ticket_dir.mkdir()
-            wt_path = ticket_dir / "backend"
-            wt_path.mkdir()
+            wt, _ = _make_worktree(tmp, ticket_name="t3", ticket_url="https://ex.com/3", db_name="wt_3")
+            with patch.object(overlay_loader_mod, "_discover_overlays", return_value=_EXTRA_ONLY):
+                spec = write_env_cache(wt)
+            assert spec is not None
+            assert "EXTRA_KEY=extra_value" in spec.content
 
-            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/3")
-            wt = Worktree.objects.create(
-                overlay="test",
-                ticket=ticket,
-                repo_path="backend",
-                branch="feature",
-                db_name="wt_3",
-                extra={"worktree_path": str(wt_path)},
-            )
-
-            with patch.object(overlay_loader_mod, "_discover_overlays", return_value=_ENV_EXTRA):
-                result = worktree_env_mod.write_env_worktree(wt)
-
-            assert result is not None
-            content = Path(result).read_text(encoding="utf-8")
-            # WT_DB_NAME should be overridden by overlay's env_extra
-            assert "WT_DB_NAME=custom_db" in content
-            # Should not have the original value
-            assert "WT_DB_NAME=wt_3" not in content
-            # New key should be appended
-            assert "EXTRA_KEY=extra_value" in content
+    def test_regenerate_overwrites_readonly_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            wt, _ = _make_worktree(tmp, ticket_name="t4", ticket_url="https://ex.com/4", db_name="wt_4")
+            with patch.object(overlay_loader_mod, "_discover_overlays", return_value=_COMMAND):
+                first = write_env_cache(wt)
+                assert first is not None
+                # File is 444 — the second call must strip, write, re-chmod.
+                second = write_env_cache(wt)
+            assert second is not None
+            assert first.path == second.path
+            assert stat.S_IMODE(second.path.stat().st_mode) == 0o444
 
     def test_emits_redis_db_index_when_allocated(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            ticket_dir = Path(tmp) / "ticket-5"
-            ticket_dir.mkdir()
-            wt_path = ticket_dir / "backend"
-            wt_path.mkdir()
-
-            ticket = Ticket.objects.create(
-                overlay="test",
-                issue_url="https://example.com/issues/5",
+            wt, _ = _make_worktree(
+                tmp,
+                ticket_name="t5",
+                ticket_url="https://ex.com/5",
                 redis_db_index=7,
-            )
-            wt = Worktree.objects.create(
-                overlay="test",
-                ticket=ticket,
-                repo_path="backend",
-                branch="feature",
                 db_name="wt_5",
-                extra={"worktree_path": str(wt_path)},
             )
-
             with patch.object(overlay_loader_mod, "_discover_overlays", return_value=_COMMAND):
-                result = worktree_env_mod.write_env_worktree(wt)
-
-            assert result is not None
-            content = Path(result).read_text(encoding="utf-8")
-            assert "REDIS_DB_INDEX=7" in content
+                spec = write_env_cache(wt)
+            assert spec is not None
+            assert "REDIS_DB_INDEX=7" in spec.content
 
     def test_omits_redis_db_index_when_unallocated(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            ticket_dir = Path(tmp) / "ticket-6"
-            ticket_dir.mkdir()
-            wt_path = ticket_dir / "backend"
-            wt_path.mkdir()
-
-            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/6")
-            wt = Worktree.objects.create(
-                overlay="test",
-                ticket=ticket,
-                repo_path="backend",
-                branch="feature",
-                db_name="wt_6",
-                extra={"worktree_path": str(wt_path)},
-            )
-
+            wt, _ = _make_worktree(tmp, ticket_name="t6", ticket_url="https://ex.com/6", db_name="wt_6")
             with patch.object(overlay_loader_mod, "_discover_overlays", return_value=_COMMAND):
-                result = worktree_env_mod.write_env_worktree(wt)
+                spec = write_env_cache(wt)
+            assert spec is not None
+            assert "REDIS_DB_INDEX" not in spec.content
 
-            assert result is not None
-            content = Path(result).read_text(encoding="utf-8")
-            assert "REDIS_DB_INDEX" not in content
 
-    def test_overwrites_existing_symlink(self) -> None:
+class TestDetectDrift(TestCase):
+    def test_no_drift_when_freshly_written(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            ticket_dir = Path(tmp) / "ticket-4"
-            ticket_dir.mkdir()
-            wt_path = ticket_dir / "backend"
-            wt_path.mkdir()
-
-            # Create a pre-existing symlink
-            repo_envwt = wt_path / ".env.worktree"
-            dummy = ticket_dir / "old_env"
-            dummy.write_text("old")
-            repo_envwt.symlink_to(dummy)
-
-            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/4")
-            wt = Worktree.objects.create(
-                overlay="test",
-                ticket=ticket,
-                repo_path="backend",
-                branch="feature",
-                db_name="wt_4",
-                extra={"worktree_path": str(wt_path)},
-            )
-
+            wt, _ = _make_worktree(tmp, ticket_name="t", ticket_url="https://ex.com/1", db_name="wt_1")
             with patch.object(overlay_loader_mod, "_discover_overlays", return_value=_COMMAND):
-                result = worktree_env_mod.write_env_worktree(wt)
+                write_env_cache(wt)
+                drifted, _ = detect_drift(wt)
+            assert drifted is False
 
-            assert result is not None
-            # Symlink should now point to the new envfile, not the old one
-            assert repo_envwt.is_symlink()
-            assert repo_envwt.resolve() != dummy.resolve()
+    def test_drift_when_file_edited(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            wt, _ = _make_worktree(tmp, ticket_name="t", ticket_url="https://ex.com/1", db_name="wt_1")
+            with patch.object(overlay_loader_mod, "_discover_overlays", return_value=_COMMAND):
+                spec = write_env_cache(wt)
+                assert spec is not None
+                spec.path.chmod(0o644)
+                spec.path.write_text("tampered\n", encoding="utf-8")
+                drifted, cache_path = detect_drift(wt)
+            assert drifted is True
+            assert cache_path == spec.path
+
+    def test_drift_when_file_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            wt, _ = _make_worktree(tmp, ticket_name="t", ticket_url="https://ex.com/1", db_name="wt_1")
+            with patch.object(overlay_loader_mod, "_discover_overlays", return_value=_COMMAND):
+                drifted, cache_path = detect_drift(wt)
+            assert drifted is True
+            assert cache_path is not None
+            assert cache_path.name == CACHE_FILENAME
+
+
+class TestOverrides(TestCase):
+    def test_set_override_persists_and_regenerates_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            wt, _ = _make_worktree(tmp, ticket_name="t", ticket_url="https://ex.com/1", db_name="wt_1")
+            with patch.object(overlay_loader_mod, "_discover_overlays", return_value=_COMMAND):
+                set_override(wt, "MY_KEY", "my_value")
+                spec = render_env_cache(wt)
+            assert WorktreeEnvOverride.objects.filter(worktree=wt, key="MY_KEY").exists()
+            assert spec is not None
+            assert load_overrides(wt) == {"MY_KEY": "my_value"}
+
+    def test_set_override_rejects_core_keys(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            wt, _ = _make_worktree(tmp, ticket_name="t", ticket_url="https://ex.com/1", db_name="wt_1")
+            with pytest.raises(ValueError, match="owned by core"):
+                set_override(wt, "WT_DB_NAME", "hack")

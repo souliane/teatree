@@ -146,7 +146,7 @@ class TestEnable:
 
         commands_run: list[list[str]] = []
         monkeypatch.setattr(
-            "teatree.autostart.subprocess.run",
+            "teatree.utils.run.subprocess.run",
             lambda *a, **kw: (commands_run.append(a[0]), subprocess.CompletedProcess(a[0], 0))[1],
         )
 
@@ -173,7 +173,7 @@ class TestEnable:
 
         commands_run: list[list[str]] = []
         monkeypatch.setattr(
-            "teatree.autostart.subprocess.run",
+            "teatree.utils.run.subprocess.run",
             lambda *a, **kw: (commands_run.append(a[0]), subprocess.CompletedProcess(a[0], 0))[1],
         )
 
@@ -192,7 +192,7 @@ class TestEnable:
 
         commands_run: list[list[str]] = []
         monkeypatch.setattr(
-            "teatree.autostart.subprocess.run",
+            "teatree.utils.run.subprocess.run",
             lambda *a, **kw: (commands_run.append(a[0]), subprocess.CompletedProcess(a[0], 0))[1],
         )
 
@@ -214,7 +214,7 @@ class TestDisable:
 
         commands_run: list[list[str]] = []
         monkeypatch.setattr(
-            "teatree.autostart.subprocess.run",
+            "teatree.utils.run.subprocess.run",
             lambda *a, **kw: (commands_run.append(a[0]), subprocess.CompletedProcess(a[0], 0))[1],
         )
 
@@ -232,7 +232,7 @@ class TestDisable:
 
         commands_run: list[list[str]] = []
         monkeypatch.setattr(
-            "teatree.autostart.subprocess.run",
+            "teatree.utils.run.subprocess.run",
             lambda *a, **kw: (commands_run.append(a[0]), subprocess.CompletedProcess(a[0], 0))[1],
         )
 
@@ -267,10 +267,10 @@ class TestEnableFailures:
         def fake_run(*a, **kw):
             cmd = a[0]
             if "load" in cmd:
-                return subprocess.CompletedProcess(cmd, 1, stderr=b"load error")
+                return subprocess.CompletedProcess(cmd, 1, stderr="load error")
             return subprocess.CompletedProcess(cmd, 0)
 
-        monkeypatch.setattr("teatree.autostart.subprocess.run", fake_run)
+        monkeypatch.setattr("teatree.utils.run.subprocess.run", fake_run)
 
         with pytest.raises(RuntimeError, match="launchctl load failed"):
             enable("acme", project, "acme.settings", "127.0.0.1", 8000)
@@ -284,10 +284,10 @@ class TestEnableFailures:
         def fake_run(*a, **kw):
             cmd = a[0]
             if "enable" in cmd:
-                return subprocess.CompletedProcess(cmd, 1, stderr=b"enable error")
+                return subprocess.CompletedProcess(cmd, 1, stderr="enable error")
             return subprocess.CompletedProcess(cmd, 0)
 
-        monkeypatch.setattr("teatree.autostart.subprocess.run", fake_run)
+        monkeypatch.setattr("teatree.utils.run.subprocess.run", fake_run)
 
         with pytest.raises(RuntimeError, match="systemctl enable failed"):
             enable("acme", project, "acme.settings", "127.0.0.1", 8000)
@@ -310,7 +310,7 @@ class TestEnableFailures:
                 return subprocess.CompletedProcess(cmd, 1, stderr=b"unload err")
             return subprocess.CompletedProcess(cmd, 0)
 
-        monkeypatch.setattr("teatree.autostart.subprocess.run", fake_run)
+        monkeypatch.setattr("teatree.utils.run.subprocess.run", fake_run)
 
         with caplog.at_level("WARNING", logger="teatree.autostart"):
             enable("acme", project, "acme.settings", "127.0.0.1", 8000)

@@ -10,7 +10,7 @@ from teatree.core.models import Ticket, Worktree
 from teatree.core.resolve import (
     WorktreeNotFoundError,
     _auto_register_from_git,
-    _find_env_worktree,
+    _find_env_cache,
     _match_worktree_by_path,
     _parse_env_file,
     _warn_cwd_mismatch,
@@ -61,22 +61,22 @@ class TestParseEnvFile:
         assert result == {"URL": "http://host?a=b"}
 
 
-class TestFindEnvWorktree:
+class TestFindEnvCache:
     def test_found_in_cwd(self, tmp_path: Path) -> None:
-        envfile = tmp_path / ".env.worktree"
+        envfile = tmp_path / ".t3-env.cache"
         envfile.write_text("TICKET_DIR=/some/path\n", encoding="utf-8")
 
-        result = _find_env_worktree(str(tmp_path))
+        result = _find_env_cache(str(tmp_path))
 
         assert result == envfile
 
     def test_found_in_parent(self, tmp_path: Path) -> None:
-        envfile = tmp_path / ".env.worktree"
+        envfile = tmp_path / ".t3-env.cache"
         envfile.write_text("TICKET_DIR=/some/path\n", encoding="utf-8")
         child = tmp_path / "sub" / "deep"
         child.mkdir(parents=True)
 
-        result = _find_env_worktree(str(child))
+        result = _find_env_cache(str(child))
 
         assert result == envfile
 
@@ -84,7 +84,7 @@ class TestFindEnvWorktree:
         child = tmp_path / "a" / "b"
         child.mkdir(parents=True)
 
-        result = _find_env_worktree(str(child))
+        result = _find_env_cache(str(child))
 
         assert result is None
 
@@ -155,7 +155,7 @@ class TestResolveWorktree(TestCase):
             extra={"worktree_path": str(self._tmp_path / "ticket-dir")},
         )
 
-        envfile = self._tmp_path / ".env.worktree"
+        envfile = self._tmp_path / ".t3-env.cache"
         envfile.write_text(f"TICKET_DIR={self._tmp_path / 'ticket-dir'}\n", encoding="utf-8")
         self._monkeypatch.setenv("T3_ORIG_CWD", str(self._tmp_path))
 
@@ -215,8 +215,8 @@ class TestResolveWorktree(TestCase):
         assert result.extra["worktree_path"] == wt_path
 
     def test_env_file_without_ticket_dir(self) -> None:
-        """When .env.worktree exists but has no TICKET_DIR, fall through to CWD match."""
-        envfile = self._tmp_path / ".env.worktree"
+        """When .t3-env.cache exists but has no TICKET_DIR, fall through to CWD match."""
+        envfile = self._tmp_path / ".t3-env.cache"
         envfile.write_text("SOME_OTHER_KEY=value\n", encoding="utf-8")
         self._monkeypatch.setenv("T3_ORIG_CWD", str(self._tmp_path))
 

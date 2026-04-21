@@ -68,7 +68,7 @@ class TestProvisionReport(TestCase):
 
 
 class TestRunStep(TestCase):
-    @patch("teatree.core.step_runner.subprocess")
+    @patch("teatree.utils.run.subprocess")
     def test_success(self, mock_sp: MagicMock) -> None:
         mock_sp.run.return_value = MagicMock(returncode=0, stdout="ok\n", stderr="")
         mock_sp.TimeoutExpired = subprocess.TimeoutExpired
@@ -77,7 +77,7 @@ class TestRunStep(TestCase):
         assert result.name == "echo-test"
         assert result.duration > 0
 
-    @patch("teatree.core.step_runner.subprocess")
+    @patch("teatree.utils.run.subprocess")
     def test_failure_with_check(self, mock_sp: MagicMock) -> None:
         mock_sp.run.return_value = MagicMock(returncode=1, stdout="", stderr="bad thing")
         mock_sp.TimeoutExpired = subprocess.TimeoutExpired
@@ -85,14 +85,14 @@ class TestRunStep(TestCase):
         assert result.success is False
         assert "bad thing" in result.error
 
-    @patch("teatree.core.step_runner.subprocess")
+    @patch("teatree.utils.run.subprocess")
     def test_failure_without_check(self, mock_sp: MagicMock) -> None:
         mock_sp.run.return_value = MagicMock(returncode=1, stdout="", stderr="ignored")
         mock_sp.TimeoutExpired = subprocess.TimeoutExpired
         result = run_step("soft-fail", ["false"], check=False)
         assert result.success is True  # check=False means non-zero is OK
 
-    @patch("teatree.core.step_runner.subprocess")
+    @patch("teatree.utils.run.subprocess")
     def test_timeout(self, mock_sp: MagicMock) -> None:
         mock_sp.run.side_effect = subprocess.TimeoutExpired(cmd=["slow"], timeout=1)
         mock_sp.TimeoutExpired = subprocess.TimeoutExpired
