@@ -107,6 +107,7 @@ Skipping this step is the #1 cause of wasted push-fix-push cycles. The rules exi
 
 ### 4. Push
 
+- **Reconcile with the default branch first.** `git fetch origin <default> && git log <branch>..origin/<default> --oneline` — if any commits appear, merge them in (`git merge origin/<default>`) and re-run lint/tests before pushing. Opening a PR that is already BEHIND main forces the user (or you) to do a second round-trip to resolve conflicts; catch them now, while you have the context of your own change open.
 - Push to remote. Cancel stale pipelines first if the branch has an existing MR (see § Rules).
 
 ### 4b. Review Gate
@@ -127,6 +128,8 @@ Before creating an MR, the `pr create` command automatically checks the session 
 - Skipped when Playwright cannot start — fails open with a clear message rather than blocking the push.
 
 ### 5. Create MR/PR
+
+**Prefer `t3 <overlay> pr create` over raw `gh`/`glab`.** The CLI handles the title/body format, ticket URL injection, assignee, and fork-vs-upstream remote resolution — all of which are easy to get wrong by hand. Reach for raw `gh`/`glab` only when the overlay doesn't expose a `pr create` subcommand, or when you're fixing the CLI itself and need to bypass it for this one call.
 
 **STOP — resolve the ticket URL before typing the glab command.**
 

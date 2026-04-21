@@ -39,6 +39,13 @@
   2. Temporarily clear the flag with `git update-index --no-skip-worktree <file>`, commit or stash the local override, switch branches, then restore the flag. **Never `git checkout <file>` to "resolve" it — that wipes the override.**
 - **Prevention:** Keep the dogfood override on a dedicated branch, not on whichever branch the main clone happens to be sitting on. If the override must live in the main clone, document it in the repo's `AGENTS.md` so future agents don't try to check out another branch there.
 
+## `gh pr create` Refuses `"push the current branch to a remote, or use the --head flag"`
+
+- **Symptom:** `gh pr create` aborts with `you must first push the current branch to a remote, or use the --head flag` even though you just ran `git push -u origin <branch>` successfully.
+- **Cause:** the repo has both `origin` (your personal fork, possibly under a host alias like `github.com-<alias>:<user>/<repo>.git`) and `upstream` (the canonical `github.com:<org>/<repo>.git`). `gh` picks a "default repo" from the set of known remotes (usually `upstream`) and looks for your branch there — but the branch only exists on `origin`.
+- **Fix:** pass both flags explicitly: `gh pr create --repo <owner>/<repo> --head <branch> ...`. Example: `gh pr create --repo souliane/teatree --head ac-teatree-379-ticket ...`.
+- **Prevention:** when the fork layout differs from upstream, always be explicit about `--repo` and `--head` on `gh pr create`; never rely on the "default repo" inference.
+
 ## `gh pr merge --delete-branch` Fails When `main` Is in Another Worktree
 
 - **Symptom:** `gh pr merge <n> --squash --delete-branch` exits with `failed to run git: fatal: 'main' is already used by worktree at '<path>'`. The PR may have already merged on the remote despite the error.
