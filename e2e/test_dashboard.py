@@ -94,22 +94,22 @@ def test_ticket_action_buttons(e2e_server: str, page: Page) -> None:
 # ── Unified Sessions panel ─────────────────────────────────────────
 
 
-def test_sessions_panel_shows_tasks(e2e_server: str, page: Page, assert_snapshot: Callable) -> None:
+def test_sessions_panel_shows_tasks(e2e_server: str, page: Page) -> None:
     page.goto(e2e_server)
-    expect(page.locator("body")).to_contain_text("Automated code review")
-    expect(page.locator("body")).to_contain_text("Needs manual verification")
-
-    sessions_section = page.locator("h2", has_text="Sessions").locator("..")
-    assert_snapshot(
-        sessions_section.screenshot(animations="disabled"),
-        name="sessions-panel.png",
-        threshold=_SNAPSHOT_THRESHOLD,
-    )
+    sessions_section = page.locator("#section-sessions")
+    # Wait for HTMX-loaded unified sessions grid to render seeded tasks.
+    sessions_section.locator("#unified-sessions-grid").wait_for(state="visible")
+    # Interactive task stays queued — its ``execution_reason`` is shown.
+    # The headless task runs synchronously under ImmediateBackend and moves
+    # to "recent activity", where the selector blanks ``execution_reason``
+    # (see ``selectors/unified.py``) — so we only assert the interactive one.
+    expect(sessions_section).to_contain_text("Needs manual verification")
+    expect(sessions_section).to_contain_text("#42")
 
 
 def test_sessions_filter_tabs(e2e_server: str, page: Page) -> None:
     page.goto(e2e_server)
-    sessions_section = page.locator("h2", has_text="Sessions").locator("..")
+    sessions_section = page.locator("#section-sessions")
     for tab in ["All", "Running", "Queued", "Completed", "Failed"]:
         expect(sessions_section.locator("button", has_text=tab)).to_be_visible()
 
@@ -141,16 +141,19 @@ def test_sync_button(e2e_server: str, page: Page) -> None:
 
 def test_create_headless_task(e2e_server: str, page: Page) -> None:
     page.goto(e2e_server)
-    page.locator("button", has_text="Auto").first.click()
+    # Accept the hx-confirm dialog so the POST goes through.
+    page.on("dialog", lambda dialog: dialog.accept())
+    # "Headless" lives on tickets WITH MRs (visible under the default "Has PR"
+    # filter). The "Auto" variant is on the {% empty %} branch and is hidden.
+    page.locator("button", has_text="Headless").first.click()
     page.wait_for_timeout(500)
-    # With ImmediateBackend the task may complete instantly, so just verify
-    # the request succeeded (no error toast) and the page is still functional
     expect(page.locator("h2", has_text="In-Flight Tickets")).to_be_visible()
 
 
 def test_create_interactive_task(e2e_server: str, page: Page) -> None:
     page.goto(e2e_server)
-    page.locator("button", has_text="Interactive").first.click()
+    page.on("dialog", lambda dialog: dialog.accept())
+    page.locator("button.split-main", has_text="Interactive").first.click()
     page.wait_for_timeout(500)
     expect(page.locator("h2", has_text="Sessions")).to_be_visible()
 

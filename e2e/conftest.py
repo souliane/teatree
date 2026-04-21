@@ -18,6 +18,10 @@ import pytest
 
 os.environ["DJANGO_SETTINGS_MODULE"] = "e2e.settings"
 os.environ["DJANGO_ALLOW_ASYNC_UNSAFE"] = "1"
+# Isolate active-session discovery from any real Claude sessions on the host.
+os.environ["TEATREE_CLAUDE_SESSIONS_DIR"] = "/nonexistent-e2e-sessions"
+# Disable panel cache so seeded data appears immediately on each test.
+os.environ["TEATREE_PANEL_CACHE_TTL"] = "0"
 
 
 def pytest_configure(config: pytest.Config) -> None:
