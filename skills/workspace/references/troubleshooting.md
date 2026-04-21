@@ -6,23 +6,23 @@
 
 ## "Database Already Exists"
 
-- **Cause:** Previous `t3 lifecycle setup` created the DB but was interrupted before completing.
-- **Fix:** Run `t3 db refresh` to drop and reimport cleanly.
+- **Cause:** Previous `t3 <overlay> lifecycle setup` created the DB but was interrupted before completing.
+- **Fix:** Run `t3 <overlay> db refresh` to drop and reimport cleanly.
 
 ## Port Already in Use
 
 - **Cause:** Stale process from a previous session holds the port.
-- **Fix:** `lsof -i :<port>` to identify the process, then kill it. Or run `t3 lifecycle setup` again — it allocates free ports automatically.
+- **Fix:** `lsof -i :<port>` to identify the process, then kill it. Or run `t3 <overlay> lifecycle setup` again — it allocates free ports automatically.
 - **Docker variants:** If using Docker-based services, port conflicts can also come from stale containers or compose project name collisions. Check `docker ps -a` for conflicting containers. Project overlays may document additional Docker-specific failure modes in their own troubleshooting references.
 
 ## Setup Reports "provisioned" But DB Is Missing or Empty
 
-- **Symptom:** `t3 lifecycle setup` completes with state "provisioned" and `db_name` in facts, but `psql` shows the database does not exist. Or DB exists but seed tables are empty (row count is 0).
+- **Symptom:** `t3 <overlay> lifecycle setup` completes with state "provisioned" and `db_name` in facts, but `psql` shows the database does not exist. Or DB exists but seed tables are empty (row count is 0).
 - **Cause:** Two known scenarios:
   1. `.env.worktree` was stale from a previous worktree (different ticket/variant). The setup used the old `DATABASE_URL` for migrations — connecting to an existing DB instead of creating a new one. Fixed in `lifecycle.py` (adds `_force_load_env_worktree` after env generation).
   2. The active project overlay was not configured in the overlay package, so project-layer DB hooks never ran.
 - **Verification after setup:** Always check: `psql -h localhost -p <port> -U <db_user> -d <db_name> -c "SELECT count(*) FROM <seed_table>"` — must be > 0.
-- **Fix:** Delete `.env.worktree` (both ticket-dir and repo-level) + `.state.json`, drop the DB if it exists, and re-run `t3 lifecycle setup`.
+- **Fix:** Delete `.env.worktree` (both ticket-dir and repo-level) + `.state.json`, drop the DB if it exists, and re-run `t3 <overlay> lifecycle setup`.
 
 ## "Worktree Is Already Checked Out"
 
@@ -63,7 +63,7 @@
 
 ## GitHub Board "Done" Transitions Don't Clean Worktrees
 
-- **Symptom:** A ticket is moved to the GitHub Projects v2 "Done" column (or the GitLab MR is merged) but the worktree is still on disk after the next `t3 followup sync`.
+- **Symptom:** A ticket is moved to the GitHub Projects v2 "Done" column (or the GitLab MR is merged) but the worktree is still on disk after the next `t3 <overlay> followup sync`.
 - **Cause:** The branch has genuinely-unpushed commits, so `cleanup_worktree()` refused the delete. The sync logs an `INFO` line (`Keeping worktree … (unpushed work): …`) rather than raising — same squash-merge-aware classifier as `clean-all`.
 - **Fix:** run `t3 teatree workspace clean-all` interactively and choose **P** (push) or **A** (abandon) per the previous entry.
 - **Prevention:** commit or drop scratch work before moving the ticket to Done. `clean-all` never silently loses unpushed content.
@@ -71,7 +71,7 @@
 ## DSLR Restore Fails Silently
 
 - **Cause:** `dslr` not installed or the snapshot is from an incompatible Postgres version.
-- **Fix:** Run `uv tool install dslr` to install. If version mismatch, delete the snapshot (`dslr delete <name>`) and let `t3 db refresh` reimport from dump.
+- **Fix:** Run `uv tool install dslr` to install. If version mismatch, delete the snapshot (`dslr delete <name>`) and let `t3 <overlay> db refresh` reimport from dump.
 
 ## Remote `pg_dump` Times Out or Produces Truncated Dump
 
@@ -103,7 +103,7 @@
 
 ## Issue Tracker CLI Quirks
 
-See your [issue tracker platform reference](../../t3:platforms/references/) § "Known CLI Quirks" for platform-specific CLI issues. Common gotcha: some CLIs cannot serialize nested JSON — use `curl` instead for complex payloads.
+See your [issue tracker platform reference](../../platforms/references/) § "Known CLI Quirks" for platform-specific CLI issues. Common gotcha: some CLIs cannot serialize nested JSON — use `curl` instead for complex payloads.
 
 ## Pre-Commit Hook Failure + Stash Cycle Destroys Uncommitted Work
 

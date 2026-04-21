@@ -213,14 +213,14 @@ When a pre-commit hook runs the full test suite and fails on tests **unrelated t
 
 ## Worktree-First Work (Non-Negotiable)
 
-**All development work MUST happen in a worktree**, never on the main clone. Use `t3 workspace ticket` or the `using-git-worktrees` skill to create one before writing any code.
+**All development work MUST happen in a worktree**, never on the main clone. Use `t3 <overlay> workspace ticket` or the `using-git-worktrees` skill to create one before writing any code.
 
-**Pre-edit check — before editing ANY project file:** If the file path lives directly under `$T3_WORKSPACE_DIR/<repo>/` (not under a ticket subdirectory like `$T3_WORKSPACE_DIR/<ticket>/<repo>/`), **stop** — you are in the main clone. Find or create the correct worktree first via `t3 workspace ticket`. The main clone may happen to be on the MR branch (from a previous checkout) — editing there "works" but pollutes the shared clone, risks merge conflicts for other worktrees, and violates isolation.
+**Pre-edit check — before editing ANY project file:** If the file path lives directly under `$T3_WORKSPACE_DIR/<repo>/` (not under a ticket subdirectory like `$T3_WORKSPACE_DIR/<ticket>/<repo>/`), **stop** — you are in the main clone. Find or create the correct worktree first via `t3 <overlay> workspace ticket`. The main clone may happen to be on the MR branch (from a previous checkout) — editing there "works" but pollutes the shared clone, risks merge conflicts for other worktrees, and violates isolation.
 
 **Collision detection — check on EVERY file write or git operation:**
 
 1. Before writing to a file, run `git status`. If you see unexpected modifications to files you did not touch, **another agent is working in the same directory**.
-2. **If you are NOT in a worktree:** STOP writing code. Move all your work to a worktree immediately (`t3 workspace ticket` or `EnterWorktree`), then continue there.
+2. **If you are NOT in a worktree:** STOP writing code. Move all your work to a worktree immediately (`t3 <overlay> workspace ticket` or `EnterWorktree`), then continue there.
 3. **If you ARE in a worktree and see someone else's changes:** STOP ALL WORK IMMEDIATELY. Alert the user: _"ALERT: Another agent is modifying files in my worktree at `<path>`. I've stopped all work to avoid conflicts. Please resolve before I continue."_ Do NOT attempt to continue, merge, or work around the collision.
 
 **Why:** Parallel agents modifying the same checkout cause silent data loss — commits overwrite each other, stashes destroy in-progress work, and merge conflicts go undetected. This has cost hours of wasted work. Worktrees give each agent an isolated copy. The rules below are secondary defenses.

@@ -60,7 +60,7 @@ Show the commit log to the user.
 
 ### 1b. Squash Option
 
-If there is **more than one** unpushed commit, offer to squash following the squash rules in [`../t3:ship/SKILL.md`](../t3:ship/SKILL.md) § "Finalize Branch".
+If there is **more than one** unpushed commit, offer to squash following the squash rules in [`../ship/SKILL.md`](../ship/SKILL.md) § "Finalize Branch".
 
 ### 2. Pre-Flight Checks (all must pass)
 

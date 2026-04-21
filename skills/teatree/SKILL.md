@@ -40,16 +40,20 @@ Each phase maps to a skill (`t3:ticket`, `t3:code`, etc.). The `Session` model t
 
 ## CLI Reference
 
+Top-level commands (no overlay needed): `t3 dashboard`, `t3 ci`, `t3 review`, `t3 doctor`, `t3 tool`, `t3 assess`, `t3 setup`, `t3 info`.
+
+Overlay-scoped commands require `t3 <overlay> <subcommand>` (e.g., `t3 teatree`):
+
 ```bash
-t3 dashboard                # Start dashboard + background worker (top-level)
-t3 <overlay> resetdb        # Drop and recreate the SQLite database
-t3 lifecycle setup          # Provision worktree (ports, DB, overlay steps)
-t3 lifecycle start          # Start dev servers
-t3 lifecycle status         # Show worktree state
-t3 lifecycle teardown       # Stop services, clean up
-t3 tasks work-next-sdk      # Claim and execute next headless task
-t3 tasks work-next-user-input  # Claim and launch next interactive task
-t3 followup sync            # Daily ticket/MR sync
+t3 dashboard                          # Start dashboard + background worker (top-level)
+t3 <overlay> resetdb                  # Drop and recreate the SQLite database
+t3 <overlay> lifecycle setup          # Provision worktree (ports, DB, overlay steps)
+t3 <overlay> lifecycle start          # Start dev servers
+t3 <overlay> lifecycle status         # Show worktree state
+t3 <overlay> lifecycle teardown       # Stop services, clean up
+t3 <overlay> tasks work-next-sdk      # Claim and execute next headless task
+t3 <overlay> tasks work-next-user-input  # Claim and launch next interactive task
+t3 <overlay> followup sync            # Daily ticket/MR sync
 ```
 
 ## Key Models
