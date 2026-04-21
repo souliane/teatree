@@ -66,7 +66,7 @@ When the active overlay has `require_ticket = True`, refuse to commit or push wi
 
 ### 2. Finalize Branch
 
-- `t3 workspace finalize [msg]` — squash commits + rebase on default branch.
+- `t3 <overlay> workspace finalize [msg]` — squash commits + rebase on default branch.
 - Run in each repo that has changes.
 - Verify the commit message follows the project's format.
 
@@ -77,7 +77,7 @@ When the active overlay has `require_ticket = True`, refuse to commit or push wi
 - Group by topic, keep human-sized commits.
 - Squash integrity check: save `OLD_TIP=$(git rev-parse HEAD)`, verify `git diff $OLD_TIP..HEAD` is empty after rewrite.
 - Respect `T3_AUTO_SQUASH` (`true` = auto, `false` = ask first).
-- **Always use `git merge-base`** for the squash target. NEVER use `origin/master` or `origin/main` directly — the branch may have been created from a stale local copy, causing the squash to include unrelated commits. The `t3 workspace finalize` command handles this correctly.
+- **Always use `git merge-base`** for the squash target. NEVER use `origin/master` or `origin/main` directly — the branch may have been created from a stale local copy, causing the squash to include unrelated commits. The `t3 <overlay> workspace finalize` command handles this correctly.
 
 ### 3. Local Verification
 
@@ -131,7 +131,7 @@ Before creating an MR, the `pr create` command automatically checks the session 
 
 - Runs automatically before MR creation; the report is recorded on `Ticket.extra['visual_qa']`.
 - Blocks MR creation when findings exist; the error payload includes `report_markdown` for a `## Visual QA` section.
-- Bypass: `t3 pr create <ticket> --skip-visual-qa "<reason>"` or `T3_VISUAL_QA=disabled` in the environment.
+- Bypass: `t3 <overlay> pr create <ticket> --skip-visual-qa "<reason>"` or `T3_VISUAL_QA=disabled` in the environment.
 - Skipped when Playwright cannot start — fails open with a clear message rather than blocking the push.
 
 ### 5. Create MR/PR
@@ -152,7 +152,7 @@ This gate exists because the CI `validate_mr_title_and_description` job fails on
 
 - **MR title = squash commit message** (MRs use squash-before-merge, so the title becomes the final commit). It MUST include the ticket URL: `type(scope): description [flag_if_feat] (TICKET_URL)`
 - **MR description first line = same format as title** (CI validates it). NEVER start with `## Summary` — that fails validation.
-- **Always assign to the user.** The `t3 pr create` command handles the correct flags automatically.
+- **Always assign to the user.** The `t3 <overlay> pr create` command handles the correct flags automatically.
 
 > **PreToolUse hook:** A `validate-mr-metadata.sh` hook automatically intercepts MR create/update commands in project repos. It validates the title and description first line against the release-notes format rules and **blocks** non-compliant calls with a clear error. Fix the reported issues and retry — no manual validation needed.
 
@@ -238,7 +238,7 @@ When a session uncovers a small unique commit on a now-stale branch (typical dur
 - **Cancel stale pipelines** before every push to a branch with an existing MR.
 - **Cancel running pipelines when closing an MR/PR.** When an MR is closed (abandoned, superseded, or replaced), cancel any running or pending pipelines for that branch immediately — they waste CI resources on code that will never be merged.
 - **Clickable references:** Every MR, ticket, or note reference must be a markdown link — see [`../t3:rules/SKILL.md`](../t3:rules/SKILL.md) § "Clickable References".
-- **Commit early, commit often.** Never accumulate more than 1-2 tickets of uncommitted changes. Commit after completing each ticket or logical unit of work. Squash later with `t3 workspace finalize`.
+- **Commit early, commit often.** Never accumulate more than 1-2 tickets of uncommitted changes. Commit after completing each ticket or logical unit of work. Squash later with `t3 <overlay> workspace finalize`.
 - **Publishing actions are mode-conditional.** Canonical rule: see [`../t3:rules/SKILL.md`](../t3:rules/SKILL.md) § "Publishing Actions Are Mode-Conditional". In `interactive` mode (default) every push/MR/merge/remote-delete needs separate explicit approval. In `auto` mode (`t3.mode = "auto"` or `T3_MODE=auto`) the agent ships end-to-end without confirm prompts; only the always-gated list (force-push to defaults, history rewrites on shared defaults, destructive shared-state ops, unauthorised external writes, `--no-verify`) remains confirm-gated.
 - **Respect commit trailer preferences.** Check the user's global agent config for rules about `Co-Authored-By` trailers before committing. Some users explicitly opt out. When in doubt, **do not add trailers** — the user can always configure their agent to add them.
 

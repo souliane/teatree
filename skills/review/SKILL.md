@@ -112,7 +112,7 @@ Run gates → Any failure? → Fix → Re-run gates → Repeat until clean
 
 1. **Lint:** zero errors from the project linter
 2. **Type check:** passes (if the project uses it)
-3. **Tests:** full suite green (use `t3 run tests` or project equivalent)
+3. **Tests:** full suite green (use `t3 <overlay> run tests` or project equivalent)
 4. **No uncommitted changes:** all fixes staged and committed
 5. **No regressions:** diff review confirms no unintended changes
 

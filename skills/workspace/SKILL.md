@@ -155,13 +155,13 @@ When a `t3` command fails, **fix the CLI code first** — never manually run the
 
 ### Never Hand-Edit Generated Files
 
-Setup tools (`t3 lifecycle setup`, etc.) generate configuration files (`.env.worktree`, docker overrides, port allocations). **Manual edits create drift** and are overwritten on the next setup run.
+Setup tools (`t3 <overlay> lifecycle setup`, etc.) generate configuration files (`.env.worktree`, docker overrides, port allocations). **Manual edits create drift** and are overwritten on the next setup run.
 
 When a generated file is wrong or incomplete, **re-run the setup tool** — don't manually patch the file. If setup fails, diagnose the root cause in the setup script (see `/t3:debug`), don't work around it.
 
 ### Never Run Infrastructure Commands Directly
 
-Use the `t3` CLI (`t3 lifecycle start`, `t3 run backend`, `t3 run frontend`, etc.) instead of running `docker compose`, language-specific dev servers, or build tools directly. The CLI commands handle:
+Use the `t3` CLI (`t3 <overlay> lifecycle start`, `t3 <overlay> run backend`, `t3 <overlay> run frontend`, etc.) instead of running `docker compose`, language-specific dev servers, or build tools directly. The CLI commands handle:
 
 - Environment variable loading from generated files
 - Service ordering (data store → migrations → application)
@@ -180,9 +180,9 @@ Each worktree gets its own **isolated environment** — dedicated database, port
 
 - Never point one worktree's frontend at another worktree's backend
 - Never use the main repo's database for worktree work
-- Never manually set ports — let `t3 lifecycle setup` allocate them via `find_free_ports()`
+- Never manually set ports — let `t3 <overlay> lifecycle setup` allocate them via `find_free_ports()`
 
-When testing an MR, create a full worktree (`t3 <overlay> workspace ticket` + `t3 lifecycle setup` + `t3 lifecycle start`).
+When testing an MR, create a full worktree (`t3 <overlay> workspace ticket` + `t3 <overlay> lifecycle setup` + `t3 <overlay> lifecycle start`).
 
 ### Validate After Provisioning (Non-Negotiable)
 
@@ -194,7 +194,7 @@ After importing a database or downloading an artifact, always validate it:
 
 ### Service Startup Ordering
 
-Setup tools enforce ordering: **data store → migrations → application server**. Starting the application before migrations causes "relation does not exist" errors. Always use the orchestration functions (`t3 lifecycle start`) rather than starting services individually.
+Setup tools enforce ordering: **data store → migrations → application server**. Starting the application before migrations causes "relation does not exist" errors. Always use the orchestration functions (`t3 <overlay> lifecycle start`) rather than starting services individually.
 
 ### Never Delegate Skill-Dependent Work to Sub-Agents
 
