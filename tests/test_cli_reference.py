@@ -51,3 +51,15 @@ class TestBuildCliReferenceFromApp:
         assert "`t3`" in result
         assert "`t3 config`" in result
         assert "`t3 dashboard`" in result
+
+    def test_resolves_overlay_proxy_leaves_to_real_typer_app(self) -> None:
+        """Overlay proxy leaves tagged with ``overlay_proxy`` render real leaf options."""
+        import django  # noqa: PLC0415
+
+        django.setup()
+        from teatree.cli import register_overlay_commands  # noqa: PLC0415
+
+        register_overlay_commands(allowlist={"t3-teatree"})
+        result = build_cli_reference_from_app(real_app)
+        assert "`t3 teatree e2e project`" in result
+        assert "--update-snapshots" in result

@@ -107,6 +107,9 @@ def test_search_clears_restores_all(e2e_server: str, page: Page) -> None:
     """Clearing search restores all tickets."""
     page.goto(e2e_server)
     _wait_for_tickets(page)
+    # Ticket #99 has no MRs and is hidden by the default "Has PR" filter;
+    # uncheck it so both tickets are eligible to appear when the search clears.
+    page.locator("#filter-has-mr").uncheck()
     page.locator("#ticket-search").fill("42")
     page.locator("#ticket-search").fill("")
     expect(page.locator("a", has_text="#42").first).to_be_visible()

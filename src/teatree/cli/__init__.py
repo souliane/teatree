@@ -666,10 +666,12 @@ def discover() -> None:
 # ── Django-dependent command groups ───────────────────────────────────
 
 
-def _register_overlay_commands() -> None:
+def register_overlay_commands(allowlist: set[str] | None = None) -> None:
     """Register all installed overlays as subcommand groups.
 
     No Django bootstrap needed — commands delegate to manage.py via subprocess.
+    Pass *allowlist* of entry names (e.g. ``{"t3-teatree"}``) to register a subset —
+    used by the CLI reference generator to keep generated docs deterministic.
     """
     from teatree.config import discover_active_overlay, discover_overlays  # noqa: PLC0415
 
@@ -677,7 +679,8 @@ def _register_overlay_commands() -> None:
     installed = discover_overlays()
 
     for entry in installed:
-        # Derive short name from the entry name (e.g. "t3-teatree" -> "teatree")
+        if allowlist is not None and entry.name not in allowlist:
+            continue
         short_name = entry.name.removeprefix("t3-")
         project_path = entry.project_path or (active.project_path if active and active.name == entry.name else None)
         # Entry-point overlays use teatree base settings; TOML overlays with their own
@@ -740,5 +743,5 @@ def _ensure_editable_if_contributing() -> None:
 def main() -> None:
     """Entry point for the ``t3`` console script."""
     _ensure_editable_if_contributing()
-    _register_overlay_commands()
+    register_overlay_commands()
     app(standalone_mode=True)
