@@ -29,6 +29,13 @@
 - **Cause:** A worktree for this branch already exists elsewhere.
 - **Fix:** Run `git worktree list` to find it. Remove with `git worktree remove <path>` if no longer needed.
 
+## `gh pr merge --delete-branch` Fails When `main` Is in Another Worktree
+
+- **Symptom:** `gh pr merge <n> --squash --delete-branch` exits with `failed to run git: fatal: 'main' is already used by worktree at '<path>'`. The PR may have already merged on the remote despite the error.
+- **Cause:** `gh` tries to checkout `main` locally to update it and delete the merged branch. Git refuses because `main` is checked out in another worktree (typical when the main clone is at the canonical path and the current shell is in a ticket worktree).
+- **Fix:** Re-run without `--delete-branch`: `gh pr merge <n> --squash`. Then clean up manually: `git fetch --prune origin` deletes the remote-tracking ref, and from the main clone run `git worktree remove <path>` and `git branch -D <branch>` to drop the local worktree and branch.
+- **Prevention:** When the main clone is in a sibling worktree, omit `--delete-branch` on `gh pr merge`. The remote delete is handled by GitHub's "auto-delete branch on merge" setting; local cleanup belongs to `git fetch --prune` and `git worktree remove`.
+
 ## DSLR Restore Fails Silently
 
 - **Cause:** `dslr` not installed or the snapshot is from an incompatible Postgres version.
