@@ -1,13 +1,7 @@
-FROM ubuntu:latest AS base
+FROM mcr.microsoft.com/playwright/python:v1.58.0-noble AS base
 RUN apt-get update -qq && \
-    apt-get install -y -qq curl direnv git jq >/dev/null 2>&1 && \
-    rm -rf /var/lib/apt/lists/* && \
-    useradd -m testuser
-USER testuser
-RUN curl -LsSf https://astral.sh/uv/install.sh | sh -s -- -q 2>/dev/null
-ENV PATH="/home/testuser/.local/bin:$PATH"
+    apt-get install -y -qq direnv jq && \
+    rm -rf /var/lib/apt/lists/*
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh -s -- -q
+ENV PATH="/root/.local/bin:$PATH"
 WORKDIR /app
-
-# Pre-install Playwright browsers (cached in image layer).
-# This avoids re-downloading ~150MB of browser binaries on every run.
-RUN uv tool install playwright && playwright install --with-deps chromium 2>/dev/null
