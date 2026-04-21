@@ -1266,6 +1266,7 @@ graph TD
     teatree.backends --> teatree.core
     teatree.contrib --> teatree.types
     teatree.contrib --> teatree.core
+    teatree.contrib --> teatree.config
     teatree.cli --> teatree.config
     teatree.cli --> teatree.core
     teatree.cli --> teatree.agents
