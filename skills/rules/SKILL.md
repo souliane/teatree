@@ -148,13 +148,38 @@ On **every prompt**, use `TaskCreate` to create tasks before doing any work — 
 
 **Never ask questions inline in text responses.** Always use the `AskUserQuestion` tool — it gives the user a structured UI to respond and prevents questions from being buried in output. One question at a time; wait for the answer before asking the next.
 
-## Never Push Without Separate Explicit Approval (Non-Negotiable)
+## Publishing Actions Are Mode-Conditional (Non-Negotiable)
+
+The setting `teatree.mode` in `~/.teatree.toml` (or the `T3_MODE` env var) picks between two doctrines for publishing actions — push, MR create, MR merge, remote branch deletion, Slack posts, any write that leaves the local machine. The default is `interactive` (security-conservative). `auto` opts into full autonomy.
+
+### Interactive mode (default)
 
 Commit approval ≠ push approval. **Squash approval ≠ push approval. "All done" ≠ push approval. Rebase approval ≠ force-push approval.** Always present the final state and ask "Push?" as a **separate question** after committing, squashing, or rebasing — use `AskUserQuestion`, not an inline question.
 
+- Every publishing action (push, MR create/update, MR merge, remote branch delete, Slack post) requires a separate explicit confirmation.
 - **Force-push (`--force-with-lease`)**: get separate explicit confirmation even if the user already approved the rebase. A rebase and a force-push are two decisions.
-- **Never use `--no-verify`** on any git command — commit, push, nothing. If a hook fails, fix the underlying issue.
-- Applies to all repos, all contexts, all branches.
+
+### Auto mode (`t3.mode = "auto"` or `T3_MODE=auto`)
+
+The user has opted into end-to-end autonomy. The agent ships complete features without pausing for confirm prompts on the publishing actions listed above. In particular:
+
+- Push the feature branch after local quality gates pass (lint, tests, `makemigrations --dry-run --check`).
+- Open the MR, watch the pipeline, merge when green, delete the remote branch.
+- Post the overlay-approved Slack messages (review request, release note) as part of the normal flow.
+
+**Quality gates still run — they just don't depend on user confirmation.** The objection auto mode answers is "stop gating on _confirmation_," not "skip quality checks."
+
+### Always-Gated Actions (Non-Negotiable, both modes)
+
+Some actions remain confirm-gated regardless of mode because they are irreversible or affect shared history:
+
+- **Force-push to default branches** (`main`, `master`, `development`, `release`, or any branch listed in the overlay's `protected_branches`).
+- **History rewrites on shared defaults** — rebase, amend, or filter-branch on any branch another agent or human is tracking.
+- **Destructive shared-state ops** — `DROP` / `TRUNCATE` on shared databases, deletions in shared directories, `rm -rf` on paths outside the active worktree.
+- **External writes the active overlay has NOT authorised** — posting to channels, repos, or services not listed in the overlay's publishing allow-list.
+- **`--no-verify` on any git command** is forbidden in both modes. If a hook fails, fix the underlying issue.
+
+This list applies to all repos, all branches, both modes.
 
 ## Run Retro Before Ending Non-Trivial Sessions
 

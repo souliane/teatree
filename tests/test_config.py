@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 
 from teatree.config import (
     E2ERepo,
+    Mode,
     _extract_settings_module,
     _resolve_ep_project_path,
     _write_update_cache,
@@ -17,6 +18,7 @@ from teatree.config import (
     discover_active_overlay,
     discover_overlays,
     get_data_dir,
+    get_mode,
     load_config,
     load_e2e_repos,
     workspace_dir,
@@ -648,3 +650,76 @@ def test_e2e_repo_is_dataclass():
     repo = E2ERepo(name="x", url="u", branch="b")
     assert repo.name == "x"
     assert repo.e2e_dir == "e2e"  # default
+
+
+# ── Mode / operating mode ────────────────────────────────────────────
+
+
+class TestMode:
+    """Parse and resolution of the ``t3.mode`` setting.
+
+    The default must stay conservative (INTERACTIVE): auto mode grants the
+    agent end-to-end autonomy including publishing actions, so a typo in the
+    config must never silently downgrade to it.
+    """
+
+    def test_parse_interactive(self):
+        assert Mode.parse("interactive") is Mode.INTERACTIVE
+
+    def test_parse_auto(self):
+        assert Mode.parse("auto") is Mode.AUTO
+
+    def test_parse_is_case_insensitive(self):
+        assert Mode.parse("AUTO") is Mode.AUTO
+        assert Mode.parse("  Interactive  ") is Mode.INTERACTIVE
+
+    def test_parse_invalid_raises(self):
+        import pytest  # noqa: PLC0415
+
+        with pytest.raises(ValueError, match="Invalid t3 mode"):
+            Mode.parse("headless")
+
+    def test_load_config_default_is_interactive(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("T3_MODE", raising=False)
+        config = load_config(tmp_path / "nonexistent.toml")
+        assert config.user.mode is Mode.INTERACTIVE
+
+    def test_load_config_reads_toml(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("T3_MODE", raising=False)
+        config_path = tmp_path / ".teatree.toml"
+        _write_toml(config_path, '[teatree]\nmode = "auto"\n')
+        config = load_config(config_path)
+        assert config.user.mode is Mode.AUTO
+
+    def test_env_var_overrides_toml(self, tmp_path, monkeypatch):
+        config_path = tmp_path / ".teatree.toml"
+        _write_toml(config_path, '[teatree]\nmode = "auto"\n')
+        monkeypatch.setenv("T3_MODE", "interactive")
+        config = load_config(config_path)
+        assert config.user.mode is Mode.INTERACTIVE
+
+    def test_env_var_applies_without_toml(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("T3_MODE", "auto")
+        config = load_config(tmp_path / "nonexistent.toml")
+        assert config.user.mode is Mode.AUTO
+
+    def test_load_config_invalid_mode_raises(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("T3_MODE", raising=False)
+        config_path = tmp_path / ".teatree.toml"
+        _write_toml(config_path, '[teatree]\nmode = "headless"\n')
+
+        import pytest  # noqa: PLC0415
+
+        with pytest.raises(ValueError, match="Invalid t3 mode"):
+            load_config(config_path)
+
+    def test_get_mode_reflects_loaded_config(self, monkeypatch):
+        from teatree.config import TeaTreeConfig, UserSettings  # noqa: PLC0415
+
+        auto_config = TeaTreeConfig(user=UserSettings(mode=Mode.AUTO))
+        with patch("teatree.config.load_config", return_value=auto_config):
+            assert get_mode() is Mode.AUTO
+
+        interactive_config = TeaTreeConfig(user=UserSettings(mode=Mode.INTERACTIVE))
+        with patch("teatree.config.load_config", return_value=interactive_config):
+            assert get_mode() is Mode.INTERACTIVE
