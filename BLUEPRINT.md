@@ -135,13 +135,15 @@ scripts/                # Standalone utility scripts
 
 Five models in `teatree.core.models/` (split into domain-specific modules), all using `django-fsm` for state machines.
 
-**No FSM signals for external sync.** django-fsm-2 provides `post_transition` signals that could auto-update external systems (GitLab labels, Notion statuses) on every state change. We deliberately don't use them — external sync is the caller's responsibility, not the state machine's. This keeps FSM transitions fast, testable, and free of side-channel I/O.
+**Transitions own their work.** Every FSM transition composes the runners needed to make its new state true — git, MR I/O, retro writing, cleanup — and enqueues long work to an `@task` worker via `transaction.on_commit`. Transition bodies stay pure (state change + metadata + enqueue); the worker does the I/O, takes a row lock with `select_for_update()`, re-checks the source state for idempotency, and on success calls the next transition to advance the ticket. This replaces the previous caller-owned pattern — `t3 ... ship`, manual `mark_merged()`, etc. — with a single rule: "to move the ticket, call the transition; the transition does the rest."
+
+Rationale: at-least-once delivery is safe because workers guard with row-locked state checks; crash recovery is `django-tasks`' job, not ours; tests use `ImmediateBackend` to run workers synchronously. `post_transition` signals remain reserved for lossy cross-cutting side effects (audit log, Slack reactions) — never for the main work of the transition.
 
 ### 4.1 Ticket — Core delivery entity
 
 The central entity. One ticket per unit of work (maps to an issue/task in the tracker).
 
-**States:** `not_started` → `scoped` → `started` → `coded` → `tested` → `reviewed` → `shipped` → `in_review` → `merged` → `delivered`
+**States:** `not_started` → `scoped` → `started` → `coded` → `tested` → `reviewed` → `shipped` → `in_review` → `merged` → `retrospected` → `delivered`
 
 **Fields:**
 
@@ -166,7 +168,8 @@ The central entity. One ticket per unit of work (maps to an issue/task in the tr
 | `ship(mr_urls=[])` | reviewed → shipped | Stores MR URLs in extra |
 | `request_review()` | shipped → in_review | — |
 | `mark_merged()` | in_review → merged | — |
-| `mark_delivered()` | merged → delivered | — |
+| `retrospect()` | merged → retrospected | Enqueues `execute_retrospect` worker via `transaction.on_commit`. Worker runs `RetroExecutor` and calls `mark_delivered()` on success. |
+| `mark_delivered()` | retrospected → delivered | — |
 | `rework()` | coded/tested/reviewed → started | Clears tests_passed, cancels pending tasks |
 
 **Auto-scheduling:** `test()` auto-creates a headless reviewing task. `review()` auto-creates a headless shipping task. Both use fresh sessions (bias-free evaluation).

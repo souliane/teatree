@@ -72,6 +72,7 @@ class TestTicketLifecycle(TestCase):
 
         ticket.request_review()
         ticket.mark_merged()
+        ticket.retrospect()
         ticket.mark_delivered()
         ticket.save()
         assert ticket.state == "delivered"

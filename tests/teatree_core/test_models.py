@@ -56,6 +56,8 @@ class TestTicketTransitions(TestCase):
         ticket.save()
         ticket.mark_merged()
         ticket.save()
+        ticket.retrospect()
+        ticket.save()
         ticket.mark_delivered()
         ticket.save()
 

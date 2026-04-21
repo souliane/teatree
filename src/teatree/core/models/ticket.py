@@ -1,7 +1,7 @@
 import re
 from typing import TYPE_CHECKING, ClassVar, cast
 
-from django.db import models
+from django.db import models, transaction
 from django_fsm import FSMField, TransitionNotAllowed, transition
 
 from teatree.core.managers import TicketManager
@@ -24,6 +24,7 @@ class Ticket(models.Model):
         SHIPPED = "shipped", "Shipped"
         IN_REVIEW = "in_review", "In review"
         MERGED = "merged", "Merged"
+        RETROSPECTED = "retrospected", "Retrospected"
         DELIVERED = "delivered", "Delivered"
         IGNORED = "ignored", "Ignored"
 
@@ -151,7 +152,21 @@ class Ticket(models.Model):
     def mark_merged(self) -> None:
         pass
 
-    @transition(field=state, source=State.MERGED, target=State.DELIVERED)
+    @transition(field=state, source=State.MERGED, target=State.RETROSPECTED)
+    def retrospect(self) -> None:
+        """Schedule retrospection I/O.
+
+        The worker writes retro artifacts and calls ``mark_delivered()`` on
+        success. FSM invariant (BLUEPRINT §4): transition bodies stay pure —
+        long I/O is offloaded to an ``@task`` worker, enqueued after commit so
+        the state change and the queued work land atomically.
+        """
+        from teatree.core.tasks import execute_retrospect  # noqa: PLC0415
+
+        ticket_pk = int(self.pk)
+        transaction.on_commit(lambda: execute_retrospect.enqueue(ticket_pk))
+
+    @transition(field=state, source=State.RETROSPECTED, target=State.DELIVERED)
     def mark_delivered(self) -> None:
         pass
 
@@ -174,6 +189,7 @@ class Ticket(models.Model):
             State.SHIPPED,
             State.IN_REVIEW,
             State.MERGED,
+            State.RETROSPECTED,
         ],
         target=State.IGNORED,
     )
