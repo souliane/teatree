@@ -221,13 +221,36 @@ t3 agent                            # Launch Claude Code (teatree-self developme
 ### Testing
 
 ```bash
-uv run pytest                       # Unit tests with coverage (>90% required)
-uv run pytest e2e/ -x               # E2E tests with Playwright
-prek run --all-files                 # Pre-commit hooks (ruff, codespell, tach, ty)
+uv run pytest                       # Test suite with coverage (>93% required)
+uv run pytest e2e/ -x               # Dashboard E2E tests with Playwright
+prek run --all-files                # Pre-commit hooks (ruff, codespell, tach, ty)
 bash dev/test-matrix.sh             # Docker matrix: Python 3.13 + 3.14 (MANDATORY before push)
 ```
 
 **Always run `dev/test-matrix.sh` before claiming a fix works.** Local `uv run pytest` only tests one Python version with locally-installed tools. The Docker matrix catches missing system dependencies and Python-version-specific coverage differences. If the Dockerfile changed, remove the cached image first: `docker rmi teatree-test`.
+
+### Test-Writing Doctrine (Non-Negotiable)
+
+New tests — added in this repo or in any overlay repo — must lean **integration / E2E / functional**. Unit tests are reserved for pure logic that integration tests can't cover efficiently.
+
+**Preferred patterns (in order):**
+
+1. **Playwright E2E** (`e2e/`) for dashboard or browser-visible behavior.
+2. **Django test client** (`client.get(...)`, `client.post(...)`) for views, URLs, HTMX endpoints.
+3. **`call_command("name", ...)`** for management commands — exercises the full Typer + Django glue.
+4. **`subprocess.run(["t3", ...])`** (marked `@pytest.mark.integration`) when the bug would only surface through the real entry point.
+5. **Real filesystem + real `git` under `tmp_path`** for anything that provisions worktrees, writes env files, or runs `git worktree add`. No mocking `Path`, `subprocess`, or git output.
+6. **Real Django ORM against the test DB** — use factories or `Model.objects.create(...)`, not mocked querysets.
+
+**When a unit test is justified:**
+
+- Pure logic with many branches that are painful to reach through a higher-level entry point (parsers, formatters, slug/branch-name builders, regex validators).
+- Error paths that require deliberately malformed input (raising from the real caller is noisier than a direct call).
+- Functions whose only effect is the return value (no I/O, no state, no side effects).
+
+**Mock only unstoppable externals.** Network calls to GitHub / GitLab / Slack / Sentry, the clock (use `time_machine`), subprocess to third-party tools you don't own. **Don't** mock: teatree code, Django models, filesystem paths inside `tmp_path`, `git` (run real `git init` instead), or functions that happen to be annoying to set up — that last one is a sign the design is wrong, not a license to mock.
+
+**Review gate:** new tests that are mostly `Mock()`, `patch()`, or assertions on `mock.call_args` are rejected unless the MR description explains why a higher-level test couldn't cover the same behavior. When converting existing mock-heavy tests, keep the coverage gate satisfied — rebalancing can't lower the number.
 
 ### Quality Gates
 
