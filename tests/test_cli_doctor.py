@@ -503,19 +503,35 @@ class TestDoctorService:
         """Finds teatree repo via T3_REPO env var."""
         (tmp_path / "pyproject.toml").write_text("[project]\nname = 'teatree'\n")
         monkeypatch.setenv("T3_REPO", str(tmp_path))
+        # Run from a neutral cwd so the worktree preference does not trigger.
+        monkeypatch.chdir(tmp_path.parent)
         assert DoctorService.find_teatree_repo() == tmp_path
 
     def test_find_teatree_repo_auto_detect(self, tmp_path, monkeypatch):
         """Auto-detects teatree repo via find_project_root."""
         monkeypatch.delenv("T3_REPO", raising=False)
+        monkeypatch.chdir(tmp_path.parent)
         with patch("teatree.find_project_root", return_value=tmp_path):
             assert DoctorService.find_teatree_repo() == tmp_path
 
     def test_find_teatree_repo_returns_none(self, tmp_path, monkeypatch):
         """Returns None when T3_REPO not set and auto-detect fails."""
         monkeypatch.delenv("T3_REPO", raising=False)
+        monkeypatch.chdir(tmp_path)
         with patch("teatree.find_project_root", return_value=None):
             assert DoctorService.find_teatree_repo() is None
+
+    def test_find_teatree_repo_prefers_cwd_worktree_over_env(self, tmp_path, monkeypatch):
+        """When cwd lives inside a teatree worktree, prefer it over T3_REPO (main clone)."""
+        main_clone = tmp_path / "main"
+        main_clone.mkdir()
+        (main_clone / "pyproject.toml").write_text('[project]\nname = "teatree"\n')
+        worktree = tmp_path / "ac-123-ticket" / "teatree"
+        worktree.mkdir(parents=True)
+        (worktree / "pyproject.toml").write_text('[project]\nname = "teatree"\n')
+        monkeypatch.setenv("T3_REPO", str(main_clone))
+        monkeypatch.chdir(worktree)
+        assert DoctorService.find_teatree_repo() == worktree
 
     # ── find_overlay_repo ───────────────────────────────────────────
 
