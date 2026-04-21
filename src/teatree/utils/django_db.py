@@ -462,11 +462,19 @@ def _try_restore_from_local_dump(ctx: _RestoreContext) -> bool:
 def _try_fetch_remote_dump(ctx: _RestoreContext) -> bool:
     """Fetch a fresh dump from the remote DB into dump_dir.
 
-    Returns True if a new dump file was saved (caller should re-run
-    local dump strategy). Returns False on failure.
+    Final safety gate: even when the caller passes ``allow_remote_dump=True``,
+    the environment variable ``T3_ALLOW_REMOTE_DUMP=1`` must also be set.
+    Prevents agent-triggered paths from auto-downloading gigabytes over VPN.
     """
     global _remote_dump_failed  # noqa: PLW0603
     cfg = ctx.cfg
+    if os.environ.get("T3_ALLOW_REMOTE_DUMP") != "1":
+        logger.warning(
+            "Remote pg_dump blocked for %s: set T3_ALLOW_REMOTE_DUMP=1 to allow "
+            "remote dump fallback. Agents must never set this env var.",
+            cfg.ref_db_name,
+        )
+        return False
     if not cfg.remote_db_url:
         logger.info("Remote dump skipped (no remote_db_url configured)")
         return False
