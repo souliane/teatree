@@ -4,10 +4,43 @@ import importlib.util
 import os
 import tomllib
 from dataclasses import dataclass, field
+from enum import StrEnum
 from pathlib import Path
 
 CONFIG_PATH = Path.home() / ".teatree.toml"
 DATA_DIR = Path(os.environ.get("XDG_DATA_HOME", str(Path.home() / ".local" / "share"))) / "teatree"
+
+
+class Mode(StrEnum):
+    """Operating mode for agent sessions.
+
+    ``interactive`` (default, conservative on security) gates publishing actions
+    on explicit user approval — push, MR creation/merge, external writes all
+    stop and ask. ``auto`` grants full autonomy: the agent ships end-to-end
+    without confirmation, falling back to interactive only for the non-
+    negotiable always-gated list (force-push to default branches, destructive
+    shared-state ops). Opt in via ``[teatree] mode = "auto"`` in
+    ``~/.teatree.toml`` or the ``T3_MODE`` environment variable.
+    """
+
+    INTERACTIVE = "interactive"
+    AUTO = "auto"
+
+    @classmethod
+    def parse(cls, value: str) -> "Mode":
+        """Parse a mode string. Invalid values raise ``ValueError``.
+
+        The conservative default (``INTERACTIVE``) is applied by the caller
+        when the setting is absent — this function only validates explicit
+        values, so typos never silently downgrade to a less-safe mode.
+        """
+        normalised = value.strip().lower()
+        try:
+            return cls(normalised)
+        except ValueError as exc:
+            valid = ", ".join(m.value for m in cls)
+            msg = f"Invalid t3 mode {value!r}; valid values: {valid}"
+            raise ValueError(msg) from exc
 
 
 def get_data_dir(namespace: str) -> Path:
@@ -88,6 +121,7 @@ class UserSettings:
     contribute: bool = False
     excluded_skills: list[str] = field(default_factory=list)
     redis_db_count: int = 16
+    mode: Mode = Mode.INTERACTIVE
 
 
 @dataclass
@@ -98,7 +132,10 @@ class TeaTreeConfig:
 
 def load_config(path: Path = CONFIG_PATH) -> TeaTreeConfig:
     if not path.is_file():
-        return TeaTreeConfig()
+        env_mode = os.environ.get("T3_MODE")
+        if env_mode is None:
+            return TeaTreeConfig()
+        return TeaTreeConfig(user=UserSettings(mode=Mode.parse(env_mode)))
 
     with path.open("rb") as f:
         raw = tomllib.load(f)
@@ -110,6 +147,11 @@ def load_config(path: Path = CONFIG_PATH) -> TeaTreeConfig:
     raw_excluded = teatree.get("excluded_skills", [])
     excluded_skills = [str(s) for s in raw_excluded] if isinstance(raw_excluded, list) else []
 
+    env_mode = os.environ.get("T3_MODE")
+    toml_mode = teatree.get("mode")
+    mode_value = env_mode if env_mode is not None else toml_mode
+    mode = Mode.parse(mode_value) if mode_value is not None else Mode.INTERACTIVE
+
     user = UserSettings(
         workspace_dir=workspace_dir,
         worktrees_dir=worktrees_dir,
@@ -120,6 +162,7 @@ def load_config(path: Path = CONFIG_PATH) -> TeaTreeConfig:
         contribute=bool(teatree.get("contribute", False)),
         excluded_skills=excluded_skills,
         redis_db_count=int(teatree.get("redis_db_count", 16)),
+        mode=mode,
     )
 
     return TeaTreeConfig(user=user, raw=raw)
@@ -161,6 +204,18 @@ def worktrees_dir() -> Path:
     if hasattr(settings, "T3_WORKTREES_DIR"):
         return Path(settings.T3_WORKTREES_DIR)
     return load_config().user.worktrees_dir
+
+
+def get_mode() -> Mode:
+    """Return the active operating mode.
+
+    Reads ``T3_MODE`` (env) first, then ``teatree.mode`` from
+    ``~/.teatree.toml``, defaulting to ``Mode.INTERACTIVE``. Call sites
+    branch with ``get_mode() is Mode.AUTO`` — we deliberately avoid thin
+    ``is_auto`` / ``is_interactive`` wrappers so the config module stays
+    within its public-function budget.
+    """
+    return load_config().user.mode
 
 
 def check_for_updates(*, force: bool = False) -> str | None:

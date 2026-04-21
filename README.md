@@ -204,6 +204,7 @@ Teatree reads its config from `~/.teatree.toml`:
 [teatree]
 workspace_dir = "~/workspace"
 branch_prefix = "dev"        # prefix for worktree branches
+mode = "interactive"          # "interactive" (default) | "auto"
 contribute = false            # enable skill self-improvement
 push = false                  # allow t3:contribute to push
 auto_squash = false           # squash related commits before push
@@ -215,6 +216,25 @@ protected_branches = ["development"]
 ```
 
 Run `t3 setup` after editing `~/.teatree.toml` to apply changes to skill symlinks and caches.
+
+### Operating mode
+
+`teatree.mode` (or the `T3_MODE` env var) controls how much autonomy the agent
+has for publishing actions:
+
+- `interactive` *(default, conservative on security)* — the agent pauses for
+  explicit approval before push, MR create, MR merge, Slack posts, or any other
+  write that leaves the local machine.
+- `auto` — opt-in end-to-end autonomy. The agent ships complete features
+  without confirm prompts: push → MR create → pipeline watch → merge → clean up
+  remote branches. Quality gates (lint, tests, migrations check) still run;
+  they just don't depend on user confirmation. A small always-gated list
+  remains regardless of mode: force-push to default branches, history rewrites
+  on shared defaults, destructive shared-DB operations, and external writes the
+  active overlay hasn't authorised.
+
+Unknown values raise an error — a typo in `mode` will never silently downgrade
+to a less-safe mode.
 
 ## Contributing & Self-Improvement
 
