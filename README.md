@@ -236,6 +236,21 @@ has for publishing actions:
 Unknown values raise an error — a typo in `mode` will never silently downgrade
 to a less-safe mode.
 
+A subset of `[teatree]` keys can be **overridden per-overlay** in
+`[overlays.<name>]` — `mode`, `branch_prefix`, `privacy`, `contribute`, and
+`excluded_skills`. For example, run `auto` mode on a personal dogfooding
+overlay while keeping `interactive` on a client project:
+
+```toml
+[teatree]
+mode = "interactive"
+
+[overlays.my-project]
+mode = "auto"
+```
+
+See `BLUEPRINT.md` § 11.1.1 for the full resolution chain.
+
 ## Contributing & Self-Improvement
 
 After every non-trivial session, the `retro` skill runs a retrospective, extracts what went wrong, and writes fixes back into skill files. When contributors enable this (`contribute = true` in `~/.teatree.toml`), improvements flow back upstream through a fork-based model.
