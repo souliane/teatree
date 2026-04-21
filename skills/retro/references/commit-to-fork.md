@@ -15,7 +15,7 @@ When `T3_CONTRIBUTE=true` and retro modified files under `$T3_REPO`, **proceed t
 
 ## Worktree for Retro Commits (Non-Negotiable)
 
-**All retro commits MUST happen in a worktree — never in the main clone.** Even for "small" skill fixes. Use `t3 workspace ticket` or `EnterWorktree` to get a worktree before touching any file.
+**All retro commits MUST happen in a worktree — never in the main clone.** Even for "small" skill fixes. Use `t3 <overlay> workspace ticket` or `EnterWorktree` to get a worktree before touching any file.
 
 If you are already in a worktree from the session, commit there. If not, create one now. When unsure which worktree to use, **ask the user** with `AskUserQuestion`.
 
@@ -37,7 +37,7 @@ git commit -m "fix(<skill>): <what was learned>"
 
 ## Squashing Retro Commits
 
-Squash retro commits into clean, human-sized units **before chaining to the review skill**. Follow the squash rules in `../t3:ship/SKILL.md` § "Finalize Branch".
+Squash retro commits into clean, human-sized units **before chaining to the review skill**. Follow the squash rules in `../ship/SKILL.md` § "Finalize Branch".
 
 ## After Committing
 

@@ -52,9 +52,9 @@ The repo's `AGENTS.md` § "Test-Writing Doctrine" carries the authoritative rule
 
 ### Backend Tests
 
-**Prerequisites:** Docker services (Postgres, Redis) must be running. Start them via `t3 lifecycle start` (see `/t3:workspace`) rather than raw `docker compose`. Read the project's test reference (e.g. `references/running-tests-and-lint.md`) for the full setup steps.
+**Prerequisites:** Docker services (Postgres, Redis) must be running. Start them via `t3 <overlay> lifecycle start` (see `/t3:workspace`) rather than raw `docker compose`. Read the project's test reference (e.g. `references/running-tests-and-lint.md`) for the full setup steps.
 
-- `t3 run tests` — run the project test suite.
+- `t3 <overlay> run tests` — run the project test suite.
 - Flags: `--reuse-db`, `--failed-first`, optional `--parallel`.
 - Always run with `--reuse-db` for speed unless schema changed.
 - Use `--failed-first` to quickly re-verify fixes.
@@ -70,7 +70,7 @@ The repo's `AGENTS.md` § "Test-Writing Doctrine" carries the authoritative rule
 - **Always run headless** with `CI=1`.
 - `t3 ci trigger-e2e` — trigger E2E tests on CI.
 
-**Full worktree per MR (Non-Negotiable):** Each MR under test MUST have its own full worktree setup (backend + frontend via `t3 lifecycle setup` + `t3 lifecycle start`). Never mix backends from one worktree with frontends from another. Never patch an incomplete worktree by hand — if it's missing repos, env files, or DB, delete it and start over with `t3 workspace ticket`. Anti-pattern: manually adding repos with `git worktree add`, copying env files, editing `.env.worktree` by hand.
+**Full worktree per MR (Non-Negotiable):** Each MR under test MUST have its own full worktree setup (backend + frontend via `t3 <overlay> lifecycle setup` + `t3 <overlay> lifecycle start`). Never mix backends from one worktree with frontends from another. Never patch an incomplete worktree by hand — if it's missing repos, env files, or DB, delete it and start over with `t3 <overlay> workspace ticket`. Anti-pattern: manually adding repos with `git worktree add`, copying env files, editing `.env.worktree` by hand.
 
 **E2E for backend/API changes:** When backend or microservice changes affect data visible in the frontend (e.g., webhook payload fields, API serializer fields, new model fields exposed via API), E2E tests are still required even if there is no frontend MR. The frontend form already has the fields — E2E proves the end-to-end data flow. Do NOT skip E2E just because the change is "backend-only."
 
@@ -88,7 +88,7 @@ E2E and integration tests ideally live in the project repo they test (e.g., the 
 - Structure tests by app and feature: `tests/<app>/<feature-area>/<test-file>`
 - Store artifacts (screenshots, recordings) in a git-tracked `artifacts/<TICKET>/` directory for proof.
 
-**Prerequisites:** Always start dev servers via `t3 lifecycle start` (see `/t3:workspace`) before running tests. Never start services manually. Before running E2E tests, verify that **translations are loaded** — the frontend i18n directory is gitignored and only populated at startup (by `t3 lifecycle start`). If the frontend was started manually, translations will be missing. Quick check: open any page and confirm labels show human-readable text, not raw keys like `app.feature.xxx.label`.
+**Prerequisites:** Always start dev servers via `t3 <overlay> lifecycle start` (see `/t3:workspace`) before running tests. Never start services manually. Before running E2E tests, verify that **translations are loaded** — the frontend i18n directory is gitignored and only populated at startup (by `t3 <overlay> lifecycle start`). If the frontend was started manually, translations will be missing. Quick check: open any page and confirm labels show human-readable text, not raw keys like `app.feature.xxx.label`.
 
 **Test depth:** Don't just verify "page loads with 200". Read the source code to understand what the feature does, then test specific behaviors: form fields, filters, CRUD operations, access control, edge cases.
 
@@ -216,29 +216,29 @@ Analyze MR changes and produce a manual test plan. Use when the user says "test 
 
 Post the test plan as a comment on the MR. If a test plan comment already exists, skip posting (don't duplicate).
 
-See your [issue tracker platform reference](../t3:platforms/references/) § "MR Notes" for the posting recipe.
+See your [issue tracker platform reference](../platforms/references/) § "MR Notes" for the posting recipe.
 
 ## Pre-Push Browser Sanity Gate (Visual QA)
 
-`t3 pr create` runs a pre-push browser sanity gate as a side effect of the shipping flow. It loads the page(s) the branch diff touches, captures silent-render regressions (crashes, console errors, raw `app.*` keys, blocking 404s), and records the summary on `Ticket.extra['visual_qa']`. See [`../t3:ship/SKILL.md`](../t3:ship/SKILL.md) § "4c. Visual QA Gate" for the blocking behavior and bypass flags.
+`t3 <overlay> pr create` runs a pre-push browser sanity gate as a side effect of the shipping flow. It loads the page(s) the branch diff touches, captures silent-render regressions (crashes, console errors, raw `app.*` keys, blocking 404s), and records the summary on `Ticket.extra['visual_qa']`. See [`../ship/SKILL.md`](../ship/SKILL.md) § "4c. Visual QA Gate" for the blocking behavior and bypass flags.
 
 This gate is **not a replacement for manual E2E evidence** — it only catches silent-render regressions before push. Feature verification still requires the workflows below.
 
 ## Post Testing Evidence on MR
 
-**Use `t3 pr post-evidence` first.** If the CLI command handles uploading and posting, use it instead of manual API calls. Only fall back to manual posting if the CLI doesn't support the required operation.
+**Use `t3 <overlay> pr post-evidence` first.** If the CLI command handles uploading and posting, use it instead of manual API calls. Only fall back to manual posting if the CLI doesn't support the required operation.
 
 After confirming a feature works (via E2E or manual verification), embed screenshot(s) and video(s) **directly in the test plan comment** — not as a separate comment. Each verified checkbox gets checked, and a screenshot goes below the relevant section.
 
 ### 1. Upload Screenshot(s) and Video(s)
 
-Upload via the platform's file upload API and get the markdown embed syntax. See your [issue tracker platform reference](../t3:platforms/references/) § "File Uploads" for the recipe.
+Upload via the platform's file upload API and get the markdown embed syntax. See your [issue tracker platform reference](../platforms/references/) § "File Uploads" for the recipe.
 
 **Video embedding:** Use the same `![alt](url)` markdown syntax as images. GitLab auto-detects video formats (.webm, .mov, .mp4) and renders an inline player. Do NOT use `<video>` HTML tags — they don't work in GitLab markdown.
 
 ### 2. Post or Update Comment — Always Use Python
 
-Shell variable interpolation and `jq --arg` both escape `!` to `\!`, breaking image syntax `![alt](url)`. **Always** use inline Python with the note body as a heredoc string — see [`../t3:rules/SKILL.md`](../t3:rules/SKILL.md) § "Temp File Safety" for the full rules. See your [issue tracker platform reference](../t3:platforms/references/) § "MR Notes (Comments)" for the complete Python recipe.
+Shell variable interpolation and `jq --arg` both escape `!` to `\!`, breaking image syntax `![alt](url)`. **Always** use inline Python with the note body as a heredoc string — see [`../rules/SKILL.md`](../rules/SKILL.md) § "Temp File Safety" for the full rules. See your [issue tracker platform reference](../platforms/references/) § "MR Notes (Comments)" for the complete Python recipe.
 
 When editing: check the verified boxes (`- [ ]` → `- [x]`), insert screenshot markdown below the relevant section, leave unchecked items as-is.
 
@@ -273,7 +273,7 @@ Evidence screenshots must always use a **side-by-side comparison table**. Minimu
 - **One screenshot per verified section** — not per checkbox, not a flood. One image that proves the section works.
 - **Cover ALL sections on first post** — don't post a partial set and wait for the user to ask for more. Every verified section should have its screenshot from the start.
 - **Screenshots go below the section they verify**, not at the bottom of the comment
-- **Clickable references:** Every MR, ticket, or note reference must be a markdown link — see [`../t3:rules/SKILL.md`](../t3:rules/SKILL.md) § "Clickable References".
+- **Clickable references:** Every MR, ticket, or note reference must be a markdown link — see [`../rules/SKILL.md`](../rules/SKILL.md) § "Clickable References".
 - Write in first person, casual tone ("Tested on local...", "Works as expected")
 - **Never mention automation, E2E, Playwright, or scripts** — must read as manual testing
 - **Update the existing test plan** — never post a second evidence comment. Always GET existing notes first, find the test plan, and PUT to update it.
@@ -306,8 +306,8 @@ When an E2E test shows missing UI elements (empty form, blank section, component
 
 Before claiming E2E success or posting screenshots as evidence, **visually inspect every screenshot** for environment issues. Reject and fix if any of these are present:
 
-- **Missing translations:** Labels show raw keys like `app.feature.xxx.label` or `app.question.xxx` instead of human-readable text. Cause: frontend started without the translation sync step (handled by `t3 run frontend` / `t3 lifecycle start`). Fix: restart via `t3 lifecycle start`.
-- **Missing static files:** Broken image icons, unstyled pages, or 404s for assets. Cause: static asset build/collection not run. Fix: restart via `t3 lifecycle start` (which handles asset preparation).
+- **Missing translations:** Labels show raw keys like `app.feature.xxx.label` or `app.question.xxx` instead of human-readable text. Cause: frontend started without the translation sync step (handled by `t3 <overlay> run frontend` / `t3 <overlay> lifecycle start`). Fix: restart via `t3 <overlay> lifecycle start`.
+- **Missing static files:** Broken image icons, unstyled pages, or 404s for assets. Cause: static asset build/collection not run. Fix: restart via `t3 <overlay> lifecycle start` (which handles asset preparation).
 - **Console errors:** Open browser devtools and check for blocking JS errors before taking screenshots.
 - **Feature element not visible:** The screenshot must show the specific UI element being tested (badge, field, status indicator), not just the top of the page. Use `element.scrollIntoViewIfNeeded()` before taking screenshots. A screenshot of "Personal Data" doesn't prove the "ID" section badge is correct.
 

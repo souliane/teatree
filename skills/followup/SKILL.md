@@ -52,7 +52,7 @@ When invoked with `--periodic` (e.g., from a cron job or scheduler), run in **no
 
 ## Platform Note
 
-The workflow below is platform-neutral. Platform-specific recipes (CLI commands, API calls, GraphQL mutations) are in [`../t3:platforms/references/`](../t3:platforms/references/). The default implementation uses GitLab (`glab` CLI). **Project overlays can override** the tracker-specific parts via extension points (`ticket_update_external_tracker`, `ticket_get_mrs`, `ticket_check_deployed`). If your project uses GitHub Issues, Jira, Linear, or another tracker, implement these extension points in your project overlay.
+The workflow below is platform-neutral. Platform-specific recipes (CLI commands, API calls, GraphQL mutations) are in [`../platforms/references/`](../platforms/references/). The default implementation uses GitLab (`glab` CLI). **Project overlays can override** the tracker-specific parts via extension points (`ticket_update_external_tracker`, `ticket_get_mrs`, `ticket_check_deployed`). If your project uses GitHub Issues, Jira, Linear, or another tracker, implement these extension points in your project overlay.
 
 ## Workflow
 
@@ -62,7 +62,7 @@ Parse the authenticated username from the issue tracker CLI (e.g., `glab auth st
 
 ### 2. Fetch "Not Started" Issues
 
-Query the issue tracker for all open issues assigned to the user with "Not started" status. See your [issue tracker platform reference](../t3:platforms/references/) § "List Issues by Label" for the CLI recipe.
+Query the issue tracker for all open issues assigned to the user with "Not started" status. See your [issue tracker platform reference](../platforms/references/) § "List Issues by Label" for the CLI recipe.
 
 Parse the response to extract: issue ID, project ID, title, URL, and project path.
 
@@ -105,7 +105,7 @@ For each confirmed ticket, in order:
 
 **a. Update ticket status** across the issue tracker and external tracker:
 
-Move the issue label/status from "Not started" to "Doing" / "In progress". See your [issue tracker platform reference](../t3:platforms/references/) § "Transition Logic" for the CLI recipe.
+Move the issue label/status from "Not started" to "Doing" / "In progress". See your [issue tracker platform reference](../platforms/references/) § "Transition Logic" for the CLI recipe.
 
 **External tracker — update status** (if configured by the project skill):
 
@@ -115,7 +115,7 @@ If not found in the external tracker, log a warning but continue — not all tic
 
 **b. Run the full lifecycle** using the loaded skills — each phase uses the corresponding lifecycle skill:
 
-1. **Intake** (`/t3:ticket`): Fetch issue, create worktree (`t3 workspace ticket`), run `t3 lifecycle setup`, verify environment.
+1. **Intake** (`/t3:ticket`): Fetch issue, create worktree (`t3 <overlay> workspace ticket`), run `t3 <overlay> lifecycle setup`, verify environment.
 2. **Implementation** (`/t3:code`): Implement with TDD. Check ALL repos in scope.
 3. **Testing** (`/t3:test`): Run tests, fix failures, ensure lint passes.
 4. **Delivery** (`/t3:ship`): Commit, push, create MRs for ALL repos with changes.
@@ -149,7 +149,7 @@ Before running transition checks (§9) or status check mode (§10), ensure `$T3_
 
 1. **Detect repos.** List repos the user works in — scan `$T3_WORKSPACE_DIR` for known repo directories (e.g., `backend-api`, `frontend-app`), or use a configured repo list from the project overlay.
 
-2. **List open MRs.** For each repo, list all open, non-draft MRs authored by the current user (see [issue tracker platform reference](../t3:platforms/references/) § "List MRs").
+2. **List open MRs.** For each repo, list all open, non-draft MRs authored by the current user (see [issue tracker platform reference](../platforms/references/) § "List MRs").
 
 3. **Extract ticket IID.** Parse the source branch name for the ticket number (first `\d+` match after the branch prefix). Skip MRs with no extractable ticket number.
 
@@ -174,7 +174,7 @@ After all tickets are processed (or when invoked in "check status" mode), scan i
 For each ticket with `Process::Doing`:
 
 1. List all MRs for the ticket's branch (via `ticket_get_mrs` extension point or the issue tracker CLI).
-2. Check `$T3_DATA_DIR/tickets/<iid>/mr_review_messages.json` for cached review request messages. See your [chat platform reference](../t3:platforms/references/) § "Caching Chat Data".
+2. Check `$T3_DATA_DIR/tickets/<iid>/mr_review_messages.json` for cached review request messages. See your [chat platform reference](../platforms/references/) § "Caching Chat Data".
 3. For MRs without a cache entry, search the team chat for the MR URL. Cache any results found.
 4. If ALL MRs have a review request message → transition the ticket.
 
@@ -188,7 +188,7 @@ For each ticket with `Process::Technical Review`:
 
 **Transition actions** (for both a and b):
 
-- Update issue tracker label/status. See your [issue tracker platform reference](../t3:platforms/references/) § "Transition Logic" for the CLI recipe.
+- Update issue tracker label/status. See your [issue tracker platform reference](../platforms/references/) § "Transition Logic" for the CLI recipe.
 - Call `ticket_update_external_tracker` extension point (Notion, Jira, etc.).
 - Report: `Ticket #<IID> → <new status> (reason)`
 
@@ -219,11 +219,11 @@ Daily nudge for MRs that were sent for review but haven't been approved yet. Des
 
 For each repo the user works in:
 
-List all user's open MRs across repos, then filter to those that are **open**, **not draft**, **not yet approved**. See your [issue tracker platform reference](../t3:platforms/references/) § "List MRs" and § "Check Approval Status" for CLI recipes.
+List all user's open MRs across repos, then filter to those that are **open**, **not draft**, **not yet approved**. See your [issue tracker platform reference](../platforms/references/) § "List MRs" and § "Check Approval Status" for CLI recipes.
 
 Also check for colleague comments (exclude system notes and author's own) via the MR notes API.
 
-**Cache MR metadata** in `$T3_DATA_DIR/mr_reminders.json` — see your [chat platform reference](../t3:platforms/references/) § "MR Reminder Cache" for the format.
+**Cache MR metadata** in `$T3_DATA_DIR/mr_reminders.json` — see your [chat platform reference](../platforms/references/) § "MR Reminder Cache" for the format.
 
 Populate `original_review_permalink` from `$T3_DATA_DIR/tickets/<iid>/mr_review_messages.json`. If not cached there, search the team chat for the MR URL and cache the result.
 
@@ -252,7 +252,7 @@ For each channel with MRs to remind:
 
 3. **Update cache:** set `last_reminded` to today's date in `$T3_DATA_DIR/mr_reminders.json`.
 
-See your [chat platform reference](../t3:platforms/references/) for known limitations (e.g., externally shared channels).
+See your [chat platform reference](../platforms/references/) for known limitations (e.g., externally shared channels).
 
 #### 11d. Cleanup
 
@@ -290,11 +290,11 @@ See [`references/followup-schema.md`](references/followup-schema.md) for the ful
 
 ### Interactive mode (default)
 
-- **Sequential only.** Never use sub-agents for ticket implementation. See [`../t3:rules/SKILL.md`](../t3:rules/SKILL.md) § "Sub-Agent Limitations".
+- **Sequential only.** Never use sub-agents for ticket implementation. See [`../rules/SKILL.md`](../rules/SKILL.md) § "Sub-Agent Limitations".
 - **Never start without user approval.** Always show the confirmation table first.
 - **Always pre-fetch external context.** Read all specs before starting implementation.
 - **Always run scope analysis.** The issue tracker project ≠ the implementation repo.
-- **`t3 lifecycle setup` is mandatory for every ticket.** Never skip it (see `/t3:workspace` § Never Hand-Edit Generated Files).
+- **`t3 <overlay> lifecycle setup` is mandatory for every ticket.** Never skip it (see `/t3:workspace` § Never Hand-Edit Generated Files).
 - **Confirm before transitioning.** In status check mode, always present the table and wait for user approval before executing transitions.
 - **Never post reminders without approval.** Always show the dry-run table first.
 
