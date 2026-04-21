@@ -788,6 +788,7 @@ Multiple MRs: the highest inferred state wins.
 workspace_dir = "~/workspace"
 branch_prefix = ""
 privacy = "strict"
+mode = "interactive"   # "interactive" (default, security-conservative) | "auto"
 
 [overlays.myproject]
 path = "~/workspace/myproject"
@@ -800,6 +801,18 @@ url = "git@gitlab.com:org/my-service.git"
 branch = "feature/e2e-tests"
 e2e_dir = "e2e"  # subdirectory containing playwright.config.ts (default: "e2e")
 ```
+
+**Operating mode (`teatree.mode`, env: `T3_MODE`)** — controls whether the agent
+pauses for confirmation on publishing actions (push, MR create, MR merge, Slack
+posts, remote branch deletion):
+
+| Mode | Default | Meaning |
+|------|---------|---------|
+| `interactive` | ✅ | Confirm before push, MR create/merge, Slack posts, any remote write. Always-gated list still applies. |
+| `auto` |  | End-to-end autonomy: push, MR create/merge, clean-all's branch pruning, retro writes, overlay-approved Slack posts all run without prompts. Only truly destructive shared-state ops remain gated (force-push to default branches, history rewrites on shared defaults, destructive DB ops on non-ticket schemas, unauthorized external writes). |
+
+The env var `T3_MODE` overrides the toml setting. Unknown values raise
+`ValueError` — typos never silently downgrade to a less-safe mode.
 
 ### 11.2 Django Settings (framework-level, in teatree's settings.py)
 
