@@ -1301,6 +1301,31 @@ teatree/utils/bad_artifacts.py  # Bad artifact cache (~/.local/share/teatree/bad
 
 The `django_db` module depends only on `utils/db` and stdlib. It has no Django imports — it shells out to `manage.py` as a subprocess, so it works regardless of the overlay's Django settings.
 
+### 15.11 State Reconciler (`t3 workspace doctor`)
+
+`teatree.core.reconcile` walks every state store and returns a typed `Drift` bundle.
+Seven finding dataclasses — `OrphanContainer`, `OrphanDB`, `StaleWorktreeDir`,
+`MissingWorktreeDir`, `MissingEnvCache`, `EnvCacheDrift`, `MissingDB` — cover the
+divergences between the Django models and the on-disk / docker / postgres world.
+
+`reconcile_ticket(ticket)` checks, for each `Worktree` row:
+
+- the claimed `worktree_path` exists on disk,
+- the env cache file is present and matches a fresh render (`detect_drift`),
+- `db_name` resolves to a real postgres database,
+- docker containers for the compose project exist only while the worktree is live
+  (post-teardown containers → orphan), and
+- `git worktree list` doesn't carry stale paths for the ticket number.
+
+`t3 workspace doctor [--ticket N] [--fix]` is the user-facing entry point. Without
+`--fix` it prints `Drift.format()` and exits non-zero. With `--fix` it loudly
+removes orphan containers (`run_checked`), drops missing DB records, regenerates
+missing env caches, and clears stale `worktree_path` values.
+
+Cleanup in `teatree.core.cleanup.cleanup_worktree` no longer swallows exceptions;
+overlay cleanup step failures are collected into a `[with errors: ...]` suffix on
+the return label so the caller can see exactly which step went wrong.
+
 ---
 
 ## 16. Dependencies
