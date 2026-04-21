@@ -1,3 +1,4 @@
+import os
 import re
 from typing import TYPE_CHECKING, ClassVar, cast
 
@@ -6,6 +7,17 @@ from django_fsm import FSMField, TransitionNotAllowed, transition
 
 from teatree.core.managers import TicketManager
 from teatree.utils import redis_container
+
+
+def _auto_ship_enabled() -> bool:
+    """Return True when ``T3_AUTO_SHIP`` opts into headless shipping.
+
+    Default is ``False`` — shipping tasks land in the interactive queue so the
+    user must approve the push explicitly. Set ``T3_AUTO_SHIP=true`` in
+    ``~/.teatree`` to allow headless shipping.
+    """
+    return os.environ.get("T3_AUTO_SHIP", "").lower() == "true"
+
 
 if TYPE_CHECKING:
     from teatree.core.models.session import Session
@@ -73,11 +85,11 @@ class Ticket(models.Model):
 
     @transition(field=state, source=State.SCOPED, target=State.STARTED)
     def start(self) -> None:
-        pass
+        self.schedule_coding()
 
     @transition(field=state, source=State.STARTED, target=State.CODED)
     def code(self) -> None:
-        pass
+        self.schedule_testing()
 
     @transition(field=state, source=State.CODED, target=State.TESTED)
     def test(self, *, passed: bool = True) -> None:
@@ -94,6 +106,36 @@ class Ticket(models.Model):
     )
     def review(self) -> None:
         self.schedule_shipping()
+
+    def schedule_coding(self, *, parent_task: "Task | None" = None) -> "Task":
+        """Create a fresh headless coding task after scoping completes."""
+        from teatree.core.models.session import Session  # noqa: PLC0415
+        from teatree.core.models.task import Task  # noqa: PLC0415
+
+        session = Session.objects.create(ticket=self, agent_id="coding")
+        return Task.objects.create(
+            ticket=self,
+            session=session,
+            phase="coding",
+            execution_target=Task.ExecutionTarget.HEADLESS,
+            execution_reason="Auto-scheduled coding — implement the ticket",
+            parent_task=parent_task,
+        )
+
+    def schedule_testing(self, *, parent_task: "Task | None" = None) -> "Task":
+        """Create a fresh headless testing task after coding completes."""
+        from teatree.core.models.session import Session  # noqa: PLC0415
+        from teatree.core.models.task import Task  # noqa: PLC0415
+
+        session = Session.objects.create(ticket=self, agent_id="testing")
+        return Task.objects.create(
+            ticket=self,
+            session=session,
+            phase="testing",
+            execution_target=Task.ExecutionTarget.HEADLESS,
+            execution_reason="Auto-scheduled testing — run + QA the coding work",
+            parent_task=parent_task,
+        )
 
     def schedule_review(self, *, parent_task: "Task | None" = None) -> "Task":
         """Create a fresh headless review+retro task (new session for bias-free evaluation)."""
@@ -124,17 +166,23 @@ class Ticket(models.Model):
         )
 
     def schedule_shipping(self, *, parent_task: "Task | None" = None) -> "Task":
-        """Create a fresh headless shipping task."""
+        """Create a shipping task. Defaults to interactive; headless when ``T3_AUTO_SHIP=true``."""
         from teatree.core.models.session import Session  # noqa: PLC0415
         from teatree.core.models.task import Task  # noqa: PLC0415
 
         session = Session.objects.create(ticket=self, agent_id="shipping")
+        if _auto_ship_enabled():
+            target = Task.ExecutionTarget.HEADLESS
+            reason = "Auto-scheduled shipping — T3_AUTO_SHIP=true, push will proceed headlessly"
+        else:
+            target = Task.ExecutionTarget.INTERACTIVE
+            reason = "Auto-scheduled shipping — gated for user approval (set T3_AUTO_SHIP=true to skip)"
         return Task.objects.create(
             ticket=self,
             session=session,
             phase="shipping",
-            execution_target=Task.ExecutionTarget.HEADLESS,
-            execution_reason="Auto-scheduled shipping — MR creation and delivery",
+            execution_target=target,
+            execution_reason=reason,
             parent_task=parent_task,
         )
 

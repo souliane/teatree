@@ -1,3 +1,5 @@
+from unittest.mock import patch
+
 import pytest
 from django.contrib import admin
 from django.test import TestCase
@@ -211,6 +213,131 @@ class TestTicketTransitions(TestCase):
 
         with pytest.raises(TransitionNotAllowed):
             ticket.review()
+
+
+class TestPhaseAutoDispatch(TestCase):
+    """Auto-dispatch of next-phase tasks at each phase boundary (issue #364)."""
+
+    def test_start_auto_schedules_coding_task(self) -> None:
+        ticket = Ticket.objects.create()
+        ticket.scope()
+        ticket.save()
+        ticket.start()
+        ticket.save()
+
+        task = ticket.tasks.get(phase="coding")
+        assert task.execution_target == Task.ExecutionTarget.HEADLESS
+        assert task.session.agent_id == "coding"
+        assert ticket.state == Ticket.State.STARTED
+
+    def test_code_auto_schedules_testing_task(self) -> None:
+        ticket = Ticket.objects.create()
+        ticket.scope()
+        ticket.save()
+        ticket.start()
+        ticket.save()
+        ticket.code()
+        ticket.save()
+
+        task = ticket.tasks.get(phase="testing")
+        assert task.execution_target == Task.ExecutionTarget.HEADLESS
+        assert task.session.agent_id == "testing"
+        assert ticket.state == Ticket.State.CODED
+
+    def test_scoping_task_completion_advances_to_started(self) -> None:
+        ticket = Ticket.objects.create()
+        ticket.scope()
+        ticket.save()
+        session = Session.objects.create(ticket=ticket, agent_id="scoper")
+        task = Task.objects.create(ticket=ticket, session=session, phase="scoping")
+
+        task.claim(claimed_by="worker")
+        task.complete()
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.STARTED
+        # start() auto-scheduled a coding task
+        assert ticket.tasks.filter(phase="coding", status=Task.Status.PENDING).exists()
+
+    def test_coding_task_completion_advances_to_coded(self) -> None:
+        ticket = Ticket.objects.create()
+        ticket.scope()
+        ticket.save()
+        ticket.start()
+        ticket.save()
+
+        _complete_phase_task(ticket, "coding")
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.CODED
+        # code() auto-scheduled a testing task
+        assert ticket.tasks.filter(phase="testing", status=Task.Status.PENDING).exists()
+
+    def test_testing_task_completion_advances_to_tested(self) -> None:
+        ticket = Ticket.objects.create()
+        ticket.scope()
+        ticket.save()
+        ticket.start()
+        ticket.save()
+        ticket.code()
+        ticket.save()
+
+        _complete_phase_task(ticket, "testing")
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.TESTED
+        # test() auto-scheduled a reviewing task
+        assert ticket.tasks.filter(phase="reviewing", status=Task.Status.PENDING).exists()
+
+    def test_shipping_defaults_to_interactive_without_t3_auto_ship(self) -> None:
+        ticket = Ticket.objects.create()
+
+        with patch.dict("os.environ", {}, clear=False) as env:
+            env.pop("T3_AUTO_SHIP", None)
+            task = ticket.schedule_shipping()
+
+        assert task.execution_target == Task.ExecutionTarget.INTERACTIVE
+        assert "user approval" in task.execution_reason
+
+    def test_shipping_is_headless_when_t3_auto_ship_true(self) -> None:
+        ticket = Ticket.objects.create()
+
+        with patch.dict("os.environ", {"T3_AUTO_SHIP": "true"}):
+            task = ticket.schedule_shipping()
+
+        assert task.execution_target == Task.ExecutionTarget.HEADLESS
+        assert "T3_AUTO_SHIP=true" in task.execution_reason
+
+    def test_shipping_task_completion_advances_to_shipped(self) -> None:
+        ticket = Ticket.objects.create()
+        _advance_ticket_to_tested(ticket)
+        _complete_phase_task(ticket, "reviewing")
+        # reviewing completion → REVIEWED + shipping task (interactive by default)
+
+        _complete_phase_task(ticket, "shipping")
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.SHIPPED
+
+    def test_child_task_of_already_advanced_ticket_is_noop(self) -> None:
+        ticket = Ticket.objects.create()
+        ticket.scope()
+        ticket.save()
+        session = Session.objects.create(ticket=ticket, agent_id="scoper")
+        first = Task.objects.create(ticket=ticket, session=session, phase="scoping")
+        second = Task.objects.create(ticket=ticket, session=session, phase="scoping")
+
+        first.claim(claimed_by="worker-1")
+        first.complete()
+        # First completion advanced SCOPED → STARTED
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.STARTED
+
+        second.claim(claimed_by="worker-2")
+        second.complete()
+        # Second completion no-ops because state is no longer SCOPED
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.STARTED
 
 
 class TestWorktree(TestCase):
