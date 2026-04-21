@@ -122,6 +122,8 @@ def main() -> int:
             and not filename.startswith("tests/")
             and not filename.startswith("scripts/hooks/")
             and not filename.startswith("e2e/")
+            and not filename.startswith("skills/")
+            and not filename.startswith("docs/")
             for pattern in _CODE_RELAXATION_PATTERNS
             if pattern in line
         )

@@ -63,6 +63,7 @@ When the active overlay has `require_ticket = True`, refuse to commit or push wi
 - Format commit message following the project's commit format reference.
 - **Link commits to issues.** Check `t3 overlay config --key mr_close_ticket`: when `true`, use `Fixes #<number>` or `Closes #<number>` in the commit message body (auto-closes on merge); when `false`, use `Relates-to #<number>` (links without closing). This applies to ALL repos.
 - Read `TICKET_URL` from `.env.worktree` — never construct it from the branch name.
+- **Baseline noqa in new files uses `relax:` type.** The teatree `quality-gates` hook flags any new `# noqa` / `# type: ignore` / `# pragma: no cover` in source files (excluding `tests/`, `scripts/hooks/`, `e2e/`). When a new file needs the house pattern `# noqa: S404` at `import subprocess` and `# noqa: S603` at each `subprocess.run` call (the pattern used by every existing CLI module), the hook treats it as a relaxation. Use `relax(<scope>): …` as the commit type, with a body explaining it follows the established baseline. Do NOT remove the suppressions — the ruff config relies on them.
 
 ### 2. Finalize Branch
 
