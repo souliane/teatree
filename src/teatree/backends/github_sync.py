@@ -5,11 +5,15 @@ import logging
 import os
 import shutil
 import subprocess  # noqa: S404
-from typing import override
+from typing import TYPE_CHECKING, override
 
 from django.core.cache import cache
 
+from teatree.core.cleanup import cleanup_worktree
 from teatree.core.sync import PENDING_REVIEWS_CACHE_KEY, RawAPIDict, SyncBackend, SyncResult
+
+if TYPE_CHECKING:
+    from teatree.core.models import Ticket
 
 logger = logging.getLogger(__name__)
 
@@ -72,16 +76,39 @@ class GitHubSyncBackend(SyncBackend):
                 result.tickets_created += 1
             else:
                 ticket = tickets[0]
+                prior_state = ticket.state
                 existing_extra = ticket.extra if isinstance(ticket.extra, dict) else {}
                 existing_extra.update(extra)
                 ticket.extra = existing_extra
                 ticket.state = state
                 ticket.save(update_fields=["extra", "state"])
                 result.tickets_updated += 1
+                if state == Ticket.State.DELIVERED and prior_state != Ticket.State.DELIVERED:
+                    self._cleanup_ticket_worktrees(ticket, result)
 
         self._sync_reviewer_prs(token, result)
 
         return result
+
+    @classmethod
+    def _cleanup_ticket_worktrees(cls, ticket: "Ticket", result: SyncResult) -> None:
+        """Free worktrees when the project board moves a ticket to Done.
+
+        Squash-merge-aware cleanup via :func:`cleanup_worktree`. Worktrees whose
+        branches carry genuinely-unpushed work are kept (the RuntimeError path);
+        the user resolves those by running ``t3 teatree workspace clean-all``.
+        """
+        from teatree.core.models import Worktree  # noqa: PLC0415
+
+        for worktree in Worktree.objects.filter(ticket=ticket):
+            try:
+                cleanup_worktree(worktree)
+                result.worktrees_cleaned += 1
+            except RuntimeError as exc:
+                logger.info("Keeping worktree %s (unpushed work): %s", worktree.repo_path, exc)
+            except Exception as exc:
+                logger.exception("Failed to clean worktree %s", worktree.repo_path)
+                result.errors.append(f"Worktree cleanup failed for {worktree.repo_path} ({worktree.branch}): {exc}")
 
     @classmethod
     def _fetch_reviewer_prs(cls, token: str) -> list[dict[str, str]]:

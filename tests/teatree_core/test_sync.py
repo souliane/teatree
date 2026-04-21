@@ -1825,6 +1825,7 @@ class TestSyncGitHub(TestCase):
             _patch_overlay(overlay),
             patch("teatree.backends.github.fetch_project_items", return_value=[item]),
             patch.object(GitHubSyncBackend, "_sync_reviewer_prs"),
+            patch("teatree.backends.github_sync.cleanup_worktree"),
         ):
             result = GitHubSyncBackend().sync(overlay)
 
@@ -1833,6 +1834,110 @@ class TestSyncGitHub(TestCase):
         assert ticket.state == Ticket.State.DELIVERED
         assert ticket.extra["custom_key"] == "preserved"
         assert ticket.extra["issue_title"] == "Updated issue"
+
+    def test_auto_cleans_worktrees_on_board_done_transition(self) -> None:
+        """Board moves ticket to ``Done`` → cleanup runs for each worktree."""
+        from teatree.backends.github import ProjectItem  # noqa: PLC0415
+        from teatree.backends.github_sync import GitHubSyncBackend  # noqa: PLC0415
+
+        overlay = self._make_overlay()
+        ticket = Ticket.objects.create(
+            issue_url="https://github.com/souliane/teatree/issues/44",
+            state=Ticket.State.IN_REVIEW,
+        )
+        Worktree.objects.create(
+            overlay="test",
+            ticket=ticket,
+            repo_path="souliane/teatree",
+            branch="fix-44",
+        )
+        item = ProjectItem(
+            issue_number=44,
+            title="Ready for cleanup",
+            url="https://github.com/souliane/teatree/issues/44",
+            status="Done",
+            position=3,
+            labels=[],
+        )
+
+        with (
+            _patch_overlay(overlay),
+            patch("teatree.backends.github.fetch_project_items", return_value=[item]),
+            patch.object(GitHubSyncBackend, "_sync_reviewer_prs"),
+            patch("teatree.backends.github_sync.cleanup_worktree") as mock_cleanup,
+        ):
+            result = GitHubSyncBackend().sync(overlay)
+
+        mock_cleanup.assert_called_once()
+        assert result.worktrees_cleaned == 1
+
+    def test_skips_cleanup_when_ticket_already_delivered(self) -> None:
+        """Ticket already Done on a prior sync → no double cleanup."""
+        from teatree.backends.github import ProjectItem  # noqa: PLC0415
+        from teatree.backends.github_sync import GitHubSyncBackend  # noqa: PLC0415
+
+        overlay = self._make_overlay()
+        Ticket.objects.create(
+            issue_url="https://github.com/souliane/teatree/issues/45",
+            state=Ticket.State.DELIVERED,
+        )
+        item = ProjectItem(
+            issue_number=45,
+            title="Already delivered",
+            url="https://github.com/souliane/teatree/issues/45",
+            status="Done",
+            position=4,
+            labels=[],
+        )
+
+        with (
+            _patch_overlay(overlay),
+            patch("teatree.backends.github.fetch_project_items", return_value=[item]),
+            patch.object(GitHubSyncBackend, "_sync_reviewer_prs"),
+            patch("teatree.backends.github_sync.cleanup_worktree") as mock_cleanup,
+        ):
+            GitHubSyncBackend().sync(overlay)
+
+        mock_cleanup.assert_not_called()
+
+    def test_keeps_worktree_with_unpushed_work(self) -> None:
+        """RuntimeError from cleanup_worktree (unsynced commits) doesn't add to errors — logged as info."""
+        from teatree.backends.github import ProjectItem  # noqa: PLC0415
+        from teatree.backends.github_sync import GitHubSyncBackend  # noqa: PLC0415
+
+        overlay = self._make_overlay()
+        ticket = Ticket.objects.create(
+            issue_url="https://github.com/souliane/teatree/issues/46",
+            state=Ticket.State.IN_REVIEW,
+        )
+        Worktree.objects.create(
+            overlay="test",
+            ticket=ticket,
+            repo_path="souliane/teatree",
+            branch="fix-46",
+        )
+        item = ProjectItem(
+            issue_number=46,
+            title="Has unpushed work",
+            url="https://github.com/souliane/teatree/issues/46",
+            status="Done",
+            position=5,
+            labels=[],
+        )
+
+        with (
+            _patch_overlay(overlay),
+            patch("teatree.backends.github.fetch_project_items", return_value=[item]),
+            patch.object(GitHubSyncBackend, "_sync_reviewer_prs"),
+            patch(
+                "teatree.backends.github_sync.cleanup_worktree",
+                side_effect=RuntimeError("refused cleanup — 1 unsynced commit(s)"),
+            ),
+        ):
+            result = GitHubSyncBackend().sync(overlay)
+
+        assert result.worktrees_cleaned == 0
+        assert result.errors == []  # info-level keep, not error
 
     def test_returns_error_for_non_overlay(self) -> None:
         from teatree.backends.github_sync import GitHubSyncBackend  # noqa: PLC0415

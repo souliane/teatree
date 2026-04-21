@@ -934,12 +934,22 @@ class TestWorkspaceCleanAll(TestCase):
             def _unsynced(_repo: str, branch: str) -> list[str]:
                 return ["abc123 chore: unpushed"] if branch == "ac-frontend-360-ticket" else []
 
+            def _classify(_repo: str, branch: str, target: str = "origin/main") -> cleanup_mod.BranchClassification:
+                if branch == "ac-frontend-360-ticket":
+                    return cleanup_mod.BranchClassification(
+                        genuinely_ahead=[
+                            cleanup_mod.BranchCommit(sha="abc123", subject="chore: unpushed", is_merge=False),
+                        ],
+                    )
+                return cleanup_mod.BranchClassification()
+
             mock_config = MagicMock()
             mock_config.user.workspace_dir = workspace
             with (
                 patch.object(cleanup_mod, "load_config", return_value=mock_config),
                 patch.object(cleanup_mod, "git") as mock_git,
                 patch.object(cleanup_mod, "get_overlay") as mock_overlay,
+                patch.object(cleanup_mod, "classify_branch_commits", side_effect=_classify),
             ):
                 mock_overlay.return_value.get_cleanup_steps.return_value = []
                 mock_git.status_porcelain.return_value = ""
@@ -950,6 +960,100 @@ class TestWorkspaceCleanAll(TestCase):
             assert any("ac-frontend-360-ticket" in c and "unsynced" in c.lower() for c in cleaned)
             assert Worktree.objects.filter(branch="ac-backend-360-ticket").count() == 0
             assert Worktree.objects.filter(branch="ac-frontend-360-ticket").count() == 1
+
+
+class TestResolveUnsyncedWorktree(TestCase):
+    """Interactive push/abandon/skip resolution for worktrees with unpushed work."""
+
+    def _make_worktree(self, wt_path: str = "/tmp/wt") -> Worktree:
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/379")
+        return Worktree.objects.create(
+            overlay="test",
+            ticket=ticket,
+            repo_path="backend",
+            branch="ac-backend-379-ticket",
+            extra={"worktree_path": wt_path},
+        )
+
+    def test_non_tty_preserves_skip_behaviour(self) -> None:
+        wt = self._make_worktree()
+        exc = RuntimeError("2 unsynced commit(s) not on origin/main: foo")
+        result = workspace_mod._resolve_unsynced_worktree(wt, exc, interactive=False)
+        assert result.startswith("Skipped:")
+        assert "unsynced" in result
+
+    def test_interactive_default_is_skip(self) -> None:
+        wt = self._make_worktree()
+        exc = RuntimeError("1 unsynced commit(s) not on origin/main: bar")
+        with patch("builtins.input", return_value=""):
+            result = workspace_mod._resolve_unsynced_worktree(wt, exc, interactive=True)
+        assert result.startswith("Skipped:")
+
+    def test_interactive_eof_falls_back_to_skip(self) -> None:
+        wt = self._make_worktree()
+        exc = RuntimeError("whatever")
+        with patch("builtins.input", side_effect=EOFError):
+            result = workspace_mod._resolve_unsynced_worktree(wt, exc, interactive=True)
+        assert result.startswith("Skipped:")
+
+    def test_interactive_push_success_suggests_pr_create(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            wt = self._make_worktree(wt_path=tmp)
+            exc = RuntimeError("work pending")
+            fake_push = subprocess.CompletedProcess([], 0, stdout="", stderr="")
+            with (
+                patch("builtins.input", return_value="p"),
+                patch.object(workspace_mod.subprocess, "run", return_value=fake_push) as mock_run,
+            ):
+                result = workspace_mod._resolve_unsynced_worktree(wt, exc, interactive=True)
+        assert result.startswith("Pushed:")
+        assert "pr create" in result
+        args = mock_run.call_args[0][0]
+        assert args[:2] == ["git", "-C"]
+        assert args[-3:] == ["push", "-u", "origin"] or args[-4:-1] == ["push", "-u", "origin"]
+
+    def test_interactive_push_failure_reports_stderr(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            wt = self._make_worktree(wt_path=tmp)
+            exc = RuntimeError("work pending")
+            fake_push = subprocess.CompletedProcess([], 1, stdout="", stderr="remote rejected: protected branch")
+            with (
+                patch("builtins.input", return_value="p"),
+                patch.object(workspace_mod.subprocess, "run", return_value=fake_push),
+            ):
+                result = workspace_mod._resolve_unsynced_worktree(wt, exc, interactive=True)
+        assert result.startswith("Push failed:")
+        assert "protected branch" in result
+
+    def test_interactive_push_missing_worktree_path(self) -> None:
+        wt = self._make_worktree(wt_path="/tmp/does-not-exist-12345")
+        exc = RuntimeError("pending")
+        with patch("builtins.input", return_value="p"):
+            result = workspace_mod._resolve_unsynced_worktree(wt, exc, interactive=True)
+        assert result.startswith("Push failed:")
+        assert "worktree path missing" in result
+
+    def test_interactive_abandon_force_cleans(self) -> None:
+        wt = self._make_worktree()
+        exc = RuntimeError("pending")
+        with (
+            patch("builtins.input", return_value="a"),
+            patch.object(workspace_mod, "cleanup_worktree", return_value="Cleaned: backend (branch)") as mock_clean,
+        ):
+            result = workspace_mod._resolve_unsynced_worktree(wt, exc, interactive=True)
+        assert result == "Cleaned: backend (branch)"
+        mock_clean.assert_called_once_with(wt, force=True)
+
+    def test_interactive_abandon_failure_reports_error(self) -> None:
+        wt = self._make_worktree()
+        exc = RuntimeError("pending")
+        with (
+            patch("builtins.input", return_value="a"),
+            patch.object(workspace_mod, "cleanup_worktree", side_effect=OSError("boom")),
+        ):
+            result = workspace_mod._resolve_unsynced_worktree(wt, exc, interactive=True)
+        assert result.startswith("Abandon failed:")
+        assert "boom" in result
 
 
 class TestWorkspaceCleanMerged(TestCase):
