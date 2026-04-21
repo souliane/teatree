@@ -449,6 +449,29 @@ class Command(TyperCommand):
                 )
         return "\n".join(results)
 
+    @command(name="clean-merged")
+    def clean_merged(self) -> list[str]:
+        """Tear down every worktree whose ticket is already MERGED.
+
+        On-demand reconciler for the daily followup sync. Use when merged-MR
+        cleanup silently failed and stale docker containers, branches, or
+        databases linger. Errors are surfaced inline — no suppression.
+        """
+        cleaned: list[str] = []
+        merged_tickets = Ticket.objects.filter(state=Ticket.State.MERGED)
+        for ticket in merged_tickets:
+            worktrees = list(Worktree.objects.filter(ticket=ticket))
+            if not worktrees:
+                continue
+            for wt in worktrees:
+                try:
+                    cleaned.append(cleanup_worktree(wt, force=True))
+                except RuntimeError as exc:
+                    cleaned.append(f"FAILED {wt.repo_path} ({wt.branch}): {exc}")
+        if not cleaned:
+            return ["No merged tickets have lingering worktrees."]
+        return cleaned
+
     @command(name="clean-all")
     def clean_all(
         self,

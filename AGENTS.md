@@ -18,7 +18,7 @@ This is the teatree repo — both the Python package (`src/teatree/`) and the wo
 
 ## What TeaTree Is
 
-A multi-repo worktree lifecycle manager for AI-assisted development. Target: service-oriented projects with databases and CI pipelines (any language). Not for docs-only repos or CLI tools.
+A personal code factory for multi-repo projects. It turns a ticket URL into a merged pull request by coordinating worktrees, databases, ports, AI agents, and code-host sync across every repo the ticket touches. Target: service-oriented projects with databases and CI pipelines (any language). Not for docs-only repos or CLI tools.
 
 It provides:
 

@@ -106,9 +106,9 @@ class GitHubSyncBackend(SyncBackend):
                 result.worktrees_cleaned += 1
             except RuntimeError as exc:
                 logger.info("Keeping worktree %s (unpushed work): %s", worktree.repo_path, exc)
-            except Exception:
+            except Exception as exc:
                 logger.exception("Failed to clean worktree %s", worktree.repo_path)
-                result.errors.append(f"Worktree cleanup failed: {worktree.repo_path}")
+                result.errors.append(f"Worktree cleanup failed for {worktree.repo_path} ({worktree.branch}): {exc}")
 
     @classmethod
     def _fetch_reviewer_prs(cls, token: str) -> list[dict[str, str]]:

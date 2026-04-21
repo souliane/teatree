@@ -7,7 +7,7 @@
   "plugins": [
     {
       "name": "t3",
-      "description": "Multi-repo worktree lifecycle manager for AI-assisted development",
+      "description": "Personal code factory for multi-repo projects",
       "source": "./",
       "category": "development",
       "homepage": "https://github.com/souliane/teatree"

@@ -10,7 +10,7 @@ If the entire `src/` and `tests/` tree were deleted, this document alone — plu
 
 ## 1. What TeaTree Is
 
-A multi-repo worktree lifecycle manager for AI-assisted development. It manages the full lifecycle of a development ticket: from intake through coding, testing, review, shipping, and delivery — coordinating across multiple repositories, worktrees, and agent sessions.
+A personal code factory for multi-repo projects. It turns a ticket URL into a merged pull request by coordinating the full lifecycle — intake, coding, testing, review, shipping, delivery — across multiple repositories, worktrees, and agent sessions.
 
 **Target:** service-oriented projects with databases and CI pipelines (any language). Not for docs-only repos or CLI tools.
 

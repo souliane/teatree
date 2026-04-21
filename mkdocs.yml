@@ -1,5 +1,5 @@
 site_name: TeaTree
-site_description: Multi-repo worktree lifecycle manager for AI-assisted development
+site_description: Personal code factory for multi-repo projects
 repo_url: https://github.com/souliane/teatree
 
 theme:
