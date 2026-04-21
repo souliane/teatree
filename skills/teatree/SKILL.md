@@ -35,7 +35,7 @@ search_hints:
 
 # TeaTree — Agent Lifecycle Platform
 
-TeaTree is a Django project that orchestrates agent workflows through lifecycle phases. Overlays are lightweight Python packages that extend it for specific projects.
+TeaTree is a personal code factory for multi-repo projects — it turns a ticket URL into a merged pull request by driving AI agents through lifecycle phases. Under the hood it's a Django project; overlays are lightweight Python packages that extend it for specific projects.
 
 ## Architecture
 

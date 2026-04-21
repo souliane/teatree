@@ -1,7 +1,7 @@
 {
   "name": "t3",
   "version": "0.0.1",
-  "description": "Multi-repo worktree lifecycle manager for AI-assisted development",
+  "description": "Personal code factory for multi-repo projects",
   "author": {
     "name": "souliane",
     "url": "https://github.com/souliane"
