@@ -7,6 +7,7 @@ teatree's own repo, skills, and GitHub project as the target.
 from pathlib import Path
 from typing import override
 
+from teatree.config import discover_overlays, load_config
 from teatree.core.models import Worktree
 from teatree.core.overlay import OverlayBase, OverlayConfig, OverlayMetadata
 from teatree.types import ProvisionStep, RunCommands, SkillMetadata
@@ -23,6 +24,31 @@ def _repo_root() -> Path:
             return parent
     msg = f"Cannot find teatree repo root from {here}"
     raise FileNotFoundError(msg)
+
+
+def _discover_workspace_repos() -> list[str]:
+    """Aggregate teatree's own repo + every discovered overlay project path.
+
+    Each path is returned relative to ``workspace_dir``. Overlays whose path
+    lives outside ``workspace_dir`` (or cannot be resolved on disk) are
+    skipped — callers can always override via ``config.workspace_repos``.
+    """
+    workspace_dir = load_config().user.workspace_dir.resolve()
+    candidates: list[Path] = [_repo_root()]
+    candidates.extend(entry.project_path for entry in discover_overlays() if entry.project_path is not None)
+
+    seen: set[str] = set()
+    repos: list[str] = []
+    for candidate in candidates:
+        try:
+            rel = candidate.resolve().relative_to(workspace_dir)
+        except ValueError:
+            continue
+        key = str(rel)
+        if key not in seen:
+            seen.add(key)
+            repos.append(key)
+    return repos
 
 
 class TeatreeMetadata(OverlayMetadata):
@@ -58,6 +84,13 @@ class TeatreeOverlay(OverlayBase):
     @override
     def get_repos(self) -> list[str]:
         return ["teatree"]
+
+    @override
+    def get_workspace_repos(self) -> list[str]:
+        if self.config.workspace_repos:
+            return list(self.config.workspace_repos)
+        discovered = _discover_workspace_repos()
+        return discovered or self.get_repos()
 
     @override
     def get_provision_steps(self, worktree: Worktree) -> list[ProvisionStep]:
