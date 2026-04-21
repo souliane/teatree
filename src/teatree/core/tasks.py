@@ -1,6 +1,21 @@
+import logging
+from typing import TypedDict
+
+from django.db import transaction
 from django.tasks import task
 
 from teatree.core.models import Task, Ticket
+from teatree.core.runners import RetroExecutor
+
+logger = logging.getLogger(__name__)
+
+
+class RetrospectResult(TypedDict, total=False):
+    ticket_id: int
+    ok: bool
+    skipped: bool
+    state: str
+    detail: str
 
 
 @task()
@@ -63,3 +78,34 @@ def refresh_followup_snapshot() -> dict[str, int]:
         "tasks": Task.objects.count(),
         "open_tasks": Task.objects.exclude(status=Task.Status.COMPLETED).count(),
     }
+
+
+@task()
+def execute_retrospect(ticket_id: int) -> RetrospectResult:
+    """Run retrospection I/O for a ticket in the RETROSPECTED state.
+
+    Idempotency: the worker takes a row lock and re-checks state before running.
+    At-least-once delivery from django-tasks means this can fire more than once
+    for the same transition — a lost update or a redelivered job must be safe.
+
+    On success, advances ``RETROSPECTED → DELIVERED`` via ``mark_delivered()``.
+    """
+    with transaction.atomic():
+        ticket = Ticket.objects.select_for_update().get(pk=ticket_id)
+        if ticket.state != Ticket.State.RETROSPECTED:
+            logger.info(
+                "execute_retrospect skipped for ticket %s: state=%s (not RETROSPECTED)",
+                ticket_id,
+                ticket.state,
+            )
+            return {"ticket_id": ticket_id, "skipped": True, "state": str(ticket.state)}
+
+        result = RetroExecutor(ticket).run()
+        if not result.ok:
+            logger.warning("Retro failed for ticket %s: %s", ticket_id, result.detail)
+            return {"ticket_id": ticket_id, "ok": False, "detail": result.detail}
+
+        ticket.mark_delivered()
+        ticket.save()
+
+    return {"ticket_id": ticket_id, "ok": True, "detail": result.detail}

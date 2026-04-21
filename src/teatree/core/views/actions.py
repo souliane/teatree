@@ -70,6 +70,7 @@ _ALLOWED_TRANSITIONS = {
     "ship",
     "request_review",
     "mark_merged",
+    "retrospect",
     "mark_delivered",
     "rework",
     "ignore",

@@ -45,6 +45,7 @@ DEFAULT_TRANSITION_EMOJIS: dict[str, str] = {
     "test": "white_check_mark",
     "request_review": "eyes",
     "mark_merged": "tada",
+    "retrospect": "memo",
     "mark_delivered": "white_check_mark",
     "rework": "arrows_counterclockwise",
     "ignore": "wastebasket",

@@ -29,6 +29,23 @@
 - **Cause:** A worktree for this branch already exists elsewhere.
 - **Fix:** Run `git worktree list` to find it. Remove with `git worktree remove <path>` if no longer needed.
 
+## Branch Switch Fails on "Clean" File (skip-worktree Pitfall)
+
+- **Symptom:** `git switch <branch>` or `git checkout <branch>` fails with `Your local changes to the following files would be overwritten by checkout` on a file that `git status` reports as clean.
+- **Cause:** The file has the `skip-worktree` flag set (commonly used to keep a local `pyproject.toml` override pointing at a sibling editable-install path — e.g. `teatree = { path = "../../souliane/teatree", editable = true }`). `git status` hides the difference; `git checkout` honors it and blocks the switch to prevent clobbering the local content.
+- **Diagnosis:** `git ls-files -v <file>` — lowercase `h` = skip-worktree is on (`H` = normal).
+- **Fix (safe):** Do not naively branch-switch in a clone that carries skip-worktree overrides. Either:
+  1. Leave the clone on its current branch and do the work in a dedicated worktree (`git worktree add`), OR
+  2. Temporarily clear the flag with `git update-index --no-skip-worktree <file>`, commit or stash the local override, switch branches, then restore the flag. **Never `git checkout <file>` to "resolve" it — that wipes the override.**
+- **Prevention:** Keep the dogfood override on a dedicated branch, not on whichever branch the main clone happens to be sitting on. If the override must live in the main clone, document it in the repo's `AGENTS.md` so future agents don't try to check out another branch there.
+
+## `gh pr merge --delete-branch` Fails When `main` Is in Another Worktree
+
+- **Symptom:** `gh pr merge <n> --squash --delete-branch` exits with `failed to run git: fatal: 'main' is already used by worktree at '<path>'`. The PR may have already merged on the remote despite the error.
+- **Cause:** `gh` tries to checkout `main` locally to update it and delete the merged branch. Git refuses because `main` is checked out in another worktree (typical when the main clone is at the canonical path and the current shell is in a ticket worktree).
+- **Fix:** Re-run without `--delete-branch`: `gh pr merge <n> --squash`. Then clean up manually: `git fetch --prune origin` deletes the remote-tracking ref, and from the main clone run `git worktree remove <path>` and `git branch -D <branch>` to drop the local worktree and branch.
+- **Prevention:** When the main clone is in a sibling worktree, omit `--delete-branch` on `gh pr merge`. The remote delete is handled by GitHub's "auto-delete branch on merge" setting; local cleanup belongs to `git fetch --prune` and `git worktree remove`.
+
 ## DSLR Restore Fails Silently
 
 - **Cause:** `dslr` not installed or the snapshot is from an incompatible Postgres version.
