@@ -136,7 +136,7 @@ Each worktree gets its own **isolated environment** — dedicated database, port
 - Never use the main repo's database for worktree work
 - Never manually set ports — let `t3 lifecycle setup` allocate them via `find_free_ports()`
 
-When testing an MR, create a full worktree (`t3 workspace ticket` + `t3 lifecycle setup` + `t3 lifecycle start`).
+When testing an MR, create a full worktree (`t3 <overlay> workspace ticket` + `t3 lifecycle setup` + `t3 lifecycle start`).
 
 ### Validate After Provisioning (Non-Negotiable)
 

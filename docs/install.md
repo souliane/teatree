@@ -102,6 +102,34 @@ uv sync
 t3 doctor check                    # both show as editable
 ```
 
+### Dogfood a teatree branch with an overlay
+
+When developing a teatree feature on a ticket branch and you need to drive it through an overlay in the browser:
+
+```sh
+cd ~/workspace/ac-teatree-123-my-branch/teatree     # teatree worktree
+t3 overlay install <overlay-name>                    # e.g. t3-acme
+t3 dashboard
+```
+
+This creates a sibling `git worktree` for the overlay (matching the teatree branch when it exists, otherwise the overlay's default branch) and installs it editable into the teatree worktree's `.venv`. The worktree's `t3` shadows the global install while you're inside it, so the dashboard and any agents use that branch's code.
+
+Configure the overlay's main clone path in `~/.teatree.toml`:
+
+```toml
+[overlays.t3-acme]
+path = "~/workspace/t3-acme"
+```
+
+Undo and inspect:
+
+```sh
+t3 overlay status
+t3 overlay uninstall <overlay-name>
+```
+
+The main clone (detected via a real `.git` directory) refuses `install` — use this in worktrees only. Tracked overlays persist in `.t3.local.json` (gitignored).
+
 ## Overlay discovery
 
 Overlays register via standard Python entry points in `pyproject.toml`:

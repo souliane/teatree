@@ -15,8 +15,10 @@ import pytest
 # a dashboard session). pytest-django falls back to pyproject.toml when the
 # env var is absent.
 os.environ.pop("DJANGO_SETTINGS_MODULE", None)
-# Strip T3_OVERLAY_NAME so tests don't resolve the host overlay (e.g. t3-teatree)
-os.environ.pop("T3_OVERLAY_NAME", None)
+# Pin T3_OVERLAY_NAME to the in-repo overlay so tests stay deterministic even
+# when extra overlays are editable-installed for dogfooding (see #120). Tests
+# that exercise overlay resolution override via monkeypatch.setenv/delenv.
+os.environ["T3_OVERLAY_NAME"] = "t3-teatree"
 
 # Guard against import-time side effects in script modules that call _init.init()
 # at module import. Route HOME/T3_WORKSPACE_DIR to a disposable temp sandbox.
