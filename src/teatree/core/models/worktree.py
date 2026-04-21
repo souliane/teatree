@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import cast
+from typing import ClassVar, cast
 
 from django.db import models
 from django_fsm import FSMField, transition
@@ -78,3 +78,25 @@ class Worktree(models.Model):
 
     def _extra(self) -> WorktreeExtra:
         return validated_worktree_extra(self.extra)
+
+
+class WorktreeEnvOverride(models.Model):
+    """User-declared env var for a worktree's env cache.
+
+    Use ``t3 env set KEY=VALUE`` rather than editing this table directly.
+    Keys owned by core (``TICKET_DIR``, ``WT_DB_NAME`` …) are rejected at
+    the CLI layer.
+    """
+
+    worktree = models.ForeignKey(Worktree, on_delete=models.CASCADE, related_name="env_overrides")
+    key = models.CharField(max_length=255)
+    value = models.TextField(blank=True)
+
+    class Meta:
+        db_table = "teatree_worktree_env_override"
+        constraints: ClassVar[list[models.BaseConstraint]] = [
+            models.UniqueConstraint(fields=["worktree", "key"], name="uniq_worktree_env_key"),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.worktree.pk}:{self.key}"

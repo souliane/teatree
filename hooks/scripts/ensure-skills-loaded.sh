@@ -127,7 +127,7 @@ EOF
             _ticket_dir=""
             _search_dir="$PWD"
             while [ "$_search_dir" != "/" ]; do
-                [ -f "$_search_dir/.env.worktree" ] && { _ticket_dir="$_search_dir"; break; }
+                [ -e "$_search_dir/.t3-env.cache" ] && { _ticket_dir="$_search_dir"; break; }
                 _search_dir=$(dirname "$_search_dir")
             done
             if [ -n "$_ticket_dir" ]; then

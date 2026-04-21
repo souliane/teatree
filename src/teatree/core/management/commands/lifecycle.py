@@ -11,7 +11,7 @@ from teatree.core.overlay import OverlayBase
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.resolve import resolve_worktree
 from teatree.core.step_runner import ProvisionReport, run_provision_steps, run_step
-from teatree.core.worktree_env import write_env_worktree
+from teatree.core.worktree_env import CACHE_FILENAME, write_env_cache
 from teatree.timeouts import TimeoutConfig, load_timeouts
 from teatree.utils import redis_container
 from teatree.utils.ports import find_free_ports, get_worktree_ports
@@ -38,7 +38,8 @@ def _setup_worktree_dir(wt_path: str, worktree: Worktree, overlay: OverlayBase, 
     """Configure direnv and pre-commit for the worktree directory."""
     if not wt_path or not Path(wt_path).is_dir():
         return
-    _append_envrc_lines(wt_path, overlay.get_envrc_lines(worktree))
+    core_lines = [f"dotenv {CACHE_FILENAME}"]
+    _append_envrc_lines(wt_path, core_lines + overlay.get_envrc_lines(worktree))
     result = run_step("direnv-allow", ["direnv", "allow", wt_path], check=False)
     if not result.success:
         stdout.write(f"  direnv allow: {result.error}")
@@ -254,9 +255,9 @@ class Command(TyperCommand):
             worktree.provision()
             worktree.save()
 
-        envfile = write_env_worktree(worktree)
-        if envfile:
-            self.stdout.write(f"  Written: {envfile}")
+        spec = write_env_cache(worktree)
+        if spec:
+            self.stdout.write(f"  Written: {spec.path}")
 
         _setup_worktree_dir((worktree.extra or {}).get("worktree_path", ""), worktree, overlay, self.stdout)
 
@@ -349,9 +350,10 @@ class Command(TyperCommand):
         """Print a structured checklist summarizing worktree state after provisioning."""
         wt_path = (worktree.extra or {}).get("worktree_path", "")
         self.stdout.write(f"\n  ── {worktree.repo_path} ──")
+        cache_path = Path(wt_path).parent / ".t3-cache" / CACHE_FILENAME if wt_path else None
         checks = [
             ("worktree dir", bool(wt_path and Path(wt_path).is_dir())),
-            (".env.worktree", bool(wt_path and (Path(wt_path).parent / ".env.worktree").is_file())),
+            (CACHE_FILENAME, bool(cache_path and cache_path.is_file())),
             ("DB name", bool(worktree.db_name)),
         ]
         checks.extend((step.name, step.success) for step in report.steps)
@@ -371,12 +373,13 @@ class Command(TyperCommand):
         wt_path = (worktree.extra or {}).get("worktree_path", "")
         ticket_dir = Path(wt_path).parent if wt_path else None
 
+        cache_file = ticket_dir / ".t3-cache" / CACHE_FILENAME if ticket_dir else None
         checks: dict[str, object] = {
             "state": worktree.state,
             "repo_path": worktree.repo_path,
             "worktree_dir": bool(wt_path and Path(wt_path).is_dir()),
             "git_marker": bool(wt_path and (Path(wt_path) / ".git").exists()),
-            "env_file": bool(ticket_dir and (ticket_dir / ".env.worktree").is_file()),
+            "env_cache": bool(cache_file and cache_file.is_file()),
             "db_name": worktree.db_name,
         }
 
@@ -390,7 +393,7 @@ class Command(TyperCommand):
 
         # Print human-readable checklist
         self.stdout.write(f"\n  ── {worktree.repo_path} ({worktree.state}) ──")
-        for key in ("worktree_dir", "git_marker", "env_file"):
+        for key in ("worktree_dir", "git_marker", "env_cache"):
             status = "OK" if checks[key] else "FAIL"
             self.stdout.write(f"  [{status}] {key}")
         self.stdout.write(f"  [{'OK' if checks['db_name'] else 'FAIL'}] DB name: {checks['db_name'] or '(none)'}")
@@ -475,8 +478,9 @@ class Command(TyperCommand):
             stop_on_required_failure=False,
         )
 
-        # Write env file (includes overlay extras which now see correct ports)
-        write_env_worktree(worktree)
+        # Regenerate cache (includes overlay extras which now see correct ports).
+        # Unconditional on every start — the plan calls for no stale cache.
+        write_env_cache(worktree)
 
         # Start services via docker-compose
         compose_file = overlay.get_compose_file(worktree)

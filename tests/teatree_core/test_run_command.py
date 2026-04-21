@@ -199,7 +199,7 @@ class TestRunCommand(TestCase):
 class TestE2eExternalCommand(TestCase):
     @override_settings(**COMMAND_SETTINGS)
     def test_reads_port_from_docker_compose_and_variant_from_env(self) -> None:
-        """e2e external reads frontend port from docker compose and variant from .env.worktree."""
+        """e2e external reads frontend port from docker compose and variant from the env cache."""
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             private_tests_dir = tmp_path / "private-tests"
@@ -207,7 +207,7 @@ class TestE2eExternalCommand(TestCase):
 
             worktree_dir = tmp_path / "workspace" / "backend"
             worktree_dir.mkdir(parents=True)
-            envfile = worktree_dir / ".env.worktree"
+            envfile = worktree_dir / ".t3-env.cache"
             envfile.write_text("WT_VARIANT=acme\n", encoding="utf-8")
 
             ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/80", variant="acme")

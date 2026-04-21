@@ -2652,20 +2652,20 @@ class TestDetectNxServePort:
             assert e2e_mod._detect_nx_serve_port("/any/path") is None
 
 
-_no_envfile = patch("teatree.core.management.commands.e2e._find_env_worktree", return_value=None)
+_no_envfile = patch("teatree.core.management.commands.e2e._find_env_cache", return_value=None)
 
 
 class TestDiscoverFrontendPort:
     def test_returns_nx_port_when_nx_running_in_worktree(self) -> None:
         with (
-            patch.object(e2e_mod, "_find_env_worktree", return_value=Path("/wt/.env.worktree")),
+            patch.object(e2e_mod, "_find_env_cache", return_value=Path("/wt/.t3-env.cache")),
             patch.object(e2e_mod, "_detect_nx_serve_port", return_value=4215),
         ):
             assert e2e_mod._discover_frontend_port("project") == 4215
 
     def test_returns_docker_port_when_nx_not_running(self) -> None:
         with (
-            patch.object(e2e_mod, "_find_env_worktree", return_value=Path("/wt/.env.worktree")),
+            patch.object(e2e_mod, "_find_env_cache", return_value=Path("/wt/.t3-env.cache")),
             patch.object(e2e_mod, "_detect_nx_serve_port", return_value=None),
             patch.object(e2e_mod, "get_service_port", return_value=4201),
         ):
@@ -2863,7 +2863,7 @@ class TestE2eExternal(TestCase):
             tmp_path = Path(tmp)
             wt_dir = tmp_path / "worktree"
             wt_dir.mkdir()
-            (wt_dir / ".env.worktree").write_text(f"WT_VARIANT=acme\nTICKET_DIR={tmp_path}\n", encoding="utf-8")
+            (wt_dir / ".t3-env.cache").write_text(f"WT_VARIANT=acme\nTICKET_DIR={tmp_path}\n", encoding="utf-8")
             private_dir = tmp_path / "private"
             private_dir.mkdir()
 
@@ -3367,7 +3367,7 @@ class TestLifecycleSetup(TestCase):
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
     def test_skips_envfile_message_when_no_path(self) -> None:
-        """Setup skips 'Written:' message when write_env_worktree returns None."""
+        """Setup skips 'Written:' message when write_env_cache returns None."""
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
 
@@ -3395,7 +3395,7 @@ class TestLifecycleSetup(TestCase):
             with (
                 patch.object(lifecycle_mod, "get_overlay", return_value=mock_overlay),
                 patch.object(utils_run_mod, "subprocess") as mock_sp,
-                patch.object(lifecycle_mod, "write_env_worktree", return_value=None),
+                patch.object(lifecycle_mod, "write_env_cache", return_value=None),
             ):
                 mock_sp.run.return_value = MagicMock(returncode=0)
                 call_command("lifecycle", "setup", path=str(wt_path))
@@ -3409,8 +3409,10 @@ class TestLifecycleSetup(TestCase):
             tmp_path = Path(tmp)
             wt_dir = tmp_path / "backend"
             wt_dir.mkdir()
-            # Create .env.worktree in parent (ticket dir)
-            (tmp_path / ".env.worktree").write_text("WT_DB_NAME=test\n")
+            # Create env cache in parent (ticket dir)
+            cache_dir = tmp_path / ".t3-cache"
+            cache_dir.mkdir()
+            (cache_dir / ".t3-env.cache").write_text("WT_DB_NAME=test\n")
 
             ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/115")
             wt = Worktree.objects.create(
@@ -3436,7 +3438,7 @@ class TestLifecycleSetup(TestCase):
 
             output = buf.getvalue()
             assert "[OK] worktree dir" in output
-            assert "[OK] .env.worktree" in output
+            assert "[OK] .t3-env.cache" in output
             assert "[OK] DB name" in output
             assert "[OK] migrations" in output
             assert "[FAIL] docker-up" in output
@@ -3463,9 +3465,9 @@ class TestLifecycleSetupHelpers(TestCase):
         _setup_worktree_dir("/tmp/does-not-exist-xyz", MagicMock(), mock_overlay, stdout)
         mock_overlay.get_envrc_lines.assert_not_called()
 
-    def test_write_env_worktree_returns_none_without_path(self) -> None:
-        """write_env_worktree returns None when worktree has no worktree_path."""
-        from teatree.core.worktree_env import write_env_worktree  # noqa: PLC0415
+    def test_write_env_cache_returns_none_without_path(self) -> None:
+        """write_env_cache returns None when worktree has no worktree_path."""
+        from teatree.core.worktree_env import write_env_cache  # noqa: PLC0415
 
         ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/250")
         wt = Worktree.objects.create(
@@ -3475,7 +3477,7 @@ class TestLifecycleSetupHelpers(TestCase):
             branch="feature",
             extra={},  # no worktree_path
         )
-        assert write_env_worktree(wt) is None
+        assert write_env_cache(wt) is None
 
 
 class TestLifecycleStart(TestCase):
@@ -3769,7 +3771,9 @@ class TestLifecycleDiagnose(TestCase):
             wt_dir.mkdir()
             # .git file marks this as a worktree (not a main clone)
             (wt_dir / ".git").write_text("gitdir: /tmp/.git/worktrees/backend")
-            (tmp_path / ".env.worktree").write_text("WT_DB_NAME=wt_120\n")
+            cache_dir = tmp_path / ".t3-cache"
+            cache_dir.mkdir()
+            (cache_dir / ".t3-env.cache").write_text("WT_DB_NAME=wt_120\n")
 
             ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/120")
             wt = Worktree.objects.create(
@@ -3789,7 +3793,7 @@ class TestLifecycleDiagnose(TestCase):
                 result = cast("dict[str, object]", call_command("lifecycle", "diagnose", path=str(wt_dir)))
 
             assert result["worktree_dir"] is True
-            assert result["env_file"] is True
+            assert result["env_cache"] is True
             assert result["db_name"] == "wt_120"
 
     @_patch_overlays(FULL_OVERLAY)

@@ -11,7 +11,7 @@ from django_typer.management import TyperCommand, command
 from teatree.config import E2ERepo, get_data_dir, load_e2e_repos
 from teatree.core.management.commands.lifecycle import compose_project
 from teatree.core.overlay_loader import get_overlay
-from teatree.core.resolve import _find_env_worktree, _get_user_cwd, _parse_env_file, resolve_worktree
+from teatree.core.resolve import _find_env_cache, _get_user_cwd, _parse_env_file, resolve_worktree
 from teatree.utils.ports import get_service_port
 from teatree.utils.run import run_allowed_to_fail, run_checked, run_streamed
 
@@ -106,7 +106,7 @@ def _discover_frontend_port(project: str, default: int = 4200) -> int | None:
     in multi-worktree setups can be another worktree's frontend.
     """
     cwd = _get_user_cwd()
-    envfile = _find_env_worktree(cwd)
+    envfile = _find_env_cache(cwd)
     if envfile is not None:
         nx_port = _detect_nx_serve_port(str(envfile.parent))
         if nx_port is not None:
@@ -132,7 +132,7 @@ def _build_e2e_env(frontend_url: str | None = None, *, headed: bool) -> dict[str
         env["BASE_URL"] = frontend_url
 
     if "CUSTOMER" not in env:
-        envfile = _find_env_worktree(_get_user_cwd())
+        envfile = _find_env_cache(_get_user_cwd())
         if envfile is not None:
             variant = _parse_env_file(envfile).get("WT_VARIANT", "")
             if variant:
@@ -185,7 +185,7 @@ class Command(TyperCommand):
             config key.
 
         Discovers the frontend port from docker-compose (or local process)
-        and reads the tenant variant from .env.worktree.
+        and reads the tenant variant from the env cache.
 
         Extra Playwright flags (--config, --timeout, --grep, etc.) can be
         passed via --playwright-args: ``--playwright-args="--config x.ts --timeout 120000"``

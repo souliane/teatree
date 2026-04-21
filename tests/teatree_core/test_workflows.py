@@ -192,14 +192,14 @@ class TestLifecycleProvision(TestCase):
         assert wt_backend.extra.get("provisioned_by_overlay") is True
         assert wt_frontend.extra.get("provisioned_by_overlay") is True
 
-        envfile = ticket_dir / ".env.worktree"
-        assert envfile.is_file(), ".env.worktree should be generated during setup"
+        envfile = ticket_dir / ".t3-cache" / ".t3-env.cache"
+        assert envfile.is_file(), "env cache should be generated during setup"
         env_content = envfile.read_text()
         assert "WT_VARIANT=testclient" in env_content
         assert "WT_DB_NAME=wt_42_testclient" in env_content
         assert "DJANGO_SETTINGS_MODULE=" in env_content
-        assert (ticket_dir / "backend" / ".env.worktree").is_symlink()
-        assert (ticket_dir / "frontend" / ".env.worktree").is_symlink()
+        assert (ticket_dir / "backend" / ".t3-env.cache").is_symlink()
+        assert (ticket_dir / "frontend" / ".t3-env.cache").is_symlink()
 
     @override_settings(**WORKFLOW_SETTINGS)
     def test_start_transitions_to_services_up(self) -> None:
