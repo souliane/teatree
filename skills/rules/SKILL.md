@@ -167,6 +167,8 @@ The user has opted into end-to-end autonomy. The agent ships complete features w
 - Open the MR, watch the pipeline, merge when green, delete the remote branch.
 - Post the overlay-approved Slack messages (review request, release note) as part of the normal flow.
 
+**Mode is per-overlay.** The setting can live under `[overlays.<name>]` and override the global `[teatree].mode`. A user can run `auto` mode on a personal dogfooding overlay while keeping `interactive` on a client overlay — the active overlay (resolved via `T3_OVERLAY_NAME`) determines which doctrine applies. See `BLUEPRINT.md` § 11.1.1.
+
 **Quality gates still run — they just don't depend on user confirmation.** The objection auto mode answers is "stop gating on _confirmation_," not "skip quality checks."
 
 ### Always-Gated Actions (Non-Negotiable, both modes)
