@@ -202,7 +202,11 @@ graph LR
 | `rules` | Cross-cutting agent safety rules — clickable refs, temp files, sub-agent limits, UX preservation. Auto-loaded as a dependency by other skills. |
 | `setup` | Bootstrap and validate teatree for local use — prerequisites, config, skill symlinks, optional agent hooks, and Django project scaffolding |
 | `ship` | Delivery — committing, pushing, creating MR/PR, pipeline monitoring, review requests |
-| `teatree` | TeaTree agent lifecycle platform — installation, configuration, lifecycle phases, overlay concept, CLI reference, and skill loading |
+| `teatree` | TeaTree agent lifecycle platform — core architecture, lifecycle phases, CLI reference, overlay API, skill loading, and plugin hooks |
+| `teatree-batch` | Unattended batch ticket processing — work through a prioritized backlog one ticket at a time, sequentially. Create worktree, implement with TDD, self-review, push, merge, clean up. Skip tickets that need design decisions |
+| `teatree-bughunt` | Self-QA variant of batch mode — dogfood the teatree dashboard, find real bugs (missing items, state/action mismatches, broken links, stale data), file them, then fix them in worktrees |
+| `teatree-dogfood` | Dogfooding checklist for teatree CLI, dashboard, and server changes — verify fresh behavior by running the command yourself, checking HTTP 200, and exercising the full task lifecycle before declaring a change done. Also lists the known worktree/uv/git-stash pitfalls that trip up local validation. |
+| `teatree-plan` | Backlog prioritization with the GitHub Projects v2 board as single source of truth. Syncs repo issues to the board, walks the user through prioritization one question at a time, and reorders/updates board columns |
 | `test` | Testing, QA, and CI — running tests, analyzing failures, quality checks, CI interaction, test plans, and posting testing evidence |
 | `ticket` | Ticket intake and kickoff — from zero to ready-to-code |
 | `workspace` | Environment and workspace lifecycle — worktree creation, setup, DB provisioning, dev servers, cleanup |
