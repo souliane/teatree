@@ -104,6 +104,14 @@ If the changes touch architecture, add new modules, rename commands, or change e
 
 Skipping this step is the #1 cause of wasted push-fix-push cycles. The rules exist in `t3:review` and the project's code-review skill — this step ensures they are applied even when the agent goes directly from code to ship without a formal review phase.
 
+### 3c. Retrospective Before Push (Non-Negotiable)
+
+Run `/t3:retro` **before** pushing — not after merge. Retro findings often surface skill fixes, guardrail improvements, or documentation updates that belong in the same PR as the feature. Running retro after push/merge means those improvements ship as a separate follow-up PR (or, worse, get lost to context compaction before they land anywhere).
+
+Sequence: code → test → review gate → **retro** → push → MR → monitor CI.
+
+If retro produces file edits (skill fixes, reference updates, docs), commit them on the current branch before § 4 Push so they ride along with the MR.
+
 ### 4. Push
 
 - **Reconcile with the default branch first.** `git fetch origin <default> && git log <branch>..origin/<default> --oneline` — if any commits appear, merge them in (`git merge origin/<default>`) and re-run lint/tests before pushing. Opening a PR that is already BEHIND main forces the user (or you) to do a second round-trip to resolve conflicts; catch them now, while you have the context of your own change open.
@@ -198,10 +206,6 @@ When a CI failure (or any bug found during work) is **pre-existing** — not int
 4. Once merged (or while waiting), rebase the feature branch to pick up the fix.
 
 **How to detect:** `git diff origin/main...HEAD --name-only` — if the failing file was never touched by the feature branch, the bug is pre-existing.
-
-## Post-Delivery Retrospective
-
-After delivery is complete (MR created, pipeline green), run `/t3:retro` to capture any lessons learned during the session.
 
 ## Rules
 

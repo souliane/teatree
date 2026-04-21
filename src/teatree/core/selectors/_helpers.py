@@ -1,10 +1,11 @@
+import os
 from pathlib import Path
 
 from django.utils import timezone
 
 from teatree.core.models import Ticket
 
-_CLAUDE_SESSIONS_DIR = Path.home() / ".claude" / "sessions"
+_CLAUDE_SESSIONS_DIR = Path(os.environ.get("TEATREE_CLAUDE_SESSIONS_DIR") or Path.home() / ".claude" / "sessions")
 
 _SECONDS_PER_MINUTE = 60
 _MINUTES_PER_HOUR = 60

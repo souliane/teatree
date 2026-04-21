@@ -2757,10 +2757,11 @@ class TestE2eProject(TestCase):
         with (
             patch.object(e2e_mod, "resolve_worktree", return_value=None),
             patch.object(e2e_mod.subprocess, "run", return_value=mock_result),
+            pytest.raises(SystemExit) as exc_info,
         ):
-            result = cast("str", call_command("e2e", "project", docker=False))
+            call_command("e2e", "project", docker=False)
 
-        assert "failed" in result
+        assert exc_info.value.code == 1
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
@@ -2905,9 +2906,10 @@ class TestE2eExternal(TestCase):
                 patch.dict("os.environ", {"T3_PRIVATE_TESTS": str(private_dir), "T3_ORIG_CWD": str(wt_dir)}),
                 patch.object(e2e_mod, "get_service_port", return_value=4200),
                 patch.object(e2e_mod.subprocess, "run", return_value=mock_result) as mock_run,
+                pytest.raises(SystemExit) as exc_info,
             ):
-                result = cast("str", call_command("e2e", "external", headed=True))
-            assert "failed" in result
+                call_command("e2e", "external", headed=True)
+            assert exc_info.value.code == 1
             cmd = mock_run.call_args[0][0]
             assert "--headed" in cmd
             env = mock_run.call_args[1]["env"]

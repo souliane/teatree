@@ -236,11 +236,27 @@ class Command(TyperCommand):
 
         cmd = ["npx", "playwright", "test", *opts.to_args()]
         result = subprocess.run(cmd, cwd=private_tests_path, check=False, env=env)  # noqa: S603
-        return "E2E passed." if result.returncode == 0 else f"E2E failed (exit {result.returncode})."
+        if result.returncode == 0:
+            return "E2E passed."
+        self.stderr.write(f"E2E failed (exit {result.returncode}).")
+        raise SystemExit(result.returncode)
 
     @command()
-    def project(self, test_path: str = "", *, headed: bool = False, docker: bool = True) -> str:
-        """Run E2E tests from the project's own test directory."""
+    def project(
+        self,
+        test_path: str = "",
+        *,
+        headed: bool = False,
+        docker: bool = True,
+        update_snapshots: bool = False,
+    ) -> str:
+        """Run E2E tests from the project's own test directory.
+
+        Pass ``--update-snapshots`` to regenerate ``pytest-playwright-visual``
+        baselines. Always do this inside the Docker image (the default) — the
+        CI runner's Chromium renders fonts at different heights than macOS, so
+        locally-generated baselines mismatch in CI.
+        """
         try:
             worktree = resolve_worktree()
             wt_path = (worktree.extra or {}).get("worktree_path", ".") if worktree else "."
@@ -255,11 +271,18 @@ class Command(TyperCommand):
             compose_file = Path(wt_path) / "dev" / "docker-compose.yml"
             if compose_file.is_file():
                 cmd = ["docker", "compose", "-f", str(compose_file), "run", "--rm", "e2e"]
+                if update_snapshots:
+                    cmd.append("--update-snapshots")
                 result = subprocess.run(cmd, cwd=wt_path, check=False)  # noqa: S603
-                return "E2E passed." if result.returncode == 0 else f"E2E failed (exit {result.returncode})."
+                if result.returncode == 0:
+                    return "E2E passed."
+                self.stderr.write(f"E2E failed (exit {result.returncode}).")
+                raise SystemExit(result.returncode)
 
         cmd = ["uv", "run", "pytest", test_dir]
         cmd.extend(["-o", f"DJANGO_SETTINGS_MODULE={settings_module}", "--no-cov", "-p", "no:tach", "-v"])
+        if update_snapshots:
+            cmd.append("--update-snapshots")
 
         env = {**os.environ, "DJANGO_SETTINGS_MODULE": settings_module}
         if headed:
@@ -268,4 +291,7 @@ class Command(TyperCommand):
             env["CI"] = "1"
 
         result = subprocess.run(cmd, cwd=wt_path, check=False, env=env)  # noqa: S603
-        return "E2E passed." if result.returncode == 0 else f"E2E failed (exit {result.returncode})."
+        if result.returncode == 0:
+            return "E2E passed."
+        self.stderr.write(f"E2E failed (exit {result.returncode}).")
+        raise SystemExit(result.returncode)
