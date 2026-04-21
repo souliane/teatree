@@ -47,6 +47,26 @@ def _find_host_project_root() -> Path | None:
     return None
 
 
+def _find_teatree_pyproject_from_cwd() -> Path | None:
+    """Return the teatree repo rooted at cwd, if any.
+
+    Walks up from cwd looking for a ``pyproject.toml`` whose ``[project].name`` is
+    ``teatree``.  Lets dogfood worktrees override ``T3_REPO`` so that running
+    ``t3`` from a worktree reinstalls editable from the worktree, not the main clone.
+    """
+    for directory in [Path.cwd(), *Path.cwd().parents]:
+        pyproject = directory / "pyproject.toml"
+        if not pyproject.is_file():
+            continue
+        try:
+            if re.search(r'^\s*name\s*=\s*"teatree"', pyproject.read_text(), re.MULTILINE):
+                return directory
+        except OSError:
+            pass
+        return None
+    return None
+
+
 def _patch_uv_source(pyproject: Path, package: str, repo_path: Path) -> bool:
     """Rewrite the ``[tool.uv.sources]`` entry for *package* to a local editable path."""
     text = pyproject.read_text(encoding="utf-8")
@@ -248,12 +268,14 @@ class DoctorService:
 
     @staticmethod
     def find_teatree_repo() -> Path | None:
+        cwd_worktree = _find_teatree_pyproject_from_cwd()
+        if cwd_worktree:
+            return cwd_worktree
         env_path = os.environ.get("T3_REPO", "")
         if env_path:
             p = Path(env_path).expanduser()
             if (p / "pyproject.toml").is_file():
                 return p
-        # Auto-detect from package location (editable or source checkout)
         from teatree import find_project_root  # noqa: PLC0415
 
         return find_project_root()
