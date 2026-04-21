@@ -100,8 +100,16 @@ _BLOCKED_COMMANDS: list[tuple[re.Pattern[str], str]] = [
         "BLOCKED: `pip/pipenv install` — use `t3 <overlay> lifecycle setup` instead.",
     ),
     (
-        re.compile(r"\b(?:pg_restore|pg_dump|dslr)\b"),
-        "BLOCKED: `pg_restore`/`pg_dump`/`dslr` — use `t3 <overlay> db refresh` instead.",
+        re.compile(r"\b(?:pg_restore|pg_dump)\b"),
+        "BLOCKED: `pg_restore`/`pg_dump` — use `t3 <overlay> db refresh` instead.",
+    ),
+    (
+        re.compile(r"\bdslr\s+(?:restore|import|snapshot|rename|export)\b"),
+        (
+            "BLOCKED: mutating `dslr` subcommand — use "
+            "`t3 <overlay> db refresh --dslr-snapshot <name>` instead. "
+            "Only `dslr list` and `dslr delete` are allowed."
+        ),
     ),
     (
         re.compile(r"\buv\s+run\s+(?:\S+\s+)*?t3(?:\s|$)"),
@@ -582,6 +590,29 @@ def handle_session_end(data: dict) -> None:
 # ── PreToolUse: block-direct-commands ────────────────────────────────
 
 
+_REMOTE_DUMP_ENV_RE = re.compile(r"\bT3_ALLOW_REMOTE_DUMP\s*=\s*1\b")
+_REMOTE_DUMP_DENY_REASON = (
+    "BLOCKED: agents must never set `T3_ALLOW_REMOTE_DUMP=1`. "
+    "Remote pg_dump over VPN requires explicit human action in a terminal — "
+    "the agent cannot opt in. Ask the user to run the command themselves."
+)
+
+
+def _deny_match(command: str) -> str | None:
+    """Return a deny reason for *command*, or None if it should pass through."""
+    # Checked FIRST — even before t3/read-only bypass — because agents must
+    # never opt in to remote pg_dump regardless of the surrounding command.
+    if _REMOTE_DUMP_ENV_RE.search(command):
+        return _REMOTE_DUMP_DENY_REASON
+    stripped = command.lstrip()
+    if _T3_CMD_PREFIX_RE.match(stripped) or _READONLY_CMD_PREFIX_RE.match(stripped):
+        return None
+    for pattern, reason in _BLOCKED_COMMANDS:
+        if pattern.search(command):
+            return reason + " If `t3` fails, fix the CLI — do not work around it."
+    return None
+
+
 def handle_block_direct_commands(data: dict) -> bool:
     """Block Bash commands that bypass the t3 CLI.
 
@@ -589,31 +620,14 @@ def handle_block_direct_commands(data: dict) -> bool:
     """
     if data.get("tool_name") != "Bash":
         return False
-
     command = data.get("tool_input", {}).get("command", "")
     if not command:
         return False
-
-    stripped = command.lstrip()
-
-    # Never block legitimate t3 invocations.
-    if _T3_CMD_PREFIX_RE.match(stripped):
+    reason = _deny_match(command)
+    if reason is None:
         return False
-
-    # Never block read-only commands that may mention tools in arguments.
-    if _READONLY_CMD_PREFIX_RE.match(stripped):
-        return False
-
-    for pattern, reason in _BLOCKED_COMMANDS:
-        if pattern.search(command):
-            suffix = " If `t3` fails, fix the CLI — do not work around it."
-            json.dump(
-                {"permissionDecision": "deny", "permissionDecisionReason": reason + suffix},
-                sys.stdout,
-            )
-            return True
-
-    return False
+    json.dump({"permissionDecision": "deny", "permissionDecisionReason": reason}, sys.stdout)
+    return True
 
 
 # ── Router ──────────────────────────────────────────────────────────
