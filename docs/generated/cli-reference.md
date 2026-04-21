@@ -29,6 +29,7 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │ assess          Codebase health assessment.                                  │
 │ overlay         Dev-mode overlay install/uninstall.                          │
 │ infra           Teatree-wide infrastructure services.                        │
+│ teatree         Commands for the t3-teatree overlay.                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -774,6 +775,866 @@ Usage: t3 infra redis down [OPTIONS]
 Usage: t3 infra redis status [OPTIONS]
 
  Print the shared Redis container status.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+### `t3 teatree`
+
+```
+Usage: t3 teatree [OPTIONS] COMMAND [ARGS]...
+
+ Commands for the t3-teatree overlay.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ resetdb      Drop the SQLite database and re-run all migrations.             │
+│ worker       Start background task workers.                                  │
+│ full-status  Show ticket, worktree, and session state summary.               │
+│ ship         Code to MR — create merge request for the ticket.               │
+│ daily        Daily followup — sync MRs, check gates, remind reviewers.       │
+│ agent        Launch Claude Code with overlay context and auto-detected       │
+│              skills.                                                         │
+│ config       Overlay configuration.                                          │
+│ lifecycle    Worktree lifecycle.                                             │
+│ workspace    Workspace management.                                           │
+│ run          Run services.                                                   │
+│ e2e          E2E test commands.                                              │
+│ db           Database operations.                                            │
+│ pr           Pull request helpers.                                           │
+│ tasks        Async task queue.                                               │
+│ followup     Follow-up snapshots.                                            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 teatree resetdb`
+
+```
+Usage: t3 teatree resetdb [OPTIONS]
+
+ Drop the SQLite database and re-run all migrations.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 teatree worker`
+
+```
+Usage: t3 teatree worker [OPTIONS]
+
+ Start background task workers.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --count           INTEGER  Number of worker processes [default: 3]           │
+│ --interval        FLOAT    Polling interval in seconds [default: 1.0]        │
+│ --help                     Show this message and exit.                       │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 teatree full-status`
+
+```
+Usage: t3 teatree full-status [OPTIONS]
+
+ Show ticket, worktree, and session state summary.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 teatree ship`
+
+```
+Usage: t3 teatree ship [OPTIONS] TICKET_ID
+
+ Code to MR — create merge request for the ticket.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    ticket_id      TEXT  Ticket ID [required]                               │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --title        TEXT  MR title                                                │
+│ --help               Show this message and exit.                             │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 teatree daily`
+
+```
+Usage: t3 teatree daily [OPTIONS]
+
+ Daily followup — sync MRs, check gates, remind reviewers.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 teatree agent`
+
+```
+Usage: t3 teatree agent [OPTIONS] [TASK]
+
+ Launch Claude Code with overlay context and auto-detected skills.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│   task      [TASK]  What to work on                                          │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --phase        TEXT  Explicit TeaTree phase override.                        │
+│ --skill        TEXT  Explicit skill override. Repeat to load multiple        │
+│                      skills.                                                 │
+│ --help               Show this message and exit.                             │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 teatree config`
+
+```
+Usage: t3 teatree config [OPTIONS] COMMAND [ARGS]...
+
+ Overlay configuration.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ enable-autostart   Install a system daemon to start the dashboard on login.  │
+│ disable-autostart  Remove the dashboard autostart daemon.                    │
+│ logs               Show dashboard daemon log output.                         │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree config enable-autostart`
+
+```
+Usage: t3 teatree config enable-autostart [OPTIONS]
+
+ Install a system daemon to start the dashboard on login.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --host        TEXT     Host to bind to [default: 127.0.0.1]                  │
+│ --port        INTEGER  Port to serve on [default: 8000]                      │
+│ --help                 Show this message and exit.                           │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree config disable-autostart`
+
+```
+Usage: t3 teatree config disable-autostart [OPTIONS]
+
+ Remove the dashboard autostart daemon.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree config logs`
+
+```
+Usage: t3 teatree config logs [OPTIONS]
+
+ Show dashboard daemon log output.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --lines   -n                 INTEGER  Number of lines to show [default: 50]  │
+│ --follow      --no-follow             Follow log output [default: no-follow] │
+│ --stderr      --no-stderr             Show stderr log instead of stdout      │
+│                                       [default: no-stderr]                   │
+│ --help                                Show this message and exit.            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 teatree lifecycle`
+
+```
+Usage: t3 teatree lifecycle [OPTIONS] COMMAND [ARGS]...
+
+ Worktree lifecycle.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ setup     Create and provision a worktree.                                   │
+│ start     Provision (if needed) and start all services.                      │
+│ status    Return worktree state information.                                 │
+│ teardown  Tear down a worktree.                                              │
+│ clean     Teardown worktree — stop services, drop DB, clean state.           │
+│ diagram   Print the lifecycle state diagram as Mermaid.                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree lifecycle setup`
+
+```
+Usage: t3 teatree lifecycle setup [OPTIONS]
+
+ Provision a worktree (DB name, env file, overlay steps). No port allocation.
+
+ Idempotent — safe to re-run. Auto-retries DB import when the DB
+ doesn't exist, regardless of previous failure count.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --path                               TEXT  Worktree path (auto-detects from  │
+│                                            PWD if empty).                    │
+│ --variant                            TEXT  Tenant variant. Updates ticket if │
+│                                            provided.                         │
+│ --overlay                            TEXT  Overlay name (auto-detects if     │
+│                                            empty).                           │
+│ --slow-import    --no-slow-import          Allow slow DB fallbacks           │
+│                                            (pg_restore, remote dump).        │
+│                                            DSLR-only by default.             │
+│                                            [default: no-slow-import]         │
+│ --verbose        --no-verbose              Show step stdout/stderr.          │
+│                                            [default: verbose]                │
+│ --no-timeout     --no-no-timeout           Disable operation timeouts.       │
+│                                            [default: no-no-timeout]          │
+│ --help                                     Show this message and exit.       │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree lifecycle start`
+
+```
+Usage: t3 teatree lifecycle start [OPTIONS]
+
+ Provision (if needed) and start all services for the ticket.
+
+ Runs setup for all worktrees in the ticket, then starts docker-compose
+ services for each. Allocates free host ports at runtime.
+ Safe to re-run — stops previous containers first.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --path                             TEXT  Worktree path (auto-detects from    │
+│                                          PWD if empty).                      │
+│ --variant                          TEXT  Tenant variant (passed to setup if  │
+│                                          needed).                            │
+│ --overlay                          TEXT  Overlay name (auto-detects if       │
+│                                          empty).                             │
+│ --verbose       --no-verbose             Show step stdout/stderr.            │
+│                                          [default: verbose]                  │
+│ --no-timeout    --no-no-timeout          Disable operation timeouts.         │
+│                                          [default: no-no-timeout]            │
+│ --help                                   Show this message and exit.         │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree lifecycle status`
+
+```
+Usage: t3 teatree lifecycle status [OPTIONS]
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --path        TEXT  Worktree path (auto-detects from PWD if empty).          │
+│ --help              Show this message and exit.                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree lifecycle teardown`
+
+```
+Usage: t3 teatree lifecycle teardown [OPTIONS]
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --path        TEXT  Worktree path (auto-detects from PWD if empty).          │
+│ --help              Show this message and exit.                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree lifecycle clean`
+
+```
+Usage: t3 teatree lifecycle clean [OPTIONS]
+
+ Teardown worktree — stop containers, drop DB, clean state.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --path        TEXT  Worktree path (auto-detects from PWD if empty).          │
+│ --help              Show this message and exit.                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree lifecycle diagram`
+
+```
+Usage: t3 teatree lifecycle diagram [OPTIONS]
+
+ Print a state diagram as Mermaid. Models: worktree, ticket, task.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --model         TEXT     [default: worktree]                                 │
+│ --ticket        INTEGER                                                      │
+│ --help                   Show this message and exit.                         │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 teatree workspace`
+
+```
+Usage: t3 teatree workspace [OPTIONS] COMMAND [ARGS]...
+
+ Workspace management.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ ticket     Create a ticket with worktree entries for each repo.              │
+│ finalize   Squash worktree commits and rebase on the default branch.         │
+│ clean-all  Prune worktrees whose branches have been merged or deleted.       │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree workspace ticket`
+
+```
+Usage: t3 teatree workspace ticket [OPTIONS] ISSUE_URL
+
+ Create or update a ticket with worktree entries for each affected repo.
+
+ Idempotent: safe to re-run after partial failures. Existing worktrees
+ are skipped, missing repos are added, and failed entries are cleaned up.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    issue_url      TEXT  [required]                                         │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --variant            TEXT                                                    │
+│ --repos              TEXT                                                    │
+│ --description        TEXT                                                    │
+│ --help                     Show this message and exit.                       │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree workspace finalize`
+
+```
+Usage: t3 teatree workspace finalize [OPTIONS] TICKET_ID
+
+ Squash worktree commits into one, then rebase on the default branch.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    ticket_id      INTEGER  [required]                                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --message        TEXT                                                        │
+│ --help                 Show this message and exit.                           │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree workspace clean-all`
+
+```
+Usage: t3 teatree workspace clean-all [OPTIONS]
+
+ Prune merged worktrees, stale branches, orphaned stashes, orphan databases,
+ and old DSLR snapshots.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --keep-dslr        INTEGER  Number of DSLR snapshots to keep per tenant.     │
+│                             [default: 1]                                     │
+│ --help                      Show this message and exit.                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 teatree run`
+
+```
+Usage: t3 teatree run [OPTIONS] COMMAND [ARGS]...
+
+ Run services.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ verify          Verify worktree state and return URLs.                       │
+│ services        Return configured run commands.                              │
+│ backend         Start the backend dev server.                                │
+│ frontend        Start the frontend dev server.                               │
+│ build-frontend  Build the frontend for production/testing.                   │
+│ tests           Run the project test suite.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree run verify`
+
+```
+Usage: t3 teatree run verify [OPTIONS]
+
+ Check that dev services respond via HTTP, then advance FSM.
+
+ Discovers ports from running docker-compose containers via
+ ``docker compose port``.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --path        TEXT  Worktree path (auto-detects from PWD if empty).          │
+│ --help              Show this message and exit.                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree run services`
+
+```
+Usage: t3 teatree run services [OPTIONS]
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --path        TEXT  Worktree path (auto-detects from PWD if empty).          │
+│ --help              Show this message and exit.                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree run backend`
+
+```
+Usage: t3 teatree run backend [OPTIONS]
+
+ Start the backend via docker-compose.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --path        TEXT  Worktree path (auto-detects from PWD if empty).          │
+│ --help              Show this message and exit.                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree run frontend`
+
+```
+Usage: t3 teatree run frontend [OPTIONS]
+
+ Start the frontend dev server on the host.
+
+ Angular's nx serve needs 6GB+ RAM which exceeds typical Docker memory
+ limits. The frontend always runs on the host; backend/redis stay in Docker.
+ In CI, use build-frontend + nginx instead (see docker-compose.e2e.yml).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --path        TEXT  Worktree path (auto-detects from PWD if empty).          │
+│ --help              Show this message and exit.                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree run build-frontend`
+
+```
+Usage: t3 teatree run build-frontend [OPTIONS]
+
+ Build the frontend app for production/testing.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --path        TEXT  Worktree path (auto-detects from PWD if empty).          │
+│ --help              Show this message and exit.                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree run tests`
+
+```
+Usage: t3 teatree run tests [OPTIONS]
+
+ Run the project test suite.
+
+ Extra arguments after ``--`` are appended to the test command
+ (e.g. ``t3 <overlay> run tests -- path/to/test.py -k name``).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --path        TEXT  Worktree path (auto-detects from PWD if empty).          │
+│ --help              Show this message and exit.                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 teatree e2e`
+
+```
+Usage: t3 teatree e2e [OPTIONS] COMMAND [ARGS]...
+
+ E2E test commands.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ trigger-ci  Trigger E2E tests on a remote CI pipeline.                       │
+│ external    Run Playwright tests from the external test repo                 │
+│             (T3_PRIVATE_TESTS).                                              │
+│ project     Run E2E tests from the project's own test directory.             │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree e2e trigger-ci`
+
+```
+Usage: t3 teatree e2e trigger-ci [OPTIONS]
+
+ Trigger E2E tests on a remote CI pipeline.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --branch        TEXT                                                         │
+│ --help                Show this message and exit.                            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree e2e external`
+
+```
+Usage: t3 teatree e2e external [OPTIONS]
+
+ Run Playwright tests from the external test repo (T3_PRIVATE_TESTS or --repo).
+
+ Two sources for the Playwright working directory:
+
+ - ``--repo <name>``: clone/update the named repo from ```` in
+     ``~/.teatree.toml`` and use its ``e2e_dir`` subdirectory.
+ - Default: resolve from ``T3_PRIVATE_TESTS`` env var or ``.private_tests``
+     config key.
+
+ Discovers the frontend port from docker-compose (or local process)
+ and reads the tenant variant from .env.worktree.
+
+ Extra Playwright flags (--config, --timeout, --grep, etc.) can be
+ passed via --playwright-args: ``--playwright-args="--config x.ts --timeout
+ 120000"``
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --test-path                                    TEXT                          │
+│ --repo                                         TEXT                          │
+│ --headed              --no-headed                    [default: no-headed]    │
+│ --update-snapshots    --no-update-snapshots          [default:               │
+│                                                      no-update-snapshots]    │
+│ --playwright-args                              TEXT                          │
+│ --help                                               Show this message and   │
+│                                                      exit.                   │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree e2e project`
+
+```
+Usage: t3 teatree e2e project [OPTIONS]
+
+ Run E2E tests from the project's own test directory.
+
+ Pass ``--update-snapshots`` to regenerate ``pytest-playwright-visual``
+ baselines. Always do this inside the Docker image (the default) — the
+ CI runner's Chromium renders fonts at different heights than macOS, so
+ locally-generated baselines mismatch in CI.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --test-path                                    TEXT                          │
+│ --headed              --no-headed                    [default: no-headed]    │
+│ --docker              --no-docker                    [default: docker]       │
+│ --update-snapshots    --no-update-snapshots          [default:               │
+│                                                      no-update-snapshots]    │
+│ --help                                               Show this message and   │
+│                                                      exit.                   │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 teatree db`
+
+```
+Usage: t3 teatree db [OPTIONS] COMMAND [ARGS]...
+
+ Database operations.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ refresh          Re-import the worktree database from dump/DSLR.             │
+│ restore-ci       Restore database from the latest CI dump.                   │
+│ reset-passwords  Reset all user passwords to a known dev value.              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree db refresh`
+
+```
+Usage: t3 teatree db refresh [OPTIONS]
+
+ Re-import the worktree database from DSLR snapshot or dump.
+
+ Without --force: tries DSLR restore first (fast), then full reimport.
+ With --force: drops existing DB first, then reimports from scratch.
+ Use --dslr-snapshot to force a specific snapshot (skip auto-discovery).
+ Use --dump-path to restore from a specific dump file.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --path                           TEXT  Worktree path (auto-detects from PWD  │
+│                                        if empty).                            │
+│ --dslr-snapshot                  TEXT  Force a specific DSLR snapshot name.  │
+│ --dump-path                      TEXT  Path to a .pgsql dump file to restore │
+│                                        from.                                 │
+│ --force            --no-force          [default: no-force]                   │
+│ --help                                 Show this message and exit.           │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree db restore-ci`
+
+```
+Usage: t3 teatree db restore-ci [OPTIONS]
+
+ Restore the worktree database from the latest CI dump.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --path        TEXT  Worktree path (auto-detects from PWD if empty).          │
+│ --help              Show this message and exit.                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree db reset-passwords`
+
+```
+Usage: t3 teatree db reset-passwords [OPTIONS]
+
+ Reset all user passwords to a known dev value.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --path        TEXT  Worktree path (auto-detects from PWD if empty).          │
+│ --help              Show this message and exit.                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 teatree pr`
+
+```
+Usage: t3 teatree pr [OPTIONS] COMMAND [ARGS]...
+
+ Pull request helpers.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ create         Create a merge request for the ticket's branch.               │
+│ check-gates    Check whether session gates allow a phase transition.         │
+│ fetch-issue    Fetch issue details from the configured tracker.              │
+│ detect-tenant  Detect the current tenant variant from the overlay.           │
+│ post-evidence  Post test evidence as an MR comment.                          │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree pr create`
+
+```
+Usage: t3 teatree pr create [OPTIONS] TICKET_ID
+
+ Create a merge request for the ticket's branch.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    ticket_id      INTEGER  [required]                                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --repo                                       TEXT                            │
+│ --title                                      TEXT                            │
+│ --description                                TEXT                            │
+│ --dry-run            --no-dry-run                  [default: no-dry-run]     │
+│ --skip-validation    --no-skip-validation          [default:                 │
+│                                                    no-skip-validation]       │
+│ --skip-visual-qa                             TEXT                            │
+│ --help                                             Show this message and     │
+│                                                    exit.                     │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree pr check-gates`
+
+```
+Usage: t3 teatree pr check-gates [OPTIONS] TICKET_ID
+
+ Check whether session gates allow a phase transition.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    ticket_id      INTEGER  [required]                                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --target-phase        TEXT  [default: shipping]                              │
+│ --help                      Show this message and exit.                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree pr fetch-issue`
+
+```
+Usage: t3 teatree pr fetch-issue [OPTIONS] ISSUE_URL
+
+ Fetch issue details with embedded image URLs and external links.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    issue_url      TEXT  [required]                                         │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree pr detect-tenant`
+
+```
+Usage: t3 teatree pr detect-tenant [OPTIONS]
+
+ Detect the current tenant variant from the overlay.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree pr post-evidence`
+
+```
+Usage: t3 teatree pr post-evidence [OPTIONS] MR_IID
+
+ Post test evidence as an MR comment. Uploads files and updates existing notes.
+
+ Files (screenshots, videos) are uploaded and embedded as ``!(url)`` in the
+ body.
+ If an existing note contains ``## Test Plan``, it is updated instead of
+ creating a new one.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    mr_iid      INTEGER  [required]                                         │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --repo         TEXT                                                          │
+│ --title        TEXT  [default: Test Plan]                                    │
+│ --body         TEXT                                                          │
+│ --files        TEXT                                                          │
+│ --help               Show this message and exit.                             │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 teatree tasks`
+
+```
+Usage: t3 teatree tasks [OPTIONS] COMMAND [ARGS]...
+
+ Async task queue.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ claim                 Claim the next available task.                         │
+│ cancel                Cancel a task by ID.                                   │
+│ list                  List tasks with optional filters.                      │
+│ work-next-sdk         Claim and execute an headless task.                    │
+│ work-next-user-input  Claim and execute a user input task.                   │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree tasks claim`
+
+```
+Usage: t3 teatree tasks claim [OPTIONS]
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --execution-target        TEXT  [default: headless]                          │
+│ --claimed-by              TEXT  [default: worker]                            │
+│ --help                          Show this message and exit.                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree tasks cancel`
+
+```
+Usage: t3 teatree tasks cancel [OPTIONS] TASK_ID
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    task_id      INTEGER  [required]                                        │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --confirm    --no-confirm      [default: no-confirm]                         │
+│ --help                         Show this message and exit.                   │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree tasks list`
+
+```
+Usage: t3 teatree tasks list [OPTIONS]
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --status                  TEXT  Filter by status                             │
+│ --execution-target        TEXT  Filter by execution target                   │
+│ --help                          Show this message and exit.                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree tasks work-next-sdk`
+
+```
+Usage: t3 teatree tasks work-next-sdk [OPTIONS]
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --claimed-by        TEXT  [default: worker]                                  │
+│ --help                    Show this message and exit.                        │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree tasks work-next-user-input`
+
+```
+Usage: t3 teatree tasks work-next-user-input [OPTIONS]
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --claimed-by        TEXT  [default: worker]                                  │
+│ --help                    Show this message and exit.                        │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 teatree followup`
+
+```
+Usage: t3 teatree followup [OPTIONS] COMMAND [ARGS]...
+
+ Follow-up snapshots.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ refresh  Return counts of tickets and tasks.                                 │
+│ sync     Synchronize followup data from MRs.                                 │
+│ remind   Return list of pending user input tasks.                            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree followup refresh`
+
+```
+Usage: t3 teatree followup refresh [OPTIONS]
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree followup sync`
+
+```
+Usage: t3 teatree followup sync [OPTIONS]
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree followup remind`
+
+```
+Usage: t3 teatree followup remind [OPTIONS]
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │

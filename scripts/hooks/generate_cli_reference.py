@@ -6,6 +6,7 @@ Walks the Typer app in-process (no subprocess spawning) and writes
 See: souliane/teatree#67
 """
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -19,9 +20,15 @@ def main(argv: list[str] | None = None) -> int:
 
     old = output.read_text(encoding="utf-8") if output.is_file() else ""
 
-    from teatree.cli import app
+    os.environ.setdefault("DJANGO_SETTINGS_MODULE", "teatree.settings")
+    import django
+
+    django.setup()
+
+    from teatree.cli import app, register_overlay_commands
     from teatree.cli_reference import build_cli_reference_from_app
 
+    register_overlay_commands(allowlist={"t3-teatree"})
     markdown = build_cli_reference_from_app(app)
     markdown = "\n".join(line.rstrip() for line in markdown.splitlines()).rstrip("\n") + "\n"
 

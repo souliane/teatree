@@ -12,6 +12,17 @@ import typer
 
 logger = logging.getLogger(__name__)
 
+OVERLAY_PROXY_COMMANDS: dict[str, tuple[str, str]] = {}
+"""Maps proxy callback ``__name__`` -> ``(django_group, django_sub)``.
+
+Populated in :meth:`OverlayAppBuilder._bridge_subcommand`.  Consumed by the
+CLI reference generator to swap the proxy's stub help for the underlying
+``TyperCommand``'s real click tree.  The proxy function's ``__name__`` is
+reassigned per-leaf (``_run_{group}_{sub}``); object identity is not stable
+across Typer's ``get_command`` conversion.
+"""
+
+
 DJANGO_GROUPS: dict[str, tuple[str, list[tuple[str, str]]]] = {
     "lifecycle": (
         "Worktree lifecycle.",
@@ -430,6 +441,7 @@ class OverlayAppBuilder:
             managepy(project_path, group_name, sub_name, *ctx.args, overlay_name=overlay_name)
 
         _run.__name__ = f"_run_{group_name}_{sub_name.replace('-', '_')}"
+        OVERLAY_PROXY_COMMANDS[_run.__name__] = (group_name, sub_name)
 
     def _register_overlay_tools(self) -> None:
         """Register tool commands from ``hook-config/tool-commands.json`` files."""

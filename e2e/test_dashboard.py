@@ -6,7 +6,13 @@ Run with:
 Golden screenshots live in ``e2e/snapshots/test_dashboard/``.
 To update them after intentional UI changes::
 
-    uv run pytest e2e/ --ds e2e.settings --no-cov -v --update-snapshots
+    t3 teatree e2e project --update-snapshots
+
+Baselines are only stable when regenerated **inside** the Docker image
+``t3 teatree e2e project`` uses — macOS Chromium renders fonts at slightly
+different heights than the CI Linux runner (see [#275](https://github.com/souliane/teatree/issues/275), credits @m13v).
+Never regenerate snapshots with plain ``uv run pytest`` on a developer
+laptop — the resulting PNGs will always mismatch CI.
 """
 
 import re
