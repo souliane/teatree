@@ -93,7 +93,7 @@ Ticket state management.
 
 | Subcommand | Arguments | Returns | Description |
 |------------|-----------|---------|-------------|
-| `transition` | `ticket_id`, `transition_name` | dict | Transitions a ticket to a new state. Allowed transitions: `scope`, `start`, `code`, `test`, `review`, `ship`, `request_review`, `mark_merged`, `mark_delivered`, `rework`. |
+| `transition` | `ticket_id`, `transition_name` | dict | Transitions a ticket to a new state. Allowed transitions: `scope`, `start`, `code`, `test`, `review`, `ship`, `request_review`, `mark_merged`, `retrospect`, `mark_delivered`, `rework`. |
 | `list` | `--state`, `--overlay` | list of dicts | Lists tickets, optionally filtered by state and/or overlay |
 
 ## `e2e`

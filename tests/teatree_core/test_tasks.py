@@ -5,7 +5,12 @@ from django.test import TestCase, override_settings
 
 import teatree.core.overlay_loader as overlay_loader_mod
 from teatree.core.models import Session, Task, TaskAttempt, Ticket
-from teatree.core.tasks import drain_headless_queue, refresh_followup_snapshot, sync_followup
+from teatree.core.tasks import (
+    drain_headless_queue,
+    execute_retrospect,
+    refresh_followup_snapshot,
+    sync_followup,
+)
 from tests.teatree_core.conftest import CommandOverlay
 
 IMMEDIATE_BACKEND = {
@@ -90,6 +95,43 @@ class TestDrainHeadlessQueue(TestCase):
             result = drain_headless_queue.enqueue()
 
         assert result.return_value == {"enqueued": []}
+
+
+class TestExecuteRetrospect(TestCase):
+    @staticmethod
+    def _ticket_in_merged() -> Ticket:
+        ticket = Ticket.objects.create(overlay="test")
+        ticket.state = Ticket.State.MERGED
+        ticket.save(update_fields=["state"])
+        return ticket
+
+    @override_settings(**IMMEDIATE_BACKEND)
+    def test_advances_merged_ticket_to_delivered(self) -> None:
+        ticket = self._ticket_in_merged()
+        ticket.state = Ticket.State.RETROSPECTED
+        ticket.save(update_fields=["state"])
+
+        result = execute_retrospect.enqueue(ticket.pk)
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.DELIVERED
+        assert ticket.extra.get("retro_scheduled") is True
+        assert result.return_value == {"ticket_id": ticket.pk, "ok": True, "detail": "retro-scheduled"}
+
+    @override_settings(**IMMEDIATE_BACKEND)
+    def test_skips_when_state_does_not_match(self) -> None:
+        """At-least-once delivery: redelivered jobs must be no-ops."""
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.DELIVERED)
+
+        result = execute_retrospect.enqueue(ticket.pk)
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.DELIVERED
+        assert result.return_value == {
+            "ticket_id": ticket.pk,
+            "skipped": True,
+            "state": "delivered",
+        }
 
 
 class TestExecuteHeadlessTask(TestCase):
