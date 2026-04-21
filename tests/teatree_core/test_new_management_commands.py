@@ -952,6 +952,44 @@ class TestWorkspaceCleanAll(TestCase):
             assert Worktree.objects.filter(branch="ac-frontend-360-ticket").count() == 1
 
 
+class TestWorkspaceCleanMerged(TestCase):
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_no_merged_tickets_returns_placeholder(self) -> None:
+        cleaned = cast("list[str]", call_command("workspace", "clean-merged"))
+        assert cleaned == ["No merged tickets have lingering worktrees."]
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_cleans_worktrees_of_merged_tickets(self) -> None:
+        merged = Ticket.objects.create(
+            overlay="test", issue_url="https://example.com/issues/70", state=Ticket.State.MERGED
+        )
+        Worktree.objects.create(overlay="test", ticket=merged, repo_path="repo", branch="ac-repo-70")
+        other = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/71")
+        Worktree.objects.create(overlay="test", ticket=other, repo_path="repo2", branch="ac-repo2-71")
+
+        with patch.object(workspace_mod, "cleanup_worktree", return_value="Cleaned: repo (ac-repo-70)") as mock_cleanup:
+            cleaned = cast("list[str]", call_command("workspace", "clean-merged"))
+
+        assert cleaned == ["Cleaned: repo (ac-repo-70)"]
+        assert mock_cleanup.call_count == 1
+        assert mock_cleanup.call_args.kwargs.get("force") is True
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_surfaces_cleanup_failures(self) -> None:
+        merged = Ticket.objects.create(
+            overlay="test", issue_url="https://example.com/issues/72", state=Ticket.State.MERGED
+        )
+        Worktree.objects.create(overlay="test", ticket=merged, repo_path="repo", branch="ac-repo-72")
+
+        with patch.object(workspace_mod, "cleanup_worktree", side_effect=RuntimeError("docker down failed")):
+            cleaned = cast("list[str]", call_command("workspace", "clean-merged"))
+
+        assert any("FAILED" in c and "docker down failed" in c for c in cleaned)
+
+
 def _subprocess_side_effect(gh_stdout: str, glab_stdout: str):
     """Return a side_effect function that dispatches mock stdout based on the CLI command."""
 

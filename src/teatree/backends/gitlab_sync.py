@@ -354,9 +354,9 @@ class GitLabSyncBackend(SyncBackend):
             try:
                 cleanup_worktree(worktree)
                 result.worktrees_cleaned += 1
-            except Exception:
+            except Exception as exc:
                 logger.exception("Failed to clean worktree %s", worktree.repo_path)
-                result.errors.append(f"Worktree cleanup failed: {worktree.repo_path}")
+                result.errors.append(f"Worktree cleanup failed for {worktree.repo_path} ({worktree.branch}): {exc}")
 
     @classmethod
     def _fetch_assigned_issues(
