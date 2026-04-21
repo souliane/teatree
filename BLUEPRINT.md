@@ -62,6 +62,7 @@ src/teatree/
     overlay.py          # OverlayBase ABC (see §6)
     overlay_loader.py   # Settings-driven overlay instantiation
     sync.py             # Shared types, SyncBackend ABC, orchestrator (sync_followup)
+    cleanup.py          # Shared worktree cleanup + squash-merge-aware branch classifier (classify_branch_commits)
     tasks.py            # django-tasks integration
     docgen.py           # Overlay/skill documentation generation
     urls.py             # URL routing
@@ -99,7 +100,7 @@ src/teatree/
     protocols.py        # Protocol classes (see §7)
     loader.py           # Settings-driven backend loader with lru_cache
     github.py           # GitHub API client
-    github_sync.py      # GitHubSyncBackend — Projects v2 board + reviewer PR sync
+    github_sync.py      # GitHubSyncBackend — Projects v2 board + reviewer PR sync + auto-cleanup on board "Done"
     gitlab.py           # GitLab API client (httpx)
     gitlab_ci.py        # GitLab CI pipeline operations
     gitlab_sync.py      # GitLabSyncBackend — MR upsert, assigned-issue upsert, labels, merged MR cleanup, Slack review permalinks
