@@ -1,6 +1,6 @@
 name: souliane/teatree
 version: 0.0.1
-description: Multi-repo worktree lifecycle manager for AI-assisted development
+description: Personal code factory for multi-repo projects
 homepage: https://github.com/souliane/teatree
 license: MIT
 keywords:

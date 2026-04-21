@@ -9,9 +9,11 @@
   <a href="https://github.com/souliane/teatree/blob/main/LICENSE"><img src="https://img.shields.io/github/license/souliane/teatree" alt="License"></a>
 </p>
 
-Multi-repo worktree lifecycle manager for AI-assisted development.
+Personal code factory for multi-repo projects.
 
-Teatree coordinates development work across multiple repositories: creating worktrees, provisioning databases, allocating ports, running services, syncing with code hosts, and tracking tickets through their entire lifecycle. It's a Django project — overlays are lightweight Python packages that plug in project-specific behaviour via entry points.
+Teatree turns a ticket URL into a merged pull request. It creates synchronized worktrees across every repo the ticket touches, provisions isolated databases and ports, routes AI agents through code → test → review → ship phases, and tracks each ticket through a state machine until delivery. If your work lives in a single repo, use a simpler tool — teatree is built for projects where one ticket means changes in several repos, each needing its own environment.
+
+Under the hood it's a Django project with a plugin system (overlays) that adapts it to your repos, CI, and services.
 
 ```mermaid
 graph TB
@@ -44,6 +46,54 @@ graph TB
   skills -->|"delegates to"| lifecycle & workspace & db & run & pr
   hooks -->|"enforces"| skills
 ```
+
+## Core concepts
+
+Teatree coordinates work through **four state machines** — each transition is a typed code path with tests, not a prompt the model might skip.
+
+**Ticket** — tracks a unit of work from intake to delivery. The state flow mirrors the [Skills diagram](#skills) below: each phase (ticket → code → test → review → ship) completes a corresponding ticket state (scoped → coded → tested → reviewed → shipped), plus terminal states `merged` and `delivered`.
+
+**Worktree** — one repo checkout inside a ticket's workspace.
+
+```mermaid
+stateDiagram-v2
+  [*] --> created
+  created --> provisioned: provision
+  provisioned --> services_up: start
+  services_up --> ready: verify
+  ready --> provisioned: db_refresh
+  services_up --> provisioned: db_refresh
+  ready --> created: teardown
+  services_up --> created: teardown
+  provisioned --> created: teardown
+```
+
+**Task** — claimable work unit with lease and heartbeat.
+
+```mermaid
+stateDiagram-v2
+  [*] --> pending
+  pending --> claimed: claim
+  claimed --> completed: success
+  claimed --> failed: error
+  claimed --> pending: lease_expired
+```
+
+**MergeRequest** — tracks delivery state on the code host.
+
+```mermaid
+stateDiagram-v2
+  [*] --> open
+  open --> review_requested: request_review
+  review_requested --> approved: approve
+  approved --> merged: merge
+```
+
+Agents read skills to do the *creative* work (writing code, reviewing a diff, choosing how to test); the CLI owns the *mechanical* work (branching, ports, DB refresh, pipeline waits, MR validation). Three interfaces sit on top:
+
+- **CLI** (`t3 ...`) — the source of truth. Everything else is a view on top.
+- **Dashboard** — web UI for tickets, MRs, pipelines, and agent sessions.
+- **Claude plugin** — skills and hooks that teach an agent how to drive the CLI.
 
 ## Three Tiers
 
@@ -158,24 +208,32 @@ graph LR
 | `workspace` | Environment and workspace lifecycle — worktree creation, setup, DB provisioning, dev servers, cleanup |
 <!-- END SKILLS -->
 
-### Skill Dependencies
+### Extended `SKILL.md` frontmatter
 
-Skills declare hard dependencies (`requires:`) and optional companion skills (`companions:`) in their YAML frontmatter:
+Teatree adds a small schema on top of Claude Code's standard `SKILL.md` frontmatter so skills can declare *when* they should load and *what* they need alongside them:
 
 ```yaml
 ---
-name: code
-requires:
-  - workspace
-companions:
-  - test-driven-development
-  - verification-before-completion
+name: ship
+triggers:
+  priority: 20
+  keywords: ['\b(commit|push|ship)\b']
+  exclude: '\breview\b'
+  end_of_session: true
+requires: [rules, platforms]
+companions: [verification-before-completion]
+search_hints: [deliver, merge request, PR]
 ---
 ```
 
-The `UserPromptSubmit` hook resolves these automatically — when it suggests loading `code`, it also loads `workspace` (required) and `test-driven-development` + `verification-before-completion` (companions, if installed). Missing companions produce a warning; missing requirements produce an error.
+- `triggers` — deterministic auto-load rules (keywords, URLs, priority, exclude, end-of-session phrases)
+- `requires` — hard dependencies, resolved transitively with cycle detection
+- `companions` — optional third-party skills (e.g. from [obra/superpowers](https://github.com/obra/superpowers), installed via [APM](https://github.com/microsoft/apm), never modified by teatree)
+- `search_hints` — keyword synonyms used to route headless tasks to the right skill
 
-Companion skills come from third-party packages like [obra/superpowers](https://github.com/obra/superpowers) and are installed via [APM](https://github.com/microsoft/apm). Teatree skills are never modified — the `companions:` field lives in teatree's frontmatter, not in the companion's.
+The `UserPromptSubmit` hook matches the prompt against a cached trigger index and injects `LOAD THESE SKILLS NOW: ...`. `PreToolUse` blocks edits until the injected skills are loaded. Matching is regex, not the model — skill loading is no longer the agent's decision.
+
+See [docs/skill-triggers.md](docs/skill-triggers.md) for the full schema and [docs/claude-code-internals.md](docs/claude-code-internals.md) for how the hooks wire into Claude Code.
 
 ## Project Overlay
 
@@ -312,7 +370,7 @@ Because skills reference the CLI and the overlay API. Keeping them together mean
 
 **Why "teatree"?**
 
-**TEA**'s **E**xtensible **A**rchitecture for work**tree** management. Also: teatree oil cuts through grime, and that's what this does to multi-repo worktree friction.
+**TEA**'s **E**xtensible **A**rchitecture for work**tree** management.
 
 ## License
 
