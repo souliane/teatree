@@ -658,7 +658,11 @@ Each registered overlay gets a subcommand group (e.g., `t3 acme`). Commands dele
 
 `lifecycle`, `workspace`, `run`, `db`, `pr`, `tasks`, `followup` — see §8.1 for details.
 
-### 8.4 Overlay Dev Loop (`t3 overlay install|uninstall|status`)
+### 8.4 Overlay Contract Check (`t3 overlay contract-check`)
+
+`contract-check --compose <paths>` reads every `${VAR}` reference in the listed docker-compose files and fails if any reference is neither defaulted (`${VAR:-x}`, `${VAR:?x}`) nor declared by core (`_declared_core_keys()`) or the active overlay (`OverlayBase.declared_env_keys()`). Stops the "compose references a missing key, substitutes empty string, something misbehaves quietly" class of bug at CI time. Overlay repos wire this into their own prek hook. The underlying utility is `teatree.utils.compose_contract` — same logic lives in `tests/test_env_contract.py` for the core repo's own compose files.
+
+### 8.5 Overlay Dev Loop (`t3 overlay install|uninstall|status`)
 
 Ships alongside the three-tier split above. Purpose: in a teatree feature worktree (never the main clone), editable-install a sibling overlay checkout so `t3 dashboard` and agents immediately see unreleased teatree code plus the overlay that exercises it.
 
