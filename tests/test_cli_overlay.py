@@ -20,7 +20,7 @@ import teatree.cli.overlay as cli_overlay_mod
 import teatree.cli.review as cli_review_mod
 import teatree.config as config_mod
 import teatree.core.overlay_loader as overlay_loader_mod
-from teatree.cli import _register_overlay_commands
+from teatree.cli import register_overlay_commands
 from teatree.cli.overlay import OverlayAppBuilder, managepy, uv_cmd
 from teatree.cli.overlay import _uvicorn as _uvicorn_fn
 
@@ -142,7 +142,7 @@ class TestOverlayAppBuilder:
             patch.object(config_mod, "discover_active_overlay", return_value=active),
             patch.object(config_mod, "discover_overlays", return_value=entries),
         ):
-            _register_overlay_commands()
+            register_overlay_commands()
 
     def test_register_commands_entry_point_overlay_uses_teatree_settings(self):
         from teatree.config import OverlayEntry  # noqa: PLC0415
@@ -155,7 +155,7 @@ class TestOverlayAppBuilder:
             patch.object(cli_mod, "OverlayAppBuilder") as mock_builder,
         ):
             mock_builder.return_value.build.return_value = typer.Typer()
-            _register_overlay_commands()
+            register_overlay_commands()
 
         mock_builder.assert_called_once_with("t3-acme", None, "teatree.settings")
 
@@ -164,7 +164,25 @@ class TestOverlayAppBuilder:
             patch.object(config_mod, "discover_active_overlay", return_value=None),
             patch.object(config_mod, "discover_overlays", return_value=[]),
         ):
-            _register_overlay_commands()
+            register_overlay_commands()
+
+    def test_register_commands_allowlist_filters_entries(self):
+        from teatree.config import OverlayEntry  # noqa: PLC0415
+
+        entries = [
+            OverlayEntry(name="t3-teatree", overlay_class="teatree.overlay:T", project_path=None),
+            OverlayEntry(name="t3-other", overlay_class="other.overlay:O", project_path=None),
+        ]
+        with (
+            patch.object(config_mod, "discover_active_overlay", return_value=None),
+            patch.object(config_mod, "discover_overlays", return_value=entries),
+            patch.object(cli_mod, "OverlayAppBuilder") as mock_builder,
+        ):
+            mock_builder.return_value.build.return_value = typer.Typer()
+            register_overlay_commands(allowlist={"t3-teatree"})
+
+        assert mock_builder.call_count == 1
+        assert mock_builder.call_args.args[0] == "t3-teatree"
 
     def test_bridge_tool_command_runs_managepy(self, tmp_path):
         """_bridge_tool_command creates a command that delegates to managepy."""
