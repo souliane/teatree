@@ -32,6 +32,8 @@ class CodeHost(Protocol):
 
     def create_pr(self, spec: PullRequestSpec) -> RawAPIDict: ...  # pragma: no branch
 
+    def current_user(self) -> str: ...  # pragma: no branch
+
     def list_open_prs(self, repo: str, author: str) -> list[RawAPIDict]: ...  # pragma: no branch
 
     def post_mr_note(self, *, repo: str, mr_iid: int, body: str) -> RawAPIDict: ...  # pragma: no branch
