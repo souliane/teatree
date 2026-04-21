@@ -3,9 +3,11 @@
 import importlib.util
 import os
 import tomllib
-from dataclasses import dataclass, field
+from collections.abc import Callable
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from pathlib import Path
+from typing import Any
 
 CONFIG_PATH = Path.home() / ".teatree.toml"
 DATA_DIR = Path(os.environ.get("XDG_DATA_HOME", str(Path.home() / ".local" / "share"))) / "teatree"
@@ -103,11 +105,36 @@ class E2ERepo:
     e2e_dir: str = "e2e"
 
 
+def _parse_excluded_skills(raw: object) -> list[str]:
+    return [str(s) for s in raw] if isinstance(raw, list) else []
+
+
+# Registry of UserSettings fields that can be overridden per-overlay in
+# ``[overlays.<name>]``. To make another setting overridable, add an entry
+# here with a parser that coerces the raw toml value to the UserSettings
+# field type. The getter `get_effective_settings()` applies overrides
+# generically via ``dataclasses.replace`` — no per-setting wiring needed.
+OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
+    "mode": Mode.parse,
+    "branch_prefix": str,
+    "privacy": str,
+    "contribute": bool,
+    "excluded_skills": _parse_excluded_skills,
+}
+
+# ``T3_*`` env vars that win over both the per-overlay override and the
+# global setting. Mapped to ``(UserSettings field, parser)``.
+ENV_SETTING_OVERRIDES: dict[str, tuple[str, Callable[[str], Any]]] = {
+    "T3_MODE": ("mode", Mode.parse),
+}
+
+
 @dataclass
 class OverlayEntry:
     name: str
     overlay_class: str
     project_path: Path | None = None
+    overrides: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -132,10 +159,7 @@ class TeaTreeConfig:
 
 def load_config(path: Path = CONFIG_PATH) -> TeaTreeConfig:
     if not path.is_file():
-        env_mode = os.environ.get("T3_MODE")
-        if env_mode is None:
-            return TeaTreeConfig()
-        return TeaTreeConfig(user=UserSettings(mode=Mode.parse(env_mode)))
+        return TeaTreeConfig()
 
     with path.open("rb") as f:
         raw = tomllib.load(f)
@@ -147,10 +171,8 @@ def load_config(path: Path = CONFIG_PATH) -> TeaTreeConfig:
     raw_excluded = teatree.get("excluded_skills", [])
     excluded_skills = [str(s) for s in raw_excluded] if isinstance(raw_excluded, list) else []
 
-    env_mode = os.environ.get("T3_MODE")
     toml_mode = teatree.get("mode")
-    mode_value = env_mode if env_mode is not None else toml_mode
-    mode = Mode.parse(mode_value) if mode_value is not None else Mode.INTERACTIVE
+    mode = Mode.parse(toml_mode) if toml_mode is not None else Mode.INTERACTIVE
 
     user = UserSettings(
         workspace_dir=workspace_dir,
@@ -206,16 +228,59 @@ def worktrees_dir() -> Path:
     return load_config().user.worktrees_dir
 
 
-def get_mode() -> Mode:
-    """Return the active operating mode.
+def get_effective_settings() -> UserSettings:
+    """Return the user settings with env and per-overlay overrides applied.
 
-    Reads ``T3_MODE`` (env) first, then ``teatree.mode`` from
-    ``~/.teatree.toml``, defaulting to ``Mode.INTERACTIVE``. Call sites
-    branch with ``get_mode() is Mode.AUTO`` — we deliberately avoid thin
-    ``is_auto`` / ``is_interactive`` wrappers so the config module stays
-    within its public-function budget.
+    Resolution per field (first match wins): ``T3_*`` env var (see
+    ``ENV_SETTING_OVERRIDES``), active overlay's override from
+    ``[overlays.<name>]``, global ``[teatree]`` value, ``UserSettings``
+    dataclass default.
+
+    The active overlay is resolved via ``T3_OVERLAY_NAME`` first (matches
+    ``get_overlay()``), then cwd-based discovery, then the single
+    installed overlay.
+
+    To make an additional setting overridable, add it to
+    ``OVERLAY_OVERRIDABLE_SETTINGS`` (per-overlay) or
+    ``ENV_SETTING_OVERRIDES`` (env). The resolver picks it up generically
+    via ``dataclasses.replace`` — no per-setting getter glue required.
+    Callers read the effective value with ``get_effective_settings().X``.
     """
-    return load_config().user.mode
+    base = load_config().user
+    active = _active_overlay_entry()
+    overrides: dict[str, Any] = dict(active.overrides) if active is not None else {}
+    for env_var, (field_name, parser) in ENV_SETTING_OVERRIDES.items():
+        raw = os.environ.get(env_var)
+        if raw is not None:
+            overrides[field_name] = parser(raw)
+    if not overrides:
+        return base
+    return replace(base, **overrides)
+
+
+def _active_overlay_entry() -> OverlayEntry | None:
+    """Find the active overlay's toml entry (carrying any overrides).
+
+    Prefers ``T3_OVERLAY_NAME`` (the same env var ``get_overlay()`` uses)
+    to avoid worktree-dir/overlay-name mismatch.
+    """
+    overlays = discover_overlays()
+    by_name = {entry.name: entry for entry in overlays}
+
+    name = os.environ.get("T3_OVERLAY_NAME")
+    if name and name in by_name:
+        return by_name[name]
+
+    fallback = discover_active_overlay()
+    if fallback is not None and fallback.name in by_name:
+        # The cwd-based lookup returns a bare OverlayEntry without overrides;
+        # swap in the toml entry so override parsing applies.
+        return by_name[fallback.name]
+
+    if len(overlays) == 1:
+        return overlays[0]
+
+    return None
 
 
 def check_for_updates(*, force: bool = False) -> str | None:
@@ -311,7 +376,16 @@ def discover_overlays(config_path: Path = CONFIG_PATH) -> list[OverlayEntry]:
             settings_module = _extract_settings_module(manage_py) if manage_py.is_file() else ""
             # Store settings module as overlay_class fallback so callers can still use it
             overlay_class = settings_module
-        seen[name] = OverlayEntry(name=name, overlay_class=overlay_class, project_path=project_path)
+        overrides: dict[str, Any] = {}
+        for key, parser in OVERLAY_OVERRIDABLE_SETTINGS.items():
+            if key in overlay_cfg:
+                overrides[key] = parser(overlay_cfg[key])
+        seen[name] = OverlayEntry(
+            name=name,
+            overlay_class=overlay_class,
+            project_path=project_path,
+            overrides=overrides,
+        )
 
     # 2. Entry points (skip if already found via toml)
     for ep in entry_points(group="teatree.overlays"):

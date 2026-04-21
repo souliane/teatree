@@ -814,6 +814,50 @@ posts, remote branch deletion):
 The env var `T3_MODE` overrides the toml setting. Unknown values raise
 `ValueError` — typos never silently downgrade to a less-safe mode.
 
+### 11.1.1 Per-Overlay Setting Overrides
+
+A subset of `[teatree]` keys can be overridden per-overlay in
+`[overlays.<name>]`. The resolution chain (first match wins):
+
+1. `T3_*` env var (currently only `T3_MODE` is wired as a one-off).
+2. Active overlay's override from `[overlays.<name>]`.
+3. Global `[teatree]` value.
+4. `UserSettings` dataclass default.
+
+The active overlay is resolved via (in order): `T3_OVERLAY_NAME` env var
+(runtime truth; matches `get_overlay()`), cwd-based discovery, then the
+single installed overlay.
+
+Overridable keys live in `OVERLAY_OVERRIDABLE_SETTINGS` in
+`src/teatree/config.py`:
+
+| Key | Why overridable |
+|-----|------------------|
+| `mode` | `auto` for a personal dogfooding overlay, `interactive` for a client overlay |
+| `branch_prefix` | Different prefix conventions per project |
+| `privacy` | Stricter for client code, looser for personal |
+| `contribute` | Contribute to one overlay's skills but not another |
+| `excluded_skills` | Project-specific skill exclusions |
+
+Callers use `get_effective_settings()` (returns a `UserSettings` with the
+active overlay's overrides applied) instead of reaching into
+`load_config().user` directly. Adding a new overridable key is a
+one-line change to the registry — the resolver picks it up via
+`dataclasses.replace`, no per-setting getter needed.
+
+```toml
+[teatree]
+mode = "interactive"         # global default
+branch_prefix = "ac"
+
+[overlays.teatree]
+mode = "auto"                # auto-mode for teatree dogfooding
+
+[overlays.client-project]
+mode = "interactive"         # stay gated on client code
+privacy = "strict"
+```
+
 ### 11.2 Django Settings (framework-level, in teatree's settings.py)
 
 | Setting | Type | Purpose |
