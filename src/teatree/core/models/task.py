@@ -107,13 +107,29 @@ class Task(models.Model):
         self._advance_ticket()
 
     def _advance_ticket(self) -> None:
-        """Auto-advance ticket state based on the completed task's phase."""
+        """Auto-advance ticket state based on the completed task's phase.
+
+        Each phase's completion triggers the matching FSM transition, which in
+        turn auto-schedules the next-phase task via the ``schedule_*`` methods
+        on ``Ticket``. The guards on ``self.phase`` + ``ticket.state`` make
+        this safe for repeat calls (e.g. parallel child tasks): once a ticket
+        has advanced, later calls find the state mismatch and no-op.
+        """
         if self._last_attempt_needs_user_input():
             self._schedule_interactive_followup()
             return
         ticket = self.ticket
         ticket.refresh_from_db()
-        if self.phase == "reviewing" and ticket.state == Ticket.State.TESTED:
+        if self.phase == "scoping" and ticket.state == Ticket.State.SCOPED:
+            ticket.start()
+            ticket.save()
+        elif self.phase == "coding" and ticket.state == Ticket.State.STARTED:
+            ticket.code()
+            ticket.save()
+        elif self.phase == "testing" and ticket.state == Ticket.State.CODED:
+            ticket.test(passed=True)
+            ticket.save()
+        elif self.phase == "reviewing" and ticket.state == Ticket.State.TESTED:
             ticket.review()
             ticket.save()
         elif self.phase == "shipping" and ticket.state == Ticket.State.REVIEWED:
