@@ -3,12 +3,18 @@ from unittest.mock import MagicMock, patch
 import pytest
 from django.test import TestCase
 
-from teatree.core.cleanup import cleanup_worktree
+from teatree.core.cleanup import (
+    BranchClassification,
+    BranchCommit,
+    classify_branch_commits,
+    cleanup_worktree,
+)
 from teatree.core.models import Ticket, Worktree
 
 _patch_config = patch("teatree.core.cleanup.load_config")
 _patch_git = patch("teatree.core.cleanup.git")
 _patch_overlay = patch("teatree.core.cleanup.get_overlay")
+_patch_classify = patch("teatree.core.cleanup.classify_branch_commits")
 
 
 def _mock_workspace(mock_config: MagicMock) -> None:
@@ -109,19 +115,24 @@ class TestCleanupWorktree(TestCase):
 
         assert not Worktree.objects.filter(pk=wt_id).exists()
 
+    @_patch_classify
     @_patch_overlay
     @_patch_git
     @_patch_config
-    def test_raises_when_unsynced_commits_present(
+    def test_raises_when_genuinely_ahead_commits_present(
         self,
         mock_config: MagicMock,
         mock_git: MagicMock,
         mock_overlay: MagicMock,
+        mock_classify: MagicMock,
     ) -> None:
         _mock_workspace(mock_config)
         mock_overlay.return_value.get_cleanup_steps.return_value = []
         mock_git.status_porcelain.return_value = ""
         mock_git.unsynced_commits.return_value = ["abc123 chore: cve fix"]
+        mock_classify.return_value = BranchClassification(
+            genuinely_ahead=[BranchCommit(sha="abc123", subject="chore: cve fix", is_merge=False)]
+        )
 
         wt = self._make_worktree(wt_path="/tmp/wt/org/repo")
         with pytest.raises(RuntimeError, match="unsynced commit"):
@@ -129,6 +140,34 @@ class TestCleanupWorktree(TestCase):
 
         mock_git.worktree_remove.assert_not_called()
         mock_git.branch_delete.assert_not_called()
+
+    @_patch_classify
+    @_patch_overlay
+    @_patch_git
+    @_patch_config
+    def test_cleans_when_only_squash_merged_and_merge_commits(
+        self,
+        mock_config: MagicMock,
+        mock_git: MagicMock,
+        mock_overlay: MagicMock,
+        mock_classify: MagicMock,
+    ) -> None:
+        """Branches whose only "unsynced" commits are squash-merged or merge commits are safe to clean."""
+        _mock_workspace(mock_config)
+        mock_overlay.return_value.get_cleanup_steps.return_value = []
+        mock_git.status_porcelain.return_value = ""
+        mock_git.unsynced_commits.return_value = ["abc123 feat: squashed on main"]
+        mock_classify.return_value = BranchClassification(
+            squash_merged=[BranchCommit(sha="abc123", subject="feat: squashed on main", is_merge=False)],
+            merge_commits=[BranchCommit(sha="mrg001", subject="Merge branch 'main'", is_merge=True)],
+            genuinely_ahead=[],
+        )
+
+        wt = self._make_worktree(wt_path="/tmp/wt/org/repo")
+        cleanup_worktree(wt)
+
+        mock_git.worktree_remove.assert_called_once()
+        mock_git.branch_delete.assert_called_once()
 
     @_patch_overlay
     @_patch_git
@@ -229,3 +268,95 @@ class TestCleanupWorktree(TestCase):
 
         mock_git.worktree_remove.assert_called_once()
         mock_git.branch_delete.assert_called_once()
+
+
+class TestClassifyBranchCommits(TestCase):
+    """``classify_branch_commits`` sorts branch-local commits into three buckets.
+
+    The classifier is the foundation for squash-merge-aware cleanup: it lets
+    the caller distinguish content already on the default branch (under a new
+    SHA, via squash-merge) from work that still needs pushing.
+    """
+
+    @patch("teatree.core.cleanup.git.run")
+    def test_empty_when_no_unsynced_commits(self, mock_run: MagicMock) -> None:
+        mock_run.side_effect = ["", ""]  # unsynced log empty, target log empty
+        result = classify_branch_commits("/repo", "feature")
+        assert result == BranchClassification(squash_merged=[], merge_commits=[], genuinely_ahead=[])
+
+    @patch("teatree.core.cleanup.git.run")
+    def test_subject_match_with_pr_suffix_marks_squash_merged(self, mock_run: MagicMock) -> None:
+        branch_log = "abc123\x00parent1\x00fix(ui): button alignment"
+        target_log = "fix(ui): button alignment (#42)\nfeat(core): unrelated"
+        mock_run.side_effect = [branch_log, target_log]
+
+        result = classify_branch_commits("/repo", "feature")
+
+        assert result.squash_merged == [BranchCommit(sha="abc123", subject="fix(ui): button alignment", is_merge=False)]
+        assert result.genuinely_ahead == []
+
+    @patch("teatree.core.cleanup.git.run")
+    def test_strips_type_prefix_for_relax_to_feat_rewrite(self, mock_run: MagicMock) -> None:
+        """Branch has ``relax: X (#140)``; main has ``feat(fsm): X (#140) (#368)`` — same content, different prefix."""
+        branch_log = "def456\x00parent1\x00relax: transition-driven workflow (#140)"
+        target_log = "feat(fsm): transition-driven workflow (#140) (#368)"
+        mock_run.side_effect = [branch_log, target_log]
+
+        result = classify_branch_commits("/repo", "feature")
+
+        assert len(result.squash_merged) == 1
+        assert result.squash_merged[0].sha == "def456"
+        assert result.genuinely_ahead == []
+
+    @patch("teatree.core.cleanup.git.run")
+    def test_merge_commit_detected_via_multiple_parents(self, mock_run: MagicMock) -> None:
+        branch_log = "mrg001\x00parent1 parent2\x00Merge branch 'main' into feature"
+        target_log = ""
+        mock_run.side_effect = [branch_log, target_log]
+
+        result = classify_branch_commits("/repo", "feature")
+
+        assert len(result.merge_commits) == 1
+        assert result.merge_commits[0].is_merge is True
+        assert result.genuinely_ahead == []
+        assert result.squash_merged == []
+
+    @patch("teatree.core.cleanup.git.run")
+    def test_genuinely_ahead_when_no_subject_match(self, mock_run: MagicMock) -> None:
+        branch_log = "new001\x00parent1\x00fix(hooks): strip trailing whitespace"
+        target_log = "chore(deps): bump pytest\nfeat(config): add t3.mode"
+        mock_run.side_effect = [branch_log, target_log]
+
+        result = classify_branch_commits("/repo", "feature")
+
+        assert result.squash_merged == []
+        assert len(result.genuinely_ahead) == 1
+        assert result.genuinely_ahead[0].sha == "new001"
+
+    @patch("teatree.core.cleanup.git.run")
+    def test_mixed_buckets(self, mock_run: MagicMock) -> None:
+        branch_log = (
+            "sha1\x00p1\x00feat(config): add setting\n"
+            "sha2\x00p1 p2\x00Merge branch 'main'\n"
+            "sha3\x00p1\x00fix(hooks): strip whitespace"
+        )
+        target_log = "feat(config): add setting (#100)\nchore: unrelated"
+        mock_run.side_effect = [branch_log, target_log]
+
+        result = classify_branch_commits("/repo", "feature")
+
+        assert [c.sha for c in result.squash_merged] == ["sha1"]
+        assert [c.sha for c in result.merge_commits] == ["sha2"]
+        assert [c.sha for c in result.genuinely_ahead] == ["sha3"]
+
+    @patch("teatree.core.cleanup.git.run")
+    def test_unsynced_fully_merged_via_squash_returns_empty_genuinely_ahead(self, mock_run: MagicMock) -> None:
+        """Every unsynced commit has a subject match on target → branch is safe to clean."""
+        branch_log = "sha1\x00p1\x00feat(config): generic per-overlay override\nsha2\x00p1\x00fix: trailing whitespace"
+        target_log = "feat(config): generic per-overlay override (#375)\nfix: trailing whitespace (#200)"
+        mock_run.side_effect = [branch_log, target_log]
+
+        result = classify_branch_commits("/repo", "feature")
+
+        assert result.genuinely_ahead == []
+        assert len(result.squash_merged) == 2

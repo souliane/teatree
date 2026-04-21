@@ -46,6 +46,21 @@
 - **Fix:** Re-run without `--delete-branch`: `gh pr merge <n> --squash`. Then clean up manually: `git fetch --prune origin` deletes the remote-tracking ref, and from the main clone run `git worktree remove <path>` and `git branch -D <branch>` to drop the local worktree and branch.
 - **Prevention:** When the main clone is in a sibling worktree, omit `--delete-branch` on `gh pr merge`. The remote delete is handled by GitHub's "auto-delete branch on merge" setting; local cleanup belongs to `git fetch --prune` and `git worktree remove`.
 
+## `clean-all` Refuses a Worktree as "Unsynced" After a Squash Merge
+
+- **Symptom:** `t3 teatree workspace clean-all` reports `refused cleanup — N unsynced commit(s) not on origin/main` for a branch whose PR you just merged via squash.
+- **Cause:** `git log --not --remotes` detects merged-ness by SHA. Squash-merges create a new SHA on `main`, so the branch commit is still "not on any remote" by hash. The cleanup classifier catches this (see `teatree/core/cleanup.py::classify_branch_commits`) by matching commit subjects — after stripping `(#NNN)` PR suffixes and conventional-commit type prefixes (`relax:` vs `feat(scope):`). If the match still fails (e.g. the MR was merged under a completely rewritten title), the branch is reported as genuinely ahead.
+- **Fix (interactive TTY):** `clean-all` prompts `[P]ush to remote / [A]bandon (force delete) / [S]kip (default)`. Choose **A** once you've confirmed the PR was merged (`gh pr list --state merged --head <branch>`). Choose **P** to push the unreviewed work to a new MR.
+- **Fix (non-TTY / CI):** the worktree is left in place and listed as `Skipped:` — rerun interactively or clean it by hand with `git worktree remove <path> --force && git branch -D <branch>`.
+- **Prevention:** keep PR titles aligned with the squash commit message produced by the MR template — the classifier's subject-normalisation covers the common `type(scope): …` + `(#NNN)` case automatically.
+
+## GitHub Board "Done" Transitions Don't Clean Worktrees
+
+- **Symptom:** A ticket is moved to the GitHub Projects v2 "Done" column (or the GitLab MR is merged) but the worktree is still on disk after the next `t3 followup sync`.
+- **Cause:** The branch has genuinely-unpushed commits, so `cleanup_worktree()` refused the delete. The sync logs an `INFO` line (`Keeping worktree … (unpushed work): …`) rather than raising — same squash-merge-aware classifier as `clean-all`.
+- **Fix:** run `t3 teatree workspace clean-all` interactively and choose **P** (push) or **A** (abandon) per the previous entry.
+- **Prevention:** commit or drop scratch work before moving the ticket to Done. `clean-all` never silently loses unpushed content.
+
 ## DSLR Restore Fails Silently
 
 - **Cause:** `dslr` not installed or the snapshot is from an incompatible Postgres version.
