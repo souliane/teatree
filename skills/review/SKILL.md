@@ -66,7 +66,7 @@ After the cleanup checklist, **actively verify each changed file against the rep
 2. **For each changed file**, check against every applicable rule section. Focus on:
 
 - Architectural patterns (e.g., container-presentational, signals-first, inject vs constructor)
-- Feature flag and multi-tenant rules (see [`references/multi-tenant-development.md`](../t3:code/references/multi-tenant-development.md) § Review Checklist)
+- Feature flag and multi-tenant rules (see [`references/multi-tenant-development.md`](../code/references/multi-tenant-development.md) § Review Checklist)
 - Banned patterns (e.g., manual `.subscribe()`, `any` types, hardcoded strings)
 
 3. **Check consistency across the changeset** — if the same pattern is applied differently in two files within the same MR, that's a finding.
@@ -112,7 +112,7 @@ Run gates → Any failure? → Fix → Re-run gates → Repeat until clean
 
 1. **Lint:** zero errors from the project linter
 2. **Type check:** passes (if the project uses it)
-3. **Tests:** full suite green (use `t3 run tests` or project equivalent)
+3. **Tests:** full suite green (use `t3 <overlay> run tests` or project equivalent)
 4. **No uncommitted changes:** all fixes staged and committed
 5. **No regressions:** diff review confirms no unintended changes
 
@@ -166,7 +166,7 @@ When raising concerns about caching, stale data, or side effects: **investigate 
 
 1. **Correctness** — does the code do what the ticket requires? Are all acceptance criteria met? When a change tightens a public contract (e.g., serializer field becomes required, API parameter becomes mandatory), trace all callers — the change affects every flow that uses that interface, not just the one the ticket describes.
 2. **Completeness** — are there missing production code changes that the tests assume? Do test expectation changes have matching implementation changes?
-3. **Feature flag** — follow the review checklist in [`references/multi-tenant-development.md`](../t3:code/references/multi-tenant-development.md). **Before raising a "missing feature flag" finding, trace the full gating chain upward** — the component under review may not have a flag itself but could be hidden/disabled at the container or routing level (e.g., `hidden: !featureFlagService.hasFeatureFlag(...)` in the parent that renders it). A finding is only valid if the feature is reachable without the flag.
+3. **Feature flag** — follow the review checklist in [`references/multi-tenant-development.md`](../code/references/multi-tenant-development.md). **Before raising a "missing feature flag" finding, trace the full gating chain upward** — the component under review may not have a flag itself but could be hidden/disabled at the container or routing level (e.g., `hidden: !featureFlagService.hasFeatureFlag(...)` in the parent that renders it). A finding is only valid if the feature is reachable without the flag.
 4. **Style** — follows project conventions?
 5. **Tests** — adequate coverage of new behavior?
 6. **Safety** — no security issues, no data loss risks?
@@ -262,7 +262,7 @@ When posting replies to reviewer discussions (e.g., "Done in `<commit>`"):
 3. **Skip already-answered discussions.** If the user (or someone else) already replied with a resolution, do not post a duplicate reply.
 4. **Present the mapping to the user before posting.** Show a table: `| Discussion | Topic | Reply |` and get confirmation. Never batch-post replies without review.
 
-See your [issue tracker platform reference](../t3:platforms/references/) § "Reply to Discussion" for the API recipe.
+See your [issue tracker platform reference](../platforms/references/) § "Reply to Discussion" for the API recipe.
 
 ## Commands
 

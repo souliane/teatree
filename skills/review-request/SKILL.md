@@ -44,13 +44,13 @@ Uses the overlay's `get_followup_repos()` (same as `t3:followup`) for repo list.
 
 The script outputs a summary table with CI status, validation results, and readiness. For MRs that fail validation:
 
-- Fix title/description using the issue tracker CLI. See your [issue tracker platform reference](../t3:platforms/references/) § "Update MR" for the recipe.
+- Fix title/description using the issue tracker CLI. See your [issue tracker platform reference](../platforms/references/) § "Update MR" for the recipe.
 - When fixing descriptions, **preserve the full body** — only prepend/fix the first line.
 - If a ticket URL is missing, ask the user.
 
 ### 5. Check Team Chat for Existing Requests
 
-Search review channels for each MR URL to avoid duplicate notifications. See your [chat platform reference](../t3:platforms/references/) § "Search for Messages" for the recipe. Use private-inclusive search — review channels may be private.
+Search review channels for each MR URL to avoid duplicate notifications. See your [chat platform reference](../platforms/references/) § "Search for Messages" for the recipe. Use private-inclusive search — review channels may be private.
 
 Store the permalink for each MR found — it's displayed in the summary table.
 
@@ -89,7 +89,7 @@ Only after user approval, post messages to the review channels. Use the project'
 
 ### 8. Persist Review Messages
 
-After sending each review request, save the message permalink in `$T3_DATA_DIR/tickets/<ticket_iid>/mr_review_messages.json`. See your [chat platform reference](../t3:platforms/references/) § "Caching Chat Data" for the format.
+After sending each review request, save the message permalink in `$T3_DATA_DIR/tickets/<ticket_iid>/mr_review_messages.json`. See your [chat platform reference](../platforms/references/) § "Caching Chat Data" for the format.
 
 Create the directory if it doesn't exist. Merge with existing entries (don't overwrite — a ticket may have MRs sent at different times).
 
@@ -103,12 +103,12 @@ After all messages are sent (or skipped), check if the ticket is ready to transi
 2. For each MR, check `$T3_DATA_DIR/tickets/<iid>/mr_review_messages.json`.
 3. For any MR not in the cache, search the team chat for the MR URL. Cache any results found.
 4. If ALL MRs have a review request message → trigger the transition:
-    - Update issue tracker label/status. See your [issue tracker platform reference](../t3:platforms/references/) § "Transition Logic".
+    - Update issue tracker label/status. See your [issue tracker platform reference](../platforms/references/) § "Transition Logic".
     - Call `ticket_update_external_tracker` extension point
     - Report: `Ticket #<IID> → Technical Review (all MRs have review requests)`
 5. If some MRs are missing review messages → report which ones and skip the transition.
 
-See [`../t3:followup/references/ticket-transitions.md`](../t3:followup/references/ticket-transitions.md) for the full transition system.
+See [`../followup/references/ticket-transitions.md`](../followup/references/ticket-transitions.md) for the full transition system.
 
 ### 10. Handle Deferred MRs
 

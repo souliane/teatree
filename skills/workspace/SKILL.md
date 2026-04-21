@@ -92,11 +92,57 @@ If the environment seems incomplete (missing `uv`, hooks not firing, overlay abs
 
 All workspace operations go through the `t3` CLI. Run `t3 <overlay> --help` for the full command list. Key command groups: `lifecycle` (setup/start/restart/teardown), `workspace` (ticket/finalize/clean-all), `run` (backend/frontend/tests), `db` (refresh/restore-ci/reset-passwords).
 
+## Cleanup Patterns
+
+`t3 <overlay> workspace clean-all` is the entry point for all cleanup. It prunes merged worktrees, drops orphaned databases, classifies and removes stale local branches (gone-remote, fully-merged, **squash-merged via subject match**), drops orphaned stashes, removes empty workspace dirs, and prunes old DSLR snapshots. The squash-merge classifier handles `(#NNN)` suffixes and `relax:` → `feat(scope):` prefix rewrites, so squash-merged branches don't appear as "unsynced".
+
+### Single-repo cleanup
+
+From the overlay or main clone:
+
+```bash
+t3 <overlay> workspace clean-all
+```
+
+### Multi-repo cleanup
+
+`clean-all` operates on the current working directory for branch and stash pruning. When a session has touched multiple independent repos (overlay repo, `$T3_REPO`, skills/dotfiles repos), loop:
+
+```bash
+for repo in "$T3_REPO" ~/workspace/<overlay>/<overlay-repo> ~/workspace/<skills-repo>; do
+  (cd "$repo" && t3 <overlay> workspace clean-all)
+done
+```
+
+Worktree pruning, orphan databases, and DSLR snapshots are global to the overlay's DB and only need to run once. Branch and stash pruning needs to run **per repo**.
+
+### Triage of "WARNING: branch X has N unpushed commits" output
+
+When `clean-all` skips a branch with this warning, the branch has commits the classifier could not match to anything on `origin/main`. Triage manually:
+
+1. **Enumerate** the unique commits: `git log --oneline origin/main..<branch>`
+2. **For each commit**, classify:
+   - **Already on main via different SHA** — verify by grepping `git log --all --oneline --grep="<subject>"` or by comparing changed file paths. If the content is reachable from main, the branch is safe to delete.
+   - **Already shipped via a different open PR** — search `gh pr list --search "<file path>"` or `git log --oneline --all -- <changed-file>`. If shipped, branch is safe to delete.
+   - **Unique unpushed work** — keep, then choose a delivery path: bundle into an open related PR (see [`../ship/SKILL.md`](../ship/SKILL.md) § "Bundle Into an Existing Open PR"), open a dedicated PR, or explicitly mark as a never-merge dev override.
+3. **After verification**, force-delete: `git branch -D <branch>` and `git worktree remove --force <path>` if a worktree exists.
+
+### Orphan stash verification
+
+`clean-all` drops only stashes whose source branch is gone. For stashes you encounter on existing branches, verify before dropping:
+
+```bash
+git stash show -p stash@{N}  # inspect the diff
+# Grep main for the changed lines/sections to confirm content is on main
+```
+
+If the content is on `main` (typical for stashes that pre-date a squash-merged branch), drop with `git stash drop stash@{N}`.
+
 ## Rules
 
 ### Plan Before Executing
 
-Canonical rule: see [`../t3:rules/SKILL.md`](../t3:rules/SKILL.md) § "Always Create Tasks". Covers simple vs complex task thresholds and the "never skip" clause.
+Canonical rule: see [`../rules/SKILL.md`](../rules/SKILL.md) § "Always Create Tasks". Covers simple vs complex task thresholds and the "never skip" clause.
 
 ### Fix the CLI, Never Work Around It (Non-Negotiable)
 
@@ -109,13 +155,13 @@ When a `t3` command fails, **fix the CLI code first** — never manually run the
 
 ### Never Hand-Edit Generated Files
 
-Setup tools (`t3 lifecycle setup`, etc.) generate configuration files (`.env.worktree`, docker overrides, port allocations). **Manual edits create drift** and are overwritten on the next setup run.
+Setup tools (`t3 <overlay> lifecycle setup`, etc.) generate configuration files (`.env.worktree`, docker overrides, port allocations). **Manual edits create drift** and are overwritten on the next setup run.
 
 When a generated file is wrong or incomplete, **re-run the setup tool** — don't manually patch the file. If setup fails, diagnose the root cause in the setup script (see `/t3:debug`), don't work around it.
 
 ### Never Run Infrastructure Commands Directly
 
-Use the `t3` CLI (`t3 lifecycle start`, `t3 run backend`, `t3 run frontend`, etc.) instead of running `docker compose`, language-specific dev servers, or build tools directly. The CLI commands handle:
+Use the `t3` CLI (`t3 <overlay> lifecycle start`, `t3 <overlay> run backend`, `t3 <overlay> run frontend`, etc.) instead of running `docker compose`, language-specific dev servers, or build tools directly. The CLI commands handle:
 
 - Environment variable loading from generated files
 - Service ordering (data store → migrations → application)
@@ -126,7 +172,7 @@ Direct commands bypass these safeguards, causing subtle failures (wrong DB, port
 
 ### Never Edit Files in the Main Clone
 
-Canonical rule: see [`../t3:rules/SKILL.md`](../t3:rules/SKILL.md) § "Worktree-First Work". Covers the pre-edit path check and collision detection.
+Canonical rule: see [`../rules/SKILL.md`](../rules/SKILL.md) § "Worktree-First Work". Covers the pre-edit path check and collision detection.
 
 ### Full Worktree Isolation (Non-Negotiable)
 
@@ -134,9 +180,9 @@ Each worktree gets its own **isolated environment** — dedicated database, port
 
 - Never point one worktree's frontend at another worktree's backend
 - Never use the main repo's database for worktree work
-- Never manually set ports — let `t3 lifecycle setup` allocate them via `find_free_ports()`
+- Never manually set ports — let `t3 <overlay> lifecycle setup` allocate them via `find_free_ports()`
 
-When testing an MR, create a full worktree (`t3 <overlay> workspace ticket` + `t3 lifecycle setup` + `t3 lifecycle start`).
+When testing an MR, create a full worktree (`t3 <overlay> workspace ticket` + `t3 <overlay> lifecycle setup` + `t3 <overlay> lifecycle start`).
 
 ### Validate After Provisioning (Non-Negotiable)
 
@@ -148,11 +194,11 @@ After importing a database or downloading an artifact, always validate it:
 
 ### Service Startup Ordering
 
-Setup tools enforce ordering: **data store → migrations → application server**. Starting the application before migrations causes "relation does not exist" errors. Always use the orchestration functions (`t3 lifecycle start`) rather than starting services individually.
+Setup tools enforce ordering: **data store → migrations → application server**. Starting the application before migrations causes "relation does not exist" errors. Always use the orchestration functions (`t3 <overlay> lifecycle start`) rather than starting services individually.
 
 ### Never Delegate Skill-Dependent Work to Sub-Agents
 
-See [`../t3:rules/SKILL.md`](../t3:rules/SKILL.md) § "Sub-Agent Limitations". If parallelism is needed, pass the **full skill file contents** in the sub-agent prompt — but prefer sequential main-conversation execution.
+See [`../rules/SKILL.md`](../rules/SKILL.md) § "Sub-Agent Limitations". If parallelism is needed, pass the **full skill file contents** in the sub-agent prompt — but prefer sequential main-conversation execution.
 
 ### Verify Services Before Declaring Running
 
@@ -206,4 +252,4 @@ The agent skills directory varies by platform (for example `~/.claude/skills/`, 
 | Find available shell functions, scripts, or COMPOSE_PROJECT_NAME details | [`references/scripts-and-functions.md`](references/scripts-and-functions.md) |
 | Understand extension points, override chain, or create a project skill | [`references/extension-points.md`](references/extension-points.md) |
 | Diagnose worktree setup failures, DB errors, port conflicts | [`references/troubleshooting.md`](references/troubleshooting.md) |
-| Cross-cutting agent rules (clickable refs, token extraction, temp files) | [`../t3:rules/SKILL.md`](../t3:rules/SKILL.md) |
+| Cross-cutting agent rules (clickable refs, token extraction, temp files) | [`../rules/SKILL.md`](../rules/SKILL.md) |

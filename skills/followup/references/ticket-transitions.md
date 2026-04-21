@@ -19,7 +19,7 @@ Automated status transitions move tickets through the delivery pipeline based on
 | Doing | Technical Review | All MRs have review request messages |
 | Technical Review | DEV Review | All MRs merged to default branch AND deployed to target env |
 
-Platform-specific label/status mappings are in the [platform reference files](../../t3:platforms/references/) (e.g., `gitlab.md` § "Transition Logic").
+Platform-specific label/status mappings are in the [platform reference files](../../platforms/references/) (e.g., `gitlab.md` § "Transition Logic").
 
 Each transition also calls `ticket_update_external_tracker` (extension point) for Notion/Jira/etc.
 
@@ -29,7 +29,7 @@ Each transition also calls `ticket_update_external_tracker` (extension point) fo
 
 1. List all open MRs for the ticket's branch across all repos.
 2. For each MR, check `$T3_DATA_DIR/tickets/<iid>/mr_review_messages.json` for a cached review request permalink.
-3. For any MR without a cached entry, search the team chat for the MR URL. See your [chat platform reference](../../t3:platforms/references/) § "Search for Messages".
+3. For any MR without a cached entry, search the team chat for the MR URL. See your [chat platform reference](../../platforms/references/) § "Search for Messages".
 4. If found, cache the permalink in `mr_review_messages.json`.
 5. If ALL MRs have a review request message → transition is ready.
 
@@ -51,7 +51,7 @@ This works regardless of whether the review was requested via t3:review-request 
 
 ## Transition Logic
 
-Shared by all transitions — update both the issue label and status. See your [issue tracker platform reference](../../t3:platforms/references/) § "Transition Logic" for the CLI recipe.
+Shared by all transitions — update both the issue label and status. See your [issue tracker platform reference](../../platforms/references/) § "Transition Logic" for the CLI recipe.
 
 ## Invocation
 
