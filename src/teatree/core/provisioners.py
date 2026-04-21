@@ -9,10 +9,10 @@ Docker Compose orchestration, or settings injection.
 import logging
 import os
 import shutil
-import subprocess  # noqa: S404
 from pathlib import Path
 
 from teatree.types import ServiceSpec, SymlinkSpec
+from teatree.utils.run import run_allowed_to_fail
 
 logger = logging.getLogger(__name__)
 
@@ -97,21 +97,16 @@ def start_services(
                 continue
 
         try:
-            proc = subprocess.run(  # noqa: S603
-                command,
-                capture_output=True,
-                text=True,
-                check=False,
-                env=run_env,
-            )
-            if proc.returncode != 0:
-                logger.warning("Service %s failed to start: %s", name, proc.stderr[:500])
-                results[name] = False
-            else:
-                results[name] = True
+            proc = run_allowed_to_fail(command, env=run_env, expected_codes=None)
         except FileNotFoundError:
             logger.warning("Command not found for service %s: %s", name, command[0])
             results[name] = False
+            continue
+        if proc.returncode != 0:
+            logger.warning("Service %s failed to start: %s", name, proc.stderr[:500])
+            results[name] = False
+        else:
+            results[name] = True
 
     return results
 

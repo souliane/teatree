@@ -232,7 +232,7 @@ class TestStartWorkers:
 
         mock_popen = MagicMock()
         mock_popen.return_value.pid = 12345
-        monkeypatch.setattr("teatree.core.apps._subprocess.Popen", mock_popen)
+        monkeypatch.setattr("teatree.utils.run.subprocess.Popen", mock_popen)
 
         # Clear the global list before test
         _worker_processes.clear()

@@ -1,9 +1,10 @@
 """Review CLI commands — GitLab draft note operations."""
 
-import subprocess  # noqa: S404
 from http import HTTPStatus
 
 import typer
+
+from teatree.utils.run import run_allowed_to_fail
 
 review_app = typer.Typer(no_args_is_help=True, help="Code review helpers.")
 _TOKEN_PARTS_COUNT = 2
@@ -23,12 +24,7 @@ class ReviewService:
         token = os.environ.get("GITLAB_TOKEN", "")
         if token:
             return token
-        result = subprocess.run(
-            ["glab", "auth", "status", "-t"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        result = run_allowed_to_fail(["glab", "auth", "status", "-t"], expected_codes=None)
         for line in result.stderr.splitlines():
             if "Token" in line and ":" in line:
                 token_value = line.rsplit(":", 1)[-1].strip()

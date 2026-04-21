@@ -1326,8 +1326,10 @@ Dev dependencies: ruff, pytest, pytest-cov, pytest-django, ty, import-linter, pr
 
 ```mermaid
 graph TD
+    teatree.config --> teatree.utils
     teatree.utils --> teatree.config
     teatree.autostart --> teatree.config
+    teatree.autostart --> teatree.utils
     teatree.timeouts --> teatree.config
     teatree.skill_loading --> teatree.types
     teatree.skill_loading --> teatree.utils
@@ -1347,6 +1349,7 @@ graph TD
     teatree.contrib --> teatree.types
     teatree.contrib --> teatree.core
     teatree.contrib --> teatree.config
+    teatree.contrib --> teatree.utils
     teatree.cli --> teatree.config
     teatree.cli --> teatree.core
     teatree.cli --> teatree.agents
@@ -1358,7 +1361,6 @@ graph TD
     teatree.cli --> teatree.autostart
     teatree.cli --> teatree.utils
     teatree.types
-    teatree.config
     teatree.templates
     teatree.claude_sessions
     teatree.overlay_init

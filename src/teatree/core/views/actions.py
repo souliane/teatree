@@ -12,6 +12,7 @@ from django_fsm import TransitionNotAllowed
 from teatree.core.models import Session, Task, Ticket
 from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.views._startup import perform_sync
+from teatree.utils.run import run_allowed_to_fail
 
 
 class CancelTaskView(View):
@@ -220,14 +221,12 @@ def _git_pull_repo(repo_dir: Path) -> _PullResult:
     (switches to main and retries).
     """
     try:
-        result = subprocess.run(
-            ["git", "pull"],  # noqa: S607
+        result = run_allowed_to_fail(
+            ["git", "pull"],
             cwd=repo_dir,
-            capture_output=True,
-            text=True,
-            timeout=_TIMEOUT,
-            check=False,
             env=_GIT_ENV,
+            expected_codes=None,
+            timeout=_TIMEOUT,
         )
     except subprocess.TimeoutExpired:
         return {"ok": False, "error": "timed out after 30s"}
@@ -240,13 +239,12 @@ def _git_pull_repo(repo_dir: Path) -> _PullResult:
 
     # Merge conflict — abort and report
     if "CONFLICT" in stderr or "fix conflicts" in stderr.lower():
-        subprocess.run(
-            ["git", "merge", "--abort"],  # noqa: S607
+        run_allowed_to_fail(
+            ["git", "merge", "--abort"],
             cwd=repo_dir,
-            capture_output=True,
-            timeout=10,
-            check=False,
             env=_GIT_ENV,
+            expected_codes=None,
+            timeout=10,
         )
         return {"ok": False, "error": f"Merge conflict:\n{stderr}", "conflict": True}
 
@@ -262,45 +260,38 @@ def _git_pull_repo(repo_dir: Path) -> _PullResult:
 def _switch_to_main_and_pull(repo_dir: Path) -> _PullResult | None:
     """Switch to main branch, pull, and delete stale local branch."""
     # Find the stale branch name
-    branch_result = subprocess.run(
-        ["git", "rev-parse", "--abbrev-ref", "HEAD"],  # noqa: S607
+    branch_result = run_allowed_to_fail(
+        ["git", "rev-parse", "--abbrev-ref", "HEAD"],
         cwd=repo_dir,
-        capture_output=True,
-        text=True,
+        expected_codes=None,
         timeout=10,
-        check=False,
     )
     stale_branch = branch_result.stdout.strip() if branch_result.returncode == 0 else ""
 
     for main_name in ("main", "master"):
-        switch = subprocess.run(  # noqa: S603
-            ["git", "checkout", main_name],  # noqa: S607
+        switch = run_allowed_to_fail(
+            ["git", "checkout", main_name],
             cwd=repo_dir,
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=False,
             env=_GIT_ENV,
+            expected_codes=None,
+            timeout=10,
         )
         if switch.returncode == 0:
-            pull = subprocess.run(
-                ["git", "pull"],  # noqa: S607
+            pull = run_allowed_to_fail(
+                ["git", "pull"],
                 cwd=repo_dir,
-                capture_output=True,
-                text=True,
-                timeout=_TIMEOUT,
-                check=False,
                 env=_GIT_ENV,
+                expected_codes=None,
+                timeout=_TIMEOUT,
             )
             output = pull.stdout.strip() if pull.returncode == 0 else ""
             msg = f"Switched to {main_name}"
             if stale_branch and stale_branch != main_name:
-                subprocess.run(  # noqa: S603
-                    ["git", "branch", "-d", stale_branch],  # noqa: S607
+                run_allowed_to_fail(
+                    ["git", "branch", "-d", stale_branch],
                     cwd=repo_dir,
-                    capture_output=True,
+                    expected_codes=None,
                     timeout=10,
-                    check=False,
                 )
                 msg += f", deleted stale branch '{stale_branch}'"
             return {"ok": True, "output": f"{msg}. {output}".strip()}
@@ -361,22 +352,18 @@ class SwitchBranchView(View):
             return JsonResponse({"error": "T3_REPO not found"}, status=400)
 
         try:
-            result = subprocess.run(
-                ["git", "branch", "--format=%(refname:short)"],  # noqa: S607
+            result = run_allowed_to_fail(
+                ["git", "branch", "--format=%(refname:short)"],
                 cwd=t3_repo,
-                capture_output=True,
-                text=True,
+                expected_codes=None,
                 timeout=10,
-                check=False,
             )
             branches = [b.strip() for b in result.stdout.strip().split("\n") if b.strip()]
-            current = subprocess.run(
-                ["git", "rev-parse", "--abbrev-ref", "HEAD"],  # noqa: S607
+            current = run_allowed_to_fail(
+                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
                 cwd=t3_repo,
-                capture_output=True,
-                text=True,
+                expected_codes=None,
                 timeout=10,
-                check=False,
             )
             current_branch = current.stdout.strip()
         except subprocess.TimeoutExpired:
@@ -396,14 +383,12 @@ class SwitchBranchView(View):
 
         env = {**os.environ, "GIT_EDITOR": "true", "GIT_SEQUENCE_EDITOR": "true"}
         try:
-            result = subprocess.run(  # noqa: S603
-                ["git", "checkout", branch],  # noqa: S607
+            result = run_allowed_to_fail(
+                ["git", "checkout", branch],
                 cwd=t3_repo,
-                capture_output=True,
-                text=True,
-                timeout=15,
-                check=False,
                 env=env,
+                expected_codes=None,
+                timeout=15,
             )
         except subprocess.TimeoutExpired:
             return JsonResponse({"error": "checkout timed out"}, status=500)

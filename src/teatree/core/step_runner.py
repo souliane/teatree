@@ -11,6 +11,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from teatree.utils.run import run_allowed_to_fail
+
 logger = logging.getLogger(__name__)
 
 
@@ -86,13 +88,11 @@ def run_step(  # noqa: PLR0913
     """
     start = time.monotonic()
     try:
-        proc = subprocess.run(  # noqa: S603
+        proc = run_allowed_to_fail(
             cmd,
             cwd=cwd,
             env=env,
-            capture_output=True,
-            text=True,
-            check=False,
+            expected_codes=None,
             timeout=timeout,
         )
         duration = time.monotonic() - start

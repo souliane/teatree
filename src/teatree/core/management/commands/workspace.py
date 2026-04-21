@@ -2,7 +2,6 @@
 
 import os
 import re
-import subprocess  # noqa: S404
 import sys
 from contextlib import suppress
 from pathlib import Path
@@ -15,6 +14,7 @@ from teatree.core.cleanup import cleanup_worktree
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay_loader import get_overlay
 from teatree.utils import git
+from teatree.utils.run import CommandFailedError, run_allowed_to_fail
 
 
 def _worktree_map(repo: str) -> dict[str, str]:
@@ -37,23 +37,19 @@ def _worktree_branches(repo: str) -> set[str]:
 
 def _is_squash_merged(repo: str, branch: str, default: str) -> bool:
     # GitHub: ask if a PR for this branch was merged.
-    result = subprocess.run(  # noqa: S603
+    result = run_allowed_to_fail(
         ["gh", "pr", "list", "--head", branch, "--state", "merged", "--json", "number", "--limit", "1"],
-        capture_output=True,
-        text=True,
-        check=False,
         cwd=repo,
+        expected_codes=None,
     )
     if result.returncode == 0 and result.stdout.strip() not in {"", "[]"}:
         return True
 
     # GitLab: glab mr list output lines for found MRs start with "!" (e.g. "!5  Title  (branch)").
-    result = subprocess.run(  # noqa: S603
+    result = run_allowed_to_fail(
         ["glab", "mr", "list", "--merged", "--source-branch", branch, "--limit", "1"],
-        capture_output=True,
-        text=True,
-        check=False,
         cwd=repo,
+        expected_codes=None,
     )
     if result.returncode == 0 and any(line.lstrip().startswith("!") for line in result.stdout.splitlines()):
         return True
@@ -172,12 +168,10 @@ def _drop_orphan_databases() -> list[str]:
     """Drop Postgres databases matching wt_* that don't belong to any worktree."""
     from teatree.utils.db import pg_env, pg_host, pg_user  # noqa: PLC0415
 
-    result = subprocess.run(  # noqa: S603
+    result = run_allowed_to_fail(
         ["psql", "-h", pg_host(), "-U", pg_user(), "-l", "-t", "-A"],
         env=pg_env(),
-        capture_output=True,
-        text=True,
-        check=False,
+        expected_codes=None,
     )
     if result.returncode != 0:
         return []
@@ -190,11 +184,10 @@ def _drop_orphan_databases() -> list[str]:
     orphans = wt_dbs - known_db_names
     cleaned: list[str] = []
     for db_name in sorted(orphans):
-        subprocess.run(  # noqa: S603
+        run_allowed_to_fail(
             ["dropdb", "-h", pg_host(), "-U", pg_user(), "--if-exists", db_name],
             env=pg_env(),
-            capture_output=True,
-            check=False,
+            expected_codes=None,
         )
         cleaned.append(f"Dropped orphan database: {db_name}")
     return cleaned
@@ -235,11 +228,9 @@ def _push_unsynced_branch(worktree: Worktree) -> str:
     wt_path = (worktree.extra or {}).get("worktree_path", "")
     if not wt_path or not Path(wt_path).is_dir():
         return f"Push failed: {worktree.repo_path} ({worktree.branch}) — worktree path missing"
-    result = subprocess.run(  # noqa: S603
+    result = run_allowed_to_fail(
         ["git", "-C", wt_path, "push", "-u", "origin", worktree.branch],
-        capture_output=True,
-        text=True,
-        check=False,
+        expected_codes=None,
     )
     if result.returncode != 0:
         return f"Push failed: {worktree.repo_path} ({worktree.branch}) — {result.stderr.strip()}"
@@ -439,7 +430,7 @@ class Command(TyperCommand):
 
                 git.rebase(repo_dir, f"origin/{default_br}")
                 results.append(f"{repo}: rebased on {default_br}")
-            except subprocess.CalledProcessError as exc:
+            except CommandFailedError as exc:
                 results.extend(
                     [
                         f"{repo}: rebase failed — {exc}",

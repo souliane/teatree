@@ -1,46 +1,29 @@
-import subprocess
+from teatree.utils.run import CommandFailedError, run_allowed_to_fail, run_checked
 
 
 def run(*, repo: str = ".", args: list[str]) -> str:
-    result = subprocess.run(
-        ["git", "-C", repo, *args],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    result = run_allowed_to_fail(["git", "-C", repo, *args], expected_codes=None)
     return result.stdout.strip()
 
 
-def run_checked(*, repo: str = ".", args: list[str]) -> str:
-    result = subprocess.run(
-        ["git", "-C", repo, *args],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
+def run_strict(*, repo: str = ".", args: list[str]) -> str:
+    result = run_checked(["git", "-C", repo, *args])
     return result.stdout.strip()
 
 
 def check(*, repo: str = ".", args: list[str]) -> bool:
-    return (
-        subprocess.run(
-            ["git", "-C", repo, *args],
-            capture_output=True,
-            check=False,
-        ).returncode
-        == 0
-    )
+    return run_allowed_to_fail(["git", "-C", repo, *args], expected_codes=None).returncode == 0
 
 
 # ── High-level operations ────────────────────────────────────────────
 
 
 def merge_base(repo: str = ".", target: str = "origin/main") -> str:
-    return run_checked(repo=repo, args=["merge-base", target, "HEAD"])
+    return run_strict(repo=repo, args=["merge-base", target, "HEAD"])
 
 
 def rev_count(repo: str = ".", range_spec: str = "") -> int:
-    out = run_checked(repo=repo, args=["rev-list", "--count", range_spec])
+    out = run_strict(repo=repo, args=["rev-list", "--count", range_spec])
     return int(out)
 
 
@@ -63,11 +46,11 @@ def status_porcelain(repo: str = ".") -> str:
 
 
 def soft_reset(repo: str = ".", target: str = "") -> None:
-    run_checked(repo=repo, args=["reset", "--soft", target])
+    run_strict(repo=repo, args=["reset", "--soft", target])
 
 
 def commit(repo: str = ".", message: str = "") -> None:
-    run_checked(repo=repo, args=["commit", "-m", message])
+    run_strict(repo=repo, args=["commit", "-m", message])
 
 
 def fetch(repo: str = ".", remote: str = "origin", ref: str = "") -> None:
@@ -78,7 +61,7 @@ def fetch(repo: str = ".", remote: str = "origin", ref: str = "") -> None:
 
 
 def rebase(repo: str = ".", target: str = "") -> None:
-    run_checked(repo=repo, args=["rebase", target])
+    run_strict(repo=repo, args=["rebase", target])
 
 
 def worktree_remove(repo: str = ".", path: str = "") -> bool:
@@ -147,4 +130,8 @@ def worktree_add(repo: str, path: str, branch: str, *, create_branch: bool = Tru
     args.append(path)
     if not create_branch:
         args.append(branch)
-    return check(repo=repo, args=args)
+    try:
+        run_checked(["git", "-C", repo, *args])
+    except CommandFailedError:
+        return False
+    return True

@@ -7,10 +7,10 @@ from unittest.mock import MagicMock, patch
 from django.core.management import call_command
 from django.test import TestCase, override_settings
 
-import teatree.cli.overlay as cli_overlay_mod
 import teatree.core.management.commands.e2e as e2e_mod
 import teatree.core.management.commands.run as run_mod
 import teatree.core.overlay_loader as overlay_loader_mod
+import teatree.utils.run as utils_run_mod
 from teatree.core.models import Ticket, Worktree
 from tests.teatree_core.conftest import CommandOverlay
 
@@ -181,7 +181,7 @@ class TestRunCommand(TestCase):
             with (
                 patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
                 patch.object(run_mod, "get_overlay", return_value=mock_overlay),
-                patch.object(run_mod.subprocess, "run", side_effect=fake_run),
+                patch.object(utils_run_mod.subprocess, "run", side_effect=fake_run),
                 patch("teatree.config.load_config", return_value=mock_config),
                 patch.object(
                     run_mod,
@@ -237,7 +237,7 @@ class TestE2eExternalCommand(TestCase):
                     },
                 ),
                 patch.object(e2e_mod, "get_service_port", return_value=4299),
-                patch.object(e2e_mod.subprocess, "run", side_effect=fake_run),
+                patch.object(utils_run_mod.subprocess, "run", side_effect=fake_run),
             ):
                 result = cast("str", call_command("e2e", "external"))
 
@@ -285,10 +285,11 @@ class TestE2eExternalCommand(TestCase):
 
 
 class TestCliOverlay:
-    @patch.object(cli_overlay_mod.subprocess, "run")
+    @patch.object(utils_run_mod.subprocess, "run")
     def test_managepy_calls_uv(self, mock_run: MagicMock, tmp_path: Path) -> None:
         from teatree.cli.overlay import managepy  # noqa: PLC0415
 
+        mock_run.return_value = MagicMock(returncode=0)
         (tmp_path / "manage.py").write_text("# stub", encoding="utf-8")
         managepy(tmp_path, "migrate", "--no-input")
 
@@ -298,7 +299,7 @@ class TestCliOverlay:
         assert cmd[1:3] == ["--directory", str(tmp_path)]
         assert cmd[-2:] == ["migrate", "--no-input"]
 
-    @patch.object(cli_overlay_mod.subprocess, "run")
+    @patch.object(utils_run_mod.subprocess, "run")
     @patch.dict("os.environ", {"DJANGO_SETTINGS_MODULE": "acme.settings"})
     def test_uvicorn_launches_asgi_with_reload(self, mock_run: MagicMock, tmp_path: Path) -> None:
         from teatree.cli.overlay import _uvicorn  # noqa: PLC0415
@@ -319,7 +320,7 @@ class TestCliOverlay:
         call_env = mock_run.call_args[1]["env"]
         assert call_env["DJANGO_SETTINGS_MODULE"] == "teatree.settings"
 
-    @patch.object(cli_overlay_mod.subprocess, "run")
+    @patch.object(utils_run_mod.subprocess, "run")
     def test_uvicorn_none_project_path_falls_back(self, mock_run: MagicMock) -> None:
         from teatree.cli.overlay import _uvicorn  # noqa: PLC0415
 

@@ -7,6 +7,7 @@ import pytest
 from django.test import TestCase
 
 import teatree.agents.headless as headless_mod
+import teatree.utils.run as utils_run_mod
 from teatree.agents.headless import (
     _get_resume_session_id,
     _parse_cli_envelope,
@@ -31,7 +32,7 @@ class TestRunHeadless(TestCase):
         with (
             patch.object(headless_mod.shutil, "which", return_value="/usr/bin/claude-code"),
             patch.object(
-                headless_mod.subprocess,
+                utils_run_mod.subprocess,
                 "run",
                 return_value=CompletedProcess([], 0, f"Progress...\n{result_json}\n", ""),
             ),
@@ -50,7 +51,7 @@ class TestRunHeadless(TestCase):
     def test_records_failure(self) -> None:
         with (
             patch.object(headless_mod.shutil, "which", return_value="/usr/bin/claude-code"),
-            patch.object(headless_mod.subprocess, "run", return_value=CompletedProcess([], 1, "", "segfault")),
+            patch.object(utils_run_mod.subprocess, "run", return_value=CompletedProcess([], 1, "", "segfault")),
         ):
             session = Session.objects.create(ticket=self.ticket)
             task = Task.objects.create(ticket=self.ticket, session=session)
@@ -78,7 +79,7 @@ class TestRunHeadless(TestCase):
         with (
             patch.object(headless_mod.shutil, "which", return_value="/usr/bin/claude-code"),
             patch.object(
-                headless_mod.subprocess,
+                utils_run_mod.subprocess,
                 "run",
                 return_value=CompletedProcess([], 0, "no structured output\n", ""),
             ),
@@ -97,7 +98,7 @@ class TestRunHeadless(TestCase):
         bad_json = json.dumps({"summary": "OK", "rogue_field": True})
         with (
             patch.object(headless_mod.shutil, "which", return_value="/usr/bin/claude-code"),
-            patch.object(headless_mod.subprocess, "run", return_value=CompletedProcess([], 0, f"{bad_json}\n", "")),
+            patch.object(utils_run_mod.subprocess, "run", return_value=CompletedProcess([], 0, f"{bad_json}\n", "")),
         ):
             session = Session.objects.create(ticket=self.ticket)
             task = Task.objects.create(ticket=self.ticket, session=session)
@@ -119,7 +120,7 @@ class TestRunHeadless(TestCase):
         )
         with (
             patch.object(headless_mod.shutil, "which", return_value="/usr/bin/claude-code"),
-            patch.object(headless_mod.subprocess, "run", return_value=CompletedProcess([], 0, f"{result_json}\n", "")),
+            patch.object(utils_run_mod.subprocess, "run", return_value=CompletedProcess([], 0, f"{result_json}\n", "")),
         ):
             session = Session.objects.create(ticket=self.ticket, agent_id="agent-1")
             task = Task.objects.create(
@@ -148,7 +149,7 @@ class TestRunHeadless(TestCase):
 
         with (
             patch.object(headless_mod.shutil, "which", return_value="/usr/bin/claude"),
-            patch.object(headless_mod.subprocess, "run", return_value=CompletedProcess([], 0, cli_envelope, "")),
+            patch.object(utils_run_mod.subprocess, "run", return_value=CompletedProcess([], 0, cli_envelope, "")),
         ):
             session = Session.objects.create(ticket=self.ticket)
             task = Task.objects.create(ticket=self.ticket, session=session)
@@ -258,7 +259,7 @@ class TestRunHeadlessResumesParentSession(TestCase):
 
         with (
             patch.object(headless_mod.shutil, "which", return_value="/usr/bin/claude"),
-            patch.object(headless_mod.subprocess, "run", side_effect=fake_run),
+            patch.object(utils_run_mod.subprocess, "run", side_effect=fake_run),
         ):
             ticket = Ticket.objects.create()
             parent_session = Session.objects.create(ticket=ticket, agent_id=FAKE_SESSION_UUID)
@@ -368,7 +369,7 @@ class TestRunWithHeartbeat(TestCase):
 
         with (
             patch.object(headless_mod, "_HEARTBEAT_INTERVAL", 0.05),
-            patch.object(headless_mod.subprocess, "run", slow_subprocess),
+            patch.object(utils_run_mod.subprocess, "run", slow_subprocess),
         ):
             stdout, _stderr, returncode = _run_with_heartbeat(task, ["echo"])
 
@@ -392,7 +393,7 @@ class TestRunWithHeartbeat(TestCase):
         with (
             patch.object(headless_mod, "_HEARTBEAT_INTERVAL", 0.05),
             patch.object(
-                headless_mod.subprocess,
+                utils_run_mod.subprocess,
                 "run",
                 lambda *_a, **_kw: CompletedProcess([], 0, "", ""),
             ),
@@ -421,7 +422,7 @@ class TestRunWithHeartbeat(TestCase):
 
         with (
             patch.object(headless_mod, "_HEARTBEAT_INTERVAL", 0.05),
-            patch.object(headless_mod.subprocess, "run", slow_subprocess),
+            patch.object(utils_run_mod.subprocess, "run", slow_subprocess),
             patch.object(headless_mod, "logger") as mock_logger,
         ):
             stdout, _stderr, returncode = _run_with_heartbeat(task, ["echo"])

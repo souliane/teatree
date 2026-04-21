@@ -22,15 +22,12 @@ import teatree.core.management.commands.e2e as e2e_mod
 import teatree.core.management.commands.lifecycle as lifecycle_mod
 import teatree.core.management.commands.pr as pr_mod
 import teatree.core.management.commands.run as run_mod
-import teatree.core.management.commands.tool as tool_mod
 import teatree.core.management.commands.workspace as workspace_mod
 import teatree.core.overlay_loader as overlay_loader_mod
-import teatree.core.provisioners as provisioners_mod
-import teatree.core.step_runner as step_runner_mod
 import teatree.core.views._startup as startup_mod
 import teatree.utils.db as db_mod
-import teatree.utils.django_db as django_db_mod
 import teatree.utils.git as git_mod
+import teatree.utils.run as utils_run_mod
 from teatree.core.management.commands.lifecycle import _register_new_repos
 from teatree.core.management.commands.pr import _last_commit_message
 from teatree.core.management.commands.workspace import _branch_prefix, _workspace_dir
@@ -294,8 +291,9 @@ class TestWorkspaceDirHelper(TestCase):
 class TestWorkspaceTicket(TestCase):
     def setUp(self) -> None:
         super().setUp()
+        mock_result = MagicMock(returncode=0, stdout="dev", stderr="")
         self.enterContext(
-            patch.object(git_mod.subprocess, "run", return_value=MagicMock(returncode=0, stdout="dev", stderr="")),
+            patch.object(utils_run_mod.subprocess, "run", return_value=mock_result),
         )
 
     @_patch_overlays(FULL_OVERLAY)
@@ -348,7 +346,7 @@ class TestWorkspaceTicket(TestCase):
 
             with (
                 patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
-                patch.object(git_mod.subprocess, "run", return_value=mock_result),
+                patch.object(utils_run_mod.subprocess, "run", return_value=mock_result),
             ):
                 ticket_id = cast("int", call_command("workspace", "ticket", "https://example.com/issues/80"))
 
@@ -421,7 +419,7 @@ class TestWorkspaceTicket(TestCase):
 
             with (
                 patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
-                patch.object(git_mod.subprocess, "run", return_value=mock_result),
+                patch.object(utils_run_mod.subprocess, "run", return_value=mock_result),
             ):
                 ticket_id = cast("int", call_command("workspace", "ticket", "https://example.com/issues/81"))
 
@@ -456,7 +454,7 @@ class TestWorkspaceTicket(TestCase):
             with (
                 patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
                 patch.object(workspace_mod, "_branch_prefix", return_value="ac"),
-                patch.object(git_mod.subprocess, "run", return_value=mock_result),
+                patch.object(utils_run_mod.subprocess, "run", return_value=mock_result),
             ):
                 ticket_id = cast("int", call_command("workspace", "ticket", "https://example.com/issues/82"))
 
@@ -491,7 +489,7 @@ class TestWorkspaceTicket(TestCase):
 
             with (
                 patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
-                patch.object(git_mod.subprocess, "run", side_effect=side_effect),
+                patch.object(utils_run_mod.subprocess, "run", side_effect=side_effect),
             ):
                 result = cast("int", call_command("workspace", "ticket", "https://example.com/issues/83"))
 
@@ -554,7 +552,7 @@ class TestWorkspaceTicket(TestCase):
 
             with (
                 patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
-                patch.object(git_mod.subprocess, "run", side_effect=side_effect),
+                patch.object(utils_run_mod.subprocess, "run", side_effect=side_effect),
             ):
                 ticket_id = cast(
                     "int",
@@ -600,7 +598,7 @@ class TestWorkspaceTicket(TestCase):
 
             with (
                 patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
-                patch.object(git_mod.subprocess, "run", side_effect=side_effect),
+                patch.object(utils_run_mod.subprocess, "run", side_effect=side_effect),
             ):
                 ticket_id = cast("int", call_command("workspace", "ticket", "https://example.com/issues/103"))
 
@@ -627,7 +625,7 @@ class TestWorkspaceTicket(TestCase):
 
             with (
                 patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
-                patch.object(git_mod.subprocess, "run", return_value=mock_result),
+                patch.object(utils_run_mod.subprocess, "run", return_value=mock_result),
             ):
                 ticket_id = cast("int", call_command("workspace", "ticket", "https://example.com/issues/90"))
 
@@ -747,7 +745,11 @@ class TestWorkspaceCleanAll(TestCase):
 
             with (
                 patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
-                patch.object(git_mod.subprocess, "run") as mock_run,
+                patch.object(
+                    utils_run_mod.subprocess,
+                    "run",
+                    return_value=subprocess.CompletedProcess([], 0, "", ""),
+                ) as mock_run,
                 patch.object(db_mod, "pg_host", return_value="localhost"),
                 patch.object(db_mod, "pg_user", return_value="testuser"),
                 patch.object(db_mod, "pg_env", return_value={"PGPASSWORD": "secret"}),
@@ -1003,7 +1005,7 @@ class TestResolveUnsyncedWorktree(TestCase):
             fake_push = subprocess.CompletedProcess([], 0, stdout="", stderr="")
             with (
                 patch("builtins.input", return_value="p"),
-                patch.object(workspace_mod.subprocess, "run", return_value=fake_push) as mock_run,
+                patch.object(utils_run_mod.subprocess, "run", return_value=fake_push) as mock_run,
             ):
                 result = workspace_mod._resolve_unsynced_worktree(wt, exc, interactive=True)
         assert result.startswith("Pushed:")
@@ -1019,7 +1021,7 @@ class TestResolveUnsyncedWorktree(TestCase):
             fake_push = subprocess.CompletedProcess([], 1, stdout="", stderr="remote rejected: protected branch")
             with (
                 patch("builtins.input", return_value="p"),
-                patch.object(workspace_mod.subprocess, "run", return_value=fake_push),
+                patch.object(utils_run_mod.subprocess, "run", return_value=fake_push),
             ):
                 result = workspace_mod._resolve_unsynced_worktree(wt, exc, interactive=True)
         assert result.startswith("Push failed:")
@@ -1106,15 +1108,15 @@ def _subprocess_side_effect(gh_stdout: str, glab_stdout: str):
 
 
 _gh_no_pr = patch(
-    "teatree.core.management.commands.workspace.subprocess.run",
+    "teatree.utils.run.subprocess.run",
     side_effect=_subprocess_side_effect(gh_stdout="[]", glab_stdout=""),
 )
 _gh_merged_pr = patch(
-    "teatree.core.management.commands.workspace.subprocess.run",
+    "teatree.utils.run.subprocess.run",
     return_value=subprocess.CompletedProcess([], 0, stdout='[{"number":1}]'),
 )
 _glab_merged_mr = patch(
-    "teatree.core.management.commands.workspace.subprocess.run",
+    "teatree.utils.run.subprocess.run",
     side_effect=_subprocess_side_effect(gh_stdout="[]", glab_stdout="!5\tMR title\t(feature)\t1 hour ago"),
 )
 
@@ -1181,7 +1183,7 @@ class TestPruneBranches(TestCase):
             patch.object(git_mod, "default_branch", return_value="main"),
             patch.object(git_mod, "worktree_remove", return_value=True) as mock_wt_rm,
             patch.object(git_mod, "branch_delete", return_value=True) as mock_br_del,
-            patch("teatree.core.management.commands.workspace.subprocess.run", return_value=gh_merged),
+            patch("teatree.utils.run.subprocess.run", return_value=gh_merged),
         ):
             cleaned = workspace_mod._prune_branches("/repo")
 
@@ -1214,7 +1216,7 @@ class TestPruneBranches(TestCase):
             patch.object(git_mod, "unsynced_commits", return_value=["abc123 chore: cve fix"]),
             patch.object(git_mod, "worktree_remove", return_value=True) as mock_wt_rm,
             patch.object(git_mod, "branch_delete", return_value=True) as mock_br_del,
-            patch("teatree.core.management.commands.workspace.subprocess.run", return_value=gh_merged),
+            patch("teatree.utils.run.subprocess.run", return_value=gh_merged),
         ):
             cleaned = workspace_mod._prune_branches("/repo")
 
@@ -1247,7 +1249,7 @@ class TestPruneBranches(TestCase):
             patch.object(git_mod, "unsynced_commits", return_value=[]),
             patch.object(git_mod, "worktree_remove", return_value=True) as mock_wt_rm,
             patch.object(git_mod, "branch_delete", return_value=True) as mock_br_del,
-            patch("teatree.core.management.commands.workspace.subprocess.run", return_value=gh_merged),
+            patch("teatree.utils.run.subprocess.run", return_value=gh_merged),
         ):
             cleaned = workspace_mod._prune_branches("/repo")
 
@@ -1327,7 +1329,7 @@ class TestPruneBranchesPassOneAndTwo(TestCase):
             patch.object(git_mod, "branch_delete") as mock_del,
             patch.object(workspace_mod, "_worktree_branches", return_value=set()),
             patch.object(workspace_mod, "_worktree_map", return_value={}),
-            patch("teatree.core.management.commands.workspace.subprocess.run", return_value=gh_no_pr),
+            patch("teatree.utils.run.subprocess.run", return_value=gh_no_pr),
         ):
             cleaned = workspace_mod._prune_branches("/repo")
 
@@ -1419,7 +1421,7 @@ class TestDropOrphanedStashes(TestCase):
 class TestDropOrphanDatabasesFailure(TestCase):
     def test_returns_empty_when_psql_fails(self) -> None:
         with (
-            patch.object(workspace_mod, "subprocess") as mock_sp,
+            patch.object(utils_run_mod, "subprocess") as mock_sp,
             patch.object(db_mod, "pg_env", return_value={}),
             patch.object(db_mod, "pg_host", return_value="localhost"),
             patch.object(db_mod, "pg_user", return_value="postgres"),
@@ -1473,8 +1475,6 @@ class TestWorkspaceFinalize(TestCase):
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
     def test_handles_rebase_failure(self) -> None:
-        import subprocess as sp  # noqa: PLC0415
-
         ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/91")
         Worktree.objects.create(overlay="test", ticket=ticket, repo_path="/tmp/backend", branch="feature-91")
 
@@ -1485,7 +1485,11 @@ class TestWorkspaceFinalize(TestCase):
             patch.object(git_mod, "merge_base", return_value="abc123"),
             patch.object(git_mod, "rev_count", return_value=1),
             patch.object(git_mod, "log_oneline", return_value=""),
-            patch.object(git_mod, "rebase", side_effect=sp.CalledProcessError(1, "git rebase")),
+            patch.object(
+                git_mod,
+                "rebase",
+                side_effect=utils_run_mod.CommandFailedError(["git", "rebase"], 1, "", "conflict"),
+            ),
         ):
             result = cast("str", call_command("workspace", "finalize", str(ticket.pk)))
 
@@ -2277,7 +2281,7 @@ class TestRunBackend(TestCase):
             mock_config = MagicMock()
             mock_config.user.workspace_dir = tmp_path
             with (
-                patch.object(run_mod.subprocess, "run") as mock_run,
+                patch.object(utils_run_mod.subprocess, "run") as mock_run,
                 patch("teatree.config.load_config", return_value=mock_config),
                 patch.object(
                     run_mod,
@@ -2343,7 +2347,7 @@ class TestRunFrontend(TestCase):
             mock_config.user.workspace_dir = tmp_path
 
             with (
-                patch.object(run_mod.subprocess, "Popen") as mock_popen,
+                patch.object(utils_run_mod.subprocess, "Popen") as mock_popen,
                 patch.object(run_mod, "find_free_ports", return_value={"frontend": 4201, "backend": 8001}),
                 patch("teatree.config.load_config", return_value=mock_config),
                 patch("teatree.utils.ports.free_port", return_value=None),
@@ -2391,7 +2395,11 @@ class TestRunBuildFrontend(TestCase):
                 extra={"worktree_path": str(wt_dir)},
             )
 
-            with patch.object(run_mod.subprocess, "run") as mock_run:
+            with patch.object(
+                utils_run_mod.subprocess,
+                "run",
+                return_value=subprocess.CompletedProcess([], 0, "", ""),
+            ) as mock_run:
                 result = cast("str", call_command("run", "build-frontend", path=str(wt_dir)))
 
             mock_run.assert_called_once()
@@ -2435,7 +2443,8 @@ class TestRunTests(TestCase):
                 extra={"worktree_path": str(wt_dir)},
             )
 
-            with patch.object(run_mod.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)) as mock_run:
+            mock_result = subprocess.CompletedProcess([], 0)
+            with patch.object(utils_run_mod.subprocess, "run", return_value=mock_result) as mock_run:
                 result = cast("str", call_command("run", "tests", path=str(wt_dir)))
 
             mock_run.assert_called_once()
@@ -2629,17 +2638,17 @@ class TestDetectNxServePort:
 
     def test_returns_port_when_nx_serve_matches_worktree_path(self) -> None:
         ps_output = self._ps_output(["node nx serve --port=4210 /home/user/tickets/my-ticket/frontend"])
-        with patch.object(e2e_mod.subprocess, "run", return_value=ps_output):
+        with patch.object(utils_run_mod.subprocess, "run", return_value=ps_output):
             assert e2e_mod._detect_nx_serve_port("/home/user/tickets/my-ticket/frontend") == 4210
 
     def test_returns_none_when_worktree_path_does_not_match(self) -> None:
         ps_output = self._ps_output(["node nx serve --port=4210 /home/user/tickets/other-ticket/frontend"])
-        with patch.object(e2e_mod.subprocess, "run", return_value=ps_output):
+        with patch.object(utils_run_mod.subprocess, "run", return_value=ps_output):
             assert e2e_mod._detect_nx_serve_port("/home/user/tickets/my-ticket/frontend") is None
 
     def test_returns_none_when_no_nx_serve_running(self) -> None:
         ps_output = self._ps_output(["python manage.py runserver"])
-        with patch.object(e2e_mod.subprocess, "run", return_value=ps_output):
+        with patch.object(utils_run_mod.subprocess, "run", return_value=ps_output):
             assert e2e_mod._detect_nx_serve_port("/any/path") is None
 
 
@@ -2741,7 +2750,7 @@ class TestE2eProject(TestCase):
         mock_result = MagicMock(returncode=0)
         with (
             patch.object(e2e_mod, "resolve_worktree", return_value=None),
-            patch.object(e2e_mod.subprocess, "run", return_value=mock_result) as mock_run,
+            patch.object(utils_run_mod.subprocess, "run", return_value=mock_result) as mock_run,
         ):
             result = cast("str", call_command("e2e", "project", docker=False))
 
@@ -2756,7 +2765,7 @@ class TestE2eProject(TestCase):
         mock_result = MagicMock(returncode=1)
         with (
             patch.object(e2e_mod, "resolve_worktree", return_value=None),
-            patch.object(e2e_mod.subprocess, "run", return_value=mock_result),
+            patch.object(utils_run_mod.subprocess, "run", return_value=mock_result),
             pytest.raises(SystemExit) as exc_info,
         ):
             call_command("e2e", "project", docker=False)
@@ -2770,7 +2779,7 @@ class TestE2eProject(TestCase):
         mock_result = MagicMock(returncode=0)
         with (
             patch.object(e2e_mod, "resolve_worktree", return_value=None),
-            patch.object(e2e_mod.subprocess, "run", return_value=mock_result) as mock_run,
+            patch.object(utils_run_mod.subprocess, "run", return_value=mock_result) as mock_run,
         ):
             call_command("e2e", "project", headed=True, docker=False)
 
@@ -2784,7 +2793,7 @@ class TestE2eProject(TestCase):
         mock_result = MagicMock(returncode=0)
         with (
             patch.object(e2e_mod, "resolve_worktree", return_value=None),
-            patch.object(e2e_mod.subprocess, "run", return_value=mock_result) as mock_run,
+            patch.object(utils_run_mod.subprocess, "run", return_value=mock_result) as mock_run,
         ):
             call_command("e2e", "project", test_path="tests/e2e/test_login.py", docker=False)
 
@@ -2831,7 +2840,7 @@ class TestE2eExternal(TestCase):
                 patch.dict("os.environ", {"T3_ORIG_CWD": str(wt_dir)}, clear=False),
                 patch.object(config_mod, "load_config") as mock_cfg,
                 patch.object(e2e_mod, "get_service_port", return_value=4200),
-                patch.object(e2e_mod.subprocess, "run", return_value=mock_result),
+                patch.object(utils_run_mod.subprocess, "run", return_value=mock_result),
             ):
                 mock_cfg.return_value.raw = {"teatree": {"private_tests": str(private_dir)}}
                 os.environ.pop("T3_PRIVATE_TESTS", None)
@@ -2873,7 +2882,7 @@ class TestE2eExternal(TestCase):
             with (
                 patch.dict("os.environ", {"T3_PRIVATE_TESTS": str(private_dir), "T3_ORIG_CWD": str(wt_dir)}),
                 patch.object(e2e_mod, "get_service_port", return_value=5555),
-                patch.object(e2e_mod.subprocess, "run", return_value=mock_result) as mock_run,
+                patch.object(utils_run_mod.subprocess, "run", return_value=mock_result) as mock_run,
             ):
                 result = cast("str", call_command("e2e", "external"))
             assert "passed" in result
@@ -2905,7 +2914,7 @@ class TestE2eExternal(TestCase):
             with (
                 patch.dict("os.environ", {"T3_PRIVATE_TESTS": str(private_dir), "T3_ORIG_CWD": str(wt_dir)}),
                 patch.object(e2e_mod, "get_service_port", return_value=4200),
-                patch.object(e2e_mod.subprocess, "run", return_value=mock_result) as mock_run,
+                patch.object(utils_run_mod.subprocess, "run", return_value=mock_result) as mock_run,
                 pytest.raises(SystemExit) as exc_info,
             ):
                 call_command("e2e", "external", headed=True)
@@ -2938,7 +2947,7 @@ class TestE2eExternal(TestCase):
             with (
                 patch.dict("os.environ", {"T3_PRIVATE_TESTS": str(private_dir), "T3_ORIG_CWD": str(wt_dir)}),
                 patch.object(e2e_mod, "get_service_port", return_value=4200),
-                patch.object(e2e_mod.subprocess, "run", return_value=mock_result) as mock_run,
+                patch.object(utils_run_mod.subprocess, "run", return_value=mock_result) as mock_run,
             ):
                 call_command("e2e", "external", test_path="tests/login.py")
             cmd = mock_run.call_args[0][0]
@@ -2987,7 +2996,7 @@ class TestE2eExternal(TestCase):
                     clear=False,
                 ),
                 patch.object(e2e_mod, "_discover_frontend_port") as mock_discover,
-                patch.object(e2e_mod.subprocess, "run", return_value=mock_result) as mock_run,
+                patch.object(utils_run_mod.subprocess, "run", return_value=mock_result) as mock_run,
             ):
                 result = cast("str", call_command("e2e", "external"))
 
@@ -3011,7 +3020,7 @@ class TestE2eExternal(TestCase):
                 patch.object(e2e_mod, "load_e2e_repos", return_value=[repo]),
                 patch.object(e2e_mod, "_clone_or_update_e2e_repo", return_value=playwright_root),
                 patch.object(e2e_mod, "_discover_frontend_port") as mock_discover,
-                patch.object(e2e_mod.subprocess, "run", return_value=mock_result) as mock_run,
+                patch.object(utils_run_mod.subprocess, "run", return_value=mock_result) as mock_run,
             ):
                 result = cast("str", call_command("e2e", "external", repo="svc"))
 
@@ -3031,8 +3040,7 @@ class TestLifecycleSetup(TestCase):
         mock_sp.run.return_value = MagicMock(returncode=0, stdout="", stderr="")
         mock_sp.TimeoutExpired = subprocess.TimeoutExpired
         mock_sp.CompletedProcess = subprocess.CompletedProcess
-        for mod in (lifecycle_mod, provisioners_mod, step_runner_mod, db_mod, django_db_mod, git_mod):
-            self.enterContext(patch.object(mod, "subprocess", mock_sp))
+        self.enterContext(patch.object(utils_run_mod, "subprocess", mock_sp))
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
@@ -3061,7 +3069,7 @@ class TestLifecycleSetup(TestCase):
 
             with (
                 patch.object(overlay_loader_mod, "_discover_overlays", return_value={"test": overlay}),
-                patch.object(lifecycle_mod, "subprocess"),
+                patch.object(utils_run_mod, "subprocess"),
             ):
                 call_command("lifecycle", "setup", path=str(wt_dir))
 
@@ -3087,7 +3095,7 @@ class TestLifecycleSetup(TestCase):
             wt.provision()
             wt.save()
 
-            with patch.object(lifecycle_mod.subprocess, "run"):
+            with patch.object(utils_run_mod.subprocess, "run"):
                 worktree_id = cast("int", call_command("lifecycle", "setup", path=str(wt_dir)))
 
             worktree = Worktree.objects.get(pk=worktree_id)
@@ -3111,7 +3119,7 @@ class TestLifecycleSetup(TestCase):
                 extra={"worktree_path": str(wt_dir)},
             )
 
-            with patch.object(lifecycle_mod.subprocess, "run"):
+            with patch.object(utils_run_mod.subprocess, "run"):
                 call_command("lifecycle", "setup", path=str(wt_dir), variant="testcustomer")
 
             ticket.refresh_from_db()
@@ -3135,7 +3143,7 @@ class TestLifecycleSetup(TestCase):
                 extra={"worktree_path": str(wt_dir)},
             )
 
-            with patch.object(lifecycle_mod, "subprocess") as mock_sp:
+            with patch.object(utils_run_mod, "subprocess") as mock_sp:
                 mock_sp.run.return_value = MagicMock(returncode=0)
                 worktree_id = cast("int", call_command("lifecycle", "setup", path=str(wt_dir)))
 
@@ -3239,8 +3247,6 @@ class TestLifecycleSetup(TestCase):
     @override_settings(**SETTINGS)
     def test_runs_prek_install_when_config_exists(self) -> None:
         """Setup runs 'prek install -f' when .pre-commit-config.yaml exists in worktree path."""
-        from teatree.core import step_runner as step_runner_mod  # noqa: PLC0415
-
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
 
@@ -3257,9 +3263,10 @@ class TestLifecycleSetup(TestCase):
                 extra={"worktree_path": str(wt_path)},
             )
 
-            with patch.object(step_runner_mod, "subprocess") as mock_sp:
+            with patch.object(utils_run_mod, "subprocess") as mock_sp:
                 mock_sp.run.return_value = MagicMock(returncode=0, stdout="", stderr="")
                 mock_sp.TimeoutExpired = subprocess.TimeoutExpired
+                mock_sp.CompletedProcess = subprocess.CompletedProcess
                 call_command("lifecycle", "setup", path=str(wt_path))
 
             # Find the prek install call among all subprocess.run calls
@@ -3301,7 +3308,7 @@ class TestLifecycleSetup(TestCase):
 
             with (
                 patch.object(lifecycle_mod, "get_overlay", return_value=mock_overlay),
-                patch.object(lifecycle_mod, "subprocess") as mock_sp,
+                patch.object(utils_run_mod, "subprocess") as mock_sp,
             ):
                 mock_sp.run.return_value = MagicMock(returncode=0)
                 call_command("lifecycle", "setup", path=str(wt_path))
@@ -3313,7 +3320,7 @@ class TestLifecycleSetup(TestCase):
             # Run again — should not duplicate
             with (
                 patch.object(lifecycle_mod, "get_overlay", return_value=mock_overlay),
-                patch.object(lifecycle_mod, "subprocess") as mock_sp,
+                patch.object(utils_run_mod, "subprocess") as mock_sp,
             ):
                 mock_sp.run.return_value = MagicMock(returncode=0)
                 call_command("lifecycle", "setup", path=str(wt_path))
@@ -3349,7 +3356,7 @@ class TestLifecycleSetup(TestCase):
 
             with (
                 patch.object(lifecycle_mod, "get_overlay", return_value=mock_overlay),
-                patch.object(lifecycle_mod, "subprocess") as mock_sp,
+                patch.object(utils_run_mod, "subprocess") as mock_sp,
             ):
                 mock_sp.run.return_value = MagicMock(returncode=0)
                 call_command("lifecycle", "setup", path=str(wt_path), variant="beta")
@@ -3387,7 +3394,7 @@ class TestLifecycleSetup(TestCase):
 
             with (
                 patch.object(lifecycle_mod, "get_overlay", return_value=mock_overlay),
-                patch.object(lifecycle_mod, "subprocess") as mock_sp,
+                patch.object(utils_run_mod, "subprocess") as mock_sp,
                 patch.object(lifecycle_mod, "write_env_worktree", return_value=None),
             ):
                 mock_sp.run.return_value = MagicMock(returncode=0)
@@ -3509,7 +3516,7 @@ class TestLifecycleStart(TestCase):
 
             with (
                 patch.object(lifecycle_mod, "get_overlay", return_value=mock_overlay),
-                patch.object(lifecycle_mod, "subprocess") as mock_sp,
+                patch.object(utils_run_mod, "subprocess") as mock_sp,
                 patch.object(
                     lifecycle_mod,
                     "find_free_ports",
@@ -3563,7 +3570,7 @@ class TestLifecycleStart(TestCase):
 
             with (
                 patch.object(lifecycle_mod, "get_overlay", return_value=mock_overlay),
-                patch.object(lifecycle_mod, "subprocess") as mock_sp,
+                patch.object(utils_run_mod, "subprocess") as mock_sp,
                 patch.object(
                     lifecycle_mod,
                     "find_free_ports",
@@ -3623,7 +3630,7 @@ class TestLifecycleStart(TestCase):
 
             with (
                 patch.object(lifecycle_mod, "get_overlay", return_value=mock_overlay),
-                patch.object(lifecycle_mod, "subprocess") as mock_sp,
+                patch.object(utils_run_mod, "subprocess") as mock_sp,
                 patch.object(
                     lifecycle_mod,
                     "find_free_ports",
@@ -3656,7 +3663,7 @@ class TestLifecycleClean(TestCase):
             wt.provision()
             wt.save()
 
-            with patch.object(lifecycle_mod, "subprocess") as mock_sp:
+            with patch.object(utils_run_mod, "subprocess") as mock_sp:
                 mock_sp.run.return_value = MagicMock(returncode=0)
                 result = cast("str", call_command("lifecycle", "clean", path=str(wt_dir)))
 
@@ -3691,7 +3698,7 @@ class TestLifecycleClean(TestCase):
                 return MagicMock(returncode=0)
 
             with (
-                patch.object(lifecycle_mod, "subprocess") as mock_sp,
+                patch.object(utils_run_mod, "subprocess") as mock_sp,
                 patch.object(db_mod, "pg_env", return_value={}),
                 patch.object(db_mod, "pg_host", return_value="localhost"),
                 patch.object(db_mod, "pg_user", return_value="postgres"),
@@ -3729,7 +3736,7 @@ class TestDropOrphanDatabases(TestCase):
             return MagicMock(returncode=0)
 
         with (
-            patch.object(workspace_mod, "subprocess") as mock_sp,
+            patch.object(utils_run_mod, "subprocess") as mock_sp,
             patch.object(db_mod, "pg_env", return_value={}),
             patch.object(db_mod, "pg_host", return_value="localhost"),
             patch.object(db_mod, "pg_user", return_value="postgres"),
@@ -3776,7 +3783,7 @@ class TestLifecycleDiagnose(TestCase):
             wt.provision()
             wt.save()
 
-            with patch.object(lifecycle_mod, "subprocess") as mock_sp:
+            with patch.object(utils_run_mod, "subprocess") as mock_sp:
                 # Mock docker compose ps (returns running services)
                 mock_sp.run.return_value = MagicMock(returncode=0, stdout="backend  running\n")
                 result = cast("dict[str, object]", call_command("lifecycle", "diagnose", path=str(wt_dir)))
@@ -3803,7 +3810,7 @@ class TestLifecycleDiagnose(TestCase):
                 extra={"worktree_path": str(wt_dir)},
             )
 
-            with patch.object(lifecycle_mod, "subprocess") as mock_sp:
+            with patch.object(utils_run_mod, "subprocess") as mock_sp:
                 mock_sp.run.return_value = MagicMock(returncode=0, stdout="")
                 result = cast("dict[str, object]", call_command("lifecycle", "diagnose", path=str(wt_dir)))
 
@@ -4084,13 +4091,14 @@ class TestToolRun(TestCase):
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
     def test_executes_command(self) -> None:
-        with patch.object(tool_mod.subprocess, "run") as mock_run:
+        with patch.object(utils_run_mod.subprocess, "run") as mock_run:
+            mock_run.return_value = subprocess.CompletedProcess([], 0, "", "")
             result = cast("str", call_command("tool", "run", "migrate"))
 
         assert "completed" in result.lower()
         mock_run.assert_called_once()
         call_args = mock_run.call_args
-        assert call_args[0][0] == "echo migrate"
+        assert call_args[0][0] == ["echo", "migrate"]
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
@@ -4112,7 +4120,8 @@ class TestToolRun(TestCase):
     @override_settings(**SETTINGS)
     def test_forwards_extra_args(self) -> None:
         """Extra args after the tool name are appended to the command."""
-        with patch.object(tool_mod.subprocess, "run") as mock_run:
+        with patch.object(utils_run_mod.subprocess, "run") as mock_run:
+            mock_run.return_value = subprocess.CompletedProcess([], 0, "", "")
             result = cast(
                 "str",
                 call_command("tool", "run", "migrate", "--verbose", "--dry-run"),
@@ -4120,7 +4129,7 @@ class TestToolRun(TestCase):
 
         assert "completed" in result.lower()
         cmd = mock_run.call_args[0][0]
-        assert cmd == "echo migrate --verbose --dry-run"
+        assert cmd == ["echo", "migrate", "--verbose", "--dry-run"]
 
 
 # ── Repo discovery in lifecycle setup ──────────────────────────────
@@ -4155,7 +4164,7 @@ class TestLifecycleRepoDiscovery(TestCase):
                 extra={"worktree_path": str(existing)},
             )
 
-            with patch.object(lifecycle_mod.subprocess, "run"):
+            with patch.object(utils_run_mod.subprocess, "run"):
                 call_command("lifecycle", "setup", path=str(existing))
 
             # Should have created a new Worktree record for frontend
@@ -4190,7 +4199,7 @@ class TestLifecycleRepoDiscovery(TestCase):
                 extra={"worktree_path": str(existing)},
             )
 
-            with patch.object(lifecycle_mod.subprocess, "run"):
+            with patch.object(utils_run_mod.subprocess, "run"):
                 call_command("lifecycle", "setup", path=str(existing))
 
             assert ticket.worktrees.count() == 1
@@ -4220,7 +4229,7 @@ class TestLifecycleRepoDiscovery(TestCase):
                 extra={"worktree_path": str(existing)},
             )
 
-            with patch.object(lifecycle_mod.subprocess, "run"):
+            with patch.object(utils_run_mod.subprocess, "run"):
                 call_command("lifecycle", "setup", path=str(existing))
 
             assert ticket.worktrees.count() == 1
@@ -4251,7 +4260,7 @@ class TestLifecycleRepoDiscovery(TestCase):
                 extra={"worktree_path": str(existing)},
             )
 
-            with patch.object(lifecycle_mod.subprocess, "run"):
+            with patch.object(utils_run_mod.subprocess, "run"):
                 call_command("lifecycle", "setup", path=str(existing))
                 call_command("lifecycle", "setup", path=str(existing))
 
@@ -4288,7 +4297,7 @@ class TestLifecycleRepoDiscovery(TestCase):
                 extra={"worktree_path": str(frontend)},
             )
 
-            with patch.object(lifecycle_mod.subprocess, "run"):
+            with patch.object(utils_run_mod.subprocess, "run"):
                 call_command("lifecycle", "setup", path=str(backend))
 
             # Both worktrees should be provisioned
@@ -4337,7 +4346,7 @@ class TestCloneOrUpdateE2eRepo(TestCase):
 
             with (
                 patch.object(e2e_mod, "get_data_dir", return_value=tmp_path / "e2e-repos"),
-                patch.object(e2e_mod.subprocess, "run", return_value=MagicMock(returncode=0)) as mock_run,
+                patch.object(utils_run_mod.subprocess, "run", return_value=MagicMock(returncode=0)) as mock_run,
             ):
                 e2e_mod._clone_or_update_e2e_repo(self._make_repo())
 
@@ -4361,7 +4370,7 @@ class TestCloneOrUpdateE2eRepo(TestCase):
 
             with (
                 patch.object(e2e_mod, "get_data_dir", return_value=tmp_path / "e2e-repos"),
-                patch.object(e2e_mod.subprocess, "run", side_effect=capture_run),
+                patch.object(utils_run_mod.subprocess, "run", side_effect=capture_run),
             ):
                 e2e_mod._clone_or_update_e2e_repo(self._make_repo())
 
@@ -4376,7 +4385,7 @@ class TestCloneOrUpdateE2eRepo(TestCase):
 
             with (
                 patch.object(e2e_mod, "get_data_dir", return_value=tmp_path / "e2e-repos"),
-                patch.object(e2e_mod.subprocess, "run", return_value=MagicMock(returncode=0)),
+                patch.object(utils_run_mod.subprocess, "run", return_value=MagicMock(returncode=0)),
             ):
                 result = e2e_mod._clone_or_update_e2e_repo(self._make_repo(e2e_dir="playwright"))
 
@@ -4423,13 +4432,13 @@ class TestE2eExternalRepo(TestCase):
                 patch.object(e2e_mod, "load_e2e_repos", return_value=[repo]),
                 patch.object(e2e_mod, "_clone_or_update_e2e_repo", return_value=playwright_root),
                 patch.object(e2e_mod, "get_service_port", return_value=4200),
-                patch.object(e2e_mod.subprocess, "run", return_value=mock_result) as mock_run,
+                patch.object(utils_run_mod.subprocess, "run", return_value=mock_result) as mock_run,
             ):
                 result = cast("str", call_command("e2e", "external", repo="home-savings"))
 
         assert "passed" in result
         run_cwd = mock_run.call_args[1]["cwd"]
-        assert run_cwd == playwright_root
+        assert str(run_cwd) == str(playwright_root)
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)

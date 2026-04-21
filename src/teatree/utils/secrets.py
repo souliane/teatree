@@ -1,6 +1,6 @@
 """Secret retrieval via the ``pass`` password store."""
 
-import subprocess
+from teatree.utils.run import CommandFailedError, run_checked
 
 
 def read_pass(key: str) -> str:
@@ -10,12 +10,8 @@ def read_pass(key: str) -> str:
     if the key is not found or ``pass`` is not installed.
     """
     try:
-        result = subprocess.run(
-            ["pass", "show", key],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        return result.stdout.strip().splitlines()[0]
-    except (subprocess.CalledProcessError, FileNotFoundError, IndexError):
+        result = run_checked(["pass", "show", key])
+    except (CommandFailedError, FileNotFoundError):
         return ""
+    lines = result.stdout.strip().splitlines()
+    return lines[0] if lines else ""

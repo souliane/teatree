@@ -1,5 +1,6 @@
 """Tests for the bundled t3-teatree overlay."""
 
+import subprocess
 from importlib.metadata import entry_points
 from pathlib import Path
 from unittest.mock import patch
@@ -159,9 +160,11 @@ class TestGetProvisionSteps(TestCase):
         overlay = TeatreeOverlay()
         steps = overlay.get_provision_steps(self.worktree)
 
-        with patch("subprocess.run") as mock_run:
+        with patch("subprocess.run", return_value=subprocess.CompletedProcess([], 0, "", "")) as mock_run:
             steps[0].callable()
-            mock_run.assert_called_once_with(["uv", "sync"], cwd=Path("/tmp/teatree"), check=True)
+            mock_run.assert_called_once()
+            assert mock_run.call_args.args[0] == ["uv", "sync"]
+            assert mock_run.call_args.kwargs["cwd"] == str(Path("/tmp/teatree"))
 
 
 class TestGetRunCommands(TestCase):

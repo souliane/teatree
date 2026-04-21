@@ -3,7 +3,6 @@
 import os
 import re
 import socket
-import subprocess  # noqa: S404
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -14,6 +13,7 @@ from teatree.core.management.commands.lifecycle import compose_project
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.resolve import _find_env_worktree, _get_user_cwd, _parse_env_file, resolve_worktree
 from teatree.utils.ports import get_service_port
+from teatree.utils.run import run_allowed_to_fail, run_checked, run_streamed
 
 
 @dataclass
@@ -54,12 +54,7 @@ def _detect_nx_serve_port(worktree_path: str) -> int | None:
     listening process and can pick up another worktree's frontend. Matching by
     worktree path ensures we discover the right ``nx serve`` instance.
     """
-    result = subprocess.run(
-        ["ps", "axo", "args"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    result = run_allowed_to_fail(["ps", "axo", "args"], expected_codes=None)
     for line in result.stdout.splitlines():
         if "nx serve" not in line or "--port=" not in line:
             continue
@@ -81,13 +76,12 @@ def _clone_or_update_e2e_repo(repo: E2ERepo) -> Path:
     """
     cache_path = get_data_dir("e2e-repos") / repo.name
     if not cache_path.exists():
-        subprocess.run(  # noqa: S603
+        run_checked(
             ["git", "clone", "--branch", repo.branch, "--depth", "1", repo.url, str(cache_path)],
-            check=True,
         )
     else:
-        subprocess.run(["git", "-C", str(cache_path), "fetch", "origin", repo.branch], check=True)  # noqa: S603
-        subprocess.run(["git", "-C", str(cache_path), "reset", "--hard", "FETCH_HEAD"], check=True)  # noqa: S603
+        run_checked(["git", "-C", str(cache_path), "fetch", "origin", repo.branch])
+        run_checked(["git", "-C", str(cache_path), "reset", "--hard", "FETCH_HEAD"])
     return cache_path / repo.e2e_dir
 
 
@@ -235,11 +229,11 @@ class Command(TyperCommand):
             self.stdout.write(f"  CUSTOMER: {env['CUSTOMER']}")
 
         cmd = ["npx", "playwright", "test", *opts.to_args()]
-        result = subprocess.run(cmd, cwd=private_tests_path, check=False, env=env)  # noqa: S603
-        if result.returncode == 0:
+        rc = run_streamed(cmd, cwd=private_tests_path, env=env, check=False)
+        if rc == 0:
             return "E2E passed."
-        self.stderr.write(f"E2E failed (exit {result.returncode}).")
-        raise SystemExit(result.returncode)
+        self.stderr.write(f"E2E failed (exit {rc}).")
+        raise SystemExit(rc)
 
     @command()
     def project(
@@ -273,11 +267,11 @@ class Command(TyperCommand):
                 cmd = ["docker", "compose", "-f", str(compose_file), "run", "--rm", "e2e"]
                 if update_snapshots:
                     cmd.append("--update-snapshots")
-                result = subprocess.run(cmd, cwd=wt_path, check=False)  # noqa: S603
-                if result.returncode == 0:
+                rc = run_streamed(cmd, cwd=wt_path, check=False)
+                if rc == 0:
                     return "E2E passed."
-                self.stderr.write(f"E2E failed (exit {result.returncode}).")
-                raise SystemExit(result.returncode)
+                self.stderr.write(f"E2E failed (exit {rc}).")
+                raise SystemExit(rc)
 
         cmd = ["uv", "run", "pytest", test_dir]
         cmd.extend(["-o", f"DJANGO_SETTINGS_MODULE={settings_module}", "--no-cov", "-p", "no:tach", "-v"])
@@ -290,8 +284,8 @@ class Command(TyperCommand):
         else:
             env["CI"] = "1"
 
-        result = subprocess.run(cmd, cwd=wt_path, check=False, env=env)  # noqa: S603
-        if result.returncode == 0:
+        rc = run_streamed(cmd, cwd=wt_path, env=env, check=False)
+        if rc == 0:
             return "E2E passed."
-        self.stderr.write(f"E2E failed (exit {result.returncode}).")
-        raise SystemExit(result.returncode)
+        self.stderr.write(f"E2E failed (exit {rc}).")
+        raise SystemExit(rc)

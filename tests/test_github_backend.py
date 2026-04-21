@@ -5,6 +5,7 @@ import subprocess
 from unittest.mock import MagicMock, patch
 
 import teatree.backends.github as github_mod
+import teatree.utils.run as utils_run_mod
 from teatree.backends.github import (
     GitHubCodeHost,
     ProjectItem,
@@ -20,19 +21,15 @@ from teatree.backends.protocols import PullRequestSpec
 
 class TestRunGh:
     def test_runs_command(self) -> None:
-        with patch.object(github_mod.subprocess, "run") as mock_run:
+        with patch.object(utils_run_mod.subprocess, "run") as mock_run:
             mock_run.return_value = subprocess.CompletedProcess([], 0, "ok", "")
             result = _run_gh("gh", "version")
-        mock_run.assert_called_once_with(
-            ["gh", "version"],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
+        mock_run.assert_called_once()
+        assert mock_run.call_args.args[0] == ["gh", "version"]
         assert result.stdout == "ok"
 
     def test_includes_auth_header_with_token(self) -> None:
-        with patch.object(github_mod.subprocess, "run") as mock_run:
+        with patch.object(utils_run_mod.subprocess, "run") as mock_run:
             mock_run.return_value = subprocess.CompletedProcess([], 0, "", "")
             _run_gh("gh", "api", "/test", token="mytoken")
         args = mock_run.call_args[0][0]
@@ -56,7 +53,7 @@ class TestGhApiGet:
 
 class TestGhApiPost:
     def test_sends_payload_via_stdin(self) -> None:
-        with patch.object(github_mod.subprocess, "run") as mock_run:
+        with patch.object(utils_run_mod.subprocess, "run") as mock_run:
             mock_run.return_value = subprocess.CompletedProcess([], 0, '{"id": 1}', "")
             result = _gh_api_post("/test", {"body": "hello"})
         assert result == {"id": 1}
@@ -64,7 +61,7 @@ class TestGhApiPost:
         assert json.loads(call_kwargs["input"]) == {"body": "hello"}
 
     def test_includes_token(self) -> None:
-        with patch.object(github_mod.subprocess, "run") as mock_run:
+        with patch.object(utils_run_mod.subprocess, "run") as mock_run:
             mock_run.return_value = subprocess.CompletedProcess([], 0, "{}", "")
             _gh_api_post("/test", {}, token="tok")
         args = mock_run.call_args[0][0]
@@ -73,7 +70,7 @@ class TestGhApiPost:
 
 class TestGhApiPatch:
     def test_sends_patch_request(self) -> None:
-        with patch.object(github_mod.subprocess, "run") as mock_run:
+        with patch.object(utils_run_mod.subprocess, "run") as mock_run:
             mock_run.return_value = subprocess.CompletedProcess([], 0, '{"updated": true}', "")
             result = _gh_api_patch("/test/1", {"title": "new"})
         assert result == {"updated": True}
@@ -82,7 +79,7 @@ class TestGhApiPatch:
         assert "PATCH" in args
 
     def test_includes_token(self) -> None:
-        with patch.object(github_mod.subprocess, "run") as mock_run:
+        with patch.object(utils_run_mod.subprocess, "run") as mock_run:
             mock_run.return_value = subprocess.CompletedProcess([], 0, "{}", "")
             _gh_api_patch("/test", {}, token="tok")
         args = mock_run.call_args[0][0]
@@ -91,7 +88,7 @@ class TestGhApiPatch:
 
 class TestGhGraphql:
     def test_executes_query(self) -> None:
-        with patch.object(github_mod.subprocess, "run") as mock_run:
+        with patch.object(utils_run_mod.subprocess, "run") as mock_run:
             mock_run.return_value = subprocess.CompletedProcess([], 0, '{"data": {}}', "")
             result = _gh_graphql("{ viewer { login } }")
         assert result == {"data": {}}
@@ -99,7 +96,7 @@ class TestGhGraphql:
         assert "graphql" in args
 
     def test_includes_token(self) -> None:
-        with patch.object(github_mod.subprocess, "run") as mock_run:
+        with patch.object(utils_run_mod.subprocess, "run") as mock_run:
             mock_run.return_value = subprocess.CompletedProcess([], 0, "{}", "")
             _gh_graphql("{ test }", token="tok")
         args = mock_run.call_args[0][0]

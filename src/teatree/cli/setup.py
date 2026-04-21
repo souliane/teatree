@@ -3,12 +3,12 @@
 import json
 import logging
 import shutil
-import subprocess  # noqa: S404
 from pathlib import Path
 
 import typer
 
 from teatree.cli.doctor import AGENT_SKILL_RUNTIMES, DoctorService, agent_skill_dirs
+from teatree.utils.run import CompletedProcess, run_allowed_to_fail
 
 # Re-exported here so external callers and tests see a single import path for
 # setup-adjacent knobs; the canonical definition lives in ``doctor`` to keep
@@ -43,15 +43,9 @@ def _find_main_clone() -> Path | None:
     return repo
 
 
-def _run_captured(args: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
+def _run_captured(args: list[str], cwd: Path | None = None) -> CompletedProcess[str]:
     """Run a subprocess, capturing stdout/stderr and never raising on non-zero exit."""
-    return subprocess.run(  # noqa: S603
-        args,
-        capture_output=True,
-        text=True,
-        check=False,
-        cwd=str(cwd) if cwd else None,
-    )
+    return run_allowed_to_fail(args, cwd=cwd, expected_codes=None)
 
 
 def _register_claude_marketplace(claude_bin: str, repo: Path) -> bool:

@@ -1,5 +1,4 @@
 import os
-import subprocess  # noqa: S404
 from pathlib import Path
 from typing import cast
 
@@ -16,6 +15,7 @@ from teatree.core.worktree_env import write_env_worktree
 from teatree.timeouts import TimeoutConfig, load_timeouts
 from teatree.utils import redis_container
 from teatree.utils.ports import find_free_ports, get_worktree_ports
+from teatree.utils.run import TimeoutExpired, run_allowed_to_fail
 
 
 def _append_envrc_lines(wt_path: str, lines: list[str]) -> None:
@@ -133,16 +133,14 @@ def _compose_env(ports: dict[str, int]) -> dict[str, str]:
 def _docker_compose_down(project: str, stdout: OutputWrapper, *, timeout: int | None = 30) -> None:
     """Stop and remove containers for the compose project."""
     try:
-        result = subprocess.run(  # noqa: S603
+        result = run_allowed_to_fail(
             ["docker", "compose", "-p", project, "down", "--remove-orphans"],
-            capture_output=True,
-            text=True,
-            check=False,
+            expected_codes=None,
             timeout=timeout,
         )
         if result.returncode != 0:
             stdout.write(f"  docker compose down: {result.stderr.strip()[:300]}")
-    except subprocess.TimeoutExpired:
+    except TimeoutExpired:
         stdout.write(f"  docker compose down: timed out after {timeout}s")
 
 
@@ -186,8 +184,8 @@ class Command(TyperCommand):
             "--pull=never",
         ]
         try:
-            result = subprocess.run(cmd, env=env, capture_output=True, text=True, check=False, timeout=timeout)  # noqa: S603
-        except subprocess.TimeoutExpired:
+            result = run_allowed_to_fail(cmd, env=env, expected_codes=None, timeout=timeout)
+        except TimeoutExpired:
             self.stderr.write(f"  docker compose up: timed out after {timeout}s")
             return False
         if result.returncode != 0:
@@ -384,11 +382,9 @@ class Command(TyperCommand):
 
         # Docker compose status
         project = compose_project(worktree)
-        result = subprocess.run(  # noqa: S603
+        result = run_allowed_to_fail(
             ["docker", "compose", "-p", project, "ps", "--format", "{{.Name}} {{.State}}"],
-            capture_output=True,
-            text=True,
-            check=False,
+            expected_codes=None,
         )
         checks["docker_services"] = result.stdout.strip() if result.returncode == 0 else "not running"
 
@@ -540,11 +536,10 @@ class Command(TyperCommand):
         if worktree.db_name:
             from teatree.utils.db import pg_env, pg_host, pg_user  # noqa: PLC0415
 
-            subprocess.run(  # noqa: S603
+            run_allowed_to_fail(
                 ["dropdb", "-h", pg_host(), "-U", pg_user(), "--if-exists", worktree.db_name],
                 env=pg_env(),
-                capture_output=True,
-                check=False,
+                expected_codes=None,
             )
 
         worktree.teardown()
@@ -563,15 +558,13 @@ class Command(TyperCommand):
             checks["overlay"] = {"status": "error", "detail": str(exc)}
 
         try:
-            result = subprocess.run(
+            result = run_allowed_to_fail(
                 ["uv", "run", "t3", "--help"],
-                capture_output=True,
-                text=True,
+                expected_codes=None,
                 timeout=30,
-                check=False,
             )
             checks["cli"] = {"status": "ok" if result.returncode == 0 else "error"}
-        except subprocess.TimeoutExpired:
+        except TimeoutExpired:
             checks["cli"] = {"status": "error", "detail": "t3 --help timed out"}
 
         try:
