@@ -6,7 +6,6 @@ requires:
   - workspace
 companions:
   - systematic-debugging
-  - verification-before-completion
 triggers:
   priority: 50
   keywords:
