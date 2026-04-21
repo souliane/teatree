@@ -26,3 +26,5 @@ htmlcov/
 
 # APM dependencies
 apm_modules/
+docs/plans/
+.t3.local.json

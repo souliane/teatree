@@ -20,6 +20,7 @@ from teatree.cli.ci import ci_app
 from teatree.cli.doctor import DoctorService, IntrospectionHelpers, doctor_app
 from teatree.cli.infra import infra_app
 from teatree.cli.overlay import OverlayAppBuilder, _uvicorn, managepy
+from teatree.cli.overlay_dev import overlay_dev_app
 from teatree.cli.review import review_app
 from teatree.cli.setup import setup_app
 from teatree.cli.tools import tool_app
@@ -642,6 +643,8 @@ app.add_typer(tool_app, name="tool")
 app.add_typer(setup_app, name="setup")
 
 app.add_typer(assess_app, name="assess")
+
+app.add_typer(overlay_dev_app, name="overlay")
 
 app.add_typer(infra_app, name="infra")
 
