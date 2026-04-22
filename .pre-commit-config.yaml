@@ -201,20 +201,20 @@ repos:
         pass_filenames: false
         always_run: true
 
-  # Phase 8 - Slow (pip-audit, manual-only — CI runs it on every PR)
+  # Phase 8 - Slow (uv audit + SBOM, manual-only — CI runs them on every PR)
   - repo: local
     hooks:
-      - id: pip-audit
-        name: pip-audit
+      - id: uv-audit
+        name: uv audit
         language: system
-        entry: >
-          bash -c "
-          set -euo pipefail
-          tmp=$(mktemp)
-          trap 'rm -f \"$tmp\"' EXIT
-          uv export --no-hashes --dev -o \"$tmp\"
-          uv run pip-audit -r \"$tmp\"
-          "
+        entry: uv audit --preview-features audit
+        pass_filenames: false
+        files: ^(pyproject\.toml|uv\.lock)$
+        stages: [manual]
+      - id: cyclonedx-sbom
+        name: Generate CycloneDX SBOM
+        language: system
+        entry: scripts/hooks/generate_sbom.sh
         pass_filenames: false
         files: ^(pyproject\.toml|uv\.lock)$
         stages: [manual]
@@ -236,7 +236,7 @@ repos:
     hooks:
       - id: semgrep
         additional_dependencies: [semgrep]
-        args: [--config=p/ci, --error, --timeout=120]
+        args: [--config=p/ci, --config=p/owasp-top-ten, --error, --timeout=120]
         stages: [manual]
 
   # Phase 10 - Commit-msg
