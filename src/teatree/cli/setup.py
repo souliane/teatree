@@ -75,6 +75,21 @@ def _install_claude_plugin(repo: Path, *, scope: str) -> bool:
     return True
 
 
+def _uv_tool_bin_dir(uv_bin: str) -> Path | None:
+    """Return the directory ``uv tool`` installs binaries into, or None on error."""
+    result = _run_captured([uv_bin, "tool", "dir", "--bin"])
+    if result.returncode != 0 or not result.stdout.strip():
+        return None
+    return Path(result.stdout.strip()).expanduser()
+
+
+def _print_path_hint(bin_dir: Path | None) -> None:
+    """Print a shell-rc instruction when the uv tool bin dir is not on PATH."""
+    target = bin_dir or Path.home() / ".local" / "bin"
+    typer.echo(f"NOTE  `{target}` is not on your PATH.")
+    typer.echo(f'      Add to your shell rc (~/.zshrc or ~/.bashrc): export PATH="{target}:$PATH"')
+
+
 def _ensure_t3_installed(repo: Path) -> bool:
     """Install ``t3`` globally via ``uv tool install`` when it's not on PATH.
 
@@ -96,7 +111,7 @@ def _ensure_t3_installed(repo: Path) -> bool:
         return False
     typer.echo("OK    Installed `t3` globally via `uv tool install --editable`.")
     if not shutil.which("t3"):
-        typer.echo("NOTE  Ensure `~/.local/bin` is on your PATH (see `uv tool dir --bin`).")
+        _print_path_hint(_uv_tool_bin_dir(uv_bin))
     return True
 
 
