@@ -104,13 +104,15 @@ If the changes touch architecture, add new modules, rename commands, or change e
 
 Skipping this step is the #1 cause of wasted push-fix-push cycles. The rules exist in `t3:review` and the project's code-review skill — this step ensures they are applied even when the agent goes directly from code to ship without a formal review phase.
 
-### 3c. Retrospective Before Push (Non-Negotiable)
+### 3c. Retrospective Before Push (Non-Negotiable, Enforced)
 
 Run `/t3:retro` **before** pushing — not after merge. Retro findings often surface skill fixes, guardrail improvements, or documentation updates that belong in the same PR as the feature. Running retro after push/merge means those improvements ship as a separate follow-up PR (or, worse, get lost to context compaction before they land anywhere).
 
 Sequence: code → test → review gate → **retro** → push → MR → monitor CI.
 
 If retro produces file edits (skill fixes, reference updates, docs), commit them on the current branch before § 4 Push so they ride along with the MR.
+
+**Enforcement:** `t3 <overlay> pr create` refuses to create the MR until the `retro` phase is marked visited on the active session. Retro marks its own visit via `t3 <overlay> lifecycle visit-phase <ticket_id> retro` (documented in `/t3:retro`). If the shipping gate complains that `retro` is missing, run retro — do not bypass with `--skip-validation` unless explicitly instructed.
 
 ### 4. Push
 

@@ -263,7 +263,7 @@ Tracks which workflow phases an agent visited within a conversation, to enforce 
 ```python
 _REQUIRED_PHASES = {
     "reviewing": ["testing"],
-    "shipping": ["testing", "reviewing"],
+    "shipping": ["testing", "reviewing", "retro"],
     "requesting_review": ["shipping"],
 }
 ```

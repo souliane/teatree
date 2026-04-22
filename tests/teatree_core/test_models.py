@@ -421,6 +421,7 @@ class TestSession(TestCase):
 
         session.visit_phase("testing")
         session.visit_phase("reviewing")
+        session.visit_phase("retro")
         session.check_gate("shipping")
         session.begin_manual_handoff()
 
@@ -430,6 +431,15 @@ class TestSession(TestCase):
         assert session.has_visited("reviewing") is True
         assert session.ended_at is not None
         assert str(session) == "agent-1"
+
+    def test_shipping_gate_blocks_when_retro_not_visited(self) -> None:
+        session = Session.objects.create(ticket=Ticket.objects.create())
+
+        session.visit_phase("testing")
+        session.visit_phase("reviewing")
+
+        with pytest.raises(QualityGateError, match="shipping requires: retro"):
+            session.check_gate("shipping")
 
     def test_ignores_duplicate_phase_visits_and_force_bypasses_gate(self) -> None:
         session = Session.objects.create(ticket=Ticket.objects.create())
@@ -465,6 +475,7 @@ class TestSession(TestCase):
         session.visit_phase("testing", agent_id="agent-1")
         session.visit_phase("coding", agent_id="agent-1")
         session.visit_phase("reviewing", agent_id="agent-1")
+        session.visit_phase("retro", agent_id="agent-1")
 
         with pytest.raises(QualityGateError, match="Maker≠checker violation"):
             session.check_gate("shipping")
@@ -475,6 +486,7 @@ class TestSession(TestCase):
         session.visit_phase("testing", agent_id="agent-1")
         session.visit_phase("coding", agent_id="agent-1")
         session.visit_phase("reviewing", agent_id="agent-2")
+        session.visit_phase("retro", agent_id="agent-1")
 
         session.check_gate("shipping")  # should not raise
 
@@ -484,6 +496,7 @@ class TestSession(TestCase):
         session.visit_phase("testing")
         session.visit_phase("coding")
         session.visit_phase("reviewing")
+        session.visit_phase("retro")
 
         session.check_gate("shipping")  # no agent_ids recorded → no enforcement
 

@@ -2002,6 +2002,7 @@ class TestPrCheckGates(TestCase):
         session = Session.objects.create(overlay="test", ticket=ticket, agent_id="agent-1")
         session.visit_phase("testing")
         session.visit_phase("reviewing")
+        session.visit_phase("retro")
 
         result = cast("dict[str, object]", call_command("pr", "check-gates", str(ticket.pk), target_phase="shipping"))
 
