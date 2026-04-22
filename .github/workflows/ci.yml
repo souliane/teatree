@@ -19,9 +19,9 @@ jobs:
       - run: uv sync
       - uses: j178/prek-action@v2
         env:
-          SKIP: pytest,pip-audit
+          SKIP: pytest,uv-audit,cyclonedx-sbom
 
-  pip-audit:
+  uv-audit:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -32,10 +32,26 @@ jobs:
         with:
           python-version: "3.13"
       - run: uv sync
-      - run: |
-          tmp=$(mktemp)
-          uv export --no-hashes --dev -o "$tmp"
-          uv run pip-audit -r "$tmp"
+      - run: uv audit --preview-features audit
+
+  sbom:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - run: uv sync
+      - run: scripts/hooks/generate_sbom.sh
+      - run: git diff --exit-code sbom.json
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: sbom
+          path: sbom.json
 
   test:
     runs-on: ubuntu-latest
