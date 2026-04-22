@@ -87,6 +87,18 @@ Hooks are registered in `hooks/hooks.json` (shipped with the plugin). This is th
 
 **Known failure (2026-04-02):** PR #109 moved hooks from `settings.json` to plugin `hooks.json` but didn't remove the old ones. This caused double hook execution on every tool call, accelerating context consumption and triggering aggressive microcompaction. Prevention: when migrating hooks to the plugin, always remove the `settings.json` equivalents in the same change.
 
+## Management Command Patterns
+
+Teatree's CLI groups (`t3 <overlay> <group> <sub>`) are django-typer `TyperCommand` classes invoked via Django's `call_command` (see `src/teatree/cli/overlay.py:430` → `managepy(...)`). To propagate a non-zero exit code from a subcommand, **use `raise SystemExit(N)` — NOT `raise typer.Exit(code=N)`**.
+
+`typer.Exit` is designed for the typer CLI runner; when it's raised inside a TyperCommand reached via `call_command`, the exception is silently swallowed and the process exits 0 even though the failure was raised. `SystemExit` bubbles up through Django management → `subprocess.run(check=True)` → CLI exit code.
+
+- Canonical example: `src/teatree/core/management/commands/tasks.py:19` — `raise SystemExit(1)` after `self.stderr.write(...)`.
+- Tests: `with pytest.raises(SystemExit) as exc_info: call_command(...)` then assert `exc_info.value.code == N`. `pytest.raises(typer.Exit)` reports `DID NOT RAISE` even though the source did raise — call_command eats it before pytest sees it.
+- `typer.Exit` is still correct in `src/teatree/cli/*.py` files that go through the typer runner directly (different call site).
+
+**Known failure (2026-04-22):** `e2e` management command returned `"E2E failed (exit 1)."` as a string instead of raising. CI jobs running `t3 teatree e2e *` reported success on Playwright/pytest failures. Fixed in [#370](https://github.com/souliane/teatree/pull/370) by raising `SystemExit(result.returncode)` after `self.stderr.write(...)`.
+
 ## Configuration
 
 `~/.teatree` sourced by hooks:

@@ -143,8 +143,11 @@ Before reading any code, fetch the referenced ticket/issue to understand the *in
 
 1. Extract the ticket URL or number from the MR title/description.
 2. Fetch the issue via the project's issue tracker CLI (e.g., `glab issue view`, `gh issue view`).
-3. If external requirements links are referenced, fetch those too.
-4. Use the ticket context as the ground truth for evaluating correctness.
+3. **Fetch every attached spec** (PDFs, OpenAPI files, vendor docs) and every linked external requirement. For GitLab attachments, the working path is `glab api projects/<id>/uploads/<secret>/<filename>` — browser-style URLs (`gitlab.com/<group>/<repo>/uploads/...`, `gitlab.com/-/project/<id>/uploads/...`) require session cookies and return login HTML when hit with a PAT. Attachments are the authoritative spec; an author docstring summarising them is not a substitute.
+4. If external requirements links are referenced, fetch those too.
+5. Use the ticket context + attachments as the ground truth for evaluating correctness.
+
+**Hard rule — refuse blind reviews.** If a ticket references a spec attachment or external requirements document that you cannot retrieve, **STOP**. Do not post review notes. Report back to the user: which document you couldn't fetch, what you tried, and what permission / access / exception is needed. Overlay skills MAY declare specific sources as out-of-scope (partner portals behind SSO the sandbox cannot reach, for example); honour those per-overlay exceptions. For anything else, a review with missing spec context is not a review — it's guessing, and guessing attached to the user's account damages the author's trust.
 
 Without ticket context you cannot judge whether the implementation is correct — only whether it compiles.
 
@@ -224,6 +227,12 @@ t3 review post-draft-note <REPO> <MR_IID> "Comment text" --file <path/to/file> -
 ```
 
 **Pre-flight: verify target line is an added line.** Before posting each inline note, confirm the target `new_line` corresponds to an added (`+`) or modified line in the diff — never a context (unchanged) line. Targeting a context line causes GitLab to render the comment in **every hunk** that references that line, creating duplicates. When the finding is about an unchanged line, target the nearest added line and reference the unchanged line in the comment text instead.
+
+**Pre-flight: the file you anchor on MUST be the file the body discusses.** If the comment body describes code in `foo.py` (e.g., "`foo.py`'s `bar()` is missing X that the sibling `baz.py` got"), anchor the comment on `foo.py` — not on `baz.py`, even if `baz.py` has more added lines in the diff. Two defensible patterns when `foo.py` has no added lines:
+
+1. Pick the nearest added line in `foo.py` (even a whitespace or adjacent-line change) and open the body with "Note on an unchanged line below:" so the reader sees the anchor is a stand-in.
+2. Post a general (MR-level) note instead of anchoring on a sibling.
+A comment anchored on the wrong file is worse than a general note — the author opens `baz.py` looking for the problem, finds nothing, and loses trust in the review.
 
 **Post-flight: verify response.** Response must confirm the comment landed on the correct file/line — if position data is missing in the response, the comment landed as a general comment (wrong). After posting all notes, list them via the API and confirm the count and positions match expectations.
 
