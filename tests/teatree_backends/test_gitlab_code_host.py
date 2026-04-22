@@ -159,3 +159,12 @@ def test_post_mr_note_returns_empty_dict_when_post_returns_none() -> None:
     result = host.post_mr_note(repo="org/repo", mr_iid=5, body="note")
 
     assert result == {}
+
+
+def test_current_user_proxies_to_api_username() -> None:
+    client = MagicMock(spec=GitLabAPI)
+    client.current_username.return_value = "adrien.cossa"
+    host = GitLabCodeHost(client=client)
+
+    assert host.current_user() == "adrien.cossa"
+    client.current_username.assert_called_once_with()
