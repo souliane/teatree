@@ -44,6 +44,7 @@ class TestPrCreate(TestCase):
     def test_reads_auto_labels_from_overlay(self) -> None:
         host = MagicMock()
         host.create_pr.return_value = {"iid": 12}
+        host.current_user.return_value = "souliane"
         self._monkeypatch.setattr(pr_command, "code_host_from_overlay", lambda: host)
 
         ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/55")
@@ -61,7 +62,44 @@ class TestPrCreate(TestCase):
         assert spec.repo == "/tmp/backend"
         assert spec.branch == "feature-branch"
         assert spec.title == "feat: add labels"
-        assert spec.assignee == "dev"
+        assert spec.assignee == "souliane"
+
+    def test_assignee_falls_back_to_git_user_name_when_host_returns_empty(self) -> None:
+        host = MagicMock()
+        host.create_pr.return_value = {"iid": 13}
+        host.current_user.return_value = ""
+        self._monkeypatch.setattr(pr_command, "code_host_from_overlay", lambda: host)
+
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/56")
+        Worktree.objects.create(ticket=ticket, overlay="test", repo_path="/tmp/backend", branch="feature-branch")
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.management.commands.pr._last_commit_message", return_value=("", "")),
+        ):
+            call_command("pr", "create", str(ticket.id), "--title", "feat: fallback")
+
+        (spec,) = host.create_pr.call_args.args
+        assert spec.assignee == "dev"  # from patched git.config_value in setUp
+
+    def test_assignee_propagates_when_host_current_user_raises(self) -> None:
+        """Host lookup errors surface to the caller — fallback is for empty, not broken."""
+        host = MagicMock()
+        host.create_pr.return_value = {"iid": 14}
+        host.current_user.side_effect = RuntimeError("gh not authenticated")
+        self._monkeypatch.setattr(pr_command, "code_host_from_overlay", lambda: host)
+
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/57")
+        Worktree.objects.create(ticket=ticket, overlay="test", repo_path="/tmp/backend", branch="feature-branch")
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.management.commands.pr._last_commit_message", return_value=("", "")),
+            pytest.raises(RuntimeError, match="gh not authenticated"),
+        ):
+            call_command("pr", "create", str(ticket.id), "--title", "feat: resilient")
+
+        host.create_pr.assert_not_called()
 
 
 class TestPostEvidence(TestCase):
@@ -104,6 +142,7 @@ class TestCheckShippingGate(TestCase):
         session = Session.objects.create(ticket=ticket)
         session.visit_phase("testing")
         session.visit_phase("reviewing")
+        session.visit_phase("retro")
         assert _check_shipping_gate(ticket) is None
 
     def test_returns_structured_error_with_missing_phases(self) -> None:

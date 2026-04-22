@@ -122,6 +122,16 @@ Retro is not complete until every confirmed finding is written to a durable home
 - any helper scripts created or reused
 - what still requires human follow-up, if anything
 
+## Mark Phase Visited (Ticket-Scoped Sessions)
+
+When retro runs for a teatree-managed ticket, mark the `retro` phase on the active session so the `t3 <overlay> pr create` shipping gate can enforce retro-before-push:
+
+```bash
+t3 <overlay> lifecycle visit-phase <ticket_id> retro
+```
+
+Skip this step when retro runs outside a ticket context (no session exists). The shipping gate fails open when no session is found, so skipping is safe — the marker only matters when a session is already tracking phases.
+
 ## Fastest Reliable Tool
 
 Retro should optimize for **speed with repeatability**. Use AI for judgment and synthesis; use scripts for deterministic evidence gathering and bulk transformations.

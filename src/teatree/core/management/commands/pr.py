@@ -43,8 +43,13 @@ def _sanitize_close_keywords(description: str, *, close_ticket: bool) -> str:
     return _CLOSE_KEYWORD_RE.sub(r"Relates to \2", description)
 
 
-def _current_user() -> str:
-    """Return the git user name for MR auto-assignment."""
+def _assignee_from_host(host: object) -> str:
+    """Return the code host login for MR auto-assignment, falling back to git user.name."""
+    host_user = getattr(host, "current_user", None)
+    if callable(host_user):
+        login = host_user()
+        if login:
+            return login
     return git.config_value(key="user.name")
 
 
@@ -183,7 +188,7 @@ class Command(TyperCommand):
                 "labels": _mr_auto_labels(),
             }
 
-        assignee = _current_user()
+        assignee = _assignee_from_host(host)
         return host.create_pr(
             PullRequestSpec(
                 repo=repo_path,
