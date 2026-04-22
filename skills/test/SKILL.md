@@ -78,6 +78,16 @@ The repo's `AGENTS.md` § "Test-Writing Doctrine" carries the authoritative rule
 
 **Establish baseline before attributing failures (Non-Negotiable):** When running E2E tests to validate a change, first run the same test on the **default branch** (or the unmodified code) to confirm it passes without your changes. If the test already fails on the default branch, it is a pre-existing failure — do not waste time debugging it as if your changes caused it. Report it as pre-existing and move on.
 
+**Pixel-stable visual snapshots** (`pytest-playwright-visual`, `assert_snapshot`): the plugin hard-fails on any single-pixel mismatch, so snapshot tests are only reproducible when every source of visual drift is pinned. Eliminate in this order before regenerating baselines:
+
+- **Dynamic data in seeded fixtures.** Freeze timestamps (`TaskAttempt.objects.update(started_at=frozen, ended_at=frozen)`), pin any `now()` values. Signal handlers that run on model creation (e.g. immediate-backend) add fresh timestamps — update them after the signal fires.
+- **Git metadata in headers.** The dashboard header prints `git rev-parse --short HEAD` + branch; these change on every commit. Override via env vars (`TEATREE_E2E_GIT_SHA`, `TEATREE_E2E_GIT_BRANCH`) read by the view. Set them at **module level** in `conftest.py` so `subprocess.Popen(env=os.environ)` propagates them to the uvicorn subprocess — patching the test process alone is not enough.
+- **Animations and caret blink.** Playwright's `animations="disabled"` only handles CSS animations it knows about. Add a session-scoped `page.add_init_script` that injects `*{animation-duration:0s!important;transition-duration:0s!important;caret-color:transparent!important}`. Combine with `reduced_motion: "reduce"` in `browser_context_args`.
+- **Font antialiasing across architectures.** Apple Silicon Docker (arm64) and x86_64 CI render fonts at different heights. Force `platform: linux/amd64` on the e2e compose service so locally-regenerated baselines match CI. Even then, leave ~0.5% pixel tolerance for residual antialiasing noise.
+- **Plugin pixel tolerance.** `pytest-playwright-visual`'s strict `if mismatch == 0:` check can be relaxed with `patchy`, but the fixture is decorated with `@pytest.fixture` — patchy's re-exec re-applies the decorator, producing a `FixtureFunctionDefinition` with no `__code__`. Patch `.__wrapped__` (the underlying function) while temporarily rebinding `pytest.fixture` to identity; the outer `FixtureFunctionDefinition` keeps wrapping the patched function. See `e2e/conftest.py` for the working pattern.
+
+**Regenerate baselines inside the same Docker image CI uses.** Never regenerate on the host with `uv run pytest --update-snapshots` — macOS Chromium renders differently. Use `t3 teatree e2e project --update-snapshots` (which runs in the pinned Docker image).
+
 ### Private Test Suite
 
 E2E and integration tests ideally live in the project repo they test (e.g., the frontend repo's `e2e/` directory). But sometimes a **separate test repo** reduces friction — no conflicts with the QA team's tests, no build pipeline overhead, freedom to use different tooling or test data. This is especially useful for personal verification tests that complement (not replace) the project's official suite.
