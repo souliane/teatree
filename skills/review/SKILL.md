@@ -143,8 +143,11 @@ Before reading any code, fetch the referenced ticket/issue to understand the *in
 
 1. Extract the ticket URL or number from the MR title/description.
 2. Fetch the issue via the project's issue tracker CLI (e.g., `glab issue view`, `gh issue view`).
-3. If external requirements links are referenced, fetch those too.
-4. Use the ticket context as the ground truth for evaluating correctness.
+3. **Fetch every attached spec** (PDFs, OpenAPI files, vendor docs) and every linked external requirement. For GitLab attachments, the working path is `glab api projects/<id>/uploads/<secret>/<filename>` — browser-style URLs (`gitlab.com/<group>/<repo>/uploads/...`, `gitlab.com/-/project/<id>/uploads/...`) require session cookies and return login HTML when hit with a PAT. Attachments are the authoritative spec; an author docstring summarising them is not a substitute.
+4. If external requirements links are referenced, fetch those too.
+5. Use the ticket context + attachments as the ground truth for evaluating correctness.
+
+**Hard rule — refuse blind reviews.** If a ticket references a spec attachment or external requirements document that you cannot retrieve, **STOP**. Do not post review notes. Report back to the user: which document you couldn't fetch, what you tried, and what permission / access / exception is needed. Overlay skills MAY declare specific sources as out-of-scope (partner portals behind SSO the sandbox cannot reach, for example); honour those per-overlay exceptions. For anything else, a review with missing spec context is not a review — it's guessing, and guessing attached to the user's account damages the author's trust.
 
 Without ticket context you cannot judge whether the implementation is correct — only whether it compiles.
 
