@@ -1,4 +1,5 @@
 import importlib
+import os
 from collections.abc import Callable, Mapping
 from pathlib import Path
 
@@ -48,16 +49,31 @@ def _extract_overlay(request: HttpRequest) -> str | None:
     return overlay or None
 
 
+def _resolve_git_metadata() -> tuple[str, str]:
+    """Return (short SHA, branch) for the dashboard header.
+
+    `TEATREE_E2E_GIT_SHA` / `TEATREE_E2E_GIT_BRANCH` env vars override the
+    real values so e2e screenshots stay pixel-stable across commits.
+    `FileNotFoundError` is caught for environments without `git` installed.
+    """
+    sha_override = os.environ.get("TEATREE_E2E_GIT_SHA")
+    branch_override = os.environ.get("TEATREE_E2E_GIT_BRANCH")
+    if sha_override is not None and branch_override is not None:
+        return sha_override, branch_override
+    try:
+        sha = sha_override if sha_override is not None else git_utils.run(args=["rev-parse", "--short", "HEAD"])
+        branch = branch_override if branch_override is not None else git_utils.current_branch()
+    except FileNotFoundError:
+        return "", ""
+    return sha, branch
+
+
 class DashboardView(View):
     def get(self, request: HttpRequest) -> HttpResponse:
         import json  # noqa: PLC0415
 
         overlay = _extract_overlay(request)
-        try:
-            git_sha = git_utils.run(args=["rev-parse", "--short", "HEAD"])
-            git_branch = git_utils.current_branch()
-        except Exception:  # noqa: BLE001
-            git_sha, git_branch = "", ""
+        git_sha, git_branch = _resolve_git_metadata()
         all_overlays = get_all_overlays()
         overlay_branches = _build_overlay_branches(all_overlays)
         overlays = get_all_overlay_names()

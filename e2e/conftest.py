@@ -23,6 +23,11 @@ os.environ["DJANGO_ALLOW_ASYNC_UNSAFE"] = "1"
 os.environ["TEATREE_CLAUDE_SESSIONS_DIR"] = "/nonexistent-e2e-sessions"
 # Disable panel cache so seeded data appears immediately on each test.
 os.environ["TEATREE_PANEL_CACHE_TTL"] = "0"
+# Pin the dashboard header's git SHA/branch so pixel-diff stays stable across
+# commits — read by `teatree.core.views.dashboard.DashboardView.get`. Set at
+# module level so `subprocess.Popen(env=os.environ)` inherits them.
+os.environ["TEATREE_E2E_GIT_SHA"] = "abc1234"
+os.environ["TEATREE_E2E_GIT_BRANCH"] = "e2e-branch"
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -66,31 +71,6 @@ def _disable_animations_init(page) -> None:
         "(document.head||document.documentElement).appendChild(s);})();"
     )
     page.add_init_script(script)
-
-
-@pytest.fixture(autouse=True, scope="session")
-def _pin_git_metadata() -> Iterator[None]:
-    """Pin the dashboard's `git rev-parse --short HEAD` + branch lookups.
-
-    The dashboard view embeds the repo's current short SHA and branch in the
-    page header; both shift across runs (real commits, branch checkouts) and
-    would break the full-page snapshot. Patching the helpers gives the view
-    a stable string to render. Session-scoped so it survives e2e_server.
-    """
-    from unittest.mock import patch
-
-    from teatree.utils import git as git_utils
-
-    def _fake_run(*, repo: str = ".", args: list[str]) -> str:
-        if args == ["rev-parse", "--short", "HEAD"]:
-            return "abc1234"
-        return ""
-
-    with (
-        patch.object(git_utils, "run", side_effect=_fake_run),
-        patch.object(git_utils, "current_branch", return_value="e2e-branch"),
-    ):
-        yield
 
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
