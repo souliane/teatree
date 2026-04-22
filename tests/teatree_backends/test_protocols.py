@@ -35,6 +35,9 @@ def test_code_host_protocol_is_structural() -> None:
             _ = spec
             return {}
 
+        def current_user(self) -> str:
+            return ""
+
         def list_open_prs(self, repo: str, author: str) -> list[dict[str, object]]:
             return []
 

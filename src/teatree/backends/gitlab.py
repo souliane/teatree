@@ -44,6 +44,10 @@ class GitLabCodeHost:
 
         return self._client.post_json(f"projects/{project.project_id}/merge_requests", payload) or {}
 
+    def current_user(self) -> str:
+        """Return the authenticated GitLab username."""
+        return self._client.current_username()
+
     def list_open_prs(self, repo: str, author: str) -> list[dict[str, object]]:
         project = self._resolve_project(repo)
         if project is None:
