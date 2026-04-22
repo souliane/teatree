@@ -2,11 +2,17 @@
 
 import json
 from dataclasses import dataclass
-from typing import cast
+from typing import TypedDict, cast
 
 from teatree.backends.protocols import PullRequestSpec
 from teatree.core.sync import RawAPIDict
 from teatree.utils.run import CompletedProcess, run_checked
+
+
+class _GitHubUser(TypedDict, total=False):
+    """Subset of the GitHub ``/user`` response that teatree reads."""
+
+    login: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -188,6 +194,14 @@ class GitHubCodeHost:
 
         result = _run_gh(*cmd, token=self._token)
         return {"url": result.stdout.strip()}
+
+    def current_user(self) -> str:
+        """Return the authenticated GitHub login (e.g. ``souliane``)."""
+        data = _gh_api_get("user", token=self._token)
+        if not isinstance(data, dict):
+            return ""
+        user = cast("_GitHubUser", data)
+        return user.get("login", "")
 
     def list_open_prs(self, repo: str, author: str) -> list[dict[str, object]]:
         data = _gh_api_get(f"repos/{repo}/pulls?state=open&per_page=100", token=self._token)

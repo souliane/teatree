@@ -255,6 +255,25 @@ class TestGitHubCodeHost:
         assert len(result) == 1
         assert result[0]["number"] == 1
 
+    def test_current_user_returns_login(self) -> None:
+        with patch.object(github_mod, "_gh_api_get", return_value={"login": "souliane", "id": 42}) as mock_get:
+            host = GitHubCodeHost(token="tok")
+            result = host.current_user()
+        assert result == "souliane"
+        mock_get.assert_called_once_with("user", token="tok")
+
+    def test_current_user_returns_empty_when_api_non_dict(self) -> None:
+        with patch.object(github_mod, "_gh_api_get", return_value=["unexpected"]):
+            host = GitHubCodeHost()
+            result = host.current_user()
+        assert result == ""
+
+    def test_current_user_returns_empty_when_login_missing(self) -> None:
+        with patch.object(github_mod, "_gh_api_get", return_value={"id": 42}):
+            host = GitHubCodeHost()
+            result = host.current_user()
+        assert result == ""
+
     def test_list_open_prs_returns_empty_for_non_list(self) -> None:
         with patch.object(github_mod, "_gh_api_get", return_value={"error": "bad"}):
             host = GitHubCodeHost()
