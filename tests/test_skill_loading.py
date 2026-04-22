@@ -386,6 +386,21 @@ def test_detect_python_in_pyproject(tmp_path: Path):
     assert SkillLoadingPolicy.detect_framework_skills(tmp_path) == ["ac-python"]
 
 
+def test_detect_fastapi_in_pyproject(tmp_path: Path):
+    (tmp_path / "pyproject.toml").write_text('[project]\ndependencies = ["fastapi[standard]>=0.115"]')
+    assert SkillLoadingPolicy.detect_framework_skills(tmp_path) == ["ac-python", "fastapi"]
+
+
+def test_detect_fastapi_in_requirements_txt(tmp_path: Path):
+    (tmp_path / "requirements.txt").write_text("fastapi==0.120.1\nfastapi-cli==0.0.14\n")
+    assert SkillLoadingPolicy.detect_framework_skills(tmp_path) == ["ac-python", "fastapi"]
+
+
+def test_detect_django_wins_over_fastapi_in_pyproject(tmp_path: Path):
+    (tmp_path / "pyproject.toml").write_text('[project]\ndependencies = ["django>=4.2", "fastapi>=0.115"]')
+    assert SkillLoadingPolicy.detect_framework_skills(tmp_path) == ["ac-django"]
+
+
 def test_detect_python_from_setup_py(tmp_path: Path):
     (tmp_path / "setup.py").touch()
     assert SkillLoadingPolicy.detect_framework_skills(tmp_path) == ["ac-python"]
