@@ -264,7 +264,7 @@ class Command(TyperCommand):
         if docker and not Path("/.dockerenv").exists():
             compose_file = Path(wt_path) / "dev" / "docker-compose.yml"
             if compose_file.is_file():
-                cmd = ["docker", "compose", "-f", str(compose_file), "run", "--rm", "e2e"]
+                cmd = ["docker", "compose", "-f", str(compose_file), "run", "--rm", "e2e", test_dir]
                 if update_snapshots:
                     cmd.append("--update-snapshots")
                 rc = run_streamed(cmd, cwd=wt_path, check=False)

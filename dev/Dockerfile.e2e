@@ -1,6 +1,8 @@
 FROM mcr.microsoft.com/playwright/python:v1.58.0-noble AS base
+# `patch` is needed by the `patchy` Python package (used in e2e/conftest.py
+# to relax pytest-playwright-visual's strict pixel comparator).
 RUN apt-get update -qq && \
-    apt-get install -y -qq direnv jq && \
+    apt-get install -y -qq direnv jq patch && \
     rm -rf /var/lib/apt/lists/*
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh -s -- -q
 ENV PATH="/root/.local/bin:$PATH"
