@@ -83,3 +83,11 @@ jobs:
       - run: uv run playwright install --with-deps chromium
       - run: uv tool install --editable .
       - run: t3 teatree e2e project --no-docker
+      - name: Upload snapshot failure diffs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-snapshot-failures
+          path: e2e/snapshot_tests_failures/
+          if-no-files-found: ignore
+          retention-days: 14

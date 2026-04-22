@@ -114,6 +114,10 @@ t3 followup sync     # sync tickets and PRs from code host
 
 A Django/HTMX web UI that surfaces everything the CLI manages: tickets, pull requests, pipeline statuses, agent sessions, and available actions. Launch it with `t3 dashboard` (auto-finds a free port). Supports SSE for live updates.
 
+<p align="center">
+  <img src="docs/dashboard.png" alt="teatree dashboard" width="900">
+</p>
+
 ### 3. Claude Plugin
 
 Skills and hooks that drive AI-assisted development. Each skill covers one phase of the development lifecycle — ticket intake, coding, testing, review, shipping — and contains the methodology, guardrails, and domain knowledge the agent needs to do the work well: TDD discipline, debugging process, review checklists, retro learning, verification rules. Skills declare dependencies (`requires:`) and optional companion skills (`companions:`) from third-party packages like [superpowers](https://github.com/obra/superpowers). Hooks handle automatic skill routing, branch protection, and session tracking.
