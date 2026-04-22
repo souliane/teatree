@@ -1299,7 +1299,7 @@ Usage: t3 teatree e2e external [OPTIONS]
      config key.
 
  Discovers the frontend port from docker-compose (or local process)
- and reads the tenant variant from .env.worktree.
+ and reads the tenant variant from the env cache.
 
  Extra Playwright flags (--config, --timeout, --grep, etc.) can be
  passed via --playwright-args: ``--playwright-args="--config x.ts --timeout

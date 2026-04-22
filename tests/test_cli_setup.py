@@ -2,6 +2,7 @@
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import click
@@ -518,11 +519,12 @@ class TestEnsureT3Installed:
             mock_which.side_effect = lambda name: "/usr/bin/uv" if name == "uv" else None
             mock_run.return_value.returncode = 0
             mock_run.return_value.stderr = ""
+            mock_run.return_value.stdout = ""
             assert _ensure_t3_installed(repo) is True
-            args = mock_run.call_args[0][0]
-            assert args[:3] == ["/usr/bin/uv", "tool", "install"]
-            assert "--editable" in args
-            assert str(repo) in args
+            install_args = mock_run.call_args_list[0][0][0]
+            assert install_args[:3] == ["/usr/bin/uv", "tool", "install"]
+            assert "--editable" in install_args
+            assert str(repo) in install_args
 
     def test_returns_false_on_install_failure(self, tmp_path: Path) -> None:
         repo = tmp_path / "teatree"
@@ -534,4 +536,31 @@ class TestEnsureT3Installed:
             mock_which.side_effect = lambda name: "/usr/bin/uv" if name == "uv" else None
             mock_run.return_value.returncode = 1
             mock_run.return_value.stderr = "boom"
+            mock_run.return_value.stdout = ""
             assert _ensure_t3_installed(repo) is False
+
+    def test_prints_shell_rc_hint_when_still_not_on_path(
+        self,
+        tmp_path: Path,
+        capsys: "pytest.CaptureFixture[str]",
+    ) -> None:
+        repo = tmp_path / "teatree"
+        repo.mkdir()
+        bin_dir = tmp_path / "uv-bin"
+        bin_dir.mkdir()
+
+        def mock_run_side_effect(cmd: list[str], *args: object, **kwargs: object) -> SimpleNamespace:
+            stdout = f"{bin_dir}\n" if cmd[:3] == ["/usr/bin/uv", "tool", "dir"] else ""
+            return SimpleNamespace(returncode=0, stderr="", stdout=stdout)
+
+        with (
+            patch("teatree.cli.setup.shutil.which") as mock_which,
+            patch("teatree.utils.run.subprocess.run", side_effect=mock_run_side_effect),
+        ):
+            mock_which.side_effect = lambda name: "/usr/bin/uv" if name == "uv" else None
+            _ensure_t3_installed(repo)
+
+        out = capsys.readouterr().out
+        assert str(bin_dir) in out
+        assert "is not on your PATH" in out
+        assert 'export PATH="' in out
