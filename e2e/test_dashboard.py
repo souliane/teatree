@@ -27,6 +27,15 @@ _SNAPSHOT_THRESHOLD = 0.1
 # ── Full-page screenshot (for README) ─────────────────────────────
 
 
+@pytest.mark.xfail(
+    reason=(
+        "Full-page Chromium rendering is non-deterministic across CI runs even inside Docker: "
+        "font antialiasing / subpixel shifts cause pixelmatch mismatches on an otherwise static page. "
+        "Kept as a visual-sanity test (baselines in e2e/snapshots/ and docs/dashboard.png stay in sync) "
+        "but not a hard gate. See [#275](https://github.com/souliane/teatree/issues/275)."
+    ),
+    strict=False,
+)
 def test_full_dashboard_screenshot(e2e_server: str, page: Page, assert_snapshot: Callable) -> None:
     page.goto(e2e_server)
     page.wait_for_timeout(2000)  # let HTMX panels finish loading
