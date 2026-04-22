@@ -92,6 +92,20 @@ When fixing a broken UX mechanism (web terminal, browser launch, notification me
 
 MR/PR comment posting (test plans, evidence, review notes) must be **serialized** — never dispatch two parallel agents that both post comments on MRs. Parallel agents cannot check for each other's posts, resulting in duplicate comments. Post all MR comments from the main conversation thread, or serialize agent tasks so only one posts at a time.
 
+## Verify Repo Visibility Before Filing External Issues (Non-Negotiable)
+
+Before creating an issue, PR, discussion, or any body of content on an external repo, **check the target repo's visibility**:
+
+```bash
+gh repo view <owner>/<repo> --json visibility,isPrivate
+```
+
+If the target is **PUBLIC**, the body must not contain internal identifiers: customer names, internal GitLab/Jira/Notion URLs, client-specific repo names, ticket IDs from private trackers, CI job/pipeline IDs, local filesystem paths (`/Users/…`, `/home/…`), environment variable values, or internal hostnames. Replace with generic placeholders (`<repo>`, `<namespace>`, `<ticket_url>`, `$T3_WORKSPACE_DIR/<ticket>/<repo>`) before posting.
+
+**Ambiguous destinations need a question.** When the user says "file a bug" without a repo and there are multiple candidates (public upstream vs. private overlay, team repo vs. personal repo), use `AskUserQuestion` to confirm the target before writing the body. Never guess — the cost of asking is low; the cost of publishing internal info is high.
+
+**The authorization to "file a bug" does not authorize posting internal info to a public repo.** User instructions like "file a teatree bug" authorize the _action_ of filing, not the _destination_. A public target always requires a scrubbed body.
+
 ## Sub-Agent Limitations
 
 Sub-agents (Agent tool) **lose all loaded skills, MCP access, and shell functions**. By default, never dispatch sub-agents for skill-dependent work. Do all skill-dependent work sequentially in the main conversation.
