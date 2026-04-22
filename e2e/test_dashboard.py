@@ -93,7 +93,7 @@ def test_tickets_without_mrs(e2e_server: str, page: Page) -> None:
 
 def test_ticket_action_buttons(e2e_server: str, page: Page) -> None:
     page.goto(e2e_server)
-    expect(page.locator("button", has_text="Auto").first).to_be_visible()
+    expect(page.locator("button", has_text="Headless").first).to_be_visible()
     expect(page.locator("button", has_text="Interactive").first).to_be_visible()
 
 
@@ -149,8 +149,6 @@ def test_create_headless_task(e2e_server: str, page: Page) -> None:
     page.goto(e2e_server)
     # Accept the hx-confirm dialog so the POST goes through.
     page.on("dialog", lambda dialog: dialog.accept())
-    # "Headless" lives on tickets WITH MRs (visible under the default "Has PR"
-    # filter). The "Auto" variant is on the {% empty %} branch and is hidden.
     page.locator("button", has_text="Headless").first.click()
     page.wait_for_timeout(500)
     expect(page.locator("h2", has_text="In-Flight Tickets")).to_be_visible()
