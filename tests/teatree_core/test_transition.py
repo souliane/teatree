@@ -176,6 +176,7 @@ class TestCheckGatesStructured(TestCase):
         session = Session.objects.create(ticket=ticket)
         session.visit_phase("testing")
         session.visit_phase("reviewing")
+        session.visit_phase("retro")
 
         result = cast("dict[str, object]", call_command("pr", "check-gates", ticket.pk, target_phase="shipping"))
 

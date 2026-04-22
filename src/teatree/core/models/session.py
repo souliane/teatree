@@ -35,7 +35,7 @@ class Session(models.Model):
 
     _REQUIRED_PHASES: ClassVar[dict[str, list[str]]] = {
         "reviewing": ["testing"],
-        "shipping": ["testing", "reviewing"],
+        "shipping": ["testing", "reviewing", "retro"],
         "requesting_review": ["shipping"],
     }
 
