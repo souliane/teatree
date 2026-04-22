@@ -68,6 +68,31 @@ def _disable_animations_init(page) -> None:
     page.add_init_script(script)
 
 
+@pytest.fixture(autouse=True, scope="session")
+def _pin_git_metadata() -> Iterator[None]:
+    """Pin the dashboard's `git rev-parse --short HEAD` + branch lookups.
+
+    The dashboard view embeds the repo's current short SHA and branch in the
+    page header; both shift across runs (real commits, branch checkouts) and
+    would break the full-page snapshot. Patching the helpers gives the view
+    a stable string to render. Session-scoped so it survives e2e_server.
+    """
+    from unittest.mock import patch
+
+    from teatree.utils import git as git_utils
+
+    def _fake_run(*, repo: str = ".", args: list[str]) -> str:
+        if args == ["rev-parse", "--short", "HEAD"]:
+            return "abc1234"
+        return ""
+
+    with (
+        patch.object(git_utils, "run", side_effect=_fake_run),
+        patch.object(git_utils, "current_branch", return_value="e2e-branch"),
+    ):
+        yield
+
+
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     """Exempt fixture setup/teardown from pytest-timeout for E2E tests.
 
