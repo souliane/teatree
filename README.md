@@ -114,6 +114,10 @@ t3 followup sync     # sync tickets and PRs from code host
 
 A Django/HTMX web UI that surfaces everything the CLI manages: tickets, pull requests, pipeline statuses, agent sessions, and available actions. Launch it with `t3 dashboard` (auto-finds a free port). Supports SSE for live updates.
 
+<p align="center">
+  <img src="docs/dashboard.png" alt="teatree dashboard" width="900">
+</p>
+
 ### 3. Claude Plugin
 
 Skills and hooks that drive AI-assisted development. Each skill covers one phase of the development lifecycle — ticket intake, coding, testing, review, shipping — and contains the methodology, guardrails, and domain knowledge the agent needs to do the work well: TDD discipline, debugging process, review checklists, retro learning, verification rules. Skills declare dependencies (`requires:`) and optional companion skills (`companions:`) from third-party packages like [superpowers](https://github.com/obra/superpowers). Hooks handle automatic skill routing, branch protection, and session tracking.
@@ -147,10 +151,12 @@ The agent batch-processes your assigned tickets, checks CI statuses, nudges stal
 ### For users
 
 ```bash
-pip install teatree
+uv tool install teatree           # installs `t3` globally (pipx install teatree also works)
 apm install -g souliane/teatree   # installs skills + companion dependencies
 t3 startoverlay my-overlay ~/workspace/my-overlay
 ```
+
+`uv tool install` puts `t3` in `~/.local/bin/`. If that directory isn't on your `PATH`, add `export PATH="$HOME/.local/bin:$PATH"` to your shell rc.
 
 ### For contributors
 
@@ -159,12 +165,11 @@ t3 startoverlay my-overlay ~/workspace/my-overlay
 ```bash
 git clone git@github.com:YOUR_USERNAME/teatree.git ~/workspace/teatree
 cd ~/workspace/teatree
-uv sync
-uv pip install -e .
-t3 setup   # installs skills globally, respects local symlinks
+uv tool install --editable .   # global `t3` binary, live-reloaded from this clone
+t3 setup                       # installs skills globally, respects local symlinks
 ```
 
-`t3 setup` runs [APM](https://github.com/microsoft/apm) to install companion dependencies (superpowers, ac-django, etc.), symlinks teatree skills to `~/.claude/skills/`, and writes the skill metadata cache. It must be run from the main clone, not a worktree.
+`uv tool install --editable .` produces the same global `~/.local/bin/t3` as the user flow — edits in this clone take effect on the next invocation, no `uv run` prefix. `t3 setup` runs [APM](https://github.com/microsoft/apm) to install companion dependencies (superpowers, ac-django, etc.), symlinks teatree skills to `~/.claude/skills/`, registers the Claude plugin, and — if `t3` isn't on `PATH` — re-runs `uv tool install --editable .` to self-install. Must be run from the main clone, not a worktree.
 
 ## Skills
 
