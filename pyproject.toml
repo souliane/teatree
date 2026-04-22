@@ -34,6 +34,7 @@ entry-points."teatree.overlays".t3-teatree = "teatree.contrib.t3_teatree.overlay
 # https://docs.astral.sh/ruff/rules/
 dev = [
   "django-types>=0.23",
+  "patchy>=2.7",
   "pip-audit>=2",
   "prek>=0.2.12",
   "pytest>=9.0.2",

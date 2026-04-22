@@ -15,7 +15,9 @@ from collections.abc import Iterator
 from datetime import UTC
 
 import httpx
+import patchy
 import pytest
+from pytest_playwright_visual import plugin as _ppv_plugin
 
 os.environ["DJANGO_SETTINGS_MODULE"] = "e2e.settings"
 os.environ["DJANGO_ALLOW_ASYNC_UNSAFE"] = "1"
@@ -71,6 +73,42 @@ def _disable_animations_init(page) -> None:
         "(document.head||document.documentElement).appendChild(s);})();"
     )
     page.add_init_script(script)
+
+
+# pytest-playwright-visual's `assert_snapshot` hard-fails on any single-pixel
+# mismatch, which makes full-page screenshots impossible to keep stable across
+# host architectures (font antialiasing varies between Apple-Silicon Docker,
+# x86_64 Docker, and bare-metal Ubuntu CI runners). Patch the strict
+# `if mismatch == 0:` check to allow up to 0.5% of pixels to differ. See
+# [#275](https://github.com/souliane/teatree/issues/275).
+#
+# patchy reads source via `inspect.getsource` (which includes `@pytest.fixture`)
+# and re-execs it; the decorator would re-wrap the result into a
+# `FixtureFunctionDefinition` with no `__code__`, breaking patchy's swap.
+# Neutralize `pytest.fixture` to identity for the duration of the patch so the
+# exec returns a plain function. We patch `__wrapped__` (the underlying
+# function); the original `FixtureFunctionDefinition` keeps wrapping it.
+_orig_fixture = pytest.fixture
+pytest.fixture = lambda *a, **_k: a[0] if a and callable(a[0]) else (lambda f: f)  # ty: ignore[invalid-assignment]
+try:
+    # editorconfig-checker-disable
+    patchy.patch(
+        _ppv_plugin.assert_snapshot.__wrapped__,  # ty: ignore[unresolved-attribute]
+        """\
+@@ -30,7 +30,7 @@
+         img_b = Image.open(file)
+         img_diff = Image.new("RGBA", img_a.size)
+         mismatch = pixelmatch(img_a, img_b, img_diff, threshold=threshold, fail_fast=fail_fast)
+-        if mismatch == 0:
++        if mismatch / (img_a.size[0] * img_a.size[1]) <= 0.005:
+             return
+         else:
+             # Create new test_results folder
+""",
+    )
+    # editorconfig-checker-enable
+finally:
+    pytest.fixture = _orig_fixture
 
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
