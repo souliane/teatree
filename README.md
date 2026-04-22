@@ -147,10 +147,12 @@ The agent batch-processes your assigned tickets, checks CI statuses, nudges stal
 ### For users
 
 ```bash
-pip install teatree
+uv tool install teatree           # installs `t3` globally (pipx install teatree also works)
 apm install -g souliane/teatree   # installs skills + companion dependencies
 t3 startoverlay my-overlay ~/workspace/my-overlay
 ```
+
+`uv tool install` puts `t3` in `~/.local/bin/`. If that directory isn't on your `PATH`, add `export PATH="$HOME/.local/bin:$PATH"` to your shell rc.
 
 ### For contributors
 
@@ -159,12 +161,11 @@ t3 startoverlay my-overlay ~/workspace/my-overlay
 ```bash
 git clone git@github.com:YOUR_USERNAME/teatree.git ~/workspace/teatree
 cd ~/workspace/teatree
-uv sync
-uv pip install -e .
-t3 setup   # installs skills globally, respects local symlinks
+uv tool install --editable .   # global `t3` binary, live-reloaded from this clone
+t3 setup                       # installs skills globally, respects local symlinks
 ```
 
-`t3 setup` runs [APM](https://github.com/microsoft/apm) to install companion dependencies (superpowers, ac-django, etc.), symlinks teatree skills to `~/.claude/skills/`, and writes the skill metadata cache. It must be run from the main clone, not a worktree.
+`uv tool install --editable .` produces the same global `~/.local/bin/t3` as the user flow — edits in this clone take effect on the next invocation, no `uv run` prefix. `t3 setup` runs [APM](https://github.com/microsoft/apm) to install companion dependencies (superpowers, ac-django, etc.), symlinks teatree skills to `~/.claude/skills/`, registers the Claude plugin, and — if `t3` isn't on `PATH` — re-runs `uv tool install --editable .` to self-install. Must be run from the main clone, not a worktree.
 
 ## Skills
 
