@@ -12,6 +12,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Iterator
+from datetime import UTC
 
 import httpx
 import pytest
@@ -29,10 +30,42 @@ def pytest_configure(config: pytest.Config) -> None:
     os.environ["DJANGO_SETTINGS_MODULE"] = "e2e.settings"
 
 
+_DISABLE_ANIMATIONS_CSS = (
+    "*,*::before,*::after{"
+    "animation-duration:0s!important;animation-delay:0s!important;"
+    "transition-duration:0s!important;transition-delay:0s!important;"
+    "caret-color:transparent!important;"
+    "}"
+)
+
+
 @pytest.fixture(scope="session")
 def browser_context_args(browser_context_args: dict[str, object]) -> dict[str, object]:
-    """Fix viewport size for deterministic screenshots."""
-    return {**browser_context_args, "viewport": {"width": 1280, "height": 900}}
+    """Fix viewport (1280x720 for README rendering) and reduce motion.
+
+    Pixel-stable screenshots require both a fixed viewport and aggressive
+    animation suppression — per-call ``animations="disabled"`` only catches
+    CSS animations Playwright knows about, not JS-driven transitions or
+    hover/loading states. See [#275](https://github.com/souliane/teatree/issues/275)
+    (credits @m13v). The ``_disable_animations_init`` fixture below injects a
+    global stylesheet on every navigation to cover the rest.
+    """
+    return {
+        **browser_context_args,
+        "viewport": {"width": 1280, "height": 720},
+        "reduced_motion": "reduce",
+    }
+
+
+@pytest.fixture(autouse=True)
+def _disable_animations_init(page) -> None:
+    """Inject the no-animation stylesheet on every navigation."""
+    script = (
+        "(()=>{const s=document.createElement('style');"
+        f"s.textContent={_DISABLE_ANIMATIONS_CSS!r};"
+        "(document.head||document.documentElement).appendChild(s);})();"
+    )
+    page.add_init_script(script)
 
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
@@ -199,6 +232,17 @@ def _seed_data(e2e_server: str, django_db_blocker) -> Iterator[None]:
             state="scoped",
         )
         Session.objects.create(ticket=ticket2, agent_id="e2e-agent-2")
+
+        # Pin TaskAttempt timestamps so dashboard screenshots are reproducible.
+        # The headless task above triggers the immediate-backend signal which
+        # creates a TaskAttempt with `ended_at=now()` — that microsecond-precision
+        # timestamp is rendered in the Sessions panel and would change every run.
+        from datetime import datetime
+
+        from teatree.core.models import TaskAttempt
+
+        frozen = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
+        TaskAttempt.objects.update(started_at=frozen, ended_at=frozen)
 
     yield
 
