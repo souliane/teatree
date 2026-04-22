@@ -228,6 +228,12 @@ t3 review post-draft-note <REPO> <MR_IID> "Comment text" --file <path/to/file> -
 
 **Pre-flight: verify target line is an added line.** Before posting each inline note, confirm the target `new_line` corresponds to an added (`+`) or modified line in the diff — never a context (unchanged) line. Targeting a context line causes GitLab to render the comment in **every hunk** that references that line, creating duplicates. When the finding is about an unchanged line, target the nearest added line and reference the unchanged line in the comment text instead.
 
+**Pre-flight: the file you anchor on MUST be the file the body discusses.** If the comment body describes code in `foo.py` (e.g., "`foo.py`'s `bar()` is missing X that the sibling `baz.py` got"), anchor the comment on `foo.py` — not on `baz.py`, even if `baz.py` has more added lines in the diff. Two defensible patterns when `foo.py` has no added lines:
+
+1. Pick the nearest added line in `foo.py` (even a whitespace or adjacent-line change) and open the body with "Note on an unchanged line below:" so the reader sees the anchor is a stand-in.
+2. Post a general (MR-level) note instead of anchoring on a sibling.
+A comment anchored on the wrong file is worse than a general note — the author opens `baz.py` looking for the problem, finds nothing, and loses trust in the review.
+
 **Post-flight: verify response.** Response must confirm the comment landed on the correct file/line — if position data is missing in the response, the comment landed as a general comment (wrong). After posting all notes, list them via the API and confirm the count and positions match expectations.
 
 **Do NOT submit the review without explicit user instruction.** By default, the user reviews draft notes in the platform's UI, edits if needed, and submits manually. If the user explicitly asks to publish (e.g., "post with t3 cli", "submit the review"), use:
