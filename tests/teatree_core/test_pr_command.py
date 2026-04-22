@@ -142,6 +142,7 @@ class TestCheckShippingGate(TestCase):
         session = Session.objects.create(ticket=ticket)
         session.visit_phase("testing")
         session.visit_phase("reviewing")
+        session.visit_phase("retro")
         assert _check_shipping_gate(ticket) is None
 
     def test_returns_structured_error_with_missing_phases(self) -> None:
