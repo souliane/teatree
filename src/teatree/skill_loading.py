@@ -68,6 +68,30 @@ _PHASE_TO_SKILL: dict[str, str] = {
 
 _PYTHON_FILE_HINTS = ("pyproject.toml", "setup.py", "requirements.txt")
 _DJANGO_DEPENDENCY_RE = re.compile(r'["\']django[>=<]', re.IGNORECASE)
+_FASTAPI_DEPENDENCY_RE = re.compile(r'(?:^|["\'])fastapi[>=<~\[]', re.IGNORECASE | re.MULTILINE)
+
+
+def _framework_skills_for_content(content: str) -> list[str]:
+    if _DJANGO_DEPENDENCY_RE.search(content):
+        return ["ac-django"]
+    if _FASTAPI_DEPENDENCY_RE.search(content):
+        return ["ac-python", "fastapi"]
+    return ["ac-python"]
+
+
+def _framework_skills_for_directory(directory: Path) -> list[str] | None:
+    if (directory / "manage.py").is_file():
+        return ["ac-django"]
+    for candidate in _PYTHON_FILE_HINTS:
+        path = directory / candidate
+        if not path.is_file():
+            continue
+        try:
+            content = path.read_text(encoding="utf-8")
+        except OSError:
+            return [] if candidate == "pyproject.toml" else ["ac-python"]
+        return _framework_skills_for_content(content)
+    return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -270,19 +294,9 @@ class SkillLoadingPolicy:
     @staticmethod
     def detect_framework_skills(cwd: Path) -> list[str]:
         for directory in [cwd, *cwd.parents]:
-            if (directory / "manage.py").is_file():
-                return ["ac-django"]
-            pyproject = directory / "pyproject.toml"
-            if pyproject.is_file():
-                try:
-                    content = pyproject.read_text(encoding="utf-8")
-                except OSError:
-                    return []
-                if _DJANGO_DEPENDENCY_RE.search(content):
-                    return ["ac-django"]
-                return ["ac-python"]
-            if any((directory / candidate).is_file() for candidate in _PYTHON_FILE_HINTS[1:]):
-                return ["ac-python"]
+            skills = _framework_skills_for_directory(directory)
+            if skills is not None:
+                return skills
         return []
 
 
