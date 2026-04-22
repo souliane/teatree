@@ -12,9 +12,12 @@ import subprocess
 import sys
 import time
 from collections.abc import Iterator
+from datetime import UTC
 
 import httpx
+import patchy
 import pytest
+from pytest_playwright_visual import plugin as _ppv_plugin
 
 os.environ["DJANGO_SETTINGS_MODULE"] = "e2e.settings"
 os.environ["DJANGO_ALLOW_ASYNC_UNSAFE"] = "1"
@@ -22,6 +25,11 @@ os.environ["DJANGO_ALLOW_ASYNC_UNSAFE"] = "1"
 os.environ["TEATREE_CLAUDE_SESSIONS_DIR"] = "/nonexistent-e2e-sessions"
 # Disable panel cache so seeded data appears immediately on each test.
 os.environ["TEATREE_PANEL_CACHE_TTL"] = "0"
+# Pin the dashboard header's git SHA/branch so pixel-diff stays stable across
+# commits — read by `teatree.core.views.dashboard.DashboardView.get`. Set at
+# module level so `subprocess.Popen(env=os.environ)` inherits them.
+os.environ["TEATREE_E2E_GIT_SHA"] = "abc1234"
+os.environ["TEATREE_E2E_GIT_BRANCH"] = "e2e-branch"
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -29,10 +37,78 @@ def pytest_configure(config: pytest.Config) -> None:
     os.environ["DJANGO_SETTINGS_MODULE"] = "e2e.settings"
 
 
+_DISABLE_ANIMATIONS_CSS = (
+    "*,*::before,*::after{"
+    "animation-duration:0s!important;animation-delay:0s!important;"
+    "transition-duration:0s!important;transition-delay:0s!important;"
+    "caret-color:transparent!important;"
+    "}"
+)
+
+
 @pytest.fixture(scope="session")
 def browser_context_args(browser_context_args: dict[str, object]) -> dict[str, object]:
-    """Fix viewport size for deterministic screenshots."""
-    return {**browser_context_args, "viewport": {"width": 1280, "height": 900}}
+    """Fix viewport (1280x720 for README rendering) and reduce motion.
+
+    Pixel-stable screenshots require both a fixed viewport and aggressive
+    animation suppression — per-call ``animations="disabled"`` only catches
+    CSS animations Playwright knows about, not JS-driven transitions or
+    hover/loading states. See [#275](https://github.com/souliane/teatree/issues/275)
+    (credits @m13v). The ``_disable_animations_init`` fixture below injects a
+    global stylesheet on every navigation to cover the rest.
+    """
+    return {
+        **browser_context_args,
+        "viewport": {"width": 1280, "height": 720},
+        "reduced_motion": "reduce",
+    }
+
+
+@pytest.fixture(autouse=True)
+def _disable_animations_init(page) -> None:
+    """Inject the no-animation stylesheet on every navigation."""
+    script = (
+        "(()=>{const s=document.createElement('style');"
+        f"s.textContent={_DISABLE_ANIMATIONS_CSS!r};"
+        "(document.head||document.documentElement).appendChild(s);})();"
+    )
+    page.add_init_script(script)
+
+
+# pytest-playwright-visual's `assert_snapshot` hard-fails on any single-pixel
+# mismatch, which makes full-page screenshots impossible to keep stable across
+# host architectures (font antialiasing varies between Apple-Silicon Docker,
+# x86_64 Docker, and bare-metal Ubuntu CI runners). Patch the strict
+# `if mismatch == 0:` check to allow up to 0.5% of pixels to differ. See
+# [#275](https://github.com/souliane/teatree/issues/275).
+#
+# patchy reads source via `inspect.getsource` (which includes `@pytest.fixture`)
+# and re-execs it; the decorator would re-wrap the result into a
+# `FixtureFunctionDefinition` with no `__code__`, breaking patchy's swap.
+# Neutralize `pytest.fixture` to identity for the duration of the patch so the
+# exec returns a plain function. We patch `__wrapped__` (the underlying
+# function); the original `FixtureFunctionDefinition` keeps wrapping it.
+_orig_fixture = pytest.fixture
+pytest.fixture = lambda *a, **_k: a[0] if a and callable(a[0]) else (lambda f: f)  # ty: ignore[invalid-assignment]
+try:
+    # editorconfig-checker-disable
+    patchy.patch(
+        _ppv_plugin.assert_snapshot.__wrapped__,  # ty: ignore[unresolved-attribute]
+        """\
+@@ -30,7 +30,7 @@
+         img_b = Image.open(file)
+         img_diff = Image.new("RGBA", img_a.size)
+         mismatch = pixelmatch(img_a, img_b, img_diff, threshold=threshold, fail_fast=fail_fast)
+-        if mismatch == 0:
++        if mismatch / (img_a.size[0] * img_a.size[1]) <= 0.005:
+             return
+         else:
+             # Create new test_results folder
+""",
+    )
+    # editorconfig-checker-enable
+finally:
+    pytest.fixture = _orig_fixture
 
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
@@ -199,6 +275,17 @@ def _seed_data(e2e_server: str, django_db_blocker) -> Iterator[None]:
             state="scoped",
         )
         Session.objects.create(ticket=ticket2, agent_id="e2e-agent-2")
+
+        # Pin TaskAttempt timestamps so dashboard screenshots are reproducible.
+        # The headless task above triggers the immediate-backend signal which
+        # creates a TaskAttempt with `ended_at=now()` — that microsecond-precision
+        # timestamp is rendered in the Sessions panel and would change every run.
+        from datetime import datetime
+
+        from teatree.core.models import TaskAttempt
+
+        frozen = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
+        TaskAttempt.objects.update(started_at=frozen, ended_at=frozen)
 
     yield
 

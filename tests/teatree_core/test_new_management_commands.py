@@ -2802,6 +2802,46 @@ class TestE2eProject(TestCase):
         assert "tests/e2e/test_login.py" in cmd
         assert "e2e/" not in cmd
 
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_docker_passes_test_path_and_update_snapshots(self) -> None:
+        """Docker path forwards --test-path and --update-snapshots to the e2e service."""
+        with tempfile.TemporaryDirectory() as tmp:
+            wt = Path(tmp)
+            (wt / "dev").mkdir()
+            (wt / "dev" / "docker-compose.yml").touch()
+
+            mock_result = MagicMock(returncode=0)
+            real_exists = Path.exists
+
+            def fake_exists(self: Path) -> bool:
+                # Pretend the in-Docker marker is absent so the command takes the
+                # docker-compose branch even when the suite itself runs in Docker.
+                if str(self) == "/.dockerenv":
+                    return False
+                return real_exists(self)
+
+            with (
+                patch.object(
+                    e2e_mod,
+                    "resolve_worktree",
+                    return_value=MagicMock(extra={"worktree_path": str(wt)}),
+                ),
+                patch.object(Path, "exists", fake_exists),
+                patch.object(utils_run_mod.subprocess, "run", return_value=mock_result) as mock_run,
+            ):
+                call_command(
+                    "e2e",
+                    "project",
+                    test_path="e2e/test_dashboard.py::test_full_dashboard_screenshot",
+                    update_snapshots=True,
+                )
+
+            cmd = mock_run.call_args[0][0]
+            assert "docker" in cmd
+            assert "e2e/test_dashboard.py::test_full_dashboard_screenshot" in cmd
+            assert "--update-snapshots" in cmd
+
 
 class TestE2eExternal(TestCase):
     @_patch_overlays(FULL_OVERLAY)

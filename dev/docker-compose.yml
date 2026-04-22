@@ -27,14 +27,19 @@ services:
 
   e2e:
     <<: *base
+    # Pin platform to linux/amd64 so snapshot baselines match CI (GitHub
+    # ubuntu-latest is x86_64). Without this, Apple Silicon Docker pulls the
+    # aarch64 image and font rendering shifts enough to break pixelmatch.
+    platform: linux/amd64
     volumes:
       - ..:/app:ro
       - ../e2e/snapshots:/app/e2e/snapshots
     build:
       context: ..
       dockerfile: dev/Dockerfile.e2e
-    entrypoint: ["uv", "run", "pytest", "e2e/",
+    entrypoint: ["uv", "run", "pytest",
       "-o", "DJANGO_SETTINGS_MODULE=e2e.settings", "--no-cov",
       "-p", "no:tach", "-v",
       "-o", "cache_dir=/tmp/.pytest_cache"]
+    command: ["e2e/"]
     profiles: [e2e]
