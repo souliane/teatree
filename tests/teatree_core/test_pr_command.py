@@ -64,6 +64,37 @@ class TestPrCreate(TestCase):
         assert spec.title == "feat: add labels"
         assert spec.assignee == "souliane"
 
+    def test_spec_repo_uses_worktree_filesystem_path_not_bare_name(self) -> None:
+        """spec.repo must be the worktree's filesystem path.
+
+        The GitLab backend resolves the project by reading the ``origin`` remote
+        of the given path. A bare repo name like ``widget-backend`` cannot be
+        URL-encoded into a namespaced ``projects/<group>%2F<repo>`` lookup and
+        produces a 404 on GitLab.
+        """
+        host = MagicMock()
+        host.create_pr.return_value = {"iid": 15}
+        host.current_user.return_value = "souliane"
+        self._monkeypatch.setattr(pr_command, "code_host_from_overlay", lambda: host)
+
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/58")
+        Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path="widget-backend",
+            branch="feature-branch",
+            extra={"worktree_path": "/abs/path/ac-widget-1234/widget-backend"},
+        )
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.management.commands.pr._last_commit_message", return_value=("", "")),
+        ):
+            call_command("pr", "create", str(ticket.id), "--title", "feat: remote-resolved")
+
+        (spec,) = host.create_pr.call_args.args
+        assert spec.repo == "/abs/path/ac-widget-1234/widget-backend"
+
     def test_assignee_falls_back_to_git_user_name_when_host_returns_empty(self) -> None:
         host = MagicMock()
         host.create_pr.return_value = {"iid": 13}
