@@ -153,12 +153,12 @@ class Command(TyperCommand):
 
         worktree = ticket.worktrees.first()
         branch = worktree.branch if worktree else f"ticket-{ticket.ticket_number}"
-        repo_path = repo or (worktree.repo_path if worktree else "")
+        worktree_fs_path = (worktree.extra or {}).get("worktree_path", "") if worktree else ""
+        repo_path = repo or worktree_fs_path or (worktree.repo_path if worktree else "")
 
         # Auto-fill title/description from the last commit message
         if not title or not description:
-            wt_path = (worktree.extra or {}).get("worktree_path", "") if worktree else ""
-            commit_subject, commit_body = _last_commit_message(wt_path or repo_path)
+            commit_subject, commit_body = _last_commit_message(worktree_fs_path or repo_path)
             if not title:
                 title = commit_subject or f"Resolve {ticket.issue_url}"
             if not description:
