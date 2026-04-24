@@ -47,6 +47,9 @@ class ShipExecutor(RunnerBase):
     worker calls ``request_review()`` on success to advance to ``IN_REVIEW``.
     """
 
+    def __init__(self, ticket: "Ticket") -> None:
+        self.ticket = ticket
+
     def run(self) -> RunnerResult:
         ticket = self.ticket
         extra = cast("TicketExtra", ticket.extra or {})

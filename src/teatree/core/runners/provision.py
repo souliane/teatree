@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 from teatree.config import workspace_dir as _workspace_dir
-from teatree.core.models import Worktree
+from teatree.core.models import Ticket, Worktree
 from teatree.core.runners.base import RunnerBase, RunnerResult
 from teatree.utils import git
 
@@ -21,6 +21,9 @@ class WorktreeProvisioner(RunnerBase):
     scope time) and materialises one ``Worktree`` row + on-disk git worktree
     per repo. Idempotent: re-running over an existing layout is a no-op.
     """
+
+    def __init__(self, ticket: Ticket) -> None:
+        self.ticket = ticket
 
     def run(self) -> RunnerResult:
         ticket = self.ticket

@@ -1,6 +1,7 @@
 import logging
 
 from teatree.core.cleanup import cleanup_worktree
+from teatree.core.models import Ticket
 from teatree.core.runners.base import RunnerBase, RunnerResult
 
 logger = logging.getLogger(__name__)
@@ -14,6 +15,9 @@ class WorktreeTeardown(RunnerBase):
     cleanup hooks). Errors on a single worktree are captured but do not
     abort the rest — the runner reports a combined success/failure label.
     """
+
+    def __init__(self, ticket: Ticket) -> None:
+        self.ticket = ticket
 
     def run(self) -> RunnerResult:
         ticket = self.ticket
