@@ -996,14 +996,32 @@ Three install paths, one source of truth:
 
 The agent-facing hook layer (`hooks/scripts/hook_router.py`) blocks `uv run t3` Bash invocations and directs agents to call the globally installed `t3` instead.
 
-### 12.4 Bash Permission Defaults
+### 12.4 Bash Permissions
 
-The plugin's `settings.json` ships a small `permissions.allow` / `permissions.deny` block so t3 lifecycle commands run end-to-end in auto mode without per-command prompts. The design is **broad allow, targeted deny**:
+The plugin's `settings.json` ships a **comprehensive** `permissions.allow` list so every command teatree and its overlays legitimately invoke matches a static rule — the auto-mode classifier is never consulted for normal workflow. This keeps day-to-day work friction-free: no surprise prompts, no classifier false-denials on routine operations.
 
-- **Allow** — one wildcard per tool family the workflow needs: `t3:*`, `git:*`, `gh:*`, `glab:*`, `uv:*`, `prek:*`, `npm:*`, `pytest:*`, `python:*`, `curl:*`, `psql:*`, `docker:*`, etc. The `t3` CLI is the safety wrapper that enforces worktree isolation, branch naming, ticket gating, and push gating; denying it inside the CLI would be the wrong layer.
-- **Deny** — the load-bearing list. Mirrors the non-negotiable rules from `t3:rules` and `t3:ship`: pushes to default branches (`main`/`master`/`development`/`develop`/`release`/`trunk`), `--force` pushes, `--no-verify` on any git command, `git config --global`/`--system`, history rewrites with `filter-branch`, `gh/glab repo delete`, auth logout, `curl | bash`, and `rm -rf` on system roots or `$HOME`.
+The design is **broad allow, narrow deny**:
 
-Deny wins over allow, so a misbehaving agent — or a misclicked ticket — cannot bypass these guardrails even with broad allow wildcards in place. This complements but does not replace Claude Code's `autoMode` classifier, which remains the semantic safety net for novel patterns the static list cannot anticipate. The plugin permissions reduce the volume of classifier prompts, not the strictness of the trust boundary.
+- **Allow** — every tool family the workflow touches:
+  - **Core t3 / Python / packaging:** `t3`, `uv`, `uvx`, `pip`, `pipenv`, `python`, `python3`, `pytest`, `ruff`, `mypy`, `ty`, `prek`, `pre-commit`, `make`, `black`, `isort`, `flake8`.
+  - **Git & hosting:** `git`, `gh`, `glab`.
+  - **Node / frontend:** `node`, `npm`, `npx`, `yarn`, `pnpm`, `nx`, `ng`.
+  - **Infra:** `docker`, `docker compose`, `docker-compose`, `docker exec`, `psql`, `createdb`, `dropdb`, `pg_dump`, `pg_restore`, `pg_isready`, `redis-cli`.
+  - **POSIX utilities & file ops:** `ls`, `cat`, `head`, `tail`, `grep`, `rg`, `find`, `sed`, `awk`, `jq`, `yq`, `xargs`, `wc`, `tree`, `file`, `which`, `env`, `cp`, `mv`, `ln`, `mkdir`, `rmdir`, `touch`, `chmod`, `chown`, `tar`, `gzip`, `zip`, `rm`, plus `readlink`, `realpath`, `basename`, `dirname`, `cut`, `sort`, `uniq`, `diff`, `date`, `df`, `du`, `tee`, `mktemp`.
+  - **Network & process:** `curl`, `wget`, `ps`, `pkill`, `kill`, `lsof`, `nc`, `fuser`.
+  - **Platform:** `launchctl`, `systemctl`, `brew`, `open`, `osascript`, `pass show`.
+- **Deny** — the load-bearing non-negotiables that take precedence over any allow wildcard:
+  - `git push` to default branches (`main`/`master`/`development`/`develop`/`release`/`trunk`)
+  - `git push --force` / `-f` / `--force-with-lease` (any branch)
+  - `--no-verify` on any git command
+  - `git config --global` / `--system`, `git filter-branch`, `git update-ref -d`
+  - `gh/glab repo delete`, `release delete`, `gist delete`, `auth logout`
+  - `curl/wget | bash/sh`
+  - `rm -rf` rooted at `/`, `~`, `$HOME`, `.`, `..`
+
+**Why this shape.** The `t3` CLI is the workflow's safety wrapper — it enforces worktree isolation, branch naming, ticket gates, and push gates. Blocking commands inside the CLI is the wrong layer; we allow tool families broadly and let `t3` decide which invocations are legitimate. The classifier stays available for novel patterns that neither list covers, but in the common case a teatree session runs end-to-end without a single classifier prompt.
+
+**Users still get the final say.** A user's own `~/.claude/settings.json` (or equivalent) can expand this further or tighten it — nothing in the plugin prevents an individual from locking down their environment.
 
 ---
 
