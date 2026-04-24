@@ -58,9 +58,36 @@ If no unpushed commits exist, inform the user and stop.
 
 Show the commit log to the user.
 
+### 1a. Bundle Sibling Retro Branches (Default)
+
+When multiple local branches hold unpushed retro commits from the **same session** or same logical topic, **bundle them into a single PR by default** — do not open one PR per branch. Each PR costs a review cycle; the user's explicit policy is to minimise the number of PRs when commits belong together.
+
+**Detect siblings:**
+
+```bash
+cd "$T3_REPO"
+DEFAULT=$(git config init.defaultBranch || echo main)
+for ref in $(git for-each-ref --format='%(refname:short)' refs/heads/); do
+  [ "$ref" = "$DEFAULT" ] && continue
+  ahead=$(git rev-list --count "$DEFAULT..$ref" 2>/dev/null)
+  [ "${ahead:-0}" -gt 0 ] && git log --format="  %h %s  [$ref]" "$DEFAULT..$ref"
+done
+```
+
+A sibling is another branch whose commits (a) trace back to the same retro session or (b) touch overlapping skills / cross-reference each other's changes. When in doubt, show the list to the user and ask whether to bundle.
+
+**Bundle procedure:**
+
+1. Pick the branch whose scope most naturally covers the combined change as the umbrella (rename if helpful).
+2. `git cherry-pick` the commits from each sibling branch onto the umbrella (oldest-first, preserving authorship).
+3. Re-run § 2 pre-flight on the combined branch.
+4. Delete the now-empty sibling branches after the combined PR lands: `git branch -D <sibling>` and `git worktree remove <path>`.
+
+**Opt-out:** if the user explicitly asks for separate PRs (different review audiences, staged rollout, one-change-per-revert policy), skip bundling. Separate PRs are the exception, not the default.
+
 ### 1b. Squash Option
 
-If there is **more than one** unpushed commit, offer to squash following the squash rules in [`../ship/SKILL.md`](../ship/SKILL.md) § "Finalize Branch".
+If the (possibly-bundled) branch has **more than one** commit, offer to squash following the squash rules in [`../ship/SKILL.md`](../ship/SKILL.md) § "Finalize Branch". Keep commits separate when each lands a distinct change that deserves its own revert boundary.
 
 ### 2. Pre-Flight Checks (all must pass)
 
