@@ -104,7 +104,7 @@ def _fix_drift(drift: Drift) -> list[str]:
         fixes.append(f"rewrote drifted env cache for wt#{cache_drift.worktree_pk}")
 
     fixes.extend(
-        f"missing DB {m.db_name} for wt#{m.worktree_pk} — run `t3 <overlay> lifecycle setup` to re-provision"
+        f"missing DB {m.db_name} for wt#{m.worktree_pk} — run `t3 <overlay> worktree provision` to re-provision"
         for m in drift.missing_dbs
     )
 

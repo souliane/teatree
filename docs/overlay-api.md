@@ -92,7 +92,7 @@ Return the list of repository names your project manages. Teatree uses this to k
 
 #### `get_provision_steps(worktree: Worktree) -> list[ProvisionStep]`
 
-Return the ordered steps to provision a worktree after creation. Each step is a `ProvisionStep` with a name, callable, and optional description. Steps run sequentially during `lifecycle setup`.
+Return the ordered steps to provision a worktree after creation. Each step is a `ProvisionStep` with a name, callable, and optional description. Steps run sequentially during `worktree provision`.
 
 ### Provisioning hooks
 
@@ -108,7 +108,7 @@ How to import/restore a database for this worktree. Returns `None` if no DB impo
 
 #### `db_import(worktree, *, force, slow_import, dslr_snapshot, dump_path) -> bool`
 
-Run the actual database import logic. Called by `lifecycle setup` and `db refresh`. Returns `True` on success. Defaults to `False` (no-op).
+Run the actual database import logic. Called by `worktree provision` and `db refresh`. Returns `True` on success. Defaults to `False` (no-op).
 
 #### `get_post_db_steps(worktree: Worktree) -> list[ProvisionStep]`
 
@@ -132,7 +132,7 @@ Service configuration (Docker compose files, readiness checks, shared vs. per-wo
 
 #### `get_compose_file(worktree: Worktree) -> str`
 
-Return the path to the docker-compose file for this worktree. Used by `lifecycle start` and `run backend`. Defaults to `""`.
+Return the path to the docker-compose file for this worktree. Used by `worktree start` and `run backend`. Defaults to `""`.
 
 ### Run hooks
 
@@ -142,7 +142,7 @@ Commands to run services (backend, frontend, build-frontend, etc.) for a worktre
 
 #### `get_pre_run_steps(worktree: Worktree, service: str) -> list[ProvisionStep]`
 
-Steps to run before starting a specific service (e.g., copy customer config, refresh translations). Called for each service during `lifecycle start` and `run frontend`. Defaults to `[]`.
+Steps to run before starting a specific service (e.g., copy customer config, refresh translations). Called for each service during `worktree start` and `run frontend`. Defaults to `[]`.
 
 #### `get_test_command(worktree: Worktree) -> list[str] | RunCommand`
 

@@ -300,7 +300,7 @@ class OverlayBase(ABC):
     def get_docker_services(self, worktree: "Worktree") -> set[str]:
         """Service names (as declared in ``get_services_config``) that MUST run in Docker.
 
-        Teatree rejects ``lifecycle setup`` if any name returned here is not
+        Teatree rejects ``worktree provision`` if any name returned here is not
         declared in ``get_services_config`` — prevents drift between the
         enforcement list and the service specs.  Default: empty set (opt-in).
         """

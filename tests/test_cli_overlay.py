@@ -561,15 +561,15 @@ class TestOverlaySubcommands:
         assert result.exit_code == 1
         assert "--phase and --skill cannot be used together." in result.output
 
-    def test_lifecycle_subcommand(self, tmp_path):
+    def test_worktree_subcommand(self, tmp_path):
         """Overlay command groups forward to manage.py."""
         overlay_app = OverlayAppBuilder("test", tmp_path, "test.settings").build()
         test_runner = CliRunner()
 
         with patch.object(cli_overlay_mod, "managepy") as mock_manage:
-            result = test_runner.invoke(overlay_app, ["lifecycle", "setup"])
+            result = test_runner.invoke(overlay_app, ["worktree", "provision"])
             assert result.exit_code == 0
-            mock_manage.assert_called_once_with(tmp_path, "lifecycle", "setup", overlay_name="test")
+            mock_manage.assert_called_once_with(tmp_path, "worktree", "provision", overlay_name="test")
 
     def test_enable_autostart(self, tmp_path):
         """enable-autostart delegates to teatree.autostart.enable."""
