@@ -4,6 +4,7 @@ import subprocess  # noqa: S404
 from pathlib import Path
 from typing import TypedDict
 
+from django.db import transaction
 from django.http import Http404, HttpRequest, HttpResponse, JsonResponse
 from django.template.response import TemplateResponse
 from django.views import View
@@ -17,8 +18,6 @@ from teatree.utils.run import run_allowed_to_fail
 
 class CancelTaskView(View):
     def post(self, request: HttpRequest, task_id: int) -> HttpResponse:
-        from django.db import transaction  # noqa: PLC0415
-
         try:
             with transaction.atomic():
                 task = Task.objects.select_for_update().get(pk=task_id)
@@ -95,8 +94,9 @@ class TicketTransitionView(View):
             return JsonResponse({"error": f"Invalid transition: {transition_name}"}, status=400)
 
         try:
-            method()
-            ticket.save()
+            with transaction.atomic():
+                method()
+                ticket.save()
         except TransitionNotAllowed:
             return JsonResponse(
                 {"error": f"Transition '{transition_name}' not allowed from state '{ticket.get_state_display()}'"},

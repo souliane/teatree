@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, cast
 
 import typer
+from django.db import transaction
 from django_typer.management import TyperCommand, command
 
 from teatree.config import load_config
@@ -343,30 +344,31 @@ class Command(TyperCommand):
         overlay = get_overlay()
         repo_names = [r.strip() for r in repos.split(",") if r.strip()] if repos else overlay.get_workspace_repos()
 
-        ticket, _ = Ticket.objects.get_or_create(
-            issue_url=issue_url,
-            defaults={"variant": variant, "repos": repo_names},
-        )
+        with transaction.atomic():
+            ticket, _ = Ticket.objects.get_or_create(
+                issue_url=issue_url,
+                defaults={"variant": variant, "repos": repo_names},
+            )
 
-        if ticket.state == Ticket.State.NOT_STARTED:
-            ticket.scope(issue_url=issue_url, variant=variant or None, repos=repo_names)
+            if ticket.state == Ticket.State.NOT_STARTED:
+                ticket.scope(issue_url=issue_url, variant=variant or None, repos=repo_names)
 
-        ticket.repos = list(dict.fromkeys((ticket.repos or []) + repo_names))
+            ticket.repos = list(dict.fromkeys((ticket.repos or []) + repo_names))
 
-        if not description:
-            description = overlay.metadata.get_issue_title(issue_url)
+            if not description:
+                description = overlay.metadata.get_issue_title(issue_url)
 
-        extra = cast("TicketExtra", ticket.extra or {})
-        if not extra.get("branch"):
-            extra["branch"] = _build_branch_name(repo_names, ticket.ticket_number, description)
-        if description and not extra.get("description"):
-            extra["description"] = description
-        ticket.extra = extra
-        ticket.save()
-
-        if ticket.state == Ticket.State.SCOPED:
-            ticket.start()
+            extra = cast("TicketExtra", ticket.extra or {})
+            if not extra.get("branch"):
+                extra["branch"] = _build_branch_name(repo_names, ticket.ticket_number, description)
+            if description and not extra.get("description"):
+                extra["description"] = description
+            ticket.extra = extra
             ticket.save()
+
+            if ticket.state == Ticket.State.SCOPED:
+                ticket.start()
+                ticket.save()
 
         # Run the provisioner synchronously so the CLI gives immediate feedback;
         # the worker that ``start()`` enqueued is idempotent and no-ops when it

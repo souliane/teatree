@@ -9,6 +9,7 @@ returns the MR URL once the worker completes.
 import re
 from typing import TypedDict, cast
 
+from django.db import transaction
 from django_typer.management import TyperCommand, command
 
 from teatree import visual_qa
@@ -171,6 +172,7 @@ class Command(TyperCommand):
         self,
         ticket_id: int,
         *,
+        title: str = "",
         dry_run: bool = False,
         skip_validation: bool = False,
         skip_visual_qa: str = "",
@@ -182,6 +184,9 @@ class Command(TyperCommand):
         On success the ``execute_ship`` worker pushes the branch, opens the MR,
         and advances ``SHIPPED → IN_REVIEW``. The return value reports the MR
         URL once the worker completes (synchronous in interactive mode).
+
+        ``--title`` overrides the MR title (default: last commit subject).
+        Stored on ``ticket.extra['mr_title_override']`` so the worker reads it.
         """
         ticket = Ticket.objects.get(pk=ticket_id)
         worktree = ticket.worktrees.first()
@@ -202,8 +207,13 @@ class Command(TyperCommand):
         if dry_run:
             return _ship_dry_run(ticket, worktree)
 
-        ticket.ship()
-        ticket.save()
+        with transaction.atomic():
+            if title:
+                extra = cast("TicketExtra", ticket.extra or {})
+                extra["mr_title_override"] = title
+                ticket.extra = extra
+            ticket.ship()
+            ticket.save()
         return ShipEnqueued(ticket_id=int(ticket.pk), state=str(ticket.state))
 
     @command(name="check-gates")

@@ -120,21 +120,22 @@ class Task(models.Model):
             return
         ticket = self.ticket
         ticket.refresh_from_db()
-        if self.phase == "scoping" and ticket.state == Ticket.State.SCOPED:
-            ticket.start()
-            ticket.save()
-        elif self.phase == "coding" and ticket.state == Ticket.State.STARTED:
-            ticket.code()
-            ticket.save()
-        elif self.phase == "testing" and ticket.state == Ticket.State.CODED:
-            ticket.test(passed=True)
-            ticket.save()
-        elif self.phase == "reviewing" and ticket.state == Ticket.State.TESTED:
-            ticket.review()
-            ticket.save()
-        elif self.phase == "shipping" and ticket.state == Ticket.State.REVIEWED:
-            ticket.ship()
-            ticket.save()
+        with transaction.atomic():
+            if self.phase == "scoping" and ticket.state == Ticket.State.SCOPED:
+                ticket.start()
+                ticket.save()
+            elif self.phase == "coding" and ticket.state == Ticket.State.STARTED:
+                ticket.code()
+                ticket.save()
+            elif self.phase == "testing" and ticket.state == Ticket.State.CODED:
+                ticket.test(passed=True)
+                ticket.save()
+            elif self.phase == "reviewing" and ticket.state == Ticket.State.TESTED:
+                ticket.review()
+                ticket.save()
+            elif self.phase == "shipping" and ticket.state == Ticket.State.REVIEWED:
+                ticket.ship()
+                ticket.save()
 
     def _last_attempt_needs_user_input(self) -> bool:
         last = self.attempts.order_by("-pk").first()  # ty: ignore[unresolved-attribute]
