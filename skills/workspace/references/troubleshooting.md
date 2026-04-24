@@ -244,3 +244,10 @@ See your [issue tracker platform reference](../../platforms/references/) § "Kno
 - **Cause:** The global uv tool install is editable-anchored at a worktree that has since been cleaned up. Check `~/.local/share/uv/tools/teatree/uv-receipt.toml` — if the `editable = "..."` path no longer exists on disk, the `teatree.pth` resolves nowhere and every import fails.
 - **Fix:** Run `t3 setup` from the main clone. Since #434, setup parses the receipt, detects the missing source, and reinstalls via `uv tool install --force --editable <main-clone>`. Safe to run from a worktree too — setup honors `T3_REPO` and resolves worktrees to their main clone.
 - **Prevention:** Avoid running `uv tool install --editable .` directly from a worktree. Go through `t3 setup` instead — it anchors at the main clone by default, so worktree cleanup can't orphan the global install.
+
+## Global `t3` Runs Main Clone Code Even From a Worktree
+
+- **Symptom (pre-#434):** Editing `src/teatree/...` inside a worktree never affected the global `t3` — you had to `uv run t3` from the worktree, or reinstall the tool editable-pointed at the worktree.
+- **Fix:** `t3` now auto-selects the teatree source at invocation time via the `t3_bootstrap` entry point. When cwd is inside a directory tree whose `pyproject.toml` names the project `teatree` and ships `src/teatree/__init__.py`, the bootstrap prepends that `src/` to `sys.path` before importing `teatree.cli`. Outside any teatree tree, it falls through to whatever the uv tool install resolved (main clone editable or PyPI libs).
+- **Verify:** `t3 info | grep teatree:` prints the path that was loaded — compare against cwd to confirm the worktree source was picked up.
+- **Caveat:** The tool's venv dependencies are shared between main clone and worktree source. If a worktree bumps a dep that isn't in the tool venv, imports fail — run `uv tool install --force --editable <main-clone>` to refresh the tool's deps, or fall back to `uv run t3` from the worktree.
