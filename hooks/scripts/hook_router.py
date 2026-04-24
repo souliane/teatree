@@ -69,19 +69,19 @@ _READONLY_CMD_PREFIX_RE = re.compile(
 _BLOCKED_COMMANDS: list[tuple[re.Pattern[str], str]] = [
     (
         re.compile(r"manage\.py\s+runserver"),
-        "BLOCKED: `manage.py runserver` — use `t3 <overlay> lifecycle start` instead.",
+        "BLOCKED: `manage.py runserver` — use `t3 <overlay> worktree start` instead.",
     ),
     (
         re.compile(r"manage\.py\s+migrate"),
-        "BLOCKED: `manage.py migrate` — use `t3 <overlay> lifecycle setup` instead.",
+        "BLOCKED: `manage.py migrate` — use `t3 <overlay> worktree provision` instead.",
     ),
     (
         re.compile(r"\bnx\s+serve\b"),
-        "BLOCKED: `nx serve` — use `t3 <overlay> lifecycle start` instead.",
+        "BLOCKED: `nx serve` — use `t3 <overlay> worktree start` instead.",
     ),
     (
         re.compile(r"\bdocker\s+compose\s+(?:up|start)\b"),
-        "BLOCKED: `docker compose up/start` — use `t3 <overlay> lifecycle start` instead.",
+        "BLOCKED: `docker compose up/start` — use `t3 <overlay> worktree start` instead.",
     ),
     (
         re.compile(r"\b(?:createdb|dropdb)\b"),
@@ -97,7 +97,7 @@ _BLOCKED_COMMANDS: list[tuple[re.Pattern[str], str]] = [
     ),
     (
         re.compile(r"\b(?:pipenv|pip)\s+install\b"),
-        "BLOCKED: `pip/pipenv install` — use `t3 <overlay> lifecycle setup` instead.",
+        "BLOCKED: `pip/pipenv install` — use `t3 <overlay> worktree provision` instead.",
     ),
     (
         re.compile(r"\b(?:pg_restore|pg_dump)\b"),

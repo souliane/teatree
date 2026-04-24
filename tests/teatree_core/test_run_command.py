@@ -138,7 +138,7 @@ class TestRunCommand(TestCase):
                 extra={"worktree_path": wt_path},
             )
             with patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY):
-                cast("int", call_command("lifecycle", "setup", path=wt_path))
+                cast("int", call_command("worktree", "provision", path=wt_path))
 
                 result = cast("dict[str, str]", call_command("run", "services", path=wt_path))
 

@@ -4,7 +4,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from teatree.core.management.commands.lifecycle import validate_docker_service_contract
+from teatree.core.management.commands.worktree import validate_docker_service_contract
 from teatree.core.overlay import OverlayBase, ProvisionStep
 
 
