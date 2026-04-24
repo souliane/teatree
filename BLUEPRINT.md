@@ -631,6 +631,7 @@ Implementations: `GitHubSyncBackend` (`backends/github_sync.py`), `GitLabSyncBac
 
 **tasks** — Task routing and execution:
 
+- `create(ticket, phase, reason | reason-file, interactive=False)` → enqueues the next-phase task (used by `/t3:next` for phase handoff; headless by default so a worker claims immediately)
 - `claim(execution_target, claimed_by, lease_seconds=120)` → claims next pending task
 - `work-next-sdk(claimed_by)` → executes headless task via `claude -p`
 - `work-next-user-input(claimed_by)` → creates interactive ttyd session

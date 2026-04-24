@@ -29,27 +29,19 @@ Load `/t3:retro` and execute it. This captures lessons while the full session co
 
 **Why:** the `next_steps` JSON field is descriptive — the pipeline does NOT parse it to create follow-up tasks. Interactive task completion does NOT record a `TaskAttempt`, so `_advance_ticket()` never fires and the ticket is orphaned. The next pending task the worker picks up will be for a different ticket, and the just-completed phase stalls.
 
-**What to do:** enqueue the next-phase Task as `HEADLESS` (so a worker claims it immediately) via Django shell. The `execution_reason` body is the prompt the headless worker will see — include the locked decision from this session and the concrete implementation task list.
+**What to do:** use `t3 <overlay> tasks create` to enqueue the next-phase Task as `HEADLESS` (so a worker claims it immediately). The `--reason` body is the prompt the headless worker will see — include the locked decision from this session and the concrete implementation task list.
 
 ```bash
-cd "$T3_REPO" && PYENV_VERSION=3.13.11 uv run python manage.py shell -c "
-from teatree.core.models import Ticket, Task, Session
-t = Ticket.objects.get(pk=<TICKET_PK>)
-sess = Session.objects.filter(ticket=t).order_by('-pk').first() or Session.objects.create(ticket=t, agent_id='phase-handoff')
-reason = '''<decision summary + numbered implementation tasks>'''
-task = Task.objects.create(
-    ticket=t, session=sess,
-    phase='<next phase>',
-    execution_target=Task.ExecutionTarget.HEADLESS,
-    execution_reason=reason,
-)
-print(task.pk, task.status)
-"
+t3 <overlay> tasks create <TICKET_PK> \
+  --phase <next phase> \
+  --reason-file <path-to-prompt>.md
 ```
+
+For short prompts, pass `--reason "<text>"` directly. For multiline prompts, write them to a tempfile and use `--reason-file`, or pipe via `--reason -` (stdin).
 
 **Phase transitions:** `scoping → coding`, `coding → testing`, `testing → reviewing`, `reviewing → shipping`.
 
-**Gotcha:** `Ticket.objects.get(pk=N)` takes the teatree **ticket PK** (visible as `ticket_id` in `t3 <overlay> tasks list`), NOT the external issue number. Confirm via `ticket.issue_url` before creating the task.
+**Gotcha:** the `<TICKET_PK>` argument takes the teatree **ticket PK** (visible as `ticket_id` in `t3 <overlay> tasks list`), NOT the external issue number — they differ. Confirm via the CLI output, not by guessing.
 
 ### 3. Emit Structured Result
 
