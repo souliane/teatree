@@ -389,6 +389,28 @@ class TestPhaseAutoDispatch(TestCase):
         assert ticket.state == Ticket.State.STARTED
         fake_task.enqueue.assert_called_once_with(ticket.pk)
 
+    def test_mark_merged_enqueues_execute_teardown_after_commit(self) -> None:
+        """Stage 5 of #140: mark_merged() body offloads teardown to a @task worker."""
+        from unittest.mock import MagicMock  # noqa: PLC0415
+
+        from teatree.core import tasks as tasks_mod  # noqa: PLC0415
+
+        ticket = Ticket.objects.create()
+        ticket.state = Ticket.State.IN_REVIEW
+        ticket.save(update_fields=["state"])
+
+        fake_task = MagicMock()
+        with (
+            self.captureOnCommitCallbacks(execute=True),
+            patch.object(tasks_mod, "execute_teardown", fake_task),
+        ):
+            ticket.mark_merged()
+            ticket.save()
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.MERGED
+        fake_task.enqueue.assert_called_once_with(ticket.pk)
+
     def test_ship_enqueues_execute_ship_after_commit(self) -> None:
         """Stage 2 of #140: ship() body offloads I/O to a @task worker."""
         from unittest.mock import MagicMock  # noqa: PLC0415

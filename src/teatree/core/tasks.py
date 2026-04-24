@@ -5,7 +5,12 @@ from django.db import transaction
 from django.tasks import task
 
 from teatree.core.models import Task, Ticket
-from teatree.core.runners import RetroExecutor, ShipExecutor, WorktreeProvisioner
+from teatree.core.runners import (
+    RetroExecutor,
+    ShipExecutor,
+    WorktreeProvisioner,
+    WorktreeTeardown,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +112,37 @@ def execute_retrospect(ticket_id: int) -> TransitionResult:
 
         ticket.mark_delivered()
         ticket.save()
+
+    return {"ticket_id": ticket_id, "ok": True, "detail": result.detail}
+
+
+@task()
+def execute_teardown(ticket_id: int) -> TransitionResult:
+    """Tear down worktrees for a MERGED ticket.
+
+    Idempotency: the worker takes a row lock and re-checks state before running.
+    At-least-once delivery from django-tasks means this can fire more than once
+    for the same transition — a lost update or a redelivered job must be safe.
+
+    Teardown is best-effort: per-worktree errors are reported in the result
+    detail but do not advance the ticket. The ticket stays in MERGED until
+    the operator either fixes the underlying issue and re-enqueues, or moves
+    on with ``retrospect()`` once the residual state is acceptable.
+    """
+    with transaction.atomic():
+        ticket = Ticket.objects.select_for_update().get(pk=ticket_id)
+        if ticket.state != Ticket.State.MERGED:
+            logger.info(
+                "execute_teardown skipped for ticket %s: state=%s (not MERGED)",
+                ticket_id,
+                ticket.state,
+            )
+            return {"ticket_id": ticket_id, "skipped": True, "state": str(ticket.state)}
+
+        result = WorktreeTeardown(ticket).run()
+        if not result.ok:
+            logger.warning("Teardown reported errors for ticket %s: %s", ticket_id, result.detail)
+            return {"ticket_id": ticket_id, "ok": False, "detail": result.detail}
 
     return {"ticket_id": ticket_id, "ok": True, "detail": result.detail}
 

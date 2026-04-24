@@ -11,5 +11,12 @@ from teatree.core.runners.base import RunnerBase
 from teatree.core.runners.provision import WorktreeProvisioner
 from teatree.core.runners.retro import RetroExecutor
 from teatree.core.runners.ship import ShipExecutor
+from teatree.core.runners.teardown import WorktreeTeardown
 
-__all__ = ["RetroExecutor", "RunnerBase", "ShipExecutor", "WorktreeProvisioner"]
+__all__ = [
+    "RetroExecutor",
+    "RunnerBase",
+    "ShipExecutor",
+    "WorktreeProvisioner",
+    "WorktreeTeardown",
+]

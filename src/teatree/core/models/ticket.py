@@ -218,7 +218,18 @@ class Ticket(models.Model):
 
     @transition(field=state, source=State.IN_REVIEW, target=State.MERGED)
     def mark_merged(self) -> None:
-        pass
+        """Schedule worktree teardown.
+
+        The worker removes git worktrees, deletes the local branch, drops the
+        per-worktree DB and runs overlay cleanup hooks. FSM invariant
+        (BLUEPRINT §4): transition bodies stay pure — long I/O is offloaded
+        to an ``@task`` worker, enqueued after commit so the state change and
+        the queued work land atomically.
+        """
+        from teatree.core.tasks import execute_teardown  # noqa: PLC0415
+
+        ticket_pk = int(self.pk)
+        transaction.on_commit(lambda: execute_teardown.enqueue(ticket_pk))
 
     @transition(field=state, source=State.MERGED, target=State.RETROSPECTED)
     def retrospect(self) -> None:

@@ -10,6 +10,7 @@ from teatree.core.tasks import (
     execute_provision,
     execute_retrospect,
     execute_ship,
+    execute_teardown,
     refresh_followup_snapshot,
     sync_followup,
 )
@@ -133,6 +134,65 @@ class TestExecuteRetrospect(TestCase):
             "ticket_id": ticket.pk,
             "skipped": True,
             "state": "delivered",
+        }
+
+
+class TestExecuteTeardown(TestCase):
+    def _ticket_in_merged(self) -> Ticket:
+        ticket = Ticket.objects.create(overlay="test")
+        ticket.state = Ticket.State.MERGED
+        ticket.save(update_fields=["state"])
+        return ticket
+
+    @override_settings(**IMMEDIATE_BACKEND)
+    def test_advances_runner_when_state_matches(self) -> None:
+        from teatree.core.runners.base import RunnerResult  # noqa: PLC0415
+
+        ticket = self._ticket_in_merged()
+
+        with patch("teatree.core.tasks.WorktreeTeardown") as teardown:
+            teardown.return_value.run.return_value = RunnerResult(ok=True, detail="tore down 2 worktree(s)")
+            result = execute_teardown.enqueue(ticket.pk)
+
+        ticket.refresh_from_db()
+        # Teardown does NOT advance the FSM — retrospect() does that explicitly.
+        assert ticket.state == Ticket.State.MERGED
+        assert result.return_value == {
+            "ticket_id": ticket.pk,
+            "ok": True,
+            "detail": "tore down 2 worktree(s)",
+        }
+
+    @override_settings(**IMMEDIATE_BACKEND)
+    def test_skips_when_state_does_not_match(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.RETROSPECTED)
+
+        result = execute_teardown.enqueue(ticket.pk)
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.RETROSPECTED
+        assert result.return_value == {
+            "ticket_id": ticket.pk,
+            "skipped": True,
+            "state": "retrospected",
+        }
+
+    @override_settings(**IMMEDIATE_BACKEND)
+    def test_reports_failure_without_advancing(self) -> None:
+        from teatree.core.runners.base import RunnerResult  # noqa: PLC0415
+
+        ticket = self._ticket_in_merged()
+
+        with patch("teatree.core.tasks.WorktreeTeardown") as teardown:
+            teardown.return_value.run.return_value = RunnerResult(ok=False, detail="repo-0: branch ahead")
+            result = execute_teardown.enqueue(ticket.pk)
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.MERGED
+        assert result.return_value == {
+            "ticket_id": ticket.pk,
+            "ok": False,
+            "detail": "repo-0: branch ahead",
         }
 
 
