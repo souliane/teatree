@@ -44,11 +44,17 @@ def _parse_env_file(path: Path) -> dict[str, str]:
 
 
 def _find_env_cache(cwd: str) -> Path | None:
-    """Walk up from *cwd* looking for the env cache (file or symlink)."""
+    """Walk up from *cwd* looking for the env cache.
+
+    Only returns a path whose target can actually be read. ``is_file()``
+    follows symlinks and returns False for broken ones, so this naturally
+    skips worktree symlinks whose target is not present in the current
+    filesystem view (e.g. Docker mounts that don't include the ticket dir).
+    """
     cwd_path = Path(cwd)
     for parent in [cwd_path, *cwd_path.parents]:
         candidate = parent / CACHE_FILENAME
-        if candidate.is_file() or candidate.is_symlink():
+        if candidate.is_file():
             return candidate
     return None
 
