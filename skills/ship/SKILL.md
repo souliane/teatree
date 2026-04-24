@@ -140,6 +140,16 @@ Before creating an MR, the `pr create` command automatically checks the session 
 
 **Prefer `t3 <overlay> pr create` over raw `gh`/`glab`.** The CLI handles the title/body format, ticket URL injection, assignee, and fork-vs-upstream remote resolution — all of which are easy to get wrong by hand. Reach for raw `gh`/`glab` only when the overlay doesn't expose a `pr create` subcommand, or when you're fixing the CLI itself and need to bypass it for this one call.
 
+#### Scope-Match Gate Before `Closes/Fixes #N` (Non-Negotiable)
+
+Before writing `Closes #N` or `Fixes #N` in a PR body, re-read the linked issue end-to-end and **enumerate every acceptance criterion, phase, or deliverable it names**. For each one, mark it ✅ shipped, ⚠️ partial, or ❌ not started, and paste the matrix into the PR body. `Closes/Fixes` is only legal when every row is ✅. Otherwise:
+
+- Use `Relates-to #N` (so the issue stays open).
+- List the unshipped phases/AC in the PR body under a "Remaining scope" heading so the next agent sees the gap.
+- Do NOT rely on "I'll do the rest later" memory. The issue body is the contract; a partial PR that auto-closes the issue silently discards the rest of the contract.
+
+**Past failure (#97, PR #423):** Issue #97 defined 5 phases (`Phase 1` teardown cleanup through `Phase 5` teatree core hooks). PR #423 shipped only Phase 5 but used `Closes #97`, auto-closing the issue when 4/5 phases remained. The user had to reopen the issue manually. Prevention: the phase-by-phase ✅/❌ matrix in the PR body would have forced the correct verb (`Relates-to`).
+
 **STOP — resolve the ticket URL before typing the glab command.**
 
 Before composing any `glab mr create` or `glab mr update` call, answer these three questions:
