@@ -164,13 +164,13 @@ On **every prompt**, use `TaskCreate` to create tasks before doing any work — 
 
 ## Publishing Actions Are Mode-Conditional (Non-Negotiable)
 
-The setting `teatree.mode` in `~/.teatree.toml` (or the `T3_MODE` env var) picks between two doctrines for publishing actions — push, MR create, MR merge, remote branch deletion, Slack posts, any write that leaves the local machine. The default is `interactive` (security-conservative). `auto` opts into full autonomy.
+The setting `teatree.mode` in `~/.teatree.toml` (or the `T3_MODE` env var) picks between two doctrines for publishing actions — push, MR create, MR merge, MR approve/unapprove, remote branch deletion, Slack posts, any write that leaves the local machine. The default is `interactive` (security-conservative). `auto` opts into full autonomy.
 
 ### Interactive mode (default)
 
 Commit approval ≠ push approval. **Squash approval ≠ push approval. "All done" ≠ push approval. Rebase approval ≠ force-push approval.** Always present the final state and ask "Push?" as a **separate question** after committing, squashing, or rebasing — use `AskUserQuestion`, not an inline question.
 
-- Every publishing action (push, MR create/update, MR merge, remote branch delete, Slack post) requires a separate explicit confirmation.
+- Every publishing action (push, MR create/update, MR merge, MR approve/unapprove, remote branch delete, Slack post) requires a separate explicit confirmation. "Recheck" / "re-review" / "look again" are verify-only instructions — they do **not** authorize re-approval.
 - **Force-push (`--force-with-lease`)**: get separate explicit confirmation even if the user already approved the rebase. A rebase and a force-push are two decisions.
 
 ### Auto mode (`t3.mode = "auto"` or `T3_MODE=auto`)
