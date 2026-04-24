@@ -24,6 +24,7 @@ class PullRequestSpec:
     target_branch: str = ""
     labels: list[str] = field(default_factory=list)
     assignee: str = ""
+    draft: bool = False
 
 
 @runtime_checkable

@@ -3,9 +3,10 @@
 import os
 import re
 import sys
+from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, cast
+from typing import TYPE_CHECKING, Annotated, TypedDict, cast
 
 import typer
 from django.db import transaction
@@ -20,6 +21,7 @@ from teatree.core.management.commands._workspace_cleanup import (
     resolve_unsynced_worktree,
 )
 from teatree.core.models import Ticket, Worktree
+from teatree.core.orphan_guard import find_orphans_in_workspace
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.reconcile import Drift, reconcile_all, reconcile_ticket
 from teatree.core.resolve import resolve_worktree
@@ -37,6 +39,29 @@ from teatree.utils.run import CommandFailedError, run_checked
 
 if TYPE_CHECKING:
     from teatree.core.models.types import TicketExtra
+
+
+class OrphanEntry(TypedDict):
+    repo: str
+    branch: str
+    status: str
+    ahead_count: int
+
+
+def _warn_orphans(write: Callable[[str], None]) -> None:
+    orphans = find_orphans_in_workspace()
+    if not orphans:
+        return
+    preview = orphans[:5]
+    write(f"WARNING: {len(orphans)} orphan branch(es) in the workspace:")
+    for r in preview:
+        write(f"  - {r.repo} ({r.branch}, {r.ahead_count} ahead, {r.status.value})")
+    if len(orphans) > len(preview):
+        write(f"  - …and {len(orphans) - len(preview)} more")
+    write(
+        "Run `t3 <overlay> pr ensure-draft --branch <name>` to track them, "
+        "or `t3 <overlay> workspace clean-all` to reap synced ones.",
+    )
 
 
 def _workspace_dir() -> Path:
@@ -127,6 +152,7 @@ class Command(TyperCommand):
         Idempotent: re-running over an already-started ticket merges new repos
         into ``ticket.repos`` so the next ``execute_provision`` picks them up.
         """
+        _warn_orphans(self.stderr.write)
         overlay = get_overlay()
         repo_names = [r.strip() for r in repos.split(",") if r.strip()] if repos else overlay.get_workspace_repos()
 
@@ -388,6 +414,20 @@ class Command(TyperCommand):
         if not fix:
             lines.extend(("", "Rerun with --fix to apply fixes."))
         return lines
+
+    @command(name="list-orphans")
+    def list_orphans(self) -> list[OrphanEntry]:
+        """List orphan branches (commits ahead of origin/main AND no open PR) across the workspace.
+
+        Used by the session-end hook and the ``workspace ticket`` warning to
+        surface work that would otherwise be lost when a session closes or a
+        new worktree is created. Emits a JSON-serialisable list — one entry
+        per orphan.
+        """
+        return [
+            OrphanEntry(repo=r.repo, branch=r.branch, status=r.status.value, ahead_count=r.ahead_count)
+            for r in find_orphans_in_workspace()
+        ]
 
     @command(name="clean-all")
     def clean_all(
