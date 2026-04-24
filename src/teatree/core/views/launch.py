@@ -52,7 +52,6 @@ def launch_interactive_task(
 
     attempt = launch_web_session(
         task,
-        phase=task.phase,
         overlay_skill_metadata=skill_metadata,
         terminal_mode=terminal_mode,
         terminal_app=terminal_app,
