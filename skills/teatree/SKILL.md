@@ -99,6 +99,12 @@ Teatree's CLI groups (`t3 <overlay> <group> <sub>`) are django-typer `TyperComma
 
 **Known failure (2026-04-22):** `e2e` management command returned `"E2E failed (exit 1)."` as a string instead of raising. CI jobs running `t3 teatree e2e *` reported success on Playwright/pytest failures. Fixed in [#370](https://github.com/souliane/teatree/pull/370) by raising `SystemExit(result.returncode)` after `self.stderr.write(...)`.
 
+### Annotated typer options must have defaults for `call_command`
+
+`Annotated[str, typer.Option(help="...")]` parameters without a default value make the command unusable via Django's `call_command` — it raises `Missing parameter: <name>` even when the caller passes the kwarg. Give every `typer.Option`-annotated parameter a default (e.g. `= ""`) and validate at runtime (`if not phase.strip(): raise SystemExit(1)`). This keeps both CLI and `call_command` call sites happy.
+
+Canonical example: `src/teatree/core/management/commands/tasks.py` `create` subcommand — `phase: Annotated[str, typer.Option(...)] = ""` + runtime non-blank check.
+
 ## Configuration
 
 `~/.teatree` sourced by hooks:

@@ -163,6 +163,41 @@ Never modify skill files outside a git repo. Resolve real path with `readlink -f
 
 When a teatree or skill infrastructure bug is discovered during any task, fix it immediately as first priority. Never defer to focus on the user's task — broken infrastructure causes cascading failures.
 
+## Do Work Now, Don't Defer to "Later" Tickets (Non-Negotiable)
+
+When the user asks for work that is actionable in the current session — a small skill edit, a one-file CLI addition, a test fix, a rule promotion — **do it in the current response**. Do not propose filing a ticket for "later", do not frame the work as a follow-up suggestion, do not ask for confirmation to proceed on obviously in-scope work. Deferring concrete work to a ticket queue is the single most common way an agent wastes the user's time — the ticket piles up, context evaporates, and work that could have shipped in the same PR now takes a fresh session.
+
+**Banned patterns when the work is actionable in this turn:**
+
+- "I'd suggest filing a ticket to…"
+- "Follow-up (not in this PR)…"
+- "Want me to open an issue for …?"
+- "As a separate ticket, we should …"
+- "File tickets for (a) and (b), or one combined…?"
+
+**When deferral IS legitimate** (narrow set):
+
+- The user explicitly asked for planning only, not execution.
+- The work requires an external dependency that is unavailable right now (missing auth, missing approval from a third party, missing DB snapshot).
+- The work would genuinely balloon this change into scope creep — and even then, ask the user directly, don't announce a ticket.
+
+**When in doubt, do the work.** A tiny PR adding the fix alongside the main change is always preferable to a stand-alone ticket that lives in the backlog for weeks.
+
+## Contribute Mode: Promote Findings to Skills, Not Personal Memory (Non-Negotiable)
+
+When `contribute = true` in `~/.teatree.toml`, retro findings and cross-cutting rules **must land in teatree skill files**, not in the agent's personal memory/config. Personal memory is the fallback for user-specific facts — paths, credentials, editor preferences, one-machine workflow choices. For anything that would help another user of these skills, write to the skill.
+
+**Before writing a feedback/guardrail to personal memory, check:**
+
+1. `contribute = true` in `~/.teatree.toml`? → yes almost always makes this a skill edit.
+2. Does the rule encode a guardrail, pattern, or "do this not that"? → skill.
+3. Would another user benefit? → skill.
+4. Is it a user preference (tone, formatting) or environment fact (path, credential)? → personal memory is legitimate.
+
+**Promote means edit an existing skill.** Pick the best-fit existing skill (`/t3:rules`, `/t3:next`, `/t3:ship`, etc.) and insert the rule there. Do not invent a new skill for a single rule — that fragments the skill graph.
+
+**Past failure (2026-04-24):** Retro saved a scoping-phase auto-enqueue rule to `~/.claude/.../memory/feedback_scoping_auto_enqueue_coding.md` when `contribute = true` and the correct home was `skills/next/SKILL.md`. The user had to explicitly call out the deferral and push for the promotion. Prevention: this checklist.
+
 ## Ask About Auth Before External Service Integrations
 
 When implementing features that require an external service (Notion, Slack, CI, etc.), ask "how do you authenticate with this service?" BEFORE writing any code. The answer (direct API token, CLI auth, MCP tool, OAuth, etc.) determines the entire architecture. Skipping this question leads to multiple implementation pivots.

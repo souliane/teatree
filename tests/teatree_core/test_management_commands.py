@@ -415,6 +415,70 @@ class TestTicketCommand(TestCase):
         assert result[0]["overlay"] == "alpha"
 
 
+class TestTasksCreateCommand(TestCase):
+    """Tests for the tasks create subcommand — phase handoff used by /t3:next."""
+
+    def test_create_headless_defaults(self) -> None:
+        ticket = Ticket.objects.create(overlay="test")
+        result = cast(
+            "dict[str, object]",
+            call_command("tasks", "create", ticket.pk, phase="coding", reason="Implement X."),
+        )
+        assert result["phase"] == "coding"
+        assert result["execution_target"] == Task.ExecutionTarget.HEADLESS
+        task = Task.objects.get(pk=result["task_id"])
+        assert task.ticket_id == ticket.pk
+        assert task.execution_reason == "Implement X."
+        assert task.execution_target == Task.ExecutionTarget.HEADLESS
+        assert task.session.ticket_id == ticket.pk
+
+    def test_create_reuses_latest_session(self) -> None:
+        ticket = Ticket.objects.create(overlay="test")
+        existing = Session.objects.create(ticket=ticket, overlay="test")
+        result = cast(
+            "dict[str, object]",
+            call_command("tasks", "create", ticket.pk, phase="coding", reason="x"),
+        )
+        task = Task.objects.get(pk=result["task_id"])
+        assert task.session_id == existing.pk
+
+    def test_create_interactive_flag(self) -> None:
+        ticket = Ticket.objects.create(overlay="test")
+        result = cast(
+            "dict[str, object]",
+            call_command("tasks", "create", ticket.pk, phase="scoping", reason="Decide X.", interactive=True),
+        )
+        task = Task.objects.get(pk=result["task_id"])
+        assert task.execution_target == Task.ExecutionTarget.INTERACTIVE
+
+    def test_create_reason_from_file(self) -> None:
+        ticket = Ticket.objects.create(overlay="test")
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False, encoding="utf-8") as fh:
+            fh.write("Long multiline prompt.\nWith details.")
+            reason_path = Path(fh.name)
+        self.addCleanup(reason_path.unlink)
+        result = cast(
+            "dict[str, object]",
+            call_command("tasks", "create", ticket.pk, phase="coding", reason_file=reason_path),
+        )
+        task = Task.objects.get(pk=result["task_id"])
+        assert task.execution_reason == "Long multiline prompt.\nWith details."
+
+    def test_create_requires_non_blank_reason(self) -> None:
+        ticket = Ticket.objects.create(overlay="test")
+        with pytest.raises(SystemExit):
+            call_command("tasks", "create", ticket.pk, phase="coding", reason="   ")
+
+    def test_create_requires_phase(self) -> None:
+        ticket = Ticket.objects.create(overlay="test")
+        with pytest.raises(SystemExit):
+            call_command("tasks", "create", ticket.pk, reason="x")
+
+    def test_create_nonexistent_ticket(self) -> None:
+        with pytest.raises(SystemExit):
+            call_command("tasks", "create", 99999, phase="coding", reason="x")
+
+
 class TestTasksCancelCommand(TestCase):
     """Tests for the tasks cancel subcommand."""
 

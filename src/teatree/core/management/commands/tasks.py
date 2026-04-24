@@ -1,5 +1,6 @@
 import os
 import pathlib
+import sys
 from typing import IO, Annotated, TypedDict, cast
 
 import typer
@@ -7,7 +8,7 @@ from django_typer.management import TyperCommand, command
 from rich.console import Console
 from rich.table import Table
 
-from teatree.core.models import InvalidTransitionError, Task, TaskAttempt
+from teatree.core.models import InvalidTransitionError, Session, Task, TaskAttempt, Ticket
 
 
 class TaskRow(TypedDict):
@@ -21,6 +22,64 @@ class TaskRow(TypedDict):
 
 
 class Command(TyperCommand):
+    @command()
+    def create(
+        self,
+        ticket: Annotated[int, typer.Argument(help="Ticket PK (see `ticket_id` in `tasks list`).")],
+        *,
+        phase: Annotated[
+            str,
+            typer.Option(help="Phase: scoping, coding, testing, reviewing, shipping."),
+        ] = "",
+        reason: Annotated[
+            str,
+            typer.Option(help="Prompt body for the worker. Use '-' to read from stdin. Overrides --reason-file."),
+        ] = "",
+        reason_file: Annotated[
+            pathlib.Path | None,
+            typer.Option(help="Read the prompt body from a file."),
+        ] = None,
+        interactive: Annotated[
+            bool,
+            typer.Option(help="Create an interactive task instead of the default headless one."),
+        ] = False,
+    ) -> dict[str, int | str]:
+        """Enqueue the next-phase task for a ticket.
+
+        Used by `/t3:next` to hand off from one phase to the next. Headless by default so a worker
+        claims it immediately; pass `--interactive` for tasks that require human input.
+        """
+        if not phase.strip():
+            self.stderr.write("--phase is required (scoping, coding, testing, reviewing, or shipping).")
+            raise SystemExit(1)
+        body = _resolve_reason(reason=reason, reason_file=reason_file)
+        if not body.strip():
+            self.stderr.write(
+                "--reason (or --reason-file, or stdin via '--reason -') is required and must not be blank."
+            )
+            raise SystemExit(1)
+
+        try:
+            ticket_obj = Ticket.objects.get(pk=ticket)
+        except Ticket.DoesNotExist:
+            self.stderr.write(f"Ticket {ticket} not found.")
+            raise SystemExit(1) from None
+
+        session = Session.objects.filter(ticket=ticket_obj).order_by("-pk").first() or Session.objects.create(
+            ticket=ticket_obj,
+            agent_id="phase-handoff",
+        )
+        target = Task.ExecutionTarget.INTERACTIVE if interactive else Task.ExecutionTarget.HEADLESS
+        task = Task.objects.create(
+            ticket=ticket_obj,
+            session=session,
+            phase=phase,
+            execution_target=target,
+            execution_reason=body,
+        )
+        self.stdout.write(f"Created task {task.pk} (ticket {ticket_obj.pk}, phase={phase}, target={target}).")
+        return {"task_id": task.pk, "ticket_id": ticket_obj.pk, "phase": phase, "execution_target": target}
+
     @command()
     def cancel(self, task_id: int, *, confirm: bool = False) -> None:
         from django.db import transaction  # noqa: PLC0415
@@ -211,6 +270,16 @@ def _build_claude_command(task: Task) -> list[str]:
         task,
         overlay_skill_metadata=get_overlay().metadata.get_skill_metadata(),
     )
+
+
+def _resolve_reason(*, reason: str, reason_file: pathlib.Path | None) -> str:
+    if reason == "-":
+        return sys.stdin.read()
+    if reason:
+        return reason
+    if reason_file is not None:
+        return reason_file.read_text()
+    return ""
 
 
 def _exec_inline(argv: list[str]) -> None:
