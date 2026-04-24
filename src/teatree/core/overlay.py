@@ -387,6 +387,17 @@ class HealthCheck:
     description: str = ""
 
 
+def _symlink_source_healthy(dest: Path, source: Path) -> bool:
+    """Return True when *dest* resolves and *source* is populated (non-empty if a dir)."""
+    if not (dest.exists() or dest.is_symlink()):
+        return False
+    if not source.exists():
+        return False
+    if source.is_dir():
+        return any(source.iterdir())
+    return True
+
+
 def _default_health_checks(overlay: OverlayBase, worktree: "Worktree") -> list[HealthCheck]:
     """Return standard post-provision checks applicable to any overlay."""
     checks: list[HealthCheck] = []
@@ -402,7 +413,10 @@ def _default_health_checks(overlay: OverlayBase, worktree: "Worktree") -> list[H
             )
         )
 
-        # Verify symlinks point to valid targets
+        # Verify symlinks point to valid, non-empty targets.
+        # An empty source directory (e.g. a pre-existing but never-populated
+        # `node_modules/`) previously passed the check and masked broken
+        # provisioning — see t3-o.#55.
         for spec in overlay.get_symlinks(worktree):
             dest = Path(wt_path) / spec.get("path", "")
             source = Path(spec.get("source", ""))
@@ -410,8 +424,8 @@ def _default_health_checks(overlay: OverlayBase, worktree: "Worktree") -> list[H
                 checks.append(
                     HealthCheck(
                         name=f"symlink-{spec.get('path', '?')}",
-                        check=lambda d=dest: d.exists() or d.is_symlink(),
-                        description=f"Symlink exists: {spec.get('path', '')}",
+                        check=lambda d=dest, s=source: _symlink_source_healthy(d, s),
+                        description=f"Symlink target populated: {spec.get('path', '')}",
                     )
                 )
 
