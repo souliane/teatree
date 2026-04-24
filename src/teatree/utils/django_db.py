@@ -103,14 +103,18 @@ def _terminate_connections(db_name: str, pg_host: str, pg_user: str, pg_env: dic
 
 def _copy_ref_to_ticket(ctx: _RestoreContext) -> bool:
     cfg = ctx.cfg
-    # Terminate live connections to the ticket DB before dropping it — otherwise
-    # dropdb fails with "database is being accessed by other users" (#385).
-    _terminate_connections(cfg.ticket_db_name, ctx.pg_host, ctx.pg_user, ctx.pg_env)
-    run_allowed_to_fail(
-        ["dropdb", "-h", ctx.pg_host, "-U", ctx.pg_user, "--if-exists", cfg.ticket_db_name],
+    # `dropdb --force` (PG 13+) terminates active connections atomically before
+    # dropping — otherwise reconnecting services (backend containers attached
+    # to the ticket DB) race with pg_terminate_backend and the DB stays up,
+    # causing the subsequent createdb to fail with "database already exists".
+    drop_result = run_allowed_to_fail(
+        ["dropdb", "-h", ctx.pg_host, "-U", ctx.pg_user, "--if-exists", "--force", cfg.ticket_db_name],
         env=ctx.pg_env,
         expected_codes=None,
     )
+    if drop_result.returncode != 0:
+        print(f"  WARNING: dropdb failed: {drop_result.stderr.strip()}", file=sys.stderr)  # noqa: T201
+        return False
     _terminate_connections(cfg.ref_db_name, ctx.pg_host, ctx.pg_user, ctx.pg_env)
     result = run_allowed_to_fail(
         ["createdb", "-h", ctx.pg_host, "-U", ctx.pg_user, cfg.ticket_db_name, "-T", cfg.ref_db_name],
