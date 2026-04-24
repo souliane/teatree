@@ -235,5 +235,19 @@ See your [issue tracker platform reference](../../platforms/references/) § "Kno
 - **Symptom:** `t3 <overlay> <cmd>` run from worktree B operates on worktree A's database/state — e.g. migrations apply to the old DB, `lifecycle status` shows the wrong ticket, or tests read stale fixtures despite being `cd`'d into the new worktree.
 - **Cause:** `uv tool install --editable <path>` pins the global `t3` binary to whatever `<path>` was at install time. The tool's venv, Django settings module, and default DB all resolve relative to that original worktree. Changing `cwd` does **not** rebind them.
 - **Fix (one-shot):** Run Django commands through the current worktree's venv instead: `uv run python manage.py <cmd>` (or `uv run t3 <overlay> <cmd>` from the worktree root). This picks up the local `.venv` and settings.
-- **Fix (persistent):** Reinstall the global tool from the worktree you want it pinned to: `uv tool install --editable /path/to/current/teatree --force`. Keep in mind the next worktree switch will hit the same trap.
+- **Fix (persistent):** Run `t3 setup` from the main clone (or with `T3_REPO` set). Setup re-anchors the global tool at the main clone and leaves intentional worktree-dogfood installs alone.
 - **Prevention:** For anything that mutates DB/fixtures/ports, prefer `uv run ...` from within the worktree. Reserve the global `t3` binary for read-only or cross-worktree commands (`t3 dashboard`, `t3 doctor`). See also § "TeaTree CLI Uses the Wrong Python Environment" for the Python-interpreter variant.
+
+## Global `t3` Fails With `ModuleNotFoundError: No module named 'teatree'`
+
+- **Symptom:** `t3 --help` (or any `t3` command) from outside the teatree main clone crashes with `ModuleNotFoundError: No module named 'teatree'`, traceback rooted at `~/.local/bin/t3`. Inside the main clone it still works because pyenv/direnv falls through to the repo-local `.venv/bin/t3`.
+- **Cause:** The global uv tool install is editable-anchored at a worktree that has since been cleaned up. Check `~/.local/share/uv/tools/teatree/uv-receipt.toml` — if the `editable = "..."` path no longer exists on disk, the `teatree.pth` resolves nowhere and every import fails.
+- **Fix:** Run `t3 setup` from the main clone. Since #434, setup parses the receipt, detects the missing source, and reinstalls via `uv tool install --force --editable <main-clone>`. Safe to run from a worktree too — setup honors `T3_REPO` and resolves worktrees to their main clone.
+- **Prevention:** Avoid running `uv tool install --editable .` directly from a worktree. Go through `t3 setup` instead — it anchors at the main clone by default, so worktree cleanup can't orphan the global install.
+
+## Global `t3` Runs Main Clone Code Even From a Worktree
+
+- **Symptom (pre-#434):** Editing `src/teatree/...` inside a worktree never affected the global `t3` — you had to `uv run t3` from the worktree, or reinstall the tool editable-pointed at the worktree.
+- **Fix:** `t3` now auto-selects the teatree source at invocation time via the `t3_bootstrap` entry point. When cwd is inside a directory tree whose `pyproject.toml` names the project `teatree` and ships `src/teatree/__init__.py`, the bootstrap prepends that `src/` to `sys.path` before importing `teatree.cli`. Outside any teatree tree, it falls through to whatever the uv tool install resolved (main clone editable or PyPI libs).
+- **Verify:** `t3 info | grep teatree:` prints the path that was loaded — compare against cwd to confirm the worktree source was picked up.
+- **Caveat:** The tool's venv dependencies are shared between main clone and worktree source. If a worktree bumps a dep that isn't in the tool venv, imports fail — run `uv tool install --force --editable <main-clone>` to refresh the tool's deps, or fall back to `uv run t3` from the worktree.
