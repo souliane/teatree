@@ -9,7 +9,7 @@ import teatree.agents.terminal_launcher as terminal_launcher_mod
 import teatree.agents.web_terminal as web_terminal_mod
 import teatree.utils.run as utils_run_mod
 from teatree.agents.web_terminal import (
-    _get_resume_session_id,
+    get_resume_session_id,
     launch_web_session,
 )
 from teatree.core.models import Session, Task, TaskAttempt, Ticket
@@ -24,7 +24,7 @@ def test_find_free_port_returns_int() -> None:
     assert port > 0
 
 
-# --- _get_resume_session_id ---
+# --- get_resume_session_id ---
 
 
 class TestGetResumeSessionId(TestCase):
@@ -39,19 +39,19 @@ class TestGetResumeSessionId(TestCase):
         )
         task = Task.objects.create(ticket=self.ticket, session=session)
 
-        assert _get_resume_session_id(task) == "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+        assert get_resume_session_id(task) == "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
 
     def test_non_uuid_agent_id(self) -> None:
         session = Session.objects.create(ticket=self.ticket, agent_id="not-a-uuid")
         task = Task.objects.create(ticket=self.ticket, session=session)
 
-        assert _get_resume_session_id(task) == ""
+        assert get_resume_session_id(task) == ""
 
     def test_empty_agent_id(self) -> None:
         session = Session.objects.create(ticket=self.ticket, agent_id="")
         task = Task.objects.create(ticket=self.ticket, session=session)
 
-        assert _get_resume_session_id(task) == ""
+        assert get_resume_session_id(task) == ""
 
 
 # --- launch_web_session ---
@@ -71,7 +71,7 @@ class TestLaunchWebSession(TestCase):
             session = Session.objects.create(ticket=self.ticket)
             task = Task.objects.create(ticket=self.ticket, session=session)
 
-            attempt = launch_web_session(task, phase="coding", overlay_skill_metadata={})
+            attempt = launch_web_session(task, overlay_skill_metadata={})
 
             assert attempt.launch_url == "http://127.0.0.1:8888"
             assert TaskAttempt.objects.count() == 1
@@ -85,7 +85,7 @@ class TestLaunchWebSession(TestCase):
             task = Task.objects.create(ticket=self.ticket, session=session)
 
             with pytest.raises(FileNotFoundError, match="claude CLI is not installed"):
-                launch_web_session(task, phase="coding", overlay_skill_metadata={})
+                launch_web_session(task, overlay_skill_metadata={})
 
     def test_returns_empty_url_when_ttyd_missing(self) -> None:
         def which_mock(name: str) -> str | None:
@@ -97,7 +97,7 @@ class TestLaunchWebSession(TestCase):
             session = Session.objects.create(ticket=self.ticket)
             task = Task.objects.create(ticket=self.ticket, session=session)
 
-            attempt = launch_web_session(task, phase="coding", overlay_skill_metadata={})
+            attempt = launch_web_session(task, overlay_skill_metadata={})
 
             assert attempt.launch_url == ""
             assert TaskAttempt.objects.count() == 1
@@ -114,7 +114,7 @@ class TestLaunchWebSession(TestCase):
             )
             task = Task.objects.create(ticket=self.ticket, session=session)
 
-            attempt = launch_web_session(task, phase="coding", overlay_skill_metadata={})
+            attempt = launch_web_session(task, overlay_skill_metadata={})
 
             assert attempt.launch_url == "http://127.0.0.1:7777"
 
@@ -133,7 +133,7 @@ class TestLaunchWebSession(TestCase):
             session = Session.objects.create(ticket=self.ticket, agent_id="not-a-uuid")
             task = Task.objects.create(ticket=self.ticket, session=session)
 
-            launch_web_session(task, phase="coding", overlay_skill_metadata={})
+            launch_web_session(task, overlay_skill_metadata={})
 
             call_args = popen_mock.call_args[0][0]
             assert "--append-system-prompt" in call_args

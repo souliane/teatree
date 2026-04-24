@@ -1,5 +1,6 @@
 import tempfile
 from collections.abc import Iterator
+from contextlib import AbstractContextManager
 from pathlib import Path
 from typing import cast
 from unittest.mock import MagicMock, patch
@@ -529,3 +530,146 @@ class TestTasksListCommand(TestCase):
         )
         assert len(result) == 1
         assert result[0]["execution_target"] == "interactive"
+
+    def test_render_tasks_table_formats_rows(self) -> None:
+        from io import StringIO  # noqa: PLC0415
+
+        from teatree.core.management.commands.tasks import TaskRow, _render_tasks_table  # noqa: PLC0415
+
+        rows: list[TaskRow] = [
+            TaskRow(
+                task_id=7,
+                ticket_id=42,
+                status="pending",
+                execution_target="interactive",
+                phase="coding",
+                execution_reason="resume after user input",
+                claimed_by="",
+            )
+        ]
+        buf = StringIO()
+        _render_tasks_table(rows, stream=buf)
+        out = buf.getvalue()
+        assert "Tasks (1)" in out
+        assert "ID" in out
+        assert "Ticket" in out
+        assert "Phase" in out
+        assert "interactive" in out
+        assert "coding" in out
+        assert "resume after" in out
+
+    def test_render_tasks_table_handles_empty(self) -> None:
+        from io import StringIO  # noqa: PLC0415
+
+        from teatree.core.management.commands.tasks import _render_tasks_table  # noqa: PLC0415
+
+        buf = StringIO()
+        _render_tasks_table([], stream=buf)
+        assert "No tasks" in buf.getvalue()
+
+
+class TestTasksStartCommand(TestCase):
+    """Tests for the tasks start subcommand (inline interactive launch)."""
+
+    def setUp(self) -> None:
+        self.ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/99")
+        self.session = Session.objects.create(ticket=self.ticket, overlay="test", agent_id="agent-1")
+
+    @staticmethod
+    def _patch_env(run_mock: MagicMock) -> list[AbstractContextManager[object]]:
+        return [
+            patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
+            patch.object(web_terminal_mod.shutil, "which", return_value="/usr/bin/claude"),
+            patch("teatree.utils.run.run_streamed", new=run_mock),
+        ]
+
+    @override_settings(**COMMAND_SETTINGS)
+    def test_start_claims_next_interactive_task_and_runs_claude(self) -> None:
+        Task.objects.create(
+            ticket=self.ticket,
+            session=self.session,
+            execution_target=Task.ExecutionTarget.HEADLESS,
+        )
+        user_task = Task.objects.create(
+            ticket=self.ticket,
+            session=self.session,
+            execution_target=Task.ExecutionTarget.INTERACTIVE,
+            phase="coding",
+        )
+
+        run_mock = MagicMock(return_value=0)
+        p1, p2, p3 = self._patch_env(run_mock)
+        with p1, p2, p3, pytest.raises(SystemExit) as exc:
+            call_command("tasks", "start")
+
+        assert exc.value.code == 0
+        run_mock.assert_called_once()
+        argv = run_mock.call_args[0][0]
+        assert argv[0] == "/usr/bin/claude"
+        assert "--append-system-prompt" in argv
+
+        user_task.refresh_from_db()
+        assert user_task.status == Task.Status.CLAIMED
+        assert user_task.claimed_by == "cli"
+        assert TaskAttempt.objects.filter(task=user_task, launch_url="").count() == 1
+
+    @override_settings(**COMMAND_SETTINGS)
+    def test_start_with_task_id_claims_specific_task(self) -> None:
+        task = Task.objects.create(
+            ticket=self.ticket,
+            session=self.session,
+            execution_target=Task.ExecutionTarget.INTERACTIVE,
+        )
+
+        run_mock = MagicMock(return_value=0)
+        p1, p2, p3 = self._patch_env(run_mock)
+        with p1, p2, p3, pytest.raises(SystemExit):
+            call_command("tasks", "start", task.pk)
+
+        run_mock.assert_called_once()
+        task.refresh_from_db()
+        assert task.status == Task.Status.CLAIMED
+
+    @override_settings(**COMMAND_SETTINGS)
+    def test_start_with_no_pending_tasks_skips_run(self) -> None:
+        run_mock = MagicMock(return_value=0)
+        p1, p2, p3 = self._patch_env(run_mock)
+        with p1, p2, p3:
+            call_command("tasks", "start")
+        run_mock.assert_not_called()
+
+    @override_settings(**COMMAND_SETTINGS)
+    def test_start_rejects_headless_task_id(self) -> None:
+        task = Task.objects.create(
+            ticket=self.ticket,
+            session=self.session,
+            execution_target=Task.ExecutionTarget.HEADLESS,
+        )
+
+        run_mock = MagicMock(return_value=0)
+        p1, p2, p3 = self._patch_env(run_mock)
+        with p1, p2, p3, pytest.raises(SystemExit):
+            call_command("tasks", "start", task.pk)
+
+        run_mock.assert_not_called()
+        task.refresh_from_db()
+        assert task.status == Task.Status.PENDING
+
+    @override_settings(**COMMAND_SETTINGS)
+    def test_start_resumes_when_session_has_claude_uuid(self) -> None:
+        uuid = "01234567-89ab-cdef-0123-456789abcdef"
+        session = Session.objects.create(ticket=self.ticket, overlay="test", agent_id=uuid)
+        Task.objects.create(
+            ticket=self.ticket,
+            session=session,
+            execution_target=Task.ExecutionTarget.INTERACTIVE,
+        )
+
+        run_mock = MagicMock(return_value=0)
+        p1, p2, p3 = self._patch_env(run_mock)
+        with p1, p2, p3, pytest.raises(SystemExit):
+            call_command("tasks", "start")
+
+        argv = run_mock.call_args[0][0]
+        assert "--resume" in argv
+        assert uuid in argv
