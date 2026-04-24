@@ -5,12 +5,17 @@ from django.db import transaction
 from django.tasks import task
 
 from teatree.core.models import Task, Ticket
-from teatree.core.runners import RetroExecutor
+from teatree.core.runners import (
+    RetroExecutor,
+    ShipExecutor,
+    WorktreeProvisioner,
+    WorktreeTeardown,
+)
 
 logger = logging.getLogger(__name__)
 
 
-class RetrospectResult(TypedDict, total=False):
+class TransitionResult(TypedDict, total=False):
     ticket_id: int
     ok: bool
     skipped: bool
@@ -81,7 +86,7 @@ def refresh_followup_snapshot() -> dict[str, int]:
 
 
 @task()
-def execute_retrospect(ticket_id: int) -> RetrospectResult:
+def execute_retrospect(ticket_id: int) -> TransitionResult:
     """Run retrospection I/O for a ticket in the RETROSPECTED state.
 
     Idempotency: the worker takes a row lock and re-checks state before running.
@@ -106,6 +111,99 @@ def execute_retrospect(ticket_id: int) -> RetrospectResult:
             return {"ticket_id": ticket_id, "ok": False, "detail": result.detail}
 
         ticket.mark_delivered()
+        ticket.save()
+
+    return {"ticket_id": ticket_id, "ok": True, "detail": result.detail}
+
+
+@task()
+def execute_teardown(ticket_id: int) -> TransitionResult:
+    """Tear down worktrees for a MERGED ticket.
+
+    Idempotency: the worker takes a row lock and re-checks state before running.
+    At-least-once delivery from django-tasks means this can fire more than once
+    for the same transition — a lost update or a redelivered job must be safe.
+
+    Teardown is best-effort: per-worktree errors are reported in the result
+    detail but do not advance the ticket. The ticket stays in MERGED until
+    the operator either fixes the underlying issue and re-enqueues, or moves
+    on with ``retrospect()`` once the residual state is acceptable.
+    """
+    with transaction.atomic():
+        ticket = Ticket.objects.select_for_update().get(pk=ticket_id)
+        if ticket.state != Ticket.State.MERGED:
+            logger.info(
+                "execute_teardown skipped for ticket %s: state=%s (not MERGED)",
+                ticket_id,
+                ticket.state,
+            )
+            return {"ticket_id": ticket_id, "skipped": True, "state": str(ticket.state)}
+
+        result = WorktreeTeardown(ticket).run()
+        if not result.ok:
+            logger.warning("Teardown reported errors for ticket %s: %s", ticket_id, result.detail)
+            return {"ticket_id": ticket_id, "ok": False, "detail": result.detail}
+
+    return {"ticket_id": ticket_id, "ok": True, "detail": result.detail}
+
+
+@task()
+def execute_provision(ticket_id: int) -> TransitionResult:
+    """Provision worktrees for a STARTED ticket and schedule the coding task.
+
+    Idempotency: the worker takes a row lock and re-checks state before running.
+    At-least-once delivery from django-tasks means this can fire more than once
+    for the same transition — a lost update or a redelivered job must be safe.
+
+    On success, the runner has materialised every git worktree; we then call
+    ``schedule_coding()`` so the FSM proceeds toward CODED.
+    """
+    with transaction.atomic():
+        ticket = Ticket.objects.select_for_update().get(pk=ticket_id)
+        if ticket.state != Ticket.State.STARTED:
+            logger.info(
+                "execute_provision skipped for ticket %s: state=%s (not STARTED)",
+                ticket_id,
+                ticket.state,
+            )
+            return {"ticket_id": ticket_id, "skipped": True, "state": str(ticket.state)}
+
+        result = WorktreeProvisioner(ticket).run()
+        if not result.ok:
+            logger.warning("Provision failed for ticket %s: %s", ticket_id, result.detail)
+            return {"ticket_id": ticket_id, "ok": False, "detail": result.detail}
+
+        ticket.schedule_coding()
+
+    return {"ticket_id": ticket_id, "ok": True, "detail": result.detail}
+
+
+@task()
+def execute_ship(ticket_id: int) -> TransitionResult:
+    """Push the worktree branch and open the merge request for a SHIPPED ticket.
+
+    Idempotency: the worker takes a row lock and re-checks state before running.
+    At-least-once delivery from django-tasks means this can fire more than once
+    for the same transition — a lost update or a redelivered job must be safe.
+
+    On success, advances ``SHIPPED → IN_REVIEW`` via ``request_review()``.
+    """
+    with transaction.atomic():
+        ticket = Ticket.objects.select_for_update().get(pk=ticket_id)
+        if ticket.state != Ticket.State.SHIPPED:
+            logger.info(
+                "execute_ship skipped for ticket %s: state=%s (not SHIPPED)",
+                ticket_id,
+                ticket.state,
+            )
+            return {"ticket_id": ticket_id, "skipped": True, "state": str(ticket.state)}
+
+        result = ShipExecutor(ticket).run()
+        if not result.ok:
+            logger.warning("Ship failed for ticket %s: %s", ticket_id, result.detail)
+            return {"ticket_id": ticket_id, "ok": False, "detail": result.detail}
+
+        ticket.request_review()
         ticket.save()
 
     return {"ticket_id": ticket_id, "ok": True, "detail": result.detail}

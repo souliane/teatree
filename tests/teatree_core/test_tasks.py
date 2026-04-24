@@ -7,7 +7,10 @@ import teatree.core.overlay_loader as overlay_loader_mod
 from teatree.core.models import Session, Task, TaskAttempt, Ticket
 from teatree.core.tasks import (
     drain_headless_queue,
+    execute_provision,
     execute_retrospect,
+    execute_ship,
+    execute_teardown,
     refresh_followup_snapshot,
     sync_followup,
 )
@@ -132,6 +135,176 @@ class TestExecuteRetrospect(TestCase):
             "skipped": True,
             "state": "delivered",
         }
+
+
+class TestExecuteTeardown(TestCase):
+    def _ticket_in_merged(self) -> Ticket:
+        ticket = Ticket.objects.create(overlay="test")
+        ticket.state = Ticket.State.MERGED
+        ticket.save(update_fields=["state"])
+        return ticket
+
+    @override_settings(**IMMEDIATE_BACKEND)
+    def test_advances_runner_when_state_matches(self) -> None:
+        from teatree.core.runners.base import RunnerResult  # noqa: PLC0415
+
+        ticket = self._ticket_in_merged()
+
+        with patch("teatree.core.tasks.WorktreeTeardown") as teardown:
+            teardown.return_value.run.return_value = RunnerResult(ok=True, detail="tore down 2 worktree(s)")
+            result = execute_teardown.enqueue(ticket.pk)
+
+        ticket.refresh_from_db()
+        # Teardown does NOT advance the FSM — retrospect() does that explicitly.
+        assert ticket.state == Ticket.State.MERGED
+        assert result.return_value == {
+            "ticket_id": ticket.pk,
+            "ok": True,
+            "detail": "tore down 2 worktree(s)",
+        }
+
+    @override_settings(**IMMEDIATE_BACKEND)
+    def test_skips_when_state_does_not_match(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.RETROSPECTED)
+
+        result = execute_teardown.enqueue(ticket.pk)
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.RETROSPECTED
+        assert result.return_value == {
+            "ticket_id": ticket.pk,
+            "skipped": True,
+            "state": "retrospected",
+        }
+
+    @override_settings(**IMMEDIATE_BACKEND)
+    def test_reports_failure_without_advancing(self) -> None:
+        from teatree.core.runners.base import RunnerResult  # noqa: PLC0415
+
+        ticket = self._ticket_in_merged()
+
+        with patch("teatree.core.tasks.WorktreeTeardown") as teardown:
+            teardown.return_value.run.return_value = RunnerResult(ok=False, detail="repo-0: branch ahead")
+            result = execute_teardown.enqueue(ticket.pk)
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.MERGED
+        assert result.return_value == {
+            "ticket_id": ticket.pk,
+            "ok": False,
+            "detail": "repo-0: branch ahead",
+        }
+
+
+class TestExecuteProvision(TestCase):
+    def _ticket_in_started(self) -> Ticket:
+        ticket = Ticket.objects.create(overlay="test", repos=["repo-a"], extra={"branch": "ac-repo-a-1-x"})
+        ticket.state = Ticket.State.STARTED
+        ticket.save(update_fields=["state"])
+        return ticket
+
+    @override_settings(**IMMEDIATE_BACKEND)
+    def test_provisions_then_schedules_coding(self) -> None:
+        from teatree.core.runners.base import RunnerResult  # noqa: PLC0415
+
+        ticket = self._ticket_in_started()
+
+        with patch("teatree.core.tasks.WorktreeProvisioner") as provisioner:
+            provisioner.return_value.run.return_value = RunnerResult(ok=True, detail="provisioned 1 worktree(s)")
+            result = execute_provision.enqueue(ticket.pk)
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.STARTED
+        assert ticket.tasks.filter(phase="coding").exists()
+        assert result.return_value == {
+            "ticket_id": ticket.pk,
+            "ok": True,
+            "detail": "provisioned 1 worktree(s)",
+        }
+
+    @override_settings(**IMMEDIATE_BACKEND)
+    def test_skips_when_state_does_not_match(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.SCOPED)
+
+        result = execute_provision.enqueue(ticket.pk)
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.SCOPED
+        assert not ticket.tasks.filter(phase="coding").exists()
+        assert result.return_value == {
+            "ticket_id": ticket.pk,
+            "skipped": True,
+            "state": "scoped",
+        }
+
+    @override_settings(**IMMEDIATE_BACKEND)
+    def test_keeps_state_when_runner_fails(self) -> None:
+        from teatree.core.runners.base import RunnerResult  # noqa: PLC0415
+
+        ticket = self._ticket_in_started()
+
+        with patch("teatree.core.tasks.WorktreeProvisioner") as provisioner:
+            provisioner.return_value.run.return_value = RunnerResult(ok=False, detail="repo missing")
+            result = execute_provision.enqueue(ticket.pk)
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.STARTED
+        assert not ticket.tasks.filter(phase="coding").exists()
+        assert result.return_value == {"ticket_id": ticket.pk, "ok": False, "detail": "repo missing"}
+
+
+class TestExecuteShip(TestCase):
+    def _ticket_in_shipped(self) -> Ticket:
+        ticket = Ticket.objects.create(overlay="test")
+        ticket.state = Ticket.State.SHIPPED
+        ticket.save(update_fields=["state"])
+        return ticket
+
+    @override_settings(**IMMEDIATE_BACKEND)
+    def test_advances_shipped_ticket_to_in_review(self) -> None:
+        from teatree.core.runners.base import RunnerResult  # noqa: PLC0415
+
+        ticket = self._ticket_in_shipped()
+
+        with patch("teatree.core.tasks.ShipExecutor") as ship_exec:
+            ship_exec.return_value.run.return_value = RunnerResult(ok=True, detail="https://example.com/mr/1")
+            result = execute_ship.enqueue(ticket.pk)
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.IN_REVIEW
+        assert result.return_value == {
+            "ticket_id": ticket.pk,
+            "ok": True,
+            "detail": "https://example.com/mr/1",
+        }
+
+    @override_settings(**IMMEDIATE_BACKEND)
+    def test_skips_when_state_does_not_match(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.MERGED)
+
+        result = execute_ship.enqueue(ticket.pk)
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.MERGED
+        assert result.return_value == {
+            "ticket_id": ticket.pk,
+            "skipped": True,
+            "state": "merged",
+        }
+
+    @override_settings(**IMMEDIATE_BACKEND)
+    def test_keeps_state_when_runner_fails(self) -> None:
+        from teatree.core.runners.base import RunnerResult  # noqa: PLC0415
+
+        ticket = self._ticket_in_shipped()
+
+        with patch("teatree.core.tasks.ShipExecutor") as ship_exec:
+            ship_exec.return_value.run.return_value = RunnerResult(ok=False, detail="push rejected")
+            result = execute_ship.enqueue(ticket.pk)
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.SHIPPED
+        assert result.return_value == {"ticket_id": ticket.pk, "ok": False, "detail": "push rejected"}
 
 
 class TestExecuteHeadlessTask(TestCase):
