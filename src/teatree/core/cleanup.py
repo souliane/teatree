@@ -6,6 +6,7 @@ new SHA on the default branch. Without subject-matching, every squash-merged
 branch looks "unsynced" and blocks cleanup.
 """
 
+import json
 import logging
 import re
 from dataclasses import dataclass, field
@@ -16,6 +17,7 @@ from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay_loader import get_overlay
 from teatree.utils import git
 from teatree.utils.db import drop_db
+from teatree.utils.run import run_allowed_to_fail
 
 logger = logging.getLogger(__name__)
 
@@ -107,11 +109,65 @@ def classify_branch_commits(repo: str, branch: str, target: str = "origin/main")
     return classification
 
 
+def _pr_merge_commit_sha(repo: str, branch: str) -> str:
+    """Return the SHA of the merge/squash commit for ``branch``'s merged PR, or ``""``.
+
+    Queries GitHub (``gh pr list``) and GitLab (``glab mr list``) for a merged
+    PR/MR whose source branch matches. The merge commit's tree captures the
+    branch's net content at merge time — used by :func:`_branch_tree_matches_squash`
+    to distinguish post-merge follow-up commits already captured by the squash
+    from commits that add new content.
+    """
+    gh = run_allowed_to_fail(
+        ["gh", "pr", "list", "--head", branch, "--state", "merged", "--json", "mergeCommit", "--limit", "1"],
+        cwd=repo,
+        expected_codes=None,
+    )
+    if gh.returncode == 0 and gh.stdout.strip() not in {"", "[]"}:
+        try:
+            data = json.loads(gh.stdout)
+            if data and data[0].get("mergeCommit", {}).get("oid"):
+                return data[0]["mergeCommit"]["oid"]
+        except (json.JSONDecodeError, IndexError, KeyError):
+            pass
+
+    glab = run_allowed_to_fail(
+        ["glab", "mr", "list", "--merged", "--source-branch", branch, "--output", "json", "-P", "1"],
+        cwd=repo,
+        expected_codes=None,
+    )
+    if glab.returncode == 0 and glab.stdout.strip() not in {"", "[]"}:
+        try:
+            data = json.loads(glab.stdout)
+            if data and data[0].get("merge_commit_sha"):
+                return data[0]["merge_commit_sha"]
+        except (json.JSONDecodeError, IndexError, KeyError):
+            pass
+    return ""
+
+
+def _branch_tree_matches_squash(repo: str, branch: str) -> bool:
+    """Return ``True`` when the PR's merge commit has the same tree as the branch tip.
+
+    Post-merge follow-up commits (retro, docs) appear as ``genuinely_ahead``
+    because their subjects don't match the squash commit's final message.
+    When their cumulative effect is already captured in the squash tree, the
+    branch is safe to clean despite the unmatched subjects.
+    """
+    merge_sha = _pr_merge_commit_sha(repo, branch)
+    if not merge_sha:
+        return False
+    return git.check(repo=repo, args=["diff", "--quiet", merge_sha, branch])
+
+
 def _raise_if_genuinely_ahead(repo_main: str, worktree: Worktree) -> None:
     """Raise ``RuntimeError`` when the branch carries commits not on ``origin/main``.
 
     Merge commits and squash-merged commits are ignored — only ``genuinely_ahead``
-    work blocks cleanup. The error message lists up to ``_SUBJECT_PREVIEW_LIMIT``
+    work blocks cleanup. As a fallback, the PR's merge commit tree is compared
+    against the branch tip: an empty diff means the cumulative branch content
+    is already captured in the squash (typical for post-merge retro commits),
+    so cleanup proceeds. The error message lists up to ``_SUBJECT_PREVIEW_LIMIT``
     commit subjects so the caller can decide whether to push or abandon.
     """
     unsynced = git.unsynced_commits(repo_main, worktree.branch)
@@ -119,6 +175,8 @@ def _raise_if_genuinely_ahead(repo_main: str, worktree: Worktree) -> None:
         return
     classification = classify_branch_commits(repo_main, worktree.branch)
     if not classification.genuinely_ahead:
+        return
+    if _branch_tree_matches_squash(repo_main, worktree.branch):
         return
     preview = classification.genuinely_ahead[:_SUBJECT_PREVIEW_LIMIT]
     subjects = ", ".join(c.subject for c in preview)

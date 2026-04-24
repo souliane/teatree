@@ -135,11 +135,77 @@ class TestCleanupWorktree(TestCase):
         )
 
         wt = self._make_worktree(wt_path="/tmp/wt/org/repo")
-        with pytest.raises(RuntimeError, match="unsynced commit"):
+        with (
+            patch("teatree.core.cleanup._pr_merge_commit_sha", return_value=""),
+            pytest.raises(RuntimeError, match="unsynced commit"),
+        ):
             cleanup_worktree(wt)
 
         mock_git.worktree_remove.assert_not_called()
         mock_git.branch_delete.assert_not_called()
+
+    @_patch_classify
+    @_patch_overlay
+    @_patch_git
+    @_patch_config
+    def test_cleans_when_genuinely_ahead_tree_matches_pr_squash_commit(
+        self,
+        mock_config: MagicMock,
+        mock_git: MagicMock,
+        mock_overlay: MagicMock,
+        mock_classify: MagicMock,
+    ) -> None:
+        """Post-merge follow-ups tree-equal to PR squash are safe to clean.
+
+        Genuinely-ahead commits whose cumulative tree matches the PR's squash
+        commit are still safe to remove because their content is already in
+        main. Reproduces the common case where an agent pushes retro/docs
+        commits AFTER the PR was squash-merged; those commits' net effect
+        is already captured by the squash tree.
+        """
+        _mock_workspace(mock_config)
+        mock_overlay.return_value.get_cleanup_steps.return_value = []
+        mock_git.status_porcelain.return_value = ""
+        mock_git.unsynced_commits.return_value = ["abc123 retro: post-merge docs"]
+        mock_classify.return_value = BranchClassification(
+            genuinely_ahead=[BranchCommit(sha="abc123", subject="retro: post-merge docs", is_merge=False)]
+        )
+        mock_git.check.return_value = True  # git diff --quiet returns 0 → tree-equal
+
+        wt = self._make_worktree(wt_path="/tmp/wt/org/repo")
+        with patch("teatree.core.cleanup._pr_merge_commit_sha", return_value="squash123"):
+            cleanup_worktree(wt)
+
+        mock_git.worktree_remove.assert_called_once()
+        mock_git.branch_delete.assert_called_once()
+
+    @_patch_classify
+    @_patch_overlay
+    @_patch_git
+    @_patch_config
+    def test_raises_when_genuinely_ahead_tree_differs_from_pr_squash_commit(
+        self,
+        mock_config: MagicMock,
+        mock_git: MagicMock,
+        mock_overlay: MagicMock,
+        mock_classify: MagicMock,
+    ) -> None:
+        """Genuinely ahead commits whose tree differs from the squash carry real work."""
+        _mock_workspace(mock_config)
+        mock_overlay.return_value.get_cleanup_steps.return_value = []
+        mock_git.status_porcelain.return_value = ""
+        mock_git.unsynced_commits.return_value = ["abc123 feat: new work"]
+        mock_classify.return_value = BranchClassification(
+            genuinely_ahead=[BranchCommit(sha="abc123", subject="feat: new work", is_merge=False)]
+        )
+        mock_git.check.return_value = False  # git diff --quiet returns 1 → tree differs
+
+        wt = self._make_worktree(wt_path="/tmp/wt/org/repo")
+        with (
+            patch("teatree.core.cleanup._pr_merge_commit_sha", return_value="squash123"),
+            pytest.raises(RuntimeError, match="unsynced commit"),
+        ):
+            cleanup_worktree(wt)
 
     @_patch_classify
     @_patch_overlay
