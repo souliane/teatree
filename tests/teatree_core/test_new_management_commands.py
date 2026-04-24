@@ -24,12 +24,12 @@ import teatree.core.management.commands.pr as pr_mod
 import teatree.core.management.commands.run as run_mod
 import teatree.core.management.commands.workspace as workspace_mod
 import teatree.core.overlay_loader as overlay_loader_mod
+import teatree.core.runners.provision as provision_mod
 import teatree.core.views._startup as startup_mod
 import teatree.utils.db as db_mod
 import teatree.utils.git as git_mod
 import teatree.utils.run as utils_run_mod
 from teatree.core.management.commands.lifecycle import _register_new_repos
-from teatree.core.management.commands.pr import _last_commit_message
 from teatree.core.management.commands.workspace import _branch_prefix, _workspace_dir
 from teatree.core.models import Session, Ticket, Worktree
 from teatree.core.overlay import (
@@ -303,7 +303,9 @@ class TestWorkspaceTicket(TestCase):
 
         ticket = Ticket.objects.get(pk=ticket_id)
         assert ticket.issue_url == "https://example.com/issues/42"
-        assert ticket.state == Ticket.State.SCOPED
+        # Stage 3 of #140: workspace ticket advances scope() then start() so the
+        # provisioning runner can materialise the worktrees in the same call.
+        assert ticket.state == Ticket.State.STARTED
         assert ticket.repos == ["backend", "frontend"]
         assert ticket.worktrees.count() == 2
 
@@ -346,6 +348,7 @@ class TestWorkspaceTicket(TestCase):
 
             with (
                 patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
+                patch.object(provision_mod, "_workspace_dir", return_value=workspace),
                 patch.object(utils_run_mod.subprocess, "run", return_value=mock_result),
             ):
                 ticket_id = cast("int", call_command("workspace", "ticket", "https://example.com/issues/80"))
@@ -419,6 +422,7 @@ class TestWorkspaceTicket(TestCase):
 
             with (
                 patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
+                patch.object(provision_mod, "_workspace_dir", return_value=workspace),
                 patch.object(utils_run_mod.subprocess, "run", return_value=mock_result),
             ):
                 ticket_id = cast("int", call_command("workspace", "ticket", "https://example.com/issues/81"))
@@ -453,6 +457,7 @@ class TestWorkspaceTicket(TestCase):
 
             with (
                 patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
+                patch.object(provision_mod, "_workspace_dir", return_value=workspace),
                 patch.object(workspace_mod, "_branch_prefix", return_value="ac"),
                 patch.object(utils_run_mod.subprocess, "run", return_value=mock_result),
             ):
@@ -489,6 +494,7 @@ class TestWorkspaceTicket(TestCase):
 
             with (
                 patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
+                patch.object(provision_mod, "_workspace_dir", return_value=workspace),
                 patch.object(utils_run_mod.subprocess, "run", side_effect=side_effect),
             ):
                 result = cast("int", call_command("workspace", "ticket", "https://example.com/issues/83"))
@@ -552,6 +558,7 @@ class TestWorkspaceTicket(TestCase):
 
             with (
                 patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
+                patch.object(provision_mod, "_workspace_dir", return_value=workspace),
                 patch.object(utils_run_mod.subprocess, "run", side_effect=side_effect),
             ):
                 ticket_id = cast(
@@ -598,6 +605,7 @@ class TestWorkspaceTicket(TestCase):
 
             with (
                 patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
+                patch.object(provision_mod, "_workspace_dir", return_value=workspace),
                 patch.object(utils_run_mod.subprocess, "run", side_effect=side_effect),
             ):
                 ticket_id = cast("int", call_command("workspace", "ticket", "https://example.com/issues/103"))
@@ -625,6 +633,7 @@ class TestWorkspaceTicket(TestCase):
 
             with (
                 patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
+                patch.object(provision_mod, "_workspace_dir", return_value=workspace),
                 patch.object(utils_run_mod.subprocess, "run", return_value=mock_result),
             ):
                 ticket_id = cast("int", call_command("workspace", "ticket", "https://example.com/issues/90"))
@@ -745,6 +754,7 @@ class TestWorkspaceCleanAll(TestCase):
 
             with (
                 patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
+                patch.object(provision_mod, "_workspace_dir", return_value=workspace),
                 patch.object(
                     utils_run_mod.subprocess,
                     "run",
@@ -844,6 +854,7 @@ class TestWorkspaceCleanAll(TestCase):
 
             with (
                 patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
+                patch.object(provision_mod, "_workspace_dir", return_value=workspace),
                 patch.object(overlay_loader_mod, "_discover_overlays", new=_fake_discover),
             ):
                 call_command("workspace", "clean-all")
@@ -873,7 +884,10 @@ class TestWorkspaceCleanAll(TestCase):
             nonempty_dir.mkdir()
             (nonempty_dir / "some_file.txt").write_text("content", encoding="utf-8")
 
-            with patch.object(workspace_mod, "_workspace_dir", return_value=workspace):
+            with (
+                patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
+                patch.object(provision_mod, "_workspace_dir", return_value=workspace),
+            ):
                 cleaned = cast("list[str]", call_command("workspace", "clean-all"))
 
             # Only the empty dir should be removed
@@ -892,6 +906,7 @@ class TestWorkspaceCleanAll(TestCase):
         with (
             tempfile.TemporaryDirectory() as tmp,
             patch.object(workspace_mod, "_workspace_dir", return_value=Path(tmp)),
+            patch.object(provision_mod, "_workspace_dir", return_value=Path(tmp)),
             patch("teatree.utils.django_db.prune_dslr_snapshots", return_value=["old-snapshot-2025"]),
         ):
             cleaned = cast("list[str]", call_command("workspace", "clean-all"))
@@ -1176,6 +1191,7 @@ class TestPruneBranches(TestCase):
         gh_merged = subprocess.CompletedProcess([], 0, stdout='[{"number":1}]')
         with (
             patch.object(workspace_mod, "_workspace_dir", return_value=Path("/tmp/ws")),
+            patch.object(provision_mod, "_workspace_dir", return_value=Path("/tmp/ws")),
             patch.object(workspace_mod, "_worktree_map", return_value=wt_map),
             patch.object(workspace_mod, "_worktree_branches", return_value={"gone-branch"}),
             patch.object(git_mod, "run", side_effect=fake_run),
@@ -1208,6 +1224,7 @@ class TestPruneBranches(TestCase):
         gh_merged = subprocess.CompletedProcess([], 0, stdout='[{"number":1}]')
         with (
             patch.object(workspace_mod, "_workspace_dir", return_value=Path("/tmp/ws")),
+            patch.object(provision_mod, "_workspace_dir", return_value=Path("/tmp/ws")),
             patch.object(workspace_mod, "_worktree_map", return_value=wt_map),
             patch.object(workspace_mod, "_worktree_branches", return_value={"gone-branch"}),
             patch.object(git_mod, "run", side_effect=fake_run),
@@ -1241,6 +1258,7 @@ class TestPruneBranches(TestCase):
         gh_merged = subprocess.CompletedProcess([], 0, stdout='[{"number":1}]')
         with (
             patch.object(workspace_mod, "_workspace_dir", return_value=Path("/tmp/ws")),
+            patch.object(provision_mod, "_workspace_dir", return_value=Path("/tmp/ws")),
             patch.object(workspace_mod, "_worktree_map", return_value=wt_map),
             patch.object(workspace_mod, "_worktree_branches", return_value={"gone-branch"}),
             patch.object(git_mod, "run", side_effect=fake_run),
@@ -1775,214 +1793,103 @@ class TestDbResetPasswords(TestCase):
 # ── PR commands ─────────────────────────────────────────────────────
 
 
+def _shippable_ticket(*, repo: str = "/tmp/wt", branch: str = "feature-x") -> Ticket:
+    """Build a ticket pre-advanced to REVIEWED with the shipping gate satisfied."""
+    ticket = Ticket.objects.create(
+        overlay="test",
+        state=Ticket.State.REVIEWED,
+        issue_url="https://example.com/issues/70",
+    )
+    session = Session.objects.create(overlay="test", ticket=ticket)
+    for phase in ("testing", "reviewing", "retro"):
+        session.visit_phase(phase)
+    Worktree.objects.create(
+        overlay="test",
+        ticket=ticket,
+        repo_path=repo,
+        branch=branch,
+        extra={"worktree_path": repo},
+    )
+    return ticket
+
+
 class TestPrCreate(TestCase):
-    def setUp(self) -> None:
-        super().setUp()
-        self.enterContext(patch.object(pr_mod.git, "config_value", return_value="dev"))
-        self.enterContext(
-            patch.object(pr_mod.git, "last_commit_message", return_value=("commit subject", "commit body")),
-        )
+    """``pr create`` is a thin wrapper around ``ticket.ship()`` (#140)."""
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_without_code_host_returns_error(self) -> None:
-        ticket = Ticket.objects.create(overlay="test")
-
+    def test_returns_error_when_no_worktree(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.REVIEWED)
         result = cast("dict[str, object]", call_command("pr", "create", str(ticket.pk)))
-
         assert "error" in result
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_with_code_host_creates_mr(self) -> None:
-        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/70")
-        Worktree.objects.create(overlay="test", ticket=ticket, repo_path="my-repo", branch="feature-70")
+    def test_advances_to_shipped_when_gates_pass(self) -> None:
+        ticket = _shippable_ticket()
 
-        mock_host = MagicMock()
-        mock_host.create_pr.return_value = {"url": "https://example.com/mr/1"}
+        with (
+            patch.object(pr_mod, "_run_visual_qa_gate", return_value=None),
+            patch.object(pr_mod, "_validate_mr_metadata", return_value=None),
+        ):
+            result = cast("dict[str, object]", call_command("pr", "create", str(ticket.pk)))
 
-        with patch.object(pr_mod, "code_host_from_overlay", return_value=mock_host):
-            result = cast(
-                "dict[str, object]",
-                call_command(
-                    "pr",
-                    "create",
-                    str(ticket.pk),
-                    title="Fix bug",
-                    description="Fixes the thing",
-                ),
-            )
-
-        assert result == {"url": "https://example.com/mr/1"}
-        (spec,) = mock_host.create_pr.call_args.args
-        assert spec.repo == "my-repo"
-        assert spec.branch == "feature-70"
-        assert spec.title == "Fix bug"
-        assert spec.description == "Fixes the thing"
-        assert spec.assignee
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.SHIPPED
+        assert result == {"ticket_id": ticket.pk, "state": Ticket.State.SHIPPED}
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_validation_failure(self) -> None:
-        """validate_mr returns error when overlay rejects title."""
-        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/71")
-        Worktree.objects.create(overlay="test", ticket=ticket, repo_path="my-repo", branch="feature-71")
-
-        mock_host = MagicMock()
-        mock_validate = MagicMock(return_value={"errors": ["Bad title"], "warnings": []})
+    def test_validation_failure_keeps_state(self) -> None:
+        ticket = _shippable_ticket()
 
         with (
-            patch.object(pr_mod, "code_host_from_overlay", return_value=mock_host),
-            patch.object(pr_mod, "_last_commit_message", return_value=("Bad Title", "")),
-            patch.object(pr_mod, "get_overlay") as mock_overlay,
+            patch.object(pr_mod, "_run_visual_qa_gate", return_value=None),
+            patch.object(
+                pr_mod,
+                "_validate_mr_metadata",
+                return_value={"error": "MR validation failed", "details": ["Bad title"]},
+            ),
         ):
-            mock_overlay.return_value.metadata.validate_mr = mock_validate
-            result = cast(
-                "dict[str, object]",
-                call_command("pr", "create", str(ticket.pk)),
-            )
+            result = cast("dict[str, object]", call_command("pr", "create", str(ticket.pk)))
 
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.REVIEWED
         assert result["error"] == "MR validation failed"
-        mock_host.create_pr.assert_not_called()
-
-    @_patch_overlays(FULL_OVERLAY)
-    @override_settings(**SETTINGS)
-    def test_no_worktree_uses_ticket_number(self) -> None:
-        """When ticket has no worktrees, fallback branch and empty repo are used."""
-        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/72")
-
-        mock_host = MagicMock()
-        mock_host.create_pr.return_value = {"url": "https://example.com/mr/2"}
-
-        with (
-            patch.object(pr_mod, "code_host_from_overlay", return_value=mock_host),
-            patch.object(pr_mod, "_last_commit_message", return_value=("", "")),
-        ):
-            cast(
-                "dict[str, object]",
-                call_command(
-                    "pr",
-                    "create",
-                    str(ticket.pk),
-                    title="My MR",
-                ),
-            )
-
-        (spec,) = mock_host.create_pr.call_args.args
-        assert spec.branch == "ticket-72"
-        assert spec.repo == ""
-
-    @_patch_overlays(FULL_OVERLAY)
-    @override_settings(**SETTINGS)
-    def test_uses_default_title_from_issue_url(self) -> None:
-        """When no title is given and no commit, it defaults to 'Resolve <issue_url>'."""
-        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/73")
-        Worktree.objects.create(overlay="test", ticket=ticket, repo_path="my-repo", branch="feature-73")
-
-        mock_host = MagicMock()
-        mock_host.create_pr.return_value = {"url": "https://example.com/mr/3"}
-
-        with (
-            patch.object(pr_mod, "code_host_from_overlay", return_value=mock_host),
-            patch.object(pr_mod, "_last_commit_message", return_value=("", "")),
-        ):
-            call_command("pr", "create", str(ticket.pk), skip_validation=True)
-
-        (spec,) = mock_host.create_pr.call_args.args
-        assert spec.title == "Resolve https://example.com/issues/73"
-
-    @_patch_overlays(FULL_OVERLAY)
-    @override_settings(**SETTINGS)
-    def test_keeps_provided_description(self) -> None:
-        """When description is given but title is not, description is preserved."""
-        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/77")
-        Worktree.objects.create(overlay="test", ticket=ticket, repo_path="my-repo", branch="feature-77")
-
-        mock_host = MagicMock()
-        mock_host.create_pr.return_value = {"url": "https://example.com/mr/7"}
-
-        with (
-            patch.object(pr_mod, "code_host_from_overlay", return_value=mock_host),
-            patch.object(pr_mod, "_last_commit_message", return_value=("commit title", "commit body")),
-        ):
-            call_command("pr", "create", str(ticket.pk), description="user desc", skip_validation=True)
-
-        (spec,) = mock_host.create_pr.call_args.args
-        assert spec.title == "commit title"
-        assert spec.description == "user desc"
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
     def test_dry_run_returns_plan(self) -> None:
-        """--dry-run returns the MR plan without creating it."""
-        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/74")
-        Worktree.objects.create(overlay="test", ticket=ticket, repo_path="my-repo", branch="feature-74")
+        ticket = _shippable_ticket()
 
-        mock_host = MagicMock()
         with (
-            patch.object(pr_mod, "code_host_from_overlay", return_value=mock_host),
-            patch.object(pr_mod, "_last_commit_message", return_value=("", "")),
+            patch.object(pr_mod, "_run_visual_qa_gate", return_value=None),
+            patch.object(pr_mod, "_validate_mr_metadata", return_value=None),
+            patch.object(pr_mod.git, "last_commit_message", return_value=("Dry MR", "body")),
         ):
             result = cast(
                 "dict[str, object]",
-                call_command("pr", "create", str(ticket.pk), title="Dry MR", dry_run=True),
+                call_command("pr", "create", str(ticket.pk), dry_run=True),
             )
 
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.REVIEWED  # not advanced
         assert result["dry_run"] is True
         assert result["title"] == "Dry MR"
-        mock_host.create_pr.assert_not_called()
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
     def test_skip_validation_bypasses_check(self) -> None:
-        """--skip-validation creates MR even with empty title."""
-        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/75")
-        Worktree.objects.create(overlay="test", ticket=ticket, repo_path="my-repo", branch="feature-75")
+        ticket = _shippable_ticket()
 
-        mock_host = MagicMock()
-        mock_host.create_pr.return_value = {"url": "https://example.com/mr/5"}
-
-        with (
-            patch.object(pr_mod, "code_host_from_overlay", return_value=mock_host),
-            patch.object(pr_mod, "_last_commit_message", return_value=("", "")),
-        ):
-            result = cast(
-                "dict[str, object]",
-                call_command("pr", "create", str(ticket.pk), skip_validation=True),
-            )
-
-        assert "error" not in result
-        mock_host.create_pr.assert_called_once()
-
-    @_patch_overlays(FULL_OVERLAY)
-    @override_settings(**SETTINGS)
-    def test_title_from_commit_message(self) -> None:
-        """When no title given, falls back to last commit subject."""
-        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/76")
-        Worktree.objects.create(
-            overlay="test",
-            ticket=ticket,
-            repo_path="my-repo",
-            branch="feature-76",
-            extra={"worktree_path": "/tmp/wt"},
+        result = cast(
+            "dict[str, object]",
+            call_command("pr", "create", str(ticket.pk), skip_validation=True),
         )
 
-        mock_host = MagicMock()
-        mock_host.create_pr.return_value = {"url": "https://example.com/mr/6"}
-
-        with (
-            patch.object(pr_mod, "code_host_from_overlay", return_value=mock_host),
-            patch.object(
-                pr_mod,
-                "_last_commit_message",
-                return_value=("fix(api): handle nulls", "Detailed body here"),
-            ),
-        ):
-            call_command("pr", "create", str(ticket.pk), skip_validation=True)
-
-        (spec,) = mock_host.create_pr.call_args.args
-        assert spec.title == "fix(api): handle nulls"
-        assert spec.description == "Detailed body here"
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.SHIPPED
+        assert "error" not in result
 
 
 class TestPrCheckGates(TestCase):
@@ -2020,24 +1927,6 @@ class TestPrCheckGates(TestCase):
 
         assert result["allowed"] is False
         assert "reviewing" in str(result["reason"])
-
-
-class TestLastCommitMessage:
-    def test_parses_subject_and_body(self) -> None:
-        with patch.object(pr_mod.git, "last_commit_message", return_value=("fix: bug", "Detailed body")):
-            subject, body = _last_commit_message("/tmp")
-        assert subject == "fix: bug"
-        assert body == "Detailed body"
-
-    def test_returns_empty_on_failure(self) -> None:
-        with patch.object(pr_mod.git, "last_commit_message", return_value=("", "")):
-            assert _last_commit_message("/tmp") == ("", "")
-
-    def test_subject_only(self) -> None:
-        with patch.object(pr_mod.git, "last_commit_message", return_value=("feat: add feature", "")):
-            subject, body = _last_commit_message("/tmp")
-        assert subject == "feat: add feature"
-        assert body == ""
 
 
 class TestPrFetchIssue(TestCase):

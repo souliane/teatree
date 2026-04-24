@@ -1,4 +1,5 @@
 from collections.abc import Iterator
+from typing import cast
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -9,10 +10,8 @@ from teatree import visual_qa
 from teatree.core.management.commands import pr as pr_command
 from teatree.core.management.commands.pr import (
     _check_shipping_gate,
-    _mr_auto_labels,
     _resolve_base_url,
     _run_visual_qa_gate,
-    _sanitize_close_keywords,
 )
 from teatree.core.models import Session, Ticket, Worktree
 from teatree.core.overlay_loader import reset_overlay_cache
@@ -29,108 +28,86 @@ def clear_overlay_cache() -> Iterator[None]:
 _MOCK_OVERLAY = {"test": CommandOverlay()}
 
 
-class TestPrCreate(TestCase):
-    def setUp(self) -> None:
-        super().setUp()
-        self.enterContext(patch.object(pr_command.git, "config_value", return_value="dev"))
-        self.enterContext(
-            patch.object(pr_command.git, "last_commit_message", return_value=("commit subject", "commit body")),
-        )
+def _shippable_ticket() -> Ticket:
+    """Build a ticket pre-advanced to REVIEWED with the shipping gate satisfied."""
+    ticket = Ticket.objects.create(overlay="test", state=Ticket.State.REVIEWED)
+    session = Session.objects.create(ticket=ticket, overlay="test")
+    session.visit_phase("testing")
+    session.visit_phase("reviewing")
+    session.visit_phase("retro")
+    Worktree.objects.create(
+        ticket=ticket,
+        overlay="test",
+        repo_path="/tmp/backend",
+        branch="feature-branch",
+        extra={"worktree_path": "/tmp/backend"},
+    )
+    return ticket
+
+
+class TestPrCreateThinWrapper(TestCase):
+    """``pr create`` validates gates then triggers ``ticket.ship()`` (#140)."""
 
     @pytest.fixture(autouse=True)
     def _inject_fixtures(self, monkeypatch: pytest.MonkeyPatch) -> None:
         self._monkeypatch = monkeypatch
 
-    def test_reads_auto_labels_from_overlay(self) -> None:
-        host = MagicMock()
-        host.create_pr.return_value = {"iid": 12}
-        host.current_user.return_value = "souliane"
-        self._monkeypatch.setattr(pr_command, "code_host_from_overlay", lambda: host)
+    def test_advances_to_shipped_when_gates_pass(self) -> None:
+        ticket = _shippable_ticket()
 
-        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/55")
-        Worktree.objects.create(ticket=ticket, overlay="test", repo_path="/tmp/backend", branch="feature-branch")
-
-        # CommandOverlay.config.mr_auto_labels returns [] (default), so labels=[]
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
-            patch("teatree.core.management.commands.pr._last_commit_message", return_value=("", "")),
+            patch.object(pr_command, "_run_visual_qa_gate", return_value=None),
+            patch.object(pr_command, "_validate_mr_metadata", return_value=None),
         ):
-            result = call_command("pr", "create", str(ticket.id), "--title", "feat: add labels")
+            result = cast("dict[str, object]", call_command("pr", "create", str(ticket.id)))
 
-        assert result == {"iid": 12}
-        (spec,) = host.create_pr.call_args.args
-        assert spec.repo == "/tmp/backend"
-        assert spec.branch == "feature-branch"
-        assert spec.title == "feat: add labels"
-        assert spec.assignee == "souliane"
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.SHIPPED
+        assert result == {"ticket_id": ticket.pk, "state": Ticket.State.SHIPPED}
 
-    def test_spec_repo_uses_worktree_filesystem_path_not_bare_name(self) -> None:
-        """spec.repo must be the worktree's filesystem path.
+    def test_returns_error_when_no_worktree(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.REVIEWED)
+        with patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY):
+            result = cast("dict[str, object]", call_command("pr", "create", str(ticket.id)))
+        assert "error" in result
 
-        The GitLab backend resolves the project by reading the ``origin`` remote
-        of the given path. A bare repo name like ``widget-backend`` cannot be
-        URL-encoded into a namespaced ``projects/<group>%2F<repo>`` lookup and
-        produces a 404 on GitLab.
-        """
-        host = MagicMock()
-        host.create_pr.return_value = {"iid": 15}
-        host.current_user.return_value = "souliane"
-        self._monkeypatch.setattr(pr_command, "code_host_from_overlay", lambda: host)
+    def test_dry_run_returns_preview_without_transition(self) -> None:
+        ticket = _shippable_ticket()
 
-        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/58")
-        Worktree.objects.create(
-            ticket=ticket,
-            overlay="test",
-            repo_path="widget-backend",
-            branch="feature-branch",
-            extra={"worktree_path": "/abs/path/ac-widget-1234/widget-backend"},
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch.object(pr_command, "_run_visual_qa_gate", return_value=None),
+            patch.object(pr_command, "_validate_mr_metadata", return_value=None),
+            patch.object(pr_command.git, "last_commit_message", return_value=("feat: x", "body")),
+        ):
+            result = cast("dict[str, object]", call_command("pr", "create", str(ticket.id), dry_run=True))
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.REVIEWED  # unchanged
+        assert result["dry_run"] is True
+        assert result["title"] == "feat: x"
+        assert result["branch"] == "feature-branch"
+
+    def test_blocked_when_visual_qa_fails(self) -> None:
+        ticket = _shippable_ticket()
+        failure = pr_command.VisualQAGateFailure(
+            allowed=False,
+            error="Visual QA found 1 blocking finding(s).",
+            visual_qa={},
+            report_markdown="## Visual QA",
+            hint="fix it",
         )
 
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
-            patch("teatree.core.management.commands.pr._last_commit_message", return_value=("", "")),
+            patch.object(pr_command, "_run_visual_qa_gate", return_value=failure),
         ):
-            call_command("pr", "create", str(ticket.id), "--title", "feat: remote-resolved")
+            result = cast("dict[str, object]", call_command("pr", "create", str(ticket.id)))
 
-        (spec,) = host.create_pr.call_args.args
-        assert spec.repo == "/abs/path/ac-widget-1234/widget-backend"
-
-    def test_assignee_falls_back_to_git_user_name_when_host_returns_empty(self) -> None:
-        host = MagicMock()
-        host.create_pr.return_value = {"iid": 13}
-        host.current_user.return_value = ""
-        self._monkeypatch.setattr(pr_command, "code_host_from_overlay", lambda: host)
-
-        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/56")
-        Worktree.objects.create(ticket=ticket, overlay="test", repo_path="/tmp/backend", branch="feature-branch")
-
-        with (
-            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
-            patch("teatree.core.management.commands.pr._last_commit_message", return_value=("", "")),
-        ):
-            call_command("pr", "create", str(ticket.id), "--title", "feat: fallback")
-
-        (spec,) = host.create_pr.call_args.args
-        assert spec.assignee == "dev"  # from patched git.config_value in setUp
-
-    def test_assignee_propagates_when_host_current_user_raises(self) -> None:
-        """Host lookup errors surface to the caller — fallback is for empty, not broken."""
-        host = MagicMock()
-        host.create_pr.return_value = {"iid": 14}
-        host.current_user.side_effect = RuntimeError("gh not authenticated")
-        self._monkeypatch.setattr(pr_command, "code_host_from_overlay", lambda: host)
-
-        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/57")
-        Worktree.objects.create(ticket=ticket, overlay="test", repo_path="/tmp/backend", branch="feature-branch")
-
-        with (
-            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
-            patch("teatree.core.management.commands.pr._last_commit_message", return_value=("", "")),
-            pytest.raises(RuntimeError, match="gh not authenticated"),
-        ):
-            call_command("pr", "create", str(ticket.id), "--title", "feat: resilient")
-
-        host.create_pr.assert_not_called()
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.REVIEWED  # not advanced
+        assert result["allowed"] is False
 
 
 class TestPostEvidence(TestCase):
@@ -187,81 +164,6 @@ class TestCheckShippingGate(TestCase):
         assert "reviewing" in result["missing"]
         assert "testing" in result["missing"]
         assert "hint" in result
-
-
-class TestSanitizeCloseKeywords:
-    @pytest.mark.parametrize(
-        ("description", "expected"),
-        [
-            # Same-project short refs
-            ("Closes #123", "Relates to #123"),
-            ("Fixes #42", "Relates to #42"),
-            ("Resolves #7", "Relates to #7"),
-            ("closes #123", "Relates to #123"),
-            ("fixes #42", "Relates to #42"),
-            ("resolves #7", "Relates to #7"),
-            ("See Closes #1 and Fixes #2", "See Relates to #1 and Relates to #2"),
-            # Cross-project short refs
-            ("Closes group/project#99", "Relates to group/project#99"),
-            ("Fixes org/sub/repo#5", "Relates to org/sub/repo#5"),
-            # Full URL refs
-            (
-                "Closes https://gitlab.com/org/project/-/issues/729",
-                "Relates to https://gitlab.com/org/project/-/issues/729",
-            ),
-            (
-                "Fixes https://gitlab.com/org/sub/repo/-/issues/42",
-                "Relates to https://gitlab.com/org/sub/repo/-/issues/42",
-            ),
-            (
-                "Resolves https://github.com/owner/repo/issues/10",
-                "Relates to https://github.com/owner/repo/issues/10",
-            ),
-            # Mixed refs in one description
-            (
-                "Closes #1\nFixes https://gitlab.com/g/p/-/issues/2\nResolves g/p#3",
-                "Relates to #1\nRelates to https://gitlab.com/g/p/-/issues/2\nRelates to g/p#3",
-            ),
-            # No ticket ref
-            ("No ticket ref here", "No ticket ref here"),
-            ("", ""),
-        ],
-    )
-    def test_replaces_close_keywords_when_close_ticket_false(self, description: str, expected: str) -> None:
-        assert _sanitize_close_keywords(description, close_ticket=False) == expected
-
-    def test_leaves_description_unchanged_when_close_ticket_true(self) -> None:
-        assert _sanitize_close_keywords("Closes #123", close_ticket=True) == "Closes #123"
-
-
-class TestMrAutoLabels:
-    def test_default_overlay_returns_empty(self) -> None:
-        """CommandOverlay has no auto labels, so _mr_auto_labels returns []."""
-        with patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY):
-            result = _mr_auto_labels()
-            assert result == []
-
-    def test_overlay_with_string_labels(self) -> None:
-        """When overlay returns a comma-separated string, it's split."""
-        mock_overlay = MagicMock()
-        mock_overlay.config.mr_auto_labels = "label-a, label-b"
-        with patch(
-            "teatree.core.overlay_loader._discover_overlays",
-            return_value={"test": mock_overlay},
-        ):
-            result = _mr_auto_labels()
-            assert result == ["label-a", "label-b"]
-
-    def test_non_iterable_returns_empty(self) -> None:
-        """_mr_auto_labels returns [] for non-iterable value."""
-        mock_overlay = MagicMock()
-        mock_overlay.config.mr_auto_labels = 42
-        with patch(
-            "teatree.core.overlay_loader._discover_overlays",
-            return_value={"test": mock_overlay},
-        ):
-            result = _mr_auto_labels()
-            assert result == []
 
 
 class TestResolveBaseUrl(TestCase):

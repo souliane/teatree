@@ -630,6 +630,7 @@ class TestRunBackend(TestCase):
                 side_effect=fake_subprocess_run,
             ),
             patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
+            patch("teatree.core.runners.provision._workspace_dir", return_value=workspace),
         ):
             ticket_id = cast(
                 "int",
@@ -643,7 +644,9 @@ class TestRunBackend(TestCase):
             )
 
         ticket = Ticket.objects.get(pk=ticket_id)
-        assert ticket.state == Ticket.State.SCOPED
+        # Stage 3 of #140: workspace ticket advances scope() then start() so the
+        # provisioning runner can materialise the worktrees in the same call.
+        assert ticket.state == Ticket.State.STARTED
         assert ticket.variant == "testclient"
         assert ticket.repos == ["backend", "frontend"]
         assert ticket.issue_url == "https://gitlab.com/org/repo/-/issues/999"
