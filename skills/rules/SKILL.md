@@ -106,6 +106,33 @@ If the target is **PUBLIC**, the body must not contain internal identifiers: cus
 
 **The authorization to "file a bug" does not authorize posting internal info to a public repo.** User instructions like "file a teatree bug" authorize the _action_ of filing, not the _destination_. A public target always requires a scrubbed body.
 
+## Leak Remediation — Silent Scrubs (Non-Negotiable)
+
+When remediating a privacy leak on a public repo (force-push to drop PII, delete a comment that exposed a credential, rewrite a branch that leaked internal data), **every public artifact produced during the remediation must be neutral**. Do not name what leaked, do not name that a leak occurred, do not describe the scrub. Announcing the remediation on a public surface amplifies the leak (Streisand effect) — the commit subject, the PR comment, and the branch name are all crawled, cached, and indexed.
+
+**Banned words in any public artifact produced during remediation** (commit subject/body, PR or issue description or comment, release note, changelog, public branch name):
+
+`leak` / `leaked` / `scrub` / `redact` / `real` (as in "real phone number") / `private` / `personal` / `sensitive` / `accidental` / `accident` / specific classes of the leaked data (`phone`, `email`, `password`, `token`, `credential`, `secret`, `key`, `address`, `ssn`).
+
+**Required form:**
+
+- **Scrub commit subject:** neutral verb only. Good: `fix(<scope>): update example values`, `refactor(<scope>): replace placeholder`, `docs(<scope>): refresh example`. Bad: `scrub real phone number`, `remove leaked credential`, `redact personal email`.
+- **Remediation branch name:** no signal. Good: `fix/update-examples`, `chore/refresh-docs`. Bad: `fix/scrub-phone-leak`, `hotfix/leaked-token`.
+- **Closing a remediation PR:** prefer no comment at all. If one is required, keep it to the shortest neutral phrasing (`Superseded.` / `Not needed.`). Do not explain _why_.
+- **Public push description:** same rule. No class-of-data words.
+- **Secure explanations** (to GitHub Support, to the user, to incident response) belong only in the corresponding private channel — never in git history or public comments.
+
+**Pre-done grep** (run before claiming the remediation is complete):
+
+```bash
+git log --format='%H %s%n%b' <branch-start>..HEAD | \
+  grep -iE 'leak|scrub|redact|real|private|personal|sensitive|accident|phone|email|password|token|credential|secret|address'
+```
+
+Also grep every PR/issue body or comment authored during remediation. Any hit is Streisand — rewrite the artifact (or delete the comment) before declaring done.
+
+**Why:** A commit subject is as public as the diff, and a PR-close comment is permanent. Describing what was removed tells the next reader exactly what used to be there and where to look in the commit graph. The fix is silent.
+
 ## Sub-Agent Limitations
 
 Sub-agents (Agent tool) **lose all loaded skills, MCP access, and shell functions**. By default, never dispatch sub-agents for skill-dependent work. Do all skill-dependent work sequentially in the main conversation.
@@ -165,6 +192,20 @@ On **every prompt**, use `TaskCreate` to create tasks before doing any work — 
 ## Publishing Actions Are Mode-Conditional (Non-Negotiable)
 
 The setting `teatree.mode` in `~/.teatree.toml` (or the `T3_MODE` env var) picks between two doctrines for publishing actions — push, MR create, MR merge, MR approve/unapprove, remote branch deletion, Slack posts, any write that leaves the local machine. The default is `interactive` (security-conservative). `auto` opts into full autonomy.
+
+### Resolve the effective mode before every publishing decision
+
+Do not assume interactive mode. Before saying "not pushed, your call", before asking "push?", and before prompting for any publishing confirmation, **actively resolve the effective mode in this order** (first match wins):
+
+1. `T3_MODE` environment variable (`auto` or `interactive`).
+2. Active overlay config: `[overlays.<active>]` table in `~/.teatree.toml` where `<active>` = `T3_OVERLAY_NAME` env var or the repo's registered overlay.
+3. Global `[teatree]` table in `~/.teatree.toml`.
+4. Per-repo overrides from agent memory / personal config (e.g. "this repo is auto — don't ask"). These supplement the config.
+5. If nothing matched: default to `interactive`.
+
+If the effective mode resolves to `auto`, apply the auto-mode doctrine below — do not ask for push confirmation, do not phrase the end-of-task as "your call", just push.
+
+The most common failure mode is defaulting to `interactive` without performing steps 1-4 — saying "not pushed, interactive mode" on a repo the user has already opted into auto. That reads as the agent ignoring the user's configured preference and forces them to repeat it every session.
 
 ### Interactive mode (default)
 
