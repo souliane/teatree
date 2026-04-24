@@ -6,16 +6,20 @@ new SHA on the default branch. Without subject-matching, every squash-merged
 branch looks "unsynced" and blocks cleanup.
 """
 
+import json
 import logging
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from teatree.config import load_config
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay_loader import get_overlay
 from teatree.utils import git
 from teatree.utils.db import drop_db
+from teatree.utils.run import run_allowed_to_fail
 
 logger = logging.getLogger(__name__)
 
@@ -107,11 +111,74 @@ def classify_branch_commits(repo: str, branch: str, target: str = "origin/main")
     return classification
 
 
+def _pr_merge_commit_sha(repo: str, branch: str) -> str:
+    """Return the SHA of the merge/squash commit for ``branch``'s merged PR, or ``""``.
+
+    Queries GitHub (``gh pr list``) and GitLab (``glab mr list``) for a merged
+    PR/MR whose source branch matches. The merge commit's tree captures the
+    branch's net content at merge time — used by :func:`_branch_tree_matches_squash`
+    to distinguish post-merge follow-up commits already captured by the squash
+    from commits that add new content.
+
+    Returns ``""`` when neither CLI is available (sandbox, CI without auth) —
+    the caller falls back to subject-match classification.
+    """
+    sha = _probe_host_cli(
+        ["gh", "pr", "list", "--head", branch, "--state", "merged", "--json", "mergeCommit", "--limit", "1"],
+        repo,
+        lambda data: data[0]["mergeCommit"]["oid"],
+    )
+    if sha:
+        return sha
+    return _probe_host_cli(
+        ["glab", "mr", "list", "--merged", "--source-branch", branch, "--output", "json", "-P", "1"],
+        repo,
+        lambda data: data[0]["merge_commit_sha"],
+    )
+
+
+def _probe_host_cli(cmd: list[str], repo: str, extract: Callable[[Any], str]) -> str:
+    """Invoke a host CLI that may be missing, parse its JSON, extract the SHA.
+
+    Swallows ``OSError`` (missing binary, permission denied in sandboxes) and
+    JSON/key errors — both are legitimate "no merged PR found" outcomes.
+    """
+    try:
+        result = run_allowed_to_fail(cmd, cwd=repo, expected_codes=None)
+    except OSError:
+        return ""
+    if result.returncode != 0 or result.stdout.strip() in {"", "[]"}:
+        return ""
+    try:
+        data = json.loads(result.stdout)
+        sha = extract(data) if data else ""
+    except (json.JSONDecodeError, IndexError, KeyError, TypeError):
+        return ""
+    return sha or ""
+
+
+def _branch_tree_matches_squash(repo: str, branch: str) -> bool:
+    """Return ``True`` when the PR's merge commit has the same tree as the branch tip.
+
+    Post-merge follow-up commits (retro, docs) appear as ``genuinely_ahead``
+    because their subjects don't match the squash commit's final message.
+    When their cumulative effect is already captured in the squash tree, the
+    branch is safe to clean despite the unmatched subjects.
+    """
+    merge_sha = _pr_merge_commit_sha(repo, branch)
+    if not merge_sha:
+        return False
+    return git.check(repo=repo, args=["diff", "--quiet", merge_sha, branch])
+
+
 def _raise_if_genuinely_ahead(repo_main: str, worktree: Worktree) -> None:
     """Raise ``RuntimeError`` when the branch carries commits not on ``origin/main``.
 
     Merge commits and squash-merged commits are ignored — only ``genuinely_ahead``
-    work blocks cleanup. The error message lists up to ``_SUBJECT_PREVIEW_LIMIT``
+    work blocks cleanup. As a fallback, the PR's merge commit tree is compared
+    against the branch tip: an empty diff means the cumulative branch content
+    is already captured in the squash (typical for post-merge retro commits),
+    so cleanup proceeds. The error message lists up to ``_SUBJECT_PREVIEW_LIMIT``
     commit subjects so the caller can decide whether to push or abandon.
     """
     unsynced = git.unsynced_commits(repo_main, worktree.branch)
@@ -119,6 +186,8 @@ def _raise_if_genuinely_ahead(repo_main: str, worktree: Worktree) -> None:
         return
     classification = classify_branch_commits(repo_main, worktree.branch)
     if not classification.genuinely_ahead:
+        return
+    if _branch_tree_matches_squash(repo_main, worktree.branch):
         return
     preview = classification.genuinely_ahead[:_SUBJECT_PREVIEW_LIMIT]
     subjects = ", ".join(c.subject for c in preview)

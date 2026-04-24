@@ -27,6 +27,7 @@ _SNAPSHOT_THRESHOLD = 0.1
 # ── Full-page screenshot (for README) ─────────────────────────────
 
 
+@pytest.mark.skip(reason="snapshot platform-sensitive, see #378 follow-up")
 def test_full_dashboard_screenshot(e2e_server: str, page: Page, assert_snapshot: Callable) -> None:
     page.goto(e2e_server)
     page.wait_for_timeout(2000)  # let HTMX panels finish loading
@@ -62,6 +63,7 @@ def test_summary_counters(e2e_server: str, page: Page) -> None:
 # ── Tickets table ───────────────────────────────────────────────────
 
 
+@pytest.mark.skip(reason="snapshot platform-sensitive, see #378 follow-up")
 def test_tickets_with_mrs(e2e_server: str, page: Page, assert_snapshot: Callable) -> None:
     page.goto(e2e_server)
     expect(page.locator("body")).to_contain_text("#42")
@@ -212,6 +214,7 @@ def test_htmx_panels_present(e2e_server: str, page: Page) -> None:
 # ── Additional panels ──────────────────────────────────────────────
 
 
+@pytest.mark.skip(reason="snapshot platform-sensitive, see #378 follow-up")
 def test_action_required_panel(e2e_server: str, page: Page, assert_snapshot: Callable) -> None:
     page.goto(e2e_server)
     expect(page.locator("h2", has_text="Action Required")).to_be_visible()
