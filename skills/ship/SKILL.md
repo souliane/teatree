@@ -219,6 +219,23 @@ When a CI failure (or any bug found during work) is **pre-existing** — not int
 
 **How to detect:** `git diff origin/main...HEAD --name-only` — if the failing file was never touched by the feature branch, the bug is pre-existing.
 
+## One Open MR Per Ticket (Non-Negotiable)
+
+Before opening a new MR/PR, check whether a sibling MR for the **same ticket** is already open on the same repo:
+
+```bash
+gh pr list --repo <repo> --search "<ticket-ref> is:open" --json number,headRefName,baseRefName
+```
+
+If a sibling is open, **do not open a second MR targeting the default branch** — the two branches will diverge on the same files and the second one will need a painful 3-way merge. Pick one:
+
+1. **Wait for the sibling to merge**, then rebase the new work on the updated default branch and open the MR.
+2. **Stack on the sibling's branch** — set the new MR's base to the sibling's source branch (`gh pr create --base <sibling-branch>`). Update the base to the default branch after the sibling merges, so the stacked MR stays minimal.
+
+**Never open two MRs on the same ticket targeting the default branch in parallel.** The only exception is when the two MRs touch genuinely disjoint files (different repos, different modules with no shared imports, no overlapping generated docs) — and even then, the second MR's description must name the sibling PR it races with.
+
+**Past failure (#140 / PRs #427 + #436):** Both PRs touched `README.md`, `BLUEPRINT.md`, `src/teatree/core/*` and ran in parallel against `main`. When #427 squash-merged first, #436 inherited an unsynced merge base and required a full 3-way conflict resolution. Opening #436 as a stacked PR with `--base ac/teatree-#140-initial-ship` would have avoided every conflict.
+
 ## Bundle Into an Existing Open PR
 
 When a session uncovers a small unique commit on a now-stale branch (typical during cleanup or retro), and opening a dedicated PR for that one commit would be more ceremony than the change deserves, **bundle it into a sibling open PR** instead. This trades a little PR-scope discipline for delivery speed.
