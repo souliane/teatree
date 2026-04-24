@@ -165,6 +165,46 @@ Present ALL findings to the user before posting any comments. Never silently dro
 
 When raising concerns about caching, stale data, or side effects: **investigate first**. Check the actual code paths and real data before speculating. A concern backed by evidence ("I checked the DB — durations do vary") is useful; a speculative "this might be a problem" wastes the author's time.
 
+**Step 0d — Answer Your Own Questions Before Posting (Non-Negotiable):**
+
+Every review comment is posted under the user's name. A comment that boils down to "I'm unsure, please confirm" makes the *user* look like they don't know their own codebase. Do not post it.
+
+Before drafting any comment, if it would contain any of the following phrases — or their equivalents — **STOP and investigate first**:
+
+- "worth confirming with the business that…"
+- "can you confirm this value matches what upstream emits?"
+- "is this string / identifier / enum value correct?"
+- "does this field exist in the producer schema?"
+- "I'm not sure whether…"
+- "does this mean that… / or… / or…?" (listing options instead of picking one)
+
+Investigate first by exhausting the sources you **can** reach:
+
+1. **Grep the repo** for the symbol / string / identifier — producers, consumers, enums, tests, fixtures, docs.
+2. **Grep sibling repos** when the value crosses a service boundary (e.g., webhook producer → consumer, API schema → client). The upstream producer's source of truth lives there. Discover sibling repos via `T3_WORKSPACE_DIR` or the overlay's configured repo list — never hardcode a user-specific path.
+3. **Read the producer's schema / enum / migration** — whichever repo emits the value. If it's a Django model, check the field's `choices=` and the migration history. If it's a Pydantic model, check the field type.
+4. **Check commit history** for the rename, addition, or removal — `git log -S "<symbol>" --all --oneline` often shows exactly when and why the value changed.
+5. **Read the test fixtures** — realistic test inputs show what the producer actually sends.
+6. **Check related MRs** on the same or upstream repos for the same symbol — someone may have already merged or discussed it.
+
+Only after all reachable sources are exhausted can you post a question-style comment — and only when the answer truly requires access you do not have (partner portal behind SSO, vendor-only documentation, product owner's desk knowledge). State what you checked and why the answer isn't reachable, so the author sees you did the work.
+
+**Scale severity to confidence.** A speculative "maybe wrong?" is a nit at best; drop it. A verified finding ("grepped `foo-producer`, canonical spelling is `X`, branch has `Y` — will fail at runtime") is a blocker and belongs in the review.
+
+**When the investigation confirms the code is correct, say nothing.** Silence on a check you performed is the correct outcome — not a "looks good, but…" comment. Positive comments belong in the summary to the user, not in the MR.
+
+**Step 0e — Don't Police Other Authors' Title/Description Format (Non-Negotiable):**
+
+Do NOT leave review comments about an external author's MR title format, description wording, commit-message style, work-item link spacing, or whether their description "reads better" in a different shape. These rules are enforced by CI and by the overlay's `validate_pr()` check — not by the reviewer. Raising them manually duplicates the bot and nags a colleague for something a machine already polices.
+
+The reviewer's responsibility is to ensure **their own** MRs pass the title/description check. On other authors' MRs, silence on formatting is the correct outcome. If something is objectively wrong in a way that affects traceability or release notes (e.g., the title references the wrong ticket), frame it as a **correctness** finding, not as a style nit.
+
+**Step 0f — Respect the Overlay's Auto-Close Policy (Non-Negotiable):**
+
+Do NOT suggest adding `Closes #NNN`, `Fixes #NNN`, `Resolves #NNN`, or any other auto-close keyword to an MR description unless the active overlay's conventions explicitly require it. Many overlays manage issue closure via their own ticket/MR linking rather than via GitHub-style auto-close trailers, and suggesting them contradicts the overlay convention.
+
+Check the overlay skill's commit-message and MR-description rules **before** proposing any trailer. The default when the overlay is silent on the topic is: do not suggest auto-close trailers.
+
 **Step 1 — Structured Review Checklist:**
 
 1. **Correctness** — does the code do what the ticket requires? Are all acceptance criteria met? When a change tightens a public contract (e.g., serializer field becomes required, API parameter becomes mandatory), trace all callers — the change affects every flow that uses that interface, not just the one the ticket describes.
@@ -209,7 +249,7 @@ Comments are posted under the user's name. They must sound like a **real human c
 
 1. **List all discussions** via `GET .../merge_requests/<IID>/discussions?per_page=100` and read each note's `body`.
 2. **For each finding**, check whether an existing comment already raises the same concern — same file, same line range, same substance. If so, **do not post a duplicate**.
-3. **If you have something to add** to an existing discussion (additional context, a related concern on the same code), **reply in that thread** instead of creating a new top-level comment. Use the Reply to Discussion recipe from the platform reference.
+3. **If you have something to add** to an existing discussion (additional context, a related concern on the same code), **reply in that thread** via `t3 review reply-to-discussion <REPO> <MR_IID> <DISCUSSION_ID> "body"` instead of creating a new top-level comment.
 4. **Only post new draft notes** for findings not already covered by existing comments.
 
 This prevents noise from multiple review passes or multiple reviewers covering the same ground.
@@ -218,7 +258,7 @@ This prevents noise from multiple review passes or multiple reviewers covering t
 
 When reviewing an external MR/PR, **always post comments inline on the correct file and line** in the diff view. For comments that aren't tied to a specific line (e.g., description feedback), post a general note without position data.
 
-**Extend the CLI, never inline API recipes.** If a `t3 review` operation is missing (e.g., bulk-publish, reply, resolve), implement it in `src/teatree/cli/review.py` — do NOT document a raw API snippet or inline script here. Skills describe what command to run, not how to replicate missing CLI functionality.
+**Extend the CLI, never inline API recipes.** If a `t3 review` operation is missing, implement it in `src/teatree/cli/review.py` — do NOT document a raw API snippet or inline script here. Skills describe what command to run, not how to replicate missing CLI functionality. Current subcommands: `post-draft-note`, `delete-draft-note`, `publish-draft-notes`, `list-draft-notes`, `reply-to-discussion`, `resolve-discussion`.
 
 **Use `t3 review post-draft-note` (Mandatory).** It handles token extraction, diff refs, position serialization, and added-line validation. Never use raw API calls.
 
@@ -271,7 +311,7 @@ When posting replies to reviewer discussions (e.g., "Done in `<commit>`"):
 3. **Skip already-answered discussions.** If the user (or someone else) already replied with a resolution, do not post a duplicate reply.
 4. **Present the mapping to the user before posting.** Show a table: `| Discussion | Topic | Reply |` and get confirmation. Never batch-post replies without review.
 
-See your [issue tracker platform reference](../platforms/references/) § "Reply to Discussion" for the API recipe.
+Post each reply via `t3 review reply-to-discussion <REPO> <MR_IID> <DISCUSSION_ID> "body"`. To mark a thread resolved after the reply, use `t3 review resolve-discussion <REPO> <MR_IID> <DISCUSSION_ID>` (pass `--no-resolved` to re-open).
 
 ## Commands
 

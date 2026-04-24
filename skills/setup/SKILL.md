@@ -113,12 +113,18 @@ EOF
 
 ## Step 3: Install Skills
 
-`t3 setup` creates symlinks from each supported agent runtime's skills
-directory to the teatree skills.  Claude is always targeted (the directory is
-created if missing); other runtimes listed in
-`teatree.cli.setup.AGENT_SKILL_RUNTIMES` are targeted only when their home
-directory already exists.  Contributor-mode symlinks that point inside the
-configured `workspace_dir` are preserved.
+`t3 setup` installs teatree's skills per runtime:
+
+- **Claude** — core skills ship inside the `t3@souliane` plugin, so `t3 setup`
+  does **not** symlink them into `~/.claude/skills/`. Any leftover core
+  symlinks from pre-plugin installs are pruned to avoid duplicate entries.
+  Overlay skills (not shipped by the plugin) are still symlinked.
+- **Other runtimes** listed in `teatree.cli.setup.AGENT_SKILL_RUNTIMES`
+  (e.g. Codex) are targeted when their home directory already exists, and
+  receive symlinks for both core and overlay skills.
+
+Contributor-mode symlinks that point inside the configured `workspace_dir`
+are preserved across runs.
 
 Inspect the result with `t3 info` — the "Skills installed to" section lists
 every runtime dir teatree detected along with the count of managed symlinks.

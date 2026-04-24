@@ -351,6 +351,68 @@ class TestSyncSkillSymlinks:
         assert created == 1
         assert (claude_skills / "my-skill").is_symlink()
 
+    def test_sync_core_false_skips_core_symlinks(self, tmp_path: Path) -> None:
+        skills_src = tmp_path / "core_skills"
+        skills_src.mkdir()
+        (skills_src / "code").mkdir()
+        (skills_src / "code" / "SKILL.md").touch()
+
+        runtime_skills = tmp_path / "runtime_skills"
+        runtime_skills.mkdir()
+
+        with (
+            patch("teatree.agents.skill_bundle.DEFAULT_SKILLS_DIR", skills_src),
+            patch("teatree.cli.setup.DoctorService") as mock_svc,
+        ):
+            mock_svc.collect_overlay_skills.return_value = []
+            created, fixed = _sync_skill_symlinks(runtime_skills, tmp_path / "workspace", sync_core=False)
+
+        assert created == 0
+        assert fixed == 0
+        assert not (runtime_skills / "code").exists()
+
+    def test_sync_core_false_prunes_existing_core_links(self, tmp_path: Path) -> None:
+        skills_src = tmp_path / "core_skills"
+        skills_src.mkdir()
+        (skills_src / "code").mkdir()
+        (skills_src / "code" / "SKILL.md").touch()
+
+        runtime_skills = tmp_path / "runtime_skills"
+        runtime_skills.mkdir()
+        (runtime_skills / "code").symlink_to(skills_src / "code")
+
+        with (
+            patch("teatree.agents.skill_bundle.DEFAULT_SKILLS_DIR", skills_src),
+            patch("teatree.cli.setup.DoctorService") as mock_svc,
+        ):
+            mock_svc.collect_overlay_skills.return_value = []
+            _sync_skill_symlinks(runtime_skills, tmp_path / "workspace", sync_core=False)
+
+        assert not (runtime_skills / "code").exists()
+
+    def test_sync_core_false_still_adds_overlays(self, tmp_path: Path) -> None:
+        skills_src = tmp_path / "core_skills"
+        skills_src.mkdir()
+        (skills_src / "code").mkdir()
+        (skills_src / "code" / "SKILL.md").touch()
+
+        overlay_skill = tmp_path / "overlay" / "my-skill"
+        overlay_skill.mkdir(parents=True)
+
+        runtime_skills = tmp_path / "runtime_skills"
+        runtime_skills.mkdir()
+
+        with (
+            patch("teatree.agents.skill_bundle.DEFAULT_SKILLS_DIR", skills_src),
+            patch("teatree.cli.setup.DoctorService") as mock_svc,
+        ):
+            mock_svc.collect_overlay_skills.return_value = [(overlay_skill, "my-skill")]
+            created, _fixed = _sync_skill_symlinks(runtime_skills, tmp_path / "workspace", sync_core=False)
+
+        assert created == 1
+        assert (runtime_skills / "my-skill").is_symlink()
+        assert not (runtime_skills / "code").exists()
+
 
 class TestAgentSkillDirs:
     def test_includes_claude_and_codex(self) -> None:
@@ -369,8 +431,12 @@ class TestAgentSkillDirs:
 
 
 class TestSetupSyncsCodexWhenDirExists:
-    def test_syncs_to_both_claude_and_codex(self, tmp_path: Path, monkeypatch) -> None:
-        """Setup mirrors skill symlinks into ~/.codex/skills when it exists."""
+    def test_syncs_codex_core_but_leaves_claude_to_plugin(self, tmp_path: Path, monkeypatch) -> None:
+        """Claude core skills come from the t3 plugin; Codex gets symlinks.
+
+        Setup should symlink core skills into ~/.codex/skills but NOT into
+        ~/.claude/skills.
+        """
         from teatree.cli import setup as setup_module  # noqa: PLC0415
 
         skills_src = tmp_path / "core_skills"
@@ -378,7 +444,6 @@ class TestSetupSyncsCodexWhenDirExists:
         (skills_src / "code").mkdir()
         (skills_src / "code" / "SKILL.md").touch()
 
-        # Simulate home layout: both dirs already exist so setup should target both
         home = tmp_path / "home"
         claude_skills = home / ".claude" / "skills"
         codex_skills = home / ".codex" / "skills"
@@ -406,8 +471,50 @@ class TestSetupSyncsCodexWhenDirExists:
             mock_load.return_value.user.workspace_dir = str(tmp_path / "workspace")
             setup_module.run(claude_scope="user", skip_plugin=True)
 
-        assert (claude_skills / "code").is_symlink()
+        assert not (claude_skills / "code").exists()
         assert (codex_skills / "code").is_symlink()
+
+    def test_prunes_stale_claude_core_symlinks(self, tmp_path: Path, monkeypatch) -> None:
+        """Leftover core symlinks from pre-plugin installs are removed.
+
+        ~/.claude/skills/ may still contain symlinks created by earlier
+        teatree versions; they must be pruned so they don't shadow the
+        plugin's copies of the same skills.
+        """
+        from teatree.cli import setup as setup_module  # noqa: PLC0415
+
+        skills_src = tmp_path / "core_skills"
+        skills_src.mkdir()
+        (skills_src / "code").mkdir()
+        (skills_src / "code" / "SKILL.md").touch()
+
+        home = tmp_path / "home"
+        claude_skills = home / ".claude" / "skills"
+        claude_skills.mkdir(parents=True)
+        (claude_skills / "code").symlink_to(skills_src / "code")
+
+        monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: home))
+
+        repo = tmp_path / "teatree"
+        repo.mkdir()
+        (repo / "apm.yml").touch()
+        (repo / ".git").mkdir()
+
+        with (
+            patch("teatree.agents.skill_bundle.DEFAULT_SKILLS_DIR", skills_src),
+            patch.object(setup_module, "_find_main_clone", return_value=repo),
+            patch.object(setup_module, "_run_apm_install", return_value=True),
+            patch.object(setup_module, "_install_claude_plugin", return_value=True),
+            patch.object(setup_module, "DoctorService") as mock_svc,
+            patch("teatree.config.load_config") as mock_load,
+        ):
+            mock_svc.collect_overlay_skills.return_value = []
+            mock_load.return_value.user.contribute = False
+            mock_load.return_value.user.excluded_skills = []
+            mock_load.return_value.user.workspace_dir = str(tmp_path / "workspace")
+            setup_module.run(claude_scope="user", skip_plugin=True)
+
+        assert not (claude_skills / "code").exists()
 
     def test_skips_codex_when_dir_missing(self, tmp_path: Path, monkeypatch) -> None:
         """Setup does not create ~/.codex/skills if it doesn't already exist."""
