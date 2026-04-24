@@ -149,12 +149,11 @@ class TestGetProvisionSteps(TestCase):
             ticket=cls.ticket, overlay="t3-teatree", repo_path="/tmp/teatree", branch="main"
         )
 
-    def test_returns_sync_step(self) -> None:
+    def test_returns_sync_and_install_overlays_steps(self) -> None:
         overlay = TeatreeOverlay()
         steps = overlay.get_provision_steps(self.worktree)
 
-        assert len(steps) == 1
-        assert steps[0].name == "sync-dependencies"
+        assert [step.name for step in steps] == ["sync-dependencies", "install-overlays-editable"]
 
     def test_sync_step_runs_uv_sync(self) -> None:
         overlay = TeatreeOverlay()
@@ -165,6 +164,113 @@ class TestGetProvisionSteps(TestCase):
             mock_run.assert_called_once()
             assert mock_run.call_args.args[0] == ["uv", "sync"]
             assert mock_run.call_args.kwargs["cwd"] == str(Path("/tmp/teatree"))
+
+
+@pytest.mark.django_db
+class TestInstallOverlaysEditableStep:
+    """Integration tests for the install-overlays-editable provision step."""
+
+    def _make_pyproject(self, path: Path, name: str) -> None:
+        path.mkdir(parents=True, exist_ok=True)
+        (path / "pyproject.toml").write_text(f'[project]\nname = "{name}"\nversion = "0.0.0"\n', encoding="utf-8")
+
+    def test_installs_overlay_worktree_editable(self, tmp_path: Path, monkeypatch, isolated_config: Path) -> None:
+        """Discovered overlay under workspace_dir → `uv pip install -e <overlay_worktree>` in teatree worktree."""
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        main_overlay = workspace / "acme" / "t3-acme"
+        self._make_pyproject(main_overlay, "t3-acme")
+
+        ticket_dir = workspace / "ac-teatree-117-ticket"
+        teatree_wt = ticket_dir / "teatree"
+        overlay_wt = ticket_dir / "t3-acme"
+        self._make_pyproject(teatree_wt, "teatree")
+        self._make_pyproject(overlay_wt, "t3-acme")
+
+        isolated_config.write_text(
+            f'[teatree]\nworkspace_dir = "{workspace}"\n\n'
+            f'[overlays.t3-acme]\npath = "{main_overlay}"\nclass = "t3_acme.overlay:AcmeOverlay"\n',
+            encoding="utf-8",
+        )
+
+        ticket = Ticket.objects.create(overlay="t3-teatree")
+        worktree = Worktree.objects.create(
+            ticket=ticket, overlay="t3-teatree", repo_path=str(teatree_wt), branch="main"
+        )
+
+        overlay = TeatreeOverlay()
+        steps = overlay.get_provision_steps(worktree)
+        install_step = next(step for step in steps if step.name == "install-overlays-editable")
+
+        with patch("subprocess.run", return_value=subprocess.CompletedProcess([], 0, "", "")) as mock_run:
+            install_step.callable()
+
+        mock_run.assert_called_once()
+        assert mock_run.call_args.args[0] == ["uv", "pip", "install", "-e", str(overlay_wt)]
+        assert mock_run.call_args.kwargs["cwd"] == str(teatree_wt)
+
+    def test_skips_overlays_outside_workspace_dir(self, tmp_path: Path, monkeypatch, isolated_config: Path) -> None:
+        """Overlay whose main clone lives outside workspace_dir is silently skipped."""
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        outside_overlay = tmp_path / "elsewhere" / "rogue"
+        self._make_pyproject(outside_overlay, "rogue")
+
+        ticket_dir = workspace / "ac-teatree-117-ticket"
+        teatree_wt = ticket_dir / "teatree"
+        self._make_pyproject(teatree_wt, "teatree")
+        self._make_pyproject(ticket_dir / "rogue", "rogue")
+
+        isolated_config.write_text(
+            f'[teatree]\nworkspace_dir = "{workspace}"\n\n'
+            f'[overlays.rogue]\npath = "{outside_overlay}"\nclass = "rogue:Overlay"\n',
+            encoding="utf-8",
+        )
+
+        ticket = Ticket.objects.create(overlay="t3-teatree")
+        worktree = Worktree.objects.create(
+            ticket=ticket, overlay="t3-teatree", repo_path=str(teatree_wt), branch="main"
+        )
+
+        overlay = TeatreeOverlay()
+        steps = overlay.get_provision_steps(worktree)
+        install_step = next(step for step in steps if step.name == "install-overlays-editable")
+
+        with patch("subprocess.run", return_value=subprocess.CompletedProcess([], 0, "", "")) as mock_run:
+            install_step.callable()
+
+        mock_run.assert_not_called()
+
+    def test_skips_overlays_without_worktree(self, tmp_path: Path, monkeypatch, isolated_config: Path) -> None:
+        """Overlay with main clone under workspace_dir but no sibling worktree is silently skipped."""
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        main_overlay = workspace / "acme" / "t3-acme"
+        self._make_pyproject(main_overlay, "t3-acme")
+
+        ticket_dir = workspace / "ac-teatree-117-ticket"
+        teatree_wt = ticket_dir / "teatree"
+        self._make_pyproject(teatree_wt, "teatree")
+
+        isolated_config.write_text(
+            f'[teatree]\nworkspace_dir = "{workspace}"\n\n'
+            f'[overlays.t3-acme]\npath = "{main_overlay}"\nclass = "t3_acme.overlay:AcmeOverlay"\n',
+            encoding="utf-8",
+        )
+
+        ticket = Ticket.objects.create(overlay="t3-teatree")
+        worktree = Worktree.objects.create(
+            ticket=ticket, overlay="t3-teatree", repo_path=str(teatree_wt), branch="main"
+        )
+
+        overlay = TeatreeOverlay()
+        steps = overlay.get_provision_steps(worktree)
+        install_step = next(step for step in steps if step.name == "install-overlays-editable")
+
+        with patch("subprocess.run", return_value=subprocess.CompletedProcess([], 0, "", "")) as mock_run:
+            install_step.callable()
+
+        mock_run.assert_not_called()
 
 
 class TestGetRunCommands(TestCase):
