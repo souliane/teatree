@@ -1,7 +1,7 @@
 """Generate the per-ticket env cache.
 
 The cache file lives at ``<ticket_dir>/.t3-cache/.t3-env.cache`` and is
-regenerated on every ``t3 lifecycle start``.  It is **not** the source of
+regenerated on every ``t3 <overlay> lifecycle start``.  It is **not** the source of
 truth — the DB is.  The file is ``chmod 444`` to discourage manual edits,
 and its header calls out that edits are pointless.
 
@@ -26,10 +26,10 @@ CACHE_DIRNAME = ".t3-cache"
 CACHE_FILENAME = ".t3-env.cache"
 
 _HEADER = (
-    "# GENERATED — regenerated on every `t3 lifecycle start`.\n"
-    "# Edit the database via `t3 env set` instead.  This file is chmod 444.\n"
+    "# GENERATED — regenerated on every `t3 <overlay> lifecycle start`.\n"
+    "# Edit the database via `t3 <overlay> env set` instead.  This file is chmod 444.\n"
     "# Source of truth: the Django DB (Ticket, Worktree, WorktreeEnvOverride).\n"
-    "# Drift detection: `t3 lifecycle start` refuses if file != DB render.\n"
+    "# Drift detection: `t3 <overlay> lifecycle start` refuses if file != DB render.\n"
     "#\n"
 )
 
