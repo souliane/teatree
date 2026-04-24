@@ -7,9 +7,23 @@
 ## Overlay Groups Show Only a Generic `run` Passthrough
 
 - **Symptom:** `t3 <overlay> <group> --help` shows a single `run` subcommand instead of the actual management command subcommands (e.g., `refresh`, `restore-ci`, `reset-passwords`).
-- **Cause:** `_build_overlay_app` bridges management commands via `_bridge_subcommand` — if the `_DJANGO_GROUPS` registry doesn't list individual subcommands, only the generic passthrough appears.
-- **Fix:** Add each subcommand explicitly to `_DJANGO_GROUPS` in `cli.py` with `(name, help_text)` tuples. The bridge creates one Typer command per entry that delegates to `manage.py <group> <subcommand>`.
-- **Prevention:** When adding a new management subcommand, always add a matching entry in `_DJANGO_GROUPS`.
+- **Cause:** `_build_overlay_app` bridges management commands via `_bridge_subcommand` — if the `DJANGO_GROUPS` registry doesn't list individual subcommands, only the generic passthrough appears.
+- **Fix:** Add each subcommand explicitly to `DJANGO_GROUPS` in `cli/overlay.py` with `(name, help_text)` tuples. The bridge creates one Typer command per entry that delegates to `manage.py <group> <subcommand>`.
+- **Prevention:** When adding, renaming, or deleting a management command or subcommand, always update the matching entry in `DJANGO_GROUPS` in the **same commit**. The bridge does not auto-discover Django commands — a missing entry is silent (no group at all), and a stale entry dispatches to a non-existent backend (each call 404s with `Unknown command`).
+
+## Overlay Bridge Dispatches to a Deleted Django Command
+
+- **Symptom:** `t3 <overlay> <group> <sub>` exits with `Unknown command: '<group>'` after a recent rename/refactor of the underlying management command, even though `t3 <overlay> <group> --help` lists the subcommand.
+- **Cause:** `cli/overlay.py:DJANGO_GROUPS` still maps `<group>` to a Django command that has been renamed or deleted. The bridge happily forwards to a target that no longer exists; the failure surfaces only when the user runs the subcommand for real.
+- **Fix:** Update `DJANGO_GROUPS` to point at the current Django command names (e.g. when `lifecycle` was split into `worktree` + `workspace`, the bridge needed both groups, not the old one). Also retire any docs/skills that still mention the dead group.
+- **Prevention:** The existing `tests/test_cli_overlay.py` bridge tests mock `managepy`, so they pass even when the target is dead. Treat any rename/deletion of a Django command in `core/management/commands/` as a `DJANGO_GROUPS` change too — and run `t3 <overlay> <group> <sub> --help` end-to-end once after the change to confirm the dispatch resolves.
+
+## Doc-Only "Fix" Propagates a Broken CLI Reference
+
+- **Symptom:** A docs-only commit replaces stale CLI invocations (e.g. `t3 lifecycle setup` → `t3 <overlay> lifecycle setup`) but every reader who copy-pastes the new form still gets `Unknown command`.
+- **Cause:** The retarget assumed the new command exists because the old one used to. When the underlying Django command (or bridge entry) was deleted in a prior PR, prose retargeting alone can't make the new invocation work — it just relocates the broken reference.
+- **Fix:** Before shipping a doc-only retarget of a CLI invocation, smoke-test the new form with `t3 <overlay> <group> <sub> --help`. If the call fails, the docs aren't stale — the CLI is broken, and the right scope is "fix the CLI bridge **and** the docs in one PR".
+- **Prevention:** Treat "stale `t3` reference" findings as a tripwire, not a docs typo. Always check `cli/overlay.py:DJANGO_GROUPS` and `core/management/commands/` before shipping the retarget.
 
 ## CLI References Undefined Sub-Apps After Script Migration
 
