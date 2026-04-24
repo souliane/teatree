@@ -216,7 +216,7 @@ class FailingImportOverlay(FullOverlay):
 
 
 class PreRunOverlay(FullOverlay):
-    """Overlay with pre-run steps — tests the pre-run loop in lifecycle setup."""
+    """Overlay with pre-run steps — tests the pre-run loop in worktree provision."""
 
     def get_pre_run_steps(self, worktree: Worktree, service: str) -> list[ProvisionStep]:
         def _log_step() -> None:
@@ -4046,7 +4046,7 @@ class TestToolRun(TestCase):
         assert cmd == ["echo", "migrate", "--verbose", "--dry-run"]
 
 
-# ── Repo discovery in lifecycle setup ──────────────────────────────
+# ── Repo discovery in worktree provision ──────────────────────────────
 
 
 class TestLifecycleRepoDiscovery(TestCase):

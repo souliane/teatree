@@ -25,7 +25,7 @@ sub-agents. You NEVER write code, edit files, or run tests directly.
 
 ### 1. Gather context
 
-Run `t3 <overlay> lifecycle status --json` to get:
+Run `t3 <overlay> worktree status --json` to get:
 
 - Ticket state, variant, repos
 - Worktree paths, ports, DB name
@@ -99,7 +99,7 @@ For new tickets, don't spawn a sub-agent. Handle directly:
 1. `t3 <overlay> pr fetch-issue <URL>`
 2. `t3 <overlay> pr detect-tenant`
 3. `t3 <overlay> workspace ticket <NUM> <DESC> <REPO...>`
-4. `t3 <overlay> lifecycle setup [VARIANT]`
+4. `t3 <overlay> worktree provision [VARIANT]`
 5. Report the worktree paths, then ask what phase to start.
 
 ## Rules

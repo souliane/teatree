@@ -302,7 +302,7 @@ class TestLifecycleProvision(TestCase):
 
     @override_settings(**WORKFLOW_SETTINGS)
     def test_password_reset_runs_automatically(self) -> None:
-        """Verify lifecycle setup calls get_reset_passwords_command and runs it."""
+        """Verify worktree provision calls get_reset_passwords_command and runs it."""
         wt_dir = self._tmp_path / "backend"
         wt_dir.mkdir()
 
@@ -596,7 +596,7 @@ class TestRunBackend(TestCase):
 
     @override_settings(**WORKFLOW_SETTINGS)
     def test_workspace_ticket_through_lifecycle_to_run(self) -> None:
-        """End-to-end workflow: workspace ticket -> lifecycle setup -> run backend.
+        """End-to-end workflow: workspace ticket -> worktree provision -> run backend.
 
         Uses a real temp directory for the workspace. Mocks git worktree add
         to create real directories. Verifies command output, DB state, and env
@@ -662,7 +662,7 @@ class TestRunBackend(TestCase):
             assert stored_path is not None
             assert Path(stored_path).is_dir()
 
-        # --- Step 2: lifecycle setup (provision) ---
+        # --- Step 2: worktree provision ---
         backend_wt = worktrees[0]
         backend_wt_path = (backend_wt.extra or {}).get("worktree_path", "")
         assert backend_wt.state == Worktree.State.CREATED

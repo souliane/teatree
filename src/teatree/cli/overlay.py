@@ -25,23 +25,30 @@ across Typer's ``get_command`` conversion.
 
 
 DJANGO_GROUPS: dict[str, tuple[str, list[tuple[str, str]]]] = {
-    "lifecycle": (
-        "Worktree lifecycle.",
+    "worktree": (
+        "Per-worktree FSM operations.",
         [
-            ("setup", "Create and provision a worktree."),
-            ("start", "Provision (if needed) and start all services."),
-            ("status", "Return worktree state information."),
-            ("teardown", "Tear down a worktree."),
-            ("clean", "Teardown worktree — stop services, drop DB, clean state."),
-            ("diagram", "Print the lifecycle state diagram as Mermaid."),
+            ("provision", "Run DB import + env cache + direnv + prek + overlay setup steps for one worktree."),
+            ("start", "Boot ``docker compose up`` for one worktree."),
+            ("verify", "Run overlay health checks for one worktree."),
+            ("teardown", "Stop docker, drop DB, remove git worktree, delete row."),
+            ("status", "Report FSM state, branch, and allocated host ports for one worktree."),
+            ("diagnose", "Print a structured health checklist for one worktree."),
+            ("smoke-test", "Quick health check: overlay loads, CLI responds, imports OK."),
+            ("diagram", "Print a state diagram as Mermaid. Models: worktree, ticket, task."),
         ],
     ),
     "workspace": (
-        "Workspace management.",
+        "Ticket-level workspace operations (every worktree in the ticket).",
         [
-            ("ticket", "Create a ticket with worktree entries for each repo."),
+            ("ticket", "Create or update a ticket and trigger worktree provisioning."),
+            ("provision", "Provision every worktree in the current ticket workspace."),
+            ("start", "Start docker for every worktree in the current ticket workspace."),
+            ("teardown", "Tear down every worktree in the current ticket workspace."),
             ("finalize", "Squash worktree commits and rebase on the default branch."),
-            ("clean-all", "Prune worktrees whose branches have been merged or deleted."),
+            ("doctor", "Detect state drift across every store; optionally fix it."),
+            ("clean-merged", "Tear down every worktree whose ticket is already MERGED."),
+            ("clean-all", "Prune merged worktrees, stale branches, orphaned stashes, orphan DBs, old DSLR snapshots."),
             ("list-orphans", "List orphan branches (commits not on main, no open PR)."),
         ],
     ),

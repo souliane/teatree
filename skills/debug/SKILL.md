@@ -122,7 +122,7 @@ After fixing and verifying, the fix needs to be committed and pushed via a PR. *
 |---------|-------------|
 | `t3 <overlay> run backend` | Restart backend after a fix |
 | `t3 <overlay> run frontend` | Restart frontend after a fix |
-| `t3 <overlay> lifecycle start` | Full restart when multiple services affected |
+| `t3 <overlay> worktree start` | Full restart when multiple services affected |
 | `t3 ci fetch-errors` | Analyze CI error logs |
 
 ## Error Log Analysis

@@ -13,8 +13,8 @@ class WorktreeTeardownRunner(RunnerBase):
     """Tear down a single worktree (docker down + DB drop + git worktree remove).
 
     Runs after ``Worktree.teardown()`` flips the FSM back to CREATED. Folds
-    what was previously split between ``t3 <overlay> lifecycle teardown``
-    (docker only) and ``t3 <overlay> lifecycle clean`` (docker + DB +
+    what was previously split between ``t3 <overlay> worktree teardown``
+    (docker only) and ``t3 <overlay> worktree teardown`` (docker + DB +
     worktree row) into one canonical path so callers no longer have to
     chain commands. The runner owns docker-down + DB drop + git worktree
     removal; it then deletes the Worktree row and releases the ticket's

@@ -115,7 +115,7 @@ If not found in the external tracker, log a warning but continue — not all tic
 
 **b. Run the full lifecycle** using the loaded skills — each phase uses the corresponding lifecycle skill:
 
-1. **Intake** (`/t3:ticket`): Fetch issue, create worktree (`t3 <overlay> workspace ticket`), run `t3 <overlay> lifecycle setup`, verify environment.
+1. **Intake** (`/t3:ticket`): Fetch issue, create worktree (`t3 <overlay> workspace ticket`), run `t3 <overlay> worktree provision`, verify environment.
 2. **Implementation** (`/t3:code`): Implement with TDD. Check ALL repos in scope.
 3. **Testing** (`/t3:test`): Run tests, fix failures, ensure lint passes.
 4. **Delivery** (`/t3:ship`): Commit, push, create MRs for ALL repos with changes.
@@ -294,7 +294,7 @@ See [`references/followup-schema.md`](references/followup-schema.md) for the ful
 - **Never start without user approval.** Always show the confirmation table first.
 - **Always pre-fetch external context.** Read all specs before starting implementation.
 - **Always run scope analysis.** The issue tracker project ≠ the implementation repo.
-- **`t3 <overlay> lifecycle setup` is mandatory for every ticket.** Never skip it (see `/t3:workspace` § Never Hand-Edit Generated Files).
+- **`t3 <overlay> worktree provision` is mandatory for every ticket.** Never skip it (see `/t3:workspace` § Never Hand-Edit Generated Files).
 - **Confirm before transitioning.** In status check mode, always present the table and wait for user approval before executing transitions.
 - **Never post reminders without approval.** Always show the dry-run table first.
 
