@@ -37,7 +37,7 @@ class ServiceSpec(TypedDict, total=False):
     base_image: str
     """Name of a ``BaseImageConfig`` the service's container should use.
 
-    Teatree resolves this to a lockfile-hashed tag at ``lifecycle setup`` and
+    Teatree resolves this to a lockfile-hashed tag at ``worktree provision`` and
     exports it as a compose env var so ``image: ${...}`` substitution works.
     """
 

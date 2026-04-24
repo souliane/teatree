@@ -118,7 +118,7 @@ class Command(TyperCommand):
         drifted, cache_path = detect_drift(worktree)
         if drifted:
             self.stderr.write(
-                f"  env cache stale at {cache_path} — rerun `t3 <overlay> lifecycle start`",
+                f"  env cache stale at {cache_path} — rerun `t3 <overlay> worktree start`",
             )
             return 1
         self.stdout.write(f"  {worktree.repo_path}: env cache in sync with DB")

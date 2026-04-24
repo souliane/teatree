@@ -91,7 +91,7 @@ Present the inferred list and let the user confirm or adjust before proceeding. 
 3. **Check external tracker** — extract linked URLs from the issue description, fetch via MCP/CLI, look for customer/tenant properties. See project-specific skill references for the customer-name-to-variant mapping.
 4. **Ask the user** — last resort, if none of the above yields a customer.
 
-Pass the detected tenant to `t3 <overlay> lifecycle setup <customer>` and `t3 <overlay> lifecycle start <customer>`.
+Pass the detected tenant to `t3 <overlay> worktree provision <customer>` and `t3 <overlay> worktree start <customer>`.
 
 ### 6. Create Worktree + Setup (Always — Don't Ask)
 
@@ -100,13 +100,13 @@ Worktree creation is the default for every ticket. **Never ask "should I create 
 Delegate to `/t3:workspace`:
 
 - `t3 <overlay> workspace ticket` — create worktrees for affected repos.
-- `t3 <overlay> lifecycle setup` — provision environment (symlinks, env, DB, direnv).
+- `t3 <overlay> worktree provision` — provision environment (symlinks, env, DB, direnv).
 
 ### 7. Start Dev Servers
 
 Delegate to `/t3:workspace`:
 
-- `t3 <overlay> lifecycle start` or `t3 <overlay> run backend`/`t3 <overlay> run frontend` as needed.
+- `t3 <overlay> worktree start` or `t3 <overlay> run backend`/`t3 <overlay> run frontend` as needed.
 - Verify services are running before declaring ready.
 
 ## Agent Rules

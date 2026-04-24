@@ -39,14 +39,14 @@ the `args` parameter to `subprocess.run()` or `subprocess.Popen()`
 
 | Hook | Return type | Consuming command |
 |---|---|---|
-| `OverlayBase.get_run_commands()` | `dict[str, list[str]]` | `run backend`, `run frontend`, `lifecycle start` |
+| `OverlayBase.get_run_commands()` | `dict[str, list[str]]` | `run backend`, `run frontend`, `worktree start` |
 | `OverlayBase.get_test_command()` | `list[str]` | `run tests` |
-| `OverlayBase.get_services_config()` | `dict[str, ServiceSpec]` | `run backend`, `lifecycle start` (reads `start_command`) |
-| `OverlayBase.get_provision_steps()` | `list[ProvisionStep]` | `lifecycle setup` (calls `step.callable()`) |
-| `OverlayBase.get_post_db_steps()` | `list[ProvisionStep]` | `lifecycle setup` |
-| `OverlayBase.get_pre_run_steps()` | `list[ProvisionStep]` | `run backend/frontend`, `lifecycle start/setup` |
+| `OverlayBase.get_services_config()` | `dict[str, ServiceSpec]` | `run backend`, `worktree start` (reads `start_command`) |
+| `OverlayBase.get_provision_steps()` | `list[ProvisionStep]` | `worktree provision` (calls `step.callable()`) |
+| `OverlayBase.get_post_db_steps()` | `list[ProvisionStep]` | `worktree provision` |
+| `OverlayBase.get_pre_run_steps()` | `list[ProvisionStep]` | `run backend/frontend`, `worktree start`/`worktree provision` |
 | `OverlayBase.get_cleanup_steps()` | `list[ProvisionStep]` | `workspace clean-all` |
-| `OverlayBase.get_reset_passwords_command()` | `ProvisionStep \| None` | `lifecycle setup` |
+| `OverlayBase.get_reset_passwords_command()` | `ProvisionStep \| None` | `worktree provision` |
 | `OverlayBase.get_env_extra()` | `dict[str, str]` | Injected into subprocess `env` for run/lifecycle commands |
 | `OverlayBase.get_envrc_lines()` | `list[str]` | Written to `.envrc` in the worktree directory |
 
