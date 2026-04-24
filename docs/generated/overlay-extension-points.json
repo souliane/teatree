@@ -20,7 +20,7 @@
       "description": "Return the ordered setup steps for a newly created worktree.",
       "name": "get_provision_steps",
       "required": true,
-      "signature": "(worktree: 'Worktree') -> list[teatree.core.overlay.ProvisionStep]"
+      "signature": "(worktree: 'Worktree') -> list[teatree.types.ProvisionStep]"
     },
     {
       "description": "Add overlay-specific environment variables to the generated worktree env file.",
@@ -38,37 +38,49 @@
       "description": "Describe how a worktree database should be provisioned or restored.",
       "name": "get_db_import_strategy",
       "required": false,
-      "signature": "(worktree: 'Worktree') -> teatree.core.overlay.DbImportStrategy | None"
+      "signature": "(worktree: 'Worktree') -> teatree.types.DbImportStrategy | None"
     },
     {
       "description": "Return callbacks to run after database setup completes.",
       "name": "get_post_db_steps",
       "required": false,
-      "signature": "(worktree: 'Worktree') -> list[teatree.core.overlay.PostDbStep]"
+      "signature": "(worktree: 'Worktree') -> list[teatree.types.ProvisionStep]"
     },
     {
       "description": "Declare extra symlinks that should exist inside the worktree.",
       "name": "get_symlinks",
       "required": false,
-      "signature": "(worktree: 'Worktree') -> list[teatree.core.overlay.SymlinkSpec]"
+      "signature": "(worktree: 'Worktree') -> list[teatree.types.SymlinkSpec]"
     },
     {
       "description": "Return additional service metadata for lifecycle orchestration.",
       "name": "get_services_config",
       "required": false,
-      "signature": "(worktree: 'Worktree') -> dict[str, teatree.core.overlay.ServiceSpec]"
+      "signature": "(worktree: 'Worktree') -> dict[str, teatree.types.ServiceSpec]"
+    },
+    {
+      "description": "Declare Docker base images teatree builds once and shares across worktrees.",
+      "name": "get_base_images",
+      "required": false,
+      "signature": "(worktree: 'Worktree') -> list[teatree.types.BaseImageConfig]"
+    },
+    {
+      "description": "Declare service names that MUST run in Docker \u2014 enforced at lifecycle setup.",
+      "name": "get_docker_services",
+      "required": false,
+      "signature": "(worktree: 'Worktree') -> set[str]"
     },
     {
       "description": "Return merge-request validation problems for this overlay.",
       "name": "metadata.validate_mr",
       "required": false,
-      "signature": "(title: str, description: str) -> teatree.core.overlay.ValidationResult"
+      "signature": "(title: str, description: str) -> teatree.types.ValidationResult"
     },
     {
       "description": "Return the active overlay skill path and remote match patterns.",
       "name": "metadata.get_skill_metadata",
       "required": false,
-      "signature": "() -> teatree.core.overlay.SkillMetadata"
+      "signature": "() -> teatree.types.SkillMetadata"
     },
     {
       "description": "Return the GitLab project path for CI operations.",
@@ -92,7 +104,7 @@
       "description": "Return overlay-specific tool commands for t3 <overlay> tool.",
       "name": "metadata.get_tool_commands",
       "required": false,
-      "signature": "() -> list[teatree.core.overlay.ToolCommand]"
+      "signature": "() -> list[teatree.types.ToolCommand]"
     },
     {
       "description": "Return GitLab project paths to sync MRs from.",
