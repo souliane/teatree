@@ -11,7 +11,7 @@ import typer
 from django_typer.management import TyperCommand, command
 
 from teatree.config import load_config
-from teatree.core.cleanup import cleanup_worktree
+from teatree.core.cleanup import _branch_tree_matches_squash, cleanup_worktree
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.reconcile import Drift, reconcile_all, reconcile_ticket
@@ -67,10 +67,13 @@ def _prune_squash_merged(repo: str, name: str, wt_map: dict[str, str]) -> str:
     """Remove a confirmed squash-merged branch (and its worktree if linked).
 
     Returns a status message — either a SKIPPED notice when unsynced commits
-    are present or a confirmation that the branch was pruned.
+    carry real content, or a confirmation that the branch was pruned. A
+    branch whose tip tree matches the PR's merge commit is cleaned despite
+    unsynced commits (typical for post-merge retro/docs work that is already
+    captured by the squash).
     """
     unsynced = git.unsynced_commits(repo, name)
-    if unsynced:
+    if unsynced and not _branch_tree_matches_squash(repo, name):
         return f"SKIPPED '{name}': {len(unsynced)} unsynced commit(s) — push to a new branch:\n  " + "\n  ".join(
             unsynced
         )
