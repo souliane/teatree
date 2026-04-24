@@ -209,25 +209,53 @@ def _ensure_skill_link(
     return 1, 0
 
 
-def _sync_skill_symlinks(claude_skills: Path, workspace_dir: Path) -> tuple[int, int]:
+def _remove_core_skill_links(runtime_skills: Path, core_skills_dir: Path) -> int:
+    """Remove symlinks in *runtime_skills* whose names match a core skill.
+
+    Used by runtimes where core skills are delivered via a plugin (e.g. Claude),
+    to prune duplicates inherited from earlier symlink-based installs.
+    """
+    removed = 0
+    for skill in sorted(core_skills_dir.iterdir()):
+        if not (skill / "SKILL.md").is_file():
+            continue
+        link = runtime_skills / skill.name
+        if link.is_symlink():
+            link.unlink()
+            removed += 1
+    return removed
+
+
+def _sync_skill_symlinks(
+    runtime_skills: Path,
+    workspace_dir: Path,
+    *,
+    sync_core: bool = True,
+) -> tuple[int, int]:
     """Create or fix symlinks for core and overlay skills.
 
-    Returns ``(created, fixed)`` counts.
+    When ``sync_core`` is ``False``, core skills are assumed to be delivered via
+    a plugin; any existing core symlinks are pruned and only overlays are linked.
+
+    Returns ``(created, fixed)`` counts (pruned links are not counted).
     """
     from teatree.agents.skill_bundle import DEFAULT_SKILLS_DIR  # noqa: PLC0415
 
     created = 0
     fixed = 0
 
-    for skill in sorted(DEFAULT_SKILLS_DIR.iterdir()):
-        if not (skill / "SKILL.md").is_file():
-            continue
-        c, f = _ensure_skill_link(skill, claude_skills / skill.name, workspace_dir)
-        created += c
-        fixed += f
+    if sync_core:
+        for skill in sorted(DEFAULT_SKILLS_DIR.iterdir()):
+            if not (skill / "SKILL.md").is_file():
+                continue
+            c, f = _ensure_skill_link(skill, runtime_skills / skill.name, workspace_dir)
+            created += c
+            fixed += f
+    else:
+        _remove_core_skill_links(runtime_skills, DEFAULT_SKILLS_DIR)
 
     for target, link_name in DoctorService.collect_overlay_skills():
-        c, f = _ensure_skill_link(target, claude_skills / link_name, workspace_dir)
+        c, f = _ensure_skill_link(target, runtime_skills / link_name, workspace_dir)
         created += c
         fixed += f
 
@@ -295,8 +323,8 @@ def run(
     all_excluded = list(dict.fromkeys(CORE_EXCLUDED_SKILLS + config.user.excluded_skills))
     workspace_dir = Path(config.user.workspace_dir).expanduser()
 
-    # The Claude skills dir is always ensured (it's where the plugin looks for skills).
-    # Other runtimes are opt-in by the presence of their home directory.
+    # Ensure the Claude skills dir exists so overlay symlinks have a target.
+    # Core skills reach Claude via the t3 plugin, not via this directory.
     claude_skills = Path.home() / ".claude" / "skills"
     claude_skills.mkdir(parents=True, exist_ok=True)
 
@@ -307,8 +335,10 @@ def run(
         if removed:
             typer.echo(f"OK    {label}: removed {removed} excluded skill(s).")
 
-        created, fixed = _sync_skill_symlinks(skills_dir, workspace_dir)
-        typer.echo(f"OK    {label}: {created} created, {fixed} fixed.")
+        sync_core = label != "claude"
+        created, fixed = _sync_skill_symlinks(skills_dir, workspace_dir, sync_core=sync_core)
+        suffix = "" if sync_core else " (core skills via plugin)"
+        typer.echo(f"OK    {label}: {created} created, {fixed} fixed{suffix}.")
 
         broken = _clean_broken_symlinks(skills_dir)
         if broken:
