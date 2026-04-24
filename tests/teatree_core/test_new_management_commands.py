@@ -24,6 +24,7 @@ import teatree.core.management.commands.pr as pr_mod
 import teatree.core.management.commands.run as run_mod
 import teatree.core.management.commands.workspace as workspace_mod
 import teatree.core.overlay_loader as overlay_loader_mod
+import teatree.core.runners.provision as provision_mod
 import teatree.core.views._startup as startup_mod
 import teatree.utils.db as db_mod
 import teatree.utils.git as git_mod
@@ -302,7 +303,9 @@ class TestWorkspaceTicket(TestCase):
 
         ticket = Ticket.objects.get(pk=ticket_id)
         assert ticket.issue_url == "https://example.com/issues/42"
-        assert ticket.state == Ticket.State.SCOPED
+        # Stage 3 of #140: workspace ticket advances scope() then start() so the
+        # provisioning runner can materialise the worktrees in the same call.
+        assert ticket.state == Ticket.State.STARTED
         assert ticket.repos == ["backend", "frontend"]
         assert ticket.worktrees.count() == 2
 
@@ -345,6 +348,7 @@ class TestWorkspaceTicket(TestCase):
 
             with (
                 patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
+                patch.object(provision_mod, "_workspace_dir", return_value=workspace),
                 patch.object(utils_run_mod.subprocess, "run", return_value=mock_result),
             ):
                 ticket_id = cast("int", call_command("workspace", "ticket", "https://example.com/issues/80"))
@@ -418,6 +422,7 @@ class TestWorkspaceTicket(TestCase):
 
             with (
                 patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
+                patch.object(provision_mod, "_workspace_dir", return_value=workspace),
                 patch.object(utils_run_mod.subprocess, "run", return_value=mock_result),
             ):
                 ticket_id = cast("int", call_command("workspace", "ticket", "https://example.com/issues/81"))
@@ -452,6 +457,7 @@ class TestWorkspaceTicket(TestCase):
 
             with (
                 patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
+                patch.object(provision_mod, "_workspace_dir", return_value=workspace),
                 patch.object(workspace_mod, "_branch_prefix", return_value="ac"),
                 patch.object(utils_run_mod.subprocess, "run", return_value=mock_result),
             ):
@@ -488,6 +494,7 @@ class TestWorkspaceTicket(TestCase):
 
             with (
                 patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
+                patch.object(provision_mod, "_workspace_dir", return_value=workspace),
                 patch.object(utils_run_mod.subprocess, "run", side_effect=side_effect),
             ):
                 result = cast("int", call_command("workspace", "ticket", "https://example.com/issues/83"))
@@ -551,6 +558,7 @@ class TestWorkspaceTicket(TestCase):
 
             with (
                 patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
+                patch.object(provision_mod, "_workspace_dir", return_value=workspace),
                 patch.object(utils_run_mod.subprocess, "run", side_effect=side_effect),
             ):
                 ticket_id = cast(
@@ -597,6 +605,7 @@ class TestWorkspaceTicket(TestCase):
 
             with (
                 patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
+                patch.object(provision_mod, "_workspace_dir", return_value=workspace),
                 patch.object(utils_run_mod.subprocess, "run", side_effect=side_effect),
             ):
                 ticket_id = cast("int", call_command("workspace", "ticket", "https://example.com/issues/103"))
@@ -624,6 +633,7 @@ class TestWorkspaceTicket(TestCase):
 
             with (
                 patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
+                patch.object(provision_mod, "_workspace_dir", return_value=workspace),
                 patch.object(utils_run_mod.subprocess, "run", return_value=mock_result),
             ):
                 ticket_id = cast("int", call_command("workspace", "ticket", "https://example.com/issues/90"))
@@ -744,6 +754,7 @@ class TestWorkspaceCleanAll(TestCase):
 
             with (
                 patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
+                patch.object(provision_mod, "_workspace_dir", return_value=workspace),
                 patch.object(
                     utils_run_mod.subprocess,
                     "run",
@@ -843,6 +854,7 @@ class TestWorkspaceCleanAll(TestCase):
 
             with (
                 patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
+                patch.object(provision_mod, "_workspace_dir", return_value=workspace),
                 patch.object(overlay_loader_mod, "_discover_overlays", new=_fake_discover),
             ):
                 call_command("workspace", "clean-all")
@@ -872,7 +884,10 @@ class TestWorkspaceCleanAll(TestCase):
             nonempty_dir.mkdir()
             (nonempty_dir / "some_file.txt").write_text("content", encoding="utf-8")
 
-            with patch.object(workspace_mod, "_workspace_dir", return_value=workspace):
+            with (
+                patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
+                patch.object(provision_mod, "_workspace_dir", return_value=workspace),
+            ):
                 cleaned = cast("list[str]", call_command("workspace", "clean-all"))
 
             # Only the empty dir should be removed
@@ -891,6 +906,7 @@ class TestWorkspaceCleanAll(TestCase):
         with (
             tempfile.TemporaryDirectory() as tmp,
             patch.object(workspace_mod, "_workspace_dir", return_value=Path(tmp)),
+            patch.object(provision_mod, "_workspace_dir", return_value=Path(tmp)),
             patch("teatree.utils.django_db.prune_dslr_snapshots", return_value=["old-snapshot-2025"]),
         ):
             cleaned = cast("list[str]", call_command("workspace", "clean-all"))
@@ -1175,6 +1191,7 @@ class TestPruneBranches(TestCase):
         gh_merged = subprocess.CompletedProcess([], 0, stdout='[{"number":1}]')
         with (
             patch.object(workspace_mod, "_workspace_dir", return_value=Path("/tmp/ws")),
+            patch.object(provision_mod, "_workspace_dir", return_value=Path("/tmp/ws")),
             patch.object(workspace_mod, "_worktree_map", return_value=wt_map),
             patch.object(workspace_mod, "_worktree_branches", return_value={"gone-branch"}),
             patch.object(git_mod, "run", side_effect=fake_run),
@@ -1207,6 +1224,7 @@ class TestPruneBranches(TestCase):
         gh_merged = subprocess.CompletedProcess([], 0, stdout='[{"number":1}]')
         with (
             patch.object(workspace_mod, "_workspace_dir", return_value=Path("/tmp/ws")),
+            patch.object(provision_mod, "_workspace_dir", return_value=Path("/tmp/ws")),
             patch.object(workspace_mod, "_worktree_map", return_value=wt_map),
             patch.object(workspace_mod, "_worktree_branches", return_value={"gone-branch"}),
             patch.object(git_mod, "run", side_effect=fake_run),
@@ -1240,6 +1258,7 @@ class TestPruneBranches(TestCase):
         gh_merged = subprocess.CompletedProcess([], 0, stdout='[{"number":1}]')
         with (
             patch.object(workspace_mod, "_workspace_dir", return_value=Path("/tmp/ws")),
+            patch.object(provision_mod, "_workspace_dir", return_value=Path("/tmp/ws")),
             patch.object(workspace_mod, "_worktree_map", return_value=wt_map),
             patch.object(workspace_mod, "_worktree_branches", return_value={"gone-branch"}),
             patch.object(git_mod, "run", side_effect=fake_run),

@@ -27,6 +27,9 @@ class TicketExtra(TypedDict, total=False):
     mr_urls: list[str]
     ignored_from: str
     visual_qa: VisualQASummary
+    branch: str
+    description: str
+    provision: dict[str, str]
 
 
 class WorktreeExtra(TypedDict, total=False):

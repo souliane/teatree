@@ -5,7 +5,7 @@ import re
 import sys
 from contextlib import suppress
 from pathlib import Path
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated, cast
 
 import typer
 from django_typer.management import TyperCommand, command
@@ -15,10 +15,14 @@ from teatree.core.cleanup import cleanup_worktree
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.reconcile import Drift, reconcile_all, reconcile_ticket
+from teatree.core.runners import WorktreeProvisioner
 from teatree.core.worktree_env import write_env_cache
 from teatree.utils import git
 from teatree.utils.db import drop_db
 from teatree.utils.run import CommandFailedError, run_allowed_to_fail, run_checked
+
+if TYPE_CHECKING:
+    from teatree.core.models.types import TicketExtra
 
 
 def _worktree_map(repo: str) -> dict[str, str]:
@@ -304,9 +308,6 @@ def _branch_prefix() -> str:
     return prefix or "dev"
 
 
-_WORKTREE_SKIPPED = Path("/dev/null/.skipped")  # sentinel: repo skipped, not a failure
-
-
 def _slugify(text: str, max_length: int = 40) -> str:
     """Convert text to a URL-safe slug for branch names."""
     return re.sub(r"[^a-z0-9]+", "-", text.strip().lower()).strip("-")[:max_length]
@@ -320,51 +321,6 @@ def _build_branch_name(repo_names: list[str], ticket_number: str, description: s
     return f"{prefix}-{first_repo}-{ticket_number}-{slug}"
 
 
-def _create_git_worktree(workspace: Path, repo_name: str, ticket_dir: Path, branch: str) -> Path | None:
-    """Run ``git worktree add`` for a single repo and return the worktree path.
-
-    ``repo_name`` may be a nested path relative to ``workspace`` (e.g.
-    ``souliane/teatree``).  The worktree subdirectory uses the basename
-    (``teatree``) to keep the ticket directory flat.
-
-    Returns ``_WORKTREE_SKIPPED`` when the repo doesn't exist or has no ``.git``,
-    the existing ``wt_path`` when it already exists, and ``None`` on actual failure.
-
-    When ``git worktree add -b`` fails because the branch already exists
-    (e.g. partial failure recovery), retries without ``-b`` to reuse the
-    existing branch.
-    """
-    repo_path = workspace / repo_name
-    if not (repo_path / ".git").is_dir():
-        print(f"  Skipping {repo_name}: not a git repository", file=sys.stderr)  # noqa: T201
-        return _WORKTREE_SKIPPED
-
-    wt_path = ticket_dir / Path(repo_name).name
-    if wt_path.exists():
-        print(f"  Skipping {repo_name}: {wt_path} already exists", file=sys.stderr)  # noqa: T201
-        return wt_path
-
-    # Pull latest before branching
-    git.pull_ff_only(str(repo_path))
-
-    success = git.worktree_add(str(repo_path), str(wt_path), branch, create_branch=True)
-    if not success:
-        # Retry without -b if branch already exists (partial failure recovery)
-        success = git.worktree_add(str(repo_path), str(wt_path), branch, create_branch=False)
-    if not success:
-        sys.stderr.write(f"  Error creating worktree for {repo_name}\n")
-        return None
-
-    # Symlink .python-version from main repo
-    pv = repo_path / ".python-version"
-    pv_dest = wt_path / ".python-version"
-    if pv.is_file() and not pv_dest.exists():
-        with suppress(OSError):
-            pv_dest.symlink_to(pv)
-
-    return wt_path
-
-
 class Command(TyperCommand):
     @command()
     def ticket(
@@ -374,70 +330,61 @@ class Command(TyperCommand):
         repos: str = "",
         description: str = "",
     ) -> int:
-        """Create or update a ticket with worktree entries for each affected repo.
+        """Create or update a ticket and trigger worktree provisioning.
 
-        Idempotent: safe to re-run after partial failures. Existing worktrees
-        are skipped, missing repos are added, and failed entries are cleaned up.
+        Thin wrapper around the FSM (BLUEPRINT §4): persist branch + description
+        on ``ticket.extra``, advance ``NOT_STARTED → SCOPED → STARTED`` via
+        ``scope()`` and ``start()``, and let ``execute_provision`` materialise
+        the per-repo git worktrees on the worker side.
+
+        Idempotent: re-running over an already-started ticket merges new repos
+        into ``ticket.repos`` so the next ``execute_provision`` picks them up.
         """
         overlay = get_overlay()
         repo_names = [r.strip() for r in repos.split(",") if r.strip()] if repos else overlay.get_workspace_repos()
 
-        ticket, _created = Ticket.objects.get_or_create(
+        ticket, _ = Ticket.objects.get_or_create(
             issue_url=issue_url,
             defaults={"variant": variant, "repos": repo_names},
         )
+
         if ticket.state == Ticket.State.NOT_STARTED:
             ticket.scope(issue_url=issue_url, variant=variant or None, repos=repo_names)
-        # Merge new repos into existing ticket (preserves order, deduplicates)
+
         ticket.repos = list(dict.fromkeys((ticket.repos or []) + repo_names))
-        ticket.save()
 
         if not description:
             description = overlay.metadata.get_issue_title(issue_url)
-        workspace = _workspace_dir()
-        branch = _build_branch_name(repo_names, ticket.ticket_number, description)
-        ticket_dir = workspace / branch
 
-        ticket_dir.mkdir(parents=True, exist_ok=True)
+        extra = cast("TicketExtra", ticket.extra or {})
+        if not extra.get("branch"):
+            extra["branch"] = _build_branch_name(repo_names, ticket.ticket_number, description)
+        if description and not extra.get("description"):
+            extra["description"] = description
+        ticket.extra = extra
+        ticket.save()
 
-        new_worktrees: list[Worktree] = []
-        failed_worktrees: list[Worktree] = []
-        for repo_name in repo_names:
-            worktree, wt_created = Worktree.objects.get_or_create(
-                ticket=ticket,
-                repo_path=repo_name,
-                defaults={"branch": branch},
-            )
-            if not wt_created:
-                self.stdout.write(f"  {repo_name}: already tracked (worktree #{worktree.pk})")
-                continue
+        if ticket.state == Ticket.State.SCOPED:
+            ticket.start()
+            ticket.save()
 
-            wt_path = _create_git_worktree(workspace, repo_name, ticket_dir, branch)
-            is_real_path = wt_path is not None and wt_path != _WORKTREE_SKIPPED
-            if is_real_path:
-                worktree.extra = {"worktree_path": str(wt_path)}
-                worktree.save(update_fields=["extra"])
-            new_worktrees.append(worktree)
-            if wt_path is None:
-                failed_worktrees.append(worktree)
-            self.stdout.write(f"  {repo_name}: {'created' if is_real_path else 'skipped'} (worktree #{worktree.pk})")
+        # Run the provisioner synchronously so the CLI gives immediate feedback;
+        # the worker that ``start()`` enqueued is idempotent and no-ops when it
+        # finds the worktrees already in place. Single source of truth: the runner.
+        result = WorktreeProvisioner(ticket).run()
 
-        # Clean up DB entries for repos that actually failed
-        for wt in failed_worktrees:
-            wt.delete()
-            new_worktrees.remove(wt)
-
-        # Full rollback only when ALL new worktrees failed and no pre-existing ones
-        if failed_worktrees and not new_worktrees and not ticket.worktrees.exists():
-            self.stderr.write("  All worktree creations failed — rolling back ticket.")
+        branch = extra["branch"]
+        ticket_dir = _workspace_dir() / branch
+        if not result.ok and not ticket.worktrees.exists():
+            self.stderr.write(f"  Provisioning failed: {result.detail}")
             ticket.delete()
             with suppress(OSError):
                 ticket_dir.rmdir()
             return 0
-
-        if failed_worktrees:
-            names = [wt.repo_path for wt in failed_worktrees]
-            self.stderr.write(f"  WARNING: failed to create worktrees for: {', '.join(names)}")
+        if not result.ok:
+            self.stderr.write(f"  WARNING: {result.detail}")
+        for wt in ticket.worktrees.all():
+            self.stdout.write(f"  {wt.repo_path}: worktree #{wt.pk}")
 
         self.stdout.write(f"\nTicket #{ticket.pk} — worktrees in {ticket_dir}")
         self.stdout.write(f"  Branch: {branch}")

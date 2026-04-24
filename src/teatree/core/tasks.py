@@ -5,7 +5,7 @@ from django.db import transaction
 from django.tasks import task
 
 from teatree.core.models import Task, Ticket
-from teatree.core.runners import RetroExecutor, ShipExecutor
+from teatree.core.runners import RetroExecutor, ShipExecutor, WorktreeProvisioner
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +107,37 @@ def execute_retrospect(ticket_id: int) -> TransitionResult:
 
         ticket.mark_delivered()
         ticket.save()
+
+    return {"ticket_id": ticket_id, "ok": True, "detail": result.detail}
+
+
+@task()
+def execute_provision(ticket_id: int) -> TransitionResult:
+    """Provision worktrees for a STARTED ticket and schedule the coding task.
+
+    Idempotency: the worker takes a row lock and re-checks state before running.
+    At-least-once delivery from django-tasks means this can fire more than once
+    for the same transition — a lost update or a redelivered job must be safe.
+
+    On success, the runner has materialised every git worktree; we then call
+    ``schedule_coding()`` so the FSM proceeds toward CODED.
+    """
+    with transaction.atomic():
+        ticket = Ticket.objects.select_for_update().get(pk=ticket_id)
+        if ticket.state != Ticket.State.STARTED:
+            logger.info(
+                "execute_provision skipped for ticket %s: state=%s (not STARTED)",
+                ticket_id,
+                ticket.state,
+            )
+            return {"ticket_id": ticket_id, "skipped": True, "state": str(ticket.state)}
+
+        result = WorktreeProvisioner(ticket).run()
+        if not result.ok:
+            logger.warning("Provision failed for ticket %s: %s", ticket_id, result.detail)
+            return {"ticket_id": ticket_id, "ok": False, "detail": result.detail}
+
+        ticket.schedule_coding()
 
     return {"ticket_id": ticket_id, "ok": True, "detail": result.detail}
 

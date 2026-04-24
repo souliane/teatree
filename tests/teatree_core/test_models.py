@@ -18,12 +18,46 @@ from teatree.core.models import (
 )
 
 
-def _advance_ticket_to_tested(ticket: Ticket) -> None:
-    """Advance a ticket through scoped, started, coded, tested."""
+def _start_with_provision(test_case: TestCase, ticket: Ticket) -> None:
+    """Drive ``ticket.start()`` and let the worker schedule the coding task.
+
+    Stage 3 of #140 made provisioning a worker side effect; tests that need
+    the coding task materialised swap the worker for an inline stub so the
+    side effect runs synchronously without touching real git.
+    """
+    from unittest.mock import MagicMock  # noqa: PLC0415
+
+    from teatree.core import tasks as tasks_mod  # noqa: PLC0415
+
+    def fake_enqueue(ticket_id: int) -> None:
+        target = Ticket.objects.get(pk=ticket_id)
+        if target.state == Ticket.State.STARTED:
+            target.schedule_coding()
+
+    fake_task = MagicMock()
+    fake_task.enqueue.side_effect = fake_enqueue
+    with (
+        patch.object(tasks_mod, "execute_provision", fake_task),
+        test_case.captureOnCommitCallbacks(execute=True),
+    ):
+        ticket.start()
+        ticket.save()
+
+
+def _advance_ticket_to_tested(ticket: Ticket, test_case: TestCase | None = None) -> None:
+    """Advance a ticket through scoped, started, coded, tested.
+
+    When ``test_case`` is provided, the start transition fires its on_commit
+    callback so the coding task gets scheduled. Tests that don't care about
+    the coding task can omit it.
+    """
     ticket.scope(issue_url="https://example.com/issues/123", variant="acme", repos=["backend", "frontend"])
     ticket.save()
-    ticket.start()
-    ticket.save()
+    if test_case is not None:
+        _start_with_provision(test_case, ticket)
+    else:
+        ticket.start()
+        ticket.save()
     ticket.code()
     ticket.save()
     ticket.test(passed=True)
@@ -218,13 +252,14 @@ class TestTicketTransitions(TestCase):
 class TestPhaseAutoDispatch(TestCase):
     """Auto-dispatch of next-phase tasks at each phase boundary (issue #364)."""
 
-    def test_start_auto_schedules_coding_task(self) -> None:
+    def test_start_provisions_then_schedules_coding_task(self) -> None:
         ticket = Ticket.objects.create()
         ticket.scope()
         ticket.save()
-        ticket.start()
-        ticket.save()
 
+        _start_with_provision(self, ticket)
+
+        ticket.refresh_from_db()
         task = ticket.tasks.get(phase="coding")
         assert task.execution_target == Task.ExecutionTarget.HEADLESS
         assert task.session.agent_id == "coding"
@@ -245,26 +280,40 @@ class TestPhaseAutoDispatch(TestCase):
         assert ticket.state == Ticket.State.CODED
 
     def test_scoping_task_completion_advances_to_started(self) -> None:
+        from unittest.mock import MagicMock  # noqa: PLC0415
+
+        from teatree.core import tasks as tasks_mod  # noqa: PLC0415
+
+        def fake_enqueue(ticket_id: int) -> None:
+            target = Ticket.objects.get(pk=ticket_id)
+            if target.state == Ticket.State.STARTED:
+                target.schedule_coding()
+
         ticket = Ticket.objects.create()
         ticket.scope()
         ticket.save()
         session = Session.objects.create(ticket=ticket, agent_id="scoper")
         task = Task.objects.create(ticket=ticket, session=session, phase="scoping")
 
+        fake_task = MagicMock()
+        fake_task.enqueue.side_effect = fake_enqueue
         task.claim(claimed_by="worker")
-        task.complete()
+        with (
+            patch.object(tasks_mod, "execute_provision", fake_task),
+            self.captureOnCommitCallbacks(execute=True),
+        ):
+            task.complete()
 
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.STARTED
-        # start() auto-scheduled a coding task
+        # execute_provision (worker side effect of start()) scheduled the coding task
         assert ticket.tasks.filter(phase="coding", status=Task.Status.PENDING).exists()
 
     def test_coding_task_completion_advances_to_coded(self) -> None:
         ticket = Ticket.objects.create()
         ticket.scope()
         ticket.save()
-        ticket.start()
-        ticket.save()
+        _start_with_provision(self, ticket)
 
         _complete_phase_task(ticket, "coding")
 
@@ -277,8 +326,7 @@ class TestPhaseAutoDispatch(TestCase):
         ticket = Ticket.objects.create()
         ticket.scope()
         ticket.save()
-        ticket.start()
-        ticket.save()
+        _start_with_provision(self, ticket)
         ticket.code()
         ticket.save()
 
@@ -318,6 +366,28 @@ class TestPhaseAutoDispatch(TestCase):
 
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.SHIPPED
+
+    def test_start_enqueues_execute_provision_after_commit(self) -> None:
+        """Stage 3 of #140: start() body offloads provisioning to a @task worker."""
+        from unittest.mock import MagicMock  # noqa: PLC0415
+
+        from teatree.core import tasks as tasks_mod  # noqa: PLC0415
+
+        ticket = Ticket.objects.create()
+        ticket.scope()
+        ticket.save()
+
+        fake_task = MagicMock()
+        with (
+            self.captureOnCommitCallbacks(execute=True),
+            patch.object(tasks_mod, "execute_provision", fake_task),
+        ):
+            ticket.start()
+            ticket.save()
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.STARTED
+        fake_task.enqueue.assert_called_once_with(ticket.pk)
 
     def test_ship_enqueues_execute_ship_after_commit(self) -> None:
         """Stage 2 of #140: ship() body offloads I/O to a @task worker."""

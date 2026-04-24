@@ -85,7 +85,18 @@ class Ticket(models.Model):
 
     @transition(field=state, source=State.SCOPED, target=State.STARTED)
     def start(self) -> None:
-        self.schedule_coding()
+        """Schedule worktree provisioning + coding task.
+
+        The worker creates per-repo git worktrees, then calls
+        ``schedule_coding()`` once the layout exists. FSM invariant (BLUEPRINT
+        §4): transition bodies stay pure — long I/O is offloaded to an
+        ``@task`` worker, enqueued after commit so the state change and the
+        queued work land atomically.
+        """
+        from teatree.core.tasks import execute_provision  # noqa: PLC0415
+
+        ticket_pk = int(self.pk)
+        transaction.on_commit(lambda: execute_provision.enqueue(ticket_pk))
 
     @transition(field=state, source=State.STARTED, target=State.CODED)
     def code(self) -> None:

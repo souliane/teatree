@@ -8,7 +8,8 @@ See BLUEPRINT.md §4 for the invariant and §4.1 for the per-transition map.
 """
 
 from teatree.core.runners.base import RunnerBase
+from teatree.core.runners.provision import WorktreeProvisioner
 from teatree.core.runners.retro import RetroExecutor
 from teatree.core.runners.ship import ShipExecutor
 
-__all__ = ["RetroExecutor", "RunnerBase", "ShipExecutor"]
+__all__ = ["RetroExecutor", "RunnerBase", "ShipExecutor", "WorktreeProvisioner"]

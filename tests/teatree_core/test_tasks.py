@@ -7,6 +7,7 @@ import teatree.core.overlay_loader as overlay_loader_mod
 from teatree.core.models import Session, Task, TaskAttempt, Ticket
 from teatree.core.tasks import (
     drain_headless_queue,
+    execute_provision,
     execute_retrospect,
     execute_ship,
     refresh_followup_snapshot,
@@ -133,6 +134,63 @@ class TestExecuteRetrospect(TestCase):
             "skipped": True,
             "state": "delivered",
         }
+
+
+class TestExecuteProvision(TestCase):
+    def _ticket_in_started(self) -> Ticket:
+        ticket = Ticket.objects.create(overlay="test", repos=["repo-a"], extra={"branch": "ac-repo-a-1-x"})
+        ticket.state = Ticket.State.STARTED
+        ticket.save(update_fields=["state"])
+        return ticket
+
+    @override_settings(**IMMEDIATE_BACKEND)
+    def test_provisions_then_schedules_coding(self) -> None:
+        from teatree.core.runners.base import RunnerResult  # noqa: PLC0415
+
+        ticket = self._ticket_in_started()
+
+        with patch("teatree.core.tasks.WorktreeProvisioner") as provisioner:
+            provisioner.return_value.run.return_value = RunnerResult(ok=True, detail="provisioned 1 worktree(s)")
+            result = execute_provision.enqueue(ticket.pk)
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.STARTED
+        assert ticket.tasks.filter(phase="coding").exists()
+        assert result.return_value == {
+            "ticket_id": ticket.pk,
+            "ok": True,
+            "detail": "provisioned 1 worktree(s)",
+        }
+
+    @override_settings(**IMMEDIATE_BACKEND)
+    def test_skips_when_state_does_not_match(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.SCOPED)
+
+        result = execute_provision.enqueue(ticket.pk)
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.SCOPED
+        assert not ticket.tasks.filter(phase="coding").exists()
+        assert result.return_value == {
+            "ticket_id": ticket.pk,
+            "skipped": True,
+            "state": "scoped",
+        }
+
+    @override_settings(**IMMEDIATE_BACKEND)
+    def test_keeps_state_when_runner_fails(self) -> None:
+        from teatree.core.runners.base import RunnerResult  # noqa: PLC0415
+
+        ticket = self._ticket_in_started()
+
+        with patch("teatree.core.tasks.WorktreeProvisioner") as provisioner:
+            provisioner.return_value.run.return_value = RunnerResult(ok=False, detail="repo missing")
+            result = execute_provision.enqueue(ticket.pk)
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.STARTED
+        assert not ticket.tasks.filter(phase="coding").exists()
+        assert result.return_value == {"ticket_id": ticket.pk, "ok": False, "detail": "repo missing"}
 
 
 class TestExecuteShip(TestCase):
