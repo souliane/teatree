@@ -10,7 +10,7 @@ from django.test import TestCase, override_settings
 
 import teatree.agents.headless as headless_mod
 import teatree.agents.web_terminal as web_terminal_mod
-import teatree.core.management.commands.lifecycle as lifecycle_cmd
+import teatree.core.management.commands.worktree as worktree_cmd
 import teatree.core.overlay_loader as overlay_loader_mod
 import teatree.utils.run as utils_run_mod
 from teatree.core.models import Session, Task, TaskAttempt, Ticket, Worktree
@@ -83,7 +83,7 @@ class TestLifecycleCommands(TestCase):
                 patch("teatree.config.load_config", return_value=mock_config),
             ):
                 mock_sp.run.return_value = MagicMock(returncode=0)
-                call_command("lifecycle", "setup")
+                call_command("worktree", "provision")
 
             mock_ensure.assert_called_once_with()
             ticket.refresh_from_db()
@@ -112,29 +112,27 @@ class TestLifecycleCommands(TestCase):
                 patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
                 patch.object(utils_run_mod, "subprocess") as mock_sp,
                 patch.object(
-                    lifecycle_cmd,
+                    worktree_cmd,
                     "find_free_ports",
                     return_value={"backend": 8001, "frontend": 4201, "postgres": 5432, "redis": 6379},
                 ),
-                patch.object(lifecycle_cmd, "get_worktree_ports", return_value={"backend": 8001, "frontend": 4201}),
+                patch.object(worktree_cmd, "get_worktree_ports", return_value={"backend": 8001, "frontend": 4201}),
                 patch("teatree.utils.redis_container.ensure_running"),
                 patch("teatree.config.load_config", return_value=mock_config),
             ):
                 mock_sp.run.return_value = MagicMock(returncode=0)
-                worktree_id = cast("int", call_command("lifecycle", "setup"))
-                status = cast("dict[str, str]", call_command("lifecycle", "status"))
-                # start returns "error" since CommandOverlay has no compose file;
-                # state stays PROVISIONED, which is fine for teardown
-                call_command("lifecycle", "start")
-                call_command("lifecycle", "teardown")
-
-            worktree = Worktree.objects.get(pk=worktree_id)
+                worktree_id = cast("int", call_command("worktree", "provision"))
+                status = cast("dict[str, str]", call_command("worktree", "status"))
+                # start no-ops with "no compose file" since CommandOverlay has none;
+                # state advances to SERVICES_UP, teardown still works from any state
+                call_command("worktree", "start")
+                call_command("worktree", "teardown")
 
             assert worktree_id == wt.id
             assert status["state"] == Worktree.State.PROVISIONED
             assert status["repo_path"] == "/tmp/backend"
-            assert worktree.state == Worktree.State.CREATED
-            assert worktree.extra == {}
+            # Teardown folds the old `clean` step — the row is deleted, not reset
+            assert not Worktree.objects.filter(pk=worktree_id).exists()
 
 
 class TestTaskCommands(TestCase):
@@ -250,7 +248,7 @@ class TestDbImportAutoRepair(TestCase):
                 patch("teatree.utils.db.db_exists", return_value=True),
                 patch("teatree.utils.redis_container.ensure_running"),
             ):
-                call_command("lifecycle", "setup")
+                call_command("worktree", "provision")
 
             # db_import was NOT called — DB already exists
             wt = Worktree.objects.get(ticket=ticket)
@@ -278,7 +276,7 @@ class TestDbImportAutoRepair(TestCase):
                 patch("teatree.utils.db.db_exists", return_value=False),
                 patch("teatree.utils.redis_container.ensure_running"),
             ):
-                call_command("lifecycle", "setup")
+                call_command("worktree", "provision")
 
             # db_import WAS called (and failed — DbOverlay always returns False)
             wt = Worktree.objects.get(ticket=ticket)
@@ -288,7 +286,7 @@ class TestDbImportAutoRepair(TestCase):
 
 class TestUpdateTicketVariant(TestCase):
     def test_updates_ticket_variant_and_recomputes_db_name(self) -> None:
-        from teatree.core.management.commands.lifecycle import _update_ticket_variant  # noqa: PLC0415
+        from teatree.core.management.commands.worktree import _update_ticket_variant  # noqa: PLC0415
 
         ticket = Ticket.objects.create(
             overlay="test",
@@ -311,7 +309,7 @@ class TestUpdateTicketVariant(TestCase):
         assert wt.db_name == f"wt_{ticket.ticket_number}_new"
 
     def test_skips_save_when_db_name_unchanged(self) -> None:
-        from teatree.core.management.commands.lifecycle import _update_ticket_variant  # noqa: PLC0415
+        from teatree.core.management.commands.worktree import _update_ticket_variant  # noqa: PLC0415
 
         ticket = Ticket.objects.create(
             overlay="test",

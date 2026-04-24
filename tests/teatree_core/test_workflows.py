@@ -15,9 +15,10 @@ import pytest
 from django.core.management import call_command
 from django.test import Client, TestCase, override_settings
 
-import teatree.core.management.commands.lifecycle as lifecycle_mod
+import teatree.core.management.commands._workspace_cleanup as ws_cleanup_mod
 import teatree.core.management.commands.run as run_mod
 import teatree.core.management.commands.workspace as workspace_mod
+import teatree.core.management.commands.worktree as worktree_mod
 import teatree.core.overlay_loader as overlay_loader_mod
 import teatree.core.tasks as tasks_mod
 import teatree.utils.run as utils_run_mod
@@ -178,8 +179,8 @@ class TestLifecycleProvision(TestCase):
             patch.object(utils_run_mod, "subprocess") as mock_sp,
         ):
             mock_sp.run.return_value = MagicMock(returncode=0)
-            backend_id = cast("int", call_command("lifecycle", "setup", path=backend_path))
-            frontend_id = cast("int", call_command("lifecycle", "setup", path=frontend_path))
+            backend_id = cast("int", call_command("worktree", "provision", path=backend_path))
+            frontend_id = cast("int", call_command("worktree", "provision", path=frontend_path))
 
         assert backend_id == wt_backend.id
         assert frontend_id == wt_frontend.id
@@ -212,7 +213,7 @@ class TestLifecycleProvision(TestCase):
             patch.object(utils_run_mod, "subprocess") as mock_sp,
         ):
             mock_sp.run.return_value = MagicMock(returncode=0)
-            call_command("lifecycle", "setup", path=backend_path)
+            call_command("worktree", "provision", path=backend_path)
 
         # Start
         mock_config = MagicMock()
@@ -221,20 +222,20 @@ class TestLifecycleProvision(TestCase):
             _patch_overlay(),
             patch.object(utils_run_mod, "subprocess") as mock_start_sp,
             patch.object(
-                lifecycle_mod,
+                worktree_mod,
                 "find_free_ports",
                 return_value={"backend": 8001, "frontend": 4201, "postgres": 5432, "redis": 6379},
             ),
             patch("teatree.config.load_config", return_value=mock_config),
         ):
             mock_start_sp.run.return_value = MagicMock(returncode=0)
-            call_command("lifecycle", "start", path=backend_path)
+            call_command("worktree", "start", path=backend_path)
 
         wt_backend.refresh_from_db()
         assert wt_backend.state == Worktree.State.SERVICES_UP
 
-        with patch.object(lifecycle_mod, "get_worktree_ports", return_value={"backend": 8001, "frontend": 4201}):
-            status = cast("dict[str, str]", call_command("lifecycle", "status", path=backend_path))
+        with patch.object(worktree_mod, "get_worktree_ports", return_value={"backend": 8001, "frontend": 4201}):
+            status = cast("dict[str, str]", call_command("worktree", "status", path=backend_path))
         assert status["state"] == Worktree.State.SERVICES_UP
         assert status["repo_path"] == "backend"
 
@@ -249,16 +250,15 @@ class TestLifecycleProvision(TestCase):
             patch.object(utils_run_mod, "subprocess") as mock_sp,
         ):
             mock_sp.run.return_value = MagicMock(returncode=0)
-            call_command("lifecycle", "setup", path=backend_path)
+            call_command("worktree", "provision", path=backend_path)
 
         # Teardown
         with patch.object(utils_run_mod, "subprocess") as mock_td_sp:
             mock_td_sp.run.return_value = MagicMock(returncode=0)
-            call_command("lifecycle", "teardown", path=backend_path)
+            call_command("worktree", "teardown", path=backend_path)
 
-        wt_backend.refresh_from_db()
-        assert wt_backend.state == Worktree.State.CREATED
-        assert wt_backend.db_name == ""
+        # Teardown folds the old `clean` step — the row is deleted, not reset
+        assert not Worktree.objects.filter(pk=wt_backend.pk).exists()
 
     @override_settings(**WORKFLOW_SETTINGS)
     def test_db_name_isolation_across_worktrees(self) -> None:
@@ -291,8 +291,8 @@ class TestLifecycleProvision(TestCase):
             patch.object(utils_run_mod, "subprocess") as mock_sp,
         ):
             mock_sp.run.return_value = MagicMock(returncode=0)
-            call_command("lifecycle", "setup", path=str(wt1_dir))
-            call_command("lifecycle", "setup", path=str(wt2_dir))
+            call_command("worktree", "provision", path=str(wt1_dir))
+            call_command("worktree", "provision", path=str(wt2_dir))
 
         wt1.refresh_from_db()
         wt2.refresh_from_db()
@@ -333,7 +333,7 @@ class TestLifecycleProvision(TestCase):
             ),
             patch.object(utils_run_mod, "subprocess"),
         ):
-            call_command("lifecycle", "setup", path=str(wt_dir))
+            call_command("worktree", "provision", path=str(wt_dir))
 
         assert reset_called
 
@@ -570,7 +570,7 @@ class TestRunBackend(TestCase):
             patch.object(utils_run_mod, "subprocess") as mock_sp,
         ):
             mock_sp.run.return_value = MagicMock(returncode=0)
-            call_command("lifecycle", "setup", path=str(wt_dir))
+            call_command("worktree", "provision", path=str(wt_dir))
 
         wt.refresh_from_db()
 
@@ -672,7 +672,7 @@ class TestRunBackend(TestCase):
             patch.object(utils_run_mod, "subprocess") as mock_lc_sp,
         ):
             mock_lc_sp.run.return_value = MagicMock(returncode=0)
-            setup_result = cast("int", call_command("lifecycle", "setup", path=backend_wt_path))
+            setup_result = cast("int", call_command("worktree", "provision", path=backend_wt_path))
 
         assert setup_result == backend_wt.id
 
@@ -746,9 +746,9 @@ class TestToolAndCleanCommands(TestCase):
         active_wt.save()
 
         with (
-            patch.object(workspace_mod, "_prune_branches", return_value=[]),
-            patch.object(workspace_mod, "_drop_orphaned_stashes", return_value=[]),
-            patch.object(workspace_mod, "_drop_orphan_databases", return_value=[]),
+            patch.object(ws_cleanup_mod, "prune_branches", return_value=[]),
+            patch.object(ws_cleanup_mod, "drop_orphaned_stashes", return_value=[]),
+            patch.object(ws_cleanup_mod, "drop_orphan_databases", return_value=[]),
         ):
             result = cast("list[str]", call_command("workspace", "clean-all"))
 

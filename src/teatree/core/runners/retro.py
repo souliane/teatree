@@ -1,5 +1,6 @@
 import logging
 
+from teatree.core.models import Ticket
 from teatree.core.runners.base import RunnerBase, RunnerResult
 
 logger = logging.getLogger(__name__)
@@ -12,6 +13,9 @@ class RetroExecutor(RunnerBase):
     on ``ticket.extra``. The agent-driven retro (skill bundle, prompt build,
     artifact generation) lands in a follow-up PR.
     """
+
+    def __init__(self, ticket: Ticket) -> None:
+        self.ticket = ticket
 
     def run(self) -> RunnerResult:
         ticket = self.ticket

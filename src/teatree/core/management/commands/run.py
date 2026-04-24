@@ -8,9 +8,9 @@ if TYPE_CHECKING:
 import typer
 from django_typer.management import TyperCommand, command
 
-from teatree.core.management.commands.lifecycle import compose_project
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.resolve import resolve_worktree
+from teatree.core.runners.worktree_start import compose_project
 from teatree.types import RunCommand, RunCommands
 from teatree.utils.ports import find_free_ports, get_worktree_ports
 from teatree.utils.run import run_streamed, spawn
@@ -89,7 +89,7 @@ class Command(TyperCommand):
             return "No docker-compose file found."
 
         from teatree.config import load_config  # noqa: PLC0415
-        from teatree.core.management.commands.lifecycle import _compose_env  # noqa: PLC0415
+        from teatree.core.runners.worktree_start import _compose_env  # noqa: PLC0415
 
         ports = find_free_ports(str(load_config().user.workspace_dir))
         env = {**os.environ, **overlay.get_env_extra(worktree), **_compose_env(ports)}
@@ -108,7 +108,7 @@ class Command(TyperCommand):
         In CI, use build-frontend + nginx instead (see docker-compose.e2e.yml).
         """
         from teatree.config import load_config  # noqa: PLC0415
-        from teatree.core.management.commands.lifecycle import _compose_env  # noqa: PLC0415
+        from teatree.core.runners.worktree_start import _compose_env  # noqa: PLC0415
         from teatree.core.step_runner import run_provision_steps  # noqa: PLC0415
         from teatree.utils.ports import free_port  # noqa: PLC0415
 

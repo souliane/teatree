@@ -5,12 +5,7 @@ from django.db import transaction
 from django.tasks import task
 
 from teatree.core.models import Task, Ticket
-from teatree.core.runners import (
-    RetroExecutor,
-    ShipExecutor,
-    WorktreeProvisioner,
-    WorktreeTeardown,
-)
+from teatree.core.runners import RetroExecutor, ShipExecutor, WorktreeProvisioner, WorktreeTeardown
 
 logger = logging.getLogger(__name__)
 
