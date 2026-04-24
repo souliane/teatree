@@ -209,7 +209,7 @@ Comments are posted under the user's name. They must sound like a **real human c
 
 1. **List all discussions** via `GET .../merge_requests/<IID>/discussions?per_page=100` and read each note's `body`.
 2. **For each finding**, check whether an existing comment already raises the same concern — same file, same line range, same substance. If so, **do not post a duplicate**.
-3. **If you have something to add** to an existing discussion (additional context, a related concern on the same code), **reply in that thread** instead of creating a new top-level comment. Use the Reply to Discussion recipe from the platform reference.
+3. **If you have something to add** to an existing discussion (additional context, a related concern on the same code), **reply in that thread** via `t3 review reply-to-discussion <REPO> <MR_IID> <DISCUSSION_ID> "body"` instead of creating a new top-level comment.
 4. **Only post new draft notes** for findings not already covered by existing comments.
 
 This prevents noise from multiple review passes or multiple reviewers covering the same ground.
@@ -218,7 +218,7 @@ This prevents noise from multiple review passes or multiple reviewers covering t
 
 When reviewing an external MR/PR, **always post comments inline on the correct file and line** in the diff view. For comments that aren't tied to a specific line (e.g., description feedback), post a general note without position data.
 
-**Extend the CLI, never inline API recipes.** If a `t3 review` operation is missing (e.g., bulk-publish, reply, resolve), implement it in `src/teatree/cli/review.py` — do NOT document a raw API snippet or inline script here. Skills describe what command to run, not how to replicate missing CLI functionality.
+**Extend the CLI, never inline API recipes.** If a `t3 review` operation is missing, implement it in `src/teatree/cli/review.py` — do NOT document a raw API snippet or inline script here. Skills describe what command to run, not how to replicate missing CLI functionality. Current subcommands: `post-draft-note`, `delete-draft-note`, `publish-draft-notes`, `list-draft-notes`, `reply-to-discussion`, `resolve-discussion`.
 
 **Use `t3 review post-draft-note` (Mandatory).** It handles token extraction, diff refs, position serialization, and added-line validation. Never use raw API calls.
 
@@ -271,7 +271,7 @@ When posting replies to reviewer discussions (e.g., "Done in `<commit>`"):
 3. **Skip already-answered discussions.** If the user (or someone else) already replied with a resolution, do not post a duplicate reply.
 4. **Present the mapping to the user before posting.** Show a table: `| Discussion | Topic | Reply |` and get confirmation. Never batch-post replies without review.
 
-See your [issue tracker platform reference](../platforms/references/) § "Reply to Discussion" for the API recipe.
+Post each reply via `t3 review reply-to-discussion <REPO> <MR_IID> <DISCUSSION_ID> "body"`. To mark a thread resolved after the reply, use `t3 review resolve-discussion <REPO> <MR_IID> <DISCUSSION_ID>` (pass `--no-resolved` to re-open).
 
 ## Commands
 

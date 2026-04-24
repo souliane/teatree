@@ -360,6 +360,10 @@ Usage: t3 review [OPTIONS] COMMAND [ARGS]...
 │ delete-draft-note    Delete a draft note from a GitLab MR.                   │
 │ publish-draft-notes  Publish all draft notes on a GitLab MR (bulk submit).   │
 │ list-draft-notes     List draft notes on a GitLab MR.                        │
+│ reply-to-discussion  Reply to a GitLab MR discussion thread (immediate, not  │
+│                      draft).                                                 │
+│ resolve-discussion   Mark a GitLab MR discussion thread resolved or          │
+│                      unresolved.                                             │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -431,6 +435,44 @@ Usage: t3 review list-draft-notes [OPTIONS] REPO MR
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 review reply-to-discussion`
+
+```
+Usage: t3 review reply-to-discussion [OPTIONS] REPO MR DISCUSSION_ID BODY
+
+ Reply to a GitLab MR discussion thread (immediate, not draft).
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    repo               TEXT     GitLab project path (e.g., my-org/my-repo)  │
+│                                  [required]                                  │
+│ *    mr                 INTEGER  Merge request IID [required]                │
+│ *    discussion_id      TEXT     Discussion (thread) ID [required]           │
+│ *    body               TEXT     Reply body (markdown) [required]            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 review resolve-discussion`
+
+```
+Usage: t3 review resolve-discussion [OPTIONS] REPO MR DISCUSSION_ID
+
+ Mark a GitLab MR discussion thread resolved or unresolved.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    repo               TEXT     GitLab project path [required]              │
+│ *    mr                 INTEGER  Merge request IID [required]                │
+│ *    discussion_id      TEXT     Discussion (thread) ID [required]           │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --resolved    --no-resolved      Mark resolved (default) or re-open.         │
+│                                  [default: resolved]                         │
+│ --help                           Show this message and exit.                 │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
