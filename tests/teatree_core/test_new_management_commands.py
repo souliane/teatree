@@ -2982,6 +2982,128 @@ class TestE2eExternal(TestCase):
         assert env["BASE_URL"] == "https://dev.example.com"
 
 
+# ── e2e run (harmonized dispatcher) ─────────────────────────────────
+#
+# Production code reads the runner config via ``overlay.metadata.get_e2e_config()``
+# (see ``e2e.py::Command.run``), so each test fixture overrides the metadata
+# class — not the overlay class — to change the returned dict.
+
+
+class _ExternalRunnerMetadata(FullMetadata):
+    def get_e2e_config(self) -> dict[str, str]:
+        return {"runner": "external", "project_path": "test/e2e-project", "ref": "main"}
+
+
+class _ProjectRunnerMetadata(FullMetadata):
+    def get_e2e_config(self) -> dict[str, str]:
+        return {"runner": "project", "test_dir": "e2e/", "settings_module": "e2e.settings"}
+
+
+class _InferExternalMetadata(FullMetadata):
+    def get_e2e_config(self) -> dict[str, str]:
+        return {"project_path": "foo/bar", "ref": "main"}
+
+
+class _InferProjectMetadata(FullMetadata):
+    def get_e2e_config(self) -> dict[str, str]:
+        return {"test_dir": "e2e/", "settings_module": "e2e.settings"}
+
+
+class _UnconfiguredMetadata(FullMetadata):
+    def get_e2e_config(self) -> dict[str, str]:
+        return {}
+
+
+class _ExternalRunnerOverlay(FullOverlay):
+    metadata = _ExternalRunnerMetadata()
+
+
+class _ProjectRunnerOverlay(FullOverlay):
+    metadata = _ProjectRunnerMetadata()
+
+
+class _InferExternalOverlay(FullOverlay):
+    metadata = _InferExternalMetadata()
+
+
+class _InferProjectOverlay(FullOverlay):
+    metadata = _InferProjectMetadata()
+
+
+class _UnconfiguredOverlay(FullOverlay):
+    metadata = _UnconfiguredMetadata()
+
+
+_EXTERNAL_RUNNER_OVERLAY = "tests.teatree_core.test_new_management_commands._ExternalRunnerOverlay"
+_PROJECT_RUNNER_OVERLAY = "tests.teatree_core.test_new_management_commands._ProjectRunnerOverlay"
+_INFER_EXTERNAL_OVERLAY = "tests.teatree_core.test_new_management_commands._InferExternalOverlay"
+_INFER_PROJECT_OVERLAY = "tests.teatree_core.test_new_management_commands._InferProjectOverlay"
+_UNCONFIGURED_OVERLAY = "tests.teatree_core.test_new_management_commands._UnconfiguredOverlay"
+
+
+class TestE2eRun(TestCase):
+    """`t3 <overlay> e2e run` dispatches to project/external based on overlay config."""
+
+    @_patch_overlays(_PROJECT_RUNNER_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_runner_project_invokes_pytest(self) -> None:
+        mock_result = MagicMock(returncode=0)
+        with (
+            patch.object(e2e_mod, "resolve_worktree", return_value=None),
+            patch.object(utils_run_mod.subprocess, "run", return_value=mock_result) as mock_run,
+        ):
+            result = cast("str", call_command("e2e", "run", docker=False))
+
+        assert "passed" in result
+        cmd = mock_run.call_args[0][0]
+        assert "pytest" in cmd
+
+    @_patch_overlays(_EXTERNAL_RUNNER_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_runner_external_invokes_playwright(self) -> None:
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch.dict("os.environ", {"T3_PRIVATE_TESTS": tmp, "BASE_URL": "https://dev.example"}, clear=False),
+        ):
+            mock_result = MagicMock(returncode=0)
+            with patch.object(utils_run_mod.subprocess, "run", return_value=mock_result) as mock_run:
+                result = cast("str", call_command("e2e", "run"))
+
+            assert "passed" in result
+            cmd = mock_run.call_args[0][0]
+            assert "playwright" in cmd
+
+    @_patch_overlays(_INFER_PROJECT_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_runner_inferred_from_test_dir(self) -> None:
+        mock_result = MagicMock(returncode=0)
+        with (
+            patch.object(e2e_mod, "resolve_worktree", return_value=None),
+            patch.object(utils_run_mod.subprocess, "run", return_value=mock_result) as mock_run,
+        ):
+            call_command("e2e", "run", docker=False)
+        assert "pytest" in mock_run.call_args[0][0]
+
+    @_patch_overlays(_INFER_EXTERNAL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_runner_inferred_from_project_path(self) -> None:
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch.dict("os.environ", {"T3_PRIVATE_TESTS": tmp, "BASE_URL": "https://dev.example"}, clear=False),
+        ):
+            mock_result = MagicMock(returncode=0)
+            with patch.object(utils_run_mod.subprocess, "run", return_value=mock_result) as mock_run:
+                call_command("e2e", "run")
+            assert "playwright" in mock_run.call_args[0][0]
+
+    @_patch_overlays(_UNCONFIGURED_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_missing_config_exits_with_error(self) -> None:
+        with pytest.raises(SystemExit) as exc_info:
+            call_command("e2e", "run")
+        assert exc_info.value.code == 2
+
+
 # ── Lifecycle commands ──────────────────────────────────────────────
 
 
