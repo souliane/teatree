@@ -7,7 +7,7 @@ prefix) because the only public surface is the ``clean-all`` subcommand.
 
 from pathlib import Path
 
-from teatree.core.cleanup import cleanup_worktree
+from teatree.core.cleanup import _branch_tree_matches_squash, cleanup_worktree
 from teatree.core.models import Worktree
 from teatree.utils import git
 from teatree.utils.run import run_allowed_to_fail
@@ -55,9 +55,14 @@ def is_squash_merged(repo: str, branch: str, default: str) -> bool:
 
 
 def prune_squash_merged(repo: str, name: str, wt_map: dict[str, str]) -> str:
-    """Remove a confirmed squash-merged branch (and its worktree if linked)."""
+    """Remove a confirmed squash-merged branch (and its worktree if linked).
+
+    A branch whose tip tree matches the PR's merge commit is cleaned despite
+    unsynced commits (typical for post-merge retro/docs work that is already
+    captured by the squash).
+    """
     unsynced = git.unsynced_commits(repo, name)
-    if unsynced:
+    if unsynced and not _branch_tree_matches_squash(repo, name):
         return f"SKIPPED '{name}': {len(unsynced)} unsynced commit(s) — push to a new branch:\n  " + "\n  ".join(
             unsynced
         )

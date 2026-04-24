@@ -24,7 +24,7 @@ dependencies = [
   "httpx>=0.27",
   "uvicorn>=0.30",
 ]
-scripts = { t3 = "teatree.cli:main" }
+scripts = { t3 = "t3_bootstrap:main" }
 
 entry-points."teatree.overlays".t3-teatree = "teatree.contrib.t3_teatree.overlay:TeatreeOverlay"
 
@@ -58,6 +58,9 @@ docs = [
 packages = [
   "src/teatree",
 ]
+
+[tool.hatch.build.targets.wheel.force-include]
+"src/t3_bootstrap.py" = "t3_bootstrap.py"
 
 [tool.ruff]
 target-version = "py313"
@@ -128,6 +131,9 @@ lint.per-file-ignores."scripts/**/*.py" = [
   "S603",
   "S607",    # subprocess security (trusted internal calls)
   "T201",    # print (CLI output)
+]
+lint.per-file-ignores."src/t3_bootstrap.py" = [
+  "PLC0415", # import-outside-top-level — the bootstrap's whole point is to import teatree AFTER sys.path manipulation.
 ]
 lint.per-file-ignores."src/teatree/cli/*.py" = [
   "B008",   # function-call-in-default-argument (typer.Option/Argument is idiomatic)

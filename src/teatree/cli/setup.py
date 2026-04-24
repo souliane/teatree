@@ -2,7 +2,10 @@
 
 import json
 import logging
+import os
+import re
 import shutil
+import tomllib
 from pathlib import Path
 
 import typer
@@ -33,14 +36,64 @@ setup_app = typer.Typer(
 
 
 def _find_main_clone() -> Path | None:
-    """Find the teatree main clone (not a worktree)."""
+    """Find the teatree main clone, resolving worktrees to their main clone.
+
+    The ``T3_REPO`` env var (set in the user's ``~/.teatree`` shell config)
+    wins over cwd heuristics so that ``t3 setup`` run from a worktree still
+    targets the configured main clone.  When unset, fall back to
+    ``DoctorService.find_teatree_repo`` (cwd → ``find_project_root``); if
+    that returns a worktree, follow its ``.git`` file back to the main clone
+    so setup targets (``uv tool install --editable`` and Claude marketplace
+    registration) land on a stable path.
+    """
+    env_path = os.environ.get("T3_REPO", "")
+    if env_path:
+        candidate = Path(env_path).expanduser()
+        if (candidate / "pyproject.toml").is_file() and (candidate / ".git").is_dir():
+            return candidate
+
     repo = DoctorService.find_teatree_repo()
     if not repo:
         return None
-    # Main clone has .git as a directory; worktrees have .git as a file
-    if not (repo / ".git").is_dir():
+    git = repo / ".git"
+    if git.is_dir():
+        return repo
+    if git.is_file():
+        match = re.match(r"^gitdir:\s*(.+)$", git.read_text().strip())
+        if not match:
+            return None
+        # `.git` points to `<main-clone>/.git/worktrees/<name>`; step back up to main clone.
+        main_clone_git = Path(match.group(1)).parent.parent
+        if main_clone_git.name == ".git" and main_clone_git.is_dir():
+            return main_clone_git.parent
+    return None
+
+
+def _current_editable_source(uv_bin: str) -> Path | None:
+    """Return the editable source recorded in uv's teatree tool receipt, or None.
+
+    Returns None when teatree isn't installed as a uv tool, when it's installed
+    non-editable (regular PyPI-style install), or when the receipt is
+    unparsable.  ``~/.local/share/uv/tools/teatree/uv-receipt.toml`` looks like::
+
+        [tool]
+        requirements = [{ name = "teatree", editable = "/path/to/clone" }]
+    """
+    result = _run_captured([uv_bin, "tool", "dir"])
+    if result.returncode != 0 or not result.stdout.strip():
         return None
-    return repo
+    receipt = Path(result.stdout.strip()) / "teatree" / "uv-receipt.toml"
+    if not receipt.is_file():
+        return None
+    try:
+        data = tomllib.loads(receipt.read_text(encoding="utf-8"))
+    except tomllib.TOMLDecodeError:
+        return None
+    for req in data.get("tool", {}).get("requirements", []):
+        if req.get("name") == "teatree":
+            editable = req.get("editable")
+            return Path(editable) if editable else None
+    return None
 
 
 def _run_captured(args: list[str], cwd: Path | None = None) -> CompletedProcess[str]:
@@ -91,21 +144,34 @@ def _print_path_hint(bin_dir: Path | None) -> None:
 
 
 def _ensure_t3_installed(repo: Path) -> bool:
-    """Install ``t3`` globally via ``uv tool install`` when it's not on PATH.
+    """Ensure a healthy global ``t3`` via ``uv tool install``.
 
-    Returns True when the binary is (already, or now) available.  When ``uv``
-    itself is missing, prints guidance and returns False rather than raising.
+    Steady-state: if ``t3`` is on PATH and the editable source recorded by uv
+    still exists, leave the install alone.  This preserves intentional
+    worktree-dogfood installs (see #397 Part 3) and non-editable installs.
+
+    Repair path: when the editable source has been deleted (e.g. the worktree
+    it was installed from got cleaned up), reinstall editable from *repo* so
+    the global ``t3`` is re-anchored at a stable main clone.
     """
-    if shutil.which("t3"):
+    uv_bin = shutil.which("uv")
+    t3_on_path = shutil.which("t3") is not None
+
+    if t3_on_path and uv_bin:
+        source = _current_editable_source(uv_bin)
+        if source is None or source.is_dir():
+            return True
+        typer.echo(f"NOTE  Global `t3` editable source missing: {source}")
+        typer.echo(f"      Re-anchoring at main clone {repo}.")
+    elif t3_on_path:
         return True
 
-    uv_bin = shutil.which("uv")
     if not uv_bin:
         typer.echo("WARN  `t3` not on PATH and `uv` is missing — skipping global install.")
         typer.echo("      Install uv: https://docs.astral.sh/uv/getting-started/installation/")
         return False
 
-    result = _run_captured([uv_bin, "tool", "install", "--editable", str(repo)])
+    result = _run_captured([uv_bin, "tool", "install", "--force", "--editable", str(repo)])
     if result.returncode != 0:
         typer.echo(f"WARN  `uv tool install` failed: {result.stderr.strip()}")
         return False
@@ -275,14 +341,9 @@ def _clean_broken_symlinks(claude_skills: Path) -> int:
 def _validate_repo(repo: Path | None) -> Path:
     """Validate the teatree repo is a main clone with apm.yml. Raises typer.Exit on failure."""
     if not repo:
-        candidate = DoctorService.find_teatree_repo()
-        if candidate and not (candidate / ".git").is_dir():
-            typer.echo(f"ERROR Running from a git worktree ({candidate}).")
-            typer.echo("      Run t3 setup from the main clone instead.")
-        else:
-            typer.echo("ERROR Teatree main clone not found.")
-            typer.echo("      Set T3_REPO env var or install teatree in editable mode.")
-            typer.echo("      Consumers without a local clone: use `apm install -g souliane/teatree`.")
+        typer.echo("ERROR Teatree main clone not found.")
+        typer.echo("      Set T3_REPO env var or install teatree in editable mode.")
+        typer.echo("      Consumers without a local clone: use `apm install -g souliane/teatree`.")
         raise typer.Exit(code=1)
 
     if not (repo / "apm.yml").is_file():
@@ -301,9 +362,10 @@ def run(
     """Install and configure teatree skills globally.
 
     Runs APM dependency install, syncs skill symlinks, and registers the
-    t3 plugin with Claude Code.  Must be run from the teatree main clone
-    (not a worktree).  Consumers without a local clone can bootstrap via
-    ``apm install -g souliane/teatree``.
+    t3 plugin with Claude Code.  Safe to run from a teatree worktree — the
+    main clone is resolved via the worktree's ``.git`` file so the global
+    install stays anchored to a stable path.  Consumers without a local
+    clone can bootstrap via ``apm install -g souliane/teatree``.
     """
     repo = _validate_repo(_find_main_clone())
     typer.echo(f"Teatree repo: {repo}")

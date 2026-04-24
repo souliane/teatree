@@ -197,7 +197,11 @@ flowchart TD
 
 ### 1. Conversation Audit
 
-**Check dashboard server logs first.** Before reviewing the conversation, inspect the teatree dashboard log for errors that may not have surfaced in the conversation:
+**Scope-match check first (Non-Negotiable).** Before auditing individual failures, re-open the ticket/issue body that framed this session and map every acceptance criterion, phase, or deliverable to what actually shipped. If ANY AC is unshipped and the session was declared complete (MR merged with `Closes/Fixes`, `/t3:next` run, ticket marked done), that is a **False completion** finding and it outranks every tactical finding below. Re-reading the issue body is not optional — scoping→implementation drift is invisible from the conversation alone.
+
+**Past failure (#97):** Scoping session focused on Phase 5 (of 5). Implementation shipped Phase 5 only, but the PR used `Closes #97`, auto-closing the issue. Retro ran and found tactical workspace-troubleshooting nuggets while never noticing that 4/5 phases of the issue body were unshipped. The user had to manually call it out. Prevention: this step.
+
+**Check dashboard server logs next.** Inspect the teatree dashboard log for errors that may not have surfaced in the conversation:
 
 ```bash
 LOG="$HOME/.local/share/teatree/$(basename "$PWD")/logs/dashboard.log"
