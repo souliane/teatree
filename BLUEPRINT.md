@@ -484,6 +484,8 @@ Defined in `teatree.core.overlay`. All methods receive the `worktree` instance f
 | `get_reset_passwords_command(worktree)` | `→ str` | `""` | Dev password reset command |
 | `get_symlinks(worktree)` | `→ list[SymlinkSpec]` | `[]` | Extra symlinks |
 | `get_services_config(worktree)` | `→ dict[str, ServiceSpec]` | `{}` | Service metadata |
+| `get_base_images(worktree)` | `→ list[BaseImageConfig]` | `[]` | Docker base images teatree builds once and shares across worktrees |
+| `get_docker_services(worktree)` | `→ set[str]` | `set()` | Service names (keys of `get_services_config`) that MUST run in Docker |
 | `validate_mr(title, description)` | `→ ValidationResult` | no errors | MR validation rules |
 | `get_followup_repos()` | `→ list[str]` | `[]` | GitLab project paths to sync |
 | `get_skill_metadata()` | `→ SkillMetadata` | `{}` | Active skill path + companions |
@@ -500,12 +502,36 @@ Defined in `teatree.core.overlay`. All methods receive the `worktree` instance f
 ProvisionStep(name: str, callable: Callable[[], None], required: bool = True, description: str = "")
 PostDbStep(name: str, description: str, command: str)           # all total=False
 SymlinkSpec(path: str, source: str, mode: str, description: str)
-ServiceSpec(shared: bool, service: str, compose_file: str, start_command: str, readiness_check: str)
+ServiceSpec(shared: bool, service: str, compose_file: str, start_command: str, readiness_check: str, base_image: str)
+BaseImageConfig(image_name: str, dockerfile: str, lockfile: str, build_context: Path, env_var: str, build_args: dict[str, str])
 DbImportStrategy(kind: str, source_database: str, shared_postgres: bool, snapshot_tool: str, restore_order: list[str], notes: list[str], worktree_repo_path: str)
 SkillMetadata(skill_path: str, companion_skills: list[str])
 ValidationResult(errors: list[str], warnings: list[str])       # total=True
 ToolCommand(name: str, help: str, command: str)                # total=True
 ```
+
+### 6.2a Docker base-image sharing across worktrees
+
+Teatree builds each `BaseImageConfig` exactly once on the main repo and
+reuses it across every worktree that needs it. Worktrees get code-level
+isolation via a `.:/app:rw` volume mount; the image itself is shared.
+
+- Image tag is `{image_name}:deps-{sha256(lockfile)[:12]}` — stable while the
+  lockfile is unchanged, new tag when dependencies change.
+- `teatree.docker.build.ensure_base_image(cfg)` probes via `docker image
+  inspect` and skips the build when the tag already exists locally.
+- `image_tag_for_lockfile(cfg)` is pure (just reads and hashes the lockfile)
+  and safe to call from env-cache rendering and drift detection.
+- `lifecycle setup` calls `ensure_base_image` once per `(image_name,
+  build_context)` pair across the ticket's worktrees, then writes each
+  `env_var={tag}` into the per-worktree env cache so compose files can
+  reference `image: ${MYAPP_BASE_IMAGE}` without knowing the tag in advance.
+- `get_docker_services(worktree)` returns a `set[str]` of service names
+  (keys of `get_services_config`) that MUST run in Docker; `lifecycle setup`
+  fails fast if any listed service is not also declared in
+  `get_services_config`.
+- Both hooks default to empty — existing overlays keep working. Core
+  enforcement only activates for overlays that opt in.
 
 ### 6.3 Scaffold (`t3 startoverlay`)
 
