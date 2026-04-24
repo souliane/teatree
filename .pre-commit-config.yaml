@@ -180,6 +180,12 @@ repos:
         types: [python]
         files: ^src/teatree/
         exclude: ^src/teatree/utils/run\.py$
+      - id: skill-prose-ban
+        name: Ban new imperative rules in skill MD without companion code (#140)
+        language: system
+        entry: uv run python scripts/hooks/check_skill_prose.py
+        pass_filenames: false
+        always_run: true
 
   # Phase 7b2 - BLUEPRINT sync
   - repo: local
