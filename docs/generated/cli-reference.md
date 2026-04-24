@@ -1571,6 +1571,8 @@ Usage: t3 teatree tasks [OPTIONS] COMMAND [ARGS]...
 │ claim                 Claim the next available task.                         │
 │ cancel                Cancel a task by ID.                                   │
 │ list                  List tasks with optional filters.                      │
+│ start                 Claim and run the next interactive task in the current │
+│                       terminal.                                              │
 │ work-next-sdk         Claim and execute an headless task.                    │
 │ work-next-user-input  Claim and execute a user input task.                   │
 ╰──────────────────────────────────────────────────────────────────────────────╯
@@ -1611,6 +1613,25 @@ Usage: t3 teatree tasks list [OPTIONS]
 │ --status                  TEXT  Filter by status                             │
 │ --execution-target        TEXT  Filter by execution target                   │
 │ --help                          Show this message and exit.                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree tasks start`
+
+```
+Usage: t3 teatree tasks start [OPTIONS] [TASK_ID]
+
+ Claim an interactive task and exec ``claude`` in the current terminal.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│   task_id      [TASK_ID]  Task ID; omit to start the next pending            │
+│                           interactive task.                                  │
+│                           [default: 0]                                       │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --claimed-by        TEXT  Worker identifier stored on the claim.             │
+│                           [default: cli]                                     │
+│ --help                    Show this message and exit.                        │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
