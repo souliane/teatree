@@ -44,6 +44,18 @@ The implementation phase. Follow test-driven development and project conventions
 
 ## Workflow
 
+### 0a. Scoping Gate — Warn When Skipped
+
+Features benefit from a scoping pass (intent discovery, acceptance-criteria framing) BEFORE coding. The teatree session FSM carries a `scoping` phase (`Ticket.State.SCOPED`) for exactly this — feature tickets are expected to transition `not_started → scoped → started` before coding starts.
+
+**Before writing any code, check:**
+
+1. Did this ticket visit the `scoping` phase? Inspect `ticket.state` and the ticket's visited phases.
+2. If the ticket is a **feature** (new capability, ambiguous scope, architectural choice to make) and scoping was skipped, **warn once** — "scoping phase was skipped; this is a feature, want to run `/t3:ticket` or brainstorm first?" — then proceed. Do NOT hard-block.
+3. Bug fixes, docs, and small tactical changes don't need scoping — skip this gate.
+
+The goal is to surface the missed step so the user can redirect early, not to add friction to every coding session.
+
 ### 0. Ticket-Required Overlay Check
 
 When the active overlay has `require_ticket = True` in its configuration, a tracked issue must exist before writing any code.
