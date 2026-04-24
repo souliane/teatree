@@ -168,3 +168,35 @@ def test_current_user_proxies_to_api_username() -> None:
 
     assert host.current_user() == "adrien.cossa"
     client.current_username.assert_called_once_with()
+
+
+def test_create_pr_falls_back_to_cwd_remote_for_bare_repo_name(tmp_path, monkeypatch) -> None:
+    """A bare repo name (no slash, no existing path) resolves via the CWD's git remote.
+
+    Regression guard for overlay issue t3-o.#54: ``Worktree.repo_path`` stores
+    a bare repo name, so callers passing it directly must still reach the
+    GitLab project via the CWD's ``origin`` remote.
+    """
+    monkeypatch.chdir(tmp_path)
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project_from_remote.return_value = _project()
+    client.post_json.return_value = {"iid": 9}
+    host = GitLabCodeHost(client=client)
+
+    host.create_pr(PullRequestSpec(repo="teatree", branch="feat", title="x", description="y"))
+
+    client.resolve_project_from_remote.assert_called_once_with(".")
+    client.resolve_project.assert_not_called()
+
+
+def test_create_pr_uses_explicit_slug_when_repo_has_namespace() -> None:
+    """A ``namespace/repo`` slug still hits ``resolve_project`` directly — no CWD fallback."""
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = _project()
+    client.post_json.return_value = {"iid": 11}
+    host = GitLabCodeHost(client=client)
+
+    host.create_pr(PullRequestSpec(repo="org/nested/repo", branch="feat", title="x", description="y"))
+
+    client.resolve_project.assert_called_once_with("org/nested/repo")
+    client.resolve_project_from_remote.assert_not_called()

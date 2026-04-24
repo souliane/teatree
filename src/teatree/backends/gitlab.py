@@ -94,6 +94,14 @@ class GitLabCodeHost:
         return self._client.upload_file(project.project_id, filepath) or {}
 
     def _resolve_project(self, repo: str) -> ProjectInfo | None:
+        """Resolve a GitLab project from a local path, ``namespace/repo`` slug, or bare name.
+
+        Bare repo names (no slash, no matching path) fall back to the CWD's
+        git remote — ``Worktree.repo_path`` stores a bare name, and callers
+        that hand it straight to the code host would otherwise 404.
+        """
         if Path(repo).exists():
             return self._client.resolve_project_from_remote(repo)
-        return self._client.resolve_project(repo)
+        if "/" in repo:
+            return self._client.resolve_project(repo)
+        return self._client.resolve_project_from_remote(".")
