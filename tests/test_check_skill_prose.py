@@ -3,7 +3,7 @@
 The hook fails when ``skills/**/SKILL.md`` or ``skills/**/references/*.md``
 grow new imperative rules (``Non-Negotiable``, leading ``Always``/``Never``
 bullets) without an accompanying change in ``src/``, ``hooks/scripts/``, or
-``tests/``. Existing prose is grandfathered via the ``prose-allowed`` marker.
+``tests/``.
 """
 
 import pytest
@@ -41,16 +41,6 @@ diff --git a/skills/ship/SKILL.md b/skills/ship/SKILL.md
 -- **Old rule (Non-Negotiable).** Removed.
 -- **Always do this** thing that became code.
 -- **Never do this** other thing.
-"""
-
-_PROSE_ALLOWED_DIFF = """\
-diff --git a/skills/retro/SKILL.md b/skills/retro/SKILL.md
---- a/skills/retro/SKILL.md
-+++ b/skills/retro/SKILL.md
-@@ -100,0 +101,3 @@
-+<!-- prose-allowed: methodology -->
-+- **Always frame retro findings** as personal takeaways, never as corrections of others.
-+- **Non-Negotiable** voice rules apply to user-facing text everywhere.
 """
 
 _REFERENCE_FILE_DIFF = """\
@@ -109,10 +99,6 @@ class TestCountNewRuleLines:
 
     def test_ignores_removed_lines(self) -> None:
         result = count_new_rule_lines(_REMOVING_PROSE_DIFF)
-        assert result == []
-
-    def test_respects_prose_allowed_marker(self) -> None:
-        result = count_new_rule_lines(_PROSE_ALLOWED_DIFF)
         assert result == []
 
     def test_includes_reference_files(self) -> None:
@@ -183,11 +169,4 @@ class TestMain:
 
         monkeypatch.setattr(mod, "_staged_diff", lambda: _REMOVING_PROSE_DIFF)
         monkeypatch.setattr(mod, "_staged_files", lambda: ["skills/ship/SKILL.md"])
-        assert main() == 0
-
-    def test_passes_when_prose_allowed_marker_present(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        import scripts.hooks.check_skill_prose as mod  # noqa: PLC0415
-
-        monkeypatch.setattr(mod, "_staged_diff", lambda: _PROSE_ALLOWED_DIFF)
-        monkeypatch.setattr(mod, "_staged_files", lambda: ["skills/retro/SKILL.md"])
         assert main() == 0
