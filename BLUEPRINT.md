@@ -162,20 +162,22 @@ The central entity. One ticket per unit of work (maps to an issue/task in the tr
 | Method | Source → Target | Side effects |
 |--------|----------------|--------------|
 | `scope(issue_url=, variant=, repos=)` | not_started → scoped | Sets issue_url, variant, repos |
-| `start()` | scoped → started | Calls `schedule_coding()` |
+| `start()` | scoped → started | Enqueues `execute_provision` worker. Worker runs `WorktreeProvisioner` and calls `schedule_coding()` on success. |
 | `code()` | started → coded | Calls `schedule_testing()` |
 | `test(passed=True)` | coded → tested | Stores `tests_passed` in extra; calls `schedule_review()` |
 | `review()` | tested → reviewed | Condition: reviewing task completed. Calls `schedule_shipping()` |
-| `ship(mr_urls=[])` | reviewed → shipped | Stores MR URLs in extra |
+| `ship()` | reviewed → shipped | Enqueues `execute_ship` worker. Worker runs `ShipExecutor` and calls `request_review()` on success. |
 | `request_review()` | shipped → in_review | — |
-| `mark_merged()` | in_review → merged | — |
-| `retrospect()` | merged → retrospected | Enqueues `execute_retrospect` worker via `transaction.on_commit`. Worker runs `RetroExecutor` and calls `mark_delivered()` on success. |
+| `mark_merged()` | in_review → merged | Enqueues `execute_teardown` worker. Worker runs `WorktreeTeardown` (best-effort cleanup of git worktrees, branches, per-worktree DBs, overlay hooks). Errors do NOT block the FSM — `retrospect()` can advance the ticket regardless. |
+| `retrospect()` | merged → retrospected | Enqueues `execute_retrospect` worker. Worker runs `RetroExecutor` and calls `mark_delivered()` on success. |
 | `mark_delivered()` | retrospected → delivered | — |
 | `rework()` | coded/tested/reviewed → started | Clears tests_passed, cancels pending tasks |
 
-**Auto-scheduling:** each phase transition auto-creates the next-phase task in a fresh session (bias-free evaluation):
+**Worker enqueue pattern (BLUEPRINT §4 invariant):** transitions that own long I/O follow one rule — body stays pure (state change + metadata only), then `transaction.on_commit(lambda: execute_X.enqueue(self.pk))`. The state change and the queued work land atomically. Workers take a row lock (`select_for_update()`), re-check the source state, run the runner, and on success call the next transition. At-least-once delivery is safe because the state guard makes redelivery a no-op. See `teatree/core/runners/` for the runner classes and `teatree/core/tasks.py` for the workers.
 
-- `start()` → headless coding task
+**Auto-scheduling:** each phase transition leads to the next-phase task in a fresh session (bias-free evaluation). `start()` schedules coding indirectly — the provision worker calls `schedule_coding()` once worktrees exist. The remaining auto-schedule edges are direct:
+
+- `start()` → enqueues provision → on success → headless coding task
 - `code()` → headless testing task
 - `test()` → headless reviewing task
 - `review()` → shipping task (execution target gated by `T3_AUTO_SHIP`)
