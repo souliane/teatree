@@ -191,6 +191,8 @@ class GitHubCodeHost:
             cmd.extend(["--label", ",".join(spec.labels)])
         if spec.assignee:
             cmd.extend(["--assignee", spec.assignee])
+        if spec.draft:
+            cmd.append("--draft")
 
         result = _run_gh(*cmd, token=self._token)
         return {"url": result.stdout.strip()}

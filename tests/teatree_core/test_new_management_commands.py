@@ -370,6 +370,28 @@ class TestWorkspaceTicket(TestCase):
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
+    def test_warns_about_existing_orphans_before_creating(self) -> None:
+        """Creating a new ticket surfaces orphan branches already in the workspace."""
+        from io import StringIO  # noqa: PLC0415
+
+        from teatree.core.orphan_guard import BranchReport, BranchStatus  # noqa: PLC0415
+
+        fake_orphans = [
+            BranchReport(repo="/ws/org/repo", branch="feat-old", status=BranchStatus.PUSHED_ORPHAN, ahead_count=3),
+        ]
+        stderr_buf = StringIO()
+        with patch(
+            "teatree.core.management.commands.workspace.find_orphans_in_workspace",
+            return_value=fake_orphans,
+        ):
+            call_command("workspace", "ticket", "https://example.com/issues/500", stderr=stderr_buf)
+
+        written = stderr_buf.getvalue()
+        assert "orphan branch" in written.lower()
+        assert "feat-old" in written
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
     def test_auto_derives_slug_from_issue_title(self) -> None:
         """When no description given, uses overlay.metadata.get_issue_title to derive slug."""
         overlay = import_string(FULL_OVERLAY)()

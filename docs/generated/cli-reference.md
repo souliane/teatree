@@ -1021,28 +1021,7 @@ Usage: t3 teatree lifecycle [OPTIONS] COMMAND [ARGS]...
 ```
 Usage: t3 teatree lifecycle setup [OPTIONS]
 
- Provision a worktree (DB name, env file, overlay steps). No port allocation.
-
- Idempotent — safe to re-run. Auto-retries DB import when the DB
- doesn't exist, regardless of previous failure count.
-
-╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --path                               TEXT  Worktree path (auto-detects from  │
-│                                            PWD if empty).                    │
-│ --variant                            TEXT  Tenant variant. Updates ticket if │
-│                                            provided.                         │
-│ --overlay                            TEXT  Overlay name (auto-detects if     │
-│                                            empty).                           │
-│ --slow-import    --no-slow-import          Allow slow DB fallbacks           │
-│                                            (pg_restore, remote dump).        │
-│                                            DSLR-only by default.             │
-│                                            [default: no-slow-import]         │
-│ --verbose        --no-verbose              Show step stdout/stderr.          │
-│                                            [default: verbose]                │
-│ --no-timeout     --no-no-timeout           Disable operation timeouts.       │
-│                                            [default: no-no-timeout]          │
-│ --help                                     Show this message and exit.       │
-╰──────────────────────────────────────────────────────────────────────────────╯
+ Create and provision a worktree.
 ```
 
 ##### `t3 teatree lifecycle start`
@@ -1050,25 +1029,7 @@ Usage: t3 teatree lifecycle setup [OPTIONS]
 ```
 Usage: t3 teatree lifecycle start [OPTIONS]
 
- Provision (if needed) and start all services for the ticket.
-
- Runs setup for all worktrees in the ticket, then starts docker-compose
- services for each. Allocates free host ports at runtime.
- Safe to re-run — stops previous containers first.
-
-╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --path                             TEXT  Worktree path (auto-detects from    │
-│                                          PWD if empty).                      │
-│ --variant                          TEXT  Tenant variant (passed to setup if  │
-│                                          needed).                            │
-│ --overlay                          TEXT  Overlay name (auto-detects if       │
-│                                          empty).                             │
-│ --verbose       --no-verbose             Show step stdout/stderr.            │
-│                                          [default: verbose]                  │
-│ --no-timeout    --no-no-timeout          Disable operation timeouts.         │
-│                                          [default: no-no-timeout]            │
-│ --help                                   Show this message and exit.         │
-╰──────────────────────────────────────────────────────────────────────────────╯
+ Provision (if needed) and start all services.
 ```
 
 ##### `t3 teatree lifecycle status`
@@ -1076,10 +1037,7 @@ Usage: t3 teatree lifecycle start [OPTIONS]
 ```
 Usage: t3 teatree lifecycle status [OPTIONS]
 
-╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --path        TEXT  Worktree path (auto-detects from PWD if empty).          │
-│ --help              Show this message and exit.                              │
-╰──────────────────────────────────────────────────────────────────────────────╯
+ Return worktree state information.
 ```
 
 ##### `t3 teatree lifecycle teardown`
@@ -1087,10 +1045,7 @@ Usage: t3 teatree lifecycle status [OPTIONS]
 ```
 Usage: t3 teatree lifecycle teardown [OPTIONS]
 
-╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --path        TEXT  Worktree path (auto-detects from PWD if empty).          │
-│ --help              Show this message and exit.                              │
-╰──────────────────────────────────────────────────────────────────────────────╯
+ Tear down a worktree.
 ```
 
 ##### `t3 teatree lifecycle clean`
@@ -1098,12 +1053,7 @@ Usage: t3 teatree lifecycle teardown [OPTIONS]
 ```
 Usage: t3 teatree lifecycle clean [OPTIONS]
 
- Teardown worktree — stop containers, drop DB, clean state.
-
-╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --path        TEXT  Worktree path (auto-detects from PWD if empty).          │
-│ --help              Show this message and exit.                              │
-╰──────────────────────────────────────────────────────────────────────────────╯
+ Teardown worktree — stop services, drop DB, clean state.
 ```
 
 ##### `t3 teatree lifecycle diagram`
@@ -1111,13 +1061,7 @@ Usage: t3 teatree lifecycle clean [OPTIONS]
 ```
 Usage: t3 teatree lifecycle diagram [OPTIONS]
 
- Print a state diagram as Mermaid. Models: worktree, ticket, task.
-
-╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --model         TEXT     [default: worktree]                                 │
-│ --ticket        INTEGER                                                      │
-│ --help                   Show this message and exit.                         │
-╰──────────────────────────────────────────────────────────────────────────────╯
+ Print the lifecycle state diagram as Mermaid.
 ```
 
 #### `t3 teatree workspace`
@@ -1131,9 +1075,10 @@ Usage: t3 teatree workspace [OPTIONS] COMMAND [ARGS]...
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ ticket     Create a ticket with worktree entries for each repo.              │
-│ finalize   Squash worktree commits and rebase on the default branch.         │
-│ clean-all  Prune worktrees whose branches have been merged or deleted.       │
+│ ticket        Create a ticket with worktree entries for each repo.           │
+│ finalize      Squash worktree commits and rebase on the default branch.      │
+│ clean-all     Prune worktrees whose branches have been merged or deleted.    │
+│ list-orphans  List orphan branches (commits not on main, no open PR).        │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -1142,10 +1087,15 @@ Usage: t3 teatree workspace [OPTIONS] COMMAND [ARGS]...
 ```
 Usage: t3 teatree workspace ticket [OPTIONS] ISSUE_URL
 
- Create or update a ticket with worktree entries for each affected repo.
+ Create or update a ticket and trigger worktree provisioning.
 
- Idempotent: safe to re-run after partial failures. Existing worktrees
- are skipped, missing repos are added, and failed entries are cleaned up.
+ Thin wrapper around the FSM (BLUEPRINT §4): persist branch + description
+ on ``ticket.extra``, advance ``NOT_STARTED → SCOPED → STARTED`` via
+ ``scope()`` and ``start()``, and let ``execute_provision`` materialise
+ the per-repo git worktrees on the worker side.
+
+ Idempotent: re-running over an already-started ticket merges new repos
+ into ``ticket.repos`` so the next ``execute_provision`` picks them up.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    issue_url      TEXT  [required]                                         │
@@ -1186,6 +1136,24 @@ Usage: t3 teatree workspace clean-all [OPTIONS]
 │ --keep-dslr        INTEGER  Number of DSLR snapshots to keep per tenant.     │
 │                             [default: 1]                                     │
 │ --help                      Show this message and exit.                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree workspace list-orphans`
+
+```
+Usage: t3 teatree workspace list-orphans [OPTIONS]
+
+ List orphan branches (commits ahead of origin/main AND no open PR) across the
+ workspace.
+
+ Used by the session-end hook and the ``workspace ticket`` warning to
+ surface work that would otherwise be lost when a session closes or a
+ new worktree is created. Emits a JSON-serialisable list — one entry
+ per orphan.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -1460,6 +1428,7 @@ Usage: t3 teatree pr [OPTIONS] COMMAND [ARGS]...
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
 │ create         Create a merge request for the ticket's branch.               │
+│ ensure-draft   Create a draft PR for an orphan branch (idempotent).          │
 │ check-gates    Check whether session gates allow a phase transition.         │
 │ fetch-issue    Fetch issue details from the configured tracker.              │
 │ detect-tenant  Detect the current tenant variant from the overlay.           │
@@ -1472,21 +1441,47 @@ Usage: t3 teatree pr [OPTIONS] COMMAND [ARGS]...
 ```
 Usage: t3 teatree pr create [OPTIONS] TICKET_ID
 
- Create a merge request for the ticket's branch.
+ Validate ship gates and trigger the ship transition.
+
+ On success the ``execute_ship`` worker pushes the branch, opens the MR,
+ and advances ``SHIPPED → IN_REVIEW``. The return value reports the MR
+ URL once the worker completes (synchronous in interactive mode).
+
+ ``--title`` overrides the MR title (default: last commit subject).
+ Stored on ``ticket.extra['mr_title_override']`` so the worker reads it.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    ticket_id      INTEGER  [required]                                      │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --repo                                       TEXT                            │
 │ --title                                      TEXT                            │
-│ --description                                TEXT                            │
 │ --dry-run            --no-dry-run                  [default: no-dry-run]     │
 │ --skip-validation    --no-skip-validation          [default:                 │
 │                                                    no-skip-validation]       │
 │ --skip-visual-qa                             TEXT                            │
 │ --help                                             Show this message and     │
 │                                                    exit.                     │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree pr ensure-draft`
+
+```
+Usage: t3 teatree pr ensure-draft [OPTIONS]
+
+ Create a draft PR for an orphan branch (idempotent, no-op when a PR already
+ exists).
+
+ An orphan is a branch with commits not on ``origin/main`` (after
+ subject-match + tree-equality checks) and no open PR/MR. When this
+ runs inside a git pre-push hook for a *first* push, the branch is not
+ yet on the remote — creating the PR is deferred with a warning so the
+ push proceeds and the agent can re-run this command afterwards.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --branch        TEXT                                                         │
+│ --repo          TEXT                                                         │
+│ --help                Show this message and exit.                            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

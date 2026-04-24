@@ -42,6 +42,7 @@ DJANGO_GROUPS: dict[str, tuple[str, list[tuple[str, str]]]] = {
             ("ticket", "Create a ticket with worktree entries for each repo."),
             ("finalize", "Squash worktree commits and rebase on the default branch."),
             ("clean-all", "Prune worktrees whose branches have been merged or deleted."),
+            ("list-orphans", "List orphan branches (commits not on main, no open PR)."),
         ],
     ),
     "run": (
@@ -75,6 +76,7 @@ DJANGO_GROUPS: dict[str, tuple[str, list[tuple[str, str]]]] = {
         "Pull request helpers.",
         [
             ("create", "Create a merge request for the ticket's branch."),
+            ("ensure-draft", "Create a draft PR for an orphan branch (idempotent)."),
             ("check-gates", "Check whether session gates allow a phase transition."),
             ("fetch-issue", "Fetch issue details from the configured tracker."),
             ("detect-tenant", "Detect the current tenant variant from the overlay."),
