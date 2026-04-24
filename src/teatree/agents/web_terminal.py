@@ -18,10 +18,31 @@ from teatree.types import SkillMetadata
 logger = logging.getLogger(__name__)
 
 
+def build_interactive_command(task: Task, *, overlay_skill_metadata: SkillMetadata) -> list[str]:
+    """Build the ``claude`` argv for an interactive task.
+
+    Resumes the prior session when the task carries a Claude session UUID,
+    otherwise starts a fresh session with the interactive system context
+    pre-loaded via ``--append-system-prompt``.
+    """
+    claude_bin = shutil.which("claude")
+    if claude_bin is None:
+        msg = "claude CLI is not installed"
+        raise FileNotFoundError(msg)
+
+    resume_session_id = get_resume_session_id(task)
+    if resume_session_id:
+        logger.info("Resuming headless session %s for task %s", resume_session_id, task.pk)
+        return [claude_bin, "--resume", resume_session_id]
+
+    skills = resolve_skill_bundle(phase=task.phase, overlay_skill_metadata=overlay_skill_metadata)
+    system_context = build_interactive_context(task, skills=skills)
+    return [claude_bin, "--append-system-prompt", system_context]
+
+
 def launch_web_session(
     task: Task,
     *,
-    phase: str,
     overlay_skill_metadata: SkillMetadata,
     terminal_mode: str = "",
     terminal_app: str = "",
@@ -31,22 +52,7 @@ def launch_web_session(
     Returns a TaskAttempt with ``launch_url`` set for browser-based modes,
     or empty for native terminal modes.
     """
-    skills = resolve_skill_bundle(phase=phase, overlay_skill_metadata=overlay_skill_metadata)
-
-    claude_bin = shutil.which("claude")
-    if claude_bin is None:
-        msg = "claude CLI is not installed"
-        raise FileNotFoundError(msg)
-
-    resume_session_id = _get_resume_session_id(task)
-
-    if resume_session_id:
-        agent_command = [claude_bin, "--resume", resume_session_id]
-        logger.info("Resuming headless session %s for task %s", resume_session_id, task.pk)
-    else:
-        system_context = build_interactive_context(task, skills=skills)
-        agent_command = [claude_bin, "--append-system-prompt", system_context]
-
+    agent_command = build_interactive_command(task, overlay_skill_metadata=overlay_skill_metadata)
     mode = terminal_mode or get_terminal_mode()
     result = terminal_launch(agent_command, mode=mode, app=terminal_app)
 
@@ -57,7 +63,7 @@ def launch_web_session(
     )
 
 
-def _get_resume_session_id(task: Task) -> str:
+def get_resume_session_id(task: Task) -> str:
     """Return the Claude session ID to resume, if available.
 
     The session_id is stored on the Session's agent_id when the interactive
