@@ -21,6 +21,13 @@ def _isolate_state_dir(tmp_path: Path):
     router.STATE_DIR = original
 
 
+@pytest.fixture(autouse=True)
+def _no_real_orphan_fetch():
+    """Prevent session-end tests from shelling out to the real t3 CLI."""
+    with patch.object(router, "_fetch_orphans", return_value=[]):
+        yield
+
+
 def _read_skills(session_id: str) -> list[str]:
     skills_file = router.STATE_DIR / f"{session_id}.skills"
     if not skills_file.is_file():
@@ -204,3 +211,64 @@ class TestSessionEndRetro:
         assert "t3:code" in output["additionalContext"]
         assert "t3:review" in output["additionalContext"]
         assert "ac-python" not in output["additionalContext"]
+
+
+class TestSessionEndOrphans:
+    """SessionEnd surfaces orphan branches alongside the retro suggestion."""
+
+    def test_orphan_summary_included_when_orphans_exist(self) -> None:
+        skills_file = router.STATE_DIR / "sess-orphan-1.skills"
+        skills_file.write_text("t3:code\n", encoding="utf-8")
+
+        fake_orphans = [
+            {"repo": "/ws/org/backend", "branch": "feat-1", "status": "pushed_orphan", "ahead_count": 3},
+            {"repo": "/ws/org/frontend", "branch": "feat-2", "status": "unpushed_orphan", "ahead_count": 1},
+        ]
+        stdout = StringIO()
+        with (
+            patch.object(router, "_fetch_orphans", return_value=fake_orphans),
+            patch("sys.stdout", stdout),
+        ):
+            handle_session_end({"session_id": "sess-orphan-1"})
+
+        output = json.loads(stdout.getvalue())
+        ctx = output["additionalContext"]
+        assert "ORPHAN BRANCHES DETECTED (2)" in ctx
+        assert "feat-1" in ctx
+        assert "feat-2" in ctx
+        assert "/ws/org/backend" in ctx
+        assert "ensure-draft" in ctx
+
+    def test_orphan_preview_truncates_long_lists(self) -> None:
+        skills_file = router.STATE_DIR / "sess-orphan-2.skills"
+        skills_file.write_text("t3:code\n", encoding="utf-8")
+
+        many = [
+            {"repo": f"/ws/r{i}", "branch": f"br-{i}", "status": "pushed_orphan", "ahead_count": 1} for i in range(8)
+        ]
+        stdout = StringIO()
+        with (
+            patch.object(router, "_fetch_orphans", return_value=many),
+            patch("sys.stdout", stdout),
+        ):
+            handle_session_end({"session_id": "sess-orphan-2"})
+
+        output = json.loads(stdout.getvalue())
+        ctx = output["additionalContext"]
+        assert "ORPHAN BRANCHES DETECTED (8)" in ctx
+        assert "and 3 more" in ctx
+
+    def test_no_orphans_but_lifecycle_skills_still_shows_retro(self) -> None:
+        skills_file = router.STATE_DIR / "sess-orphan-3.skills"
+        skills_file.write_text("t3:code\n", encoding="utf-8")
+
+        stdout = StringIO()
+        with (
+            patch.object(router, "_fetch_orphans", return_value=[]),
+            patch("sys.stdout", stdout),
+        ):
+            handle_session_end({"session_id": "sess-orphan-3"})
+
+        output = json.loads(stdout.getvalue())
+        assert "retro" in output["additionalContext"].lower()
+        assert "ORPHAN" not in output["additionalContext"]

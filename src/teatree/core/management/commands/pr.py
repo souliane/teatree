@@ -13,9 +13,11 @@ from django.db import transaction
 from django_typer.management import TyperCommand, command
 
 from teatree import visual_qa
+from teatree.backends.protocols import PullRequestSpec
 from teatree.core.backend_factory import code_host_from_overlay, get_issue_tracker
 from teatree.core.models import Ticket, Worktree
 from teatree.core.models.types import TicketExtra, VisualQASummary
+from teatree.core.orphan_guard import BranchStatus, classify_branch
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.runners.ship import overlay_mr_labels, sanitize_close_keywords
 from teatree.utils import git
@@ -59,8 +61,24 @@ class ShippingGateFailure(TypedDict):
     hint: str
 
 
+class EnsureDraftResult(TypedDict, total=False):
+    skipped: str
+    branch: str
+    url: str
+    hint: str
+    error: str
+
+
 _IMAGE_URL_RE = re.compile(r"!\[([^\]]*)\]\((/uploads/[^\)]+)\)")
 _EXTERNAL_LINK_RE = re.compile(r"https?://(?:www\.)?(?:notion\.so|linear\.app|jira\.\S+)/\S+")
+_REMOTE_HOST_RE = re.compile(r"^(?:git@[^:]+:|https?://[^/]+/|ssh://[^/]+/|git://[^/]+/)")
+
+
+def _slug_from_remote(remote_url: str) -> str:
+    """Extract the ``org/repo`` (or ``ns/group/repo``) slug from a git remote URL."""
+    if not remote_url:
+        return ""
+    return _REMOTE_HOST_RE.sub("", remote_url.strip()).removesuffix(".git")
 
 
 def _ship_preview(ticket: Ticket, worktree: Worktree) -> tuple[str, str, str]:
@@ -215,6 +233,64 @@ class Command(TyperCommand):
             ticket.ship()
             ticket.save()
         return ShipEnqueued(ticket_id=int(ticket.pk), state=str(ticket.state))
+
+    @command(name="ensure-draft")
+    def ensure_draft(
+        self,
+        branch: str = "",
+        repo: str = "",
+    ) -> EnsureDraftResult:
+        """Create a draft PR for an orphan branch (idempotent, no-op when a PR already exists).
+
+        An orphan is a branch with commits not on ``origin/main`` (after
+        subject-match + tree-equality checks) and no open PR/MR. When this
+        runs inside a git pre-push hook for a *first* push, the branch is not
+        yet on the remote — creating the PR is deferred with a warning so the
+        push proceeds and the agent can re-run this command afterwards.
+        """
+        repo_path = repo or "."
+        branch_name = branch or git.current_branch(repo=repo_path)
+        if not branch_name or branch_name in {"HEAD", "main", "master"}:
+            return EnsureDraftResult(skipped="not on a feature branch", branch=branch_name)
+
+        report = classify_branch(repo_path, branch_name)
+
+        if report.status is BranchStatus.SYNCED:
+            return EnsureDraftResult(skipped="branch synced to origin/main", branch=branch_name)
+        if report.status is BranchStatus.OPEN_PR:
+            return EnsureDraftResult(skipped="open PR exists", branch=branch_name, url=report.open_pr_url)
+        if report.status is BranchStatus.UNPUSHED_ORPHAN:
+            return EnsureDraftResult(
+                skipped="branch not on remote yet — re-run after push completes",
+                branch=branch_name,
+                hint=f"t3 <overlay> pr ensure-draft --branch {branch_name}",
+            )
+
+        host = code_host_from_overlay()
+        if host is None:
+            return EnsureDraftResult(error="no code host configured")
+
+        commit_subject, commit_body = git.last_commit_message(repo=repo_path)
+        title = commit_subject or f"WIP: {branch_name}"
+        description = commit_body or f"Draft PR auto-created to track branch `{branch_name}`."
+        description = sanitize_close_keywords(description, close_ticket=get_overlay().config.mr_close_ticket)
+
+        remote = git.remote_url(repo=repo_path)
+        repo_slug = _slug_from_remote(remote)
+        assignee = host.current_user() or git.config_value(key="user.name")
+
+        raw = host.create_pr(
+            PullRequestSpec(
+                repo=repo_slug,
+                branch=branch_name,
+                title=title,
+                description=description,
+                labels=overlay_mr_labels(),
+                assignee=assignee,
+                draft=True,
+            ),
+        )
+        return EnsureDraftResult(branch=branch_name, url=str(raw.get("url", raw.get("web_url", ""))))
 
     @command(name="check-gates")
     def check_gates(self, ticket_id: int, target_phase: str = "shipping") -> dict[str, object]:

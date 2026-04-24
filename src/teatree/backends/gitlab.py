@@ -41,6 +41,8 @@ class GitLabCodeHost:
             payload["labels"] = ",".join(spec.labels)
         if spec.assignee:
             payload["assignee_username"] = spec.assignee
+        if spec.draft and not spec.title.startswith("Draft:"):
+            payload["title"] = f"Draft: {spec.title}"
 
         return self._client.post_json(f"projects/{project.project_id}/merge_requests", payload) or {}
 

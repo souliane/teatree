@@ -12,8 +12,10 @@ from teatree.core.management.commands.pr import (
     _check_shipping_gate,
     _resolve_base_url,
     _run_visual_qa_gate,
+    _slug_from_remote,
 )
 from teatree.core.models import Session, Ticket, Worktree
+from teatree.core.orphan_guard import BranchReport, BranchStatus
 from teatree.core.overlay_loader import reset_overlay_cache
 from tests.teatree_core.conftest import CommandOverlay
 
@@ -108,6 +110,133 @@ class TestPrCreateThinWrapper(TestCase):
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.REVIEWED  # not advanced
         assert result["allowed"] is False
+
+
+class TestSlugFromRemote(TestCase):
+    def test_github_ssh(self) -> None:
+        assert _slug_from_remote("git@github.com:souliane/teatree.git") == "souliane/teatree"
+
+    def test_github_https(self) -> None:
+        assert _slug_from_remote("https://github.com/souliane/teatree.git") == "souliane/teatree"
+
+    def test_gitlab_nested_namespace(self) -> None:
+        assert _slug_from_remote("git@gitlab.com:acme/team/backend.git") == "acme/team/backend"
+
+    def test_no_dot_git_suffix(self) -> None:
+        assert _slug_from_remote("https://github.com/souliane/teatree") == "souliane/teatree"
+
+    def test_empty_returns_empty(self) -> None:
+        assert _slug_from_remote("") == ""
+
+
+class TestEnsureDraft(TestCase):
+    @pytest.fixture(autouse=True)
+    def _inject_fixtures(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._monkeypatch = monkeypatch
+
+    def test_no_op_when_branch_has_open_pr(self) -> None:
+        host = MagicMock()
+        self._monkeypatch.setattr(pr_command, "code_host_from_overlay", lambda: host)
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch.object(pr_command.git, "current_branch", return_value="feat-x"),
+            patch.object(
+                pr_command,
+                "classify_branch",
+                return_value=BranchReport(
+                    repo=".",
+                    branch="feat-x",
+                    status=BranchStatus.OPEN_PR,
+                    ahead_count=3,
+                    open_pr_url="https://gitlab.com/org/repo/-/merge_requests/42",
+                ),
+            ),
+        ):
+            result = cast("dict[str, object]", call_command("pr", "ensure-draft"))
+
+        assert result["skipped"] == "open PR exists"
+        assert "42" in str(result["url"])
+        host.create_pr.assert_not_called()
+
+    def test_no_op_when_branch_synced(self) -> None:
+        host = MagicMock()
+        self._monkeypatch.setattr(pr_command, "code_host_from_overlay", lambda: host)
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch.object(pr_command.git, "current_branch", return_value="feat-y"),
+            patch.object(
+                pr_command,
+                "classify_branch",
+                return_value=BranchReport(
+                    repo=".",
+                    branch="feat-y",
+                    status=BranchStatus.SYNCED,
+                    ahead_count=0,
+                ),
+            ),
+        ):
+            result = cast("dict[str, object]", call_command("pr", "ensure-draft"))
+
+        assert "synced" in str(result["skipped"])
+        host.create_pr.assert_not_called()
+
+    def test_defers_when_branch_not_on_remote(self) -> None:
+        host = MagicMock()
+        self._monkeypatch.setattr(pr_command, "code_host_from_overlay", lambda: host)
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch.object(pr_command.git, "current_branch", return_value="feat-z"),
+            patch.object(
+                pr_command,
+                "classify_branch",
+                return_value=BranchReport(
+                    repo=".",
+                    branch="feat-z",
+                    status=BranchStatus.UNPUSHED_ORPHAN,
+                    ahead_count=2,
+                ),
+            ),
+        ):
+            result = cast("dict[str, object]", call_command("pr", "ensure-draft"))
+
+        assert "not on remote yet" in str(result["skipped"])
+        assert "feat-z" in str(result["hint"])
+        host.create_pr.assert_not_called()
+
+    def test_creates_draft_when_pushed_orphan(self) -> None:
+        host = MagicMock()
+        host.create_pr.return_value = {"url": "https://github.com/souliane/teatree/pull/999"}
+        host.current_user.return_value = "souliane"
+        self._monkeypatch.setattr(pr_command, "code_host_from_overlay", lambda: host)
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch.object(pr_command.git, "current_branch", return_value="feat-q"),
+            patch.object(pr_command.git, "remote_url", return_value="git@github.com:souliane/teatree.git"),
+            patch.object(pr_command.git, "last_commit_message", return_value=("feat: cool thing", "body")),
+            patch.object(
+                pr_command,
+                "classify_branch",
+                return_value=BranchReport(
+                    repo=".",
+                    branch="feat-q",
+                    status=BranchStatus.PUSHED_ORPHAN,
+                    ahead_count=5,
+                ),
+            ),
+        ):
+            result = cast("dict[str, object]", call_command("pr", "ensure-draft"))
+
+        assert result["url"] == "https://github.com/souliane/teatree/pull/999"
+        assert result["branch"] == "feat-q"
+        (spec,) = host.create_pr.call_args.args
+        assert spec.draft is True
+        assert spec.branch == "feat-q"
+        assert spec.repo == "souliane/teatree"
+        assert spec.title == "feat: cool thing"
 
 
 class TestPostEvidence(TestCase):
