@@ -8,6 +8,7 @@ from teatree.core.models import Session, Task, TaskAttempt, Ticket
 from teatree.core.tasks import (
     drain_headless_queue,
     execute_retrospect,
+    execute_ship,
     refresh_followup_snapshot,
     sync_followup,
 )
@@ -132,6 +133,60 @@ class TestExecuteRetrospect(TestCase):
             "skipped": True,
             "state": "delivered",
         }
+
+
+class TestExecuteShip(TestCase):
+    def _ticket_in_shipped(self) -> Ticket:
+        ticket = Ticket.objects.create(overlay="test")
+        ticket.state = Ticket.State.SHIPPED
+        ticket.save(update_fields=["state"])
+        return ticket
+
+    @override_settings(**IMMEDIATE_BACKEND)
+    def test_advances_shipped_ticket_to_in_review(self) -> None:
+        from teatree.core.runners.base import RunnerResult  # noqa: PLC0415
+
+        ticket = self._ticket_in_shipped()
+
+        with patch("teatree.core.tasks.ShipExecutor") as ship_exec:
+            ship_exec.return_value.run.return_value = RunnerResult(ok=True, detail="https://example.com/mr/1")
+            result = execute_ship.enqueue(ticket.pk)
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.IN_REVIEW
+        assert result.return_value == {
+            "ticket_id": ticket.pk,
+            "ok": True,
+            "detail": "https://example.com/mr/1",
+        }
+
+    @override_settings(**IMMEDIATE_BACKEND)
+    def test_skips_when_state_does_not_match(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.MERGED)
+
+        result = execute_ship.enqueue(ticket.pk)
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.MERGED
+        assert result.return_value == {
+            "ticket_id": ticket.pk,
+            "skipped": True,
+            "state": "merged",
+        }
+
+    @override_settings(**IMMEDIATE_BACKEND)
+    def test_keeps_state_when_runner_fails(self) -> None:
+        from teatree.core.runners.base import RunnerResult  # noqa: PLC0415
+
+        ticket = self._ticket_in_shipped()
+
+        with patch("teatree.core.tasks.ShipExecutor") as ship_exec:
+            ship_exec.return_value.run.return_value = RunnerResult(ok=False, detail="push rejected")
+            result = execute_ship.enqueue(ticket.pk)
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.SHIPPED
+        assert result.return_value == {"ticket_id": ticket.pk, "ok": False, "detail": "push rejected"}
 
 
 class TestExecuteHeadlessTask(TestCase):

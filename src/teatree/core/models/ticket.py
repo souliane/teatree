@@ -187,10 +187,19 @@ class Ticket(models.Model):
         )
 
     @transition(field=state, source=State.REVIEWED, target=State.SHIPPED)
-    def ship(self, *, mr_urls: list[str] | None = None) -> None:
-        extra = self._extra()
-        extra["mr_urls"] = mr_urls or []
-        self.extra = extra
+    def ship(self) -> None:
+        """Schedule push + MR creation.
+
+        The worker pushes the worktree branch, opens the merge request, and
+        calls ``request_review()`` on success. FSM invariant (BLUEPRINT §4):
+        transition bodies stay pure — long I/O is offloaded to an ``@task``
+        worker, enqueued after commit so the state change and the queued work
+        land atomically.
+        """
+        from teatree.core.tasks import execute_ship  # noqa: PLC0415
+
+        ticket_pk = int(self.pk)
+        transaction.on_commit(lambda: execute_ship.enqueue(ticket_pk))
 
     @transition(field=state, source=State.SHIPPED, target=State.IN_REVIEW)
     def request_review(self) -> None:

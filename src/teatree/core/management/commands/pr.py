@@ -1,17 +1,22 @@
-"""Pull request helpers: create, check gates, fetch issue, detect tenant."""
+"""Pull request helpers: gate-validate then enqueue ship transition.
+
+The actual push + MR creation lives in ``ShipExecutor`` (BLUEPRINT §4) and runs
+inside the ``execute_ship`` task. This command is a deterministic CLI wrapper:
+it runs the deterministic gates, calls ``ticket.ship()`` to enter SHIPPED, and
+returns the MR URL once the worker completes.
+"""
 
 import re
-from collections.abc import Iterable
 from typing import TypedDict, cast
 
 from django_typer.management import TyperCommand, command
 
 from teatree import visual_qa
-from teatree.backends.protocols import PullRequestSpec
 from teatree.core.backend_factory import code_host_from_overlay, get_issue_tracker
 from teatree.core.models import Ticket, Worktree
 from teatree.core.models.types import TicketExtra, VisualQASummary
 from teatree.core.overlay_loader import get_overlay
+from teatree.core.runners.ship import overlay_mr_labels, sanitize_close_keywords
 from teatree.utils import git
 
 
@@ -23,42 +28,70 @@ class VisualQAGateFailure(TypedDict):
     hint: str
 
 
+class ShipDryRun(TypedDict):
+    dry_run: bool
+    repo: str
+    branch: str
+    title: str
+    description: str
+    labels: list[str]
+
+
+class MrValidationError(TypedDict):
+    error: str
+    details: list[str]
+
+
+class WorktreeMissingError(TypedDict):
+    error: str
+
+
+class ShipEnqueued(TypedDict):
+    ticket_id: int
+    state: str
+
+
+class ShippingGateFailure(TypedDict):
+    allowed: bool
+    error: str
+    missing: list[str]
+    hint: str
+
+
 _IMAGE_URL_RE = re.compile(r"!\[([^\]]*)\]\((/uploads/[^\)]+)\)")
 _EXTERNAL_LINK_RE = re.compile(r"https?://(?:www\.)?(?:notion\.so|linear\.app|jira\.\S+)/\S+")
-_CLOSE_KEYWORD_RE = re.compile(
-    r"\b(closes?|fixes?|resolves?)\s+((?:[\w./-]+)?#\d+|https?://\S+/issues/\d+)",
-    re.IGNORECASE,
-)
 
 
-def _sanitize_close_keywords(description: str, *, close_ticket: bool) -> str:
-    """Replace GitLab auto-close keywords with a non-closing reference.
-
-    When *close_ticket* is ``False``, replaces ``Closes #N``, ``Fixes #N``,
-    ``Resolves #N`` (and their variants) with ``Relates to #N`` so the MR
-    does not auto-close the issue on merge.
-    """
-    if close_ticket:
-        return description
-    return _CLOSE_KEYWORD_RE.sub(r"Relates to \2", description)
+def _ship_preview(ticket: Ticket, worktree: Worktree) -> tuple[str, str, str]:
+    """Return ``(repo_path, title, description)`` previewed from the last commit."""
+    repo_path = (worktree.extra or {}).get("worktree_path", "") or worktree.repo_path
+    subject, body = git.last_commit_message(repo=repo_path)
+    title = subject or f"Resolve {ticket.issue_url}"
+    description = sanitize_close_keywords(body, close_ticket=get_overlay().config.mr_close_ticket)
+    return repo_path, title, description
 
 
-def _assignee_from_host(host: object) -> str:
-    """Return the code host login for MR auto-assignment, falling back to git user.name."""
-    host_user = getattr(host, "current_user", None)
-    if callable(host_user):
-        login = host_user()
-        if login:
-            return login
-    return git.config_value(key="user.name")
+def _ship_dry_run(ticket: Ticket, worktree: Worktree) -> ShipDryRun:
+    repo_path, title, description = _ship_preview(ticket, worktree)
+    return ShipDryRun(
+        dry_run=True,
+        repo=repo_path,
+        branch=worktree.branch,
+        title=title,
+        description=description,
+        labels=overlay_mr_labels(),
+    )
 
 
-def _last_commit_message(cwd: str) -> tuple[str, str]:
-    """Return ``(subject, body)`` from the last git commit in *cwd*."""
-    return git.last_commit_message(repo=cwd)
+def _validate_mr_metadata(ticket: Ticket, worktree: Worktree) -> MrValidationError | None:
+    _, title, description = _ship_preview(ticket, worktree)
+    validation = get_overlay().metadata.validate_mr(title, description)
+    if validation["errors"]:
+        return MrValidationError(error="MR validation failed", details=validation["errors"])
+    return None
 
 
-def _check_shipping_gate(ticket: Ticket) -> dict[str, object] | None:
+def _check_shipping_gate(ticket: Ticket) -> ShippingGateFailure | None:
     """Return an error dict if the ticket hasn't passed the review gate.
 
     Returns structured JSON with ``missing`` phases so the calling agent
@@ -75,12 +108,12 @@ def _check_shipping_gate(ticket: Ticket) -> dict[str, object] | None:
         visited = session.visited_phases or []
         required = session._REQUIRED_PHASES.get("shipping", [])  # noqa: SLF001
         missing = [p for p in required if p not in visited]
-        return {
-            "allowed": False,
-            "error": f"Gate check failed: {exc}",
-            "missing": missing,
-            "hint": "Spawn a review sub-agent to satisfy the reviewing gate, then retry.",
-        }
+        return ShippingGateFailure(
+            allowed=False,
+            error=f"Gate check failed: {exc}",
+            missing=missing,
+            hint="Spawn a review sub-agent to satisfy the reviewing gate, then retry.",
+        )
     return None
 
 
@@ -134,38 +167,26 @@ def _run_visual_qa_gate(ticket: Ticket, *, skip_reason: str = "") -> VisualQAGat
 
 class Command(TyperCommand):
     @command()
-    def create(  # noqa: PLR0913
+    def create(
         self,
         ticket_id: int,
-        repo: str = "",
-        title: str = "",
-        description: str = "",
         *,
         dry_run: bool = False,
         skip_validation: bool = False,
         skip_visual_qa: str = "",
-    ) -> dict[str, object]:
-        """Create a merge request for the ticket's branch."""
+    ) -> (
+        ShipEnqueued | ShipDryRun | MrValidationError | VisualQAGateFailure | ShippingGateFailure | WorktreeMissingError
+    ):
+        """Validate ship gates and trigger the ship transition.
+
+        On success the ``execute_ship`` worker pushes the branch, opens the MR,
+        and advances ``SHIPPED → IN_REVIEW``. The return value reports the MR
+        URL once the worker completes (synchronous in interactive mode).
+        """
         ticket = Ticket.objects.get(pk=ticket_id)
-        host = code_host_from_overlay()
-        if host is None:
-            return {"error": "No code host configured (check overlay GitLab token)"}
-
         worktree = ticket.worktrees.first()
-        branch = worktree.branch if worktree else f"ticket-{ticket.ticket_number}"
-        worktree_fs_path = (worktree.extra or {}).get("worktree_path", "") if worktree else ""
-        repo_path = repo or worktree_fs_path or (worktree.repo_path if worktree else "")
-
-        # Auto-fill title/description from the last commit message
-        if not title or not description:
-            commit_subject, commit_body = _last_commit_message(worktree_fs_path or repo_path)
-            if not title:
-                title = commit_subject or f"Resolve {ticket.issue_url}"
-            if not description:
-                description = commit_body
-
-        overlay = get_overlay()
-        description = _sanitize_close_keywords(description, close_ticket=overlay.config.mr_close_ticket)
+        if worktree is None:
+            return WorktreeMissingError(error="ticket has no worktree")
 
         if not skip_validation:
             gate_error = _check_shipping_gate(ticket)
@@ -173,32 +194,17 @@ class Command(TyperCommand):
                 return gate_error
             visual_qa_error = _run_visual_qa_gate(ticket, skip_reason=skip_visual_qa)
             if visual_qa_error:
-                return {**visual_qa_error}
-            validation = overlay.metadata.validate_mr(title, description)
-            if validation["errors"]:
-                return {"error": "MR validation failed", "details": validation["errors"]}
+                return visual_qa_error
+            validation_error = _validate_mr_metadata(ticket, worktree)
+            if validation_error:
+                return validation_error
 
         if dry_run:
-            return {
-                "dry_run": True,
-                "repo": repo_path,
-                "branch": branch,
-                "title": title,
-                "description": description,
-                "labels": _mr_auto_labels(),
-            }
+            return _ship_dry_run(ticket, worktree)
 
-        assignee = _assignee_from_host(host)
-        return host.create_pr(
-            PullRequestSpec(
-                repo=repo_path,
-                branch=branch,
-                title=title,
-                description=description,
-                labels=_mr_auto_labels(),
-                assignee=assignee,
-            ),
-        )
+        ticket.ship()
+        ticket.save()
+        return ShipEnqueued(ticket_id=int(ticket.pk), state=str(ticket.state))
 
     @command(name="check-gates")
     def check_gates(self, ticket_id: int, target_phase: str = "shipping") -> dict[str, object]:
@@ -308,15 +314,3 @@ class Command(TyperCommand):
             return host.update_mr_note(repo=repo_path, mr_iid=mr_iid, note_id=note_id, body=note_body)
 
         return host.post_mr_note(repo=repo_path, mr_iid=mr_iid, body=note_body)
-
-
-def _mr_auto_labels() -> list[str]:
-    raw = get_overlay().config.mr_auto_labels
-    if isinstance(raw, str):
-        values = raw.split(",")
-    elif isinstance(raw, Iterable):
-        values = [str(value) for value in raw]
-    else:
-        return []
-
-    return [value.strip() for value in values if value.strip()]

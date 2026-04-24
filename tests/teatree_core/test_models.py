@@ -319,6 +319,31 @@ class TestPhaseAutoDispatch(TestCase):
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.SHIPPED
 
+    def test_ship_enqueues_execute_ship_after_commit(self) -> None:
+        """Stage 2 of #140: ship() body offloads I/O to a @task worker."""
+        from unittest.mock import MagicMock  # noqa: PLC0415
+
+        from teatree.core import tasks as tasks_mod  # noqa: PLC0415
+
+        ticket = Ticket.objects.create()
+        _advance_ticket_to_tested(ticket)
+        _complete_phase_task(ticket, "reviewing")
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.REVIEWED
+
+        fake_task = MagicMock()
+        with (
+            self.captureOnCommitCallbacks(execute=True),
+            patch.object(tasks_mod, "execute_ship", fake_task),
+        ):
+            ticket.ship()
+            ticket.save()
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.SHIPPED
+        fake_task.enqueue.assert_called_once_with(ticket.pk)
+
     def test_child_task_of_already_advanced_ticket_is_noop(self) -> None:
         ticket = Ticket.objects.create()
         ticket.scope()

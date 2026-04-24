@@ -5,12 +5,12 @@ from django.db import transaction
 from django.tasks import task
 
 from teatree.core.models import Task, Ticket
-from teatree.core.runners import RetroExecutor
+from teatree.core.runners import RetroExecutor, ShipExecutor
 
 logger = logging.getLogger(__name__)
 
 
-class RetrospectResult(TypedDict, total=False):
+class TransitionResult(TypedDict, total=False):
     ticket_id: int
     ok: bool
     skipped: bool
@@ -81,7 +81,7 @@ def refresh_followup_snapshot() -> dict[str, int]:
 
 
 @task()
-def execute_retrospect(ticket_id: int) -> RetrospectResult:
+def execute_retrospect(ticket_id: int) -> TransitionResult:
     """Run retrospection I/O for a ticket in the RETROSPECTED state.
 
     Idempotency: the worker takes a row lock and re-checks state before running.
@@ -106,6 +106,37 @@ def execute_retrospect(ticket_id: int) -> RetrospectResult:
             return {"ticket_id": ticket_id, "ok": False, "detail": result.detail}
 
         ticket.mark_delivered()
+        ticket.save()
+
+    return {"ticket_id": ticket_id, "ok": True, "detail": result.detail}
+
+
+@task()
+def execute_ship(ticket_id: int) -> TransitionResult:
+    """Push the worktree branch and open the merge request for a SHIPPED ticket.
+
+    Idempotency: the worker takes a row lock and re-checks state before running.
+    At-least-once delivery from django-tasks means this can fire more than once
+    for the same transition — a lost update or a redelivered job must be safe.
+
+    On success, advances ``SHIPPED → IN_REVIEW`` via ``request_review()``.
+    """
+    with transaction.atomic():
+        ticket = Ticket.objects.select_for_update().get(pk=ticket_id)
+        if ticket.state != Ticket.State.SHIPPED:
+            logger.info(
+                "execute_ship skipped for ticket %s: state=%s (not SHIPPED)",
+                ticket_id,
+                ticket.state,
+            )
+            return {"ticket_id": ticket_id, "skipped": True, "state": str(ticket.state)}
+
+        result = ShipExecutor(ticket).run()
+        if not result.ok:
+            logger.warning("Ship failed for ticket %s: %s", ticket_id, result.detail)
+            return {"ticket_id": ticket_id, "ok": False, "detail": result.detail}
+
+        ticket.request_review()
         ticket.save()
 
     return {"ticket_id": ticket_id, "ok": True, "detail": result.detail}

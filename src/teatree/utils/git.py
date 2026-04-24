@@ -76,6 +76,13 @@ def pull_ff_only(repo: str = ".") -> bool:
     return check(repo=repo, args=["pull", "--ff-only"])
 
 
+def push(repo: str = ".", remote: str = "origin", branch: str = "") -> None:
+    args = ["push", "--set-upstream", remote]
+    if branch:
+        args.append(branch)
+    run_strict(repo=repo, args=args)
+
+
 # ── Discovery ────────────────────────────────────────────────────────
 
 
