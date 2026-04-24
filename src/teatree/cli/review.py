@@ -2,6 +2,7 @@
 
 from http import HTTPStatus
 
+import httpx
 import typer
 
 from teatree.utils.run import run_allowed_to_fail
@@ -100,8 +101,6 @@ class ReviewService:
 
     def delete_draft_note(self, repo: str, mr: int, note_id: int) -> tuple[str, int]:
         """Delete a draft note. Returns (message, exit_code)."""
-        import httpx  # noqa: PLC0415
-
         api = self._get_api()
         encoded = repo.replace("/", "%2F")
         response = httpx.delete(
@@ -114,7 +113,6 @@ class ReviewService:
         return f"Failed: HTTP {response.status_code}", 1
 
     def publish_draft_notes(self, repo: str, mr: int) -> tuple[str, int]:
-        import httpx  # noqa: PLC0415
 
         api = self._get_api()
         encoded = repo.replace("/", "%2F")
@@ -125,6 +123,33 @@ class ReviewService:
         )
         if response.status_code in {HTTPStatus.OK, HTTPStatus.NO_CONTENT}:
             return "OK — all draft notes published", 0
+        return f"Failed: HTTP {response.status_code}", 1
+
+    def reply_to_discussion(self, repo: str, mr: int, discussion_id: str, body: str) -> tuple[str, int]:
+        """Reply to an existing discussion thread on an MR. Returns (message, exit_code)."""
+        api = self._get_api()
+        encoded = repo.replace("/", "%2F")
+        result = api.post_json(
+            f"projects/{encoded}/merge_requests/{mr}/discussions/{discussion_id}/notes",
+            {"body": body},
+        )
+        if not result:
+            return "Failed to post reply", 1
+        note_id = dict(result).get("id")
+        return f"OK reply_note_id={note_id}", 0
+
+    def resolve_discussion(self, repo: str, mr: int, discussion_id: str, *, resolved: bool = True) -> tuple[str, int]:
+        """Mark a discussion thread resolved or unresolved. Returns (message, exit_code)."""
+        api = self._get_api()
+        encoded = repo.replace("/", "%2F")
+        flag = "true" if resolved else "false"
+        response = httpx.put(
+            f"{api.base_url}/projects/{encoded}/merge_requests/{mr}/discussions/{discussion_id}?resolved={flag}",
+            headers={"PRIVATE-TOKEN": self.token},
+            timeout=10.0,
+        )
+        if response.status_code in {HTTPStatus.OK, HTTPStatus.NO_CONTENT}:
+            return f"OK resolved={resolved}", 0
         return f"Failed: HTTP {response.status_code}", 1
 
     def list_draft_notes(self, repo: str, mr: int) -> tuple[str, int]:
@@ -210,3 +235,34 @@ def list_draft_notes(
     service = _require_token()
     msg, _code = service.list_draft_notes(repo, mr)
     typer.echo(msg)
+
+
+@review_app.command(name="reply-to-discussion")
+def reply_to_discussion(
+    repo: str = typer.Argument(help="GitLab project path (e.g., my-org/my-repo)"),
+    mr: int = typer.Argument(help="Merge request IID"),
+    discussion_id: str = typer.Argument(help="Discussion (thread) ID"),
+    body: str = typer.Argument(help="Reply body (markdown)"),
+) -> None:
+    """Reply to a GitLab MR discussion thread (immediate, not draft)."""
+    service = _require_token()
+    msg, code = service.reply_to_discussion(repo, mr, discussion_id, body)
+    typer.echo(msg)
+    if code:
+        raise typer.Exit(code=code)
+
+
+@review_app.command(name="resolve-discussion")
+def resolve_discussion(
+    repo: str = typer.Argument(help="GitLab project path"),
+    mr: int = typer.Argument(help="Merge request IID"),
+    discussion_id: str = typer.Argument(help="Discussion (thread) ID"),
+    *,
+    resolved: bool = typer.Option(True, "--resolved/--no-resolved", help="Mark resolved (default) or re-open."),
+) -> None:
+    """Mark a GitLab MR discussion thread resolved or unresolved."""
+    service = _require_token()
+    msg, code = service.resolve_discussion(repo, mr, discussion_id, resolved=resolved)
+    typer.echo(msg)
+    if code:
+        raise typer.Exit(code=code)

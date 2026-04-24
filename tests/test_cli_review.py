@@ -213,6 +213,72 @@ class TestReviewService:
             assert result.exit_code == 1
             assert "Failed: HTTP 403" in result.output
 
+    def test_reply_to_discussion_success(self, monkeypatch):
+        monkeypatch.setenv("GITLAB_TOKEN", "test-token")
+        mock_api = MagicMock()
+        mock_api.post_json.return_value = {"id": 777, "body": "thanks"}
+        with patch.object(gitlab_api_mod, "GitLabAPI", return_value=mock_api):
+            result = runner.invoke(
+                app,
+                ["review", "reply-to-discussion", "org/repo", "1", "abc123", "thanks"],
+            )
+            assert result.exit_code == 0
+            assert "OK reply_note_id=777" in result.output
+            mock_api.post_json.assert_called_once()
+            endpoint, payload = mock_api.post_json.call_args.args
+            assert "discussions/abc123/notes" in endpoint
+            assert payload == {"body": "thanks"}
+
+    def test_reply_to_discussion_failure(self, monkeypatch):
+        monkeypatch.setenv("GITLAB_TOKEN", "test-token")
+        mock_api = MagicMock()
+        mock_api.post_json.return_value = None
+        with patch.object(gitlab_api_mod, "GitLabAPI", return_value=mock_api):
+            result = runner.invoke(
+                app,
+                ["review", "reply-to-discussion", "org/repo", "1", "abc123", "thanks"],
+            )
+            assert result.exit_code == 1
+            assert "Failed to post reply" in result.output
+
+    def test_resolve_discussion_success(self, monkeypatch):
+        monkeypatch.setenv("GITLAB_TOKEN", "test-token")
+        mock_response = MagicMock(status_code=200)
+        with patch.object(httpx, "put", return_value=mock_response) as mock_put:
+            result = runner.invoke(
+                app,
+                ["review", "resolve-discussion", "org/repo", "1", "abc123"],
+            )
+            assert result.exit_code == 0
+            assert "OK resolved=True" in result.output
+            call_url = mock_put.call_args.args[0]
+            assert "discussions/abc123" in call_url
+            assert "resolved=true" in call_url
+
+    def test_unresolve_discussion_success(self, monkeypatch):
+        monkeypatch.setenv("GITLAB_TOKEN", "test-token")
+        mock_response = MagicMock(status_code=200)
+        with patch.object(httpx, "put", return_value=mock_response) as mock_put:
+            result = runner.invoke(
+                app,
+                ["review", "resolve-discussion", "org/repo", "1", "abc123", "--no-resolved"],
+            )
+            assert result.exit_code == 0
+            assert "OK resolved=False" in result.output
+            call_url = mock_put.call_args.args[0]
+            assert "resolved=false" in call_url
+
+    def test_resolve_discussion_failure(self, monkeypatch):
+        monkeypatch.setenv("GITLAB_TOKEN", "test-token")
+        mock_response = MagicMock(status_code=403)
+        with patch.object(httpx, "put", return_value=mock_response):
+            result = runner.invoke(
+                app,
+                ["review", "resolve-discussion", "org/repo", "1", "abc123"],
+            )
+            assert result.exit_code == 1
+            assert "Failed: HTTP 403" in result.output
+
 
 # -- _require_token helper -----------------------------------------------------
 
@@ -250,5 +316,21 @@ class TestRequireToken:
         with patch.object(utils_run_mod.subprocess, "run") as mock_run:
             mock_run.return_value = MagicMock(stderr="", returncode=1)
             result = runner.invoke(app, ["review", "list-draft-notes", "org/repo", "1"])
+            assert result.exit_code == 1
+            assert "No GitLab token" in result.output
+
+    def test_reply_to_discussion_rejected(self, monkeypatch):
+        monkeypatch.delenv("GITLAB_TOKEN", raising=False)
+        with patch.object(utils_run_mod.subprocess, "run") as mock_run:
+            mock_run.return_value = MagicMock(stderr="", returncode=1)
+            result = runner.invoke(app, ["review", "reply-to-discussion", "org/repo", "1", "abc", "hi"])
+            assert result.exit_code == 1
+            assert "No GitLab token" in result.output
+
+    def test_resolve_discussion_rejected(self, monkeypatch):
+        monkeypatch.delenv("GITLAB_TOKEN", raising=False)
+        with patch.object(utils_run_mod.subprocess, "run") as mock_run:
+            mock_run.return_value = MagicMock(stderr="", returncode=1)
+            result = runner.invoke(app, ["review", "resolve-discussion", "org/repo", "1", "abc"])
             assert result.exit_code == 1
             assert "No GitLab token" in result.output
