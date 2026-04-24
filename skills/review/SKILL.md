@@ -193,6 +193,18 @@ Only after all reachable sources are exhausted can you post a question-style com
 
 **When the investigation confirms the code is correct, say nothing.** Silence on a check you performed is the correct outcome — not a "looks good, but…" comment. Positive comments belong in the summary to the user, not in the MR.
 
+**Step 0e — Don't Police Other Authors' Title/Description Format (Non-Negotiable):**
+
+Do NOT leave review comments about an external author's MR title format, description wording, commit-message style, work-item link spacing, or whether their description "reads better" in a different shape. These rules are enforced by CI and by the overlay's `validate_pr()` check — not by the reviewer. Raising them manually duplicates the bot and nags a colleague for something a machine already polices.
+
+The reviewer's responsibility is to ensure **their own** MRs pass the title/description check. On other authors' MRs, silence on formatting is the correct outcome. If something is objectively wrong in a way that affects traceability or release notes (e.g., the title references the wrong ticket), frame it as a **correctness** finding, not as a style nit.
+
+**Step 0f — Respect the Overlay's Auto-Close Policy (Non-Negotiable):**
+
+Do NOT suggest adding `Closes #NNN`, `Fixes #NNN`, `Resolves #NNN`, or any other auto-close keyword to an MR description unless the active overlay's conventions explicitly require it. Many overlays manage issue closure via their own ticket/MR linking rather than via GitHub-style auto-close trailers, and suggesting them contradicts the overlay convention.
+
+Check the overlay skill's commit-message and MR-description rules **before** proposing any trailer. The default when the overlay is silent on the topic is: do not suggest auto-close trailers.
+
 **Step 1 — Structured Review Checklist:**
 
 1. **Correctness** — does the code do what the ticket requires? Are all acceptance criteria met? When a change tightens a public contract (e.g., serializer field becomes required, API parameter becomes mandatory), trace all callers — the change affects every flow that uses that interface, not just the one the ticket describes.
