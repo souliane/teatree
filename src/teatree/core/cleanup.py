@@ -123,21 +123,21 @@ def _pr_merge_commit_sha(repo: str, branch: str) -> str:
     Returns ``""`` when neither CLI is available (sandbox, CI without auth) —
     the caller falls back to subject-match classification.
     """
-    sha = _probe_host_cli(
+    sha = probe_host_cli(
         ["gh", "pr", "list", "--head", branch, "--state", "merged", "--json", "mergeCommit", "--limit", "1"],
         repo,
         lambda data: data[0]["mergeCommit"]["oid"],
     )
     if sha:
         return sha
-    return _probe_host_cli(
+    return probe_host_cli(
         ["glab", "mr", "list", "--merged", "--source-branch", branch, "--output", "json", "-P", "1"],
         repo,
         lambda data: data[0]["merge_commit_sha"],
     )
 
 
-def _probe_host_cli(cmd: list[str], repo: str, extract: Callable[[Any], str]) -> str:
+def probe_host_cli(cmd: list[str], repo: str, extract: Callable[[Any], str]) -> str:
     """Invoke a host CLI that may be missing, parse its JSON, extract the SHA.
 
     Swallows ``OSError`` (missing binary, permission denied in sandboxes) and

@@ -235,6 +235,13 @@ repos:
         pass_filenames: false
         always_run: true
         stages: [push]
+      - id: ensure-draft-pr
+        name: ensure draft PR exists (no-orphan invariant)
+        language: system
+        entry: t3 teatree pr ensure-draft
+        pass_filenames: false
+        always_run: true
+        stages: [push]
 
   # Phase 9 - Manual
   - repo: https://github.com/semgrep/semgrep

@@ -559,32 +559,80 @@ def handle_post_compact(data: dict) -> None:
     json.dump({"additionalContext": context}, sys.stdout)
 
 
+_SESSION_END_ORPHAN_TIMEOUT = 4
+_SESSION_END_ORPHAN_PREVIEW = 5
+
+
+def _fetch_orphans() -> list[dict]:
+    """Invoke ``t3 teatree workspace list-orphans`` and return its JSON, or ``[]``."""
+    import shutil  # noqa: PLC0415
+
+    t3_bin = shutil.which("t3")
+    if not t3_bin:
+        return []
+    try:
+        result = subprocess.run(  # noqa: S603
+            [t3_bin, "teatree", "workspace", "list-orphans"],
+            capture_output=True,
+            text=True,
+            timeout=_SESSION_END_ORPHAN_TIMEOUT,
+            check=False,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return []
+    if result.returncode != 0 or not result.stdout.strip():
+        return []
+    try:
+        data = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return []
+    return data if isinstance(data, list) else []
+
+
+def _format_orphan_summary(orphans: list[dict]) -> str:
+    """Return a one-line-per-orphan bullet list, truncated to _SESSION_END_ORPHAN_PREVIEW entries."""
+    preview = orphans[:_SESSION_END_ORPHAN_PREVIEW]
+    lines = [f"  - {o.get('repo', '?')} ({o.get('branch', '?')}, {o.get('ahead_count', 0)} ahead)" for o in preview]
+    if len(orphans) > _SESSION_END_ORPHAN_PREVIEW:
+        lines.append(f"  - …and {len(orphans) - _SESSION_END_ORPHAN_PREVIEW} more")
+    return "\n".join(lines)
+
+
 def handle_session_end(data: dict) -> None:
-    """Suggest retro when lifecycle skills were loaded during the session."""
+    """Suggest retro and surface orphan branches at session close."""
     session_id = data.get("session_id", "")
     if not session_id:
         return
 
     skills_file = STATE_DIR / f"{session_id}.skills"
-    if not skills_file.is_file():
-        return
-
-    loaded = {line.strip() for line in skills_file.read_text(encoding="utf-8").splitlines() if line.strip()}
+    loaded: set[str] = set()
+    if skills_file.is_file():
+        loaded = {line.strip() for line in skills_file.read_text(encoding="utf-8").splitlines() if line.strip()}
 
     lifecycle_skills = {"t3:code", "t3:debug", "t3:test", "t3:ship", "t3:review", "t3:ticket"}
-    if not loaded & lifecycle_skills:
+    retro_relevant = bool(loaded & lifecycle_skills)
+
+    orphans = _fetch_orphans() if retro_relevant else []
+
+    if not retro_relevant and not orphans:
         return
 
-    json.dump(
-        {
-            "additionalContext": (
-                "SESSION ENDING — lifecycle skills were loaded during this session "
-                f"({', '.join(sorted(loaded & lifecycle_skills))}). "
-                "Consider running /t3:retro to capture learnings before the session ends."
-            ),
-        },
-        sys.stdout,
-    )
+    parts: list[str] = []
+    if retro_relevant:
+        parts.append(
+            "SESSION ENDING — lifecycle skills were loaded during this session "
+            f"({', '.join(sorted(loaded & lifecycle_skills))}). "
+            "Consider running /t3:retro to capture learnings before the session ends.",
+        )
+    if orphans:
+        parts.append(
+            f"ORPHAN BRANCHES DETECTED ({len(orphans)}) — branches with local work and no open PR:\n"
+            f"{_format_orphan_summary(orphans)}\n"
+            "Run `t3 teatree pr ensure-draft --branch <name>` to track them, "
+            "or `t3 teatree workspace clean-all` to reap synced ones.",
+        )
+
+    json.dump({"additionalContext": "\n\n".join(parts)}, sys.stdout)
 
 
 # ── PreToolUse: block-direct-commands ────────────────────────────────
