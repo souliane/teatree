@@ -7,6 +7,7 @@ from pathlib import Path
 
 import typer
 
+from teatree.triage import LabelSuggester
 from teatree.utils.run import run_allowed_to_fail
 
 tool_app = typer.Typer(no_args_is_help=True, help="Standalone utilities.")
@@ -84,6 +85,29 @@ def sonar_check(
         cmd.append("--remote-status")
     result = run_allowed_to_fail(cmd, expected_codes=None)
     raise typer.Exit(code=result.returncode)
+
+
+@tool_app.command("label-issues")
+def label_issues(
+    repo: str = typer.Argument(..., help="Repository in owner/name form (e.g. souliane/teatree)"),
+    *,
+    apply: bool = typer.Option(False, "--apply", help="Apply labels via `gh issue edit` (default: print only)."),
+) -> None:
+    """Suggest labels for unlabeled open issues by keyword-matching title and body."""
+    suggester = LabelSuggester(repo)
+    suggestions = suggester.collect_suggestions()
+    if not suggestions:
+        typer.echo("No labelable issues found.")
+        return
+
+    for s in suggestions:
+        typer.echo(f"#{s.number} {s.title}  -> {', '.join(s.labels)}")
+
+    if apply:
+        suggester.apply(suggestions)
+        typer.echo(f"Applied labels to {len(suggestions)} issue(s).")
+    else:
+        typer.echo(f"\n{len(suggestions)} issue(s) to label. Re-run with --apply to apply.")
 
 
 @tool_app.command("claude-handover")

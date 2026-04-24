@@ -546,6 +546,8 @@ Usage: t3 tool [OPTIONS] COMMAND [ARGS]...
 │ analyze-video    Decompose video into frames for AI analysis.                │
 │ bump-deps        Bump pyproject.toml dependencies from uv.lock.              │
 │ sonar-check      Run local SonarQube analysis via Docker.                    │
+│ label-issues     Suggest labels for unlabeled open issues by                 │
+│                  keyword-matching title and body.                            │
 │ claude-handover  Show Claude handover telemetry and runtime recommendations. │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -611,6 +613,23 @@ Usage: t3 tool sonar-check [OPTIONS] [REPO_PATH]
 │ --remote-status    --no-remote-status      Fetch CI Sonar results            │
 │                                            [default: no-remote-status]       │
 │ --help                                     Show this message and exit.       │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 tool label-issues`
+
+```
+Usage: t3 tool label-issues [OPTIONS] REPO
+
+ Suggest labels for unlabeled open issues by keyword-matching title and body.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    repo      TEXT  Repository in owner/name form (e.g. souliane/teatree)   │
+│                      [required]                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --apply          Apply labels via `gh issue edit` (default: print only).     │
+│ --help           Show this message and exit.                                 │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
