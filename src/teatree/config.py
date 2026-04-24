@@ -159,7 +159,9 @@ class TeaTreeConfig:
     raw: dict = field(default_factory=dict)
 
 
-def load_config(path: Path = CONFIG_PATH) -> TeaTreeConfig:
+def load_config(path: Path | None = None) -> TeaTreeConfig:
+    if path is None:
+        path = CONFIG_PATH
     if not path.is_file():
         return TeaTreeConfig()
 
@@ -192,7 +194,7 @@ def load_config(path: Path = CONFIG_PATH) -> TeaTreeConfig:
     return TeaTreeConfig(user=user, raw=raw)
 
 
-def load_e2e_repos(path: Path = CONFIG_PATH) -> list[E2ERepo]:
+def load_e2e_repos(path: Path | None = None) -> list[E2ERepo]:
     """Load named E2E repos from ``[e2e_repos.<name>]`` sections in ``~/.teatree.toml``.
 
     Each entry may specify ``url``, ``branch``, and optionally ``e2e_dir``
@@ -352,7 +354,7 @@ def _write_update_cache(cache_path: Path, message: str) -> None:
     )
 
 
-def discover_overlays(config_path: Path = CONFIG_PATH) -> list[OverlayEntry]:
+def discover_overlays(config_path: Path | None = None) -> list[OverlayEntry]:
     """Discover overlays from ~/.teatree.toml and installed entry points.
 
     Sources (merged by name, toml wins on conflict):
@@ -361,6 +363,8 @@ def discover_overlays(config_path: Path = CONFIG_PATH) -> list[OverlayEntry]:
     """
     from importlib.metadata import entry_points  # noqa: PLC0415
 
+    if config_path is None:
+        config_path = CONFIG_PATH
     seen: dict[str, OverlayEntry] = {}
 
     # 1. Toml config
