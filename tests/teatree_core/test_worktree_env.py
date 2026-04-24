@@ -21,7 +21,7 @@ from teatree.core.worktree_env import (
     set_override,
     write_env_cache,
 )
-from teatree.types import DbImportStrategy
+from teatree.types import BaseImageConfig, DbImportStrategy
 from tests.teatree_core.conftest import CommandOverlay
 
 
@@ -80,6 +80,31 @@ class ExtraOnlyOverlay(OverlayBase):
 
     def declared_env_keys(self) -> set[str]:
         return {"EXTRA_KEY"}
+
+
+class BaseImageOverlay(OverlayBase):
+    """Overlay that declares a base image — tag should land in env cache."""
+
+    def __init__(self, context: Path) -> None:
+        super().__init__()
+        self._context = context
+
+    def get_repos(self) -> list[str]:
+        return ["backend"]
+
+    def get_provision_steps(self, worktree: Worktree) -> list[ProvisionStep]:
+        return []
+
+    def get_base_images(self, worktree: Worktree) -> list[BaseImageConfig]:
+        return [
+            BaseImageConfig(
+                image_name="myapp-local",
+                dockerfile="Dockerfile-local",
+                lockfile="Pipfile.lock",
+                build_context=self._context,
+                env_var="MYAPP_BASE_IMAGE",
+            )
+        ]
 
 
 _SHARED_PG = {"test": SharedPostgresOverlay()}
@@ -217,6 +242,19 @@ class TestWriteEnvCache(TestCase):
                 spec = write_env_cache(wt)
             assert spec is not None
             assert "REDIS_DB_INDEX" not in spec.content
+
+    def test_base_image_env_var_lands_in_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            wt, _ = _make_worktree(tmp, ticket_name="t7", ticket_url="https://ex.com/7", db_name="wt_7")
+            main_repo = Path(tmp) / "main-repo"
+            main_repo.mkdir()
+            (main_repo / "Dockerfile-local").write_text("FROM scratch\n")
+            (main_repo / "Pipfile.lock").write_text('{"_meta": {"hash": "deadbeef"}}\n')
+            overlay = {"test": BaseImageOverlay(context=main_repo)}
+            with patch.object(overlay_loader_mod, "_discover_overlays", return_value=overlay):
+                spec = write_env_cache(wt)
+            assert spec is not None
+            assert "MYAPP_BASE_IMAGE=myapp-local:deps-" in spec.content
 
 
 class TestDetectDrift(TestCase):

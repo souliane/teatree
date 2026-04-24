@@ -12,10 +12,31 @@ from teatree.core.overlay_loader import get_overlay
 from teatree.core.resolve import resolve_worktree
 from teatree.core.step_runner import ProvisionReport, run_provision_steps, run_step
 from teatree.core.worktree_env import CACHE_FILENAME, write_env_cache
+from teatree.docker.build import ensure_base_image
 from teatree.timeouts import TimeoutConfig, load_timeouts
 from teatree.utils import redis_container
 from teatree.utils.ports import find_free_ports, get_worktree_ports
 from teatree.utils.run import TimeoutExpired, run_allowed_to_fail
+
+
+def validate_docker_service_contract(overlay: OverlayBase, worktree: Worktree) -> None:
+    """Raise if ``get_docker_services`` names a service not in ``get_services_config``.
+
+    Prevents drift between the enforcement list and the service specs — fails
+    fast at setup instead of at ``lifecycle start`` when compose would silently
+    ignore an undeclared service name.
+    """
+    declared_services = set(overlay.get_services_config(worktree))
+    docker_services = set(overlay.get_docker_services(worktree))
+    missing = docker_services - declared_services
+    if missing:
+        msg = (
+            f"Overlay {overlay.__class__.__name__} declares docker services "
+            f"{sorted(missing)} not present in get_services_config "
+            f"(declared: {sorted(declared_services)}). "
+            "Either add them to get_services_config or remove from get_docker_services."
+        )
+        raise RuntimeError(msg)
 
 
 def _append_envrc_lines(wt_path: str, lines: list[str]) -> None:
@@ -164,6 +185,29 @@ class Command(TyperCommand):
         else:
             self._timeouts = load_timeouts(overlay)
 
+    def _validate_overlay_docker_contract(self, overlay: OverlayBase, worktrees: list[Worktree]) -> None:
+        for worktree in worktrees:
+            validate_docker_service_contract(overlay, worktree)
+
+    def _build_base_images(self, overlay: OverlayBase, worktrees: list[Worktree]) -> None:
+        """Build overlay-declared base images once and log the resolved tag.
+
+        Called once per ``setup`` invocation, not per worktree — the image
+        is shared across every worktree of the ticket (and across tickets
+        with the same lockfile hash).  Skips build when the tag already
+        exists locally.
+        """
+        seen: set[str] = set()
+        for worktree in worktrees:
+            for cfg in overlay.get_base_images(worktree):
+                key = f"{cfg.image_name}|{cfg.build_context}"
+                if key in seen:
+                    continue
+                seen.add(key)
+                self.stdout.write(f"  Base image: {cfg.image_name} (context: {cfg.build_context})")
+                tag = ensure_base_image(cfg)
+                self.stdout.write(f"  [OK] {tag}")
+
     def _docker_compose_up(
         self,
         project: str,
@@ -229,9 +273,12 @@ class Command(TyperCommand):
 
         resolved_overlay = get_overlay()
         self._init_timeouts(resolved_overlay, no_timeout=no_timeout)
+        worktrees = list(ticket.worktrees.all())
+        self._validate_overlay_docker_contract(resolved_overlay, worktrees)
+        self._build_base_images(resolved_overlay, worktrees)
 
         failed_repos: list[str] = []
-        for wt in ticket.worktrees.all():
+        for wt in worktrees:
             try:
                 report = self._provision_worktree(wt, resolved_overlay, slow_import=slow_import)
                 if not report.success:

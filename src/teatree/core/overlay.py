@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from teatree.types import (
+    BaseImageConfig,
     DbImportStrategy,
     ProvisionStep,
     RunCommand,
@@ -23,6 +24,7 @@ if TYPE_CHECKING:
 # Re-export all types so existing ``from teatree.core.overlay import X`` still works.
 __all__ = [
     "DEFAULT_TRANSITION_EMOJIS",
+    "BaseImageConfig",
     "DbImportStrategy",
     "OverlayBase",
     "OverlayConfig",
@@ -282,6 +284,28 @@ class OverlayBase(ABC):
     def get_compose_file(self, worktree: "Worktree") -> str:
         """Return the path to the docker-compose file for this worktree."""
         return ""
+
+    def get_base_images(self, worktree: "Worktree") -> list[BaseImageConfig]:
+        """Return base images teatree builds once and shares across worktrees.
+
+        Each image is tagged ``{image_name}:deps-{sha256(lockfile)[:12]}``;
+        teatree skips the build when the tag already exists.  Code changes
+        reach containers through the worktree's volume mount — no rebuild.
+        Default: no base images (opt-in — overlays keep working until they
+        opt in).
+        """
+        _ = worktree
+        return []
+
+    def get_docker_services(self, worktree: "Worktree") -> set[str]:
+        """Service names (as declared in ``get_services_config``) that MUST run in Docker.
+
+        Teatree rejects ``lifecycle setup`` if any name returned here is not
+        declared in ``get_services_config`` — prevents drift between the
+        enforcement list and the service specs.  Default: empty set (opt-in).
+        """
+        _ = worktree
+        return set()
 
     # ── Run hooks ────────────────────────────────────────────────────
 

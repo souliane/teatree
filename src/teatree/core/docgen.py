@@ -16,6 +16,8 @@ _OVERLAY_HOOK_ORDER = (
     "get_post_db_steps",
     "get_symlinks",
     "get_services_config",
+    "get_base_images",
+    "get_docker_services",
 )
 
 _METADATA_HOOK_ORDER = (
@@ -37,6 +39,8 @@ _OVERLAY_HOOK_DESCRIPTIONS = {
     "get_post_db_steps": "Return callbacks to run after database setup completes.",
     "get_symlinks": "Declare extra symlinks that should exist inside the worktree.",
     "get_services_config": "Return additional service metadata for lifecycle orchestration.",
+    "get_base_images": "Declare Docker base images teatree builds once and shares across worktrees.",
+    "get_docker_services": "Declare service names that MUST run in Docker — enforced at lifecycle setup.",
 }
 
 _METADATA_HOOK_DESCRIPTIONS = {
