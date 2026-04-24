@@ -88,6 +88,20 @@ class TestFindEnvCache:
 
         assert result is None
 
+    def test_broken_symlink_is_ignored(self, tmp_path: Path) -> None:
+        """Broken symlinks are not returned.
+
+        Under a Docker mount that does not include the ticket dir, the
+        worktree's ``.t3-env.cache`` symlink stays present but its target
+        disappears; returning it would crash downstream ``read_text``.
+        """
+        link = tmp_path / ".t3-env.cache"
+        link.symlink_to(tmp_path / "does-not-exist" / ".t3-env.cache")
+
+        result = _find_env_cache(str(tmp_path))
+
+        assert result is None
+
 
 class TestMatchWorktreeByPath(TestCase):
     def test_exact_match(self) -> None:
