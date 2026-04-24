@@ -20,6 +20,7 @@ from typing import cast
 from teatree.core.models import Ticket, Worktree, WorktreeEnvOverride
 from teatree.core.models.types import WorktreeExtra, validated_worktree_extra
 from teatree.core.overlay_loader import get_overlay
+from teatree.docker.build import image_tag_for_lockfile
 
 CACHE_DIRNAME = ".t3-cache"
 CACHE_FILENAME = ".t3-env.cache"
@@ -121,6 +122,9 @@ def render_env_cache(worktree: Worktree) -> EnvCacheSpec | None:
         raise RuntimeError(msg)
 
     pairs.update(overlay.get_env_extra(worktree))
+
+    for cfg in overlay.get_base_images(worktree):
+        pairs[cfg.env_var] = image_tag_for_lockfile(cfg)
 
     ordered_keys = tuple(pairs.keys())
     body = "\n".join(f"{k}={pairs[k]}" for k in ordered_keys) + "\n"

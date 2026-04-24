@@ -34,6 +34,36 @@ class ServiceSpec(TypedDict, total=False):
     compose_file: str
     start_command: list[str]
     readiness_check: str
+    base_image: str
+    """Name of a ``BaseImageConfig`` the service's container should use.
+
+    Teatree resolves this to a lockfile-hashed tag at ``lifecycle setup`` and
+    exports it as a compose env var so ``image: ${...}`` substitution works.
+    """
+
+
+@dataclass(frozen=True, slots=True)
+class BaseImageConfig:
+    """Declares a Docker image teatree builds once and shares across worktrees.
+
+    Teatree tags each image as ``{image_name}:deps-{sha256(lockfile)[:12]}`` —
+    rebuild happens only when the lockfile content changes.  Code changes are
+    picked up automatically via the worktree's ``.:/app`` volume mount, with
+    no rebuild.
+
+    *build_context* is an absolute path (the overlay resolves it — usually
+    the main-repo root for that image's repo).  *dockerfile* and *lockfile*
+    are resolved relative to it.  *env_var* is the name core exports into
+    the per-worktree env cache with the resolved tag as value, so compose
+    files can reference ``image: ${env_var}``.
+    """
+
+    image_name: str
+    dockerfile: str
+    lockfile: str
+    build_context: Path
+    env_var: str
+    build_args: dict[str, str] = field(default_factory=dict)
 
 
 class DbImportStrategy(TypedDict, total=False):

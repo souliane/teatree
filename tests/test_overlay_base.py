@@ -78,6 +78,16 @@ def test_get_services_config_returns_empty_dict():
     assert overlay.get_services_config(_make_worktree()) == {}
 
 
+def test_get_base_images_returns_empty_list():
+    overlay = _MinimalOverlay()
+    assert overlay.get_base_images(_make_worktree()) == []
+
+
+def test_get_docker_services_returns_empty_set():
+    overlay = _MinimalOverlay()
+    assert overlay.get_docker_services(_make_worktree()) == set()
+
+
 def test_validate_mr_returns_empty_errors_and_warnings():
     overlay = _MinimalOverlay()
     result = overlay.metadata.validate_mr("title", "desc")
