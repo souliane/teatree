@@ -664,7 +664,7 @@ Typer-based, work without Django:
 - `t3 e2e external [--repo <name>] [--test-path <path>]` — run Playwright tests from `T3_PRIVATE_TESTS` or a named `[e2e_repos.<name>]` git repo; skips port discovery when `BASE_URL` is already set (DEV/staging mode)
 - `t3 review {post-draft-note,delete-draft-note,list-draft-notes,publish-draft-notes,reply-to-discussion,resolve-discussion}` — GitLab draft notes plus immediate replies on existing discussion threads and resolve/unresolve toggle
 - `t3 review-request discover` — discover open MRs
-- `t3 tool {privacy-scan,analyze-video,bump-deps}` — standalone utilities
+- `t3 tool {privacy-scan,analyze-video,bump-deps,label-issues}` — standalone utilities
 - `t3 config write-skill-cache` — write overlay skill metadata to cache
 - `t3 doctor {check,repair}` — health checks and symlink repair
 
