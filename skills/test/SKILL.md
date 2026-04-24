@@ -88,6 +88,19 @@ The repo's `AGENTS.md` § "Test-Writing Doctrine" carries the authoritative rule
 
 **Regenerate baselines inside the same Docker image CI uses.** Never regenerate on the host with `uv run pytest --update-snapshots` — macOS Chromium renders differently. Use `t3 teatree e2e project --update-snapshots` (which runs in the pinned Docker image).
 
+**Recovering a baseline that was never committed.** Different from drift: Playwright fails with `A snapshot doesn't exist at ...`. If the test runs against a DEV/staging environment that can't be reproduced locally (shared SSO, external services), pull the `{name}-actual.png` from the failing job's artifacts and commit it as the baseline:
+
+```bash
+TOKEN=$(glab auth status --show-token 2>&1 | grep -o 'glpat-[^ ]*')  # see t3:platforms gitlab.md
+curl -sL -H "PRIVATE-TOKEN: $TOKEN" \
+  "https://gitlab.com/api/v4/projects/<path>/jobs/<job_id>/artifacts" \
+  -o /tmp/artifacts.zip
+unzip -j /tmp/artifacts.zip "<path-to>/<name>-actual.png" -d <baseline-dir>/
+mv <baseline-dir>/<name>-actual.png <baseline-dir>/<name>.png
+```
+
+Inspect the extracted PNG before committing — confirm it captures the intended deterministic state (mock data, masked dynamic rows) rather than a transient error page.
+
 ### Private Test Suite
 
 E2E and integration tests ideally live in the project repo they test (e.g., the frontend repo's `e2e/` directory). But sometimes a **separate test repo** reduces friction — no conflicts with the QA team's tests, no build pipeline overhead, freedom to use different tooling or test data. This is especially useful for personal verification tests that complement (not replace) the project's official suite.
