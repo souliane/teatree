@@ -9,9 +9,9 @@ from pathlib import Path
 from django_typer.management import TyperCommand, command
 
 from teatree.config import E2ERepo, get_data_dir, load_e2e_repos
-from teatree.core.management.commands.lifecycle import compose_project
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.resolve import _find_env_cache, _get_user_cwd, _parse_env_file, resolve_worktree
+from teatree.core.runners.worktree_start import compose_project
 from teatree.utils.ports import get_service_port
 from teatree.utils.run import run_allowed_to_fail, run_checked, run_streamed
 
