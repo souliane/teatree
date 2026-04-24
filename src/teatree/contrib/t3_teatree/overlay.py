@@ -103,6 +103,7 @@ class TeatreeOverlay(OverlayBase):
         def install_overlays_editable() -> None:
             workspace_dir = load_config().user.workspace_dir.resolve()
             ticket_dir = repo.parent
+            repo_resolved = repo.resolve()
             for entry in discover_overlays():
                 if entry.project_path is None:
                     continue
@@ -112,6 +113,8 @@ class TeatreeOverlay(OverlayBase):
                     continue
                 overlay_worktree = ticket_dir / entry.project_path.name
                 if not overlay_worktree.is_dir():
+                    continue
+                if overlay_worktree.resolve() == repo_resolved:
                     continue
                 run_checked(["uv", "pip", "install", "-e", str(overlay_worktree)], cwd=repo)
 

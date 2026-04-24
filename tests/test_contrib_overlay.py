@@ -241,6 +241,37 @@ class TestInstallOverlaysEditableStep:
 
         mock_run.assert_not_called()
 
+    def test_skips_self_when_teatree_overlay_is_discovered(
+        self, tmp_path: Path, monkeypatch, isolated_config: Path
+    ) -> None:
+        """The teatree entry-point overlay resolves to the teatree worktree — skip to avoid redundant re-install."""
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        ticket_dir = workspace / "ac-teatree-117-ticket"
+        teatree_wt = ticket_dir / "teatree"
+        self._make_pyproject(teatree_wt, "teatree")
+
+        isolated_config.write_text(
+            f'[teatree]\nworkspace_dir = "{workspace}"\n\n'
+            f'[overlays.t3-teatree]\npath = "{teatree_wt}"\n'
+            'class = "teatree.contrib.t3_teatree.overlay:TeatreeOverlay"\n',
+            encoding="utf-8",
+        )
+
+        ticket = Ticket.objects.create(overlay="t3-teatree")
+        worktree = Worktree.objects.create(
+            ticket=ticket, overlay="t3-teatree", repo_path=str(teatree_wt), branch="main"
+        )
+
+        overlay = TeatreeOverlay()
+        steps = overlay.get_provision_steps(worktree)
+        install_step = next(step for step in steps if step.name == "install-overlays-editable")
+
+        with patch("subprocess.run", return_value=subprocess.CompletedProcess([], 0, "", "")) as mock_run:
+            install_step.callable()
+
+        mock_run.assert_not_called()
+
     def test_skips_overlays_without_worktree(self, tmp_path: Path, monkeypatch, isolated_config: Path) -> None:
         """Overlay with main clone under workspace_dir but no sibling worktree is silently skipped."""
         workspace = tmp_path / "workspace"
