@@ -9,8 +9,10 @@ branch looks "unsynced" and blocks cleanup.
 import json
 import logging
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from teatree.config import load_config
 from teatree.core.models import Ticket, Worktree
@@ -117,33 +119,42 @@ def _pr_merge_commit_sha(repo: str, branch: str) -> str:
     branch's net content at merge time — used by :func:`_branch_tree_matches_squash`
     to distinguish post-merge follow-up commits already captured by the squash
     from commits that add new content.
-    """
-    gh = run_allowed_to_fail(
-        ["gh", "pr", "list", "--head", branch, "--state", "merged", "--json", "mergeCommit", "--limit", "1"],
-        cwd=repo,
-        expected_codes=None,
-    )
-    if gh.returncode == 0 and gh.stdout.strip() not in {"", "[]"}:
-        try:
-            data = json.loads(gh.stdout)
-            if data and data[0].get("mergeCommit", {}).get("oid"):
-                return data[0]["mergeCommit"]["oid"]
-        except (json.JSONDecodeError, IndexError, KeyError):
-            pass
 
-    glab = run_allowed_to_fail(
-        ["glab", "mr", "list", "--merged", "--source-branch", branch, "--output", "json", "-P", "1"],
-        cwd=repo,
-        expected_codes=None,
+    Returns ``""`` when neither CLI is available (sandbox, CI without auth) —
+    the caller falls back to subject-match classification.
+    """
+    sha = _probe_host_cli(
+        ["gh", "pr", "list", "--head", branch, "--state", "merged", "--json", "mergeCommit", "--limit", "1"],
+        repo,
+        lambda data: data[0]["mergeCommit"]["oid"],
     )
-    if glab.returncode == 0 and glab.stdout.strip() not in {"", "[]"}:
-        try:
-            data = json.loads(glab.stdout)
-            if data and data[0].get("merge_commit_sha"):
-                return data[0]["merge_commit_sha"]
-        except (json.JSONDecodeError, IndexError, KeyError):
-            pass
-    return ""
+    if sha:
+        return sha
+    return _probe_host_cli(
+        ["glab", "mr", "list", "--merged", "--source-branch", branch, "--output", "json", "-P", "1"],
+        repo,
+        lambda data: data[0]["merge_commit_sha"],
+    )
+
+
+def _probe_host_cli(cmd: list[str], repo: str, extract: Callable[[Any], str]) -> str:
+    """Invoke a host CLI that may be missing, parse its JSON, extract the SHA.
+
+    Swallows ``OSError`` (missing binary, permission denied in sandboxes) and
+    JSON/key errors — both are legitimate "no merged PR found" outcomes.
+    """
+    try:
+        result = run_allowed_to_fail(cmd, cwd=repo, expected_codes=None)
+    except OSError:
+        return ""
+    if result.returncode != 0 or result.stdout.strip() in {"", "[]"}:
+        return ""
+    try:
+        data = json.loads(result.stdout)
+        sha = extract(data) if data else ""
+    except (json.JSONDecodeError, IndexError, KeyError, TypeError):
+        return ""
+    return sha or ""
 
 
 def _branch_tree_matches_squash(repo: str, branch: str) -> bool:
