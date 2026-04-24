@@ -179,6 +179,27 @@ glab api "projects/<PROJECT_ID>/merge_requests/<IID>/notes?per_page=100"
 glab ci status --branch <source_branch> -R <repo>
 ```
 
+### Watch a Manually-Triggered Job by ID
+
+`glab ci status --branch` only finds the latest pipeline; it misses manually-triggered stage jobs and old pipelines. When you already have a job URL (e.g., from `glab mr view`'s `head_pipeline.jobs[]`), hit the REST API directly:
+
+```bash
+TOKEN=$(glab config get token --host gitlab.com)
+PROJ="<group>%2F<repo>"  # URL-encoded path
+JOB=<job_id>
+
+# Status + duration
+curl -sL -H "PRIVATE-TOKEN: $TOKEN" \
+  "https://gitlab.com/api/v4/projects/$PROJ/jobs/$JOB" | \
+  python3 -c "import json,sys;j=json.load(sys.stdin);print(f\"{j['status']} {j.get('duration')}s\")"
+
+# Live trace tail — test-by-test progress visible
+curl -sL -H "PRIVATE-TOKEN: $TOKEN" \
+  "https://gitlab.com/api/v4/projects/$PROJ/jobs/$JOB/trace" | tail -c 3000
+```
+
+Pair with `ScheduleWakeup` to poll at sensible intervals (5-10 min for multi-minute jobs) rather than tight loops.
+
 ## Code Review — Draft Notes
 
 **Always use draft notes**, not direct discussions. Draft notes are only visible to the reviewer until explicitly submitted — this lets the user review, edit, and submit as a batch.
