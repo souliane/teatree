@@ -83,9 +83,25 @@ class Ticket(models.Model):
         if repos is not None:
             self.repos = repos
 
-    @transition(field=state, source=State.SCOPED, target=State.STARTED)
+    @transition(field=state, source=[State.SCOPED, State.STARTED], target=State.STARTED)
     def start(self) -> None:
-        self.schedule_coding()
+        """Schedule worktree provisioning + coding task.
+
+        The worker creates per-repo git worktrees, then calls
+        ``schedule_coding()`` once the layout exists. FSM invariant (BLUEPRINT
+        §4): transition bodies stay pure — long I/O is offloaded to an
+        ``@task`` worker, enqueued after commit so the state change and the
+        queued work land atomically.
+
+        Source ``[SCOPED, STARTED]`` makes re-firing idempotent: if the previous
+        provisioning worker failed, the operator can re-call ``start()``
+        without rolling back through ``rework``. The worker's own state guard
+        prevents duplicate work when provisioning already succeeded.
+        """
+        from teatree.core.tasks import execute_provision  # noqa: PLC0415
+
+        ticket_pk = int(self.pk)
+        transaction.on_commit(lambda: execute_provision.enqueue(ticket_pk))
 
     @transition(field=state, source=State.STARTED, target=State.CODED)
     def code(self) -> None:
@@ -186,21 +202,52 @@ class Ticket(models.Model):
             parent_task=parent_task,
         )
 
-    @transition(field=state, source=State.REVIEWED, target=State.SHIPPED)
-    def ship(self, *, mr_urls: list[str] | None = None) -> None:
-        extra = self._extra()
-        extra["mr_urls"] = mr_urls or []
-        self.extra = extra
+    @transition(field=state, source=[State.REVIEWED, State.SHIPPED], target=State.SHIPPED)
+    def ship(self) -> None:
+        """Schedule push + MR creation.
+
+        The worker pushes the worktree branch, opens the merge request, and
+        calls ``request_review()`` on success. FSM invariant (BLUEPRINT §4):
+        transition bodies stay pure — long I/O is offloaded to an ``@task``
+        worker, enqueued after commit so the state change and the queued work
+        land atomically.
+
+        Source ``[REVIEWED, SHIPPED]`` makes re-firing idempotent: if the
+        previous ship worker failed (push rejected, code host unavailable,
+        credentials missing), the operator can re-call ``ship()`` to retry.
+        The worker's own state guard skips duplicate work if push already
+        succeeded.
+        """
+        from teatree.core.tasks import execute_ship  # noqa: PLC0415
+
+        ticket_pk = int(self.pk)
+        transaction.on_commit(lambda: execute_ship.enqueue(ticket_pk))
 
     @transition(field=state, source=State.SHIPPED, target=State.IN_REVIEW)
     def request_review(self) -> None:
         pass
 
-    @transition(field=state, source=State.IN_REVIEW, target=State.MERGED)
+    @transition(field=state, source=[State.IN_REVIEW, State.MERGED], target=State.MERGED)
     def mark_merged(self) -> None:
-        pass
+        """Schedule worktree teardown.
 
-    @transition(field=state, source=State.MERGED, target=State.RETROSPECTED)
+        The worker removes git worktrees, deletes the local branch, drops the
+        per-worktree DB and runs overlay cleanup hooks. FSM invariant
+        (BLUEPRINT §4): transition bodies stay pure — long I/O is offloaded
+        to an ``@task`` worker, enqueued after commit so the state change and
+        the queued work land atomically.
+
+        Source ``[IN_REVIEW, MERGED]`` makes re-firing idempotent: if a
+        previous teardown reported errors, the operator can re-call
+        ``mark_merged()`` to retry. The worker is best-effort and does not
+        advance the FSM, so retries are safe.
+        """
+        from teatree.core.tasks import execute_teardown  # noqa: PLC0415
+
+        ticket_pk = int(self.pk)
+        transaction.on_commit(lambda: execute_teardown.enqueue(ticket_pk))
+
+    @transition(field=state, source=[State.MERGED, State.RETROSPECTED], target=State.RETROSPECTED)
     def retrospect(self) -> None:
         """Schedule retrospection I/O.
 
@@ -208,6 +255,11 @@ class Ticket(models.Model):
         success. FSM invariant (BLUEPRINT §4): transition bodies stay pure —
         long I/O is offloaded to an ``@task`` worker, enqueued after commit so
         the state change and the queued work land atomically.
+
+        Source ``[MERGED, RETROSPECTED]`` makes re-firing idempotent: if a
+        previous retro worker failed, the operator can re-call ``retrospect()``
+        to retry. The worker's own state guard skips when retrospection
+        already produced its artifacts.
         """
         from teatree.core.tasks import execute_retrospect  # noqa: PLC0415
 

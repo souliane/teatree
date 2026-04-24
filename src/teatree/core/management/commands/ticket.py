@@ -1,5 +1,6 @@
 """Ticket state management: transitions and listing, mirroring dashboard actions."""
 
+from django.db import transaction
 from django_fsm import TransitionNotAllowed
 from django_typer.management import TyperCommand, command
 
@@ -41,8 +42,9 @@ class Command(TyperCommand):
             return {"error": f"Invalid transition: {transition_name}"}
 
         try:
-            method()
-            ticket.save()
+            with transaction.atomic():
+                method()
+                ticket.save()
         except TransitionNotAllowed:
             return {
                 "error": f"Transition '{transition_name}' not allowed from state '{ticket.state}'",

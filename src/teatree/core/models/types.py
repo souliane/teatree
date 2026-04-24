@@ -25,8 +25,12 @@ class VisualQASummary(TypedDict, total=False):
 class TicketExtra(TypedDict, total=False):
     tests_passed: bool
     mr_urls: list[str]
+    mr_title_override: str
     ignored_from: str
     visual_qa: VisualQASummary
+    branch: str
+    description: str
+    provision: dict[str, str]
 
 
 class WorktreeExtra(TypedDict, total=False):
