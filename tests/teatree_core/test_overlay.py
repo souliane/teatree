@@ -245,3 +245,75 @@ class TestDefaultHealthChecks(TestCase):
             assert "worktree-exists" in names
             assert "symlink-link" in names
             assert "db-name-set" in names
+
+    def test_symlink_check_fails_when_source_directory_is_empty(self) -> None:
+        """A symlink pointing at an empty source directory must fail the health check.
+
+        Regression guard for t3-o.#55 Bug 1: ``node_modules`` symlinks whose
+        main-clone target was an empty directory silently passed health, so
+        lifecycle setup reported ``[OK] symlinks`` while every worktree's
+        frontend was broken.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            wt_path = Path(tmp) / "worktree"
+            wt_path.mkdir()
+            empty_source = Path(tmp) / "empty_source"
+            empty_source.mkdir()
+
+            link_dest = wt_path / "node_modules"
+            link_dest.symlink_to(empty_source)
+
+            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/2")
+            worktree = Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="backend",
+                branch="feature",
+                db_name="test_db",
+                extra={"worktree_path": str(wt_path)},
+            )
+
+            overlay = DummyOverlay()
+            with patch.object(
+                overlay,
+                "get_symlinks",
+                return_value=[
+                    {"path": "node_modules", "source": str(empty_source), "mode": "symlink"},
+                ],
+            ):
+                checks = overlay.get_health_checks(worktree)
+            symlink_check = next(c for c in checks if c.name == "symlink-node_modules")
+            assert symlink_check.check() is False
+
+    def test_symlink_check_passes_when_source_directory_is_populated(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            wt_path = Path(tmp) / "worktree"
+            wt_path.mkdir()
+            populated_source = Path(tmp) / "populated_source"
+            populated_source.mkdir()
+            (populated_source / "some-package").mkdir()
+
+            link_dest = wt_path / "node_modules"
+            link_dest.symlink_to(populated_source)
+
+            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/3")
+            worktree = Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="backend",
+                branch="feature",
+                db_name="test_db",
+                extra={"worktree_path": str(wt_path)},
+            )
+
+            overlay = DummyOverlay()
+            with patch.object(
+                overlay,
+                "get_symlinks",
+                return_value=[
+                    {"path": "node_modules", "source": str(populated_source), "mode": "symlink"},
+                ],
+            ):
+                checks = overlay.get_health_checks(worktree)
+            symlink_check = next(c for c in checks if c.name == "symlink-node_modules")
+            assert symlink_check.check() is True
