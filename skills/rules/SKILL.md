@@ -193,6 +193,20 @@ On **every prompt**, use `TaskCreate` to create tasks before doing any work — 
 
 The setting `teatree.mode` in `~/.teatree.toml` (or the `T3_MODE` env var) picks between two doctrines for publishing actions — push, MR create, MR merge, MR approve/unapprove, remote branch deletion, Slack posts, any write that leaves the local machine. The default is `interactive` (security-conservative). `auto` opts into full autonomy.
 
+### Resolve the effective mode before every publishing decision
+
+Do not assume interactive mode. Before saying "not pushed, your call", before asking "push?", and before prompting for any publishing confirmation, **actively resolve the effective mode in this order** (first match wins):
+
+1. `T3_MODE` environment variable (`auto` or `interactive`).
+2. Active overlay config: `[overlays.<active>]` table in `~/.teatree.toml` where `<active>` = `T3_OVERLAY_NAME` env var or the repo's registered overlay.
+3. Global `[teatree]` table in `~/.teatree.toml`.
+4. Per-repo overrides from agent memory / personal config (e.g. "this repo is auto — don't ask"). These supplement the config.
+5. If nothing matched: default to `interactive`.
+
+If the effective mode resolves to `auto`, apply the auto-mode doctrine below — do not ask for push confirmation, do not phrase the end-of-task as "your call", just push.
+
+The most common failure mode is defaulting to `interactive` without performing steps 1-4 — saying "not pushed, interactive mode" on a repo the user has already opted into auto. That reads as the agent ignoring the user's configured preference and forces them to repeat it every session.
+
 ### Interactive mode (default)
 
 Commit approval ≠ push approval. **Squash approval ≠ push approval. "All done" ≠ push approval. Rebase approval ≠ force-push approval.** Always present the final state and ask "Push?" as a **separate question** after committing, squashing, or rebasing — use `AskUserQuestion`, not an inline question.
