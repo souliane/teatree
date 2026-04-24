@@ -513,10 +513,17 @@ class Command(TyperCommand):
             os.environ[key] = value
 
         # Run pre-run steps (need port env for patch-customer-json etc.)
+        # Dedupe by step name — overlays commonly return the same provisioning
+        # steps for related services (e.g. frontend + build-frontend share setup).
         commands = overlay.get_run_commands(worktree)
+        seen_step_names: set[str] = set()
         pre_run_steps = []
         for service_name in commands:
-            pre_run_steps.extend(overlay.get_pre_run_steps(worktree, service_name))
+            for step in overlay.get_pre_run_steps(worktree, service_name):
+                if step.name in seen_step_names:
+                    continue
+                seen_step_names.add(step.name)
+                pre_run_steps.append(step)
         run_provision_steps(
             pre_run_steps,
             verbose=self._verbose,
