@@ -2,6 +2,7 @@
 
 import json
 import shutil
+from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -74,6 +75,19 @@ class TestFindMainClone:
         with patch("teatree.cli.setup.DoctorService") as mock_svc:
             mock_svc.find_teatree_repo.return_value = repo
             assert _find_main_clone() is None
+
+    def test_env_var_wins_over_cwd_heuristic(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """``T3_REPO`` env var must take priority so setup from a worktree still targets the configured main clone."""
+        main_clone = tmp_path / "main-clone"
+        main_clone.mkdir()
+        (main_clone / ".git").mkdir()
+        (main_clone / "pyproject.toml").touch()
+        monkeypatch.setenv("T3_REPO", str(main_clone))
+
+        with patch("teatree.cli.setup.DoctorService") as mock_svc:
+            mock_svc.find_teatree_repo.return_value = tmp_path / "some-worktree"
+            assert _find_main_clone() == main_clone
+            mock_svc.find_teatree_repo.assert_not_called()
 
 
 class TestRunApmInstall:
@@ -621,48 +635,129 @@ class TestCoreExcludedSkills:
         assert "using-git-worktrees" in CORE_EXCLUDED_SKILLS
 
 
+def _install_run_side_effect(
+    uv_tools_dir: Path,
+    *,
+    install_returncode: int = 0,
+    install_stderr: str = "",
+) -> Callable[..., SimpleNamespace]:
+    """Build a ``subprocess.run`` side effect covering ``uv tool dir`` + install."""
+
+    def side_effect(cmd: list[str], *args: object, **kwargs: object) -> SimpleNamespace:
+        if cmd[:3] == ["/usr/bin/uv", "tool", "dir"]:
+            stdout = "" if "--bin" in cmd else f"{uv_tools_dir}\n"
+            return SimpleNamespace(returncode=0, stderr="", stdout=stdout)
+        if cmd[:3] == ["/usr/bin/uv", "tool", "install"]:
+            return SimpleNamespace(returncode=install_returncode, stderr=install_stderr, stdout="")
+        return SimpleNamespace(returncode=0, stderr="", stdout="")
+
+    return side_effect
+
+
+def _which_t3_and_uv(name: str) -> str | None:
+    return {"t3": "/usr/local/bin/t3", "uv": "/usr/bin/uv"}.get(name)
+
+
 class TestEnsureT3Installed:
-    def test_skips_install_when_t3_on_path(self, tmp_path: Path) -> None:
+    def test_skips_when_editable_source_exists(self, tmp_path: Path) -> None:
+        uv_tools_dir = tmp_path / "uv-tools"
+        teatree_tool = uv_tools_dir / "teatree"
+        teatree_tool.mkdir(parents=True)
+        editable_source = tmp_path / "main-clone"
+        editable_source.mkdir()
+        (teatree_tool / "uv-receipt.toml").write_text(
+            f'[tool]\nrequirements = [{{ name = "teatree", editable = "{editable_source}" }}]\n'
+        )
+
         with (
             patch("teatree.cli.setup.shutil.which") as mock_which,
-            patch("teatree.utils.run.subprocess.run") as mock_run,
+            patch("teatree.utils.run.subprocess.run", side_effect=_install_run_side_effect(uv_tools_dir)) as mock_run,
         ):
-            mock_which.side_effect = lambda name: "/usr/local/bin/t3" if name == "t3" else None
-            assert _ensure_t3_installed(tmp_path) is True
-            mock_run.assert_not_called()
+            mock_which.side_effect = _which_t3_and_uv
+            assert _ensure_t3_installed(editable_source) is True
+            # Only the `uv tool dir` receipt lookup — no install invoked.
+            install_calls = [c for c in mock_run.call_args_list if c[0][0][:3] == ["/usr/bin/uv", "tool", "install"]]
+            assert install_calls == []
+
+    def test_skips_when_install_is_non_editable(self, tmp_path: Path) -> None:
+        uv_tools_dir = tmp_path / "uv-tools"
+        teatree_tool = uv_tools_dir / "teatree"
+        teatree_tool.mkdir(parents=True)
+        (teatree_tool / "uv-receipt.toml").write_text('[tool]\nrequirements = [{ name = "teatree" }]\n')
+
+        with (
+            patch("teatree.cli.setup.shutil.which") as mock_which,
+            patch("teatree.utils.run.subprocess.run", side_effect=_install_run_side_effect(uv_tools_dir)) as mock_run,
+        ):
+            mock_which.side_effect = _which_t3_and_uv
+            assert _ensure_t3_installed(tmp_path / "main-clone") is True
+            install_calls = [c for c in mock_run.call_args_list if c[0][0][:3] == ["/usr/bin/uv", "tool", "install"]]
+            assert install_calls == []
+
+    def test_reinstalls_when_editable_source_missing(self, tmp_path: Path) -> None:
+        """Stale editable install (worktree deleted) must be repaired from the main clone."""
+        uv_tools_dir = tmp_path / "uv-tools"
+        teatree_tool = uv_tools_dir / "teatree"
+        teatree_tool.mkdir(parents=True)
+        deleted_worktree = tmp_path / "deleted-worktree"
+        (teatree_tool / "uv-receipt.toml").write_text(
+            f'[tool]\nrequirements = [{{ name = "teatree", editable = "{deleted_worktree}" }}]\n'
+        )
+        main_clone = tmp_path / "main-clone"
+        main_clone.mkdir()
+
+        with (
+            patch("teatree.cli.setup.shutil.which") as mock_which,
+            patch("teatree.utils.run.subprocess.run", side_effect=_install_run_side_effect(uv_tools_dir)) as mock_run,
+        ):
+            mock_which.side_effect = _which_t3_and_uv
+            assert _ensure_t3_installed(main_clone) is True
+            install_calls = [c for c in mock_run.call_args_list if c[0][0][:3] == ["/usr/bin/uv", "tool", "install"]]
+            assert len(install_calls) == 1
+            args = install_calls[0][0][0]
+            assert "--force" in args
+            assert "--editable" in args
+            assert str(main_clone) in args
 
     def test_returns_false_when_uv_missing(self, tmp_path: Path) -> None:
         with patch("teatree.cli.setup.shutil.which", return_value=None):
             assert _ensure_t3_installed(tmp_path) is False
 
+    def test_returns_true_when_t3_on_path_without_uv(self, tmp_path: Path) -> None:
+        """Pipx or other non-uv installs are respected — we only touch uv tool installs."""
+        with patch("teatree.cli.setup.shutil.which") as mock_which:
+            mock_which.side_effect = lambda name: "/usr/local/bin/t3" if name == "t3" else None
+            assert _ensure_t3_installed(tmp_path) is True
+
     def test_installs_editable_when_t3_missing(self, tmp_path: Path) -> None:
         repo = tmp_path / "teatree"
         repo.mkdir()
+        uv_tools_dir = tmp_path / "uv-tools"
+        uv_tools_dir.mkdir()
         with (
             patch("teatree.cli.setup.shutil.which") as mock_which,
-            patch("teatree.utils.run.subprocess.run") as mock_run,
+            patch("teatree.utils.run.subprocess.run", side_effect=_install_run_side_effect(uv_tools_dir)) as mock_run,
         ):
             mock_which.side_effect = lambda name: "/usr/bin/uv" if name == "uv" else None
-            mock_run.return_value.returncode = 0
-            mock_run.return_value.stderr = ""
-            mock_run.return_value.stdout = ""
             assert _ensure_t3_installed(repo) is True
-            install_args = mock_run.call_args_list[0][0][0]
-            assert install_args[:3] == ["/usr/bin/uv", "tool", "install"]
-            assert "--editable" in install_args
-            assert str(repo) in install_args
+            install_calls = [c for c in mock_run.call_args_list if c[0][0][:3] == ["/usr/bin/uv", "tool", "install"]]
+            assert len(install_calls) == 1
+            args = install_calls[0][0][0]
+            assert "--force" in args
+            assert "--editable" in args
+            assert str(repo) in args
 
     def test_returns_false_on_install_failure(self, tmp_path: Path) -> None:
         repo = tmp_path / "teatree"
         repo.mkdir()
+        uv_tools_dir = tmp_path / "uv-tools"
+        uv_tools_dir.mkdir()
+        side_effect = _install_run_side_effect(uv_tools_dir, install_returncode=1, install_stderr="boom")
         with (
             patch("teatree.cli.setup.shutil.which") as mock_which,
-            patch("teatree.utils.run.subprocess.run") as mock_run,
+            patch("teatree.utils.run.subprocess.run", side_effect=side_effect),
         ):
             mock_which.side_effect = lambda name: "/usr/bin/uv" if name == "uv" else None
-            mock_run.return_value.returncode = 1
-            mock_run.return_value.stderr = "boom"
-            mock_run.return_value.stdout = ""
             assert _ensure_t3_installed(repo) is False
 
     def test_prints_shell_rc_hint_when_still_not_on_path(
