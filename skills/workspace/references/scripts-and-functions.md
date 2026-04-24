@@ -43,12 +43,12 @@ t3 <overlay> --help            # overlay-specific commands (from overlay project
 | `t3 <overlay> dashboard` | Migrate DB + start dashboard server |
 | `t3 <overlay> resetdb` | Drop and recreate SQLite DB |
 | `t3 <overlay> worker` | Start background task workers |
-| `t3 <overlay> lifecycle setup [VARIANT]` | Provision worktree: ports, env, symlinks, DB |
-| `t3 <overlay> lifecycle start` | Start dev servers, then verify |
-| `t3 <overlay> lifecycle status` | Show worktree state |
-| `t3 <overlay> lifecycle teardown` | Tear down a worktree |
-| `t3 <overlay> lifecycle clean` | Teardown — stop services, drop DB, clean state |
-| `t3 <overlay> lifecycle diagram` | Print state diagram as Mermaid |
+| `t3 <overlay> worktree provision [VARIANT]` | Provision worktree: ports, env, symlinks, DB |
+| `t3 <overlay> worktree start` | Start dev servers, then verify |
+| `t3 <overlay> worktree status` | Show worktree state |
+| `t3 <overlay> worktree teardown` | Tear down a worktree |
+| `t3 <overlay> worktree teardown` | Teardown — stop services, drop DB, clean state |
+| `t3 <overlay> worktree diagram` | Print state diagram as Mermaid |
 | `t3 <overlay> workspace ticket` | Create ticket workspace with git worktrees |
 | `t3 <overlay> workspace finalize` | Squash commits + rebase on default branch |
 | `t3 <overlay> workspace clean-all` | Prune merged/gone worktrees |

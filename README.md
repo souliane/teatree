@@ -102,8 +102,8 @@ Agents read skills to do the *creative* work (writing code, reviewing a diff, ch
 The core of teatree. Django management commands handle everything deterministic: state machines, port allocation, database provisioning, worktree creation, PR validation, code host sync. These are tested with >90% branch coverage — no prose, no model variance.
 
 ```bash
-t3 teatree lifecycle setup   # provision worktrees, DBs, ports for a ticket
-t3 teatree lifecycle start   # start all services
+t3 teatree worktree provision   # provision worktrees, DBs, ports for a ticket
+t3 teatree worktree start   # start all services
 t3 teatree workspace ticket  # create multi-repo worktrees from a ticket URL
 t3 teatree db refresh        # restore a database dump
 t3 teatree pr create         # create a pull request with metadata validation

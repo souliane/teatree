@@ -43,7 +43,7 @@ def _get_help_text(cmd: click.Command, ctx: click.Context) -> str:
 def _resolve_proxy_leaf(cmd: click.Command) -> click.Command | None:
     """Return the underlying Django TyperCommand's click leaf for an overlay proxy.
 
-    Overlay leaves (``t3 teatree lifecycle setup`` etc.) are proxies that forward
+    Overlay leaves (``t3 teatree worktree provision`` etc.) are proxies that forward
     ``--help`` to ``manage.py``; their click object has no real options.  When
     the proxy marker is present, swap it for the TyperCommand's own click tree
     so the doc renders the real flags.  Returns ``None`` on any import failure

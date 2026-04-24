@@ -1,9 +1,9 @@
 {
   "commands": [
-    "lifecycle setup",
-    "lifecycle start",
-    "lifecycle status",
-    "lifecycle teardown",
+    "worktree provision",
+    "worktree start",
+    "worktree status",
+    "worktree teardown",
     "tasks work-next-sdk",
     "tasks work-next-user-input",
     "followup refresh",
@@ -29,7 +29,7 @@
       "signature": "(worktree: 'Worktree') -> dict[str, str]"
     },
     {
-      "description": "Expose named service commands for lifecycle start and operator discovery.",
+      "description": "Expose named service commands for `worktree start` and operator discovery.",
       "name": "get_run_commands",
       "required": false,
       "signature": "(worktree: 'Worktree') -> RunCommands"
@@ -53,7 +53,7 @@
       "signature": "(worktree: 'Worktree') -> list[teatree.types.SymlinkSpec]"
     },
     {
-      "description": "Return additional service metadata for lifecycle orchestration.",
+      "description": "Return additional service metadata for worktree-lifecycle orchestration.",
       "name": "get_services_config",
       "required": false,
       "signature": "(worktree: 'Worktree') -> dict[str, teatree.types.ServiceSpec]"
@@ -65,7 +65,7 @@
       "signature": "(worktree: 'Worktree') -> list[teatree.types.BaseImageConfig]"
     },
     {
-      "description": "Declare service names that MUST run in Docker \u2014 enforced at lifecycle setup.",
+      "description": "Declare service names that MUST run in Docker \u2014 enforced at `worktree provision`.",
       "name": "get_docker_services",
       "required": false,
       "signature": "(worktree: 'Worktree') -> set[str]"

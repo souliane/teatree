@@ -34,13 +34,13 @@ _OVERLAY_HOOK_DESCRIPTIONS = {
     "get_repos": "Declare the repositories that TeaTree should provision for this overlay.",
     "get_provision_steps": "Return the ordered setup steps for a newly created worktree.",
     "get_env_extra": "Add overlay-specific environment variables to the generated worktree env file.",
-    "get_run_commands": "Expose named service commands for lifecycle start and operator discovery.",
+    "get_run_commands": "Expose named service commands for `worktree start` and operator discovery.",
     "get_db_import_strategy": "Describe how a worktree database should be provisioned or restored.",
     "get_post_db_steps": "Return callbacks to run after database setup completes.",
     "get_symlinks": "Declare extra symlinks that should exist inside the worktree.",
-    "get_services_config": "Return additional service metadata for lifecycle orchestration.",
+    "get_services_config": "Return additional service metadata for worktree-lifecycle orchestration.",
     "get_base_images": "Declare Docker base images teatree builds once and shares across worktrees.",
-    "get_docker_services": "Declare service names that MUST run in Docker — enforced at lifecycle setup.",
+    "get_docker_services": "Declare service names that MUST run in Docker — enforced at `worktree provision`.",
 }
 
 _METADATA_HOOK_DESCRIPTIONS = {
@@ -56,10 +56,10 @@ _METADATA_HOOK_DESCRIPTIONS = {
 _OVERLAY_SETTINGS: tuple["SettingRecord", ...] = ()
 
 _OVERLAY_COMMANDS = (
-    "lifecycle setup",
-    "lifecycle start",
-    "lifecycle status",
-    "lifecycle teardown",
+    "worktree provision",
+    "worktree start",
+    "worktree status",
+    "worktree teardown",
     "tasks work-next-sdk",
     "tasks work-next-user-input",
     "followup refresh",

@@ -52,7 +52,7 @@ The repo's `AGENTS.md` § "Test-Writing Doctrine" carries the authoritative rule
 
 ### Backend Tests
 
-**Prerequisites:** Docker services (Postgres, Redis) must be running. Start them via `t3 <overlay> lifecycle start` (see `/t3:workspace`) rather than raw `docker compose`. Read the project's test reference (e.g. `references/running-tests-and-lint.md`) for the full setup steps.
+**Prerequisites:** Docker services (Postgres, Redis) must be running. Start them via `t3 <overlay> worktree start` (see `/t3:workspace`) rather than raw `docker compose`. Read the project's test reference (e.g. `references/running-tests-and-lint.md`) for the full setup steps.
 
 - `t3 <overlay> run tests` — run the project test suite.
 - Flags: `--reuse-db`, `--failed-first`, optional `--parallel`.
@@ -70,7 +70,7 @@ The repo's `AGENTS.md` § "Test-Writing Doctrine" carries the authoritative rule
 - **Always run headless** with `CI=1`.
 - `t3 ci trigger-e2e` — trigger E2E tests on CI.
 
-**Full worktree per MR (Non-Negotiable):** Each MR under test MUST have its own full worktree setup (backend + frontend via `t3 <overlay> lifecycle setup` + `t3 <overlay> lifecycle start`). Never mix backends from one worktree with frontends from another. Never patch an incomplete worktree by hand — if it's missing repos, env files, or DB, delete it and start over with `t3 <overlay> workspace ticket`. Anti-pattern: manually adding repos with `git worktree add`, copying env files, editing `.env.worktree` by hand.
+**Full worktree per MR (Non-Negotiable):** Each MR under test MUST have its own full worktree setup (backend + frontend via `t3 <overlay> worktree provision` + `t3 <overlay> worktree start`). Never mix backends from one worktree with frontends from another. Never patch an incomplete worktree by hand — if it's missing repos, env files, or DB, delete it and start over with `t3 <overlay> workspace ticket`. Anti-pattern: manually adding repos with `git worktree add`, copying env files, editing `.env.worktree` by hand.
 
 **E2E for backend/API changes:** When backend or microservice changes affect data visible in the frontend (e.g., webhook payload fields, API serializer fields, new model fields exposed via API), E2E tests are still required even if there is no frontend MR. The frontend form already has the fields — E2E proves the end-to-end data flow. Do NOT skip E2E just because the change is "backend-only."
 
@@ -111,7 +111,7 @@ E2E and integration tests ideally live in the project repo they test (e.g., the 
 - Structure tests by app and feature: `tests/<app>/<feature-area>/<test-file>`
 - Store artifacts (screenshots, recordings) in a git-tracked `artifacts/<TICKET>/` directory for proof.
 
-**Prerequisites:** Always start dev servers via `t3 <overlay> lifecycle start` (see `/t3:workspace`) before running tests. Never start services manually. Before running E2E tests, verify that **translations are loaded** — the frontend i18n directory is gitignored and only populated at startup (by `t3 <overlay> lifecycle start`). If the frontend was started manually, translations will be missing. Quick check: open any page and confirm labels show human-readable text, not raw keys like `app.feature.xxx.label`.
+**Prerequisites:** Always start dev servers via `t3 <overlay> worktree start` (see `/t3:workspace`) before running tests. Never start services manually. Before running E2E tests, verify that **translations are loaded** — the frontend i18n directory is gitignored and only populated at startup (by `t3 <overlay> worktree start`). If the frontend was started manually, translations will be missing. Quick check: open any page and confirm labels show human-readable text, not raw keys like `app.feature.xxx.label`.
 
 **Test depth:** Don't just verify "page loads with 200". Read the source code to understand what the feature does, then test specific behaviors: form fields, filters, CRUD operations, access control, edge cases.
 
@@ -329,8 +329,8 @@ When an E2E test shows missing UI elements (empty form, blank section, component
 
 Before claiming E2E success or posting screenshots as evidence, **visually inspect every screenshot** for environment issues. Reject and fix if any of these are present:
 
-- **Missing translations:** Labels show raw keys like `app.feature.xxx.label` or `app.question.xxx` instead of human-readable text. Cause: frontend started without the translation sync step (handled by `t3 <overlay> run frontend` / `t3 <overlay> lifecycle start`). Fix: restart via `t3 <overlay> lifecycle start`.
-- **Missing static files:** Broken image icons, unstyled pages, or 404s for assets. Cause: static asset build/collection not run. Fix: restart via `t3 <overlay> lifecycle start` (which handles asset preparation).
+- **Missing translations:** Labels show raw keys like `app.feature.xxx.label` or `app.question.xxx` instead of human-readable text. Cause: frontend started without the translation sync step (handled by `t3 <overlay> run frontend` / `t3 <overlay> worktree start`). Fix: restart via `t3 <overlay> worktree start`.
+- **Missing static files:** Broken image icons, unstyled pages, or 404s for assets. Cause: static asset build/collection not run. Fix: restart via `t3 <overlay> worktree start` (which handles asset preparation).
 - **Console errors:** Open browser devtools and check for blocking JS errors before taking screenshots.
 - **Feature element not visible:** The screenshot must show the specific UI element being tested (badge, field, status indicator), not just the top of the page. Use `element.scrollIntoViewIfNeeded()` before taking screenshots. A screenshot of "Personal Data" doesn't prove the "ID" section badge is correct.
 

@@ -842,8 +842,9 @@ Usage: t3 teatree [OPTIONS] COMMAND [ARGS]...
 │ agent        Launch Claude Code with overlay context and auto-detected       │
 │              skills.                                                         │
 │ config       Overlay configuration.                                          │
-│ lifecycle    Worktree lifecycle.                                             │
-│ workspace    Workspace management.                                           │
+│ worktree     Per-worktree FSM operations.                                    │
+│ workspace    Ticket-level workspace operations (every worktree in the        │
+│              ticket).                                                        │
 │ run          Run services.                                                   │
 │ e2e          E2E test commands.                                              │
 │ db           Database operations.                                            │
@@ -996,72 +997,163 @@ Usage: t3 teatree config logs [OPTIONS]
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
-#### `t3 teatree lifecycle`
+#### `t3 teatree worktree`
 
 ```
-Usage: t3 teatree lifecycle [OPTIONS] COMMAND [ARGS]...
+Usage: t3 teatree worktree [OPTIONS] COMMAND [ARGS]...
 
- Worktree lifecycle.
+ Per-worktree FSM operations.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ setup     Create and provision a worktree.                                   │
-│ start     Provision (if needed) and start all services.                      │
-│ status    Return worktree state information.                                 │
-│ teardown  Tear down a worktree.                                              │
-│ clean     Teardown worktree — stop services, drop DB, clean state.           │
-│ diagram   Print the lifecycle state diagram as Mermaid.                      │
+│ provision   Run DB import + env cache + direnv + prek + overlay setup steps  │
+│             for one worktree.                                                │
+│ start       Boot ``docker compose up`` for one worktree.                     │
+│ verify      Run overlay health checks for one worktree.                      │
+│ teardown    Stop docker, drop DB, remove git worktree, delete row.           │
+│ status      Report FSM state, branch, and allocated host ports for one       │
+│             worktree.                                                        │
+│ diagnose    Print a structured health checklist for one worktree.            │
+│ smoke-test  Quick health check: overlay loads, CLI responds, imports OK.     │
+│ diagram     Print a state diagram as Mermaid. Models: worktree, ticket,      │
+│             task.                                                            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
-##### `t3 teatree lifecycle setup`
+##### `t3 teatree worktree provision`
 
 ```
-Usage: t3 teatree lifecycle setup [OPTIONS]
+Usage: t3 teatree worktree provision [OPTIONS]
 
- Create and provision a worktree.
+ Run DB import + env cache + direnv + prek + overlay setup steps for one
+ worktree.
+
+ Thin wrapper around ``Worktree.provision()``: the FSM flips
+ CREATED → PROVISIONED and enqueues ``execute_worktree_provision``;
+ the runner also runs synchronously here so the operator sees
+ immediate output. Idempotent — re-running is safe.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --path                               TEXT  Worktree path (auto-detects from  │
+│                                            PWD if empty).                    │
+│ --variant                            TEXT  Tenant variant. Updates ticket if │
+│                                            provided.                         │
+│ --overlay                            TEXT  Overlay name (auto-detects if     │
+│                                            empty).                           │
+│ --slow-import    --no-slow-import          Allow slow DB fallbacks           │
+│                                            (pg_restore, remote dump).        │
+│                                            DSLR-only by default.             │
+│                                            [default: no-slow-import]         │
+│ --help                                     Show this message and exit.       │
+╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
-##### `t3 teatree lifecycle start`
+##### `t3 teatree worktree start`
 
 ```
-Usage: t3 teatree lifecycle start [OPTIONS]
+Usage: t3 teatree worktree start [OPTIONS]
 
- Provision (if needed) and start all services.
+ Boot ``docker compose up`` for one worktree.
+
+ Thin wrapper around ``Worktree.start_services()``: the FSM advances
+ to SERVICES_UP and enqueues ``execute_worktree_start``; the runner
+ also runs synchronously here so the operator sees immediate output.
+ Allocates free host ports, refreshes the env cache, runs overlay
+ pre-run steps, then ``docker compose up -d``.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --path        TEXT  Worktree path (auto-detects from PWD if empty).          │
+│ --help              Show this message and exit.                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
-##### `t3 teatree lifecycle status`
+##### `t3 teatree worktree verify`
 
 ```
-Usage: t3 teatree lifecycle status [OPTIONS]
+Usage: t3 teatree worktree verify [OPTIONS]
 
- Return worktree state information.
+ Run overlay health checks for one worktree.
+
+ Thin wrapper around ``Worktree.verify()``: SERVICES_UP → READY +
+ runner records URLs and reports failed checks. Best-effort.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --path        TEXT  Worktree path (auto-detects from PWD if empty).          │
+│ --help              Show this message and exit.                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
-##### `t3 teatree lifecycle teardown`
+##### `t3 teatree worktree teardown`
 
 ```
-Usage: t3 teatree lifecycle teardown [OPTIONS]
+Usage: t3 teatree worktree teardown [OPTIONS]
 
- Tear down a worktree.
+ Stop docker, drop DB, remove git worktree, delete row.
+
+ Thin wrapper around ``Worktree.teardown()``: the FSM resets to
+ CREATED and enqueues ``execute_worktree_teardown``; the runner
+ also runs synchronously here so the operator sees immediate
+ output. Folds the previous ``teardown`` + ``clean`` commands
+ into a single canonical path.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --path        TEXT  Worktree path (auto-detects from PWD if empty).          │
+│ --help              Show this message and exit.                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
-##### `t3 teatree lifecycle clean`
+##### `t3 teatree worktree status`
 
 ```
-Usage: t3 teatree lifecycle clean [OPTIONS]
+Usage: t3 teatree worktree status [OPTIONS]
 
- Teardown worktree — stop services, drop DB, clean state.
+ Report FSM state, branch, and allocated host ports for one worktree.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --path        TEXT  Worktree path (auto-detects from PWD if empty).          │
+│ --help              Show this message and exit.                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
-##### `t3 teatree lifecycle diagram`
+##### `t3 teatree worktree diagnose`
 
 ```
-Usage: t3 teatree lifecycle diagram [OPTIONS]
+Usage: t3 teatree worktree diagnose [OPTIONS]
 
- Print the lifecycle state diagram as Mermaid.
+ Print a structured health checklist for one worktree.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --path        TEXT  Worktree path (auto-detects from PWD if empty).          │
+│ --help              Show this message and exit.                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree worktree smoke-test`
+
+```
+Usage: t3 teatree worktree smoke-test [OPTIONS]
+
+ Quick health check: overlay loads, CLI responds, imports OK.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree worktree diagram`
+
+```
+Usage: t3 teatree worktree diagram [OPTIONS]
+
+ Print a state diagram as Mermaid. Models: worktree, ticket, task.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --model         TEXT     [default: worktree]                                 │
+│ --ticket        INTEGER                                                      │
+│ --help                   Show this message and exit.                         │
+╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
 #### `t3 teatree workspace`
@@ -1069,15 +1161,22 @@ Usage: t3 teatree lifecycle diagram [OPTIONS]
 ```
 Usage: t3 teatree workspace [OPTIONS] COMMAND [ARGS]...
 
- Workspace management.
+ Ticket-level workspace operations (every worktree in the ticket).
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ ticket        Create a ticket with worktree entries for each repo.           │
+│ ticket        Create or update a ticket and trigger worktree provisioning.   │
+│ provision     Provision every worktree in the current ticket workspace.      │
+│ start         Start docker for every worktree in the current ticket          │
+│               workspace.                                                     │
+│ teardown      Tear down every worktree in the current ticket workspace.      │
 │ finalize      Squash worktree commits and rebase on the default branch.      │
-│ clean-all     Prune worktrees whose branches have been merged or deleted.    │
+│ doctor        Detect state drift across every store; optionally fix it.      │
+│ clean-merged  Tear down every worktree whose ticket is already MERGED.       │
+│ clean-all     Prune merged worktrees, stale branches, orphaned stashes,      │
+│               orphan DBs, old DSLR snapshots.                                │
 │ list-orphans  List orphan branches (commits not on main, no open PR).        │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -1108,6 +1207,65 @@ Usage: t3 teatree workspace ticket [OPTIONS] ISSUE_URL
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
+##### `t3 teatree workspace provision`
+
+```
+Usage: t3 teatree workspace provision [OPTIONS]
+
+ Provision every worktree in the current ticket workspace.
+
+ Iterates ``ticket.worktrees`` and fires ``Worktree.provision()``
+ for each. Each transition enqueues its worker via on_commit; the
+ runner also runs synchronously so the operator gets streaming
+ feedback. Stops at the first failure so the operator can fix the
+ offending worktree before retrying.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --path                               TEXT  Worktree path inside the          │
+│                                            workspace (auto-detects from      │
+│                                            PWD).                             │
+│ --slow-import    --no-slow-import          Allow slow DB fallbacks.          │
+│                                            [default: no-slow-import]         │
+│ --help                                     Show this message and exit.       │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree workspace start`
+
+```
+Usage: t3 teatree workspace start [OPTIONS]
+
+ Start docker for every worktree in the current ticket workspace.
+
+ Allocates one shared port set across the workspace, then fires
+ ``Worktree.start_services()`` on each worktree (CLI runs the
+ runner synchronously).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --path        TEXT  Worktree path inside the workspace (auto-detects from    │
+│                     PWD).                                                    │
+│ --help              Show this message and exit.                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree workspace teardown`
+
+```
+Usage: t3 teatree workspace teardown [OPTIONS]
+
+ Tear down every worktree in the current ticket workspace.
+
+ Fires ``Worktree.teardown()`` on each worktree. Continues past
+ per-worktree failures to maximise cleanup; surfaces them in the
+ final summary.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --path        TEXT  Worktree path inside the workspace (auto-detects from    │
+│                     PWD).                                                    │
+│ --help              Show this message and exit.                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
 ##### `t3 teatree workspace finalize`
 
 ```
@@ -1121,6 +1279,45 @@ Usage: t3 teatree workspace finalize [OPTIONS] TICKET_ID
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --message        TEXT                                                        │
 │ --help                 Show this message and exit.                           │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree workspace doctor`
+
+```
+Usage: t3 teatree workspace doctor [OPTIONS]
+
+ Detect state drift across every store; optionally fix it.
+
+ Checks Django ↔ git worktrees, Postgres DBs, docker containers, redis
+ slots, env cache files.  Without ``--fix`` prints drift; with
+ ``--fix`` cleans orphan containers, drops orphan DBs, regenerates
+ missing env caches, and prunes stale worktree dirs.  Every action
+ uses :func:`run_checked` — no silent swallow.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --ticket                INTEGER  Reconcile just this ticket pk; 0 = all      │
+│                                  tickets.                                    │
+│                                  [default: 0]                                │
+│ --fix       --no-fix             Apply fixes instead of just listing drift.  │
+│                                  [default: no-fix]                           │
+│ --help                           Show this message and exit.                 │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree workspace clean-merged`
+
+```
+Usage: t3 teatree workspace clean-merged [OPTIONS]
+
+ Tear down every worktree whose ticket is already MERGED.
+
+ On-demand reconciler for the daily followup sync. Use when merged-MR
+ cleanup silently failed and stale docker containers, branches, or
+ databases linger. Errors are surfaced inline — no suppression.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
