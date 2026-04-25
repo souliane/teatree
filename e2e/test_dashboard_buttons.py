@@ -382,11 +382,9 @@ def test_snapshot_ticket_details_expanded(e2e_server: str, page: Page, assert_sn
     page.locator("button[onclick^='toggleTicketDetails']").first.click()
     details = page.locator("tr[id^='ticket-details-']").first
     expect(details).to_be_visible()
-    # Let task-graph + lifecycle partials settle. We do NOT wait for the mermaid
-    # ``<svg>`` because mermaid loads from ``cdn.jsdelivr.net`` which isolated
-    # CI / Docker containers cannot reach — see
-    # ``test_mermaid_lifecycle_renders_svg`` below for the tracking xfail.
-    page.wait_for_timeout(800)
+    # Wait for the mermaid lifecycle SVG to render. Mermaid is vendored locally
+    # (``teatree/js/mermaid-11.min.js``) so this works in sealed CI / Docker.
+    details.locator(".mermaid svg").first.wait_for(state="attached", timeout=5000)
     assert_snapshot(
         details.screenshot(animations="disabled"),
         name="ticket-details-expanded.png",
@@ -394,22 +392,14 @@ def test_snapshot_ticket_details_expanded(e2e_server: str, page: Page, assert_sn
     )
 
 
-@pytest.mark.xfail(
-    reason=(
-        "Mermaid loads from cdn.jsdelivr.net — the e2e Docker container has no "
-        "network egress, so the <pre class='mermaid'> block never renders as SVG. "
-        "Vendor mermaid into teatree/static/ to fix."
-    ),
-    strict=False,
-)
 def test_mermaid_lifecycle_renders_svg(e2e_server: str, page: Page) -> None:
-    """Will pass once mermaid is vendored (no external CDN fetch)."""
+    """Lifecycle ``<pre class='mermaid'>`` is replaced with an inline SVG."""
     page.goto(e2e_server)
     page.locator("tr[data-mr-row]").first.wait_for(state="attached")
     page.locator("button[onclick^='toggleTicketDetails']").first.click()
     details = page.locator("tr[id^='ticket-details-']").first
     expect(details).to_be_visible()
-    details.locator(".mermaid svg").first.wait_for(state="attached", timeout=3000)
+    details.locator(".mermaid svg").first.wait_for(state="attached", timeout=10000)
 
 
 def test_snapshot_sessions_filter_queued(e2e_server: str, page: Page, assert_snapshot: Callable) -> None:
