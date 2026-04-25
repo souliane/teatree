@@ -828,6 +828,9 @@ branch_prefix = ""
 privacy = "strict"
 mode = "interactive"   # "interactive" (default, security-conservative) | "auto"
 
+[user]
+claude_chrome = true   # spawn `claude` with --chrome so sessions can drive the browser
+
 [overlays.myproject]
 path = "~/workspace/myproject"
 

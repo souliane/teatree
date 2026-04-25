@@ -265,3 +265,25 @@ class TestLaunchInteractiveAgentView:
 
         assert response.status_code == 500
         assert "claude CLI not found" in data["error"]
+
+
+class TestClaudeArgv:
+    """The shared `_claude_argv` builder honours the user's `claude_chrome` config (#456)."""
+
+    def test_appends_chrome_when_enabled(self, monkeypatch: "pytest.MonkeyPatch") -> None:
+        from teatree.config import TeaTreeConfig, UserSettings  # noqa: PLC0415
+        from teatree.core.views.launch import _claude_argv  # noqa: PLC0415
+
+        cfg = TeaTreeConfig(user=UserSettings(claude_chrome=True))
+        monkeypatch.setattr("teatree.core.views.launch.load_config", lambda: cfg)
+
+        assert _claude_argv("/usr/bin/claude") == ["/usr/bin/claude", "--chrome"]
+
+    def test_omits_chrome_when_disabled(self, monkeypatch: "pytest.MonkeyPatch") -> None:
+        from teatree.config import TeaTreeConfig, UserSettings  # noqa: PLC0415
+        from teatree.core.views.launch import _claude_argv  # noqa: PLC0415
+
+        cfg = TeaTreeConfig(user=UserSettings(claude_chrome=False))
+        monkeypatch.setattr("teatree.core.views.launch.load_config", lambda: cfg)
+
+        assert _claude_argv("/usr/bin/claude") == ["/usr/bin/claude"]

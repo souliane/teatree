@@ -4,11 +4,20 @@ import shutil
 from django.http import Http404, HttpRequest, HttpResponse, JsonResponse
 from django.views import View
 
+from teatree.config import load_config
 from teatree.core.models import InvalidTransitionError, Task
 from teatree.core.overlay_loader import get_overlay
 from teatree.types import SkillMetadata
 
 logger = logging.getLogger(__name__)
+
+
+def _claude_argv(claude_bin: str) -> list[str]:
+    """Build the base argv for spawning `claude`, honouring the user config."""
+    argv = [claude_bin]
+    if load_config().user.claude_chrome:
+        argv.append("--chrome")
+    return argv
 
 
 class LaunchAgentView(View):
@@ -85,7 +94,7 @@ def launch_interactive_for_task(task: "Task") -> str:
     if not claude_bin:
         return ""
 
-    result = terminal_launch([claude_bin], mode=get_terminal_mode())
+    result = terminal_launch(_claude_argv(claude_bin), mode=get_terminal_mode())
     logger.info("Launched interactive session for task %s (mode=%s)", task.pk, result.mode)
     return result.launch_url
 
@@ -101,7 +110,7 @@ class LaunchInteractiveAgentView(View):
 
         mode = request.POST.get("terminal_mode") or get_terminal_mode()
         app = request.POST.get("terminal_app", "")
-        result = terminal_launch([claude_bin], mode=mode, app=app)
+        result = terminal_launch(_claude_argv(claude_bin), mode=mode, app=app)
 
         if result.launch_url:
             return JsonResponse({"launch_url": result.launch_url})

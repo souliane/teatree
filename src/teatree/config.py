@@ -151,6 +151,11 @@ class UserSettings:
     excluded_skills: list[str] = field(default_factory=list)
     redis_db_count: int = 16
     mode: Mode = Mode.INTERACTIVE
+    # Pass --chrome to every spawned `claude` session so Claude in Chrome is
+    # available wherever it could be useful (browser inspection, UI debugging,
+    # E2E selector drafting, bug hunts). Costs ~300 lines of system prompt per
+    # session; turn off only on machines without the Chrome extension.
+    claude_chrome: bool = True
 
 
 @dataclass
@@ -189,6 +194,7 @@ def load_config(path: Path | None = None) -> TeaTreeConfig:
         excluded_skills=excluded_skills,
         redis_db_count=int(teatree.get("redis_db_count", 16)),
         mode=mode,
+        claude_chrome=bool(teatree.get("claude_chrome", True)),
     )
 
     return TeaTreeConfig(user=user, raw=raw)
