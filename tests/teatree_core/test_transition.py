@@ -135,6 +135,18 @@ class TestTicketLifecycleMermaid(TestCase):
         assert "stateDiagram-v2" in mermaid
         assert "note right of not_started: current" in mermaid
 
+    def test_mermaid_defines_current_state_when_no_transitions(self) -> None:
+        """Ticket state set without recording transitions still produces parseable mermaid.
+
+        The ``note right of <state>`` reference is backed by an explicit edge
+        from ``not_started``.
+        """
+        ticket = Ticket.objects.create(state="started")
+
+        mermaid = build_ticket_lifecycle_mermaid(ticket.pk)
+        assert "not_started --> started" in mermaid
+        assert "note right of started: current" in mermaid
+
 
 class TestLifecycleDiagramTicketFlag(TestCase):
     def test_diagram_with_ticket_flag(self) -> None:

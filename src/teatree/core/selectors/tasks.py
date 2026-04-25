@@ -92,17 +92,25 @@ def build_task_graph(ticket_id: int) -> list[TaskGraphNode]:
 def build_ticket_lifecycle_mermaid(ticket_id: int) -> str:
     """Build a Mermaid stateDiagram-v2 from recorded TicketTransition rows."""
     ticket = Ticket.objects.get(pk=ticket_id)
-    transitions = TicketTransition.objects.filter(ticket_id=ticket_id).select_related("session")
+    transitions = list(TicketTransition.objects.filter(ticket_id=ticket_id).select_related("session"))
 
     lines = ["stateDiagram-v2", f"    [*] --> {ticket.State.NOT_STARTED}"]
+    referenced: set[str] = {ticket.State.NOT_STARTED}
 
     for t in transitions:
         label = f"{t.triggered_by}()"
         if t.session_id:
             label += f" S{t.session_id}"
         lines.append(f"    {t.from_state} --> {t.to_state}: {label}")
+        referenced.update((t.from_state, t.to_state))
 
-    # Highlight current state with a note.
+    # mermaid v11 stateDiagram-v2 requires every state in a ``note`` to be defined
+    # by an edge. Without recorded transitions a ticket whose state is not the
+    # initial NOT_STARTED would dangle the note → render fails with
+    # "No such shape: undefined".
+    if ticket.state not in referenced:
+        lines.append(f"    {ticket.State.NOT_STARTED} --> {ticket.state}")
+
     lines.append(f"    note right of {ticket.state}: current")
 
     return "\n".join(lines)
