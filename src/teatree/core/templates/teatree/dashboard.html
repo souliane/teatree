@@ -485,7 +485,12 @@
     }
     (function() {
       var saved = parseInt(localStorage.getItem('teatree_sync_interval') || '0');
-      if (saved > 0) _applySyncInterval(saved);
+      var apply = function() { if (saved > 0) _applySyncInterval(saved); };
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', apply);
+      } else {
+        apply();
+      }
       document.addEventListener('click', function(e) {
         var menu = document.getElementById('sync-interval-menu');
         if (menu && !menu.classList.contains('hidden') && !e.target.closest('#sync-interval-menu') && !e.target.closest('[onclick*="sync-interval-menu"]')) {

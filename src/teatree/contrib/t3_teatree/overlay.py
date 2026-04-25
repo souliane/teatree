@@ -70,6 +70,7 @@ class TeatreeMetadata(OverlayMetadata):
     @override
     def get_e2e_config(self) -> dict[str, str]:
         return {
+            "runner": "project",
             "test_dir": "e2e/",
             "settings_module": "e2e.settings",
         }

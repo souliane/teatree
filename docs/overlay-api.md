@@ -75,7 +75,7 @@ Project metadata, CI integration, MR validation, and skill registration live on 
 | `get_followup_repos()` | `[]` | Repos to check during follow-up sync |
 | `get_skill_metadata()` | `{}` | Skill path, remote patterns, trigger index for the overlay's companion skills |
 | `get_ci_project_path()` | `""` | CI project path for pipeline triggers and evidence posting |
-| `get_e2e_config()` | `{}` | E2E test configuration (project path, settings module, test dir) |
+| `get_e2e_config()` | `{}` | E2E runner config: `runner` (`"project"` / `"external"`), plus `test_dir` / `settings_module` (project runner) or `project_path` / `ref` (external runner) |
 | `detect_variant()` | `""` | Detect the current tenant variant from project context |
 | `get_tool_commands()` | `[]` | Custom tool commands exposed via `t3 <overlay> tool run` |
 | `get_issue_title(url)` | `""` | Fetch the title of an issue from its URL |
