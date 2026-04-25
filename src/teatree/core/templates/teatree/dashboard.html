@@ -319,17 +319,20 @@
       } catch(e) { showToast('Update failed', 'error'); }
     }
 
-    document.body.addEventListener('htmx:sseOpen', function() {
-      var dot = document.getElementById('sse-status');
-      if (dot) { dot.className = 'inline-block h-2 w-2 rounded-full bg-emerald-500'; dot.title = 'SSE connected'; }
-    });
-    document.body.addEventListener('htmx:sseError', function() {
-      var dot = document.getElementById('sse-status');
-      if (dot) { dot.className = 'inline-block h-2 w-2 rounded-full bg-red-400 animate-pulse'; dot.title = 'SSE reconnecting'; }
-    });
-    document.body.addEventListener('htmx:sseClose', function() {
-      var dot = document.getElementById('sse-status');
-      if (dot) { dot.className = 'inline-block h-2 w-2 rounded-full bg-bark/40'; dot.title = 'SSE disconnected'; }
+    // Defer SSE listener attachment until <body> exists — this script runs in <head>.
+    document.addEventListener('DOMContentLoaded', function() {
+      document.body.addEventListener('htmx:sseOpen', function() {
+        var dot = document.getElementById('sse-status');
+        if (dot) { dot.className = 'inline-block h-2 w-2 rounded-full bg-emerald-500'; dot.title = 'SSE connected'; }
+      });
+      document.body.addEventListener('htmx:sseError', function() {
+        var dot = document.getElementById('sse-status');
+        if (dot) { dot.className = 'inline-block h-2 w-2 rounded-full bg-red-400 animate-pulse'; dot.title = 'SSE reconnecting'; }
+      });
+      document.body.addEventListener('htmx:sseClose', function() {
+        var dot = document.getElementById('sse-status');
+        if (dot) { dot.className = 'inline-block h-2 w-2 rounded-full bg-bark/40'; dot.title = 'SSE disconnected'; }
+      });
     });
 
     function filterTickets() {
@@ -609,6 +612,7 @@
   <main class="mx-auto max-w-7xl px-4 py-10 sm:px-6 lg:px-8">
     <header class="mb-4 flex items-center gap-4">
       {% if logo_url %}<img id="dashboard-logo" src="{{ logo_url }}" alt="" class="h-14" onerror="this.style.display='none'">{% endif %}
+      <span id="sse-status" class="inline-block h-2 w-2 rounded-full bg-bark/40" title="SSE disconnected"></span>
       {% if overlays %}
       <select
         id="overlay-selector"

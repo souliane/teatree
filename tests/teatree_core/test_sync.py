@@ -232,6 +232,7 @@ class TestMREntry:
             "repo": "r",
             "iid": 1,
             "updated_at": "x",
+            "state": "opened",
         }
 
     def test_to_dict_includes_set_optional_fields(self) -> None:

@@ -124,6 +124,59 @@ class TestBuildDashboardSummary(TestCase):
         assert summary.pending_headless_tasks == 1
         assert summary.pending_interactive_tasks == 1
 
+    def test_active_worktrees_kpi_matches_panel_size(self) -> None:
+        """KPI count must equal the worktrees panel row count — bug hunt 2026-04-25 (#455 §4)."""
+        import tempfile  # noqa: PLC0415
+
+        with tempfile.TemporaryDirectory(prefix="teatree-455-kpi-") as tmp:
+            # Two worktrees in CREATED state on a non-delivered ticket — these must both
+            # be counted (the old `active()` filter excluded CREATED, mismatching the panel).
+            ticket = Ticket.objects.create(state=Ticket.State.STARTED)
+            Worktree.objects.create(
+                ticket=ticket,
+                repo_path="org/backend",
+                branch="b1",
+                state=Worktree.State.CREATED,
+                extra={"worktree_path": tmp},
+            )
+            Worktree.objects.create(
+                ticket=ticket,
+                repo_path="org/frontend",
+                branch="b2",
+                state=Worktree.State.READY,
+                extra={"worktree_path": tmp},
+            )
+            # Delivered ticket worktree — must NOT count.
+            delivered = Ticket.objects.create(state=Ticket.State.DELIVERED)
+            Worktree.objects.create(
+                ticket=delivered,
+                repo_path="org/dead",
+                branch="b3",
+                state=Worktree.State.READY,
+                extra={"worktree_path": tmp},
+            )
+
+            summary = build_dashboard_summary()
+            rows = build_worktree_rows()
+
+            assert summary.active_worktrees == len(rows) == 2
+
+    def test_active_worktrees_kpi_excludes_stale(self) -> None:
+        """Worktrees pointing at non-existent on-disk paths must drop out — bug hunt 2026-04-25 (#455 §5)."""
+        ticket = Ticket.objects.create(state=Ticket.State.STARTED)
+        Worktree.objects.create(
+            ticket=ticket,
+            repo_path="org/orphan",
+            branch="orphan",
+            state=Worktree.State.READY,
+            extra={"worktree_path": "/tmp/teatree-455-does-not-exist-on-disk"},
+        )
+
+        summary = build_dashboard_summary()
+        rows = build_worktree_rows()
+
+        assert summary.active_worktrees == len(rows) == 0
+
 
 class TestBuildPendingReviews(TestCase):
     def test_returns_empty_when_no_cache(self) -> None:
@@ -933,6 +986,21 @@ class TestCheckMr(TestCase):
     def test_returns_empty_for_non_dict(self) -> None:
         assert _check_mr("not-a-dict", self.ticket) == []
 
+    def test_returns_empty_for_merged(self) -> None:
+        """Merged MRs must not surface as action items — bug hunt 2026-04-25 (#455 §2)."""
+        mr = {
+            "draft": False,
+            "repo": "backend",
+            "iid": 10,
+            "url": "https://gitlab.com/org/backend/-/merge_requests/10",
+            "pipeline_status": "success",
+            "state": "merged",
+            "review_requested": True,
+            "approvals": {"count": 0, "required": 2},
+            "discussions": [{"status": "needs_reply"}],
+        }
+        assert _check_mr(mr, self.ticket) == []
+
     def test_needs_review_request(self) -> None:
         mr = {
             "draft": False,
@@ -1160,6 +1228,36 @@ class TestBuildMrRows(TestCase):
             extra={"mrs": {"url1": "not-a-dict"}},
         )
         assert _build_mr_rows(ticket) == []
+
+    def test_merged_mr_excluded(self) -> None:
+        """Merged MRs must not appear in the dashboard MR rows — bug hunt 2026-04-25 (#455 §2)."""
+        ticket = Ticket.objects.create(
+            state=Ticket.State.STARTED,
+            extra={
+                "mrs": {
+                    "https://gitlab.com/org/backend/-/merge_requests/10": {
+                        "url": "https://gitlab.com/org/backend/-/merge_requests/10",
+                        "title": "feat",
+                        "repo": "backend",
+                        "iid": "10",
+                        "branch": "feat/x",
+                        "draft": False,
+                        "state": "merged",
+                    },
+                    "https://gitlab.com/org/backend/-/merge_requests/11": {
+                        "url": "https://gitlab.com/org/backend/-/merge_requests/11",
+                        "title": "still open",
+                        "repo": "backend",
+                        "iid": "11",
+                        "branch": "feat/y",
+                        "draft": False,
+                        "state": "opened",
+                    },
+                },
+            },
+        )
+        rows = _build_mr_rows(ticket)
+        assert [r.iid for r in rows] == ["11"]
 
     def test_non_dict_approvals(self) -> None:
         ticket = Ticket.objects.create(
