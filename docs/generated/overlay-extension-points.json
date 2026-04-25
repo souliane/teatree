@@ -89,7 +89,7 @@
       "signature": "() -> str"
     },
     {
-      "description": "Return E2E trigger configuration (project_path, ref).",
+      "description": "Return E2E runner configuration (runner, test_dir, settings_module, project_path, ref).",
       "name": "metadata.get_e2e_config",
       "required": false,
       "signature": "() -> dict[str, str]"

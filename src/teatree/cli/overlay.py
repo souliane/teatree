@@ -66,6 +66,7 @@ DJANGO_GROUPS: dict[str, tuple[str, list[tuple[str, str]]]] = {
     "e2e": (
         "E2E test commands.",
         [
+            ("run", "Run E2E tests — dispatches to project or external runner based on overlay config."),
             ("trigger-ci", "Trigger E2E tests on a remote CI pipeline."),
             ("external", "Run Playwright tests from the external test repo (T3_PRIVATE_TESTS)."),
             ("project", "Run E2E tests from the project's own test directory."),
