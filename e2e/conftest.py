@@ -73,6 +73,16 @@ def _disable_animations_init(page) -> None:
         "(document.head||document.documentElement).appendChild(s);})();"
     )
     page.add_init_script(script)
+    # Coverage instrumentation roughly doubles the uvicorn worker's response
+    # time, which makes Playwright's 5s `expect` and 30s action timeouts
+    # marginal. Bump them when COVERAGE_FILE is set so coverage runs don't
+    # introduce flakes; ad-hoc e2e runs keep the tighter defaults.
+    if os.environ.get("COVERAGE_FILE"):
+        from playwright.sync_api import expect as pw_expect
+
+        page.set_default_timeout(60_000)
+        page.set_default_navigation_timeout(60_000)
+        pw_expect.set_options(timeout=15_000)
 
 
 # pytest-playwright-visual's `assert_snapshot` hard-fails on any single-pixel
