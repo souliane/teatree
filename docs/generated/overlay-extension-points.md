@@ -19,7 +19,7 @@ Base class: `teatree.core.overlay.OverlayBase`
 | `metadata.validate_mr` | No | `(title: str, description: str) -> teatree.types.ValidationResult` | Return merge-request validation problems for this overlay. |
 | `metadata.get_skill_metadata` | No | `() -> teatree.types.SkillMetadata` | Return the active overlay skill path and remote match patterns. |
 | `metadata.get_ci_project_path` | No | `() -> str` | Return the GitLab project path for CI operations. |
-| `metadata.get_e2e_config` | No | `() -> dict[str, str]` | Return E2E trigger configuration (project_path, ref). |
+| `metadata.get_e2e_config` | No | `() -> dict[str, str]` | Return E2E runner configuration (runner, test_dir, settings_module, project_path, ref). |
 | `metadata.detect_variant` | No | `() -> str` | Detect the current tenant variant from environment. |
 | `metadata.get_tool_commands` | No | `() -> list[teatree.types.ToolCommand]` | Return overlay-specific tool commands for t3 <overlay> tool. |
 | `metadata.get_followup_repos` | No | `() -> list[str]` | Return GitLab project paths to sync MRs from. |
