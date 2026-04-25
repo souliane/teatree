@@ -3,6 +3,7 @@ from datetime import timedelta
 from django.test import TestCase
 from django.utils import timezone
 
+from teatree.core.managers import WorktreeQuerySet
 from teatree.core.models import Session, Task, Ticket, Worktree
 
 
@@ -21,21 +22,41 @@ class TestTicketQuerySet(TestCase):
 
 
 class TestWorktreeQuerySet(TestCase):
-    def test_active_excludes_created_items(self) -> None:
+    def test_active_excludes_delivered_and_ignored_tickets(self) -> None:
+        """Matches the worktrees panel filter so KPI count and table size agree."""
         active = Worktree.objects.create(
-            ticket=Ticket.objects.create(),
+            ticket=Ticket.objects.create(state=Ticket.State.STARTED),
             repo_path="/tmp/backend",
             branch="active",
             state=Worktree.State.READY,
         )
-        Worktree.objects.create(
-            ticket=Ticket.objects.create(),
+        also_active = Worktree.objects.create(
+            ticket=Ticket.objects.create(state=Ticket.State.STARTED),
             repo_path="/tmp/frontend",
-            branch="created",
+            branch="just-created",
             state=Worktree.State.CREATED,
         )
+        Worktree.objects.create(
+            ticket=Ticket.objects.create(state=Ticket.State.DELIVERED),
+            repo_path="/tmp/done",
+            branch="done",
+            state=Worktree.State.READY,
+        )
+        Worktree.objects.create(
+            ticket=Ticket.objects.create(state=Ticket.State.IGNORED),
+            repo_path="/tmp/ignored",
+            branch="ignored",
+            state=Worktree.State.READY,
+        )
 
-        assert list(Worktree.objects.active()) == [active]
+        assert list(Worktree.objects.active()) == [active, also_active]
+
+    def test_done_ticket_states_match_ticket_enum(self) -> None:
+        """Lock the hardcoded state strings to the Ticket.State enum values."""
+        assert (
+            Ticket.State.DELIVERED.value,
+            Ticket.State.IGNORED.value,
+        ) == WorktreeQuerySet._DONE_TICKET_STATES
 
 
 class TestSessionQuerySet(TestCase):

@@ -27,7 +27,7 @@ from teatree.cli.overlay_dev import overlay_dev_app
 from teatree.cli.review import review_app
 from teatree.cli.setup import setup_app
 from teatree.cli.tools import tool_app
-from teatree.config import discover_active_overlay
+from teatree.config import discover_active_overlay, load_config
 from teatree.utils.run import run_streamed, spawn
 
 logger = logging.getLogger(__name__)
@@ -170,7 +170,10 @@ def _launch_claude(
         context_lines.extend(("", f"Task: {task}"))
 
     context = "\n".join(context_lines)
-    cmd = [claude_bin, "--append-system-prompt", context]
+    cmd = [claude_bin]
+    if load_config().user.claude_chrome:
+        cmd.append("--chrome")
+    cmd.extend(["--append-system-prompt", context])
 
     if os.environ.get("T3_CONTRIBUTE", "").lower() == "true":
         from teatree import find_project_root  # noqa: PLC0415

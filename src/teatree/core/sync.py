@@ -50,6 +50,7 @@ class MREntry:
     repo: str
     iid: int
     updated_at: str
+    state: str = "opened"  # opened | closed | merged | locked — from the upstream MR API
     pipeline_status: str | None = None
     pipeline_url: str | None = None
     approvals: RawAPIDict | None = None
