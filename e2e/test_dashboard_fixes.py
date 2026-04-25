@@ -1,7 +1,10 @@
-"""E2E tests for dashboard fixes (issue #62).
+"""E2E tests for dashboard fixes (issue #62 + bug-hunt #455).
 
-Covers: vendored JS, logo, terminal options, overlay dropdown, task launch.
+Covers: vendored JS, logo, terminal options, overlay dropdown, task launch,
+plus regressions for the bug-hunt 2026-04-25 findings.
 """
+
+import re
 
 from playwright.sync_api import Page, expect
 
@@ -137,3 +140,61 @@ def test_static_assets_return_200(e2e_server: str, page: Page) -> None:
     for path in ["static/teatree/js/htmx-2.0.4.min.js", "static/teatree/js/htmx-ext-sse-2.2.4.js"]:
         resp = page.request.get(f"{e2e_server}/{path}")
         assert resp.status == 200, f"{path} returned {resp.status}"  # noqa: PLR2004
+
+
+# ── Bug hunt 2026-04-25 (#455) ───────────────────────────────────────
+
+
+def test_no_pageerror_on_load(e2e_server: str, page: Page) -> None:
+    """No uncaught JS exception fires on initial dashboard load (#455 §1).
+
+    Regression for the SSE listeners being registered in `<head>` before
+    `<body>` parsed — `document.body.addEventListener(...)` threw `TypeError`
+    every load, halting the inline script.
+    """
+    errors: list[str] = []
+    page.on("pageerror", lambda exc: errors.append(str(exc)))
+    page.goto(e2e_server)
+    page.wait_for_timeout(800)
+    assert errors == [], f"Uncaught page errors on dashboard load: {errors}"
+
+
+def test_sse_status_indicator_present(e2e_server: str, page: Page) -> None:
+    """The `#sse-status` indicator that the SSE listeners reference must exist (#455 §3)."""
+    page.goto(e2e_server)
+    expect(page.locator("#sse-status")).to_be_attached()
+
+
+def test_task_detail_url_404s_without_htmx(e2e_server: str, page: Page) -> None:
+    """Direct browser nav to the task detail partial returns 404 (#455 §6)."""
+    response = page.goto(f"{e2e_server}/tasks/1/detail/")
+    assert response is not None
+    assert response.status == 404  # noqa: PLR2004
+
+
+def test_ticket_lifecycle_url_404s_without_htmx(e2e_server: str, page: Page) -> None:
+    """Direct browser nav to the lifecycle partial returns 404 (#455 §6)."""
+    response = page.goto(f"{e2e_server}/tickets/1/lifecycle/")
+    assert response is not None
+    assert response.status == 404  # noqa: PLR2004
+
+
+def test_task_graph_url_404s_without_htmx(e2e_server: str, page: Page) -> None:
+    """Direct browser nav to the task-graph partial returns 404 (#455 §6)."""
+    response = page.goto(f"{e2e_server}/tickets/1/task-graph/")
+    assert response is not None
+    assert response.status == 404  # noqa: PLR2004
+
+
+def test_active_worktrees_kpi_matches_panel(e2e_server: str, page: Page) -> None:
+    """KPI count must equal the worktrees panel row count (#455 §4)."""
+    page.goto(e2e_server)
+    page.wait_for_timeout(800)  # let HTMX panels load
+
+    kpi_card = page.locator("article", has_text="Active Worktrees")
+    kpi_text = kpi_card.locator("div").filter(has_text=re.compile(r"^\d+$")).first.inner_text().strip()
+    kpi_count = int(kpi_text) if kpi_text.isdigit() else 0
+
+    panel_rows = page.locator("table").filter(has_text="Branch").locator("tbody tr").count()
+
+    assert kpi_count == panel_rows, f"KPI says {kpi_count} active worktrees, panel shows {panel_rows} rows"

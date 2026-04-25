@@ -76,7 +76,7 @@ def build_pending_reviews() -> list[PendingReviewRow]:
 def build_dashboard_summary(overlay: str | None = None) -> DashboardSummary:
     return DashboardSummary(
         in_flight_tickets=Ticket.objects.in_flight(overlay=overlay).count(),
-        active_worktrees=Worktree.objects.active(overlay=overlay).count(),
+        active_worktrees=len(build_worktree_rows(overlay=overlay)),
         pending_headless_tasks=Task.objects.claimable_for_headless(overlay=overlay).count(),
         pending_interactive_tasks=Task.objects.claimable_for_interactive(overlay=overlay).count(),
         pending_reviews=len(build_pending_reviews()),
@@ -101,6 +101,7 @@ def build_worktree_rows(overlay: str | None = None) -> list[DashboardWorktreeRow
             db_name=wt.db_name,
         )
         for wt in worktrees
+        if not wt.is_stale
     ]
 
 
@@ -254,7 +255,7 @@ def _build_mr_rows(ticket: Ticket) -> list[DashboardMRRow]:
         return []
     rows = []
     for mr in mrs_data.values():
-        if not isinstance(mr, dict):
+        if not isinstance(mr, dict) or mr.get("state") == "merged":
             continue
         approvals = mr.get("approvals", {})
         if not isinstance(approvals, dict):

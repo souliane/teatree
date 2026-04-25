@@ -220,7 +220,7 @@ One worktree per repository per ticket.
 |-------|------|---------|
 | `ticket` | FK(Ticket) | Parent ticket |
 | `overlay` | CharField(255) | Overlay name (entry point name from `teatree.overlays`) |
-| `repo_path` | CharField(500) | Filesystem path to the worktree |
+| `repo_path` | CharField(500) | Repo identifier (e.g. `org/repo` or short slug) — NOT a filesystem path. The on-disk worktree path lives in `extra['worktree_path']` and is exposed as `Worktree.worktree_path`. |
 | `branch` | CharField(255) | Git branch name |
 | `state` | FSMField | Current lifecycle state |
 | `db_name` | CharField(255) | Database name |

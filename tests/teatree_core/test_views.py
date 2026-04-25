@@ -347,6 +347,16 @@ class TestTaskDetailView(TestCase):
 
         assert response.status_code == 404
 
+    def test_returns_404_when_not_htmx_request(self) -> None:
+        """Direct browser nav must 404 — partial lacks page chrome (#455 §6)."""
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.STARTED)
+        session = Session.objects.create(ticket=ticket, overlay="test", agent_id="test")
+        task = Task.objects.create(ticket=ticket, session=session, phase="coding")
+
+        response = Client().get(reverse("teatree:task-detail", args=[task.pk]))
+
+        assert response.status_code == 404
+
 
 # ---------------------------------------------------------------------------
 # SyncFollowupView
@@ -817,7 +827,10 @@ class TestTicketLifecycleView(TestCase):
         ticket.scope(issue_url="https://example.com/issues/view-1")
         ticket.save()
 
-        response = Client().get(reverse("teatree:ticket-lifecycle", args=[ticket.pk]))
+        response = Client().get(
+            reverse("teatree:ticket-lifecycle", args=[ticket.pk]),
+            HTTP_HX_REQUEST="true",
+        )
 
         assert response.status_code == 200
         content = response.content.decode()
@@ -827,14 +840,28 @@ class TestTicketLifecycleView(TestCase):
     def test_returns_empty_for_ticket_without_transitions(self) -> None:
         ticket = Ticket.objects.create()
 
-        response = Client().get(reverse("teatree:ticket-lifecycle", args=[ticket.pk]))
+        response = Client().get(
+            reverse("teatree:ticket-lifecycle", args=[ticket.pk]),
+            HTTP_HX_REQUEST="true",
+        )
 
         assert response.status_code == 200
         content = response.content.decode()
         assert "note right of not_started" in content
 
     def test_returns_404_for_missing_ticket(self) -> None:
-        response = Client().get(reverse("teatree:ticket-lifecycle", args=[999999]))
+        response = Client().get(
+            reverse("teatree:ticket-lifecycle", args=[999999]),
+            HTTP_HX_REQUEST="true",
+        )
+
+        assert response.status_code == 404
+
+    def test_returns_404_when_not_htmx_request(self) -> None:
+        """Direct browser nav must 404 — partial lacks page chrome (#455 §6)."""
+        ticket = Ticket.objects.create()
+
+        response = Client().get(reverse("teatree:ticket-lifecycle", args=[ticket.pk]))
 
         assert response.status_code == 404
 
@@ -850,7 +877,10 @@ class TestTaskGraphView(TestCase):
         session = Session.objects.create(ticket=ticket, overlay="test")
         Task.objects.create(ticket=ticket, session=session, phase="coding")
 
-        response = Client().get(reverse("teatree:task-graph", args=[ticket.pk]))
+        response = Client().get(
+            reverse("teatree:task-graph", args=[ticket.pk]),
+            HTTP_HX_REQUEST="true",
+        )
 
         assert response.status_code == 200
         assert b"coding" in response.content
@@ -858,13 +888,27 @@ class TestTaskGraphView(TestCase):
     def test_returns_empty_for_ticket_without_tasks(self) -> None:
         ticket = Ticket.objects.create()
 
-        response = Client().get(reverse("teatree:task-graph", args=[ticket.pk]))
+        response = Client().get(
+            reverse("teatree:task-graph", args=[ticket.pk]),
+            HTTP_HX_REQUEST="true",
+        )
 
         assert response.status_code == 200
         assert b"No tasks" in response.content
 
     def test_returns_404_for_missing_ticket(self) -> None:
-        response = Client().get(reverse("teatree:task-graph", args=[999999]))
+        response = Client().get(
+            reverse("teatree:task-graph", args=[999999]),
+            HTTP_HX_REQUEST="true",
+        )
+
+        assert response.status_code == 404
+
+    def test_returns_404_when_not_htmx_request(self) -> None:
+        """Direct browser nav must 404 — partial lacks page chrome (#455 §6)."""
+        ticket = Ticket.objects.create()
+
+        response = Client().get(reverse("teatree:task-graph", args=[ticket.pk]))
 
         assert response.status_code == 404
 

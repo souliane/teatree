@@ -23,7 +23,11 @@ class Worktree(models.Model):
 
     overlay = models.CharField(max_length=255)
     ticket = models.ForeignKey(Ticket, on_delete=models.CASCADE, related_name="worktrees")
-    repo_path = models.CharField(max_length=500)
+    repo_path = models.CharField(
+        max_length=500,
+        help_text="Repo identifier (e.g. 'org/repo' or a short slug) — NOT a filesystem path. "
+        "The on-disk worktree path lives in extra['worktree_path'].",
+    )
     branch = models.CharField(max_length=255)
     state = FSMField(max_length=32, choices=State.choices, default=State.CREATED)
     db_name = models.CharField(max_length=255, blank=True)
@@ -36,6 +40,18 @@ class Worktree(models.Model):
 
     def __str__(self) -> str:
         return str(self.repo_path)
+
+    @property
+    def worktree_path(self) -> str:
+        """On-disk path to the materialised git worktree, or '' before provisioning."""
+        extra = self.extra if isinstance(self.extra, dict) else {}
+        return str(extra.get("worktree_path", ""))
+
+    @property
+    def is_stale(self) -> bool:
+        """True if this row claims a worktree path that no longer exists on disk."""
+        path = self.worktree_path
+        return bool(path) and not Path(path).exists()
 
     @transition(field=state, source=[State.CREATED, State.PROVISIONED], target=State.PROVISIONED)
     def provision(self) -> None:
