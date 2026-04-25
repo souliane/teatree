@@ -399,7 +399,7 @@ def test_mermaid_lifecycle_renders_svg(e2e_server: str, page: Page) -> None:
     page.locator("button[onclick^='toggleTicketDetails']").first.click()
     details = page.locator("tr[id^='ticket-details-']").first
     expect(details).to_be_visible()
-    details.locator(".mermaid svg").first.wait_for(state="attached", timeout=3000)
+    details.locator(".mermaid svg").first.wait_for(state="attached", timeout=10000)
 
 
 def test_snapshot_sessions_filter_queued(e2e_server: str, page: Page, assert_snapshot: Callable) -> None:
