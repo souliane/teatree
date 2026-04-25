@@ -87,6 +87,53 @@ class TestShipExecutor(TestCase):
         assert result.ok is False
         assert "worktree" in result.detail.lower()
 
+    def test_description_starts_with_commit_subject(self) -> None:
+        """Default MR description prepends the commit subject.
+
+        Some overlays' CI jobs validate that the first description line matches
+        the title format; previously the description was only the commit body,
+        so every MR without an explicit description tripped the pipeline.
+        Regression guard for overlay issue t3-o.#54 Bug 2.
+        """
+        ticket = self._ticket_with_worktree()
+        host = MagicMock()
+        host.create_pr.return_value = {"web_url": "https://example.com/mr/2"}
+        host.current_user.return_value = "souliane"
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.ship.code_host_from_overlay", return_value=host),
+            patch("teatree.core.runners.ship.git.push"),
+            patch(
+                "teatree.core.runners.ship.git.last_commit_message",
+                return_value=("feat(core): add thing (https://example.com/issues/77)", "Longer body.\nMore detail."),
+            ),
+        ):
+            ShipExecutor(ticket).run()
+
+        (spec,) = host.create_pr.call_args.args
+        assert spec.description.startswith("feat(core): add thing (https://example.com/issues/77)")
+        assert spec.description == (
+            "feat(core): add thing (https://example.com/issues/77)\n\nLonger body.\nMore detail."
+        )
+
+    def test_description_is_just_subject_when_body_empty(self) -> None:
+        ticket = self._ticket_with_worktree()
+        host = MagicMock()
+        host.create_pr.return_value = {"web_url": "u"}
+        host.current_user.return_value = "dev"
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.ship.code_host_from_overlay", return_value=host),
+            patch("teatree.core.runners.ship.git.push"),
+            patch("teatree.core.runners.ship.git.last_commit_message", return_value=("feat: x", "")),
+        ):
+            ShipExecutor(ticket).run()
+
+        (spec,) = host.create_pr.call_args.args
+        assert spec.description == "feat: x"
+
     def test_assignee_falls_back_to_git_user_name_when_host_returns_empty(self) -> None:
         ticket = self._ticket_with_worktree()
         host = MagicMock()

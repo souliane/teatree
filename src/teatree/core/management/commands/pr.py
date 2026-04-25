@@ -86,7 +86,8 @@ def _ship_preview(ticket: Ticket, worktree: Worktree) -> tuple[str, str, str]:
     repo_path = (worktree.extra or {}).get("worktree_path", "") or worktree.repo_path
     subject, body = git.last_commit_message(repo=repo_path)
     title = subject or f"Resolve {ticket.issue_url}"
-    description = sanitize_close_keywords(body, close_ticket=get_overlay().config.mr_close_ticket)
+    raw_description = f"{subject}\n\n{body}" if subject and body else (subject or body)
+    description = sanitize_close_keywords(raw_description, close_ticket=get_overlay().config.mr_close_ticket)
     return repo_path, title, description
 
 

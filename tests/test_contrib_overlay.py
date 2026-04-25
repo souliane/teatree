@@ -374,7 +374,11 @@ class TestOverlayDefaults(TestCase):
         assert overlay.get_services_config(worktree) == {}
         assert overlay.metadata.validate_mr("title", "desc") == {"errors": [], "warnings": []}
         assert overlay.metadata.get_ci_project_path() == ""
-        assert overlay.metadata.get_e2e_config() == {"test_dir": "e2e/", "settings_module": "e2e.settings"}
+        assert overlay.metadata.get_e2e_config() == {
+            "runner": "project",
+            "test_dir": "e2e/",
+            "settings_module": "e2e.settings",
+        }
         assert overlay.metadata.detect_variant() == ""
         assert overlay.metadata.get_tool_commands() == []
 

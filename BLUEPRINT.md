@@ -661,10 +661,12 @@ Typer-based, work without Django:
 - `t3 sessions` — list/resume Claude conversation sessions
 - `t3 docs` — serve mkdocs documentation (requires `docs` dependency group)
 - `t3 ci {cancel,divergence,fetch-errors,fetch-failed-tests,trigger-e2e,quality-check}` — CI helpers
-- `t3 e2e external [--repo <name>] [--test-path <path>]` — run Playwright tests from `T3_PRIVATE_TESTS` or a named `[e2e_repos.<name>]` git repo; skips port discovery when `BASE_URL` is already set (DEV/staging mode)
+- `t3 <overlay> e2e run [<test-path>]` — run E2E tests; dispatches to the project runner (in-repo pytest-playwright) or the external runner (remote Playwright repo) based on the overlay's `get_e2e_config()` — same command across overlays
+- `t3 <overlay> e2e external [--repo <name>] [<test-path>]` — explicit external runner: Playwright from `T3_PRIVATE_TESTS` or a named `[e2e_repos.<name>]` git repo; skips port discovery when `BASE_URL` is already set (DEV/staging mode)
+- `t3 <overlay> e2e project [<test-path>] [--update-snapshots]` — explicit project runner: pytest-playwright in the overlay's own test dir, executed in the canonical Docker image by default
 - `t3 review {post-draft-note,delete-draft-note,list-draft-notes,publish-draft-notes,reply-to-discussion,resolve-discussion}` — GitLab draft notes plus immediate replies on existing discussion threads and resolve/unresolve toggle
 - `t3 review-request discover` — discover open MRs
-- `t3 tool {privacy-scan,analyze-video,bump-deps,label-issues}` — standalone utilities
+- `t3 tool {privacy-scan,analyze-video,bump-deps,label-issues,find-duplicates}` — standalone utilities
 - `t3 config write-skill-cache` — write overlay skill metadata to cache
 - `t3 doctor {check,repair}` — health checks and symlink repair
 

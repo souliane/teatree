@@ -548,6 +548,7 @@ Usage: t3 tool [OPTIONS] COMMAND [ARGS]...
 │ sonar-check      Run local SonarQube analysis via Docker.                    │
 │ label-issues     Suggest labels for unlabeled open issues by                 │
 │                  keyword-matching title and body.                            │
+│ find-duplicates  Flag pairs of open issues with near-identical titles.       │
 │ claude-handover  Show Claude handover telemetry and runtime recommendations. │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -630,6 +631,25 @@ Usage: t3 tool label-issues [OPTIONS] REPO
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --apply          Apply labels via `gh issue edit` (default: print only).     │
 │ --help           Show this message and exit.                                 │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 tool find-duplicates`
+
+```
+Usage: t3 tool find-duplicates [OPTIONS] REPO
+
+ Flag pairs of open issues with near-identical titles.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    repo      TEXT  Repository in owner/name form (e.g. souliane/teatree)   │
+│                      [required]                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --threshold        FLOAT RANGE [0.0<=x<=1.0]  Similarity ratio required to   │
+│                                               flag a pair (0.0-1.0).         │
+│                                               [default: 0.75]                │
+│ --help                                        Show this message and exit.    │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -1490,10 +1510,39 @@ Usage: t3 teatree e2e [OPTIONS] COMMAND [ARGS]...
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ run         Run E2E tests — dispatches to project or external runner based   │
+│             on overlay config.                                               │
 │ trigger-ci  Trigger E2E tests on a remote CI pipeline.                       │
 │ external    Run Playwright tests from the external test repo                 │
 │             (T3_PRIVATE_TESTS).                                              │
 │ project     Run E2E tests from the project's own test directory.             │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree e2e run`
+
+```
+Usage: t3 teatree e2e run [OPTIONS]
+
+ Run E2E tests — the one command that works for every overlay.
+
+ Dispatches to the ``project`` runner (in-repo pytest-playwright) or the
+ ``external`` runner (remote playwright repo) based on what the overlay's
+ ``get_e2e_config()`` returns. The overlay declares ``"runner": "project"``
+ or ``"runner": "external"``; when absent, ``test_dir`` implies ``project``
+ and ``project_path`` implies ``external`` for compatibility.
+
+ Runner-specific flags (``--repo``, ``--playwright-args``) stay on the
+ explicit ``external`` subcommand to keep this entry point overlay-agnostic.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --test-path                                    TEXT                          │
+│ --headed              --no-headed                    [default: no-headed]    │
+│ --update-snapshots    --no-update-snapshots          [default:               │
+│                                                      no-update-snapshots]    │
+│ --docker              --no-docker                    [default: docker]       │
+│ --help                                               Show this message and   │
+│                                                      exit.                   │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

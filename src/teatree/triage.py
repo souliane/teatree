@@ -1,9 +1,11 @@
-"""Auto-labeling for GitHub issues — first slice of the triage tool (see #49)."""
+"""Auto-labeling and duplicate detection for GitHub issues — triage tool (see #49)."""
 
 import json
 import re
 import sys
 from dataclasses import dataclass
+from difflib import SequenceMatcher
+from itertools import combinations
 
 from teatree.utils.run import run_allowed_to_fail
 
@@ -86,3 +88,82 @@ class LabelSuggester:
                 ],
                 expected_codes=None,
             )
+
+
+# Conventional-commit prefix: `type(scope)!:` with optional scope and breaking `!`.
+_CONVENTIONAL_PREFIX = re.compile(r"^\s*[a-z]+(?:\([^)]+\))?!?:\s*", flags=re.IGNORECASE)
+# Trailing PR/issue reference: " (#123)".
+_PR_SUFFIX = re.compile(r"\s*\(#\d+\)\s*$")
+# Leading bracket tag: "[WIP]", "[RFC]", etc.
+_BRACKET_TAG = re.compile(r"^\s*\[[^\]]+\]\s*")
+_NON_ALNUM = re.compile(r"[^a-z0-9\s]+")
+_WHITESPACE = re.compile(r"\s+")
+
+
+def normalize_title(title: str) -> str:
+    """Lower-case, strip conventional-commit prefix / PR suffix / bracket tags / punctuation."""
+    text = title.lower()
+    text = _BRACKET_TAG.sub("", text)
+    text = _CONVENTIONAL_PREFIX.sub("", text)
+    text = _PR_SUFFIX.sub("", text)
+    text = _NON_ALNUM.sub(" ", text)
+    return _WHITESPACE.sub(" ", text).strip()
+
+
+@dataclass(frozen=True)
+class DuplicateMatch:
+    a_number: int
+    b_number: int
+    a_title: str
+    b_title: str
+    score: float
+
+
+class DuplicateFinder:
+    """Find potentially duplicate open issues by normalized-title similarity."""
+
+    def __init__(self, repo: str, *, threshold: float = 0.75) -> None:
+        self.repo = repo
+        self.threshold = threshold
+
+    def find(self) -> list[DuplicateMatch]:
+        result = run_allowed_to_fail(
+            [
+                "gh",
+                "issue",
+                "list",
+                "--repo",
+                self.repo,
+                "--state",
+                "open",
+                "--limit",
+                "200",
+                "--json",
+                "number,title,body,labels",
+            ],
+            expected_codes=None,
+        )
+        if result.returncode != 0:
+            sys.stderr.write(f"gh issue list failed: {result.stderr.strip()}\n")
+            return []
+
+        issues = json.loads(result.stdout or "[]")
+        normalized = [(issue["number"], issue["title"], normalize_title(issue["title"])) for issue in issues]
+
+        matches: list[DuplicateMatch] = []
+        for (num_a, title_a, norm_a), (num_b, title_b, norm_b) in combinations(normalized, 2):
+            if not norm_a or not norm_b:
+                continue
+            score = SequenceMatcher(None, norm_a, norm_b).ratio()
+            if score >= self.threshold:
+                matches.append(
+                    DuplicateMatch(
+                        a_number=num_a,
+                        b_number=num_b,
+                        a_title=title_a,
+                        b_title=title_b,
+                        score=score,
+                    )
+                )
+        matches.sort(key=lambda m: m.score, reverse=True)
+        return matches

@@ -146,6 +146,56 @@ def _build_e2e_env(frontend_url: str | None = None, *, headed: bool) -> dict[str
 
 
 class Command(TyperCommand):
+    @command()
+    def run(
+        self,
+        test_path: str = "",
+        *,
+        headed: bool = False,
+        update_snapshots: bool = False,
+        docker: bool = True,
+    ) -> str:
+        """Run E2E tests — the one command that works for every overlay.
+
+        Dispatches to the ``project`` runner (in-repo pytest-playwright) or the
+        ``external`` runner (remote playwright repo) based on what the overlay's
+        ``get_e2e_config()`` returns. The overlay declares ``"runner": "project"``
+        or ``"runner": "external"``; when absent, ``test_dir`` implies ``project``
+        and ``project_path`` implies ``external`` for compatibility.
+
+        Runner-specific flags (``--repo``, ``--playwright-args``) stay on the
+        explicit ``external`` subcommand to keep this entry point overlay-agnostic.
+        """
+        overlay = get_overlay()
+        e2e_config = overlay.metadata.get_e2e_config()
+        runner = e2e_config.get("runner") or self._infer_runner(e2e_config)
+        if runner == "project":
+            return self.project(
+                test_path=test_path,
+                headed=headed,
+                docker=docker,
+                update_snapshots=update_snapshots,
+            )
+        if runner == "external":
+            return self.external(
+                test_path=test_path,
+                headed=headed,
+                update_snapshots=update_snapshots,
+            )
+        self.stderr.write(
+            f"Overlay e2e_config has no runner ({e2e_config}). "
+            "Set 'runner' to 'project' or 'external' in get_e2e_config().",
+        )
+        raise SystemExit(2)
+
+    @staticmethod
+    def _infer_runner(e2e_config: dict[str, str]) -> str:
+        if "test_dir" in e2e_config or "settings_module" in e2e_config:
+            return "project"
+        if "project_path" in e2e_config:
+            return "external"
+        return ""
+
     @command(name="trigger-ci")
     def trigger_ci(self, branch: str = "") -> dict[str, object]:
         """Trigger E2E tests on a remote CI pipeline."""
