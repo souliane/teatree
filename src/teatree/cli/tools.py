@@ -7,7 +7,7 @@ from pathlib import Path
 
 import typer
 
-from teatree.triage import LabelSuggester
+from teatree.triage import DuplicateFinder, LabelSuggester
 from teatree.utils.run import run_allowed_to_fail
 
 tool_app = typer.Typer(no_args_is_help=True, help="Standalone utilities.")
@@ -108,6 +108,32 @@ def label_issues(
         typer.echo(f"Applied labels to {len(suggestions)} issue(s).")
     else:
         typer.echo(f"\n{len(suggestions)} issue(s) to label. Re-run with --apply to apply.")
+
+
+@tool_app.command("find-duplicates")
+def find_duplicates(
+    repo: str = typer.Argument(..., help="Repository in owner/name form (e.g. souliane/teatree)"),
+    *,
+    threshold: float = typer.Option(
+        0.75,
+        "--threshold",
+        min=0.0,
+        max=1.0,
+        help="Similarity ratio required to flag a pair (0.0-1.0).",
+    ),
+) -> None:
+    """Flag pairs of open issues with near-identical titles."""
+    finder = DuplicateFinder(repo, threshold=threshold)
+    matches = finder.find()
+    if not matches:
+        typer.echo("No potential duplicates found.")
+        return
+
+    for match in matches:
+        typer.echo(
+            f"  {match.score:.2f}  #{match.a_number} {match.a_title}\n         #{match.b_number} {match.b_title}"
+        )
+    typer.echo(f"\n{len(matches)} potential duplicate pair(s).")
 
 
 @tool_app.command("claude-handover")

@@ -1,10 +1,16 @@
-"""Tests for teatree.triage — label inference for GitHub issues."""
+"""Tests for teatree.triage — label inference and duplicate detection for GitHub issues."""
 
 import json
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from teatree.triage import LABEL_KEYWORDS, LabelSuggester, infer_labels
+from teatree.triage import (
+    LABEL_KEYWORDS,
+    DuplicateFinder,
+    LabelSuggester,
+    infer_labels,
+    normalize_title,
+)
 
 
 def _issue_fixture() -> list[dict]:
@@ -108,3 +114,106 @@ class TestLabelSuggester:
             mock_run.return_value = SimpleNamespace(stdout="", stderr="gh: not found", returncode=1)
             suggestions = LabelSuggester("souliane/teatree").collect_suggestions()
         assert suggestions == []
+
+
+class TestNormalizeTitle:
+    def test_lowercases(self) -> None:
+        assert normalize_title("Fix DASHBOARD bug") == normalize_title("fix dashboard bug")
+
+    def test_strips_conventional_prefix(self) -> None:
+        assert normalize_title("feat: add a thing") == normalize_title("add a thing")
+        assert normalize_title("fix(cli): add a thing") == normalize_title("add a thing")
+        assert normalize_title("docs(scope)!: add a thing") == normalize_title("add a thing")
+
+    def test_strips_pr_suffix(self) -> None:
+        assert normalize_title("add a thing (#123)") == normalize_title("add a thing")
+
+    def test_strips_punctuation(self) -> None:
+        assert normalize_title("add a thing!") == normalize_title("add a thing")
+        assert normalize_title("add, a thing.") == normalize_title("add a thing")
+
+    def test_collapses_whitespace(self) -> None:
+        assert normalize_title("add   a   thing") == normalize_title("add a thing")
+
+    def test_strips_leading_emoji(self) -> None:
+        # Common "noise" words we don't want to count as signal.
+        assert normalize_title("[WIP] add a thing") == normalize_title("add a thing")
+
+
+def _dup_issue(number: int, title: str, labels: list[dict] | None = None) -> dict:
+    return {"number": number, "title": title, "body": "", "labels": labels or []}
+
+
+class TestDuplicateFinder:
+    def test_finds_near_identical_titles(self) -> None:
+        issues = [
+            _dup_issue(1, "Dashboard SSE disconnects under load"),
+            _dup_issue(2, "Dashboard SSE disconnects under load."),
+            _dup_issue(3, "Totally unrelated thing"),
+        ]
+        with patch("teatree.triage.run_allowed_to_fail") as mock_run:
+            mock_run.return_value = _fake_list_result(issues)
+            matches = DuplicateFinder("souliane/teatree").find()
+
+        assert len(matches) == 1
+        pair = matches[0]
+        assert {pair.a_number, pair.b_number} == {1, 2}
+        assert pair.score >= 0.9
+
+    def test_finds_conventional_commit_variants(self) -> None:
+        issues = [
+            _dup_issue(10, "feat: add duplicate detection"),
+            _dup_issue(11, "Add duplicate detection"),
+            _dup_issue(12, "fix: something else entirely"),
+        ]
+        with patch("teatree.triage.run_allowed_to_fail") as mock_run:
+            mock_run.return_value = _fake_list_result(issues)
+            matches = DuplicateFinder("souliane/teatree").find()
+
+        assert any({m.a_number, m.b_number} == {10, 11} for m in matches)
+
+    def test_ignores_low_similarity(self) -> None:
+        issues = [
+            _dup_issue(1, "Dashboard SSE disconnects under load"),
+            _dup_issue(2, "Switch CI from codecov to coveralls"),
+        ]
+        with patch("teatree.triage.run_allowed_to_fail") as mock_run:
+            mock_run.return_value = _fake_list_result(issues)
+            matches = DuplicateFinder("souliane/teatree").find()
+
+        assert matches == []
+
+    def test_threshold_is_configurable(self) -> None:
+        issues = [
+            _dup_issue(1, "Refactor overlay loader"),
+            _dup_issue(2, "Refactor overlay module"),
+        ]
+        with patch("teatree.triage.run_allowed_to_fail") as mock_run:
+            mock_run.return_value = _fake_list_result(issues)
+            strict = DuplicateFinder("souliane/teatree", threshold=0.99).find()
+            loose = DuplicateFinder("souliane/teatree", threshold=0.6).find()
+
+        assert strict == []
+        assert len(loose) >= 1
+
+    def test_each_pair_reported_once(self) -> None:
+        issues = [
+            _dup_issue(1, "Duplicate issue detection"),
+            _dup_issue(2, "Duplicate issue detection"),
+            _dup_issue(3, "Duplicate issue detection"),
+        ]
+        with patch("teatree.triage.run_allowed_to_fail") as mock_run:
+            mock_run.return_value = _fake_list_result(issues)
+            matches = DuplicateFinder("souliane/teatree").find()
+
+        # With 3 identical titles we expect C(3, 2) = 3 unique pairs, no self-pairs, no duplicates.
+        pair_keys = {frozenset((m.a_number, m.b_number)) for m in matches}
+        assert len(pair_keys) == len(matches) == 3
+        assert all(m.a_number != m.b_number for m in matches)
+
+    def test_gh_failure_returns_empty(self) -> None:
+        with patch("teatree.triage.run_allowed_to_fail") as mock_run:
+            mock_run.return_value = SimpleNamespace(stdout="", stderr="gh: not found", returncode=1)
+            matches = DuplicateFinder("souliane/teatree").find()
+
+        assert matches == []
