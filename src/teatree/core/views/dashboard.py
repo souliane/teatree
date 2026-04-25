@@ -125,7 +125,11 @@ class DashboardPanelView(View):
 
 
 class TaskDetailView(View):
+    """HTMX-only modal partial. Direct GETs 404 — partials lack page chrome."""
+
     def get(self, request: HttpRequest, task_id: int) -> HttpResponse:
+        if not getattr(request, "htmx", False):
+            raise Http404
         detail = build_task_detail(task_id)
         if detail is None:
             raise Http404
@@ -137,9 +141,13 @@ class TaskDetailView(View):
 
 
 class TaskGraphView(View):
+    """HTMX-only modal partial. Direct GETs 404 — partials lack page chrome."""
+
     def get(self, request: HttpRequest, ticket_id: int) -> HttpResponse:
         from teatree.core.models import Ticket  # noqa: PLC0415
 
+        if not getattr(request, "htmx", False):
+            raise Http404
         ticket = get_object_or_404(Ticket, pk=ticket_id)
         graph = build_task_graph(ticket_id)
         return TemplateResponse(
@@ -150,10 +158,14 @@ class TaskGraphView(View):
 
 
 class TicketLifecycleView(View):
+    """HTMX-only modal partial. Direct GETs 404 — partials lack page chrome."""
+
     def get(self, request: HttpRequest, ticket_id: int) -> HttpResponse:
         from teatree.core.models import Ticket  # noqa: PLC0415
         from teatree.core.selectors import build_ticket_lifecycle_mermaid  # noqa: PLC0415
 
+        if not getattr(request, "htmx", False):
+            raise Http404
         ticket = get_object_or_404(Ticket, pk=ticket_id)
         mermaid = build_ticket_lifecycle_mermaid(ticket_id)
         return TemplateResponse(

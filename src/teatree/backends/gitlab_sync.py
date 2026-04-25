@@ -129,6 +129,7 @@ class GitLabSyncBackend(SyncBackend):
             repo=ctx.repo_short,
             iid=mr_iid,
             updated_at=str(mr.get("updated_at", "")),
+            state=str(mr.get("state", "opened")),
         )
 
         if not is_draft and ctx.project and mr_iid:
@@ -318,6 +319,9 @@ class GitLabSyncBackend(SyncBackend):
                 continue
             entry = cast("MREntryDict", mr_entry)
             if entry.pop("discussions", None) is not None:
+                changed = True
+            if entry.get("state") != "merged":
+                entry["state"] = "merged"
                 changed = True
             result.mrs_merged += 1
         return changed, not unmerged

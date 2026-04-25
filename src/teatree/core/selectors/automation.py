@@ -97,7 +97,7 @@ _DISCUSSION_STATUS_DISPLAY = {
 
 def _check_mr(mr: dict, ticket: "Ticket") -> list[ActionRequiredItem]:
     """Return action items for a single MR dict."""
-    if not isinstance(mr, dict) or mr.get("draft"):
+    if not isinstance(mr, dict) or mr.get("draft") or mr.get("state") == "merged":
         return []
     repo = str(mr.get("repo", ""))
     iid = str(mr.get("iid", ""))
