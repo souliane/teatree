@@ -124,6 +124,10 @@ def test_approval_button_expands_ticket_details(e2e_server: str, page: Page) -> 
 def test_hide_selected_fires_transition(e2e_server: str, page: Page) -> None:
     page.goto(e2e_server)
     page.locator("tr[data-mr-row]").first.wait_for(state="attached")
+    # Wait for HTMX to attach handlers — under coverage instrumentation the
+    # initial load completes before HTMX finishes wiring up, and clicking
+    # before then sends no transition POST.
+    page.wait_for_load_state("networkidle")
     page.locator("thead input[type='checkbox']").check()
     hide_btn = page.locator("#hide-selected-btn")
     expect(hide_btn).to_be_visible()
@@ -399,7 +403,10 @@ def test_mermaid_lifecycle_renders_svg(e2e_server: str, page: Page) -> None:
     page.locator("button[onclick^='toggleTicketDetails']").first.click()
     details = page.locator("tr[id^='ticket-details-']").first
     expect(details).to_be_visible()
-    details.locator(".mermaid svg").first.wait_for(state="attached", timeout=10000)
+    # No explicit timeout — uses the page default (bumped under coverage in
+    # e2e/conftest.py). Mermaid lazy-loads + parses + renders the SVG, which
+    # is meaningfully slower when the uvicorn worker is instrumented.
+    details.locator(".mermaid svg").first.wait_for(state="attached")
 
 
 def test_snapshot_sessions_filter_queued(e2e_server: str, page: Page, assert_snapshot: Callable) -> None:
