@@ -101,11 +101,34 @@ class TeatreeOverlay(OverlayBase):
         def sync_deps() -> None:
             run_checked(["uv", "sync"], cwd=repo)
 
+        def install_overlays_editable() -> None:
+            workspace_dir = load_config().user.workspace_dir.resolve()
+            ticket_dir = repo.parent
+            repo_resolved = repo.resolve()
+            for entry in discover_overlays():
+                if entry.project_path is None:
+                    continue
+                try:
+                    entry.project_path.resolve().relative_to(workspace_dir)
+                except ValueError:
+                    continue
+                overlay_worktree = ticket_dir / entry.project_path.name
+                if not overlay_worktree.is_dir():
+                    continue
+                if overlay_worktree.resolve() == repo_resolved:
+                    continue
+                run_checked(["uv", "pip", "install", "-e", str(overlay_worktree)], cwd=repo)
+
         return [
             ProvisionStep(
                 name="sync-dependencies",
                 callable=sync_deps,
                 description="Install Python dependencies with uv sync",
+            ),
+            ProvisionStep(
+                name="install-overlays-editable",
+                callable=install_overlays_editable,
+                description="Install discovered overlays editable from their ticket worktrees",
             ),
         ]
 
