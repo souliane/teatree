@@ -548,6 +548,7 @@ Usage: t3 tool [OPTIONS] COMMAND [ARGS]...
 │ sonar-check      Run local SonarQube analysis via Docker.                    │
 │ label-issues     Suggest labels for unlabeled open issues by                 │
 │                  keyword-matching title and body.                            │
+│ find-duplicates  Flag pairs of open issues with near-identical titles.       │
 │ claude-handover  Show Claude handover telemetry and runtime recommendations. │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -630,6 +631,25 @@ Usage: t3 tool label-issues [OPTIONS] REPO
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --apply          Apply labels via `gh issue edit` (default: print only).     │
 │ --help           Show this message and exit.                                 │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 tool find-duplicates`
+
+```
+Usage: t3 tool find-duplicates [OPTIONS] REPO
+
+ Flag pairs of open issues with near-identical titles.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    repo      TEXT  Repository in owner/name form (e.g. souliane/teatree)   │
+│                      [required]                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --threshold        FLOAT RANGE [0.0<=x<=1.0]  Similarity ratio required to   │
+│                                               flag a pair (0.0-1.0).         │
+│                                               [default: 0.75]                │
+│ --help                                        Show this message and exit.    │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

@@ -666,7 +666,7 @@ Typer-based, work without Django:
 - `t3 <overlay> e2e project [<test-path>] [--update-snapshots]` — explicit project runner: pytest-playwright in the overlay's own test dir, executed in the canonical Docker image by default
 - `t3 review {post-draft-note,delete-draft-note,list-draft-notes,publish-draft-notes,reply-to-discussion,resolve-discussion}` — GitLab draft notes plus immediate replies on existing discussion threads and resolve/unresolve toggle
 - `t3 review-request discover` — discover open MRs
-- `t3 tool {privacy-scan,analyze-video,bump-deps,label-issues}` — standalone utilities
+- `t3 tool {privacy-scan,analyze-video,bump-deps,label-issues,find-duplicates}` — standalone utilities
 - `t3 config write-skill-cache` — write overlay skill metadata to cache
 - `t3 doctor {check,repair}` — health checks and symlink repair
 
