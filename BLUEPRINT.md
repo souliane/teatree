@@ -1039,7 +1039,18 @@ The design is **broad allow, narrow deny**:
 
 ### 13.1 Coverage Gate
 
-**>90% branch coverage, non-negotiable.** Enforced by pytest-cov with `fail_under = 93, branch = true`. Omits only migrations.
+**>90% branch coverage, non-negotiable.** Combines unit (`tests/`) and e2e (`e2e/`) suites — every line of `src/teatree` that either suite exercises counts. Threshold (`93`) enforced on the combined report only.
+
+**Why combined.** Many code paths are easier to exercise from the dashboard (HTMX panels, view rendering, JS-driven flows) than from a unit test. Combining lets us delete unit tests that duplicate what an e2e already covers without sacrificing the gate.
+
+**How it works:**
+
+- `[tool.coverage.run] patch = ["subprocess"], sigterm = true` — auto-instruments the uvicorn worker that Playwright drives, and flushes coverage on `proc.terminate()`.
+- Each pytest invocation gets a distinct `COVERAGE_FILE` (`.coverage.unit`, `.coverage.e2e`) so parallel writes don't race.
+- Individual jobs pass `--cov-fail-under=0` so the per-run check ignores the 93% target — that target is enforced only on the combined report.
+- `coverage combine` merges every `.coverage.*` file (including the per-PID partials `patch=["subprocess"]` leaves behind) into one `.coverage`.
+- Locally: `scripts/coverage.sh` runs both suites in parallel, combines, reports, and writes HTML to `htmlcov/`.
+- CI: the `test` and `e2e` jobs upload `.coverage.*` artifacts; a small `coverage` job downloads, combines, and enforces the threshold — no test re-runs.
 
 ### 13.2 Django Test Settings
 
@@ -1077,7 +1088,7 @@ Playwright tests in `e2e/` with separate settings (`e2e.settings`) using file-ba
 
 | Tool | What it checks | Config |
 |------|----------------|--------|
-| pytest + pytest-cov | >90% branch coverage (`fail_under = 93`) | `pyproject.toml [tool.coverage]` |
+| pytest + pytest-cov | >90% branch coverage on combined unit+e2e (threshold `93`) | `pyproject.toml [tool.coverage]` + `scripts/coverage.sh` |
 | ruff | ALL rules enabled, specific ignores justified | `pyproject.toml [tool.ruff]` |
 | ty | Static type checker with `error-on-warning = true` | `pyproject.toml [tool.ty]` |
 | import-linter | Dependency boundaries | `pyproject.toml [tool.importlinter]` |

@@ -324,7 +324,16 @@ class Command(TyperCommand):
                 raise SystemExit(rc)
 
         cmd = ["uv", "run", "pytest", test_dir]
-        cmd.extend(["-o", f"DJANGO_SETTINGS_MODULE={settings_module}", "--no-cov", "-p", "no:tach", "-v"])
+        cmd.extend(["-o", f"DJANGO_SETTINGS_MODULE={settings_module}", "-p", "no:tach", "-v"])
+        # COVERAGE_FILE is set by scripts/coverage.sh (and CI) to capture coverage
+        # for the combined report. patch=["subprocess"] in pyproject auto-instruments
+        # the uvicorn worker. The 93% gate only applies to the combined unit+e2e
+        # report — disable the per-run threshold so the e2e-only data file isn't
+        # rejected as low coverage. Default to --no-cov so ad-hoc e2e runs stay fast.
+        if os.environ.get("COVERAGE_FILE"):
+            cmd.extend(["--cov", "--cov-report=", "--cov-fail-under=0"])
+        else:
+            cmd.append("--no-cov")
         if update_snapshots:
             cmd.append("--update-snapshots")
 

@@ -70,23 +70,28 @@ jobs:
           tags: teatree-test-${{ matrix.python-version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      # --cov-fail-under=0 disables the per-run threshold here — the 93% gate
+      # runs on the combined unit+e2e report in the `coverage` job below.
       - run: >
           docker run --rm
           -v "$PWD":/app
           -e UV_PROJECT_ENVIRONMENT=/tmp/.venv
-          -e COVERAGE_FILE=/app/.coverage
+          -e COVERAGE_FILE=/app/.coverage.unit
           teatree-test-${{ matrix.python-version }}
           uv run -p ${{ matrix.python-version }} pytest --no-header -q
           -o cache_dir=/tmp/.pytest_cache
-          --cov-report=xml:/app/coverage.xml
+          --cov-fail-under=0
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: coverage-${{ matrix.python-version }}
-          path: coverage.xml
+          name: coverage-data-unit
+          path: .coverage.unit*
+          include-hidden-files: true
 
   e2e:
     runs-on: ubuntu-latest
+    env:
+      COVERAGE_FILE: .coverage.e2e
     steps:
       - uses: actions/checkout@v6
       - uses: astral-sh/setup-uv@v7
@@ -107,3 +112,41 @@ jobs:
           path: e2e/snapshot_tests_failures/
           if-no-files-found: ignore
           retention-days: 14
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: coverage-data-e2e
+          path: .coverage.e2e*
+          include-hidden-files: true
+          if-no-files-found: ignore
+
+  # Combine the .coverage.* artifacts produced by `test` and `e2e` into a
+  # single report. No test re-run — `coverage combine` merges the data files,
+  # then `report` enforces the threshold and `html` produces the browsable
+  # report. Mirrors what scripts/coverage.sh does locally.
+  coverage:
+    runs-on: ubuntu-latest
+    needs: [test, e2e]
+    if: always()
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - run: uv sync
+      - uses: actions/download-artifact@v6
+        with:
+          pattern: coverage-data-*
+          merge-multiple: true
+      - run: uv run coverage combine
+      - run: uv run coverage report --fail-under=93
+      - run: uv run coverage html
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: coverage-html
+          path: htmlcov/
+          retention-days: 30

@@ -245,10 +245,31 @@ partial_branches = [
 
 [tool.coverage.run]
 branch = true
+# patch=["subprocess"] auto-instruments any Python subprocess (the uvicorn
+# worker Playwright drives during e2e) without an asgi.py shim. Implies
+# parallel mode: each process writes a distinct .coverage.* file that
+# `coverage combine` merges.
+# sigterm=true flushes coverage on SIGTERM — the e2e_server fixture stops
+# uvicorn with proc.terminate(), and without this the subprocess data is lost.
+# (sys.monitoring core would be ~5x faster but doesn't support branch=true
+# on coverage.py 7.13 — branch coverage matters more, so keep the default.)
+patch = [ "subprocess" ]
+sigterm = true
 source = [
   "src/teatree",
 ]
 omit = [ "src/teatree/core/migrations/*.py" ]
+
+[tool.coverage.paths]
+# Combine treats these as the same source tree. Required because the test job
+# runs in Docker (/app/src/teatree/...) and the e2e job on the host runner
+# (/home/runner/work/teatree/teatree/src/teatree/...). Local runs match the
+# first entry verbatim, so this is a no-op outside CI.
+source = [
+  "src/teatree",
+  "*/src/teatree",
+  "/app/src/teatree",
+]
 
 [tool.uv.build-backend]
 module-name = "teatree"
