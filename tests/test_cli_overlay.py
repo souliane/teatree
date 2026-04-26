@@ -16,11 +16,14 @@ from typer.testing import CliRunner
 
 import teatree.autostart as autostart_mod
 import teatree.cli as cli_mod
+import teatree.cli.agent as cli_agent_mod
+import teatree.cli.dashboard as cli_dashboard_mod
 import teatree.cli.overlay as cli_overlay_mod
 import teatree.config as config_mod
 import teatree.core.overlay_loader as overlay_loader_mod
 import teatree.utils.run as utils_run_mod
 from teatree.cli import register_overlay_commands
+from teatree.cli.dashboard import DashboardGuard
 from teatree.cli.overlay import OverlayAppBuilder, managepy, uv_cmd
 from teatree.cli.overlay import _uvicorn as _uvicorn_fn
 
@@ -211,7 +214,7 @@ class TestOverlayCommands:
         """Return a context manager that patches DashboardGuard to be a no-op."""
         guard = MagicMock()
         guard.stop_existing.return_value = False
-        return patch.object(cli_mod, "DashboardGuard", return_value=guard)
+        return patch.object(cli_dashboard_mod, "DashboardGuard", return_value=guard)
 
     def test_dashboard(self, tmp_path):
         """Dashboard command migrates and starts uvicorn."""
@@ -221,10 +224,10 @@ class TestOverlayCommands:
         (tmp_path / "manage.py").write_text("pass\n")
 
         with (
-            patch.object(cli_mod, "managepy") as mock_manage,
-            patch.object(cli_mod, "_uvicorn") as mock_uvicorn,
+            patch.object(cli_overlay_mod, "managepy") as mock_manage,
+            patch.object(cli_overlay_mod, "_uvicorn") as mock_uvicorn,
             patch.object(utils_run_mod, "subprocess"),
-            patch("teatree.cli.discover_active_overlay", return_value=self._mock_active_overlay(tmp_path)),
+            patch("teatree.config.discover_active_overlay", return_value=self._mock_active_overlay(tmp_path)),
             patch("socket.socket") as mock_socket_cls,
             self._mock_guard(),
         ):
@@ -266,10 +269,10 @@ class TestOverlayCommands:
             return ephemeral_sock
 
         with (
-            patch.object(cli_mod, "managepy"),
-            patch.object(cli_mod, "_uvicorn") as mock_uvicorn,
+            patch.object(cli_overlay_mod, "managepy"),
+            patch.object(cli_overlay_mod, "_uvicorn") as mock_uvicorn,
             patch.object(utils_run_mod, "subprocess"),
-            patch("teatree.cli.discover_active_overlay", return_value=self._mock_active_overlay(tmp_path)),
+            patch("teatree.config.discover_active_overlay", return_value=self._mock_active_overlay(tmp_path)),
             patch("socket.socket", side_effect=socket_factory),
             self._mock_guard(),
         ):
@@ -286,7 +289,7 @@ class TestOverlayCommands:
         guard = MagicMock()
         guard.stop_existing.return_value = True
 
-        with patch.object(cli_mod, "DashboardGuard", return_value=guard):
+        with patch.object(cli_dashboard_mod, "DashboardGuard", return_value=guard):
             result = test_runner.invoke(app, ["dashboard", "--stop"])
             assert result.exit_code == 0
             assert "Dashboard stopped" in result.output
@@ -300,7 +303,7 @@ class TestOverlayCommands:
         guard = MagicMock()
         guard.stop_existing.return_value = False
 
-        with patch.object(cli_mod, "DashboardGuard", return_value=guard):
+        with patch.object(cli_dashboard_mod, "DashboardGuard", return_value=guard):
             result = test_runner.invoke(app, ["dashboard", "--stop"])
             assert result.exit_code == 0
             assert "No running dashboard" in result.output
@@ -315,12 +318,12 @@ class TestOverlayCommands:
         guard.stop_existing.return_value = True
 
         with (
-            patch.object(cli_mod, "managepy"),
-            patch.object(cli_mod, "_uvicorn"),
+            patch.object(cli_overlay_mod, "managepy"),
+            patch.object(cli_overlay_mod, "_uvicorn"),
             patch.object(utils_run_mod, "subprocess"),
-            patch("teatree.cli.discover_active_overlay", return_value=self._mock_active_overlay(tmp_path)),
+            patch("teatree.config.discover_active_overlay", return_value=self._mock_active_overlay(tmp_path)),
             patch("socket.socket") as mock_socket_cls,
-            patch.object(cli_mod, "DashboardGuard", return_value=guard),
+            patch.object(cli_dashboard_mod, "DashboardGuard", return_value=guard),
         ):
             mock_sock = MagicMock()
             mock_sock.connect_ex.return_value = 1
@@ -336,8 +339,6 @@ class TestOverlayCommands:
 class TestDashboardGuard:
     def test_write_and_read_pid(self, tmp_path):
         """Guard writes and reads current process PID."""
-        from teatree.cli import DashboardGuard  # noqa: PLC0415
-
         pid_file = tmp_path / "dashboard.pid"
         guard = DashboardGuard(pid_file=pid_file)
         guard.write_pid()
@@ -346,8 +347,6 @@ class TestDashboardGuard:
 
     def test_read_pid_stale(self, tmp_path):
         """Guard cleans up PID file for a dead process."""
-        from teatree.cli import DashboardGuard  # noqa: PLC0415
-
         pid_file = tmp_path / "dashboard.pid"
         pid_file.write_text("99999999")  # unlikely to be a real PID
         guard = DashboardGuard(pid_file=pid_file)
@@ -356,15 +355,11 @@ class TestDashboardGuard:
 
     def test_read_pid_missing(self, tmp_path):
         """Guard returns None when no PID file exists."""
-        from teatree.cli import DashboardGuard  # noqa: PLC0415
-
         guard = DashboardGuard(pid_file=tmp_path / "dashboard.pid")
         assert guard._read_pid() is None
 
     def test_cleanup(self, tmp_path):
         """Guard removes PID file on cleanup."""
-        from teatree.cli import DashboardGuard  # noqa: PLC0415
-
         pid_file = tmp_path / "dashboard.pid"
         guard = DashboardGuard(pid_file=pid_file)
         guard.write_pid()
@@ -513,13 +508,13 @@ class TestOverlaySubcommands:
             patch("shutil.which", return_value="/usr/bin/claude"),
             patch.object(cli_doctor_mod.IntrospectionHelpers, "editable_info", return_value=(False, "")),
             patch.object(overlay_loader_mod, "get_overlay", return_value=overlay_obj),
-            patch.object(cli_mod, "_detect_agent_ticket_status", return_value="started"),
+            patch.object(cli_agent_mod, "_detect_agent_ticket_status", return_value="started"),
             patch.object(
                 SkillLoadingPolicy,
                 "select_for_agent_launch",
                 return_value=SkillSelectionResult(skills=["code"]),
             ),
-            patch.object(cli_mod.os, "execvp") as mock_exec,
+            patch.object(cli_agent_mod.os, "execvp") as mock_exec,
         ):
             test_runner.invoke(overlay_app, ["agent", "fix something"])
             mock_exec.assert_called_once()
@@ -540,13 +535,13 @@ class TestOverlaySubcommands:
             patch("shutil.which", return_value="/usr/bin/claude"),
             patch.object(cli_doctor_mod.IntrospectionHelpers, "editable_info", return_value=(False, "")),
             patch.object(overlay_loader_mod, "get_overlay", return_value=overlay_obj),
-            patch.object(cli_mod, "_detect_agent_ticket_status", return_value=""),
+            patch.object(cli_agent_mod, "_detect_agent_ticket_status", return_value=""),
             patch.object(
                 SkillLoadingPolicy,
                 "select_for_agent_launch",
                 return_value=SkillSelectionResult(skills=["code"]),
             ),
-            patch.object(cli_mod.os, "execvp") as mock_exec,
+            patch.object(cli_agent_mod.os, "execvp") as mock_exec,
         ):
             test_runner.invoke(overlay_app, ["agent"])
             mock_exec.assert_called_once()
