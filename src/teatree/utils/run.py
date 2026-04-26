@@ -16,6 +16,7 @@ Three entry points:
     lifetime (``.terminate()`` / ``.wait()``).
 """
 
+import re
 import subprocess
 from collections.abc import Iterable, Sequence
 from pathlib import Path
@@ -37,6 +38,16 @@ __all__ = [
 ]
 
 
+_SECRET_HEADER_RE = re.compile(r"(?i)(authorization|x-[\w-]*token|x-[\w-]*key)\s*:\s*\S.*")
+_SECRET_QUERY_RE = re.compile(r"(?i)\b(token|access_token|api_key|password|secret)=[^&\s]+")
+
+
+def _redact_secrets(arg: str) -> str:
+    """Strip credential values from a single command-line argument."""
+    redacted = _SECRET_HEADER_RE.sub(lambda m: f"{m.group(1)}: <redacted>", arg)
+    return _SECRET_QUERY_RE.sub(lambda m: f"{m.group(1)}=<redacted>", redacted)
+
+
 class CommandFailedError(RuntimeError):
     """Raised when a subprocess exits with an unexpected return code."""
 
@@ -48,7 +59,7 @@ class CommandFailedError(RuntimeError):
         super().__init__(self._format())
 
     def _format(self) -> str:
-        cmd_str = " ".join(self.cmd)
+        cmd_str = " ".join(_redact_secrets(arg) for arg in self.cmd)
         tail = _last_lines(self.stderr or self.stdout, n=20)
         if tail:
             return f"command failed (rc={self.returncode}): {cmd_str}\n{tail}"

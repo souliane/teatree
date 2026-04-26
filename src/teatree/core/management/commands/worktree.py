@@ -361,18 +361,6 @@ class Command(TyperCommand):
             return f"Unknown model: {model}. Choose from: worktree, ticket, task"
         return _fsm_diagram(model_map[model])
 
-    @command(name="visit-phase")
-    def visit_phase(self, ticket_id: int, phase: str) -> str:
-        """Mark a phase as visited on the ticket's latest session."""
-        from teatree.core.models import Session  # noqa: PLC0415
-
-        ticket = Ticket.objects.get(pk=ticket_id)
-        session = ticket.sessions.order_by("-pk").first()
-        if session is None:
-            session = Session.objects.create(ticket=ticket)
-        session.visit_phase(phase)
-        return f"Phase '{phase}' marked as visited on session {session.pk}"
-
 
 def _fsm_diagram(model: type) -> str:
     """Generate a Mermaid state diagram from django-fsm transitions."""
