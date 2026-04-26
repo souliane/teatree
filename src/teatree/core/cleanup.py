@@ -202,12 +202,47 @@ def _raise_if_genuinely_ahead(repo_main: str, worktree: Worktree) -> None:
     raise RuntimeError(msg)
 
 
+def _resolve_worktree_path(workspace: Path, worktree: Worktree) -> str:
+    """Return the on-disk worktree path, preferring extras and falling back to the canonical layout.
+
+    Provisioning records ``worktree_path`` in ``Worktree.extra`` after a
+    successful ``git worktree add``. When that record is missing (extras lost,
+    row created before the path was set, manual provisioning), derive the path
+    from the canonical layout used by ``WorktreeProvisioner._create``:
+    ``workspace/<branch>/<repo-leaf>``.
+    """
+    stored = (worktree.extra or {}).get("worktree_path", "")
+    if stored:
+        return stored
+    return str(workspace / worktree.branch / Path(worktree.repo_path).name)
+
+
+def _remove_git_worktree(repo_main: Path, wt_path: str, worktree: Worktree, *, force: bool) -> list[str]:
+    """Remove the git worktree + branch from the source repo, returning any error messages.
+
+    Returns an empty list on success. The source repo missing, the git worktree
+    remove failing, or the branch delete failing each yield one entry. Failures
+    are surfaced (not raised) so unrelated cleanup steps still run.
+    """
+    if not repo_main.is_dir():
+        return [f"source repo missing at {repo_main}"]
+    if not force:
+        _raise_if_genuinely_ahead(str(repo_main), worktree)
+    errors: list[str] = []
+    if not git.worktree_remove(str(repo_main), wt_path):
+        errors.append(f"git worktree remove failed for {wt_path}")
+    if not git.branch_delete(str(repo_main), worktree.branch):
+        errors.append(f"git branch -D failed for {worktree.branch}")
+    return errors
+
+
 def cleanup_worktree(worktree: Worktree, *, force: bool = False) -> str:
     """Remove a single worktree: git worktree, branch, DB, overlay cleanup.
 
     Deletes the Worktree record from the database and returns a summary label.
     Errors in individual cleanup steps are suppressed so that partial cleanup
-    still succeeds.
+    still succeeds, but they are surfaced in the returned label so the caller
+    can detect partial failures.
 
     Raises ``RuntimeError`` when *force* is ``False`` and the branch has local
     commits that are genuinely ahead of the default branch (i.e. not merge
@@ -215,10 +250,10 @@ def cleanup_worktree(worktree: Worktree, *, force: bool = False) -> str:
     from trusted callers (e.g. tests, programmatic API).
     """
     workspace = load_config().user.workspace_dir
-    wt_path = (worktree.extra or {}).get("worktree_path", "")
+    wt_path = _resolve_worktree_path(workspace, worktree)
     overlay = get_overlay()
 
-    if wt_path and Path(wt_path).is_dir() and git.status_porcelain(wt_path):
+    if Path(wt_path).is_dir() and git.status_porcelain(wt_path):
         logger.warning("%s has uncommitted changes — cleaning anyway (PR merged)", worktree.repo_path)
 
     step_errors: list[str] = []
@@ -229,13 +264,7 @@ def cleanup_worktree(worktree: Worktree, *, force: bool = False) -> str:
             logger.exception("cleanup step failed for %s: %s", worktree.repo_path, step.description)
             step_errors.append(f"{step.description}: {exc}")
 
-    if wt_path:
-        repo_main = workspace / worktree.repo_path
-        if repo_main.is_dir():
-            if not force:
-                _raise_if_genuinely_ahead(str(repo_main), worktree)
-            git.worktree_remove(str(repo_main), wt_path)
-            git.branch_delete(str(repo_main), worktree.branch)
+    step_errors.extend(_remove_git_worktree(workspace / worktree.repo_path, wt_path, worktree, force=force))
 
     if worktree.db_name:
         drop_db(worktree.db_name)
