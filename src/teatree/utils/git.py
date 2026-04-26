@@ -115,6 +115,32 @@ def remote_url(repo: str = ".", remote: str = "origin") -> str:
     return run(repo=repo, args=["remote", "get-url", remote])
 
 
+def remote_slug(repo: str = ".", remote: str = "origin") -> str:
+    """Return ``owner/repo`` (or ``group/sub/.../proj``) for the given remote.
+
+    When ``repo`` is already a slug (no leading ``/``, no ``:`` or ``@``,
+    contains a ``/``), it is returned unchanged.  Otherwise the remote URL is
+    parsed.  Returns the empty string when no slug can be resolved so callers
+    can fall back to a default.
+    """
+    if "/" in repo and not repo.startswith("/") and ":" not in repo and "@" not in repo:
+        return repo
+    url = remote_url(repo=repo, remote=remote)
+    if not url:
+        return ""
+    cleaned = url.rstrip("/")
+    cleaned = cleaned.removesuffix(".git")
+    if "@" in cleaned and ":" in cleaned and "://" not in cleaned:
+        # scp-like form: git@github.com:owner/repo
+        return cleaned.split(":", 1)[1]
+    if "://" in cleaned:
+        # https://host/owner/repo or ssh://git@host/owner/repo
+        host_and_path = cleaned.split("://", 1)[1].split("/", 1)
+        if len(host_and_path) > 1:
+            return host_and_path[1]
+    return ""
+
+
 def config_value(repo: str = ".", key: str = "") -> str:
     """Return a git config value, or empty string if not set."""
     return run(repo=repo, args=["config", key])

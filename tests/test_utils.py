@@ -274,6 +274,46 @@ def test_remote_url_returns_url(monkeypatch: pytest.MonkeyPatch) -> None:
     assert git.remote_url(repo="/tmp/r", remote="origin") == "git@github.com:acme/repo.git"
 
 
+@pytest.mark.parametrize(
+    ("remote_url_value", "expected_slug"),
+    [
+        ("git@github.com:acme/repo.git", "acme/repo"),
+        ("git@github.com:acme/repo", "acme/repo"),
+        ("https://github.com/acme/repo.git", "acme/repo"),
+        ("https://github.com/acme/repo", "acme/repo"),
+        ("ssh://git@github.com/acme/repo.git", "acme/repo"),
+        ("git@gitlab.com:group/sub/proj.git", "group/sub/proj"),
+        ("https://gitlab.com/group/sub/proj.git", "group/sub/proj"),
+    ],
+)
+def test_remote_slug_parses_supported_url_forms(
+    remote_url_value: str,
+    expected_slug: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        utils_run_mod.subprocess,
+        "run",
+        lambda *a, **kw: CompletedProcess(a[0], 0, f"{remote_url_value}\n", ""),
+    )
+    assert git.remote_slug(repo="/tmp/r", remote="origin") == expected_slug
+
+
+def test_remote_slug_returns_empty_when_no_remote(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        utils_run_mod.subprocess,
+        "run",
+        lambda *a, **kw: CompletedProcess(a[0], 1, "", "no remote"),
+    )
+    assert git.remote_slug(repo="/tmp/r") == ""
+
+
+def test_remote_slug_passes_through_when_path_is_already_slug(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Callers can hand an already-resolved slug (``owner/repo``) and get it back unchanged."""
+    assert git.remote_slug(repo="acme/repo") == "acme/repo"
+    assert git.remote_slug(repo="group/sub/proj") == "group/sub/proj"
+
+
 def test_config_value_returns_value(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         utils_run_mod.subprocess,
