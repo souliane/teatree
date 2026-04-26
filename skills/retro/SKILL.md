@@ -39,9 +39,11 @@ Retro's behavior depends on these `~/.teatree` variables and on whether the curr
 - **Active overlay / overlay app** — when the current repo contains an overlay package, retro writes project-specific improvements there. If no overlay is detectable, retro writes to the nearest repo-level agent instructions or user memory/config fallback.
 - **`T3_CONTRIBUTE`** — `false` (default) or `true`:
   - `false`: only improve the active project overlay. Core skill gaps are noted in conversation but not acted on.
-  - `true`: also improve core skills in the user's fork at `$T3_REPO`. Retro creates a local commit but **never pushes automatically**. Use `/t3:contribute` to review and push when ready.
-- **`T3_PUSH`** — `false` (default) or `true`. When `false`, retro never asks about pushing — it only commits locally and reminds the user to run `/t3:contribute` later. Set to `true` to be prompted about pushing after each retro commit.
-- **`T3_AUTO_PUSH_FORK`** — `false` (default) or `true`. When `true` **and** `T3_PUSH=true` **and** `origin` differs from `T3_UPSTREAM` (i.e. pushing lands on the user's fork, not upstream), retro pushes automatically after the privacy scan passes, without prompting. Upstream issue creation still requires explicit confirmation.
+  - `true`: also improve core skills in `$T3_REPO`. Retro creates a local commit; whether it then pushes is governed by the mode resolution below.
+- **Push behavior is mode-conditional — defer to `t3:rules § Publishing Actions Are Mode-Conditional`.** Resolve the effective mode in the prescribed order (`T3_MODE` env → active overlay config → global `[teatree]` table → per-repo memory overrides → default `interactive`).
+  - **`auto`**: push immediately after the privacy scan passes — no prompt, no "your call", no deferral to `/t3:contribute`. Open the PR if one doesn't already exist.
+  - **`interactive`**: commit locally and remind the user to run `/t3:contribute`.
+  - The legacy `T3_PUSH` / `T3_AUTO_PUSH_FORK` env vars are honored only when no `mode` is configured anywhere; the `mode` setting subsumes them and wins on conflict. **Do not gate retro pushes on `T3_PUSH` when `mode = "auto"` is set in `~/.teatree.toml`** — that was a 2026-04-25 retro lesson. A fork-vs-upstream split (origin ≠ `T3_UPSTREAM`) does not change the push decision; it only affects whether `/t3:contribute` opens an upstream issue afterward.
 - **`T3_UPSTREAM`** — upstream GitHub repo (e.g., `souliane/teatree`). Used by `/t3:contribute` to open issues upstream after pushing. When `origin` matches `T3_UPSTREAM`, pushes already land directly on upstream.
 - **`T3_PRIVACY`** — privacy check strictness: `strict` (default) or `relaxed`. See § Privacy Scan.
 - **`T3_REVIEW_SKILL`** — name of an external skill review tool (e.g., `ac-reviewing-codebase`). If set, retro recommends running it after skill improvements. If not set, retro suggests installing one during first run and storing the preference.
@@ -187,12 +189,13 @@ flowchart TD
   K --> O["Tests pass?"]
 
   L & M & N & O --> P{"T3_CONTRIBUTE=true?"}
-  P -->|"Yes"| Q["5. Commit to Fork<br/>(local only, never auto-pushes)"]
+  P -->|"Yes"| Q["5. Commit on current branch<br/>(worktree, never main clone)"]
   P -->|"No"| R["Done — overlay improved"]
 
   Q --> S["6. Privacy Scan<br/>(emails, paths, keys, banned terms)"]
-  S --> T["Commit on current branch"]
-  T --> U["User runs /t3:contribute later<br/>to review, push, open upstream issue"]
+  S --> MODE{"Effective mode<br/>(see § Configuration)"}
+  MODE -->|"auto"| PUSH["Push + open PR<br/>(per t3:rules)"]
+  MODE -->|"interactive"| CONTRIB["User runs /t3:contribute later<br/>to review, push, open upstream issue"]
 ```
 
 ### 1. Conversation Audit
@@ -445,7 +448,7 @@ When `T3_PRIVACY` is not set, default to `strict`.
 - Do not skip the conversation audit. The point is to catch ALL issues, not just the obvious one.
 - Do not update skills speculatively. Only document confirmed patterns from actual failures.
 - Do not write step-by-step CLI procedures into skills. If `t3` handles it, say "use `t3 <command>`" — don't reproduce the steps. Procedural docs belong in BLUEPRINT.md/AGENTS.md/docs, not skills.
-- Do not push retro commits directly. Always use `/t3:contribute` for push + upstream issue creation.
+- Do not push retro commits in `interactive` mode — use `/t3:contribute` for push + upstream issue creation. In `auto` mode, push directly per § Configuration.
 
 ### 7. Clean Personal Config
 
