@@ -183,6 +183,27 @@ When the user asks for work that is actionable in the current session — a smal
 
 **When in doubt, do the work.** A tiny PR adding the fix alongside the main change is always preferable to a stand-alone ticket that lives in the backlog for weeks.
 
+**Bundle Bugs Found Mid-Session into the Current PR (Non-Negotiable when in `auto` mode).**
+
+When you encounter a bug, broken behavior, or rough edge during any session — fix it on the spot, in the current MR if at all reasonable. Do not narrate the finding as a deferral, do not propose filing tickets, do not ask "should I fix this in a separate PR?" before doing the obvious work. Work unattended.
+
+Decision rubric (apply silently — don't narrate to the user):
+
+| Fix size | Action |
+|---|---|
+| **Small (≤ ~50 LOC, no architectural decisions)** | Bundle into the current PR. Skip the "Isolate Unrelated Fixes" rule from `t3:ship` — small fixes have lower scope-creep cost than coordination cost. |
+| **Medium (related domain, fits the current ticket's spirit)** | Still bundle if the PR title can fairly cover it (e.g., assorted shipping-flow bug fixes during a CLI refactor). Mention in the PR body so reviewers see it. |
+| **Large (architectural, cross-cutting, or genuinely orthogonal)** | Create a worktree + PR immediately, implement, ship. No new ticket. |
+| **Truly large work that cannot fit a session** | File a ticket and leave it. Last resort. |
+
+**Only stop and ask when:**
+
+- The fix has security/destructive blast radius (DB drops, force-push to default, secret rotation).
+- The architectural choice has multiple equally valid options.
+- The work is genuinely big enough to need its own ticket _and_ the user hasn't opted into auto mode for this overlay.
+
+This rule reinforces "Do Work Now" — the bundling decision is part of doing the work, not a separate question to ask.
+
 ## Contribute Mode: Promote Findings to Skills, Not Personal Memory (Non-Negotiable)
 
 When `contribute = true` in `~/.teatree.toml`, retro findings and cross-cutting rules **must land in teatree skill files**, not in the agent's personal memory/config. Personal memory is the fallback for user-specific facts — paths, credentials, editor preferences, one-machine workflow choices. For anything that would help another user of these skills, write to the skill.

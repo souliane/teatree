@@ -110,6 +110,12 @@ DJANGO_GROUPS: dict[str, tuple[str, list[tuple[str, str]]]] = {
             ("remind", "Return list of pending user input tasks."),
         ],
     ),
+    "lifecycle": (
+        "Session lifecycle and phase tracking.",
+        [
+            ("visit-phase", "Mark a phase as visited on the ticket's latest session."),
+        ],
+    ),
 }
 
 

@@ -200,7 +200,7 @@ class TestVisitPhaseCommand(TestCase):
         ticket = Ticket.objects.create()
         session = Session.objects.create(ticket=ticket, agent_id="agent")
 
-        call_command("worktree", "visit-phase", ticket.pk, "reviewing")
+        call_command("lifecycle", "visit-phase", ticket.pk, "reviewing")
 
         session.refresh_from_db()
         assert session.has_visited("reviewing")
@@ -208,7 +208,7 @@ class TestVisitPhaseCommand(TestCase):
     def test_visit_phase_creates_session_if_none(self) -> None:
         ticket = Ticket.objects.create()
 
-        call_command("worktree", "visit-phase", ticket.pk, "testing")
+        call_command("lifecycle", "visit-phase", ticket.pk, "testing")
 
         session = ticket.sessions.first()
         assert session is not None

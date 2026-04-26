@@ -890,6 +890,7 @@ Usage: t3 teatree [OPTIONS] COMMAND [ARGS]...
 │ pr           Pull request helpers.                                           │
 │ tasks        Async task queue.                                               │
 │ followup     Follow-up snapshots.                                            │
+│ lifecycle    Session lifecycle and phase tracking.                           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -1959,6 +1960,37 @@ Usage: t3 teatree followup sync [OPTIONS]
 ```
 Usage: t3 teatree followup remind [OPTIONS]
 
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 teatree lifecycle`
+
+```
+Usage: t3 teatree lifecycle [OPTIONS] COMMAND [ARGS]...
+
+ Session lifecycle and phase tracking.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ visit-phase  Mark a phase as visited on the ticket's latest session.         │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree lifecycle visit-phase`
+
+```
+Usage: t3 teatree lifecycle visit-phase [OPTIONS] TICKET_ID PHASE
+
+ Mark a phase as visited on the ticket's latest session.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    ticket_id      INTEGER  [required]                                      │
+│ *    phase          TEXT     [required]                                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
