@@ -987,6 +987,30 @@ class TestSyncFollowup(TestCase):
         assert len(result.errors) == 1
         assert "API timeout" in result.errors[0]
 
+    def test_unhandled_backend_exception_does_not_crash_sync(self) -> None:
+        """A backend raising an unhandled exception must surface as a SyncResult error.
+
+        Regression: ``httpx.ReadTimeout`` from a backend internal call escaped the
+        backend's own try/except and crashed ``sync_followup``, which surfaced as
+        an HTTP 500 on ``/dashboard/sync/``. The dashboard must receive a
+        SyncResult with errors instead.
+        """
+        failing_backend = MagicMock()
+        failing_backend.is_configured.return_value = True
+        failing_backend.sync.side_effect = httpx.ReadTimeout("upstream hung")
+        type(failing_backend).__name__ = "FailingBackend"
+
+        with (
+            patch("teatree.backends.gitlab_sync.GitLabSyncBackend", return_value=failing_backend),
+            patch("teatree.backends.github_sync.GitHubSyncBackend") as gh_backend_cls,
+        ):
+            gh_backend_cls.return_value.is_configured.return_value = False
+            result = sync_followup()
+
+        assert result.mrs_found == 0
+        assert any("upstream hung" in e for e in result.errors)
+        assert any("FailingBackend" in e for e in result.errors)
+
     def test_returns_error_when_username_missing(self) -> None:
         overlay = SyncOverlay(gitlab_username="")
         mock_client = MagicMock()
