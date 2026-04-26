@@ -326,11 +326,8 @@ class OverlayAppBuilder:
             ),
         ) -> None:
             """Launch Claude Code with overlay context and auto-detected skills."""
-            from teatree.cli import (  # noqa: PLC0415
-                _detect_agent_ticket_status,
-                _find_project_root,
-                _launch_claude,
-            )
+            from teatree.cli import _find_project_root  # noqa: PLC0415
+            from teatree.cli.agent import _detect_agent_ticket_status, _launch_claude  # noqa: PLC0415
             from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
             from teatree.skill_loading import SkillLoadingPolicy  # noqa: PLC0415
 
