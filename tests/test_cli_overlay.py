@@ -566,6 +566,23 @@ class TestOverlaySubcommands:
             assert result.exit_code == 0
             mock_manage.assert_called_once_with(tmp_path, "worktree", "provision", overlay_name="test")
 
+    def test_lifecycle_visit_phase_subcommand(self, tmp_path):
+        """`lifecycle visit-phase` forwards to manage.py with positional args."""
+        overlay_app = OverlayAppBuilder("test", tmp_path, "test.settings").build()
+        test_runner = CliRunner()
+
+        with patch.object(cli_overlay_mod, "managepy") as mock_manage:
+            result = test_runner.invoke(overlay_app, ["lifecycle", "visit-phase", "42", "reviewing"])
+            assert result.exit_code == 0
+            mock_manage.assert_called_once_with(
+                tmp_path,
+                "lifecycle",
+                "visit-phase",
+                "42",
+                "reviewing",
+                overlay_name="test",
+            )
+
     def test_enable_autostart(self, tmp_path):
         """enable-autostart delegates to teatree.autostart.enable."""
         overlay_app = OverlayAppBuilder("test", tmp_path, "test.settings").build()

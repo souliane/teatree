@@ -215,6 +215,42 @@ class TestGitHubCodeHost:
             )
         assert result == {"url": "https://github.com/org/repo/pull/1"}
 
+    def test_create_pr_resolves_local_path_to_owner_repo_slug(self, tmp_path: object) -> None:
+        """``gh pr create --repo`` requires ``owner/repo`` — local paths must be resolved first."""
+        with (
+            patch.object(github_mod, "_run_gh") as mock_run,
+            patch.object(github_mod.git, "remote_slug", return_value="souliane/teatree") as mock_slug,
+        ):
+            mock_run.return_value = MagicMock(stdout="https://github.com/souliane/teatree/pull/3\n")
+            host = GitHubCodeHost()
+            host.create_pr(
+                PullRequestSpec(
+                    repo="/Users/adrien/workspace/ticket/teatree",
+                    branch="feature",
+                    title="t",
+                    description="d",
+                ),
+            )
+        mock_slug.assert_called_once_with(repo="/Users/adrien/workspace/ticket/teatree")
+        cmd = list(mock_run.call_args[0])
+        assert cmd[cmd.index("--repo") + 1] == "souliane/teatree"
+
+    def test_create_pr_passes_through_existing_slug_unchanged(self) -> None:
+        """When the caller already provides ``owner/repo``, no resolution is needed."""
+        with patch.object(github_mod, "_run_gh") as mock_run:
+            mock_run.return_value = MagicMock(stdout="https://github.com/org/repo/pull/4\n")
+            host = GitHubCodeHost()
+            host.create_pr(
+                PullRequestSpec(
+                    repo="org/repo",
+                    branch="feature",
+                    title="t",
+                    description="d",
+                ),
+            )
+        cmd = list(mock_run.call_args[0])
+        assert cmd[cmd.index("--repo") + 1] == "org/repo"
+
     def test_create_pr_with_optional_params(self) -> None:
         with patch.object(github_mod, "_run_gh") as mock_run:
             mock_run.return_value = MagicMock(stdout="https://github.com/org/repo/pull/2\n")

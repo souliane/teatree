@@ -65,6 +65,51 @@ class TestCommandFailedError:
         assert "command failed (rc=1)" in str(err)
         assert "false" in str(err)
 
+    def test_redacts_authorization_header_value(self) -> None:
+        err = CommandFailedError(
+            ["gh", "api", "user", "--header", "Authorization: Bearer ghp_secrettoken"],
+            1,
+            "",
+            "",
+        )
+        msg = str(err)
+        assert "ghp_secrettoken" not in msg
+        assert "Authorization: <redacted>" in msg
+
+    def test_redacts_authorization_header_in_separate_arg(self) -> None:
+        err = CommandFailedError(
+            [
+                "gh",
+                "api",
+                "user",
+                "--header",
+                "authorization: token mysupersecret",
+            ],
+            1,
+            "",
+            "",
+        )
+        msg = str(err)
+        assert "mysupersecret" not in msg
+        assert "<redacted>" in msg
+
+    def test_redacts_token_query_parameters(self) -> None:
+        err = CommandFailedError(
+            ["curl", "https://example.com/api?token=verysecret&other=ok"],
+            22,
+            "",
+            "",
+        )
+        msg = str(err)
+        assert "verysecret" not in msg
+        assert "token=<redacted>" in msg
+        assert "other=ok" in msg
+
+    def test_preserves_cmd_attribute_for_callers(self) -> None:
+        original = ["gh", "api", "user", "--header", "Authorization: Bearer ghp_x"]
+        err = CommandFailedError(original, 1, "", "")
+        assert err.cmd == original
+
 
 class TestSpawn:
     def test_returns_popen_that_can_be_awaited(self) -> None:

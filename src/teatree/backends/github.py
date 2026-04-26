@@ -6,6 +6,7 @@ from typing import TypedDict, cast
 
 from teatree.backends.protocols import PullRequestSpec
 from teatree.core.sync import RawAPIDict
+from teatree.utils import git
 from teatree.utils.run import CompletedProcess, run_checked
 
 
@@ -172,12 +173,13 @@ class GitHubCodeHost:
         self._token = token
 
     def create_pr(self, spec: PullRequestSpec) -> RawAPIDict:
+        repo_slug = git.remote_slug(repo=spec.repo)
         cmd = [
             "gh",
             "pr",
             "create",
             "--repo",
-            spec.repo,
+            repo_slug,
             "--head",
             spec.branch,
             "--title",

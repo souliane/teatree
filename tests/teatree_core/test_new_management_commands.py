@@ -4049,7 +4049,7 @@ class TestLifecycleVisitPhase(TestCase):
     @override_settings(**SETTINGS)
     def test_creates_session_and_visits_phase(self) -> None:
         ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/vp1")
-        result = cast("str", call_command("worktree", "visit-phase", str(ticket.pk), "coding"))
+        result = cast("str", call_command("lifecycle", "visit-phase", str(ticket.pk), "coding"))
 
         assert "coding" in result
         assert ticket.sessions.count() == 1
@@ -4063,7 +4063,7 @@ class TestLifecycleVisitPhase(TestCase):
         session = Session.objects.create(ticket=ticket)
         session.visit_phase("testing")
 
-        result = cast("str", call_command("worktree", "visit-phase", str(ticket.pk), "reviewing"))
+        result = cast("str", call_command("lifecycle", "visit-phase", str(ticket.pk), "reviewing"))
 
         assert ticket.sessions.count() == 1
         session.refresh_from_db()
