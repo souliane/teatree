@@ -16,19 +16,21 @@ from typer.testing import CliRunner
 import teatree.agents.skill_bundle as skill_bundle_mod
 import teatree.claude_sessions as claude_sessions_mod
 import teatree.cli as cli_mod
+import teatree.cli.agent as cli_agent_mod
+import teatree.cli.review_request as cli_review_request_mod
 import teatree.config as config_mod
 import teatree.core.overlay_loader as overlay_loader_mod
 import teatree.core.resolve as resolve_mod
 import teatree.utils.run as utils_run_mod
 from teatree.cli import (
-    _detect_agent_ticket_status,
     _ensure_editable_if_contributing,
     _find_overlay_project,
     _find_project_root,
-    _resolve_overlay_for_server,
     app,
 )
 from teatree.cli import doctor as cli_doctor_mod
+from teatree.cli.agent import _detect_agent_ticket_status
+from teatree.cli.dashboard import _resolve_overlay_for_server
 from teatree.cli.doctor import DoctorService, IntrospectionHelpers
 from teatree.overlay_init.generator import OverlayScaffolder, camelize
 
@@ -127,13 +129,13 @@ class TestAgentCommand:
             patch.object(overlay_loader_mod, "get_overlay", return_value=overlay_obj),
             patch("shutil.which", return_value="/usr/bin/claude"),
             patch.object(cli_doctor_mod.IntrospectionHelpers, "editable_info", return_value=(False, "")),
-            patch.object(cli_mod, "_detect_agent_ticket_status", return_value="started"),
+            patch.object(cli_agent_mod, "_detect_agent_ticket_status", return_value="started"),
             patch.object(
                 SkillLoadingPolicy,
                 "select_for_agent_launch",
                 return_value=SkillSelectionResult(skills=["code"]),
             ),
-            patch.object(cli_mod.os, "execvp") as mock_exec,
+            patch.object(cli_agent_mod.os, "execvp") as mock_exec,
         ):
             runner.invoke(app, ["agent", "fix bug"])
             mock_exec.assert_called_once()
@@ -157,7 +159,7 @@ class TestAgentCommand:
                 "select_for_agent_launch",
                 return_value=SkillSelectionResult(skills=["code"]),
             ),
-            patch.object(cli_mod.os, "execvp") as mock_exec,
+            patch.object(cli_agent_mod.os, "execvp") as mock_exec,
         ):
             runner.invoke(app, ["agent"])
             mock_exec.assert_called_once()
@@ -504,7 +506,7 @@ class TestReviewRequestDiscover:
         active = OverlayEntry(name="t3-test", overlay_class="test.Overlay", project_path=tmp_path)
         with (
             patch.object(config_mod, "discover_active_overlay", return_value=active),
-            patch.object(cli_mod, "managepy") as mock_manage,
+            patch.object(cli_review_request_mod, "managepy") as mock_manage,
         ):
             result = runner.invoke(app, ["review-request", "discover"])
             assert result.exit_code == 0
@@ -606,9 +608,9 @@ class TestLaunchClaude:
             patch.object(
                 cli_doctor_mod.IntrospectionHelpers, "editable_info", return_value=(True, "file:///src/teatree")
             ),
-            patch.object(cli_mod.os, "execvp") as mock_exec,
+            patch.object(cli_agent_mod.os, "execvp") as mock_exec,
         ):
-            from teatree.cli import _launch_claude  # noqa: PLC0415
+            from teatree.cli.agent import _launch_claude  # noqa: PLC0415
 
             _launch_claude(
                 task="test",
@@ -629,9 +631,9 @@ class TestLaunchClaude:
         with (
             patch("shutil.which", return_value="/usr/bin/claude"),
             patch.object(cli_doctor_mod.IntrospectionHelpers, "editable_info", return_value=(False, "")),
-            patch.object(cli_mod.os, "execvp") as mock_exec,
+            patch.object(cli_agent_mod.os, "execvp") as mock_exec,
         ):
-            from teatree.cli import _launch_claude  # noqa: PLC0415
+            from teatree.cli.agent import _launch_claude  # noqa: PLC0415
 
             _launch_claude(
                 task="",
@@ -650,9 +652,9 @@ class TestLaunchClaude:
         with (
             patch("shutil.which", return_value="/usr/bin/claude"),
             patch.object(cli_doctor_mod.IntrospectionHelpers, "editable_info", return_value=(False, "")),
-            patch.object(cli_mod.os, "execvp") as mock_exec,
+            patch.object(cli_agent_mod.os, "execvp") as mock_exec,
         ):
-            from teatree.cli import _launch_claude  # noqa: PLC0415
+            from teatree.cli.agent import _launch_claude  # noqa: PLC0415
 
             _launch_claude(
                 task="",
@@ -733,7 +735,7 @@ class TestResolveOverlayForServer:
         entry = self._make_entry(overlay_class="myapp.settings")
         with (
             patch.object(config_mod, "discover_overlays", return_value=[entry]),
-            patch.object(cli_mod, "discover_active_overlay", return_value=entry),
+            patch.object(config_mod, "discover_active_overlay", return_value=entry),
         ):
             _, _, settings = _resolve_overlay_for_server(project=tmp_path)
         assert settings == "myapp.settings"
@@ -754,7 +756,7 @@ class TestResolveOverlayForServer:
         """No overlay found at all errors."""
         with (
             patch.object(config_mod, "discover_overlays", return_value=[]),
-            patch.object(cli_mod, "discover_active_overlay", return_value=None),
+            patch.object(config_mod, "discover_active_overlay", return_value=None),
             pytest.raises(ClickExit),
         ):
             _resolve_overlay_for_server()
@@ -785,7 +787,7 @@ class TestResolveOverlayForServer:
         )
         with (
             patch.object(config_mod, "discover_overlays", return_value=[entry]),
-            patch.object(cli_mod, "discover_active_overlay", return_value=entry),
+            patch.object(config_mod, "discover_active_overlay", return_value=entry),
         ):
             _, _, settings = _resolve_overlay_for_server()
         assert settings == "custom.settings"
