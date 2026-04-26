@@ -138,7 +138,13 @@ def sync_followup() -> SyncResult:
 
     for backend in backends:
         if backend.is_configured(overlay):
-            result = _merge_results(result, backend.sync(overlay))
+            try:
+                backend_result = backend.sync(overlay)
+            except Exception as exc:
+                backend_name = type(backend).__name__
+                logger.exception("%s sync failed", backend_name)
+                backend_result = SyncResult(errors=[f"{backend_name} sync failed: {exc}"])
+            result = _merge_results(result, backend_result)
             ran_any = True
 
     if not ran_any:
