@@ -19,6 +19,7 @@ from django_typer.management import TyperCommand, command
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay import OverlayBase
 from teatree.core.overlay_loader import get_overlay
+from teatree.core.readiness import run_probes
 from teatree.core.resolve import resolve_worktree
 from teatree.core.runners import (
     WorktreeProvisionRunner,
@@ -214,6 +215,33 @@ class Command(TyperCommand):
         result = WorktreeVerifyRunner(worktree, overlay=resolved_overlay).run()
         self.stdout.write(f"  {result.detail}")
         return worktree.state
+
+    @command()
+    def ready(
+        self,
+        path: str = typer.Option("", help="Worktree path (auto-detects from PWD if empty)."),
+    ) -> str:
+        """Run runtime readiness probes for one worktree.
+
+        Strict: exits 0 iff every probe declared by ``OverlayBase.get_readiness_probes``
+        passes. Does not mutate worktree state. Use after ``start`` to verify
+        the env is actually serving — answers the question ``verify`` cannot
+        (HTTP, CORS round-trip, end-to-end auth, fixture seed integrity).
+        """
+        worktree = resolve_worktree(path)
+        resolved_overlay = get_overlay()
+        probes = resolved_overlay.get_readiness_probes(worktree)
+        if not probes:
+            self.stdout.write("  No readiness probes defined for this overlay.")
+            return "ok"
+        results = run_probes(probes)
+        for r in results:
+            self.stdout.write(f"  {r.format()}")
+        failures = [r for r in results if not r.passed]
+        if failures:
+            self.stderr.write(f"  {len(failures)} of {len(results)} probe(s) failed")
+            raise SystemExit(1)
+        return "ok"
 
     @command()
     def teardown(
