@@ -163,6 +163,26 @@ class Command(TyperCommand):
             raise SystemExit(1)
         return int(worktree.pk)
 
+    def _check_readiness_probes(self, worktree: Worktree, overlay: OverlayBase) -> None:
+        """Run overlay readiness probes; raise SystemExit(1) on any failure.
+
+        Shared by ``start``, ``verify``, ``ready`` so all three honor the same
+        runtime health gate. ``start`` and ``verify`` cannot return success
+        when the started/healthy services are silently broken (raw
+        translations, missing CORS headers, fixture-seed integrity).
+        """
+        probes = overlay.get_readiness_probes(worktree)
+        if not probes:
+            self.stdout.write("  No readiness probes defined for this overlay.")
+            return
+        results = run_probes(probes)
+        for r in results:
+            self.stdout.write(f"  {r.format()}")
+        failures = [r for r in results if not r.passed]
+        if failures:
+            self.stderr.write(f"  {len(failures)} of {len(results)} probe(s) failed")
+            raise SystemExit(1)
+
     @command()
     def start(
         self,
@@ -174,7 +194,8 @@ class Command(TyperCommand):
         to SERVICES_UP and enqueues ``execute_worktree_start``; the runner
         also runs synchronously here so the operator sees immediate output.
         Allocates free host ports, refreshes the env cache, runs overlay
-        pre-run steps, then ``docker compose up -d``.
+        pre-run steps, then ``docker compose up -d``. After the runner
+        succeeds, runs the overlay's readiness probes — exits 1 if any fail.
         """
         worktree = resolve_worktree(path)
         resolved_overlay = get_overlay()
@@ -195,6 +216,7 @@ class Command(TyperCommand):
         if not result.ok:
             self.stderr.write(f"  Start failed for {worktree.repo_path}")
             raise SystemExit(1)
+        self._check_readiness_probes(worktree, resolved_overlay)
         return worktree.state
 
     @command()
@@ -205,7 +227,8 @@ class Command(TyperCommand):
         """Run overlay health checks for one worktree.
 
         Thin wrapper around ``Worktree.verify()``: SERVICES_UP → READY +
-        runner records URLs and reports failed checks. Best-effort.
+        runner records URLs and reports failed checks. After the runner,
+        runs the overlay's readiness probes — exits 1 if any fail.
         """
         worktree = resolve_worktree(path)
         resolved_overlay = get_overlay()
@@ -214,6 +237,8 @@ class Command(TyperCommand):
             worktree.save()
         result = WorktreeVerifyRunner(worktree, overlay=resolved_overlay).run()
         self.stdout.write(f"  {result.detail}")
+        worktree.refresh_from_db()
+        self._check_readiness_probes(worktree, resolved_overlay)
         return worktree.state
 
     @command()
@@ -230,17 +255,7 @@ class Command(TyperCommand):
         """
         worktree = resolve_worktree(path)
         resolved_overlay = get_overlay()
-        probes = resolved_overlay.get_readiness_probes(worktree)
-        if not probes:
-            self.stdout.write("  No readiness probes defined for this overlay.")
-            return "ok"
-        results = run_probes(probes)
-        for r in results:
-            self.stdout.write(f"  {r.format()}")
-        failures = [r for r in results if not r.passed]
-        if failures:
-            self.stderr.write(f"  {len(failures)} of {len(results)} probe(s) failed")
-            raise SystemExit(1)
+        self._check_readiness_probes(worktree, resolved_overlay)
         return "ok"
 
     @command()
