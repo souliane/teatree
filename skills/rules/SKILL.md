@@ -88,6 +88,26 @@ For note bodies containing markdown images (`![alt](url)`), shell variable inter
 
 When fixing a broken UX mechanism (web terminal, browser launch, notification method), fix it **in-kind** — do not replace it with a different mechanism without asking. If proposing a different approach, ask the user first: "Currently this uses X. Want to keep that or switch to Y?"
 
+## No AI Signature on Posts Made on the User's Behalf (Non-Negotiable)
+
+Every artifact you publish under the user's identity — git commits, MR/PR descriptions, MR/PR comments and discussions, issue bodies, Slack/Teams messages, email drafts, release notes — must read as if the user wrote it. **Never append AI/agent signatures or footers**.
+
+**Canonical setting:** `[teatree] agent_signature` in `~/.teatree.toml` (default `false`). Programmatic teatree code paths that post on the user's behalf consult `teatree.identity.agent_signature_enabled()` (or wrap their suffix in `agent_signature_suffix(...)`). When you publish through an external tool (MCP Slack send, `gh` comment, `glab` discussion, raw `httpx`), apply the same policy by hand: omit the signature unless the setting is `true`.
+
+**Banned trailers and footers in any user-on-behalf artifact:**
+
+- `Co-Authored-By: <model> <noreply@anthropic.com>` (or any other agent identity)
+- `🤖 Generated with Claude Code` / `Generated with [Claude Code](...)`
+- `Sent using Claude` / `Drafted by Claude` / `via Claude` / `(via AI)` / `via the assistant`
+- Any emoji-bot signature or "this message was written by …" footer
+- Slack-block "Posted by Claude" / "AI-generated" formatting
+
+**This rule is global, not commit-specific.** The original "no Co-Authored-By in commits" rule was a special case; the principle generalizes to every venue where the agent posts on the user's behalf. If you would not put `Co-Authored-By` on a commit, do not put `Sent using Claude` on a Slack message. The user is responsible for the content; the agent is the typist, not the author.
+
+**When the user is the author and explicitly invokes you:** if the user asks for a draft to review before sending themselves, no signature is needed (they will send it themselves anyway). When **you** post on their behalf (Slack DM, MR discussion, GitHub comment, email), the rule still applies — the message must be indistinguishable in form from one the user wrote.
+
+**Failure mode this rule prevents:** the agent appends "Sent using Claude" to a Slack message it sends to a colleague on the user's behalf. The colleague now sees that the user did not write the message themselves; the user looks lazy or impersonal, and the rapport with the colleague is damaged. Same logic for `Co-Authored-By` in commits, "🤖 Generated" footers in MR descriptions, and "via the assistant" suffixes in issue comments.
+
 ## Never Post MR Comments from Parallel Agents (Non-Negotiable)
 
 MR/PR comment posting (test plans, evidence, review notes) must be **serialized** — never dispatch two parallel agents that both post comments on MRs. Parallel agents cannot check for each other's posts, resulting in duplicate comments. Post all MR comments from the main conversation thread, or serialize agent tasks so only one posts at a time.
