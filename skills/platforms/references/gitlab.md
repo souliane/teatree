@@ -220,6 +220,10 @@ t3 review list-draft-notes <REPO> <MR_IID>
 
 # Delete a draft note
 t3 review delete-draft-note <REPO> <MR_IID> <NOTE_ID>
+
+# Edit a note in place — works for drafts AND published notes; auto-detects which.
+# The draft endpoint is tried first; on 404 it falls back to the published-notes endpoint.
+t3 review update-note <REPO> <MR_IID> <NOTE_ID> "New comment body"
 ```
 
 ### Key Differences from `/discussions`
