@@ -85,6 +85,7 @@ class TestMainDetection:
 
     def test_detects_pyproject_relaxation(self, monkeypatch: pytest.MonkeyPatch) -> None:
         import scripts.hooks.check_quality_gates as mod  # noqa: PLC0415
+        import scripts.hooks.commit_message as helper  # noqa: PLC0415
 
         def fake_diff(path_filter: str = "") -> str:
             if path_filter == "pyproject.toml":
@@ -92,12 +93,13 @@ class TestMainDetection:
             return ""
 
         monkeypatch.setattr(mod, "_staged_diff", fake_diff)
-        monkeypatch.setattr(mod, "_find_git_dir", lambda: None)
+        monkeypatch.setattr(helper, "_find_git_dir", lambda: None)
         monkeypatch.setattr("sys.argv", ["check_quality_gates.py"])
         assert mod.main() == 1
 
     def test_detects_noqa_in_code(self, monkeypatch: pytest.MonkeyPatch) -> None:
         import scripts.hooks.check_quality_gates as mod  # noqa: PLC0415
+        import scripts.hooks.commit_message as helper  # noqa: PLC0415
 
         def fake_diff(path_filter: str = "") -> str:
             if path_filter == "pyproject.toml":
@@ -105,7 +107,7 @@ class TestMainDetection:
             return _NOQA_DIFF
 
         monkeypatch.setattr(mod, "_staged_diff", fake_diff)
-        monkeypatch.setattr(mod, "_find_git_dir", lambda: None)
+        monkeypatch.setattr(helper, "_find_git_dir", lambda: None)
         monkeypatch.setattr("sys.argv", ["check_quality_gates.py"])
         assert mod.main() == 1
 

@@ -60,6 +60,9 @@ class GitLabCodeHost:
         )
         return data if isinstance(data, list) else []
 
+    def list_my_open_prs(self, author: str) -> list[RawAPIDict]:
+        return self._client.list_all_open_mrs(author)
+
     def post_mr_note(self, *, repo: str, mr_iid: int, body: str) -> dict[str, object]:
         project = self._resolve_project(repo)
         if project is None:

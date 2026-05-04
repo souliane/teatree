@@ -316,6 +316,33 @@ class TestGitHubCodeHost:
             result = host.list_open_prs("org/repo", "alice")
         assert result == []
 
+    def test_list_my_open_prs_searches_by_author_across_forge(self) -> None:
+        search_response = {
+            "items": [
+                {"number": 1, "title": "first", "html_url": "https://github.com/org/repo/pull/1"},
+                {"number": 2, "title": "second", "html_url": "https://github.com/org/other/pull/2"},
+            ],
+        }
+        with patch.object(github_mod, "_gh_api_get", return_value=search_response) as mock_get:
+            host = GitHubCodeHost(token="tok")
+            result = host.list_my_open_prs("alice")
+        assert len(result) == 2
+        assert result[0]["number"] == 1
+        mock_get.assert_called_once_with(
+            "search/issues?q=is%3Apr+is%3Aopen+author%3Aalice&per_page=100",
+            token="tok",
+        )
+
+    def test_list_my_open_prs_returns_empty_when_response_missing_items(self) -> None:
+        with patch.object(github_mod, "_gh_api_get", return_value={"total_count": 0}):
+            host = GitHubCodeHost()
+            assert host.list_my_open_prs("alice") == []
+
+    def test_list_my_open_prs_returns_empty_when_response_not_dict(self) -> None:
+        with patch.object(github_mod, "_gh_api_get", return_value=[]):
+            host = GitHubCodeHost()
+            assert host.list_my_open_prs("alice") == []
+
     def test_post_mr_note(self) -> None:
         with patch.object(github_mod, "_gh_api_post", return_value={"id": 42}) as mock_post:
             host = GitHubCodeHost()

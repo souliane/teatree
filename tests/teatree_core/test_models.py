@@ -340,7 +340,7 @@ class TestPhaseAutoDispatch(TestCase):
     def test_shipping_defaults_to_interactive_without_t3_auto_ship(self) -> None:
         ticket = Ticket.objects.create()
 
-        with patch.dict("os.environ", {}, clear=False) as env:
+        with patch.dict("os.environ", {"T3_MODE": "interactive"}, clear=False) as env:
             env.pop("T3_AUTO_SHIP", None)
             task = ticket.schedule_shipping()
 
@@ -350,11 +350,24 @@ class TestPhaseAutoDispatch(TestCase):
     def test_shipping_is_headless_when_t3_auto_ship_true(self) -> None:
         ticket = Ticket.objects.create()
 
-        with patch.dict("os.environ", {"T3_AUTO_SHIP": "true"}):
+        with patch.dict("os.environ", {"T3_AUTO_SHIP": "true", "T3_MODE": "interactive"}):
             task = ticket.schedule_shipping()
 
         assert task.execution_target == Task.ExecutionTarget.HEADLESS
-        assert "T3_AUTO_SHIP=true" in task.execution_reason
+        assert "auto mode" in task.execution_reason
+
+    def test_shipping_is_headless_when_global_mode_is_auto(self) -> None:
+        # When teatree.mode = auto in ~/.teatree.toml (or T3_MODE=auto), the
+        # ship task should run headlessly even without T3_AUTO_SHIP — the
+        # global auto mode is the user's blanket consent for publishing.
+        ticket = Ticket.objects.create()
+
+        with patch.dict("os.environ", {"T3_MODE": "auto"}, clear=False) as env:
+            env.pop("T3_AUTO_SHIP", None)
+            task = ticket.schedule_shipping()
+
+        assert task.execution_target == Task.ExecutionTarget.HEADLESS
+        assert "auto mode" in task.execution_reason
 
     def test_shipping_task_completion_advances_to_shipped(self) -> None:
         ticket = Ticket.objects.create()
