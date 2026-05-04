@@ -50,15 +50,18 @@ class TicketQuerySet(_OverlayFilterMixin, models.QuerySet):
 
 
 class WorktreeQuerySet(_OverlayFilterMixin, models.QuerySet):
-    # Values must match Ticket.State.{DELIVERED,IGNORED}.value — checked in tests.
-    _DONE_TICKET_STATES = ("delivered", "ignored")
-
     def active(self, overlay: str | None = None) -> models.QuerySet:
         """Worktrees whose ticket is still in flight (not delivered or ignored).
 
         Matches the worktrees panel one-to-one so the KPI count and table size agree.
         """
-        return self.for_overlay(overlay).exclude(ticket__state__in=self._DONE_TICKET_STATES).order_by("pk")
+        from teatree.core.models.ticket import Ticket  # noqa: PLC0415
+
+        return (
+            self.for_overlay(overlay)
+            .exclude(ticket__state__in=[Ticket.State.DELIVERED, Ticket.State.IGNORED])
+            .order_by("pk")
+        )
 
 
 class SessionQuerySet(_OverlayFilterMixin, models.QuerySet):

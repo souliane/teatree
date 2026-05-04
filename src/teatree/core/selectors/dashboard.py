@@ -255,7 +255,7 @@ def _build_mr_rows(ticket: Ticket) -> list[DashboardMRRow]:
         return []
     rows = []
     for mr in mrs_data.values():
-        if not isinstance(mr, dict) or mr.get("state") == "merged":
+        if not isinstance(mr, dict) or mr.get("state") in {"merged", "closed"}:
             continue
         approvals = mr.get("approvals", {})
         if not isinstance(approvals, dict):
