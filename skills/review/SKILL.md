@@ -229,6 +229,30 @@ If none of those triggers apply (purely internal refactor, test-only change, com
 
 **Failure mode this step prevents:** a reviewer posts "the canonical name should be X" based on the local repo's pattern, the author replies "the FE has 20 usages of Y, please check before commenting", and the user (whose name is on the comment) loses credibility for a finding that would have been correct if the reviewer had grepped the FE first.
 
+**Step 0h — Discussion Venue: MR Over Chat (Non-Negotiable):**
+
+Discussion topics that anchor to specific code in an MR — design questions about a function, a TODO in the diff, a missing call compared to a sibling endpoint, a hardcoded value, an architectural choice visible in the patch — belong on the **MR**, not in a Slack/Teams DM or chat thread. Default to MR notes whenever the topic references something the reviewer can point to in the diff.
+
+**Why MR over chat:**
+
+- MR notes are persistent, threaded per topic, and resolve with the MR. Chat scrolls away.
+- Other reviewers and stakeholders see MR notes; chat is a private channel between two people.
+- MR notes attach to the line/file, so the conversation stays anchored to the code that triggered it.
+- The ticket's audit trail benefits from the discussion living next to the code change.
+
+**When chat is the right venue:**
+
+- A heads-up that the review is ready and points to the MR for the discussion ("left some thoughts on !351").
+- Coordination/scheduling ("can we pair on the LE flow tomorrow?").
+- Sensitive feedback that doesn't belong in a public review trail.
+- Topics genuinely unrelated to the diff (e.g., process discussion about how the team reviews MRs).
+
+**Inline first, general note second:**
+
+When posting on the MR, prefer **inline** (line-anchored) discussions over **general** MR comments. Inline notes show the exact code that triggered the question and let the author resolve them per topic. Use a general MR comment only when the topic is not anchorable to a single line — for example, an architectural question that spans the whole file or a code block that is not part of the MR's diff (so GitLab cannot anchor an inline note to it).
+
+**Failure mode this step prevents:** the reviewer drafts a Slack message containing 5 design questions about specific lines of an MR, sends it as a DM, and the discussion lives in chat where it is invisible to the rest of the team and disconnected from the code. The author then has to copy-paste the chat back into MR comments to track resolution. The right move was to post the topics as MR discussions in the first place and send a one-line Slack heads-up pointing to the MR.
+
 **Step 1 — Structured Review Checklist:**
 
 1. **Correctness** — does the code do what the ticket requires? Are all acceptance criteria met? When a change tightens a public contract (e.g., serializer field becomes required, API parameter becomes mandatory), trace all callers — the change affects every flow that uses that interface, not just the one the ticket describes.

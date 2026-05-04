@@ -830,6 +830,7 @@ mode = "interactive"   # "interactive" (default, security-conservative) | "auto"
 
 [user]
 claude_chrome = true   # spawn `claude` with --chrome so sessions can drive the browser
+agent_signature = false  # never append agent identity (Co-Authored-By, "Sent using …") to user-on-behalf posts
 
 [overlays.myproject]
 path = "~/workspace/myproject"
