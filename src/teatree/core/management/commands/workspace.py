@@ -246,7 +246,8 @@ class Command(TyperCommand):
 
         Allocates one shared port set across the workspace, then fires
         ``Worktree.start_services()`` on each worktree (CLI runs the
-        runner synchronously).
+        runner synchronously). After every worktree starts, runs each
+        overlay's readiness probes — exits 1 if any probe fails.
         """
         anchor = resolve_worktree(path)
         ticket = Ticket.objects.get(pk=anchor.ticket.pk)
@@ -270,6 +271,22 @@ class Command(TyperCommand):
         if failures:
             self.stderr.write(f"  Failed: {', '.join(failures)}")
             return "error"
+
+        total = 0
+        total_failures = 0
+        for wt in worktrees:
+            probes = overlay.get_readiness_probes(wt)
+            if not probes:
+                continue
+            self.stdout.write(f"  {wt.repo_path}:")
+            results = run_probes(probes)
+            for r in results:
+                self.stdout.write(f"    {r.format()}")
+            total += len(results)
+            total_failures += sum(1 for r in results if not r.passed)
+        if total_failures:
+            self.stderr.write(f"  {total_failures} of {total} probe(s) failed")
+            raise SystemExit(1)
         return f"started {len(worktrees)} worktree(s)"
 
     @command()
