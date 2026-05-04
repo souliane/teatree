@@ -319,6 +319,43 @@
       } catch(e) { showToast('Update failed', 'error'); }
     }
 
+    // E2E sync signal: body[data-htmx-idle="1"] iff every panel-rendering
+    // HTMX request kicked off so far has settled. Tests should wait for this
+    // after page.goto so they don't interact with DOM that HTMX is about to
+    // replace. Listeners on `document` (events bubble from body) so registration
+    // doesn't depend on body existing yet — this script runs in <head>.
+    //
+    // We track only requests targeting `/dashboard/panels/` (the partials that
+    // swap visible content) — long-running side-effects like the auto-sync
+    // POST to `/dashboard/sync/` would otherwise pin the counter and the page
+    // would never report idle. We pair beforeRequest with afterRequest (fires
+    // on every outcome — success, error, abort) so a failed panel can't pin
+    // the counter either. Tests should disable the auto-sync via the
+    // ``TEATREE_DASHBOARD_AUTO_SYNC`` setting so the post-sync ``refreshPanels``
+    // can't swap panels under interactions after the helper saw idle=1.
+    (function() {
+      var pending = 0;
+      var seen = false;
+      function isTracked(e) {
+        var path = e && e.detail && e.detail.requestConfig && e.detail.requestConfig.path;
+        return typeof path === 'string' && path.indexOf('/dashboard/panels/') !== -1;
+      }
+      function update() {
+        if (document.body) {
+          document.body.dataset.htmxIdle = (seen && pending === 0) ? '1' : '0';
+        }
+      }
+      document.addEventListener('htmx:beforeRequest', function(e) {
+        if (!isTracked(e)) return;
+        seen = true; pending++; update();
+      });
+      document.addEventListener('htmx:afterRequest', function(e) {
+        if (!isTracked(e)) return;
+        pending = Math.max(0, pending - 1); update();
+      });
+      document.addEventListener('DOMContentLoaded', update);
+    })();
+
     // Defer SSE listener attachment until <body> exists — this script runs in <head>.
     document.addEventListener('DOMContentLoaded', function() {
       document.body.addEventListener('htmx:sseOpen', function() {
@@ -581,6 +618,7 @@
 <body class="min-h-screen bg-[radial-gradient(circle_at_top_left,_rgba(66,104,85,0.18),_transparent_30%),linear-gradient(180deg,_#fbf4e8_0%,_#f5ecdd_55%,_#eadbc6_100%)] text-bark"
       hx-headers='{"X-CSRFToken": "{{ csrf_token }}"}'>
   <div hx-ext="sse" sse-connect="{% url 'teatree:dashboard-events' %}">
+  {% if auto_sync_enabled %}
   <!-- Auto-sync on page load: same as "Sync Now" button -->
   <div
     hx-post="{% url 'teatree:dashboard-sync' %}"
@@ -589,6 +627,7 @@
     hx-swap="outerHTML"
     hx-on::after-request="htmx.trigger(document.body, 'refreshPanels')"
   ></div>
+  {% endif %}
   {% if git_sha %}
   <div class="fixed top-2 right-3 z-40" id="branch-switcher">
     <button

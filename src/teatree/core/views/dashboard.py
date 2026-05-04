@@ -3,6 +3,7 @@ import os
 from collections.abc import Callable, Mapping
 from pathlib import Path
 
+from django.conf import settings
 from django.http import Http404, HttpRequest, HttpResponse
 from django.shortcuts import get_object_or_404
 from django.template.response import TemplateResponse
@@ -104,6 +105,7 @@ class DashboardView(View):
                 "overlay_branches": overlay_branches,
                 "terminal_apps": detect_available_apps(),
                 "contribute_mode": load_config().user.contribute,
+                "auto_sync_enabled": getattr(settings, "TEATREE_DASHBOARD_AUTO_SYNC", True),
             },
         )
 

@@ -76,3 +76,10 @@ TASKS = {
         "BACKEND": "django_tasks.backends.immediate.ImmediateBackend",
     },
 }
+
+# Disable the dashboard auto-sync POST in e2e mode. The auto-sync's
+# ``hx-on::after-request="refreshPanels"`` triggers a second wave of panel
+# reloads after the initial HTMX panel loads have already settled, which can
+# swap DOM nodes underneath in-flight test interactions. Tests don't need
+# sync to run.
+TEATREE_DASHBOARD_AUTO_SYNC = False
