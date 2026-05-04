@@ -10,7 +10,14 @@ See: souliane/teatree#17
 import re
 import subprocess
 
-from commit_message import commit_message_has_relax_prefix
+# When run as a hook (`python scripts/hooks/check_quality_gates.py`), sys.path[0]
+# is `scripts/hooks/` so the bare-name import resolves. When loaded under pytest
+# (as `scripts.hooks.check_quality_gates`), the dotted path resolves first and
+# yields the same module instance the test patches via `scripts.hooks.commit_message`.
+try:
+    from scripts.hooks.commit_message import commit_message_has_relax_prefix
+except ImportError:
+    from commit_message import commit_message_has_relax_prefix
 
 # Patterns in pyproject.toml that indicate structural config relaxation.
 _PYPROJECT_KEYWORD_PATTERNS: list[str] = [
