@@ -988,18 +988,25 @@ class TestCheckMr(TestCase):
 
     def test_returns_empty_for_merged(self) -> None:
         """Merged MRs must not surface as action items — bug hunt 2026-04-25 (#455 §2)."""
-        mr = {
+        assert _check_mr(self._closed_state_mr("merged"), self.ticket) == []
+
+    def test_returns_empty_for_closed(self) -> None:
+        """Closed-without-merge MRs must not surface as action items either."""
+        assert _check_mr(self._closed_state_mr("closed"), self.ticket) == []
+
+    @staticmethod
+    def _closed_state_mr(state: str) -> dict:
+        return {
             "draft": False,
             "repo": "backend",
             "iid": 10,
             "url": "https://gitlab.com/org/backend/-/merge_requests/10",
             "pipeline_status": "success",
-            "state": "merged",
+            "state": state,
             "review_requested": True,
             "approvals": {"count": 0, "required": 2},
             "discussions": [{"status": "needs_reply"}],
         }
-        assert _check_mr(mr, self.ticket) == []
 
     def test_needs_review_request(self) -> None:
         mr = {
@@ -1229,15 +1236,19 @@ class TestBuildMrRows(TestCase):
         )
         assert _build_mr_rows(ticket) == []
 
-    def test_merged_mr_excluded(self) -> None:
-        """Merged MRs must not appear in the dashboard MR rows — bug hunt 2026-04-25 (#455 §2)."""
+    def test_terminal_state_mrs_excluded(self) -> None:
+        """Merged and closed MRs must not appear in the dashboard MR rows.
+
+        Merged-MR exclusion is the bug hunt 2026-04-25 (#455 §2) regression;
+        closed-without-merge MRs are the same conceptual case (no action possible).
+        """
         ticket = Ticket.objects.create(
             state=Ticket.State.STARTED,
             extra={
                 "mrs": {
                     "https://gitlab.com/org/backend/-/merge_requests/10": {
                         "url": "https://gitlab.com/org/backend/-/merge_requests/10",
-                        "title": "feat",
+                        "title": "merged",
                         "repo": "backend",
                         "iid": "10",
                         "branch": "feat/x",
@@ -1252,6 +1263,15 @@ class TestBuildMrRows(TestCase):
                         "branch": "feat/y",
                         "draft": False,
                         "state": "opened",
+                    },
+                    "https://gitlab.com/org/backend/-/merge_requests/12": {
+                        "url": "https://gitlab.com/org/backend/-/merge_requests/12",
+                        "title": "abandoned",
+                        "repo": "backend",
+                        "iid": "12",
+                        "branch": "feat/z",
+                        "draft": False,
+                        "state": "closed",
                     },
                 },
             },
