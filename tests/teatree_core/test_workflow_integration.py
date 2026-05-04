@@ -5,13 +5,37 @@ verifying that state transitions, task auto-scheduling, and quality gates all
 chain together correctly.
 """
 
+import subprocess
+from pathlib import Path
+
 import pytest
 from django.test import TestCase
 
 from teatree.core.models import QualityGateError, Session, Task, Ticket, Worktree
 
 
+def _make_repo_with_diff(repo_dir: Path, *, branch: str) -> None:
+    repo_dir.mkdir(parents=True, exist_ok=True)
+    env = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+
+    def git(*args: str) -> None:
+        subprocess.run(["git", "-C", str(repo_dir), *args], check=True, env=env, capture_output=True)  # noqa: S607
+
+    git("init", "--initial-branch=main")
+    (repo_dir / "README.md").write_text("seed\n")
+    git("add", "README.md")
+    git("commit", "-m", "seed")
+    git("checkout", "-b", branch)
+    (repo_dir / "feature.txt").write_text("feature\n")
+    git("add", "feature.txt")
+    git("commit", "-m", "add feature")
+
+
 class TestTicketLifecycle(TestCase):
+    @pytest.fixture(autouse=True)
+    def _inject_tmp_path(self, tmp_path: Path) -> None:
+        self._tmp_path = tmp_path
+
     def test_from_creation_to_tested(self) -> None:
         """Ticket flows from creation through testing with worktree provisioning."""
         ticket = Ticket.objects.create()
@@ -47,6 +71,10 @@ class TestTicketLifecycle(TestCase):
         ticket.code()
         ticket.test(passed=True)
         ticket.save()
+
+        repo_dir = self._tmp_path / "backend"
+        _make_repo_with_diff(repo_dir, branch="feat/42")
+        Worktree.objects.create(ticket=ticket, repo_path=str(repo_dir), branch="feat/42")
 
         session = Session.objects.create(ticket=ticket, agent_id="test-agent")
         session.visit_phase("coding")

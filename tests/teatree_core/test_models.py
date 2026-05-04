@@ -1,3 +1,5 @@
+import subprocess
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -72,9 +74,46 @@ def _complete_phase_task(ticket: Ticket, phase: str) -> None:
     task.complete()
 
 
+def _attach_shippable_worktree(ticket: Ticket, tmp_path: Path, *, commits_ahead: int = 1) -> Worktree:
+    """Attach a git-backed worktree to *ticket* so ``has_shippable_diff`` returns True."""
+    repo_dir = tmp_path / f"repo-{ticket.pk}"
+    branch = f"feature-{ticket.pk}"
+    _init_repo_with_branch(repo_dir, branch=branch, commits_ahead=commits_ahead)
+    return Worktree.objects.create(ticket=ticket, repo_path=str(repo_dir), branch=branch)
+
+
+def _init_repo_with_branch(repo_dir: Path, *, branch: str, commits_ahead: int) -> None:
+    """Initialise a git repo at *repo_dir* with main + a feature branch.
+
+    The feature branch is named *branch* and contains *commits_ahead* commits
+    on top of the main tip. Use ``commits_ahead=0`` for the no-shippable-diff
+    case (branch points at the same SHA as main).
+    """
+    repo_dir.mkdir(parents=True, exist_ok=True)
+    env = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+
+    def git(*args: str) -> None:
+        subprocess.run(["git", "-C", str(repo_dir), *args], check=True, env=env, capture_output=True)  # noqa: S607
+
+    git("init", "--initial-branch=main")
+    (repo_dir / "README.md").write_text("seed\n")
+    git("add", "README.md")
+    git("commit", "-m", "seed")
+    git("checkout", "-b", branch)
+    for i in range(commits_ahead):
+        (repo_dir / f"f{i}.txt").write_text(f"{i}\n")
+        git("add", f"f{i}.txt")
+        git("commit", "-m", f"add f{i}")
+
+
 class TestTicketTransitions(TestCase):
+    @pytest.fixture(autouse=True)
+    def _inject_tmp_path(self, tmp_path: Path) -> None:
+        self._tmp_path = tmp_path
+
     def test_persist_delivery_state(self) -> None:
         ticket = Ticket.objects.create()
+        _attach_shippable_worktree(ticket, self._tmp_path)
 
         _advance_ticket_to_tested(ticket)
 
@@ -134,6 +173,7 @@ class TestTicketTransitions(TestCase):
 
     def test_reviewing_task_completion_advances_to_reviewed(self) -> None:
         ticket = Ticket.objects.create()
+        _attach_shippable_worktree(ticket, self._tmp_path)
         _advance_ticket_to_tested(ticket)
 
         _complete_phase_task(ticket, "reviewing")
@@ -249,8 +289,79 @@ class TestTicketTransitions(TestCase):
             ticket.review()
 
 
+class TestHasShippableDiff(TestCase):
+    """``Ticket.has_shippable_diff`` and the auto-shipping gate (issue #473)."""
+
+    @pytest.fixture(autouse=True)
+    def _inject_tmp_path(self, tmp_path: Path) -> None:
+        self._tmp_path = tmp_path
+
+    def _make_ticket_with_worktree(self, *, commits_ahead: int) -> Ticket:
+        ticket = Ticket.objects.create()
+        repo_dir = self._tmp_path / f"repo-{commits_ahead}"
+        branch = "feature"
+        _init_repo_with_branch(repo_dir, branch=branch, commits_ahead=commits_ahead)
+        Worktree.objects.create(ticket=ticket, repo_path=str(repo_dir), branch=branch)
+        return ticket
+
+    def test_returns_false_when_no_worktrees(self) -> None:
+        ticket = Ticket.objects.create()
+
+        assert ticket.has_shippable_diff() is False
+
+    def test_returns_false_when_branch_has_no_commits_ahead(self) -> None:
+        ticket = self._make_ticket_with_worktree(commits_ahead=0)
+
+        assert ticket.has_shippable_diff() is False
+
+    def test_returns_true_when_branch_has_commits_ahead(self) -> None:
+        ticket = self._make_ticket_with_worktree(commits_ahead=2)
+
+        assert ticket.has_shippable_diff() is True
+
+    def test_review_skips_shipping_task_when_no_diff(self) -> None:
+        ticket = self._make_ticket_with_worktree(commits_ahead=0)
+        _advance_ticket_to_tested(ticket)
+
+        _complete_phase_task(ticket, "reviewing")
+        ticket.refresh_from_db()
+
+        assert ticket.state == Ticket.State.REVIEWED
+        assert not ticket.tasks.filter(phase="shipping").exists()
+        assert "no shippable diff" in ticket.extra.get("shipping_skipped", "")
+
+    def test_review_schedules_shipping_when_branch_has_commits(self) -> None:
+        ticket = self._make_ticket_with_worktree(commits_ahead=1)
+        _advance_ticket_to_tested(ticket)
+
+        _complete_phase_task(ticket, "reviewing")
+        ticket.refresh_from_db()
+
+        assert ticket.state == Ticket.State.REVIEWED
+        assert ticket.tasks.filter(phase="shipping", status=Task.Status.PENDING).exists()
+        assert "shipping_skipped" not in ticket.extra
+
+    def test_returns_false_when_worktree_missing_branch(self) -> None:
+        ticket = Ticket.objects.create()
+        Worktree.objects.create(ticket=ticket, repo_path=str(self._tmp_path), branch="")
+
+        assert ticket.has_shippable_diff() is False
+
+    def test_returns_false_when_repo_path_is_not_a_git_directory(self) -> None:
+        ticket = Ticket.objects.create()
+        not_a_repo = self._tmp_path / "not-a-repo"
+        not_a_repo.mkdir()
+        Worktree.objects.create(ticket=ticket, repo_path=str(not_a_repo), branch="feature")
+
+        assert ticket.has_shippable_diff() is False
+
+
 class TestPhaseAutoDispatch(TestCase):
     """Auto-dispatch of next-phase tasks at each phase boundary (issue #364)."""
+
+    @pytest.fixture(autouse=True)
+    def _inject_tmp_path(self, tmp_path: Path) -> None:
+        self._tmp_path = tmp_path
 
     def test_start_provisions_then_schedules_coding_task(self) -> None:
         ticket = Ticket.objects.create()
@@ -371,6 +482,7 @@ class TestPhaseAutoDispatch(TestCase):
 
     def test_shipping_task_completion_advances_to_shipped(self) -> None:
         ticket = Ticket.objects.create()
+        _attach_shippable_worktree(ticket, self._tmp_path)
         _advance_ticket_to_tested(ticket)
         _complete_phase_task(ticket, "reviewing")
         # reviewing completion → REVIEWED + shipping task (interactive by default)
@@ -392,6 +504,7 @@ class TestPhaseAutoDispatch(TestCase):
         from teatree.core import tasks as tasks_mod  # noqa: PLC0415
 
         ticket = Ticket.objects.create()
+        _attach_shippable_worktree(ticket, self._tmp_path)
         _advance_ticket_to_tested(ticket)
         _complete_phase_task(ticket, "reviewing")
         ticket.refresh_from_db()
@@ -420,6 +533,7 @@ class TestPhaseAutoDispatch(TestCase):
         from teatree.core import tasks as tasks_mod  # noqa: PLC0415
 
         ticket = Ticket.objects.create()
+        _attach_shippable_worktree(ticket, self._tmp_path)
         _advance_ticket_to_tested(ticket)
         _complete_phase_task(ticket, "reviewing")
         ticket.refresh_from_db()
@@ -467,6 +581,7 @@ class TestPhaseAutoDispatch(TestCase):
         no-op (zero-row UPDATE). Verify no duplicate task is created.
         """
         ticket = Ticket.objects.create()
+        _attach_shippable_worktree(ticket, self._tmp_path)
         _advance_ticket_to_tested(ticket)
         _complete_phase_task(ticket, "reviewing")
 
