@@ -383,6 +383,18 @@ class SwitchBranchView(View):
 
         env = {**os.environ, "GIT_EDITOR": "true", "GIT_SEQUENCE_EDITOR": "true"}
         try:
+            worktree_path = _branch_worktree_path(t3_repo, branch)
+            if worktree_path:
+                return JsonResponse(
+                    {
+                        "error": (
+                            f"Branch '{branch}' is checked out at {worktree_path}. "
+                            f"Run `t3 dashboard` from that worktree to test it."
+                        ),
+                        "worktree_path": worktree_path,
+                    },
+                    status=409,
+                )
             result = run_allowed_to_fail(
                 ["git", "checkout", branch],
                 cwd=t3_repo,
@@ -391,10 +403,31 @@ class SwitchBranchView(View):
                 timeout=15,
             )
         except subprocess.TimeoutExpired:
-            return JsonResponse({"error": "checkout timed out"}, status=500)
+            return JsonResponse({"error": "git operation timed out"}, status=500)
 
         if result.returncode != 0:
             error = (result.stderr or result.stdout).strip()
             return JsonResponse({"error": error}, status=500)
 
         return JsonResponse({"ok": True, "branch": branch})
+
+
+def _branch_worktree_path(t3_repo: Path, branch: str) -> str:
+    """Return the worktree path holding ``branch``, or empty string if none."""
+    result = run_allowed_to_fail(
+        ["git", "worktree", "list", "--porcelain"],
+        cwd=t3_repo,
+        expected_codes=None,
+        timeout=10,
+    )
+    if result.returncode != 0:
+        return ""
+
+    target = f"branch refs/heads/{branch}"
+    current_path = ""
+    for line in result.stdout.splitlines():
+        if line.startswith("worktree "):
+            current_path = line.removeprefix("worktree ")
+        elif line == target and current_path != str(t3_repo):
+            return current_path
+    return ""
