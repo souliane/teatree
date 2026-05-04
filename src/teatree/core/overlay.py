@@ -403,13 +403,23 @@ class HealthCheck:
 
 
 def _symlink_source_healthy(dest: Path, source: Path) -> bool:
-    """Return True when *dest* resolves and *source* is populated (non-empty if a dir)."""
-    if not (dest.exists() or dest.is_symlink()):
+    """Return True when *dest* contains populated content.
+
+    Two valid end states: a symlink at *dest* pointing to a populated
+    *source*, or a real populated directory at *dest* (e.g. after
+    ``npm install`` ran in the worktree, replacing the symlink with a
+    real directory — see #480).
+    """
+    if dest.is_symlink():
+        if not source.exists():
+            return False
+        if source.is_dir():
+            return any(source.iterdir())
+        return True
+    if not dest.exists():
         return False
-    if not source.exists():
-        return False
-    if source.is_dir():
-        return any(source.iterdir())
+    if dest.is_dir():
+        return any(dest.iterdir())
     return True
 
 

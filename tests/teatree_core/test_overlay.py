@@ -318,6 +318,80 @@ class TestDefaultHealthChecks(TestCase):
             symlink_check = next(c for c in checks if c.name == "symlink-node_modules")
             assert symlink_check.check() is True
 
+    def test_symlink_check_passes_when_dest_is_real_populated_directory(self) -> None:
+        """A real populated directory at *dest* must pass even if *source* is empty.
+
+        Regression guard for #480: when ``npm install`` ran directly in the
+        worktree (replacing the symlink with a real ``node_modules`` directory)
+        and the main-clone source is empty, provision used to fail the health
+        check even though packages are installed and the worktree is usable.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            wt_path = Path(tmp) / "worktree"
+            wt_path.mkdir()
+            empty_source = Path(tmp) / "empty_source"
+            empty_source.mkdir()
+
+            real_dest = wt_path / "node_modules"
+            real_dest.mkdir()
+            (real_dest / "some-package").mkdir()
+
+            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/4")
+            worktree = Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="backend",
+                branch="feature",
+                db_name="test_db",
+                extra={"worktree_path": str(wt_path)},
+            )
+
+            overlay = DummyOverlay()
+            with patch.object(
+                overlay,
+                "get_symlinks",
+                return_value=[
+                    {"path": "node_modules", "source": str(empty_source), "mode": "symlink"},
+                ],
+            ):
+                checks = overlay.get_health_checks(worktree)
+            symlink_check = next(c for c in checks if c.name == "symlink-node_modules")
+            assert symlink_check.check() is True
+
+    def test_symlink_check_fails_when_dest_is_real_empty_directory(self) -> None:
+        """A real but empty directory at *dest* must fail the health check."""
+        with tempfile.TemporaryDirectory() as tmp:
+            wt_path = Path(tmp) / "worktree"
+            wt_path.mkdir()
+            populated_source = Path(tmp) / "populated_source"
+            populated_source.mkdir()
+            (populated_source / "some-package").mkdir()
+
+            real_dest = wt_path / "node_modules"
+            real_dest.mkdir()
+
+            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/5")
+            worktree = Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="backend",
+                branch="feature",
+                db_name="test_db",
+                extra={"worktree_path": str(wt_path)},
+            )
+
+            overlay = DummyOverlay()
+            with patch.object(
+                overlay,
+                "get_symlinks",
+                return_value=[
+                    {"path": "node_modules", "source": str(populated_source), "mode": "symlink"},
+                ],
+            ):
+                checks = overlay.get_health_checks(worktree)
+            symlink_check = next(c for c in checks if c.name == "symlink-node_modules")
+            assert symlink_check.check() is False
+
 
 class TestReadinessProbes(TestCase):
     def test_default_overlay_returns_no_probes(self) -> None:
