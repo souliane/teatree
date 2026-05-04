@@ -203,13 +203,13 @@ graph LR
 | `handover` | Use when the user wants to transfer an in-flight TeaTree task from Claude to another runtime, or asks whether it is time to switch because Claude usage is getting high. |
 | `next` | Wrap up the current session — retro, structured result, pipeline handoff. |
 | `platforms` | Platform-specific API recipes for GitLab, GitHub, and Slack. Auto-loaded as a dependency by skills that interact with these platforms. |
-| `pr-sweep` | Maintenance sweep across all your open PRs/MRs — merge the default branch, fix conflicts, monitor CI, push. Never rebases |
 | `retro` | Conversation retrospective and skill improvement |
 | `review` | Code review — self-review before finalization, giving review, receiving review feedback |
 | `review-request` | Batch review requests — discover open MRs, validate metadata, check for duplicates, post to review channels |
 | `rules` | Cross-cutting agent safety rules — clickable refs, temp files, sub-agent limits, UX preservation. Auto-loaded as a dependency by other skills. |
 | `setup` | Bootstrap and validate teatree for local use — prerequisites, config, skill symlinks, optional agent hooks, and Django project scaffolding |
 | `ship` | Delivery — committing, pushing, creating MR/PR, pipeline monitoring, review requests |
+| `sweeping-prs` | Maintenance sweep across all your open PRs/MRs — merge the default branch, fix conflicts, monitor CI, push. Never rebases |
 | `teatree` | TeaTree agent lifecycle platform — core architecture, lifecycle phases, CLI reference, overlay API, skill loading, and plugin hooks |
 | `teatree-batch` | Unattended batch ticket processing — work through a prioritized backlog one ticket at a time, sequentially. Create worktree, implement with TDD, self-review, push, merge, clean up. Skip tickets that need design decisions |
 | `teatree-bughunt` | Self-QA variant of batch mode — dogfood the teatree dashboard, find real bugs (missing items, state/action mismatches, broken links, stale data), file them, then fix them in worktrees |

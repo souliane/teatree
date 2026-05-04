@@ -384,7 +384,7 @@ class Command(TyperCommand):
     def sweep(self) -> RawAPIDict:
         """List all open PRs/MRs authored by the current user across the forge.
 
-        Output is consumed by the ``/t3:pr-sweep`` agent skill, which walks
+        Output is consumed by the ``/t3:sweeping-prs`` agent skill, which walks
         each PR sequentially: merges the default branch, fixes conflicts,
         monitors CI, and pushes — never rebases. The CLI itself only
         discovers; mutating actions live in the skill so the agent can

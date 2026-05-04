@@ -1699,7 +1699,7 @@ Usage: t3 teatree pr [OPTIONS] COMMAND [ARGS]...
 │ fetch-issue    Fetch issue details from the configured tracker.              │
 │ detect-tenant  Detect the current tenant variant from the overlay.           │
 │ post-evidence  Post test evidence as an MR comment.                          │
-│ sweep          List your open PRs across the forge for the /t3:pr-sweep      │
+│ sweep          List your open PRs across the forge for the /t3:sweeping-prs  │
 │                skill.                                                        │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -1715,11 +1715,14 @@ Usage: t3 teatree pr create [OPTIONS] TICKET_ID
  and advances ``SHIPPED → IN_REVIEW``. The return value reports the MR
  URL once the worker completes (synchronous in interactive mode).
 
+ ``ticket_id`` accepts the internal DB pk, the full issue URL, or the
+ bare issue number (resolved against ``Ticket.issue_url``).
+
  ``--title`` overrides the MR title (default: last commit subject).
  Stored on ``ticket.extra['mr_title_override']`` so the worker reads it.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    ticket_id      INTEGER  [required]                                      │
+│ *    ticket_id      TEXT  [required]                                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --title                                      TEXT                            │
@@ -1827,7 +1830,7 @@ Usage: t3 teatree pr sweep [OPTIONS]
 
  List all open PRs/MRs authored by the current user across the forge.
 
- Output is consumed by the ``/t3:pr-sweep`` agent skill, which walks
+ Output is consumed by the ``/t3:sweeping-prs`` agent skill, which walks
  each PR sequentially: merges the default branch, fixes conflicts,
  monitors CI, and pushes — never rebases. The CLI itself only
  discovers; mutating actions live in the skill so the agent can
