@@ -121,6 +121,30 @@ def test_list_open_prs_returns_empty_when_response_not_list() -> None:
     assert host.list_open_prs("org/repo", "adrien") == []
 
 
+def test_list_my_open_prs_delegates_to_client_list_all_open_mrs() -> None:
+    """list_my_open_prs returns the forge-wide list of MRs authored by user."""
+    client = MagicMock(spec=GitLabAPI)
+    client.list_all_open_mrs.return_value = [
+        {"iid": 1, "title": "MR 1", "web_url": "https://gitlab.com/org/repo/-/merge_requests/1"},
+        {"iid": 2, "title": "MR 2", "web_url": "https://gitlab.com/org/other/-/merge_requests/2"},
+    ]
+    host = GitLabCodeHost(client=client)
+
+    result = host.list_my_open_prs("adrien")
+
+    assert len(result) == 2
+    assert result[0]["iid"] == 1
+    client.list_all_open_mrs.assert_called_once_with("adrien")
+
+
+def test_list_my_open_prs_returns_empty_when_no_mrs() -> None:
+    client = MagicMock(spec=GitLabAPI)
+    client.list_all_open_mrs.return_value = []
+    host = GitLabCodeHost(client=client)
+
+    assert host.list_my_open_prs("adrien") == []
+
+
 def test_post_mr_note_returns_error_when_project_not_resolved() -> None:
     """post_mr_note returns error when project cannot be resolved (lines 55-57)."""
     client = MagicMock(spec=GitLabAPI)

@@ -174,8 +174,8 @@ repos:
         language: system
         entry: uv run python scripts/hooks/check_module_health.py
         pass_filenames: false
-        types: [python]
         always_run: true
+        stages: [commit-msg]
       - id: subprocess-ban
         name: Ban raw subprocess calls in src/teatree/ (use teatree.utils.run)
         language: system
