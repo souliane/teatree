@@ -205,6 +205,30 @@ Do NOT suggest adding `Closes #NNN`, `Fixes #NNN`, `Resolves #NNN`, or any other
 
 Check the overlay skill's commit-message and MR-description rules **before** proposing any trailer. The default when the overlay is silent on the topic is: do not suggest auto-close trailers.
 
+**Step 0g — Cross-Service Verification (Non-Negotiable):**
+
+A review of a service that talks to other services is incomplete until those other services have been checked. Reviewing one repo in isolation produces blind comments — the reviewer asserts "this is the convention" or "this default is fine" without knowing what the producers and consumers across the platform actually do. Comments built on that premise make the user look stupid when the author replies with "have you checked the FE / the gateway / the sibling microservice?".
+
+**Before posting any comment about a name, contract, default value, schema field, response shape, or wire format, exhaust the cross-service grep:**
+
+1. **Enumerate the related services** at the start of the review. From the MR's repo, list every service that produces or consumes the same data: upstream gateway, downstream consumers (frontend, sibling backend, document generation, data warehouse), shared schema/proto repos. Discover them via `T3_WORKSPACE_DIR` (or the overlay's configured repo list) — never hardcode a user-specific path. State the list explicitly so the user can correct gaps before you start.
+2. **Grep every related service** for the symbol/string/identifier/field name. Frontend models, backend serializers, fixture files, generated docs, OpenAPI specs, migration histories. Note where each occurrence lives.
+3. **Cite the cross-service evidence in the comment.** "Frontend has 18 references to `idExpirationDate` in `libs/shared/data-model/...`; the gateway-side Python repo has matching references in `docgen/serializers/...`" is a finding. "I think this should be spelled differently" is a guess.
+4. **When the cross-service check reveals the comment was wrong, drop the comment.** A comment that survives the check survives because the platform-wide convention contradicts the diff. Silence is the correct outcome on a check that confirmed the diff is fine.
+5. **When the cross-service check is impossible** (a repo is not in scope, sandboxed, or behind access you don't have), say so explicitly in the comment and name what was checked vs not. Don't pretend you ran a check you didn't.
+
+**Triggers for this step** — every diff touching:
+
+- A schema field name, enum value, or wire format (Pydantic models, DRF serializers, TypeScript interfaces, OpenAPI definitions).
+- A default value or boolean flag that previously had a different default (especially flags with always-on/always-off semantics like loyalty enrichment, feature gates, search filters).
+- A response shape or wrapper type returned by an endpoint already consumed by another service.
+- A query parameter name or required/optional toggle on a public endpoint.
+- A renamed function, method, or class that is used cross-repo (gateway client, shared library, public CLI command).
+
+If none of those triggers apply (purely internal refactor, test-only change, comment fix), this step is satisfied automatically.
+
+**Failure mode this step prevents:** a reviewer posts "the canonical name should be X" based on the local repo's pattern, the author replies "the FE has 20 usages of Y, please check before commenting", and the user (whose name is on the comment) loses credibility for a finding that would have been correct if the reviewer had grepped the FE first.
+
 **Step 1 — Structured Review Checklist:**
 
 1. **Correctness** — does the code do what the ticket requires? Are all acceptance criteria met? When a change tightens a public contract (e.g., serializer field becomes required, API parameter becomes mandatory), trace all callers — the change affects every flow that uses that interface, not just the one the ticket describes.
