@@ -31,6 +31,7 @@ class TicketExtra(TypedDict, total=False):
     branch: str
     description: str
     provision: dict[str, str]
+    shipping_skipped: str
 
 
 class WorktreeExtra(TypedDict, total=False):
