@@ -205,6 +205,54 @@ Do NOT suggest adding `Closes #NNN`, `Fixes #NNN`, `Resolves #NNN`, or any other
 
 Check the overlay skill's commit-message and MR-description rules **before** proposing any trailer. The default when the overlay is silent on the topic is: do not suggest auto-close trailers.
 
+**Step 0g — Cross-Service Verification (Non-Negotiable):**
+
+A review of a service that talks to other services is incomplete until those other services have been checked. Reviewing one repo in isolation produces blind comments — the reviewer asserts "this is the convention" or "this default is fine" without knowing what the producers and consumers across the platform actually do. Comments built on that premise make the user look stupid when the author replies with "have you checked the FE / the gateway / the sibling microservice?".
+
+**Before posting any comment about a name, contract, default value, schema field, response shape, or wire format, exhaust the cross-service grep:**
+
+1. **Enumerate the related services** at the start of the review. From the MR's repo, list every service that produces or consumes the same data: upstream gateway, downstream consumers (frontend, sibling backend, document generation, data warehouse), shared schema/proto repos. Discover them via `T3_WORKSPACE_DIR` (or the overlay's configured repo list) — never hardcode a user-specific path. State the list explicitly so the user can correct gaps before you start.
+2. **Grep every related service** for the symbol/string/identifier/field name. Frontend models, backend serializers, fixture files, generated docs, OpenAPI specs, migration histories. Note where each occurrence lives.
+3. **Cite the cross-service evidence in the comment.** "Frontend has 18 references to `idExpirationDate` in `libs/shared/data-model/...`; the gateway-side Python repo has matching references in `docgen/serializers/...`" is a finding. "I think this should be spelled differently" is a guess.
+4. **When the cross-service check reveals the comment was wrong, drop the comment.** A comment that survives the check survives because the platform-wide convention contradicts the diff. Silence is the correct outcome on a check that confirmed the diff is fine.
+5. **When the cross-service check is impossible** (a repo is not in scope, sandboxed, or behind access you don't have), say so explicitly in the comment and name what was checked vs not. Don't pretend you ran a check you didn't.
+
+**Triggers for this step** — every diff touching:
+
+- A schema field name, enum value, or wire format (Pydantic models, DRF serializers, TypeScript interfaces, OpenAPI definitions).
+- A default value or boolean flag that previously had a different default (especially flags with always-on/always-off semantics like loyalty enrichment, feature gates, search filters).
+- A response shape or wrapper type returned by an endpoint already consumed by another service.
+- A query parameter name or required/optional toggle on a public endpoint.
+- A renamed function, method, or class that is used cross-repo (gateway client, shared library, public CLI command).
+
+If none of those triggers apply (purely internal refactor, test-only change, comment fix), this step is satisfied automatically.
+
+**Failure mode this step prevents:** a reviewer posts "the canonical name should be X" based on the local repo's pattern, the author replies "the FE has 20 usages of Y, please check before commenting", and the user (whose name is on the comment) loses credibility for a finding that would have been correct if the reviewer had grepped the FE first.
+
+**Step 0h — Discussion Venue: MR Over Chat (Non-Negotiable):**
+
+Discussion topics that anchor to specific code in an MR — design questions about a function, a TODO in the diff, a missing call compared to a sibling endpoint, a hardcoded value, an architectural choice visible in the patch — belong on the **MR**, not in a Slack/Teams DM or chat thread. Default to MR notes whenever the topic references something the reviewer can point to in the diff.
+
+**Why MR over chat:**
+
+- MR notes are persistent, threaded per topic, and resolve with the MR. Chat scrolls away.
+- Other reviewers and stakeholders see MR notes; chat is a private channel between two people.
+- MR notes attach to the line/file, so the conversation stays anchored to the code that triggered it.
+- The ticket's audit trail benefits from the discussion living next to the code change.
+
+**When chat is the right venue:**
+
+- A heads-up that the review is ready and points to the MR for the discussion ("left some thoughts on !351").
+- Coordination/scheduling ("can we pair on the LE flow tomorrow?").
+- Sensitive feedback that doesn't belong in a public review trail.
+- Topics genuinely unrelated to the diff (e.g., process discussion about how the team reviews MRs).
+
+**Inline first, general note second:**
+
+When posting on the MR, prefer **inline** (line-anchored) discussions over **general** MR comments. Inline notes show the exact code that triggered the question and let the author resolve them per topic. Use a general MR comment only when the topic is not anchorable to a single line — for example, an architectural question that spans the whole file or a code block that is not part of the MR's diff (so GitLab cannot anchor an inline note to it).
+
+**Failure mode this step prevents:** the reviewer drafts a Slack message containing 5 design questions about specific lines of an MR, sends it as a DM, and the discussion lives in chat where it is invisible to the rest of the team and disconnected from the code. The author then has to copy-paste the chat back into MR comments to track resolution. The right move was to post the topics as MR discussions in the first place and send a one-line Slack heads-up pointing to the MR.
+
 **Step 1 — Structured Review Checklist:**
 
 1. **Correctness** — does the code do what the ticket requires? Are all acceptance criteria met? When a change tightens a public contract (e.g., serializer field becomes required, API parameter becomes mandatory), trace all callers — the change affects every flow that uses that interface, not just the one the ticket describes.

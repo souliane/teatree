@@ -5,10 +5,20 @@ from typing import cast
 import httpx
 
 from teatree.core.sync import RawAPIDict
+from teatree.identity import agent_signature_suffix
 
 
-def post_webhook_message(webhook_url: str, text: str) -> RawAPIDict:
-    response = httpx.post(webhook_url, json={"text": text}, timeout=10.0)
+def post_webhook_message(webhook_url: str, text: str, *, signature: str = "") -> RawAPIDict:
+    """Post a Slack webhook message on the user's behalf.
+
+    `signature` is appended only when `[teatree] agent_signature = true` in
+    `~/.teatree.toml`. Default config keeps the message indistinguishable
+    from one the user typed themselves — see `teatree.identity` and
+    `skills/rules/SKILL.md` § "No AI Signature on Posts Made on the User's
+    Behalf".
+    """
+    body = text + agent_signature_suffix(signature)
+    response = httpx.post(webhook_url, json={"text": body}, timeout=10.0)
     response.raise_for_status()
     return cast("RawAPIDict", response.json())
 

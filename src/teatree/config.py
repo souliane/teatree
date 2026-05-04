@@ -156,6 +156,15 @@ class UserSettings:
     # E2E selector drafting, bug hunts). Costs ~300 lines of system prompt per
     # session; turn off only on machines without the Chrome extension.
     claude_chrome: bool = True
+    # Whether teatree should append an agent identity (`Co-Authored-By`,
+    # "Sent using …", "Generated with …") to artifacts published on the
+    # user's behalf — git commits, MR/PR descriptions and comments, Slack
+    # messages, issue bodies. Default off: the user is the author, the agent
+    # is the typist. Honored by every teatree post-on-behalf code path; the
+    # rule for ad-hoc agent posting (MCP Slack, gh comment, etc.) lives in
+    # `skills/rules/SKILL.md` § "No AI Signature on Posts Made on the User's
+    # Behalf".
+    agent_signature: bool = False
 
 
 @dataclass
@@ -195,6 +204,7 @@ def load_config(path: Path | None = None) -> TeaTreeConfig:
         redis_db_count=int(teatree.get("redis_db_count", 16)),
         mode=mode,
         claude_chrome=bool(teatree.get("claude_chrome", True)),
+        agent_signature=bool(teatree.get("agent_signature", False)),
     )
 
     return TeaTreeConfig(user=user, raw=raw)
