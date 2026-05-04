@@ -1,13 +1,18 @@
+import logging
 import os
 import re
 from typing import TYPE_CHECKING, ClassVar, cast
 
+from django.apps import apps
 from django.db import models, transaction
 from django_fsm import FSMField, TransitionNotAllowed, transition
 
 from teatree.config import Mode, get_effective_settings
 from teatree.core.managers import TicketManager
-from teatree.utils import redis_container
+from teatree.utils import git, redis_container
+from teatree.utils.run import CommandFailedError
+
+logger = logging.getLogger(__name__)
 
 
 def _auto_ship_enabled() -> bool:
@@ -29,6 +34,7 @@ if TYPE_CHECKING:
     from teatree.core.models.session import Session
     from teatree.core.models.task import Task
     from teatree.core.models.types import TicketExtra
+    from teatree.core.models.worktree import Worktree
 
 
 class Ticket(models.Model):
@@ -127,7 +133,27 @@ class Ticket(models.Model):
         conditions=[lambda t: t.tasks.filter(phase="reviewing", status="completed").exists()],
     )
     def review(self) -> None:
-        self.schedule_shipping()
+        if self.has_shippable_diff():
+            self.schedule_shipping()
+            return
+        logger.info(
+            "Ticket %s reviewed with no shippable diff; skipping auto-shipping (likely meta or already-shipped work)",
+            self.pk,
+        )
+        extra = self._extra()
+        extra["shipping_skipped"] = "no shippable diff — likely meta or already-shipped work"
+        self.extra = extra
+
+    def has_shippable_diff(self) -> bool:
+        """Return True iff at least one worktree has commits ahead of its base branch.
+
+        Used by ``review()`` to skip auto-scheduling shipping when there is
+        nothing to ship — typically meta-tracker tickets whose work already
+        landed via sibling PRs. Manual ``schedule_shipping()`` callers are not
+        gated.
+        """
+        worktree_model = apps.get_model("core", "Worktree")
+        return any(_worktree_has_commits_ahead(wt) for wt in worktree_model.objects.filter(ticket=self))
 
     def schedule_coding(self, *, parent_task: "Task | None" = None) -> "Task":
         """Create a fresh headless coding task after scoping completes."""
@@ -334,3 +360,27 @@ class Ticket(models.Model):
 
     def _extra(self) -> "TicketExtra":
         return cast("TicketExtra", self.extra or {})
+
+
+def _worktree_has_commits_ahead(worktree: "Worktree") -> bool:
+    repo_path = (worktree.extra or {}).get("worktree_path") or worktree.repo_path
+    branch = worktree.branch
+    if not repo_path or not branch:
+        return False
+    base = _resolve_base_branch(repo_path)
+    try:
+        return git.rev_count(repo=repo_path, range_spec=f"{base}..{branch}") > 0
+    except (CommandFailedError, ValueError, OSError):
+        # Missing path, missing branch, missing git remote — all mean no
+        # shippable diff. Fail closed so the auto-FSM stops at REVIEWED.
+        return False
+
+
+def _resolve_base_branch(repo_path: str) -> str:
+    try:
+        return f"origin/{git.default_branch(repo_path)}"
+    except (CommandFailedError, RuntimeError):
+        # No origin remote (fresh clones, tests under tmp_path) — fall back to
+        # the local default. ``RuntimeError`` covers ``default_branch``'s own
+        # "could not detect" path.
+        return "main"

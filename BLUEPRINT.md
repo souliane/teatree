@@ -165,7 +165,7 @@ The central entity. One ticket per unit of work (maps to an issue/task in the tr
 | `start()` | scoped → started | Enqueues `execute_provision` worker. Worker runs `WorktreeProvisioner` and calls `schedule_coding()` on success. |
 | `code()` | started → coded | Calls `schedule_testing()` |
 | `test(passed=True)` | coded → tested | Stores `tests_passed` in extra; calls `schedule_review()` |
-| `review()` | tested → reviewed | Condition: reviewing task completed. Calls `schedule_shipping()` |
+| `review()` | tested → reviewed | Condition: reviewing task completed. Calls `schedule_shipping()` only if `has_shippable_diff()` returns True (otherwise stamps `extra["shipping_skipped"]` for triage — guards meta-tickets from spurious shipping tasks). |
 | `ship()` | reviewed → shipped | Enqueues `execute_ship` worker. Worker runs `ShipExecutor` and calls `request_review()` on success. |
 | `request_review()` | shipped → in_review | — |
 | `mark_merged()` | in_review → merged | Enqueues `execute_teardown` worker. Worker runs `WorktreeTeardown` (best-effort cleanup of git worktrees, branches, per-worktree DBs, overlay hooks). Errors do NOT block the FSM — `retrospect()` can advance the ticket regardless. |
@@ -180,9 +180,11 @@ The central entity. One ticket per unit of work (maps to an issue/task in the tr
 - `start()` → enqueues provision → on success → headless coding task
 - `code()` → headless testing task
 - `test()` → headless reviewing task
-- `review()` → shipping task (execution target gated by `T3_AUTO_SHIP`)
+- `review()` → shipping task (execution target gated by `T3_AUTO_SHIP`), gated on `has_shippable_diff()`
 
 `schedule_shipping()` defaults to `ExecutionTarget.INTERACTIVE` so the user must explicitly approve the push. Set `T3_AUTO_SHIP=true` in the environment to make shipping headless.
+
+`Ticket.has_shippable_diff()` returns True iff at least one `Worktree` has commits ahead of its base branch (resolved via `origin/<default>` or local `main` fallback). When False, `review()` advances state but skips `schedule_shipping()` — typical for meta-tracker tickets whose work shipped via sibling PRs. Manual `schedule_shipping()` callers (CLI, dashboard, tests) remain permissive and bypass the gate.
 
 **`extra` structure:**
 
