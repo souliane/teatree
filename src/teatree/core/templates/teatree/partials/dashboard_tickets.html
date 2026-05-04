@@ -150,7 +150,7 @@
                     hx-post="/tickets/{{ ticket.ticket_id }}/create-task/"
                     hx-vals='{"target": "interactive", "reason": "Address {{ mr.needs_reply_count }} review comment(s) on !{{ mr.iid }}"}'
                     hx-swap="none"
-                    hx-on::before-request="event.detail.requestConfig.parameters['terminal_mode'] = localStorage.getItem('teatree_terminal_mode') || 'new-window'; event.detail.requestConfig.parameters['terminal_app'] = localStorage.getItem('teatree_terminal_app') || ''"
+                    hx-on::before-request="event.detail.requestConfig.parameters['terminal_mode'] = localStorage.getItem('teatree_terminal_mode') || 'new-tab'; event.detail.requestConfig.parameters['terminal_app'] = localStorage.getItem('teatree_terminal_app') || ''"
                     hx-on::after-request="handleActionResponse(event)"
                     hx-disable-elt="this"
                     hx-confirm="Open interactive session to address {{ mr.needs_reply_count }} review comment(s)?"
@@ -229,7 +229,7 @@
                       hx-post="/tickets/{{ ticket.ticket_id }}/create-task/"
                       hx-vals='{"target": "interactive"}'
                       hx-swap="none"
-                      hx-on::before-request="event.detail.requestConfig.parameters['terminal_mode'] = localStorage.getItem('teatree_terminal_mode') || 'new-window'; event.detail.requestConfig.parameters['terminal_app'] = localStorage.getItem('teatree_terminal_app') || ''"
+                      hx-on::before-request="event.detail.requestConfig.parameters['terminal_mode'] = localStorage.getItem('teatree_terminal_mode') || 'new-tab'; event.detail.requestConfig.parameters['terminal_app'] = localStorage.getItem('teatree_terminal_app') || ''"
                       hx-on::after-request="handleActionResponse(event)"
                       hx-disable-elt="this"
                       hx-confirm="Start interactive session for ticket #{{ ticket.display_id }}?"
@@ -329,7 +329,7 @@
                     hx-post="/tickets/{{ ticket.ticket_id }}/create-task/"
                     hx-vals='{"target": "interactive"}'
                     hx-swap="none"
-                    hx-on::before-request="event.detail.requestConfig.parameters['terminal_mode'] = localStorage.getItem('teatree_terminal_mode') || 'new-window'; event.detail.requestConfig.parameters['terminal_app'] = localStorage.getItem('teatree_terminal_app') || ''"
+                    hx-on::before-request="event.detail.requestConfig.parameters['terminal_mode'] = localStorage.getItem('teatree_terminal_mode') || 'new-tab'; event.detail.requestConfig.parameters['terminal_app'] = localStorage.getItem('teatree_terminal_app') || ''"
                     hx-on::after-request="handleActionResponse(event)"
                     hx-disable-elt="this"
                     hx-confirm="Start interactive session for ticket #{{ ticket.display_id }}?"
