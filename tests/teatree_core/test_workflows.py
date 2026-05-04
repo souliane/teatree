@@ -369,6 +369,10 @@ class TestOverlayFiltering(TestCase):
 
 
 class TestTaskWorkflow(TestCase):
+    @pytest.fixture(autouse=True)
+    def _inject_tmp_path(self, tmp_path: Path) -> None:
+        self._tmp_path = tmp_path
+
     @override_settings(**WORKFLOW_SETTINGS)
     def test_claim_work_complete_advances_ticket(self) -> None:
         """Test the full task lifecycle: create -> claim -> complete -> ticket advances."""
@@ -384,6 +388,23 @@ class TestTaskWorkflow(TestCase):
         ticket.test(passed=True)
         ticket.save()
         assert ticket.state == Ticket.State.TESTED
+
+        repo_dir = self._tmp_path / "backend"
+        repo_dir.mkdir(parents=True)
+        env = {
+            "GIT_AUTHOR_NAME": "t",
+            "GIT_AUTHOR_EMAIL": "t@t",
+            "GIT_COMMITTER_NAME": "t",
+            "GIT_COMMITTER_EMAIL": "t@t",
+        }
+        for cmd in (
+            ["git", "init", "--initial-branch=main"],
+            ["git", "commit", "--allow-empty", "-m", "seed"],
+            ["git", "checkout", "-b", "feature/99"],
+            ["git", "commit", "--allow-empty", "-m", "feature work"],
+        ):
+            subprocess.run(cmd, cwd=repo_dir, check=True, env=env, capture_output=True)
+        Worktree.objects.create(ticket=ticket, repo_path=str(repo_dir), branch="feature/99")
 
         # start()/code()/test() each auto-schedule a task; the worker picks them
         # up FIFO. Drain the coding + testing tasks (the "work" already happened
