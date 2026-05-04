@@ -367,6 +367,102 @@ class TestPhaseAutoDispatch(TestCase):
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.SHIPPED
 
+    def test_direct_ship_consumes_pending_shipping_task(self) -> None:
+        """Regression #471: direct ship() must consume the pending shipping task.
+
+        When ``pr.py`` calls ``ticket.ship()`` directly the auto-scheduled
+        PENDING shipping task would otherwise be claimed by the dispatcher
+        as a zombie session after the work is already done.
+        """
+        from unittest.mock import MagicMock  # noqa: PLC0415
+
+        from teatree.core import tasks as tasks_mod  # noqa: PLC0415
+
+        ticket = Ticket.objects.create()
+        _advance_ticket_to_tested(ticket)
+        _complete_phase_task(ticket, "reviewing")
+        ticket.refresh_from_db()
+        # review() scheduled an interactive shipping task that is still PENDING
+        shipping_task = ticket.tasks.get(phase="shipping")
+        assert shipping_task.status == Task.Status.PENDING
+
+        with (
+            self.captureOnCommitCallbacks(execute=True),
+            patch.object(tasks_mod, "execute_ship", MagicMock()),
+        ):
+            ticket.ship()
+            ticket.save()
+
+        shipping_task.refresh_from_db()
+        assert shipping_task.status == Task.Status.COMPLETED
+
+    def test_direct_ship_consumes_claimed_shipping_task(self) -> None:
+        """Orphan task already CLAIMED by a dispatcher race must still be consumed.
+
+        The dispatcher may have polled and claimed the shipping task between
+        the user invoking the manual ship and the FSM transition firing.
+        """
+        from unittest.mock import MagicMock  # noqa: PLC0415
+
+        from teatree.core import tasks as tasks_mod  # noqa: PLC0415
+
+        ticket = Ticket.objects.create()
+        _advance_ticket_to_tested(ticket)
+        _complete_phase_task(ticket, "reviewing")
+        ticket.refresh_from_db()
+        shipping_task = ticket.tasks.get(phase="shipping")
+        shipping_task.claim(claimed_by="zombie-dispatcher")
+
+        with (
+            self.captureOnCommitCallbacks(execute=True),
+            patch.object(tasks_mod, "execute_ship", MagicMock()),
+        ):
+            ticket.ship()
+            ticket.save()
+
+        shipping_task.refresh_from_db()
+        assert shipping_task.status == Task.Status.COMPLETED
+
+    def test_direct_review_consumes_pending_reviewing_task(self) -> None:
+        """Same regression for ``ticket.review()`` and the reviewing task."""
+        ticket = Ticket.objects.create()
+        _advance_ticket_to_tested(ticket)
+        # test() scheduled a PENDING reviewing task. We satisfy the FSM guard
+        # by also marking that task COMPLETED before review() — but the bug
+        # would surface if a second reviewing task were left pending.
+        first_review = ticket.tasks.get(phase="reviewing")
+        first_review.claim(claimed_by="t")
+        first_review.complete()
+        # A second reviewing task could exist (e.g. retry); simulate one.
+        ticket.refresh_from_db()
+        ticket.state = Ticket.State.TESTED
+        ticket.save(update_fields=["state"])
+        zombie = ticket.schedule_review()
+        assert zombie.status == Task.Status.PENDING
+
+        ticket.review()
+        ticket.save()
+
+        zombie.refresh_from_db()
+        assert zombie.status == Task.Status.COMPLETED
+
+    def test_task_driven_path_unaffected(self) -> None:
+        """Task-completion path stays a single-shipping-task chain.
+
+        ``Task.complete()`` marks the task COMPLETED before
+        ``_advance_ticket()`` fires the transition, so the consume call is a
+        no-op (zero-row UPDATE). Verify no duplicate task is created.
+        """
+        ticket = Ticket.objects.create()
+        _advance_ticket_to_tested(ticket)
+        _complete_phase_task(ticket, "reviewing")
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.REVIEWED
+        shipping_tasks = list(ticket.tasks.filter(phase="shipping"))
+        assert len(shipping_tasks) == 1
+        assert shipping_tasks[0].status == Task.Status.PENDING
+
     def test_start_enqueues_execute_provision_after_commit(self) -> None:
         """Stage 3 of #140: start() body offloads provisioning to a @task worker."""
         from unittest.mock import MagicMock  # noqa: PLC0415
