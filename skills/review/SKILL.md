@@ -49,6 +49,15 @@ Both self-review and external review cycles.
 git diff --merge-base main
 ```
 
+**Precondition — branch must be current with main.** If main has advanced since the branch's merge-base, the diff will surface those new commits as phantom "reversions" — code the author looks like they deleted but actually never had. Reviewing on top of a stale branch produces spurious scope-creep findings AND can let real silent-revert PRs through.
+
+```bash
+git fetch origin main --quiet
+git merge-base --is-ancestor origin/main HEAD || git merge origin/main --no-edit
+```
+
+Run this **before** the cleanup checklist. Resolve any conflicts the same way you would on a normal merge — no rebase, no stash.
+
 Cleanup checklist:
 
 - [ ] No code duplication introduced
