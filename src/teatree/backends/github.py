@@ -3,6 +3,7 @@
 import json
 from dataclasses import dataclass
 from typing import TypedDict, cast
+from urllib.parse import quote_plus
 
 from teatree.backends.protocols import PullRequestSpec
 from teatree.core.sync import RawAPIDict
@@ -215,6 +216,16 @@ class GitHubCodeHost:
             "list[dict[str, object]]",
             [pr for pr in data if isinstance(pr, dict) and pr.get("user", {}).get("login") == author],  # type: ignore[union-attr]
         )
+
+    def list_my_open_prs(self, author: str) -> list[RawAPIDict]:
+        query = quote_plus(f"is:pr is:open author:{author}")
+        data = _gh_api_get(f"search/issues?q={query}&per_page=100", token=self._token)
+        if not isinstance(data, dict):
+            return []
+        items = cast("RawAPIDict", data).get("items")
+        if not isinstance(items, list):
+            return []
+        return cast("list[RawAPIDict]", items)
 
     def post_mr_note(self, *, repo: str, mr_iid: int, body: str) -> dict[str, object]:
         data = _gh_api_post(

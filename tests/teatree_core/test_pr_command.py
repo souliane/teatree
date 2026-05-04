@@ -91,6 +91,28 @@ class TestPrCreateThinWrapper(TestCase):
         assert result["title"] == "feat: x"
         assert result["branch"] == "feature-branch"
 
+    def test_resolves_ticket_by_issue_url(self) -> None:
+        # Calling `pr create` with the issue URL (or trailing issue number)
+        # resolves to the ticket by issue_url so users don't have to look up
+        # the internal DB pk first.
+        ticket = _shippable_ticket()
+        ticket.issue_url = "https://github.com/souliane/teatree/issues/466"
+        ticket.save(update_fields=["issue_url"])
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch.object(pr_command, "_run_visual_qa_gate", return_value=None),
+            patch.object(pr_command, "_validate_mr_metadata", return_value=None),
+        ):
+            result = cast(
+                "dict[str, object]",
+                call_command("pr", "create", "https://github.com/souliane/teatree/issues/466"),
+            )
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.SHIPPED
+        assert result["ticket_id"] == ticket.pk
+
     def test_blocked_when_visual_qa_fails(self) -> None:
         ticket = _shippable_ticket()
         failure = pr_command.VisualQAGateFailure(
@@ -267,6 +289,82 @@ class TestPostEvidence(TestCase):
             result = call_command("pr", "post-evidence", "10")
 
         assert "error" in result
+
+
+class TestSweep(TestCase):
+    """``pr sweep`` lists all of the user's open PRs across the forge (#466)."""
+
+    @pytest.fixture(autouse=True)
+    def _inject_fixtures(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._monkeypatch = monkeypatch
+
+    def test_returns_open_prs_for_authenticated_user(self) -> None:
+        from teatree.core.overlay import OverlayConfig  # noqa: PLC0415
+
+        host = MagicMock()
+        host.list_my_open_prs.return_value = [
+            {
+                "iid": 1,
+                "title": "feat: x",
+                "web_url": "https://gitlab.com/org/repo/-/merge_requests/1",
+                "source_branch": "feat-x",
+                "target_branch": "main",
+            },
+            {
+                "iid": 2,
+                "title": "fix: y",
+                "web_url": "https://gitlab.com/org/other/-/merge_requests/2",
+                "source_branch": "fix-y",
+                "target_branch": "develop",
+            },
+        ]
+        self._monkeypatch.setattr(pr_command, "code_host_from_overlay", lambda: host)
+        overlay = CommandOverlay()
+        # Per-instance config so we don't mutate the class-level default shared by other tests.
+        overlay.config = OverlayConfig()
+        overlay.config.get_gitlab_username = lambda: "adrien"  # type: ignore[method-assign]
+
+        with patch("teatree.core.overlay_loader._discover_overlays", return_value={"test": overlay}):
+            result = cast("dict[str, object]", call_command("pr", "sweep"))
+
+        assert result["author"] == "adrien"
+        assert result["count"] == 2
+        prs = cast("list[dict[str, object]]", result["prs"])
+        assert prs[0]["target_branch"] == "main"
+        assert prs[1]["target_branch"] == "develop"
+        host.list_my_open_prs.assert_called_once_with("adrien")
+
+    def test_falls_back_to_current_user_when_no_username_configured(self) -> None:
+        host = MagicMock()
+        host.current_user.return_value = "souliane"
+        host.list_my_open_prs.return_value = []
+        self._monkeypatch.setattr(pr_command, "code_host_from_overlay", lambda: host)
+
+        with patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY):
+            result = cast("dict[str, object]", call_command("pr", "sweep"))
+
+        assert result["author"] == "souliane"
+        assert result["count"] == 0
+        host.list_my_open_prs.assert_called_once_with("souliane")
+
+    def test_returns_error_when_no_code_host_configured(self) -> None:
+        self._monkeypatch.setattr(pr_command, "code_host_from_overlay", lambda: None)
+
+        with patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY):
+            result = cast("dict[str, object]", call_command("pr", "sweep"))
+
+        assert "error" in result
+
+    def test_returns_error_when_username_unresolved(self) -> None:
+        host = MagicMock()
+        host.current_user.return_value = ""
+        self._monkeypatch.setattr(pr_command, "code_host_from_overlay", lambda: host)
+
+        with patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY):
+            result = cast("dict[str, object]", call_command("pr", "sweep"))
+
+        assert "error" in result
+        host.list_my_open_prs.assert_not_called()
 
 
 class TestCheckShippingGate(TestCase):

@@ -37,6 +37,8 @@ class CodeHost(Protocol):
 
     def list_open_prs(self, repo: str, author: str) -> list[RawAPIDict]: ...  # pragma: no branch
 
+    def list_my_open_prs(self, author: str) -> list[RawAPIDict]: ...  # pragma: no branch
+
     def post_mr_note(self, *, repo: str, mr_iid: int, body: str) -> RawAPIDict: ...  # pragma: no branch
 
     def update_mr_note(
