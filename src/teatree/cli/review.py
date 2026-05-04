@@ -152,6 +152,37 @@ class ReviewService:
             return f"OK resolved={resolved}", 0
         return f"Failed: HTTP {response.status_code}", 1
 
+    def update_note(self, repo: str, mr: int, note_id: int, body: str) -> tuple[str, int]:
+        """Update a note (draft or published) on an MR. Returns (message, exit_code).
+
+        Tries the draft-notes endpoint first; on 404 falls back to the published-notes
+        endpoint. The two endpoints use different payload keys (``note`` vs ``body``).
+        """
+        api = self._get_api()
+        encoded = repo.replace("/", "%2F")
+        headers = {"PRIVATE-TOKEN": self.token}
+
+        draft_response = httpx.put(
+            f"{api.base_url}/projects/{encoded}/merge_requests/{mr}/draft_notes/{note_id}",
+            headers=headers,
+            json={"note": body},
+            timeout=10.0,
+        )
+        if draft_response.status_code == HTTPStatus.OK:
+            return f"OK updated draft_note_id={note_id}", 0
+        if draft_response.status_code != HTTPStatus.NOT_FOUND:
+            return f"Failed (draft): HTTP {draft_response.status_code}", 1
+
+        published_response = httpx.put(
+            f"{api.base_url}/projects/{encoded}/merge_requests/{mr}/notes/{note_id}",
+            headers=headers,
+            json={"body": body},
+            timeout=10.0,
+        )
+        if published_response.status_code == HTTPStatus.OK:
+            return f"OK updated note_id={note_id}", 0
+        return f"Failed: HTTP {published_response.status_code}", 1
+
     def list_draft_notes(self, repo: str, mr: int) -> tuple[str, int]:
         """List draft notes. Returns (message, exit_code)."""
         api = self._get_api()
@@ -247,6 +278,21 @@ def reply_to_discussion(
     """Reply to a GitLab MR discussion thread (immediate, not draft)."""
     service = _require_token()
     msg, code = service.reply_to_discussion(repo, mr, discussion_id, body)
+    typer.echo(msg)
+    if code:
+        raise typer.Exit(code=code)
+
+
+@review_app.command(name="update-note")
+def update_note(
+    repo: str = typer.Argument(help="GitLab project path (e.g., my-org/my-repo)"),
+    mr: int = typer.Argument(help="Merge request IID"),
+    note_id: int = typer.Argument(help="Note ID (draft or published)"),
+    body: str = typer.Argument(help="New comment body (markdown)"),
+) -> None:
+    """Update a note on a GitLab MR — auto-detects draft vs published."""
+    service = _require_token()
+    msg, code = service.update_note(repo, mr, note_id, body)
     typer.echo(msg)
     if code:
         raise typer.Exit(code=code)

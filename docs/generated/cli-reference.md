@@ -362,6 +362,8 @@ Usage: t3 review [OPTIONS] COMMAND [ARGS]...
 │ list-draft-notes     List draft notes on a GitLab MR.                        │
 │ reply-to-discussion  Reply to a GitLab MR discussion thread (immediate, not  │
 │                      draft).                                                 │
+│ update-note          Update a note on a GitLab MR — auto-detects draft vs    │
+│                      published.                                              │
 │ resolve-discussion   Mark a GitLab MR discussion thread resolved or          │
 │                      unresolved.                                             │
 ╰──────────────────────────────────────────────────────────────────────────────╯
@@ -451,6 +453,25 @@ Usage: t3 review reply-to-discussion [OPTIONS] REPO MR DISCUSSION_ID BODY
 │ *    mr                 INTEGER  Merge request IID [required]                │
 │ *    discussion_id      TEXT     Discussion (thread) ID [required]           │
 │ *    body               TEXT     Reply body (markdown) [required]            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 review update-note`
+
+```
+Usage: t3 review update-note [OPTIONS] REPO MR NOTE_ID BODY
+
+ Update a note on a GitLab MR — auto-detects draft vs published.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    repo         TEXT     GitLab project path (e.g., my-org/my-repo)        │
+│                            [required]                                        │
+│ *    mr           INTEGER  Merge request IID [required]                      │
+│ *    note_id      INTEGER  Note ID (draft or published) [required]           │
+│ *    body         TEXT     New comment body (markdown) [required]            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
