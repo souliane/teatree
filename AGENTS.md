@@ -167,7 +167,7 @@ Current implementations: `GitHubSyncBackend` (`backends/github_sync.py`), `GitLa
 ```python
 TEATREE_HEADLESS_RUNTIME = "claude-code"     # Runtime for headless tasks
 TEATREE_INTERACTIVE_RUNTIME = "codex"        # Runtime for interactive tasks
-TEATREE_TERMINAL_MODE = "same-terminal"      # Terminal strategy
+TEATREE_TERMINAL_MODE = "new-tab"            # Terminal strategy: new-tab | new-window | ttyd
 TEATREE_HEADLESS_USE_CLI = True              # Use `claude -p` instead of Anthropic API
 ```
 
@@ -175,12 +175,18 @@ TEATREE_HEADLESS_USE_CLI = True              # Use `claude -p` instead of Anthro
 
 ### Interactive Sessions (web_terminal.py)
 
-Interactive tasks launch via ttyd — a web-based terminal that wraps `claude`. This is the only interactive mode.
+Interactive tasks launch through one of three strategies, picked by `TEATREE_TERMINAL_MODE` (or the per-task `terminal_mode` parameter):
 
-- ttyd must be installed (`brew install ttyd`)
-- ttyd must be spawned with `--writable` (read-only otherwise)
-- Dashboard Launch button → POST `/tasks/<id>/launch/` → returns `{"launch_url": "..."}` → JS opens in new tab
-- Command: `claude --append-system-prompt <context>` (no `-p`, interactive mode)
+| Mode | Behavior | Survives server restart? |
+|------|----------|--------------------------|
+| `new-tab` (default) | Opens a tab in the existing terminal app (iTerm via AppleScript; Terminal.app via System Events keystroke). Linux falls back to a new window. | Yes |
+| `new-window` | Spawns a fresh native terminal window via `osascript` / terminal-emulator IPC. | Yes |
+| `ttyd` | Spawns a `ttyd` process and returns a browser URL. Registered with the in-memory process registry, so it is killed on server shutdown. | No |
+
+- Dashboard Launch button → POST `/tasks/<id>/launch/` → native modes return `{"pid": ...}` and the OS terminal opens; ttyd mode returns `{"launch_url": "..."}` and JS opens it in a new tab.
+- Command: `claude --append-system-prompt <context>` (no `-p`, interactive mode).
+- ttyd-only requirements: must be installed (`brew install ttyd`) and spawned with `--writable`.
+- Terminal.app `new-tab` requires Accessibility permission for the host process (System Events keystroke).
 - **Session resume:** When a parent headless task carried a `session_id` (via `Session.agent_id`), the interactive session resumes it with `claude --resume <session_id>` — preserving full context from the headless run.
 
 ### Headless Sessions (headless.py)

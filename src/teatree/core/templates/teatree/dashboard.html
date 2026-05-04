@@ -652,12 +652,12 @@
       <div class="ml-auto flex items-center gap-3">
         <div id="sync-status"></div>
         <!-- Hidden selectors for HTMX parameter injection -->
-        <select id="terminal-mode-selector" class="hidden"><option value="new-window">New window</option><option value="ttyd">ttyd</option></select>
+        <select id="terminal-mode-selector" class="hidden"><option value="new-tab">New tab</option><option value="new-window">New window</option><option value="ttyd">ttyd</option></select>
         <select id="terminal-app-selector" class="hidden"><option value="">Default</option><option value="iterm2">iTerm2</option><option value="terminal">Terminal.app</option><option value="kitty">Kitty</option><option value="alacritty">Alacritty</option><option value="wezterm">WezTerm</option></select>
         <script>
         (function() {
           var modeSel = document.getElementById('terminal-mode-selector');
-          var savedMode = localStorage.getItem('teatree_terminal_mode') || 'new-window';
+          var savedMode = localStorage.getItem('teatree_terminal_mode') || 'new-tab';
           if (modeSel) modeSel.value = savedMode;
           var appSel = document.getElementById('terminal-app-selector');
           var savedApp = localStorage.getItem('teatree_terminal_app') || '';
@@ -665,7 +665,7 @@
           // Mark active buttons in all split-menus
           document.querySelectorAll('.split-menu [data-key]').forEach(function(btn) {
             var stored = localStorage.getItem(btn.dataset.key);
-            if (stored == null && btn.dataset.key === 'teatree_terminal_mode') stored = 'new-window';
+            if (stored == null && btn.dataset.key === 'teatree_terminal_mode') stored = 'new-tab';
             btn.classList.toggle('active', btn.dataset.value === stored);
           });
         })();
@@ -675,7 +675,7 @@
             class="pill-btn pill-xs split-main border border-clay/30 bg-clay/10 uppercase tracking-[0.18em] text-clay hover:bg-clay/20"
             hx-post="{% url 'teatree:launch-terminal' %}"
             hx-swap="none"
-            hx-on::before-request="event.detail.requestConfig.parameters['terminal_mode'] = localStorage.getItem('teatree_terminal_mode') || 'new-window'; event.detail.requestConfig.parameters['terminal_app'] = localStorage.getItem('teatree_terminal_app') || ''"
+            hx-on::before-request="event.detail.requestConfig.parameters['terminal_mode'] = localStorage.getItem('teatree_terminal_mode') || 'new-tab'; event.detail.requestConfig.parameters['terminal_app'] = localStorage.getItem('teatree_terminal_app') || ''"
             hx-on::after-request="handleActionResponse(event)"
           >Terminal</button>
           <button type="button" class="pill-btn pill-xs split-arrow border border-clay/30 bg-clay/10 text-clay hover:bg-clay/20" onclick="toggleSplitMenu(this)">&#9662;</button>
@@ -686,7 +686,7 @@
             class="pill-btn pill-xs split-main border border-moss/30 bg-moss/10 uppercase tracking-[0.18em] text-moss hover:bg-moss/20"
             hx-post="{% url 'teatree:launch-interactive-agent' %}"
             hx-swap="none"
-            hx-on::before-request="event.detail.requestConfig.parameters['terminal_mode'] = localStorage.getItem('teatree_terminal_mode') || 'new-window'; event.detail.requestConfig.parameters['terminal_app'] = localStorage.getItem('teatree_terminal_app') || ''"
+            hx-on::before-request="event.detail.requestConfig.parameters['terminal_mode'] = localStorage.getItem('teatree_terminal_mode') || 'new-tab'; event.detail.requestConfig.parameters['terminal_app'] = localStorage.getItem('teatree_terminal_app') || ''"
             hx-on::after-request="handleActionResponse(event)"
           >Agent</button>
           <button type="button" class="pill-btn pill-xs split-arrow border border-moss/30 bg-moss/10 text-moss hover:bg-moss/20" onclick="toggleSplitMenu(this)">&#9662;</button>
@@ -868,7 +868,7 @@
   <script>
     // Mark active split-menu options on load (runs after all DOM is ready)
     document.querySelectorAll('.split-menu [data-key]').forEach(function(b) {
-      var current = localStorage.getItem(b.dataset.key) || (b.dataset.key === 'teatree_terminal_mode' ? 'new-window' : '');
+      var current = localStorage.getItem(b.dataset.key) || (b.dataset.key === 'teatree_terminal_mode' ? 'new-tab' : '');
       b.classList.toggle('active', b.dataset.value === current);
     });
   </script>

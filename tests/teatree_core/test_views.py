@@ -1233,3 +1233,33 @@ class TestSwitchBranchView(TestCase):
 
         assert response.status_code == 500
         assert "timed out" in response.json()["error"]
+
+    def test_post_branch_in_worktree_returns_409_with_path(self) -> None:
+        worktree_listing = (
+            "worktree /Users/adrien/workspace/souliane/teatree\n"
+            "HEAD aaaa\n"
+            "branch refs/heads/main\n"
+            "\n"
+            "worktree /Users/adrien/workspace/ac-teatree-474-ticket/teatree\n"
+            "HEAD bbbb\n"
+            "branch refs/heads/ac-teatree-474-ticket\n"
+        )
+        worktree_result = subprocess_mod.CompletedProcess([], 0, worktree_listing, "")
+        with (
+            patch.object(actions_views, "_get_t3_repo", return_value=self.tmp_path),
+            patch("teatree.utils.run.subprocess") as mock_subprocess,
+        ):
+            mock_subprocess.run.return_value = worktree_result
+            mock_subprocess.TimeoutExpired = subprocess_mod.TimeoutExpired
+            response = Client().post(
+                reverse("teatree:dashboard-switch-branch"),
+                {"branch": "ac-teatree-474-ticket"},
+            )
+
+        assert response.status_code == 409
+        data = response.json()
+        assert "/Users/adrien/workspace/ac-teatree-474-ticket/teatree" in data["error"]
+        assert data["worktree_path"] == "/Users/adrien/workspace/ac-teatree-474-ticket/teatree"
+        # `git checkout` must NOT have been attempted — only `git worktree list`.
+        called_argvs = [call.args[0] for call in mock_subprocess.run.call_args_list]
+        assert all("checkout" not in argv for argv in called_argvs)

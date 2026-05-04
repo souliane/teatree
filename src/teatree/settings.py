@@ -93,7 +93,7 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 LOGGING = default_logging("teatree")
 
 # Framework-level config (not overlay-specific)
-TEATREE_TERMINAL_MODE = "same-terminal"
+TEATREE_TERMINAL_MODE = "new-tab"
 
 # Operation timeouts (seconds).  0 = no timeout.
 # Override per-overlay via OverlayBase.get_timeouts() or per-user
