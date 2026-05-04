@@ -111,6 +111,7 @@ class Ticket(models.Model):
 
     @transition(field=state, source=State.STARTED, target=State.CODED)
     def code(self) -> None:
+        self._consume_pending_phase_tasks("coding")
         self.schedule_testing()
 
     @transition(field=state, source=State.CODED, target=State.TESTED)
@@ -118,6 +119,7 @@ class Ticket(models.Model):
         extra = self._extra()
         extra["tests_passed"] = passed
         self.extra = extra
+        self._consume_pending_phase_tasks("testing")
         self.schedule_review()
 
     @transition(
@@ -127,6 +129,7 @@ class Ticket(models.Model):
         conditions=[lambda t: t.tasks.filter(phase="reviewing", status="completed").exists()],
     )
     def review(self) -> None:
+        self._consume_pending_phase_tasks("reviewing")
         self.schedule_shipping()
 
     def schedule_coding(self, *, parent_task: "Task | None" = None) -> "Task":
@@ -229,6 +232,7 @@ class Ticket(models.Model):
         """
         from teatree.core.tasks import execute_ship  # noqa: PLC0415
 
+        self._consume_pending_phase_tasks("shipping")
         ticket_pk = int(self.pk)
         transaction.on_commit(lambda: execute_ship.enqueue(ticket_pk))
 
@@ -331,6 +335,30 @@ class Ticket(models.Model):
 
         for task in self.tasks.filter(status__in=[Task.Status.PENDING, Task.Status.CLAIMED]):  # type: ignore[attr-defined]  # Django reverse FK
             task.fail()
+
+    def _consume_pending_phase_tasks(self, phase: str) -> None:
+        """Mark non-terminal tasks for ``phase`` as COMPLETED.
+
+        FSM transitions advance ticket state via two paths: the task-driven
+        chain (``Task.complete()`` → ``_advance_ticket()`` → transition body),
+        and direct CLI/API calls (e.g. ``pr.py`` calling ``ticket.ship()``).
+        On the task-driven path the task is already COMPLETED before this runs
+        — the filter is empty and this is a no-op. On the direct path the
+        previously-scheduled phase task is orphaned in PENDING/CLAIMED and
+        would be picked up later as a zombie session; consume it now.
+        """
+        from teatree.core.models.task import Task  # noqa: PLC0415
+
+        self.tasks.filter(  # type: ignore[attr-defined]  # Django reverse FK
+            phase=phase,
+            status__in=[Task.Status.PENDING, Task.Status.CLAIMED],
+        ).update(
+            status=Task.Status.COMPLETED,
+            claimed_at=None,
+            claimed_by="",
+            lease_expires_at=None,
+            heartbeat_at=None,
+        )
 
     def _extra(self) -> "TicketExtra":
         return cast("TicketExtra", self.extra or {})
