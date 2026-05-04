@@ -69,7 +69,7 @@ class WorktreeProvisionRunner(RunnerBase):
         wt_path = (worktree.extra or {}).get("worktree_path", "")
         _setup_worktree_dir(wt_path, worktree, overlay)
 
-        if overlay.get_db_import_strategy(worktree) is not None:
+        if worktree.db_name and overlay.get_db_import_strategy(worktree) is not None:
             self._run_db_import()
 
         report = run_provision_steps(overlay.get_provision_steps(worktree))
