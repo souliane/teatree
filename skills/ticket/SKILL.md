@@ -53,6 +53,18 @@ From zero to ready-to-code. Combines understanding the ticket with setting up th
 - For referenced external context (Notion, Slack, etc.): use CLI tools when available, MCP only for services without a CLI.
 - **Deep-fetch linked pages:** When external context (Notion, Confluence, etc.) contains links to sub-pages, automatically fetch those too — including their discussions/comments. Don't wait for the user to ask. Enable `include_discussions: true` when fetching Notion pages to surface resolved discussions that clarify requirements.
 
+### 1b. Check For Resolved-But-Open Issues
+
+Before treating the issue as work to do, check whether a merged PR/MR has already shipped it. Squash-merges that name the issue as `(#N)` rather than `Closes #N` leave the issue `OPEN` even though the work is done — the pipeline will keep scheduling phases against it.
+
+```bash
+gh pr list --repo <owner>/<repo> --search "in:title #<issue-number>" --state merged --json number,title,mergedAt
+# or for GitLab:
+glab mr list --search "#<issue-number>" --state merged
+```
+
+If a merged PR references this issue and its body claims the work is complete, **stop and confirm with the user** before continuing. If the user agrees the work is done, close the issue with a comment pointing to the merged PR — do not start a redundant scoping/implementation pass.
+
 ### 2. State Acceptance Criteria
 
 - Extract and list acceptance criteria before coding.
