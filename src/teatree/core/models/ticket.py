@@ -5,18 +5,24 @@ from typing import TYPE_CHECKING, ClassVar, cast
 from django.db import models, transaction
 from django_fsm import FSMField, TransitionNotAllowed, transition
 
+from teatree.config import Mode, get_effective_settings
 from teatree.core.managers import TicketManager
 from teatree.utils import redis_container
 
 
 def _auto_ship_enabled() -> bool:
-    """Return True when ``T3_AUTO_SHIP`` opts into headless shipping.
+    """Return True when shipping should run headlessly without user approval.
 
-    Default is ``False`` — shipping tasks land in the interactive queue so the
-    user must approve the push explicitly. Set ``T3_AUTO_SHIP=true`` in
-    ``~/.teatree`` to allow headless shipping.
+    Two opt-ins, in order: ``teatree.mode = "auto"`` (or ``T3_MODE=auto``)
+    is the user's blanket autonomy switch and covers publishing actions
+    including the ship task; ``T3_AUTO_SHIP=true`` is the legacy
+    per-action override, still honored so users who haven't moved to
+    global auto mode keep the same behavior. Default is interactive —
+    shipping waits for explicit approval.
     """
-    return os.environ.get("T3_AUTO_SHIP", "").lower() == "true"
+    if os.environ.get("T3_AUTO_SHIP", "").lower() == "true":
+        return True
+    return get_effective_settings().mode == Mode.AUTO
 
 
 if TYPE_CHECKING:
@@ -185,17 +191,20 @@ class Ticket(models.Model):
         )
 
     def schedule_shipping(self, *, parent_task: "Task | None" = None) -> "Task":
-        """Create a shipping task. Defaults to interactive; headless when ``T3_AUTO_SHIP=true``."""
+        """Create a shipping task. Headless under auto mode; interactive otherwise."""
         from teatree.core.models.session import Session  # noqa: PLC0415
         from teatree.core.models.task import Task  # noqa: PLC0415
 
         session = Session.objects.create(ticket=self, agent_id="shipping")
         if _auto_ship_enabled():
             target = Task.ExecutionTarget.HEADLESS
-            reason = "Auto-scheduled shipping — T3_AUTO_SHIP=true, push will proceed headlessly"
+            reason = "Auto-scheduled shipping — auto mode, push will proceed headlessly"
         else:
             target = Task.ExecutionTarget.INTERACTIVE
-            reason = "Auto-scheduled shipping — gated for user approval (set T3_AUTO_SHIP=true to skip)"
+            reason = (
+                "Auto-scheduled shipping — gated for user approval "
+                '(set teatree.mode = "auto" or T3_AUTO_SHIP=true to skip)'
+            )
         return Task.objects.create(
             ticket=self,
             session=session,
