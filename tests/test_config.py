@@ -225,6 +225,18 @@ def test_load_config_defaults_when_teatree_section_empty(tmp_path: Path) -> None
     assert config.user.branch_prefix == ""
 
 
+def test_agent_signature_defaults_off(tmp_path: Path) -> None:
+    config_path = tmp_path / ".teatree.toml"
+    _write_toml(config_path, "[teatree]\n")
+    assert load_config(config_path).user.agent_signature is False
+
+
+def test_agent_signature_opt_in(tmp_path: Path) -> None:
+    config_path = tmp_path / ".teatree.toml"
+    _write_toml(config_path, "[teatree]\nagent_signature = true\n")
+    assert load_config(config_path).user.agent_signature is True
+
+
 # ── get_data_dir ──────────────────────────────────────────────────────
 
 
