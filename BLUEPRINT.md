@@ -388,11 +388,13 @@ Runs `claude -p <prompt> --append-system-prompt <context> --output-format json`.
 
 ### 5.3 Interactive Execution (web_terminal.py)
 
-Launches ttyd (browser-based terminal) wrapping `claude --append-system-prompt <context>`.
+Wraps `claude --append-system-prompt <context>` in one of three terminal strategies, selected by `TEATREE_TERMINAL_MODE` (default `new-tab`) or the per-launch `terminal_mode` parameter:
 
-**Requirements:** ttyd must be installed (`brew install ttyd`) and spawned with `--writable`.
+- `new-tab` — opens a tab in the existing terminal app (iTerm AppleScript or Terminal.app `cmd+t` System Events keystroke; Linux falls back to a new window). Survives teatree server restarts.
+- `new-window` — spawns a fresh native terminal window via `osascript` (macOS) or terminal-emulator IPC (Linux). Survives teatree server restarts.
+- `ttyd` — browser-based terminal. Requires `ttyd` installed (`brew install ttyd`) and spawned with `--writable`. Registered with the in-memory process registry, so it is terminated on server shutdown.
 
-**Flow:** POST `/tasks/<id>/launch/` → ttyd process started → returns `{"launch_url": "http://localhost:<port>"}` → dashboard opens in new tab.
+**Flow:** POST `/tasks/<id>/launch/` → native modes return `{"pid": ...}` and the OS terminal opens; ttyd mode returns `{"launch_url": "http://localhost:<port>"}` and the dashboard opens it in a new tab.
 
 ### 5.4 Prompt Building (prompt.py)
 
@@ -906,7 +908,7 @@ privacy = "strict"
 |---------|------|---------|
 | `TEATREE_HEADLESS_RUNTIME` | str | Runtime for headless tasks (default: "claude-code") |
 | `TEATREE_INTERACTIVE_RUNTIME` | str | Runtime for interactive tasks (default: "codex") |
-| `TEATREE_TERMINAL_MODE` | str | Terminal strategy (default: "same-terminal") |
+| `TEATREE_TERMINAL_MODE` | str | Terminal strategy: `new-tab` \| `new-window` \| `ttyd` (default: `"new-tab"`). Native modes survive a teatree server restart; `ttyd` does not. |
 | `TEATREE_SDK_USE_CLI` | bool | Use `claude` binary instead of API (default: True) |
 | `TEATREE_CLAUDE_STATUSLINE_STATE_DIR` | str | Directory for Claude statusline state files |
 | `TEATREE_AGENT_HANDOVER` | list | Agent handover configuration |
