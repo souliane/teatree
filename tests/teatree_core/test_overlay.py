@@ -391,3 +391,17 @@ class TestDefaultHealthChecks(TestCase):
                 checks = overlay.get_health_checks(worktree)
             symlink_check = next(c for c in checks if c.name == "symlink-node_modules")
             assert symlink_check.check() is False
+
+
+class TestReadinessProbes(TestCase):
+    def test_default_overlay_returns_no_probes(self) -> None:
+        """An overlay that doesn't override the extension point makes no claim."""
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/4")
+        worktree = Worktree.objects.create(
+            overlay="test",
+            ticket=ticket,
+            repo_path="backend",
+            branch="feature",
+            db_name="test_db",
+        )
+        assert DummyOverlay().get_readiness_probes(worktree) == []
