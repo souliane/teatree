@@ -20,6 +20,7 @@ from teatree.types import (
 
 if TYPE_CHECKING:
     from teatree.core.models import Worktree
+    from teatree.core.readiness import Probe
 
 # Re-export all types so existing ``from teatree.core.overlay import X`` still works.
 __all__ = [
@@ -351,6 +352,20 @@ class OverlayBase(ABC):
         verify: worktree path exists, symlinks are valid, and DB name is set.
         """
         return _default_health_checks(self, worktree)
+
+    def get_readiness_probes(self, worktree: "Worktree") -> list["Probe"]:
+        """Return runtime readiness probes for a started worktree.
+
+        Health checks (``get_health_checks``) verify post-provision invariants
+        (symlinks, db name set) — they answer "did setup do its job?". Probes
+        verify post-start runtime behaviour — they answer "is the env actually
+        serving?". Overlays declare HTTP endpoints, command checks, and custom
+        probes that an operator can trust as the truth-tellers for ready.
+
+        Default empty: an overlay with no probes makes no claim about ready.
+        """
+        _ = worktree
+        return []
 
     def get_workspace_repos(self) -> list[str]:
         """Return repo paths relative to ``workspace_dir``.

@@ -23,6 +23,7 @@ from teatree.core.management.commands._workspace_cleanup import (
 from teatree.core.models import Ticket, Worktree
 from teatree.core.orphan_guard import find_orphans_in_workspace
 from teatree.core.overlay_loader import get_overlay
+from teatree.core.readiness import run_probes
 from teatree.core.reconcile import Drift, reconcile_all, reconcile_ticket
 from teatree.core.resolve import resolve_worktree
 from teatree.core.runners import (
@@ -270,6 +271,42 @@ class Command(TyperCommand):
             self.stderr.write(f"  Failed: {', '.join(failures)}")
             return "error"
         return f"started {len(worktrees)} worktree(s)"
+
+    @command()
+    def ready(
+        self,
+        path: str = typer.Option("", help="Worktree path inside the workspace (auto-detects from PWD)."),
+    ) -> str:
+        """Run readiness probes for every worktree in the ticket workspace.
+
+        Strict: exits 0 iff every probe across every worktree passes. No
+        per-worktree skip flag and no env-var escape — if a probe doesn't
+        apply to a variant, the overlay's ``get_readiness_probes`` returns
+        an empty list (or omits that probe) for that worktree.
+        """
+        anchor = resolve_worktree(path)
+        ticket = Ticket.objects.get(pk=anchor.ticket.pk)
+        overlay = get_overlay()
+
+        worktrees = list(ticket.worktrees.all())
+        total = 0
+        total_failures = 0
+        for wt in worktrees:
+            probes = overlay.get_readiness_probes(wt)
+            if not probes:
+                self.stdout.write(f"  {wt.repo_path}: no probes")
+                continue
+            self.stdout.write(f"  {wt.repo_path}:")
+            results = run_probes(probes)
+            for r in results:
+                self.stdout.write(f"    {r.format()}")
+            failures = [r for r in results if not r.passed]
+            total += len(results)
+            total_failures += len(failures)
+        if total_failures:
+            self.stderr.write(f"  {total_failures} of {total} probe(s) failed")
+            raise SystemExit(1)
+        return "ok"
 
     @command()
     def teardown(
