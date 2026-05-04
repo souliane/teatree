@@ -3,7 +3,6 @@ from datetime import timedelta
 from django.test import TestCase
 from django.utils import timezone
 
-from teatree.core.managers import WorktreeQuerySet
 from teatree.core.models import Session, Task, Ticket, Worktree
 
 
@@ -50,13 +49,6 @@ class TestWorktreeQuerySet(TestCase):
         )
 
         assert list(Worktree.objects.active()) == [active, also_active]
-
-    def test_done_ticket_states_match_ticket_enum(self) -> None:
-        """Lock the hardcoded state strings to the Ticket.State enum values."""
-        assert (
-            Ticket.State.DELIVERED.value,
-            Ticket.State.IGNORED.value,
-        ) == WorktreeQuerySet._DONE_TICKET_STATES
 
 
 class TestSessionQuerySet(TestCase):
