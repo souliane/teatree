@@ -137,6 +137,17 @@ Each external API concern is a `@runtime_checkable Protocol` in `teatree.backend
 
 Backends are auto-configured from overlay methods. For example, `get_gitlab_token()` and `get_gitlab_url()` on the overlay class drive the GitLab backend; `get_slack_token()` and `get_review_channel()` drive Slack. No individual `TEATREE_*` Django settings are needed — each overlay carries its own configuration.
 
+### Overlay Methods That Wrap Platform APIs Belong on a Backend
+
+Overlay extension points are for **project-shaped** values: which repos exist, how to provision a worktree, which CI project to query, what tenants are valid. They are **not** for platform-API wrappers (HTTP, `gh`/`glab` shellouts, SDK clients). When an overlay method's body contains an HTTP call, a `subprocess` call to a platform CLI, or an SDK client instantiation, that's a sign the logic should move to (or delegate to) a core backend protocol.
+
+Concretely:
+
+- **Overlay** answers "which GitLab project is this overlay's CI?" (returns a string) — that's overlay-shaped.
+- **Backend** answers "fetch the title of this issue" or "list my open MRs" (calls the GitLab API) — that's backend-shaped, and a protocol like `IssueTracker.get_issue` or `CodeHost.list_my_open_prs` already exists.
+
+When adding a new overlay method, ask: would two overlays end up implementing this against the same API? If yes, write it once on the backend protocol and have overlays consume it. The reviewer skill `ac-reviewing-codebase` § Phase 3.5b enforces this rule during audits.
+
 ### Sync ABC (`core/sync.py`)
 
 Every file under `backends/` that syncs external data into the Django DB must subclass `SyncBackend` from `teatree.core.sync`:

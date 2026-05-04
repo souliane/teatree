@@ -20,6 +20,7 @@ from teatree.core.models.types import TicketExtra, VisualQASummary
 from teatree.core.orphan_guard import BranchStatus, classify_branch
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.runners.ship import overlay_mr_labels, sanitize_close_keywords
+from teatree.core.sync import RawAPIDict
 from teatree.utils import git
 
 
@@ -351,6 +352,27 @@ class Command(TyperCommand):
     def detect_tenant(self) -> str:
         """Detect the current tenant variant from the overlay."""
         return get_overlay().metadata.detect_variant()
+
+    @command(name="sweep")
+    def sweep(self) -> RawAPIDict:
+        """List all open PRs/MRs authored by the current user across the forge.
+
+        Output is consumed by the ``/t3:pr-sweep`` agent skill, which walks
+        each PR sequentially: merges the default branch, fixes conflicts,
+        monitors CI, and pushes — never rebases. The CLI itself only
+        discovers; mutating actions live in the skill so the agent can
+        prompt for non-default-base PRs and conflict resolution.
+        """
+        host = code_host_from_overlay()
+        if host is None:
+            return {"error": "No code host configured (check overlay tokens)"}
+
+        author = get_overlay().config.get_gitlab_username() or host.current_user()
+        if not author:
+            return {"error": "Could not resolve author username — set <host>_username in ~/.teatree.toml"}
+
+        prs = host.list_my_open_prs(author)
+        return {"author": author, "count": len(prs), "prs": prs}
 
     @command(name="post-evidence")
     def post_evidence(

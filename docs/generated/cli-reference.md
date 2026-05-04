@@ -1699,6 +1699,8 @@ Usage: t3 teatree pr [OPTIONS] COMMAND [ARGS]...
 │ fetch-issue    Fetch issue details from the configured tracker.              │
 │ detect-tenant  Detect the current tenant variant from the overlay.           │
 │ post-evidence  Post test evidence as an MR comment.                          │
+│ sweep          List your open PRs across the forge for the /t3:pr-sweep      │
+│                skill.                                                        │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -1815,6 +1817,24 @@ Usage: t3 teatree pr post-evidence [OPTIONS] MR_IID
 │ --body         TEXT                                                          │
 │ --files        TEXT                                                          │
 │ --help               Show this message and exit.                             │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree pr sweep`
+
+```
+Usage: t3 teatree pr sweep [OPTIONS]
+
+ List all open PRs/MRs authored by the current user across the forge.
+
+ Output is consumed by the ``/t3:pr-sweep`` agent skill, which walks
+ each PR sequentially: merges the default branch, fixes conflicts,
+ monitors CI, and pushes — never rebases. The CLI itself only
+ discovers; mutating actions live in the skill so the agent can
+ prompt for non-default-base PRs and conflict resolution.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

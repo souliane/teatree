@@ -89,6 +89,7 @@ DJANGO_GROUPS: dict[str, tuple[str, list[tuple[str, str]]]] = {
             ("fetch-issue", "Fetch issue details from the configured tracker."),
             ("detect-tenant", "Detect the current tenant variant from the overlay."),
             ("post-evidence", "Post test evidence as an MR comment."),
+            ("sweep", "List your open PRs across the forge for the /t3:pr-sweep skill."),
         ],
     ),
     "tasks": (

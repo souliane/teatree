@@ -583,7 +583,7 @@ Each external API concern is a `@runtime_checkable Protocol` in `teatree.backend
 
 | Protocol | Methods |
 |----------|---------|
-| `CodeHost` | `create_pr(PullRequestSpec)`, `list_open_prs()`, `post_mr_note()` |
+| `CodeHost` | `create_pr(PullRequestSpec)`, `list_open_prs()`, `list_my_open_prs()`, `post_mr_note()` |
 | `CIService` | `cancel_pipelines()`, `fetch_pipeline_errors()`, `fetch_failed_tests()`, `trigger_pipeline()`, `quality_check()` |
 | `IssueTracker` | `get_issue()` |
 | `ChatNotifier` | `send()` |

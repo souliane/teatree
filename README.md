@@ -203,6 +203,7 @@ graph LR
 | `handover` | Use when the user wants to transfer an in-flight TeaTree task from Claude to another runtime, or asks whether it is time to switch because Claude usage is getting high. |
 | `next` | Wrap up the current session — retro, structured result, pipeline handoff. |
 | `platforms` | Platform-specific API recipes for GitLab, GitHub, and Slack. Auto-loaded as a dependency by skills that interact with these platforms. |
+| `pr-sweep` | Maintenance sweep across all your open PRs/MRs — merge the default branch, fix conflicts, monitor CI, push. Never rebases |
 | `retro` | Conversation retrospective and skill improvement |
 | `review` | Code review — self-review before finalization, giving review, receiving review feedback |
 | `review-request` | Batch review requests — discover open MRs, validate metadata, check for duplicates, post to review channels |
