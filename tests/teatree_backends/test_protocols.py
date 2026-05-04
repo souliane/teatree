@@ -41,6 +41,9 @@ def test_code_host_protocol_is_structural() -> None:
         def list_open_prs(self, repo: str, author: str) -> list[dict[str, object]]:
             return []
 
+        def list_my_open_prs(self, author: str) -> list[dict[str, object]]:
+            return []
+
         def post_mr_note(self, *, repo: str, mr_iid: int, body: str) -> dict[str, object]:
             return {}
 
