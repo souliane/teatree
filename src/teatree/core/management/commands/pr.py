@@ -186,11 +186,35 @@ def _run_visual_qa_gate(ticket: Ticket, *, skip_reason: str = "") -> VisualQAGat
     )
 
 
+def _resolve_ticket(ref: str) -> Ticket:
+    """Resolve a ticket from a numeric pk or an issue URL.
+
+    Accepts a numeric pk (``"314"`` — direct DB lookup), a full issue URL
+    (``"https://github.com/owner/repo/issues/466"`` — exact match on
+    ``issue_url``), or a bare issue number when no pk exists (``"466"`` —
+    falls back to ``issue_url`` ending in ``/466``). Lets users paste the
+    GitHub/GitLab issue number without looking up the internal DB pk.
+    """
+    if ref.isdigit():
+        try:
+            return Ticket.objects.get(pk=int(ref))
+        except Ticket.DoesNotExist:
+            ticket = Ticket.objects.filter(issue_url__endswith=f"/{ref}").first()
+            if ticket is not None:
+                return ticket
+            raise
+    ticket = Ticket.objects.filter(issue_url=ref).first()
+    if ticket is None:
+        msg = f"No ticket matching {ref!r} (looked up by pk and issue_url)"
+        raise Ticket.DoesNotExist(msg)
+    return ticket
+
+
 class Command(TyperCommand):
     @command()
     def create(
         self,
-        ticket_id: int,
+        ticket_id: str,
         *,
         title: str = "",
         dry_run: bool = False,
@@ -205,11 +229,14 @@ class Command(TyperCommand):
         and advances ``SHIPPED → IN_REVIEW``. The return value reports the MR
         URL once the worker completes (synchronous in interactive mode).
 
+        ``ticket_id`` accepts the internal DB pk, the full issue URL, or the
+        bare issue number (resolved against ``Ticket.issue_url``).
+
         ``--title`` overrides the MR title (default: last commit subject).
         Stored on ``ticket.extra['mr_title_override']`` so the worker reads it.
         """
-        ticket = Ticket.objects.get(pk=ticket_id)
-        worktree = ticket.worktrees.first()
+        ticket = _resolve_ticket(ticket_id)
+        worktree = ticket.worktrees.first()  # ty: ignore[unresolved-attribute]
         if worktree is None:
             return WorktreeMissingError(error="ticket has no worktree")
 

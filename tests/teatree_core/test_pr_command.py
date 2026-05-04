@@ -91,6 +91,28 @@ class TestPrCreateThinWrapper(TestCase):
         assert result["title"] == "feat: x"
         assert result["branch"] == "feature-branch"
 
+    def test_resolves_ticket_by_issue_url(self) -> None:
+        # Calling `pr create` with the issue URL (or trailing issue number)
+        # resolves to the ticket by issue_url so users don't have to look up
+        # the internal DB pk first.
+        ticket = _shippable_ticket()
+        ticket.issue_url = "https://github.com/souliane/teatree/issues/466"
+        ticket.save(update_fields=["issue_url"])
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch.object(pr_command, "_run_visual_qa_gate", return_value=None),
+            patch.object(pr_command, "_validate_mr_metadata", return_value=None),
+        ):
+            result = cast(
+                "dict[str, object]",
+                call_command("pr", "create", "https://github.com/souliane/teatree/issues/466"),
+            )
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.SHIPPED
+        assert result["ticket_id"] == ticket.pk
+
     def test_blocked_when_visual_qa_fails(self) -> None:
         ticket = _shippable_ticket()
         failure = pr_command.VisualQAGateFailure(
