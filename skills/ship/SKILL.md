@@ -49,7 +49,7 @@ From "code is done" to "MR is merged."
 When the active overlay has `require_ticket = True`, refuse to commit or push without a ticket reference.
 
 - **Detection:** check `overlay.config.require_ticket`. Overlays that dogfood their own workflow enable this flag.
-- **Every commit must include** an issue reference in the message body. Run `t3 overlay config --key mr_close_ticket` to check the setting: when `true`, use `Fixes #<number>` or `Closes #<number>` (auto-closes on merge); when `false`, use `Relates-to #<number>` (links without closing).
+- **Every commit must include** an issue reference. Default to a ticket-URL parenthetical at the end of the subject line (`type(scope): description (TICKET_URL)`) — that is the linking mechanism teatree's `validate_mr_title_and_description` enforces. Use `Fixes #<number>` / `Closes #<number>` only when the active overlay sets `mr_close_ticket = True` (grep the overlay's `OverlayBase` subclass to confirm — there is no CLI for it). Default is `False`.
 - **If no ticket context exists:** ask "Which ticket is this for?" Do not proceed without a ticket reference.
 - **Exception:** commits from `/t3:retro` (format `fix(<skill>): ...`) are exempt — retro findings are small tactical fixes committed directly on the current branch.
 
@@ -60,7 +60,7 @@ When the active overlay has `require_ticket = True`, refuse to commit or push wi
 - **Verify branch matches ticket** before committing. If on the wrong branch, create a clean branch from the default branch and cherry-pick.
 - **Check for pre-existing changes before staging.** If the diff includes changes you did not make in this session, **warn the user** — either stage only your hunks or ask how to proceed.
 - Format commit message following the project's commit format reference.
-- **Link commits to issues.** Check `t3 overlay config --key mr_close_ticket`: when `true`, use `Fixes #<number>` or `Closes #<number>` in the commit message body (auto-closes on merge); when `false`, use `Relates-to #<number>` (links without closing). This applies to ALL repos.
+- **Link commits to issues** via the ticket-URL parenthetical in the subject line (`type(scope): description (TICKET_URL)`). Use `Fixes #<number>` / `Closes #<number>` in the body only when the active overlay sets `mr_close_ticket = True` (grep the overlay's `OverlayBase` subclass — no CLI exposes this). This applies to ALL repos.
 - Read `TICKET_URL` from `.env.worktree` — never construct it from the branch name.
 - **Baseline noqa in new files uses `relax:` type.** The teatree `quality-gates` hook flags any new `# noqa` / `# type: ignore` / `# pragma: no cover` in source files (excluding `tests/`, `scripts/hooks/`, `e2e/`). When a new file needs the house pattern `# noqa: S404` at `import subprocess` and `# noqa: S603` at each `subprocess.run` call (the pattern used by every existing CLI module), the hook treats it as a relaxation. Use `relax(<scope>): …` as the commit type, with a body explaining it follows the established baseline. Do NOT remove the suppressions — the ruff config relies on them.
 

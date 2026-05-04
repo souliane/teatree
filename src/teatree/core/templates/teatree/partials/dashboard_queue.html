@@ -62,7 +62,7 @@
                   class="pill-btn pill-xs split-main border border-clay/30 bg-clay/10 uppercase tracking-[0.18em] text-clay hover:bg-clay/20"
                   hx-post="/tasks/{{ task.task_id }}/launch/"
                   hx-swap="none"
-                  hx-on::before-request="event.detail.requestConfig.parameters['terminal_mode'] = localStorage.getItem('teatree_terminal_mode') || 'new-window'; event.detail.requestConfig.parameters['terminal_app'] = localStorage.getItem('teatree_terminal_app') || ''"
+                  hx-on::before-request="event.detail.requestConfig.parameters['terminal_mode'] = localStorage.getItem('teatree_terminal_mode') || 'new-tab'; event.detail.requestConfig.parameters['terminal_app'] = localStorage.getItem('teatree_terminal_app') || ''"
                   hx-on::after-request="handleActionResponse(event)"
                   hx-disable-elt="this"
                 >Launch</button>

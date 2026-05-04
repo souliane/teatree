@@ -49,6 +49,15 @@ Both self-review and external review cycles.
 git diff --merge-base main
 ```
 
+**Precondition — branch must be current with main.** If main has advanced since the branch's merge-base, the diff will surface those new commits as phantom "reversions" — code the author looks like they deleted but actually never had. Reviewing on top of a stale branch produces spurious scope-creep findings AND can let real silent-revert PRs through.
+
+```bash
+git fetch origin main --quiet
+git merge-base --is-ancestor origin/main HEAD || git merge origin/main --no-edit
+```
+
+Run this **before** the cleanup checklist. Resolve any conflicts the same way you would on a normal merge — no rebase, no stash.
+
 Cleanup checklist:
 
 - [ ] No code duplication introduced
@@ -306,7 +315,7 @@ This prevents noise from multiple review passes or multiple reviewers covering t
 
 When reviewing an external MR/PR, **always post comments inline on the correct file and line** in the diff view. For comments that aren't tied to a specific line (e.g., description feedback), post a general note without position data.
 
-**Extend the CLI, never inline API recipes.** If a `t3 review` operation is missing, implement it in `src/teatree/cli/review.py` — do NOT document a raw API snippet or inline script here. Skills describe what command to run, not how to replicate missing CLI functionality. Current subcommands: `post-draft-note`, `delete-draft-note`, `publish-draft-notes`, `list-draft-notes`, `reply-to-discussion`, `resolve-discussion`.
+**Extend the CLI, never inline API recipes.** If a `t3 review` operation is missing, implement it in `src/teatree/cli/review.py` — do NOT document a raw API snippet or inline script here. Skills describe what command to run, not how to replicate missing CLI functionality. Current subcommands: `post-draft-note`, `delete-draft-note`, `publish-draft-notes`, `list-draft-notes`, `update-note`, `reply-to-discussion`, `resolve-discussion`.
 
 **Use `t3 review post-draft-note` (Mandatory).** It handles token extraction, diff refs, position serialization, and added-line validation. Never use raw API calls.
 

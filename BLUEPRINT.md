@@ -165,7 +165,7 @@ The central entity. One ticket per unit of work (maps to an issue/task in the tr
 | `start()` | scoped → started | Enqueues `execute_provision` worker. Worker runs `WorktreeProvisioner` and calls `schedule_coding()` on success. |
 | `code()` | started → coded | Calls `schedule_testing()` |
 | `test(passed=True)` | coded → tested | Stores `tests_passed` in extra; calls `schedule_review()` |
-| `review()` | tested → reviewed | Condition: reviewing task completed. Calls `schedule_shipping()` |
+| `review()` | tested → reviewed | Condition: reviewing task completed. Calls `schedule_shipping()` only if `has_shippable_diff()` returns True (otherwise stamps `extra["shipping_skipped"]` for triage — guards meta-tickets from spurious shipping tasks). |
 | `ship()` | reviewed → shipped | Enqueues `execute_ship` worker. Worker runs `ShipExecutor` and calls `request_review()` on success. |
 | `request_review()` | shipped → in_review | — |
 | `mark_merged()` | in_review → merged | Enqueues `execute_teardown` worker. Worker runs `WorktreeTeardown` (best-effort cleanup of git worktrees, branches, per-worktree DBs, overlay hooks). Errors do NOT block the FSM — `retrospect()` can advance the ticket regardless. |
@@ -180,9 +180,11 @@ The central entity. One ticket per unit of work (maps to an issue/task in the tr
 - `start()` → enqueues provision → on success → headless coding task
 - `code()` → headless testing task
 - `test()` → headless reviewing task
-- `review()` → shipping task (execution target gated by `T3_AUTO_SHIP`)
+- `review()` → shipping task (execution target gated by `T3_AUTO_SHIP`), gated on `has_shippable_diff()`
 
 `schedule_shipping()` defaults to `ExecutionTarget.INTERACTIVE` so the user must explicitly approve the push. Set `T3_AUTO_SHIP=true` in the environment to make shipping headless.
+
+`Ticket.has_shippable_diff()` returns True iff at least one `Worktree` has commits ahead of its base branch (resolved via `origin/<default>` or local `main` fallback). When False, `review()` advances state but skips `schedule_shipping()` — typical for meta-tracker tickets whose work shipped via sibling PRs. Manual `schedule_shipping()` callers (CLI, dashboard, tests) remain permissive and bypass the gate.
 
 **`extra` structure:**
 
@@ -308,6 +310,8 @@ Represents a unit of work for an agent (headless or interactive).
 
 Each guard is `phase + state` so repeat calls (e.g. from parallel child tasks) find the state mismatch and safely no-op after the first advance.
 
+**Phase task consumption:** Each FSM transition body calls `_consume_pending_phase_tasks(phase)` for the phase it closes. On the task-driven path the task was already marked COMPLETED before the transition fires, so the call is a zero-row no-op. On direct-call paths (e.g. `pr.py` invoking `ticket.ship()` from a CLI command) the previously auto-scheduled phase task is still PENDING/CLAIMED — the call marks it COMPLETED so the dispatcher does not later claim it as a zombie session.
+
 **Session resume:** Both headless and interactive runners walk the `parent_task` chain to find a previous `agent_session_id`. When found, the CLI is invoked with `--resume <session_id>` to preserve full conversation context across execution mode switches.
 
 **Convenience:** `complete_with_attempt()` creates a TaskAttempt and calls complete/fail based on exit_code.
@@ -388,11 +392,13 @@ Runs `claude -p <prompt> --append-system-prompt <context> --output-format json`.
 
 ### 5.3 Interactive Execution (web_terminal.py)
 
-Launches ttyd (browser-based terminal) wrapping `claude --append-system-prompt <context>`.
+Wraps `claude --append-system-prompt <context>` in one of three terminal strategies, selected by `TEATREE_TERMINAL_MODE` (default `new-tab`) or the per-launch `terminal_mode` parameter:
 
-**Requirements:** ttyd must be installed (`brew install ttyd`) and spawned with `--writable`.
+- `new-tab` — opens a tab in the existing terminal app (iTerm AppleScript or Terminal.app `cmd+t` System Events keystroke; Linux falls back to a new window). Survives teatree server restarts.
+- `new-window` — spawns a fresh native terminal window via `osascript` (macOS) or terminal-emulator IPC (Linux). Survives teatree server restarts.
+- `ttyd` — browser-based terminal. Requires `ttyd` installed (`brew install ttyd`) and spawned with `--writable`. Registered with the in-memory process registry, so it is terminated on server shutdown.
 
-**Flow:** POST `/tasks/<id>/launch/` → ttyd process started → returns `{"launch_url": "http://localhost:<port>"}` → dashboard opens in new tab.
+**Flow:** POST `/tasks/<id>/launch/` → native modes return `{"pid": ...}` and the OS terminal opens; ttyd mode returns `{"launch_url": "http://localhost:<port>"}` and the dashboard opens it in a new tab.
 
 ### 5.4 Prompt Building (prompt.py)
 
@@ -664,7 +670,7 @@ Typer-based, work without Django:
 - `t3 <overlay> e2e run [<test-path>]` — run E2E tests; dispatches to the project runner (in-repo pytest-playwright) or the external runner (remote Playwright repo) based on the overlay's `get_e2e_config()` — same command across overlays
 - `t3 <overlay> e2e external [--repo <name>] [<test-path>]` — explicit external runner: Playwright from `T3_PRIVATE_TESTS` or a named `[e2e_repos.<name>]` git repo; skips port discovery when `BASE_URL` is already set (DEV/staging mode)
 - `t3 <overlay> e2e project [<test-path>] [--update-snapshots]` — explicit project runner: pytest-playwright in the overlay's own test dir, executed in the canonical Docker image by default
-- `t3 review {post-draft-note,delete-draft-note,list-draft-notes,publish-draft-notes,reply-to-discussion,resolve-discussion}` — GitLab draft notes plus immediate replies on existing discussion threads and resolve/unresolve toggle
+- `t3 review {post-draft-note,delete-draft-note,list-draft-notes,publish-draft-notes,update-note,reply-to-discussion,resolve-discussion}` — GitLab draft notes (post/delete/list/publish), in-place edits of draft or published notes, plus immediate replies on existing discussion threads and resolve/unresolve toggle
 - `t3 review-request discover` — discover open MRs
 - `t3 tool {privacy-scan,analyze-video,bump-deps,label-issues,find-duplicates}` — standalone utilities
 - `t3 config write-skill-cache` — write overlay skill metadata to cache
@@ -906,7 +912,7 @@ privacy = "strict"
 |---------|------|---------|
 | `TEATREE_HEADLESS_RUNTIME` | str | Runtime for headless tasks (default: "claude-code") |
 | `TEATREE_INTERACTIVE_RUNTIME` | str | Runtime for interactive tasks (default: "codex") |
-| `TEATREE_TERMINAL_MODE` | str | Terminal strategy (default: "same-terminal") |
+| `TEATREE_TERMINAL_MODE` | str | Terminal strategy: `new-tab` \| `new-window` \| `ttyd` (default: `"new-tab"`). Native modes survive a teatree server restart; `ttyd` does not. |
 | `TEATREE_SDK_USE_CLI` | bool | Use `claude` binary instead of API (default: True) |
 | `TEATREE_CLAUDE_STATUSLINE_STATE_DIR` | str | Directory for Claude statusline state files |
 | `TEATREE_AGENT_HANDOVER` | list | Agent handover configuration |

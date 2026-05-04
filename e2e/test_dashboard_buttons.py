@@ -407,6 +407,7 @@ def test_mermaid_lifecycle_renders_svg(e2e_server: str, page: Page) -> None:
 def test_snapshot_sessions_filter_queued(e2e_server: str, page: Page, assert_snapshot: Callable) -> None:
     page.goto(e2e_server)
     wait_for_sessions(page)
+    page.wait_for_timeout(1000)
     _dismiss_toasts(page)
     grid = page.locator("#unified-sessions-grid")
     page.locator('button[onclick*="filterSessions"][onclick*="\'queued\'"]').click()

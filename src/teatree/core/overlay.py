@@ -20,6 +20,7 @@ from teatree.types import (
 
 if TYPE_CHECKING:
     from teatree.core.models import Worktree
+    from teatree.core.readiness import Probe
 
 # Re-export all types so existing ``from teatree.core.overlay import X`` still works.
 __all__ = [
@@ -352,6 +353,20 @@ class OverlayBase(ABC):
         """
         return _default_health_checks(self, worktree)
 
+    def get_readiness_probes(self, worktree: "Worktree") -> list["Probe"]:
+        """Return runtime readiness probes for a started worktree.
+
+        Health checks (``get_health_checks``) verify post-provision invariants
+        (symlinks, db name set) — they answer "did setup do its job?". Probes
+        verify post-start runtime behaviour — they answer "is the env actually
+        serving?". Overlays declare HTTP endpoints, command checks, and custom
+        probes that an operator can trust as the truth-tellers for ready.
+
+        Default empty: an overlay with no probes makes no claim about ready.
+        """
+        _ = worktree
+        return []
+
     def get_workspace_repos(self) -> list[str]:
         """Return repo paths relative to ``workspace_dir``.
 
@@ -388,13 +403,23 @@ class HealthCheck:
 
 
 def _symlink_source_healthy(dest: Path, source: Path) -> bool:
-    """Return True when *dest* resolves and *source* is populated (non-empty if a dir)."""
-    if not (dest.exists() or dest.is_symlink()):
+    """Return True when *dest* contains populated content.
+
+    Two valid end states: a symlink at *dest* pointing to a populated
+    *source*, or a real populated directory at *dest* (e.g. after
+    ``npm install`` ran in the worktree, replacing the symlink with a
+    real directory — see #480).
+    """
+    if dest.is_symlink():
+        if not source.exists():
+            return False
+        if source.is_dir():
+            return any(source.iterdir())
+        return True
+    if not dest.exists():
         return False
-    if not source.exists():
-        return False
-    if source.is_dir():
-        return any(source.iterdir())
+    if dest.is_dir():
+        return any(dest.iterdir())
     return True
 
 
