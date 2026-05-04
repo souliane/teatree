@@ -24,6 +24,12 @@ class TestLaunch:
         mock.assert_called_once()
         assert result.mode == "new-window"
 
+    def test_dispatches_to_native_tab(self) -> None:
+        with patch.object(launcher_mod, "_launch_native_tab", return_value=LaunchResult(mode="new-tab")) as mock:
+            result = launch(["echo", "hi"], mode="new-tab")
+        mock.assert_called_once()
+        assert result.mode == "new-tab"
+
 
 class TestLaunchTtyd:
     def test_returns_empty_when_ttyd_not_found(self) -> None:
@@ -92,6 +98,61 @@ class TestLaunchMacosWindow:
         with patch.object(utils_run_mod.subprocess, "Popen", return_value=mock_proc) as mock_popen:
             launcher_mod._launch_macos_window("echo hi", cwd="/work")
         script = mock_popen.call_args[0][0][2]  # osascript -e <script>
+        assert "cd /work" in script
+
+
+class TestLaunchNativeTab:
+    def test_dispatches_to_macos_on_darwin(self) -> None:
+        with (
+            patch.object(launcher_mod.sys, "platform", "darwin"),
+            patch.object(
+                launcher_mod,
+                "_launch_macos_tab",
+                return_value=LaunchResult(mode="new-tab"),
+            ) as mock,
+        ):
+            launcher_mod._launch_native_tab(["echo", "hi"], cwd="/tmp", app="iterm2")
+        mock.assert_called_once_with("echo hi", cwd="/tmp", app="iterm2")
+
+    def test_falls_back_to_window_on_non_darwin(self) -> None:
+        with (
+            patch.object(launcher_mod.sys, "platform", "linux"),
+            patch.object(
+                launcher_mod,
+                "_launch_linux_window",
+                return_value=LaunchResult(mode="new-window"),
+            ) as mock,
+        ):
+            launcher_mod._launch_native_tab(["echo", "hi"])
+        mock.assert_called_once()
+
+
+class TestLaunchMacosTab:
+    def test_launches_iterm_tab(self) -> None:
+        mock_proc = MagicMock(pid=101)
+        with patch.object(utils_run_mod.subprocess, "Popen", return_value=mock_proc) as mock_popen:
+            result = launcher_mod._launch_macos_tab("echo hi", app="iterm2")
+        assert result.pid == 101
+        assert result.mode == "new-tab"
+        script = mock_popen.call_args[0][0][2]
+        assert "create tab with default profile" in script
+        assert "current window" in script
+
+    def test_launches_terminal_default_via_keystroke(self) -> None:
+        mock_proc = MagicMock(pid=102)
+        with patch.object(utils_run_mod.subprocess, "Popen", return_value=mock_proc) as mock_popen:
+            result = launcher_mod._launch_macos_tab("echo hi")
+        assert result.pid == 102
+        assert result.mode == "new-tab"
+        script = mock_popen.call_args[0][0][2]
+        assert "keystroke" in script
+        assert "front window" in script
+
+    def test_includes_cwd(self) -> None:
+        mock_proc = MagicMock(pid=103)
+        with patch.object(utils_run_mod.subprocess, "Popen", return_value=mock_proc) as mock_popen:
+            launcher_mod._launch_macos_tab("echo hi", cwd="/work", app="iterm2")
+        script = mock_popen.call_args[0][0][2]
         assert "cd /work" in script
 
 

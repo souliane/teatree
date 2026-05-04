@@ -1,7 +1,12 @@
 """Terminal launch strategies for interactive agent sessions.
 
-Dispatches to ttyd (browser-based), native window, or native tab
-based on ``TEATREE_TERMINAL_MODE``.
+Dispatches to ttyd (browser-based), a new native window, or a new tab in
+the existing native terminal based on ``TEATREE_TERMINAL_MODE``.
+
+The native modes spawn an ``osascript`` / terminal-emulator process owned
+by the OS terminal app, so the agent session survives a teatree server
+restart. The ttyd mode is registered with the in-memory process registry
+and is therefore terminated on server shutdown.
 """
 
 import logging
@@ -29,6 +34,8 @@ def launch(command: list[str], *, mode: str = "ttyd", cwd: str = "", app: str = 
     """Launch a command in the configured terminal mode."""
     if mode == "new-window":
         return _launch_native_window(command, cwd=cwd, app=app)
+    if mode == "new-tab":
+        return _launch_native_tab(command, cwd=cwd, app=app)
     return _launch_ttyd(command, cwd=cwd)
 
 
@@ -57,6 +64,16 @@ def _launch_native_window(command: list[str], *, cwd: str = "", app: str = "") -
 
     if sys.platform == "darwin":
         return _launch_macos_window(cmd_str, cwd=cwd, app=app)
+    return _launch_linux_window(cmd_str, cwd=cwd, app=app)
+
+
+def _launch_native_tab(command: list[str], *, cwd: str = "", app: str = "") -> LaunchResult:
+    cmd_str = " ".join(command)
+
+    if sys.platform == "darwin":
+        return _launch_macos_tab(cmd_str, cwd=cwd, app=app)
+    # Linux terminal-emulator IPC for tabs is not portable across distros;
+    # fall back to a new window so the session still survives server restart.
     return _launch_linux_window(cmd_str, cwd=cwd, app=app)
 
 
@@ -122,6 +139,39 @@ def _launch_macos_window(cmd_str: str, *, cwd: str = "", app: str = "") -> Launc
     proc = spawn(["osascript", "-e", script], stdout=DEVNULL, stderr=PIPE)
     logger.info("Launched %s window (pid=%d)", app_name, proc.pid)
     return LaunchResult(pid=proc.pid, mode="new-window")
+
+
+def _launch_macos_tab(cmd_str: str, *, cwd: str = "", app: str = "") -> LaunchResult:
+    cd_prefix = f"cd {cwd} && " if cwd else ""
+    app_name = _MACOS_APP_NAMES.get(app.lower(), "Terminal")
+
+    if app_name == "iTerm":
+        script = f"""
+        tell application "iTerm"
+            activate
+            tell current window
+                create tab with default profile
+                tell current session
+                    write text "{cd_prefix}{cmd_str}"
+                end tell
+            end tell
+        end tell
+        """
+    else:
+        # Terminal.app has no AppleScript verb for "new tab"; the standard
+        # workaround is a System Events keystroke. Requires Accessibility
+        # permission for the host process.
+        script = f"""
+        tell application "Terminal"
+            activate
+            tell application "System Events" to keystroke "t" using command down
+            do script "{cd_prefix}{cmd_str}" in front window
+        end tell
+        """
+
+    proc = spawn(["osascript", "-e", script], stdout=DEVNULL, stderr=PIPE)
+    logger.info("Launched %s tab (pid=%d)", app_name, proc.pid)
+    return LaunchResult(pid=proc.pid, mode="new-tab")
 
 
 def _launch_linux_window(cmd_str: str, *, cwd: str = "", app: str = "") -> LaunchResult:
