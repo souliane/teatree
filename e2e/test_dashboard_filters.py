@@ -7,13 +7,7 @@ import re
 
 from playwright.sync_api import Page, expect
 
-# ── helpers ───────────────────────────────────────────────────────────
-
-
-def _wait_for_tickets(page: Page) -> None:
-    """Wait for the HTMX-loaded ticket table to render MR rows."""
-    page.locator("tr[data-mr-row]").first.wait_for(state="attached")
-
+from e2e._dashboard_helpers import wait_for_tickets as _wait_for_tickets
 
 # ── Filter toolbar ─────────────────────────────────────────────────
 

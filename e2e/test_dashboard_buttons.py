@@ -16,6 +16,8 @@ from collections.abc import Callable
 import pytest
 from playwright.sync_api import Page, expect
 
+from e2e._dashboard_helpers import wait_for_sessions, wait_for_tickets
+
 _SNAPSHOT_THRESHOLD = 0.1
 
 
@@ -107,7 +109,7 @@ def test_task_modal_closes_on_escape(e2e_server: str, page: Page) -> None:
 
 def test_approval_button_expands_ticket_details(e2e_server: str, page: Page) -> None:
     page.goto(e2e_server)
-    page.locator("tr[data-mr-row]").first.wait_for(state="attached")
+    wait_for_tickets(page)
     approval_btn = page.locator("button[onclick^='toggleTicketDetails']").first
     # The expanded row id follows pattern #ticket-details-<id> and starts hidden
     expanded_row = page.locator("tr[id^='ticket-details-']").first
@@ -123,7 +125,7 @@ def test_approval_button_expands_ticket_details(e2e_server: str, page: Page) -> 
 
 def test_hide_selected_fires_transition(e2e_server: str, page: Page) -> None:
     page.goto(e2e_server)
-    page.locator("tr[data-mr-row]").first.wait_for(state="attached")
+    wait_for_tickets(page)
     page.locator("thead input[type='checkbox']").check()
     hide_btn = page.locator("#hide-selected-btn")
     expect(hide_btn).to_be_visible()
@@ -134,7 +136,7 @@ def test_hide_selected_fires_transition(e2e_server: str, page: Page) -> None:
 
 def test_hide_button_hidden_when_no_selection(e2e_server: str, page: Page) -> None:
     page.goto(e2e_server)
-    page.locator("tr[data-mr-row]").first.wait_for(state="attached")
+    wait_for_tickets(page)
     expect(page.locator("#hide-selected-btn")).to_be_hidden()
 
 
@@ -143,8 +145,8 @@ def test_hide_button_hidden_when_no_selection(e2e_server: str, page: Page) -> No
 
 def test_sessions_filter_queued_hides_others(e2e_server: str, page: Page) -> None:
     page.goto(e2e_server)
+    wait_for_sessions(page)
     grid = page.locator("#unified-sessions-grid")
-    grid.wait_for(state="visible")
     # Seeded: one interactive (queued) + one headless that the immediate backend
     # runs synchronously (ends up in "completed" status). Clicking "Queued" must
     # hide the completed article.
@@ -162,8 +164,8 @@ def test_sessions_filter_queued_hides_others(e2e_server: str, page: Page) -> Non
 
 def test_sessions_filter_all_shows_everything(e2e_server: str, page: Page) -> None:
     page.goto(e2e_server)
+    wait_for_sessions(page)
     grid = page.locator("#unified-sessions-grid")
-    grid.wait_for(state="visible")
     page.locator('button[onclick*="filterSessions"][onclick*="\'queued\'"]').click()
     page.locator('button[onclick*="filterSessions"][onclick*="\'all\'"]').click()
     for article in grid.locator("article").all():
@@ -283,7 +285,7 @@ def test_inflight_tickets_header_sync_posts(e2e_server: str, page: Page) -> None
 
 def test_ticket_transition_button_posts(e2e_server: str, page: Page) -> None:
     page.goto(e2e_server)
-    page.locator("tr[data-mr-row]").first.wait_for(state="attached")
+    wait_for_tickets(page)
     # Ticket #42 is in state "started" → offers transitions; grab first one.
     transition_btn = page.locator("button[hx-post*='/transition/']").first
     if transition_btn.count() == 0:
@@ -299,8 +301,8 @@ def test_ticket_transition_button_posts(e2e_server: str, page: Page) -> None:
 
 def test_sessions_dismiss_posts_cancel(e2e_server: str, page: Page) -> None:
     page.goto(e2e_server)
+    wait_for_sessions(page)
     sessions = page.locator("#section-sessions")
-    sessions.locator("#unified-sessions-grid").wait_for(state="visible")
     dismiss_btn = sessions.locator("button", has_text="Dismiss").first
     if dismiss_btn.count() == 0:
         pytest.skip("no queued tasks in seed")
@@ -378,7 +380,7 @@ def test_snapshot_ticket_details_expanded(e2e_server: str, page: Page, assert_sn
     page.goto(e2e_server)
     page.wait_for_timeout(1000)
     _dismiss_toasts(page)
-    page.locator("tr[data-mr-row]").first.wait_for(state="attached")
+    wait_for_tickets(page)
     page.locator("button[onclick^='toggleTicketDetails']").first.click()
     details = page.locator("tr[id^='ticket-details-']").first
     expect(details).to_be_visible()
@@ -395,7 +397,7 @@ def test_snapshot_ticket_details_expanded(e2e_server: str, page: Page, assert_sn
 def test_mermaid_lifecycle_renders_svg(e2e_server: str, page: Page) -> None:
     """Lifecycle ``<pre class='mermaid'>`` is replaced with an inline SVG."""
     page.goto(e2e_server)
-    page.locator("tr[data-mr-row]").first.wait_for(state="attached")
+    wait_for_tickets(page)
     page.locator("button[onclick^='toggleTicketDetails']").first.click()
     details = page.locator("tr[id^='ticket-details-']").first
     expect(details).to_be_visible()
@@ -404,10 +406,9 @@ def test_mermaid_lifecycle_renders_svg(e2e_server: str, page: Page) -> None:
 
 def test_snapshot_sessions_filter_queued(e2e_server: str, page: Page, assert_snapshot: Callable) -> None:
     page.goto(e2e_server)
-    page.wait_for_timeout(1000)
+    wait_for_sessions(page)
     _dismiss_toasts(page)
     grid = page.locator("#unified-sessions-grid")
-    grid.wait_for(state="visible")
     page.locator('button[onclick*="filterSessions"][onclick*="\'queued\'"]').click()
     assert_snapshot(
         grid.screenshot(animations="disabled"),
