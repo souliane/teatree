@@ -59,6 +59,8 @@ Output a JSON block on the **last line** of the session. **When step 2 enqueued 
 
 Set `needs_user_input: true` if the next step requires human judgment. The system will create a new interactive task for it.
 
+`next_steps` is a contract field for downstream tooling and the user. Each entry must describe action that will be taken (by a queued task, the next pipeline step, or the user explicitly). Items prefixed with "follow-up:" or "worth doing later" indicate the writer punted — these are not next steps, they are deferrals, and they belong fixed/bundled/asked-about, not listed.
+
 ### 4. Display Summary
 
 Before ending, show the user what happened:
@@ -83,3 +85,4 @@ This is non-negotiable — the user must see what `/t3:next` did.
 - Do not end without displaying the summary
 - Do not manually advance the ticket **state** — the FSM transitions are owned by `_advance_ticket()`. Step 2 creates the next-phase **Task** (which is different) so the headless worker has something to claim.
 - Do not skip step 2 with "the user can dispatch it from the dashboard." A session that locked a phase decision but left no follow-up Task orphans the ticket — the pipeline picks unrelated pending tasks instead.
+- Do not list unaddressed session findings (operational notes, bugs raised, unfixed lapses) as `next_steps` items. `next_steps` describes legitimate forward-looking work the pipeline will do — NOT a dumping ground for things you noticed but didn't address. Apply `t3:rules § Do Work Now` to each finding before listing it: fix in this session, bundle into the next-phase task, or use `AskUserQuestion` to choose a lane. If a finding ends up in `next_steps`, it must be a deliberate handoff (e.g., "task #88 ships #23 + bundled proxy parity fix"), not a deferral.

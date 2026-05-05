@@ -31,6 +31,7 @@ DJANGO_GROUPS: dict[str, tuple[str, list[tuple[str, str]]]] = {
             ("provision", "Run DB import + env cache + direnv + prek + overlay setup steps for one worktree."),
             ("start", "Boot ``docker compose up`` for one worktree."),
             ("verify", "Run overlay health checks for one worktree."),
+            ("ready", "Run runtime readiness probes for one worktree."),
             ("teardown", "Stop docker, drop DB, remove git worktree, delete row."),
             ("status", "Report FSM state, branch, and allocated host ports for one worktree."),
             ("diagnose", "Print a structured health checklist for one worktree."),
@@ -44,6 +45,7 @@ DJANGO_GROUPS: dict[str, tuple[str, list[tuple[str, str]]]] = {
             ("ticket", "Create or update a ticket and trigger worktree provisioning."),
             ("provision", "Provision every worktree in the current ticket workspace."),
             ("start", "Start docker for every worktree in the current ticket workspace."),
+            ("ready", "Run readiness probes for every worktree in the ticket workspace."),
             ("teardown", "Tear down every worktree in the current ticket workspace."),
             ("finalize", "Squash worktree commits and rebase on the default branch."),
             ("doctor", "Detect state drift across every store; optionally fix it."),
@@ -95,8 +97,9 @@ DJANGO_GROUPS: dict[str, tuple[str, list[tuple[str, str]]]] = {
     "tasks": (
         "Async task queue.",
         [
-            ("claim", "Claim the next available task."),
             ("cancel", "Cancel a task by ID."),
+            ("claim", "Claim the next available task."),
+            ("create", "Enqueue the next-phase task for a ticket."),
             ("list", "List tasks with optional filters."),
             ("start", "Claim and run the next interactive task in the current terminal."),
             ("work-next-sdk", "Claim and execute an headless task."),
