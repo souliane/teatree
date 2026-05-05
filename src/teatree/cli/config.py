@@ -20,26 +20,19 @@ def check_update() -> None:
 
 @config_app.command(name="write-skill-cache")
 def write_skill_cache() -> None:
-    """Write overlay skill metadata to XDG cache for hook consumption."""
-    import json as _json  # noqa: PLC0415
-
+    """Write overlay skill metadata + trigger index to XDG cache for hook consumption."""
     import django  # noqa: PLC0415
 
     from teatree.config import DATA_DIR, discover_active_overlay  # noqa: PLC0415
 
-    active = discover_active_overlay()
-    if active and "DJANGO_SETTINGS_MODULE" not in os.environ:
-        os.environ["DJANGO_SETTINGS_MODULE"] = "teatree.settings"
+    discover_active_overlay()
+    os.environ.setdefault("DJANGO_SETTINGS_MODULE", "teatree.settings")
     django.setup()
 
-    from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
+    from teatree.core.views._startup import _write_skill_metadata_cache  # noqa: PLC0415
 
-    overlay = get_overlay()
-    metadata = overlay.metadata.get_skill_metadata()
-    cache_path = DATA_DIR / "skill-metadata.json"
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
-    cache_path.write_text(_json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
-    typer.echo(f"Wrote skill metadata to {cache_path}")
+    _write_skill_metadata_cache()
+    typer.echo(f"Wrote skill metadata to {DATA_DIR / 'skill-metadata.json'}")
 
 
 @config_app.command()
