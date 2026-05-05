@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from teatree.config import load_config
+from teatree.core.clone_paths import resolve_clone_path
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay_loader import get_overlay
 from teatree.utils import git
@@ -264,7 +265,8 @@ def cleanup_worktree(worktree: Worktree, *, force: bool = False) -> str:
             logger.exception("cleanup step failed for %s: %s", worktree.repo_path, step.description)
             step_errors.append(f"{step.description}: {exc}")
 
-    step_errors.extend(_remove_git_worktree(workspace / worktree.repo_path, wt_path, worktree, force=force))
+    repo_main = resolve_clone_path(workspace, worktree) or workspace / worktree.repo_path
+    step_errors.extend(_remove_git_worktree(repo_main, wt_path, worktree, force=force))
 
     if worktree.db_name:
         drop_db(worktree.db_name)

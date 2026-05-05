@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from teatree.config import load_config
+from teatree.core.clone_paths import resolve_clone_path
 from teatree.core.models import Ticket, Worktree
 from teatree.core.worktree_env import detect_drift, render_env_cache
 from teatree.utils import git
@@ -193,7 +194,7 @@ def _collect_stale_worktree_dirs(drift: Drift, worktrees: list[Worktree], ticket
         if (wt.extra or {}).get("worktree_path")
     }
     for wt in worktrees:
-        repo_main = workspace / wt.repo_path
+        repo_main = resolve_clone_path(workspace, wt) or workspace / wt.repo_path
         for path_str in _find_worktree_paths_on_disk(repo_main):
             resolved = Path(path_str).resolve().as_posix()
             if resolved == str(repo_main.resolve()):
