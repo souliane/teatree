@@ -342,6 +342,7 @@
             </td>
           </tr>
         {% endfor %}
+        {% if ticket.mrs %}
         <!-- Combined task graph + lifecycle (toggled by approval count click) -->
         <tr id="ticket-details-{{ ticket.ticket_id }}" class="hidden" data-ticket-group="{{ ticket.ticket_id }}">
           <td colspan="10" class="border-b border-bark/10 bg-parchment/50 px-5 py-3">
@@ -361,6 +362,7 @@
             </div>
           </td>
         </tr>
+        {% endif %}
         {% endwith %}
       {% endfor %}
     </tbody>
