@@ -21,6 +21,7 @@ from enum import StrEnum
 
 from teatree.config import load_config
 from teatree.core.cleanup import _branch_tree_matches_squash, classify_branch_commits, probe_host_cli
+from teatree.core.clone_paths import resolve_clone_path
 from teatree.core.models import Worktree
 from teatree.utils import git
 
@@ -109,8 +110,8 @@ def find_orphans_in_workspace() -> list[BranchReport]:
     reports: list[BranchReport] = []
     seen: set[tuple[str, str]] = set()
     for wt in Worktree.objects.all():
-        repo_main = workspace / wt.repo_path
-        if not repo_main.is_dir():
+        repo_main = resolve_clone_path(workspace, wt)
+        if repo_main is None or not repo_main.is_dir():
             continue
         key = (str(repo_main), wt.branch)
         if key in seen:
