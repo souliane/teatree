@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 from teatree.config import workspace_dir as _workspace_dir
+from teatree.core.clone_paths import find_clone_path
 from teatree.core.models import Ticket, Worktree
 from teatree.core.runners.base import RunnerBase, RunnerResult
 from teatree.utils import git
@@ -56,18 +57,19 @@ class WorktreeProvisioner(RunnerBase):
                 overlay=ticket.overlay,
             )
 
-            wt_path = self._create(workspace, repo_name, ticket_dir, branch)
-            if wt_path is None:
-                # actual failure — drop the row so subsequent runs can retry cleanly
+            created = self._create(workspace, repo_name, ticket_dir, branch)
+            if created is None:
                 worktree.delete()
                 failed.append(repo_name)
                 continue
-            if not wt_path:
-                # skipped (source repo missing) — keep the row without a path
-                continue
 
+            wt_path, clone_path = created
             worktree.branch = branch
-            worktree.extra = {**(worktree.extra or {}), "worktree_path": wt_path}
+            worktree.extra = {
+                **(worktree.extra or {}),
+                "worktree_path": wt_path,
+                "clone_path": str(clone_path),
+            }
             worktree.save(update_fields=["branch", "extra"])
             provisioned[repo_name] = wt_path
 
@@ -80,21 +82,27 @@ class WorktreeProvisioner(RunnerBase):
         return RunnerResult(ok=True, detail=f"provisioned {len(provisioned)} worktree(s)")
 
     @staticmethod
-    def _create(workspace: Path, repo_name: str, ticket_dir: Path, branch: str) -> str | None:
+    def _create(workspace: Path, repo_name: str, ticket_dir: Path, branch: str) -> tuple[str, Path] | None:
         """Run ``git worktree add`` for one repo.
 
-        Returns the worktree path on success, ``""`` when the source repo is
-        not a git checkout (skipped), or ``None`` on actual failure. Retries
-        without ``-b`` so partial-failure recovery picks up an existing branch.
+        Returns ``(worktree_path, clone_path)`` on success or ``None`` on
+        failure (no clone found, or ``git worktree add`` rejected the path).
+        Retries without ``-b`` so partial-failure recovery picks up an
+        existing branch.
         """
-        repo_path = workspace / repo_name
-        if not (repo_path / ".git").is_dir():
-            logger.info("Skipping %s: not a git repository under %s", repo_name, workspace)
-            return ""
+        repo_path = find_clone_path(workspace, repo_name)
+        if repo_path is None:
+            logger.warning(
+                "No git clone found for %s under %s (looked at %s and one-level subdirs)",
+                repo_name,
+                workspace,
+                workspace / repo_name,
+            )
+            return None
 
         wt_path = ticket_dir / Path(repo_name).name
         if wt_path.exists():
-            return str(wt_path)
+            return str(wt_path), repo_path
 
         git.pull_ff_only(str(repo_path))
 
@@ -111,4 +119,4 @@ class WorktreeProvisioner(RunnerBase):
             with suppress(OSError):
                 pv_dest.symlink_to(pv)
 
-        return str(wt_path)
+        return str(wt_path), repo_path
