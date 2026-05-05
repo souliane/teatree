@@ -422,6 +422,15 @@ When a pre-commit hook runs the full test suite and fails on tests **unrelated t
 
 **Pre-edit check — before editing ANY project file:** If the file path lives directly under `$T3_WORKSPACE_DIR/<repo>/` (not under a ticket subdirectory like `$T3_WORKSPACE_DIR/<ticket>/<repo>/`), **stop** — you are in the main clone. Find or create the correct worktree first via `t3 <overlay> workspace ticket`. The main clone may happen to be on the MR branch (from a previous checkout) — editing there "works" but pollutes the shared clone, risks merge conflicts for other worktrees, and violates isolation.
 
+**Pre-commit check — before running `git commit` (Non-Negotiable):** Run `git rev-parse --show-toplevel`. If the result is the main clone (e.g., `$T3_REPO`, `~/workspace/<repo>/<repo>` — i.e. NOT a `$T3_WORKSPACE_DIR/<ticket>/<repo>` path), **abort the commit**. Do not proceed to commit on `main` or any default branch in the main clone, even if the staged changes are already there from a prior session. Recovery path:
+
+1. Pick a branch name (`ac/<short-slug>` matching the change).
+2. `git branch <branch> HEAD` (snapshots the current staged + working state to the new branch).
+3. If staged-but-not-committed: `git stash push --staged`, `git worktree add ~/workspace/<branch>/<repo> -b <branch>`, `cd` into the worktree, `git stash pop`, then commit there.
+4. If already-committed-on-main: `git branch <branch> HEAD`, `git reset --hard origin/main` (or `git reset --hard <previous-HEAD>`), then `git worktree add ~/workspace/<branch>/<repo> <branch>` and continue from the worktree.
+
+**Past failure (2026-05-05):** Resuming after compaction with skill edits already applied directly in the main clones of `souliane/teatree` and `souliane/skills`, I committed those edits on `main` rather than recovering them onto worktree branches first. The user reset main and called `/retro`. Prevention: this pre-commit check.
+
 **Collision detection — check on EVERY file write or git operation:**
 
 1. Before writing to a file, run `git status`. If you see unexpected modifications to files you did not touch, **another agent is working in the same directory**.
