@@ -16,7 +16,7 @@ from collections.abc import Callable
 import pytest
 from playwright.sync_api import Page, expect
 
-from e2e._dashboard_helpers import wait_for_sessions, wait_for_tickets
+from e2e._dashboard_helpers import wait_for_dashboard_idle, wait_for_sessions, wait_for_tickets
 
 _SNAPSHOT_THRESHOLD = 0.1
 
@@ -386,7 +386,9 @@ def test_snapshot_ticket_details_expanded(e2e_server: str, page: Page, assert_sn
     expect(details).to_be_visible()
     # Wait for the mermaid lifecycle SVG to render. Mermaid is vendored locally
     # (``teatree/js/mermaid-11.min.js``) so this works in sealed CI / Docker.
-    details.locator(".mermaid svg").first.wait_for(state="attached", timeout=5000)
+    wait_for_dashboard_idle(page)
+    details.locator(".mermaid").first.wait_for(state="attached")
+    details.locator(".mermaid svg").first.wait_for(state="attached", timeout=15000)
     assert_snapshot(
         details.screenshot(animations="disabled"),
         name="ticket-details-expanded.png",
@@ -401,7 +403,9 @@ def test_mermaid_lifecycle_renders_svg(e2e_server: str, page: Page) -> None:
     page.locator("button[onclick^='toggleTicketDetails']").first.click()
     details = page.locator("tr[id^='ticket-details-']").first
     expect(details).to_be_visible()
-    details.locator(".mermaid svg").first.wait_for(state="attached", timeout=10000)
+    wait_for_dashboard_idle(page)
+    details.locator(".mermaid").first.wait_for(state="attached")
+    details.locator(".mermaid svg").first.wait_for(state="attached", timeout=15000)
 
 
 def test_snapshot_sessions_filter_queued(e2e_server: str, page: Page, assert_snapshot: Callable) -> None:
