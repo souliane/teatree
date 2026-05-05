@@ -340,6 +340,22 @@ uv run pytest               # >90% coverage required
 prek run --all-files         # ruff, pytest, codespell, banned-terms
 ```
 
+### E2E Tests
+
+Dashboard E2E tests live under `e2e/` and run inside Docker for snapshot stability ([#275](https://github.com/souliane/teatree/issues/275)):
+
+```bash
+t3 teatree e2e project              # run full suite (CI default)
+t3 teatree e2e project --headed     # interactive mode for debugging
+```
+
+**Failure triage artifacts** (git-ignored, mounted writable into the e2e container):
+
+- `e2e/.logs/server-<ISO>-<worker>.log` — captured stdout/stderr from the live ASGI server. Path is printed on every test failure via `pytest_runtest_makereport`.
+- `e2e/.videos/<test-name>/<rand>.webm` — Playwright video recording. Only retained for **failing** tests (passing tests delete their video on teardown to keep CI artifact size small).
+
+In CI, attach the `e2e/.logs/` and `e2e/.videos/` directories as job artifacts and link them from the failed run summary so reviewers can replay the failure without rerunning the suite.
+
 ## Security Considerations
 
 Skills are prompt instructions — they control what your AI agent does. This makes the supply chain a security surface.

@@ -34,6 +34,9 @@ services:
     volumes:
       - ..:/app:ro
       - ../e2e/snapshots:/app/e2e/snapshots
+      # Writable mounts for failure triage — host paths are git-ignored.
+      - ../e2e/.logs:/app/e2e/.logs
+      - ../e2e/.videos:/app/e2e/.videos
     build:
       context: ..
       dockerfile: dev/Dockerfile.e2e
