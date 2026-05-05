@@ -137,6 +137,16 @@ class TestDashboardPanelView(TestCase):
 
         assert response.status_code == 404
 
+    def test_tickets_panel_omits_detail_row_for_ticket_without_mrs(self) -> None:
+        ticket = Ticket.objects.create(
+            overlay="test", issue_url="https://example.com/issues/911", state=Ticket.State.STARTED
+        )
+
+        response = Client().get(reverse("teatree:dashboard-panel", args=["tickets"]), HTTP_HX_REQUEST="true")
+
+        assert response.status_code == 200
+        assert f"ticket-details-{ticket.pk}".encode() not in response.content
+
     def test_action_required(self) -> None:
         """Cover the 'action_required' branch of _panel_context (line 81)."""
         response = Client().get(reverse("teatree:dashboard-panel", args=["action_required"]), HTTP_HX_REQUEST="true")
