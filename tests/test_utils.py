@@ -11,15 +11,15 @@ from teatree.utils import db, git, ports
 from teatree.utils import run as utils_run_mod
 
 
-def test_find_free_ports_returns_dict_of_three_ports(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """find_free_ports returns a dict with backend, frontend, postgres keys.
+def test_find_free_ports_returns_only_requested_keys(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """find_free_ports returns a dict with exactly the keys the overlay requested.
 
     Redis is not allocated per-worktree: a single shared teatree-redis
     container on localhost:6379 serves every ticket.
     """
     monkeypatch.setattr(ports, "port_in_use", lambda port: False)
 
-    result = ports.find_free_ports(str(tmp_path))
+    result = ports.find_free_ports(str(tmp_path), {"backend", "frontend", "postgres"})
     assert isinstance(result, dict)
     assert set(result.keys()) == {"backend", "frontend", "postgres"}
     assert result["backend"] >= 8001
@@ -27,12 +27,27 @@ def test_find_free_ports_returns_dict_of_three_ports(tmp_path: Path, monkeypatch
     assert result["postgres"] >= 5432
 
 
+def test_find_free_ports_returns_empty_for_no_keys(tmp_path: Path) -> None:
+    """find_free_ports returns an empty dict when the overlay declares no required ports."""
+    result = ports.find_free_ports(str(tmp_path), set())
+    assert result == {}
+
+
+def test_find_free_ports_supports_custom_key(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """find_free_ports allocates a port for an overlay-declared custom key."""
+    monkeypatch.setattr(ports, "port_in_use", lambda port: False)
+    result = ports.find_free_ports(str(tmp_path), {"web"})
+    assert set(result.keys()) == {"web"}
+    assert isinstance(result["web"], int)
+    assert result["web"] > 0
+
+
 def test_find_free_ports_skips_occupied(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """find_free_ports skips ports that are already in use."""
     occupied = {8001, 4201}
     monkeypatch.setattr(ports, "port_in_use", lambda port: port in occupied)
 
-    result = ports.find_free_ports(str(tmp_path))
+    result = ports.find_free_ports(str(tmp_path), {"backend", "frontend"})
     assert result["backend"] > 8001  # skipped 8001
     assert result["frontend"] > 4201  # skipped 4201
 

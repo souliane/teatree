@@ -42,6 +42,19 @@ class CommandOverlay(OverlayBase):
             "frontend": ["run-frontend", worktree.repo_path],
         }
 
+    def uses_redis(self) -> bool:
+        return True
+
+
+class SingleRepoOverlay(OverlayBase):
+    """Single-service overlay that opts out of redis (default behaviour)."""
+
+    def get_repos(self) -> list[str]:
+        return ["solo"]
+
+    def get_provision_steps(self, worktree: Worktree) -> list[ProvisionStep]:
+        return []
+
 
 @pytest.fixture(autouse=True)
 def clear_overlay_cache() -> Iterator[None]:
@@ -89,6 +102,44 @@ class TestLifecycleCommands(TestCase):
             mock_ensure.assert_called_once_with()
             ticket.refresh_from_db()
             assert ticket.redis_db_index == 0
+
+    @override_settings(**COMMAND_SETTINGS)
+    def test_provision_skips_redis_when_overlay_does_not_use_it(self) -> None:
+        """Single-service overlays declaring ``uses_redis() -> False`` skip redis allocation."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            wt_path = str(tmp_path / "wt-solo")
+            Path(wt_path).mkdir()
+            ticket = Ticket.objects.create(overlay="solo", issue_url="https://example.com/issues/78")
+            Worktree.objects.create(
+                ticket=ticket,
+                overlay="solo",
+                repo_path="/tmp/solo",
+                branch="feature",
+                extra={"worktree_path": wt_path},
+            )
+
+            mock_config = MagicMock()
+            mock_config.user.workspace_dir = tmp_path
+
+            with (
+                patch.dict("os.environ", {"T3_ORIG_CWD": wt_path}),
+                patch.object(
+                    overlay_loader_mod,
+                    "_discover_overlays",
+                    return_value={"solo": SingleRepoOverlay()},
+                ),
+                patch.object(utils_run_mod, "subprocess") as mock_sp,
+                patch("teatree.utils.redis_container.ensure_running") as mock_ensure,
+                patch("teatree.config.load_config", return_value=mock_config),
+            ):
+                mock_sp.run.return_value = MagicMock(returncode=0)
+                call_command("worktree", "provision")
+
+            mock_ensure.assert_not_called()
+            ticket.refresh_from_db()
+            # Redis slot is not allocated for overlays that don't use redis.
+            assert ticket.redis_db_index is None
 
     @override_settings(**COMMAND_SETTINGS)
     def test_create_start_report_and_teardown_worktrees(self) -> None:
