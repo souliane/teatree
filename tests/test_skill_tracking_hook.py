@@ -237,7 +237,7 @@ class TestSessionEndOrphans:
         assert "feat-1" in ctx
         assert "feat-2" in ctx
         assert "/ws/org/backend" in ctx
-        assert "ensure-draft" in ctx
+        assert "ensure-pr" in ctx
 
     def test_orphan_preview_truncates_long_lists(self) -> None:
         skills_file = router.STATE_DIR / "sess-orphan-2.skills"

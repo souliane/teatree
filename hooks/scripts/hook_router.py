@@ -628,7 +628,7 @@ def handle_session_end(data: dict) -> None:
         parts.append(
             f"ORPHAN BRANCHES DETECTED ({len(orphans)}) — branches with local work and no open PR:\n"
             f"{_format_orphan_summary(orphans)}\n"
-            "Run `t3 teatree pr ensure-draft --branch <name>` to track them, "
+            "Run `t3 teatree pr ensure-pr --branch <name>` to track them, "
             "or `t3 teatree workspace clean-all` to reap synced ones.",
         )
 

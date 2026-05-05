@@ -1,9 +1,12 @@
 """Shared worktree cleanup logic used by sync (auto-clean on merge) and workspace commands.
 
 The classifier below is the reason this module can be honest about squash-merges:
-``git log --not --remotes`` detects commits by SHA, but a squash-merge creates a
-new SHA on the default branch. Without subject-matching, every squash-merged
-branch looks "unsynced" and blocks cleanup.
+``git log <branch> --not origin/main`` detects commits by SHA, but a squash-merge
+creates a new SHA on the default branch. Without subject-matching, every
+squash-merged branch looks "unsynced" and blocks cleanup. Comparing against
+``origin/main`` (not ``--remotes``) is essential — ``--remotes`` would also
+exclude the feature branch's own remote tracking ref, hiding commits that are
+pushed but not yet on main.
 """
 
 import json
@@ -84,7 +87,7 @@ def classify_branch_commits(repo: str, branch: str, target: str = "origin/main")
     """
     raw = git.run(
         repo=repo,
-        args=["log", branch, "--not", "--remotes", "--format=%H%x00%P%x00%s"],
+        args=["log", branch, "--not", target, "--format=%H%x00%P%x00%s"],
     )
     classification = BranchClassification()
     if not raw.strip():
