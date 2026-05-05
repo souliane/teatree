@@ -305,6 +305,19 @@ On **every prompt**, use `TaskCreate` to create tasks before doing any work — 
 - **Complex tasks** (3+ steps): use the task tracking tools for each step, update status as you go.
 - **Never skip this.** If you find yourself doing 3+ things without a plan, stop and create one.
 
+## Mid-Task Interrupts (Non-Negotiable)
+
+When a new request arrives while you are in the middle of work, **do not silently pivot**. Default to finishing the current task, queue the new one, and tell the user.
+
+1. **Add the new request as a task** (`TaskCreate`) before doing anything else.
+2. **Decide whether it blocks the current task.** Blocking means the new request invalidates the in-progress work, fixes an actively-broken state, or the user explicitly says "stop and do this first." Routine new requests do NOT block.
+3. **Tell the user the order.** "I'll finish [current task], then handle [new task]." One sentence — don't bury it.
+4. **Default = finish what you were doing.** Silent pivots abandon the in-progress context the user was tracking and force them to re-prompt to recover it.
+
+This rule does NOT override `User Instructions Are Priority 1` — explicit corrections like "skip tests, push now" are blocking by definition. The interrupt rule handles the routine case where a new request looks important but isn't tied to the current state.
+
+**Past failure (2026-05-05):** Mid-Notion-fetch session, the user asked for a different action. Agent pivoted, dropped the Notion comparison mid-execution, and the user had to send "make a TODO you are forgetting what I asked" before the agent recovered. Default-to-finish prevents this.
+
 ## Always Use AskUserQuestion for Questions
 
 **Never ask questions inline in text responses.** Always use the `AskUserQuestion` tool — it gives the user a structured UI to respond and prevents questions from being buried in output. One question at a time; wait for the answer before asking the next.
