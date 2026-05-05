@@ -43,6 +43,25 @@ _Adapted from [superpowers/verification-before-completion](https://github.com/ob
 
 **Banned language without evidence:** "should pass", "probably works", "seems correct", "looks good", "I'm confident". These words without a command output are lies, not claims.
 
+## Grep Before Claiming Cross-Reference Coverage (Non-Negotiable)
+
+When the user asks how their codebase or harness compares to an external reference — an article, a framework's docs, a competitor's product, a popular library — the reflex is to pattern-match: a name in the reference resembles a skill or file or function the agent has seen, so the agent claims it's covered (or claims the inverse). This pattern-match is unreliable across naming differences and partial-implementation gaps, and it always defaults toward overclaiming coverage when the agent has the user's project context loaded.
+
+**Required before any "X is covered / X is a gap" claim:**
+
+1. **Grep the actual repo** for the concept under at least two framings. `rg`, `grep -r`, or `git log -S` against the codebase, not against memory.
+2. **Cite `file:line`** for each "covered" assertion. A claim that something exists must point at where it exists.
+3. **Cite the specific gap** for each "missing" assertion. Name the function, regex, or section that would have to exist and link the file path where you'd expect it. If you can't, you don't have enough evidence to call it a gap.
+4. **If you can't grep** (no read access, ambiguous naming, the concept is implementation-shape rather than keyword-shape), **ask the user** before making the claim. Do not paper over the uncertainty with hedge words.
+
+**Banned shortcuts:**
+
+- Naming a skill ("/t3:code", "/t3:ship") and asserting it covers an article concept on the strength of its description alone.
+- Listing items as "covered" because they sound like things the harness probably does.
+- Producing a "what's missing" list without grepping for each item first.
+
+**Why this rule exists.** When the user's project state is loaded into context (CLAUDE.md, MEMORY.md, recent file reads), the agent's pattern-matching defaults aggressive — it treats name-similarity as coverage and produces flattering comparisons that don't survive a `rg` check. The corrective is to require evidence at the point of claim, not at the point of correction.
+
 ## User Instructions Are Priority 1
 
 When the user gives a direct, explicit instruction (skip tests, push now, use this approach), execute it IMMEDIATELY. Do not try a "better" approach first, do not retry the same failing approach hoping it works, and do not silently substitute your own plan. Execute the instruction first (it's fast and safe), then suggest an alternative if you have one.

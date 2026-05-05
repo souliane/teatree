@@ -151,16 +151,16 @@ See your [issue tracker platform reference](../../platforms/references/) § "Kno
 - **Fix:** Unset the leaking env vars before committing: `unset DJANGO_SETTINGS_MODULE && git commit ...`. If the issue is `.pth`-based cross-contamination, use `SKIP=pytest git commit ...` and verify tests pass separately with explicit `PYTHONPATH`.
 - **Prevention:** When committing to a repo other than the current working directory (e.g., during skill reviews or retros), sanitize Django-related env vars first. The agent should detect when the target repo differs from the cwd and preemptively unset `DJANGO_SETTINGS_MODULE` and reset `VIRTUAL_ENV`. When a shared venv has editable installs from multiple Django projects, the pytest pre-commit hook may always fail — use `SKIP=pytest` and run tests manually.
 
-## `No module named uvicorn` When Running `t3 <overlay> dashboard`
+## `No module named uvicorn` When Running `t3 dashboard`
 
-- **Symptom:** `t3 acme dashboard` fails with `No module named uvicorn`.
+- **Symptom:** `t3 dashboard` fails with `No module named uvicorn`.
 - **Cause:** `_uvicorn()` used `sys.executable` — the teatree venv's Python. But `uvicorn` is a dependency of the overlay project (e.g., t3-acme), not of teatree itself. The teatree venv has no `uvicorn` installed.
 - **Fix:** `_uvicorn()` now uses `uv --directory <project_path> run uvicorn` to run in the project's environment, falling back to `sys.executable` otherwise.
 - **Prevention:** When spawning overlay project commands from the `t3` CLI, always consider whether the command needs project-specific dependencies. If so, use `uv --directory <project_path>` to run in the correct environment.
 
-## `Could not import module "asgi"` When Running `t3 <overlay> dashboard`
+## `Could not import module "asgi"` When Running `t3 dashboard`
 
-- **Symptom:** `t3 acme dashboard` runs migrations successfully but then fails with `Error loading ASGI app. Could not import module "asgi"`.
+- **Symptom:** `t3 dashboard` runs migrations successfully but then fails with `Error loading ASGI app. Could not import module "asgi"`.
 - **Cause:** `_uvicorn()` read `DJANGO_SETTINGS_MODULE` from `os.environ` to construct the ASGI module path (e.g., `acme.asgi:application`). But the overlay registration never set it in the environment — only the overlay entry object had the `settings_module`. With an empty env var, the ASGI path resolved to bare `"asgi:application"`.
 - **Fix:** Thread `settings_module` from the overlay entry through `_build_overlay_app` → `dashboard` → `_uvicorn` as a parameter, falling back to `os.environ` only if not provided.
 - **Prevention:** When adding CLI commands that need overlay metadata (settings module, project path), pass the metadata explicitly from the overlay entry rather than relying on environment variables that may not be set.
