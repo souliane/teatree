@@ -16,38 +16,52 @@ t3 <overlay> --help            # overlay-specific commands (from overlay project
 | Command | What it does |
 |---------|-------------|
 | `t3 startoverlay` | Scaffold a new overlay package |
-| `t3 start-ticket <URL>` | Zero to coding — create ticket, provision worktree, start services |
-| `t3 ship <TICKET_ID>` | Code to MR — create merge request |
-| `t3 daily` | Daily followup — sync MRs, check gates, remind reviewers |
-| `t3 agent` | Launch agent with project context |
-| `t3 full-status` | Show ticket, worktree, and session state summary |
+| `t3 docs` | Serve project documentation with mkdocs |
+| `t3 agent` | Launch Claude Code with auto-detected project context |
+| `t3 sessions` | List recent Claude conversation sessions with resume commands |
 | `t3 info` | Show binary, source paths, editable status, and installed overlays |
-| `t3 doctor check` | Verify imports and editable-install sanity |
-| `t3 config autoload` | List skill auto-loading rules |
+| `t3 dashboard` | Migrate the database and start the dashboard dev server |
+| `t3 doctor check` | Verify imports, required tools, and editable-install sanity |
+| `t3 config autoload` | List skill auto-loading rules from `context-match.yml` |
+| `t3 config check-update` | Check if a newer version of teatree is available |
+| `t3 config write-skill-cache` | Write overlay skill metadata + trigger index to XDG cache |
+| `t3 config cache` | Show the XDG skill-metadata cache content |
 | `t3 ci cancel` | Cancel stale CI pipelines |
 | `t3 ci divergence` | Check fork divergence from upstream |
 | `t3 ci trigger-e2e` | Trigger E2E tests on CI |
-| `t3 ci fetch-errors` | Fetch error logs from CI |
-| `t3 ci fetch-failed-tests` | Extract failed test IDs from CI |
-| `t3 ci quality-check` | Run quality analysis |
-| `t3 review-request discover` | Discover open MRs awaiting review |
-| `t3 tool privacy-scan` | Scan for privacy-sensitive patterns |
-| `t3 tool analyze-video` | Decompose video into frames |
-| `t3 tool bump-deps` | Bump pyproject.toml deps from uv.lock |
+| `t3 ci fetch-errors` | Fetch error logs from the latest CI pipeline |
+| `t3 ci fetch-failed-tests` | Extract failed test IDs from the latest CI pipeline |
+| `t3 ci quality-check` | Run quality analysis (fetch test report from latest pipeline) |
+| `t3 review post-draft-note` / `publish-draft-notes` / `delete-draft-note` / `list-draft-notes` / `update-note` / `reply-to-discussion` / `resolve-discussion` | Code review helpers |
+| `t3 review-request discover` | Discover open merge requests awaiting review |
+| `t3 setup` | First-time setup and global skill management |
+| `t3 assess` | Codebase health assessment |
+| `t3 overlay` | Dev-mode overlay install/uninstall |
+| `t3 infra` | Teatree-wide infrastructure services |
+| `t3 tool privacy-scan` | Scan text for privacy-sensitive patterns |
+| `t3 tool analyze-video` | Decompose video into frames for AI analysis |
+| `t3 tool bump-deps` | Bump pyproject.toml dependencies from uv.lock |
 | `t3 tool sonar-check` | Run local SonarQube analysis via Docker |
+| `t3 tool label-issues` | Suggest labels for unlabeled open issues |
+| `t3 tool find-duplicates` | Flag pairs of open issues with near-identical titles |
+| `t3 tool claude-handover` | Show Claude handover telemetry and runtime recommendations |
 
 ## Overlay Commands (`t3 <overlay> ...`)
 
+Run `t3 <overlay> --help` for the full list. Subcommand groups: `worktree`, `workspace`, `run`, `e2e`, `db`, `pr`, `tasks`, `followup`, `lifecycle`, `config`. Standalone commands: `resetdb`, `worker`, `full-status`, `ship`, `daily`, `agent`. Some overlays expose extra command groups (e.g. `tool`).
+
 | Command | What it does |
 |---------|-------------|
-| `t3 <overlay> dashboard` | Migrate DB + start dashboard server |
-| `t3 <overlay> resetdb` | Drop and recreate SQLite DB |
+| `t3 <overlay> ship [TICKET_ID]` | Code to MR — create merge request for the ticket |
+| `t3 <overlay> daily` | Daily followup — sync MRs, check gates, remind reviewers |
+| `t3 <overlay> full-status` | Show ticket, worktree, and session state summary |
+| `t3 <overlay> agent` | Launch Claude Code with overlay context and auto-detected skills |
+| `t3 <overlay> resetdb` | Drop the SQLite database and re-run all migrations |
 | `t3 <overlay> worker` | Start background task workers |
 | `t3 <overlay> worktree provision [VARIANT]` | Provision worktree: ports, env, symlinks, DB |
 | `t3 <overlay> worktree start` | Start dev servers, then verify |
 | `t3 <overlay> worktree status` | Show worktree state |
-| `t3 <overlay> worktree teardown` | Tear down a worktree |
-| `t3 <overlay> worktree teardown` | Teardown — stop services, drop DB, clean state |
+| `t3 <overlay> worktree teardown` | Stop services, drop DB, clean state |
 | `t3 <overlay> worktree diagram` | Print state diagram as Mermaid |
 | `t3 <overlay> workspace ticket` | Create ticket workspace with git worktrees |
 | `t3 <overlay> workspace finalize` | Squash commits + rebase on default branch |
@@ -71,6 +85,8 @@ t3 <overlay> --help            # overlay-specific commands (from overlay project
 | `t3 <overlay> followup sync` | Sync followup data from MRs |
 | `t3 <overlay> followup refresh` | Return counts of tickets and tasks |
 | `t3 <overlay> followup remind` | Return list of pending tasks |
+| `t3 <overlay> lifecycle ...` | Session lifecycle and phase tracking |
+| `t3 <overlay> tasks ...` | Async task queue (overlay-dependent) |
 
 ## Standalone Scripts (`scripts/`)
 
