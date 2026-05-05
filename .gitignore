@@ -28,3 +28,8 @@ htmlcov/
 apm_modules/
 docs/plans/
 .t3.local.json
+
+# E2E artifacts: server stdout/stderr capture + Playwright video recordings.
+# Mounted writable into the e2e Docker container; useful when triaging CI failures.
+e2e/.logs/
+e2e/.videos/

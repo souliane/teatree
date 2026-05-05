@@ -77,6 +77,16 @@ TASKS = {
     },
 }
 
+# File-based cache shared across the test process and the live ASGI subprocess.
+# The default LocMemCache is per-process, so seeding ``PENDING_REVIEWS_CACHE_KEY``
+# from conftest would never reach the server's panel builder.
+CACHES = {
+    "default": {
+        "BACKEND": "django.core.cache.backends.filebased.FileBasedCache",
+        "LOCATION": str(_DB_DIR / "cache"),
+    },
+}
+
 # Disable the dashboard auto-sync POST in e2e mode. The auto-sync's
 # ``hx-on::after-request="refreshPanels"`` triggers a second wave of panel
 # reloads after the initial HTMX panel loads have already settled, which can

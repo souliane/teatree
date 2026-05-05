@@ -83,7 +83,10 @@ def test_tickets_pipeline_and_approvals(e2e_server: str, page: Page) -> None:
     page.goto(e2e_server)
     expect(page.locator("body")).to_contain_text("\u2705")  # ✅
     expect(page.locator("body")).to_contain_text("\u274c")  # ❌
-    expect(page.locator("span", has_text="Draft")).to_be_visible()
+    # Draft pill rendered for the frontend!200 MR. ``.first`` because the
+    # Pending Reviews panel also seeds a draft entry — both spans share the
+    # same Tailwind class so a bare locator is ambiguous.
+    expect(page.locator("span", has_text="Draft").first).to_be_visible()
     expect(page.locator("body")).to_contain_text("1/1")
     expect(page.locator("body")).to_contain_text("0/1")
 
@@ -212,19 +215,8 @@ def test_htmx_panels_present(e2e_server: str, page: Page) -> None:
 
 
 # ── Additional panels ──────────────────────────────────────────────
-
-
-@pytest.mark.skip(reason="snapshot platform-sensitive, see #378 follow-up")
-def test_action_required_panel(e2e_server: str, page: Page, assert_snapshot: Callable) -> None:
-    page.goto(e2e_server)
-    expect(page.locator("h2", has_text="Action Required")).to_be_visible()
-
-    action_section = page.locator("h2", has_text="Action Required").locator("..")
-    assert_snapshot(
-        action_section.screenshot(animations="disabled"),
-        name="action-required.png",
-        threshold=_SNAPSHOT_THRESHOLD,
-    )
+# Functional coverage for the rest of the panel surface lives in
+# ``test_dashboard_panels.py`` (functional asserts, not snapshots — see #19).
 
 
 def test_sessions_panel_visible(e2e_server: str, page: Page) -> None:
@@ -237,13 +229,10 @@ def test_automation_panel(e2e_server: str, page: Page) -> None:
     expect(page.locator("h2", has_text="Automation")).to_be_visible()
 
 
-def test_task_detail_modal(e2e_server: str, page: Page) -> None:
-    page.goto(e2e_server)
-    task_link = page.locator("[hx-get*='/tasks/'][hx-get*='/detail/']").first
-    if task_link.is_visible():
-        task_link.click()
-        page.wait_for_timeout(500)
-        expect(page.locator("#task-modal-body")).to_be_visible()
+# Task detail modal coverage moved to ``test_dashboard_flows.py``
+# (``test_task_detail_modal_opens``) — that version drops the
+# ``if visible:`` skip guard and asserts modal contents on a guaranteed-
+# visible seeded task.
 
 
 # ── Git Pull (CONTRIBUTE mode) ─────────────────────────────────────
