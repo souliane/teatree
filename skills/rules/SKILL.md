@@ -47,6 +47,36 @@ _Adapted from [superpowers/verification-before-completion](https://github.com/ob
 
 When the user gives a direct, explicit instruction (skip tests, push now, use this approach), execute it IMMEDIATELY. Do not try a "better" approach first, do not retry the same failing approach hoping it works, and do not silently substitute your own plan. Execute the instruction first (it's fast and safe), then suggest an alternative if you have one.
 
+## Classifier Denial Protocol (Non-Negotiable)
+
+When the auto-mode classifier denies a tool call (Bash command rejected, MCP call refused, "permission denied" from the harness, etc.), **stop immediately**. Do not retry, do not work around it with a different command, do not "find another way". A classifier denial is an **immediate session blocker** — handle it before doing anything else.
+
+**Required response, every time:**
+
+1. **Stop.** Drop whatever you were doing. Do not start an alternative approach in the same response.
+2. **Inform the user** in plain text: which command was denied, what you were trying to accomplish, and the smallest static permission rule that would have allowed it (e.g. `Bash(gh issue create *)`, `Bash(docker buildx prune *)`). The rule must be the smallest rule that covers the use case — never a blanket `Bash` or `Bash(* *)`.
+3. **Ask via `AskUserQuestion`** with two options:
+   - **"Allow it (relax classifier)"** — preferred. You then attempt the edit yourself (see step 4); only if the harness blocks the write do you fall back to a paste-ready snippet for the user to apply.
+   - **"Keep the denial (do it differently)"** — you propose a concrete alternative path (different tool, manual step, API call) and proceed only after the user picks one.
+4. **If the user picked "Allow it":** attempt to add the rule to the user's `~/.claude/settings.json` (`permissions.allow` array) yourself, via the `Edit` tool. Read the file first, merge the new entry into the existing array, write it back. **If the write succeeds**, retry the original command. **If the write is denied** by the harness self-modification guardrail, only then fall back: hand over a paste-ready snippet, wait for the user to apply it, then retry. Do not preemptively skip the edit attempt — the goal is zero manual operations for the user when the harness allows it.
+5. **Wait for the answer.** Do not retry the denied command, do not invent workarounds, do not file tickets, do not start unrelated work, until the user has chosen and (if relaxing) the new rule is in place.
+
+**Banned reactions to a classifier denial:**
+
+- Silently retrying with a different argument shape hoping the classifier passes (`gh issue create` → `gh api repos/.../issues`).
+- Switching tools (Bash → MCP, MCP → Python subprocess) to bypass the rule.
+- Decomposing the command into pieces that each pass individually.
+- Editing teatree's plugin `settings.json`, `CLAUDE.md`, or any plugin-distributed permissions file to add an allow rule.
+- Continuing the surrounding work and "leaving the denial for later".
+
+**Why this rule exists.** The classifier exists to give the user a final say on standing-permission expansions. Auto-mode aggressiveness combined with classifier strictness is a recurring source of teatree workflow breakage — agents that retry, decompose, or sidestep silently accumulate scope, lose user trust, and ship work the user never authorized. The right escalation is to **ask once, fix permission at the user-scope settings file, retry**.
+
+**Boundary: who edits permissions where.**
+
+- Teatree (this skill, BLUEPRINT, plugin `settings.json`) defines the _protocol_. Teatree never relaxes permissions on the user's behalf.
+- The agent **attempts** the edit to `~/.claude/settings.json` (user scope) directly — that's the path with zero manual steps for the user. Many users have a standing authorization for this in their `autoMode.allow`. The agent only falls back to handing over a paste-ready snippet **after** the harness self-modification guardrail blocks the write — never as the default path. The snippet is the manual fallback, not the primary mechanism.
+- Plugin-distributed permissions (`plugins/t3/settings.json`, `CLAUDE.md` standing clauses) are **never** the right place to relax for a single workflow — that would grant the standing right to every user of the plugin. Refuse if asked to do this; explain that user-scope `settings.json` is the right knob.
+
 ## Context Transparency
 
 The user cannot see system-reminders, memory content, or hook output injected into your context. When your response is influenced by any of this invisible context, **briefly state what you received** so the user can follow your reasoning. For example: "Teatree suggested loading `/t3:code`. Memory mentions X."
