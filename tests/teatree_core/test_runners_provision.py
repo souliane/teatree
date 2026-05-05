@@ -137,7 +137,7 @@ class TestWorktreeProvisioner(TestCase):
         assert "repo-a" in result.detail
         assert Worktree.objects.filter(ticket=ticket, repo_path="repo-a").count() == 0
 
-    def test_skips_repo_without_git_directory(self) -> None:
+    def test_returns_failure_when_no_clone_found_anywhere(self) -> None:
         not_a_repo = self.workspace / "no-git"
         not_a_repo.mkdir()
         ticket = self._scoped_ticket(repos=["no-git"], branch="ac-no-git-77-x")
@@ -149,12 +149,69 @@ class TestWorktreeProvisioner(TestCase):
         ):
             result = WorktreeProvisioner(ticket).run()
 
-        assert result.ok is True
+        assert result.ok is False
+        assert "no-git" in result.detail
         worktree_add.assert_not_called()
-        # Skipped repo keeps its DB row so the ticket still tracks it; the row
-        # has no worktree_path until a real source repo appears.
-        wt = Worktree.objects.get(ticket=ticket, repo_path="no-git")
-        assert (wt.extra or {}).get("worktree_path") is None
+        assert Worktree.objects.filter(ticket=ticket, repo_path="no-git").count() == 0
+
+    def test_finds_clone_under_namespaced_subdir(self) -> None:
+        namespaced = self.workspace / "souliane" / "teatree"
+        namespaced.mkdir(parents=True)
+        (namespaced / ".git").mkdir()
+        ticket = self._scoped_ticket(repos=["teatree"], branch="ac-teatree-491-x")
+
+        captured: dict[str, str] = {}
+
+        def fake_worktree_add(repo: str, path: str, branch: str, *, create_branch: bool = True) -> bool:
+            del branch, create_branch
+            captured["source"] = repo
+            captured["dest"] = path
+            Path(path).mkdir(parents=True, exist_ok=True)
+            return True
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            self._patch_workspace_dir(),
+            patch("teatree.core.runners.provision.git.worktree_add", side_effect=fake_worktree_add),
+            patch("teatree.core.runners.provision.git.pull_ff_only", return_value=True),
+        ):
+            result = WorktreeProvisioner(ticket).run()
+
+        assert result.ok is True
+        assert captured["source"] == str(namespaced)
+        assert captured["dest"] == str(self.workspace / "ac-teatree-491-x" / "teatree")
+        wt = Worktree.objects.get(ticket=ticket, repo_path="teatree")
+        assert (wt.extra or {}).get("worktree_path") == captured["dest"]
+        assert (wt.extra or {}).get("clone_path") == str(namespaced)
+
+    def test_warns_when_multiple_clones_match_basename(self) -> None:
+        first = self.workspace / "alpha" / "teatree"
+        second = self.workspace / "zeta" / "teatree"
+        for clone in (first, second):
+            clone.mkdir(parents=True)
+            (clone / ".git").mkdir()
+        ticket = self._scoped_ticket(repos=["teatree"], branch="ac-teatree-491-multi")
+
+        captured: dict[str, str] = {}
+
+        def fake_worktree_add(repo: str, path: str, branch: str, *, create_branch: bool = True) -> bool:
+            del branch, create_branch
+            captured["source"] = repo
+            Path(path).mkdir(parents=True, exist_ok=True)
+            return True
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            self._patch_workspace_dir(),
+            patch("teatree.core.runners.provision.git.worktree_add", side_effect=fake_worktree_add),
+            patch("teatree.core.runners.provision.git.pull_ff_only", return_value=True),
+            self.assertLogs("teatree.core.clone_paths", level="WARNING") as cm,
+        ):
+            result = WorktreeProvisioner(ticket).run()
+
+        assert result.ok is True
+        assert captured["source"] == str(first)
+        assert any("Multiple clones match" in msg for msg in cm.output)
 
     def test_returns_failure_when_branch_missing_from_extra(self) -> None:
         ticket = Ticket.objects.create(
