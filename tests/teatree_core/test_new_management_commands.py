@@ -295,6 +295,12 @@ class TestWorkspaceTicket(TestCase):
         self.enterContext(
             patch.object(utils_run_mod.subprocess, "run", return_value=mock_result),
         )
+        # Seed the host-style clones the provisioner expects under HOME/workspace.
+        # Tests that override T3_WORKSPACE_DIR ignore these and create their own.
+        workspace = Path(os.environ["HOME"]) / "workspace"
+        workspace.mkdir(parents=True, exist_ok=True)
+        for repo in ("backend", "frontend", "api", "web"):
+            (workspace / repo / ".git").mkdir(parents=True, exist_ok=True)
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
@@ -427,16 +433,13 @@ class TestWorkspaceTicket(TestCase):
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS, T3_WORKSPACE_DIR="/tmp/ws-test")
-    def test_skips_non_git_repo(self) -> None:
-        """Repos without .git directory are skipped."""
+    def test_partial_failure_when_one_repo_has_no_clone(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
 
             workspace = tmp_path / "workspace"
             workspace.mkdir()
-            # Only backend has .git; frontend doesn't
-            (workspace / "backend").mkdir()
-            (workspace / "backend" / ".git").mkdir()
+            (workspace / "backend" / ".git").mkdir(parents=True)
             (workspace / "frontend").mkdir()
 
             mock_result = MagicMock()
@@ -450,8 +453,8 @@ class TestWorkspaceTicket(TestCase):
                 ticket_id = cast("int", call_command("workspace", "ticket", "https://example.com/issues/81"))
 
             ticket = Ticket.objects.get(pk=ticket_id)
-            # Both worktrees are created in DB; one was skipped during git worktree add
-            assert ticket.worktrees.count() == 2
+            assert ticket.worktrees.count() == 1
+            assert ticket.worktrees.get().repo_path == "backend"
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS, T3_WORKSPACE_DIR="/tmp/ws-test")

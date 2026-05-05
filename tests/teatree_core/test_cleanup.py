@@ -561,3 +561,50 @@ class TestCleanupWorktreeRemovesOnDiskWorktree(TestCase):
         assert "errors" in label.lower() or "Cleaned: myrepo" in label
         # Worktree row deleted regardless so the operator can retry without DB cruft
         assert not Worktree.objects.filter(pk=wt.pk).exists()
+
+
+class TestCleanupWorktreeNamespacedClone(TestCase):
+    @pytest.fixture(autouse=True)
+    def _tmp_workspace(self, tmp_path: Path) -> None:
+        self.workspace = tmp_path / "workspace"
+        self.workspace.mkdir()
+        self.repo_main = self.workspace / "souliane" / "teatree"
+        self.repo_main.mkdir(parents=True)
+        _run_git("init", "-q", "-b", "main", cwd=self.repo_main)
+        _run_git("config", "user.email", "t@t", cwd=self.repo_main)
+        _run_git("config", "user.name", "t", cwd=self.repo_main)
+        _run_git("commit", "--allow-empty", "-q", "-m", "initial", cwd=self.repo_main)
+        self.branch = "ac-teatree-491-x"
+        self.wt_path = self.workspace / self.branch / "teatree"
+        _run_git("worktree", "add", "-q", "-b", self.branch, str(self.wt_path), cwd=self.repo_main)
+
+    def test_resolves_namespaced_clone_via_extra(self) -> None:
+        ticket = Ticket.objects.create(
+            issue_url="https://example.com/issues/491",
+            state=Ticket.State.IN_REVIEW,
+        )
+        wt = Worktree.objects.create(
+            overlay="test",
+            ticket=ticket,
+            repo_path="teatree",
+            branch=self.branch,
+            extra={"worktree_path": str(self.wt_path), "clone_path": str(self.repo_main)},
+        )
+
+        with (
+            patch("teatree.core.cleanup.load_config") as mock_config,
+            patch("teatree.core.cleanup.get_overlay") as mock_overlay,
+        ):
+            mock_config.return_value.user.workspace_dir = self.workspace
+            mock_overlay.return_value.get_cleanup_steps.return_value = []
+            label = cleanup_worktree(wt, force=True)
+
+        assert not self.wt_path.exists()
+        registry = subprocess.run(
+            [_GIT, "-C", str(self.repo_main), "worktree", "list"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+        assert str(self.wt_path) not in registry
+        assert "errors" not in label.lower()
