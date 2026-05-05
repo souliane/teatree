@@ -253,7 +253,10 @@ class Command(TyperCommand):
         ticket = Ticket.objects.get(pk=anchor.ticket.pk)
         overlay = get_overlay()
 
-        ports = find_free_ports(str(load_config().user.workspace_dir))
+        ports = find_free_ports(
+            str(load_config().user.workspace_dir),
+            overlay.get_required_ports(anchor),
+        )
         self.stdout.write(f"  Ports: {ports}")
 
         worktrees = list(ticket.worktrees.all())

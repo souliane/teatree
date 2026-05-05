@@ -21,15 +21,9 @@ def compose_project(worktree: Worktree) -> str:
     return f"{worktree.repo_path}-wt{ticket.ticket_number}" if ticket else worktree.repo_path
 
 
-def _compose_env(ports: dict[str, int]) -> dict[str, str]:
-    frontend = ports.get("frontend", 4200)
-    return {
-        "BACKEND_HOST_PORT": str(ports.get("backend", 8000)),
-        "FRONTEND_HOST_PORT": str(frontend),
-        "POSTGRES_HOST_PORT": str(ports.get("postgres", 5432)),
-        "POSTGRES_PORT": str(ports.get("postgres", 5432)),
-        "CORS_WHITE_FRONT": f"http://localhost:{frontend}",
-    }
+def _compose_env(ports: dict[str, int], overlay: OverlayBase) -> dict[str, str]:
+    """Render ``${KEY}_HOST_PORT`` env vars (plus overlay-specific aliases) for compose."""
+    return overlay.get_port_env(ports)
 
 
 def _compose_files(compose_file: str) -> list[str]:
@@ -74,7 +68,7 @@ class WorktreeStartRunner(RunnerBase):
     ) -> None:
         self.worktree = worktree
         self.overlay = overlay or get_overlay()
-        self.ports = ports if ports is not None else self._allocate_ports()
+        self.ports = ports if ports is not None else self._allocate_ports(self.overlay, worktree)
         self.timeouts = timeouts or load_timeouts(self.overlay)
 
     def run(self) -> RunnerResult:
@@ -84,7 +78,7 @@ class WorktreeStartRunner(RunnerBase):
 
         docker_compose_down(project, timeout=self.timeouts.get("docker_compose_down"))
 
-        port_env = _compose_env(self.ports)
+        port_env = _compose_env(self.ports, overlay)
         for key, value in port_env.items():
             os.environ[key] = value
 
@@ -147,8 +141,8 @@ class WorktreeStartRunner(RunnerBase):
         return True
 
     @staticmethod
-    def _allocate_ports() -> dict[str, int]:
+    def _allocate_ports(overlay: OverlayBase, worktree: Worktree) -> dict[str, int]:
         from teatree.config import load_config  # noqa: PLC0415
 
         workspace = str(load_config().user.workspace_dir)
-        return find_free_ports(workspace)
+        return find_free_ports(workspace, overlay.get_required_ports(worktree))
