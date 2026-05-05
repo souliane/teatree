@@ -260,7 +260,7 @@ After posting (or during any follow-up invocation), remove entries from `mr_remi
 
 ### 12. Dashboard
 
-The dashboard is a Django view served by teatree. Start it with `t3 <overlay> dashboard` (e.g., `t3 acme dashboard`). It provides a live overview of all in-flight work, reading from the DB populated by `t3 <overlay> followup sync`.
+The dashboard is a Django view served by teatree. Start it with `t3 dashboard` (top-level command, no overlay needed). It provides a live overview of all in-flight work, reading from the DB populated by `t3 <overlay> followup sync`.
 
 **Extension point: `followup_enrich_data`** — project overlays can add project-specific fields to followup entries (e.g., Notion status, tenant info).
 
@@ -268,7 +268,7 @@ The dashboard is a Django view served by teatree. Start it with `t3 <overlay> da
 
 **Execute immediately when the skill is loaded** — before responding to the user, before asking what they want, before anything else. This is the first thing followup does on every invocation (both interactive and periodic). The user should never have to ask for a data refresh.
 
-**Always use `t3 <overlay> followup sync`** (or `t3 daily` as a top-level shortcut) to collect data. This command handles MR discovery, pipeline status, approvals, merge detection, and cache cleanup in one deterministic pass. Never manually call issue tracker APIs to build followup data — the CLI command is the single entry point.
+**Always use `t3 <overlay> followup sync`** (or `t3 <overlay> daily` as a one-shot shortcut that also processes reminders) to collect data. This command handles MR discovery, pipeline status, approvals, merge detection, and cache cleanup in one deterministic pass. Never manually call issue tracker APIs to build followup data — the CLI command is the single entry point.
 
 The command discovers open MRs from the repos returned by the overlay's `get_followup_repos()` method. Overlays can return a static list or query the GitLab group API dynamically. The legacy `T3_FOLLOWUP_REPOS` env var is not read by the code — configure the overlay instead.
 
