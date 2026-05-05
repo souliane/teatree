@@ -30,7 +30,7 @@ Load `ac-python` and `ac-django` — all code must follow their review checklist
 2. **Fetch the prioritized board** (see `/teatree-plan` § 6) and sort by effort (quick wins first).
 3. **For each ticket**, in order:
    - Read the issue. If it requires design decisions or user input, **skip it** and move to the next.
-   - Create a worktree at `~/workspace/souliane/tickets/<slug>`.
+   - Create a worktree via `t3 teatree workspace ticket <ticket_url>` (uses `$T3_WORKSPACE_DIR`).
    - Implement following `ac-python`/`ac-django` standards. When a teatree change affects the overlay API, make the corresponding overlay fix in the same session.
    - Run tests + lint, self-review with a `t3:reviewer` sub-agent.
    - Push, create PR, wait for CI, merge.
