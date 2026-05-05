@@ -1,5 +1,6 @@
 """Tests for teatree.cli_reference — introspection-based CLI doc generation."""
 
+import pytest
 import typer
 
 from teatree.cli import app as real_app
@@ -52,6 +53,7 @@ class TestBuildCliReferenceFromApp:
         assert "`t3 config`" in result
         assert "`t3 dashboard`" in result
 
+    @pytest.mark.timeout(30)
     def test_resolves_overlay_proxy_leaves_to_real_typer_app(self) -> None:
         """Overlay proxy leaves tagged with ``overlay_proxy`` render real leaf options."""
         import django  # noqa: PLC0415
