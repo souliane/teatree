@@ -54,12 +54,12 @@ When the auto-mode classifier denies a tool call (Bash command rejected, MCP cal
 **Required response, every time:**
 
 1. **Stop.** Drop whatever you were doing. Do not start an alternative approach in the same response.
-2. **Inform the user** in plain text: which command was denied, what you were trying to accomplish, and the smallest static permission rule that would have allowed it (e.g. `Bash(gh issue create *)`, `Bash(docker buildx prune *)`).
-3. **Suggest the fix.** Provide a paste-ready snippet for the user's `~/.claude/settings.json` (`permissions.allow` array) that, once applied, lets the same command succeed when retried in the **same session**. The snippet must be the smallest rule that covers the use case — never a blanket `Bash` or `Bash(* *)`.
-4. **Ask via `AskUserQuestion`** with two options:
-   - **"Allow it (relax classifier)"** — user pastes the snippet into `~/.claude/settings.json`, then you retry the original command.
+2. **Inform the user** in plain text: which command was denied, what you were trying to accomplish, and the smallest static permission rule that would have allowed it (e.g. `Bash(gh issue create *)`, `Bash(docker buildx prune *)`). The rule must be the smallest rule that covers the use case — never a blanket `Bash` or `Bash(* *)`.
+3. **Ask via `AskUserQuestion`** with two options:
+   - **"Allow it (relax classifier)"** — preferred. You then attempt the edit yourself (see step 4); only if the harness blocks the write do you fall back to a paste-ready snippet for the user to apply.
    - **"Keep the denial (do it differently)"** — you propose a concrete alternative path (different tool, manual step, API call) and proceed only after the user picks one.
-5. **Wait for the answer.** Do not retry the denied command, do not invent workarounds, do not file tickets, do not start unrelated work, until the user has chosen.
+4. **If the user picked "Allow it":** attempt to add the rule to the user's `~/.claude/settings.json` (`permissions.allow` array) yourself, via the `Edit` tool. Read the file first, merge the new entry into the existing array, write it back. **If the write succeeds**, retry the original command. **If the write is denied** by the harness self-modification guardrail, only then fall back: hand over a paste-ready snippet, wait for the user to apply it, then retry. Do not preemptively skip the edit attempt — the goal is zero manual operations for the user when the harness allows it.
+5. **Wait for the answer.** Do not retry the denied command, do not invent workarounds, do not file tickets, do not start unrelated work, until the user has chosen and (if relaxing) the new rule is in place.
 
 **Banned reactions to a classifier denial:**
 
@@ -74,7 +74,7 @@ When the auto-mode classifier denies a tool call (Bash command rejected, MCP cal
 **Boundary: who edits permissions where.**
 
 - Teatree (this skill, BLUEPRINT, plugin `settings.json`) defines the _protocol_. Teatree never relaxes permissions on the user's behalf.
-- The agent **may suggest** an addition to `~/.claude/settings.json` (user scope) but **must not write** to it — Claude Code's autonomy guardrail blocks those edits, and that's by design. Hand the snippet over; the user pastes it.
+- The agent **attempts** the edit to `~/.claude/settings.json` (user scope) directly — that's the path with zero manual steps for the user. Many users have a standing authorization for this in their `autoMode.allow`. The agent only falls back to handing over a paste-ready snippet **after** the harness self-modification guardrail blocks the write — never as the default path. The snippet is the manual fallback, not the primary mechanism.
 - Plugin-distributed permissions (`plugins/t3/settings.json`, `CLAUDE.md` standing clauses) are **never** the right place to relax for a single workflow — that would grant the standing right to every user of the plugin. Refuse if asked to do this; explain that user-scope `settings.json` is the right knob.
 
 ## Context Transparency
