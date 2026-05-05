@@ -154,7 +154,7 @@ def main() -> None:
     """CLI entry point for pre-commit and manual validation."""
     paths = [Path(p) for p in sys.argv[1:]]
     if not paths:
-        print("Usage: python -m teatree.skill_schema <SKILL.md ...>")  # noqa: T201
+        sys.stdout.write("Usage: python -m teatree.skill_schema <SKILL.md ...>\n")
         sys.exit(1)
 
     all_errors: list[str] = []
@@ -169,15 +169,15 @@ def main() -> None:
         all_warnings.extend(warns)
 
     for warning in all_warnings:
-        print(f"WARN: {warning}")  # noqa: T201
+        sys.stdout.write(f"WARN: {warning}\n")
     for error in all_errors:
-        print(f"ERROR: {error}")  # noqa: T201
+        sys.stdout.write(f"ERROR: {error}\n")
 
     if all_errors:
-        print(f"\nFAIL — {len(all_errors)} error(s)")  # noqa: T201
+        sys.stdout.write(f"\nFAIL — {len(all_errors)} error(s)\n")
         sys.exit(1)
     else:
-        print("PASS")  # noqa: T201
+        sys.stdout.write("PASS\n")
 
 
 if __name__ == "__main__":
