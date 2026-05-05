@@ -15,9 +15,9 @@ agents:
 dependencies:
   apm:
   - obra/superpowers#1f20bef3f59b85ad7b52718f822e37c4478a3ff5  # v5.0.7
-  - souliane/skills/ac-reviewing-codebase#b5348f4d334a48c552a64c710e722e34107e6402
-  - souliane/skills/ac-python#b5348f4d334a48c552a64c710e722e34107e6402
-  - souliane/skills/ac-django#b5348f4d334a48c552a64c710e722e34107e6402
+  - souliane/skills/ac-reviewing-codebase#d0008a39e9b1b9ba905e15380ee62ef459183dfd
+  - souliane/skills/ac-python#d0008a39e9b1b9ba905e15380ee62ef459183dfd
+  - souliane/skills/ac-django#d0008a39e9b1b9ba905e15380ee62ef459183dfd
   - souliane/teatree
 install:
   pip: teatree
