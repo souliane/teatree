@@ -6,6 +6,7 @@ bridge subcommands, overlay command registration, overlay subcommands
 lifecycle), overlay config subcommands, and overlay tool registration.
 """
 
+import importlib
 import json
 import os
 from pathlib import Path
@@ -24,10 +25,48 @@ import teatree.core.overlay_loader as overlay_loader_mod
 import teatree.utils.run as utils_run_mod
 from teatree.cli import register_overlay_commands
 from teatree.cli.dashboard import DashboardGuard
-from teatree.cli.overlay import OverlayAppBuilder, managepy, uv_cmd
+from teatree.cli.overlay import DJANGO_GROUPS, OverlayAppBuilder, managepy, uv_cmd
 from teatree.cli.overlay import _uvicorn as _uvicorn_fn
 
 runner = CliRunner()
+
+
+def _registered_command_names(typer_app: typer.Typer) -> set[str]:
+    """Return the set of subcommand names a django-typer Command exposes."""
+    names: set[str] = set()
+    for cmd in typer_app.registered_commands:
+        if cmd.name:
+            names.add(cmd.name)
+        elif cmd.callback is not None:
+            names.add(cmd.callback.__name__.replace("_", "-"))
+    return names
+
+
+class TestDjangoGroupsParity:
+    """Static ``DJANGO_GROUPS`` must match the live ``manage.py`` command tree.
+
+    Drift in either direction breaks the overlay proxy: a missing static entry
+    surfaces as ``No such command 'X'``; a stale entry surfaces as a typer
+    error when the django-typer command rejects the unknown subcommand.
+    """
+
+    def test_every_group_matches_manage_py_commands(self) -> None:
+        for group_name, (_, subcommands) in DJANGO_GROUPS.items():
+            module = importlib.import_module(f"teatree.core.management.commands.{group_name}")
+            cmd_cls = module.Command
+            assert hasattr(cmd_cls, "typer_app"), f"Command for {group_name!r} is not a django-typer command"
+            actual = _registered_command_names(cmd_cls.typer_app)
+            declared = {sub for sub, _ in subcommands}
+            missing_in_static = actual - declared
+            stale_in_static = declared - actual
+            assert not missing_in_static, (
+                f"{group_name}: subcommands exist on the Django Command but are not declared in "
+                f"DJANGO_GROUPS: {sorted(missing_in_static)}"
+            )
+            assert not stale_in_static, (
+                f"{group_name}: DJANGO_GROUPS declares subcommands that no longer exist on the "
+                f"Django Command: {sorted(stale_in_static)}"
+            )
 
 
 class TestUvCmd:

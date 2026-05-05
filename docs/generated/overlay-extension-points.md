@@ -9,6 +9,9 @@ Base class: `teatree.core.overlay.OverlayBase`
 | `get_repos` | Yes | `() -> list[str]` | Declare the repositories that TeaTree should provision for this overlay. |
 | `get_provision_steps` | Yes | `(worktree: 'Worktree') -> list[teatree.types.ProvisionStep]` | Return the ordered setup steps for a newly created worktree. |
 | `get_env_extra` | No | `(worktree: 'Worktree') -> dict[str, str]` | Add overlay-specific environment variables to the generated worktree env file. |
+| `get_required_ports` | No | `(worktree: 'Worktree') -> set[str]` | Declare which port keys must be allocated per worktree (empty for single-service overlays). |
+| `get_port_env` | No | `(ports: dict[str, int]) -> dict[str, str]` | Render the env vars that publish allocated host ports to docker-compose. |
+| `uses_redis` | No | `() -> bool` | Declare whether this overlay needs the shared teatree-redis container and a per-ticket DB index. |
 | `get_run_commands` | No | `(worktree: 'Worktree') -> RunCommands` | Expose named service commands for `worktree start` and operator discovery. |
 | `get_db_import_strategy` | No | `(worktree: 'Worktree') -> teatree.types.DbImportStrategy \| None` | Describe how a worktree database should be provisioned or restored. |
 | `get_post_db_steps` | No | `(worktree: 'Worktree') -> list[teatree.types.ProvisionStep]` | Return callbacks to run after database setup completes. |

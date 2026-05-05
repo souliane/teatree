@@ -29,6 +29,24 @@
       "signature": "(worktree: 'Worktree') -> dict[str, str]"
     },
     {
+      "description": "Declare which port keys must be allocated per worktree (empty for single-service overlays).",
+      "name": "get_required_ports",
+      "required": false,
+      "signature": "(worktree: 'Worktree') -> set[str]"
+    },
+    {
+      "description": "Render the env vars that publish allocated host ports to docker-compose.",
+      "name": "get_port_env",
+      "required": false,
+      "signature": "(ports: dict[str, int]) -> dict[str, str]"
+    },
+    {
+      "description": "Declare whether this overlay needs the shared teatree-redis container and a per-ticket DB index.",
+      "name": "uses_redis",
+      "required": false,
+      "signature": "() -> bool"
+    },
+    {
       "description": "Expose named service commands for `worktree start` and operator discovery.",
       "name": "get_run_commands",
       "required": false,

@@ -1074,6 +1074,7 @@ Usage: t3 teatree worktree [OPTIONS] COMMAND [ARGS]...
 │             for one worktree.                                                │
 │ start       Boot ``docker compose up`` for one worktree.                     │
 │ verify      Run overlay health checks for one worktree.                      │
+│ ready       Run runtime readiness probes for one worktree.                   │
 │ teardown    Stop docker, drop DB, remove git worktree, delete row.           │
 │ status      Report FSM state, branch, and allocated host ports for one       │
 │             worktree.                                                        │
@@ -1142,6 +1143,25 @@ Usage: t3 teatree worktree verify [OPTIONS]
  Thin wrapper around ``Worktree.verify()``: SERVICES_UP → READY +
  runner records URLs and reports failed checks. After the runner,
  runs the overlay's readiness probes — exits 1 if any fail.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --path        TEXT  Worktree path (auto-detects from PWD if empty).          │
+│ --help              Show this message and exit.                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree worktree ready`
+
+```
+Usage: t3 teatree worktree ready [OPTIONS]
+
+ Run runtime readiness probes for one worktree.
+
+ Strict: exits 0 iff every probe declared by
+ ``OverlayBase.get_readiness_probes``
+ passes. Does not mutate worktree state. Use after ``start`` to verify
+ the env is actually serving — answers the question ``verify`` cannot
+ (HTTP, CORS round-trip, end-to-end auth, fixture seed integrity).
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --path        TEXT  Worktree path (auto-detects from PWD if empty).          │
@@ -1235,6 +1255,8 @@ Usage: t3 teatree workspace [OPTIONS] COMMAND [ARGS]...
 │ provision     Provision every worktree in the current ticket workspace.      │
 │ start         Start docker for every worktree in the current ticket          │
 │               workspace.                                                     │
+│ ready         Run readiness probes for every worktree in the ticket          │
+│               workspace.                                                     │
 │ teardown      Tear down every worktree in the current ticket workspace.      │
 │ finalize      Squash worktree commits and rebase on the default branch.      │
 │ doctor        Detect state drift across every store; optionally fix it.      │
@@ -1305,6 +1327,25 @@ Usage: t3 teatree workspace start [OPTIONS]
  ``Worktree.start_services()`` on each worktree (CLI runs the
  runner synchronously). After every worktree starts, runs each
  overlay's readiness probes — exits 1 if any probe fails.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --path        TEXT  Worktree path inside the workspace (auto-detects from    │
+│                     PWD).                                                    │
+│ --help              Show this message and exit.                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree workspace ready`
+
+```
+Usage: t3 teatree workspace ready [OPTIONS]
+
+ Run readiness probes for every worktree in the ticket workspace.
+
+ Strict: exits 0 iff every probe across every worktree passes. No
+ per-worktree skip flag and no env-var escape — if a probe doesn't
+ apply to a variant, the overlay's ``get_readiness_probes`` returns
+ an empty list (or omits that probe) for that worktree.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --path        TEXT  Worktree path inside the workspace (auto-detects from    │
@@ -1876,13 +1917,28 @@ Usage: t3 teatree tasks [OPTIONS] COMMAND [ARGS]...
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ claim                 Claim the next available task.                         │
 │ cancel                Cancel a task by ID.                                   │
+│ claim                 Claim the next available task.                         │
+│ create                Enqueue the next-phase task for a ticket.              │
 │ list                  List tasks with optional filters.                      │
 │ start                 Claim and run the next interactive task in the current │
 │                       terminal.                                              │
 │ work-next-sdk         Claim and execute an headless task.                    │
 │ work-next-user-input  Claim and execute a user input task.                   │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree tasks cancel`
+
+```
+Usage: t3 teatree tasks cancel [OPTIONS] TASK_ID
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    task_id      INTEGER  [required]                                        │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --confirm    --no-confirm      [default: no-confirm]                         │
+│ --help                         Show this message and exit.                   │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -1898,17 +1954,34 @@ Usage: t3 teatree tasks claim [OPTIONS]
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
-##### `t3 teatree tasks cancel`
+##### `t3 teatree tasks create`
 
 ```
-Usage: t3 teatree tasks cancel [OPTIONS] TASK_ID
+Usage: t3 teatree tasks create [OPTIONS] TICKET
+
+ Enqueue the next-phase task for a ticket.
+
+ Used by `/t3:next` to hand off from one phase to the next. Headless by default
+ so a worker
+ claims it immediately; pass `--interactive` for tasks that require human
+ input.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    task_id      INTEGER  [required]                                        │
+│ *    ticket      INTEGER  Ticket PK (see `ticket_id` in `tasks list`).       │
+│                           [required]                                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --confirm    --no-confirm      [default: no-confirm]                         │
-│ --help                         Show this message and exit.                   │
+│ --phase                              TEXT  Phase: scoping, coding, testing,  │
+│                                            reviewing, shipping.              │
+│ --reason                             TEXT  Prompt body for the worker. Use   │
+│                                            '-' to read from stdin. Overrides │
+│                                            --reason-file.                    │
+│ --reason-file                        PATH  Read the prompt body from a file. │
+│ --interactive    --no-interactive          Create an interactive task        │
+│                                            instead of the default headless   │
+│                                            one.                              │
+│                                            [default: no-interactive]         │
+│ --help                                     Show this message and exit.       │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

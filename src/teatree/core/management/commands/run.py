@@ -91,8 +91,8 @@ class Command(TyperCommand):
         from teatree.config import load_config  # noqa: PLC0415
         from teatree.core.runners.worktree_start import _compose_env  # noqa: PLC0415
 
-        ports = find_free_ports(str(load_config().user.workspace_dir))
-        env = {**os.environ, **overlay.get_env_extra(worktree), **_compose_env(ports)}
+        ports = find_free_ports(str(load_config().user.workspace_dir), overlay.get_required_ports(worktree))
+        env = {**os.environ, **overlay.get_env_extra(worktree), **_compose_env(ports, overlay)}
         env.pop("VIRTUAL_ENV", None)
 
         cmd = ["docker", "compose", "-p", project, "-f", compose_file, "up", "-d", "web"]
@@ -116,8 +116,8 @@ class Command(TyperCommand):
         overlay = get_overlay()
 
         # Allocate ports so the frontend uses a dynamic port, not the default 4200
-        ports = find_free_ports(str(load_config().user.workspace_dir))
-        port_env = _compose_env(ports)
+        ports = find_free_ports(str(load_config().user.workspace_dir), overlay.get_required_ports(worktree))
+        port_env = _compose_env(ports, overlay)
         frontend_port = ports.get("frontend", 4200)
 
         # Kill stale process on the allocated port
