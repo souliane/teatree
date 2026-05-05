@@ -84,7 +84,7 @@ DJANGO_GROUPS: dict[str, tuple[str, list[tuple[str, str]]]] = {
         "Pull request helpers.",
         [
             ("create", "Create a merge request for the ticket's branch."),
-            ("ensure-draft", "Create a draft PR for an orphan branch (idempotent)."),
+            ("ensure-pr", "Create a PR for an orphan branch (idempotent)."),
             ("check-gates", "Check whether session gates allow a phase transition."),
             ("fetch-issue", "Fetch issue details from the configured tracker."),
             ("detect-tenant", "Detect the current tenant variant from the overlay."),

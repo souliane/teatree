@@ -238,10 +238,10 @@ repos:
         pass_filenames: false
         always_run: true
         stages: [push]
-      - id: ensure-draft-pr
-        name: ensure draft PR exists (no-orphan invariant)
+      - id: ensure-pr
+        name: ensure PR exists (no-orphan invariant)
         language: system
-        entry: uv run t3 teatree pr ensure-draft
+        entry: uv run t3 teatree pr ensure-pr
         pass_filenames: false
         always_run: true
         stages: [push]

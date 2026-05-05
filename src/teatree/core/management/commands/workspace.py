@@ -60,7 +60,7 @@ def _warn_orphans(write: Callable[[str], None]) -> None:
     if len(orphans) > len(preview):
         write(f"  - …and {len(orphans) - len(preview)} more")
     write(
-        "Run `t3 <overlay> pr ensure-draft --branch <name>` to track them, "
+        "Run `t3 <overlay> pr ensure-pr --branch <name>` to track them, "
         "or `t3 <overlay> workspace clean-all` to reap synced ones.",
     )
 
