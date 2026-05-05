@@ -55,13 +55,32 @@ def _next_free_port(start: int, *, used: set[int]) -> int:
     return port
 
 
-def find_free_ports(workspace_dir: str) -> Ports:
-    """Find three free host ports for backend, frontend, postgres.
+# Default starting host ports per known key. Overlays declaring a key not
+# listed here fall back to ``DEFAULT_START_PORT`` for sequential allocation.
+START_PORTS: dict[str, int] = {
+    "backend": 8001,
+    "frontend": 4201,
+    # Postgres: default 5432 for shared server, 5433+ for isolated.
+    "postgres": 5432,
+}
+DEFAULT_START_PORT = 9001
+
+
+def find_free_ports(workspace_dir: str, keys: set[str]) -> Ports:
+    """Find a free host port for each *key* the overlay requested.
+
+    Returns a ``Ports`` dict with exactly the requested ``keys``. The empty
+    set yields an empty dict — overlays that need no host ports (e.g.
+    pure-Python tools without docker compose) opt out simply by declaring
+    no required ports.
 
     Uses a file lock in *workspace_dir* to prevent concurrent allocations
     from picking the same ports.  Port availability is checked via socket
     bind only — no file scanning.
     """
+    if not keys:
+        return {}
+
     lock_file = Path(workspace_dir) / ".port-allocation.lock"
     lock_file.parent.mkdir(parents=True, exist_ok=True)
 
@@ -69,17 +88,14 @@ def find_free_ports(workspace_dir: str) -> Ports:
     try:
         fcntl.flock(handle, fcntl.LOCK_EX)
         used: set[int] = set()
-        backend = _next_free_port(8001, used=used)
-        used.add(backend)
-        frontend = _next_free_port(4201, used=used)
-        used.add(frontend)
-        # Postgres: default 5432 for shared server, 5433+ for isolated
-        postgres = _next_free_port(5432, used=used)
-        return {
-            "backend": backend,
-            "frontend": frontend,
-            "postgres": postgres,
-        }
+        result: Ports = {}
+        # Allocate in deterministic order for reproducibility.
+        for key in sorted(keys):
+            start = START_PORTS.get(key, DEFAULT_START_PORT)
+            port = _next_free_port(start, used=used)
+            used.add(port)
+            result[key] = port
+        return result
     finally:
         fcntl.flock(handle, fcntl.LOCK_UN)
         handle.close()
@@ -103,7 +119,7 @@ def revalidate_ports(ports: Ports, workspace_dir: str) -> Ports:
             if not port_in_use(port):
                 result[name] = port
             else:
-                start = CONTAINER_PORTS.get(name, port) + 1
+                start = START_PORTS.get(name, port + 1)
                 new_port = _next_free_port(start, used=used)
                 used.add(new_port)
                 result[name] = new_port

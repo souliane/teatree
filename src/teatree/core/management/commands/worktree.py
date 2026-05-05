@@ -143,10 +143,10 @@ class Command(TyperCommand):
         ticket = Ticket.objects.get(pk=worktree.ticket.pk)
 
         _update_ticket_variant(ticket, variant)
-        redis_container.ensure_running()
-        Ticket.objects.allocate_redis_slot(ticket)
-
         resolved_overlay = get_overlay()
+        if resolved_overlay.uses_redis():
+            redis_container.ensure_running()
+            Ticket.objects.allocate_redis_slot(ticket)
         validate_docker_service_contract(resolved_overlay, worktree)
         _build_base_images(resolved_overlay, worktree, writer=self.stdout.write)
 
@@ -202,7 +202,10 @@ class Command(TyperCommand):
 
         from teatree.config import load_config  # noqa: PLC0415
 
-        ports = find_free_ports(str(load_config().user.workspace_dir))
+        ports = find_free_ports(
+            str(load_config().user.workspace_dir),
+            resolved_overlay.get_required_ports(worktree),
+        )
         self.stdout.write(f"  Ports: {ports}")
 
         commands = list(resolved_overlay.get_run_commands(worktree))

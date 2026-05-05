@@ -223,7 +223,7 @@ class OverlayMetadata:
 # ── Overlay base class ───────────────────────────────────────────────
 
 
-class OverlayBase(ABC):
+class OverlayBase(ABC):  # noqa: PLR0904 — overlay extension API; hook count reflects surface, not poor encapsulation.
     django_app: str | None = None
     config: OverlayConfig = OverlayConfig()
     metadata: OverlayMetadata = OverlayMetadata()
@@ -307,6 +307,37 @@ class OverlayBase(ABC):
         """
         _ = worktree
         return set()
+
+    # ── Port hooks ───────────────────────────────────────────────────
+
+    def get_required_ports(self, worktree: "Worktree") -> set[str]:
+        """Return the set of port keys this overlay needs allocated per worktree.
+
+        Default: empty set. Overlays opt in by declaring the keys they map in
+        their compose templates (e.g., ``{"backend", "frontend", "postgres"}``).
+        Pure-Python overlays without docker compose declare nothing here.
+        """
+        _ = worktree
+        return set()
+
+    def get_port_env(self, ports: dict[str, int]) -> dict[str, str]:
+        """Return the env vars that publish allocated host *ports* to compose.
+
+        Default mapping is generic: each key ``X`` becomes ``X_HOST_PORT``
+        (uppercased). Overlays override to add convention-specific aliases
+        (e.g. ``POSTGRES_PORT`` for ``psql``, ``CORS_WHITE_FRONT`` for
+        Django CORS) without changing core.
+        """
+        return {f"{key.upper()}_HOST_PORT": str(port) for key, port in ports.items()}
+
+    def uses_redis(self) -> bool:
+        """Return True when this overlay needs the shared teatree-redis container.
+
+        Default ``False`` — single-service overlays (CLI tools, doc generators,
+        teatree itself) skip the redis-allocation step. Multi-service overlays
+        with Celery/RQ/cache override to ``True``.
+        """
+        return False
 
     # ── Run hooks ────────────────────────────────────────────────────
 
@@ -453,14 +484,5 @@ def _default_health_checks(overlay: OverlayBase, worktree: "Worktree") -> list[H
                         description=f"Symlink target populated: {spec.get('path', '')}",
                     )
                 )
-
-    if worktree.db_name:
-        checks.append(
-            HealthCheck(
-                name="db-name-set",
-                check=lambda: bool(worktree.db_name),
-                description=f"Database name assigned: {worktree.db_name}",
-            )
-        )
 
     return checks

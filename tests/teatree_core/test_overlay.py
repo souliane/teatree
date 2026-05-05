@@ -132,8 +132,17 @@ class TestOverlayBase(TestCase):
             assert overlay.get_post_db_steps(worktree) == []
             assert overlay.get_symlinks(worktree) == []
             assert overlay.get_services_config(worktree) == {}
+            assert overlay.get_required_ports(worktree) == set()
+            assert overlay.uses_redis() is False
+            assert overlay.get_port_env({}) == {}
             assert overlay.metadata.validate_mr("title", "description") == {"errors": [], "warnings": []}
             assert overlay.metadata.get_skill_metadata() == {}
+
+    def test_get_port_env_renders_generic_host_port_keys(self) -> None:
+        """Default ``get_port_env`` produces ``${KEY}_HOST_PORT`` for each port."""
+        overlay = DummyOverlay()
+        env = overlay.get_port_env({"backend": 8001, "web": 9100})
+        assert env == {"BACKEND_HOST_PORT": "8001", "WEB_HOST_PORT": "9100"}
 
     def test_abstract_fallthroughs_raise_not_implemented(self) -> None:
         overlay = SuperCallingOverlay()
@@ -215,7 +224,7 @@ class TestOverlayConfig(TestCase):
 
 
 class TestDefaultHealthChecks(TestCase):
-    def test_includes_worktree_symlink_and_db_checks(self) -> None:
+    def test_includes_worktree_and_symlink_checks(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             wt_path = Path(tmp) / "worktree"
             wt_path.mkdir()
@@ -244,7 +253,30 @@ class TestDefaultHealthChecks(TestCase):
             names = [c.name for c in checks]
             assert "worktree-exists" in names
             assert "symlink-link" in names
-            assert "db-name-set" in names
+
+    def test_omits_db_name_check_even_when_db_name_is_set(self) -> None:
+        """``db-name-set`` is not a generic invariant — overlays that need a DB opt in.
+
+        Overlays that need a DB declare the check via ``get_health_checks``.
+        Single-service overlays (CLI tools, doc generators) without a
+        database must not see this check.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            wt_path = Path(tmp) / "worktree"
+            wt_path.mkdir()
+
+            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/db")
+            worktree = Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="backend",
+                branch="feature",
+                db_name="test_db",
+                extra={"worktree_path": str(wt_path)},
+            )
+
+            checks = DummyOverlay().get_health_checks(worktree)
+            assert "db-name-set" not in [c.name for c in checks]
 
     def test_symlink_check_fails_when_source_directory_is_empty(self) -> None:
         """A symlink pointing at an empty source directory must fail the health check.
