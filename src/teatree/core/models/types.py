@@ -36,6 +36,7 @@ class TicketExtra(TypedDict, total=False):
 
 class WorktreeExtra(TypedDict, total=False):
     worktree_path: str
+    clone_path: str
     services: list[str]
     urls: dict[str, str]
     pids: dict[str, int]
