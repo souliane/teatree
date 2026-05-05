@@ -53,11 +53,10 @@ def build_unified_sessions(
         seen_task_ids.add(task_row.task_id)
         status = task_row.status.lower()
         row_status = "running" if status == "claimed" else "queued"
-        target = "headless" if "headless" in task_row.session_agent_id.lower() else "interactive"
         rows.append(
             UnifiedSessionRow(
                 row_status=row_status,
-                execution_target=target,
+                execution_target=task_row.execution_target,
                 task_id=task_row.task_id,
                 ticket_id=task_row.ticket_id,
                 ticket_display_id=task_row.ticket_display_id,
