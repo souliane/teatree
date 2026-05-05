@@ -308,19 +308,23 @@ class TestInfoCommand:
 
 class TestConfigCommands:
     def test_write_skill_cache_writes_json(self, tmp_path, monkeypatch):
-        """write-skill-cache writes overlay metadata to cache."""
+        """write-skill-cache delegates to the canonical _write_skill_metadata_cache helper."""
+        import teatree.core.views._startup as startup_mod  # noqa: PLC0415
         from teatree.config import OverlayEntry  # noqa: PLC0415
 
         active = OverlayEntry(name="test", overlay_class="test.overlay.TestOverlay")
         mock_overlay = MagicMock()
         mock_overlay.metadata.get_skill_metadata.return_value = {"skill_path": "skills/test/SKILL.md"}
 
-        monkeypatch.setattr("teatree.config.DATA_DIR", tmp_path)
+        monkeypatch.setattr(startup_mod, "DATA_DIR", tmp_path)
         monkeypatch.delenv("DJANGO_SETTINGS_MODULE", raising=False)
         with (
             patch.object(config_mod, "discover_active_overlay", return_value=active),
             patch("django.setup"),
-            patch.object(overlay_loader_mod, "get_overlay", return_value=mock_overlay),
+            patch.object(startup_mod, "get_overlay", return_value=mock_overlay),
+            patch.object(startup_mod, "_build_trigger_index", return_value=[]),
+            patch.object(startup_mod, "resolve_all", return_value={}),
+            patch.object(startup_mod, "_collect_skill_mtimes", return_value={}),
         ):
             result = runner.invoke(app, ["config", "write-skill-cache"])
             assert result.exit_code == 0
@@ -329,6 +333,8 @@ class TestConfigCommands:
             assert cache.is_file()
             data = json.loads(cache.read_text())
             assert data["skill_path"] == "skills/test/SKILL.md"
+            assert data["trigger_index"] == []
+            assert "teatree_version" in data
 
     def test_write_skill_cache_no_active_overlay(self, monkeypatch):
         """write-skill-cache works when DJANGO_SETTINGS_MODULE is already set."""

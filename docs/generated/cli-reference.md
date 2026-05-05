@@ -149,8 +149,8 @@ Usage: t3 config [OPTIONS] COMMAND [ARGS]...
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
 │ check-update       Check if a newer version of teatree is available.         │
-│ write-skill-cache  Write overlay skill metadata to XDG cache for hook        │
-│                    consumption.                                              │
+│ write-skill-cache  Write overlay skill metadata + trigger index to XDG cache │
+│                    for hook consumption.                                     │
 │ autoload           List skill auto-loading rules from context-match.yml      │
 │                    files.                                                    │
 │ cache              Show the XDG skill-metadata cache content.                │
@@ -176,7 +176,8 @@ Usage: t3 config check-update [OPTIONS]
 ```
 Usage: t3 config write-skill-cache [OPTIONS]
 
- Write overlay skill metadata to XDG cache for hook consumption.
+ Write overlay skill metadata + trigger index to XDG cache for hook
+ consumption.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
@@ -1122,7 +1123,8 @@ Usage: t3 teatree worktree start [OPTIONS]
  to SERVICES_UP and enqueues ``execute_worktree_start``; the runner
  also runs synchronously here so the operator sees immediate output.
  Allocates free host ports, refreshes the env cache, runs overlay
- pre-run steps, then ``docker compose up -d``.
+ pre-run steps, then ``docker compose up -d``. After the runner
+ succeeds, runs the overlay's readiness probes — exits 1 if any fail.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --path        TEXT  Worktree path (auto-detects from PWD if empty).          │
@@ -1138,7 +1140,8 @@ Usage: t3 teatree worktree verify [OPTIONS]
  Run overlay health checks for one worktree.
 
  Thin wrapper around ``Worktree.verify()``: SERVICES_UP → READY +
- runner records URLs and reports failed checks. Best-effort.
+ runner records URLs and reports failed checks. After the runner,
+ runs the overlay's readiness probes — exits 1 if any fail.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --path        TEXT  Worktree path (auto-detects from PWD if empty).          │
@@ -1300,7 +1303,8 @@ Usage: t3 teatree workspace start [OPTIONS]
 
  Allocates one shared port set across the workspace, then fires
  ``Worktree.start_services()`` on each worktree (CLI runs the
- runner synchronously).
+ runner synchronously). After every worktree starts, runs each
+ overlay's readiness probes — exits 1 if any probe fails.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --path        TEXT  Worktree path inside the workspace (auto-detects from    │
