@@ -1,6 +1,7 @@
 """GitHub backend — code host and project board sync via ``gh`` CLI."""
 
 import json
+import os
 from dataclasses import dataclass
 from typing import TypedDict, cast
 from urllib.parse import quote_plus
@@ -31,11 +32,14 @@ class ProjectItem:
 
 
 def _run_gh(*args: str, token: str = "") -> CompletedProcess[str]:
-    """Run a ``gh`` CLI command and return the result."""
-    cmd = list(args)
-    if token:
-        cmd.extend(["--header", f"Authorization: Bearer {token}"])
-    return run_checked(cmd)
+    """Run a ``gh`` CLI command and return the result.
+
+    Auth via ``GH_TOKEN`` env, never ``--header``: only ``gh api`` accepts
+    ``--header``; injecting it into ``gh pr create`` fails with
+    ``unknown flag --header``.
+    """
+    env = {**os.environ, "GH_TOKEN": token} if token else None
+    return run_checked(list(args), env=env)
 
 
 def _gh_api_get(endpoint: str, *, token: str = "") -> object:

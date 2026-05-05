@@ -747,3 +747,27 @@ class TestOverlaySubcommands:
         builder = OverlayAppBuilder("test", tmp_path, "test.settings")
         builder._register_overlay_tools()
         assert len(builder.overlay_app.registered_groups) == 0
+
+    def test_register_tools_ignores_non_canonical_paths(self, tmp_path):
+        """Only ``skills/*/hook-config/tool-commands.json`` is picked up.
+
+        Regression: ``rglob`` previously walked the entire project tree, which
+        scanned ``.venv/``, ``node_modules/``, ``__pycache__/``, etc. and was
+        slow on large worktrees. The bounded ``glob`` matches only the
+        documented per-skill layout.
+        """
+        nested = tmp_path / "deep" / "nested" / "hook-config"
+        nested.mkdir(parents=True)
+        (nested / "tool-commands.json").write_text(
+            json.dumps([{"name": "ghost", "help": "Should be ignored", "command": "tool ghost"}])
+        )
+        venv_hook = tmp_path / ".venv" / "lib" / "skills" / "stub" / "hook-config"
+        venv_hook.mkdir(parents=True)
+        (venv_hook / "tool-commands.json").write_text(
+            json.dumps([{"name": "vendored", "help": "Should be ignored", "command": "tool vendored"}])
+        )
+
+        builder = OverlayAppBuilder("test", tmp_path, "test.settings")
+        builder._register_overlay_tools()
+
+        assert len(builder.overlay_app.registered_groups) == 0

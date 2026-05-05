@@ -99,6 +99,7 @@ class DashboardTaskRow:
     last_error: str
     result_summary: str
     session_agent_id: str
+    execution_target: str
     phase: str
     issue_url: str = ""
     elapsed_time: str = ""
