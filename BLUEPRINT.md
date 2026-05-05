@@ -1015,6 +1015,8 @@ Three install paths, one source of truth:
 
 The agent-facing hook layer (`hooks/scripts/hook_router.py`) blocks `uv run t3` Bash invocations and directs agents to call the globally installed `t3` instead.
 
+`UserPromptSubmit` skill detection (`scripts/lib/skill_loader.py`) enriches the prompt with linked MR/issue titles before keyword matching via `teatree.url_title_fetcher`. This lets a domain skill (e.g. `home-savings-le`) auto-load when the prompt contains only a bare MR URL whose *title* — not its URL — carries the trigger keyword. Titles are fetched in parallel via `glab`/`gh` (1.5s per fetch, 4.0s total budget) and cached at `~/.cache/teatree/url-titles.json`. Disable with `T3_HOOK_FETCH_TITLES=0`.
+
 ### 12.4 Bash Permissions
 
 The plugin's `settings.json` ships a **comprehensive** `permissions.allow` list so every command teatree and its overlays legitimately invoke matches a static rule — the auto-mode classifier is never consulted for normal workflow. This keeps day-to-day work friction-free: no surprise prompts, no classifier false-denials on routine operations.

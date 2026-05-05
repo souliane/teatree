@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from lib.trigger_parser import parse_triggers as parse_triggers_from_frontmatter
+from lib.url_title_fetcher import enrich_prompt as _enrich_prompt_with_url_titles
 
 _SRC_DIR = Path(__file__).resolve().parents[2] / "src"
 if str(_SRC_DIR) not in sys.path:
@@ -181,7 +182,8 @@ def detect_intent(
     if not trigger_index:
         return ""
 
-    lp = prompt.lower()
+    enriched = _enrich_prompt_with_url_titles(prompt)
+    lp = enriched.lower()
 
     # Pass 0: Explicit /<skill> slash commands (highest priority).
     # When the prompt starts with a known skill name, use it directly
@@ -266,7 +268,8 @@ def detect_intent_detailed(
     if not trigger_index:
         return _NO_MATCH
 
-    lp = prompt.lower()
+    enriched = _enrich_prompt_with_url_titles(prompt)
+    lp = enriched.lower()
 
     # Pass 0: Explicit /<skill> slash commands.
     slash_match = re.match(r"^/?([a-z][a-z0-9_-]+)", lp.strip())
