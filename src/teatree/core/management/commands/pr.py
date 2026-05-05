@@ -62,7 +62,7 @@ class ShippingGateFailure(TypedDict):
     hint: str
 
 
-class EnsureDraftResult(TypedDict, total=False):
+class EnsurePrResult(TypedDict, total=False):
     skipped: str
     branch: str
     url: str
@@ -263,13 +263,13 @@ class Command(TyperCommand):
             ticket.save()
         return ShipEnqueued(ticket_id=int(ticket.pk), state=str(ticket.state))
 
-    @command(name="ensure-draft")
-    def ensure_draft(
+    @command(name="ensure-pr")
+    def ensure_pr(
         self,
         branch: str = "",
         repo: str = "",
-    ) -> EnsureDraftResult:
-        """Create a draft PR for an orphan branch (idempotent, no-op when a PR already exists).
+    ) -> EnsurePrResult:
+        """Create a PR for an orphan branch (idempotent, no-op when a PR already exists).
 
         An orphan is a branch with commits not on ``origin/main`` (after
         subject-match + tree-equality checks) and no open PR/MR. When this
@@ -280,28 +280,28 @@ class Command(TyperCommand):
         repo_path = repo or "."
         branch_name = branch or git.current_branch(repo=repo_path)
         if not branch_name or branch_name in {"HEAD", "main", "master"}:
-            return EnsureDraftResult(skipped="not on a feature branch", branch=branch_name)
+            return EnsurePrResult(skipped="not on a feature branch", branch=branch_name)
 
         report = classify_branch(repo_path, branch_name)
 
         if report.status is BranchStatus.SYNCED:
-            return EnsureDraftResult(skipped="branch synced to origin/main", branch=branch_name)
+            return EnsurePrResult(skipped="branch synced to origin/main", branch=branch_name)
         if report.status is BranchStatus.OPEN_PR:
-            return EnsureDraftResult(skipped="open PR exists", branch=branch_name, url=report.open_pr_url)
+            return EnsurePrResult(skipped="open PR exists", branch=branch_name, url=report.open_pr_url)
         if report.status is BranchStatus.UNPUSHED_ORPHAN:
-            return EnsureDraftResult(
+            return EnsurePrResult(
                 skipped="branch not on remote yet — re-run after push completes",
                 branch=branch_name,
-                hint=f"t3 <overlay> pr ensure-draft --branch {branch_name}",
+                hint=f"t3 <overlay> pr ensure-pr --branch {branch_name}",
             )
 
         host = code_host_from_overlay()
         if host is None:
-            return EnsureDraftResult(error="no code host configured")
+            return EnsurePrResult(error="no code host configured")
 
         commit_subject, commit_body = git.last_commit_message(repo=repo_path)
         title = commit_subject or f"WIP: {branch_name}"
-        description = commit_body or f"Draft PR auto-created to track branch `{branch_name}`."
+        description = commit_body or f"PR auto-created to track branch `{branch_name}`."
         description = sanitize_close_keywords(description, close_ticket=get_overlay().config.mr_close_ticket)
 
         remote = git.remote_url(repo=repo_path)
@@ -316,10 +316,10 @@ class Command(TyperCommand):
                 description=description,
                 labels=overlay_mr_labels(),
                 assignee=assignee,
-                draft=True,
+                draft=False,
             ),
         )
-        return EnsureDraftResult(branch=branch_name, url=str(raw.get("url", raw.get("web_url", ""))))
+        return EnsurePrResult(branch=branch_name, url=str(raw.get("url", raw.get("web_url", ""))))
 
     @command(name="check-gates")
     def check_gates(self, ticket_id: int, target_phase: str = "shipping") -> dict[str, object]:

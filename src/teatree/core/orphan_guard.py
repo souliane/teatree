@@ -8,8 +8,8 @@ easy to miss when closing a session.
 This module is the single source of truth used by the three enforcement
 points that keep the no-orphan invariant:
 
-- pre-push CLI (``t3 pr ensure-draft``) — auto-create a draft before pushing
-    an orphan so the branch has a tracking artifact from the first push.
+- pre-push CLI (``t3 pr ensure-pr``) — auto-create a PR before pushing an
+    orphan so the branch has a tracking artifact from the first push.
 - session-end hook — surface orphans in ``additionalContext`` so the agent
     sees them before the session closes.
 - ``workspace ticket`` — warn before creating a new worktree when the
