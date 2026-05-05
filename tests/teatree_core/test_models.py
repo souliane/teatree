@@ -106,6 +106,31 @@ def _init_repo_with_branch(repo_dir: Path, *, branch: str, commits_ahead: int) -
         git("commit", "-m", f"add f{i}")
 
 
+class TestTicketNumber(TestCase):
+    """``Ticket.ticket_number`` derives a stable identifier from ``issue_url``.
+
+    The fallback to ``str(self.pk)`` covers issue URLs that do not end in a
+    valid issue number — empty, non-numeric suffix, or the placeholder ``/0``
+    that GitHub and GitLab never assign to a real issue (issue numbers start at 1).
+    """
+
+    def test_returns_trailing_number_when_url_is_well_formed(self) -> None:
+        ticket = Ticket.objects.create(issue_url="https://github.com/example/repo/issues/123")
+        assert ticket.ticket_number == "123"
+
+    def test_falls_back_to_pk_when_url_is_empty(self) -> None:
+        ticket = Ticket.objects.create()
+        assert ticket.ticket_number == str(ticket.pk)
+
+    def test_falls_back_to_pk_when_url_has_no_trailing_number(self) -> None:
+        ticket = Ticket.objects.create(issue_url="https://example.com/no-number")
+        assert ticket.ticket_number == str(ticket.pk)
+
+    def test_falls_back_to_pk_when_url_ends_in_zero(self) -> None:
+        ticket = Ticket.objects.create(issue_url="https://github.com/example/repo/issues/0")
+        assert ticket.ticket_number == str(ticket.pk)
+
+
 class TestTicketTransitions(TestCase):
     @pytest.fixture(autouse=True)
     def _inject_tmp_path(self, tmp_path: Path) -> None:
