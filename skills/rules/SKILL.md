@@ -224,6 +224,12 @@ When the user asks for work that is actionable in the current session — a smal
 - "Want me to open an issue for …?"
 - "As a separate ticket, we should …"
 - "File tickets for (a) and (b), or one combined…?"
+- "separate bug worth fixing later"
+- "worth filing later"
+- "out of scope for this PR" (when the fix is small enough to bundle)
+- "I'll note this for follow-up"
+
+**Defaulting to "later" without asking is treated as "I discovered a bug but I don't care."** A finding that surfaces during a session must result in **action this turn** — either the fix lands, or the user is asked which lane it goes into. Silent deferral is not a lane.
 
 **When deferral IS legitimate** (narrow set):
 
@@ -253,6 +259,14 @@ Decision rubric (apply silently — don't narrate to the user):
 - The work is genuinely big enough to need its own ticket _and_ the user hasn't opted into auto mode for this overlay.
 
 This rule reinforces "Do Work Now" — the bundling decision is part of doing the work, not a separate question to ask.
+
+**When genuinely unsure, ASK — never silently defer.** If the fix is borderline (small but truly orthogonal, or medium-sized but the current PR is already large), present three explicit options to the user via `AskUserQuestion`:
+
+1. **Fix right now and bundle into the current PR** (default — pick this unless reason not to)
+2. **Add to the session TODO list** (fix later this same session, before wrapping up)
+3. **File as a separate issue** (truly out-of-scope or would balloon the change)
+
+Use options 2 and 3 only when there is a concrete reason against option 1. Asking is acceptable; silently writing "worth filing later" and moving on is not.
 
 ## Contribute Mode: Promote Findings to Skills, Not Personal Memory (Non-Negotiable)
 

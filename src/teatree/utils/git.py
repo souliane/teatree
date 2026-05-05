@@ -31,13 +31,16 @@ def log_oneline(repo: str = ".", range_spec: str = "") -> str:
     return run(repo=repo, args=["log", "--oneline", range_spec])
 
 
-def unsynced_commits(repo: str, branch: str) -> list[str]:
-    """Return one-line commit descriptions on *branch* not reachable from any remote.
+def unsynced_commits(repo: str, branch: str, target: str = "origin/main") -> list[str]:
+    """Return one-line commit descriptions on *branch* not reachable from *target*.
 
-    An empty list means the branch is fully synced.
-    Uses ``git log <branch> --not --remotes --oneline``.
+    An empty list means the branch is fully captured by ``target`` (default
+    ``origin/main``). Compared against the default branch — not against
+    every remote tracking ref — so a feature branch that has been pushed
+    to its own remote ref still surfaces commits that haven't landed on
+    main yet.
     """
-    output = run(repo=repo, args=["log", branch, "--not", "--remotes", "--oneline"])
+    output = run(repo=repo, args=["log", branch, "--not", target, "--oneline"])
     return [line for line in output.splitlines() if line.strip()]
 
 
