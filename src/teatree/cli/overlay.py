@@ -450,13 +450,18 @@ class OverlayAppBuilder:
         OVERLAY_PROXY_COMMANDS[_run.__name__] = (group_name, sub_name)
 
     def _register_overlay_tools(self) -> None:
-        """Register tool commands from ``hook-config/tool-commands.json`` files."""
+        """Register tool commands from ``skills/*/hook-config/tool-commands.json`` files.
+
+        Bounded to the documented per-overlay layout (one skill dir per package),
+        which is fast and side-steps an unbounded ``rglob`` over the entire
+        project tree (``.venv/``, ``__pycache__/``, ``node_modules/``, etc.).
+        """
         project_path = self.project_path
         if project_path is None:
             return
 
         tool_commands: list[dict[str, str]] = []
-        for candidate in project_path.rglob("hook-config/tool-commands.json"):
+        for candidate in project_path.glob("skills/*/hook-config/tool-commands.json"):
             try:
                 data = _json.loads(candidate.read_text(encoding="utf-8"))
                 if isinstance(data, list):  # pragma: no branch

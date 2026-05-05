@@ -28,13 +28,24 @@ class TestRunGh:
         assert mock_run.call_args.args[0] == ["gh", "version"]
         assert result.stdout == "ok"
 
-    def test_includes_auth_header_with_token(self) -> None:
+    def test_passes_token_via_gh_token_env(self) -> None:
+        # Regression for #500: only `gh api` accepts `--header`; injecting it
+        # into `gh pr create` fails with `unknown flag --header`.
         with patch.object(utils_run_mod.subprocess, "run") as mock_run:
             mock_run.return_value = subprocess.CompletedProcess([], 0, "", "")
-            _run_gh("gh", "api", "/test", token="mytoken")
+            _run_gh("gh", "pr", "create", token="mytoken")
         args = mock_run.call_args[0][0]
-        assert "--header" in args
-        assert "Authorization: Bearer mytoken" in args
+        assert "--header" not in args
+        assert all("Authorization" not in a for a in args)
+        env = mock_run.call_args.kwargs.get("env") or {}
+        assert env.get("GH_TOKEN") == "mytoken"
+
+    def test_no_token_does_not_set_gh_token_env(self) -> None:
+        with patch.object(utils_run_mod.subprocess, "run") as mock_run:
+            mock_run.return_value = subprocess.CompletedProcess([], 0, "", "")
+            _run_gh("gh", "version")
+        env = mock_run.call_args.kwargs.get("env")
+        assert env is None or "GH_TOKEN" not in env
 
 
 class TestGhApiGet:
