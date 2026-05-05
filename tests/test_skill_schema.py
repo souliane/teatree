@@ -43,6 +43,13 @@ class TestValidateSkillMd:
         assert errors == []
         assert any("unknown field 'custom_field'" in w for w in warnings)
 
+    def test_companions_field_is_recognised(self, tmp_path: Path):
+        skill_md = tmp_path / "SKILL.md"
+        skill_md.write_text("---\nname: test\ndescription: d\ncompanions:\n  - other-skill\n---\n")
+        errors, warnings = validate_skill_md(skill_md)
+        assert errors == []
+        assert not any("'companions'" in w for w in warnings)
+
     def test_invalid_regex_in_keywords(self, tmp_path: Path):
         skill_md = tmp_path / "SKILL.md"
         skill_md.write_text("---\nname: test\ndescription: d\ntriggers:\n  keywords:\n    - '[invalid'\n---\n")
