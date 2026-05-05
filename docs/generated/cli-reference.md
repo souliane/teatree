@@ -1719,7 +1719,7 @@ Usage: t3 teatree pr [OPTIONS] COMMAND [ARGS]...
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
 │ create         Create a merge request for the ticket's branch.               │
-│ ensure-draft   Create a draft PR for an orphan branch (idempotent).          │
+│ ensure-pr      Create a PR for an orphan branch (idempotent).                │
 │ check-gates    Check whether session gates allow a phase transition.         │
 │ fetch-issue    Fetch issue details from the configured tracker.              │
 │ detect-tenant  Detect the current tenant variant from the overlay.           │
@@ -1760,13 +1760,12 @@ Usage: t3 teatree pr create [OPTIONS] TICKET_ID
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
-##### `t3 teatree pr ensure-draft`
+##### `t3 teatree pr ensure-pr`
 
 ```
-Usage: t3 teatree pr ensure-draft [OPTIONS]
+Usage: t3 teatree pr ensure-pr [OPTIONS]
 
- Create a draft PR for an orphan branch (idempotent, no-op when a PR already
- exists).
+ Create a PR for an orphan branch (idempotent, no-op when a PR already exists).
 
  An orphan is a branch with commits not on ``origin/main`` (after
  subject-match + tree-equality checks) and no open PR/MR. When this

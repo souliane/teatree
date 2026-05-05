@@ -151,7 +151,7 @@ class TestSlugFromRemote(TestCase):
         assert _slug_from_remote("") == ""
 
 
-class TestEnsureDraft(TestCase):
+class TestEnsurePr(TestCase):
     @pytest.fixture(autouse=True)
     def _inject_fixtures(self, monkeypatch: pytest.MonkeyPatch) -> None:
         self._monkeypatch = monkeypatch
@@ -175,7 +175,7 @@ class TestEnsureDraft(TestCase):
                 ),
             ),
         ):
-            result = cast("dict[str, object]", call_command("pr", "ensure-draft"))
+            result = cast("dict[str, object]", call_command("pr", "ensure-pr"))
 
         assert result["skipped"] == "open PR exists"
         assert "42" in str(result["url"])
@@ -199,7 +199,7 @@ class TestEnsureDraft(TestCase):
                 ),
             ),
         ):
-            result = cast("dict[str, object]", call_command("pr", "ensure-draft"))
+            result = cast("dict[str, object]", call_command("pr", "ensure-pr"))
 
         assert "synced" in str(result["skipped"])
         host.create_pr.assert_not_called()
@@ -222,13 +222,13 @@ class TestEnsureDraft(TestCase):
                 ),
             ),
         ):
-            result = cast("dict[str, object]", call_command("pr", "ensure-draft"))
+            result = cast("dict[str, object]", call_command("pr", "ensure-pr"))
 
         assert "not on remote yet" in str(result["skipped"])
         assert "feat-z" in str(result["hint"])
         host.create_pr.assert_not_called()
 
-    def test_creates_draft_when_pushed_orphan(self) -> None:
+    def test_creates_pr_when_pushed_orphan(self) -> None:
         host = MagicMock()
         host.create_pr.return_value = {"url": "https://github.com/souliane/teatree/pull/999"}
         host.current_user.return_value = "souliane"
@@ -250,12 +250,12 @@ class TestEnsureDraft(TestCase):
                 ),
             ),
         ):
-            result = cast("dict[str, object]", call_command("pr", "ensure-draft"))
+            result = cast("dict[str, object]", call_command("pr", "ensure-pr"))
 
         assert result["url"] == "https://github.com/souliane/teatree/pull/999"
         assert result["branch"] == "feat-q"
         (spec,) = host.create_pr.call_args.args
-        assert spec.draft is True
+        assert spec.draft is False
         assert spec.branch == "feat-q"
         assert spec.repo == "souliane/teatree"
         assert spec.title == "feat: cool thing"

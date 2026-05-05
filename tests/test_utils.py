@@ -1268,3 +1268,32 @@ class TestUnsyncedCommits:
         )
         result = git.unsynced_commits("/repo", "feature")
         assert result == ["abc123 fix something", "def456 another fix"]
+
+    def test_pushed_branch_with_commit_not_on_main_is_ahead(self, tmp_path: Path) -> None:
+        """A commit pushed to its own remote branch but not on main must still be ahead.
+
+        Regression: ``git log --not --remotes`` excludes ALL remote tracking
+        refs, so a pushed feature branch's own commits get filtered out and
+        the classifier mis-reports the branch as synced. The unsynced check
+        must compare against the default branch, not against every remote.
+        """
+        bare = tmp_path / "remote.git"
+        utils_run_mod.run_checked(["git", "init", "--bare", str(bare)])
+        local = tmp_path / "local"
+        utils_run_mod.run_checked(["git", "clone", str(bare), str(local)])
+        for k, v in {"user.email": "t@x", "user.name": "t", "commit.gpgsign": "false"}.items():
+            utils_run_mod.run_checked(["git", "-C", str(local), "config", k, v])
+        (local / "a").write_text("1\n")
+        utils_run_mod.run_checked(["git", "-C", str(local), "add", "a"])
+        utils_run_mod.run_checked(["git", "-C", str(local), "commit", "-m", "main commit"])
+        utils_run_mod.run_checked(["git", "-C", str(local), "branch", "-M", "main"])
+        utils_run_mod.run_checked(["git", "-C", str(local), "push", "origin", "main"])
+        utils_run_mod.run_checked(["git", "-C", str(local), "checkout", "-b", "feature"])
+        (local / "b").write_text("2\n")
+        utils_run_mod.run_checked(["git", "-C", str(local), "add", "b"])
+        utils_run_mod.run_checked(["git", "-C", str(local), "commit", "-m", "feature work"])
+        utils_run_mod.run_checked(["git", "-C", str(local), "push", "origin", "feature"])
+
+        result = git.unsynced_commits(str(local), "feature")
+        assert len(result) == 1
+        assert "feature work" in result[0]
