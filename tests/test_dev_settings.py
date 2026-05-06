@@ -3,6 +3,8 @@
 import importlib
 from unittest.mock import patch
 
+from django.test import override_settings
+
 
 def test_settings_importable():
     """Importing the module should execute it without errors."""
@@ -52,3 +54,17 @@ def test_discover_overlay_apps_skips_entry_points_without_django_app():
         result = mod._discover_overlay_apps()
 
     assert result == []
+
+
+def test_urls_module_loads_with_admin_disabled():
+    """teatree.urls executes without errors when DEBUG is False."""
+    with override_settings(DEBUG=False):
+        mod = importlib.reload(importlib.import_module("teatree.urls"))
+        assert len(mod.urlpatterns) == 1
+
+
+def test_urls_module_loads_with_admin_enabled():
+    """teatree.urls registers admin under DEBUG=True."""
+    with override_settings(DEBUG=True):
+        mod = importlib.reload(importlib.import_module("teatree.urls"))
+        assert len(mod.urlpatterns) == 2

@@ -79,6 +79,27 @@ class TestStatuslineRender:
         assert target.exists()
         assert not list(tmp_path.glob("*.tmp"))
 
+    def test_render_cleans_up_tmp_file_on_failure(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """If the rename fails, the temp file is removed."""
+        target = tmp_path / "statusline.txt"
+        zones = StatuslineZones(anchors=["x"], action_needed=[], in_flight=[])
+
+        original_replace = Path.replace
+
+        def fail_replace(self: Path, *args: object, **kwargs: object) -> None:
+            msg = "replace failed"
+            raise OSError(msg)
+
+        monkeypatch.setattr(Path, "replace", fail_replace)
+        try:
+            with pytest.raises(OSError, match="replace failed"):
+                render(zones, target=target)
+        finally:
+            monkeypatch.setattr(Path, "replace", original_replace)
+
+        # Tmp file should be cleaned up.
+        assert not list(tmp_path.glob("*.tmp"))
+
 
 class TestDefaultPath:
     def test_uses_xdg_data_home_when_set(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -215,3 +215,130 @@ class TestSlackBotCommand:
 
         assert result.exit_code == 1
         assert "Failed to store bot token" in result.stdout
+
+    def test_app_token_pass_failure_exits_with_error(self, tmp_path: Path) -> None:
+        inputs = "xoxb-1-test\nxapp-1-test\nU01ABCD1234\n"
+
+        def fake_write_pass(key: str, value: str) -> bool:
+            return "bot" in key  # bot succeeds, app fails
+
+        with (
+            patch("teatree.cli.slack_setup.discover_overlays", return_value=_stub_overlays()),
+            patch("teatree.cli.slack_setup.write_pass", side_effect=fake_write_pass),
+            patch("teatree.cli.slack_setup.webbrowser.open"),
+        ):
+            result = self._invoke(
+                tmp_path,
+                inputs=inputs,
+                args=["--overlay", "acme", "--skip-smoke-test"],
+            )
+
+        assert result.exit_code == 1
+        assert "Failed to store app token" in result.stdout
+
+    def test_invalid_token_format_reprompts(self, tmp_path: Path) -> None:
+        inputs = "garbage\nxoxb-1-test\nxapp-1-test\nU01ABCD1234\n"
+        with (
+            patch("teatree.cli.slack_setup.discover_overlays", return_value=_stub_overlays()),
+            patch("teatree.cli.slack_setup.write_pass", return_value=True),
+            patch("teatree.cli.slack_setup.webbrowser.open"),
+        ):
+            result = self._invoke(
+                tmp_path,
+                inputs=inputs,
+                args=["--overlay", "acme", "--skip-smoke-test"],
+            )
+
+        assert result.exit_code == 0, result.stdout
+        assert "Invalid bot token format" in result.stdout
+
+    def test_invalid_user_id_format_reprompts(self, tmp_path: Path) -> None:
+        inputs = "xoxb-1-test\nxapp-1-test\nbad-id\nU01ABCD1234\n"
+        with (
+            patch("teatree.cli.slack_setup.discover_overlays", return_value=_stub_overlays()),
+            patch("teatree.cli.slack_setup.write_pass", return_value=True),
+            patch("teatree.cli.slack_setup.webbrowser.open"),
+        ):
+            result = self._invoke(
+                tmp_path,
+                inputs=inputs,
+                args=["--overlay", "acme", "--skip-smoke-test"],
+            )
+
+        assert result.exit_code == 0, result.stdout
+        assert "Slack user ids start with" in result.stdout
+
+
+class TestSmokeTest:
+    """Direct tests for ``_smoke_test`` — bypasses the CLI prompts."""
+
+    def test_open_dm_returns_empty_channel(self) -> None:
+        from teatree.cli.slack_setup import _smoke_test  # noqa: PLC0415
+
+        with patch("teatree.cli.slack_setup.SlackBotBackend") as bot_cls:
+            bot_cls.return_value.open_dm.return_value = ""
+            result = _smoke_test(bot_token="xoxb-1", user_id="U01ABCD1234")
+
+        assert result is False
+
+    def test_post_message_failure(self) -> None:
+        from teatree.cli.slack_setup import _smoke_test  # noqa: PLC0415
+
+        with patch("teatree.cli.slack_setup.SlackBotBackend") as bot_cls:
+            bot_cls.return_value.open_dm.return_value = "C123"
+            bot_cls.return_value.post_message.return_value = {"error": "channel_not_found"}
+            result = _smoke_test(bot_token="xoxb-1", user_id="U01ABCD1234")
+
+        assert result is False
+
+    def test_reaction_received_within_timeout(self) -> None:
+        from teatree.cli.slack_setup import _smoke_test  # noqa: PLC0415
+
+        with (
+            patch("teatree.cli.slack_setup.SlackBotBackend") as bot_cls,
+            patch("teatree.cli.slack_setup.time.sleep"),
+        ):
+            bot_cls.return_value.open_dm.return_value = "C123"
+            bot_cls.return_value.post_message.return_value = {"ts": "1.0"}
+            bot_cls.return_value.get_reactions.return_value = ["white_check_mark"]
+            result = _smoke_test(bot_token="xoxb-1", user_id="U01ABCD1234")
+
+        assert result is True
+
+    def test_reaction_timeout_returns_false(self) -> None:
+        from teatree.cli.slack_setup import _smoke_test  # noqa: PLC0415
+
+        # First monotonic call returns 0 (start), subsequent calls return values
+        # past the deadline so the while loop exits without polling.
+        with (
+            patch("teatree.cli.slack_setup.SlackBotBackend") as bot_cls,
+            patch("teatree.cli.slack_setup.time.sleep"),
+            patch("teatree.cli.slack_setup.time.monotonic", side_effect=[0.0, 1.0, 9_999_999.0]),
+        ):
+            bot_cls.return_value.open_dm.return_value = "C123"
+            bot_cls.return_value.post_message.return_value = {"ts": "1.0"}
+            bot_cls.return_value.get_reactions.return_value = []
+            result = _smoke_test(bot_token="xoxb-1", user_id="U01ABCD1234")
+
+        assert result is False
+
+
+class TestSmokeTestInvocation:
+    def test_smoke_test_failure_exits_with_error(self, tmp_path: Path) -> None:
+        inputs = "xoxb-1-test\nxapp-1-test\nU01ABCD1234\n"
+        config = tmp_path / "teatree.toml"
+        runner = CliRunner()
+        with (
+            patch("teatree.cli.slack_setup.discover_overlays", return_value=_stub_overlays()),
+            patch("teatree.cli.slack_setup.write_pass", return_value=True),
+            patch("teatree.cli.slack_setup.webbrowser.open"),
+            patch("teatree.cli.slack_setup._smoke_test", return_value=False),
+        ):
+            result = runner.invoke(
+                setup_app,
+                ["slack-bot", "--overlay", "acme", "--config", str(config)],
+                input=inputs,
+                catch_exceptions=False,
+            )
+
+        assert result.exit_code == 1

@@ -766,3 +766,39 @@ class TestTasksStartCommand(TestCase):
         argv = run_mock.call_args[0][0]
         assert "--resume" in argv
         assert uuid in argv
+
+    @override_settings(**COMMAND_SETTINGS)
+    def test_start_with_invalid_task_id_exits(self) -> None:
+        run_mock = MagicMock(return_value=0)
+        p1, p2, p3 = self._patch_env(run_mock)
+        with p1, p2, p3, pytest.raises(SystemExit) as exc:
+            call_command("tasks", "start", 99999)
+        assert exc.value.code == 1
+        run_mock.assert_not_called()
+
+
+class TestResolveReason:
+    def test_reads_stdin_when_dash(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from io import StringIO  # noqa: PLC0415
+
+        from teatree.core.management.commands.tasks import _resolve_reason  # noqa: PLC0415
+
+        monkeypatch.setattr("sys.stdin", StringIO("from stdin"))
+        assert _resolve_reason(reason="-", reason_file=None) == "from stdin"
+
+    def test_returns_inline_reason(self) -> None:
+        from teatree.core.management.commands.tasks import _resolve_reason  # noqa: PLC0415
+
+        assert _resolve_reason(reason="inline", reason_file=None) == "inline"
+
+    def test_reads_from_file_when_provided(self, tmp_path: Path) -> None:
+        from teatree.core.management.commands.tasks import _resolve_reason  # noqa: PLC0415
+
+        f = tmp_path / "reason.txt"
+        f.write_text("from file")
+        assert _resolve_reason(reason="", reason_file=f) == "from file"
+
+    def test_returns_empty_when_nothing_provided(self) -> None:
+        from teatree.core.management.commands.tasks import _resolve_reason  # noqa: PLC0415
+
+        assert _resolve_reason(reason="", reason_file=None) == ""

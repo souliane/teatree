@@ -240,3 +240,47 @@ class TestStatusCommand:
 
         assert result.exit_code == 0
         assert "No overlays installed" in result.output
+
+
+class TestErrorHandling:
+    def test_install_reports_overlay_dev_error(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        empty = tmp_path / "elsewhere"
+        empty.mkdir()
+        monkeypatch.chdir(empty)
+        result = CliRunner().invoke(overlay_dev_app, ["install", "missing"])
+
+        assert result.exit_code == 1
+        assert "Error" in result.output
+
+    def test_uninstall_reports_overlay_dev_error(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        empty = tmp_path / "elsewhere"
+        empty.mkdir()
+        monkeypatch.chdir(empty)
+        result = CliRunner().invoke(overlay_dev_app, ["uninstall", "missing"])
+
+        assert result.exit_code == 1
+        assert "Error" in result.output
+
+    def test_status_reports_overlay_dev_error(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        empty = tmp_path / "elsewhere"
+        empty.mkdir()
+        monkeypatch.chdir(empty)
+        result = CliRunner().invoke(overlay_dev_app, ["status"])
+
+        assert result.exit_code == 1
+        assert "Error" in result.output
+
+    def test_default_branch_falls_back_to_main(self, tmp_path: Path) -> None:
+        from teatree.cli.overlay_dev import _default_branch  # noqa: PLC0415
+
+        with patch("teatree.cli.overlay_dev.run_allowed_to_fail") as run_mock:
+            run_mock.return_value = MagicMock(returncode=128, stdout="", stderr="not a symbolic ref")
+            assert _default_branch(tmp_path) == "main"
+
+    def test_resolve_teatree_worktree_rejects_non_file_git_marker(self, tmp_path: Path) -> None:
+        worktree = tmp_path / "wt"
+        worktree.mkdir()
+        (worktree / "pyproject.toml").write_text('[project]\nname = "teatree"\n')
+        # No .git at all (not a file, not a dir)
+        with pytest.raises(OverlayDevError, match=r"no \.git marker"):
+            _resolve_teatree_worktree(worktree)

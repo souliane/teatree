@@ -71,3 +71,20 @@ def test_slack_mention_with_github_pr_url_routes_to_reviewer() -> None:
     review_actions = [a for a in actions if a.zone == "t3:reviewer"]
     assert len(review_actions) == 1
     assert review_actions[0].payload["url"] == "https://github.com/o/r/pull/9"
+
+
+def test_slack_signal_without_event_dict_emits_only_statusline() -> None:
+    actions = dispatch([ScanSignal(kind="slack.mention", summary="x", payload={"event": "not-a-dict"})])
+    assert [a.kind for a in actions] == ["statusline"]
+
+
+def test_slack_signal_with_non_string_text_emits_only_statusline() -> None:
+    payload: dict[str, object] = {"event": {"text": 42}}
+    actions = dispatch([ScanSignal(kind="slack.dm", summary="x", payload=payload)])
+    assert [a.kind for a in actions] == ["statusline"]
+
+
+def test_assigned_issue_ready_dispatches_to_orchestrator() -> None:
+    actions = dispatch([ScanSignal(kind="assigned_issue.ready", summary="Issue 5")])
+    assert actions[0].kind == "agent"
+    assert actions[0].zone == "t3:orchestrator"

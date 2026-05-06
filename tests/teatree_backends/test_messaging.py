@@ -237,3 +237,101 @@ def test_slack_get_reactions_returns_empty_when_no_reactions(monkeypatch: pytest
     backend = SlackBotBackend(bot_token="xoxb-test")
 
     assert backend.get_reactions(channel="C1", ts="123.456") == []
+
+
+def test_slack_get_returns_empty_when_no_token() -> None:
+    backend = SlackBotBackend(bot_token="")
+    assert backend.get_reactions(channel="C1", ts="123") == []
+
+
+def test_slack_get_reactions_skips_non_dict_entries(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_get(url: str, **kwargs: object) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "ok": True,
+                "message": {
+                    "reactions": [
+                        "garbage",
+                        {"name": "eyes"},
+                        {"name": 42},  # name not a string
+                    ],
+                },
+            },
+            request=httpx.Request("GET", url),
+        )
+
+    monkeypatch.setattr(slack_bot.httpx, "get", fake_get)
+    backend = SlackBotBackend(bot_token="xoxb-test")
+
+    assert backend.get_reactions(channel="C1", ts="123") == ["eyes"]
+
+
+def test_slack_get_reactions_returns_empty_when_reactions_not_list(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_get(url: str, **kwargs: object) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"ok": True, "message": {"reactions": "not-a-list"}},
+            request=httpx.Request("GET", url),
+        )
+
+    monkeypatch.setattr(slack_bot.httpx, "get", fake_get)
+    backend = SlackBotBackend(bot_token="xoxb-test")
+
+    assert backend.get_reactions(channel="C1", ts="123") == []
+
+
+def test_slack_get_reactions_returns_empty_when_get_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_get(url: str, **kwargs: object) -> httpx.Response:
+        return httpx.Response(200, json={"ok": False}, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(slack_bot.httpx, "get", fake_get)
+    backend = SlackBotBackend(bot_token="xoxb-test")
+
+    assert backend.get_reactions(channel="C1", ts="123") == []
+
+
+def test_slack_post_reply_includes_thread_ts(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_post(url: str, **kwargs: object) -> httpx.Response:
+        captured["json"] = kwargs["json"]
+        return httpx.Response(200, json={"ok": True}, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(slack_bot.httpx, "post", fake_post)
+    backend = SlackBotBackend(bot_token="xoxb-test")
+
+    backend.post_reply(channel="C", ts="1.0", text="reply")
+
+    assert captured["json"] == {"channel": "C", "thread_ts": "1.0", "text": "reply"}
+
+
+def test_slack_resolve_user_id_returns_empty_when_members_not_list(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_get(url: str, **kwargs: object) -> httpx.Response:
+        return httpx.Response(200, json={"ok": True, "members": "not-a-list"}, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(slack_bot.httpx, "get", fake_get)
+    backend = SlackBotBackend(bot_token="xoxb-test")
+
+    assert backend.resolve_user_id("alice") == ""
+
+
+def test_slack_resolve_user_id_skips_non_dict_members(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_get(url: str, **kwargs: object) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "ok": True,
+                "members": [
+                    "garbage",
+                    {"id": 42, "name": "alice"},  # id not a string
+                    {"id": "U99", "name": "alice"},
+                ],
+            },
+            request=httpx.Request("GET", url),
+        )
+
+    monkeypatch.setattr(slack_bot.httpx, "get", fake_get)
+    backend = SlackBotBackend(bot_token="xoxb-test")
+
+    assert backend.resolve_user_id("alice") == "U99"
