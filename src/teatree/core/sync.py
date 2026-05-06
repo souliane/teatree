@@ -65,6 +65,8 @@ class MREntry:
     notion_url: str | None = None
     draft_comments_pending: bool | None = None
     draft_comments_count: int | None = None
+    approvals_dismissed_at: str | None = None
+    dismissed_approvers: list[str] | None = None
 
     def to_dict(self) -> MREntryDict:
         result: MREntryDict = {}

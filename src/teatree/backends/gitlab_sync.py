@@ -9,6 +9,7 @@ import httpx
 from django.core.cache import cache
 from django.utils import timezone
 
+from teatree.backends.gitlab_sync_approvals import detect_approval_dismissal
 from teatree.backends.gitlab_sync_terminal import detect_closed_mrs, detect_merged_mrs
 from teatree.backends.slack_review_sync import fetch_review_permalinks
 from teatree.core.models import Ticket
@@ -144,6 +145,14 @@ class GitLabSyncBackend(SyncBackend):
             e2e_url = cls._detect_e2e_evidence(discussions, web_url)
             if e2e_url:
                 mr_entry.e2e_test_plan_url = e2e_url
+
+            current_count = (
+                int(mr_entry.approvals.get("count", 0)) if isinstance(mr_entry.approvals, dict) else 0  # ty: ignore[invalid-argument-type]
+            )
+            dismissal = detect_approval_dismissal(discussions, current_approval_count=current_count)
+            if dismissal is not None:
+                mr_entry.approvals_dismissed_at = dismissal.at
+                mr_entry.dismissed_approvers = dismissal.approvers
 
             draft_count = ctx.client.get_draft_notes_count(ctx.project.project_id, mr_iid)
             mr_entry.draft_comments_pending = draft_count > 0
