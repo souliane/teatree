@@ -1279,6 +1279,50 @@ class TestBuildMrRows(TestCase):
         rows = _build_mr_rows(ticket)
         assert [r.iid for r in rows] == ["11"]
 
+    def test_passes_approvals_dismissed_metadata(self) -> None:
+        """When sync has flagged a push-reset dismissal, the dashboard row carries it through."""
+        ticket = Ticket.objects.create(
+            state=Ticket.State.STARTED,
+            extra={
+                "mrs": {
+                    "url1": {
+                        "url": "https://gitlab.com/org/backend/-/merge_requests/10",
+                        "title": "feat",
+                        "repo": "backend",
+                        "iid": "10",
+                        "branch": "feat/x",
+                        "draft": False,
+                        "approvals_dismissed_at": "2026-05-01T11:00:00Z",
+                        "dismissed_approvers": ["alice", "bob"],
+                    },
+                },
+            },
+        )
+        rows = _build_mr_rows(ticket)
+        assert len(rows) == 1
+        assert rows[0].approvals_dismissed_at == "2026-05-01T11:00:00Z"
+        assert rows[0].dismissed_approvers == ["alice", "bob"]
+
+    def test_approvals_dismissed_defaults_when_absent(self) -> None:
+        ticket = Ticket.objects.create(
+            state=Ticket.State.STARTED,
+            extra={
+                "mrs": {
+                    "url1": {
+                        "url": "https://gitlab.com/org/backend/-/merge_requests/10",
+                        "title": "feat",
+                        "repo": "backend",
+                        "iid": "10",
+                        "branch": "feat/x",
+                        "draft": False,
+                    },
+                },
+            },
+        )
+        rows = _build_mr_rows(ticket)
+        assert rows[0].approvals_dismissed_at == ""
+        assert rows[0].dismissed_approvers == []
+
     def test_non_dict_approvals(self) -> None:
         ticket = Ticket.objects.create(
             state=Ticket.State.STARTED,

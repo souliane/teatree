@@ -946,6 +946,31 @@ def test_list_recently_merged_mrs_returns_empty_when_not_a_list(monkeypatch: pyt
     assert result == []
 
 
+def test_list_recently_closed_mrs_queries_state_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = gitlab_api.GitLabAPI(token="test-token")
+    captured: list[str] = []
+
+    def capture_get_json(endpoint: str) -> list[dict[str, object]]:
+        captured.append(endpoint)
+        return [{"iid": 77, "state": "closed"}]
+
+    monkeypatch.setattr(client, "get_json", capture_get_json)
+
+    result = client.list_recently_closed_mrs("adrien", updated_after="2024-06-01T00:00:00Z")
+
+    assert result == [{"iid": 77, "state": "closed"}]
+    assert "state=closed" in captured[0]
+    assert "author_username=adrien" in captured[0]
+    assert "updated_after" in captured[0]
+
+
+def test_list_recently_closed_mrs_returns_empty_when_not_a_list(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = gitlab_api.GitLabAPI(token="test-token")
+    monkeypatch.setattr(client, "get_json", lambda _endpoint: {"error": "bad"})
+
+    assert client.list_recently_closed_mrs("adrien") == []
+
+
 def test_get_mr_pipeline_returns_status_and_url(monkeypatch: pytest.MonkeyPatch) -> None:
     client = gitlab_api.GitLabAPI(token="test-token")
     monkeypatch.setattr(

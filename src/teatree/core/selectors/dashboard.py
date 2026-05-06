@@ -288,6 +288,8 @@ def _build_mr_rows(ticket: Ticket) -> list[DashboardMRRow]:
                 e2e_test_plan_url=str(mr.get("e2e_test_plan_url", "")),
                 is_frontend=str(mr.get("repo", "")) in frontend_repos,
                 needs_reply_count=_count_needs_reply(mr),
+                approvals_dismissed_at=str(mr.get("approvals_dismissed_at", "")),
+                dismissed_approvers=_list_of_str(mr.get("dismissed_approvers", [])),
             ),
         )
     return rows
