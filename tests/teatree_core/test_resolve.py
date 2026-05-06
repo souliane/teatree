@@ -338,3 +338,99 @@ class TestAutoRegisterFromGit:
 
         with patch("teatree.core.resolve.git.current_branch", return_value=""):
             assert _auto_register_from_git(str(wt_dir)) is None
+
+
+class TestAutoRegisterReusesExistingWorktree(TestCase):
+    @pytest.fixture(autouse=True)
+    def _inject_fixtures(self, tmp_path: Path) -> None:
+        self._tmp_path = tmp_path
+
+    def _make_git_worktree(self, name: str) -> Path:
+        wt_dir = self._tmp_path / name
+        wt_dir.mkdir()
+        (wt_dir / ".git").write_text(f"gitdir: /some/.git/worktrees/{name}\n")
+        return wt_dir
+
+    def test_reuses_existing_worktree_for_same_branch_and_repo(self) -> None:
+        """An existing Worktree for this branch+repo should be reused, not duplicated.
+
+        Bug: ``workspace ticket <real_url>`` provisions a Worktree row keyed
+        to a real issue URL. Running ``t3`` from inside that worktree dropped
+        through to ``_auto_register_from_git`` whenever
+        ``_match_worktree_by_path`` failed (e.g., the stored ``worktree_path``
+        was missing or differed by a trailing slash), creating a duplicate
+        ``auto:<branch>`` ticket. The fix: look up the Worktree by branch+repo
+        first, and only fall through to ticket creation when nothing exists.
+        """
+        ticket = Ticket.objects.create(issue_url="https://gitlab.com/org/repo/-/issues/123")
+        existing = Worktree.objects.create(
+            ticket=ticket,
+            repo_path="my-repo",
+            branch="feat/branch",
+            extra={},  # worktree_path was never recorded — that's why _match_worktree_by_path missed it
+        )
+        wt_dir = self._make_git_worktree("my-repo")
+
+        with patch("teatree.core.resolve.git.current_branch", return_value="feat/branch"):
+            result = _auto_register_from_git(str(wt_dir))
+
+        assert result is not None
+        assert result.pk == existing.pk
+        assert result.ticket_id == ticket.pk
+        assert Ticket.objects.count() == 1
+        assert not Ticket.objects.filter(issue_url="auto:feat/branch").exists()
+
+    def test_backfills_missing_worktree_path_on_reuse(self) -> None:
+        """Reusing a Worktree should backfill ``extra.worktree_path``.
+
+        After this fix, future calls to ``_match_worktree_by_path`` will
+        match the same Worktree directly (step 2 of resolution) without
+        needing to fall through to auto-register again.
+        """
+        ticket = Ticket.objects.create(issue_url="https://gitlab.com/org/repo/-/issues/123")
+        Worktree.objects.create(
+            ticket=ticket,
+            repo_path="my-repo",
+            branch="feat/branch",
+            extra={"some_other": "value"},
+        )
+        wt_dir = self._make_git_worktree("my-repo")
+
+        with patch("teatree.core.resolve.git.current_branch", return_value="feat/branch"):
+            result = _auto_register_from_git(str(wt_dir))
+
+        assert result is not None
+        assert result.extra["worktree_path"] == str(wt_dir)
+        assert result.extra["some_other"] == "value"
+
+    def test_creates_new_ticket_when_no_worktree_exists(self) -> None:
+        """First-time auto-register still creates a fresh ``auto:<branch>`` ticket."""
+        wt_dir = self._make_git_worktree("my-repo")
+
+        with patch("teatree.core.resolve.git.current_branch", return_value="feat/new"):
+            result = _auto_register_from_git(str(wt_dir))
+
+        assert result is not None
+        assert result.branch == "feat/new"
+        assert result.repo_path == "my-repo"
+        assert result.extra["worktree_path"] == str(wt_dir)
+        assert result.ticket.issue_url == "auto:feat/new"
+
+    def test_does_not_match_worktree_for_different_repo(self) -> None:
+        """A Worktree for the same branch but a different repo must not be reused."""
+        ticket = Ticket.objects.create(issue_url="https://gitlab.com/org/repo/-/issues/123")
+        Worktree.objects.create(
+            ticket=ticket,
+            repo_path="other-repo",
+            branch="feat/branch",
+            extra={"worktree_path": "/tmp/other-repo"},
+        )
+        wt_dir = self._make_git_worktree("my-repo")
+
+        with patch("teatree.core.resolve.git.current_branch", return_value="feat/branch"):
+            result = _auto_register_from_git(str(wt_dir))
+
+        assert result is not None
+        assert result.repo_path == "my-repo"
+        assert result.ticket.issue_url == "auto:feat/branch"
+        assert Worktree.objects.count() == 2
