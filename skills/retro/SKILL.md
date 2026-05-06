@@ -43,7 +43,7 @@ Retro's behavior depends on these `~/.teatree` variables and on whether the curr
 - **Push behavior is mode-conditional — defer to `t3:rules § Publishing Actions Are Mode-Conditional`.** Resolve the effective mode in the prescribed order (`T3_MODE` env → active overlay config → global `[teatree]` table → per-repo memory overrides → default `interactive`).
   - **`auto`**: push immediately after the privacy scan passes — no prompt, no "your call", no deferral to `/t3:contribute`. Open the PR if one doesn't already exist.
   - **`interactive`**: commit locally and remind the user to run `/t3:contribute`.
-  - The legacy `T3_PUSH` / `T3_AUTO_PUSH_FORK` env vars are honored only when no `mode` is configured anywhere; the `mode` setting subsumes them and wins on conflict. **Do not gate retro pushes on `T3_PUSH` when `mode = "auto"` is set in `~/.teatree.toml`** — that was a 2026-04-25 retro lesson. A fork-vs-upstream split (origin ≠ `T3_UPSTREAM`) does not change the push decision; it only affects whether `/t3:contribute` opens an upstream issue afterward.
+  - The legacy `T3_PUSH` / `T3_AUTO_PUSH_FORK` env vars are honored only when no `mode` is configured anywhere; the `mode` setting subsumes them and wins on conflict. **Do not gate retro pushes on `T3_PUSH` when `mode = "auto"` is set in `~/.teatree.toml`.** A fork-vs-upstream split (origin ≠ `T3_UPSTREAM`) does not change the push decision; it only affects whether `/t3:contribute` opens an upstream issue afterward.
 - **`T3_UPSTREAM`** — upstream GitHub repo (e.g., `souliane/teatree`). Used by `/t3:contribute` to open issues upstream after pushing. When `origin` matches `T3_UPSTREAM`, pushes already land directly on upstream.
 - **`T3_PRIVACY`** — privacy check strictness: `strict` (default) or `relaxed`. See § Privacy Scan.
 - **`T3_REVIEW_SKILL`** — name of an external skill review tool (e.g., `ac-reviewing-codebase`). If set, retro recommends running it after skill improvements. If not set, retro suggests installing one during first run and storing the preference.
@@ -201,8 +201,6 @@ flowchart TD
 ### 1. Conversation Audit
 
 **Scope-match check first (Non-Negotiable).** Before auditing individual failures, re-open the ticket/issue body that framed this session and map every acceptance criterion, phase, or deliverable to what actually shipped. If ANY AC is unshipped and the session was declared complete (MR merged with `Closes/Fixes`, `/t3:next` run, ticket marked done), that is a **False completion** finding and it outranks every tactical finding below. Re-reading the issue body is not optional — scoping→implementation drift is invisible from the conversation alone.
-
-**Past failure (#97):** Scoping session focused on Phase 5 (of 5). Implementation shipped Phase 5 only, but the PR used `Closes #97`, auto-closing the issue. Retro ran and found tactical workspace-troubleshooting nuggets while never noticing that 4/5 phases of the issue body were unshipped. The user had to manually call it out. Prevention: this step.
 
 **Check dashboard server logs next.** Inspect the teatree dashboard log for errors that may not have surfaced in the conversation:
 

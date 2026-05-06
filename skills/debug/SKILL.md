@@ -67,7 +67,7 @@ When a user reports "this worked yesterday" or "this just started happening," ch
 3. Plugin/package updates (check cache timestamps, lockfiles)
 4. Environment changes (new env vars, updated tools)
 
-This is faster than reading every file in detail and often pinpoints the cause immediately. (Source: retro 2026-04-02 — duplicate hooks from plugin migration found via file dates, not code reading.)
+This is faster than reading every file in detail and often pinpoints the cause immediately.
 
 ### Phase 1: Root Cause Investigation
 
