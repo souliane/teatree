@@ -122,6 +122,34 @@ def run_probes(probes: "Iterable[Probe]", *, max_workers: int = 8) -> list[Probe
     return [results[i] for i in range(len(probes_list))]
 
 
+@dataclass(frozen=True, slots=True)
+class ProbeRunSummary:
+    """Aggregate counts after running a probe batch."""
+
+    total: int
+    failures: int
+
+
+def run_and_report_probes(
+    probes: "Iterable[Probe]",
+    *,
+    write_line: "Callable[[str], None]",
+    indent: str = "",
+) -> ProbeRunSummary:
+    """Run probes, format each result via ``write_line``, return a summary.
+
+    Empty input returns ``ProbeRunSummary(0, 0)`` and writes nothing — the
+    caller decides whether to print a "no probes" line or stay silent. The
+    failure-count message and ``SystemExit`` belong to the caller too;
+    different commands word the message and exit-condition differently.
+    """
+    results = run_probes(probes)
+    for result in results:
+        write_line(f"{indent}{result.format()}")
+    failures = sum(1 for r in results if not r.passed)
+    return ProbeRunSummary(total=len(results), failures=failures)
+
+
 def _check_http(name: str, spec: HTTPProbeSpec) -> ProbeResult:
     evidence = f"GET {spec.url}"
     headers = dict(spec.request_headers or {})
@@ -224,7 +252,9 @@ __all__ = [
     "HTTPProbeSpec",
     "Probe",
     "ProbeResult",
+    "ProbeRunSummary",
     "command_probe",
     "http_probe",
+    "run_and_report_probes",
     "run_probes",
 ]
