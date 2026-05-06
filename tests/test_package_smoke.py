@@ -12,5 +12,6 @@ def test_teatree_apps_register() -> None:
     agents_config = apps.get_app_config("agents")
 
     assert teatree.__version__ == "0.0.1"
+    assert teatree.__overlay_api_version__ == "1"
     assert core_config.name == "teatree.core"
     assert agents_config.name == "teatree.agents"
