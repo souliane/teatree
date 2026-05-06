@@ -237,6 +237,30 @@ def test_agent_signature_opt_in(tmp_path: Path) -> None:
     assert load_config(config_path).user.agent_signature is True
 
 
+def test_require_human_approval_to_merge_defaults_on(tmp_path: Path) -> None:
+    config_path = tmp_path / ".teatree.toml"
+    _write_toml(config_path, "[teatree]\n")
+    assert load_config(config_path).user.require_human_approval_to_merge is True
+
+
+def test_require_human_approval_to_merge_can_be_disabled(tmp_path: Path) -> None:
+    config_path = tmp_path / ".teatree.toml"
+    _write_toml(config_path, "[teatree]\nrequire_human_approval_to_merge = false\n")
+    assert load_config(config_path).user.require_human_approval_to_merge is False
+
+
+def test_loop_cadence_seconds_defaults_to_720(tmp_path: Path) -> None:
+    config_path = tmp_path / ".teatree.toml"
+    _write_toml(config_path, "[teatree]\n")
+    assert load_config(config_path).user.loop_cadence_seconds == 720
+
+
+def test_loop_cadence_seconds_override(tmp_path: Path) -> None:
+    config_path = tmp_path / ".teatree.toml"
+    _write_toml(config_path, "[teatree]\nloop_cadence_seconds = 300\n")
+    assert load_config(config_path).user.loop_cadence_seconds == 300
+
+
 # ── get_data_dir ──────────────────────────────────────────────────────
 
 
