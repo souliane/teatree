@@ -935,6 +935,17 @@ class TestGitPullRepo:
 
         assert result["ok"] is True
         assert "Already up to date" in str(result["output"])
+        assert result["changed"] is False
+
+    def test_changed_true_when_pull_updates(self, tmp_path: Path) -> None:
+        pull = subprocess_mod.CompletedProcess([], 0, "Updating abc..def\n 1 file changed\n", "")
+        with patch("teatree.utils.run.subprocess") as mock_sub:
+            mock_sub.run.return_value = pull
+            mock_sub.TimeoutExpired = subprocess_mod.TimeoutExpired
+            result = actions_views._git_pull_repo(tmp_path)
+
+        assert result["ok"] is True
+        assert result["changed"] is True
 
     def test_timeout(self, tmp_path: Path) -> None:
         with patch("teatree.utils.run.subprocess") as mock_sub:
@@ -1000,6 +1011,21 @@ class TestGitPullView(TestCase):
         data = response.json()
         assert data["ok"] is True
         assert "teatree" in data["results"]
+
+    def test_response_passes_changed_flag(self) -> None:
+        with (
+            patch.object(actions_views, "_get_t3_repo", return_value=self.tmp_path),
+            patch.object(actions_views, "_find_overlay_repo_dirs", return_value=[]),
+            patch.object(
+                actions_views,
+                "_git_pull_repo",
+                return_value={"ok": True, "output": "Updating abc..def", "changed": True},
+            ),
+        ):
+            response = Client().post(reverse("teatree:dashboard-git-pull"))
+
+        assert response.status_code == 200
+        assert response.json()["results"]["teatree"]["changed"] is True
 
     def test_pulls_overlay_repos(self) -> None:
         overlay_dir = self.tmp_path / "overlay"
