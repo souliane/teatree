@@ -274,16 +274,39 @@ class GitLabAPI:
         *,
         updated_after: str | None = None,
         per_page: int = 100,
-    ) -> list[dict[str, object]]:
+    ) -> list[RawMR]:
         """Fetch recently merged MRs authored by *author*.
 
         When *updated_after* is provided, only returns MRs updated after that
         timestamp (ISO 8601).  Otherwise returns the most recent *per_page*.
         """
+        return self._list_terminal_mrs("merged", author, updated_after=updated_after, per_page=per_page)
+
+    def list_recently_closed_mrs(
+        self,
+        author: str,
+        *,
+        updated_after: str | None = None,
+        per_page: int = 100,
+    ) -> list[RawMR]:
+        """Fetch recently closed-without-merge MRs authored by *author*.
+
+        Mirrors :meth:`list_recently_merged_mrs` for the ``state=closed`` case.
+        """
+        return self._list_terminal_mrs("closed", author, updated_after=updated_after, per_page=per_page)
+
+    def _list_terminal_mrs(
+        self,
+        state: str,
+        author: str,
+        *,
+        updated_after: str | None,
+        per_page: int,
+    ) -> list[RawMR]:
         from urllib.parse import urlencode  # noqa: PLC0415
 
         query: dict[str, str | int] = {
-            "state": "merged",
+            "state": state,
             "author_username": author,
             "scope": "all",
             "per_page": per_page,

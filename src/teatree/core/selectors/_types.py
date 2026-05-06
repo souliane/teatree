@@ -54,6 +54,8 @@ class DashboardMRRow:
     e2e_test_plan_url: str
     is_frontend: bool
     needs_reply_count: int = 0
+    approvals_dismissed_at: str = ""
+    dismissed_approvers: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True, slots=True)
