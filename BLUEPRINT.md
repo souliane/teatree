@@ -240,7 +240,7 @@ One worktree per repository per ticket.
 | `db_refresh()` | provisioned/services_up/ready → provisioned | Stores timestamp |
 | `teardown()` | * → created | Clears db_name, extra |
 
-**Readiness gate:** ``worktree start``, ``worktree verify``, ``worktree ready``, and ``workspace start`` all run the overlay's ``get_readiness_probes(worktree)`` after their primary work and exit 1 if any probe fails. Probes verify the running services are actually serving (HTTP, CORS round-trip, fixture-seed integrity) — they answer questions ``verify`` cannot. See ``teatree.core.readiness``.
+**Readiness gate:** ``worktree start``, ``worktree verify``, ``worktree ready``, and ``workspace start`` run ``overlay.get_readiness_probes(worktree)`` after their primary work and exit 1 if any probe fails. Probes are runtime checks against started services (HTTP endpoints, dependency round-trips, content invariants on seeded data); ``HealthCheck`` covers post-provision file/symlink/env invariants instead. See ``teatree.core.readiness``.
 
 **Port allocation (Non-Negotiable — see §17):** Ports are NEVER stored in the database or in the `.t3-env.cache` file. They are allocated fresh at `worktree start` time via `find_free_ports(workspace, overlay.get_required_ports(worktree))` and exported via `overlay.get_port_env(ports)` to `docker compose`. Discovery uses `docker compose port` at runtime — the running containers are the single source of truth. Overlays that need no docker-compose ports return `set()` and the allocator yields an empty dict.
 
