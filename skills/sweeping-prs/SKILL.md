@@ -1,6 +1,6 @@
 ---
 name: sweeping-prs
-description: Maintenance sweep across all your open PRs/MRs — merge the default branch, fix conflicts, monitor CI, push. Never rebases. Use when user says "sweep PRs", "update all my MRs", "merge main into open PRs", or wants to keep open PRs up to date with main.
+description: Maintenance sweep across all your open PRs/MRs — merge the default branch, fix conflicts, monitor CI, push, and (per-repo policy) optionally squash-merge each PR before moving to the next. Never rebases. Use when user says "sweep PRs", "update all my MRs", "merge main into open PRs", or wants to keep open PRs up to date with main.
 compatibility: macOS/Linux, zsh, git, issue tracker CLI (glab, gh).
 requires:
   - workspace
@@ -24,8 +24,28 @@ Walk every open PR/MR you authored, sequentially, and bring each up to date with
 2. If conflicts are mechanical, resolve and continue. If not, prompt the user.
 3. Push.
 4. Watch CI. On red, hand off to the existing `/t3:debug` + `/t3:ship` fix-push-monitor loop.
+5. Depending on the per-repo policy (see § Per-Repo Policy below), either squash-merge the PR before moving on, or stop at "green and up to date".
 
-The goal is to keep stale PRs mergeable without burying review feedback under a force-push.
+The goal is to keep stale PRs mergeable without burying review feedback under a force-push, and — for repos the user fully owns — actually drain the queue rather than just refresh it.
+
+## Per-Repo Policy
+
+Each PR's repo (`org/repo`, taken from the JSON `references.full` minus the `!iid` suffix) is matched against a `SWEEP_POLICY` map declared in `~/.ac-reviewing-codebase`:
+
+```
+SWEEP_POLICY="<owned-org>/(repo-a|repo-b):serial-merge;<other-org>/.+:bulk-update"
+```
+
+Same regex+semicolon shape as the other knobs in that file. Two policies are recognized:
+
+| Policy | What it does | When to pick it |
+|---|---|---|
+| **`bulk-update`** (default) | For each open PR: update from `<default>` → push → watch CI → next PR. The PR itself is **not** merged. | Repos where merging requires human approval, or where the user only wants stale branches refreshed. |
+| **`serial-merge`** | For each open PR: update from `<default>` → push → wait for CI **green** → squash-merge the PR → fetch the next PR (next iteration sees the just-landed commit as part of `main`). | Repos the user fully owns and wants drained (e.g. `souliane/teatree`, `souliane/skills`) without piling conflict cascades onto the next PR. |
+
+Repos absent from `SWEEP_POLICY` default to `bulk-update` so existing behavior is unchanged for unconfigured repos.
+
+**Why serial, not parallel, for `serial-merge`:** the whole point is that PR #N+1 must see the *post-merge* state of `main` before it tries to update — that is what removes the conflict cascade. Sweeping the full list in parallel and then merging sequentially defers the same conflicts to merge time instead of preventing them. The `serial-merge` loop therefore re-runs the discovery CLI after each merge, so it always operates on a fresh "open PRs as of now" snapshot.
 
 ## Dependencies
 
@@ -116,17 +136,28 @@ Subject to mode (canonical rule: [`../rules/SKILL.md`](../rules/SKILL.md) § "Pu
 
 ### Step 7 — CI watch
 
-After push, watch the pipeline. On red, delegate to the existing fix-push-monitor loop (see [`../ship/SKILL.md`](../ship/SKILL.md) § "Monitor Pipeline" and [`../debug/SKILL.md`](../debug/SKILL.md)). When it goes green, mark the PR done and move to the next.
+After push, watch the pipeline. On red, delegate to the existing fix-push-monitor loop (see [`../ship/SKILL.md`](../ship/SKILL.md) § "Monitor Pipeline" and [`../debug/SKILL.md`](../debug/SKILL.md)). When it goes green:
+
+- **`bulk-update`** policy: mark the PR done and move to the next.
+- **`serial-merge`** policy: continue to Step 8.
+
+### Step 8 — Merge (serial-merge only)
+
+Squash-merge the PR (`gh pr merge <iid> --squash` or the GitLab equivalent). On any merge failure (review required, branch protection block, conflict that snuck in between Step 5 and now) **stop the sweep and surface the failure** — do not silently skip to the next PR, because the next PR's update step would still be racing against the unmerged predecessor.
+
+After a successful merge, **re-run the discovery CLI** (`t3 <overlay> pr sweep`) to refresh the "open PRs" list before picking the next entry. The list shrinks by one and any sibling PR may now be conflict-free where it wasn't before.
 
 ## Summary Table
 
 After all PRs are processed, emit a summary:
 
-| PR | Action | Result |
-|----|--------|--------|
-| [org/repo!1234](https://gitlab.com/...) | merged + pushed | green |
-| [org/repo!1235](https://gitlab.com/...) | skipped | non-default base |
-| [org/repo!1240](https://gitlab.com/...) | merged + pushed | red — fix queued |
+| PR | Policy | Action | Result |
+|----|--------|--------|--------|
+| [org/repo!1234](https://gitlab.com/...) | bulk-update | merged main + pushed | green |
+| [org/repo!1235](https://gitlab.com/...) | bulk-update | skipped | non-default base |
+| [org/repo!1240](https://gitlab.com/...) | bulk-update | merged main + pushed | red — fix queued |
+| [souliane/teatree#526](https://github.com/...) | serial-merge | merged main + pushed + squash-merged | landed |
+| [souliane/teatree#527](https://github.com/...) | serial-merge | not reached | sweep stopped on #526 merge failure |
 
 Use clickable references — see [`../rules/SKILL.md`](../rules/SKILL.md) § "Clickable References".
 
