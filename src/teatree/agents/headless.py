@@ -1,7 +1,13 @@
 """Headless agent runner — executes tasks without a terminal.
 
 Runs ``claude -p`` as a subprocess, captures structured output,
-and stores the result in TaskAttempt.result.
+and stores the result in ``TaskAttempt.result``. The runner is the
+swap point for an Anthropic SDK runtime: a future implementation
+that talks to the API directly need only provide a callable matching
+``run_headless(task, *, phase, overlay_skill_metadata) -> TaskAttempt``.
+
+Wires only to ``Task`` / ``TaskAttempt`` models — no dashboard, no
+process registry, no platform autostart.
 """
 
 import json
