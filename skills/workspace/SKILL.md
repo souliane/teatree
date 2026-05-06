@@ -206,11 +206,27 @@ After starting dev servers, **verify each service responds via HTTP** before rep
 
 Project skills define the specific endpoints to check (e.g., admin login, API version, frontend index).
 
+### Health Checks vs Readiness Probes (Non-Negotiable)
+
+Two distinct gates run on a worktree, with two different overlay hooks:
+
+- `OverlayBase.get_health_checks(worktree)` — **post-provision invariants**. Did `worktree provision` finish its job? (symlinks valid, env cache populated, compose override generated.) Run by `worktree provision` to fail fast on broken setup.
+- `OverlayBase.get_readiness_probes(worktree)` — **post-start runtime checks**. Is the started worktree actually serving? (HTTP probes against allocated ports, health endpoints, dependent services responding.) Run by `worktree ready` and `workspace ready` to gate "ready to use" claims.
+
+**Decision rule for overlay authors:**
+
+- If the check makes sense before any service starts (file present, symlink target reachable, env var set), implement it as a `HealthCheck`.
+- If the check requires a running process (HTTP probe, command exit code, service round-trip), implement it as a `Probe` via `http_probe()` / `command_probe()` — see `teatree.core.readiness`.
+
+**Agent rule when starting a worktree:**
+
+- After `worktree start` succeeds, run `worktree ready` (or `workspace ready` for a multi-repo ticket) before declaring services "running". A green `start` only proves containers/processes launched — `ready` is the truth-teller. If `ready` is red, treat it like a CI failure: diagnose root cause, never bypass.
+
 ## Extension Points
 
 For the full extension points table, override chain, and project skill creation guide, see [`references/extension-points.md`](references/extension-points.md).
 
-Key methods on `OverlayBase`: `get_repos()`, `get_provision_steps()`, `get_db_import_strategy()`, `get_env_extra()`, `get_run_commands()`, `get_services_config()`, `get_verify_endpoints()`. See the reference for the full list.
+Key methods on `OverlayBase`: `get_repos()`, `get_required_ports()`, `get_port_env()`, `uses_redis()`, `get_provision_steps()`, `get_db_import_strategy()`, `get_env_extra()`, `get_run_commands()`, `get_services_config()`, `get_verify_endpoints()`, `get_health_checks()`, `get_readiness_probes()`. See the reference for the full list.
 
 ## Lifecycle State Machine
 
@@ -227,6 +243,8 @@ stateDiagram-v2
     services_up --> created : teardown
     services_up --> ready : verify
 ```
+
+The `services_up → ready` transition runs `OverlayBase.get_readiness_probes()`. A worktree is **only** "ready to use" once probes pass — `services_up` alone proves processes launched, not that they serve traffic.
 
 ## Troubleshooting
 
