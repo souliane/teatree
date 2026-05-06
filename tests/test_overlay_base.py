@@ -43,6 +43,12 @@ def test_get_test_command_returns_empty_list():
     assert overlay.get_test_command(_make_worktree()) == []
 
 
+def test_get_e2e_preflight_returns_empty_list_by_default():
+    overlay = _MinimalOverlay()
+    assert overlay.get_e2e_preflight(customer="acme", base_url="https://dev.example.com") == []
+    assert overlay.get_e2e_preflight(customer=None, base_url=None) == []
+
+
 def test_get_db_import_strategy_returns_none():
     overlay = _MinimalOverlay()
     assert overlay.get_db_import_strategy(_make_worktree()) is None

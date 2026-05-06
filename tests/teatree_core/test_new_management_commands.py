@@ -3,7 +3,7 @@
 import os
 import subprocess
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from io import StringIO
 from pathlib import Path
 from typing import cast
@@ -2983,6 +2983,78 @@ class TestE2eExternal(TestCase):
         mock_discover.assert_not_called()
         env = mock_run.call_args[1]["env"]
         assert env["BASE_URL"] == "https://dev.example.com"
+
+
+class TestE2eExternalPreflight(TestCase):
+    """``e2e external`` invokes ``overlay.get_e2e_preflight()`` before launching Playwright."""
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_passes_customer_and_base_url_then_runs_playwright(self) -> None:
+        recorded: list[dict[str, str | None]] = []
+
+        def _record(self_overlay: object, *, customer: str | None, base_url: str | None) -> list[Callable[[], None]]:
+            _ = self_overlay
+            recorded.append({"customer": customer, "base_url": base_url})
+            return [lambda: None]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            private_dir = Path(tmp) / "private"
+            private_dir.mkdir()
+            mock_result = MagicMock(returncode=0)
+            with (
+                patch.dict(
+                    "os.environ",
+                    {
+                        "T3_PRIVATE_TESTS": str(private_dir),
+                        "BASE_URL": "https://dev.example.com",
+                        "CUSTOMER": "acme",
+                    },
+                    clear=False,
+                ),
+                patch.object(import_string(FULL_OVERLAY), "get_e2e_preflight", new=_record),
+                patch.object(e2e_mod, "_discover_frontend_port"),
+                patch.object(utils_run_mod.subprocess, "run", return_value=mock_result),
+            ):
+                result = cast("str", call_command("e2e", "external"))
+
+        assert "passed" in result
+        assert recorded == [{"customer": "acme", "base_url": "https://dev.example.com"}]
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_failing_check_aborts_before_playwright(self) -> None:
+        def _failing(self_overlay: object, *, customer: str | None, base_url: str | None) -> list[Callable[[], None]]:
+            _ = self_overlay, customer, base_url
+
+            def _fail() -> None:
+                msg = "Vendor SSO rejected stored credentials"
+                raise RuntimeError(msg)
+
+            return [_fail]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            private_dir = Path(tmp) / "private"
+            private_dir.mkdir()
+            mock_result = MagicMock(returncode=0)
+            with (
+                patch.dict(
+                    "os.environ",
+                    {
+                        "T3_PRIVATE_TESTS": str(private_dir),
+                        "BASE_URL": "https://dev.example.com",
+                    },
+                    clear=False,
+                ),
+                patch.object(import_string(FULL_OVERLAY), "get_e2e_preflight", new=_failing),
+                patch.object(utils_run_mod.subprocess, "run", return_value=mock_result) as mock_run,
+                patch.object(e2e_mod, "_discover_frontend_port"),
+                pytest.raises(SystemExit) as exc_info,
+            ):
+                call_command("e2e", "external")
+
+        assert exc_info.value.code != 0
+        mock_run.assert_not_called()
 
 
 # ── e2e run (harmonized dispatcher) ─────────────────────────────────
