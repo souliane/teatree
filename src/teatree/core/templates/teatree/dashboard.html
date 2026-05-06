@@ -310,13 +310,38 @@
         } else {
           var results = data.results || {};
           var parts = [];
+          var anyChanged = false;
           for (var repo in results) {
             var out = results[repo].output || 'up to date';
             parts.push(repo + ': ' + out);
+            if (results[repo].changed) anyChanged = true;
           }
           showToast(parts.join('\n') || 'Update complete', 'success');
+          if (anyChanged) hardReloadDashboard();
         }
       } catch(e) { showToast('Update failed', 'error'); }
+    }
+
+    // Hard reload bypassing service workers and Cache Storage so the freshly
+    // pulled dashboard assets actually load. Delays briefly so the success
+    // toast is visible before the page swaps.
+    function hardReloadDashboard() {
+      setTimeout(function() {
+        var done = function() { location.reload(); };
+        var clearCaches = function() {
+          if (!('caches' in window)) return Promise.resolve();
+          return caches.keys().then(function(keys) {
+            return Promise.all(keys.map(function(k) { return caches.delete(k); }));
+          });
+        };
+        var unregisterSWs = function() {
+          if (!('serviceWorker' in navigator)) return Promise.resolve();
+          return navigator.serviceWorker.getRegistrations().then(function(regs) {
+            return Promise.all(regs.map(function(r) { return r.unregister(); }));
+          });
+        };
+        Promise.all([unregisterSWs(), clearCaches()]).then(done, done);
+      }, 1500);
     }
 
     // E2E sync signal: body[data-htmx-idle="1"] iff every panel-rendering
