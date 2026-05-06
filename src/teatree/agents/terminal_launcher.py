@@ -23,11 +23,19 @@ from teatree.utils.run import DEVNULL, PIPE, spawn
 logger = logging.getLogger(__name__)
 
 
+_TTYD_INSTALL_HINT = "ttyd not found on PATH — install with `brew install ttyd` (macOS) or `apt install ttyd` (Linux)"
+_LINUX_TERMINAL_HINT = (
+    "No terminal emulator found on PATH — install one of "
+    "gnome-terminal, konsole, xfce4-terminal, kitty, alacritty, or xterm"
+)
+
+
 @dataclass(frozen=True, slots=True)
 class LaunchResult:
     launch_url: str = ""
     pid: int = 0
     mode: str = ""
+    error: str = ""
 
 
 def launch(command: list[str], *, mode: str = "ttyd", cwd: str = "", app: str = "") -> LaunchResult:
@@ -42,8 +50,8 @@ def launch(command: list[str], *, mode: str = "ttyd", cwd: str = "", app: str = 
 def _launch_ttyd(command: list[str], *, cwd: str = "") -> LaunchResult:
     ttyd_bin = shutil.which("ttyd")
     if not ttyd_bin:
-        logger.error("ttyd not found on PATH")
-        return LaunchResult(mode="ttyd")
+        logger.error(_TTYD_INSTALL_HINT)
+        return LaunchResult(mode="ttyd", error=_TTYD_INSTALL_HINT)
 
     port = find_free_port()
     proc = spawn(
@@ -179,8 +187,8 @@ def _launch_linux_window(cmd_str: str, *, cwd: str = "", app: str = "") -> Launc
     if not terminal:
         terminal = _detect_linux_terminal()
     if not terminal:
-        logger.error("No terminal emulator found on PATH")
-        return LaunchResult(mode="new-window")
+        logger.error(_LINUX_TERMINAL_HINT)
+        return LaunchResult(mode="new-window", error=_LINUX_TERMINAL_HINT)
 
     name = Path(terminal).name
     if name in {"gnome-terminal", "xfce4-terminal"}:

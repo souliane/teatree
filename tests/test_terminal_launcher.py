@@ -38,6 +38,8 @@ class TestLaunchTtyd:
         assert result.mode == "ttyd"
         assert result.launch_url == ""
         assert result.pid == 0
+        assert "ttyd not found" in result.error
+        assert "brew install ttyd" in result.error
 
     def test_launches_ttyd_process(self) -> None:
         mock_proc = MagicMock(pid=12345)
@@ -165,6 +167,7 @@ class TestLaunchLinuxWindow:
             result = launcher_mod._launch_linux_window("echo hi")
         assert result.mode == "new-window"
         assert result.pid == 0
+        assert "No terminal emulator found" in result.error
 
     def test_uses_gnome_terminal(self) -> None:
         mock_proc = MagicMock(pid=55)
