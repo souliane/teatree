@@ -74,6 +74,22 @@ class OverlayConfig:
     """GitHub user or org that owns the project board."""
     github_project_number: int = 0
     """GitHub Projects v2 board number (0 = not configured)."""
+    code_host: str = ""
+    """Selects the CodeHostBackend implementation: ``"github"``, ``"gitlab"``, or ``""``.
+
+    Empty falls back to whichever token the config exposes — legacy behaviour
+    preserved for overlays that predate the explicit field.
+    """
+    messaging_backend: str = "noop"
+    """Selects the MessagingBackend implementation: ``"slack"`` or ``"noop"`` (default)."""
+    slack_bot_token_ref: str = ""
+    """``pass`` entry name prefix for Slack bot credentials.
+
+    The loader reads ``<ref>-bot`` (xoxb token) and ``<ref>-app`` (xapp token).
+    Empty falls back to ``get_slack_token()`` for one-shot webhook posts.
+    """
+    slack_user_id: str = ""
+    """Slack user id of the human the bot speaks for; used to filter @mentions."""
     require_ticket: bool = False
     """Whether to enforce a tracked issue before coding/shipping."""
     mr_close_ticket: bool = False

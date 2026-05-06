@@ -14,7 +14,7 @@ from django_typer.management import TyperCommand, command
 
 from teatree import visual_qa
 from teatree.backends.protocols import PullRequestSpec
-from teatree.core.backend_factory import code_host_from_overlay, get_issue_tracker
+from teatree.core.backend_factory import code_host_from_overlay
 from teatree.core.models import Ticket, Worktree
 from teatree.core.models.types import TicketExtra, VisualQASummary
 from teatree.core.orphan_guard import BranchStatus, classify_branch
@@ -345,10 +345,10 @@ class Command(TyperCommand):
     @command(name="fetch-issue")
     def fetch_issue(self, issue_url: str) -> dict[str, object]:
         """Fetch issue details with embedded image URLs and external links."""
-        tracker = get_issue_tracker()
-        if tracker is None:
-            return {"error": "No issue tracker configured"}
-        issue = tracker.get_issue(issue_url)
+        host = code_host_from_overlay()
+        if host is None:
+            return {"error": "No code host configured"}
+        issue = host.get_issue(issue_url)
         description = str(issue.get("description", ""))
 
         # Extract embedded image paths (GitLab /uploads/ references)

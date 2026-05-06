@@ -2,14 +2,17 @@
 
 import json
 import os
+import re
 from dataclasses import dataclass
 from typing import TypedDict, cast
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urlparse
 
 from teatree.backends.protocols import PullRequestSpec
 from teatree.core.sync import RawAPIDict
 from teatree.utils import git
 from teatree.utils.run import CompletedProcess, run_checked
+
+_ISSUE_URL_RE = re.compile(r"^/(?P<owner>[^/]+)/(?P<repo>[^/]+)/issues/(?P<number>\d+)/?$")
 
 
 class _GitHubUser(TypedDict, total=False):
@@ -255,3 +258,19 @@ class GitHubCodeHost:
     def upload_file(self, *, repo: str, filepath: str) -> dict[str, object]:
         msg = f"File upload to {repo} not supported (token={'set' if self._token else 'unset'}, file={filepath})"
         raise NotImplementedError(msg)
+
+    def get_issue(self, issue_url: str) -> RawAPIDict:
+        """Fetch a GitHub issue from its full URL.
+
+        Supports ``https://github.com/<owner>/<repo>/issues/<number>``.
+        Returns ``{"error": ...}`` when the URL is not a recognised GitHub
+        issue URL.
+        """
+        path = urlparse(issue_url).path
+        match = _ISSUE_URL_RE.match(path)
+        if match is None:
+            return {"error": f"Not a GitHub issue URL: {issue_url}"}
+
+        endpoint = f"repos/{match['owner']}/{match['repo']}/issues/{match['number']}"
+        data = _gh_api_get(endpoint, token=self._token)
+        return cast("RawAPIDict", data) if isinstance(data, dict) else {"error": f"Issue not found: {issue_url}"}

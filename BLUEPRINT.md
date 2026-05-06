@@ -649,9 +649,8 @@ Each external API concern is a `@runtime_checkable Protocol` in `teatree.backend
 | `CodeHostBackend` | `list_my_prs(*, author)`, `list_review_requested_prs(*, reviewer)`, `get_pr(pr_url)`, `get_pr_pipeline_status(pr_url)`, `get_pr_review_threads(pr_url)`, `post_pr_comment(pr_url, body)`, `post_pr_review(pr_url, comments)`, `create_pr(PullRequestSpec)`, `merge_pr(pr_url)`, `list_assigned_issues(*, assignee)`, `get_issue(issue_url)` | `GitHubCodeHost`, `GitLabCodeHost` |
 | `CIService` | `cancel_pipelines()`, `fetch_pipeline_errors()`, `fetch_failed_tests()`, `trigger_pipeline()`, `quality_check()` | `GitHubActionsCI`, `GitLabCI` |
 | `MessagingBackend` | `fetch_mentions(*, since)`, `fetch_dms(*, since)`, `post_message(channel, text, *, thread_ts)`, `post_reply(channel, ts, text)`, `react(channel, ts, emoji)`, `resolve_user_id(handle)` | `SlackBotBackend`, `NoopMessagingBackend` |
-| `ErrorTracker` | `get_top_issues()` | `SentryErrorTracker` |
 
-The `IssueTracker` and `ChatNotifier` protocols are folded into `CodeHostBackend` (issue methods) and `MessagingBackend` (post methods) respectively — the previous split duplicated state across protocols and forced overlays to configure two backends for one platform.
+`backends.sentry.SentryClient` is a concrete client (no Protocol). The `IssueTracker` and `ChatNotifier` protocols are folded into `CodeHostBackend` (issue methods) and `MessagingBackend` (post methods) respectively — the previous split duplicated state across protocols and forced overlays to configure two backends for one platform.
 
 ### 7.2 Code-Host Selection
 

@@ -6,7 +6,7 @@ import httpx
 
 
 class SentryClient:
-    """Sentry API client implementing the ErrorTracker protocol."""
+    """Sentry API client — fetches issue summaries for retro/triage skills."""
 
     def __init__(self, *, token: str, org: str, base_url: str = "https://sentry.io") -> None:
         self.token = token

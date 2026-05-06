@@ -1,10 +1,11 @@
 """Concern-based backend protocols.
 
 Each protocol defines a capability that teatree needs from external services.
-Overlays configure which implementation to use via Django settings.
+Overlays declare which implementation to load via ``OverlayConfig`` fields
+(``code_host``, ``messaging_backend``); ``backends.loader`` resolves the choice.
 
 A single class can satisfy multiple protocols when the platform provides
-multiple concerns (e.g. GitLab provides code hosting, CI, and issue tracking).
+multiple concerns (e.g. GitLab provides code hosting and CI in one client).
 """
 
 from dataclasses import dataclass, field
@@ -15,7 +16,7 @@ from teatree.core.sync import RawAPIDict
 
 @dataclass(frozen=True, slots=True)
 class PullRequestSpec:
-    """Fields needed to open a pull/merge request on a CodeHost."""
+    """Fields needed to open a pull/merge request on a CodeHostBackend."""
 
     repo: str
     branch: str
@@ -27,9 +28,22 @@ class PullRequestSpec:
     draft: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class MessageSpec:
+    """Fields for an outgoing chat message."""
+
+    channel: str
+    text: str
+    thread_ts: str = ""
+
+
 @runtime_checkable
-class CodeHost(Protocol):
-    """Create and list pull/merge requests."""
+class CodeHostBackend(Protocol):
+    """Pull/merge requests + issue fetch — the canonical code-host concern.
+
+    PR is the canonical term in core; GitLab implementations translate
+    MR ↔ PR at the API edge.
+    """
 
     def create_pr(self, spec: PullRequestSpec) -> RawAPIDict: ...  # pragma: no branch
 
@@ -54,6 +68,8 @@ class CodeHost(Protocol):
 
     def upload_file(self, *, repo: str, filepath: str) -> RawAPIDict: ...  # pragma: no branch
 
+    def get_issue(self, issue_url: str) -> RawAPIDict: ...  # pragma: no branch
+
 
 @runtime_checkable
 class CIService(Protocol):
@@ -77,21 +93,23 @@ class CIService(Protocol):
 
 
 @runtime_checkable
-class IssueTracker(Protocol):
-    """Fetch issue details from a project tracker."""
+class MessagingBackend(Protocol):
+    """Messaging — mentions, DMs, posts, reactions, user lookup.
 
-    def get_issue(self, issue_url: str) -> RawAPIDict: ...  # pragma: no branch
+    The single Protocol covers both inbound (fetch_mentions, fetch_dms) and
+    outbound (post_message, post_reply, react) concerns plus user-id
+    resolution for routing. ``send`` is the legacy one-shot post used by
+    overlay notifications.
+    """
 
+    def fetch_mentions(self, *, since: str = "") -> list[RawAPIDict]: ...  # pragma: no branch
 
-@runtime_checkable
-class ChatNotifier(Protocol):
-    """Send notifications to a team chat channel."""
+    def fetch_dms(self, *, since: str = "") -> list[RawAPIDict]: ...  # pragma: no branch
 
-    def send(self, *, channel: str, text: str) -> RawAPIDict: ...  # pragma: no branch
+    def post_message(self, *, channel: str, text: str, thread_ts: str = "") -> RawAPIDict: ...  # pragma: no branch
 
+    def post_reply(self, *, channel: str, ts: str, text: str) -> RawAPIDict: ...  # pragma: no branch
 
-@runtime_checkable
-class ErrorTracker(Protocol):
-    """Fetch error/issue data from an error tracking service."""
+    def react(self, *, channel: str, ts: str, emoji: str) -> RawAPIDict: ...  # pragma: no branch
 
-    def get_top_issues(self, *, project: str, limit: int = 10) -> list[RawAPIDict]: ...  # pragma: no branch
+    def resolve_user_id(self, handle: str) -> str: ...  # pragma: no branch

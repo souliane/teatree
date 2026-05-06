@@ -404,3 +404,22 @@ class TestGitHubCodeHost:
 
         with pytest.raises(NotImplementedError, match="File upload"):
             host.upload_file(repo="org/repo", filepath="/tmp/test.txt")
+
+    def test_get_issue_parses_url_and_returns_payload(self) -> None:
+        payload = {"number": 7, "title": "Bug", "body": "details"}
+        with patch.object(github_mod, "_gh_api_get", return_value=payload) as mock_get:
+            host = GitHubCodeHost(token="tok")
+            result = host.get_issue("https://github.com/souliane/teatree/issues/7")
+        assert result == payload
+        mock_get.assert_called_once_with("repos/souliane/teatree/issues/7", token="tok")
+
+    def test_get_issue_rejects_non_issue_url(self) -> None:
+        host = GitHubCodeHost()
+        result = host.get_issue("https://github.com/souliane/teatree/pull/12")
+        assert "error" in result
+
+    def test_get_issue_returns_error_when_api_returns_non_dict(self) -> None:
+        with patch.object(github_mod, "_gh_api_get", return_value=[]):
+            host = GitHubCodeHost()
+            result = host.get_issue("https://github.com/souliane/teatree/issues/9")
+        assert "error" in result

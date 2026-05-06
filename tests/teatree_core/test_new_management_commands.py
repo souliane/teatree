@@ -1966,7 +1966,7 @@ class TestPrFetchIssue(TestCase):
         mock_tracker = MagicMock()
         mock_tracker.get_issue.return_value = {"title": "Bug", "state": "opened", "description": "A bug"}
 
-        with patch.object(pr_mod, "get_issue_tracker", return_value=mock_tracker):
+        with patch.object(pr_mod, "code_host_from_overlay", return_value=mock_tracker):
             result = cast("dict[str, object]", call_command("pr", "fetch-issue", "https://example.com/issues/1"))
 
         assert result["title"] == "Bug"
@@ -1979,7 +1979,7 @@ class TestPrFetchIssue(TestCase):
         mock_tracker = MagicMock()
         mock_tracker.get_issue.return_value = {"title": "Task", "description": desc}
 
-        with patch.object(pr_mod, "get_issue_tracker", return_value=mock_tracker):
+        with patch.object(pr_mod, "code_host_from_overlay", return_value=mock_tracker):
             result = cast("dict[str, object]", call_command("pr", "fetch-issue", "https://example.com/issues/2"))
 
         assert result["_embedded_images"] == [{"alt": "screenshot", "path": "/uploads/abc/img.png"}]
@@ -1996,7 +1996,7 @@ class TestPrFetchIssue(TestCase):
             "comments": [{"body": "See ![fix](/uploads/xyz/fix.png)"}],
         }
 
-        with patch.object(pr_mod, "get_issue_tracker", return_value=mock_tracker):
+        with patch.object(pr_mod, "code_host_from_overlay", return_value=mock_tracker):
             result = cast("dict[str, object]", call_command("pr", "fetch-issue", "https://example.com/issues/3"))
 
         comments = result["comments"]
@@ -2015,7 +2015,7 @@ class TestPrFetchIssue(TestCase):
             "comments": ["not a dict", {"body": "valid"}],
         }
 
-        with patch.object(pr_mod, "get_issue_tracker", return_value=mock_tracker):
+        with patch.object(pr_mod, "code_host_from_overlay", return_value=mock_tracker):
             result = cast("dict[str, object]", call_command("pr", "fetch-issue", "https://example.com/issues/4"))
 
         assert "error" not in result

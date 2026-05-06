@@ -224,3 +224,47 @@ def test_create_pr_uses_explicit_slug_when_repo_has_namespace() -> None:
 
     client.resolve_project.assert_called_once_with("org/nested/repo")
     client.resolve_project_from_remote.assert_not_called()
+
+
+def test_get_issue_parses_url_and_calls_api() -> None:
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = _project()
+    client.get_issue.return_value = {"title": "Bug", "iid": 7}
+    host = GitLabCodeHost(client=client)
+
+    result = host.get_issue("https://gitlab.com/org/repo/-/issues/7")
+
+    assert result == {"title": "Bug", "iid": 7}
+    client.resolve_project.assert_called_once_with("org/repo")
+    client.get_issue.assert_called_once_with(42, 7)
+
+
+def test_get_issue_rejects_non_issue_url() -> None:
+    client = MagicMock(spec=GitLabAPI)
+    host = GitLabCodeHost(client=client)
+
+    result = host.get_issue("https://gitlab.com/org/repo/-/merge_requests/12")
+
+    assert "error" in result
+    client.resolve_project.assert_not_called()
+
+
+def test_get_issue_returns_error_when_project_not_resolved() -> None:
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = None
+    host = GitLabCodeHost(client=client)
+
+    result = host.get_issue("https://gitlab.com/missing/repo/-/issues/1")
+
+    assert "error" in result
+
+
+def test_get_issue_returns_error_when_api_returns_none() -> None:
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = _project()
+    client.get_issue.return_value = None
+    host = GitLabCodeHost(client=client)
+
+    result = host.get_issue("https://gitlab.com/org/repo/-/issues/9")
+
+    assert "error" in result

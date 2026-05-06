@@ -1,6 +1,12 @@
 """Tests for backend protocol structural typing."""
 
-from teatree.backends.protocols import ChatNotifier, CIService, CodeHost, ErrorTracker, IssueTracker, PullRequestSpec
+from teatree.backends.protocols import (
+    CIService,
+    CodeHostBackend,
+    MessageSpec,
+    MessagingBackend,
+    PullRequestSpec,
+)
 
 
 def test_ci_service_protocol_is_structural() -> None:
@@ -29,7 +35,7 @@ def test_ci_service_protocol_is_structural() -> None:
     assert isinstance(MyCIService(), CIService)
 
 
-def test_code_host_protocol_is_structural() -> None:
+def test_code_host_backend_protocol_is_structural() -> None:
     class MyCodeHost:
         def create_pr(self, spec: PullRequestSpec) -> dict[str, object]:
             _ = spec
@@ -56,31 +62,33 @@ def test_code_host_protocol_is_structural() -> None:
         def upload_file(self, *, repo: str, filepath: str) -> dict[str, object]:
             return {}
 
-    assert isinstance(MyCodeHost(), CodeHost)
-
-
-def test_issue_tracker_protocol_is_structural() -> None:
-    class MyIssueTracker:
         def get_issue(self, issue_url: str) -> dict[str, object]:
             return {}
 
-    assert isinstance(MyIssueTracker(), IssueTracker)
+    assert isinstance(MyCodeHost(), CodeHostBackend)
 
 
-def test_chat_notifier_protocol_is_structural() -> None:
-    class MyChatNotifier:
-        def send(self, *, channel: str, text: str) -> dict[str, object]:
-            return {}
-
-    assert isinstance(MyChatNotifier(), ChatNotifier)
-
-
-def test_error_tracker_protocol_is_structural() -> None:
-    class MyErrorTracker:
-        def get_top_issues(self, *, project: str, limit: int = 10) -> list[dict[str, object]]:
+def test_messaging_backend_protocol_is_structural() -> None:
+    class MyMessaging:
+        def fetch_mentions(self, *, since: str = "") -> list[dict[str, object]]:
             return []
 
-    assert isinstance(MyErrorTracker(), ErrorTracker)
+        def fetch_dms(self, *, since: str = "") -> list[dict[str, object]]:
+            return []
+
+        def post_message(self, *, channel: str, text: str, thread_ts: str = "") -> dict[str, object]:
+            return {}
+
+        def post_reply(self, *, channel: str, ts: str, text: str) -> dict[str, object]:
+            return {}
+
+        def react(self, *, channel: str, ts: str, emoji: str) -> dict[str, object]:
+            return {}
+
+        def resolve_user_id(self, handle: str) -> str:
+            return ""
+
+    assert isinstance(MyMessaging(), MessagingBackend)
 
 
 def test_non_conforming_class_is_not_ci_service() -> None:
@@ -94,25 +102,16 @@ def test_non_conforming_class_is_not_code_host() -> None:
     class NotACodeHost:
         pass
 
-    assert not isinstance(NotACodeHost(), CodeHost)
+    assert not isinstance(NotACodeHost(), CodeHostBackend)
 
 
-def test_non_conforming_class_is_not_issue_tracker() -> None:
-    class NotAnIssueTracker:
+def test_non_conforming_class_is_not_messaging_backend() -> None:
+    class NotAMessaging:
         pass
 
-    assert not isinstance(NotAnIssueTracker(), IssueTracker)
+    assert not isinstance(NotAMessaging(), MessagingBackend)
 
 
-def test_non_conforming_class_is_not_chat_notifier() -> None:
-    class NotAChatNotifier:
-        pass
-
-    assert not isinstance(NotAChatNotifier(), ChatNotifier)
-
-
-def test_non_conforming_class_is_not_error_tracker() -> None:
-    class NotAnErrorTracker:
-        pass
-
-    assert not isinstance(NotAnErrorTracker(), ErrorTracker)
+def test_message_spec_default_thread_ts() -> None:
+    spec = MessageSpec(channel="C123", text="hello")
+    assert spec.thread_ts == ""

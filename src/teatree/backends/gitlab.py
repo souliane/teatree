@@ -1,8 +1,12 @@
+import re
 from pathlib import Path
+from urllib.parse import urlparse
 
 from teatree.backends.gitlab_api import GitLabAPI, ProjectInfo
 from teatree.backends.protocols import PullRequestSpec
 from teatree.core.sync import RawAPIDict
+
+_ISSUE_URL_RE = re.compile(r"^/(?P<path>.+?)/-/issues/(?P<iid>\d+)/?$")
 
 
 def get_client(*, token: str = "", base_url: str = "") -> GitLabAPI:
@@ -95,6 +99,25 @@ class GitLabCodeHost:
         if project is None:
             return {"error": f"Could not resolve project: {repo}"}
         return self._client.upload_file(project.project_id, filepath) or {}
+
+    def get_issue(self, issue_url: str) -> RawAPIDict:
+        """Fetch a GitLab issue from its full URL.
+
+        Supports the canonical web format ``https://gitlab.example.com/<group>/<repo>/-/issues/<iid>``.
+        Returns ``{"error": ...}`` when the URL is not a recognised GitLab issue URL or when
+        the project cannot be resolved.
+        """
+        path = urlparse(issue_url).path
+        match = _ISSUE_URL_RE.match(path)
+        if match is None:
+            return {"error": f"Not a GitLab issue URL: {issue_url}"}
+
+        project = self._client.resolve_project(match["path"])
+        if project is None:
+            return {"error": f"Could not resolve project: {match['path']}"}
+
+        issue = self._client.get_issue(project.project_id, int(match["iid"]))
+        return issue if isinstance(issue, dict) else {"error": f"Issue not found: {issue_url}"}
 
     def _resolve_project(self, repo: str) -> ProjectInfo | None:
         """Resolve a GitLab project from a local path, ``namespace/repo`` slug, or bare name.
