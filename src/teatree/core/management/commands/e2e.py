@@ -215,6 +215,17 @@ class Command(TyperCommand):
         variables = {"E2E": "true"}
         return ci.trigger_pipeline(project=project, ref=ref, variables=variables)
 
+    def _run_preflight(self, env: dict[str, str]) -> None:
+        """Run overlay-declared preflight checks. Exit non-zero on first failure."""
+        overlay = get_overlay()
+        checks = overlay.get_e2e_preflight(customer=env.get("CUSTOMER") or None, base_url=env.get("BASE_URL") or None)
+        for check in checks:
+            try:
+                check()
+            except RuntimeError as exc:
+                self.stderr.write(f"E2E preflight failed: {exc}")
+                raise SystemExit(1) from exc
+
     @command()
     def external(
         self,
@@ -277,6 +288,8 @@ class Command(TyperCommand):
         self.stdout.write(f"  BASE_URL: {env['BASE_URL']}")
         if env.get("CUSTOMER"):
             self.stdout.write(f"  CUSTOMER: {env['CUSTOMER']}")
+
+        self._run_preflight(env)
 
         cmd = ["npx", "playwright", "test", *opts.to_args()]
         rc = run_streamed(cmd, cwd=private_tests_path, env=env, check=False)

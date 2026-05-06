@@ -350,6 +350,20 @@ class OverlayBase(ABC):  # noqa: PLR0904 — overlay extension API; hook count r
     def get_test_command(self, worktree: "Worktree") -> list[str] | RunCommand:
         return []
 
+    def get_e2e_preflight(self, *, customer: str | None, base_url: str | None) -> list[Callable[[], None]]:
+        """Return preflight checks to run before launching the external Playwright suite.
+
+        Each callable raises :class:`RuntimeError` on failure with a human-readable
+        message; the ``e2e external`` command will print the message and exit
+        non-zero before any test starts. Default: no checks.
+
+        Overlays use this to fail fast on environment problems they alone can detect
+        (auth chains, network reachability, vendor SSO availability) without leaking
+        overlay-specific knowledge into core.
+        """
+        _ = customer, base_url
+        return []
+
     def get_verify_endpoints(self, worktree: "Worktree") -> dict[str, str]:
         """Return custom health-check paths per service.
 
