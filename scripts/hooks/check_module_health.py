@@ -15,8 +15,6 @@ import pathlib
 import re
 import subprocess
 
-from commit_message import commit_message_has_relax_prefix
-
 MAX_LOC = 500
 MAX_MODULE_FUNCTIONS = 10
 
@@ -162,19 +160,16 @@ def main() -> int:
     if not violations:
         return 0
 
-    if commit_message_has_relax_prefix():
-        print(f"Module health relaxation acknowledged via relax: commit type ({len(violations)} item(s)).")
-        return 0
-
     print("Module health violations:")
     print()
     for v in violations:
         print(v)
     print()
     print(
-        "Fix these before committing. For pre-existing violations being\n"
-        "refactored incrementally, use 'relax:' as the commit type.\n"
-        "Example: relax(api): add dict[str, object] for legacy compat"
+        "Fix these before committing. Split the file by concern, move\n"
+        "module-level functions to a class, or replace dict[str, object]\n"
+        "with a typed dataclass / TypedDict. There is no bypass — refactor\n"
+        "before the commit lands."
     )
     return 1
 
