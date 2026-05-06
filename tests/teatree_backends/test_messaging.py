@@ -155,3 +155,63 @@ def test_slack_exposes_app_token_and_user_id() -> None:
     backend = SlackBotBackend(bot_token="xoxb", app_token="xapp", user_id="U123")
     assert backend.app_token == "xapp"
     assert backend.user_id == "U123"
+
+
+def test_slack_open_dm_returns_channel_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_post(url: str, **kwargs: object) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"ok": True, "channel": {"id": "D9XYZ"}},
+            request=httpx.Request("POST", url),
+        )
+
+    monkeypatch.setattr(slack_bot.httpx, "post", fake_post)
+    backend = SlackBotBackend(bot_token="xoxb-test")
+
+    assert backend.open_dm("U01ABCD1234") == "D9XYZ"
+
+
+def test_slack_open_dm_returns_empty_on_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_post(url: str, **kwargs: object) -> httpx.Response:
+        return httpx.Response(200, json={"ok": False}, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(slack_bot.httpx, "post", fake_post)
+    backend = SlackBotBackend(bot_token="xoxb-test")
+
+    assert backend.open_dm("U01ABCD1234") == ""
+
+
+def test_slack_get_reactions_returns_emoji_names(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_get(url: str, **kwargs: object) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "ok": True,
+                "message": {
+                    "reactions": [
+                        {"name": "white_check_mark", "users": ["U1"], "count": 1},
+                        {"name": "eyes", "users": ["U2"], "count": 1},
+                    ],
+                },
+            },
+            request=httpx.Request("GET", url),
+        )
+
+    monkeypatch.setattr(slack_bot.httpx, "get", fake_get)
+    backend = SlackBotBackend(bot_token="xoxb-test")
+
+    assert backend.get_reactions(channel="C1", ts="123.456") == ["white_check_mark", "eyes"]
+
+
+def test_slack_get_reactions_returns_empty_when_no_reactions(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_get(url: str, **kwargs: object) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"ok": True, "message": {}},
+            request=httpx.Request("GET", url),
+        )
+
+    monkeypatch.setattr(slack_bot.httpx, "get", fake_get)
+    backend = SlackBotBackend(bot_token="xoxb-test")
+
+    assert backend.get_reactions(channel="C1", ts="123.456") == []

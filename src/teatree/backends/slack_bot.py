@@ -101,6 +101,34 @@ class SlackBotBackend:
     def react(self, *, channel: str, ts: str, emoji: str) -> RawAPIDict:
         return self._post("reactions.add", {"channel": channel, "timestamp": ts, "name": emoji})
 
+    def open_dm(self, user_id: str) -> str:
+        """Open a direct-message channel with *user_id* and return its channel id."""
+        data = self._post("conversations.open", {"users": user_id})
+        if not data.get("ok"):
+            return ""
+        channel = cast("RawAPIDict", data.get("channel") or {})
+        channel_id = channel.get("id")
+        return channel_id if isinstance(channel_id, str) else ""
+
+    def get_reactions(self, *, channel: str, ts: str) -> list[str]:
+        """Return the emoji names currently set on a message."""
+        data = self._get("reactions.get", {"channel": channel, "timestamp": ts})
+        if not data.get("ok"):
+            return []
+        message = cast("RawAPIDict", data.get("message") or {})
+        reactions = message.get("reactions")
+        if not isinstance(reactions, list):
+            return []
+        names: list[str] = []
+        for raw_reaction in reactions:
+            if not isinstance(raw_reaction, dict):
+                continue
+            reaction = cast("RawAPIDict", raw_reaction)
+            name = reaction.get("name")
+            if isinstance(name, str):
+                names.append(name)
+        return names
+
     def resolve_user_id(self, handle: str) -> str:
         """Look up a Slack user id from a handle (``@alice`` or ``alice``)."""
         clean = handle.lstrip("@")

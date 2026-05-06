@@ -6,7 +6,7 @@ If the entire `src/` and `tests/` tree were deleted, this document alone — plu
 
 **Change policy:** Every code change to teatree must be reflected here. Before modifying this file, always ask the user for approval — this is the source of truth and the user validates every change.
 
-**Status:** This BLUEPRINT describes the **target** architecture under issue [#541](https://github.com/souliane/teatree/issues/541). Phases 1–2 are done in the active branch — the statusline file is the persistent UI surface, the HTML dashboard, ttyd web terminal, ASGI/uvicorn scaffolding, and platform autostart helpers are gone. Phases 3–8 (code-host + messaging Protocols, fat loop + scanners, slim headless executor, auto-mode defaults, ticket dispositions, no-overlay-leak gate) ship in the same PR. When this BLUEPRINT and the code disagree on later phases, treat this file as the destination, not the present.
+**Status:** This BLUEPRINT describes the **target** architecture under issue [#541](https://github.com/souliane/teatree/issues/541). Phases 1–3 and Phase 3.6 are done in the active branch — the statusline file is the persistent UI surface; the HTML dashboard, ttyd web terminal, ASGI/uvicorn scaffolding, and platform autostart helpers are gone; the code-host + messaging Protocols are unified, with `SlackBotBackend`/`NoopMessagingBackend` selectable via overlay config; and `t3 setup slack-bot --overlay <name>` walks the user through Slack app registration. Phases 4–5 (fat loop + scanners, slim headless executor) ship in the same PR. When this BLUEPRINT and the code disagree on later phases, treat this file as the destination, not the present.
 
 ---
 
@@ -766,7 +766,7 @@ Typer-based, work without Django:
 - `t3 tool {privacy-scan,analyze-video,bump-deps,label-issues,find-duplicates}` — standalone utilities
 - `t3 config write-skill-cache` — write overlay skill metadata to cache
 - `t3 doctor {check,repair}` — health checks and symlink repair
-- `t3 setup slack-bot --overlay <name>` — interactive walkthrough to register a Slack bot for an overlay; opens the app-manifest URL, captures bot+app tokens, stores them via `pass`, writes `slack_user_id` into `~/.teatree.toml`, smoke-tests with a round-trip DM (see § 10.1 for the manifest template and scopes)
+- `t3 setup slack-bot --overlay <name>` — interactive walkthrough to register a Slack bot for an overlay; opens the app-manifest URL, captures bot+app tokens, stores them via `pass`, writes `slack_user_id` into `~/.teatree.toml`, smoke-tests with a round-trip DM (see § 10.1 for the manifest template and scopes). Subcommands of `t3 setup` short-circuit the global skill-install callback so the walkthrough runs without requiring `T3_REPO`.
 - `t3 graph <kind>` — render mermaid diagrams on demand. `<kind>` ∈ `{ticket, worktree, task, modules, loop}`. Prints to stdout; pipe to a viewer or paste into a markdown buffer.
 - `t3 loop {start,stop,status,tick}` — manage the long-lived `/loop`. `start` registers the loop in the active Claude Code session; `tick` runs one tick out-of-band (used by tests and by manual investigation).
 

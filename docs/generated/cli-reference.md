@@ -687,6 +687,31 @@ Usage: t3 setup [OPTIONS] COMMAND [ARGS]...
 │ --skip-plugin               Skip Claude CLI plugin registration.             │
 │ --help                      Show this message and exit.                      │
 ╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ slack-bot  Register a per-overlay Slack bot and store its tokens via         │
+│            ``pass``.                                                         │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 setup slack-bot`
+
+```
+Usage: t3 setup slack-bot [OPTIONS]
+
+ Register a per-overlay Slack bot and store its tokens via ``pass``.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ *  --overlay                TEXT  Overlay name as registered in              │
+│                                   `~/.teatree.toml`.                         │
+│                                   [required]                                 │
+│    --reset                        Rotate the existing bot + app tokens; skip │
+│                                   the manifest URL.                          │
+│    --skip-smoke-test              Skip the round-trip DM verification.       │
+│    --config                 PATH  Path to teatree config (default:           │
+│                                   ~/.teatree.toml).                          │
+│                                   [default: /Users/adrien/.teatree.toml]     │
+│    --help                         Show this message and exit.                │
+╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
 ### `t3 assess`
