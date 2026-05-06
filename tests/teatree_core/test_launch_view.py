@@ -198,6 +198,21 @@ class TestLaunchTerminalView:
         assert response.status_code == 200
         assert data["launched"] is True
 
+    def test_returns_500_when_launcher_reports_error(self, monkeypatch: "pytest.MonkeyPatch") -> None:
+        from teatree.agents.terminal_launcher import LaunchResult  # noqa: PLC0415
+
+        mock_result = LaunchResult(mode="ttyd", error="ttyd not found on PATH — install with `brew install ttyd`")
+        monkeypatch.setattr(
+            "teatree.agents.terminal_launcher.launch",
+            lambda command, mode="ttyd", cwd="", app="": mock_result,
+        )
+
+        response = Client().post("/dashboard/launch-terminal/")
+        data = json.loads(response.content)
+
+        assert response.status_code == 500
+        assert "ttyd not found" in data["error"]
+
 
 class TestFindFreePort:
     def test_returns_valid_port(self) -> None:
@@ -265,6 +280,22 @@ class TestLaunchInteractiveAgentView:
 
         assert response.status_code == 500
         assert "claude CLI not found" in data["error"]
+
+    def test_returns_500_when_launcher_reports_error(self, monkeypatch: "pytest.MonkeyPatch") -> None:
+        from teatree.agents.terminal_launcher import LaunchResult  # noqa: PLC0415
+
+        mock_result = LaunchResult(mode="ttyd", error="ttyd not found on PATH — install with `brew install ttyd`")
+        monkeypatch.setattr("teatree.core.views.launch.shutil.which", lambda name: f"/usr/bin/{name}")
+        monkeypatch.setattr(
+            "teatree.agents.terminal_launcher.launch",
+            lambda command, mode="ttyd", cwd="", app="": mock_result,
+        )
+
+        response = Client().post("/dashboard/launch-agent/")
+        data = json.loads(response.content)
+
+        assert response.status_code == 500
+        assert "ttyd not found" in data["error"]
 
 
 class TestClaudeArgv:
