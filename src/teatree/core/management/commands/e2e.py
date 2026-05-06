@@ -298,6 +298,19 @@ class Command(TyperCommand):
         self.stderr.write(f"E2E failed (exit {rc}).")
         raise SystemExit(rc)
 
+    def _project_wt_path(self) -> str:
+        try:
+            worktree = resolve_worktree()
+            return (worktree.extra or {}).get("worktree_path", ".") if worktree else "."
+        except Exception:  # noqa: BLE001
+            return "."
+
+    def _exit_with_rc(self, rc: int) -> str:
+        if rc == 0:
+            return "E2E passed."
+        self.stderr.write(f"E2E failed (exit {rc}).")
+        raise SystemExit(rc)
+
     @command()
     def project(
         self,
@@ -314,15 +327,16 @@ class Command(TyperCommand):
         CI runner's Chromium renders fonts at different heights than macOS, so
         locally-generated baselines mismatch in CI.
         """
-        try:
-            worktree = resolve_worktree()
-            wt_path = (worktree.extra or {}).get("worktree_path", ".") if worktree else "."
-        except Exception:  # noqa: BLE001
-            wt_path = "."
-        overlay = get_overlay()
-        e2e_config = overlay.metadata.get_e2e_config()
+        wt_path = self._project_wt_path()
+        e2e_config = get_overlay().metadata.get_e2e_config()
         settings_module = e2e_config.get("settings_module", "e2e.settings")
         test_dir = test_path or e2e_config.get("test_dir", "e2e/")
+
+        if not test_path:
+            test_dir_path = Path(wt_path) / test_dir
+            if not test_dir_path.exists():
+                self.stdout.write(f"No E2E tests at {test_dir_path} — skipping.")
+                return "E2E skipped (no tests)."
 
         if docker and not Path("/.dockerenv").exists():
             compose_file = Path(wt_path) / "dev" / "docker-compose.yml"
@@ -330,11 +344,7 @@ class Command(TyperCommand):
                 cmd = ["docker", "compose", "-f", str(compose_file), "run", "--rm", "e2e", test_dir]
                 if update_snapshots:
                     cmd.append("--update-snapshots")
-                rc = run_streamed(cmd, cwd=wt_path, check=False)
-                if rc == 0:
-                    return "E2E passed."
-                self.stderr.write(f"E2E failed (exit {rc}).")
-                raise SystemExit(rc)
+                return self._exit_with_rc(run_streamed(cmd, cwd=wt_path, check=False))
 
         cmd = ["uv", "run", "pytest", test_dir]
         cmd.extend(["-o", f"DJANGO_SETTINGS_MODULE={settings_module}", "--no-cov", "-p", "no:tach", "-v"])
@@ -347,8 +357,4 @@ class Command(TyperCommand):
         else:
             env["CI"] = "1"
 
-        rc = run_streamed(cmd, cwd=wt_path, env=env, check=False)
-        if rc == 0:
-            return "E2E passed."
-        self.stderr.write(f"E2E failed (exit {rc}).")
-        raise SystemExit(rc)
+        return self._exit_with_rc(run_streamed(cmd, cwd=wt_path, env=env, check=False))

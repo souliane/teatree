@@ -2663,6 +2663,7 @@ class TestE2eProject(TestCase):
         mock_result = MagicMock(returncode=0)
         with (
             patch.object(e2e_mod, "resolve_worktree", return_value=None),
+            patch.object(Path, "exists", return_value=True),
             patch.object(utils_run_mod.subprocess, "run", return_value=mock_result) as mock_run,
         ):
             result = cast("str", call_command("e2e", "project", docker=False))
@@ -2678,6 +2679,7 @@ class TestE2eProject(TestCase):
         mock_result = MagicMock(returncode=1)
         with (
             patch.object(e2e_mod, "resolve_worktree", return_value=None),
+            patch.object(Path, "exists", return_value=True),
             patch.object(utils_run_mod.subprocess, "run", return_value=mock_result),
             pytest.raises(SystemExit) as exc_info,
         ):
@@ -2692,6 +2694,7 @@ class TestE2eProject(TestCase):
         mock_result = MagicMock(returncode=0)
         with (
             patch.object(e2e_mod, "resolve_worktree", return_value=None),
+            patch.object(Path, "exists", return_value=True),
             patch.object(utils_run_mod.subprocess, "run", return_value=mock_result) as mock_run,
         ):
             call_command("e2e", "project", headed=True, docker=False)
@@ -2706,6 +2709,7 @@ class TestE2eProject(TestCase):
         mock_result = MagicMock(returncode=0)
         with (
             patch.object(e2e_mod, "resolve_worktree", return_value=None),
+            patch.object(Path, "exists", return_value=True),
             patch.object(utils_run_mod.subprocess, "run", return_value=mock_result) as mock_run,
         ):
             call_command("e2e", "project", test_path="tests/e2e/test_login.py", docker=False)
@@ -2713,6 +2717,18 @@ class TestE2eProject(TestCase):
         cmd = mock_run.call_args[0][0]
         assert "tests/e2e/test_login.py" in cmd
         assert "e2e/" not in cmd
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_skips_when_test_dir_missing(self) -> None:
+        """e2e project exits cleanly when the test directory doesn't exist."""
+        with (
+            patch.object(e2e_mod, "resolve_worktree", return_value=None),
+            patch.object(Path, "exists", return_value=False),
+        ):
+            result = cast("str", call_command("e2e", "project", docker=False))
+
+        assert "skipped" in result.lower()
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
@@ -3123,6 +3139,7 @@ class TestE2eRun(TestCase):
         mock_result = MagicMock(returncode=0)
         with (
             patch.object(e2e_mod, "resolve_worktree", return_value=None),
+            patch.object(Path, "exists", return_value=True),
             patch.object(utils_run_mod.subprocess, "run", return_value=mock_result) as mock_run,
         ):
             result = cast("str", call_command("e2e", "run", docker=False))
@@ -3152,6 +3169,7 @@ class TestE2eRun(TestCase):
         mock_result = MagicMock(returncode=0)
         with (
             patch.object(e2e_mod, "resolve_worktree", return_value=None),
+            patch.object(Path, "exists", return_value=True),
             patch.object(utils_run_mod.subprocess, "run", return_value=mock_result) as mock_run,
         ):
             call_command("e2e", "run", docker=False)
