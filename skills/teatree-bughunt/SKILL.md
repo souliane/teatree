@@ -91,7 +91,7 @@ For each confirmed bug, in severity order:
 
 1. `gh issue create` with label `bug`, clear reproduction steps, severity.
 2. Add to the project board.
-3. Implement per `/teatree-batch` rules (worktree under `~/workspace/souliane/tickets/<slug>`, TDD, `t3:reviewer` sub-agent, sequential merge).
+3. Implement per `/teatree-batch` rules (worktree via `t3 teatree workspace ticket`, TDD, `t3:reviewer` sub-agent, sequential merge).
 4. Close the issue via the PR.
 
 ## Step 6 — Tear down
