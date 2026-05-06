@@ -181,11 +181,15 @@ Every review comment is posted under the user's name. A comment that boils down 
 Before drafting any comment, if it would contain any of the following phrases — or their equivalents — **STOP and investigate first**:
 
 - "worth confirming with the business that…"
+- "worth checking `<file>` / `<function>` / the downstream serializer / etc."
 - "can you confirm this value matches what upstream emits?"
 - "is this string / identifier / enum value correct?"
 - "does this field exist in the producer schema?"
 - "I'm not sure whether…"
 - "does this mean that… / or… / or…?" (listing options instead of picking one)
+- "verify that …" / "please check …" / "confirm whether …" — any imperative that asks the author to do verification work the reviewer is capable of doing themselves.
+
+**The reviewer does the verification, not the author.** If the comment names a file, function, schema, enum, downstream caller, or any other artifact reachable from the local checkout, **open it and read it before posting**. "Worth checking `foo.py`" is not a review comment — it is the reviewer outsourcing their job. Either the file says the code is wrong (post a verified finding) or it says the code is fine (post nothing).
 
 Investigate first by exhausting the sources you **can** reach:
 

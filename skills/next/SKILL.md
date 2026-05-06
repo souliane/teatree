@@ -25,7 +25,7 @@ Load `/t3:retro` and execute it. This captures lessons while the full session co
 
 ### 2. Auto-Enqueue the Next-Phase Task
 
-**When:** the current task is an interactive phase task (`scoping`, `coding`, `testing`, `reviewing`, `shipping`) with a clear outcome that does **not** require further user input. Skip when the user hasn't confirmed the outcome, or when you'll set `needs_user_input: true` below.
+**When:** the current task is an interactive phase task (`scoping`, `coding`, `testing`, `reviewing`, `shipping`) with a clear outcome that does **not** require further user input. Skip when the user hasn't confirmed the outcome, or when you'll set `needs_user_input: true` below. **Also skip when the work has already shipped** — the issue is closed, the PR is merged, and you ran the phase as a post-merge audit. Enqueueing a `reviewing` task for a closed ticket creates a no-op headless run; record the audit outcome in the structured result and stop.
 
 **Why:** the `next_steps` JSON field is descriptive — the pipeline does NOT parse it to create follow-up tasks. Interactive task completion does NOT record a `TaskAttempt`, so `_advance_ticket()` never fires and the ticket is orphaned. The next pending task the worker picks up will be for a different ticket, and the just-completed phase stalls.
 

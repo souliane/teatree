@@ -9,6 +9,7 @@ from django.test import TestCase
 import teatree.core.overlay_loader as overlay_loader_mod
 from teatree.backends.gitlab_api import ProjectInfo
 from teatree.backends.gitlab_sync import GitLabSyncBackend
+from teatree.backends.gitlab_sync_terminal import apply_closed_status, apply_merged_status
 from teatree.backends.slack_review_sync import fetch_review_permalinks
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay import OverlayBase, OverlayConfig, ProvisionStep
@@ -142,6 +143,12 @@ _MERGED_MR = {
     "project_id": 123,
 }
 
+_CLOSED_MR = {
+    "web_url": "https://gitlab.com/org/repo/-/merge_requests/77",
+    "iid": 77,
+    "project_id": 123,
+}
+
 
 def _make_mock_client(mrs: list[dict]) -> MagicMock:
     mock = MagicMock()
@@ -149,6 +156,7 @@ def _make_mock_client(mrs: list[dict]) -> MagicMock:
     mock.list_all_open_mrs.return_value = mrs
     mock.list_open_issues_for_assignee.return_value = []
     mock.list_recently_merged_mrs.return_value = []
+    mock.list_recently_closed_mrs.return_value = []
     mock.resolve_project.return_value = _PROJECT
     mock.get_mr_pipeline.return_value = {"status": "success", "url": "https://gitlab.com/pipelines/1"}
     mock.get_mr_approvals.return_value = {"count": 0, "required": 1}
@@ -161,6 +169,13 @@ def _make_merged_mock(merged_mrs: list[dict]) -> MagicMock:
     """Mock client with no open MRs and some merged MRs."""
     mock = _make_mock_client([])
     mock.list_recently_merged_mrs.return_value = merged_mrs
+    return mock
+
+
+def _make_closed_mock(closed_mrs: list[dict]) -> MagicMock:
+    """Mock client with no open MRs and some closed-without-merge MRs."""
+    mock = _make_mock_client([])
+    mock.list_recently_closed_mrs.return_value = closed_mrs
     return mock
 
 
@@ -870,7 +885,7 @@ class TestDetectE2EEvidence:
 
 
 class TestApplyMergedStatusAllMerged(TestCase):
-    @patch("teatree.backends.gitlab_sync.cleanup_worktree")
+    @patch("teatree.backends.gitlab_sync_terminal.cleanup_worktree")
     def test_advances_state_when_all_merged_no_discussions(self, mock_cleanup: MagicMock) -> None:
         """All MRs merged but none have discussions — state should still advance."""
         ticket = Ticket.objects.create(
@@ -879,7 +894,7 @@ class TestApplyMergedStatusAllMerged(TestCase):
             extra={"mrs": {"url1": {"title": "MR1"}, "url2": {"title": "MR2"}}},
         )
         result = SyncResult()
-        GitLabSyncBackend._apply_merged_status(ticket, {"url1", "url2"}, result)
+        apply_merged_status(ticket, {"url1", "url2"}, result)
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.MERGED
 
@@ -890,11 +905,11 @@ class TestApplyMergedStatusAllMerged(TestCase):
             extra={"mrs": {"url1": {"title": "MR1"}, "url2": {"title": "MR2"}}},
         )
         result = SyncResult()
-        GitLabSyncBackend._apply_merged_status(ticket, {"url1"}, result)
+        apply_merged_status(ticket, {"url1"}, result)
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.IN_REVIEW
 
-    @patch("teatree.backends.gitlab_sync.cleanup_worktree")
+    @patch("teatree.backends.gitlab_sync_terminal.cleanup_worktree")
     def test_auto_cleans_worktrees_on_merge(self, mock_cleanup: MagicMock) -> None:
         ticket = Ticket.objects.create(
             issue_url="https://gitlab.com/org/repo/-/issues/3",
@@ -908,11 +923,11 @@ class TestApplyMergedStatusAllMerged(TestCase):
             branch="fix-3",
         )
         result = SyncResult()
-        GitLabSyncBackend._apply_merged_status(ticket, {"url1"}, result)
+        apply_merged_status(ticket, {"url1"}, result)
         mock_cleanup.assert_called_once()
         assert result.worktrees_cleaned == 1
 
-    @patch("teatree.backends.gitlab_sync.cleanup_worktree", side_effect=RuntimeError("cleanup failed"))
+    @patch("teatree.backends.gitlab_sync_terminal.cleanup_worktree", side_effect=RuntimeError("cleanup failed"))
     def test_cleanup_failure_does_not_block_merge(self, mock_cleanup: MagicMock) -> None:
         ticket = Ticket.objects.create(
             issue_url="https://gitlab.com/org/repo/-/issues/4",
@@ -926,13 +941,84 @@ class TestApplyMergedStatusAllMerged(TestCase):
             branch="fix-4",
         )
         result = SyncResult()
-        GitLabSyncBackend._apply_merged_status(ticket, {"url1"}, result)
+        apply_merged_status(ticket, {"url1"}, result)
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.MERGED
         assert result.worktrees_cleaned == 0
         assert any("cleanup failed" in e for e in result.errors)
         # Error must carry the repo + branch so the dashboard can point at the stuck worktree.
         assert any("org/repo" in e and "fix-4" in e for e in result.errors)
+
+
+class TestApplyClosedStatus(TestCase):
+    """Closed-without-merge MRs: drop discussions, mark state=closed, never advance ticket FSM."""
+
+    def test_marks_cached_state_closed(self) -> None:
+        ticket = Ticket.objects.create(
+            issue_url="https://gitlab.com/org/repo/-/issues/77",
+            state=Ticket.State.IN_REVIEW,
+            extra={
+                "mrs": {
+                    "url1": {"title": "MR1", "state": "opened"},
+                },
+            },
+        )
+        result = SyncResult()
+        apply_closed_status(ticket, {"url1"}, result)
+        ticket.refresh_from_db()
+        assert ticket.extra["mrs"]["url1"]["state"] == "closed"
+        assert ticket.state == Ticket.State.IN_REVIEW
+        assert result.mrs_closed == 1
+
+    def test_does_not_change_ticket_state_when_all_closed(self) -> None:
+        """Closing the only MR must NOT advance the ticket FSM (no FSM target for closed)."""
+        ticket = Ticket.objects.create(
+            issue_url="https://gitlab.com/org/repo/-/issues/78",
+            state=Ticket.State.IN_REVIEW,
+            extra={"mrs": {"url1": {"title": "MR1", "state": "opened"}}},
+        )
+        result = SyncResult()
+        apply_closed_status(ticket, {"url1"}, result)
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.IN_REVIEW
+
+    def test_drops_discussions_from_closed_mr(self) -> None:
+        ticket = Ticket.objects.create(
+            issue_url="https://gitlab.com/org/repo/-/issues/79",
+            state=Ticket.State.IN_REVIEW,
+            extra={
+                "mrs": {
+                    "url1": {
+                        "title": "MR1",
+                        "state": "opened",
+                        "discussions": [{"status": "needs_reply", "detail": "fix"}],
+                    },
+                },
+            },
+        )
+        result = SyncResult()
+        apply_closed_status(ticket, {"url1"}, result)
+        ticket.refresh_from_db()
+        assert "discussions" not in ticket.extra["mrs"]["url1"]
+
+    def test_does_not_clean_worktrees(self) -> None:
+        """Closed MRs leave worktrees alone — user may reopen with new MR."""
+        ticket = Ticket.objects.create(
+            issue_url="https://gitlab.com/org/repo/-/issues/80",
+            state=Ticket.State.IN_REVIEW,
+            extra={"mrs": {"url1": {"title": "MR1", "state": "opened"}}},
+        )
+        Worktree.objects.create(
+            overlay="test",
+            ticket=ticket,
+            repo_path="org/repo",
+            branch="fix-80",
+        )
+        result = SyncResult()
+        with patch("teatree.backends.gitlab_sync_terminal.cleanup_worktree") as mock_cleanup:
+            apply_closed_status(ticket, {"url1"}, result)
+        mock_cleanup.assert_not_called()
+        assert result.worktrees_cleaned == 0
 
 
 class TestSyncFollowup(TestCase):
@@ -1510,7 +1596,7 @@ class TestSyncFollowupMergedMrs(TestCase):
     def test_handles_merged_mr_fetch_failure(self) -> None:
         """When merged MR fetch fails, error is appended but sync continues."""
         mock_client = _make_mock_client([])
-        mock_client.list_recently_merged_mrs.side_effect = RuntimeError("timeout")
+        mock_client.list_recently_merged_mrs.side_effect = httpx.ConnectError("timeout")
         self._monkeypatch.setattr("teatree.backends.gitlab_api.GitLabAPI", lambda **_kw: mock_client)
 
         result = sync_followup()
@@ -1555,6 +1641,48 @@ class TestSyncFollowupMergedMrs(TestCase):
 
         # Non-dict entries are skipped; no crash, no merge count
         assert result.mrs_merged == 0
+
+    def test_followup_marks_closed_mr_so_dashboard_filters_it(self) -> None:
+        """When user closes an MR without merging, sync must update the cached state to "closed".
+
+        Regression: previously sync only fetched opened+merged states, so closed MRs kept
+        cached state="opened" forever and the dashboard kept rendering them.
+        """
+        Ticket.objects.create(
+            overlay="test",
+            issue_url="https://gitlab.com/org/repo/-/issues/77",
+            repos=["repo"],
+            state=Ticket.State.IN_REVIEW,
+            extra={
+                "mrs": {
+                    _CLOSED_MR["web_url"]: {
+                        "url": _CLOSED_MR["web_url"],
+                        "repo": "repo",
+                        "iid": 77,
+                        "state": "opened",
+                    },
+                },
+            },
+        )
+
+        mock_client = _make_closed_mock([_CLOSED_MR])
+        self._monkeypatch.setattr("teatree.backends.gitlab_api.GitLabAPI", lambda **_kw: mock_client)
+
+        result = sync_followup()
+
+        assert result.mrs_closed == 1
+        ticket = Ticket.objects.get(issue_url="https://gitlab.com/org/repo/-/issues/77")
+        assert ticket.extra["mrs"][_CLOSED_MR["web_url"]]["state"] == "closed"
+
+    def test_handles_closed_mr_fetch_failure(self) -> None:
+        """Closed-MR fetch failure logs an error but does not abort sync."""
+        mock_client = _make_mock_client([])
+        mock_client.list_recently_closed_mrs.side_effect = httpx.ConnectError("timeout")
+        self._monkeypatch.setattr("teatree.backends.gitlab_api.GitLabAPI", lambda **_kw: mock_client)
+
+        result = sync_followup()
+
+        assert any("Closed MR fetch failed" in e for e in result.errors)
 
     def test_no_change_when_mr_has_no_discussions(self) -> None:
         """Merged MR without discussions causes no save (no changed flag)."""

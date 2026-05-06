@@ -174,6 +174,7 @@ class _PullResult(TypedDict, total=False):
     output: str
     error: str
     conflict: bool
+    changed: bool
 
 
 def _get_t3_repo() -> Path | None:
@@ -209,9 +210,11 @@ def _find_overlay_repo_dirs() -> list[tuple[str, Path]]:
     return repos
 
 
-_GIT_ENV = {**os.environ, "GIT_EDITOR": "true", "GIT_SEQUENCE_EDITOR": "true"}
+_GIT_ENV = {**os.environ, "GIT_EDITOR": "true", "GIT_SEQUENCE_EDITOR": "true", "LC_ALL": "C"}
 
 _TIMEOUT = 30
+
+_PULL_NOOP_PREFIXES = ("Already up to date", "Already up-to-date")
 
 
 def _git_pull_repo(repo_dir: Path) -> _PullResult:
@@ -233,7 +236,8 @@ def _git_pull_repo(repo_dir: Path) -> _PullResult:
 
     if result.returncode == 0:
         output = result.stdout.strip()
-        return {"ok": True, "output": output or "Already up to date."}
+        changed = bool(output) and not output.startswith(_PULL_NOOP_PREFIXES)
+        return {"ok": True, "output": output or "Already up to date.", "changed": changed}
 
     stderr = (result.stderr or result.stdout).strip()
 
@@ -294,7 +298,7 @@ def _switch_to_main_and_pull(repo_dir: Path) -> _PullResult | None:
                     timeout=10,
                 )
                 msg += f", deleted stale branch '{stale_branch}'"
-            return {"ok": True, "output": f"{msg}. {output}".strip()}
+            return {"ok": True, "output": f"{msg}. {output}".strip(), "changed": True}
     return None
 
 

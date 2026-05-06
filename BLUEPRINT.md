@@ -103,7 +103,9 @@ src/teatree/
     github_sync.py      # GitHubSyncBackend — Projects v2 board + reviewer PR sync + auto-cleanup on board "Done"
     gitlab.py           # GitLab API client (httpx)
     gitlab_ci.py        # GitLab CI pipeline operations
-    gitlab_sync.py      # GitLabSyncBackend — MR upsert, assigned-issue upsert, labels, merged MR cleanup, Slack review permalinks
+    gitlab_sync.py             # GitLabSyncBackend — MR upsert, assigned-issue upsert, labels, Slack review permalinks
+    gitlab_sync_terminal.py    # Detect merged + closed MRs, advance ticket state on merge, rewrite cached state on close
+    gitlab_sync_approvals.py   # Detect "approvals dismissed by push" from MR system notes
     slack.py            # Slack notifications
     slack_reactions.py  # Emoji reactions on MR permalinks (ticket state transitions)
     notion.py           # Notion integration
@@ -733,7 +735,7 @@ Selector-backed views with django-htmx. **No domain logic in views** — all dat
 | `GET /dashboard/events/` | SSE | Server-Sent Events stream for real-time updates |
 | `GET /dashboard/panels/<panel>/` | HTMX | Panel refresh (requires HX-Request header) |
 | `POST /dashboard/sync/` | — | Trigger followup sync |
-| `POST /dashboard/git-pull/` | — | Pull teatree + all overlay repos; aborts on conflict, auto-switches stale branches |
+| `POST /dashboard/git-pull/` | — | Pull teatree + all overlay repos; aborts on conflict, auto-switches stale branches; per-repo `changed` flag triggers a client-side hard reload |
 | `GET /dashboard/switch-branch/` | JSON | List local branches + current branch |
 | `POST /dashboard/switch-branch/` | JSON | Switch teatree repo to specified branch (uvicorn auto-reloads) |
 | `POST /dashboard/launch-terminal/` | — | Open a terminal session |
