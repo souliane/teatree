@@ -3,6 +3,7 @@
 import logging
 import re
 from dataclasses import dataclass
+from http import HTTPStatus
 from typing import TYPE_CHECKING, override
 
 import httpx
@@ -365,7 +366,13 @@ class GitLabSyncBackend(SyncBackend):
         return match.group(1) if match else ""
 
     @classmethod
-    def _resolve_issue(cls, client: "GitLabAPI", issue_url: str) -> tuple[dict, str, int] | None:
+    def _resolve_issue(
+        cls,
+        client: "GitLabAPI",
+        issue_url: str,
+        *,
+        ticket: Ticket | None = None,
+    ) -> tuple[dict, str, int] | None:
         match = _ISSUE_PARTS_RE.search(issue_url)
         if not match:
             return None
@@ -379,9 +386,22 @@ class GitLabSyncBackend(SyncBackend):
         try:
             issue = client.get_issue(project.project_id, iid)
         except httpx.HTTPStatusError as exc:
-            logger.warning("Failed to fetch issue %s#%d: %s", project_path, iid, exc)
+            if ticket is not None and getattr(exc.response, "status_code", None) == HTTPStatus.NOT_FOUND:
+                cls._mark_tracker_404(ticket, project_path, iid)
+            else:
+                logger.warning("Failed to fetch issue %s#%d: %s", project_path, iid, exc)
             return None
         return (issue, project_path, iid) if issue else None
+
+    @classmethod
+    def _mark_tracker_404(cls, ticket: Ticket, project_path: str, iid: int) -> None:
+        extra = ticket.extra if isinstance(ticket.extra, dict) else {}
+        if extra.get("tracker_404"):
+            return
+        extra["tracker_404"] = True
+        ticket.extra = extra
+        ticket.save(update_fields=["extra"])
+        logger.info("Issue %s#%d returned 404; marked tracker_404 to skip future sync", project_path, iid)
 
     @classmethod
     def _apply_issue_data(cls, client: "GitLabAPI", ticket: Ticket, issue: dict, project_path: str, iid: int) -> bool:
@@ -420,7 +440,10 @@ class GitLabSyncBackend(SyncBackend):
         for ticket in Ticket.objects.exclude(issue_url="").filter(
             issue_url__regex=r"/-/(issues|work_items)/\d+$",
         ):
-            resolved = cls._resolve_issue(client, ticket.issue_url)
+            extra = ticket.extra if isinstance(ticket.extra, dict) else {}
+            if extra.get("tracker_404"):
+                continue
+            resolved = cls._resolve_issue(client, ticket.issue_url, ticket=ticket)
             if not resolved:
                 continue
             issue, project_path, iid = resolved

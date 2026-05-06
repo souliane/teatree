@@ -800,6 +800,59 @@ class TestResolveIssueHandles404:
         assert result[0]["title"] == "Test issue"
 
 
+class TestTracker404Memoization(TestCase):
+    """A 404 from GitLab persists ``tracker_404`` on the ticket so ``_fetch_issue_labels`` skips it."""
+
+    def _client_returning_404(self) -> MagicMock:
+        client = MagicMock()
+        client.resolve_project.return_value = ProjectInfo(
+            project_id=1, path_with_namespace="org/repo", short_name="repo"
+        )
+        client.get_issue.side_effect = httpx.HTTPStatusError(
+            "404 Not Found",
+            request=MagicMock(),
+            response=MagicMock(status_code=404),
+        )
+        return client
+
+    def test_resolve_issue_marks_ticket_on_404(self) -> None:
+        ticket = Ticket.objects.create(issue_url="https://gitlab.com/org/repo/-/issues/123")
+
+        result = GitLabSyncBackend._resolve_issue(self._client_returning_404(), ticket.issue_url, ticket=ticket)
+
+        assert result is None
+        ticket.refresh_from_db()
+        assert ticket.extra.get("tracker_404") is True
+
+    def test_resolve_issue_does_not_mark_when_ticket_omitted(self) -> None:
+        client = self._client_returning_404()
+
+        result = GitLabSyncBackend._resolve_issue(client, "https://gitlab.com/org/repo/-/issues/123")
+
+        assert result is None  # original behavior preserved when no ticket is passed
+
+    def test_fetch_issue_labels_skips_already_marked_tickets(self) -> None:
+        marked = Ticket.objects.create(
+            issue_url="https://gitlab.com/org/repo/-/issues/123",
+            extra={"tracker_404": True},
+        )
+        live = Ticket.objects.create(issue_url="https://gitlab.com/org/repo/-/issues/124")
+        client = MagicMock()
+        client.resolve_project.return_value = ProjectInfo(
+            project_id=1, path_with_namespace="org/repo", short_name="repo"
+        )
+        client.get_issue.return_value = {"id": 124, "title": "Live", "labels": []}
+
+        GitLabSyncBackend._fetch_issue_labels(client, SyncResult())
+
+        called_iids = [call.kwargs.get("issue_iid") or call.args[1] for call in client.get_issue.call_args_list]
+        assert called_iids == [124]
+        marked.refresh_from_db()
+        assert marked.extra.get("tracker_404") is True
+        live.refresh_from_db()
+        assert live.extra.get("issue_title") == "Live"
+
+
 class TestDetectE2EEvidence:
     def test_finds_evidence_with_keyword_and_image(self) -> None:
         discussions = [
