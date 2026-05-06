@@ -54,44 +54,40 @@ class GitLabCodeHost:
         """Return the authenticated GitLab username."""
         return self._client.current_username()
 
-    def list_open_prs(self, repo: str, author: str) -> list[dict[str, object]]:
-        project = self._resolve_project(repo)
-        if project is None:
-            return []
-
-        data = self._client.get_json(
-            f"projects/{project.project_id}/merge_requests?state=opened&author_username={author}&per_page=100",
-        )
-        return data if isinstance(data, list) else []
-
-    def list_my_open_prs(self, author: str) -> list[RawAPIDict]:
+    def list_my_prs(self, *, author: str) -> list[RawAPIDict]:
         return self._client.list_all_open_mrs(author)
 
-    def post_mr_note(self, *, repo: str, mr_iid: int, body: str) -> dict[str, object]:
+    def list_review_requested_prs(self, *, reviewer: str) -> list[RawAPIDict]:
+        return self._client.list_open_mrs_as_reviewer(reviewer)
+
+    def list_assigned_issues(self, *, assignee: str) -> list[RawAPIDict]:
+        return self._client.list_open_issues_for_assignee(assignee)
+
+    def post_pr_comment(self, *, repo: str, pr_iid: int, body: str) -> RawAPIDict:
         project = self._resolve_project(repo)
         if project is None:
             return {"error": f"Could not resolve project: {repo}"}
 
         payload = {"body": body}
-        return self._client.post_json(f"projects/{project.project_id}/merge_requests/{mr_iid}/notes", payload) or {}
+        return self._client.post_json(f"projects/{project.project_id}/merge_requests/{pr_iid}/notes", payload) or {}
 
-    def update_mr_note(self, *, repo: str, mr_iid: int, note_id: int, body: str) -> dict[str, object]:
+    def update_pr_comment(self, *, repo: str, pr_iid: int, comment_id: int, body: str) -> RawAPIDict:
         project = self._resolve_project(repo)
         if project is None:
             return {"error": f"Could not resolve project: {repo}"}
         return (
             self._client.put_json(
-                f"projects/{project.project_id}/merge_requests/{mr_iid}/notes/{note_id}",
+                f"projects/{project.project_id}/merge_requests/{pr_iid}/notes/{comment_id}",
                 {"body": body},
             )
             or {}
         )
 
-    def list_mr_notes(self, *, repo: str, mr_iid: int) -> list[dict[str, object]]:
+    def list_pr_comments(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]:
         project = self._resolve_project(repo)
         if project is None:
             return []
-        data = self._client.get_json(f"projects/{project.project_id}/merge_requests/{mr_iid}/notes?per_page=100")
+        data = self._client.get_json(f"projects/{project.project_id}/merge_requests/{pr_iid}/notes?per_page=100")
         return data if isinstance(data, list) else []
 
     def upload_file(self, *, repo: str, filepath: str) -> dict[str, object]:

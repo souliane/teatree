@@ -145,9 +145,31 @@ def test_slack_resolve_user_id_empty_handle_returns_empty() -> None:
     assert backend.resolve_user_id("@") == ""
 
 
-def test_slack_inbound_methods_return_empty_until_phase_3_6() -> None:
+def test_slack_inbound_methods_return_empty_until_socket_mode_enqueues() -> None:
     backend = SlackBotBackend(bot_token="xoxb-test")
     assert backend.fetch_mentions() == []
+    assert backend.fetch_dms() == []
+
+
+def test_slack_fetch_mentions_drains_enqueued_events() -> None:
+    backend = SlackBotBackend(bot_token="xoxb-test")
+    backend.enqueue_mention({"text": "hi", "ts": "1.0"})
+    backend.enqueue_mention({"text": "hello", "ts": "2.0"})
+
+    first = backend.fetch_mentions()
+    second = backend.fetch_mentions()
+
+    assert [e["ts"] for e in first] == ["1.0", "2.0"]
+    assert second == []
+
+
+def test_slack_fetch_dms_drains_enqueued_events() -> None:
+    backend = SlackBotBackend(bot_token="xoxb-test")
+    backend.enqueue_dm({"text": "dm", "ts": "3.0"})
+
+    drained = backend.fetch_dms()
+
+    assert [e["ts"] for e in drained] == ["3.0"]
     assert backend.fetch_dms() == []
 
 

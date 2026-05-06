@@ -14,7 +14,6 @@ from teatree.loop.scanners.base import Scanner, ScanSignal
 from teatree.loop.scanners.my_prs import MyPrsScanner
 from teatree.loop.scanners.notion_view import NotionViewScanner
 from teatree.loop.scanners.pending_tasks import PendingTasksScanner
-from teatree.loop.scanners.review_channels import ReviewChannelsScanner
 from teatree.loop.scanners.reviewer_prs import ReviewerPrsScanner
 from teatree.loop.scanners.slack_mentions import SlackMentionsScanner
 
@@ -23,7 +22,6 @@ __all__ = [
     "MyPrsScanner",
     "NotionViewScanner",
     "PendingTasksScanner",
-    "ReviewChannelsScanner",
     "ReviewerPrsScanner",
     "ScanSignal",
     "Scanner",

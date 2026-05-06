@@ -46,15 +46,14 @@ class AssignedIssuesScanner:
     """List issues assigned to the user with the configured ready-label."""
 
     host: CodeHostBackend
-    list_assigned: object = None  # callable(host, author) -> list[RawAPIDict]
     ready_labels: tuple[str, ...] = field(default_factory=tuple)
     name: str = "assigned_issues"
 
     def scan(self) -> list[ScanSignal]:
         author = self.host.current_user()
-        if not author or self.list_assigned is None:
+        if not author:
             return []
-        issues = self.list_assigned(self.host, author)  # ty: ignore[call-non-callable]
+        issues = self.host.list_assigned_issues(assignee=author)
         signals: list[ScanSignal] = []
         for issue in issues:
             labels = _issue_labels(issue)

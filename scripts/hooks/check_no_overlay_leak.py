@@ -65,8 +65,31 @@ TEXT_SUFFIXES: tuple[str, ...] = (
 )
 
 
+def _term_variants(term: str) -> set[str]:
+    """Generate kebab/snake/camel/Pascal variants of *term*.
+
+    For a multi-word term like ``home-savings`` returns
+    ``{"home-savings", "home_savings", "homeSavings", "HomeSavings"}``.
+    Single-word terms produce only the original token.
+    """
+    parts = re.split(r"[-_]", term)
+    variants: set[str] = {term}
+    if len(parts) <= 1:
+        return variants
+    variants.add("-".join(parts))
+    variants.add("_".join(parts))
+    variants.add(parts[0] + "".join(p.capitalize() for p in parts[1:]))
+    variants.add("".join(p.capitalize() for p in parts))
+    return variants
+
+
 def _build_pattern() -> re.Pattern[str]:
-    escaped = "|".join(re.escape(t) for t in OVERLAY_LEAK_TERMS)
+    all_variants: set[str] = set()
+    for term in OVERLAY_LEAK_TERMS:
+        all_variants.update(_term_variants(term))
+    escaped_variants = [re.escape(v) for v in all_variants]
+    escaped_variants.sort(key=len, reverse=True)
+    escaped = "|".join(escaped_variants)
     return re.compile(rf"\b({escaped})\b", re.IGNORECASE)
 
 

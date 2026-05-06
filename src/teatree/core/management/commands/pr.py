@@ -398,7 +398,7 @@ class Command(TyperCommand):
         if not author:
             return {"error": "Could not resolve author username — set <host>_username in ~/.teatree.toml"}
 
-        prs = host.list_my_open_prs(author)
+        prs = host.list_my_prs(author=author)
         return {"author": author, "count": len(prs), "prs": prs}
 
     @command(name="post-evidence")
@@ -437,7 +437,7 @@ class Command(TyperCommand):
             note_body += f"\n\n{embed_section}"
 
         # Find existing test plan note to update
-        existing_notes = host.list_mr_notes(repo=repo_path, mr_iid=mr_iid)
+        existing_notes = host.list_pr_comments(repo=repo_path, pr_iid=mr_iid)
         marker = "## Test Plan"
         existing_note = next(
             (n for n in existing_notes if marker in str(n.get("body", "")) and not n.get("system")),
@@ -445,8 +445,8 @@ class Command(TyperCommand):
         )
 
         if existing_note:
-            note_id = int(str(existing_note["id"]))
-            self.stdout.write(f"  Updating existing note {note_id}")
-            return host.update_mr_note(repo=repo_path, mr_iid=mr_iid, note_id=note_id, body=note_body)
+            comment_id = int(str(existing_note["id"]))
+            self.stdout.write(f"  Updating existing note {comment_id}")
+            return host.update_pr_comment(repo=repo_path, pr_iid=mr_iid, comment_id=comment_id, body=note_body)
 
-        return host.post_mr_note(repo=repo_path, mr_iid=mr_iid, body=note_body)
+        return host.post_pr_comment(repo=repo_path, pr_iid=mr_iid, body=note_body)

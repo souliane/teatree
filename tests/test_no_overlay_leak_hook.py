@@ -109,3 +109,39 @@ class TestNoOverlayLeakHook:
         result = _run(tmp_path)
 
         assert result.returncode == 1
+
+    @pytest.mark.parametrize(
+        "snake_variant",
+        ["home_savings", "oper_product", "oper_skills", "t3_oper", "t3_oper_e2e"],
+    )
+    def test_blocks_snake_case_variant(self, tmp_path: Path, snake_variant: str) -> None:
+        _seed(tmp_path, "src/teatree/foo.py", f"{snake_variant} = True\n")
+
+        result = _run(tmp_path)
+
+        assert result.returncode == 1
+        assert snake_variant in result.stdout.lower()
+
+    @pytest.mark.parametrize(
+        "camel_variant",
+        ["homeSavings", "operProduct", "t3Oper"],
+    )
+    def test_blocks_camel_case_variant(self, tmp_path: Path, camel_variant: str) -> None:
+        _seed(tmp_path, "src/teatree/foo.py", f"value = {camel_variant}\n")
+
+        result = _run(tmp_path)
+
+        assert result.returncode == 1
+        assert camel_variant.lower() in result.stdout.lower()
+
+    @pytest.mark.parametrize(
+        "pascal_variant",
+        ["HomeSavings", "OperProduct", "T3Oper"],
+    )
+    def test_blocks_pascal_case_variant(self, tmp_path: Path, pascal_variant: str) -> None:
+        _seed(tmp_path, "src/teatree/foo.py", f"class {pascal_variant}: pass\n")
+
+        result = _run(tmp_path)
+
+        assert result.returncode == 1
+        assert pascal_variant.lower() in result.stdout.lower()

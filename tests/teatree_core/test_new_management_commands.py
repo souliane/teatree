@@ -2042,8 +2042,8 @@ class TestPrPostEvidence(TestCase):
     @override_settings(**SETTINGS)
     def test_with_code_host(self) -> None:
         mock_host = MagicMock()
-        mock_host.post_mr_note.return_value = {"id": 42}
-        mock_host.list_mr_notes.return_value = []  # no existing note
+        mock_host.post_pr_comment.return_value = {"id": 42}
+        mock_host.list_pr_comments.return_value = []  # no existing note
 
         with patch.object(pr_mod, "code_host_from_overlay", return_value=mock_host):
             result = cast(
@@ -2059,8 +2059,8 @@ class TestPrPostEvidence(TestCase):
             )
 
         assert result == {"id": 42}
-        call_kwargs = mock_host.post_mr_note.call_args[1]
-        assert call_kwargs["mr_iid"] == 100
+        call_kwargs = mock_host.post_pr_comment.call_args[1]
+        assert call_kwargs["pr_iid"] == 100
         assert "## Evidence" in call_kwargs["body"]
         assert "Test passed" in call_kwargs["body"]
 
@@ -2068,10 +2068,10 @@ class TestPrPostEvidence(TestCase):
     @override_settings(**SETTINGS)
     def test_updates_existing_note(self) -> None:
         mock_host = MagicMock()
-        mock_host.list_mr_notes.return_value = [
+        mock_host.list_pr_comments.return_value = [
             {"id": 999, "body": "## Test Plan\n\nOld content", "system": False},
         ]
-        mock_host.update_mr_note.return_value = {"id": 999}
+        mock_host.update_pr_comment.return_value = {"id": 999}
 
         with patch.object(pr_mod, "code_host_from_overlay", return_value=mock_host):
             result = cast(
@@ -2086,19 +2086,19 @@ class TestPrPostEvidence(TestCase):
             )
 
         assert result == {"id": 999}
-        mock_host.update_mr_note.assert_called_once()
-        call_kwargs = mock_host.update_mr_note.call_args[1]
-        assert call_kwargs["note_id"] == 999
+        mock_host.update_pr_comment.assert_called_once()
+        call_kwargs = mock_host.update_pr_comment.call_args[1]
+        assert call_kwargs["comment_id"] == 999
         assert "Updated content" in call_kwargs["body"]
-        mock_host.post_mr_note.assert_not_called()
+        mock_host.post_pr_comment.assert_not_called()
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
     def test_uploads_files(self) -> None:
         mock_host = MagicMock()
         mock_host.upload_file.return_value = {"markdown": "![screenshot](/uploads/abc/img.png)"}
-        mock_host.list_mr_notes.return_value = []
-        mock_host.post_mr_note.return_value = {"id": 55}
+        mock_host.list_pr_comments.return_value = []
+        mock_host.post_pr_comment.return_value = {"id": 55}
 
         with patch.object(pr_mod, "code_host_from_overlay", return_value=mock_host):
             cast(
@@ -2114,7 +2114,7 @@ class TestPrPostEvidence(TestCase):
             )
 
         mock_host.upload_file.assert_called_once_with(repo="my/repo", filepath="/tmp/img.png")
-        body = mock_host.post_mr_note.call_args[1]["body"]
+        body = mock_host.post_pr_comment.call_args[1]["body"]
         assert "![screenshot](/uploads/abc/img.png)" in body
 
     @_patch_overlays(FULL_OVERLAY)
@@ -2123,8 +2123,8 @@ class TestPrPostEvidence(TestCase):
         """When upload returns no markdown key, the embed is skipped."""
         mock_host = MagicMock()
         mock_host.upload_file.return_value = {}  # no markdown
-        mock_host.list_mr_notes.return_value = []
-        mock_host.post_mr_note.return_value = {"id": 56}
+        mock_host.list_pr_comments.return_value = []
+        mock_host.post_pr_comment.return_value = {"id": 56}
 
         with patch.object(pr_mod, "code_host_from_overlay", return_value=mock_host):
             cast(
@@ -2132,15 +2132,15 @@ class TestPrPostEvidence(TestCase):
                 call_command("pr", "post-evidence", "100", repo="my/repo", body="x", files=["/tmp/bad.png"]),
             )
 
-        body = mock_host.post_mr_note.call_args[1]["body"]
+        body = mock_host.post_pr_comment.call_args[1]["body"]
         assert "![" not in body  # no embed added
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
     def test_without_body(self) -> None:
         mock_host = MagicMock()
-        mock_host.post_mr_note.return_value = {"id": 43}
-        mock_host.list_mr_notes.return_value = []
+        mock_host.post_pr_comment.return_value = {"id": 43}
+        mock_host.list_pr_comments.return_value = []
 
         with patch.object(pr_mod, "code_host_from_overlay", return_value=mock_host):
             cast(
@@ -2153,7 +2153,7 @@ class TestPrPostEvidence(TestCase):
                 ),
             )
 
-        call_kwargs = mock_host.post_mr_note.call_args[1]
+        call_kwargs = mock_host.post_pr_comment.call_args[1]
         assert "_No details provided._" in call_kwargs["body"]
 
     @_patch_overlays(FULL_OVERLAY)
@@ -2161,13 +2161,13 @@ class TestPrPostEvidence(TestCase):
     def test_uses_overlay_ci_project_path(self) -> None:
         """When no repo is given, falls back to overlay.metadata.get_ci_project_path()."""
         mock_host = MagicMock()
-        mock_host.post_mr_note.return_value = {"id": 44}
-        mock_host.list_mr_notes.return_value = []
+        mock_host.post_pr_comment.return_value = {"id": 44}
+        mock_host.list_pr_comments.return_value = []
 
         with patch.object(pr_mod, "code_host_from_overlay", return_value=mock_host):
             call_command("pr", "post-evidence", "102", title="T")
 
-        call_kwargs = mock_host.post_mr_note.call_args[1]
+        call_kwargs = mock_host.post_pr_comment.call_args[1]
         assert call_kwargs["repo"] == "test/project"
 
 

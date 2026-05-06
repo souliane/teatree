@@ -14,14 +14,16 @@ from pathlib import Path
 from teatree.backends.protocols import CodeHostBackend, MessagingBackend
 from teatree.loop.dispatch import DispatchAction, dispatch
 from teatree.loop.scanners import (
+    AssignedIssuesScanner,
     MyPrsScanner,
+    NotionViewScanner,
     PendingTasksScanner,
-    ReviewChannelsScanner,
     ReviewerPrsScanner,
     Scanner,
     SlackMentionsScanner,
 )
 from teatree.loop.scanners.base import ScanSignal
+from teatree.loop.scanners.notion_view import NotionLike
 from teatree.loop.statusline import StatuslineZones, render
 
 logger = logging.getLogger(__name__)
@@ -58,13 +60,23 @@ def build_default_scanners(
     *,
     host: CodeHostBackend | None,
     messaging: MessagingBackend | None,
+    notion_client: NotionLike | None = None,
+    ready_labels: tuple[str, ...] = (),
 ) -> list[Scanner]:
     """Construct the default scanner set from the active overlay's backends."""
     scanners: list[Scanner] = [PendingTasksScanner()]
     if host is not None:
-        scanners.extend([MyPrsScanner(host=host), ReviewerPrsScanner(host=host)])
+        scanners.extend(
+            [
+                MyPrsScanner(host=host),
+                ReviewerPrsScanner(host=host),
+                AssignedIssuesScanner(host=host, ready_labels=ready_labels),
+            ]
+        )
     if messaging is not None:
-        scanners.extend([SlackMentionsScanner(backend=messaging), ReviewChannelsScanner(backend=messaging)])
+        scanners.append(SlackMentionsScanner(backend=messaging))
+    if notion_client is not None:
+        scanners.append(NotionViewScanner(client=notion_client))
     return scanners
 
 
@@ -75,15 +87,8 @@ def _zones_for(actions: list[DispatchAction]) -> StatuslineZones:
             target = getattr(zones, action.zone, None)
             if isinstance(target, list):
                 target.append(action.detail)
-            continue
-        if action.kind == "agent":
+        else:  # "agent" or "webhook" — both surface as in-flight progress
             zones.in_flight.append(f"→ {action.zone}: {action.detail}")
-            continue
-        if action.kind == "webhook":
-            zones.in_flight.append(f"→ {action.zone}: {action.detail}")
-            continue
-        if action.kind == "ticket_create":
-            zones.action_needed.append(action.detail)
     return zones
 
 

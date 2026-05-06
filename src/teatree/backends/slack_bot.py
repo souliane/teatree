@@ -34,6 +34,11 @@ class SlackBotBackend:
         self._bot_token = bot_token
         self._app_token = app_token
         self._user_id = user_id
+        # Inbound queues populated by the Phase 3.6 Socket Mode receiver. Each
+        # tick the loop scanner drains them via ``fetch_mentions`` /
+        # ``fetch_dms``; the receiver calls ``enqueue_mention`` / ``enqueue_dm``.
+        self._mentions: list[RawAPIDict] = []
+        self._dms: list[RawAPIDict] = []
 
     @property
     def app_token(self) -> str:
@@ -42,6 +47,14 @@ class SlackBotBackend:
     @property
     def user_id(self) -> str:
         return self._user_id
+
+    def enqueue_mention(self, event: RawAPIDict) -> None:
+        """Push a Socket Mode ``app_mention`` event into the inbound queue."""
+        self._mentions.append(event)
+
+    def enqueue_dm(self, event: RawAPIDict) -> None:
+        """Push a Socket Mode ``message.im`` event into the inbound queue."""
+        self._dms.append(event)
 
     def _post(self, method: str, payload: SlackPayload) -> RawAPIDict:
         if not self._bot_token:
@@ -70,24 +83,22 @@ class SlackBotBackend:
         response.raise_for_status()
         return cast("RawAPIDict", response.json())
 
-    @staticmethod
-    def fetch_mentions(*, since: str = "") -> list[RawAPIDict]:
-        """Inbound mentions stream through Socket Mode (Phase 3.6).
+    def fetch_mentions(self, *, since: str = "") -> list[RawAPIDict]:
+        """Drain queued Socket Mode mentions and return them in order.
 
-        Returns the empty list until the Phase 3.6 receiver is active —
-        scanners call this every tick and tolerate an empty result.
+        ``since`` is accepted for protocol compatibility but ignored — the
+        Socket Mode receiver delivers events in real time, so the queue
+        only ever holds events that arrived after the previous tick.
         """
         _ = since
-        return []
+        events, self._mentions = self._mentions, []
+        return events
 
-    @staticmethod
-    def fetch_dms(*, since: str = "") -> list[RawAPIDict]:
-        """Inbound DMs stream through Socket Mode (Phase 3.6).
-
-        See :meth:`fetch_mentions` — same contract.
-        """
+    def fetch_dms(self, *, since: str = "") -> list[RawAPIDict]:
+        """Drain queued Socket Mode DMs. See :meth:`fetch_mentions`."""
         _ = since
-        return []
+        events, self._dms = self._dms, []
+        return events
 
     def post_message(self, *, channel: str, text: str, thread_ts: str = "") -> RawAPIDict:
         payload: SlackPayload = {"channel": channel, "text": text}

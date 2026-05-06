@@ -466,8 +466,7 @@ Each tick runs three stages:
 |---|---|---|
 | `my_prs` | Open PRs I authored: pipeline status, draft comments, dismissed approvals, mergeability. | Mechanical fix (lint/type/format) inline; otherwise surface in statusline. |
 | `reviewer_prs` | Open PRs where I'm a requested reviewer + cached `last_reviewed_sha` per PR. | Dispatch to the `reviewer` phase agent when `head.sha` ≠ `last_reviewed_sha`. The agent posts draft notes via `t3 review post-draft-note` and publishes when its review is complete. |
-| `review_channels` | New review-request messages from the active overlay's `MessagingBackend`. | Route to `reviewer_prs` queue (no separate agent invocation). |
-| `slack_mentions` | New `app_mention` events and DMs from the active overlay's `MessagingBackend`. | Reply inline when answerable from session context; otherwise ack with 👀 and surface in statusline. |
+| `slack_mentions` | New `app_mention` events and DMs from the active overlay's `MessagingBackend`. | The dispatcher folds Slack messages whose text contains a PR URL into a `t3:reviewer` agent action; everything else is surfaced in the statusline (`action_needed` zone) so the user can reply inline or ack. |
 | `notion_view` | Notion items assigned to me with no code-host reference field set. | Trigger the existing n8n webhook so the code-host issue is created with project routing + templating. Read-only with respect to Notion. |
 | `assigned_issues` | Open issues assigned to me on a configured code host that have reached "ready to work" state. | Create the `Ticket` + worktrees; the ticket FSM's `start()` transition then handles the rest (the orchestrator phase agent picks up coding when the worktrees are provisioned). |
 | `pending_tasks` | `Task` rows in `pending` state. | Run via the headless executor (§ 5.2), which dispatches to the appropriate phase agent. The Django `Task` model is resolved lazily through `apps.get_model("core", "Task")` so the scanner module is importable before `django.setup()` runs (the CLI imports the loop subapp at startup). |
@@ -885,7 +884,7 @@ e2e_dir = "e2e"  # subdirectory containing playwright.config.ts (default: "e2e")
 
 **Slack bot setup** (`t3 setup slack-bot --overlay <name>`): an interactive walkthrough scaffolds the per-overlay Slack app and stores its tokens. Steps:
 
-1. Open the Slack-side "Create app from manifest" URL with a teatree-owned manifest pre-filled. The manifest declares Socket Mode (no public webhook needed), the standard scope set (`channels:history`, `channels:read`, `chat:write`, `groups:history`, `groups:read`, `im:history`, `im:read`, `im:write`, `mpim:history`, `mpim:read`, `reactions:read`, `reactions:write`, `users:read`), and bot events (`app_mention`, `message.im`).
+1. Open the Slack-side "Create app from manifest" URL with a teatree-owned manifest pre-filled. The manifest declares Socket Mode (no public webhook needed), the standard scope set (`channels:history`, `channels:read`, `chat:write`, `groups:history`, `groups:read`, `im:history`, `im:read`, `im:write`, `mpim:history`, `mpim:read`, `reactions:read`, `reactions:write`, `users:read`, `users:read.email`), and bot events (`app_mention`, `message.im`).
 2. After the user installs the app to their workspace, capture the bot token (`xoxb-…`) and the app-level token (`xapp-…`) into `pass` entries `<slack_bot_token_ref>-bot` and `<slack_bot_token_ref>-app`.
 3. Capture the user's Slack ID (`U01ABCD1234`) and write it to `[overlays.<name>] slack_user_id` in `~/.teatree.toml`. The walkthrough mutates only the per-overlay block; nothing else in the file is touched.
 4. Smoke-test by sending a DM via the bot and waiting for the user to react with ✅ on the message.

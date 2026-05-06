@@ -122,6 +122,8 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "privacy": str,
     "contribute": bool,
     "excluded_skills": _parse_excluded_skills,
+    "loop_cadence_seconds": int,
+    "require_human_approval_to_merge": bool,
 }
 
 # ``T3_*`` env vars that win over both the per-overlay override and the

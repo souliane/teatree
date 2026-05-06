@@ -78,7 +78,10 @@ class ReviewerPrsScanner:
     name: str = "reviewer_prs"
 
     def scan(self) -> list[ScanSignal]:
-        prs = self.host.list_open_prs(repo="", author="")
+        reviewer = self.host.current_user()
+        if not reviewer:
+            return []
+        prs = self.host.list_review_requested_prs(reviewer=reviewer)
         cache = _read_cache(self.cache_path)
         signals: list[ScanSignal] = []
         for pr in prs:

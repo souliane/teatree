@@ -10,7 +10,7 @@ from django_typer.management import TyperCommand, command
 from rich.console import Console
 from rich.table import Table
 
-from teatree.agents.headless import _UUID_RE
+from teatree.agents.headless import UUID_RE
 from teatree.agents.prompt import build_interactive_context
 from teatree.agents.skill_bundle import resolve_skill_bundle
 from teatree.core.models import InvalidTransitionError, Session, Task, TaskAttempt, Ticket
@@ -265,7 +265,7 @@ def _build_claude_command(task: Task) -> list[str]:
         raise FileNotFoundError(msg)
 
     agent_id = task.session.agent_id if task.session else ""
-    if agent_id and _UUID_RE.match(agent_id):
+    if agent_id and UUID_RE.match(agent_id):
         logger.info("Resuming claude session %s for task %s", agent_id, task.pk)
         return [claude_bin, "--resume", agent_id]
 

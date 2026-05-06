@@ -62,7 +62,7 @@ class MyPrsScanner:
         author = self.host.current_user()
         if not author:
             return []
-        prs = self.host.list_my_open_prs(author)
+        prs = self.host.list_my_prs(author=author)
         signals: list[ScanSignal] = []
         for pr in prs:
             url = _str_field(pr, "web_url", "html_url")

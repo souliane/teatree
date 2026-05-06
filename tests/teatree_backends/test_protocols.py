@@ -9,86 +9,111 @@ from teatree.backends.protocols import (
 )
 
 
+class _FakeCIService:
+    def cancel_pipelines(self, *, project: str, ref: str) -> list[int]:
+        _ = (project, ref)
+        return []
+
+    def fetch_pipeline_errors(self, *, project: str, ref: str) -> list[str]:
+        _ = (project, ref)
+        return []
+
+    def fetch_failed_tests(self, *, project: str, ref: str) -> list[str]:
+        _ = (project, ref)
+        return []
+
+    def trigger_pipeline(
+        self,
+        *,
+        project: str,
+        ref: str,
+        variables: dict[str, str] | None = None,
+    ) -> dict[str, object]:
+        _ = (project, ref, variables)
+        return {}
+
+    def quality_check(self, *, project: str, ref: str) -> dict[str, object]:
+        _ = (project, ref)
+        return {}
+
+
+class _FakeCodeHost:
+    def create_pr(self, spec: PullRequestSpec) -> dict[str, object]:
+        _ = spec
+        return {}
+
+    def current_user(self) -> str:
+        return ""
+
+    def list_my_prs(self, *, author: str) -> list[dict[str, object]]:
+        _ = author
+        return []
+
+    def list_review_requested_prs(self, *, reviewer: str) -> list[dict[str, object]]:
+        _ = reviewer
+        return []
+
+    def post_pr_comment(self, *, repo: str, pr_iid: int, body: str) -> dict[str, object]:
+        _ = (repo, pr_iid, body)
+        return {}
+
+    def update_pr_comment(self, *, repo: str, pr_iid: int, comment_id: int, body: str) -> dict[str, object]:
+        _ = (repo, pr_iid, comment_id, body)
+        return {}
+
+    def list_pr_comments(self, *, repo: str, pr_iid: int) -> list[dict[str, object]]:
+        _ = (repo, pr_iid)
+        return []
+
+    def upload_file(self, *, repo: str, filepath: str) -> dict[str, object]:
+        _ = (repo, filepath)
+        return {}
+
+    def get_issue(self, issue_url: str) -> dict[str, object]:
+        _ = issue_url
+        return {}
+
+    def list_assigned_issues(self, *, assignee: str) -> list[dict[str, object]]:
+        _ = assignee
+        return []
+
+
+class _FakeMessaging:
+    def fetch_mentions(self, *, since: str = "") -> list[dict[str, object]]:
+        _ = since
+        return []
+
+    def fetch_dms(self, *, since: str = "") -> list[dict[str, object]]:
+        _ = since
+        return []
+
+    def post_message(self, *, channel: str, text: str, thread_ts: str = "") -> dict[str, object]:
+        _ = (channel, text, thread_ts)
+        return {}
+
+    def post_reply(self, *, channel: str, ts: str, text: str) -> dict[str, object]:
+        _ = (channel, ts, text)
+        return {}
+
+    def react(self, *, channel: str, ts: str, emoji: str) -> dict[str, object]:
+        _ = (channel, ts, emoji)
+        return {}
+
+    def resolve_user_id(self, handle: str) -> str:
+        _ = handle
+        return ""
+
+
 def test_ci_service_protocol_is_structural() -> None:
-    class MyCIService:
-        def cancel_pipelines(self, *, project: str, ref: str) -> list[int]:
-            return []
-
-        def fetch_pipeline_errors(self, *, project: str, ref: str) -> list[str]:
-            return []
-
-        def fetch_failed_tests(self, *, project: str, ref: str) -> list[str]:
-            return []
-
-        def trigger_pipeline(
-            self,
-            *,
-            project: str,
-            ref: str,
-            variables: dict[str, str] | None = None,
-        ) -> dict[str, object]:
-            return {}
-
-        def quality_check(self, *, project: str, ref: str) -> dict[str, object]:
-            return {}
-
-    assert isinstance(MyCIService(), CIService)
+    assert isinstance(_FakeCIService(), CIService)
 
 
 def test_code_host_backend_protocol_is_structural() -> None:
-    class MyCodeHost:
-        def create_pr(self, spec: PullRequestSpec) -> dict[str, object]:
-            _ = spec
-            return {}
-
-        def current_user(self) -> str:
-            return ""
-
-        def list_open_prs(self, repo: str, author: str) -> list[dict[str, object]]:
-            return []
-
-        def list_my_open_prs(self, author: str) -> list[dict[str, object]]:
-            return []
-
-        def post_mr_note(self, *, repo: str, mr_iid: int, body: str) -> dict[str, object]:
-            return {}
-
-        def update_mr_note(self, *, repo: str, mr_iid: int, note_id: int, body: str) -> dict[str, object]:
-            return {}
-
-        def list_mr_notes(self, *, repo: str, mr_iid: int) -> list[dict[str, object]]:
-            return []
-
-        def upload_file(self, *, repo: str, filepath: str) -> dict[str, object]:
-            return {}
-
-        def get_issue(self, issue_url: str) -> dict[str, object]:
-            return {}
-
-    assert isinstance(MyCodeHost(), CodeHostBackend)
+    assert isinstance(_FakeCodeHost(), CodeHostBackend)
 
 
 def test_messaging_backend_protocol_is_structural() -> None:
-    class MyMessaging:
-        def fetch_mentions(self, *, since: str = "") -> list[dict[str, object]]:
-            return []
-
-        def fetch_dms(self, *, since: str = "") -> list[dict[str, object]]:
-            return []
-
-        def post_message(self, *, channel: str, text: str, thread_ts: str = "") -> dict[str, object]:
-            return {}
-
-        def post_reply(self, *, channel: str, ts: str, text: str) -> dict[str, object]:
-            return {}
-
-        def react(self, *, channel: str, ts: str, emoji: str) -> dict[str, object]:
-            return {}
-
-        def resolve_user_id(self, handle: str) -> str:
-            return ""
-
-    assert isinstance(MyMessaging(), MessagingBackend)
+    assert isinstance(_FakeMessaging(), MessagingBackend)
 
 
 def test_non_conforming_class_is_not_ci_service() -> None:

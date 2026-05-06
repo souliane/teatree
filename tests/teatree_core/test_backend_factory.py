@@ -5,8 +5,11 @@ from unittest.mock import patch
 import teatree.core.overlay_loader as overlay_loader_mod
 from teatree.backends.gitlab import GitLabCodeHost
 from teatree.backends.gitlab_ci import GitLabCIService
-from teatree.backends.loader import reset_backend_caches
-from teatree.core.backend_factory import ci_service_from_overlay, code_host_from_overlay
+from teatree.core.backend_factory import (
+    ci_service_from_overlay,
+    code_host_from_overlay,
+    reset_backend_caches,
+)
 from teatree.core.overlay import OverlayBase, OverlayConfig
 
 

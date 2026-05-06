@@ -42,33 +42,36 @@ class CodeHostBackend(Protocol):
     """Pull/merge requests + issue fetch — the canonical code-host concern.
 
     PR is the canonical term in core; GitLab implementations translate
-    MR ↔ PR at the API edge.
+    MR ↔ PR at the API edge. ``repo`` + ``pr_iid`` is the natural unit on
+    both APIs (GitLab ``merge_requests/<iid>``, GitHub ``pulls/<number>``).
     """
 
     def create_pr(self, spec: PullRequestSpec) -> RawAPIDict: ...  # pragma: no branch
 
     def current_user(self) -> str: ...  # pragma: no branch
 
-    def list_open_prs(self, repo: str, author: str) -> list[RawAPIDict]: ...  # pragma: no branch
+    def list_my_prs(self, *, author: str) -> list[RawAPIDict]: ...  # pragma: no branch
 
-    def list_my_open_prs(self, author: str) -> list[RawAPIDict]: ...  # pragma: no branch
+    def list_review_requested_prs(self, *, reviewer: str) -> list[RawAPIDict]: ...  # pragma: no branch
 
-    def post_mr_note(self, *, repo: str, mr_iid: int, body: str) -> RawAPIDict: ...  # pragma: no branch
+    def post_pr_comment(self, *, repo: str, pr_iid: int, body: str) -> RawAPIDict: ...  # pragma: no branch
 
-    def update_mr_note(
+    def update_pr_comment(
         self,
         *,
         repo: str,
-        mr_iid: int,
-        note_id: int,
+        pr_iid: int,
+        comment_id: int,
         body: str,
     ) -> RawAPIDict: ...  # pragma: no branch
 
-    def list_mr_notes(self, *, repo: str, mr_iid: int) -> list[RawAPIDict]: ...  # pragma: no branch
+    def list_pr_comments(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]: ...  # pragma: no branch
 
     def upload_file(self, *, repo: str, filepath: str) -> RawAPIDict: ...  # pragma: no branch
 
     def get_issue(self, issue_url: str) -> RawAPIDict: ...  # pragma: no branch
+
+    def list_assigned_issues(self, *, assignee: str) -> list[RawAPIDict]: ...  # pragma: no branch
 
 
 @runtime_checkable
@@ -98,8 +101,7 @@ class MessagingBackend(Protocol):
 
     The single Protocol covers both inbound (fetch_mentions, fetch_dms) and
     outbound (post_message, post_reply, react) concerns plus user-id
-    resolution for routing. ``send`` is the legacy one-shot post used by
-    overlay notifications.
+    resolution for routing.
     """
 
     def fetch_mentions(self, *, since: str = "") -> list[RawAPIDict]: ...  # pragma: no branch

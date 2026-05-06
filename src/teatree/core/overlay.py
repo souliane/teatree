@@ -92,6 +92,13 @@ class OverlayConfig:
     """Slack user id of the human the bot speaks for; used to filter @mentions."""
     require_ticket: bool = False
     """Whether to enforce a tracked issue before coding/shipping."""
+    ready_labels: list[str]
+    """Labels that mark an assigned issue as ready for the loop to pick up.
+
+    Used by ``AssignedIssuesScanner``. Empty disables the filter (every
+    open assigned issue is considered ready)."""
+    notion_database_id: str = ""
+    """Notion database id powering ``NotionViewScanner``. Empty disables the scanner."""
     mr_close_ticket: bool = False
     """Whether MR descriptions should use auto-closing keywords (Closes #N).
 
@@ -112,6 +119,7 @@ class OverlayConfig:
         self.frontend_repos = []
         self.workspace_repos = []
         self.protected_branches = []
+        self.ready_labels = []
         if settings_module:
             self._load_settings(settings_module)
         if overlay_name:
