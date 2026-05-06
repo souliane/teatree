@@ -9,20 +9,17 @@ import hooks.scripts.hook_router as router
 from hooks.scripts.hook_router import _T3_TEMP_PREFIX, _find_temp_files, handle_post_compact
 
 
-@pytest.fixture
-def snapshot_dir(tmp_path: Path) -> Path:
-    """Create a temporary directory to act as /tmp."""
-    return tmp_path / "tmp"
-
-
 @pytest.fixture(autouse=True)
-def _isolate_state_dir(tmp_path: Path):
-    """Point STATE_DIR at a temp directory so tests don't pollute /tmp."""
-    original = router.STATE_DIR
+def _isolate_filesystem(tmp_path: Path):
+    """Point STATE_DIR and _TMP_DIR at temp directories so tests don't see real /tmp."""
+    original_state, original_tmp = router.STATE_DIR, router._TMP_DIR
     router.STATE_DIR = tmp_path / "state"
+    router._TMP_DIR = tmp_path / "tmp"
     router.STATE_DIR.mkdir(parents=True, exist_ok=True)
+    router._TMP_DIR.mkdir(parents=True, exist_ok=True)
     yield
-    router.STATE_DIR = original
+    router.STATE_DIR = original_state
+    router._TMP_DIR = original_tmp
 
 
 class TestFindTempFiles:
@@ -37,15 +34,13 @@ class TestFindTempFiles:
         assert len(result) == 1
         assert result[0].name == f.name
 
-    def test_finds_legacy_files_in_tmp(self, snapshot_dir: Path) -> None:
-        snapshot_dir.mkdir(parents=True, exist_ok=True)
-        f = snapshot_dir / f"{_T3_TEMP_PREFIX}other-session-20260403-1200.md"
+    def test_finds_legacy_files_in_tmp(self) -> None:
+        f = router._TMP_DIR / f"{_T3_TEMP_PREFIX}other-session-20260403-1200.md"
         f.write_text("old findings", encoding="utf-8")
 
-        # Direct test: put a file in STATE_DIR with no session match
         result = _find_temp_files("sess-123")
-        # Won't find it in snapshot_dir (it's not /tmp), validates STATE_DIR path works
-        assert isinstance(result, list)
+        assert len(result) == 1
+        assert result[0].name == f.name
 
 
 class TestHandlePostCompact:
