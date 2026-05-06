@@ -103,7 +103,9 @@ src/teatree/
     github_sync.py      # GitHubSyncBackend — Projects v2 board + reviewer PR sync + auto-cleanup on board "Done"
     gitlab.py           # GitLab API client (httpx)
     gitlab_ci.py        # GitLab CI pipeline operations
-    gitlab_sync.py      # GitLabSyncBackend — MR upsert, assigned-issue upsert, labels, merged MR cleanup, Slack review permalinks
+    gitlab_sync.py             # GitLabSyncBackend — MR upsert, assigned-issue upsert, labels, Slack review permalinks
+    gitlab_sync_terminal.py    # Detect merged + closed MRs, advance ticket state on merge, rewrite cached state on close
+    gitlab_sync_approvals.py   # Detect "approvals dismissed by push" from MR system notes
     slack.py            # Slack notifications
     slack_reactions.py  # Emoji reactions on MR permalinks (ticket state transitions)
     notion.py           # Notion integration
