@@ -510,6 +510,7 @@ Defined in `teatree.core.overlay`. All methods receive the `worktree` instance f
 | `get_workspace_repos()` | `→ list[str]` | `get_repos()` | Repos for workspace ticket creation |
 | `get_tool_commands()` | `→ list[ToolCommand]` | `[]` | Overlay-specific CLI tools |
 | `get_visual_qa_targets(changed_files)` | `→ list[str]` | `[]` | URL paths the pre-push browser sanity gate should load |
+| `get_e2e_preflight(customer, base_url)` | `→ list[Callable[[], None]]` | `[]` | Pre-Playwright gates; each callable raises `RuntimeError` on failure |
 
 ### 6.2 Supporting TypedDicts
 
