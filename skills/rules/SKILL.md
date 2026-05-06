@@ -11,6 +11,69 @@ metadata:
 
 Cross-cutting rules that apply to all teatree skills. Loaded automatically via `requires:`.
 
+## Index
+
+Use `Ctrl+F`/`grep` to jump to a rule. Sections are grouped below by theme; numbering is for navigation only — every rule is binding.
+
+**Skill loading & verification**
+
+1. [Invoke Skills Before ANY Response](#invoke-skills-before-any-response)
+2. [Verification Before Completion](#verification-before-completion-non-negotiable)
+3. [Grep Before Claiming Cross-Reference Coverage](#grep-before-claiming-cross-reference-coverage-non-negotiable)
+4. [Verify Imports Before Applying External Code](#verify-imports-before-applying-external-code)
+
+**User intent, interruptions, and asking**
+
+5. [User Instructions Are Priority 1](#user-instructions-are-priority-1)
+6. [Always Use AskUserQuestion for Questions](#always-use-askuserquestion-for-questions)
+7. [Always Create Tasks](#always-create-tasks)
+8. [Mid-Task Interrupts](#mid-task-interrupts-non-negotiable)
+9. [Context Transparency](#context-transparency)
+10. [Context Longevity](#context-longevity)
+
+**Permissions, classifier, and authorization**
+
+11. [Classifier Denial Protocol](#classifier-denial-protocol-non-negotiable)
+12. [Ask About Auth Before External Service Integrations](#ask-about-auth-before-external-service-integrations)
+13. [Publishing Actions Are Mode-Conditional](#publishing-actions-are-mode-conditional-non-negotiable)
+
+**Communication & references**
+
+14. [Clickable References](#clickable-references)
+15. [No AI Signature on Posts Made on the User's Behalf](#no-ai-signature-on-posts-made-on-the-users-behalf-non-negotiable)
+16. [Never Post MR Comments from Parallel Agents](#never-post-mr-comments-from-parallel-agents-non-negotiable)
+17. [Verify Repo Visibility Before Filing External Issues](#verify-repo-visibility-before-filing-external-issues-non-negotiable)
+18. [Leak Remediation — Silent Scrubs](#leak-remediation--silent-scrubs-non-negotiable)
+19. [GitLab Inline Comments](#gitlab-inline-comments)
+
+**API & shell recipes**
+
+20. [Token Extraction](#token-extraction)
+21. [Temp File Safety](#temp-file-safety)
+22. [Complex API Payloads: Use curl or Python](#complex-api-payloads-use-curl-or-python)
+23. [Preserve Existing UX Patterns](#preserve-existing-ux-patterns)
+24. [Prefer Native Tool APIs Over Filesystem Heuristics](#prefer-native-tool-apis-over-filesystem-heuristics)
+25. [Shell Alias Safety](#shell-alias-safety)
+
+**Files, agents, and worktrees**
+
+26. [Sub-Agent Limitations](#sub-agent-limitations)
+27. [Symlink Safety](#symlink-safety)
+28. [Skill File Writes Require a Git Repo](#skill-file-writes-require-a-git-repo)
+29. [Worktree-First Work](#worktree-first-work-non-negotiable)
+30. [Concurrent Agent Safety](#concurrent-agent-safety-non-negotiable)
+
+**Workflow discipline**
+
+31. [Fix TeaTree/Skill Bugs Immediately](#fix-teatreeskill-bugs-immediately)
+32. [Teatree Extension Point Changes Must Update All Registered Overlays](#teatree-extension-point-changes-must-update-all-registered-overlays-non-negotiable)
+33. [Do Work Now, Don't Defer to "Later" Tickets](#do-work-now-dont-defer-to-later-tickets-non-negotiable)
+34. [Contribute Mode: Promote Findings to Skills, Not Personal Memory](#contribute-mode-promote-findings-to-skills-not-personal-memory-non-negotiable)
+35. [Never Change MR Base Branch or Dependencies](#never-change-mr-base-branch-or-dependencies-non-negotiable)
+36. [Run Retro Before Ending Non-Trivial Sessions](#run-retro-before-ending-non-trivial-sessions)
+37. [Commit Before Declaring Done](#commit-before-declaring-done-non-negotiable)
+38. [Pre-Commit Hook Failures on Unrelated Tests](#pre-commit-hook-failures-on-unrelated-tests)
+
 ## Invoke Skills Before ANY Response
 
 _Adapted from [superpowers/using-superpowers](https://github.com/obra/superpowers)._
@@ -231,6 +294,20 @@ Never modify skill files outside a git repo. Resolve real path with `readlink -f
 ## Fix TeaTree/Skill Bugs Immediately
 
 When a teatree or skill infrastructure bug is discovered during any task, fix it immediately as first priority. Never defer to focus on the user's task — broken infrastructure causes cascading failures.
+
+## Teatree Extension Point Changes Must Update All Registered Overlays (Non-Negotiable)
+
+When you add, change, or remove a hook on `OverlayBase` (e.g. `get_required_ports`, `get_port_env`, `uses_redis`, `get_health_checks`, `get_readiness_probes`, `get_base_images`, …) on this machine, you must in the same session update **every overlay registered locally** to adopt the new contract — even when the change is "additive" with a working default.
+
+**Why:** the teatree codebase is overlay-agnostic and CI cannot see the user's installed overlays. A "default returns empty/false" is silent — the overlay keeps shipping, but with the wrong runtime behaviour (port collisions, skipped readiness checks, missing health invariants). The drift only surfaces when the user runs the new command and gets a confusing failure with no obvious root cause.
+
+**How to apply:**
+
+1. Enumerate registered overlays on this machine: `uv run python -c "from importlib.metadata import entry_points; [print(ep.value) for ep in entry_points(group='teatree.overlays')]"`. Treat the output as the authoritative list — not memory, not assumptions about which overlays are installed.
+2. For each overlay, decide whether the new hook needs an explicit override and, if so, implement it in the same MR (or a paired MR opened in the same session). Do not file a "later" ticket — see § "Do Work Now, Don't Defer to 'Later' Tickets".
+3. Cite the overlay PR(s) in the teatree MR description so reviewers can confirm the chain landed end-to-end.
+
+**Past failure mode this rule prevents.** A wave of teatree PRs added several overlay hooks. A registered overlay kept running on the no-op defaults — multiple worktrees collided on the same backend port because `get_required_ports` returned an empty set, and `worktree ready` reported green even when nothing was serving. The teatree side looked clean; the symptom only showed up downstream after weeks.
 
 ## Do Work Now, Don't Defer to "Later" Tickets (Non-Negotiable)
 
