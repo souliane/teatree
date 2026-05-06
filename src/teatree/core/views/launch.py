@@ -80,6 +80,8 @@ class LaunchTerminalView(View):
         shell = os.environ.get("SHELL", "/bin/zsh")
         result = terminal_launch([shell, "-l"], mode=mode, app=app)
 
+        if result.error:
+            return JsonResponse({"error": result.error}, status=500)
         if result.launch_url:
             return JsonResponse({"launch_url": result.launch_url})
         return JsonResponse({"launched": True, "mode": result.mode})
@@ -112,6 +114,8 @@ class LaunchInteractiveAgentView(View):
         app = request.POST.get("terminal_app", "")
         result = terminal_launch(_claude_argv(claude_bin), mode=mode, app=app)
 
+        if result.error:
+            return JsonResponse({"error": result.error}, status=500)
         if result.launch_url:
             return JsonResponse({"launch_url": result.launch_url})
         return JsonResponse({"launched": True, "mode": result.mode})

@@ -5,7 +5,7 @@ Can be used as a CLI tool: ``uv run python -m teatree.skill_schema <paths>``.
 
 Teatree frontmatter is a superset of APM's SKILL.md format:
 - APM requires: ``name``, ``description``
-- Teatree adds: ``triggers``, ``search_hints``, ``requires``, ``metadata``, ``compatibility``
+- Teatree adds: ``triggers``, ``search_hints``, ``requires``, ``companions``, ``metadata``, ``compatibility``
 
 Unknown fields produce warnings (not errors) to preserve APM compatibility —
 APM or other tools may add fields teatree doesn't know about.
@@ -23,6 +23,7 @@ _KNOWN_TOP_LEVEL = frozenset(
         "triggers",
         "search_hints",
         "requires",
+        "companions",
         "metadata",
         "compatibility",
     }

@@ -209,7 +209,7 @@ graph LR
 | `rules` | Cross-cutting agent safety rules — clickable refs, temp files, sub-agent limits, UX preservation. Auto-loaded as a dependency by other skills. |
 | `setup` | Bootstrap and validate teatree for local use — prerequisites, config, skill symlinks, optional agent hooks, and Django project scaffolding |
 | `ship` | Delivery — committing, pushing, creating MR/PR, pipeline monitoring, review requests |
-| `sweeping-prs` | Maintenance sweep across all your open PRs/MRs — merge the default branch, fix conflicts, monitor CI, push. Never rebases |
+| `sweeping-prs` | Maintenance sweep across all your open PRs/MRs — merge the default branch, fix conflicts, monitor CI, push, and (per-repo policy) optionally squash-merge each PR before moving to the next. Never rebases |
 | `teatree` | TeaTree agent lifecycle platform — core architecture, lifecycle phases, CLI reference, overlay API, skill loading, and plugin hooks |
 | `teatree-batch` | Unattended batch ticket processing — work through a prioritized backlog one ticket at a time, sequentially. Create worktree, implement with TDD, self-review, push, merge, clean up. Skip tickets that need design decisions |
 | `teatree-bughunt` | Self-QA variant of batch mode — dogfood the teatree dashboard, find real bugs (missing items, state/action mismatches, broken links, stale data), file them, then fix them in worktrees |
@@ -339,6 +339,22 @@ uv run pytest               # >90% coverage required
 # Pre-commit checks
 prek run --all-files         # ruff, pytest, codespell, banned-terms
 ```
+
+### E2E Tests
+
+Dashboard E2E tests live under `e2e/` and run inside Docker for snapshot stability ([#275](https://github.com/souliane/teatree/issues/275)):
+
+```bash
+t3 teatree e2e project              # run full suite (CI default)
+t3 teatree e2e project --headed     # interactive mode for debugging
+```
+
+**Failure triage artifacts** (git-ignored, mounted writable into the e2e container):
+
+- `e2e/.logs/server-<ISO>-<worker>.log` — captured stdout/stderr from the live ASGI server. Path is printed on every test failure via `pytest_runtest_makereport`.
+- `e2e/.videos/<test-name>/<rand>.webm` — Playwright video recording. Only retained for **failing** tests (passing tests delete their video on teardown to keep CI artifact size small).
+
+In CI, attach the `e2e/.logs/` and `e2e/.videos/` directories as job artifacts and link them from the failed run summary so reviewers can replay the failure without rerunning the suite.
 
 ## Security Considerations
 
