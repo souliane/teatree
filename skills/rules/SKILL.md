@@ -300,8 +300,6 @@ When `contribute = true` in `~/.teatree.toml`, retro findings and cross-cutting 
 
 **Promote means edit an existing skill.** Pick the best-fit existing skill (`/t3:rules`, `/t3:next`, `/t3:ship`, etc.) and insert the rule there. Do not invent a new skill for a single rule — that fragments the skill graph.
 
-**Past failure (2026-04-24):** Retro saved a scoping-phase auto-enqueue rule to `~/.claude/.../memory/feedback_scoping_auto_enqueue_coding.md` when `contribute = true` and the correct home was `skills/next/SKILL.md`. The user had to explicitly call out the deferral and push for the promotion. Prevention: this checklist.
-
 ## Ask About Auth Before External Service Integrations
 
 When implementing features that require an external service (Notion, Slack, CI, etc.), ask "how do you authenticate with this service?" BEFORE writing any code. The answer (direct API token, CLI auth, MCP tool, OAuth, etc.) determines the entire architecture. Skipping this question leads to multiple implementation pivots.
@@ -428,8 +426,6 @@ When a pre-commit hook runs the full test suite and fails on tests **unrelated t
 2. `git branch <branch> HEAD` (snapshots the current staged + working state to the new branch).
 3. If staged-but-not-committed: `git stash push --staged`, `git worktree add ~/workspace/<branch>/<repo> -b <branch>`, `cd` into the worktree, `git stash pop`, then commit there.
 4. If already-committed-on-main: `git branch <branch> HEAD`, `git reset --hard origin/main` (or `git reset --hard <previous-HEAD>`), then `git worktree add ~/workspace/<branch>/<repo> <branch>` and continue from the worktree.
-
-**Past failure (2026-05-05):** Resuming after compaction with skill edits already applied directly in the main clones of `souliane/teatree` and `souliane/skills`, I committed those edits on `main` rather than recovering them onto worktree branches first. The user reset main and called `/retro`. Prevention: this pre-commit check.
 
 **Collision detection — check on EVERY file write or git operation:**
 

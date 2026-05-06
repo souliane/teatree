@@ -148,8 +148,6 @@ Before writing `Closes #N` or `Fixes #N` in a PR body, re-read the linked issue 
 - List the unshipped phases/AC in the PR body under a "Remaining scope" heading so the next agent sees the gap.
 - Do NOT rely on "I'll do the rest later" memory. The issue body is the contract; a partial PR that auto-closes the issue silently discards the rest of the contract.
 
-**Past failure (#97, PR #423):** Issue #97 defined 5 phases (`Phase 1` teardown cleanup through `Phase 5` teatree core hooks). PR #423 shipped only Phase 5 but used `Closes #97`, auto-closing the issue when 4/5 phases remained. The user had to reopen the issue manually. Prevention: the phase-by-phase ✅/❌ matrix in the PR body would have forced the correct verb (`Relates-to`).
-
 **STOP — resolve the ticket URL before typing the glab command.**
 
 Before composing any `glab mr create` or `glab mr update` call, answer these three questions:
@@ -234,8 +232,6 @@ If a sibling is open, **do not open a second MR targeting the default branch** �
 
 **Never open two MRs on the same ticket targeting the default branch in parallel.** The only exception is when the two MRs touch genuinely disjoint files (different repos, different modules with no shared imports, no overlapping generated docs) — and even then, the second MR's description must name the sibling PR it races with.
 
-**Past failure (#140 / PRs #427 + #436):** Both PRs touched `README.md`, `BLUEPRINT.md`, `src/teatree/core/*` and ran in parallel against `main`. When #427 squash-merged first, #436 inherited an unsynced merge base and required a full 3-way conflict resolution. Opening #436 as a stacked PR with `--base ac/teatree-#140-initial-ship` would have avoided every conflict.
-
 ### Also sweep by content for ticketless PRs (Non-Negotiable)
 
 The ticket-ref query above misses **retro fixes, skill edits, and other PRs without a ticket reference**. Before opening any such PR, also run a content sweep against open and recently-merged PRs on the same repo and look for overlap on title keywords or touched files:
@@ -254,8 +250,6 @@ Match against:
 - **Touched files** that overlap with `git diff --name-only origin/main..HEAD` on the local branch — for skill PRs especially, multiple agents/users converge on the same `skills/<topic>/SKILL.md` file.
 
 Treat a hit on either signal as a sibling and apply the same options (wait, stack, or bundle per `## Bundle Into an Existing Open PR` below). If the hit is in the recently-merged list, run `git fetch origin main && git log origin/main..HEAD` — if the local diff is now empty, abandon the branch instead of pushing an empty PR.
-
-**Past failure (2026-05-05, PR [#509](https://github.com/souliane/teatree/pull/509)):** Agent opened #509 with two retro findings (grep cross-ref rule + pre-commit worktree check) without sweeping. The user had merged the same two findings via [#507](https://github.com/souliane/teatree/pull/507) and [#508](https://github.com/souliane/teatree/pull/508) in parallel, minutes before #509 landed. #509 squash-merged as an empty diff — wasted CI on lint/test/e2e jobs and added an empty merge commit to history.
 
 ## Bundle Into an Existing Open PR
 
