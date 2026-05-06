@@ -125,7 +125,18 @@ repos:
         language: script
         entry: scripts/hooks/check-banned-terms.sh --config ~/.teatree.toml
         types: [text]
-        exclude: ^(\.pre-commit-config\.yaml|scripts/hooks/)$
+        exclude: |
+          (?x)^(
+            \.pre-commit-config\.yaml |
+            scripts/hooks/.* |
+            tests/test_no_overlay_leak_hook\.py
+          )$
+      - id: no-overlay-leak
+        name: no overlay names in src/teatree or docs (BLUEPRINT § 1)
+        language: system
+        entry: uv run python scripts/hooks/check_no_overlay_leak.py
+        files: '^(src/teatree|docs)/'
+        pass_filenames: true
 
   # Phase 7 - Project-specific
   - repo: local
