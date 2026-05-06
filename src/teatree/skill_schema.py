@@ -15,6 +15,8 @@ import re
 import sys
 from pathlib import Path
 
+import typer
+
 _KNOWN_TOP_LEVEL = frozenset(
     {
         "name",
@@ -155,7 +157,7 @@ def main() -> None:
     """CLI entry point for pre-commit and manual validation."""
     paths = [Path(p) for p in sys.argv[1:]]
     if not paths:
-        sys.stdout.write("Usage: python -m teatree.skill_schema <SKILL.md ...>\n")
+        typer.echo("Usage: python -m teatree.skill_schema <SKILL.md ...>", err=True)
         sys.exit(1)
 
     all_errors: list[str] = []
@@ -170,15 +172,15 @@ def main() -> None:
         all_warnings.extend(warns)
 
     for warning in all_warnings:
-        sys.stdout.write(f"WARN: {warning}\n")
+        typer.echo(f"WARN: {warning}")
     for error in all_errors:
-        sys.stdout.write(f"ERROR: {error}\n")
+        typer.echo(f"ERROR: {error}")
 
     if all_errors:
-        sys.stdout.write(f"\nFAIL — {len(all_errors)} error(s)\n")
+        typer.echo(f"\nFAIL — {len(all_errors)} error(s)")
         sys.exit(1)
     else:
-        sys.stdout.write("PASS\n")
+        typer.echo("PASS")
 
 
 if __name__ == "__main__":
