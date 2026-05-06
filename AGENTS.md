@@ -121,6 +121,12 @@ An overlay is a lightweight Python package that customizes teatree. It:
 4. Registers via a `teatree.overlays` entry point in `pyproject.toml` (e.g., `my-overlay = "myapp.overlay:MyOverlay"`)
 5. Gets auto-discovered by the overlay loader from `importlib.metadata.entry_points(group="teatree.overlays")`
 
+### Overlay API version (`teatree.__overlay_api_version__`)
+
+Teatree exports `__overlay_api_version__` (a string) for overlays to assert against at import time. Bump it on every **breaking** change to the overlay-facing surface — `OverlayBase` method signatures, `Worktree`/`Ticket` fields overlays read, the entry-point contract, or runner protocols overlays may implement. Non-breaking additions (new optional hook, new helper) do not bump it.
+
+Overlays should hard-fail at import (no shim, no deprecation warning) when the runtime teatree exposes a different version than what they were built against. CI catches the rest before merge.
+
 ## Backend Architecture
 
 ### API Protocols (`backends/protocols.py`)

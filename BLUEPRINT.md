@@ -479,6 +479,8 @@ Everything else — DB provisioning strategies, migration runners, symlink manag
 
 Defined in `teatree.core.overlay`. All methods receive the `worktree` instance for context.
 
+**Overlay API version pin.** ``teatree.__overlay_api_version__`` (currently ``"1"``) is bumped on any **breaking** change to the overlay-facing API: ``OverlayBase`` method signatures, ``Worktree``/``Ticket`` fields overlays read, the ``teatree.overlays`` entry-point contract, or runner protocols overlays may implement. Overlays assert this at import to fail loudly when teatree diverges from what they were built against — no silent misbehavior, no shim, no deprecation warning. Non-breaking additions (new optional hook, new helper) leave the version alone.
+
 **Abstract methods (must implement):**
 
 | Method | Signature | Purpose |
