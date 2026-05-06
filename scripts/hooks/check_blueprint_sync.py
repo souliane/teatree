@@ -2,7 +2,7 @@
 
 Exits non-zero when source code changes without a corresponding BLUEPRINT.md
 update, unless the commit type is one that typically doesn't require it
-(test, docs, style, chore, relax, ci).
+(test, docs, style, chore, ci, fix).
 
 See: souliane/teatree#8
 """
@@ -12,7 +12,7 @@ import subprocess
 import sys
 
 # Commit types that don't require BLUEPRINT updates.
-_EXEMPT_PREFIXES = ("test", "docs", "style", "chore", "relax", "ci", "fix")
+_EXEMPT_PREFIXES = ("test", "docs", "style", "chore", "ci", "fix")
 
 
 def _staged_files() -> list[str]:
