@@ -112,7 +112,7 @@ class DashboardTaskRow:
 class ActiveSessionRow:
     pid: int
     uptime: str
-    kind: str  # "headless", "interactive", "ttyd", "manual"
+    kind: str  # "headless", "interactive", "manual"
     task_id: int | None
     ticket_id: int | None
     ticket_display_id: str

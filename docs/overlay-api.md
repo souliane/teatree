@@ -49,7 +49,6 @@ Set these as `UPPER_CASE` constants in a settings module, or as `lower_case` key
 | `workspace_repos` | `[]` | Repo paths relative to `workspace_dir` (supports nested paths) |
 | `protected_branches` | `[]` | Branch names that should never be deleted during cleanup |
 | `dev_env_url` | `""` | Development environment base URL |
-| `dashboard_logo` | `""` | Path or URL for the dashboard logo |
 
 ### Secret getters
 

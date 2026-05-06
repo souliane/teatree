@@ -5,7 +5,7 @@ by ``hooks/check_module_health.py``. The two states share fetch + url-collection
 plumbing but diverge on side effects:
 
 - merged → advance the ticket FSM to ``MERGED`` and clean up worktrees
-- closed → only rewrite the cached MR state so the dashboard filter hides it
+- closed → only rewrite the cached MR state so consumers filter the row out
 """
 
 import logging
@@ -84,7 +84,7 @@ def apply_merged_status(ticket: Ticket, merged_urls: set[str], result: SyncResul
 def apply_closed_status(ticket: Ticket, closed_urls: set[str], result: SyncResult) -> None:
     # Closed-without-merge has no FSM target and no worktree cleanup: the user may
     # still reopen / push a new MR for the same ticket. Only the cached MR entry is
-    # rewritten so the dashboard's state-based filter stops rendering the row.
+    # rewritten so the cached state-based filter stops rendering the row.
     extra = ticket.extra if isinstance(ticket.extra, dict) else {}
     mrs = extra.get("mrs", {})
     if not isinstance(mrs, dict) or not mrs:

@@ -17,7 +17,6 @@ def test_settings_importable():
     assert "teatree.agents" in mod.INSTALLED_APPS
     assert isinstance(mod.LOGGING, dict)
     assert mod.LOGGING["version"] == 1
-    assert mod.TEATREE_TERMINAL_MODE == "new-tab"
     assert mod.STATIC_URL == "static/"
 
 

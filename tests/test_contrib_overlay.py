@@ -381,13 +381,3 @@ class TestOverlayDefaults(TestCase):
         }
         assert overlay.metadata.detect_variant() == ""
         assert overlay.metadata.get_tool_commands() == []
-
-
-class TestAsgiModule:
-    def test_asgi_application_is_importable(self) -> None:
-        """The ASGI entry point for teatree is importable and creates an application."""
-        import importlib  # noqa: PLC0415
-
-        mod = importlib.import_module("teatree.asgi")
-        assert hasattr(mod, "application")
-        assert callable(mod.application)

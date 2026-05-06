@@ -48,10 +48,6 @@ class CommandOverlay(OverlayBase):
 
 COMMAND_OVERLAY = "tests.teatree_core.conftest.CommandOverlay"
 
-COMMAND_SETTINGS = {
-    "TEATREE_TERMINAL_MODE": "same-terminal",
-}
-
 
 @pytest.fixture(autouse=True)
 def _clear_overlay_cache() -> Iterator[None]:

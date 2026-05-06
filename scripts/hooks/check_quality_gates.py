@@ -4,11 +4,15 @@ Flags additions to lint ignore lists, coverage omit patterns, new ``# noqa`` /
 ``# pragma: no cover`` annotations, and ``fail_under`` decreases. Exits non-zero
 when relaxations are found — there is no bypass. Refactor instead.
 
+Suppressions that are renamed-in-place (same marker added and removed within
+the same file) net to zero and are not flagged.
+
 See: souliane/teatree#17
 """
 
 import re
 import subprocess
+from collections import Counter
 
 # Patterns in pyproject.toml that indicate structural config relaxation.
 _PYPROJECT_KEYWORD_PATTERNS: list[str] = [
@@ -70,6 +74,35 @@ def _added_lines(diff: str) -> list[tuple[str, int, str]]:
     return findings
 
 
+def _removed_lines(diff: str) -> list[tuple[str, str]]:
+    """Extract removed lines from unified diff output.
+
+    Returns list of (filename, line_text) tuples. The filename is the new
+    (post-rename) path so callers can compare against added lines in the
+    same file scope.
+    """
+    findings: list[tuple[str, str]] = []
+    current_file = ""
+
+    for raw_line in diff.splitlines():
+        if raw_line.startswith("+++ "):
+            path = raw_line[4:]
+            current_file = path.removeprefix("b/")
+        elif raw_line.startswith("-") and not raw_line.startswith("---"):
+            findings.append((current_file, raw_line[1:]))
+
+    return findings
+
+
+def _suppression_marker(line: str) -> str | None:
+    """Return the suppression marker (with rule code) found in `line`, or None."""
+    for pattern in _CODE_RELAXATION_PATTERNS:
+        idx = line.find(pattern)
+        if idx >= 0:
+            return line[idx:].rstrip()
+    return None
+
+
 def _is_pyproject_relaxation(line: str) -> bool:
     """Return True if the added line looks like a quality gate relaxation."""
     lower = line.lower()
@@ -90,18 +123,27 @@ def main() -> int:
 
     code_diff = _staged_diff()
     if code_diff:
-        violations.extend(
-            f"  {filename}:{line_num}: {line.strip()}"
-            for filename, line_num, line in _added_lines(code_diff)
-            if filename != "pyproject.toml"
-            and not filename.startswith("tests/")
-            and not filename.startswith("scripts/hooks/")
-            and not filename.startswith("e2e/")
-            and not filename.startswith("skills/")
-            and not filename.startswith("docs/")
-            for pattern in _CODE_RELAXATION_PATTERNS
-            if pattern in line
-        )
+        # Renamed-in-place suppressions (same marker removed and re-added in
+        # the same file) cancel out. Build a counter of removed markers per
+        # file, then decrement as we encounter matching adds.
+        removed_markers: Counter[tuple[str, str]] = Counter()
+        for filename, line in _removed_lines(code_diff):
+            marker = _suppression_marker(line)
+            if marker is not None:
+                removed_markers[filename, marker] += 1
+
+        skip_prefixes = ("tests/", "scripts/hooks/", "e2e/", "skills/", "docs/")
+        for filename, line_num, line in _added_lines(code_diff):
+            if filename == "pyproject.toml" or filename.startswith(skip_prefixes):
+                continue
+            marker = _suppression_marker(line)
+            if marker is None:
+                continue
+            key = (filename, marker)
+            if removed_markers[key] > 0:
+                removed_markers[key] -= 1
+                continue
+            violations.append(f"  {filename}:{line_num}: {line.strip()}")
 
     if not violations:
         return 0

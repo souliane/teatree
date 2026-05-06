@@ -63,7 +63,6 @@ class TestBlocksForbiddenCommands:
             ("dslr snapshot mydb", "db"),
             ("uv run t3 worktree start", "install teatree"),
             ("uv run t3 teatree worktree provision", "install teatree"),
-            ("uv run --no-sync t3 dashboard", "install teatree"),
             ("cd /tmp && uv run t3 info", "install teatree"),
             ("dslr restore my_snap", "db"),
             ("T3_ALLOW_REMOTE_DUMP=1 t3 myapp db refresh", "T3_ALLOW_REMOTE_DUMP"),

@@ -1,7 +1,7 @@
 """Headless agent runner — executes tasks without a terminal.
 
 Runs ``claude -p`` as a subprocess, captures structured output,
-and stores the result in TaskAttempt.result for the dashboard to display.
+and stores the result in TaskAttempt.result.
 """
 
 import json

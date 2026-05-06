@@ -26,7 +26,7 @@ import teatree.core.management.commands.workspace as workspace_mod
 import teatree.core.management.commands.worktree as worktree_mod
 import teatree.core.overlay_loader as overlay_loader_mod
 import teatree.core.runners.provision as provision_mod
-import teatree.core.views._startup as startup_mod
+import teatree.core.skill_cache as startup_mod
 import teatree.utils.db as db_mod
 import teatree.utils.git as git_mod
 import teatree.utils.run as utils_run_mod
@@ -238,9 +238,7 @@ POST_DB_OVERLAY = "tests.teatree_core.test_new_management_commands.PostDbStepsOv
 FAILING_IMPORT_OVERLAY = "tests.teatree_core.test_new_management_commands.FailingImportOverlay"
 PRE_RUN_OVERLAY = "tests.teatree_core.test_new_management_commands.PreRunOverlay"
 
-SETTINGS = {
-    "TEATREE_TERMINAL_MODE": "same-terminal",
-}
+SETTINGS: dict[str, object] = {}
 
 
 @pytest.fixture(autouse=True)
@@ -2747,13 +2745,13 @@ class TestE2eProject(TestCase):
                 call_command(
                     "e2e",
                     "project",
-                    test_path="e2e/test_dashboard.py::test_full_dashboard_screenshot",
+                    test_path="e2e/test_smoke.py::test_smoke",
                     update_snapshots=True,
                 )
 
             cmd = mock_run.call_args[0][0]
             assert "docker" in cmd
-            assert "e2e/test_dashboard.py::test_full_dashboard_screenshot" in cmd
+            assert "e2e/test_smoke.py::test_smoke" in cmd
             assert "--update-snapshots" in cmd
 
 

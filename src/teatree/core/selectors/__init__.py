@@ -1,7 +1,8 @@
-"""Selectors package — query functions for dashboard panels and task details.
+"""Selectors package — read-only queries for tickets, sessions, tasks, and worktrees.
 
-All public names are re-exported here for backward compatibility so that
-``from teatree.core.selectors import ...`` continues to work unchanged.
+Loop scanners and the CLI consume these selectors to render the statusline
+and answer status queries without bypassing the FSM models. (Phase 4 will
+restructure these into named scanner modules.)
 """
 
 from ._cache import _cached, _panel_cache, invalidate_panel_cache

@@ -23,7 +23,6 @@ from teatree.utils.compose_contract import (
 REPO_ROOT = Path(__file__).parent.parent
 COMPOSE_FILES = [
     REPO_ROOT / "dev" / "docker-compose.yml",
-    REPO_ROOT / "dev" / "docker-compose.dashboard.yml",
 ]
 
 # Keys that come from the caller's environment, not the env cache.

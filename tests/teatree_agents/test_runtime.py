@@ -2,7 +2,6 @@ from pathlib import Path
 
 import pytest
 
-from teatree.agents.services import get_terminal_mode
 from teatree.agents.skill_bundle import resolve_skill_bundle
 
 
@@ -34,7 +33,3 @@ def test_resolve_skill_bundle_uses_framework_detection(
 
     assert "ac-python" in bundle
     assert "debug" in bundle
-
-
-def test_get_terminal_mode_default() -> None:
-    assert isinstance(get_terminal_mode(), str)

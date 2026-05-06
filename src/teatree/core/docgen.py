@@ -85,7 +85,7 @@ _TEATREE_RESPONSIBILITIES = (
     "Worktree lifecycle orchestration",
     "Task claiming, leasing, and execution routing",
     "Quality-gate state tracking on sessions",
-    "Generated dashboard and documentation surfaces",
+    "Generated documentation surfaces",
 )
 
 _AGENT_LAUNCH_FIELDS = (

@@ -88,7 +88,6 @@ class OverlayConfig:
     workspace_repos: list[str]
     protected_branches: list[str]
     dev_env_url: str = ""
-    dashboard_logo: str = ""
 
     def __init__(self, settings_module: str = "", overlay_name: str = "") -> None:
         # Initialize mutable defaults per-instance

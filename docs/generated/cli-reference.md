@@ -18,7 +18,6 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │                 commands.                                                    │
 │ info            Show t3 installation, teatree/overlay sources, and editable  │
 │                 status.                                                      │
-│ dashboard       Migrate the database and start the dashboard dev server.     │
 │ config          Configuration and autoloading.                               │
 │ ci              CI pipeline helpers.                                         │
 │ review          Code review helpers.                                         │
@@ -115,25 +114,6 @@ Usage: t3 info [OPTIONS]
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
-╰──────────────────────────────────────────────────────────────────────────────╯
-```
-
-### `t3 dashboard`
-
-```
-Usage: t3 dashboard [OPTIONS]
-
- Migrate the database and start the dashboard dev server.
-
-╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --host           TEXT     Host to bind to [default: 127.0.0.1]               │
-│ --port           INTEGER  Port to serve on [default: 8000]                   │
-│ --project        PATH     Project root to serve from (worktree path).        │
-│ --workers        INTEGER  Number of background task workers to start (0 to   │
-│                           disable)                                           │
-│                           [default: 1]                                       │
-│ --stop                    Stop the running dashboard and exit.               │
-│ --help                    Show this message and exit.                        │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -1009,53 +989,6 @@ Usage: t3 teatree config [OPTIONS] COMMAND [ARGS]...
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
-╰──────────────────────────────────────────────────────────────────────────────╯
-╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ enable-autostart   Install a system daemon to start the dashboard on login.  │
-│ disable-autostart  Remove the dashboard autostart daemon.                    │
-│ logs               Show dashboard daemon log output.                         │
-╰──────────────────────────────────────────────────────────────────────────────╯
-```
-
-##### `t3 teatree config enable-autostart`
-
-```
-Usage: t3 teatree config enable-autostart [OPTIONS]
-
- Install a system daemon to start the dashboard on login.
-
-╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --host        TEXT     Host to bind to [default: 127.0.0.1]                  │
-│ --port        INTEGER  Port to serve on [default: 8000]                      │
-│ --help                 Show this message and exit.                           │
-╰──────────────────────────────────────────────────────────────────────────────╯
-```
-
-##### `t3 teatree config disable-autostart`
-
-```
-Usage: t3 teatree config disable-autostart [OPTIONS]
-
- Remove the dashboard autostart daemon.
-
-╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --help          Show this message and exit.                                  │
-╰──────────────────────────────────────────────────────────────────────────────╯
-```
-
-##### `t3 teatree config logs`
-
-```
-Usage: t3 teatree config logs [OPTIONS]
-
- Show dashboard daemon log output.
-
-╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --lines   -n                 INTEGER  Number of lines to show [default: 50]  │
-│ --follow      --no-follow             Follow log output [default: no-follow] │
-│ --stderr      --no-stderr             Show stderr log instead of stdout      │
-│                                       [default: no-stderr]                   │
-│ --help                                Show this message and exit.            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -2032,10 +1965,7 @@ Usage: t3 teatree tasks work-next-sdk [OPTIONS]
 ```
 Usage: t3 teatree tasks work-next-user-input [OPTIONS]
 
-╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --claimed-by        TEXT  [default: worker]                                  │
-│ --help                    Show this message and exit.                        │
-╰──────────────────────────────────────────────────────────────────────────────╯
+ Claim and execute a user input task.
 ```
 
 #### `t3 teatree followup`

@@ -1,13 +1,23 @@
-"""Shared startup/sync logic called by both dashboard init and sync-now button."""
+"""Skill metadata cache.
+
+Writes the active overlay's skill metadata + trigger index to
+``$DATA_DIR/skill-metadata.json``. The UserPromptSubmit hook reads the
+cache to resolve overlay matching and the trigger index without paying
+the cost of Django bootstrap on every prompt.
+
+Called from `t3 config write-skill-metadata` and from the loop tick
+when its scanners notice a SKILL.md mtime change. The dashboard's
+"sync now" entry point that previously called this is gone in #541.
+"""
 
 import json
 import logging
+import operator
 from pathlib import Path
 
 import teatree
 from teatree.config import DATA_DIR
 from teatree.core.overlay_loader import get_overlay
-from teatree.core.sync import SyncResult, sync_followup
 from teatree.skill_deps import resolve_all
 from teatree.skill_schema import validate_skill_md
 from teatree.trigger_parser import parse_triggers as _parse_triggers
@@ -15,31 +25,11 @@ from teatree.trigger_parser import parse_triggers as _parse_triggers
 logger = logging.getLogger(__name__)
 
 # Default skill directory where Claude Code discovers skills.
-# When supporting other agent platforms, make this configurable via settings.
 _CLAUDE_SKILLS_DIR = Path.home() / ".claude" / "skills"
 
 
-def perform_sync() -> SyncResult:
-    """Run followup sync and refresh caches.
-
-    Called by:
-    - Dashboard startup (DashboardView.get, first request)
-    - "Sync now" button (SyncFollowupView.post)
-    - CLI (t3 config write-skill-cache, for the cache part)
-
-    Add any new sync-time work here so all entry points stay in sync.
-    """
-    result = sync_followup()
-    _write_skill_metadata_cache()
-    return result
-
-
-def _write_skill_metadata_cache() -> None:
-    """Write the active overlay's skill metadata to the XDG data directory.
-
-    The UserPromptSubmit hook reads this cache to resolve overlay matching
-    and the trigger index without needing Django at hook time.
-    """
+def write_skill_metadata_cache() -> None:
+    """Write the active overlay's skill metadata to the XDG data directory."""
     metadata = get_overlay().metadata.get_skill_metadata()
     trigger_index = _build_trigger_index()
     metadata["trigger_index"] = trigger_index
@@ -52,6 +42,8 @@ def _write_skill_metadata_cache() -> None:
 
 
 def _validate_skills(known_skills: set[str]) -> None:
+    if not _CLAUDE_SKILLS_DIR.is_dir():
+        return
     for d in sorted(_CLAUDE_SKILLS_DIR.iterdir()):
         resolved = d.resolve() if d.is_symlink() else d
         if not resolved.is_dir():
@@ -67,12 +59,7 @@ def _validate_skills(known_skills: set[str]) -> None:
 
 
 def _build_trigger_index() -> list[dict]:
-    """Scan ``~/.claude/skills/*/SKILL.md`` and extract ``triggers:`` blocks.
-
-    Returns a list of trigger entries sorted by priority, each with keys:
-    ``skill``, ``priority``, ``keywords``, ``urls``, ``exclude``,
-    ``end_of_session``.
-    """
+    """Scan ``~/.claude/skills/*/SKILL.md`` and extract ``triggers:`` blocks."""
     index: list[dict] = []
 
     if not _CLAUDE_SKILLS_DIR.is_dir():
@@ -87,7 +74,6 @@ def _build_trigger_index() -> list[dict]:
     _validate_skills(known_skills)
 
     for skill_dir in sorted(_CLAUDE_SKILLS_DIR.iterdir()):
-        # Resolve symlinks so we can check if target exists
         resolved = skill_dir.resolve() if skill_dir.is_symlink() else skill_dir
         if not resolved.is_dir():
             continue
@@ -102,8 +88,6 @@ def _build_trigger_index() -> list[dict]:
         if triggers is None:
             continue
         index.append({"skill": skill_dir.name, **triggers})
-
-    import operator  # noqa: PLC0415
 
     index.sort(key=operator.itemgetter("priority", "skill"))
     return index
@@ -127,4 +111,4 @@ def _collect_skill_mtimes() -> dict[str, int]:
     return mtimes
 
 
-# _parse_triggers is imported from scripts/lib/trigger_parser.py (single source of truth).
+__all__ = ["write_skill_metadata_cache"]

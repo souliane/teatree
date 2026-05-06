@@ -15,7 +15,6 @@ from pathlib import Path
 import typer
 
 import teatree.cli.agent as _agent
-import teatree.cli.dashboard as _dashboard
 import teatree.cli.info as _info
 import teatree.cli.sessions as _sessions
 from teatree.cli.assess import assess_app
@@ -81,7 +80,6 @@ app.command()(_agent.agent)
 app.command()(_sessions.sessions)
 app.command()(_info.info)
 app.add_typer(config_app, name="config")
-app.command()(_dashboard.dashboard)
 app.add_typer(ci_app, name="ci")
 app.add_typer(review_app, name="review")
 app.add_typer(review_request_app, name="review-request")

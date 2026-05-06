@@ -55,7 +55,7 @@ def get_data_dir(namespace: str) -> Path:
 
 
 def default_logging(namespace: str) -> dict:
-    """Return a default Django LOGGING dict that writes to ``<data_dir>/logs/dashboard.log``.
+    """Return a default Django LOGGING dict that writes to ``<data_dir>/logs/teatree.log``.
 
     Usage in settings::
 
@@ -76,7 +76,7 @@ def default_logging(namespace: str) -> dict:
         "handlers": {
             "file": {
                 "class": "logging.handlers.RotatingFileHandler",
-                "filename": str(log_dir / "dashboard.log"),
+                "filename": str(log_dir / "teatree.log"),
                 "maxBytes": 5_000_000,
                 "backupCount": 3,
                 "formatter": "verbose",

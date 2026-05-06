@@ -8,19 +8,19 @@ If your project spans several repos (backend, frontend, translations, configurat
 
 ## Core concepts
 
-Teatree coordinates work through **four state machines** — `Ticket`, `Worktree`, `Task`, `MergeRequest` — each with typed transitions and tests. Agents read skills to do the *creative* work; the CLI owns the *mechanical* work.
+Teatree coordinates work through **four state machines** — `Ticket`, `Worktree`, `Task`, `PullRequest` — each with typed transitions and tests. Agents read skills to do the *creative* work; the CLI owns the *mechanical* work.
 
-Three interfaces sit on top:
+Two surfaces sit on top:
 
 - **CLI** (`t3 ...`) — the source of truth. Everything else is a view on top.
-- **Dashboard** — web UI for tickets, MRs, pipelines, and agent sessions.
-- **Claude plugin** — skills and hooks that teach an agent how to drive the CLI.
+- **Statusline** — the loop renders a 3-zone statusline (anchors, action needed, in flight) that is the only persistent UI surface.
+- **Claude plugin** — skills, hooks, and a fat `/loop` that teach an agent how to drive the CLI.
 
 ## How it fits together
 
-- **`teatree/`** -- the Django project. Models, management commands, overlay loader, views, and the `t3` CLI.
+- **`teatree/`** -- the Django project. Models, management commands, overlay loader, code-host + messaging backends, the `/loop` and its scanners, and the `t3` CLI.
 - **`skills/*/`** -- skill directories. Each teaches the agent one phase of the development lifecycle.
-- **Overlay pattern** -- project-specific behaviour lives in a lightweight overlay package that subclasses `OverlayBase` and registers via a `teatree.overlays` entry point. Teatree stays generic; the overlay wires in your repos, services, and provisioning steps.
+- **Overlay pattern** -- project-specific behaviour lives in a lightweight overlay package that subclasses `OverlayBase` and registers via a `teatree.overlays` entry point. Teatree stays generic; the overlay wires in your repos, services, code host, and messaging backend.
 
 ## Getting started
 
@@ -32,12 +32,12 @@ pip install teatree   # or: uv add teatree
 t3 startoverlay my-overlay ~/workspace/my-overlay
 ```
 
-Your overlay is a lightweight Python package with an `OverlayBase` subclass and a `teatree.overlays` entry point. Once installed alongside teatree, `t3 teatree dashboard` picks it up automatically -- no settings to configure.
+Your overlay is a lightweight Python package with an `OverlayBase` subclass and a `teatree.overlays` entry point. Once installed alongside teatree, `/loop` (in your interactive Claude Code session) picks it up automatically.
 
 ## Further reading
 
 - [Installation](install.md) -- setup and first project
-- [Architecture](architecture.md) -- how the code is structured
+- [Architecture](../BLUEPRINT.md) -- the canonical architecture spec
 - [CLI Reference](cli.md) -- the `t3` command and its subcommands
 - [Overlay API](overlay-api.md) -- the contract between teatree and your project
 - [Management Commands](management-commands.md) -- Django management commands exposed through `t3`

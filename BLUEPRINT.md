@@ -6,7 +6,7 @@ If the entire `src/` and `tests/` tree were deleted, this document alone — plu
 
 **Change policy:** Every code change to teatree must be reflected here. Before modifying this file, always ask the user for approval — this is the source of truth and the user validates every change.
 
-**Status:** This BLUEPRINT describes the **target** architecture under issue [#541](https://github.com/souliane/teatree/issues/541). The current `main` branch still ships an HTML dashboard, the `interactive` mode default, `web_terminal.py`, `cli/dashboard.py`, and the `backends/slack.py` / `backends/slack_reactions.py` modules. Phases 1–8 of #541 align the implementation to this spec in a single PR; until that PR merges, the live `main` contract is what runs. When this BLUEPRINT and the code disagree, treat this file as the destination, not the present.
+**Status:** This BLUEPRINT describes the **target** architecture under issue [#541](https://github.com/souliane/teatree/issues/541). Phases 1–2 are done in the active branch — the statusline file is the persistent UI surface, the HTML dashboard, ttyd web terminal, ASGI/uvicorn scaffolding, and platform autostart helpers are gone. Phases 3–8 (code-host + messaging Protocols, fat loop + scanners, slim headless executor, auto-mode defaults, ticket dispositions, no-overlay-leak gate) ship in the same PR. When this BLUEPRINT and the code disagree on later phases, treat this file as the destination, not the present.
 
 ---
 
@@ -62,7 +62,6 @@ src/teatree/
   config.py             # ~/.teatree.toml parsing, overlay discovery
   skill_map.py          # Phase → companion skills delegation map
   dev_settings.py       # Development Django settings
-  autostart.py          # Platform-native daemon management (launchd/systemd)
 
   core/                 # Django app: the heart of teatree
     apps.py             # AppConfig with auto-admin registration
@@ -193,7 +192,7 @@ The central entity. One ticket per unit of work (maps to an issue/task in the tr
 
 `schedule_shipping()` defaults to `ExecutionTarget.INTERACTIVE` so the user must explicitly approve the push. Set `T3_AUTO_SHIP=true` in the environment to make shipping headless.
 
-`Ticket.has_shippable_diff()` returns True iff at least one `Worktree` has commits ahead of its base branch (resolved via `origin/<default>` or local `main` fallback). When False, `review()` advances state but skips `schedule_shipping()` — typical for meta-tracker tickets whose work shipped via sibling PRs. Manual `schedule_shipping()` callers (CLI, dashboard, tests) remain permissive and bypass the gate.
+`Ticket.has_shippable_diff()` returns True iff at least one `Worktree` has commits ahead of its base branch (resolved via `origin/<default>` or local `main` fallback). When False, `review()` advances state but skips `schedule_shipping()` — typical for meta-tracker tickets whose work shipped via sibling PRs. Manual `schedule_shipping()` callers (CLI, tests) remain permissive and bypass the gate.
 
 **`extra` structure:**
 
@@ -348,7 +347,7 @@ Records each execution attempt for audit trail.
 | `exit_code` | IntegerField | 0=success, non-zero=failure |
 | `artifact_path` | CharField(500) | Path to output artifact |
 | `result` | JSONField(dict) | Structured result (see §5) |
-| `launch_url` | URLField(500) | For interactive tasks (ttyd URL) |
+| `launch_url` | URLField(500) | Reserved for interactive task launch URLs |
 | `agent_session_id` | CharField(255) | Agent session ID for continuity |
 
 ---
@@ -716,7 +715,7 @@ Implementations: `GitHubSyncBackend` (`backends/github_sync.py`), `GitLabSyncBac
 |------|------|---------------|----------|
 | Runtime commands | django-typer management commands | Yes | `worktree provision`, `tasks work-next-sdk`, `followup refresh` |
 | Bootstrap commands | Typer CLI (`t3`) | No | `t3 startoverlay`, `t3 info`, `t3 ci cancel` |
-| Overlay commands | Typer CLI delegating to manage.py | Via subprocess | `t3 acme start-ticket`, `t3 acme dashboard` |
+| Overlay commands | Typer CLI delegating to manage.py | Via subprocess | `t3 acme start-ticket`, `t3 acme worktree start` |
 | Internal utilities | Python modules in `utils/` | No | Port allocation, git helpers, DB ops |
 
 ### 8.1 Management Commands (django-typer)
@@ -735,7 +734,7 @@ Implementations: `GitHubSyncBackend` (`backends/github_sync.py`), `GitLabSyncBac
 - `create(ticket, phase, reason | reason-file, interactive=False)` → enqueues the next-phase task (used by `/t3:next` for phase handoff; headless by default so a worker claims immediately)
 - `claim(execution_target, claimed_by, lease_seconds=120)` → claims next pending task
 - `work-next-sdk(claimed_by)` → executes headless task via `claude -p`
-- `work-next-user-input(claimed_by)` → creates interactive ttyd session
+- `start(task_id?, claimed_by)` → claims an interactive task and execs `claude` in the current terminal
 
 **followup** — GitLab sync:
 
@@ -796,7 +795,7 @@ Each registered overlay gets a subcommand group (e.g., `t3 acme`). Commands dele
 
 ### 8.5 Overlay Dev Loop (`t3 overlay install|uninstall|status`)
 
-Ships alongside the three-tier split above. Purpose: in a teatree feature worktree (never the main clone), editable-install a sibling overlay checkout so `t3 dashboard` and agents immediately see unreleased teatree code plus the overlay that exercises it.
+Ships alongside the three-tier split above. Purpose: in a teatree feature worktree (never the main clone), editable-install a sibling overlay checkout so the `t3` CLI and agents immediately see unreleased teatree code plus the overlay that exercises it.
 
 - `install <name>` walks up from `cwd` to find the teatree worktree, resolves the overlay main clone via `[overlays.<name>].path` in `~/.teatree.toml`, adds a sibling `git worktree` matching the teatree branch (falls back to the overlay's default branch), then runs `uv pip install --editable --no-deps <sibling>` against the teatree worktree venv. State is persisted in `.t3.local.json` (gitignored).
 - `uninstall <name>` removes the overlay from the venv and state file.
@@ -1114,7 +1113,6 @@ The design is **broad allow, narrow deny**:
 
 - In-memory SQLite (`:memory:`) for isolation and speed
 - `django_tasks.backends.immediate` for synchronous task execution
-- `django-htmx` middleware for `request.htmx` attribute
 
 ### 12.3 Test Isolation
 
@@ -1457,7 +1455,6 @@ the caller can see exactly which step went wrong.
 django>=5.2,<6.1
 django-tasks-db>=0.12
 django-fsm-2>=4
-django-htmx>=1.27
 django-rich>=2.2
 django-tasks>=0.9
 django-typer>=3.3

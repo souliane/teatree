@@ -1,8 +1,8 @@
 """In-memory process registry for tracking spawned subprocesses.
 
-Tracks Popen handles so they can be cleaned up on shutdown or
-via a dashboard action. Processes die with the server, so
-persistence across restarts is not needed.
+Tracks Popen handles so they can be cleaned up on shutdown.
+Processes die with the parent process, so persistence across
+restarts is not needed.
 """
 
 import atexit
