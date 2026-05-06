@@ -83,9 +83,7 @@ The `SkillLoadingPolicy` class resolves which skills to load based on intent, ov
 
 ## Plugin Hooks Architecture
 
-Hooks are registered in `hooks/hooks.json` (shipped with the plugin). This is the **sole source** for hook registrations — do NOT duplicate hooks in the user's `~/.claude/settings.json`. When adding or changing hooks, only modify `hooks.json` in this repo.
-
-**Known failure (2026-04-02):** PR #109 moved hooks from `settings.json` to plugin `hooks.json` but didn't remove the old ones. This caused double hook execution on every tool call, accelerating context consumption and triggering aggressive microcompaction. Prevention: when migrating hooks to the plugin, always remove the `settings.json` equivalents in the same change.
+Hooks are registered in `hooks/hooks.json` (shipped with the plugin). This is the **sole source** for hook registrations — do NOT duplicate hooks in the user's `~/.claude/settings.json`. When migrating hooks to the plugin, remove the `settings.json` equivalents in the same change to avoid double execution.
 
 ## Management Command Patterns
 
@@ -96,8 +94,7 @@ Teatree's CLI groups (`t3 <overlay> <group> <sub>`) are django-typer `TyperComma
 - Canonical example: `src/teatree/core/management/commands/tasks.py:19` — `raise SystemExit(1)` after `self.stderr.write(...)`.
 - Tests: `with pytest.raises(SystemExit) as exc_info: call_command(...)` then assert `exc_info.value.code == N`. `pytest.raises(typer.Exit)` reports `DID NOT RAISE` even though the source did raise — call_command eats it before pytest sees it.
 - `typer.Exit` is still correct in `src/teatree/cli/*.py` files that go through the typer runner directly (different call site).
-
-**Known failure (2026-04-22):** `e2e` management command returned `"E2E failed (exit 1)."` as a string instead of raising. CI jobs running `t3 teatree e2e *` reported success on Playwright/pytest failures. Fixed in [#370](https://github.com/souliane/teatree/pull/370) by raising `SystemExit(result.returncode)` after `self.stderr.write(...)`.
+- Anti-pattern: returning an error string from a management command instead of raising. The CLI exits 0 and CI reports green on real failures.
 
 ### Annotated typer options must have defaults for `call_command`
 
