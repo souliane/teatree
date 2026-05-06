@@ -62,7 +62,7 @@ When the active overlay has `require_ticket = True`, refuse to commit or push wi
 - Format commit message following the project's commit format reference.
 - **Link commits to issues** via the ticket-URL parenthetical in the subject line (`type(scope): description (TICKET_URL)`) **when the active overlay has `require_ticket = True`** (see § 0). Overlays with the default `require_ticket = False` (teatree itself) do NOT need the URL — a plain `type(scope): description` subject is correct and `validate_mr_title_and_description` will not reject it. Use `Fixes #<number>` / `Closes #<number>` in the body only when the active overlay sets `mr_close_ticket = True` (grep the overlay's `OverlayBase` subclass — no CLI exposes this).
 - Read `TICKET_URL` from `.env.worktree` — never construct it from the branch name.
-- **Baseline noqa in new files uses `relax:` type.** The teatree `quality-gates` hook flags any new `# noqa` / `# type: ignore` / `# pragma: no cover` in source files (excluding `tests/`, `scripts/hooks/`, `e2e/`). When a new file needs the house pattern `# noqa: S404` at `import subprocess` and `# noqa: S603` at each `subprocess.run` call (the pattern used by every existing CLI module), the hook treats it as a relaxation. Use `relax(<scope>): …` as the commit type, with a body explaining it follows the established baseline. Do NOT remove the suppressions — the ruff config relies on them.
+- **No commit-type bypass for the quality gates.** The teatree `quality-gates` and `module-health` hooks have no `relax:` escape hatch (souliane/teatree#525). When the gate fires, fix the architecture: split the file by concern, refactor module-level functions onto a class, replace `dict[str, object]` with a typed dataclass, or delegate the suppressed import/call to a module the hook already exempts (`tests/`, `scripts/hooks/`, `e2e/`, `skills/`, `docs/`). The legitimate house pattern around `subprocess` (`# noqa: S404` on the import, `# noqa: S603` on each call) belongs in a CLI helper module that already lives under one of those exempt paths — not in newly suppressed source files.
 
 ### 2. Finalize Branch
 
@@ -148,8 +148,6 @@ Before writing `Closes #N` or `Fixes #N` in a PR body, re-read the linked issue 
 - List the unshipped phases/AC in the PR body under a "Remaining scope" heading so the next agent sees the gap.
 - Do NOT rely on "I'll do the rest later" memory. The issue body is the contract; a partial PR that auto-closes the issue silently discards the rest of the contract.
 
-**Past failure (#97, PR #423):** Issue #97 defined 5 phases (`Phase 1` teardown cleanup through `Phase 5` teatree core hooks). PR #423 shipped only Phase 5 but used `Closes #97`, auto-closing the issue when 4/5 phases remained. The user had to reopen the issue manually. Prevention: the phase-by-phase ✅/❌ matrix in the PR body would have forced the correct verb (`Relates-to`).
-
 **STOP — resolve the ticket URL before typing the glab command.**
 
 Before composing any `glab mr create` or `glab mr update` call, answer these three questions:
@@ -234,7 +232,24 @@ If a sibling is open, **do not open a second MR targeting the default branch** �
 
 **Never open two MRs on the same ticket targeting the default branch in parallel.** The only exception is when the two MRs touch genuinely disjoint files (different repos, different modules with no shared imports, no overlapping generated docs) — and even then, the second MR's description must name the sibling PR it races with.
 
-**Past failure (#140 / PRs #427 + #436):** Both PRs touched `README.md`, `BLUEPRINT.md`, `src/teatree/core/*` and ran in parallel against `main`. When #427 squash-merged first, #436 inherited an unsynced merge base and required a full 3-way conflict resolution. Opening #436 as a stacked PR with `--base ac/teatree-#140-initial-ship` would have avoided every conflict.
+### Also sweep by content for ticketless PRs (Non-Negotiable)
+
+The ticket-ref query above misses **retro fixes, skill edits, and other PRs without a ticket reference**. Before opening any such PR, also run a content sweep against open and recently-merged PRs on the same repo and look for overlap on title keywords or touched files:
+
+```bash
+# Open PRs (parallel work in flight)
+gh pr list --repo <repo> --state open --json number,title,headRefName
+
+# Recently-merged PRs (work that landed minutes ago — same risk)
+gh pr list --repo <repo> --state merged --limit 10 --json number,title,mergedAt
+```
+
+Match against:
+
+- **Title keywords** that overlap with the about-to-be-pushed PR's title (e.g., "rules", "worktree", "anti-fabrication"). Synonyms count.
+- **Touched files** that overlap with `git diff --name-only origin/main..HEAD` on the local branch — for skill PRs especially, multiple agents/users converge on the same `skills/<topic>/SKILL.md` file.
+
+Treat a hit on either signal as a sibling and apply the same options (wait, stack, or bundle per `## Bundle Into an Existing Open PR` below). If the hit is in the recently-merged list, run `git fetch origin main && git log origin/main..HEAD` — if the local diff is now empty, abandon the branch instead of pushing an empty PR.
 
 ## Bundle Into an Existing Open PR
 

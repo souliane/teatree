@@ -300,8 +300,6 @@ When `contribute = true` in `~/.teatree.toml`, retro findings and cross-cutting 
 
 **Promote means edit an existing skill.** Pick the best-fit existing skill (`/t3:rules`, `/t3:next`, `/t3:ship`, etc.) and insert the rule there. Do not invent a new skill for a single rule — that fragments the skill graph.
 
-**Past failure (2026-04-24):** Retro saved a scoping-phase auto-enqueue rule to `~/.claude/.../memory/feedback_scoping_auto_enqueue_coding.md` when `contribute = true` and the correct home was `skills/next/SKILL.md`. The user had to explicitly call out the deferral and push for the promotion. Prevention: this checklist.
-
 ## Ask About Auth Before External Service Integrations
 
 When implementing features that require an external service (Notion, Slack, CI, etc.), ask "how do you authenticate with this service?" BEFORE writing any code. The answer (direct API token, CLI auth, MCP tool, OAuth, etc.) determines the entire architecture. Skipping this question leads to multiple implementation pivots.
@@ -421,6 +419,13 @@ When a pre-commit hook runs the full test suite and fails on tests **unrelated t
 **All development work MUST happen in a worktree**, never on the main clone. Use `t3 <overlay> workspace ticket` or the `using-git-worktrees` skill to create one before writing any code.
 
 **Pre-edit check — before editing ANY project file:** If the file path lives directly under `$T3_WORKSPACE_DIR/<repo>/` (not under a ticket subdirectory like `$T3_WORKSPACE_DIR/<ticket>/<repo>/`), **stop** — you are in the main clone. Find or create the correct worktree first via `t3 <overlay> workspace ticket`. The main clone may happen to be on the MR branch (from a previous checkout) — editing there "works" but pollutes the shared clone, risks merge conflicts for other worktrees, and violates isolation.
+
+**Pre-commit check — before running `git commit` (Non-Negotiable):** Run `git rev-parse --show-toplevel`. If the result is the main clone (e.g., `$T3_REPO`, `~/workspace/<repo>/<repo>` — i.e. NOT a `$T3_WORKSPACE_DIR/<ticket>/<repo>` path), **abort the commit**. Do not proceed to commit on `main` or any default branch in the main clone, even if the staged changes are already there from a prior session. Recovery path:
+
+1. Pick a branch name (`ac/<short-slug>` matching the change).
+2. `git branch <branch> HEAD` (snapshots the current staged + working state to the new branch).
+3. If staged-but-not-committed: `git stash push --staged`, `git worktree add ~/workspace/<branch>/<repo> -b <branch>`, `cd` into the worktree, `git stash pop`, then commit there.
+4. If already-committed-on-main: `git branch <branch> HEAD`, `git reset --hard origin/main` (or `git reset --hard <previous-HEAD>`), then `git worktree add ~/workspace/<branch>/<repo> <branch>` and continue from the worktree.
 
 **Collision detection — check on EVERY file write or git operation:**
 

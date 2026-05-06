@@ -78,7 +78,9 @@ class Ticket(models.Model):
     @property
     def ticket_number(self) -> str:
         match = re.search(r"(\d+)$", self.issue_url)
-        return match.group(1) if match else str(self.pk)
+        if match and match.group(1) != "0":
+            return match.group(1)
+        return str(self.pk)
 
     @transition(field=state, source=State.NOT_STARTED, target=State.SCOPED)
     def scope(

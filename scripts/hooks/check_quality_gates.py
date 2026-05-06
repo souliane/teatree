@@ -1,23 +1,14 @@
 """Commit-msg hook: detect quality gate relaxations in staged changes.
 
 Flags additions to lint ignore lists, coverage omit patterns, new ``# noqa`` /
-``# pragma: no cover`` annotations, and ``fail_under`` decreases.  Exits non-zero
-when relaxations are found **unless** the commit message starts with ``relax:``.
+``# pragma: no cover`` annotations, and ``fail_under`` decreases. Exits non-zero
+when relaxations are found — there is no bypass. Refactor instead.
 
 See: souliane/teatree#17
 """
 
 import re
 import subprocess
-
-# When run as a hook (`python scripts/hooks/check_quality_gates.py`), sys.path[0]
-# is `scripts/hooks/` so the bare-name import resolves. When loaded under pytest
-# (as `scripts.hooks.check_quality_gates`), the dotted path resolves first and
-# yields the same module instance the test patches via `scripts.hooks.commit_message`.
-try:
-    from scripts.hooks.commit_message import commit_message_has_relax_prefix
-except ImportError:
-    from commit_message import commit_message_has_relax_prefix
 
 # Patterns in pyproject.toml that indicate structural config relaxation.
 _PYPROJECT_KEYWORD_PATTERNS: list[str] = [
@@ -115,18 +106,16 @@ def main() -> int:
     if not violations:
         return 0
 
-    if commit_message_has_relax_prefix():
-        print(f"Quality gate relaxation acknowledged via relax: commit type ({len(violations)} item(s)).")
-        return 0
-
     print("Quality gate relaxation detected:")
     print()
     for v in violations:
         print(v)
     print()
     print(
-        "If intentional, use 'relax:' as the commit type to acknowledge.\n"
-        "Example: relax: add S404 to test ignores — subprocess in test fixtures is trusted"
+        "Remove the suppression and fix the underlying issue. If the\n"
+        "suppression is genuinely required (e.g., trusted subprocess in a\n"
+        "test fixture), move the affected code into a directory the hook\n"
+        "already exempts (tests/, scripts/hooks/, e2e/, skills/, docs/)."
     )
     return 1
 
