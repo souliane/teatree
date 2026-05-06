@@ -3,15 +3,15 @@
 import logging
 import re
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, cast, override
+from typing import TYPE_CHECKING, override
 
 import httpx
 from django.core.cache import cache
 from django.utils import timezone
 
+from teatree.backends.gitlab_sync_terminal import detect_closed_mrs, detect_merged_mrs
 from teatree.backends.slack_review_sync import fetch_review_permalinks
-from teatree.core.cleanup import cleanup_worktree
-from teatree.core.models import Ticket, Worktree
+from teatree.core.models import Ticket
 from teatree.core.sync import (
     LAST_SYNC_CACHE_KEY,
     PENDING_REVIEWS_CACHE_KEY,
@@ -99,7 +99,8 @@ class GitLabSyncBackend(SyncBackend):
             Ticket.objects.in_flight().filter(overlay="").update(overlay=overlay_name)
 
         self._fetch_issue_labels(client, result)
-        self._detect_merged_mrs(client, username, result, last_sync)
+        detect_merged_mrs(client, username, result, last_sync)
+        detect_closed_mrs(client, username, result, last_sync)
         fetch_review_permalinks(result)
         self._sync_reviewer_mrs(client, username, result)
 
@@ -303,66 +304,6 @@ class GitLabSyncBackend(SyncBackend):
         ticket.save(update_fields=update_fields)
 
     @classmethod
-    def _scan_merged_mrs(
-        cls,
-        mrs: RawAPIDict,
-        merged_urls: set[str],
-        result: SyncResult,
-    ) -> tuple[bool, bool]:
-        changed = False
-        unmerged = False
-        for mr_url, mr_entry in mrs.items():
-            if not isinstance(mr_entry, dict):
-                continue
-            if mr_url not in merged_urls:
-                unmerged = True
-                continue
-            entry = cast("MREntryDict", mr_entry)
-            if entry.pop("discussions", None) is not None:
-                changed = True
-            if entry.get("state") != "merged":
-                entry["state"] = "merged"
-                changed = True
-            result.mrs_merged += 1
-        return changed, not unmerged
-
-    @classmethod
-    def _apply_merged_status(cls, ticket: Ticket, merged_urls: set[str], result: SyncResult) -> None:
-        extra = ticket.extra if isinstance(ticket.extra, dict) else {}
-        mrs = extra.get("mrs", {})
-        if not isinstance(mrs, dict) or not mrs:
-            return
-
-        changed, all_merged = cls._scan_merged_mrs(mrs, merged_urls, result)
-
-        if not changed and not all_merged:
-            return
-
-        update_fields: list[str] = []
-        if changed:
-            extra["mrs"] = mrs
-            ticket.extra = extra
-            update_fields.append("extra")
-        if all_merged and _STATE_ORDER.index(Ticket.State.MERGED) > _STATE_ORDER.index(ticket.state):
-            ticket.state = Ticket.State.MERGED
-            update_fields.append("state")
-        if update_fields:
-            ticket.save(update_fields=update_fields)
-
-        if all_merged:
-            cls._cleanup_merged_worktrees(ticket, result)
-
-    @classmethod
-    def _cleanup_merged_worktrees(cls, ticket: Ticket, result: SyncResult) -> None:
-        for worktree in Worktree.objects.filter(ticket=ticket):
-            try:
-                cleanup_worktree(worktree)
-                result.worktrees_cleaned += 1
-            except Exception as exc:
-                logger.exception("Failed to clean worktree %s", worktree.repo_path)
-                result.errors.append(f"Worktree cleanup failed for {worktree.repo_path} ({worktree.branch}): {exc}")
-
-    @classmethod
     def _fetch_assigned_issues(
         cls,
         client: "GitLabAPI",
@@ -413,27 +354,6 @@ class GitLabSyncBackend(SyncBackend):
     def _extract_issue_repo_path(cls, issue_url: str) -> str:
         match = _ISSUE_PARTS_RE.search(issue_url)
         return match.group(1) if match else ""
-
-    @classmethod
-    def _detect_merged_mrs(
-        cls,
-        client: "GitLabAPI",
-        username: str,
-        result: SyncResult,
-        last_sync: str | None,
-    ) -> None:
-        try:
-            merged_mrs = client.list_recently_merged_mrs(username, updated_after=last_sync)
-        except Exception as exc:  # noqa: BLE001
-            result.errors.append(f"Merged MR fetch failed: {exc}")
-            return
-
-        if not merged_mrs:
-            return
-
-        merged_urls = {str(mr.get("web_url", "")) for mr in merged_mrs}
-        for ticket in Ticket.objects.in_flight():
-            cls._apply_merged_status(ticket, merged_urls, result)
 
     @classmethod
     def _resolve_issue(cls, client: "GitLabAPI", issue_url: str) -> tuple[dict, str, int] | None:
@@ -573,7 +493,7 @@ class GitLabSyncBackend(SyncBackend):
                     "author": author_name,
                     "draft": str(mr.get("draft", False)),
                     "updated_at": str(mr.get("updated_at", "")),
-                }
+                },
             )
 
         cache.set(PENDING_REVIEWS_CACHE_KEY, reviews, timeout=None)

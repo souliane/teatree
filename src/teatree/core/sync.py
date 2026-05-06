@@ -27,6 +27,7 @@ class SyncResult:
     tickets_updated: int = 0
     labels_fetched: int = 0
     mrs_merged: int = 0
+    mrs_closed: int = 0
     reviews_synced: int = 0
     worktrees_cleaned: int = 0
     errors: list[str] = field(default_factory=list)
@@ -104,6 +105,7 @@ def _merge_results(a: SyncResult, b: SyncResult) -> SyncResult:
         tickets_updated=a.tickets_updated + b.tickets_updated,
         labels_fetched=a.labels_fetched + b.labels_fetched,
         mrs_merged=a.mrs_merged + b.mrs_merged,
+        mrs_closed=a.mrs_closed + b.mrs_closed,
         reviews_synced=a.reviews_synced + b.reviews_synced,
         worktrees_cleaned=a.worktrees_cleaned + b.worktrees_cleaned,
         errors=[*a.errors, *b.errors],
