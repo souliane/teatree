@@ -23,7 +23,7 @@ from teatree.core.management.commands._workspace_cleanup import (
 from teatree.core.models import Ticket, Worktree
 from teatree.core.orphan_guard import find_orphans_in_workspace
 from teatree.core.overlay_loader import get_overlay
-from teatree.core.readiness import run_probes
+from teatree.core.readiness import run_and_report_probes
 from teatree.core.reconcile import Drift, reconcile_all, reconcile_ticket
 from teatree.core.resolve import resolve_worktree
 from teatree.core.runners import (
@@ -282,11 +282,9 @@ class Command(TyperCommand):
             if not probes:
                 continue
             self.stdout.write(f"  {wt.repo_path}:")
-            results = run_probes(probes)
-            for r in results:
-                self.stdout.write(f"    {r.format()}")
-            total += len(results)
-            total_failures += sum(1 for r in results if not r.passed)
+            summary = run_and_report_probes(probes, write_line=self.stdout.write, indent="    ")
+            total += summary.total
+            total_failures += summary.failures
         if total_failures:
             self.stderr.write(f"  {total_failures} of {total} probe(s) failed")
             raise SystemExit(1)
@@ -317,12 +315,9 @@ class Command(TyperCommand):
                 self.stdout.write(f"  {wt.repo_path}: no probes")
                 continue
             self.stdout.write(f"  {wt.repo_path}:")
-            results = run_probes(probes)
-            for r in results:
-                self.stdout.write(f"    {r.format()}")
-            failures = [r for r in results if not r.passed]
-            total += len(results)
-            total_failures += len(failures)
+            summary = run_and_report_probes(probes, write_line=self.stdout.write, indent="    ")
+            total += summary.total
+            total_failures += summary.failures
         if total_failures:
             self.stderr.write(f"  {total_failures} of {total} probe(s) failed")
             raise SystemExit(1)
