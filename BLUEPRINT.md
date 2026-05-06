@@ -733,7 +733,7 @@ Selector-backed views with django-htmx. **No domain logic in views** — all dat
 | `GET /dashboard/events/` | SSE | Server-Sent Events stream for real-time updates |
 | `GET /dashboard/panels/<panel>/` | HTMX | Panel refresh (requires HX-Request header) |
 | `POST /dashboard/sync/` | — | Trigger followup sync |
-| `POST /dashboard/git-pull/` | — | Pull teatree + all overlay repos; aborts on conflict, auto-switches stale branches |
+| `POST /dashboard/git-pull/` | — | Pull teatree + all overlay repos; aborts on conflict, auto-switches stale branches; per-repo `changed` flag triggers a client-side hard reload |
 | `GET /dashboard/switch-branch/` | JSON | List local branches + current branch |
 | `POST /dashboard/switch-branch/` | JSON | Switch teatree repo to specified branch (uvicorn auto-reloads) |
 | `POST /dashboard/launch-terminal/` | — | Open a terminal session |
