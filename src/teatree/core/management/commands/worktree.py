@@ -19,7 +19,7 @@ from django_typer.management import TyperCommand, command
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay import OverlayBase
 from teatree.core.overlay_loader import get_overlay
-from teatree.core.readiness import run_probes
+from teatree.core.readiness import run_and_report_probes
 from teatree.core.resolve import resolve_worktree
 from teatree.core.runners import (
     WorktreeProvisionRunner,
@@ -167,20 +167,16 @@ class Command(TyperCommand):
         """Run overlay readiness probes; raise SystemExit(1) on any failure.
 
         Shared by ``start``, ``verify``, ``ready`` so all three honor the same
-        runtime health gate. ``start`` and ``verify`` cannot return success
-        when the started/healthy services are silently broken (raw
-        translations, missing CORS headers, fixture-seed integrity).
+        runtime health gate. Returns success when the overlay has no probes
+        (the empty list is itself a valid contract).
         """
         probes = overlay.get_readiness_probes(worktree)
         if not probes:
             self.stdout.write("  No readiness probes defined for this overlay.")
             return
-        results = run_probes(probes)
-        for r in results:
-            self.stdout.write(f"  {r.format()}")
-        failures = [r for r in results if not r.passed]
-        if failures:
-            self.stderr.write(f"  {len(failures)} of {len(results)} probe(s) failed")
+        summary = run_and_report_probes(probes, write_line=self.stdout.write, indent="  ")
+        if summary.failures:
+            self.stderr.write(f"  {summary.failures} of {summary.total} probe(s) failed")
             raise SystemExit(1)
 
     @command()
