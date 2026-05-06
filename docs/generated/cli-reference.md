@@ -28,6 +28,7 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │ assess          Codebase health assessment.                                  │
 │ overlay         Dev-mode overlay install/uninstall.                          │
 │ infra           Teatree-wide infrastructure services.                        │
+│ loop            Manage the long-lived fat loop.                              │
 │ teatree         Commands for the t3-teatree overlay.                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -883,6 +884,79 @@ Usage: t3 infra redis down [OPTIONS]
 Usage: t3 infra redis status [OPTIONS]
 
  Print the shared Redis container status.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+### `t3 loop`
+
+```
+Usage: t3 loop [OPTIONS] COMMAND [ARGS]...
+
+ Manage the long-lived fat loop.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ tick    Run one tick: scan in parallel, dispatch, render statusline.         │
+│ status  Show the loop's last-rendered statusline.                            │
+│ start   Register the fat loop with the active Claude Code session.           │
+│ stop    Print the slot id to stop in the Claude Code session.                │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 loop tick`
+
+```
+Usage: t3 loop tick [OPTIONS]
+
+ Run one tick: scan in parallel, dispatch, render statusline.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --statusline-file        PATH  Override the statusline output path (test     │
+│                                hook).                                        │
+│ --json                         Emit the tick report as JSON.                 │
+│ --help                         Show this message and exit.                   │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 loop status`
+
+```
+Usage: t3 loop status [OPTIONS]
+
+ Show the loop's last-rendered statusline.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 loop start`
+
+```
+Usage: t3 loop start [OPTIONS]
+
+ Register the fat loop with the active Claude Code session.
+
+ The actual ``/loop`` registration is environment-specific — this
+ command emits the slot definition the user pastes into the Claude
+ Code session's loop register.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 loop stop`
+
+```
+Usage: t3 loop stop [OPTIONS]
+
+ Print the slot id to stop in the Claude Code session.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │

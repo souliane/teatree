@@ -6,7 +6,7 @@ If the entire `src/` and `tests/` tree were deleted, this document alone — plu
 
 **Change policy:** Every code change to teatree must be reflected here. Before modifying this file, always ask the user for approval — this is the source of truth and the user validates every change.
 
-**Status:** This BLUEPRINT describes the **target** architecture under issue [#541](https://github.com/souliane/teatree/issues/541). Phases 1–3 and Phase 3.6 are done in the active branch — the statusline file is the persistent UI surface; the HTML dashboard, ttyd web terminal, ASGI/uvicorn scaffolding, and platform autostart helpers are gone; the code-host + messaging Protocols are unified, with `SlackBotBackend`/`NoopMessagingBackend` selectable via overlay config; and `t3 setup slack-bot --overlay <name>` walks the user through Slack app registration. Phases 4–5 (fat loop + scanners, slim headless executor) ship in the same PR. When this BLUEPRINT and the code disagree on later phases, treat this file as the destination, not the present.
+**Status:** This BLUEPRINT describes the **target** architecture under issue [#541](https://github.com/souliane/teatree/issues/541). Phases 1–4 and Phase 3.6 are done in the active branch — the statusline file is the persistent UI surface; the HTML dashboard, ttyd web terminal, ASGI/uvicorn scaffolding, and platform autostart helpers are gone; the code-host + messaging Protocols are unified, with `SlackBotBackend`/`NoopMessagingBackend` selectable via overlay config; `t3 setup slack-bot --overlay <name>` walks the user through Slack app registration; and the fat loop + 7 scanners + dispatcher are wired through `t3 loop tick`. Phase 5 (slim headless executor) ships in the same PR. When this BLUEPRINT and the code disagree on later phases, treat this file as the destination, not the present.
 
 ---
 
@@ -470,7 +470,7 @@ Each tick runs three stages:
 | `slack_mentions` | New `app_mention` events and DMs from the active overlay's `MessagingBackend`. | Reply inline when answerable from session context; otherwise ack with 👀 and surface in statusline. |
 | `notion_view` | Notion items assigned to me with no code-host reference field set. | Trigger the existing n8n webhook so the code-host issue is created with project routing + templating. Read-only with respect to Notion. |
 | `assigned_issues` | Open issues assigned to me on a configured code host that have reached "ready to work" state. | Create the `Ticket` + worktrees; the ticket FSM's `start()` transition then handles the rest (the orchestrator phase agent picks up coding when the worktrees are provisioned). |
-| `pending_tasks` | `Task` rows in `pending` state. | Run via the headless executor (§ 5.2), which dispatches to the appropriate phase agent. |
+| `pending_tasks` | `Task` rows in `pending` state. | Run via the headless executor (§ 5.2), which dispatches to the appropriate phase agent. The Django `Task` model is resolved lazily through `apps.get_model("core", "Task")` so the scanner module is importable before `django.setup()` runs (the CLI imports the loop subapp at startup). |
 
 **Why pure-Python scanners (not subagents):** the scan stage is deterministic I/O — fetch PR statuses, fetch mentions, query the DB. Modeling it as a Claude agent would burn tokens for work a typed Python function does cheaper, more reliably, and with reproducible tests. Claude is invoked only when judgment is needed (review the diff, decide the fix, draft a reply); for that, the loop calls the existing phase agents.
 
