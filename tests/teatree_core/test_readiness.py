@@ -17,6 +17,7 @@ from teatree.core.readiness import (
     ProbeResult,
     command_probe,
     http_probe,
+    run_and_report_probes,
     run_probes,
 )
 
@@ -261,3 +262,27 @@ class TestRunProbes:
         ]
         results = run_probes(probes)
         assert [r.passed for r in results] == [True, False]
+
+
+class TestRunAndReportProbes:
+    def test_empty_input_writes_nothing_and_returns_zero_summary(self) -> None:
+        lines: list[str] = []
+        summary = run_and_report_probes([], write_line=lines.append)
+        assert lines == []
+        assert (summary.total, summary.failures) == (0, 0)
+
+    def test_writes_each_result_with_indent(self) -> None:
+        probes = [
+            Probe(name="ok", description="d", check_fn=lambda: ProbeResult(name="ok", passed=True, reason="200")),
+            Probe(name="bad", description="d", check_fn=lambda: ProbeResult(name="bad", passed=False, reason="nope")),
+        ]
+        lines: list[str] = []
+        summary = run_and_report_probes(probes, write_line=lines.append, indent="  ")
+        assert lines == ["  [OK] ok — 200", "  [FAIL] bad — nope"]
+        assert (summary.total, summary.failures) == (2, 1)
+
+    def test_default_indent_is_empty(self) -> None:
+        probes = [Probe(name="ok", description="d", check_fn=lambda: ProbeResult(name="ok", passed=True))]
+        lines: list[str] = []
+        run_and_report_probes(probes, write_line=lines.append)
+        assert lines == ["[OK] ok"]
