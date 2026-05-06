@@ -19,6 +19,7 @@ import os
 import re
 import subprocess  # noqa: S404
 import sys
+import tempfile
 from pathlib import Path
 
 STATE_DIR = Path(
@@ -514,19 +515,18 @@ def handle_read_dedup(data: dict) -> None:
 
 
 _T3_TEMP_PREFIX = "t3-snapshot-"
+_TMP_DIR = Path(tempfile.gettempdir())
 
 
 def _find_temp_files(session_id: str) -> list[Path]:
-    """Find t3 temp files for this session in STATE_DIR and /tmp."""
+    """Find t3 temp files for this session in STATE_DIR and _TMP_DIR."""
     results: list[Path] = []
     session_glob = f"{_T3_TEMP_PREFIX}{session_id}-*.md"
-    for search_dir in (STATE_DIR, Path("/tmp")):  # noqa: S108
+    for search_dir in (STATE_DIR, _TMP_DIR):
         if search_dir.is_dir():
             results.extend(sorted(search_dir.glob(session_glob)))
-    # Also pick up any sessionless t3-snapshot files in /tmp (legacy retro pattern)
-    tmp = Path("/tmp")  # noqa: S108
-    if tmp.is_dir():
-        for f in sorted(tmp.glob(f"{_T3_TEMP_PREFIX}*.md")):
+    if _TMP_DIR.is_dir():
+        for f in sorted(_TMP_DIR.glob(f"{_T3_TEMP_PREFIX}*.md")):
             if f not in results:
                 results.append(f)
     return results
