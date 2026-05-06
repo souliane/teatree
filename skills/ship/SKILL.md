@@ -236,6 +236,27 @@ If a sibling is open, **do not open a second MR targeting the default branch** �
 
 **Past failure (#140 / PRs #427 + #436):** Both PRs touched `README.md`, `BLUEPRINT.md`, `src/teatree/core/*` and ran in parallel against `main`. When #427 squash-merged first, #436 inherited an unsynced merge base and required a full 3-way conflict resolution. Opening #436 as a stacked PR with `--base ac/teatree-#140-initial-ship` would have avoided every conflict.
 
+### Also sweep by content for ticketless PRs (Non-Negotiable)
+
+The ticket-ref query above misses **retro fixes, skill edits, and other PRs without a ticket reference**. Before opening any such PR, also run a content sweep against open and recently-merged PRs on the same repo and look for overlap on title keywords or touched files:
+
+```bash
+# Open PRs (parallel work in flight)
+gh pr list --repo <repo> --state open --json number,title,headRefName
+
+# Recently-merged PRs (work that landed minutes ago — same risk)
+gh pr list --repo <repo> --state merged --limit 10 --json number,title,mergedAt
+```
+
+Match against:
+
+- **Title keywords** that overlap with the about-to-be-pushed PR's title (e.g., "rules", "worktree", "anti-fabrication"). Synonyms count.
+- **Touched files** that overlap with `git diff --name-only origin/main..HEAD` on the local branch — for skill PRs especially, multiple agents/users converge on the same `skills/<topic>/SKILL.md` file.
+
+Treat a hit on either signal as a sibling and apply the same options (wait, stack, or bundle per `## Bundle Into an Existing Open PR` below). If the hit is in the recently-merged list, run `git fetch origin main && git log origin/main..HEAD` — if the local diff is now empty, abandon the branch instead of pushing an empty PR.
+
+**Past failure (2026-05-05, PR [#509](https://github.com/souliane/teatree/pull/509)):** Agent opened #509 with two retro findings (grep cross-ref rule + pre-commit worktree check) without sweeping. The user had merged the same two findings via [#507](https://github.com/souliane/teatree/pull/507) and [#508](https://github.com/souliane/teatree/pull/508) in parallel, minutes before #509 landed. #509 squash-merged as an empty diff — wasted CI on lint/test/e2e jobs and added an empty merge commit to history.
+
 ## Bundle Into an Existing Open PR
 
 When a session uncovers a small unique commit on a now-stale branch (typical during cleanup or retro), and opening a dedicated PR for that one commit would be more ceremony than the change deserves, **bundle it into a sibling open PR** instead. This trades a little PR-scope discipline for delivery speed.
