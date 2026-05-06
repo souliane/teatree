@@ -271,7 +271,6 @@ repos:
           - fix
           - perf
           - refactor
-          - relax
           - revert
           - style
           - test
