@@ -12,6 +12,8 @@ from urllib.parse import quote
 import httpx
 from playwright.sync_api import Page, Route, expect
 
+from e2e._dashboard_helpers import wait_for_dashboard_idle, wait_for_sessions
+
 
 def test_task_detail_modal_opens(e2e_server: str, page: Page, django_db_blocker) -> None:
     """Click a Task button in the unified-sessions panel; modal populates with task fields.
@@ -22,8 +24,10 @@ def test_task_detail_modal_opens(e2e_server: str, page: Page, django_db_blocker)
     from teatree.core.models import Task
 
     page.goto(e2e_server)
-    # Wait for the unified sessions HTMX panel to load (renders Task buttons).
-    page.locator("#unified-sessions-grid").wait_for(state="visible")
+    # Wait for HTMX to settle and the unified-sessions panel to render — Task
+    # buttons inside live in there. Without the idle gate the click can land
+    # on a node about to be discarded by HTMX's load swap.
+    wait_for_sessions(page)
 
     with django_db_blocker.unblock():
         task = Task.objects.filter(execution_target="interactive").first()
@@ -120,6 +124,7 @@ def test_launch_terminal_flow(e2e_server: str, page: Page) -> None:
         "window.__opens = []; window.open = (u, t) => { window.__opens.push(u); return null; };",
     )
     page.reload()  # re-run init script after route is set
+    wait_for_dashboard_idle(page)
     page.locator("button.split-main", has_text="Terminal").first.click()
     # Wait for the captured POST to land.
     page.wait_for_function("window.__opens && window.__opens.length > 0", timeout=5000)
@@ -144,6 +149,8 @@ def test_launch_agent_headless(e2e_server: str, page: Page, django_db_blocker) -
 
     page.goto(e2e_server)
     page.on("dialog", lambda dialog: dialog.accept())
+    # Headless buttons live inside the HTMX-loaded sessions panel.
+    wait_for_sessions(page)
     page.locator("button", has_text="Headless").first.click()
     # Give the synchronous task backend time to record the attempt.
     page.wait_for_timeout(1500)
