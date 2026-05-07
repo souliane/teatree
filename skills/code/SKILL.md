@@ -127,6 +127,45 @@ Any frontend change that affects UI behavior (new fields, form logic, visibility
 - Stay in `t3:code` for TDD, implementation-time tests, and feature-building.
 - Switch to `/t3:test` when the work becomes broader verification, E2E orchestration, CI failure analysis, test-plan writing, or MR evidence posting.
 
+### 5c. Mass-Rename / Cross-Cutting Refactor Verification (Non-Negotiable)
+
+When the task is a rename, type-renaming, key-renaming, or any refactor that should remove **every occurrence** of an old name across the repo, the agent **must not declare "done" on the strength of a single grep iteration**. souliane/teatree#545's MR→PR rename produced four false-completion claims in a row (test files missed, single-quoted `'mrs'` missed, error message strings missed, `_infer_state_from_mrs` class name missed) because each pass was driven by a narrow grep that didn't cover all the surface forms.
+
+**Before claiming a rename is finished, run an exhaustive sweep that covers every surface form the old name can take:**
+
+1. **Plain occurrences across all file types**, not just `.py`:
+
+   ```bash
+   rg -n --hidden --no-ignore -g '!{.git,node_modules,.venv,*.pyc,*.lock}' '<OLD_NAME>'
+   ```
+
+   Run from the repo root, not from a sub-directory — sub-directory greps miss `tests/`, `docs/`, `skills/`, `agents/`, top-level `BLUEPRINT.md`/`README.md`, and CI configs.
+
+2. **Quote-variant fan-out** when the name appears in dict keys, error strings, or fixture data:
+
+   ```bash
+   rg -n "['\"]<OLD_NAME>['\"]"     # 'mrs' AND "mrs"
+   rg -n "\.<OLD_NAME>\b"           # attribute access (.mrs)
+   rg -n "\[['\"]<OLD_NAME>['\"]\]" # subscript access (['mrs'])
+   ```
+
+3. **Compound and CamelCase forms** — the old name may be embedded:
+
+   ```bash
+   # If renaming MergeRequest → PullRequest, also catch MR/MREntry/_check_mr/list_open_mrs/MergeRequestSpec
+   rg -ni '\b(<OLD_SHORT>|<OLD_LONG>|<OLD_VARIANT_1>|<OLD_VARIANT_2>)\b'
+   ```
+
+   Build the variant list explicitly at the start of the rename — don't discover them mid-flight one at a time.
+
+4. **Migration data and JSON keys**: when the old name lives in `Ticket.extra`, fixture JSON, OpenAPI specs, or other serialised data, the rename needs a data migration **and** a grep of every fixture/test JSON for the old key.
+
+5. **Sibling repos in `$T3_WORKSPACE_DIR`**: a rename of a public symbol that crosses a service boundary (a Pydantic model, an API field name, a wire format, a published Protocol) must be greped in every consumer repo too. Don't ship the producer's rename without verifying the consumers.
+
+**The verification gate:** rerun the full sweep with `rg --count` and confirm **zero hits** for every surface form before marking the task complete. A non-zero count means the rename is not done — paste the remaining hits into the response and keep going. "I think I got them all" is not a verification result; `rg --count` is.
+
+**This rule complements `verification-before-completion`** (no completion claim without fresh evidence in the same response). The mass-rename case is the variant where a single command's output isn't enough — you need *zero hits across N variant queries* as the receipt.
+
 ### 6. Quality Gates During Development
 
 - **When adding a prek hook, check for CI duplication.** After adding a new hook to `.pre-commit-config.yaml`, grep the repo's `.gitlab-ci.yml` (or equivalent) for any job that runs the same script directly. If found, remove the standalone CI job — having the check run twice wastes CI time and creates maintenance confusion. One source of truth: prek.

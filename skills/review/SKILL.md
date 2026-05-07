@@ -41,6 +41,18 @@ Both self-review and external review cycles.
 
 ## Workflows
 
+### Spawn the t3:reviewer Sub-Agent Before Pushing (Non-Negotiable)
+
+**Self-review by the implementing conversation never satisfies the shipping gate's `reviewing` phase.** The implementer's context carries every "looks done" blind spot that allowed the gap in the first place — that is exactly what produced souliane/teatree#545's six rounds of follow-up review fixes (missed renames, broken tests, undocumented contract changes, bypassed FSM). The corrective is an independent sub-agent that hasn't seen the implementation conversation.
+
+**The only sanctioned path** to advancing a ticket from `TESTED → REVIEWED` is:
+
+1. Spawn the `t3:reviewer` sub-agent from the main conversation via the `Agent` tool. The full Agent invocation snippet, FSM transition mechanics, and "drive transitions, not visit phases" rules live in [`../ship/SKILL.md`](../ship/SKILL.md) § "Review Gate" — that section is the source of truth.
+2. Apply every finding the sub-agent surfaces. Reviewer agents are read-only; the implementing conversation owns the edits.
+3. Drive the FSM `review` transition (by completing the reviewing task, which auto-fires `ticket.review()`). **Never** use `t3 <overlay> lifecycle visit-phase reviewing` as a substitute — it writes the session record without advancing the FSM, leaving `Ticket.state` stuck at `TESTED`.
+
+The "Self-Review Before Finalization" workflow below is a **complement** to the sub-agent pass, not a replacement. Run it first to catch the obvious things, then spawn the reviewer.
+
 ### Self-Review Before Finalization
 
 **Review ALL diverging code**, not just the last commit:
