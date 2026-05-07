@@ -6,7 +6,7 @@ If the entire `src/` and `tests/` tree were deleted, this document alone — plu
 
 **Change policy:** Every code change to teatree must be reflected here. Before modifying this file, always ask the user for approval — this is the source of truth and the user validates every change.
 
-**Status:** This BLUEPRINT is the **current** architecture under issue [#541](https://github.com/souliane/teatree/issues/541). All eight phases have shipped on the active branch — the statusline file is the persistent UI surface; the HTML dashboard, ttyd web terminal, ASGI/uvicorn scaffolding, and platform autostart helpers are gone; the code-host + messaging Protocols are unified, with `SlackBotBackend`/`NoopMessagingBackend` selectable via overlay config; `t3 setup slack-bot --overlay <name>` walks the user through Slack app registration; the fat loop + 7 scanners + dispatcher are wired through `t3 loop tick`; the headless executor is the deliberately-slim `claude -p` swap point for a future Anthropic SDK runtime; and the no-overlay-leak gate keeps the platform tenant-agnostic.
+**Status:** This BLUEPRINT is the **current** architecture under issue [#541](https://github.com/souliane/teatree/issues/541). Phases 0-6 and 8 have shipped on the active branch; phase 7 (ticket dispositions — close superseded issues/PRs) is deferred to a follow-up. The statusline file is the persistent UI surface; the HTML dashboard, ttyd web terminal, ASGI/uvicorn scaffolding, and platform autostart helpers are gone; the code-host + messaging Protocols are unified, with `SlackBotBackend`/`NoopMessagingBackend` selectable via overlay config; `t3 setup slack-bot --overlay <name>` walks the user through Slack app registration; the fat loop + 6 scanners + dispatcher are wired through `t3 loop tick` (review-channel scanning is folded into the dispatcher's PR-URL detection); the headless executor is the deliberately-slim `claude -p` swap point for a future Anthropic SDK runtime; and the no-overlay-leak gate keeps the platform tenant-agnostic.
 
 ---
 
@@ -458,7 +458,7 @@ Each tick runs three stages:
 
 1. **Scan** — pure-Python scanners under `teatree.loop.scanners` collect signals from external sources in parallel. Scanners are deterministic, mockable, and fully covered by integration tests against stubbed backends. They never invoke Claude.
 2. **Dispatch** — the tick decides what each signal means and either acts inline (mechanical fix-and-push, n8n webhook trigger, statusline note) or delegates to one of the seven phase agents shipped with the plugin (§ 11.2). Phase agents are invoked via the standard Task tool the same way `t3:orchestrator` invokes them today; the loop is just one more caller.
-3. **Render** — `teatree.loop.statusline.render` writes `~/.teatree/statusline.txt` with three zones (§ 5.6.1).
+3. **Render** — `teatree.loop.statusline.render` writes `${XDG_DATA_HOME:-$HOME/.local/share}/teatree/statusline.txt` (or `$TEATREE_STATUSLINE_FILE` when set) with three zones (§ 5.6.1).
 
 **Scanners (`teatree.loop.scanners.*`):**
 
@@ -953,7 +953,7 @@ privacy = "strict"
 | Setting | Type | Purpose |
 |---------|------|---------|
 | `TEATREE_HEADLESS_RUNTIME` | str | Runtime for headless tasks (default: "claude-code") |
-| `TEATREE_CLAUDE_STATUSLINE_STATE_DIR` | str | Directory for the loop's rendered statusline file (default: `~/.teatree/`) |
+| `TEATREE_CLAUDE_STATUSLINE_STATE_DIR` | str | Directory for Claude Code's per-session statusline state files used by `agents/handover.py` (default: `/tmp/claude-statusline`). Distinct from the loop's rendered statusline file — see env var `TEATREE_STATUSLINE_FILE` below. |
 | `TEATREE_EDITABLE` | bool | Declare teatree is editable (verified by `t3 doctor check`) |
 | `OVERLAY_EDITABLE` | bool | Declare overlay is editable (verified by `t3 doctor check`) |
 
@@ -1475,8 +1475,8 @@ Dev dependencies: ruff, pytest, pytest-cov, pytest-django, ty, import-linter, pr
 - **Port allocation is ephemeral (Non-Negotiable).** Ports are allocated at `worktree start` via `find_free_ports()` (file-locked in `teatree.utils.ports`), passed as env vars to `docker compose`, and discovered at runtime via `docker compose port`. Ports are **never** written to `.env.worktree`, the database, or any other persistent store. Docker services are discoverable via `docker compose port` (single source of truth). Host-process services (e.g. frontend dev servers) use the allocated port directly.
 - Coverage omits only migrations. Everything else must be covered.
 - `claude -p` is headless (exits immediately). The user's interactive session running `/loop` is the only persistent Claude Code session.
-- Statusline state is rendered to a file (`~/.teatree/statusline.txt`) by the loop and `cat`-ed by the hook — the hook itself does no DB or network I/O.
-- Overlay-specific names (customer, tenant, product) **must not appear** in `src/teatree/` or `docs/`. Phase 8 lands a CI grep gate to enforce this.
+- Statusline state is rendered to a file (`${XDG_DATA_HOME:-$HOME/.local/share}/teatree/statusline.txt`, override via `TEATREE_STATUSLINE_FILE`) by the loop and `cat`-ed by the hook — the hook itself does no DB or network I/O. The file lives under XDG data, not `~/.teatree` (which is the user's shell config file, not a directory).
+- Overlay-specific names (customer, tenant, product) **must not appear** in `src/teatree/` or `docs/`. The CI grep gate (`scripts/hooks/check_no_overlay_leak.py`) enforces this — forbidden terms are loaded at runtime from `$TEATREE_OVERLAY_LEAK_TERMS` or `~/.teatree.toml` `[overlay_leak].terms` so the public repo never holds tenant names.
 - E2E tests (when overlays declare them) use file-based SQLite (not `:memory:`) because Playwright spawns a separate server process.
 
 ## Module Dependency Graph

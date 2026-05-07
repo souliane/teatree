@@ -221,6 +221,18 @@ This gate exists because the CI `validate_mr_title_and_description` job fails on
 
 > **PreToolUse hook:** A `validate-mr-metadata.sh` hook automatically intercepts MR create/update commands in project repos. It validates the title and description first line against the release-notes format rules and **blocks** non-compliant calls with a clear error. Fix the reported issues and retry — no manual validation needed.
 
+### 5b. Multi-Phase PRs Must Name Every Phase in the Title (Non-Negotiable)
+
+When a PR ships work spanning more than one numbered phase of an issue (e.g. `phase 3` of an 8-phase rewrite), the title MUST list every phase the diff covers — not only the lead phase. A reviewer must be able to read the title and know exactly what scope to expect.
+
+- Single phase: `feat(scope): <subject> (#NNN phase 3)` — fine.
+- Bundled phases: `feat(scope): <subject> (#NNN phases 1-6 + 8)` — preferred range form.
+- Non-contiguous: `feat(scope): <subject> (#NNN phases 2, 3, 8)` — explicit list.
+
+**Why:** A title that says "phase 3" while the diff also demolishes the dashboard (phase 2), adds the statusline file (phase 1), introduces the loop scaffolding (phase 4), and lands the no-leak gate (phase 8) is misleading. Reviewers gate their attention by title; mis-titling forces them to discover scope from the diff, which is the slow path. Past failure: PR #543 advertised "phase 3" but bundled phases 1, 2, 3, 3.6, 4, 5, 6, 8.
+
+**How to apply:** before creating the PR, list the commits and decide which phase each commit belongs to. If the answer covers more than one phase, use the bundled form. The same rule applies when a description says "phase X" — the description's first line must match the title.
+
 ### 6. Monitor Pipeline
 
 - Background polling for pipeline status.

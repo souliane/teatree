@@ -5,14 +5,14 @@ from django.utils import timezone
 from django_fsm import FSMField, transition
 
 
-class MergeRequest(models.Model):
+class PullRequest(models.Model):
     class State(models.TextChoices):
         OPEN = "open", "Open"
         REVIEW_REQUESTED = "review_requested", "Review requested"
         APPROVED = "approved", "Approved"
         MERGED = "merged", "Merged"
 
-    ticket = models.ForeignKey("core.Ticket", on_delete=models.CASCADE, related_name="merge_requests")
+    ticket = models.ForeignKey("core.Ticket", on_delete=models.CASCADE, related_name="pull_requests")
     overlay = models.CharField(max_length=255, blank=True)
     url = models.URLField(max_length=500)
     repo = models.CharField(max_length=255)
@@ -22,11 +22,11 @@ class MergeRequest(models.Model):
     state = FSMField(max_length=32, choices=State.choices, default=State.OPEN)
 
     class Meta:
-        db_table = "teatree_merge_request"
+        db_table = "teatree_pull_request"
         constraints: ClassVar = [
             models.UniqueConstraint(
                 fields=["url"],
-                name="unique_merge_request_url",
+                name="unique_pull_request_url",
             ),
         ]
 

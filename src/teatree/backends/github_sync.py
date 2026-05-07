@@ -55,7 +55,7 @@ class GitHubSyncBackend(SyncBackend):
         }
 
         for item in items:
-            result.mrs_found += 1
+            result.prs_found += 1
             state = status_map.get(item.status, Ticket.State.NOT_STARTED)
             extra: RawAPIDict = {
                 "issue_title": item.title,

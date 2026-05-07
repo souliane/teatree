@@ -232,8 +232,8 @@ class Command(TyperCommand):
         ``ticket_id`` accepts the internal DB pk, the full issue URL, or the
         bare issue number (resolved against ``Ticket.issue_url``).
 
-        ``--title`` overrides the MR title (default: last commit subject).
-        Stored on ``ticket.extra['mr_title_override']`` so the worker reads it.
+        ``--title`` overrides the PR title (default: last commit subject).
+        Stored on ``ticket.extra['pr_title_override']`` so the worker reads it.
         """
         ticket = _resolve_ticket(ticket_id)
         worktree = ticket.worktrees.first()  # ty: ignore[unresolved-attribute]
@@ -257,7 +257,7 @@ class Command(TyperCommand):
         with transaction.atomic():
             if title:
                 extra = cast("TicketExtra", ticket.extra or {})
-                extra["mr_title_override"] = title
+                extra["pr_title_override"] = title
                 ticket.extra = extra
             ticket.ship()
             ticket.save()

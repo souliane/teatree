@@ -1,4 +1,4 @@
-"""Slack review-permalink sync — attach review channel links to in-flight MRs."""
+"""Slack review-permalink sync — attach review channel links to in-flight PRs."""
 
 import logging
 
@@ -12,34 +12,34 @@ from teatree.core.sync import SyncResult
 logger = logging.getLogger(__name__)
 
 
-def _collect_reviewable_mr_urls() -> tuple[list[str], dict[str, tuple[Ticket, str]]]:
-    mr_urls: list[str] = []
+def _collect_reviewable_pr_urls() -> tuple[list[str], dict[str, tuple[Ticket, str]]]:
+    pr_urls: list[str] = []
     url_to_ticket: dict[str, tuple[Ticket, str]] = {}
     for ticket in Ticket.objects.in_flight():
         extra = ticket.extra if isinstance(ticket.extra, dict) else {}
-        mrs = extra.get("mrs", {})
-        if not isinstance(mrs, dict):
+        prs = extra.get("prs", {})
+        if not isinstance(prs, dict):
             continue
-        for mr_url, mr in mrs.items():
-            if not isinstance(mr, dict) or mr.get("draft") or mr.get("review_permalink"):
+        for pr_url, pr in prs.items():
+            if not isinstance(pr, dict) or pr.get("draft") or pr.get("review_permalink"):
                 continue
-            clean_url = mr_url.rstrip("/").split("#")[0]
-            mr_urls.append(clean_url)
-            url_to_ticket[clean_url] = (ticket, mr_url)
-    return mr_urls, url_to_ticket
+            clean_url = pr_url.rstrip("/").split("#")[0]
+            pr_urls.append(clean_url)
+            url_to_ticket[clean_url] = (ticket, pr_url)
+    return pr_urls, url_to_ticket
 
 
-def _apply_match(ticket: Ticket, mr_url: str, permalink: str, channel: str) -> bool:
+def _apply_match(ticket: Ticket, pr_url: str, permalink: str, channel: str) -> bool:
     extra = ticket.extra if isinstance(ticket.extra, dict) else {}
-    mrs = extra.get("mrs", {})
-    if not isinstance(mrs, dict):
+    prs = extra.get("prs", {})
+    if not isinstance(prs, dict):
         return False
-    mr = mrs.get(mr_url)
-    if not isinstance(mr, dict):
+    pr = prs.get(pr_url)
+    if not isinstance(pr, dict):
         return False
-    mr["review_permalink"] = permalink
-    mr["review_channel"] = channel
-    extra["mrs"] = mrs
+    pr["review_permalink"] = permalink
+    pr["review_channel"] = channel
+    extra["prs"] = prs
     ticket.extra = extra
     ticket.save(update_fields=["extra"])
     return True
@@ -52,8 +52,8 @@ def fetch_review_permalinks(result: SyncResult) -> None:
     if not token or not channel_id:
         return
 
-    mr_urls, url_to_ticket = _collect_reviewable_mr_urls()
-    if not mr_urls:
+    pr_urls, url_to_ticket = _collect_reviewable_pr_urls()
+    if not pr_urls:
         return
 
     try:
@@ -62,7 +62,7 @@ def fetch_review_permalinks(result: SyncResult) -> None:
                 token=token,
                 channel_id=channel_id,
                 channel_name=channel_name,
-                mr_urls=mr_urls,
+                pr_urls=pr_urls,
             )
         )
     except (httpx.HTTPError, RuntimeError, ValueError) as exc:
@@ -70,6 +70,6 @@ def fetch_review_permalinks(result: SyncResult) -> None:
         return
 
     for match in matches:
-        ticket, mr_url = url_to_ticket[match.mr_url]
-        if _apply_match(ticket, mr_url, match.permalink, match.channel):
+        ticket, pr_url = url_to_ticket[match.pr_url]
+        if _apply_match(ticket, pr_url, match.permalink, match.channel):
             result.reviews_synced += 1

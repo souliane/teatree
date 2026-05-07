@@ -101,7 +101,7 @@ def test_list_my_prs_delegates_to_client_list_all_open_mrs() -> None:
 
     assert len(result) == 2
     assert result[0]["iid"] == 1
-    client.list_all_open_mrs.assert_called_once_with("adrien")
+    client.list_all_open_mrs.assert_called_once_with("adrien", updated_after=None)
 
 
 def test_list_my_prs_returns_empty_when_no_mrs() -> None:
@@ -120,7 +120,7 @@ def test_list_review_requested_prs_delegates_to_client() -> None:
     result = host.list_review_requested_prs(reviewer="adrien")
 
     assert result == [{"iid": 5, "title": "MR 5"}]
-    client.list_open_mrs_as_reviewer.assert_called_once_with("adrien")
+    client.list_open_mrs_as_reviewer.assert_called_once_with("adrien", updated_after=None)
 
 
 def test_list_assigned_issues_delegates_to_client() -> None:

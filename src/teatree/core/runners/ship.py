@@ -41,7 +41,7 @@ def overlay_mr_labels() -> list[str]:
 
 
 class ShipExecutor(RunnerBase):
-    """Push the worktree branch and open the merge request.
+    """Push the worktree branch and open the pull request.
 
     Runs inside ``execute_ship`` after the FSM advances to ``SHIPPED``. The
     worker calls ``request_review()`` on success to advance to ``IN_REVIEW``.
@@ -53,7 +53,7 @@ class ShipExecutor(RunnerBase):
     def run(self) -> RunnerResult:
         ticket = self.ticket
         extra = cast("TicketExtra", ticket.extra or {})
-        existing_urls = list(extra.get("mr_urls") or [])
+        existing_urls = list(extra.get("pr_urls") or [])
         if existing_urls:
             return RunnerResult(ok=True, detail=existing_urls[-1])
 
@@ -71,10 +71,10 @@ class ShipExecutor(RunnerBase):
         git.push(repo=repo_path, remote="origin", branch=branch)
 
         spec = self._build_pr_spec(ticket, host, repo_path, branch, extra)
-        mr = host.create_pr(spec)
-        url = str(mr.get("web_url") or mr.get("html_url") or "")
-        self._record_mr_url(ticket, extra, url)
-        logger.info("Ship executor pushed %s and opened MR %s", branch, url)
+        pr = host.create_pr(spec)
+        url = str(pr.get("web_url") or pr.get("html_url") or "")
+        self._record_pr_url(ticket, extra, url)
+        logger.info("Ship executor pushed %s and opened PR %s", branch, url)
         return RunnerResult(ok=True, detail=url)
 
     @staticmethod
@@ -85,7 +85,7 @@ class ShipExecutor(RunnerBase):
         branch: str,
         extra: "TicketExtra",
     ) -> PullRequestSpec:
-        title_override = str(extra.get("mr_title_override") or "")
+        title_override = str(extra.get("pr_title_override") or "")
         subject, body = git.last_commit_message(repo=repo_path)
         title = title_override or subject or f"Resolve {ticket.issue_url}"
         raw_description = f"{subject}\n\n{body}" if subject and body else (subject or body)
@@ -101,11 +101,11 @@ class ShipExecutor(RunnerBase):
         )
 
     @staticmethod
-    def _record_mr_url(ticket: "Ticket", extra: "TicketExtra", url: str) -> None:
-        urls = list(extra.get("mr_urls") or [])
+    def _record_pr_url(ticket: "Ticket", extra: "TicketExtra", url: str) -> None:
+        urls = list(extra.get("pr_urls") or [])
         if url and url not in urls:
             urls.append(url)
-        extra["mr_urls"] = urls
-        extra.pop("mr_title_override", None)
+        extra["pr_urls"] = urls
+        extra.pop("pr_title_override", None)
         ticket.extra = extra
         ticket.save(update_fields=["extra"])

@@ -1,7 +1,8 @@
-"""Sync external data (MRs/PRs, issues, project boards) into the local database.
+"""Sync external data (PRs, issues, project boards) into the local database.
 
 Dispatches to the appropriate backend (GitLab or GitHub) based on the
-active overlay's configuration.
+active overlay's configuration. "PR" is the canonical term in core; the
+GitLab backend translates to MR internally.
 """
 
 import logging
@@ -14,20 +15,20 @@ PENDING_REVIEWS_CACHE_KEY = "teatree_pending_reviews"
 # Type aliases for untyped external data (GitLab/GitHub API responses)
 # and serialized internal data stored in JSONFields.
 type RawAPIDict = dict[str, object]
-type MREntryDict = dict[str, object]
+type PREntryDict = dict[str, object]
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
 class SyncResult:
-    mrs_found: int = 0
+    prs_found: int = 0
     issues_found: int = 0
     tickets_created: int = 0
     tickets_updated: int = 0
     labels_fetched: int = 0
-    mrs_merged: int = 0
-    mrs_closed: int = 0
+    prs_merged: int = 0
+    prs_closed: int = 0
     reviews_synced: int = 0
     worktrees_cleaned: int = 0
     errors: list[str] = field(default_factory=list)
@@ -43,7 +44,7 @@ class DiscussionSummary:
 
 
 @dataclass(slots=True)
-class MREntry:
+class PREntry:
     url: str
     title: str
     branch: str
@@ -51,7 +52,7 @@ class MREntry:
     repo: str
     iid: int
     updated_at: str
-    state: str = "opened"  # opened | closed | merged | locked — from the upstream MR API
+    state: str = "opened"  # opened | closed | merged | locked — from the upstream PR API
     pipeline_status: str | None = None
     pipeline_url: str | None = None
     approvals: RawAPIDict | None = None
@@ -68,8 +69,8 @@ class MREntry:
     approvals_dismissed_at: str | None = None
     dismissed_approvers: list[str] | None = None
 
-    def to_dict(self) -> MREntryDict:
-        result: MREntryDict = {}
+    def to_dict(self) -> PREntryDict:
+        result: PREntryDict = {}
         for k in self.__slots__:
             v = getattr(self, k)
             if v is None:
@@ -101,13 +102,13 @@ class SyncBackend(ABC):
 def _merge_results(a: SyncResult, b: SyncResult) -> SyncResult:
     """Merge two SyncResult instances, summing counts and concatenating lists."""
     return SyncResult(
-        mrs_found=a.mrs_found + b.mrs_found,
+        prs_found=a.prs_found + b.prs_found,
         issues_found=a.issues_found + b.issues_found,
         tickets_created=a.tickets_created + b.tickets_created,
         tickets_updated=a.tickets_updated + b.tickets_updated,
         labels_fetched=a.labels_fetched + b.labels_fetched,
-        mrs_merged=a.mrs_merged + b.mrs_merged,
-        mrs_closed=a.mrs_closed + b.mrs_closed,
+        prs_merged=a.prs_merged + b.prs_merged,
+        prs_closed=a.prs_closed + b.prs_closed,
         reviews_synced=a.reviews_synced + b.reviews_synced,
         worktrees_cleaned=a.worktrees_cleaned + b.worktrees_cleaned,
         errors=[*a.errors, *b.errors],
@@ -127,7 +128,7 @@ def _overlay_name(overlay: object) -> str:
 def sync_followup() -> SyncResult:
     """Sync from all configured code host backends.
 
-    Runs GitHub project board sync and/or GitLab MR sync based on
+    Runs GitHub project board sync and/or GitLab PR sync based on
     which credentials are configured in the active overlay.  When both
     tokens are present, both syncs run and results are merged.
     """
@@ -176,8 +177,8 @@ __all__ = [
     "LAST_SYNC_CACHE_KEY",
     "PENDING_REVIEWS_CACHE_KEY",
     "DiscussionSummary",
-    "MREntry",
-    "MREntryDict",
+    "PREntry",
+    "PREntryDict",
     "RawAPIDict",
     "SyncBackend",
     "SyncResult",

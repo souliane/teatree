@@ -1,4 +1,24 @@
-"""GitLab sync backend — MR upsert, issue labels, merged MR cleanup, assigned issues."""
+"""GitLab sync backend — PR upsert, issue labels, merged PR cleanup, assigned issues.
+
+Translates between GitLab's "merge request" API surface and teatree's
+canonical "PR" data model: ``PREntry``, ``Ticket.extra["prs"]``,
+``SyncResult.prs_*``. GitLab API URLs and method names that hit
+``/merge_requests/...`` endpoints keep their GitLab-native naming because
+they describe the literal endpoint being called.
+
+The backend wraps a ``GitLabCodeHost`` and routes cross-host shaped calls
+(``list_my_prs``, ``list_assigned_issues``, ``list_review_requested_prs``)
+through the :class:`CodeHostBackend` Protocol. GitLab-specific operations
+(pipeline status, approvals, discussions, draft notes count, terminal-state
+PR scans, project resolution, work item status) are accessed via
+:attr:`GitLabCodeHost.client` because they have no GitHub parallel.
+
+The backend constructs its own ``GitLabCodeHost`` from the overlay's GitLab
+token rather than going through ``get_code_host(overlay)`` so dual sync
+(GitHub project board + GitLab MRs in the same overlay) keeps working: the
+loader picks one primary code host but each sync backend is platform-bound
+and needs its own client.
+"""
 
 import logging
 import re
@@ -10,16 +30,17 @@ import httpx
 from django.core.cache import cache
 from django.utils import timezone
 
+from teatree.backends.gitlab import GitLabCodeHost
 from teatree.backends.gitlab_sync_approvals import detect_approval_dismissal
-from teatree.backends.gitlab_sync_terminal import detect_closed_mrs, detect_merged_mrs
+from teatree.backends.gitlab_sync_terminal import detect_closed_prs, detect_merged_prs
 from teatree.backends.slack_review_sync import fetch_review_permalinks
 from teatree.core.models import Ticket
 from teatree.core.sync import (
     LAST_SYNC_CACHE_KEY,
     PENDING_REVIEWS_CACHE_KEY,
     DiscussionSummary,
-    MREntry,
-    MREntryDict,
+    PREntry,
+    PREntryDict,
     RawAPIDict,
     SyncBackend,
     SyncResult,
@@ -43,8 +64,15 @@ _STATE_ORDER = [s.value for s in Ticket.State]
 
 
 @dataclass(frozen=True, slots=True)
-class _MRContext:
-    mr: RawAPIDict
+class _PRContext:
+    """A single GitLab MR being processed as a teatree PR.
+
+    The ``raw`` field holds the upstream GitLab API response (which uses
+    GitLab's MR vocabulary); the surrounding code maps it onto the teatree
+    canonical ``PREntry`` model.
+    """
+
+    raw: RawAPIDict
     repo_short: str
     client: "GitLabAPI"
     project: "ProjectInfo | None"
@@ -59,16 +87,17 @@ class GitLabSyncBackend(SyncBackend):
 
     @override
     def sync(self, overlay: object) -> SyncResult:
-        from teatree.backends.gitlab_api import GitLabAPI, ProjectInfo  # noqa: PLC0415
+        from teatree.backends.gitlab_api import ProjectInfo  # noqa: PLC0415
         from teatree.core.overlay import OverlayBase  # noqa: PLC0415
 
         if not isinstance(overlay, OverlayBase):
             return SyncResult(errors=["Invalid overlay"])
 
-        overlay_name = _overlay_name(overlay)
         token = overlay.config.get_gitlab_token()
-        client = GitLabAPI(token=token, base_url=overlay.config.gitlab_url)
-        username = overlay.config.get_gitlab_username() or client.current_username()
+        host = GitLabCodeHost(token=token, base_url=overlay.config.gitlab_url)
+        overlay_name = _overlay_name(overlay)
+        client = host.client
+        username = overlay.config.get_gitlab_username() or host.current_user()
         if not username:
             return SyncResult(errors=["GitLab username is not configured in overlay"])
         result = SyncResult()
@@ -77,116 +106,116 @@ class GitLabSyncBackend(SyncBackend):
         sync_started_at = timezone.now()
 
         try:
-            mrs = client.list_all_open_mrs(username, updated_after=last_sync)
+            raw_prs = host.list_my_prs(author=username, updated_after=last_sync)
         except Exception as exc:  # noqa: BLE001
-            return SyncResult(errors=[f"MR fetch failed: {exc}"])
+            return SyncResult(errors=[f"PR fetch failed: {exc}"])
 
-        for mr in mrs:
-            result.mrs_found += 1
-            repo_path = self._extract_repo_path(mr)
+        for raw in raw_prs:
+            result.prs_found += 1
+            repo_path = self._extract_repo_path(raw)
             repo_short = repo_path.rsplit("/", maxsplit=1)[-1]
-            project_id = int(mr.get("project_id", 0))  # type: ignore[arg-type]
+            project_id = int(raw.get("project_id", 0))  # type: ignore[arg-type]
             project = (
                 ProjectInfo(project_id=project_id, path_with_namespace=repo_path, short_name=repo_short)
                 if project_id
                 else None
             )
-            ctx = _MRContext(mr=mr, repo_short=repo_short, client=client, project=project)
-            self._upsert_ticket_from_mr(ctx, result, username=username, overlay_name=overlay_name)
+            ctx = _PRContext(raw=raw, repo_short=repo_short, client=client, project=project)
+            self._upsert_ticket_from_pr(ctx, result, username=username, overlay_name=overlay_name)
 
-        self._fetch_assigned_issues(client, username, result, overlay_name=overlay_name)
+        self._fetch_assigned_issues(host, username, result, overlay_name=overlay_name)
 
         # Backfill overlay on any in-flight tickets that still have it empty
         if overlay_name:
             Ticket.objects.in_flight().filter(overlay="").update(overlay=overlay_name)
 
         self._fetch_issue_labels(client, result)
-        detect_merged_mrs(client, username, result, last_sync)
-        detect_closed_mrs(client, username, result, last_sync)
+        detect_merged_prs(client, username, result, last_sync)
+        detect_closed_prs(client, username, result, last_sync)
         fetch_review_permalinks(result)
-        self._sync_reviewer_mrs(client, username, result)
+        self._sync_reviewer_prs(host, username, result)
 
         cache.set(LAST_SYNC_CACHE_KEY, sync_started_at.isoformat(), timeout=None)
 
         return result
 
     @classmethod
-    def _extract_repo_path(cls, mr: RawAPIDict) -> str:
-        web_url = str(mr.get("web_url", ""))
+    def _extract_repo_path(cls, raw: RawAPIDict) -> str:
+        web_url = str(raw.get("web_url", ""))
         match = _REPO_PATH_RE.search(web_url)
         return match.group(1) if match else ""
 
     @classmethod
-    def _build_mr_entry(cls, ctx: "_MRContext", *, username: str) -> MREntry:
-        """Build a fully enriched MREntry from a raw MR dict."""
-        mr = ctx.mr
-        web_url = str(mr.get("web_url", ""))
-        is_draft = bool(mr.get("draft"))
-        mr_iid = int(mr.get("iid", 0))  # type: ignore[arg-type]
+    def _build_pr_entry(cls, ctx: "_PRContext", *, username: str) -> PREntry:
+        """Build a fully enriched PREntry from a raw GitLab MR dict."""
+        raw = ctx.raw
+        web_url = str(raw.get("web_url", ""))
+        is_draft = bool(raw.get("draft"))
+        pr_iid = int(raw.get("iid", 0))  # type: ignore[arg-type]
 
-        mr_entry = MREntry(
+        pr_entry = PREntry(
             url=web_url,
-            title=str(mr.get("title", "")),
-            branch=str(mr.get("source_branch", "")),
+            title=str(raw.get("title", "")),
+            branch=str(raw.get("source_branch", "")),
             draft=is_draft,
             repo=ctx.repo_short,
-            iid=mr_iid,
-            updated_at=str(mr.get("updated_at", "")),
-            state=str(mr.get("state", "opened")),
+            iid=pr_iid,
+            updated_at=str(raw.get("updated_at", "")),
+            state=str(raw.get("state", "opened")),
         )
 
-        if not is_draft and ctx.project and mr_iid:
-            pipeline = ctx.client.get_mr_pipeline(ctx.project.project_id, mr_iid)
-            mr_entry.pipeline_status = pipeline["status"]
-            mr_entry.pipeline_url = pipeline["url"]
-            mr_entry.approvals = ctx.client.get_mr_approvals(ctx.project.project_id, mr_iid)
+        if not is_draft and ctx.project and pr_iid:
+            pipeline = ctx.client.get_mr_pipeline(ctx.project.project_id, pr_iid)
+            pr_entry.pipeline_status = pipeline["status"]
+            pr_entry.pipeline_url = pipeline["url"]
+            pr_entry.approvals = ctx.client.get_mr_approvals(ctx.project.project_id, pr_iid)
 
-            discussions = ctx.client.get_mr_discussions(ctx.project.project_id, mr_iid)
-            mr_entry.discussions = cls._classify_discussions(discussions, username)
+            discussions = ctx.client.get_mr_discussions(ctx.project.project_id, pr_iid)
+            pr_entry.discussions = cls._classify_discussions(discussions, username)
             e2e_url = cls._detect_e2e_evidence(discussions, web_url)
             if e2e_url:
-                mr_entry.e2e_test_plan_url = e2e_url
+                pr_entry.e2e_test_plan_url = e2e_url
 
             current_count = (
-                int(mr_entry.approvals.get("count", 0)) if isinstance(mr_entry.approvals, dict) else 0  # ty: ignore[invalid-argument-type]
+                int(pr_entry.approvals.get("count", 0)) if isinstance(pr_entry.approvals, dict) else 0  # ty: ignore[invalid-argument-type]
             )
             dismissal = detect_approval_dismissal(discussions, current_approval_count=current_count)
             if dismissal is not None:
-                mr_entry.approvals_dismissed_at = dismissal.at
-                mr_entry.dismissed_approvers = dismissal.approvers
+                pr_entry.approvals_dismissed_at = dismissal.at
+                pr_entry.dismissed_approvers = dismissal.approvers
 
-            draft_count = ctx.client.get_draft_notes_count(ctx.project.project_id, mr_iid)
-            mr_entry.draft_comments_pending = draft_count > 0
-            mr_entry.draft_comments_count = draft_count if draft_count > 0 else None
+            draft_count = ctx.client.get_draft_notes_count(ctx.project.project_id, pr_iid)
+            pr_entry.draft_comments_pending = draft_count > 0
+            pr_entry.draft_comments_count = draft_count if draft_count > 0 else None
 
-        reviewers = mr.get("reviewers", [])
+        reviewers = raw.get("reviewers", [])
         if isinstance(reviewers, list):
-            mr_entry.review_requested = bool(reviewers)
-            mr_entry.reviewer_names = [str(r.get("username", "")) for r in reviewers if isinstance(r, dict)]  # ty: ignore[no-matching-overload]
+            pr_entry.review_requested = bool(reviewers)
+            pr_entry.reviewer_names = [str(r.get("username", "")) for r in reviewers if isinstance(r, dict)]  # ty: ignore[no-matching-overload]
 
-        return mr_entry
+        return pr_entry
 
     @classmethod
-    def _upsert_ticket_from_mr(
+    def _upsert_ticket_from_pr(
         cls,
-        ctx: "_MRContext",
+        ctx: "_PRContext",
         result: SyncResult,
         *,
         username: str = "",
         overlay_name: str = "",
     ) -> None:
-        mr_entry = cls._build_mr_entry(ctx, username=username)
-        web_url = mr_entry.url
-        lookup_url = cls._extract_issue_url(ctx.mr) or web_url
-        mr_entry_dict = mr_entry.to_dict()
-        inferred_state = cls._infer_state_from_mrs({web_url: mr_entry_dict})
+        pr_entry = cls._build_pr_entry(ctx, username=username)
+        web_url = pr_entry.url
+        lookup_url = cls._extract_issue_url(ctx.raw) or web_url
+        pr_entry_dict = pr_entry.to_dict()
+        inferred_state = cls._infer_state_from_prs({web_url: pr_entry_dict})
 
         tickets = list(Ticket.objects.filter(issue_url=lookup_url).order_by("pk"))
         if not tickets:
             Ticket.objects.create(
                 issue_url=lookup_url,
                 repos=[ctx.repo_short],
-                extra={"mrs": {web_url: mr_entry_dict}},
+                extra={"prs": {web_url: pr_entry_dict}},
                 state=inferred_state,
                 overlay=overlay_name,
             )
@@ -199,7 +228,7 @@ class GitLabSyncBackend(SyncBackend):
             if overlay_name and not ticket.overlay:
                 ticket.overlay = overlay_name
                 ticket.save(update_fields=["overlay"])
-            cls._update_ticket(ticket, mr_entry_dict, web_url, ctx.repo_short, inferred_state)
+            cls._update_ticket(ticket, pr_entry_dict, web_url, ctx.repo_short, inferred_state)
             result.tickets_updated += 1
 
     @classmethod
@@ -234,7 +263,7 @@ class GitLabSyncBackend(SyncBackend):
         return result
 
     @classmethod
-    def _detect_e2e_evidence(cls, discussions: list[RawAPIDict], mr_url: str) -> str:
+    def _detect_e2e_evidence(cls, discussions: list[RawAPIDict], pr_url: str) -> str:
         for disc in discussions:
             if not isinstance(disc, dict):
                 continue
@@ -249,7 +278,7 @@ class GitLabSyncBackend(SyncBackend):
                 has_keyword = bool(_E2E_EVIDENCE_RE.search(body))
                 if has_keyword and has_image:
                     note_id = note.get("id")  # ty: ignore[invalid-argument-type]
-                    return f"{mr_url}#note_{note_id}" if note_id else mr_url
+                    return f"{pr_url}#note_{note_id}" if note_id else pr_url
         return ""
 
     @classmethod
@@ -257,13 +286,13 @@ class GitLabSyncBackend(SyncBackend):
         src_extra = source.extra if isinstance(source.extra, dict) else {}
         tgt_extra = target.extra if isinstance(target.extra, dict) else {}
 
-        src_mrs = src_extra.get("mrs", {})
-        tgt_mrs = tgt_extra.get("mrs", {})
-        if isinstance(src_mrs, dict) and isinstance(tgt_mrs, dict):
-            for url, entry in src_mrs.items():
-                if url not in tgt_mrs:
-                    tgt_mrs[url] = entry
-            tgt_extra["mrs"] = tgt_mrs
+        src_prs = src_extra.get("prs", {})
+        tgt_prs = tgt_extra.get("prs", {})
+        if isinstance(src_prs, dict) and isinstance(tgt_prs, dict):
+            for url, entry in src_prs.items():
+                if url not in tgt_prs:
+                    tgt_prs[url] = entry
+            tgt_extra["prs"] = tgt_prs
             target.extra = tgt_extra
 
         src_repos = source.repos if isinstance(source.repos, list) else []
@@ -278,25 +307,25 @@ class GitLabSyncBackend(SyncBackend):
     def _update_ticket(
         cls,
         ticket: Ticket,
-        mr_entry: MREntryDict,
-        mr_url: str,
+        pr_entry: PREntryDict,
+        pr_url: str,
         repo_short: str,
         inferred_state: str = "",
     ) -> None:
         extra = ticket.extra if isinstance(ticket.extra, dict) else {}
-        mrs = extra.get("mrs", {})
-        if not isinstance(mrs, dict):
-            mrs = {}
+        prs = extra.get("prs", {})
+        if not isinstance(prs, dict):
+            prs = {}
 
         # Preserve fields written by skills (Slack data, E2E links) that sync can't fetch
-        prev = mrs.get(mr_url)
+        prev = prs.get(pr_url)
         if isinstance(prev, dict):
             for key in _SKILL_WRITTEN_FIELDS:
-                if key in prev and key not in mr_entry:
-                    mr_entry[key] = prev[key]
+                if key in prev and key not in pr_entry:
+                    pr_entry[key] = prev[key]
 
-        mrs[mr_url] = mr_entry
-        extra["mrs"] = mrs
+        prs[pr_url] = pr_entry
+        extra["prs"] = prs
 
         repos = ticket.repos if isinstance(ticket.repos, list) else []
         if repo_short not in repos:
@@ -316,19 +345,19 @@ class GitLabSyncBackend(SyncBackend):
     @classmethod
     def _fetch_assigned_issues(
         cls,
-        client: "GitLabAPI",
+        host: GitLabCodeHost,
         username: str,
         result: SyncResult,
         *,
         overlay_name: str = "",
     ) -> None:
-        """Upsert tickets for issues assigned to *username* that have no MR yet.
+        """Upsert tickets for issues assigned to *username* that have no PR yet.
 
-        Tickets keyed by the same ``issue_url`` are consolidated with MR-based
+        Tickets keyed by the same ``issue_url`` are consolidated with PR-based
         tickets so each ticket is represented by a single row.
         """
         try:
-            issues = client.list_open_issues_for_assignee(username)
+            issues = host.list_assigned_issues(assignee=username)
         except httpx.HTTPError as exc:
             result.errors.append(f"Assigned issues fetch failed: {exc}")
             return
@@ -472,28 +501,28 @@ class GitLabSyncBackend(SyncBackend):
         return None
 
     @classmethod
-    def _infer_state_from_mrs(cls, mrs_data: dict[str, MREntryDict]) -> str:
+    def _infer_state_from_prs(cls, prs_data: dict[str, PREntryDict]) -> str:
         best = Ticket.State.NOT_STARTED
-        for mr in mrs_data.values():
-            if not isinstance(mr, dict):
+        for pr in prs_data.values():
+            if not isinstance(pr, dict):
                 continue
-            is_draft = mr.get("draft", True)
+            is_draft = pr.get("draft", True)
             if is_draft:
                 candidate = Ticket.State.STARTED
             else:
-                approvals = mr.get("approvals")
+                approvals = pr.get("approvals")
                 has_approvals = isinstance(approvals, dict) and int(approvals.get("count", 0)) > 0  # ty: ignore[no-matching-overload]
-                review_requested = bool(mr.get("review_requested"))
+                review_requested = bool(pr.get("review_requested"))
                 candidate = Ticket.State.IN_REVIEW if (has_approvals or review_requested) else Ticket.State.SHIPPED
             if _STATE_ORDER.index(candidate) > _STATE_ORDER.index(best):
                 best = candidate
         return best
 
     @classmethod
-    def _extract_issue_url(cls, mr: RawAPIDict) -> str:
+    def _extract_issue_url(cls, raw: RawAPIDict) -> str:
         for text in [
-            str(mr.get("description", "") or "").split("\n", maxsplit=1)[0],
-            str(mr.get("title", "")),
+            str(raw.get("description", "") or "").split("\n", maxsplit=1)[0],
+            str(raw.get("title", "")),
         ]:
             match = _ISSUE_URL_RE.search(text)
             if match:
@@ -501,30 +530,30 @@ class GitLabSyncBackend(SyncBackend):
         return ""
 
     @classmethod
-    def _sync_reviewer_mrs(cls, client: "GitLabAPI", username: str, result: SyncResult) -> None:
+    def _sync_reviewer_prs(cls, host: GitLabCodeHost, username: str, result: SyncResult) -> None:
         try:
-            reviewer_mrs = client.list_open_mrs_as_reviewer(username)
+            reviewer_prs = host.list_review_requested_prs(reviewer=username)
         except Exception as exc:  # noqa: BLE001
-            result.errors.append(f"Reviewer MR fetch failed: {exc}")
+            result.errors.append(f"Reviewer PR fetch failed: {exc}")
             return
 
         reviews: list[dict[str, str]] = []
-        for mr in reviewer_mrs:
-            web_url = str(mr.get("web_url", ""))
-            author_info = mr.get("author", {})
+        for raw in reviewer_prs:
+            web_url = str(raw.get("web_url", ""))
+            author_info = raw.get("author", {})
             author_name = str(author_info.get("username", "")) if isinstance(author_info, dict) else ""  # ty: ignore[no-matching-overload]
-            repo_path = cls._extract_repo_path(mr)
+            repo_path = cls._extract_repo_path(raw)
             repo_short = repo_path.rsplit("/", maxsplit=1)[-1]
-            iid = str(mr.get("iid", ""))
+            iid = str(raw.get("iid", ""))
             reviews.append(
                 {
                     "url": web_url,
-                    "title": str(mr.get("title", "")),
+                    "title": str(raw.get("title", "")),
                     "repo": repo_short,
                     "iid": iid,
                     "author": author_name,
-                    "draft": str(mr.get("draft", False)),
-                    "updated_at": str(mr.get("updated_at", "")),
+                    "draft": str(raw.get("draft", False)),
+                    "updated_at": str(raw.get("updated_at", "")),
                 },
             )
 

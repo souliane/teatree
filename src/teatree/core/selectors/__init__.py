@@ -30,7 +30,7 @@ from ._types import (
     UnifiedSessionRow,
 )
 from .activity import build_active_sessions, build_recent_activity
-from .automation import _check_mr, build_action_required, build_automation_summary
+from .automation import _check_pr, build_action_required, build_automation_summary
 from .queues import (
     _last_result_for_tasks,
     build_headless_queue,
@@ -54,7 +54,7 @@ __all__ = [
     "TaskRelatedRow",
     "UnifiedSessionRow",
     "_cached",
-    "_check_mr",
+    "_check_pr",
     "_display_id",
     "_extra_str",
     "_humanize_duration",
