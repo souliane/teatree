@@ -25,12 +25,12 @@ def post_webhook_message(webhook_url: str, text: str, *, signature: str = "") ->
 
 @dataclass(frozen=True, slots=True)
 class SlackReviewMatch:
-    mr_url: str
+    pr_url: str
     permalink: str
     channel: str
 
 
-_MR_URL_RE = re.compile(r"https://[^\s|>]+/merge_requests/\d+")
+_PR_URL_RE = re.compile(r"https://[^\s|>]+/(?:merge_requests|pull|pulls)/\d+")
 
 
 def _resolve_workspace_domain(client: httpx.Client) -> str:
@@ -50,7 +50,7 @@ class _ChannelContext:
 
 def _iter_review_matches(
     msg: RawAPIDict,
-    mr_url_set: set[str],
+    pr_url_set: set[str],
     seen: set[str],
     ctx: _ChannelContext,
 ) -> list[SlackReviewMatch]:
@@ -59,7 +59,7 @@ def _iter_review_matches(
     ts = str(msg.get("ts", ""))
     if not ts:
         return []
-    found_urls = _MR_URL_RE.findall(text)
+    found_urls = _PR_URL_RE.findall(text)
     if not found_urls:
         return []
 
@@ -67,9 +67,9 @@ def _iter_review_matches(
     matches: list[SlackReviewMatch] = []
     for url in found_urls:
         clean_url = url.rstrip("/").split("#")[0]
-        if clean_url in mr_url_set and clean_url not in seen:
+        if clean_url in pr_url_set and clean_url not in seen:
             seen.add(clean_url)
-            matches.append(SlackReviewMatch(mr_url=clean_url, permalink=permalink, channel=ctx.channel_name))
+            matches.append(SlackReviewMatch(pr_url=clean_url, permalink=permalink, channel=ctx.channel_name))
     return matches
 
 
@@ -93,21 +93,21 @@ class SlackReviewSearchRequest:
     token: str
     channel_id: str
     channel_name: str
-    mr_urls: list[str]
+    pr_urls: list[str]
     max_pages: int = 10
     workspace_domain: str = ""
 
 
 def search_review_permalinks(request: SlackReviewSearchRequest) -> list[SlackReviewMatch]:
-    """Read recent messages from a Slack channel and match MR URLs.
+    """Read recent messages from a Slack channel and match PR URLs.
 
     Uses conversations.history (no search:read scope needed).
-    Matching is deterministic: exact MR URL substring match, no AI.
+    Matching is deterministic: exact PR URL substring match, no AI.
     """
-    if not request.token or not request.channel_id or not request.mr_urls:
+    if not request.token or not request.channel_id or not request.pr_urls:
         return []
 
-    mr_url_set = set(request.mr_urls)
+    pr_url_set = set(request.pr_urls)
     matches: list[SlackReviewMatch] = []
     seen: set[str] = set()
 
@@ -126,9 +126,9 @@ def search_review_permalinks(request: SlackReviewSearchRequest) -> list[SlackRev
                 break
 
             for msg in data.get("messages", []):  # ty: ignore[not-iterable]
-                matches.extend(_iter_review_matches(msg, mr_url_set, seen, ctx))
+                matches.extend(_iter_review_matches(msg, pr_url_set, seen, ctx))
 
-            if seen == mr_url_set or not data.get("has_more"):
+            if seen == pr_url_set or not data.get("has_more"):
                 break
             meta = data.get("response_metadata", {})
             cursor = meta.get("next_cursor") if isinstance(meta, dict) else None  # ty: ignore[invalid-argument-type]

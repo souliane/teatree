@@ -215,8 +215,11 @@ class GitHubCodeHost:
         user = cast("_GitHubUser", data)
         return user.get("login", "")
 
-    def list_my_prs(self, *, author: str) -> list[RawAPIDict]:
-        query = quote_plus(f"is:pr is:open author:{author}")
+    def list_my_prs(self, *, author: str, updated_after: str | None = None) -> list[RawAPIDict]:
+        terms = [f"is:pr is:open author:{author}"]
+        if updated_after:
+            terms.append(f"updated:>={updated_after}")
+        query = quote_plus(" ".join(terms))
         data = _gh_api_get(f"search/issues?q={query}&per_page=100", token=self._token)
         if not isinstance(data, dict):
             return []
@@ -225,8 +228,16 @@ class GitHubCodeHost:
             return []
         return cast("list[RawAPIDict]", items)
 
-    def list_review_requested_prs(self, *, reviewer: str) -> list[RawAPIDict]:
-        query = quote_plus(f"is:pr is:open review-requested:{reviewer}")
+    def list_review_requested_prs(
+        self,
+        *,
+        reviewer: str,
+        updated_after: str | None = None,
+    ) -> list[RawAPIDict]:
+        terms = [f"is:pr is:open review-requested:{reviewer}"]
+        if updated_after:
+            terms.append(f"updated:>={updated_after}")
+        query = quote_plus(" ".join(terms))
         data = _gh_api_get(f"search/issues?q={query}&per_page=100", token=self._token)
         if not isinstance(data, dict):
             return []

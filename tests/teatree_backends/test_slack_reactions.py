@@ -8,7 +8,7 @@ import pytest
 
 from teatree.backends import slack_reactions
 from teatree.backends.slack_reactions import (
-    _iter_mr_permalinks,
+    _iter_pr_permalinks,
     add_reaction,
     add_reactions_for_transition,
     parse_permalink,
@@ -98,11 +98,11 @@ class TestAddReaction:
         assert add_reaction("xoxb", "C1", "1.0", "tada") is False
 
 
-class TestIterMrPermalinks:
+class TestIterPrPermalinks:
     def test_collects_only_non_empty_string_permalinks(self) -> None:
         ticket = SimpleNamespace(
             extra={
-                "mrs": {
+                "prs": {
                     "a": {"review_permalink": "https://team.slack.com/archives/C1/p1700000000000100"},
                     "b": {"review_permalink": ""},
                     "c": {},
@@ -111,12 +111,12 @@ class TestIterMrPermalinks:
                 }
             }
         )
-        assert _iter_mr_permalinks(ticket) == ["https://team.slack.com/archives/C1/p1700000000000100"]
+        assert _iter_pr_permalinks(ticket) == ["https://team.slack.com/archives/C1/p1700000000000100"]
 
-    def test_empty_when_no_mrs(self) -> None:
-        assert _iter_mr_permalinks(SimpleNamespace(extra={})) == []
-        assert _iter_mr_permalinks(SimpleNamespace(extra={"mrs": "garbage"})) == []
-        assert _iter_mr_permalinks(SimpleNamespace(extra=None)) == []
+    def test_empty_when_no_prs(self) -> None:
+        assert _iter_pr_permalinks(SimpleNamespace(extra={})) == []
+        assert _iter_pr_permalinks(SimpleNamespace(extra={"prs": "garbage"})) == []
+        assert _iter_pr_permalinks(SimpleNamespace(extra=None)) == []
 
 
 @dataclass
@@ -138,7 +138,7 @@ class _StubOverlay:
 
 class TestAddReactionsForTransition:
     def _ticket(self, permalinks: list[str]) -> SimpleNamespace:
-        return SimpleNamespace(extra={"mrs": {f"mr-{i}": {"review_permalink": p} for i, p in enumerate(permalinks)}})
+        return SimpleNamespace(extra={"prs": {f"pr-{i}": {"review_permalink": p} for i, p in enumerate(permalinks)}})
 
     def test_posts_one_reaction_per_permalink(self, monkeypatch: pytest.MonkeyPatch) -> None:
         overlay = _StubOverlay(_StubConfig(token="xoxb"))

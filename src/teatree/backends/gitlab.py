@@ -2,6 +2,7 @@ import re
 from pathlib import Path
 from urllib.parse import urlparse
 
+from teatree.backends import gitlab_api as _gitlab_api
 from teatree.backends.gitlab_api import GitLabAPI, ProjectInfo
 from teatree.backends.protocols import PullRequestSpec
 from teatree.core.sync import RawAPIDict
@@ -13,8 +14,10 @@ def get_client(*, token: str = "", base_url: str = "") -> GitLabAPI:
     """Build a ``GitLabAPI`` from explicit credentials.
 
     When *token* is empty the ``GitLabAPI`` default (env-var fallback) is used.
+    Resolves ``GitLabAPI`` through the module attribute so test patches that
+    rebind ``teatree.backends.gitlab_api.GitLabAPI`` apply here too.
     """
-    return GitLabAPI(
+    return _gitlab_api.GitLabAPI(
         token=token,
         base_url=base_url or "https://gitlab.com/api/v4",
     )
@@ -29,6 +32,17 @@ class GitLabCodeHost:
         base_url: str = "",
     ) -> None:
         self._client = client or get_client(token=token, base_url=base_url)
+
+    @property
+    def client(self) -> GitLabAPI:
+        """Underlying ``GitLabAPI``.
+
+        Exposed for ``GitLabSyncBackend`` and other GitLab-specific consumers
+        that need calls outside the cross-host Protocol surface (pipeline
+        status, approvals, discussions, draft notes count, terminal-state PR
+        scans). Cross-host code paths must keep using the Protocol methods.
+        """
+        return self._client
 
     def create_pr(self, spec: PullRequestSpec) -> RawAPIDict:
         project = self._resolve_project(spec.repo)
@@ -54,11 +68,16 @@ class GitLabCodeHost:
         """Return the authenticated GitLab username."""
         return self._client.current_username()
 
-    def list_my_prs(self, *, author: str) -> list[RawAPIDict]:
-        return self._client.list_all_open_mrs(author)
+    def list_my_prs(self, *, author: str, updated_after: str | None = None) -> list[RawAPIDict]:
+        return self._client.list_all_open_mrs(author, updated_after=updated_after)
 
-    def list_review_requested_prs(self, *, reviewer: str) -> list[RawAPIDict]:
-        return self._client.list_open_mrs_as_reviewer(reviewer)
+    def list_review_requested_prs(
+        self,
+        *,
+        reviewer: str,
+        updated_after: str | None = None,
+    ) -> list[RawAPIDict]:
+        return self._client.list_open_mrs_as_reviewer(reviewer, updated_after=updated_after)
 
     def list_assigned_issues(self, *, assignee: str) -> list[RawAPIDict]:
         return self._client.list_open_issues_for_assignee(assignee)

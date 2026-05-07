@@ -1,11 +1,14 @@
-"""Terminal-state MR handling: detect merged and closed MRs, update cached extras.
+"""Terminal-state PR handling: detect merged and closed PRs, update cached extras.
 
 Split out of ``gitlab_sync.py`` to keep that module under the LOC budget enforced
 by ``hooks/check_module_health.py``. The two states share fetch + url-collection
 plumbing but diverge on side effects:
 
 - merged → advance the ticket FSM to ``MERGED`` and clean up worktrees
-- closed → only rewrite the cached MR state so consumers filter the row out
+- closed → only rewrite the cached PR state so consumers filter the row out
+
+GitLab API method names that end in ``_mrs`` are kept (they describe the
+literal GitLab endpoint being called); teatree-canonical names use ``pr``.
 """
 
 import logging
@@ -15,7 +18,7 @@ import httpx
 
 from teatree.core.cleanup import cleanup_worktree
 from teatree.core.models import Ticket, Worktree
-from teatree.core.sync import MREntryDict, RawAPIDict, SyncResult
+from teatree.core.sync import PREntryDict, RawAPIDict, SyncResult
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -27,8 +30,8 @@ logger = logging.getLogger(__name__)
 _STATE_ORDER = [s.value for s in Ticket.State]
 
 
-def detect_merged_mrs(client: "GitLabAPI", username: str, result: SyncResult, last_sync: str | None) -> None:
-    merged_urls = _fetch_terminal_mr_urls(
+def detect_merged_prs(client: "GitLabAPI", username: str, result: SyncResult, last_sync: str | None) -> None:
+    merged_urls = _fetch_terminal_pr_urls(
         client.list_recently_merged_mrs,
         username,
         last_sync,
@@ -41,8 +44,8 @@ def detect_merged_mrs(client: "GitLabAPI", username: str, result: SyncResult, la
         apply_merged_status(ticket, merged_urls, result)
 
 
-def detect_closed_mrs(client: "GitLabAPI", username: str, result: SyncResult, last_sync: str | None) -> None:
-    closed_urls = _fetch_terminal_mr_urls(
+def detect_closed_prs(client: "GitLabAPI", username: str, result: SyncResult, last_sync: str | None) -> None:
+    closed_urls = _fetch_terminal_pr_urls(
         client.list_recently_closed_mrs,
         username,
         last_sync,
@@ -57,18 +60,18 @@ def detect_closed_mrs(client: "GitLabAPI", username: str, result: SyncResult, la
 
 def apply_merged_status(ticket: Ticket, merged_urls: set[str], result: SyncResult) -> None:
     extra = ticket.extra if isinstance(ticket.extra, dict) else {}
-    mrs = extra.get("mrs", {})
-    if not isinstance(mrs, dict) or not mrs:
+    prs = extra.get("prs", {})
+    if not isinstance(prs, dict) or not prs:
         return
 
-    changed, all_merged = _scan_merged_mrs(mrs, merged_urls, result)
+    changed, all_merged = _scan_merged_prs(prs, merged_urls, result)
 
     if not changed and not all_merged:
         return
 
     update_fields: list[str] = []
     if changed:
-        extra["mrs"] = mrs
+        extra["prs"] = prs
         ticket.extra = extra
         update_fields.append("extra")
     if all_merged and _STATE_ORDER.index(Ticket.State.MERGED) > _STATE_ORDER.index(ticket.state):
@@ -83,47 +86,47 @@ def apply_merged_status(ticket: Ticket, merged_urls: set[str], result: SyncResul
 
 def apply_closed_status(ticket: Ticket, closed_urls: set[str], result: SyncResult) -> None:
     # Closed-without-merge has no FSM target and no worktree cleanup: the user may
-    # still reopen / push a new MR for the same ticket. Only the cached MR entry is
+    # still reopen / push a new PR for the same ticket. Only the cached PR entry is
     # rewritten so the cached state-based filter stops rendering the row.
     extra = ticket.extra if isinstance(ticket.extra, dict) else {}
-    mrs = extra.get("mrs", {})
-    if not isinstance(mrs, dict) or not mrs:
+    prs = extra.get("prs", {})
+    if not isinstance(prs, dict) or not prs:
         return
 
     changed = False
-    for mr_url, mr_entry in mrs.items():
-        if not isinstance(mr_entry, dict) or mr_url not in closed_urls:
+    for pr_url, pr_entry in prs.items():
+        if not isinstance(pr_entry, dict) or pr_url not in closed_urls:
             continue
-        entry = cast("MREntryDict", mr_entry)
+        entry = cast("PREntryDict", pr_entry)
         if entry.pop("discussions", None) is not None:
             changed = True
         if entry.get("state") != "closed":
             entry["state"] = "closed"
             changed = True
-        result.mrs_closed += 1
+        result.prs_closed += 1
 
     if changed:
-        extra["mrs"] = mrs
+        extra["prs"] = prs
         ticket.extra = extra
         ticket.save(update_fields=["extra"])
 
 
-def _scan_merged_mrs(mrs: RawAPIDict, merged_urls: set[str], result: SyncResult) -> tuple[bool, bool]:
+def _scan_merged_prs(prs: RawAPIDict, merged_urls: set[str], result: SyncResult) -> tuple[bool, bool]:
     changed = False
     unmerged = False
-    for mr_url, mr_entry in mrs.items():
-        if not isinstance(mr_entry, dict):
+    for pr_url, pr_entry in prs.items():
+        if not isinstance(pr_entry, dict):
             continue
-        if mr_url not in merged_urls:
+        if pr_url not in merged_urls:
             unmerged = True
             continue
-        entry = cast("MREntryDict", mr_entry)
+        entry = cast("PREntryDict", pr_entry)
         if entry.pop("discussions", None) is not None:
             changed = True
         if entry.get("state") != "merged":
             entry["state"] = "merged"
             changed = True
-        result.mrs_merged += 1
+        result.prs_merged += 1
     return changed, not unmerged
 
 
@@ -137,7 +140,7 @@ def _cleanup_merged_worktrees(ticket: Ticket, result: SyncResult) -> None:
             result.errors.append(f"Worktree cleanup failed for {worktree.repo_path} ({worktree.branch}): {exc}")
 
 
-def _fetch_terminal_mr_urls(
+def _fetch_terminal_pr_urls(
     fetcher: "Callable[..., list[RawAPIDict]]",
     username: str,
     last_sync: str | None,
@@ -146,10 +149,10 @@ def _fetch_terminal_mr_urls(
     label: str,
 ) -> set[str] | None:
     try:
-        mrs = fetcher(username, updated_after=last_sync)
+        raw_prs = fetcher(username, updated_after=last_sync)
     except httpx.HTTPError as exc:
-        result.errors.append(f"{label} MR fetch failed: {exc}")
+        result.errors.append(f"{label} PR fetch failed: {exc}")
         return None
-    if not mrs:
+    if not raw_prs:
         return None
-    return {str(mr.get("web_url", "")) for mr in mrs}
+    return {str(raw.get("web_url", "")) for raw in raw_prs}
