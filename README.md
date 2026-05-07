@@ -186,6 +186,8 @@ t3 setup                       # installs skills globally, respects local symlin
 
 `uv tool install --editable .` produces the same global `~/.local/bin/t3` as the user flow — edits in this clone take effect on the next invocation, no `uv run` prefix. `t3 setup` runs [APM](https://github.com/microsoft/apm) to install companion dependencies (superpowers, ac-django, etc.), symlinks teatree skills to `~/.claude/skills/`, registers the Claude plugin, and — if `t3` isn't on `PATH` — re-runs `uv tool install --editable .` to self-install. Must be run from the main clone, not a worktree.
 
+`t3 setup` also self-heals when teatree adds a new dep: editable installs don't auto-resync their venv when `pyproject.toml` changes, so on every run `t3 setup` compares the declared `[project].dependencies` against the dists in the running interpreter and re-runs `uv tool install --editable . --reinstall` automatically when anything is missing. After the reinstall, setup re-execs itself against the refreshed venv. No manual `--reinstall` step is needed when pulling teatree updates.
+
 ## Skills
 
 Each skill teaches the agent one phase of development:

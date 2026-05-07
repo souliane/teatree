@@ -62,6 +62,20 @@ class TestTickCommand:
         assert "statusline" in result.stdout
         run_tick_mock.assert_called_once()
 
+    def test_calls_django_setup_before_scanning(self, tmp_path: Path) -> None:
+        """Regression: scanners hit Django ORM, so django.setup() must run first."""
+        report = _build_report(statusline_path=tmp_path / "sl.txt")
+        with (
+            patch("teatree.cli.loop.django.setup") as setup_mock,
+            patch("teatree.cli.loop.code_host_from_overlay", return_value=None),
+            patch("teatree.cli.loop.messaging_from_overlay", return_value=None),
+            patch("teatree.cli.loop.run_tick", return_value=report),
+        ):
+            result = runner.invoke(loop_app, ["tick"])
+
+        assert result.exit_code == 0
+        setup_mock.assert_called_once()
+
     def test_text_output_includes_scanner_errors(self, tmp_path: Path) -> None:
         report = _build_report(errors={"my_prs": "RuntimeError: x"})
         with (
