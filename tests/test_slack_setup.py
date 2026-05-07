@@ -1,5 +1,7 @@
 """Tests for ``t3 setup slack-bot`` — interactive Slack-bot walkthrough."""
 
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any, cast
 from unittest.mock import patch
@@ -17,6 +19,33 @@ from teatree.cli.slack_setup import (
     write_overlay_settings,
 )
 from teatree.config import OverlayEntry
+
+
+class TestTomlkitImportIsLazy:
+    """Regression guard: importing ``slack_setup`` must not trigger ``tomlkit``.
+
+    A user with a stale teatree install (pre-tomlkit-dep) was unable to run
+    any ``t3`` subcommand because ``cli/__init__.py`` imports ``cli/setup.py``
+    which imports ``cli/slack_setup.py`` which used to ``import tomlkit`` at
+    module top level. The whole CLI bootstrap crashed on the missing optional
+    dep. This test runs the import in a subprocess so it sees a clean
+    ``sys.modules`` and asserts ``tomlkit`` does not get pulled in.
+    """
+
+    def test_importing_slack_setup_does_not_import_tomlkit(self) -> None:
+        probe = (
+            "import sys\n"
+            "import teatree.cli.slack_setup\n"
+            "msg = 'tomlkit must stay lazy so a stale install cannot break the whole CLI'\n"
+            "assert 'tomlkit' not in sys.modules, msg\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", probe],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
 
 
 class TestBuildManifest:

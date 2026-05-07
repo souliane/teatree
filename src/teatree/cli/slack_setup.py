@@ -10,6 +10,7 @@ through ``pass``. Re-running with ``--reset`` rotates both tokens without
 re-prompting for the manifest URL.
 """
 
+import importlib
 import json
 import re
 import time
@@ -18,8 +19,6 @@ import webbrowser
 from pathlib import Path
 from typing import Any
 
-import tomlkit
-import tomlkit.items
 import typer
 
 from teatree.backends.slack_bot import SlackBotBackend
@@ -99,16 +98,25 @@ def write_overlay_settings(
 
     Uses :mod:`tomlkit` so the rest of the file (other overlays, global
     ``[teatree]`` settings, comments, ordering) is preserved.
+
+    ``tomlkit`` is resolved lazily via :func:`importlib.import_module` so the
+    CLI bootstrap stays robust to stale installs that predate the dep being
+    added — every other subcommand keeps working even when ``tomlkit`` is
+    missing, and the user only sees the ImportError when they actually run
+    ``t3 setup slack-bot``.
     """
+    tomlkit = importlib.import_module("tomlkit")
+    tomlkit_items = importlib.import_module("tomlkit.items")
+
     document = tomlkit.parse(config_path.read_text(encoding="utf-8")) if config_path.is_file() else tomlkit.document()
 
     overlays = document.get("overlays")
-    if not isinstance(overlays, tomlkit.items.Table):
+    if not isinstance(overlays, tomlkit_items.Table):
         overlays = tomlkit.table()
         document["overlays"] = overlays
 
     overlay_block = overlays.get(overlay_name)
-    if not isinstance(overlay_block, tomlkit.items.Table):
+    if not isinstance(overlay_block, tomlkit_items.Table):
         overlay_block = tomlkit.table()
         overlays[overlay_name] = overlay_block
 
