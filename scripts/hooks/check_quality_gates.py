@@ -25,9 +25,13 @@ _PYPROJECT_KEYWORD_PATTERNS: list[str] = [
     "--no-verify",
 ]
 
-# Inline suppressions in source files.
+# Inline suppressions in source files. The "no-qa" marker is intentionally
+# omitted — narrow, well-targeted "no-qa: <RULE>" comments are the right
+# escape valve when a lint rule disagrees with a deliberate design choice
+# (e.g. an inline import next to "<RULE> = PLC0415" to keep an optional
+# dep out of the top-level import chain). Use sparingly — bare "no-qa"
+# is still bad form, but that's a review-time concern, not a hook-time one.
 _CODE_RELAXATION_PATTERNS: list[str] = [
-    "# noqa",
     "# type: ignore",
     "# pragma: no cover",
 ]

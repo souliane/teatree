@@ -18,8 +18,6 @@ import webbrowser
 from pathlib import Path
 from typing import Any
 
-import tomlkit
-import tomlkit.items
 import typer
 
 from teatree.backends.slack_bot import SlackBotBackend
@@ -98,17 +96,23 @@ def write_overlay_settings(
     """Persist Slack settings on the per-overlay block of *config_path*.
 
     Uses :mod:`tomlkit` so the rest of the file (other overlays, global
-    ``[teatree]`` settings, comments, ordering) is preserved.
+    ``[teatree]`` settings, comments, ordering) is preserved. ``tomlkit`` is
+    imported inline so that a stale teatree install that pre-dates the dep
+    being added doesn't crash the rest of the CLI on bootstrap — the failure
+    surfaces only to callers of the ``t3 setup slack-bot`` final step.
     """
+    import tomlkit  # noqa: PLC0415
+    from tomlkit import items as tomlkit_items  # noqa: PLC0415
+
     document = tomlkit.parse(config_path.read_text(encoding="utf-8")) if config_path.is_file() else tomlkit.document()
 
     overlays = document.get("overlays")
-    if not isinstance(overlays, tomlkit.items.Table):
+    if not isinstance(overlays, tomlkit_items.Table):
         overlays = tomlkit.table()
         document["overlays"] = overlays
 
     overlay_block = overlays.get(overlay_name)
-    if not isinstance(overlay_block, tomlkit.items.Table):
+    if not isinstance(overlay_block, tomlkit_items.Table):
         overlay_block = tomlkit.table()
         overlays[overlay_name] = overlay_block
 

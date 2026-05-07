@@ -119,13 +119,60 @@ If retro produces file edits (skill fixes, reference updates, docs), commit them
 - **Reconcile with the default branch first.** `git fetch origin <default> && git log <branch>..origin/<default> --oneline` — if any commits appear, merge them in (`git merge origin/<default>`) and re-run lint/tests before pushing. Opening a PR that is already BEHIND main forces the user (or you) to do a second round-trip to resolve conflicts; catch them now, while you have the context of your own change open.
 - Push to remote. Cancel stale pipelines first if the branch has an existing MR (see § Rules).
 
-### 4b. Review Gate
+### 4b. Review Gate (Non-Negotiable)
 
 Before creating an MR, the `pr create` command automatically checks the session gate:
 
-- **shipping** requires prior `testing` and `reviewing` phases
-- If no review session ran for this ticket, `pr create` returns an error with a hint to run `/t3:review`
-- Use `--skip-validation` only when explicitly told to bypass gates
+- **shipping** requires prior `testing`, `reviewing`, and `retro` phases.
+- If no review session ran for this ticket, `pr create` returns an error with a hint to run `/t3:review`.
+- `--skip-validation` is reserved for bypasses the **user explicitly authorised** in the same session — never the agent's own choice.
+
+**The `reviewing` phase MUST be earned by spawning the `t3:reviewer` sub-agent — not by self-review against repo rules alone.** § 3b ("Self-Review Against Repo Rules") is necessary but not sufficient: it is the implementer reviewing their own work, which is the exact pattern that allowed #545 to claim "implementation finished" while review later found six rounds of missed renames, broken tests, undocumented contract changes, and a bypassed shipping gate. An independent reviewer that has not seen the implementation conversation is the corrective.
+
+#### Drive the FSM, never just visit phases (Non-Negotiable)
+
+Teatree has **two independent gates** layered on top of each other:
+
+1. **`Ticket.state` FSM** (`STARTED → CODED → TESTED → REVIEWED → SHIPPED → IN_REVIEW → ...`) — owned by `django_fsm` transitions on `core.models.ticket.Ticket`. This is the system of record. `pr create` calls `ticket.ship()` and refuses if the state isn't `REVIEWED`.
+2. **`Session.visited_phases`** — a flat record consulted by `_check_shipping_gate` when a session exists.
+
+`t3 <overlay> lifecycle visit-phase` only writes the second one. **Calling it directly leaves the FSM untouched**, so the ticket state stays at `TESTED` (or earlier), `pr create` errors `"Transition 'ship' not allowed from state 'tested'"`, and the workflow is silently inconsistent — exactly the breakage the user flagged after #545.
+
+**The agent must drive transitions, not visit phases.** The transition-driven path keeps both gates aligned automatically: `Task.complete()` → `_advance_ticket()` → fires the matching FSM transition → `_consume_pending_phase_tasks` clears stragglers → next-phase task auto-scheduled.
+
+#### How to satisfy the gate (the only sanctioned path)
+
+1. **Locate the reviewing task.** When the worktree was created via `t3 <overlay> workspace ticket <url>`, a `Task(phase="reviewing")` was scheduled by `Ticket.schedule_review()` once `test()` fired. If the branch is ad-hoc (no session/ticket exists yet), create one first with `t3 <overlay> workspace ticket <issue_url>` — never push from a session-less branch. The session is the receipt; without it the FSM has nothing to advance.
+
+2. **Spawn the reviewer sub-agent from the main conversation** (not from another sub-agent — see [`../rules/SKILL.md`](../rules/SKILL.md) § "Sub-Agent Limitations") via the `Agent` tool:
+
+   ```text
+   Agent(
+     description: "Pre-push review of <ticket>",
+     subagent_type: "t3:reviewer",
+     prompt: "Review the diverging code on this branch against main. Branch: <name>. \
+              Ticket: <url>. Scope: <one-line summary>. Read the linked ticket end-to-end \
+              before touching the diff (per /t3:review § 'Step 0 — Gather Ticket Context'). \
+              Apply both the per-file repo-rules check (/t3:review § 'Active Verification \
+              Against Repo Rules') and the module-level architectural check (full files of \
+              every touched module). Report findings as a punch list — no code edits."
+   )
+   ```
+
+3. **Apply every finding.** Reviewer sub-agents are read-only; the implementing conversation owns the edits. Do not cherry-pick which findings to take — if a finding is wrong, push back with evidence in the same conversation, do not silently drop it.
+
+4. **Drive the `review` transition** so the FSM advances `TESTED → REVIEWED` and the shipping task is auto-scheduled. Two equivalent entry points (use the first one available):
+
+   - **Preferred — complete the reviewing task**, which auto-fires `ticket.review()` via `Task._advance_ticket()`. This matches how every other phase advances and keeps the task ledger clean.
+   - **Direct transition fallback** when the agent doesn't have the task ID handy: `t3 <overlay> ticket transition <ticket_id> review`. The FSM still requires a completed `reviewing` task as a `conditions=` predicate, so this only works after step 3 has already produced one.
+
+   Do **not** use `t3 <overlay> lifecycle visit-phase <ticket_id> reviewing` as a substitute. It only writes `Session.visited_phases` and leaves `Ticket.state` stuck at `TESTED`, which will cause `pr create` to fail at the FSM layer even though the session gate looks satisfied.
+
+5. **Verify before pushing.** `t3 <overlay> ticket list --state reviewed` (or `--id <ticket_id>`) should show the ticket in `reviewed`. If it's still `tested`, the transition didn't fire — re-check that the reviewing task actually completed (`task.status == COMPLETED`) and that no FSM `conditions=` predicate is still failing. Don't paper over with `lifecycle visit-phase`; fix the root cause.
+
+**Why a sub-agent, not just self-review.** The implementer's context is contaminated by the implementation: every "looks done" judgment carries the same blind spots that produced the gaps. A sub-agent starts cold, reads the diff with fresh eyes, and applies the review skill's checklists without the implementer's "I already checked that" shortcuts. The cost of one extra `Agent` call is ~30s of wall time and a few hundred tokens; the cost of skipping it is multi-round push-fix-push cycles after the PR is already public.
+
+**Why the FSM, not just the session gate.** The session gate is a soft safety net that fail-opens when no session exists. The FSM is the actual contract — every downstream consumer (`pr create`, `execute_ship`, the loop dispatcher, the dashboard) reads `Ticket.state`. Bypassing the FSM produces tickets that look reviewed in the session record but are still `TESTED` in the source of truth, which then breaks every later transition until someone notices and rewinds by hand.
 
 ### 4c. Visual QA Gate
 
@@ -138,7 +185,15 @@ Before creating an MR, the `pr create` command automatically checks the session 
 
 ### 5. Create MR/PR
 
-**Prefer `t3 <overlay> pr create` over raw `gh`/`glab`.** The CLI handles the title/body format, ticket URL injection, assignee, and fork-vs-upstream remote resolution — all of which are easy to get wrong by hand. Reach for raw `gh`/`glab` only when the overlay doesn't expose a `pr create` subcommand, or when you're fixing the CLI itself and need to bypass it for this one call.
+**`t3 <overlay> pr create` is mandatory (Non-Negotiable).** Raw `gh pr create` / `glab mr create` is forbidden whenever the active overlay exposes a `pr create` subcommand. The CLI is not a convenience wrapper — it is the **only** path that runs the shipping gate (§ 4b: testing + reviewing + retro phases visited), the visual-QA gate (§ 4c), the title/description format validator, the ticket URL injection, the assignee defaults, and the fork-vs-upstream remote resolution. Bypassing it ships PRs that look published but have skipped every guard — exactly the failure mode that produced souliane/teatree#545 (PR pushed via `gh pr create`, shipping gate never ran, six rounds of follow-up review fixes).
+
+**Allowed exceptions (must hold all):**
+
+1. The active overlay genuinely has no `pr create` subcommand (e.g., a brand-new overlay still being built). Verify with `t3 <overlay> pr --help` before assuming.
+2. You are fixing the `t3 <overlay> pr create` command itself and need a one-shot bypass to land the fix.
+3. You explicitly state the bypass and the reason in the response, so the user can stop you if the assumption is wrong.
+
+If `t3 <overlay> pr create` errors, **fix the error** (create the missing session, run the reviewer, set the missing env var) — do not work around it with raw `gh`/`glab`. Treating the CLI as optional is the same anti-pattern as "Fix the CLI, Never Work Around It" in [`../workspace/SKILL.md`](../workspace/SKILL.md), applied to the shipping flow.
 
 #### Scope-Match Gate Before `Closes/Fixes #N` (Non-Negotiable)
 
