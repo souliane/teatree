@@ -1,50 +1,68 @@
-"""Backend loader — builds code host / CI from explicit credentials.
+"""Backend loader — selects code-host and messaging implementations per overlay.
 
-The functions here do NOT import from ``teatree.core``; callers are
-responsible for resolving overlay config and passing tokens / URLs.
+The loader is the only place that branches on platform. Caller code consumes
+:class:`teatree.backends.protocols.CodeHostBackend` and
+:class:`teatree.backends.protocols.MessagingBackend` uniformly; the choice of
+GitHub vs GitLab and Slack vs Noop is encoded on ``OverlayBase.config``.
 """
 
 from functools import lru_cache
+from typing import TYPE_CHECKING
 
-from teatree.backends.protocols import ChatNotifier, CIService, CodeHost, ErrorTracker, IssueTracker
+from teatree.backends.github import GitHubCodeHost
+from teatree.backends.gitlab import GitLabCodeHost
+from teatree.backends.gitlab_api import GitLabAPI
+from teatree.backends.gitlab_ci import GitLabCIService
+from teatree.backends.messaging_noop import NoopMessagingBackend
+from teatree.backends.protocols import CIService, CodeHostBackend, MessagingBackend
+from teatree.backends.slack_bot import SlackBotBackend
+from teatree.utils.secrets import read_pass
+
+if TYPE_CHECKING:
+    from teatree.core.overlay import OverlayBase
 
 
-@lru_cache(maxsize=1)
-def get_code_host(
-    *,
-    github_token: str = "",
-    gitlab_token: str = "",
-    gitlab_url: str = "",
-) -> CodeHost | None:
-    """Return a configured code-host backend, or ``None``.
+def get_code_host(overlay: "OverlayBase") -> CodeHostBackend | None:
+    """Return the configured CodeHostBackend for *overlay*, or ``None``.
 
-    Callers should resolve tokens from the overlay and pass them explicitly.
+    Selection follows ``overlay.config.code_host``; falls back to inspecting
+    the available tokens when the field is unset (legacy behaviour kept so
+    older overlays that haven't migrated still work).
     """
-    if github_token:
-        from teatree.backends.github import GitHubCodeHost  # noqa: PLC0415
+    choice = getattr(overlay.config, "code_host", "")
+    github_token = overlay.config.get_github_token()
+    gitlab_token = overlay.config.get_gitlab_token()
 
-        return GitHubCodeHost(token=github_token)
+    if choice == "github" or (not choice and github_token):
+        return GitHubCodeHost(token=github_token) if github_token else None
 
-    if gitlab_token:
-        from teatree.backends.gitlab import GitLabCodeHost  # noqa: PLC0415
+    if choice == "gitlab" or (not choice and gitlab_token):
+        return GitLabCodeHost(token=gitlab_token, base_url=overlay.config.gitlab_url) if gitlab_token else None
 
-        return GitLabCodeHost(token=gitlab_token, base_url=gitlab_url)
-    return None
-
-
-@lru_cache(maxsize=1)
-def get_issue_tracker() -> IssueTracker | None:
-    return None
-
-
-@lru_cache(maxsize=1)
-def get_chat_notifier() -> ChatNotifier | None:
-    return None
+    if choice in {"", "github", "gitlab"}:
+        return None
+    msg = f"Unknown code_host: {choice!r}"
+    raise ValueError(msg)
 
 
-@lru_cache(maxsize=1)
-def get_error_tracker() -> ErrorTracker | None:
-    return None
+def get_messaging(overlay: "OverlayBase") -> MessagingBackend:
+    """Return the configured MessagingBackend for *overlay*.
+
+    Default is :class:`NoopMessagingBackend` so callers always get a
+    Protocol-conforming object — no per-call ``is None`` guards.
+    """
+    choice = getattr(overlay.config, "messaging_backend", "") or "noop"
+    if choice == "slack":
+        token_ref = getattr(overlay.config, "slack_bot_token_ref", "")
+        return SlackBotBackend(
+            bot_token=read_pass(f"{token_ref}-bot") if token_ref else overlay.config.get_slack_token(),
+            app_token=read_pass(f"{token_ref}-app") if token_ref else "",
+            user_id=getattr(overlay.config, "slack_user_id", ""),
+        )
+    if choice == "noop":
+        return NoopMessagingBackend()
+    msg = f"Unknown messaging_backend: {choice!r}"
+    raise ValueError(msg)
 
 
 @lru_cache(maxsize=1)
@@ -58,16 +76,9 @@ def get_ci_service(
     Callers should resolve tokens from the overlay and pass them explicitly.
     """
     if gitlab_token:
-        from teatree.backends.gitlab_api import GitLabAPI  # noqa: PLC0415
-        from teatree.backends.gitlab_ci import GitLabCIService  # noqa: PLC0415
-
         return GitLabCIService(client=GitLabAPI(token=gitlab_token, base_url=gitlab_url or "https://gitlab.com/api/v4"))
     return None
 
 
 def reset_backend_caches() -> None:
-    get_code_host.cache_clear()
-    get_issue_tracker.cache_clear()
-    get_chat_notifier.cache_clear()
-    get_error_tracker.cache_clear()
     get_ci_service.cache_clear()

@@ -1,5 +1,7 @@
+import logging
 import os
 import pathlib
+import shutil
 import sys
 from typing import IO, Annotated, TypedDict, cast
 
@@ -8,7 +10,13 @@ from django_typer.management import TyperCommand, command
 from rich.console import Console
 from rich.table import Table
 
+from teatree.agents.headless import UUID_RE
+from teatree.agents.prompt import build_interactive_context
+from teatree.agents.skill_bundle import resolve_skill_bundle
 from teatree.core.models import InvalidTransitionError, Session, Task, TaskAttempt, Ticket
+from teatree.core.overlay_loader import get_overlay
+
+logger = logging.getLogger(__name__)
 
 
 class TaskRow(TypedDict):
@@ -141,13 +149,6 @@ class Command(TyperCommand):
         return self._execute_sdk(task)
 
     @command()
-    def work_next_user_input(self, claimed_by: str = "worker") -> dict[str, str] | None:
-        task = self._claim_next_task(execution_target=Task.ExecutionTarget.INTERACTIVE, claimed_by=claimed_by)
-        if task is None:
-            return None
-        return self._execute_runtime(task)
-
-    @command()
     def start(
         self,
         task_id: Annotated[int, typer.Argument(help="Task ID; omit to start the next pending interactive task.")] = 0,
@@ -211,17 +212,6 @@ class Command(TyperCommand):
         )
         return {"exit_code": str(attempt.exit_code), "attempt_id": str(attempt.pk)}
 
-    @staticmethod
-    def _execute_runtime(task: Task) -> dict[str, str]:
-        from teatree.agents.web_terminal import launch_web_session  # noqa: PLC0415
-        from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
-
-        attempt = launch_web_session(
-            task,
-            overlay_skill_metadata=get_overlay().metadata.get_skill_metadata(),
-        )
-        return {"launch_url": attempt.launch_url, "attempt_id": str(attempt.pk)}
-
 
 _STATUS_STYLES: dict[str, str] = {
     "pending": "yellow",
@@ -263,13 +253,26 @@ def _render_tasks_table(rows: list[TaskRow], *, stream: IO[str] | None = None) -
 
 
 def _build_claude_command(task: Task) -> list[str]:
-    from teatree.agents.web_terminal import build_interactive_command  # noqa: PLC0415
-    from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
+    """Build the ``claude`` argv for an interactive task.
 
-    return build_interactive_command(
-        task,
-        overlay_skill_metadata=get_overlay().metadata.get_skill_metadata(),
-    )
+    Resumes the prior session when the task carries a Claude session UUID,
+    otherwise starts a fresh session with the interactive system context
+    pre-loaded via ``--append-system-prompt``.
+    """
+    claude_bin = shutil.which("claude")
+    if claude_bin is None:
+        msg = "claude CLI is not installed"
+        raise FileNotFoundError(msg)
+
+    agent_id = task.session.agent_id if task.session else ""
+    if agent_id and UUID_RE.match(agent_id):
+        logger.info("Resuming claude session %s for task %s", agent_id, task.pk)
+        return [claude_bin, "--resume", agent_id]
+
+    overlay_skill_metadata = get_overlay().metadata.get_skill_metadata()
+    skills = resolve_skill_bundle(phase=task.phase, overlay_skill_metadata=overlay_skill_metadata)
+    system_context = build_interactive_context(task, skills=skills)
+    return [claude_bin, "--append-system-prompt", system_context]
 
 
 def _resolve_reason(*, reason: str, reason_file: pathlib.Path | None) -> str:

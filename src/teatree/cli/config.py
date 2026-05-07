@@ -29,9 +29,9 @@ def write_skill_cache() -> None:
     os.environ.setdefault("DJANGO_SETTINGS_MODULE", "teatree.settings")
     django.setup()
 
-    from teatree.core.views._startup import _write_skill_metadata_cache  # noqa: PLC0415
+    from teatree.core.skill_cache import write_skill_metadata_cache  # noqa: PLC0415
 
-    _write_skill_metadata_cache()
+    write_skill_metadata_cache()
     typer.echo(f"Wrote skill metadata to {DATA_DIR / 'skill-metadata.json'}")
 
 

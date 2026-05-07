@@ -55,7 +55,7 @@ def get_data_dir(namespace: str) -> Path:
 
 
 def default_logging(namespace: str) -> dict:
-    """Return a default Django LOGGING dict that writes to ``<data_dir>/logs/dashboard.log``.
+    """Return a default Django LOGGING dict that writes to ``<data_dir>/logs/teatree.log``.
 
     Usage in settings::
 
@@ -76,7 +76,7 @@ def default_logging(namespace: str) -> dict:
         "handlers": {
             "file": {
                 "class": "logging.handlers.RotatingFileHandler",
-                "filename": str(log_dir / "dashboard.log"),
+                "filename": str(log_dir / "teatree.log"),
                 "maxBytes": 5_000_000,
                 "backupCount": 3,
                 "formatter": "verbose",
@@ -122,6 +122,8 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "privacy": str,
     "contribute": bool,
     "excluded_skills": _parse_excluded_skills,
+    "loop_cadence_seconds": int,
+    "require_human_approval_to_merge": bool,
 }
 
 # ``T3_*`` env vars that win over both the per-overlay override and the
@@ -151,6 +153,14 @@ class UserSettings:
     excluded_skills: list[str] = field(default_factory=list)
     redis_db_count: int = 16
     mode: Mode = Mode.INTERACTIVE
+    # Loop tick interval in seconds (BLUEPRINT § 5.6). Default 12 minutes.
+    loop_cadence_seconds: int = 720
+    # Training-wheel for `auto` overlays: when true, the loop autonomously
+    # pushes and creates PRs but stops short of merging — merge requires a
+    # human reaction (👍 or `/merge`). The user flips this off only once
+    # comfortable (BLUEPRINT § 5.6.2). No effect in `interactive` mode,
+    # where every publishing action prompts regardless.
+    require_human_approval_to_merge: bool = True
     # Pass --chrome to every spawned `claude` session so Claude in Chrome is
     # available wherever it could be useful (browser inspection, UI debugging,
     # E2E selector drafting, bug hunts). Costs ~300 lines of system prompt per
@@ -203,6 +213,8 @@ def load_config(path: Path | None = None) -> TeaTreeConfig:
         excluded_skills=excluded_skills,
         redis_db_count=int(teatree.get("redis_db_count", 16)),
         mode=mode,
+        loop_cadence_seconds=int(teatree.get("loop_cadence_seconds", 720)),
+        require_human_approval_to_merge=bool(teatree.get("require_human_approval_to_merge", True)),
         claude_chrome=bool(teatree.get("claude_chrome", True)),
         agent_signature=bool(teatree.get("agent_signature", False)),
     )

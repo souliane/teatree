@@ -5,8 +5,12 @@ from unittest.mock import patch
 import teatree.core.overlay_loader as overlay_loader_mod
 from teatree.backends.gitlab import GitLabCodeHost
 from teatree.backends.gitlab_ci import GitLabCIService
-from teatree.backends.loader import reset_backend_caches
-from teatree.core.backend_factory import ci_service_from_overlay, code_host_from_overlay
+from teatree.core.backend_factory import (
+    ci_service_from_overlay,
+    code_host_from_overlay,
+    messaging_from_overlay,
+    reset_backend_caches,
+)
 from teatree.core.overlay import OverlayBase, OverlayConfig
 
 
@@ -87,3 +91,32 @@ def test_ci_service_from_overlay_returns_none_when_overlay_not_configured() -> N
         return_value={},
     ):
         assert ci_service_from_overlay() is None
+
+
+def test_messaging_from_overlay_returns_none_when_overlay_not_configured() -> None:
+    with patch.object(
+        overlay_loader_mod,
+        "_discover_overlays",
+        return_value={},
+    ):
+        assert messaging_from_overlay() is None
+
+
+def test_messaging_from_overlay_delegates_to_loader() -> None:
+    with (
+        _patch_overlay(_NoTokenOverlay),
+        patch("teatree.core.backend_factory.get_messaging", return_value="sentinel") as get_messaging_mock,
+    ):
+        result = messaging_from_overlay()
+
+    assert result == "sentinel"
+    get_messaging_mock.assert_called_once()
+
+
+def test_reset_backend_caches_clears_all_caches() -> None:
+    with _patch_overlay(_TokenOverlay):
+        first = code_host_from_overlay()
+    reset_backend_caches()
+    with _patch_overlay(_NoTokenOverlay):
+        second = code_host_from_overlay()
+    assert first is not second

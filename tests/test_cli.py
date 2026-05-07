@@ -9,8 +9,6 @@ import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import pytest
-from click.exceptions import Exit as ClickExit
 from typer.testing import CliRunner
 
 import teatree.agents.skill_bundle as skill_bundle_mod
@@ -30,7 +28,6 @@ from teatree.cli import (
 )
 from teatree.cli import doctor as cli_doctor_mod
 from teatree.cli.agent import _detect_agent_ticket_status
-from teatree.cli.dashboard import _resolve_overlay_for_server
 from teatree.cli.doctor import DoctorService, IntrospectionHelpers
 from teatree.overlay_init.generator import OverlayScaffolder, camelize
 
@@ -308,8 +305,8 @@ class TestInfoCommand:
 
 class TestConfigCommands:
     def test_write_skill_cache_writes_json(self, tmp_path, monkeypatch):
-        """write-skill-cache delegates to the canonical _write_skill_metadata_cache helper."""
-        import teatree.core.views._startup as startup_mod  # noqa: PLC0415
+        """write-skill-cache delegates to the canonical write_skill_metadata_cache helper."""
+        import teatree.core.skill_cache as startup_mod  # noqa: PLC0415
         from teatree.config import OverlayEntry  # noqa: PLC0415
 
         active = OverlayEntry(name="test", overlay_class="test.overlay.TestOverlay")
@@ -336,20 +333,25 @@ class TestConfigCommands:
             assert data["trigger_index"] == []
             assert "teatree_version" in data
 
-    def test_write_skill_cache_no_active_overlay(self, monkeypatch):
+    def test_write_skill_cache_no_active_overlay(self, tmp_path, monkeypatch):
         """write-skill-cache works when DJANGO_SETTINGS_MODULE is already set."""
+        import teatree.core.skill_cache as startup_mod  # noqa: PLC0415
+
         mock_overlay = MagicMock()
         mock_overlay.metadata.get_skill_metadata.return_value = {}
 
         monkeypatch.setenv("DJANGO_SETTINGS_MODULE", "tests.django_settings")
+        monkeypatch.setattr(startup_mod, "DATA_DIR", tmp_path)
         with (
             patch.object(config_mod, "discover_active_overlay", return_value=None),
             patch("django.setup"),
-            patch.object(overlay_loader_mod, "get_overlay", return_value=mock_overlay),
+            patch.object(startup_mod, "get_overlay", return_value=mock_overlay),
+            patch.object(startup_mod, "_build_trigger_index", return_value=[]),
+            patch.object(startup_mod, "resolve_all", return_value={}),
+            patch.object(startup_mod, "_collect_skill_mtimes", return_value={}),
         ):
-            runner.invoke(app, ["config", "write-skill-cache"])
-            # May fail at get_overlay since no overlay is configured,
-            # but the branch we want (326->328 bypass) is hit
+            result = runner.invoke(app, ["config", "write-skill-cache"])
+            assert result.exit_code == 0
 
     def test_autoload_shows_context_match_files(self, tmp_path):
         """Config autoload lists context-match.yml rules from skill dirs."""
@@ -697,106 +699,6 @@ class TestDetectAgentTicketStatus:
             patch.object(resolve_mod, "resolve_worktree", return_value=mock_wt),
         ):
             assert _detect_agent_ticket_status(tmp_path) == "started"
-
-
-# ── _resolve_overlay_for_server ─────────────────────────────────────
-
-
-class TestResolveOverlayForServer:
-    """Tests for the _resolve_overlay_for_server helper."""
-
-    def _make_entry(
-        self,
-        name: str = "test",
-        overlay_class: str = "test.overlay:TestOverlay",
-        project_path: Path | None = None,
-    ) -> config_mod.OverlayEntry:
-        return config_mod.OverlayEntry(
-            name=name,
-            overlay_class=overlay_class,
-            project_path=project_path,
-        )
-
-    def test_explicit_project_with_pyproject(self, tmp_path: Path) -> None:
-        """--project pointing to a valid directory returns that path."""
-        (tmp_path / "pyproject.toml").write_text("[project]\n")
-        entry = self._make_entry(project_path=tmp_path)
-        with patch.object(config_mod, "discover_overlays", return_value=[entry]):
-            path, name, settings = _resolve_overlay_for_server(project=tmp_path)
-        assert path == tmp_path
-        assert name == "test"
-        assert settings == "teatree.settings"
-
-    def test_explicit_project_missing_pyproject(self, tmp_path: Path) -> None:
-        """--project without pyproject.toml raises SystemExit."""
-        with (
-            patch.object(config_mod, "discover_overlays", return_value=[]),
-            pytest.raises(ClickExit),
-        ):
-            _resolve_overlay_for_server(project=tmp_path)
-
-    def test_explicit_project_toml_overlay_class(self, tmp_path: Path) -> None:
-        """--project with a TOML-only overlay uses overlay_class as settings."""
-        (tmp_path / "pyproject.toml").write_text("[project]\n")
-        entry = self._make_entry(overlay_class="myapp.settings")
-        with (
-            patch.object(config_mod, "discover_overlays", return_value=[entry]),
-            patch.object(config_mod, "discover_active_overlay", return_value=entry),
-        ):
-            _, _, settings = _resolve_overlay_for_server(project=tmp_path)
-        assert settings == "myapp.settings"
-
-    def test_auto_multiple_overlays_errors(self) -> None:
-        """Multiple entry-point overlays without --project errors."""
-        entries = [
-            self._make_entry(name="a"),
-            self._make_entry(name="b"),
-        ]
-        with (
-            patch.object(config_mod, "discover_overlays", return_value=entries),
-            pytest.raises(ClickExit),
-        ):
-            _resolve_overlay_for_server()
-
-    def test_auto_no_overlay_errors(self) -> None:
-        """No overlay found at all errors."""
-        with (
-            patch.object(config_mod, "discover_overlays", return_value=[]),
-            patch.object(config_mod, "discover_active_overlay", return_value=None),
-            pytest.raises(ClickExit),
-        ):
-            _resolve_overlay_for_server()
-
-    def test_auto_no_project_path_errors(self) -> None:
-        """Overlay without project_path configured errors."""
-        entry = self._make_entry(project_path=None)
-        with (
-            patch.object(config_mod, "discover_overlays", return_value=[entry]),
-            pytest.raises(ClickExit),
-        ):
-            _resolve_overlay_for_server()
-
-    def test_auto_single_overlay_success(self, tmp_path: Path) -> None:
-        """Single entry-point overlay with project_path auto-resolves."""
-        entry = self._make_entry(project_path=tmp_path)
-        with patch.object(config_mod, "discover_overlays", return_value=[entry]):
-            path, name, settings = _resolve_overlay_for_server()
-        assert path == tmp_path
-        assert name == "test"
-        assert settings == "teatree.settings"
-
-    def test_auto_toml_overlay_settings(self, tmp_path: Path) -> None:
-        """TOML-only overlay_class is used as settings_module."""
-        entry = self._make_entry(
-            overlay_class="custom.settings",
-            project_path=tmp_path,
-        )
-        with (
-            patch.object(config_mod, "discover_overlays", return_value=[entry]),
-            patch.object(config_mod, "discover_active_overlay", return_value=entry),
-        ):
-            _, _, settings = _resolve_overlay_for_server()
-        assert settings == "custom.settings"
 
 
 class TestCheckUpdateCommand:

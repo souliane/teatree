@@ -325,7 +325,7 @@ class GitLabSyncBackend(SyncBackend):
         """Upsert tickets for issues assigned to *username* that have no MR yet.
 
         Tickets keyed by the same ``issue_url`` are consolidated with MR-based
-        tickets so each ticket renders as a single dashboard row.
+        tickets so each ticket is represented by a single row.
         """
         try:
             issues = client.list_open_issues_for_assignee(username)

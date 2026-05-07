@@ -37,7 +37,6 @@ INSTALLED_APPS = [
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
-    "django_htmx",
     "django_rich",
     "django_tasks",
     "django_tasks_db",
@@ -48,14 +47,12 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
-    "teatree.core.middleware.LocalhostOnlyMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
-    "django_htmx.middleware.HtmxMiddleware",
 ]
 
 ROOT_URLCONF = "teatree.urls"
@@ -91,9 +88,6 @@ STATIC_URL = "static/"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 LOGGING = default_logging("teatree")
-
-# Framework-level config (not overlay-specific)
-TEATREE_TERMINAL_MODE = "new-tab"
 
 # Operation timeouts (seconds).  0 = no timeout.
 # Override per-overlay via OverlayBase.get_timeouts() or per-user

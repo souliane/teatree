@@ -15,7 +15,6 @@ from pathlib import Path
 import typer
 
 import teatree.cli.agent as _agent
-import teatree.cli.dashboard as _dashboard
 import teatree.cli.info as _info
 import teatree.cli.sessions as _sessions
 from teatree.cli.assess import assess_app
@@ -23,6 +22,7 @@ from teatree.cli.ci import ci_app
 from teatree.cli.config import config_app
 from teatree.cli.doctor import DoctorService, IntrospectionHelpers, doctor_app
 from teatree.cli.infra import infra_app
+from teatree.cli.loop import loop_app
 from teatree.cli.overlay import OverlayAppBuilder
 from teatree.cli.overlay_dev import overlay_dev_app
 from teatree.cli.review import review_app
@@ -81,7 +81,6 @@ app.command()(_agent.agent)
 app.command()(_sessions.sessions)
 app.command()(_info.info)
 app.add_typer(config_app, name="config")
-app.command()(_dashboard.dashboard)
 app.add_typer(ci_app, name="ci")
 app.add_typer(review_app, name="review")
 app.add_typer(review_request_app, name="review-request")
@@ -91,6 +90,7 @@ app.add_typer(setup_app, name="setup")
 app.add_typer(assess_app, name="assess")
 app.add_typer(overlay_dev_app, name="overlay")
 app.add_typer(infra_app, name="infra")
+app.add_typer(loop_app, name="loop")
 
 
 # ── Django-dependent overlay command groups ───────────────────────────

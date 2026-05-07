@@ -2,9 +2,8 @@
 
 ## Pyramid
 
-1. **Integration tests** (bulk): exercise Django views, management commands, and selectors with the test client and real DB. Cover happy paths.
+1. **Integration tests** (bulk): exercise Django management commands and selectors with `call_command` and real DB. Cover happy paths.
 2. **Unit tests** (edge cases): isolated functions with complex branching, error handling, boundary values.
-3. **E2E tests** (`e2e/`): browser-level tests with Playwright for dashboard panels and critical user flows.
 
 ## Conventions
 

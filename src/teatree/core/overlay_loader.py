@@ -54,7 +54,7 @@ def get_all_overlay_names() -> list[str]:
 
     Unlike ``get_all_overlays()``, this includes TOML entries that declare a
     ``path`` but no ``class`` — they can't be instantiated as OverlayBase but
-    should appear in the dashboard overlay selector for ticket filtering.
+    should appear when listing overlays known to teatree (for ticket filtering, etc.).
     """
     from teatree.config import load_config  # noqa: PLC0415
 

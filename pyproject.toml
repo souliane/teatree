@@ -16,13 +16,12 @@ classifiers = [
 dependencies = [
   "django>=5.2,<6.1",
   "django-fsm-2>=4",
-  "django-htmx>=1.27",
   "django-rich>=2.2",
   "django-tasks>=0.9",
   "django-tasks-db>=0.12",
   "django-typer>=3.3",
   "httpx>=0.27",
-  "uvicorn>=0.30",
+  "tomlkit>=0.13",
 ]
 scripts = { t3 = "t3_bootstrap:main" }
 
@@ -265,7 +264,6 @@ allowed-unresolved-imports = [
   "lib.env",      # Legacy scripts — guarded by try/except ImportError
   "lib.gitlab",   # Legacy scripts — guarded by try/except ImportError
   "lib.registry", # Legacy scripts — guarded by try/except ImportError
-  "tomlkit",
 ]
 
 [tool.ty.rules]

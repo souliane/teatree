@@ -50,7 +50,6 @@ class TestBuildCliReferenceFromApp:
         assert "# CLI Reference" in result
         assert "`t3`" in result
         assert "`t3 config`" in result
-        assert "`t3 dashboard`" in result
 
     def test_resolves_overlay_proxy_leaves_to_real_typer_app(self) -> None:
         """Overlay proxy leaves tagged with ``overlay_proxy`` render real leaf options."""

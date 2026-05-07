@@ -3,42 +3,27 @@ from datetime import timedelta
 from pathlib import Path
 
 import pytest
-from django.core.cache import cache as django_cache
 from django.test import TestCase
 from django.utils import timezone
 
-from teatree.core.models import Session, Task, TaskAttempt, Ticket, Worktree
+from teatree.core.models import Session, Task, TaskAttempt, Ticket
 from teatree.core.selectors import (
-    _build_mr_rows,
     _cached,
     _check_mr,
-    _first_mr_title,
     _humanize_duration,
     _last_result_for_tasks,
     _list_of_str,
     _panel_cache,
     _uptime_from_epoch_ms,
-    _variant_url,
     build_action_required,
     build_active_sessions,
     build_automation_summary,
-    build_dashboard_snapshot,
-    build_dashboard_summary,
-    build_dashboard_ticket_rows,
     build_headless_queue,
     build_interactive_queue,
-    build_pending_reviews,
     build_recent_activity,
     build_task_detail,
-    build_worktree_rows,
     invalidate_panel_cache,
 )
-from teatree.core.selectors._types import DashboardTicketRow
-from teatree.core.selectors.dashboard import (
-    _count_needs_reply,
-    _mr_latest_updated_at,
-)
-from teatree.core.sync import PENDING_REVIEWS_CACHE_KEY
 
 
 class TestCached:
@@ -83,327 +68,6 @@ class TestInvalidatePanelCache:
         _panel_cache.clear()
 
 
-class TestBuildDashboardSummary(TestCase):
-    def test_counts_in_flight_work(self) -> None:
-        active_ticket = Ticket.objects.create(issue_url="https://example.com/issues/101", state=Ticket.State.STARTED)
-        done_ticket = Ticket.objects.create(issue_url="https://example.com/issues/102", state=Ticket.State.DELIVERED)
-        active_session = Session.objects.create(ticket=active_ticket, agent_id="codex")
-        done_session = Session.objects.create(ticket=done_ticket, agent_id="claude")
-
-        Worktree.objects.create(
-            ticket=active_ticket,
-            repo_path="/tmp/backend",
-            branch="feature/101",
-            state=Worktree.State.READY,
-        )
-        Worktree.objects.create(
-            ticket=done_ticket,
-            repo_path="/tmp/frontend",
-            branch="feature/102",
-            state=Worktree.State.CREATED,
-        )
-        Task.objects.create(
-            ticket=active_ticket, session=active_session, execution_target=Task.ExecutionTarget.HEADLESS
-        )
-        Task.objects.create(
-            ticket=active_ticket,
-            session=active_session,
-            execution_target=Task.ExecutionTarget.INTERACTIVE,
-        )
-        Task.objects.create(
-            ticket=done_ticket,
-            session=done_session,
-            execution_target=Task.ExecutionTarget.INTERACTIVE,
-            status=Task.Status.COMPLETED,
-        )
-
-        summary = build_dashboard_summary()
-
-        assert summary.in_flight_tickets == 1
-        assert summary.active_worktrees == 1
-        assert summary.pending_headless_tasks == 1
-        assert summary.pending_interactive_tasks == 1
-
-    def test_active_worktrees_kpi_matches_panel_size(self) -> None:
-        """KPI count must equal the worktrees panel row count — bug hunt 2026-04-25 (#455 §4)."""
-        import tempfile  # noqa: PLC0415
-
-        with tempfile.TemporaryDirectory(prefix="teatree-455-kpi-") as tmp:
-            # Two worktrees in CREATED state on a non-delivered ticket — these must both
-            # be counted (the old `active()` filter excluded CREATED, mismatching the panel).
-            ticket = Ticket.objects.create(state=Ticket.State.STARTED)
-            Worktree.objects.create(
-                ticket=ticket,
-                repo_path="org/backend",
-                branch="b1",
-                state=Worktree.State.CREATED,
-                extra={"worktree_path": tmp},
-            )
-            Worktree.objects.create(
-                ticket=ticket,
-                repo_path="org/frontend",
-                branch="b2",
-                state=Worktree.State.READY,
-                extra={"worktree_path": tmp},
-            )
-            # Delivered ticket worktree — must NOT count.
-            delivered = Ticket.objects.create(state=Ticket.State.DELIVERED)
-            Worktree.objects.create(
-                ticket=delivered,
-                repo_path="org/dead",
-                branch="b3",
-                state=Worktree.State.READY,
-                extra={"worktree_path": tmp},
-            )
-
-            summary = build_dashboard_summary()
-            rows = build_worktree_rows()
-
-            assert summary.active_worktrees == len(rows) == 2
-
-    def test_active_worktrees_kpi_excludes_stale(self) -> None:
-        """Worktrees pointing at non-existent on-disk paths must drop out — bug hunt 2026-04-25 (#455 §5)."""
-        ticket = Ticket.objects.create(state=Ticket.State.STARTED)
-        Worktree.objects.create(
-            ticket=ticket,
-            repo_path="org/orphan",
-            branch="orphan",
-            state=Worktree.State.READY,
-            extra={"worktree_path": "/tmp/teatree-455-does-not-exist-on-disk"},
-        )
-
-        summary = build_dashboard_summary()
-        rows = build_worktree_rows()
-
-        assert summary.active_worktrees == len(rows) == 0
-
-
-class TestBuildPendingReviews(TestCase):
-    def test_returns_empty_when_no_cache(self) -> None:
-        assert build_pending_reviews() == []
-
-    def test_returns_rows_from_cache(self) -> None:
-        django_cache.set(
-            PENDING_REVIEWS_CACHE_KEY,
-            [
-                {
-                    "url": "https://github.com/org/repo/pull/1",
-                    "title": "Add feature",
-                    "repo": "repo",
-                    "iid": "1",
-                    "author": "bob",
-                    "draft": "False",
-                    "updated_at": "2026-04-09",
-                },
-            ],
-        )
-
-        rows = build_pending_reviews()
-
-        assert len(rows) == 1
-        assert rows[0].repo == "repo"
-        assert rows[0].author == "bob"
-        assert not rows[0].draft
-
-        django_cache.delete(PENDING_REVIEWS_CACHE_KEY)
-
-    def test_summary_includes_pending_reviews_count(self) -> None:
-        django_cache.set(
-            PENDING_REVIEWS_CACHE_KEY,
-            [{"url": "u", "title": "t", "repo": "r", "iid": "1", "author": "a", "draft": "False", "updated_at": ""}],
-        )
-
-        summary = build_dashboard_summary()
-
-        assert summary.pending_reviews == 1
-
-        django_cache.delete(PENDING_REVIEWS_CACHE_KEY)
-
-
-class TestBuildDashboardTicketRows(TestCase):
-    def test_annotates_related_counts(self) -> None:
-        first_ticket = Ticket.objects.create(
-            issue_url="https://example.com/issues/201",
-            variant="ops",
-            repos=["backend", "frontend"],
-            state=Ticket.State.STARTED,
-            extra={
-                "tracker_status": "Process::Doing",
-                "issue_title": "Add login feature",
-                "mrs": {
-                    "https://gitlab.com/org/backend/-/merge_requests/10": {
-                        "url": "https://gitlab.com/org/backend/-/merge_requests/10",
-                        "title": "feat: add login",
-                        "repo": "backend",
-                        "iid": 10,
-                        "branch": "feat/login",
-                        "draft": False,
-                        "pipeline_status": "success",
-                        "pipeline_url": "https://gitlab.com/pipelines/1",
-                        "approvals": {"count": 1, "required": 1},
-                    },
-                },
-            },
-        )
-        second_ticket = Ticket.objects.create(
-            issue_url="https://example.com/issues/202",
-            repos=["docs"],
-            state=Ticket.State.CODED,
-        )
-        delivered_ticket = Ticket.objects.create(
-            issue_url="https://example.com/issues/203",
-            state=Ticket.State.DELIVERED,
-        )
-
-        first_session = Session.objects.create(ticket=first_ticket, agent_id="codex")
-        second_session = Session.objects.create(ticket=second_ticket, agent_id="claude")
-        delivered_session = Session.objects.create(ticket=delivered_ticket, agent_id="other")
-
-        Worktree.objects.create(
-            ticket=first_ticket,
-            repo_path="/tmp/one",
-            branch="feature/201",
-            state=Worktree.State.PROVISIONED,
-        )
-        Worktree.objects.create(
-            ticket=first_ticket,
-            repo_path="/tmp/two",
-            branch="feature/201-frontend",
-            state=Worktree.State.READY,
-        )
-        Worktree.objects.create(
-            ticket=second_ticket,
-            repo_path="/tmp/docs",
-            branch="feature/202",
-            state=Worktree.State.CREATED,
-        )
-        Task.objects.create(
-            ticket=first_ticket,
-            session=first_session,
-            execution_target=Task.ExecutionTarget.HEADLESS,
-            status=Task.Status.CLAIMED,
-        )
-        Task.objects.create(
-            ticket=first_ticket,
-            session=first_session,
-            execution_target=Task.ExecutionTarget.INTERACTIVE,
-            status=Task.Status.FAILED,
-        )
-        Task.objects.create(
-            ticket=second_ticket,
-            session=second_session,
-            execution_target=Task.ExecutionTarget.HEADLESS,
-            status=Task.Status.COMPLETED,
-        )
-        Task.objects.create(
-            ticket=delivered_ticket,
-            session=delivered_session,
-            execution_target=Task.ExecutionTarget.HEADLESS,
-        )
-
-        rows = build_dashboard_ticket_rows()
-
-        assert [row.ticket_id for row in rows] == [first_ticket.pk, second_ticket.pk]
-        assert rows[0].display_id == "201"
-        assert rows[0].variant == "ops"
-        assert rows[0].repos == ["backend", "frontend"]
-        assert rows[0].tracker_status == "Doing"
-        assert rows[0].issue_title == "Add login feature"
-        assert rows[0].ongoing_tasks == 1  # FAILED tasks excluded
-        assert len(rows[0].mrs) == 1
-        assert rows[0].mrs[0].repo == "backend"
-        assert rows[0].mrs[0].pipeline_status == "success"
-        assert rows[0].mrs[0].approval_count == 1
-        assert rows[1].ongoing_tasks == 0
-        assert rows[1].mrs == []
-        assert rows[1].tracker_status == ""
-
-    def test_includes_slack_and_e2e_fields(self) -> None:
-        Ticket.objects.create(
-            issue_url="https://example.com/issues/301",
-            repos=["backend"],
-            state=Ticket.State.STARTED,
-            extra={
-                "mrs": {
-                    "https://gitlab.com/org/backend/-/merge_requests/20": {
-                        "url": "https://gitlab.com/org/backend/-/merge_requests/20",
-                        "title": "feat: with slack link",
-                        "repo": "backend",
-                        "iid": 20,
-                        "branch": "feat/slack",
-                        "draft": False,
-                        "pipeline_status": "success",
-                        "pipeline_url": "https://gitlab.com/pipelines/2",
-                        "approvals": {"count": 1, "required": 1},
-                        "review_requested": True,
-                        "reviewer_names": ["alice"],
-                        "review_channel": "#backend-review",
-                        "review_permalink": "https://slack.com/archives/C123/p456",
-                        "e2e_test_plan_url": "https://gitlab.com/org/backend/-/merge_requests/20#note_99",
-                    },
-                    "https://gitlab.com/org/backend/-/merge_requests/21": {
-                        "url": "https://gitlab.com/org/backend/-/merge_requests/21",
-                        "title": "feat: no slack data",
-                        "repo": "backend",
-                        "iid": 21,
-                        "branch": "feat/no-slack",
-                        "draft": False,
-                        "review_requested": True,
-                        "reviewer_names": ["bob"],
-                    },
-                },
-            },
-        )
-
-        rows = build_dashboard_ticket_rows()
-        assert len(rows) == 1
-        mrs = rows[0].mrs
-        assert len(mrs) == 2
-
-        # MR with Slack data
-        mr_with = next(m for m in mrs if m.iid == "20")
-        assert mr_with.review_channel == "#backend-review"
-        assert mr_with.review_permalink == "https://slack.com/archives/C123/p456"
-        assert mr_with.e2e_test_plan_url == "https://gitlab.com/org/backend/-/merge_requests/20#note_99"
-
-        # MR without Slack data
-        mr_without = next(m for m in mrs if m.iid == "21")
-        assert mr_without.review_channel == ""
-        assert mr_without.review_permalink == ""
-        assert mr_without.e2e_test_plan_url == ""
-
-
-class TestTicketRowFiltering(TestCase):
-    def test_filters_synced_tickets_with_no_data(self) -> None:
-        """Synced tickets with MR-only issue_url and no title/MRs are hidden."""
-        # This ticket has an MR URL as issue_url but no issue/work_item URL, no title, no MRs
-        Ticket.objects.create(
-            issue_url="https://gitlab.com/org/repo/-/merge_requests/999",
-            state=Ticket.State.STARTED,
-        )
-        # This ticket has a proper issue URL — should be shown
-        Ticket.objects.create(
-            issue_url="https://gitlab.com/org/repo/-/issues/100",
-            state=Ticket.State.STARTED,
-            extra={"issue_title": "Real ticket"},
-        )
-        rows = build_dashboard_ticket_rows()
-        assert len(rows) == 1
-        assert rows[0].issue_title == "Real ticket"
-
-    def test_keeps_tickets_with_issue_link(self) -> None:
-        """Tickets with a real issue URL are shown even without MRs."""
-        Ticket.objects.create(issue_url="https://gitlab.com/org/repo/-/issues/42", state=Ticket.State.STARTED)
-        rows = build_dashboard_ticket_rows()
-        assert len(rows) == 1
-
-    def test_hides_tickets_with_no_visible_data(self) -> None:
-        """Tickets with no issue link, no title, and no MRs are hidden."""
-        Ticket.objects.create(overlay="test", state=Ticket.State.STARTED)
-        rows = build_dashboard_ticket_rows()
-        assert len(rows) == 0
-
-
 class TestBuildInteractiveQueue(TestCase):
     def setUp(self) -> None:
         _panel_cache.clear()
@@ -435,12 +99,12 @@ class TestBuildInteractiveQueue(TestCase):
         )
 
         queue = build_interactive_queue()
-        snapshot = build_dashboard_snapshot()
+        pending = build_interactive_queue(pending_only=True)
 
         assert [row.task_id for row in queue] == [first.pk, second.pk]
         assert queue[0].last_error == ""
         assert queue[1].claimed_by == "codex-terminal"
-        assert snapshot.interactive_queue == build_interactive_queue(pending_only=True)
+        assert pending == build_interactive_queue(pending_only=True)
 
     def test_includes_last_error_from_attempts(self) -> None:
         ticket = Ticket.objects.create(state=Ticket.State.STARTED)
@@ -1177,215 +841,6 @@ class TestBuildActionRequired(TestCase):
         assert any(i.kind == "needs_review_request" for i in items)
 
 
-class TestVariantUrl:
-    def test_formats_correctly(self) -> None:
-        from unittest.mock import MagicMock, patch  # noqa: PLC0415
-
-        mock_overlay = MagicMock()
-        mock_overlay.config.dev_env_url = "https://{variant}.dev.example.com"
-        with patch(
-            "teatree.core.overlay_loader._discover_overlays",
-            return_value={"test": mock_overlay},
-        ):
-            assert _variant_url("OPS") == "https://ops.dev.example.com"
-
-    def test_empty_template(self) -> None:
-        from unittest.mock import MagicMock, patch  # noqa: PLC0415
-
-        mock_overlay = MagicMock()
-        mock_overlay.config.dev_env_url = ""
-        with patch(
-            "teatree.core.overlay_loader._discover_overlays",
-            return_value={"test": mock_overlay},
-        ):
-            assert _variant_url("ops") == ""
-
-    def test_empty_variant(self) -> None:
-        assert _variant_url("") == ""
-
-    def test_no_overlay_returns_empty(self) -> None:
-        from unittest.mock import patch  # noqa: PLC0415
-
-        with patch("teatree.core.overlay_loader._discover_overlays", return_value={}):
-            assert _variant_url("ops") == ""
-
-    def test_bad_template(self) -> None:
-        from unittest.mock import MagicMock, patch  # noqa: PLC0415
-
-        mock_overlay = MagicMock()
-        mock_overlay.config.dev_env_url = "{missing_key}"
-        with patch(
-            "teatree.core.overlay_loader._discover_overlays",
-            return_value={"test": mock_overlay},
-        ):
-            assert _variant_url("ops") == ""
-
-
-class TestBuildMrRows(TestCase):
-    def test_non_dict_mrs_data(self) -> None:
-        ticket = Ticket.objects.create(
-            state=Ticket.State.STARTED,
-            extra={"mrs": "not-a-dict"},
-        )
-        assert _build_mr_rows(ticket) == []
-
-    def test_non_dict_mr_entry(self) -> None:
-        ticket = Ticket.objects.create(
-            state=Ticket.State.STARTED,
-            extra={"mrs": {"url1": "not-a-dict"}},
-        )
-        assert _build_mr_rows(ticket) == []
-
-    def test_terminal_state_mrs_excluded(self) -> None:
-        """Merged and closed MRs must not appear in the dashboard MR rows.
-
-        Merged-MR exclusion is the bug hunt 2026-04-25 (#455 §2) regression;
-        closed-without-merge MRs are the same conceptual case (no action possible).
-        """
-        ticket = Ticket.objects.create(
-            state=Ticket.State.STARTED,
-            extra={
-                "mrs": {
-                    "https://gitlab.com/org/backend/-/merge_requests/10": {
-                        "url": "https://gitlab.com/org/backend/-/merge_requests/10",
-                        "title": "merged",
-                        "repo": "backend",
-                        "iid": "10",
-                        "branch": "feat/x",
-                        "draft": False,
-                        "state": "merged",
-                    },
-                    "https://gitlab.com/org/backend/-/merge_requests/11": {
-                        "url": "https://gitlab.com/org/backend/-/merge_requests/11",
-                        "title": "still open",
-                        "repo": "backend",
-                        "iid": "11",
-                        "branch": "feat/y",
-                        "draft": False,
-                        "state": "opened",
-                    },
-                    "https://gitlab.com/org/backend/-/merge_requests/12": {
-                        "url": "https://gitlab.com/org/backend/-/merge_requests/12",
-                        "title": "abandoned",
-                        "repo": "backend",
-                        "iid": "12",
-                        "branch": "feat/z",
-                        "draft": False,
-                        "state": "closed",
-                    },
-                },
-            },
-        )
-        rows = _build_mr_rows(ticket)
-        assert [r.iid for r in rows] == ["11"]
-
-    def test_passes_approvals_dismissed_metadata(self) -> None:
-        """When sync has flagged a push-reset dismissal, the dashboard row carries it through."""
-        ticket = Ticket.objects.create(
-            state=Ticket.State.STARTED,
-            extra={
-                "mrs": {
-                    "url1": {
-                        "url": "https://gitlab.com/org/backend/-/merge_requests/10",
-                        "title": "feat",
-                        "repo": "backend",
-                        "iid": "10",
-                        "branch": "feat/x",
-                        "draft": False,
-                        "approvals_dismissed_at": "2026-05-01T11:00:00Z",
-                        "dismissed_approvers": ["alice", "bob"],
-                    },
-                },
-            },
-        )
-        rows = _build_mr_rows(ticket)
-        assert len(rows) == 1
-        assert rows[0].approvals_dismissed_at == "2026-05-01T11:00:00Z"
-        assert rows[0].dismissed_approvers == ["alice", "bob"]
-
-    def test_approvals_dismissed_defaults_when_absent(self) -> None:
-        ticket = Ticket.objects.create(
-            state=Ticket.State.STARTED,
-            extra={
-                "mrs": {
-                    "url1": {
-                        "url": "https://gitlab.com/org/backend/-/merge_requests/10",
-                        "title": "feat",
-                        "repo": "backend",
-                        "iid": "10",
-                        "branch": "feat/x",
-                        "draft": False,
-                    },
-                },
-            },
-        )
-        rows = _build_mr_rows(ticket)
-        assert rows[0].approvals_dismissed_at == ""
-        assert rows[0].dismissed_approvers == []
-
-    def test_non_dict_approvals(self) -> None:
-        ticket = Ticket.objects.create(
-            state=Ticket.State.STARTED,
-            extra={
-                "mrs": {
-                    "url1": {
-                        "url": "https://gitlab.com/org/backend/-/merge_requests/10",
-                        "title": "feat",
-                        "repo": "backend",
-                        "iid": "10",
-                        "branch": "feat/x",
-                        "draft": False,
-                        "approvals": "not-a-dict",
-                    },
-                },
-            },
-        )
-        rows = _build_mr_rows(ticket)
-        assert len(rows) == 1
-        assert rows[0].approval_count == 0
-
-    def test_iid_extracted_from_url(self) -> None:
-        """When iid is missing, it should be extracted from the URL."""
-        ticket = Ticket.objects.create(
-            state=Ticket.State.STARTED,
-            extra={
-                "mrs": {
-                    "url1": {
-                        "url": "https://gitlab.com/org/backend/-/merge_requests/42",
-                        "title": "feat",
-                        "repo": "backend",
-                        "branch": "feat/x",
-                        "draft": False,
-                        # No "iid" key
-                    },
-                },
-            },
-        )
-        rows = _build_mr_rows(ticket)
-        assert len(rows) == 1
-        assert rows[0].iid == "42"
-
-    def test_iid_empty_when_no_match(self) -> None:
-        """When iid is missing and URL doesn't match, iid stays empty."""
-        ticket = Ticket.objects.create(
-            state=Ticket.State.STARTED,
-            extra={
-                "mrs": {
-                    "url1": {
-                        "url": "https://example.com/no-match",
-                        "title": "feat",
-                        "repo": "backend",
-                        "branch": "feat/x",
-                        "draft": False,
-                    },
-                },
-            },
-        )
-        rows = _build_mr_rows(ticket)
-        assert len(rows) == 1
-        assert rows[0].iid == ""
-
-
 class TestListOfStr:
     def test_returns_empty_for_non_list(self) -> None:
         assert _list_of_str("not-a-list") == []
@@ -1540,29 +995,6 @@ class TestBuildRecentActivity(TestCase):
         assert rows[0].error != ""
 
 
-class TestBuildWorktreeRows(TestCase):
-    def test_excludes_delivered_tickets(self) -> None:
-        active_ticket = Ticket.objects.create(state=Ticket.State.STARTED)
-        delivered_ticket = Ticket.objects.create(state=Ticket.State.DELIVERED)
-        Worktree.objects.create(
-            ticket=active_ticket,
-            repo_path="/tmp/active",
-            branch="feat/active",
-            state=Worktree.State.READY,
-        )
-        Worktree.objects.create(
-            ticket=delivered_ticket,
-            repo_path="/tmp/delivered",
-            branch="feat/delivered",
-            state=Worktree.State.READY,
-        )
-
-        rows = build_worktree_rows()
-
-        assert len(rows) == 1
-        assert rows[0].ticket_id == active_ticket.pk
-
-
 class TestUptimeFromEpochMs:
     def test_minutes(self) -> None:
         now_ms = int(timezone.now().timestamp() * 1000)
@@ -1573,39 +1005,6 @@ class TestUptimeFromEpochMs:
         now_ms = int(timezone.now().timestamp() * 1000)
         # 2 hours and 30 minutes ago
         assert _uptime_from_epoch_ms(now_ms - (2 * 60 + 30) * 60_000) == "2h30m"
-
-
-class TestFirstMrTitle(TestCase):
-    def test_mrs_not_dict(self) -> None:
-        """When mrs is not a dict, return empty string (branch 631->637)."""
-        ticket = Ticket.objects.create(
-            state=Ticket.State.STARTED,
-            extra={"mrs": "not-a-dict"},
-        )
-        assert _first_mr_title(ticket) == ""
-
-    def test_non_dict_mr_value(self) -> None:
-        """When an mr entry is not a dict, skip it (branch 633->632)."""
-        ticket = Ticket.objects.create(
-            state=Ticket.State.STARTED,
-            extra={"mrs": {"url1": "not-a-dict"}},
-        )
-        assert _first_mr_title(ticket) == ""
-
-    def test_empty_title(self) -> None:
-        """When mr dict has empty title, skip it (branch 635->632)."""
-        ticket = Ticket.objects.create(
-            state=Ticket.State.STARTED,
-            extra={"mrs": {"url1": {"title": ""}}},
-        )
-        assert _first_mr_title(ticket) == ""
-
-    def test_returns_first_nonempty_title(self) -> None:
-        ticket = Ticket.objects.create(
-            state=Ticket.State.STARTED,
-            extra={"mrs": {"url1": {"title": ""}, "url2": {"title": "My Feature"}}},
-        )
-        assert _first_mr_title(ticket) == "My Feature"
 
 
 class TestLastResultForTasks(TestCase):
@@ -1779,14 +1178,6 @@ class TestBuildAutomationSummary(TestCase):
         assert summary.total_tokens_24h == 0
         assert summary.total_cost_24h == pytest.approx(0.0)
 
-    def test_included_in_snapshot(self) -> None:
-        _panel_cache.clear()
-        snapshot = build_dashboard_snapshot()
-
-        assert snapshot.automation is not None
-        assert snapshot.automation.running == 0
-        _panel_cache.clear()
-
 
 class TestOverlayFiltering(TestCase):
     """Verify that overlay= parameter filters all selector functions."""
@@ -1794,37 +1185,6 @@ class TestOverlayFiltering(TestCase):
     def setUp(self) -> None:
         super().setUp()
         _panel_cache.clear()
-
-    def test_summary_filters_by_overlay(self) -> None:
-        Ticket.objects.create(overlay="alpha", state=Ticket.State.STARTED)
-        Ticket.objects.create(overlay="beta", state=Ticket.State.STARTED)
-
-        all_summary = build_dashboard_summary()
-        alpha_summary = build_dashboard_summary(overlay="alpha")
-
-        assert all_summary.in_flight_tickets == 2
-        assert alpha_summary.in_flight_tickets == 1
-
-    def test_ticket_rows_filter_by_overlay(self) -> None:
-        Ticket.objects.create(
-            overlay="alpha", state=Ticket.State.STARTED, issue_url="https://gitlab.com/o/r/-/issues/1"
-        )
-        Ticket.objects.create(overlay="beta", state=Ticket.State.STARTED, issue_url="https://gitlab.com/o/r/-/issues/2")
-
-        all_rows = build_dashboard_ticket_rows()
-        alpha_rows = build_dashboard_ticket_rows(overlay="alpha")
-
-        assert len(all_rows) == 2
-        assert len(alpha_rows) == 1
-
-    def test_worktree_rows_filter_by_overlay(self) -> None:
-        t1 = Ticket.objects.create(overlay="alpha", state=Ticket.State.STARTED)
-        t2 = Ticket.objects.create(overlay="beta", state=Ticket.State.STARTED)
-        Worktree.objects.create(ticket=t1, overlay="alpha", repo_path="be", branch="a")
-        Worktree.objects.create(ticket=t2, overlay="beta", repo_path="be", branch="b")
-
-        assert len(build_worktree_rows()) == 2
-        assert len(build_worktree_rows(overlay="alpha")) == 1
 
     def test_headless_queue_filters_by_overlay(self) -> None:
         t1 = Ticket.objects.create(overlay="alpha")
@@ -1852,61 +1212,3 @@ class TestOverlayFiltering(TestCase):
         assert all_summary.running == 2
         assert alpha_summary.running == 1
         assert alpha_summary.completed_24h == 1
-
-    def test_snapshot_uses_overlay_in_cache_keys(self) -> None:
-        Ticket.objects.create(overlay="alpha", state=Ticket.State.STARTED)
-        Ticket.objects.create(overlay="beta", state=Ticket.State.STARTED)
-
-        all_snap = build_dashboard_snapshot()
-        alpha_snap = build_dashboard_snapshot(overlay="alpha")
-
-        assert all_snap.summary.in_flight_tickets == 2
-        assert alpha_snap.summary.in_flight_tickets == 1
-        _panel_cache.clear()
-
-
-class TestBuildPendingReviewsEdgeCases(TestCase):
-    def test_returns_empty_when_cache_is_not_a_list(self) -> None:
-        django_cache.set(PENDING_REVIEWS_CACHE_KEY, "not-a-list")
-        assert build_pending_reviews() == []
-
-
-def _make_ticket_row(ticket_id: int) -> DashboardTicketRow:
-    return DashboardTicketRow(
-        ticket_id=ticket_id,
-        display_id="",
-        issue_url="",
-        has_issue=False,
-        issue_title="",
-        state="started",
-        tracker_status="",
-        notion_status="",
-        notion_url="",
-        variant="",
-        variant_url="",
-        repos=[],
-        ongoing_tasks=0,
-        total_tasks=0,
-        labels=[],
-        mrs=[],
-        transitions=[],
-    )
-
-
-class TestMrLatestUpdatedAt(TestCase):
-    def test_returns_empty_when_extra_is_not_dict(self) -> None:
-        ticket = Ticket.objects.create(overlay="test")
-        ticket.extra = "not-a-dict"
-        ticket.save()
-        assert _mr_latest_updated_at(_make_ticket_row(ticket.pk)) == ""
-
-    def test_returns_fallback_updated_at_when_mrs_is_not_dict(self) -> None:
-        ticket = Ticket.objects.create(overlay="test")
-        ticket.extra = {"mrs": "not-a-dict", "updated_at": "2026-01-01"}
-        ticket.save()
-        assert _mr_latest_updated_at(_make_ticket_row(ticket.pk)) == "2026-01-01"
-
-
-class TestCountNeedsReply:
-    def test_returns_zero_when_discussions_not_a_list(self) -> None:
-        assert _count_needs_reply({"discussions": "not-a-list"}) == 0

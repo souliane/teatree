@@ -18,7 +18,6 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │                 commands.                                                    │
 │ info            Show t3 installation, teatree/overlay sources, and editable  │
 │                 status.                                                      │
-│ dashboard       Migrate the database and start the dashboard dev server.     │
 │ config          Configuration and autoloading.                               │
 │ ci              CI pipeline helpers.                                         │
 │ review          Code review helpers.                                         │
@@ -29,6 +28,7 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │ assess          Codebase health assessment.                                  │
 │ overlay         Dev-mode overlay install/uninstall.                          │
 │ infra           Teatree-wide infrastructure services.                        │
+│ loop            Manage the long-lived fat loop.                              │
 │ teatree         Commands for the t3-teatree overlay.                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -115,25 +115,6 @@ Usage: t3 info [OPTIONS]
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
-╰──────────────────────────────────────────────────────────────────────────────╯
-```
-
-### `t3 dashboard`
-
-```
-Usage: t3 dashboard [OPTIONS]
-
- Migrate the database and start the dashboard dev server.
-
-╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --host           TEXT     Host to bind to [default: 127.0.0.1]               │
-│ --port           INTEGER  Port to serve on [default: 8000]                   │
-│ --project        PATH     Project root to serve from (worktree path).        │
-│ --workers        INTEGER  Number of background task workers to start (0 to   │
-│                           disable)                                           │
-│                           [default: 1]                                       │
-│ --stop                    Stop the running dashboard and exit.               │
-│ --help                    Show this message and exit.                        │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -707,6 +688,31 @@ Usage: t3 setup [OPTIONS] COMMAND [ARGS]...
 │ --skip-plugin               Skip Claude CLI plugin registration.             │
 │ --help                      Show this message and exit.                      │
 ╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ slack-bot  Register a per-overlay Slack bot and store its tokens via         │
+│            ``pass``.                                                         │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 setup slack-bot`
+
+```
+Usage: t3 setup slack-bot [OPTIONS]
+
+ Register a per-overlay Slack bot and store its tokens via ``pass``.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ *  --overlay                TEXT  Overlay name as registered in              │
+│                                   `~/.teatree.toml`.                         │
+│                                   [required]                                 │
+│    --reset                        Rotate the existing bot + app tokens; skip │
+│                                   the manifest URL.                          │
+│    --skip-smoke-test              Skip the round-trip DM verification.       │
+│    --config                 PATH  Path to teatree config (default:           │
+│                                   ~/.teatree.toml).                          │
+│                                   [default: /Users/adrien/.teatree.toml]     │
+│    --help                         Show this message and exit.                │
+╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
 ### `t3 assess`
@@ -884,6 +890,79 @@ Usage: t3 infra redis status [OPTIONS]
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
+### `t3 loop`
+
+```
+Usage: t3 loop [OPTIONS] COMMAND [ARGS]...
+
+ Manage the long-lived fat loop.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ tick    Run one tick: scan in parallel, dispatch, render statusline.         │
+│ status  Show the loop's last-rendered statusline.                            │
+│ start   Register the fat loop with the active Claude Code session.           │
+│ stop    Print the slot id to stop in the Claude Code session.                │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 loop tick`
+
+```
+Usage: t3 loop tick [OPTIONS]
+
+ Run one tick: scan in parallel, dispatch, render statusline.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --statusline-file        PATH  Override the statusline output path (test     │
+│                                hook).                                        │
+│ --json                         Emit the tick report as JSON.                 │
+│ --help                         Show this message and exit.                   │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 loop status`
+
+```
+Usage: t3 loop status [OPTIONS]
+
+ Show the loop's last-rendered statusline.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 loop start`
+
+```
+Usage: t3 loop start [OPTIONS]
+
+ Register the fat loop with the active Claude Code session.
+
+ The actual ``/loop`` registration is environment-specific — this
+ command emits the slot definition the user pastes into the Claude
+ Code session's loop register.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 loop stop`
+
+```
+Usage: t3 loop stop [OPTIONS]
+
+ Print the slot id to stop in the Claude Code session.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
 ### `t3 teatree`
 
 ```
@@ -1009,53 +1088,6 @@ Usage: t3 teatree config [OPTIONS] COMMAND [ARGS]...
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
-╰──────────────────────────────────────────────────────────────────────────────╯
-╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ enable-autostart   Install a system daemon to start the dashboard on login.  │
-│ disable-autostart  Remove the dashboard autostart daemon.                    │
-│ logs               Show dashboard daemon log output.                         │
-╰──────────────────────────────────────────────────────────────────────────────╯
-```
-
-##### `t3 teatree config enable-autostart`
-
-```
-Usage: t3 teatree config enable-autostart [OPTIONS]
-
- Install a system daemon to start the dashboard on login.
-
-╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --host        TEXT     Host to bind to [default: 127.0.0.1]                  │
-│ --port        INTEGER  Port to serve on [default: 8000]                      │
-│ --help                 Show this message and exit.                           │
-╰──────────────────────────────────────────────────────────────────────────────╯
-```
-
-##### `t3 teatree config disable-autostart`
-
-```
-Usage: t3 teatree config disable-autostart [OPTIONS]
-
- Remove the dashboard autostart daemon.
-
-╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --help          Show this message and exit.                                  │
-╰──────────────────────────────────────────────────────────────────────────────╯
-```
-
-##### `t3 teatree config logs`
-
-```
-Usage: t3 teatree config logs [OPTIONS]
-
- Show dashboard daemon log output.
-
-╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --lines   -n                 INTEGER  Number of lines to show [default: 50]  │
-│ --follow      --no-follow             Follow log output [default: no-follow] │
-│ --stderr      --no-stderr             Show stderr log instead of stdout      │
-│                                       [default: no-stderr]                   │
-│ --help                                Show this message and exit.            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -2032,10 +2064,7 @@ Usage: t3 teatree tasks work-next-sdk [OPTIONS]
 ```
 Usage: t3 teatree tasks work-next-user-input [OPTIONS]
 
-╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --claimed-by        TEXT  [default: worker]                                  │
-│ --help                    Show this message and exit.                        │
-╰──────────────────────────────────────────────────────────────────────────────╯
+ Claim and execute a user input task.
 ```
 
 #### `t3 teatree followup`
