@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from teatree.loop.statusline import StatuslineZones, default_path, render
+from teatree.loop.statusline import StatuslineEntry, StatuslineZones, default_path, render
 
 
 class TestStatuslineRender:
@@ -50,7 +50,7 @@ class TestStatuslineRender:
         target = tmp_path / "deep" / "nested" / "statusline.txt"
         zones = StatuslineZones(anchors=["x"], action_needed=[], in_flight=[])
 
-        render(zones, target=target)
+        render(zones, target=target, colorize=False)
 
         assert target.exists()
         assert target.read_text().strip() == "x"
@@ -99,6 +99,59 @@ class TestStatuslineRender:
 
         # Tmp file should be cleaned up.
         assert not list(tmp_path.glob("*.tmp"))
+
+
+class TestStatuslineEntry:
+    def test_url_renders_as_osc8_hyperlink(self, tmp_path: Path) -> None:
+        target = tmp_path / "statusline.txt"
+        entry = StatuslineEntry(text="PR #545: feat(loop)", url="https://github.com/owner/repo/pull/545")
+        zones = StatuslineZones(in_flight=[entry])
+
+        render(zones, target=target, colorize=True)
+        content = target.read_text()
+
+        assert "\033]8;;https://github.com/owner/repo/pull/545\033\\" in content
+        assert "PR #545: feat(loop)" in content
+        assert content.endswith("\n")
+
+    def test_no_color_falls_back_to_text_url(self, tmp_path: Path) -> None:
+        target = tmp_path / "statusline.txt"
+        entry = StatuslineEntry(text="PR #545", url="https://example.com/pr/545")
+        zones = StatuslineZones(in_flight=[entry])
+
+        render(zones, target=target, colorize=False)
+        content = target.read_text()
+
+        assert "\033]" not in content  # no OSC sequences
+        assert "PR #545 <https://example.com/pr/545>" in content
+
+
+class TestStatuslineColors:
+    def test_zone_specific_ansi_colors_when_colorize_true(self, tmp_path: Path) -> None:
+        target = tmp_path / "statusline.txt"
+        zones = StatuslineZones(
+            anchors=["tick @ 12:00"],
+            action_needed=["PR #1 failed"],
+            in_flight=["PR #2 open"],
+        )
+
+        render(zones, target=target, colorize=True)
+        content = target.read_text()
+
+        assert "\033[2;37m" in content  # dim for anchors
+        assert "\033[1;31m" in content  # red for action_needed
+        assert "\033[1;36m" in content  # cyan for in_flight
+        assert "\033[0m" in content  # reset after each line
+
+    def test_no_color_env_strips_ansi(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("NO_COLOR", "1")
+        target = tmp_path / "statusline.txt"
+        zones = StatuslineZones(anchors=["tick"], action_needed=["x"], in_flight=["y"])
+
+        render(zones, target=target)
+        content = target.read_text()
+
+        assert "\033" not in content
 
 
 class TestDefaultPath:

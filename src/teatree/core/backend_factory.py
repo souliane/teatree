@@ -5,6 +5,7 @@ This module bridges ``teatree.core`` (overlay registry) and
 need to extract tokens or branch on platform themselves.
 """
 
+from dataclasses import dataclass
 from functools import lru_cache
 
 from django.core.exceptions import ImproperlyConfigured
@@ -18,7 +19,22 @@ from teatree.backends.loader import (
     reset_backend_caches as _reset_loader_caches,
 )
 from teatree.backends.protocols import CIService, CodeHostBackend, MessagingBackend
-from teatree.core.overlay_loader import get_overlay
+from teatree.core.overlay_loader import get_all_overlays, get_overlay
+
+
+@dataclass(frozen=True, slots=True)
+class OverlayBackends:
+    """Backends and config slice for one registered overlay.
+
+    The loop tick builds one set of scanners per ``OverlayBackends`` so a
+    user with multiple overlays (e.g. one per GitHub identity) sees PRs,
+    issues, and Slack mentions from all of them in one statusline.
+    """
+
+    name: str
+    host: CodeHostBackend | None
+    messaging: MessagingBackend | None
+    ready_labels: tuple[str, ...]
 
 
 @lru_cache(maxsize=1)
@@ -59,6 +75,33 @@ def ci_service_from_overlay() -> CIService | None:
     )
 
 
+def iter_overlay_backends() -> list[OverlayBackends]:
+    """Yield :class:`OverlayBackends` for every registered overlay.
+
+    Overlays whose credentials don't resolve get ``host=None`` /
+    ``messaging=None`` — the caller decides whether to skip them.
+    """
+    out: list[OverlayBackends] = []
+    for name, overlay in get_all_overlays().items():
+        try:
+            host = get_code_host(overlay)
+        except (ImproperlyConfigured, ValueError):
+            host = None
+        try:
+            messaging = get_messaging(overlay)
+        except (ImproperlyConfigured, ValueError):
+            messaging = None
+        out.append(
+            OverlayBackends(
+                name=name,
+                host=host,
+                messaging=messaging,
+                ready_labels=tuple(overlay.config.ready_labels),
+            )
+        )
+    return out
+
+
 def reset_backend_caches() -> None:
     """Clear all per-overlay backend caches.
 
@@ -71,11 +114,13 @@ def reset_backend_caches() -> None:
 
 
 __all__ = [
+    "OverlayBackends",
     "ci_service_from_overlay",
     "code_host_from_overlay",
     "get_ci_service",
     "get_code_host",
     "get_messaging",
+    "iter_overlay_backends",
     "messaging_from_overlay",
     "reset_backend_caches",
 ]

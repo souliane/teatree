@@ -1,6 +1,6 @@
 ---
 name: teatree-bughunt
-description: Self-QA variant of batch mode — dogfood the teatree dashboard, find real bugs (missing items, state/action mismatches, broken links, stale data), file them, then fix them in worktrees. Use when the user says "bug hunt", "self-qa", "hunt bugs", "find and fix bugs", or "dogfood the dashboard".
+description: Self-QA variant of batch mode — dogfood the teatree loop and statusline, find real bugs (missing signals, broken links, stale data, scanner errors), file them, then fix them in worktrees. Use when the user says "bug hunt", "self-qa", "hunt bugs", or "find and fix bugs".
 metadata:
   version: 0.0.1
   subagent_safe: false
@@ -8,11 +8,11 @@ triggers:
   priority: 85
   keywords:
     - '\b(bug hunt|bug[- ]hunt|self[- ]qa|hunt (for )?bugs|find and fix bugs)\b'
-    - '\bdogfood the dashboard\b'
+    - '\bdogfood the loop\b'
 search_hints:
   - bug hunt
   - self-qa
-  - dogfood dashboard
+  - dogfood loop
   - hunt bugs
   - find and fix
 ---

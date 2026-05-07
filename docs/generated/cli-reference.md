@@ -903,7 +903,7 @@ Usage: t3 loop [OPTIONS] COMMAND [ARGS]...
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
 │ tick    Run one tick: scan in parallel, dispatch, render statusline.         │
 │ status  Show the loop's last-rendered statusline.                            │
-│ start   Register the fat loop with the active Claude Code session.           │
+│ start   Spawn a Claude Code session with the fat loop pre-registered.        │
 │ stop    Print the slot id to stop in the Claude Code session.                │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -915,9 +915,16 @@ Usage: t3 loop tick [OPTIONS]
 
  Run one tick: scan in parallel, dispatch, render statusline.
 
+ Without ``--overlay``, every registered overlay is scanned in
+ parallel — useful when you maintain multiple GitHub identities
+ (one per overlay). With ``--overlay <name>``, only that overlay's
+ credentials are used.
+
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --statusline-file        PATH  Override the statusline output path (test     │
 │                                hook).                                        │
+│ --overlay                TEXT  Restrict scanning to the named overlay        │
+│                                (default: scan every registered overlay).     │
 │ --json                         Emit the tick report as JSON.                 │
 │ --help                         Show this message and exit.                   │
 ╰──────────────────────────────────────────────────────────────────────────────╯
@@ -940,14 +947,18 @@ Usage: t3 loop status [OPTIONS]
 ```
 Usage: t3 loop start [OPTIONS]
 
- Register the fat loop with the active Claude Code session.
+ Spawn a Claude Code session with the fat loop pre-registered.
 
- The actual ``/loop`` registration is environment-specific — this
- command emits the slot definition the user pastes into the Claude
- Code session's loop register.
+ Looks for ``claude`` on ``PATH`` and runs it with an initial
+ ``/loop <cadence> !t3 loop tick`` prompt so the loop is registered
+ before the user types anything. When ``claude`` is not available or
+ the caller is already inside a Claude Code session, falls back to
+ printing the slash command for manual entry.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --help          Show this message and exit.                                  │
+│ --print-only          Print the /loop slot definition instead of spawning a  │
+│                       Claude Code session.                                   │
+│ --help                Show this message and exit.                            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
