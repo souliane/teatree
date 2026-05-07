@@ -19,6 +19,7 @@ from teatree.cli.setup import (
     _install_claude_plugin,
     _register_claude_marketplace,
     _remove_excluded_skills,
+    _repair_dep_drift,
     _run_apm_install,
     _strip_apm_hooks,
     _sync_skill_symlinks,
@@ -785,3 +786,116 @@ class TestEnsureT3Installed:
         assert str(bin_dir) in out
         assert "is not on your PATH" in out
         assert 'export PATH="' in out
+
+
+def _write_pyproject(repo: Path, deps: list[str]) -> Path:
+    """Build a minimal ``pyproject.toml`` declaring *deps* under ``[project]``."""
+    repo.mkdir(parents=True, exist_ok=True)
+    pyproject = repo / "pyproject.toml"
+    quoted = ", ".join(f'"{d}"' for d in deps)
+    pyproject.write_text(
+        f'[project]\nname = "teatree"\nversion = "0"\ndependencies = [{quoted}]\n',
+        encoding="utf-8",
+    )
+    return pyproject
+
+
+class TestRepairDepDrift:
+    """``_repair_dep_drift`` — auto-reinstall when an editable venv is stale."""
+
+    def test_returns_false_when_no_drift(self, tmp_path: Path) -> None:
+        repo = tmp_path / "repo"
+        _write_pyproject(repo, ["django", "httpx"])
+        with patch("teatree.cli.setup.find_missing_dependencies", return_value=[]):
+            assert _repair_dep_drift(repo) is False
+
+    def test_returns_false_when_pyproject_absent(self, tmp_path: Path) -> None:
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        assert _repair_dep_drift(repo) is False
+
+    def test_warns_and_returns_false_on_non_editable_install(
+        self,
+        tmp_path: Path,
+        capsys: "pytest.CaptureFixture[str]",
+    ) -> None:
+        repo = tmp_path / "repo"
+        _write_pyproject(repo, ["tomlkit"])
+        with (
+            patch("teatree.cli.setup.find_missing_dependencies", return_value=["tomlkit"]),
+            patch("teatree.cli.setup.editable_source_path", return_value=None),
+        ):
+            assert _repair_dep_drift(repo) is False
+        out = capsys.readouterr().out
+        assert "tomlkit" in out
+        assert "uv tool upgrade teatree --reinstall" in out
+
+    def test_warns_and_returns_false_when_uv_missing(
+        self,
+        tmp_path: Path,
+        capsys: "pytest.CaptureFixture[str]",
+    ) -> None:
+        repo = tmp_path / "repo"
+        _write_pyproject(repo, ["tomlkit"])
+        source = tmp_path / "main-clone"
+        with (
+            patch("teatree.cli.setup.find_missing_dependencies", return_value=["tomlkit"]),
+            patch("teatree.cli.setup.editable_source_path", return_value=source),
+            patch("teatree.cli.setup.shutil.which", return_value=None),
+        ):
+            assert _repair_dep_drift(repo) is False
+        assert "uv` is not on PATH" in capsys.readouterr().out
+
+    def test_reinstalls_and_re_execs_on_editable_drift(self, tmp_path: Path) -> None:
+        repo = tmp_path / "repo"
+        _write_pyproject(repo, ["tomlkit"])
+        source = tmp_path / "main-clone"
+        captured: dict[str, object] = {}
+
+        def fake_execv(path: str, argv: list[str]) -> None:
+            captured["path"] = path
+            captured["argv"] = argv
+            raise SystemExit(0)  # don't actually replace the test process
+
+        completed = SimpleNamespace(returncode=0, stdout="", stderr="")
+        with (
+            patch("teatree.cli.setup.find_missing_dependencies", return_value=["tomlkit"]),
+            patch("teatree.cli.setup.editable_source_path", return_value=source),
+            patch("teatree.cli.setup.shutil.which") as mock_which,
+            patch("teatree.cli.setup._run_captured", return_value=completed) as mock_run,
+            patch("teatree.cli.setup.os.execv", side_effect=fake_execv),
+            patch("teatree.cli.setup.sys.argv", ["/usr/local/bin/t3", "setup"]),
+        ):
+            bins = {"uv": "/usr/bin/uv", "t3": "/usr/local/bin/t3"}
+            mock_which.side_effect = bins.get
+            with pytest.raises(SystemExit):
+                _repair_dep_drift(repo)
+
+        # Reinstall command must target the editable source and pass --reinstall.
+        install_cmd = mock_run.call_args.args[0]
+        assert install_cmd[:3] == ["/usr/bin/uv", "tool", "install"]
+        assert "--editable" in install_cmd
+        assert str(source) in install_cmd
+        assert "--reinstall" in install_cmd
+        # Re-exec preserves the original argv (so subcommands and flags survive).
+        assert captured["argv"] == ["/usr/local/bin/t3", "setup"]
+
+    def test_returns_false_when_reinstall_fails(
+        self,
+        tmp_path: Path,
+        capsys: "pytest.CaptureFixture[str]",
+    ) -> None:
+        repo = tmp_path / "repo"
+        _write_pyproject(repo, ["tomlkit"])
+        source = tmp_path / "main-clone"
+        completed = SimpleNamespace(returncode=1, stdout="", stderr="boom")
+        with (
+            patch("teatree.cli.setup.find_missing_dependencies", return_value=["tomlkit"]),
+            patch("teatree.cli.setup.editable_source_path", return_value=source),
+            patch("teatree.cli.setup.shutil.which", return_value="/usr/bin/uv"),
+            patch("teatree.cli.setup._run_captured", return_value=completed),
+            patch("teatree.cli.setup.os.execv") as mock_execv,
+        ):
+            assert _repair_dep_drift(repo) is False
+            mock_execv.assert_not_called()
+        assert "Reinstall failed" in capsys.readouterr().out
