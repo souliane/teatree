@@ -85,12 +85,12 @@ DJANGO_GROUPS: dict[str, tuple[str, list[tuple[str, str]]]] = {
     "pr": (
         "Pull request helpers.",
         [
-            ("create", "Create a merge request for the ticket's branch."),
+            ("create", "Create a pull request for the ticket's branch."),
             ("ensure-pr", "Create a PR for an orphan branch (idempotent)."),
             ("check-gates", "Check whether session gates allow a phase transition."),
             ("fetch-issue", "Fetch issue details from the configured tracker."),
             ("detect-tenant", "Detect the current tenant variant from the overlay."),
-            ("post-evidence", "Post test evidence as an MR comment."),
+            ("post-evidence", "Post test evidence as a PR comment."),
             ("sweep", "List your open PRs across the forge for the /t3:sweeping-prs skill."),
         ],
     ),
@@ -264,9 +264,9 @@ class OverlayAppBuilder:
         @overlay_app.command(name="ship")
         def ship(
             ticket_id: str = typer.Argument(help="Ticket ID"),
-            title: str = typer.Option("", help="MR title"),
+            title: str = typer.Option("", help="PR title"),
         ) -> None:
-            """Code to MR — create merge request for the ticket."""
+            """Code to PR — create pull request for the ticket."""
             args = ["pr", "create", ticket_id]
             if title:
                 args.extend(["--title", title])

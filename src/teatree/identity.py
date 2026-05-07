@@ -2,7 +2,7 @@
 
 Single source of truth for whether teatree appends an agent identity
 (`Co-Authored-By`, "Sent using …", "Generated with …") to artifacts published
-on the user's behalf — git commits, MR/PR comments, Slack messages, issue
+on the user's behalf — git commits, PR comments, Slack messages, issue
 bodies. Driven by the `[teatree] agent_signature` setting in
 `~/.teatree.toml` (default `False`).
 

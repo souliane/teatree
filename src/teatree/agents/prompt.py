@@ -176,7 +176,7 @@ def build_system_context(task: Task, *, skills: list[str], lifecycle_skill: str 
             (
                 "",
                 "PHASE: shipping — auto-review gate",
-                "Before creating the MR, check quality gates: `t3 <overlay> pr check-gates <ticket_id>`.",
+                "Before creating the PR, check quality gates: `t3 <overlay> pr check-gates <ticket_id>`.",
                 "If the result shows `reviewing` in the `missing` list:",
                 "1. Spawn a sub-agent to review the diff (run the code-review skill against the branch).",
                 (

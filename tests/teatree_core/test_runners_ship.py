@@ -14,7 +14,7 @@ from django.test import TestCase
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay_loader import reset_overlay_cache
 from teatree.core.runners import ShipExecutor
-from teatree.core.runners.ship import overlay_mr_labels, sanitize_close_keywords
+from teatree.core.runners.ship import overlay_pr_labels, sanitize_close_keywords
 from tests.teatree_core.conftest import CommandOverlay
 
 
@@ -185,16 +185,16 @@ class TestSanitizeCloseKeywords:
 class TestOverlayMrLabels:
     def test_default_overlay_returns_empty(self) -> None:
         with patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY):
-            assert overlay_mr_labels() == []
+            assert overlay_pr_labels() == []
 
     def test_overlay_with_string_labels(self) -> None:
         mock = MagicMock()
         mock.config.mr_auto_labels = "label-a, label-b"
         with patch("teatree.core.overlay_loader._discover_overlays", return_value={"test": mock}):
-            assert overlay_mr_labels() == ["label-a", "label-b"]
+            assert overlay_pr_labels() == ["label-a", "label-b"]
 
     def test_non_iterable_returns_empty(self) -> None:
         mock = MagicMock()
         mock.config.mr_auto_labels = 42
         with patch("teatree.core.overlay_loader._discover_overlays", return_value={"test": mock}):
-            assert overlay_mr_labels() == []
+            assert overlay_pr_labels() == []

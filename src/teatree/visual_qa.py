@@ -1,17 +1,17 @@
-"""Pre-push browser sanity gate for frontend MRs.
+"""Pre-push browser sanity gate for frontend PRs.
 
 Loads the page(s) the diff actually touches in a real browser and reports
 silent-render regressions: page crashes, console errors, raw ``app.*``
 translation keys, blocking asset 404s.
 
 Designed as a fast pre-push gate, not a regression suite.  Hard caps keep
-the gate well under 60 seconds per MR.  When Playwright is unavailable
+the gate well under 60 seconds per PR.  When Playwright is unavailable
 the gate skips with a clear message instead of blocking the push.
 
-The gate is a precondition of MR creation: ``pr create`` calls
-``_run_visual_qa_gate`` before composing the MR, persists the summary on
+The gate is a precondition of PR creation: ``pr create`` calls
+``_run_visual_qa_gate`` before composing the PR, persists the summary on
 ``Ticket.extra['visual_qa']`` so the result survives in the FSM history,
-and refuses to create the MR when findings are present.
+and refuses to create the PR when findings are present.
 """
 
 import contextlib
@@ -65,7 +65,7 @@ PER_PAGE_TIMEOUT_MS = 10_000
 TOTAL_TIMEOUT_S = 60
 DEFAULT_SCREENSHOT_DIR = ".t3/visual_qa"
 
-# 401/403 are common when an MR-only flow is logged out — not a blocker.
+# 401/403 are common when an authenticated-only flow is logged out — not a blocker.
 _HTTP_ERROR_THRESHOLD = 400
 _NON_BLOCKING_STATUSES = frozenset({401, 403})
 
@@ -295,7 +295,7 @@ def evaluate(
 
 
 def format_report(report: VisualQAReport) -> str:
-    """Render a ``## Visual QA`` markdown section for the MR description."""
+    """Render a ``## Visual QA`` markdown section for the PR description."""
     lines = ["## Visual QA", ""]
     if report.skipped_reason:
         lines.append(f"_skipped: {report.skipped_reason}_")
