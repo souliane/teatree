@@ -50,9 +50,19 @@ class CodeHostBackend(Protocol):
 
     def current_user(self) -> str: ...  # pragma: no branch
 
-    def list_my_prs(self, *, author: str) -> list[RawAPIDict]: ...  # pragma: no branch
+    def list_my_prs(
+        self,
+        *,
+        author: str,
+        updated_after: str | None = None,
+    ) -> list[RawAPIDict]: ...  # pragma: no branch
 
-    def list_review_requested_prs(self, *, reviewer: str) -> list[RawAPIDict]: ...  # pragma: no branch
+    def list_review_requested_prs(
+        self,
+        *,
+        reviewer: str,
+        updated_after: str | None = None,
+    ) -> list[RawAPIDict]: ...  # pragma: no branch
 
     def post_pr_comment(self, *, repo: str, pr_iid: int, body: str) -> RawAPIDict: ...  # pragma: no branch
 

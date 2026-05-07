@@ -63,7 +63,7 @@ class TestShipExecutor(TestCase):
         assert spec.assignee == "souliane"
 
         ticket.refresh_from_db()
-        assert ticket.extra["mr_urls"] == ["https://example.com/mr/1"]
+        assert ticket.extra["pr_urls"] == ["https://example.com/mr/1"]
 
     def test_returns_failure_when_no_code_host(self) -> None:
         ticket = self._ticket_with_worktree()

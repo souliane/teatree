@@ -71,20 +71,20 @@ def build_action_required(overlay: str | None = None) -> list[ActionRequiredItem
         for task in task_qs
     ]
 
-    items.extend(_action_items_from_mrs(overlay))
+    items.extend(_action_items_from_prs(overlay))
     return items
 
 
-def _action_items_from_mrs(overlay: str | None = None) -> list[ActionRequiredItem]:
-    """Scan in-flight MRs for review/approval needs."""
+def _action_items_from_prs(overlay: str | None = None) -> list[ActionRequiredItem]:
+    """Scan in-flight PRs for review/approval needs."""
     items: list[ActionRequiredItem] = []
     for ticket in Ticket.objects.in_flight(overlay=overlay):
         extra = ticket.extra if isinstance(ticket.extra, dict) else {}
-        mrs = extra.get("mrs", {})
-        if not isinstance(mrs, dict):
+        prs = extra.get("prs", {})
+        if not isinstance(prs, dict):
             continue
-        for mr in mrs.values():
-            items.extend(_check_mr(mr, ticket))
+        for pr in prs.values():
+            items.extend(_check_pr(pr, ticket))
     return items
 
 
@@ -95,35 +95,35 @@ _DISCUSSION_STATUS_DISPLAY = {
 }
 
 
-def _check_mr(mr: dict, ticket: "Ticket") -> list[ActionRequiredItem]:
-    """Return action items for a single MR dict."""
-    if not isinstance(mr, dict) or mr.get("draft") or mr.get("state") in {"merged", "closed"}:
+def _check_pr(pr: dict, ticket: "Ticket") -> list[ActionRequiredItem]:
+    """Return action items for a single PR dict."""
+    if not isinstance(pr, dict) or pr.get("draft") or pr.get("state") in {"merged", "closed"}:
         return []
-    repo = str(mr.get("repo", ""))
-    iid = str(mr.get("iid", ""))
-    mr_url = str(mr.get("url", ""))
-    mr_label = f"{repo} #{iid}"
-    pipeline = mr.get("pipeline_status")
-    slack_url = str(mr.get("review_permalink", ""))
-    approvals = mr.get("approvals", {})
+    repo = str(pr.get("repo", ""))
+    iid = str(pr.get("iid", ""))
+    pr_url = str(pr.get("url", ""))
+    pr_label = f"{repo} #{iid}"
+    pipeline = pr.get("pipeline_status")
+    slack_url = str(pr.get("review_permalink", ""))
+    approvals = pr.get("approvals", {})
     if not isinstance(approvals, dict):
         approvals = {}
     count = int(approvals.get("count", 0))
     required = int(approvals.get("required", 1))
     items: list[ActionRequiredItem] = []
 
-    if pipeline == "success" and not mr.get("review_permalink") and not mr.get("review_requested"):
+    if pipeline == "success" and not pr.get("review_permalink") and not pr.get("review_requested"):
         items.append(
             ActionRequiredItem(
                 kind="needs_review_request",
-                label=f"{mr_label} — ready for review request",
-                url=mr_url,
+                label=f"{pr_label} — ready for review request",
+                url=pr_url,
                 ticket_id=ticket.pk,
                 detail="CI green, no review posted yet",
             ),
         )
 
-    raw_discussions = mr.get("discussions", [])
+    raw_discussions = pr.get("discussions", [])
     discussions: list[DiscussionData] = (
         [d for d in raw_discussions if isinstance(d, dict)] if isinstance(raw_discussions, list) else []
     )
@@ -133,8 +133,8 @@ def _check_mr(mr: dict, ticket: "Ticket") -> list[ActionRequiredItem]:
         items.append(
             ActionRequiredItem(
                 kind="needs_reply",
-                label=f"{mr_label} — {needs_reply} comment{'s' if needs_reply > 1 else ''} need reply",
-                url=mr_url,
+                label=f"{pr_label} — {needs_reply} comment{'s' if needs_reply > 1 else ''} need reply",
+                url=pr_url,
                 ticket_id=ticket.pk,
                 detail="Review threads waiting for your response",
                 slack_url=slack_url,
@@ -142,25 +142,25 @@ def _check_mr(mr: dict, ticket: "Ticket") -> list[ActionRequiredItem]:
             ),
         )
 
-    if pipeline == "success" and mr.get("review_requested") and count < required:
+    if pipeline == "success" and pr.get("review_requested") and count < required:
         items.append(
             ActionRequiredItem(
                 kind="needs_approval",
-                label=f"{mr_label} — waiting for approval ({count}/{required})",
-                url=mr_url,
+                label=f"{pr_label} — waiting for approval ({count}/{required})",
+                url=pr_url,
                 ticket_id=ticket.pk,
                 detail="Review requested, approval pending",
                 slack_url=slack_url,
             ),
         )
 
-    draft_count = mr.get("draft_comments_count")
-    if mr.get("draft_comments_pending") and isinstance(draft_count, int) and draft_count > 0:
+    draft_count = pr.get("draft_comments_count")
+    if pr.get("draft_comments_pending") and isinstance(draft_count, int) and draft_count > 0:
         items.append(
             ActionRequiredItem(
                 kind="review_draft",
-                label=f"{mr_label} — agent posted review comments",
-                url=mr_url,
+                label=f"{pr_label} — agent posted review comments",
+                url=pr_url,
                 ticket_id=ticket.pk,
                 detail=f"{draft_count} draft comment{'s' if draft_count > 1 else ''}"
                 " need your review before publishing",
@@ -171,7 +171,7 @@ def _check_mr(mr: dict, ticket: "Ticket") -> list[ActionRequiredItem]:
 
 
 def _extract_review_comments(discussions: list[DiscussionData]) -> tuple[ReviewCommentDetail, ...]:
-    """Extract review comment details from MR discussion data."""
+    """Extract review comment details from PR discussion data."""
     comments: list[ReviewCommentDetail] = []
     for disc in discussions:
         status_key = str(disc.get("status", ""))

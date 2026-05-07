@@ -64,7 +64,7 @@ def sync_followup() -> dict[str, int | list[str]]:
 
     result = _sync()
     return {
-        "mrs_found": result.mrs_found,
+        "prs_found": result.prs_found,
         "tickets_created": result.tickets_created,
         "tickets_updated": result.tickets_updated,
         "errors": result.errors,
@@ -175,7 +175,7 @@ def execute_provision(ticket_id: int) -> TransitionResult:
 
 @task()
 def execute_ship(ticket_id: int) -> TransitionResult:
-    """Push the worktree branch and open the merge request for a SHIPPED ticket.
+    """Push the worktree branch and open the pull request for a SHIPPED ticket.
 
     Idempotency: the worker takes a row lock and re-checks state before running.
     At-least-once delivery from django-tasks means this can fire more than once

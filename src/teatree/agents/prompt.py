@@ -105,17 +105,17 @@ def build_task_prompt(task: Task) -> str:
     if task.execution_reason:
         lines.append(f"Reason: {task.execution_reason}")
 
-    # MR context
-    mrs = extra.get("mrs", {})
-    if isinstance(mrs, dict) and mrs:
-        lines.extend(("", "Open merge requests:"))
-        for mr in mrs.values():
-            if not isinstance(mr, dict):
+    # PR context
+    prs = extra.get("prs", {})
+    if isinstance(prs, dict) and prs:
+        lines.extend(("", "Open pull requests:"))
+        for pr in prs.values():
+            if not isinstance(pr, dict):
                 continue
-            url = mr.get("url", "")
-            title = mr.get("title", "")
-            draft = " (draft)" if mr.get("draft") else ""
-            pipeline = mr.get("pipeline_status", "")
+            url = pr.get("url", "")
+            title = pr.get("title", "")
+            draft = " (draft)" if pr.get("draft") else ""
+            pipeline = pr.get("pipeline_status", "")
             pipeline_info = f" — pipeline: {pipeline}" if pipeline else ""
             lines.append(f"  - {url}{draft}{pipeline_info}")
             if title:
@@ -125,7 +125,7 @@ def build_task_prompt(task: Task) -> str:
         (
             "",
             "Instructions:",
-            "1. Check what has been done so far (git log, existing code, MR status)",
+            "1. Check what has been done so far (git log, existing code, PR status)",
             "2. Identify what remains to be done",
             "3. If you can proceed (code, test, fix) — do it",
             "4. If you need human input (design decision, access, clarification) — STOP immediately.",
@@ -219,26 +219,26 @@ def build_system_context(task: Task, *, skills: list[str], lifecycle_skill: str 
 
 
 type _TicketExtra = dict[str, object]
-type _MrDict = dict[str, object]
+type _PrDict = dict[str, object]
 
 
-def _format_mr_context(extra: _TicketExtra) -> list[str]:
-    mrs = extra.get("mrs", {})
-    if not isinstance(mrs, dict) or not mrs:
+def _format_pr_context(extra: _TicketExtra) -> list[str]:
+    prs = extra.get("prs", {})
+    if not isinstance(prs, dict) or not prs:
         return []
-    lines = ["", "Open merge requests:"]
-    for raw_mr in mrs.values():
-        if not isinstance(raw_mr, dict):
+    lines = ["", "Open pull requests:"]
+    for raw_pr in prs.values():
+        if not isinstance(raw_pr, dict):
             continue
-        mr = cast("_MrDict", raw_mr)
-        url = mr.get("url", "")
-        mr_title = mr.get("title", "")
-        draft = " (draft)" if mr.get("draft") else ""
-        pipeline = mr.get("pipeline_status", "")
+        pr = cast("_PrDict", raw_pr)
+        url = pr.get("url", "")
+        pr_title = pr.get("title", "")
+        draft = " (draft)" if pr.get("draft") else ""
+        pipeline = pr.get("pipeline_status", "")
         pipeline_info = f" — pipeline: {pipeline}" if pipeline else ""
         lines.append(f"  - {url}{draft}{pipeline_info}")
-        if mr_title:
-            lines.append(f"    {mr_title}")
+        if pr_title:
+            lines.append(f"    {pr_title}")
     return lines
 
 
@@ -272,7 +272,7 @@ def build_interactive_context(task: Task, *, skills: list[str]) -> str:
             ),
         )
 
-    lines.extend(_format_mr_context(extra))
+    lines.extend(_format_pr_context(extra))
 
     lines.extend(("", "This is an interactive session — the user is present."))
 

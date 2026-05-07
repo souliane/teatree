@@ -18,8 +18,8 @@ from teatree.core.sync import (
     LAST_SYNC_CACHE_KEY,
     PENDING_REVIEWS_CACHE_KEY,
     DiscussionSummary,
-    MREntry,
-    MREntryDict,
+    PREntry,
+    PREntryDict,
     RawAPIDict,
     SyncResult,
     _merge_results,
@@ -197,9 +197,9 @@ class TestDiscussionSummary:
             ds.status = "needs_reply"  # type: ignore[misc]
 
 
-class TestMREntry:
+class TestPREntry:
     def test_required_fields(self) -> None:
-        entry = MREntry(
+        entry = PREntry(
             url="https://example.com/mr/1",
             title="feat: add feature",
             branch="feat/add-feature",
@@ -212,7 +212,7 @@ class TestMREntry:
         assert entry.iid == 42
 
     def test_optional_fields_default_to_none(self) -> None:
-        entry = MREntry(
+        entry = PREntry(
             url="u",
             title="t",
             branch="b",
@@ -227,7 +227,7 @@ class TestMREntry:
         assert entry.review_permalink is None
 
     def test_to_dict_omits_none_values(self) -> None:
-        entry = MREntry(
+        entry = PREntry(
             url="u",
             title="t",
             branch="b",
@@ -251,7 +251,7 @@ class TestMREntry:
         }
 
     def test_to_dict_includes_set_optional_fields(self) -> None:
-        entry = MREntry(
+        entry = PREntry(
             url="u",
             title="t",
             branch="b",
@@ -270,7 +270,7 @@ class TestMREntry:
         assert d["reviewer_names"] == ["alice"]
 
     def test_to_dict_serializes_discussions(self) -> None:
-        entry = MREntry(
+        entry = PREntry(
             url="u",
             title="t",
             branch="b",
@@ -290,7 +290,7 @@ class TestMREntry:
         ]
 
     def test_mutable(self) -> None:
-        entry = MREntry(
+        entry = PREntry(
             url="u",
             title="t",
             branch="b",
@@ -303,7 +303,7 @@ class TestMREntry:
         assert entry.pipeline_status == "success"
 
     def test_draft_comments_fields_default_to_none(self) -> None:
-        entry = MREntry(
+        entry = PREntry(
             url="u",
             title="t",
             branch="b",
@@ -316,7 +316,7 @@ class TestMREntry:
         assert entry.draft_comments_count is None
 
     def test_draft_comments_in_to_dict(self) -> None:
-        entry = MREntry(
+        entry = PREntry(
             url="u",
             title="t",
             branch="b",
@@ -365,35 +365,35 @@ class TestProcessLabel:
         assert GitLabSyncBackend._process_label([]) is None
 
 
-class TestInferStateFromMrs:
-    def test_empty_mrs(self) -> None:
-        assert GitLabSyncBackend._infer_state_from_mrs({}) == Ticket.State.NOT_STARTED
+class TestInferStateFromPrs:
+    def test_empty_prs(self) -> None:
+        assert GitLabSyncBackend._infer_state_from_prs({}) == Ticket.State.NOT_STARTED
 
     def test_corrupted_mrs(self) -> None:
-        assert GitLabSyncBackend._infer_state_from_mrs({"x": "not-a-dict"}) == Ticket.State.NOT_STARTED
+        assert GitLabSyncBackend._infer_state_from_prs({"x": "not-a-dict"}) == Ticket.State.NOT_STARTED
 
     def test_draft_mr(self) -> None:
         mrs = {"url1": {"draft": True}}
-        assert GitLabSyncBackend._infer_state_from_mrs(mrs) == Ticket.State.STARTED
+        assert GitLabSyncBackend._infer_state_from_prs(mrs) == Ticket.State.STARTED
 
     def test_non_draft_mr(self) -> None:
         mrs = {"url1": {"draft": False}}
-        assert GitLabSyncBackend._infer_state_from_mrs(mrs) == Ticket.State.SHIPPED
+        assert GitLabSyncBackend._infer_state_from_prs(mrs) == Ticket.State.SHIPPED
 
     def test_mr_with_approvals(self) -> None:
         mrs = {"url1": {"draft": False, "approvals": {"count": 1, "required": 1}}}
-        assert GitLabSyncBackend._infer_state_from_mrs(mrs) == Ticket.State.IN_REVIEW
+        assert GitLabSyncBackend._infer_state_from_prs(mrs) == Ticket.State.IN_REVIEW
 
     def test_mr_with_review_requested(self) -> None:
         mrs = {"url1": {"draft": False, "review_requested": True}}
-        assert GitLabSyncBackend._infer_state_from_mrs(mrs) == Ticket.State.IN_REVIEW
+        assert GitLabSyncBackend._infer_state_from_prs(mrs) == Ticket.State.IN_REVIEW
 
     def test_picks_highest_across_mrs(self) -> None:
         mrs = {
             "url1": {"draft": True},  # STARTED
             "url2": {"draft": False, "approvals": {"count": 1, "required": 1}},  # IN_REVIEW
         }
-        assert GitLabSyncBackend._infer_state_from_mrs(mrs) == Ticket.State.IN_REVIEW
+        assert GitLabSyncBackend._infer_state_from_prs(mrs) == Ticket.State.IN_REVIEW
 
     def test_second_mr_does_not_advance_when_lower(self) -> None:
         """When second MR infers a lower state than the first, best stays unchanged."""
@@ -402,7 +402,7 @@ class TestInferStateFromMrs:
             "url2": {"draft": True},  # STARTED (lower)
         }
         # Should pick the highest: IN_REVIEW
-        assert GitLabSyncBackend._infer_state_from_mrs(mrs) == Ticket.State.IN_REVIEW
+        assert GitLabSyncBackend._infer_state_from_prs(mrs) == Ticket.State.IN_REVIEW
 
 
 class TestClassifyDiscussions:
@@ -494,7 +494,7 @@ class TestUpdateTicket(TestCase):
             issue_url="https://gitlab.com/org/repo/-/issues/200",
             repos=["repo"],
             extra={
-                "mrs": {
+                "prs": {
                     "https://gitlab.com/org/repo/-/merge_requests/50": {
                         "url": "https://gitlab.com/org/repo/-/merge_requests/50",
                         "repo": "repo",
@@ -508,7 +508,7 @@ class TestUpdateTicket(TestCase):
         )
 
         # Simulate a sync update that doesn't include the skill-written fields
-        new_mr_entry: MREntryDict = {
+        new_mr_entry: PREntryDict = {
             "url": "https://gitlab.com/org/repo/-/merge_requests/50",
             "repo": "repo",
             "title": "feat: new title",
@@ -519,7 +519,7 @@ class TestUpdateTicket(TestCase):
         GitLabSyncBackend._update_ticket(ticket, new_mr_entry, mr_url, "repo")
 
         ticket.refresh_from_db()
-        mr = ticket.extra["mrs"]["https://gitlab.com/org/repo/-/merge_requests/50"]
+        mr = ticket.extra["prs"]["https://gitlab.com/org/repo/-/merge_requests/50"]
         assert mr["title"] == "feat: new title"
         assert mr["review_channel"] == "#backend-review"
         assert mr["review_permalink"] == "https://slack.com/archives/C123/p456"
@@ -533,35 +533,35 @@ class TestMergeTicketExtras(TestCase):
             overlay="test",
             issue_url="https://gitlab.com/org/repo/-/issues/900",
             repos=["repo-a"],
-            extra={"mrs": {"https://mr/1": {"title": "MR 1"}}},
+            extra={"prs": {"https://mr/1": {"title": "MR 1"}}},
         )
         source = Ticket.objects.create(
             overlay="test",
             issue_url="https://gitlab.com/org/repo/-/issues/901",
             repos=["repo-b"],
-            extra={"mrs": {"https://mr/2": {"title": "MR 2"}}},
+            extra={"prs": {"https://mr/2": {"title": "MR 2"}}},
         )
         GitLabSyncBackend._merge_ticket_extras(target, source)
         target.refresh_from_db()
 
-        assert "https://mr/1" in target.extra["mrs"]
-        assert "https://mr/2" in target.extra["mrs"]
+        assert "https://mr/1" in target.extra["prs"]
+        assert "https://mr/2" in target.extra["prs"]
         assert "repo-a" in target.repos
         assert "repo-b" in target.repos
 
     def test_handles_non_dict_mrs(self) -> None:
-        """Non-dict mrs in extras are treated as empty -- repos still merge."""
+        """Non-dict prs in extras are treated as empty -- repos still merge."""
         target = Ticket.objects.create(
             overlay="test",
             issue_url="https://gitlab.com/org/repo/-/issues/960",
             repos=["repo-a"],
-            extra={"mrs": "corrupt"},
+            extra={"prs": "corrupt"},
         )
         source = Ticket.objects.create(
             overlay="test",
             issue_url="https://gitlab.com/org/repo/-/issues/961",
             repos=["repo-b"],
-            extra={"mrs": ["also-corrupt"]},
+            extra={"prs": ["also-corrupt"]},
         )
         GitLabSyncBackend._merge_ticket_extras(target, source)
         target.refresh_from_db()
@@ -573,19 +573,19 @@ class TestMergeTicketExtras(TestCase):
             overlay="test",
             issue_url="https://gitlab.com/org/repo/-/issues/950",
             repos=["repo-a", "repo-b"],
-            extra={"mrs": {"https://mr/1": {"title": "MR 1"}}},
+            extra={"prs": {"https://mr/1": {"title": "MR 1"}}},
         )
         source = Ticket.objects.create(
             overlay="test",
             issue_url="https://gitlab.com/org/repo/-/issues/951",
             repos=["repo-b", "repo-c"],
-            extra={"mrs": {"https://mr/1": {"title": "MR 1 dup"}, "https://mr/3": {"title": "MR 3"}}},
+            extra={"prs": {"https://mr/1": {"title": "MR 1 dup"}, "https://mr/3": {"title": "MR 3"}}},
         )
         GitLabSyncBackend._merge_ticket_extras(target, source)
         target.refresh_from_db()
 
-        assert target.extra["mrs"]["https://mr/1"]["title"] == "MR 1"
-        assert "https://mr/3" in target.extra["mrs"]
+        assert target.extra["prs"]["https://mr/1"]["title"] == "MR 1"
+        assert "https://mr/3" in target.extra["prs"]
         assert target.repos == ["repo-a", "repo-b", "repo-c"]
 
 
@@ -616,7 +616,7 @@ class TestFetchReviewPermalinks(TestCase):
             repos=["repo"],
             state=Ticket.State.STARTED,
             extra={
-                "mrs": {
+                "prs": {
                     "https://gitlab.com/org/repo/-/merge_requests/50": {
                         "draft": True,
                         "url": "https://gitlab.com/org/repo/-/merge_requests/50",
@@ -639,7 +639,7 @@ class TestFetchReviewPermalinks(TestCase):
             repos=["repo"],
             state=Ticket.State.SHIPPED,
             extra={
-                "mrs": {
+                "prs": {
                     "https://gitlab.com/org/repo/-/merge_requests/51": {
                         "draft": False,
                         "review_permalink": "https://slack.com/existing",
@@ -668,7 +668,7 @@ class TestFetchReviewPermalinks(TestCase):
             repos=["repo"],
             state=Ticket.State.SHIPPED,
             extra={
-                "mrs": {
+                "prs": {
                     "https://gitlab.com/org/repo/-/merge_requests/52": {
                         "draft": False,
                     },
@@ -697,14 +697,14 @@ class TestFetchReviewPermalinks(TestCase):
             issue_url="https://gitlab.com/org/repo/-/issues/503",
             repos=["repo"],
             state=Ticket.State.SHIPPED,
-            extra={"mrs": {mr_url: {"draft": False}}},
+            extra={"prs": {mr_url: {"draft": False}}},
         )
 
         self._monkeypatch.setattr(
             "teatree.backends.slack_review_sync.search_review_permalinks",
             lambda _request: [
                 SlackReviewMatch(
-                    mr_url=mr_url,
+                    pr_url=mr_url,
                     permalink="https://team.slack.com/archives/C123/p170000",
                     channel="review-crew",
                 ),
@@ -717,7 +717,7 @@ class TestFetchReviewPermalinks(TestCase):
 
         assert result.reviews_synced == 1
         ticket = Ticket.objects.get(issue_url="https://gitlab.com/org/repo/-/issues/503")
-        mr = ticket.extra["mrs"][mr_url]
+        mr = ticket.extra["prs"][mr_url]
         assert mr["review_permalink"] == "https://team.slack.com/archives/C123/p170000"
         assert mr["review_channel"] == "review-crew"
 
@@ -728,7 +728,7 @@ class TestFetchReviewPermalinks(TestCase):
             issue_url="https://gitlab.com/org/repo/-/issues/801",
             repos=["repo"],
             state=Ticket.State.SHIPPED,
-            extra={"mrs": "not-a-dict"},
+            extra={"prs": "not-a-dict"},
         )
         self._monkeypatch.setattr("teatree.backends.slack_review_sync.search_review_permalinks", lambda _request: [])
 
@@ -744,7 +744,7 @@ class TestFetchReviewPermalinks(TestCase):
             issue_url="https://gitlab.com/org/repo/-/issues/802",
             repos=["repo"],
             state=Ticket.State.SHIPPED,
-            extra={"mrs": {"https://gitlab.com/mr/1": "not-a-dict"}},
+            extra={"prs": {"https://gitlab.com/mr/1": "not-a-dict"}},
         )
         self._monkeypatch.setattr("teatree.backends.slack_review_sync.search_review_permalinks", lambda _request: [])
 
@@ -891,7 +891,7 @@ class TestApplyMergedStatusAllMerged(TestCase):
         ticket = Ticket.objects.create(
             issue_url="https://gitlab.com/org/repo/-/issues/1",
             state=Ticket.State.IN_REVIEW,
-            extra={"mrs": {"url1": {"title": "MR1"}, "url2": {"title": "MR2"}}},
+            extra={"prs": {"url1": {"title": "MR1"}, "url2": {"title": "MR2"}}},
         )
         result = SyncResult()
         apply_merged_status(ticket, {"url1", "url2"}, result)
@@ -902,7 +902,7 @@ class TestApplyMergedStatusAllMerged(TestCase):
         ticket = Ticket.objects.create(
             issue_url="https://gitlab.com/org/repo/-/issues/2",
             state=Ticket.State.IN_REVIEW,
-            extra={"mrs": {"url1": {"title": "MR1"}, "url2": {"title": "MR2"}}},
+            extra={"prs": {"url1": {"title": "MR1"}, "url2": {"title": "MR2"}}},
         )
         result = SyncResult()
         apply_merged_status(ticket, {"url1"}, result)
@@ -914,7 +914,7 @@ class TestApplyMergedStatusAllMerged(TestCase):
         ticket = Ticket.objects.create(
             issue_url="https://gitlab.com/org/repo/-/issues/3",
             state=Ticket.State.IN_REVIEW,
-            extra={"mrs": {"url1": {"title": "MR1"}}},
+            extra={"prs": {"url1": {"title": "MR1"}}},
         )
         Worktree.objects.create(
             overlay="test",
@@ -932,7 +932,7 @@ class TestApplyMergedStatusAllMerged(TestCase):
         ticket = Ticket.objects.create(
             issue_url="https://gitlab.com/org/repo/-/issues/4",
             state=Ticket.State.IN_REVIEW,
-            extra={"mrs": {"url1": {"title": "MR1"}}},
+            extra={"prs": {"url1": {"title": "MR1"}}},
         )
         Worktree.objects.create(
             overlay="test",
@@ -958,7 +958,7 @@ class TestApplyClosedStatus(TestCase):
             issue_url="https://gitlab.com/org/repo/-/issues/77",
             state=Ticket.State.IN_REVIEW,
             extra={
-                "mrs": {
+                "prs": {
                     "url1": {"title": "MR1", "state": "opened"},
                 },
             },
@@ -966,16 +966,16 @@ class TestApplyClosedStatus(TestCase):
         result = SyncResult()
         apply_closed_status(ticket, {"url1"}, result)
         ticket.refresh_from_db()
-        assert ticket.extra["mrs"]["url1"]["state"] == "closed"
+        assert ticket.extra["prs"]["url1"]["state"] == "closed"
         assert ticket.state == Ticket.State.IN_REVIEW
-        assert result.mrs_closed == 1
+        assert result.prs_closed == 1
 
     def test_does_not_change_ticket_state_when_all_closed(self) -> None:
         """Closing the only MR must NOT advance the ticket FSM (no FSM target for closed)."""
         ticket = Ticket.objects.create(
             issue_url="https://gitlab.com/org/repo/-/issues/78",
             state=Ticket.State.IN_REVIEW,
-            extra={"mrs": {"url1": {"title": "MR1", "state": "opened"}}},
+            extra={"prs": {"url1": {"title": "MR1", "state": "opened"}}},
         )
         result = SyncResult()
         apply_closed_status(ticket, {"url1"}, result)
@@ -987,7 +987,7 @@ class TestApplyClosedStatus(TestCase):
             issue_url="https://gitlab.com/org/repo/-/issues/79",
             state=Ticket.State.IN_REVIEW,
             extra={
-                "mrs": {
+                "prs": {
                     "url1": {
                         "title": "MR1",
                         "state": "opened",
@@ -999,14 +999,14 @@ class TestApplyClosedStatus(TestCase):
         result = SyncResult()
         apply_closed_status(ticket, {"url1"}, result)
         ticket.refresh_from_db()
-        assert "discussions" not in ticket.extra["mrs"]["url1"]
+        assert "discussions" not in ticket.extra["prs"]["url1"]
 
     def test_does_not_clean_worktrees(self) -> None:
         """Closed MRs leave worktrees alone — user may reopen with new MR."""
         ticket = Ticket.objects.create(
             issue_url="https://gitlab.com/org/repo/-/issues/80",
             state=Ticket.State.IN_REVIEW,
-            extra={"mrs": {"url1": {"title": "MR1", "state": "opened"}}},
+            extra={"prs": {"url1": {"title": "MR1", "state": "opened"}}},
         )
         Worktree.objects.create(
             overlay="test",
@@ -1036,21 +1036,21 @@ class TestSyncFollowup(TestCase):
 
         result = sync_followup()
 
-        assert result.mrs_found == 2
+        assert result.prs_found == 2
         assert result.tickets_created == 2
         assert result.errors == []
         assert Ticket.objects.count() == 2
 
         issue_ticket = Ticket.objects.get(issue_url="https://gitlab.com/org/repo/-/issues/100")
         assert "repo" in issue_ticket.repos
-        assert "mrs" in issue_ticket.extra
+        assert "prs" in issue_ticket.extra
         # Non-draft MR should have pipeline data
-        mr_data = issue_ticket.extra["mrs"][_MR_WITH_ISSUE["web_url"]]
+        mr_data = issue_ticket.extra["prs"][_MR_WITH_ISSUE["web_url"]]
         assert mr_data["pipeline_status"] == "success"
         assert mr_data["approvals"] == {"count": 0, "required": 1}
 
         mr_ticket = Ticket.objects.get(issue_url=_MR_WITHOUT_ISSUE["web_url"])
-        assert mr_ticket.extra["mrs"][_MR_WITHOUT_ISSUE["web_url"]]["draft"] is True
+        assert mr_ticket.extra["prs"][_MR_WITHOUT_ISSUE["web_url"]]["draft"] is True
 
     def test_sync_sets_draft_comments_pending(self) -> None:
         mock_client = _make_mock_client([_MR_WITH_ISSUE])
@@ -1060,7 +1060,7 @@ class TestSyncFollowup(TestCase):
         sync_followup()
 
         ticket = Ticket.objects.get(issue_url="https://gitlab.com/org/repo/-/issues/100")
-        mr_data = ticket.extra["mrs"][_MR_WITH_ISSUE["web_url"]]
+        mr_data = ticket.extra["prs"][_MR_WITH_ISSUE["web_url"]]
         assert mr_data["draft_comments_pending"] is True
         assert mr_data["draft_comments_count"] == 5
 
@@ -1072,7 +1072,7 @@ class TestSyncFollowup(TestCase):
         sync_followup()
 
         ticket = Ticket.objects.get(issue_url="https://gitlab.com/org/repo/-/issues/100")
-        mr_data = ticket.extra["mrs"][_MR_WITH_ISSUE["web_url"]]
+        mr_data = ticket.extra["prs"][_MR_WITH_ISSUE["web_url"]]
         assert mr_data["draft_comments_pending"] is False
         assert "draft_comments_count" not in mr_data
 
@@ -1092,7 +1092,7 @@ class TestSyncFollowup(TestCase):
             overlay="test",
             issue_url="https://gitlab.com/org/repo/-/issues/100",
             repos=["old-repo"],
-            extra={"mrs": {}},
+            extra={"prs": {}},
         )
 
         mock_client = _make_mock_client([_MR_WITH_ISSUE])
@@ -1105,7 +1105,7 @@ class TestSyncFollowup(TestCase):
         ticket = Ticket.objects.get(issue_url="https://gitlab.com/org/repo/-/issues/100")
         assert "repo" in ticket.repos
         assert "old-repo" in ticket.repos
-        assert _MR_WITH_ISSUE["web_url"] in ticket.extra["mrs"]
+        assert _MR_WITH_ISSUE["web_url"] in ticket.extra["prs"]
 
     def test_returns_error_when_token_missing(self) -> None:
         overlay = SyncOverlay(gitlab_token="")
@@ -1122,7 +1122,7 @@ class TestSyncFollowup(TestCase):
 
         result = sync_followup()
 
-        assert result.mrs_found == 0
+        assert result.prs_found == 0
         assert len(result.errors) == 1
         assert "API timeout" in result.errors[0]
 
@@ -1146,7 +1146,7 @@ class TestSyncFollowup(TestCase):
             gh_backend_cls.return_value.is_configured.return_value = False
             result = sync_followup()
 
-        assert result.mrs_found == 0
+        assert result.prs_found == 0
         assert any("upstream hung" in e for e in result.errors)
         assert any("FailingBackend" in e for e in result.errors)
 
@@ -1166,7 +1166,7 @@ class TestSyncFollowup(TestCase):
             overlay="test",
             issue_url=_MR_WITHOUT_ISSUE["web_url"],
             repos=["repo"],
-            extra={"mrs": {}},
+            extra={"prs": {}},
         )
 
         mock_client = _make_mock_client([_MR_WITHOUT_ISSUE])
@@ -1176,14 +1176,14 @@ class TestSyncFollowup(TestCase):
 
         assert result.tickets_updated == 1
         ticket = Ticket.objects.get(issue_url=_MR_WITHOUT_ISSUE["web_url"])
-        assert _MR_WITHOUT_ISSUE["web_url"] in ticket.extra["mrs"]
+        assert _MR_WITHOUT_ISSUE["web_url"] in ticket.extra["prs"]
 
     def test_handles_corrupted_extra_field(self) -> None:
         Ticket.objects.create(
             overlay="test",
             issue_url="https://gitlab.com/org/repo/-/issues/100",
             repos=["repo"],
-            extra={"mrs": "not-a-dict"},
+            extra={"prs": "not-a-dict"},
         )
 
         mock_client = _make_mock_client([_MR_WITH_ISSUE])
@@ -1193,7 +1193,7 @@ class TestSyncFollowup(TestCase):
 
         assert result.tickets_updated == 1
         ticket = Ticket.objects.get(issue_url="https://gitlab.com/org/repo/-/issues/100")
-        assert isinstance(ticket.extra["mrs"], dict)
+        assert isinstance(ticket.extra["prs"], dict)
 
     def test_first_run_passes_no_updated_after(self) -> None:
         """First sync (no cached timestamp) should call list_open_mrs without updated_after."""
@@ -1260,7 +1260,7 @@ class TestSyncFollowup(TestCase):
             issue_url="https://gitlab.com/org/repo/-/issues/100",
             repos=["repo"],
             state=Ticket.State.NOT_STARTED,
-            extra={"mrs": {}},
+            extra={"prs": {}},
         )
         mock_client = _make_mock_client([_MR_WITH_ISSUE])
         self._monkeypatch.setattr("teatree.backends.gitlab_api.GitLabAPI", lambda **_kw: mock_client)
@@ -1277,7 +1277,7 @@ class TestSyncFollowup(TestCase):
             issue_url="https://gitlab.com/org/repo/-/issues/100",
             repos=["repo"],
             state=Ticket.State.IN_REVIEW,
-            extra={"mrs": {}},
+            extra={"prs": {}},
         )
         # MR with no approvals -> inferred SHIPPED, but ticket is already at IN_REVIEW
         mock_client = _make_mock_client([_MR_WITH_ISSUE])
@@ -1302,7 +1302,7 @@ class TestSyncFollowup(TestCase):
 
         assert result.tickets_created == 1
         ticket = Ticket.objects.get(issue_url=mr["web_url"])
-        mr_data = ticket.extra["mrs"][mr["web_url"]]
+        mr_data = ticket.extra["prs"][mr["web_url"]]
         assert "review_requested" not in mr_data
         assert "reviewer_names" not in mr_data
 
@@ -1312,14 +1312,14 @@ class TestSyncFollowup(TestCase):
             overlay="test",
             issue_url="https://gitlab.com/org/repo/-/issues/100",
             repos=["repo"],
-            extra={"mrs": {"https://mr/old": {"title": "old"}}},
+            extra={"prs": {"https://mr/old": {"title": "old"}}},
             state=Ticket.State.STARTED,
         )
         dup_b = Ticket.objects.create(
             overlay="test",
             issue_url="https://gitlab.com/org/repo/-/issues/101",
             repos=["other-repo"],
-            extra={"mrs": {"https://mr/dup": {"title": "dup"}}},
+            extra={"prs": {"https://mr/dup": {"title": "dup"}}},
         )
         dup_c = Ticket.objects.create(
             overlay="test",
@@ -1347,7 +1347,7 @@ class TestSyncFollowup(TestCase):
         assert not Ticket.objects.filter(pk=dup_b.pk).exists()
         assert not Ticket.objects.filter(pk=dup_c.pk).exists()
         ticket_a.refresh_from_db()
-        assert "https://mr/dup" in ticket_a.extra["mrs"]
+        assert "https://mr/dup" in ticket_a.extra["prs"]
         assert "other-repo" in ticket_a.repos
 
 
@@ -1387,7 +1387,7 @@ class TestSyncFollowupAssignedIssues(TestCase):
         assert ticket.repos == ["repo"]
         # issue_title starts from the list response then gets refreshed by _fetch_issue_labels
         assert ticket.extra["issue_title"]
-        assert "mrs" not in ticket.extra or ticket.extra["mrs"] == {}
+        assert "prs" not in ticket.extra or ticket.extra["prs"] == {}
 
     def test_skips_duplicate_when_mr_already_created_ticket(self) -> None:
         mock_client = _make_mock_client([_MR_WITH_ISSUE])
@@ -1404,7 +1404,7 @@ class TestSyncFollowupAssignedIssues(TestCase):
 
         tickets = Ticket.objects.filter(issue_url="https://gitlab.com/org/repo/-/issues/100")
         assert tickets.count() == 1
-        assert _MR_WITH_ISSUE["web_url"] in tickets.first().extra["mrs"]
+        assert _MR_WITH_ISSUE["web_url"] in tickets.first().extra["prs"]
 
     def test_captures_api_errors(self) -> None:
         mock_client = _make_mock_client([])
@@ -1505,7 +1505,7 @@ class TestSyncFollowupMergedMrs(TestCase):
             repos=["repo"],
             state=Ticket.State.IN_REVIEW,
             extra={
-                "mrs": {
+                "prs": {
                     "https://gitlab.com/org/repo/-/merge_requests/42": {
                         "url": "https://gitlab.com/org/repo/-/merge_requests/42",
                         "repo": "repo",
@@ -1524,12 +1524,12 @@ class TestSyncFollowupMergedMrs(TestCase):
 
         result = sync_followup()
 
-        assert result.mrs_merged == 1
+        assert result.prs_merged == 1
         ticket = Ticket.objects.get(issue_url="https://gitlab.com/org/repo/-/issues/100")
-        mr = ticket.extra["mrs"]["https://gitlab.com/org/repo/-/merge_requests/42"]
+        mr = ticket.extra["prs"]["https://gitlab.com/org/repo/-/merge_requests/42"]
         assert "discussions" not in mr
 
-    def test_advances_ticket_to_merged_when_all_mrs_merged(self) -> None:
+    def test_advances_ticket_to_merged_when_all_prs_merged(self) -> None:
         """When all MRs for a ticket are merged, ticket state advances to MERGED."""
         Ticket.objects.create(
             overlay="test",
@@ -1537,7 +1537,7 @@ class TestSyncFollowupMergedMrs(TestCase):
             repos=["repo"],
             state=Ticket.State.IN_REVIEW,
             extra={
-                "mrs": {
+                "prs": {
                     "https://gitlab.com/org/repo/-/merge_requests/42": {
                         "url": "https://gitlab.com/org/repo/-/merge_requests/42",
                         "repo": "repo",
@@ -1564,7 +1564,7 @@ class TestSyncFollowupMergedMrs(TestCase):
             repos=["repo"],
             state=Ticket.State.IN_REVIEW,
             extra={
-                "mrs": {
+                "prs": {
                     "https://gitlab.com/org/repo/-/merge_requests/42": {
                         "url": "https://gitlab.com/org/repo/-/merge_requests/42",
                         "repo": "repo",
@@ -1590,8 +1590,8 @@ class TestSyncFollowupMergedMrs(TestCase):
         ticket = Ticket.objects.get(issue_url="https://gitlab.com/org/repo/-/issues/100")
         assert ticket.state == Ticket.State.IN_REVIEW
         # Merged MR's discussions removed, open MR's discussions preserved
-        assert "discussions" not in ticket.extra["mrs"]["https://gitlab.com/org/repo/-/merge_requests/42"]
-        assert "discussions" in ticket.extra["mrs"]["https://gitlab.com/org/repo/-/merge_requests/99"]
+        assert "discussions" not in ticket.extra["prs"]["https://gitlab.com/org/repo/-/merge_requests/42"]
+        assert "discussions" in ticket.extra["prs"]["https://gitlab.com/org/repo/-/merge_requests/99"]
 
     def test_handles_merged_mr_fetch_failure(self) -> None:
         """When merged MR fetch fails, error is appended but sync continues."""
@@ -1601,7 +1601,7 @@ class TestSyncFollowupMergedMrs(TestCase):
 
         result = sync_followup()
 
-        assert any("Merged MR fetch failed" in e for e in result.errors)
+        assert any("Merged PR fetch failed" in e for e in result.errors)
 
     def test_skips_ticket_with_no_mrs(self) -> None:
         """Ticket with empty/missing mrs dict should be skipped in merged detection."""
@@ -1610,7 +1610,7 @@ class TestSyncFollowupMergedMrs(TestCase):
             issue_url="https://gitlab.com/org/repo/-/issues/300",
             repos=["repo"],
             state=Ticket.State.IN_REVIEW,
-            extra={"mrs": {}},
+            extra={"prs": {}},
         )
 
         mock_client = _make_merged_mock([_MERGED_MR])
@@ -1618,7 +1618,7 @@ class TestSyncFollowupMergedMrs(TestCase):
 
         result = sync_followup()
 
-        assert result.mrs_merged == 0
+        assert result.prs_merged == 0
 
     def test_skips_non_dict_mr_entry(self) -> None:
         """Non-dict mr_entry values should be skipped in merged detection."""
@@ -1628,7 +1628,7 @@ class TestSyncFollowupMergedMrs(TestCase):
             repos=["repo"],
             state=Ticket.State.IN_REVIEW,
             extra={
-                "mrs": {
+                "prs": {
                     "https://gitlab.com/org/repo/-/merge_requests/42": "not-a-dict",
                 },
             },
@@ -1640,7 +1640,7 @@ class TestSyncFollowupMergedMrs(TestCase):
         result = sync_followup()
 
         # Non-dict entries are skipped; no crash, no merge count
-        assert result.mrs_merged == 0
+        assert result.prs_merged == 0
 
     def test_followup_marks_closed_mr_so_dashboard_filters_it(self) -> None:
         """When user closes an MR without merging, sync must update the cached state to "closed".
@@ -1654,7 +1654,7 @@ class TestSyncFollowupMergedMrs(TestCase):
             repos=["repo"],
             state=Ticket.State.IN_REVIEW,
             extra={
-                "mrs": {
+                "prs": {
                     _CLOSED_MR["web_url"]: {
                         "url": _CLOSED_MR["web_url"],
                         "repo": "repo",
@@ -1670,9 +1670,9 @@ class TestSyncFollowupMergedMrs(TestCase):
 
         result = sync_followup()
 
-        assert result.mrs_closed == 1
+        assert result.prs_closed == 1
         ticket = Ticket.objects.get(issue_url="https://gitlab.com/org/repo/-/issues/77")
-        assert ticket.extra["mrs"][_CLOSED_MR["web_url"]]["state"] == "closed"
+        assert ticket.extra["prs"][_CLOSED_MR["web_url"]]["state"] == "closed"
 
     def test_handles_closed_mr_fetch_failure(self) -> None:
         """Closed-MR fetch failure logs an error but does not abort sync."""
@@ -1682,7 +1682,7 @@ class TestSyncFollowupMergedMrs(TestCase):
 
         result = sync_followup()
 
-        assert any("Closed MR fetch failed" in e for e in result.errors)
+        assert any("Closed PR fetch failed" in e for e in result.errors)
 
     def test_no_change_when_mr_has_no_discussions(self) -> None:
         """Merged MR without discussions causes no save (no changed flag)."""
@@ -1692,7 +1692,7 @@ class TestSyncFollowupMergedMrs(TestCase):
             repos=["repo"],
             state=Ticket.State.IN_REVIEW,
             extra={
-                "mrs": {
+                "prs": {
                     "https://gitlab.com/org/repo/-/merge_requests/42": {
                         "url": "https://gitlab.com/org/repo/-/merge_requests/42",
                         "repo": "repo",
@@ -1709,7 +1709,7 @@ class TestSyncFollowupMergedMrs(TestCase):
         result = sync_followup()
 
         # MR is counted as merged even without discussions
-        assert result.mrs_merged == 1
+        assert result.prs_merged == 1
 
 
 class TestSyncFollowupLabels(TestCase):
@@ -1851,17 +1851,17 @@ class TestSyncFollowupLabels(TestCase):
 
 class TestMergeResults:
     def test_sums_counts_and_concatenates_errors(self) -> None:
-        a = SyncResult(mrs_found=3, tickets_created=1, errors=["err-a"])
-        b = SyncResult(mrs_found=5, tickets_updated=2, errors=["err-b"])
+        a = SyncResult(prs_found=3, tickets_created=1, errors=["err-a"])
+        b = SyncResult(prs_found=5, tickets_updated=2, errors=["err-b"])
         merged = _merge_results(a, b)
-        assert merged.mrs_found == 8
+        assert merged.prs_found == 8
         assert merged.tickets_created == 1
         assert merged.tickets_updated == 2
         assert merged.errors == ["err-a", "err-b"]
 
     def test_merges_empty_results(self) -> None:
         merged = _merge_results(SyncResult(), SyncResult())
-        assert merged.mrs_found == 0
+        assert merged.prs_found == 0
         assert merged.errors == []
 
 
@@ -1903,7 +1903,7 @@ class TestDualSync(TestCase):
 
         result = sync_followup()
 
-        assert result.mrs_found == 2  # 1 GitHub + 1 GitLab
+        assert result.prs_found == 2  # 1 GitHub + 1 GitLab
         assert result.tickets_created == 2
         assert result.errors == []
         assert Ticket.objects.count() == 2
@@ -1916,7 +1916,7 @@ class TestDualSync(TestCase):
         with _patch_overlay(overlay):
             result = sync_followup()
 
-        assert result.mrs_found == 1
+        assert result.prs_found == 1
         assert result.tickets_created == 1
 
     def test_no_tokens_returns_error(self) -> None:
@@ -1930,6 +1930,8 @@ class TestDualSync(TestCase):
 
 class TestSyncReviewerMRs(TestCase):
     def test_caches_reviewer_mrs(self) -> None:
+        from teatree.backends.gitlab import GitLabCodeHost  # noqa: PLC0415
+
         mock_client = MagicMock()
         mock_client.list_open_mrs_as_reviewer.return_value = [
             {
@@ -1941,9 +1943,10 @@ class TestSyncReviewerMRs(TestCase):
                 "author": {"username": "alice"},
             },
         ]
+        host = GitLabCodeHost(client=mock_client)
         result = SyncResult()
 
-        GitLabSyncBackend._sync_reviewer_mrs(mock_client, "testuser", result)
+        GitLabSyncBackend._sync_reviewer_prs(host, "testuser", result)
 
         cached = cache.get(PENDING_REVIEWS_CACHE_KEY)
         assert cached is not None
@@ -1955,14 +1958,17 @@ class TestSyncReviewerMRs(TestCase):
         cache.delete(PENDING_REVIEWS_CACHE_KEY)
 
     def test_handles_api_failure_gracefully(self) -> None:
+        from teatree.backends.gitlab import GitLabCodeHost  # noqa: PLC0415
+
         mock_client = MagicMock()
         mock_client.list_open_mrs_as_reviewer.side_effect = RuntimeError("API down")
+        host = GitLabCodeHost(client=mock_client)
         result = SyncResult()
 
-        GitLabSyncBackend._sync_reviewer_mrs(mock_client, "testuser", result)
+        GitLabSyncBackend._sync_reviewer_prs(host, "testuser", result)
 
         assert len(result.errors) == 1
-        assert "Reviewer MR fetch failed" in result.errors[0]
+        assert "Reviewer PR fetch failed" in result.errors[0]
 
 
 # ── GitHub sync ──────────────────────────────────────────────────────
@@ -2002,7 +2008,7 @@ class TestSyncGitHub(TestCase):
             result = GitHubSyncBackend().sync(overlay)
 
         assert result.tickets_created == 1
-        assert result.mrs_found == 1
+        assert result.prs_found == 1
         ticket = Ticket.objects.get(issue_url="https://github.com/souliane/teatree/issues/42")
         assert ticket.state == Ticket.State.STARTED
         assert ticket.extra["issue_title"] == "Test issue"
