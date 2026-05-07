@@ -60,7 +60,7 @@ class TestPrCreateThinWrapper(TestCase):
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             patch.object(pr_command, "_run_visual_qa_gate", return_value=None),
-            patch.object(pr_command, "_validate_mr_metadata", return_value=None),
+            patch.object(pr_command, "_validate_pr_metadata", return_value=None),
         ):
             result = cast("dict[str, object]", call_command("pr", "create", str(ticket.id)))
 
@@ -80,7 +80,7 @@ class TestPrCreateThinWrapper(TestCase):
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             patch.object(pr_command, "_run_visual_qa_gate", return_value=None),
-            patch.object(pr_command, "_validate_mr_metadata", return_value=None),
+            patch.object(pr_command, "_validate_pr_metadata", return_value=None),
             patch.object(pr_command.git, "last_commit_message", return_value=("feat: x", "body")),
         ):
             result = cast("dict[str, object]", call_command("pr", "create", str(ticket.id), dry_run=True))
@@ -102,7 +102,7 @@ class TestPrCreateThinWrapper(TestCase):
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             patch.object(pr_command, "_run_visual_qa_gate", return_value=None),
-            patch.object(pr_command, "_validate_mr_metadata", return_value=None),
+            patch.object(pr_command, "_validate_pr_metadata", return_value=None),
         ):
             result = cast(
                 "dict[str, object]",

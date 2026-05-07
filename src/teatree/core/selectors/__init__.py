@@ -1,8 +1,7 @@
 """Selectors package — read-only queries for tickets, sessions, tasks, and worktrees.
 
 Loop scanners and the CLI consume these selectors to render the statusline
-and answer status queries without bypassing the FSM models. (Phase 4 will
-restructure these into named scanner modules.)
+and answer status queries without bypassing the FSM models.
 """
 
 from ._cache import _cached, _panel_cache, invalidate_panel_cache

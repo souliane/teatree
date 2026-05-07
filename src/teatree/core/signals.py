@@ -35,7 +35,7 @@ def _add_slack_reactions_on_transition(
     name: str,
     **_kwargs: object,
 ) -> None:
-    """Post a Slack emoji reaction on the MR review message for this transition."""
+    """Post a Slack emoji reaction on the PR review message for this transition."""
     try:
         add_reactions_for_transition(instance, name)
     except Exception:

@@ -29,7 +29,7 @@ def sanitize_close_keywords(description: str, *, close_ticket: bool) -> str:
     return _CLOSE_KEYWORD_RE.sub(r"Relates to \2", description)
 
 
-def overlay_mr_labels() -> list[str]:
+def overlay_pr_labels() -> list[str]:
     raw = get_overlay().config.mr_auto_labels
     if isinstance(raw, str):
         values: Iterable[str] = raw.split(",")
@@ -96,7 +96,7 @@ class ShipExecutor(RunnerBase):
             branch=branch,
             title=title,
             description=description,
-            labels=overlay_mr_labels(),
+            labels=overlay_pr_labels(),
             assignee=assignee,
         )
 

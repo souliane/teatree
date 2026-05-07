@@ -244,9 +244,9 @@ class Ticket(models.Model):
 
     @transition(field=state, source=[State.REVIEWED, State.SHIPPED], target=State.SHIPPED)
     def ship(self) -> None:
-        """Schedule push + MR creation.
+        """Schedule push + PR creation.
 
-        The worker pushes the worktree branch, opens the merge request, and
+        The worker pushes the worktree branch, opens the pull request, and
         calls ``request_review()`` on success. FSM invariant (BLUEPRINT §4):
         transition bodies stay pure — long I/O is offloaded to an ``@task``
         worker, enqueued after commit so the state change and the queued work

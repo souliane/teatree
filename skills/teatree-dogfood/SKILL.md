@@ -1,6 +1,6 @@
 ---
 name: teatree-dogfood
-description: Dogfooding checklist for teatree CLI, dashboard, and server changes — verify fresh behavior by running the command yourself, checking HTTP 200, and exercising the full task lifecycle before declaring a change done. Also lists the known worktree/uv/git-stash pitfalls that trip up local validation.
+description: Dogfooding checklist for teatree CLI, loop, and statusline changes — verify fresh behavior by running the command yourself, exercising the full task lifecycle, and watching the rendered statusline before declaring a change done. Also lists the known worktree/uv/git-stash pitfalls that trip up local validation.
 metadata:
   version: 0.0.1
   subagent_safe: true

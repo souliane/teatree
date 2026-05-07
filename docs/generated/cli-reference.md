@@ -903,7 +903,7 @@ Usage: t3 loop [OPTIONS] COMMAND [ARGS]...
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
 │ tick    Run one tick: scan in parallel, dispatch, render statusline.         │
 │ status  Show the loop's last-rendered statusline.                            │
-│ start   Register the fat loop with the active Claude Code session.           │
+│ start   Spawn a Claude Code session with the fat loop pre-registered.        │
 │ stop    Print the slot id to stop in the Claude Code session.                │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -915,9 +915,16 @@ Usage: t3 loop tick [OPTIONS]
 
  Run one tick: scan in parallel, dispatch, render statusline.
 
+ Without ``--overlay``, every registered overlay is scanned in
+ parallel — useful when you maintain multiple GitHub identities
+ (one per overlay). With ``--overlay <name>``, only that overlay's
+ credentials are used.
+
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --statusline-file        PATH  Override the statusline output path (test     │
 │                                hook).                                        │
+│ --overlay                TEXT  Restrict scanning to the named overlay        │
+│                                (default: scan every registered overlay).     │
 │ --json                         Emit the tick report as JSON.                 │
 │ --help                         Show this message and exit.                   │
 ╰──────────────────────────────────────────────────────────────────────────────╯
@@ -940,14 +947,18 @@ Usage: t3 loop status [OPTIONS]
 ```
 Usage: t3 loop start [OPTIONS]
 
- Register the fat loop with the active Claude Code session.
+ Spawn a Claude Code session with the fat loop pre-registered.
 
- The actual ``/loop`` registration is environment-specific — this
- command emits the slot definition the user pastes into the Claude
- Code session's loop register.
+ Looks for ``claude`` on ``PATH`` and runs it with an initial
+ ``/loop <cadence> !t3 loop tick`` prompt so the loop is registered
+ before the user types anything. When ``claude`` is not available or
+ the caller is already inside a Claude Code session, falls back to
+ printing the slash command for manual entry.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --help          Show this message and exit.                                  │
+│ --print-only          Print the /loop slot definition instead of spawning a  │
+│                       Claude Code session.                                   │
+│ --help                Show this message and exit.                            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -977,7 +988,7 @@ Usage: t3 teatree [OPTIONS] COMMAND [ARGS]...
 │ resetdb      Drop the SQLite database and re-run all migrations.             │
 │ worker       Start background task workers.                                  │
 │ full-status  Show ticket, worktree, and session state summary.               │
-│ ship         Code to MR — create merge request for the ticket.               │
+│ ship         Code to PR — create pull request for the ticket.                │
 │ daily        Daily followup — sync MRs, check gates, remind reviewers.       │
 │ agent        Launch Claude Code with overlay context and auto-detected       │
 │              skills.                                                         │
@@ -1038,13 +1049,13 @@ Usage: t3 teatree full-status [OPTIONS]
 ```
 Usage: t3 teatree ship [OPTIONS] TICKET_ID
 
- Code to MR — create merge request for the ticket.
+ Code to PR — create pull request for the ticket.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    ticket_id      TEXT  Ticket ID [required]                               │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --title        TEXT  MR title                                                │
+│ --title        TEXT  PR title                                                │
 │ --help               Show this message and exit.                             │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -1450,7 +1461,7 @@ Usage: t3 teatree workspace clean-merged [OPTIONS]
 
  Tear down every worktree whose ticket is already MERGED.
 
- On-demand reconciler for the daily followup sync. Use when merged-MR
+ On-demand reconciler for the daily followup sync. Use when merged-PR
  cleanup silently failed and stale docker containers, branches, or
  databases linger. Errors are surfaced inline — no suppression.
 
@@ -1791,12 +1802,12 @@ Usage: t3 teatree pr [OPTIONS] COMMAND [ARGS]...
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ create         Create a merge request for the ticket's branch.               │
+│ create         Create a pull request for the ticket's branch.                │
 │ ensure-pr      Create a PR for an orphan branch (idempotent).                │
 │ check-gates    Check whether session gates allow a phase transition.         │
 │ fetch-issue    Fetch issue details from the configured tracker.              │
 │ detect-tenant  Detect the current tenant variant from the overlay.           │
-│ post-evidence  Post test evidence as an MR comment.                          │
+│ post-evidence  Post test evidence as a PR comment.                           │
 │ sweep          List your open PRs across the forge for the /t3:sweeping-prs  │
 │                skill.                                                        │
 ╰──────────────────────────────────────────────────────────────────────────────╯
@@ -1809,8 +1820,8 @@ Usage: t3 teatree pr create [OPTIONS] TICKET_ID
 
  Validate ship gates and trigger the ship transition.
 
- On success the ``execute_ship`` worker pushes the branch, opens the MR,
- and advances ``SHIPPED → IN_REVIEW``. The return value reports the MR
+ On success the ``execute_ship`` worker pushes the branch, opens the PR,
+ and advances ``SHIPPED → IN_REVIEW``. The return value reports the PR
  URL once the worker completes (synchronous in interactive mode).
 
  ``ticket_id`` accepts the internal DB pk, the full issue URL, or the
@@ -1841,7 +1852,7 @@ Usage: t3 teatree pr ensure-pr [OPTIONS]
  Create a PR for an orphan branch (idempotent, no-op when a PR already exists).
 
  An orphan is a branch with commits not on ``origin/main`` (after
- subject-match + tree-equality checks) and no open PR/MR. When this
+ subject-match + tree-equality checks) and no open PR. When this
  runs inside a git pre-push hook for a *first* push, the branch is not
  yet on the remote — creating the PR is deferred with a warning so the
  push proceeds and the agent can re-run this command afterwards.
@@ -1901,7 +1912,7 @@ Usage: t3 teatree pr detect-tenant [OPTIONS]
 ```
 Usage: t3 teatree pr post-evidence [OPTIONS] MR_IID
 
- Post test evidence as an MR comment. Uploads files and updates existing notes.
+ Post test evidence as a PR comment. Uploads files and updates existing notes.
 
  Files (screenshots, videos) are uploaded and embedded as ``!(url)`` in the
  body.

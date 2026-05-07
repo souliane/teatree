@@ -413,7 +413,7 @@ class Command(TyperCommand):
     def clean_merged(self) -> list[str]:
         """Tear down every worktree whose ticket is already MERGED.
 
-        On-demand reconciler for the daily followup sync. Use when merged-MR
+        On-demand reconciler for the daily followup sync. Use when merged-PR
         cleanup silently failed and stale docker containers, branches, or
         databases linger. Errors are surfaced inline — no suppression.
         """
