@@ -95,13 +95,31 @@ class TestMainDetection:
         monkeypatch.setattr("sys.argv", ["check_quality_gates.py"])
         assert mod.main() == 1
 
-    def test_detects_noqa_in_code(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_does_not_detect_noqa_in_code(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Narrow ``# noqa: <RULE>`` suppressions are intentionally allowed.
+
+        See the comment on ``_CODE_RELAXATION_PATTERNS`` — they're the right
+        escape valve when a lint rule disagrees with a deliberate design
+        choice.
+        """
         import scripts.hooks.check_quality_gates as mod  # noqa: PLC0415
 
         def fake_diff(path_filter: str = "") -> str:
             if path_filter == "pyproject.toml":
                 return ""
             return _NOQA_DIFF
+
+        monkeypatch.setattr(mod, "_staged_diff", fake_diff)
+        monkeypatch.setattr("sys.argv", ["check_quality_gates.py"])
+        assert mod.main() == 0
+
+    def test_detects_pragma_in_code(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import scripts.hooks.check_quality_gates as mod  # noqa: PLC0415
+
+        def fake_diff(path_filter: str = "") -> str:
+            if path_filter == "pyproject.toml":
+                return ""
+            return _PRAGMA_DIFF
 
         monkeypatch.setattr(mod, "_staged_diff", fake_diff)
         monkeypatch.setattr("sys.argv", ["check_quality_gates.py"])

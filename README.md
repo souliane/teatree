@@ -79,7 +79,7 @@ stateDiagram-v2
   claimed --> pending: lease_expired
 ```
 
-**MergeRequest** — tracks delivery state on the code host.
+**PullRequest** — tracks delivery state on the code host.
 
 ```mermaid
 stateDiagram-v2
@@ -88,6 +88,8 @@ stateDiagram-v2
   review_requested --> approved: approve
   approved --> merged: merge
 ```
+
+Every state change goes through a transition with code behind it — `Ticket.review()` requires a completed reviewing task, `Ticket.ship()` requires `state == REVIEWED`, and so on. Agents do not write to these fields directly; they drive transitions, and the transitions enforce their own preconditions. Direct writes to a state machine field bypass the predicates and produce tickets that look advanced from one angle and stale from another — that's a bug, not a shortcut. The same rule applies to the CLI: any command that affects a state machine must call into a transition, never mutate the field.
 
 Agents read skills to do the *creative* work (writing code, reviewing a diff, choosing how to test); the CLI owns the *mechanical* work (branching, ports, DB refresh, pipeline waits, MR validation). Three interfaces sit on top:
 
@@ -125,6 +127,17 @@ A Django/HTMX web UI that surfaces everything the CLI manages: tickets, pull req
 Skills and hooks that drive AI-assisted development. Each skill covers one phase of the development lifecycle — ticket intake, coding, testing, review, shipping — and contains the methodology, guardrails, and domain knowledge the agent needs to do the work well: TDD discipline, debugging process, review checklists, retro learning, verification rules. Skills declare dependencies (`requires:`) and optional companion skills (`companions:`) from third-party packages like [superpowers](https://github.com/obra/superpowers). Hooks handle automatic skill routing, branch protection, and session tracking.
 
 Skills use the CLI for infrastructure (worktrees, databases, ports, CI), but the actual development work — writing code, reasoning about architecture, reviewing diffs, running retros — is guided by skill content, not CLI commands.
+
+### Workflow guarantees
+
+A few rules in the lifecycle skills are non-negotiable. They exist because each one prevents a specific class of failure that has bitten a real session:
+
+- **PRs go through `t3 <overlay> pr create`.** Raw `gh pr create` / `glab mr create` skips the shipping gate (testing + reviewing + retro phases), the visual-QA gate, and the title/description validator. The CLI is the only path that runs every guard; using it is mandatory whenever the overlay exposes the subcommand.
+- **The `reviewing` phase is satisfied by an independent sub-agent, not by self-review.** Before push, the implementing conversation spawns the `t3:reviewer` sub-agent (read-only, no edits) and applies its findings. Self-review against repo rules is a complement, not a substitute — the implementer's context carries the same blind spots that allowed the gap.
+- **State machine changes happen via transitions, never via direct field writes.** This holds for both code and CLI: every command that affects a state machine must call into a transition (`Ticket.code()`, `Ticket.review()`, `Ticket.ship()`, etc.) so the predicates run and the dependent gates stay aligned.
+- **Mass renames and cross-cutting refactors require an exhaustive sweep before "done".** A single `rg` pass is not enough — the agent runs every surface form (plain, quoted, attribute access, subscript, CamelCase variants, sibling repos) and confirms zero hits before claiming the rename is complete.
+
+These rules live in the `ship`, `review`, `code`, and `rules` skills. The CLI enforces what it can mechanically (gate checks, transition predicates); the skills carry the rest.
 
 ## What It Looks Like
 

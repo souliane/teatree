@@ -1,5 +1,7 @@
 """Tests for ``t3 setup slack-bot`` — interactive Slack-bot walkthrough."""
 
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any, cast
 from unittest.mock import patch
@@ -17,6 +19,61 @@ from teatree.cli.slack_setup import (
     write_overlay_settings,
 )
 from teatree.config import OverlayEntry
+
+
+class TestSlackSetupSurvivesMissingTomlkit:
+    """Regression guard: ``cli/slack_setup`` must load without ``tomlkit``.
+
+    A user with a stale teatree install (pre-tomlkit-dep) was unable to run
+    any ``t3`` subcommand because ``cli/__init__.py`` imports ``cli/setup.py``
+    which imports ``cli/slack_setup.py`` which used to ``import tomlkit`` at
+    module top level. The whole CLI bootstrap crashed on the missing optional
+    dep. ``tomlkit`` is now imported inline inside ``write_overlay_settings``
+    so the failure surfaces only to ``t3 setup slack-bot`` callers; every
+    other subcommand stays usable while the user fixes their install.
+    """
+
+    def test_slack_setup_imports_without_pulling_in_tomlkit(self) -> None:
+        probe = (
+            "import sys\n"
+            "import teatree.cli.slack_setup  # noqa: F401\n"
+            # If the import is truly lazy, tomlkit must not have been pulled
+            # into sys.modules just by loading the slack-setup module. The
+            # subprocess starts clean, so this is a deterministic check.
+            "assert 'tomlkit' not in sys.modules, "
+            "    'slack_setup must not eagerly import tomlkit at module load'\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", probe],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
+
+    def test_slack_setup_module_loads_when_tomlkit_is_missing(self) -> None:
+        """The module loads even when ``tomlkit`` is missing.
+
+        With ``tomlkit`` blocked in ``sys.modules``, importing the module
+        still succeeds — the inline import only fires when
+        ``write_overlay_settings`` is actually called.
+        """
+        probe = (
+            "import sys\n"
+            # ``sys.modules[name] = None`` is the documented way to make a
+            # subsequent ``import name`` raise ImportError without actually
+            # uninstalling the package.
+            "sys.modules['tomlkit'] = None\n"
+            "sys.modules['tomlkit.items'] = None\n"
+            "import teatree.cli.slack_setup  # noqa: F401\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", probe],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
 
 
 class TestBuildManifest:
