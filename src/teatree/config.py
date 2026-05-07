@@ -19,7 +19,7 @@ class Mode(StrEnum):
     """Operating mode for agent sessions.
 
     ``interactive`` (default, conservative on security) gates publishing actions
-    on explicit user approval — push, MR creation/merge, external writes all
+    on explicit user approval — push, PR creation/merge, external writes all
     stop and ask. ``auto`` grants full autonomy: the agent ships end-to-end
     without confirmation, falling back to interactive only for the non-
     negotiable always-gated list (force-push to default branches, destructive
@@ -168,7 +168,7 @@ class UserSettings:
     claude_chrome: bool = True
     # Whether teatree should append an agent identity (`Co-Authored-By`,
     # "Sent using …", "Generated with …") to artifacts published on the
-    # user's behalf — git commits, MR/PR descriptions and comments, Slack
+    # user's behalf — git commits, PR descriptions and comments, Slack
     # messages, issue bodies. Default off: the user is the author, the agent
     # is the typist. Honored by every teatree post-on-behalf code path; the
     # rule for ad-hoc agent posting (MCP Slack, gh comment, etc.) lives in

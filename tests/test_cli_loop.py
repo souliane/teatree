@@ -5,9 +5,10 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from typer.testing import CliRunner
 
-from teatree.cli.loop import _report_to_dict, loop_app
+from teatree.cli.loop import _cadence_for_loop_slot, _report_to_dict, loop_app
 from teatree.loop.dispatch import DispatchAction
 from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.tick import TickReport
@@ -122,14 +123,69 @@ class TestStatusCommand:
         assert "check 1" in result.stdout
 
 
-class TestStartStopCommands:
-    def test_start_emits_slot_definition(self) -> None:
+class TestCadenceParser:
+    @pytest.mark.parametrize(
+        ("env_value", "expected"),
+        [
+            ("720", "12m"),
+            ("600", "10m"),
+            ("90", "90s"),
+            ("", "12m"),
+            ("garbage", "12m"),
+            ("30", "1m"),  # clamped to 60s minimum, formatted as 1m
+        ],
+    )
+    def test_parses_t3_loop_cadence(self, env_value: str, expected: str, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("T3_LOOP_CADENCE", env_value)
+        assert _cadence_for_loop_slot() == expected
+
+    def test_default_when_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("T3_LOOP_CADENCE", raising=False)
+        assert _cadence_for_loop_slot() == "12m"
+
+
+class TestStartCommand:
+    def test_print_only_emits_slash_command(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("T3_LOOP_CADENCE", "720")
+        result = runner.invoke(loop_app, ["start", "--print-only"])
+
+        assert result.exit_code == 0
+        assert "/loop 12m !t3 loop tick" in result.stdout
+        assert "T3_LOOP_CADENCE" in result.stdout
+
+    def test_inside_claude_session_falls_back_to_print(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("CLAUDECODE", "1")
         result = runner.invoke(loop_app, ["start"])
 
         assert result.exit_code == 0
-        assert "name: t3-loop" in result.stdout
-        assert "!t3 loop tick" in result.stdout
+        assert "/loop" in result.stdout
 
+    def test_missing_claude_binary_exits_with_instructions(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("CLAUDECODE", raising=False)
+        with (
+            patch("teatree.cli.loop._stdin_is_terminal", return_value=True),
+            patch("teatree.cli.loop.shutil.which", return_value=None),
+        ):
+            result = runner.invoke(loop_app, ["start"])
+
+        assert result.exit_code == 1
+        assert "claude` not found" in result.stdout
+        assert "/loop" in result.stdout
+
+    def test_spawns_claude_with_register_prompt(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("CLAUDECODE", raising=False)
+        monkeypatch.setenv("T3_LOOP_CADENCE", "600")
+        with (
+            patch("teatree.cli.loop._stdin_is_terminal", return_value=True),
+            patch("teatree.cli.loop.shutil.which", return_value="/usr/bin/claude"),
+            patch("teatree.cli.loop.os.execv") as execv_mock,
+        ):
+            runner.invoke(loop_app, ["start"])
+
+        execv_mock.assert_called_once_with("/usr/bin/claude", ["/usr/bin/claude", "/loop 10m !t3 loop tick"])
+
+
+class TestStopCommand:
     def test_stop_explains_unregister(self) -> None:
         result = runner.invoke(loop_app, ["stop"])
 

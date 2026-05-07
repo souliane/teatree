@@ -212,7 +212,7 @@ def push_unsynced_branch(worktree: Worktree) -> str:
     overlay_name = worktree.ticket.overlay or "<overlay>"
     return (
         f"Pushed: {worktree.repo_path} ({worktree.branch}). "
-        f"Run `t3 {overlay_name} pr create {worktree.ticket.pk}` to open an MR."
+        f"Run `t3 {overlay_name} pr create {worktree.ticket.pk}` to open a PR."
     )
 
 

@@ -1,9 +1,9 @@
 """Pull request helpers: gate-validate then enqueue ship transition.
 
-The actual push + MR creation lives in ``ShipExecutor`` (BLUEPRINT §4) and runs
+The actual push + PR creation lives in ``ShipExecutor`` (BLUEPRINT §4) and runs
 inside the ``execute_ship`` task. This command is a deterministic CLI wrapper:
 it runs the deterministic gates, calls ``ticket.ship()`` to enter SHIPPED, and
-returns the MR URL once the worker completes.
+returns the PR URL once the worker completes.
 """
 
 import re
@@ -19,7 +19,7 @@ from teatree.core.models import Ticket, Worktree
 from teatree.core.models.types import TicketExtra, VisualQASummary
 from teatree.core.orphan_guard import BranchStatus, classify_branch
 from teatree.core.overlay_loader import get_overlay
-from teatree.core.runners.ship import overlay_mr_labels, sanitize_close_keywords
+from teatree.core.runners.ship import overlay_pr_labels, sanitize_close_keywords
 from teatree.core.sync import RawAPIDict
 from teatree.utils import git
 
@@ -41,7 +41,7 @@ class ShipDryRun(TypedDict):
     labels: list[str]
 
 
-class MrValidationError(TypedDict):
+class PrValidationError(TypedDict):
     error: str
     details: list[str]
 
@@ -100,15 +100,15 @@ def _ship_dry_run(ticket: Ticket, worktree: Worktree) -> ShipDryRun:
         branch=worktree.branch,
         title=title,
         description=description,
-        labels=overlay_mr_labels(),
+        labels=overlay_pr_labels(),
     )
 
 
-def _validate_mr_metadata(ticket: Ticket, worktree: Worktree) -> MrValidationError | None:
+def _validate_pr_metadata(ticket: Ticket, worktree: Worktree) -> PrValidationError | None:
     _, title, description = _ship_preview(ticket, worktree)
     validation = get_overlay().metadata.validate_mr(title, description)
     if validation["errors"]:
-        return MrValidationError(error="MR validation failed", details=validation["errors"])
+        return PrValidationError(error="PR validation failed", details=validation["errors"])
     return None
 
 
@@ -151,12 +151,12 @@ def _resolve_base_url(worktree: Worktree | None) -> str:
 
 
 def _run_visual_qa_gate(ticket: Ticket, *, skip_reason: str = "") -> VisualQAGateFailure | None:
-    """Run the pre-push browser sanity gate before MR creation.
+    """Run the pre-push browser sanity gate before PR creation.
 
     Records a JSON summary on ``ticket.extra['visual_qa']`` when the gate
     actually ran (i.e. not skipped for env/flag reasons) so the result
     survives in the FSM history.  Returns an error dict when blocking
-    findings are present so the caller can refuse MR creation, or
+    findings are present so the caller can refuse PR creation, or
     ``None`` when the gate passes / is skipped.
     """
     worktree = ticket.worktrees.first()  # ty: ignore[unresolved-attribute]
@@ -221,12 +221,12 @@ class Command(TyperCommand):
         skip_validation: bool = False,
         skip_visual_qa: str = "",
     ) -> (
-        ShipEnqueued | ShipDryRun | MrValidationError | VisualQAGateFailure | ShippingGateFailure | WorktreeMissingError
+        ShipEnqueued | ShipDryRun | PrValidationError | VisualQAGateFailure | ShippingGateFailure | WorktreeMissingError
     ):
         """Validate ship gates and trigger the ship transition.
 
-        On success the ``execute_ship`` worker pushes the branch, opens the MR,
-        and advances ``SHIPPED → IN_REVIEW``. The return value reports the MR
+        On success the ``execute_ship`` worker pushes the branch, opens the PR,
+        and advances ``SHIPPED → IN_REVIEW``. The return value reports the PR
         URL once the worker completes (synchronous in interactive mode).
 
         ``ticket_id`` accepts the internal DB pk, the full issue URL, or the
@@ -247,7 +247,7 @@ class Command(TyperCommand):
             visual_qa_error = _run_visual_qa_gate(ticket, skip_reason=skip_visual_qa)
             if visual_qa_error:
                 return visual_qa_error
-            validation_error = _validate_mr_metadata(ticket, worktree)
+            validation_error = _validate_pr_metadata(ticket, worktree)
             if validation_error:
                 return validation_error
 
@@ -272,7 +272,7 @@ class Command(TyperCommand):
         """Create a PR for an orphan branch (idempotent, no-op when a PR already exists).
 
         An orphan is a branch with commits not on ``origin/main`` (after
-        subject-match + tree-equality checks) and no open PR/MR. When this
+        subject-match + tree-equality checks) and no open PR. When this
         runs inside a git pre-push hook for a *first* push, the branch is not
         yet on the remote — creating the PR is deferred with a warning so the
         push proceeds and the agent can re-run this command afterwards.
@@ -314,7 +314,7 @@ class Command(TyperCommand):
                 branch=branch_name,
                 title=title,
                 description=description,
-                labels=overlay_mr_labels(),
+                labels=overlay_pr_labels(),
                 assignee=assignee,
                 draft=False,
             ),
@@ -410,7 +410,7 @@ class Command(TyperCommand):
         body: str = "",
         files: list[str] | None = None,
     ) -> dict[str, object]:
-        """Post test evidence as an MR comment. Uploads files and updates existing notes.
+        """Post test evidence as a PR comment. Uploads files and updates existing notes.
 
         Files (screenshots, videos) are uploaded and embedded as ``![name](url)`` in the body.
         If an existing note contains ``## Test Plan``, it is updated instead of creating a new one.

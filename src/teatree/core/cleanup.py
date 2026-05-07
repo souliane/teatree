@@ -67,7 +67,7 @@ def _canonicalize_subject(subject: str) -> str:
     """Normalize a commit subject for cross-branch matching.
 
     Strips, in order: trailing ``(#NNN)`` (added on squash-merge), trailing
-    ``[flag] (ticket_url)`` (release-note suffix enforced by the MR-metadata
+    ``[flag] (ticket_url)`` (release-note suffix enforced by the PR-metadata
     hook — present on the merged title but usually absent from the local
     commit), and leading ``type(scope):`` so the ``relax:`` → ``feat(scope):``
     rewrite still matches.
@@ -119,7 +119,7 @@ def _pr_merge_commit_sha(repo: str, branch: str) -> str:
     """Return the SHA of the merge/squash commit for ``branch``'s merged PR, or ``""``.
 
     Queries GitHub (``gh pr list``) and GitLab (``glab mr list``) for a merged
-    PR/MR whose source branch matches. The merge commit's tree captures the
+    PR whose source branch matches. The merge commit's tree captures the
     branch's net content at merge time — used by :func:`_branch_tree_matches_squash`
     to distinguish post-merge follow-up commits already captured by the squash
     from commits that add new content.

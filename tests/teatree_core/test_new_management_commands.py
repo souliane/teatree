@@ -1853,7 +1853,7 @@ class TestPrCreate(TestCase):
 
         with (
             patch.object(pr_mod, "_run_visual_qa_gate", return_value=None),
-            patch.object(pr_mod, "_validate_mr_metadata", return_value=None),
+            patch.object(pr_mod, "_validate_pr_metadata", return_value=None),
         ):
             result = cast("dict[str, object]", call_command("pr", "create", str(ticket.pk)))
 
@@ -1870,7 +1870,7 @@ class TestPrCreate(TestCase):
             patch.object(pr_mod, "_run_visual_qa_gate", return_value=None),
             patch.object(
                 pr_mod,
-                "_validate_mr_metadata",
+                "_validate_pr_metadata",
                 return_value={"error": "MR validation failed", "details": ["Bad title"]},
             ),
         ):
@@ -1887,7 +1887,7 @@ class TestPrCreate(TestCase):
 
         with (
             patch.object(pr_mod, "_run_visual_qa_gate", return_value=None),
-            patch.object(pr_mod, "_validate_mr_metadata", return_value=None),
+            patch.object(pr_mod, "_validate_pr_metadata", return_value=None),
             patch.object(pr_mod.git, "last_commit_message", return_value=("Dry MR", "body")),
         ):
             result = cast(

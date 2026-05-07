@@ -475,6 +475,8 @@ Each tick runs three stages:
 
 **Why fat-loop, not many small loops:** Claude Code's `/loop` is session-scoped with a 50-task and 7-day expiry. One fat loop calling commands and skills costs one slot; N small loops would saturate the slot budget.
 
+**Multi-overlay scanning.** A user with more than one overlay (e.g. one per code-host identity) sees PRs, issues, and Slack mentions from all of them in one tick. `teatree.core.backend_factory.iter_overlay_backends()` returns one `OverlayBackends` bundle (host + messaging + ready_labels) per registered overlay; `run_tick(TickRequest(backends=...))` fans out one set of scanners per overlay through a single thread pool, tags each emitted signal with its overlay name in the payload, and prefixes the rendered statusline lines with `[overlay]`. `t3 loop tick` defaults to scanning every overlay; `--overlay <name>` restricts it to one. Inputs flow through a typed `TickRequest` dataclass (`scanners`, `host`, `messaging`, `backends`, `notion_client`, `ready_labels`) so the call surface stays narrow.
+
 #### 5.6.1 Statusline rendering
 
 The statusline is the **only persistent UI surface**. It is written to a file by the loop and read by the statusline hook (`hooks/scripts/statusline.sh`) which is just a `cat`. This decouples render speed from content size.
@@ -487,7 +489,9 @@ The statusline is the **only persistent UI surface**. It is written to a file by
 
 The hook reads the file in <10 ms. The render-to-file pattern means the loop can spend tens of seconds composing the statusline content without slowing the hook.
 
-The render module lives at `src/teatree/loop/statusline.py` (`StatuslineZones` dataclass + `render(zones, target=...)`). The default file path is `${XDG_DATA_HOME:-$HOME/.local/share}/teatree/statusline.txt`; the hook honours `TEATREE_STATUSLINE_FILE` for tests and overrides.
+The render module lives at `src/teatree/loop/statusline.py` (`StatuslineZones` dataclass + `StatuslineEntry(text, url)` for URL-aware lines + `render(zones, target=..., colorize=...)`). The default file path is `${XDG_DATA_HOME:-$HOME/.local/share}/teatree/statusline.txt`; the hook honours `TEATREE_STATUSLINE_FILE` for tests and overrides.
+
+**Color and hyperlinks.** Each zone carries a distinct ANSI color (dim grey for anchors, bright red for action_needed, bright cyan for in_flight). Set `NO_COLOR=1` (or pass `colorize=False` to `render()`) to disable. Signals that include a `url` payload render as OSC 8 terminal hyperlinks (clickable in iTerm2, Kitty, WezTerm, Ghostty); the renderer falls back to `text <url>` when colorize is off so non-OSC8 terminals still receive the URL.
 
 #### 5.6.2 Mode + training-wheel
 

@@ -1,9 +1,9 @@
-"""Fetch GitLab/GitHub MR/issue titles to enrich prompts before trigger matching.
+"""Fetch PR/issue titles from GitLab/GitHub to enrich prompts before trigger matching.
 
 Used by the UserPromptSubmit hook so a skill's keyword triggers can match the
-content of a linked MR/issue, not just the prompt text. Without this, pasting
-a bare MR URL from a generic-looking repo does not load skills that only the
-MR's *title* would identify (e.g. a domain-specific skill on a feature MR).
+content of a linked PR/issue, not just the prompt text. Without this, pasting
+a bare PR URL from a generic-looking repo does not load skills that only the
+PR's *title* would identify (e.g. a domain-specific skill on a feature PR).
 
 Set ``T3_HOOK_FETCH_TITLES=0`` to disable. Titles are cached at
 ``~/.cache/teatree/url-titles.json`` indefinitely (titles rarely change;
@@ -142,7 +142,7 @@ def fetch_titles(prompt: str) -> list[str]:
 
 
 def enrich_prompt(prompt: str) -> str:
-    """Append fetched MR/issue titles to *prompt* so trigger keywords can match them."""
+    """Append fetched PR/issue titles to *prompt* so trigger keywords can match them."""
     titles = fetch_titles(prompt)
     if not titles:
         return prompt
