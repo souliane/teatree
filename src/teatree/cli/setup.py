@@ -11,6 +11,7 @@ from pathlib import Path
 import typer
 
 from teatree.cli.doctor import AGENT_SKILL_RUNTIMES, DoctorService, agent_skill_dirs
+from teatree.cli.slack_setup import slack_bot_setup
 from teatree.utils.run import CompletedProcess, run_allowed_to_fail
 
 # Re-exported here so external callers and tests see a single import path for
@@ -355,6 +356,7 @@ def _validate_repo(repo: Path | None) -> Path:
 
 @setup_app.callback()
 def run(
+    ctx: typer.Context,
     *,
     claude_scope: str = typer.Option("user", help="Claude plugin install scope: user or project."),
     skip_plugin: bool = typer.Option(False, "--skip-plugin", help="Skip Claude CLI plugin registration."),
@@ -367,6 +369,8 @@ def run(
     install stays anchored to a stable path.  Consumers without a local
     clone can bootstrap via ``apm install -g souliane/teatree``.
     """
+    if ctx.invoked_subcommand is not None:
+        return
     repo = _validate_repo(_find_main_clone())
     typer.echo(f"Teatree repo: {repo}")
 
@@ -410,3 +414,6 @@ def run(
         _install_claude_plugin(repo, scope=claude_scope)
 
     typer.echo("Done.")
+
+
+setup_app.command("slack-bot")(slack_bot_setup)

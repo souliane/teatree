@@ -1,8 +1,8 @@
 """Parse ``triggers:`` blocks from SKILL.md YAML frontmatter.
 
 Standalone module with no Django or teatree imports — safe to use from both
-the UserPromptSubmit hook (``skill_loader.py``) and the Django startup cache
-builder (``teatree.core.views._startup``).
+the UserPromptSubmit hook (``skill_loader.py``) and the skill metadata
+cache builder (``teatree.core.skill_cache``).
 """
 
 from __future__ import annotations  # noqa: TID251 — standalone script, no teatree package imports

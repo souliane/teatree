@@ -11,9 +11,8 @@ from unittest.mock import MagicMock
 import pytest
 
 # Ensure unit tests use the settings declared in pyproject.toml, not a stale
-# DJANGO_SETTINGS_MODULE from the shell (e.g. e2e.settings left over from
-# a dashboard session). pytest-django falls back to pyproject.toml when the
-# env var is absent.
+# DJANGO_SETTINGS_MODULE from the shell. pytest-django falls back to
+# pyproject.toml when the env var is absent.
 os.environ.pop("DJANGO_SETTINGS_MODULE", None)
 # Pin T3_OVERLAY_NAME to the in-repo overlay so tests stay deterministic even
 # when extra overlays are editable-installed for dogfooding (see #120). Tests

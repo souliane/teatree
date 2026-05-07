@@ -1,7 +1,8 @@
-"""Selectors package — query functions for dashboard panels and task details.
+"""Selectors package — read-only queries for tickets, sessions, tasks, and worktrees.
 
-All public names are re-exported here for backward compatibility so that
-``from teatree.core.selectors import ...`` continues to work unchanged.
+Loop scanners and the CLI consume these selectors to render the statusline
+and answer status queries without bypassing the FSM models. (Phase 4 will
+restructure these into named scanner modules.)
 """
 
 from ._cache import _cached, _panel_cache, invalidate_panel_cache
@@ -18,14 +19,8 @@ from ._types import (
     ActionRequiredItem,
     ActiveSessionRow,
     AutomationSummary,
-    DashboardMRRow,
-    DashboardSnapshot,
-    DashboardSummary,
     DashboardTaskRow,
-    DashboardTicketRow,
-    DashboardWorktreeRow,
     DiscussionData,
-    PendingReviewRow,
     RecentActivityRow,
     ReviewCommentDetail,
     TaskAttemptDetail,
@@ -36,17 +31,6 @@ from ._types import (
 )
 from .activity import build_active_sessions, build_recent_activity
 from .automation import _check_mr, build_action_required, build_automation_summary
-from .dashboard import (
-    _build_mr_rows,
-    _first_mr_title,
-    _variant_url,
-    available_ticket_transitions,
-    build_dashboard_snapshot,
-    build_dashboard_summary,
-    build_dashboard_ticket_rows,
-    build_pending_reviews,
-    build_worktree_rows,
-)
 from .queues import (
     _last_result_for_tasks,
     build_headless_queue,
@@ -60,14 +44,8 @@ __all__ = [
     "ActionRequiredItem",
     "ActiveSessionRow",
     "AutomationSummary",
-    "DashboardMRRow",
-    "DashboardSnapshot",
-    "DashboardSummary",
     "DashboardTaskRow",
-    "DashboardTicketRow",
-    "DashboardWorktreeRow",
     "DiscussionData",
-    "PendingReviewRow",
     "RecentActivityRow",
     "ReviewCommentDetail",
     "TaskAttemptDetail",
@@ -75,12 +53,10 @@ __all__ = [
     "TaskGraphNode",
     "TaskRelatedRow",
     "UnifiedSessionRow",
-    "_build_mr_rows",
     "_cached",
     "_check_mr",
     "_display_id",
     "_extra_str",
-    "_first_mr_title",
     "_humanize_duration",
     "_last_result_for_tasks",
     "_list_of_str",
@@ -88,22 +64,15 @@ __all__ = [
     "_panel_cache",
     "_task_overlay_q",
     "_uptime_from_epoch_ms",
-    "_variant_url",
-    "available_ticket_transitions",
     "build_action_required",
     "build_active_sessions",
     "build_automation_summary",
-    "build_dashboard_snapshot",
-    "build_dashboard_summary",
-    "build_dashboard_ticket_rows",
     "build_headless_queue",
     "build_interactive_queue",
-    "build_pending_reviews",
     "build_recent_activity",
     "build_task_detail",
     "build_task_graph",
     "build_ticket_lifecycle_mermaid",
     "build_unified_sessions",
-    "build_worktree_rows",
     "invalidate_panel_cache",
 ]

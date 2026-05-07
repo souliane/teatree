@@ -161,47 +161,6 @@ def managepy(project_path: Path | None, *args: str, overlay_name: str = "") -> N
         run_streamed([sys.executable, "-m", "teatree", *args], env=env)
 
 
-def _uvicorn(
-    project_path: Path | None,
-    host: str,
-    port: int,
-    settings_module: str = "",
-    overlay_name: str = "",
-) -> None:
-    """Start uvicorn for the teatree ASGI application."""
-    env = _base_env()
-    env["DJANGO_SETTINGS_MODULE"] = settings_module or "teatree.settings"
-    if overlay_name:
-        env["T3_OVERLAY_NAME"] = overlay_name
-
-    if project_path and (project_path / "manage.py").is_file():
-        cmd = [
-            *uv_cmd(project_path, "python", "-m", "uvicorn", "teatree.asgi:application"),
-            "--host",
-            host,
-            "--port",
-            str(port),
-            "--reload",
-        ]
-        run_streamed(cmd, cwd=project_path, env=env, check=False)
-    else:
-        run_streamed(
-            [
-                sys.executable,
-                "-m",
-                "uvicorn",
-                "teatree.asgi:application",
-                "--host",
-                host,
-                "--port",
-                str(port),
-                "--reload",
-            ],
-            env=env,
-            check=False,
-        )
-
-
 class OverlayAppBuilder:
     """Build a Typer sub-app for a single installed overlay."""
 
@@ -366,58 +325,8 @@ class OverlayAppBuilder:
             )
 
     def _register_config_commands(self) -> None:
-        """Register ``config`` subgroup with autostart and log commands."""
-        project_path = self.project_path
-        overlay_name = self.overlay_name
+        """Register the empty ``config`` subgroup so overlay commands hang off it."""
         config_group = typer.Typer(no_args_is_help=True, help="Overlay configuration.")
-
-        @config_group.command(name="enable-autostart")
-        def enable_autostart(
-            host: str = typer.Option("127.0.0.1", help="Host to bind to"),
-            port: int = typer.Option(8000, help="Port to serve on"),
-        ) -> None:
-            """Install a system daemon to start the dashboard on login."""
-            from teatree.autostart import enable  # noqa: PLC0415
-
-            msg = enable(
-                overlay_name=overlay_name,
-                project_path=project_path or Path.cwd(),
-                settings_module="teatree.settings",
-                host=host,
-                port=port,
-            )
-            typer.echo(msg)
-
-        @config_group.command(name="disable-autostart")
-        def disable_autostart() -> None:
-            """Remove the dashboard autostart daemon."""
-            from teatree.autostart import disable  # noqa: PLC0415
-
-            msg = disable(overlay_name=overlay_name)
-            typer.echo(msg)
-
-        @config_group.command(name="logs")
-        def show_logs(
-            lines: int = typer.Option(50, "--lines", "-n", help="Number of lines to show"),
-            *,
-            follow: bool = typer.Option(default=False, help="Follow log output"),
-            stderr: bool = typer.Option(default=False, help="Show stderr log instead of stdout"),
-        ) -> None:
-            """Show dashboard daemon log output."""
-            from teatree.autostart import log_paths  # noqa: PLC0415
-
-            paths = log_paths(overlay_name=overlay_name)
-            log_file = paths["stderr"] if stderr else paths["stdout"]
-
-            if not log_file.is_file():
-                typer.echo(f"No log file found at {log_file}")
-                raise typer.Exit(code=1)
-
-            if follow:
-                run_streamed(["tail", "-f", "-n", str(lines), str(log_file)], check=False)
-            else:
-                run_streamed(["tail", "-n", str(lines), str(log_file)], check=False)
-
         self.overlay_app.add_typer(config_group, name="config")
 
     def _bridge_subcommand(

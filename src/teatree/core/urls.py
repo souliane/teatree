@@ -1,43 +1,13 @@
-from django.urls import path
+"""URL config for the `teatree.core` app.
 
-from teatree.core.views.actions import (
-    CancelTaskView,
-    CreateTaskView,
-    GitPullView,
-    ReopenTaskView,
-    SwitchBranchView,
-    SyncFollowupView,
-    TicketTransitionView,
-)
-from teatree.core.views.dashboard import (
-    DashboardPanelView,
-    DashboardView,
-    TaskDetailView,
-    TaskGraphView,
-    TicketLifecycleView,
-)
-from teatree.core.views.history import SessionHistoryView
-from teatree.core.views.launch import LaunchAgentView, LaunchInteractiveAgentView, LaunchTerminalView
-from teatree.core.views.sse import DashboardSSEView
+The HTML dashboard was removed in #541; the statusline-driven harness
+makes URLs unnecessary for the user-facing surface. This file is kept
+so Django's URL resolver still treats `teatree.core` as a registered
+app, but no routes are exposed.
+"""
+
+from django.urls import URLPattern, URLResolver
 
 app_name = "teatree"
 
-urlpatterns = [
-    path("", DashboardView.as_view(), name="dashboard"),
-    path("dashboard/panels/<str:panel>/", DashboardPanelView.as_view(), name="dashboard-panel"),
-    path("dashboard/events/", DashboardSSEView.as_view(), name="dashboard-events"),
-    path("dashboard/sync/", SyncFollowupView.as_view(), name="dashboard-sync"),
-    path("tasks/<int:task_id>/detail/", TaskDetailView.as_view(), name="task-detail"),
-    path("tickets/<int:ticket_id>/task-graph/", TaskGraphView.as_view(), name="task-graph"),
-    path("tickets/<int:ticket_id>/lifecycle/", TicketLifecycleView.as_view(), name="ticket-lifecycle"),
-    path("tasks/<int:task_id>/launch/", LaunchAgentView.as_view(), name="task-launch"),
-    path("tasks/<int:task_id>/cancel/", CancelTaskView.as_view(), name="task-cancel"),
-    path("tasks/<int:task_id>/reopen/", ReopenTaskView.as_view(), name="task-reopen"),
-    path("tickets/<int:ticket_id>/transition/", TicketTransitionView.as_view(), name="ticket-transition"),
-    path("tickets/<int:ticket_id>/create-task/", CreateTaskView.as_view(), name="ticket-create-task"),
-    path("dashboard/launch-terminal/", LaunchTerminalView.as_view(), name="launch-terminal"),
-    path("dashboard/launch-agent/", LaunchInteractiveAgentView.as_view(), name="launch-interactive-agent"),
-    path("sessions/<str:session_id>/history/", SessionHistoryView.as_view(), name="session-history"),
-    path("dashboard/git-pull/", GitPullView.as_view(), name="dashboard-git-pull"),
-    path("dashboard/switch-branch/", SwitchBranchView.as_view(), name="dashboard-switch-branch"),
-]
+urlpatterns: list[URLPattern | URLResolver] = []

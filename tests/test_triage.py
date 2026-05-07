@@ -40,13 +40,9 @@ class TestInferLabels:
         assert "architecture" in infer_labels("Refactor overlay loader", "")
         assert "architecture" in infer_labels("split god-module", "")
 
-    def test_dashboard_keywords(self) -> None:
-        assert "dashboard" in infer_labels("Add panel to dashboard", "")
-        assert "dashboard" in infer_labels("New view in admin", "")
-
     def test_multiple_matches(self) -> None:
-        labels = infer_labels("refactor: split dashboard panel", "")
-        assert {"architecture", "dashboard"}.issubset(set(labels))
+        labels = infer_labels("refactor: improve overlay loader feature", "")
+        assert {"architecture", "enhancement"}.issubset(set(labels))
 
     def test_no_match_returns_empty(self) -> None:
         assert infer_labels("random title", "random body") == []
@@ -62,7 +58,7 @@ class TestInferLabels:
         assert "enhancement" not in labels
 
     def test_label_keywords_populated(self) -> None:
-        assert set(LABEL_KEYWORDS) == {"bug", "enhancement", "documentation", "architecture", "dashboard"}
+        assert set(LABEL_KEYWORDS) == {"bug", "enhancement", "documentation", "architecture"}
         assert all(LABEL_KEYWORDS[label] for label in LABEL_KEYWORDS)
 
 
@@ -118,7 +114,7 @@ class TestLabelSuggester:
 
 class TestNormalizeTitle:
     def test_lowercases(self) -> None:
-        assert normalize_title("Fix DASHBOARD bug") == normalize_title("fix dashboard bug")
+        assert normalize_title("Fix BUG case") == normalize_title("fix bug case")
 
     def test_strips_conventional_prefix(self) -> None:
         assert normalize_title("feat: add a thing") == normalize_title("add a thing")

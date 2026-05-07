@@ -10,7 +10,7 @@ from teatree.core.runners.base import RunnerBase, RunnerResult
 from teatree.utils import git
 
 if TYPE_CHECKING:
-    from teatree.backends.protocols import CodeHost
+    from teatree.backends.protocols import CodeHostBackend
     from teatree.core.models.ticket import Ticket
     from teatree.core.models.types import TicketExtra
 
@@ -80,7 +80,7 @@ class ShipExecutor(RunnerBase):
     @staticmethod
     def _build_pr_spec(
         ticket: "Ticket",
-        host: "CodeHost",
+        host: "CodeHostBackend",
         repo_path: str,
         branch: str,
         extra: "TicketExtra",

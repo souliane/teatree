@@ -14,7 +14,6 @@ LABEL_KEYWORDS: dict[str, tuple[str, ...]] = {
     "enhancement": ("feat", "feature", "add", "improve", "improvement", "support"),
     "documentation": ("docs", "doc", "documentation", "readme"),
     "architecture": ("refactor", "split", "merge", "restructure", "consolidate", "deduplicate"),
-    "dashboard": ("dashboard", "panel", "view", "widget"),
 }
 
 

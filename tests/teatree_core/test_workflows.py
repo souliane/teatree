@@ -13,14 +13,13 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from django.core.management import call_command
-from django.test import Client, TestCase, override_settings
+from django.test import TestCase, override_settings
 
 import teatree.core.management.commands._workspace_cleanup as ws_cleanup_mod
 import teatree.core.management.commands.run as run_mod
 import teatree.core.management.commands.workspace as workspace_mod
 import teatree.core.management.commands.worktree as worktree_mod
 import teatree.core.overlay_loader as overlay_loader_mod
-import teatree.core.tasks as tasks_mod
 import teatree.utils.run as utils_run_mod
 from teatree.core.models import Session, Task, Ticket, Worktree
 from teatree.core.overlay import OverlayBase, OverlayMetadata, ProvisionStep, RunCommands, ServiceSpec, ToolCommand
@@ -100,9 +99,7 @@ class WorkflowOverlay(OverlayBase):
 
 _MOCK_OVERLAY = {"test": WorkflowOverlay()}
 
-WORKFLOW_SETTINGS = {
-    "TEATREE_TERMINAL_MODE": "same-terminal",
-}
+WORKFLOW_SETTINGS: dict[str, object] = {}
 
 
 def _patch_overlay():
@@ -498,67 +495,6 @@ class TestTaskWorkflow(TestCase):
         assert followup is not None
         assert followup.status == Task.Status.PENDING
         assert "approval" in followup.execution_reason.lower()
-
-
-# ---------------------------------------------------------------------------
-# Dashboard and views workflows
-# ---------------------------------------------------------------------------
-
-
-class TestDashboardAndViews(TestCase):
-    @override_settings(**WORKFLOW_SETTINGS)
-    def test_create_task_and_cancel(self) -> None:
-        """Test the dashboard view workflow: create headless task -> cancel it."""
-        client = Client()
-
-        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/77")
-        Session.objects.create(ticket=ticket, overlay="test", agent_id="dashboard")
-
-        with patch.object(tasks_mod, "execute_headless_task") as mock_enqueue:
-            mock_enqueue.enqueue = MagicMock()
-            resp = client.post(
-                f"/tickets/{ticket.pk}/create-task/",
-                {"phase": "coding", "target": "headless"},
-            )
-        assert resp.status_code == 200
-        data = resp.json()
-        task_id = data["task_id"]
-        assert data["status"] == Task.Status.PENDING
-
-        resp = client.post(f"/tasks/{task_id}/cancel/")
-        assert resp.status_code == 200
-        cancel_data = resp.json()
-        assert cancel_data["status"] == Task.Status.FAILED
-
-        task = Task.objects.get(pk=task_id)
-        assert task.status == Task.Status.FAILED
-
-    @override_settings(**WORKFLOW_SETTINGS)
-    def test_ticket_state_progression_via_views(self) -> None:
-        """Test ticket state progression through the TicketTransitionView."""
-        client = Client()
-
-        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/10")
-
-        def transition(name: str, expected_status: int = 200) -> dict:
-            resp = client.post(f"/tickets/{ticket.pk}/transition/", {"transition": name})
-            assert resp.status_code == expected_status, f"Transition {name} returned {resp.status_code}: {resp.content}"
-            return resp.json()
-
-        result = transition("scope")
-        assert result["state"] == "Scoped"
-
-        result = transition("start")
-        assert result["state"] == "Started"
-
-        result = transition("code")
-        assert result["state"] == "Coded"
-
-        result = transition("ship", expected_status=409)
-        assert "not allowed" in result["error"]
-
-        result = transition("nonexistent", expected_status=400)
-        assert "Unknown transition" in result["error"]
 
 
 # ---------------------------------------------------------------------------

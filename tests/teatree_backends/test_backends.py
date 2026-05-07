@@ -61,49 +61,49 @@ def test_get_client_defaults():
     assert client.base_url == "https://gitlab.com/api/v4"
 
 
-def test_gitlab_code_host_update_mr_note(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_gitlab_code_host_update_pr_comment(monkeypatch: pytest.MonkeyPatch) -> None:
 
     mock_client = MagicMock()
     mock_client.resolve_project.return_value = MagicMock(project_id=42, default_branch="main")
     mock_client.put_json.return_value = {"id": 99}
 
     host = gitlab.GitLabCodeHost(client=mock_client)
-    result = host.update_mr_note(repo="org/repo", mr_iid=5, note_id=99, body="Updated")
+    result = host.update_pr_comment(repo="org/repo", pr_iid=5, comment_id=99, body="Updated")
 
     assert result == {"id": 99}
     mock_client.put_json.assert_called_once()
 
 
-def test_gitlab_code_host_update_mr_note_no_project(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_gitlab_code_host_update_pr_comment_no_project(monkeypatch: pytest.MonkeyPatch) -> None:
 
     mock_client = MagicMock()
     mock_client.resolve_project.return_value = None
 
     host = gitlab.GitLabCodeHost(client=mock_client)
-    result = host.update_mr_note(repo="bad/repo", mr_iid=5, note_id=99, body="x")
+    result = host.update_pr_comment(repo="bad/repo", pr_iid=5, comment_id=99, body="x")
 
     assert "error" in result
 
 
-def test_gitlab_code_host_list_mr_notes() -> None:
+def test_gitlab_code_host_list_pr_comments() -> None:
 
     mock_client = MagicMock()
     mock_client.resolve_project.return_value = MagicMock(project_id=42, default_branch="main")
     mock_client.get_json.return_value = [{"id": 1, "body": "note"}]
 
     host = gitlab.GitLabCodeHost(client=mock_client)
-    result = host.list_mr_notes(repo="org/repo", mr_iid=5)
+    result = host.list_pr_comments(repo="org/repo", pr_iid=5)
 
     assert len(result) == 1
 
 
-def test_gitlab_code_host_list_mr_notes_no_project() -> None:
+def test_gitlab_code_host_list_pr_comments_no_project() -> None:
 
     mock_client = MagicMock()
     mock_client.resolve_project.return_value = None
 
     host = gitlab.GitLabCodeHost(client=mock_client)
-    assert host.list_mr_notes(repo="bad/repo", mr_iid=5) == []
+    assert host.list_pr_comments(repo="bad/repo", pr_iid=5) == []
 
 
 def test_gitlab_code_host_upload_file() -> None:

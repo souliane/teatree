@@ -107,10 +107,10 @@ class TestFetchTitles:
 
 class TestEnrichPrompt:
     def test_appends_titles_to_prompt(self, cache_path):
-        cache_path.write_text(json.dumps({"gitlab:g/r:merge_requests:1": "feat(savings-app): joint rep"}))
+        cache_path.write_text(json.dumps({"gitlab:g/r:merge_requests:1": "feat(demo-svc): joint rep"}))
         result = utf.enrich_prompt("review https://gitlab.com/g/r/-/merge_requests/1")
         assert "review https://gitlab.com/g/r/-/merge_requests/1" in result
-        assert "[linked title: feat(savings-app): joint rep]" in result
+        assert "[linked title: feat(demo-svc): joint rep]" in result
 
     def test_returns_prompt_unchanged_when_no_titles(self, cache_path, monkeypatch):
         monkeypatch.setenv("T3_HOOK_FETCH_TITLES", "0")

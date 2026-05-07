@@ -511,7 +511,7 @@ class TestSetupSyncsCodexWhenDirExists:
             mock_load.return_value.user.contribute = False
             mock_load.return_value.user.excluded_skills = []
             mock_load.return_value.user.workspace_dir = str(tmp_path / "workspace")
-            setup_module.run(claude_scope="user", skip_plugin=True)
+            setup_module.run(SimpleNamespace(invoked_subcommand=None), claude_scope="user", skip_plugin=True)
 
         assert not (claude_skills / "code").exists()
         assert (codex_skills / "code").is_symlink()
@@ -554,7 +554,7 @@ class TestSetupSyncsCodexWhenDirExists:
             mock_load.return_value.user.contribute = False
             mock_load.return_value.user.excluded_skills = []
             mock_load.return_value.user.workspace_dir = str(tmp_path / "workspace")
-            setup_module.run(claude_scope="user", skip_plugin=True)
+            setup_module.run(SimpleNamespace(invoked_subcommand=None), claude_scope="user", skip_plugin=True)
 
         assert not (claude_skills / "code").exists()
 
@@ -590,7 +590,7 @@ class TestSetupSyncsCodexWhenDirExists:
             mock_load.return_value.user.contribute = False
             mock_load.return_value.user.excluded_skills = []
             mock_load.return_value.user.workspace_dir = str(tmp_path / "workspace")
-            setup_module.run(claude_scope="user", skip_plugin=True)
+            setup_module.run(SimpleNamespace(invoked_subcommand=None), claude_scope="user", skip_plugin=True)
 
         assert not (home / ".codex").exists()
 
