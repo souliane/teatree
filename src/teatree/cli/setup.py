@@ -5,6 +5,7 @@ import logging
 import os
 import re
 import shutil
+import sys
 import tomllib
 from pathlib import Path
 
@@ -12,6 +13,7 @@ import typer
 
 from teatree.cli.doctor import AGENT_SKILL_RUNTIMES, DoctorService, agent_skill_dirs
 from teatree.cli.slack_setup import slack_bot_setup
+from teatree.utils.dep_drift import editable_source_path, find_missing_dependencies
 from teatree.utils.run import CompletedProcess, run_allowed_to_fail
 
 # Re-exported here so external callers and tests see a single import path for
@@ -142,6 +144,60 @@ def _print_path_hint(bin_dir: Path | None) -> None:
     target = bin_dir or Path.home() / ".local" / "bin"
     typer.echo(f"NOTE  `{target}` is not on your PATH.")
     typer.echo(f'      Add to your shell rc (~/.zshrc or ~/.bashrc): export PATH="{target}:$PATH"')
+
+
+def _repair_dep_drift(repo: Path) -> bool:
+    """Reinstall the editable teatree if its venv is missing declared deps.
+
+    When teatree adds a new top-level dependency to ``pyproject.toml``, every
+    existing editable install (``uv tool install --editable .``) breaks until
+    the user re-runs the install — the venv's pinned deps don't auto-resync
+    when the source's ``pyproject.toml`` changes.  This was the catch-22 that
+    killed ``t3 setup`` when ``tomlkit`` was first added: the very command
+    that would repair the install was the one the missing dep took out.
+
+    Returns ``True`` and ``execvp``-replaces the process when a repair was
+    triggered (so this never actually returns ``True`` from the caller's
+    perspective).  Returns ``False`` when no drift is detected, when the
+    install is non-editable (PyPI/wheel), or when ``uv`` is unavailable.
+    """
+    pyproject = repo / "pyproject.toml"
+    if not pyproject.is_file():
+        return False
+    missing = find_missing_dependencies(pyproject)
+    if not missing:
+        return False
+
+    source = editable_source_path()
+    if source is None:
+        typer.echo(
+            f"WARN  Teatree is missing declared deps: {', '.join(missing)}\n"
+            "      Reinstall: `uv tool upgrade teatree --reinstall` "
+            "(or `pip install --upgrade teatree`).",
+        )
+        return False
+
+    uv_bin = shutil.which("uv")
+    if not uv_bin:
+        typer.echo(
+            f"WARN  Editable install missing deps ({', '.join(missing)}) but `uv` "
+            "is not on PATH — install uv and re-run `t3 setup`.",
+        )
+        return False
+
+    typer.echo(
+        f"NOTE  Editable install missing deps: {', '.join(missing)}.  Re-running "
+        f"`uv tool install --editable {source} --reinstall` …",
+    )
+    result = _run_captured([uv_bin, "tool", "install", "--editable", str(source), "--reinstall"])
+    if result.returncode != 0:
+        typer.echo(f"WARN  Reinstall failed: {result.stderr.strip()}")
+        return False
+
+    typer.echo("OK    Reinstalled — restarting `t3 setup` against the refreshed venv.")
+    t3_bin = shutil.which("t3") or sys.argv[0]
+    os.execv(t3_bin, [t3_bin, *sys.argv[1:]])  # noqa: S606
+    return True  # unreachable — execv replaces the process; here for the type-checker
 
 
 def _ensure_t3_installed(repo: Path) -> bool:
@@ -374,6 +430,7 @@ def run(
     repo = _validate_repo(_find_main_clone())
     typer.echo(f"Teatree repo: {repo}")
 
+    _repair_dep_drift(repo)
     _ensure_t3_installed(repo)
 
     _run_apm_install(repo)

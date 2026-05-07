@@ -8,10 +8,12 @@ of this module fill in once a Claude-side loop binding exists.
 """
 
 import json
+import os
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
+import django
 import typer
 
 from teatree.core.backend_factory import code_host_from_overlay, messaging_from_overlay
@@ -19,6 +21,12 @@ from teatree.loop.statusline import default_path
 from teatree.loop.tick import TickReport, run_tick
 
 loop_app = typer.Typer(name="loop", help="Manage the long-lived fat loop.", no_args_is_help=True)
+
+
+def _ensure_django_ready() -> None:
+    os.environ.setdefault("DJANGO_SETTINGS_MODULE", "teatree.settings")
+    django.setup()
+
 
 type ReportDict = dict[str, Any]
 
@@ -43,6 +51,7 @@ def tick_command(
     json_output: bool = typer.Option(False, "--json", help="Emit the tick report as JSON."),
 ) -> None:
     """Run one tick: scan in parallel, dispatch, render statusline."""
+    _ensure_django_ready()
     host = code_host_from_overlay()
     messaging = messaging_from_overlay()
     report = run_tick(host=host, messaging=messaging, statusline_path=statusline_file)
