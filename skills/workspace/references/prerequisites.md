@@ -33,7 +33,7 @@ Scripts that need Bash 5+ features (associative arrays) include a version guard 
 When writing or modifying shell scripts, verify:
 
 1. **Shebang:** `#!/usr/bin/env bash` — never a hardcoded path.
-2. **Bash version features:** If the script uses `declare -A` (associative arrays), add the Bash 4+ version guard with re-exec (see `statusline-command.sh` for the pattern).
+2. **Bash version features:** If the script uses `declare -A` (associative arrays), add the Bash 4+ version guard with re-exec (see `hooks/scripts/statusline.sh` for the pattern).
 3. **macOS-only commands:** Replace or wrap with platform detection:
     - `md5 -q` → check `command -v md5sum` first
     - `stat -f '%m'` → use `stat -c '%Y'` on Linux

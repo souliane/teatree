@@ -27,22 +27,23 @@ graph TB
     followup["followup<br/>code host sync"]
   end
 
-  subgraph "Dashboard"
+  subgraph "Loop & Statusline"
     direction LR
-    tickets["tickets & MRs"]
-    pipelines["CI pipelines"]
-    sessions["agent sessions"]
-    actions["launch & cancel"]
+    scanners["scanners<br/>my PRs, reviewer PRs,<br/>assigned issues, Slack, Notion"]
+    statusline["statusline.txt<br/>3 zones: anchors / action / in flight"]
+    dispatch["dispatch<br/>turns signals into agent actions"]
   end
 
   subgraph "Claude Plugin"
     direction LR
-    skills["17 lifecycle skills"]
+    skills["lifecycle skills"]
     hooks["hooks<br/>routing, guards, tracking"]
     companions["companion skills<br/>superpowers, ac-*"]
   end
 
-  Dashboard -->|"web UI for"| lifecycle & workspace & pr & followup
+  scanners -->|"feed signals to"| dispatch
+  dispatch -->|"renders"| statusline
+  scanners -->|"query"| pr & followup
   skills -->|"delegates to"| lifecycle & workspace & db & run & pr
   hooks -->|"enforces"| skills
 ```
@@ -91,10 +92,10 @@ stateDiagram-v2
 
 Every state change goes through a transition with code behind it — `Ticket.review()` requires a completed reviewing task, `Ticket.ship()` requires `state == REVIEWED`, and so on. Agents do not write to these fields directly; they drive transitions, and the transitions enforce their own preconditions. Direct writes to a state machine field bypass the predicates and produce tickets that look advanced from one angle and stale from another — that's a bug, not a shortcut. The same rule applies to the CLI: any command that affects a state machine must call into a transition, never mutate the field.
 
-Agents read skills to do the *creative* work (writing code, reviewing a diff, choosing how to test); the CLI owns the *mechanical* work (branching, ports, DB refresh, pipeline waits, MR validation). Three interfaces sit on top:
+Agents read skills to do the *creative* work (writing code, reviewing a diff, choosing how to test); the CLI owns the *mechanical* work (branching, ports, DB refresh, pipeline waits, PR validation). Three interfaces sit on top:
 
 - **CLI** (`t3 ...`) — the source of truth. Everything else is a view on top.
-- **Dashboard** — web UI for tickets, MRs, pipelines, and agent sessions.
+- **Loop & Statusline** — a long-running `/loop` slot scans signals, dispatches actions, renders a statusline file the Claude Code hook reads on every prompt.
 - **Claude plugin** — skills and hooks that teach an agent how to drive the CLI.
 
 ## Three Tiers
@@ -114,13 +115,34 @@ t3 teatree followup sync     # sync tickets and PRs from code host
 
 > Replace `teatree` with your overlay's name (`t3 <overlay>`) when working in another overlay.
 
-### 2. Dashboard
+### 2. Loop & Statusline
 
-A Django/HTMX web UI that surfaces everything the CLI manages: tickets, pull requests, pipeline statuses, agent sessions, and available actions. Launch it with `t3 dashboard` (auto-finds a free port). Supports SSE for live updates.
+A long-running `/loop` slot in your interactive Claude Code session drives the day. Every ~12 minutes the loop runs `t3 loop tick`, which fans out to scanners that watch your assigned issues, your open PRs, PRs assigned to you for review, Slack mentions, the Notion → GitLab bridge, and the local task queue. Findings are rendered to `${XDG_DATA_HOME:-~/.local/share}/teatree/statusline.txt` (three zones: anchors / action needed / in flight). The Claude Code statusline hook `cat`s that file in <10ms, so live status sits at the top of every session without polling.
 
-<p align="center">
-  <img src="docs/dashboard.png" alt="teatree dashboard" width="900">
-</p>
+```bash
+# Spawn a Claude Code session with the loop pre-registered:
+t3 loop start
+
+# Or, from inside an existing session, register manually:
+/loop 12m !t3 loop tick
+
+# Out of band, run one tick or read the last-rendered statusline:
+t3 loop tick
+t3 loop status
+```
+
+The cadence is configurable via `T3_LOOP_CADENCE` (seconds, default `720`). To stop the loop, run `/loop unregister t3-loop` in the Claude Code session.
+
+**Wire up the Claude Code statusline hook** so the rendered file actually shows in the bottom bar. Either enable the `t3` plugin (the plugin's `settings.json` registers the hook automatically), or add it to `~/.claude/settings.json`:
+
+```json
+{
+  "statusLine": {
+    "type": "command",
+    "command": "~/workspace/souliane/teatree/hooks/scripts/statusline.sh"
+  }
+}
+```
 
 ### 3. Claude Plugin
 
@@ -227,8 +249,8 @@ graph LR
 | `sweeping-prs` | Maintenance sweep across all your open PRs/MRs — merge the default branch, fix conflicts, monitor CI, push, and (per-repo policy) optionally squash-merge each PR before moving to the next. Never rebases |
 | `teatree` | TeaTree agent lifecycle platform — core architecture, lifecycle phases, CLI reference, overlay API, skill loading, and plugin hooks |
 | `teatree-batch` | Unattended batch ticket processing — work through a prioritized backlog one ticket at a time, sequentially. Create worktree, implement with TDD, self-review, push, merge, clean up. Skip tickets that need design decisions |
-| `teatree-bughunt` | Self-QA variant of batch mode — dogfood the teatree dashboard, find real bugs (missing items, state/action mismatches, broken links, stale data), file them, then fix them in worktrees |
-| `teatree-dogfood` | Dogfooding checklist for teatree CLI, dashboard, and server changes — verify fresh behavior by running the command yourself, checking HTTP 200, and exercising the full task lifecycle before declaring a change done. Also lists the known worktree/uv/git-stash pitfalls that trip up local validation. |
+| `teatree-bughunt` | Self-QA variant of batch mode — dogfood the teatree loop and statusline, find real bugs (missing signals, broken links, stale data, scanner errors), file them, then fix them in worktrees |
+| `teatree-dogfood` | Dogfooding checklist for teatree CLI, loop, and statusline changes — verify fresh behavior by running the command yourself, exercising the full task lifecycle, and watching the rendered statusline before declaring a change done. Also lists the known worktree/uv/git-stash pitfalls that trip up local validation. |
 | `teatree-plan` | Backlog prioritization with the GitHub Projects v2 board as single source of truth. Syncs repo issues to the board, walks the user through prioritization one question at a time, and reorders/updates board columns |
 | `test` | Testing, QA, and CI — running tests, analyzing failures, quality checks, CI interaction, test plans, and posting testing evidence |
 | `ticket` | Ticket intake and kickoff — from zero to ready-to-code |
@@ -357,11 +379,12 @@ prek run --all-files         # ruff, pytest, codespell, banned-terms
 
 ### E2E Tests
 
-Dashboard E2E tests live under `e2e/` and run inside Docker for snapshot stability ([#275](https://github.com/souliane/teatree/issues/275)):
+E2E tests run via `t3 <overlay> e2e run`, which dispatches to the in-repo pytest-playwright runner or an external playwright repo based on `OverlayBase.get_e2e_config()`. Overlays declare `"runner": "project"` or `"runner": "external"`; the runner is overlay-agnostic from the call site:
 
 ```bash
-t3 teatree e2e project              # run full suite (CI default)
-t3 teatree e2e project --headed     # interactive mode for debugging
+t3 <overlay> e2e run                          # CI default
+t3 <overlay> e2e run --headed                 # interactive debug
+t3 <overlay> e2e run --update-snapshots       # accept new snapshots
 ```
 
 **Failure triage artifacts** (git-ignored, mounted writable into the e2e container):
@@ -385,11 +408,12 @@ Skills are prompt instructions — they control what your AI agent does. This ma
 teatree/
   src/teatree/         # Django project (installed as `teatree`)
     cli/               #   Typer CLI package — bootstrap commands
-    core/              #   Models, views, management commands, templates
+    core/              #   Models, FSM transitions, management commands
     agents/            #   Agent runtime adapters (Claude Code, Codex)
-    backends/          #   GitLab / Slack / Notion integrations
+    backends/          #   Code-host (GitHub, GitLab) + messaging (Slack, Notion) Protocols
+    loop/              #   Fat /loop tick — scanners, dispatch, statusline render
     utils/             #   Internal helpers (ports, git, DB)
-    overlay_init/      #   `t3 startoverlay` templates
+    templates/overlay/ #   `t3 startoverlay` scaffolding
   skills/              # AI agent skills (SKILL.md + references)
   hooks/               # Agent platform hooks (routing, guards, statusline)
   scripts/             # Pre-commit hooks, utility scripts

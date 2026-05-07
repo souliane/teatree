@@ -100,10 +100,10 @@ class OverlayConfig:
     notion_database_id: str = ""
     """Notion database id powering ``NotionViewScanner``. Empty disables the scanner."""
     mr_close_ticket: bool = False
-    """Whether MR descriptions should use auto-closing keywords (Closes #N).
+    """Whether PR descriptions should use auto-closing keywords (Closes #N).
 
     When ``False`` (default), close keywords are replaced with ``Relates to #N``
-    so merging the MR does not auto-close the linked issue.
+    so merging the PR does not auto-close the linked issue.
     """
     known_variants: list[str]
     mr_auto_labels: list[str]
@@ -211,7 +211,7 @@ class OverlayConfig:
 
 
 class OverlayMetadata:
-    """Project metadata, CI integration, MR validation, and skill registration.
+    """Project metadata, CI integration, PR validation, and skill registration.
 
     Subclass and assign to ``OverlayBase.metadata`` for project-specific values.
     Consumers access via ``overlay.metadata.get_skill_metadata()``.
@@ -466,7 +466,7 @@ class OverlayBase(ABC):  # noqa: PLR0904 — overlay extension API; hook count r
         this diff.  Default: skip — overlays opt in by mapping diff paths
         to the URLs they care about.
 
-        Called from the shipping gate as a side effect of MR creation;
+        Called from the shipping gate as a side effect of PR creation;
         results are recorded on ``Ticket.extra['visual_qa']``.
         """
         _ = changed_files

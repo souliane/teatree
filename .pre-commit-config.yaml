@@ -59,9 +59,6 @@ repos:
     hooks:
       - id: check-added-large-files
         args: [--maxkb=600]
-        # Vendored third-party JS bundles are exempt — pinned at known versions
-        # under ``src/teatree/core/static/teatree/js/`` (mermaid, htmx).
-        exclude: ^src/teatree/core/static/teatree/js/.*$
       - id: check-json
       - id: check-merge-conflict
       - id: check-toml

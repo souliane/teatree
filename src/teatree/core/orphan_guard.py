@@ -1,7 +1,7 @@
 """Detect and guard against orphan branches.
 
 An ORPHAN is a local branch that carries work not on ``origin/main`` (after
-subject-match and tree-equality checks) AND has no open PR/MR on the remote.
+subject-match and tree-equality checks) AND has no open PR on the remote.
 Orphans silently leak work: they accumulate between weekly cleanups and are
 easy to miss when closing a session.
 
@@ -54,7 +54,7 @@ class BranchReport:
 
 
 def find_open_pr(repo: str, branch: str) -> str:
-    """Return the URL of the open PR/MR for ``branch``, or ``""`` if none.
+    """Return the URL of the open PR for ``branch``, or ``""`` if none.
 
     Queries GitHub (``gh pr list``) and GitLab (``glab mr list``). Returns ``""``
     when neither CLI is available (sandbox, CI without auth) — callers treat
