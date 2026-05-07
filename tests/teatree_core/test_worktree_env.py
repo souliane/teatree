@@ -82,6 +82,29 @@ class ExtraOnlyOverlay(OverlayBase):
         return {"EXTRA_KEY"}
 
 
+class SecretOverlay(OverlayBase):
+    """Overlay whose get_env_extra includes both public and secret keys."""
+
+    def get_repos(self) -> list[str]:
+        return ["backend"]
+
+    def get_provision_steps(self, worktree: Worktree) -> list[ProvisionStep]:
+        return []
+
+    def get_env_extra(self, worktree: Worktree) -> dict[str, str]:
+        return {
+            "PUBLIC_KEY": "public_value",
+            "SECRET_PASSWORD": "s3cr3t",
+            "DATABASE_URL": "postgresql://u:s3cr3t@host/db",
+        }
+
+    def declared_env_keys(self) -> set[str]:
+        return {"PUBLIC_KEY", "SECRET_PASSWORD", "DATABASE_URL"}
+
+    def declared_secret_env_keys(self) -> set[str]:
+        return {"SECRET_PASSWORD", "DATABASE_URL"}
+
+
 class BaseImageOverlay(OverlayBase):
     """Overlay that declares a base image — tag should land in env cache."""
 
@@ -110,6 +133,7 @@ class BaseImageOverlay(OverlayBase):
 _SHARED_PG = {"test": SharedPostgresOverlay()}
 _ENV_EXTRA_COLLIDES = {"test": EnvExtraOverrideOverlay()}
 _EXTRA_ONLY = {"test": ExtraOnlyOverlay()}
+_SECRET = {"test": SecretOverlay()}
 _COMMAND = {"test": CommandOverlay()}
 
 
@@ -157,6 +181,20 @@ class TestRenderEnvCache(TestCase):
                 pytest.raises(RuntimeError, match="core already owns"),
             ):
                 render_env_cache(wt)
+
+    def test_drops_keys_in_declared_secret_env_keys(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            wt, _ = _make_worktree(tmp, ticket_name="ts", ticket_url="https://ex.com/1", variant="acme")
+            with patch.object(overlay_loader_mod, "_discover_overlays", return_value=_SECRET):
+                spec = render_env_cache(wt)
+            assert spec is not None
+            assert "PUBLIC_KEY=public_value" in spec.content
+            assert "SECRET_PASSWORD" not in spec.content
+            assert "DATABASE_URL" not in spec.content
+            assert "s3cr3t" not in spec.content
+            assert "PUBLIC_KEY" in spec.keys
+            assert "SECRET_PASSWORD" not in spec.keys
+            assert "DATABASE_URL" not in spec.keys
 
 
 class TestWriteEnvCache(TestCase):

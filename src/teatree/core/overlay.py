@@ -253,6 +253,19 @@ class OverlayBase(ABC):  # noqa: PLR0904 — overlay extension API; hook count r
         """
         return set()
 
+    def declared_secret_env_keys(self) -> set[str]:
+        """Return env keys whose values must NOT be persisted to ``.t3-env.cache``.
+
+        Keys returned here are still produced by ``get_env_extra()`` — callers
+        passing the dict as subprocess ``env=`` (e.g. ``t3 <overlay> run backend``,
+        ``worktree_start``) keep them — but ``render_env_cache`` filters them out
+        of the on-disk file. Use this for credentials read from ``pass`` or any
+        value that should live only in process memory.
+
+        Default empty: overlays that don't source secrets need not override.
+        """
+        return set()
+
     def get_db_import_strategy(self, worktree: "Worktree") -> DbImportStrategy | None:
         return None
 
