@@ -10,7 +10,6 @@ through ``pass``. Re-running with ``--reset`` rotates both tokens without
 re-prompting for the manifest URL.
 """
 
-import importlib
 import json
 import re
 import time
@@ -24,6 +23,22 @@ import typer
 from teatree.backends.slack_bot import SlackBotBackend
 from teatree.config import CONFIG_PATH, discover_overlays
 from teatree.utils.secrets import write_pass
+
+# ``tomlkit`` is only used by ``write_overlay_settings`` (the ``t3 setup
+# slack-bot`` final step). Wrapping it in ``try/except`` keeps the rest of
+# the CLI loadable when the dep is missing — a stale teatree install that
+# pre-dates tomlkit being added used to crash every subcommand on bootstrap
+# because this top-level import lived in the chain
+# ``cli/__init__.py → cli/setup.py → cli/slack_setup.py``. Now only
+# ``write_overlay_settings`` callers see the failure, and the CLI's other
+# subcommands stay usable so the user can fix their install.
+try:
+    import tomlkit
+    from tomlkit import items as tomlkit_items
+
+    _HAS_TOMLKIT = True
+except ImportError:
+    _HAS_TOMLKIT = False
 
 type SlackManifest = dict[str, Any]
 
@@ -97,16 +112,17 @@ def write_overlay_settings(
     """Persist Slack settings on the per-overlay block of *config_path*.
 
     Uses :mod:`tomlkit` so the rest of the file (other overlays, global
-    ``[teatree]`` settings, comments, ordering) is preserved.
-
-    ``tomlkit`` is resolved lazily via :func:`importlib.import_module` so the
-    CLI bootstrap stays robust to stale installs that predate the dep being
-    added — every other subcommand keeps working even when ``tomlkit`` is
-    missing, and the user only sees the ImportError when they actually run
-    ``t3 setup slack-bot``.
+    ``[teatree]`` settings, comments, ordering) is preserved. Raises
+    ``typer.Exit`` with a clear remediation when ``tomlkit`` is missing
+    from the install — see the module-level guard for context.
     """
-    tomlkit = importlib.import_module("tomlkit")
-    tomlkit_items = importlib.import_module("tomlkit.items")
+    if not _HAS_TOMLKIT:
+        typer.echo(
+            "ERROR ``t3 setup slack-bot`` needs tomlkit, which is missing from this teatree install.\n"
+            "Reinstall teatree to pick up the dep:  uv tool install --editable . --reinstall\n"
+            "(or: pip install --upgrade teatree).",
+        )
+        raise typer.Exit(code=1)
 
     document = tomlkit.parse(config_path.read_text(encoding="utf-8")) if config_path.is_file() else tomlkit.document()
 

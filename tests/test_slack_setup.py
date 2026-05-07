@@ -21,23 +21,57 @@ from teatree.cli.slack_setup import (
 from teatree.config import OverlayEntry
 
 
-class TestTomlkitImportIsLazy:
-    """Regression guard: importing ``slack_setup`` must not trigger ``tomlkit``.
+class TestSlackSetupSurvivesMissingTomlkit:
+    """Regression guard: ``cli/slack_setup`` must load without ``tomlkit``.
 
     A user with a stale teatree install (pre-tomlkit-dep) was unable to run
     any ``t3`` subcommand because ``cli/__init__.py`` imports ``cli/setup.py``
     which imports ``cli/slack_setup.py`` which used to ``import tomlkit`` at
     module top level. The whole CLI bootstrap crashed on the missing optional
-    dep. This test runs the import in a subprocess so it sees a clean
-    ``sys.modules`` and asserts ``tomlkit`` does not get pulled in.
+    dep. This test runs the import in a subprocess that has ``tomlkit``
+    blocked in ``sys.modules`` (the standard way to simulate a missing
+    optional dep) and asserts the module still loads — so every other
+    subcommand stays usable while the user fixes their install.
     """
 
-    def test_importing_slack_setup_does_not_import_tomlkit(self) -> None:
+    def test_slack_setup_imports_when_tomlkit_is_missing(self) -> None:
         probe = (
             "import sys\n"
-            "import teatree.cli.slack_setup\n"
-            "msg = 'tomlkit must stay lazy so a stale install cannot break the whole CLI'\n"
-            "assert 'tomlkit' not in sys.modules, msg\n"
+            # ``sys.modules[name] = None`` is the documented way to make a
+            # subsequent ``import name`` raise ImportError without actually
+            # uninstalling the package.
+            "sys.modules['tomlkit'] = None\n"
+            "sys.modules['tomlkit.items'] = None\n"
+            "import teatree.cli.slack_setup as mod\n"
+            "assert mod._HAS_TOMLKIT is False, '_HAS_TOMLKIT must reflect the missing dep'\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", probe],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
+
+    def test_write_overlay_settings_exits_cleanly_when_tomlkit_is_missing(self) -> None:
+        probe = (
+            "import sys\n"
+            "sys.modules['tomlkit'] = None\n"
+            "sys.modules['tomlkit.items'] = None\n"
+            "import typer\n"
+            "from pathlib import Path\n"
+            "from teatree.cli.slack_setup import write_overlay_settings\n"
+            "try:\n"
+            "    write_overlay_settings(\n"
+            "        Path('/tmp/never-written.toml'),\n"
+            "        'demo',\n"
+            "        slack_user_id='U123ABC',\n"
+            "        slack_bot_token_ref='pass:slack/demo/bot',\n"
+            "    )\n"
+            "except typer.Exit as exc:\n"
+            "    assert exc.exit_code == 1, exc.exit_code\n"
+            "else:\n"
+            "    raise AssertionError('expected typer.Exit when tomlkit is missing')\n"
         )
         result = subprocess.run(
             [sys.executable, "-c", probe],
