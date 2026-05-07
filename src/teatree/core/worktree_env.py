@@ -15,12 +15,15 @@ import platform
 import stat
 from dataclasses import dataclass
 from pathlib import Path
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 from teatree.core.models import Ticket, Worktree, WorktreeEnvOverride
 from teatree.core.models.types import WorktreeExtra, validated_worktree_extra
 from teatree.core.overlay_loader import get_overlay
 from teatree.docker.build import image_tag_for_lockfile
+
+if TYPE_CHECKING:
+    from teatree.core.overlay import OverlayBase
 
 CACHE_DIRNAME = ".t3-cache"
 CACHE_FILENAME = ".t3-env.cache"
@@ -91,6 +94,17 @@ def _declared_core_keys() -> set[str]:
     }
 
 
+def _check_overlay_does_not_collide_with_core(overlay: "OverlayBase") -> None:
+    declared_overlay = overlay.declared_env_keys()
+    duplicates = _declared_core_keys() & declared_overlay
+    if duplicates:
+        msg = (
+            f"Overlay {overlay.__class__.__name__} declares keys that core "
+            f"already owns: {sorted(duplicates)}. Remove them from the overlay."
+        )
+        raise RuntimeError(msg)
+
+
 def render_env_cache(worktree: Worktree) -> EnvCacheSpec | None:
     """Render the env cache content for *worktree* without touching disk.
 
@@ -101,8 +115,7 @@ def render_env_cache(worktree: Worktree) -> EnvCacheSpec | None:
     wt_path_str = extra.get("worktree_path")
     if not wt_path_str:
         return None
-    wt_path = Path(wt_path_str)
-    ticket_dir = wt_path.parent
+    ticket_dir = Path(wt_path_str).parent
 
     overlay = get_overlay()
     pairs = dict(_core_env_pairs(worktree))
@@ -111,27 +124,21 @@ def render_env_cache(worktree: Worktree) -> EnvCacheSpec | None:
     if db_strategy and db_strategy.get("shared_postgres"):
         pairs["POSTGRES_HOST"] = _docker_host_address()
 
-    declared_core = _declared_core_keys()
-    declared_overlay = overlay.declared_env_keys()
-    duplicates = declared_core & declared_overlay
-    if duplicates:
-        msg = (
-            f"Overlay {overlay.__class__.__name__} declares keys that core "
-            f"already owns: {sorted(duplicates)}. Remove them from the overlay."
-        )
-        raise RuntimeError(msg)
-
+    _check_overlay_does_not_collide_with_core(overlay)
     pairs.update(overlay.get_env_extra(worktree))
 
     for cfg in overlay.get_base_images(worktree):
         pairs[cfg.env_var] = image_tag_for_lockfile(cfg)
 
-    ordered_keys = tuple(pairs.keys())
+    # Drop secret keys from the on-disk cache — they remain in ``get_env_extra``
+    # so subprocess callers (run backend, worktree_start) still receive them
+    # via ``env=``, but the file at chmod 444 must not contain credentials.
+    secret_keys = overlay.declared_secret_env_keys()
+    ordered_keys = tuple(k for k in pairs if k not in secret_keys)
     body = "\n".join(f"{k}={pairs[k]}" for k in ordered_keys) + "\n"
-    content = _HEADER + body
 
     cache_path = ticket_dir / CACHE_DIRNAME / CACHE_FILENAME
-    return EnvCacheSpec(path=cache_path, keys=ordered_keys, content=content)
+    return EnvCacheSpec(path=cache_path, keys=ordered_keys, content=_HEADER + body)
 
 
 def write_env_cache(worktree: Worktree) -> EnvCacheSpec | None:
