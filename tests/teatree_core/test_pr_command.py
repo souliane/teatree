@@ -267,18 +267,19 @@ class TestPostEvidence(TestCase):
         self._monkeypatch = monkeypatch
 
     def test_delegates_to_code_host(self) -> None:
-        """post-evidence posts an MR note via the code host."""
+        """post-evidence posts a PR comment via the code host."""
         host = MagicMock()
-        host.post_mr_note.return_value = {"id": 55}
+        host.list_pr_comments.return_value = []
+        host.post_pr_comment.return_value = {"id": 55}
         self._monkeypatch.setattr(pr_command, "code_host_from_overlay", lambda: host)
 
         with patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY):
             result = call_command("pr", "post-evidence", "10", "--body", "All tests pass")
 
         assert result == {"id": 55}
-        host.post_mr_note.assert_called_once()
-        call_kw = host.post_mr_note.call_args
-        assert call_kw.kwargs["mr_iid"] == 10
+        host.post_pr_comment.assert_called_once()
+        call_kw = host.post_pr_comment.call_args
+        assert call_kw.kwargs["pr_iid"] == 10
         assert "All tests pass" in call_kw.kwargs["body"]
 
     def test_returns_error_without_code_host(self) -> None:
@@ -302,7 +303,7 @@ class TestSweep(TestCase):
         from teatree.core.overlay import OverlayConfig  # noqa: PLC0415
 
         host = MagicMock()
-        host.list_my_open_prs.return_value = [
+        host.list_my_prs.return_value = [
             {
                 "iid": 1,
                 "title": "feat: x",
@@ -332,12 +333,12 @@ class TestSweep(TestCase):
         prs = cast("list[dict[str, object]]", result["prs"])
         assert prs[0]["target_branch"] == "main"
         assert prs[1]["target_branch"] == "develop"
-        host.list_my_open_prs.assert_called_once_with("adrien")
+        host.list_my_prs.assert_called_once_with(author="adrien")
 
     def test_falls_back_to_current_user_when_no_username_configured(self) -> None:
         host = MagicMock()
         host.current_user.return_value = "souliane"
-        host.list_my_open_prs.return_value = []
+        host.list_my_prs.return_value = []
         self._monkeypatch.setattr(pr_command, "code_host_from_overlay", lambda: host)
 
         with patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY):
@@ -345,7 +346,7 @@ class TestSweep(TestCase):
 
         assert result["author"] == "souliane"
         assert result["count"] == 0
-        host.list_my_open_prs.assert_called_once_with("souliane")
+        host.list_my_prs.assert_called_once_with(author="souliane")
 
     def test_returns_error_when_no_code_host_configured(self) -> None:
         self._monkeypatch.setattr(pr_command, "code_host_from_overlay", lambda: None)
@@ -364,7 +365,7 @@ class TestSweep(TestCase):
             result = cast("dict[str, object]", call_command("pr", "sweep"))
 
         assert "error" in result
-        host.list_my_open_prs.assert_not_called()
+        host.list_my_prs.assert_not_called()
 
 
 class TestCheckShippingGate(TestCase):

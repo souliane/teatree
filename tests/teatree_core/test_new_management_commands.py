@@ -26,7 +26,7 @@ import teatree.core.management.commands.workspace as workspace_mod
 import teatree.core.management.commands.worktree as worktree_mod
 import teatree.core.overlay_loader as overlay_loader_mod
 import teatree.core.runners.provision as provision_mod
-import teatree.core.views._startup as startup_mod
+import teatree.core.skill_cache as startup_mod
 import teatree.utils.db as db_mod
 import teatree.utils.git as git_mod
 import teatree.utils.run as utils_run_mod
@@ -238,9 +238,7 @@ POST_DB_OVERLAY = "tests.teatree_core.test_new_management_commands.PostDbStepsOv
 FAILING_IMPORT_OVERLAY = "tests.teatree_core.test_new_management_commands.FailingImportOverlay"
 PRE_RUN_OVERLAY = "tests.teatree_core.test_new_management_commands.PreRunOverlay"
 
-SETTINGS = {
-    "TEATREE_TERMINAL_MODE": "same-terminal",
-}
+SETTINGS: dict[str, object] = {}
 
 
 @pytest.fixture(autouse=True)
@@ -1968,7 +1966,7 @@ class TestPrFetchIssue(TestCase):
         mock_tracker = MagicMock()
         mock_tracker.get_issue.return_value = {"title": "Bug", "state": "opened", "description": "A bug"}
 
-        with patch.object(pr_mod, "get_issue_tracker", return_value=mock_tracker):
+        with patch.object(pr_mod, "code_host_from_overlay", return_value=mock_tracker):
             result = cast("dict[str, object]", call_command("pr", "fetch-issue", "https://example.com/issues/1"))
 
         assert result["title"] == "Bug"
@@ -1981,7 +1979,7 @@ class TestPrFetchIssue(TestCase):
         mock_tracker = MagicMock()
         mock_tracker.get_issue.return_value = {"title": "Task", "description": desc}
 
-        with patch.object(pr_mod, "get_issue_tracker", return_value=mock_tracker):
+        with patch.object(pr_mod, "code_host_from_overlay", return_value=mock_tracker):
             result = cast("dict[str, object]", call_command("pr", "fetch-issue", "https://example.com/issues/2"))
 
         assert result["_embedded_images"] == [{"alt": "screenshot", "path": "/uploads/abc/img.png"}]
@@ -1998,7 +1996,7 @@ class TestPrFetchIssue(TestCase):
             "comments": [{"body": "See ![fix](/uploads/xyz/fix.png)"}],
         }
 
-        with patch.object(pr_mod, "get_issue_tracker", return_value=mock_tracker):
+        with patch.object(pr_mod, "code_host_from_overlay", return_value=mock_tracker):
             result = cast("dict[str, object]", call_command("pr", "fetch-issue", "https://example.com/issues/3"))
 
         comments = result["comments"]
@@ -2017,7 +2015,7 @@ class TestPrFetchIssue(TestCase):
             "comments": ["not a dict", {"body": "valid"}],
         }
 
-        with patch.object(pr_mod, "get_issue_tracker", return_value=mock_tracker):
+        with patch.object(pr_mod, "code_host_from_overlay", return_value=mock_tracker):
             result = cast("dict[str, object]", call_command("pr", "fetch-issue", "https://example.com/issues/4"))
 
         assert "error" not in result
@@ -2044,8 +2042,8 @@ class TestPrPostEvidence(TestCase):
     @override_settings(**SETTINGS)
     def test_with_code_host(self) -> None:
         mock_host = MagicMock()
-        mock_host.post_mr_note.return_value = {"id": 42}
-        mock_host.list_mr_notes.return_value = []  # no existing note
+        mock_host.post_pr_comment.return_value = {"id": 42}
+        mock_host.list_pr_comments.return_value = []  # no existing note
 
         with patch.object(pr_mod, "code_host_from_overlay", return_value=mock_host):
             result = cast(
@@ -2061,8 +2059,8 @@ class TestPrPostEvidence(TestCase):
             )
 
         assert result == {"id": 42}
-        call_kwargs = mock_host.post_mr_note.call_args[1]
-        assert call_kwargs["mr_iid"] == 100
+        call_kwargs = mock_host.post_pr_comment.call_args[1]
+        assert call_kwargs["pr_iid"] == 100
         assert "## Evidence" in call_kwargs["body"]
         assert "Test passed" in call_kwargs["body"]
 
@@ -2070,10 +2068,10 @@ class TestPrPostEvidence(TestCase):
     @override_settings(**SETTINGS)
     def test_updates_existing_note(self) -> None:
         mock_host = MagicMock()
-        mock_host.list_mr_notes.return_value = [
+        mock_host.list_pr_comments.return_value = [
             {"id": 999, "body": "## Test Plan\n\nOld content", "system": False},
         ]
-        mock_host.update_mr_note.return_value = {"id": 999}
+        mock_host.update_pr_comment.return_value = {"id": 999}
 
         with patch.object(pr_mod, "code_host_from_overlay", return_value=mock_host):
             result = cast(
@@ -2088,19 +2086,19 @@ class TestPrPostEvidence(TestCase):
             )
 
         assert result == {"id": 999}
-        mock_host.update_mr_note.assert_called_once()
-        call_kwargs = mock_host.update_mr_note.call_args[1]
-        assert call_kwargs["note_id"] == 999
+        mock_host.update_pr_comment.assert_called_once()
+        call_kwargs = mock_host.update_pr_comment.call_args[1]
+        assert call_kwargs["comment_id"] == 999
         assert "Updated content" in call_kwargs["body"]
-        mock_host.post_mr_note.assert_not_called()
+        mock_host.post_pr_comment.assert_not_called()
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
     def test_uploads_files(self) -> None:
         mock_host = MagicMock()
         mock_host.upload_file.return_value = {"markdown": "![screenshot](/uploads/abc/img.png)"}
-        mock_host.list_mr_notes.return_value = []
-        mock_host.post_mr_note.return_value = {"id": 55}
+        mock_host.list_pr_comments.return_value = []
+        mock_host.post_pr_comment.return_value = {"id": 55}
 
         with patch.object(pr_mod, "code_host_from_overlay", return_value=mock_host):
             cast(
@@ -2116,7 +2114,7 @@ class TestPrPostEvidence(TestCase):
             )
 
         mock_host.upload_file.assert_called_once_with(repo="my/repo", filepath="/tmp/img.png")
-        body = mock_host.post_mr_note.call_args[1]["body"]
+        body = mock_host.post_pr_comment.call_args[1]["body"]
         assert "![screenshot](/uploads/abc/img.png)" in body
 
     @_patch_overlays(FULL_OVERLAY)
@@ -2125,8 +2123,8 @@ class TestPrPostEvidence(TestCase):
         """When upload returns no markdown key, the embed is skipped."""
         mock_host = MagicMock()
         mock_host.upload_file.return_value = {}  # no markdown
-        mock_host.list_mr_notes.return_value = []
-        mock_host.post_mr_note.return_value = {"id": 56}
+        mock_host.list_pr_comments.return_value = []
+        mock_host.post_pr_comment.return_value = {"id": 56}
 
         with patch.object(pr_mod, "code_host_from_overlay", return_value=mock_host):
             cast(
@@ -2134,15 +2132,15 @@ class TestPrPostEvidence(TestCase):
                 call_command("pr", "post-evidence", "100", repo="my/repo", body="x", files=["/tmp/bad.png"]),
             )
 
-        body = mock_host.post_mr_note.call_args[1]["body"]
+        body = mock_host.post_pr_comment.call_args[1]["body"]
         assert "![" not in body  # no embed added
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
     def test_without_body(self) -> None:
         mock_host = MagicMock()
-        mock_host.post_mr_note.return_value = {"id": 43}
-        mock_host.list_mr_notes.return_value = []
+        mock_host.post_pr_comment.return_value = {"id": 43}
+        mock_host.list_pr_comments.return_value = []
 
         with patch.object(pr_mod, "code_host_from_overlay", return_value=mock_host):
             cast(
@@ -2155,7 +2153,7 @@ class TestPrPostEvidence(TestCase):
                 ),
             )
 
-        call_kwargs = mock_host.post_mr_note.call_args[1]
+        call_kwargs = mock_host.post_pr_comment.call_args[1]
         assert "_No details provided._" in call_kwargs["body"]
 
     @_patch_overlays(FULL_OVERLAY)
@@ -2163,13 +2161,13 @@ class TestPrPostEvidence(TestCase):
     def test_uses_overlay_ci_project_path(self) -> None:
         """When no repo is given, falls back to overlay.metadata.get_ci_project_path()."""
         mock_host = MagicMock()
-        mock_host.post_mr_note.return_value = {"id": 44}
-        mock_host.list_mr_notes.return_value = []
+        mock_host.post_pr_comment.return_value = {"id": 44}
+        mock_host.list_pr_comments.return_value = []
 
         with patch.object(pr_mod, "code_host_from_overlay", return_value=mock_host):
             call_command("pr", "post-evidence", "102", title="T")
 
-        call_kwargs = mock_host.post_mr_note.call_args[1]
+        call_kwargs = mock_host.post_pr_comment.call_args[1]
         assert call_kwargs["repo"] == "test/project"
 
 
@@ -2747,13 +2745,13 @@ class TestE2eProject(TestCase):
                 call_command(
                     "e2e",
                     "project",
-                    test_path="e2e/test_dashboard.py::test_full_dashboard_screenshot",
+                    test_path="e2e/test_smoke.py::test_smoke",
                     update_snapshots=True,
                 )
 
             cmd = mock_run.call_args[0][0]
             assert "docker" in cmd
-            assert "e2e/test_dashboard.py::test_full_dashboard_screenshot" in cmd
+            assert "e2e/test_smoke.py::test_smoke" in cmd
             assert "--update-snapshots" in cmd
 
 
@@ -4423,14 +4421,14 @@ class TestLifecycleRepoDiscovery(TestCase):
 class TestCloneOrUpdateE2eRepo(TestCase):
     def _make_repo(self, *, e2e_dir: str = "e2e") -> "config_mod.E2ERepo":
         return config_mod.E2ERepo(
-            name="home-savings", url="git@example.com:org/svc.git", branch="feature/e2e", e2e_dir=e2e_dir
+            name="demo-svc", url="git@example.com:org/svc.git", branch="feature/e2e", e2e_dir=e2e_dir
         )
 
     def test_clone_when_not_exists(self) -> None:
         """Calls git clone when cache directory does not exist."""
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            cache_path = tmp_path / "e2e-repos" / "home-savings"
+            cache_path = tmp_path / "e2e-repos" / "demo-svc"
 
             with (
                 patch.object(e2e_mod, "get_data_dir", return_value=tmp_path / "e2e-repos"),
@@ -4447,7 +4445,7 @@ class TestCloneOrUpdateE2eRepo(TestCase):
         """Calls git fetch + reset when cache directory already exists."""
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            cache_path = tmp_path / "e2e-repos" / "home-savings"
+            cache_path = tmp_path / "e2e-repos" / "demo-svc"
             cache_path.mkdir(parents=True)
 
             calls: list[list[str]] = []
@@ -4469,7 +4467,7 @@ class TestCloneOrUpdateE2eRepo(TestCase):
         """Returns cache_path / e2e_dir as the playwright working directory."""
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            (tmp_path / "e2e-repos" / "home-savings").mkdir(parents=True)
+            (tmp_path / "e2e-repos" / "demo-svc").mkdir(parents=True)
 
             with (
                 patch.object(e2e_mod, "get_data_dir", return_value=tmp_path / "e2e-repos"),
@@ -4477,7 +4475,7 @@ class TestCloneOrUpdateE2eRepo(TestCase):
             ):
                 result = e2e_mod._clone_or_update_e2e_repo(self._make_repo(e2e_dir="playwright"))
 
-            assert result == tmp_path / "e2e-repos" / "home-savings" / "playwright"
+            assert result == tmp_path / "e2e-repos" / "demo-svc" / "playwright"
 
 
 # ── e2e external --repo ───────────────────────────────────────────────
@@ -4513,7 +4511,7 @@ class TestE2eExternalRepo(TestCase):
                 state=Worktree.State.SERVICES_UP,
             )
 
-            repo = config_mod.E2ERepo(name="home-savings", url="git@example.com:org/svc.git", branch="feature/e2e")
+            repo = config_mod.E2ERepo(name="demo-svc", url="git@example.com:org/svc.git", branch="feature/e2e")
             mock_result = MagicMock(returncode=0)
             with (
                 patch.dict("os.environ", {"T3_ORIG_CWD": str(wt_dir)}),
@@ -4522,7 +4520,7 @@ class TestE2eExternalRepo(TestCase):
                 patch.object(e2e_mod, "get_service_port", return_value=4200),
                 patch.object(utils_run_mod.subprocess, "run", return_value=mock_result) as mock_run,
             ):
-                result = cast("str", call_command("e2e", "external", repo="home-savings"))
+                result = cast("str", call_command("e2e", "external", repo="demo-svc"))
 
         assert "passed" in result
         run_cwd = mock_run.call_args[1]["cwd"]
@@ -4532,10 +4530,10 @@ class TestE2eExternalRepo(TestCase):
     @override_settings(**SETTINGS)
     def test_external_repo_git_failure_surfaces_error(self) -> None:
         """subprocess.CalledProcessError from git is raised to the caller."""
-        repo = config_mod.E2ERepo(name="home-savings", url="git@example.com:org/svc.git", branch="feature/e2e")
+        repo = config_mod.E2ERepo(name="demo-svc", url="git@example.com:org/svc.git", branch="feature/e2e")
         with (
             patch.object(e2e_mod, "load_e2e_repos", return_value=[repo]),
             patch.object(e2e_mod, "_clone_or_update_e2e_repo", side_effect=subprocess.CalledProcessError(1, "git")),
             pytest.raises(subprocess.CalledProcessError),
         ):
-            call_command("e2e", "external", repo="home-savings")
+            call_command("e2e", "external", repo="demo-svc")

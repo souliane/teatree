@@ -7,8 +7,8 @@ fires vary by version, so the dismissal pattern is intentionally permissive
 replaying ``approved`` / ``unapproved`` system notes in chronological order.
 
 The signal is suppressed whenever ``current_approval_count > 0`` — a positive
-current count means someone has re-approved after any dismissal, so the
-dashboard would only nag on stale state.
+current count means someone has re-approved after any dismissal, so consumers
+would only nag on stale state.
 """
 
 import operator
@@ -36,7 +36,7 @@ def detect_approval_dismissal(
     """Return the most recent push-triggered approval dismissal, or None.
 
     Returns None when ``current_approval_count > 0`` — a re-approval supersedes
-    any earlier dismissal, so the dashboard signal would be stale.
+    any earlier dismissal, so the signal would be stale.
     """
     if current_approval_count > 0:
         return None

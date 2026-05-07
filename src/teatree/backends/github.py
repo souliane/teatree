@@ -2,14 +2,17 @@
 
 import json
 import os
+import re
 from dataclasses import dataclass
 from typing import TypedDict, cast
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urlparse
 
 from teatree.backends.protocols import PullRequestSpec
 from teatree.core.sync import RawAPIDict
 from teatree.utils import git
 from teatree.utils.run import CompletedProcess, run_checked
+
+_ISSUE_URL_RE = re.compile(r"^/(?P<owner>[^/]+)/(?P<repo>[^/]+)/issues/(?P<number>\d+)/?$")
 
 
 class _GitHubUser(TypedDict, total=False):
@@ -212,16 +215,7 @@ class GitHubCodeHost:
         user = cast("_GitHubUser", data)
         return user.get("login", "")
 
-    def list_open_prs(self, repo: str, author: str) -> list[dict[str, object]]:
-        data = _gh_api_get(f"repos/{repo}/pulls?state=open&per_page=100", token=self._token)
-        if not isinstance(data, list):
-            return []
-        return cast(
-            "list[dict[str, object]]",
-            [pr for pr in data if isinstance(pr, dict) and pr.get("user", {}).get("login") == author],  # type: ignore[union-attr]
-        )
-
-    def list_my_open_prs(self, author: str) -> list[RawAPIDict]:
+    def list_my_prs(self, *, author: str) -> list[RawAPIDict]:
         query = quote_plus(f"is:pr is:open author:{author}")
         data = _gh_api_get(f"search/issues?q={query}&per_page=100", token=self._token)
         if not isinstance(data, dict):
@@ -231,27 +225,63 @@ class GitHubCodeHost:
             return []
         return cast("list[RawAPIDict]", items)
 
-    def post_mr_note(self, *, repo: str, mr_iid: int, body: str) -> dict[str, object]:
+    def list_review_requested_prs(self, *, reviewer: str) -> list[RawAPIDict]:
+        query = quote_plus(f"is:pr is:open review-requested:{reviewer}")
+        data = _gh_api_get(f"search/issues?q={query}&per_page=100", token=self._token)
+        if not isinstance(data, dict):
+            return []
+        items = cast("RawAPIDict", data).get("items")
+        if not isinstance(items, list):
+            return []
+        return cast("list[RawAPIDict]", items)
+
+    def post_pr_comment(self, *, repo: str, pr_iid: int, body: str) -> RawAPIDict:
         data = _gh_api_post(
-            f"repos/{repo}/issues/{mr_iid}/comments",
+            f"repos/{repo}/issues/{pr_iid}/comments",
             {"body": body},
             token=self._token,
         )
-        return cast("dict[str, object]", data) if isinstance(data, dict) else {}
+        return cast("RawAPIDict", data) if isinstance(data, dict) else {}
 
-    def update_mr_note(self, *, repo: str, mr_iid: int, note_id: int, body: str) -> dict[str, object]:
-        _ = mr_iid  # GitHub comment IDs are globally unique
+    def update_pr_comment(self, *, repo: str, pr_iid: int, comment_id: int, body: str) -> RawAPIDict:
+        _ = pr_iid  # GitHub comment IDs are globally unique
         data = _gh_api_patch(
-            f"repos/{repo}/issues/comments/{note_id}",
+            f"repos/{repo}/issues/comments/{comment_id}",
             {"body": body},
             token=self._token,
         )
-        return cast("dict[str, object]", data) if isinstance(data, dict) else {}
+        return cast("RawAPIDict", data) if isinstance(data, dict) else {}
 
-    def list_mr_notes(self, *, repo: str, mr_iid: int) -> list[dict[str, object]]:
-        data = _gh_api_get(f"repos/{repo}/issues/{mr_iid}/comments", token=self._token)
-        return cast("list[dict[str, object]]", data) if isinstance(data, list) else []
+    def list_pr_comments(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]:
+        data = _gh_api_get(f"repos/{repo}/issues/{pr_iid}/comments", token=self._token)
+        return cast("list[RawAPIDict]", data) if isinstance(data, list) else []
 
-    def upload_file(self, *, repo: str, filepath: str) -> dict[str, object]:
+    def list_assigned_issues(self, *, assignee: str) -> list[RawAPIDict]:
+        query = quote_plus(f"is:issue is:open assignee:{assignee}")
+        data = _gh_api_get(f"search/issues?q={query}&per_page=100", token=self._token)
+        if not isinstance(data, dict):
+            return []
+        items = cast("RawAPIDict", data).get("items")
+        if not isinstance(items, list):
+            return []
+        return cast("list[RawAPIDict]", items)
+
+    def upload_file(self, *, repo: str, filepath: str) -> RawAPIDict:
         msg = f"File upload to {repo} not supported (token={'set' if self._token else 'unset'}, file={filepath})"
         raise NotImplementedError(msg)
+
+    def get_issue(self, issue_url: str) -> RawAPIDict:
+        """Fetch a GitHub issue from its full URL.
+
+        Supports ``https://github.com/<owner>/<repo>/issues/<number>``.
+        Returns ``{"error": ...}`` when the URL is not a recognised GitHub
+        issue URL.
+        """
+        path = urlparse(issue_url).path
+        match = _ISSUE_URL_RE.match(path)
+        if match is None:
+            return {"error": f"Not a GitHub issue URL: {issue_url}"}
+
+        endpoint = f"repos/{match['owner']}/{match['repo']}/issues/{match['number']}"
+        data = _gh_api_get(endpoint, token=self._token)
+        return cast("RawAPIDict", data) if isinstance(data, dict) else {"error": f"Issue not found: {issue_url}"}

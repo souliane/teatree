@@ -14,9 +14,7 @@ import teatree.utils.run as utils_run_mod
 from teatree.core.models import Ticket, Worktree
 from tests.teatree_core.conftest import CommandOverlay
 
-COMMAND_SETTINGS = {
-    "TEATREE_TERMINAL_MODE": "same-terminal",
-}
+COMMAND_SETTINGS: dict[str, object] = {}
 
 _MOCK_OVERLAY = {"test": CommandOverlay()}
 
@@ -298,35 +296,3 @@ class TestCliOverlay:
         assert Path(cmd[0]).name == "uv"
         assert cmd[1:3] == ["--directory", str(tmp_path)]
         assert cmd[-2:] == ["migrate", "--no-input"]
-
-    @patch.object(utils_run_mod.subprocess, "run")
-    @patch.dict("os.environ", {"DJANGO_SETTINGS_MODULE": "acme.settings"})
-    def test_uvicorn_launches_asgi_with_reload(self, mock_run: MagicMock, tmp_path: Path) -> None:
-        from teatree.cli.overlay import _uvicorn  # noqa: PLC0415
-
-        (tmp_path / "manage.py").write_text("pass\n")
-        _uvicorn(tmp_path, "127.0.0.1", 8000)
-
-        assert mock_run.call_count == 1
-        cmd = mock_run.call_args[0][0]
-        assert Path(cmd[0]).name == "uv"
-        assert cmd[1:3] == ["--directory", str(tmp_path)]
-        assert "uvicorn" in cmd
-        assert "teatree.asgi:application" in cmd
-        assert "--host" in cmd
-        assert "--reload" in cmd
-        assert cmd[cmd.index("--port") + 1] == "8000"
-        # _uvicorn sets DJANGO_SETTINGS_MODULE for the subprocess
-        call_env = mock_run.call_args[1]["env"]
-        assert call_env["DJANGO_SETTINGS_MODULE"] == "teatree.settings"
-
-    @patch.object(utils_run_mod.subprocess, "run")
-    def test_uvicorn_none_project_path_falls_back(self, mock_run: MagicMock) -> None:
-        from teatree.cli.overlay import _uvicorn  # noqa: PLC0415
-
-        mock_run.return_value = MagicMock(returncode=0)
-        _uvicorn(None, "127.0.0.1", 8000)
-        mock_run.assert_called_once()
-        cmd = mock_run.call_args[0][0]
-        assert "-m" in cmd
-        assert "uvicorn" in cmd

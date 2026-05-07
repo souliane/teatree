@@ -243,7 +243,7 @@ def _format_mr_context(extra: _TicketExtra) -> list[str]:
 
 
 def build_interactive_context(task: Task, *, skills: list[str]) -> str:
-    """Build the system context for interactive (ttyd) sessions."""
+    """Build the system context for interactive Claude Code sessions."""
     ticket: Ticket = task.ticket
     extra = ticket.extra if isinstance(ticket.extra, dict) else {}
 

@@ -74,8 +74,31 @@ class OverlayConfig:
     """GitHub user or org that owns the project board."""
     github_project_number: int = 0
     """GitHub Projects v2 board number (0 = not configured)."""
+    code_host: str = ""
+    """Selects the CodeHostBackend implementation: ``"github"``, ``"gitlab"``, or ``""``.
+
+    Empty falls back to whichever token the config exposes — legacy behaviour
+    preserved for overlays that predate the explicit field.
+    """
+    messaging_backend: str = "noop"
+    """Selects the MessagingBackend implementation: ``"slack"`` or ``"noop"`` (default)."""
+    slack_bot_token_ref: str = ""
+    """``pass`` entry name prefix for Slack bot credentials.
+
+    The loader reads ``<ref>-bot`` (xoxb token) and ``<ref>-app`` (xapp token).
+    Empty falls back to ``get_slack_token()`` for one-shot webhook posts.
+    """
+    slack_user_id: str = ""
+    """Slack user id of the human the bot speaks for; used to filter @mentions."""
     require_ticket: bool = False
     """Whether to enforce a tracked issue before coding/shipping."""
+    ready_labels: list[str]
+    """Labels that mark an assigned issue as ready for the loop to pick up.
+
+    Used by ``AssignedIssuesScanner``. Empty disables the filter (every
+    open assigned issue is considered ready)."""
+    notion_database_id: str = ""
+    """Notion database id powering ``NotionViewScanner``. Empty disables the scanner."""
     mr_close_ticket: bool = False
     """Whether MR descriptions should use auto-closing keywords (Closes #N).
 
@@ -88,7 +111,6 @@ class OverlayConfig:
     workspace_repos: list[str]
     protected_branches: list[str]
     dev_env_url: str = ""
-    dashboard_logo: str = ""
 
     def __init__(self, settings_module: str = "", overlay_name: str = "") -> None:
         # Initialize mutable defaults per-instance
@@ -97,6 +119,7 @@ class OverlayConfig:
         self.frontend_repos = []
         self.workspace_repos = []
         self.protected_branches = []
+        self.ready_labels = []
         if settings_module:
             self._load_settings(settings_module)
         if overlay_name:

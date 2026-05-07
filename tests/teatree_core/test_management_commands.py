@@ -10,7 +10,7 @@ from django.core.management import call_command
 from django.test import TestCase, override_settings
 
 import teatree.agents.headless as headless_mod
-import teatree.agents.web_terminal as web_terminal_mod
+import teatree.core.management.commands.tasks as tasks_cmd
 import teatree.core.management.commands.worktree as worktree_cmd
 import teatree.core.overlay_loader as overlay_loader_mod
 import teatree.utils.run as utils_run_mod
@@ -65,9 +65,7 @@ def clear_overlay_cache() -> Iterator[None]:
 
 _MOCK_OVERLAY = {"test": CommandOverlay()}
 
-COMMAND_SETTINGS = {
-    "TEATREE_TERMINAL_MODE": "same-terminal",
-}
+COMMAND_SETTINGS: dict[str, object] = {}
 
 
 class TestLifecycleCommands(TestCase):
@@ -193,19 +191,10 @@ class TestTaskCommands(TestCase):
     def test_claim_and_complete_work(self) -> None:
         import subprocess as _sp  # noqa: PLC0415
 
-        from teatree.agents.terminal_launcher import LaunchResult  # noqa: PLC0415
-
         ticket = Ticket.objects.create(overlay="test")
         session = Session.objects.create(ticket=ticket, overlay="test", agent_id="agent-1")
         sdk_task = Task.objects.create(ticket=ticket, session=session)
         sdk_followup_task = Task.objects.create(ticket=ticket, session=session)
-        user_task = Task.objects.create(
-            ticket=ticket,
-            session=session,
-            execution_target=Task.ExecutionTarget.INTERACTIVE,
-        )
-
-        mock_result = LaunchResult(launch_url="http://127.0.0.1:9999", pid=1, mode="ttyd")
 
         with (
             patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
@@ -220,8 +209,6 @@ class TestTaskCommands(TestCase):
                 ),
             ),
             patch.object(headless_mod.shutil, "which", return_value="/usr/bin/claude"),
-            patch.object(web_terminal_mod.shutil, "which", return_value="/usr/bin/claude"),
-            patch.object(web_terminal_mod, "terminal_launch", return_value=mock_result),
         ):
             claimed_task_id = cast(
                 "int", call_command("tasks", "claim", execution_target="headless", claimed_by="worker-1")
@@ -230,31 +217,23 @@ class TestTaskCommands(TestCase):
                 "dict[str, str]",
                 call_command("tasks", "work-next-sdk", claimed_by="worker-1"),
             )
-            user_result = cast(
-                "dict[str, str]",
-                call_command("tasks", "work-next-user-input", claimed_by="worker-2"),
-            )
             refresh_summary = cast("dict[str, int]", call_command("followup", "refresh"))
             reminders = cast("list[int]", call_command("followup", "remind"))
 
         sdk_task.refresh_from_db()
         sdk_followup_task.refresh_from_db()
-        user_task.refresh_from_db()
 
         assert claimed_task_id == sdk_task.id
         assert "exit_code" in sdk_result
-        assert "launch_url" in user_result
         assert sdk_task.status == Task.Status.CLAIMED
         assert sdk_followup_task.status == Task.Status.COMPLETED
-        assert user_task.status == Task.Status.CLAIMED
-        assert TaskAttempt.objects.count() == 2
-        assert refresh_summary == {"tickets": 1, "tasks": 3, "open_tasks": 2}
+        assert TaskAttempt.objects.count() == 1
+        assert refresh_summary == {"tickets": 1, "tasks": 2, "open_tasks": 1}
         assert reminders == []
 
     @override_settings(**COMMAND_SETTINGS)
     def test_return_none_when_no_work_available(self) -> None:
         assert call_command("tasks", "work-next-sdk", claimed_by="worker-1") is None
-        assert call_command("tasks", "work-next-user-input", claimed_by="worker-2") is None
 
 
 class DbOverlay(CommandOverlay):
@@ -693,7 +672,7 @@ class TestTasksStartCommand(TestCase):
     def _patch_env(run_mock: MagicMock) -> list[AbstractContextManager[object]]:
         return [
             patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
-            patch.object(web_terminal_mod.shutil, "which", return_value="/usr/bin/claude"),
+            patch.object(tasks_cmd.shutil, "which", return_value="/usr/bin/claude"),
             patch("teatree.utils.run.run_streamed", new=run_mock),
         ]
 
@@ -787,3 +766,39 @@ class TestTasksStartCommand(TestCase):
         argv = run_mock.call_args[0][0]
         assert "--resume" in argv
         assert uuid in argv
+
+    @override_settings(**COMMAND_SETTINGS)
+    def test_start_with_invalid_task_id_exits(self) -> None:
+        run_mock = MagicMock(return_value=0)
+        p1, p2, p3 = self._patch_env(run_mock)
+        with p1, p2, p3, pytest.raises(SystemExit) as exc:
+            call_command("tasks", "start", 99999)
+        assert exc.value.code == 1
+        run_mock.assert_not_called()
+
+
+class TestResolveReason:
+    def test_reads_stdin_when_dash(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from io import StringIO  # noqa: PLC0415
+
+        from teatree.core.management.commands.tasks import _resolve_reason  # noqa: PLC0415
+
+        monkeypatch.setattr("sys.stdin", StringIO("from stdin"))
+        assert _resolve_reason(reason="-", reason_file=None) == "from stdin"
+
+    def test_returns_inline_reason(self) -> None:
+        from teatree.core.management.commands.tasks import _resolve_reason  # noqa: PLC0415
+
+        assert _resolve_reason(reason="inline", reason_file=None) == "inline"
+
+    def test_reads_from_file_when_provided(self, tmp_path: Path) -> None:
+        from teatree.core.management.commands.tasks import _resolve_reason  # noqa: PLC0415
+
+        f = tmp_path / "reason.txt"
+        f.write_text("from file")
+        assert _resolve_reason(reason="", reason_file=f) == "from file"
+
+    def test_returns_empty_when_nothing_provided(self) -> None:
+        from teatree.core.management.commands.tasks import _resolve_reason  # noqa: PLC0415
+
+        assert _resolve_reason(reason="", reason_file=None) == ""

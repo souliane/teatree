@@ -1,4 +1,4 @@
-"""Ticket state management: transitions and listing, mirroring dashboard actions."""
+"""Ticket state management: transitions and listing for the loop and CLI."""
 
 from django.db import transaction
 from django_fsm import TransitionNotAllowed

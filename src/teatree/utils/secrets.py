@@ -1,4 +1,4 @@
-"""Secret retrieval via the ``pass`` password store."""
+"""Secret storage via the ``pass`` password store."""
 
 from teatree.utils.run import CommandFailedError, run_checked
 
@@ -15,3 +15,17 @@ def read_pass(key: str) -> str:
         return ""
     lines = result.stdout.strip().splitlines()
     return lines[0] if lines else ""
+
+
+def write_pass(key: str, value: str) -> bool:
+    """Store *value* under *key* in the ``pass`` password store.
+
+    Uses ``pass insert --multiline --force`` so the secret is read from
+    stdin and an existing entry is overwritten silently. Returns ``True``
+    on success, ``False`` if ``pass`` is not installed or the call failed.
+    """
+    try:
+        run_checked(["pass", "insert", "--multiline", "--force", key], stdin_text=value)
+    except (CommandFailedError, FileNotFoundError):
+        return False
+    return True

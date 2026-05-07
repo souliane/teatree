@@ -237,6 +237,30 @@ def test_agent_signature_opt_in(tmp_path: Path) -> None:
     assert load_config(config_path).user.agent_signature is True
 
 
+def test_require_human_approval_to_merge_defaults_on(tmp_path: Path) -> None:
+    config_path = tmp_path / ".teatree.toml"
+    _write_toml(config_path, "[teatree]\n")
+    assert load_config(config_path).user.require_human_approval_to_merge is True
+
+
+def test_require_human_approval_to_merge_can_be_disabled(tmp_path: Path) -> None:
+    config_path = tmp_path / ".teatree.toml"
+    _write_toml(config_path, "[teatree]\nrequire_human_approval_to_merge = false\n")
+    assert load_config(config_path).user.require_human_approval_to_merge is False
+
+
+def test_loop_cadence_seconds_defaults_to_720(tmp_path: Path) -> None:
+    config_path = tmp_path / ".teatree.toml"
+    _write_toml(config_path, "[teatree]\n")
+    assert load_config(config_path).user.loop_cadence_seconds == 720
+
+
+def test_loop_cadence_seconds_override(tmp_path: Path) -> None:
+    config_path = tmp_path / ".teatree.toml"
+    _write_toml(config_path, "[teatree]\nloop_cadence_seconds = 300\n")
+    assert load_config(config_path).user.loop_cadence_seconds == 300
+
+
 # ── get_data_dir ──────────────────────────────────────────────────────
 
 
@@ -651,17 +675,17 @@ def test_load_e2e_repos_from_toml(tmp_path: Path) -> None:
     _write_toml(
         config_path,
         """
-[e2e_repos.home-savings]
-url = "git@gitlab.com:org/microservice-home-savings.git"
-branch = "ac/mhs-e2e"
+[e2e_repos.demo-svc]
+url = "git@example.com:org/microservice-demo.git"
+branch = "ac/demo-e2e"
 e2e_dir = "e2e"
 """,
     )
     repos = load_e2e_repos(config_path)
     assert len(repos) == 1
-    assert repos[0].name == "home-savings"
-    assert repos[0].url == "git@gitlab.com:org/microservice-home-savings.git"
-    assert repos[0].branch == "ac/mhs-e2e"
+    assert repos[0].name == "demo-svc"
+    assert repos[0].url == "git@example.com:org/microservice-demo.git"
+    assert repos[0].branch == "ac/demo-e2e"
     assert repos[0].e2e_dir == "e2e"
 
 

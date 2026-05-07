@@ -15,7 +15,6 @@ INSTALLED_APPS = [
     "django.contrib.contenttypes",
     "django.contrib.messages",
     "django.contrib.sessions",
-    "django_htmx",
     "django_rich",
     "django_tasks",
     "django_tasks_db",
@@ -30,7 +29,6 @@ MIDDLEWARE = [
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
-    "django_htmx.middleware.HtmxMiddleware",
 ]
 
 TEMPLATES = [
@@ -54,7 +52,6 @@ TASKS = {
     },
 }
 
-TEATREE_TERMINAL_MODE = "same-terminal"
 TEATREE_CLAUDE_STATUSLINE_STATE_DIR = "/tmp/claude-statusline"
 TEATREE_AGENT_HANDOVER = [
     {

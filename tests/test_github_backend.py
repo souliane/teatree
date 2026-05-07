@@ -291,17 +291,6 @@ class TestGitHubCodeHost:
         assert "--label" in flat
         assert "--assignee" in flat
 
-    def test_list_open_prs(self) -> None:
-        prs = [
-            {"number": 1, "user": {"login": "alice"}},
-            {"number": 2, "user": {"login": "bob"}},
-        ]
-        with patch.object(github_mod, "_gh_api_get", return_value=prs):
-            host = GitHubCodeHost()
-            result = host.list_open_prs("org/repo", "alice")
-        assert len(result) == 1
-        assert result[0]["number"] == 1
-
     def test_current_user_returns_login(self) -> None:
         with patch.object(github_mod, "_gh_api_get", return_value={"login": "souliane", "id": 42}) as mock_get:
             host = GitHubCodeHost(token="tok")
@@ -321,13 +310,7 @@ class TestGitHubCodeHost:
             result = host.current_user()
         assert result == ""
 
-    def test_list_open_prs_returns_empty_for_non_list(self) -> None:
-        with patch.object(github_mod, "_gh_api_get", return_value={"error": "bad"}):
-            host = GitHubCodeHost()
-            result = host.list_open_prs("org/repo", "alice")
-        assert result == []
-
-    def test_list_my_open_prs_searches_by_author_across_forge(self) -> None:
+    def test_list_my_prs_searches_by_author_across_forge(self) -> None:
         search_response = {
             "items": [
                 {"number": 1, "title": "first", "html_url": "https://github.com/org/repo/pull/1"},
@@ -336,7 +319,7 @@ class TestGitHubCodeHost:
         }
         with patch.object(github_mod, "_gh_api_get", return_value=search_response) as mock_get:
             host = GitHubCodeHost(token="tok")
-            result = host.list_my_open_prs("alice")
+            result = host.list_my_prs(author="alice")
         assert len(result) == 2
         assert result[0]["number"] == 1
         mock_get.assert_called_once_with(
@@ -344,58 +327,91 @@ class TestGitHubCodeHost:
             token="tok",
         )
 
-    def test_list_my_open_prs_returns_empty_when_response_missing_items(self) -> None:
+    def test_list_my_prs_returns_empty_when_response_missing_items(self) -> None:
         with patch.object(github_mod, "_gh_api_get", return_value={"total_count": 0}):
             host = GitHubCodeHost()
-            assert host.list_my_open_prs("alice") == []
+            assert host.list_my_prs(author="alice") == []
 
-    def test_list_my_open_prs_returns_empty_when_response_not_dict(self) -> None:
+    def test_list_my_prs_returns_empty_when_response_not_dict(self) -> None:
         with patch.object(github_mod, "_gh_api_get", return_value=[]):
             host = GitHubCodeHost()
-            assert host.list_my_open_prs("alice") == []
+            assert host.list_my_prs(author="alice") == []
 
-    def test_post_mr_note(self) -> None:
+    def test_list_review_requested_prs_searches_by_reviewer(self) -> None:
+        search_response = {"items": [{"number": 7, "title": "needs review"}]}
+        with patch.object(github_mod, "_gh_api_get", return_value=search_response) as mock_get:
+            host = GitHubCodeHost(token="tok")
+            result = host.list_review_requested_prs(reviewer="alice")
+        assert len(result) == 1
+        assert result[0]["number"] == 7
+        mock_get.assert_called_once_with(
+            "search/issues?q=is%3Apr+is%3Aopen+review-requested%3Aalice&per_page=100",
+            token="tok",
+        )
+
+    def test_list_review_requested_prs_returns_empty_when_response_not_dict(self) -> None:
+        with patch.object(github_mod, "_gh_api_get", return_value=[]):
+            host = GitHubCodeHost()
+            assert host.list_review_requested_prs(reviewer="alice") == []
+
+    def test_list_assigned_issues_searches_by_assignee(self) -> None:
+        search_response = {"items": [{"number": 11, "title": "bug to fix"}]}
+        with patch.object(github_mod, "_gh_api_get", return_value=search_response) as mock_get:
+            host = GitHubCodeHost(token="tok")
+            result = host.list_assigned_issues(assignee="alice")
+        assert len(result) == 1
+        mock_get.assert_called_once_with(
+            "search/issues?q=is%3Aissue+is%3Aopen+assignee%3Aalice&per_page=100",
+            token="tok",
+        )
+
+    def test_list_assigned_issues_returns_empty_when_response_not_dict(self) -> None:
+        with patch.object(github_mod, "_gh_api_get", return_value=[]):
+            host = GitHubCodeHost()
+            assert host.list_assigned_issues(assignee="alice") == []
+
+    def test_post_pr_comment(self) -> None:
         with patch.object(github_mod, "_gh_api_post", return_value={"id": 42}) as mock_post:
             host = GitHubCodeHost()
-            result = host.post_mr_note(repo="org/repo", mr_iid=5, body="LGTM")
+            result = host.post_pr_comment(repo="org/repo", pr_iid=5, body="LGTM")
         assert result == {"id": 42}
         mock_post.assert_called_once()
 
-    def test_post_mr_note_returns_empty_for_non_dict(self) -> None:
+    def test_post_pr_comment_returns_empty_for_non_dict(self) -> None:
         with patch.object(github_mod, "_gh_api_post", return_value="error"):
             host = GitHubCodeHost()
-            result = host.post_mr_note(repo="org/repo", mr_iid=5, body="test")
+            result = host.post_pr_comment(repo="org/repo", pr_iid=5, body="test")
         assert result == {}
 
-    def test_update_mr_note(self) -> None:
+    def test_update_pr_comment(self) -> None:
         with patch.object(github_mod, "_gh_api_patch", return_value={"id": 42}) as mock_patch:
             host = GitHubCodeHost()
-            result = host.update_mr_note(repo="org/repo", mr_iid=5, note_id=42, body="Updated")
+            result = host.update_pr_comment(repo="org/repo", pr_iid=5, comment_id=42, body="Updated")
         assert result == {"id": 42}
-        # Should use the note_id, not mr_iid for GitHub
+        # GitHub comment IDs are globally unique — pr_iid is unused on PATCH path
         mock_patch.assert_called_once_with(
             "repos/org/repo/issues/comments/42",
             {"body": "Updated"},
             token="",
         )
 
-    def test_update_mr_note_returns_empty_for_non_dict(self) -> None:
+    def test_update_pr_comment_returns_empty_for_non_dict(self) -> None:
         with patch.object(github_mod, "_gh_api_patch", return_value=[]):
             host = GitHubCodeHost()
-            result = host.update_mr_note(repo="org/repo", mr_iid=5, note_id=42, body="x")
+            result = host.update_pr_comment(repo="org/repo", pr_iid=5, comment_id=42, body="x")
         assert result == {}
 
-    def test_list_mr_notes(self) -> None:
+    def test_list_pr_comments(self) -> None:
         notes = [{"id": 1, "body": "comment"}]
         with patch.object(github_mod, "_gh_api_get", return_value=notes):
             host = GitHubCodeHost()
-            result = host.list_mr_notes(repo="org/repo", mr_iid=5)
+            result = host.list_pr_comments(repo="org/repo", pr_iid=5)
         assert result == notes
 
-    def test_list_mr_notes_returns_empty_for_non_list(self) -> None:
+    def test_list_pr_comments_returns_empty_for_non_list(self) -> None:
         with patch.object(github_mod, "_gh_api_get", return_value={"error": "bad"}):
             host = GitHubCodeHost()
-            result = host.list_mr_notes(repo="org/repo", mr_iid=5)
+            result = host.list_pr_comments(repo="org/repo", pr_iid=5)
         assert result == []
 
     def test_upload_file_raises(self) -> None:
@@ -404,3 +420,22 @@ class TestGitHubCodeHost:
 
         with pytest.raises(NotImplementedError, match="File upload"):
             host.upload_file(repo="org/repo", filepath="/tmp/test.txt")
+
+    def test_get_issue_parses_url_and_returns_payload(self) -> None:
+        payload = {"number": 7, "title": "Bug", "body": "details"}
+        with patch.object(github_mod, "_gh_api_get", return_value=payload) as mock_get:
+            host = GitHubCodeHost(token="tok")
+            result = host.get_issue("https://github.com/souliane/teatree/issues/7")
+        assert result == payload
+        mock_get.assert_called_once_with("repos/souliane/teatree/issues/7", token="tok")
+
+    def test_get_issue_rejects_non_issue_url(self) -> None:
+        host = GitHubCodeHost()
+        result = host.get_issue("https://github.com/souliane/teatree/pull/12")
+        assert "error" in result
+
+    def test_get_issue_returns_error_when_api_returns_non_dict(self) -> None:
+        with patch.object(github_mod, "_gh_api_get", return_value=[]):
+            host = GitHubCodeHost()
+            result = host.get_issue("https://github.com/souliane/teatree/issues/9")
+        assert "error" in result

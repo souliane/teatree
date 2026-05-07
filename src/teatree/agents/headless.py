@@ -1,7 +1,13 @@
 """Headless agent runner — executes tasks without a terminal.
 
 Runs ``claude -p`` as a subprocess, captures structured output,
-and stores the result in TaskAttempt.result for the dashboard to display.
+and stores the result in ``TaskAttempt.result``. The runner is the
+swap point for an Anthropic SDK runtime: a future implementation
+that talks to the API directly need only provide a callable matching
+``run_headless(task, *, phase, overlay_skill_metadata) -> TaskAttempt``.
+
+Wires only to ``Task`` / ``TaskAttempt`` models — no dashboard, no
+process registry, no platform autostart.
 """
 
 import json
@@ -44,7 +50,7 @@ def _safe_float(value: str | None) -> float | None:
         return None
 
 
-_UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 
 
 def run_headless(
@@ -157,10 +163,10 @@ def _get_resume_session_id(task: Task) -> str:
     current = task.parent_task
     while current is not None:
         last_attempt = current.attempts.order_by("-pk").first()
-        if last_attempt and last_attempt.agent_session_id and _UUID_RE.match(last_attempt.agent_session_id):
+        if last_attempt and last_attempt.agent_session_id and UUID_RE.match(last_attempt.agent_session_id):
             return last_attempt.agent_session_id
         agent_id = current.session.agent_id if current.session_id else ""
-        if agent_id and _UUID_RE.match(agent_id):
+        if agent_id and UUID_RE.match(agent_id):
             return agent_id
         current = current.parent_task
     return ""

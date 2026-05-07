@@ -16,7 +16,6 @@ PUBLIC_PACKAGES = [
     "teatree.contrib.t3_teatree",
     "teatree.core",
     "teatree.core.models",
-    "teatree.core.views",
     "teatree.overlay_init",
     "teatree.utils",
 ]

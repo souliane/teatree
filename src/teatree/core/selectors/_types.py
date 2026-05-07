@@ -1,5 +1,5 @@
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TypedDict
 
 
@@ -12,82 +12,6 @@ class AutomationSummary:
     last_completed_at: str
     total_tokens_24h: int
     total_cost_24h: float
-
-
-@dataclass(frozen=True, slots=True)
-class DashboardSummary:
-    in_flight_tickets: int
-    active_worktrees: int
-    pending_headless_tasks: int
-    pending_interactive_tasks: int
-    pending_reviews: int = 0
-
-
-_PIPELINE_DISPLAY: dict[str, tuple[str, str]] = {
-    "success": ("\u2705", "bg-green-100 text-green-700"),
-    "failed": ("\u274c", "bg-red-100 text-red-700"),
-    "running": ("\U0001f504", "bg-yellow-100 text-yellow-700"),
-    "pending": ("\u23f3", "bg-yellow-100 text-yellow-700"),
-}
-_PIPELINE_FALLBACK_CSS = "bg-yellow-100 text-yellow-700"
-
-
-@dataclass(frozen=True, slots=True)
-class DashboardMRRow:
-    url: str
-    title: str
-    repo: str
-    iid: str
-    branch: str
-    draft: bool
-    pipeline_status: str | None
-    pipeline_url: str | None
-    pipeline_icon: str
-    pipeline_css: str
-    approval_count: int
-    approval_required: int
-    approved_by: list[str]
-    review_requested: bool
-    reviewer_names: list[str]
-    review_channel: str
-    review_permalink: str
-    e2e_test_plan_url: str
-    is_frontend: bool
-    needs_reply_count: int = 0
-    approvals_dismissed_at: str = ""
-    dismissed_approvers: list[str] = field(default_factory=list)
-
-
-@dataclass(frozen=True, slots=True)
-class DashboardWorktreeRow:
-    worktree_id: int
-    ticket_id: int
-    display_id: str
-    repo_path: str
-    branch: str
-    state: str
-    db_name: str
-
-
-@dataclass(frozen=True, slots=True)
-class DashboardTicketRow:
-    ticket_id: int
-    display_id: str
-    issue_url: str
-    has_issue: bool
-    issue_title: str
-    state: str
-    tracker_status: str
-    notion_status: str
-    notion_url: str
-    variant: str
-    variant_url: str
-    repos: list[str]
-    ongoing_tasks: int
-    total_tasks: int
-    labels: list[str]
-    mrs: list[DashboardMRRow]
-    transitions: list[tuple[str, str]]  # (method_name, label)
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,7 +36,7 @@ class DashboardTaskRow:
 class ActiveSessionRow:
     pid: int
     uptime: str
-    kind: str  # "headless", "interactive", "ttyd", "manual"
+    kind: str  # "headless", "interactive", "manual"
     task_id: int | None
     ticket_id: int | None
     ticket_display_id: str
@@ -244,33 +168,3 @@ class TaskGraphNode:
     execution_reason: str
     depth: int
     children: list["TaskGraphNode"]
-
-
-@dataclass(frozen=True, slots=True)
-class PendingReviewRow:
-    url: str
-    title: str
-    repo: str
-    iid: str
-    author: str
-    draft: bool
-    pipeline_status: str
-    pipeline_css: str
-    pipeline_icon: str
-    pipeline_url: str
-    updated_at: str
-
-
-@dataclass(frozen=True, slots=True)
-class DashboardSnapshot:
-    summary: DashboardSummary
-    automation: AutomationSummary
-    action_required: list[ActionRequiredItem]
-    tickets: list[DashboardTicketRow]
-    worktrees: list[DashboardWorktreeRow]
-    headless_queue: list[DashboardTaskRow]
-    interactive_queue: list[DashboardTaskRow]
-    pending_reviews: list[PendingReviewRow]
-    active_sessions: list[ActiveSessionRow]
-    recent_activity: list[RecentActivityRow]
-    unified_sessions: list[UnifiedSessionRow] = field(default_factory=list)

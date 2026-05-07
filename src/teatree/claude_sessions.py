@@ -2,7 +2,7 @@
 
 Reads ``~/.claude/history.jsonl`` and ``~/.claude/projects/`` to build a
 deterministic session index. Detects whether each session finished normally
-or was interrupted (disconnected ttyd, killed process, etc.).
+or was interrupted (killed process, disconnected terminal, etc.).
 """
 
 import json
