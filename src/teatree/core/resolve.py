@@ -113,7 +113,14 @@ def _match_worktree_by_path(path: str) -> Worktree | None:
 
 
 def _auto_register_from_git(cwd: str) -> Worktree | None:
-    """Detect a git worktree from the filesystem and auto-register it in the DB."""
+    """Detect a git worktree from the filesystem and auto-register it in the DB.
+
+    Reuses an existing Worktree row keyed by branch + repo before falling
+    through to creating a new ``auto:<branch>`` ticket. This prevents duplicate
+    ticket rows when a real-ticket worktree exists but its
+    ``extra["worktree_path"]`` is missing or stale (which would make
+    ``_match_worktree_by_path`` miss it).
+    """
     cwd_path = Path(cwd).resolve()
     git_file = cwd_path / ".git"
     if not git_file.is_file():
@@ -124,6 +131,15 @@ def _auto_register_from_git(cwd: str) -> Worktree | None:
         return None
 
     repo_name = cwd_path.name
+    existing = Worktree.objects.filter(branch=branch, repo_path=repo_name).first()
+    if existing is not None:
+        extra = existing.extra or {}
+        if extra.get("worktree_path") != str(cwd_path):
+            extra["worktree_path"] = str(cwd_path)
+            existing.extra = extra
+            existing.save(update_fields=["extra"])
+        return existing
+
     ticket, _created = Ticket.objects.get_or_create(
         issue_url=f"auto:{branch}",
         defaults={"variant": "", "repos": [repo_name]},
