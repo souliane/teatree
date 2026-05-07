@@ -3,7 +3,7 @@
 When a ticket transitions between FSM states, we want the corresponding
 Slack review-request message to get an emoji reaction so reviewers can see
 the state change at a glance (``:tada:`` on merge, ``:arrows_counterclockwise:``
-on rework, …).  The review permalink stored on each MR entry gives us the
+on rework, …).  The review permalink stored on each PR entry gives us the
 Slack ``channel`` and ``timestamp`` needed for ``reactions.add``.
 """
 
@@ -77,24 +77,24 @@ def add_reaction(token: str, channel_id: str, timestamp: str, emoji: str) -> boo
     return False
 
 
-def _iter_mr_permalinks(ticket: "Ticket") -> list[str]:
-    """Collect non-empty ``review_permalink`` values from the ticket's MRs."""
+def _iter_pr_permalinks(ticket: "Ticket") -> list[str]:
+    """Collect non-empty ``review_permalink`` values from the ticket's PRs."""
     extra = ticket.extra if isinstance(ticket.extra, dict) else {}
-    mrs = extra.get("mrs", {})
-    if not isinstance(mrs, dict):
+    prs = extra.get("prs", {})
+    if not isinstance(prs, dict):
         return []
     permalinks: list[str] = []
-    for mr in mrs.values():
-        if not isinstance(mr, dict):
+    for pr in prs.values():
+        if not isinstance(pr, dict):
             continue
-        permalink = mr.get("review_permalink")
+        permalink = pr.get("review_permalink")
         if isinstance(permalink, str) and permalink:
             permalinks.append(permalink)
     return permalinks
 
 
 def add_reactions_for_transition(ticket: "Ticket", transition_name: str) -> int:
-    """Add the emoji mapped to *transition_name* to every MR permalink.
+    """Add the emoji mapped to *transition_name* to every PR permalink.
 
     Returns the number of successful reaction posts.  Missing credentials,
     missing permalinks, and unmapped transitions are all silent no-ops.
@@ -109,7 +109,7 @@ def add_reactions_for_transition(ticket: "Ticket", transition_name: str) -> int:
         return 0
 
     posted = 0
-    for permalink in _iter_mr_permalinks(ticket):
+    for permalink in _iter_pr_permalinks(ticket):
         parsed = parse_permalink(permalink)
         if not parsed:
             continue

@@ -75,7 +75,7 @@ def test_search_review_permalinks_returns_empty_when_no_token() -> None:
             token="",
             channel_id="C123",
             channel_name="review",
-            mr_urls=["https://gitlab.com/org/repo/-/merge_requests/1"],
+            pr_urls=["https://gitlab.com/org/repo/-/merge_requests/1"],
         )
     )
     assert result == []
@@ -88,33 +88,33 @@ def test_search_review_permalinks_returns_empty_when_no_channel_id() -> None:
             token="xoxb-token",
             channel_id="",
             channel_name="review",
-            mr_urls=["https://gitlab.com/org/repo/-/merge_requests/1"],
+            pr_urls=["https://gitlab.com/org/repo/-/merge_requests/1"],
         )
     )
     assert result == []
 
 
-def test_search_review_permalinks_returns_empty_when_no_mr_urls() -> None:
-    """search_review_permalinks returns [] when mr_urls is empty (line 47)."""
+def test_search_review_permalinks_returns_empty_when_no_pr_urls() -> None:
+    """search_review_permalinks returns [] when pr_urls is empty (line 47)."""
     result = search_review_permalinks(
         SlackReviewSearchRequest(
             token="xoxb-token",
             channel_id="C123",
             channel_name="review",
-            mr_urls=[],
+            pr_urls=[],
         )
     )
     assert result == []
 
 
 def test_search_review_permalinks_finds_matching_mr(monkeypatch: pytest.MonkeyPatch) -> None:
-    """search_review_permalinks matches MR URL in message text (lines 46-111)."""
-    mr_url = "https://gitlab.com/org/repo/-/merge_requests/42"
+    """search_review_permalinks matches PR URL in message text (lines 46-111)."""
+    pr_url = "https://gitlab.com/org/repo/-/merge_requests/42"
     page = {
         "ok": True,
         "messages": [
             {
-                "text": f"Please review {mr_url}",
+                "text": f"Please review {pr_url}",
                 "ts": "1700000000.000100",
             },
         ],
@@ -128,24 +128,24 @@ def test_search_review_permalinks_finds_matching_mr(monkeypatch: pytest.MonkeyPa
             token="xoxb-token",
             channel_id="C123",
             channel_name="review-crew",
-            mr_urls=[mr_url],
+            pr_urls=[pr_url],
         )
     )
 
     assert len(result) == 1
     assert result[0] == SlackReviewMatch(
-        mr_url=mr_url,
+        pr_url=pr_url,
         permalink="https://team.slack.com/archives/C123/p1700000000000100",
         channel="review-crew",
     )
 
 
 def test_search_review_permalinks_stops_when_all_found(monkeypatch: pytest.MonkeyPatch) -> None:
-    """search_review_permalinks stops paging when all MR URLs are matched (line 102)."""
-    mr_url = "https://gitlab.com/org/repo/-/merge_requests/10"
+    """search_review_permalinks stops paging when all PR URLs are matched (line 102)."""
+    pr_url = "https://gitlab.com/org/repo/-/merge_requests/10"
     page1 = {
         "ok": True,
-        "messages": [{"text": f"Check {mr_url}", "ts": "1700000001.000200"}],
+        "messages": [{"text": f"Check {pr_url}", "ts": "1700000001.000200"}],
         "has_more": True,
         "response_metadata": {"next_cursor": "cursor2"},
     }
@@ -162,7 +162,7 @@ def test_search_review_permalinks_stops_when_all_found(monkeypatch: pytest.Monke
             token="xoxb-token",
             channel_id="C456",
             channel_name="reviews",
-            mr_urls=[mr_url],
+            pr_urls=[pr_url],
         )
     )
 
@@ -173,17 +173,17 @@ def test_search_review_permalinks_stops_when_all_found(monkeypatch: pytest.Monke
 
 def test_search_review_permalinks_paginates(monkeypatch: pytest.MonkeyPatch) -> None:
     """search_review_permalinks follows pagination cursor (lines 63-64, 106-109)."""
-    mr_url1 = "https://gitlab.com/org/repo/-/merge_requests/1"
-    mr_url2 = "https://gitlab.com/org/repo/-/merge_requests/2"
+    pr_url1 = "https://gitlab.com/org/repo/-/merge_requests/1"
+    pr_url2 = "https://gitlab.com/org/repo/-/merge_requests/2"
     page1 = {
         "ok": True,
-        "messages": [{"text": f"Review {mr_url1}", "ts": "1700000001.000100"}],
+        "messages": [{"text": f"Review {pr_url1}", "ts": "1700000001.000100"}],
         "has_more": True,
         "response_metadata": {"next_cursor": "page2cursor"},
     }
     page2 = {
         "ok": True,
-        "messages": [{"text": f"Review {mr_url2}", "ts": "1700000002.000200"}],
+        "messages": [{"text": f"Review {pr_url2}", "ts": "1700000002.000200"}],
         "has_more": False,
     }
     fake_client = FakeClient(auth_url="https://ws.slack.com/", pages=[page1, page2])
@@ -194,12 +194,12 @@ def test_search_review_permalinks_paginates(monkeypatch: pytest.MonkeyPatch) -> 
             token="xoxb-token",
             channel_id="C789",
             channel_name="review",
-            mr_urls=[mr_url1, mr_url2],
+            pr_urls=[pr_url1, pr_url2],
         )
     )
 
     assert len(result) == 2
-    assert {m.mr_url for m in result} == {mr_url1, mr_url2}
+    assert {m.pr_url for m in result} == {pr_url1, pr_url2}
 
 
 def test_search_review_permalinks_stops_on_not_ok(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -213,7 +213,7 @@ def test_search_review_permalinks_stops_on_not_ok(monkeypatch: pytest.MonkeyPatc
             token="xoxb-token",
             channel_id="C999",
             channel_name="review",
-            mr_urls=["https://gitlab.com/org/repo/-/merge_requests/1"],
+            pr_urls=["https://gitlab.com/org/repo/-/merge_requests/1"],
         )
     )
 
@@ -222,12 +222,12 @@ def test_search_review_permalinks_stops_on_not_ok(monkeypatch: pytest.MonkeyPatc
 
 def test_search_review_permalinks_skips_messages_without_ts(monkeypatch: pytest.MonkeyPatch) -> None:
     """search_review_permalinks skips messages with empty ts (line 79-80)."""
-    mr_url = "https://gitlab.com/org/repo/-/merge_requests/5"
+    pr_url = "https://gitlab.com/org/repo/-/merge_requests/5"
     page = {
         "ok": True,
         "messages": [
-            {"text": f"Review {mr_url}", "ts": ""},
-            {"text": f"Review {mr_url}", "ts": "1700000003.000100"},
+            {"text": f"Review {pr_url}", "ts": ""},
+            {"text": f"Review {pr_url}", "ts": "1700000003.000100"},
         ],
         "has_more": False,
     }
@@ -239,7 +239,7 @@ def test_search_review_permalinks_skips_messages_without_ts(monkeypatch: pytest.
             token="xoxb-token",
             channel_id="C111",
             channel_name="review",
-            mr_urls=[mr_url],
+            pr_urls=[pr_url],
         )
     )
 
@@ -249,10 +249,10 @@ def test_search_review_permalinks_skips_messages_without_ts(monkeypatch: pytest.
 
 def test_search_review_permalinks_uses_provided_workspace_domain(monkeypatch: pytest.MonkeyPatch) -> None:
     """search_review_permalinks uses workspace_domain param if provided (line 57-58)."""
-    mr_url = "https://gitlab.com/org/repo/-/merge_requests/7"
+    pr_url = "https://gitlab.com/org/repo/-/merge_requests/7"
     page = {
         "ok": True,
-        "messages": [{"text": f"Review {mr_url}", "ts": "1700000004.000100"}],
+        "messages": [{"text": f"Review {pr_url}", "ts": "1700000004.000100"}],
         "has_more": False,
     }
     fake_client = FakeClient(pages=[page])
@@ -263,7 +263,7 @@ def test_search_review_permalinks_uses_provided_workspace_domain(monkeypatch: py
             token="xoxb-token",
             channel_id="C222",
             channel_name="review",
-            mr_urls=[mr_url],
+            pr_urls=[pr_url],
             workspace_domain="custom.slack.com",
         )
     )
@@ -273,13 +273,13 @@ def test_search_review_permalinks_uses_provided_workspace_domain(monkeypatch: py
 
 
 def test_search_review_permalinks_deduplicates_same_mr(monkeypatch: pytest.MonkeyPatch) -> None:
-    """search_review_permalinks only returns first match for a given MR URL (line 92)."""
-    mr_url = "https://gitlab.com/org/repo/-/merge_requests/8"
+    """search_review_permalinks only returns first match for a given PR URL (line 92)."""
+    pr_url = "https://gitlab.com/org/repo/-/merge_requests/8"
     page = {
         "ok": True,
         "messages": [
-            {"text": f"Review {mr_url}", "ts": "1700000005.000100"},
-            {"text": f"Also {mr_url}", "ts": "1700000006.000200"},
+            {"text": f"Review {pr_url}", "ts": "1700000005.000100"},
+            {"text": f"Also {pr_url}", "ts": "1700000006.000200"},
         ],
         "has_more": False,
     }
@@ -291,7 +291,7 @@ def test_search_review_permalinks_deduplicates_same_mr(monkeypatch: pytest.Monke
             token="xoxb-token",
             channel_id="C333",
             channel_name="review",
-            mr_urls=[mr_url],
+            pr_urls=[pr_url],
         )
     )
 
@@ -302,7 +302,7 @@ def test_search_review_permalinks_stops_when_no_cursor(monkeypatch: pytest.Monke
     """search_review_permalinks stops when has_more but no cursor (line 108-109)."""
     page = {
         "ok": True,
-        "messages": [{"text": "No MR here", "ts": "1700000007.000100"}],
+        "messages": [{"text": "No PR here", "ts": "1700000007.000100"}],
         "has_more": True,
         "response_metadata": {},
     }
@@ -314,7 +314,7 @@ def test_search_review_permalinks_stops_when_no_cursor(monkeypatch: pytest.Monke
             token="xoxb-token",
             channel_id="C444",
             channel_name="review",
-            mr_urls=["https://gitlab.com/org/repo/-/merge_requests/99"],
+            pr_urls=["https://gitlab.com/org/repo/-/merge_requests/99"],
         )
     )
 

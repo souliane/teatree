@@ -8,7 +8,7 @@ protocol implementations.  They do NOT replace the Protocol signatures
 from typing import TypedDict
 
 
-class MergeRequestResponse(TypedDict, total=False):
+class PullRequestResponse(TypedDict, total=False):
     iid: int
     web_url: str
     title: str

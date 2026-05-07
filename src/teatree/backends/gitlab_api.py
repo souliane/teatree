@@ -251,6 +251,7 @@ class GitLabAPI:
         reviewer: str,
         *,
         per_page: int = 100,
+        updated_after: str | None = None,
     ) -> list[RawMR]:
         """Fetch all open MRs where *reviewer* is assigned as reviewer (not author)."""
         from urllib.parse import urlencode  # noqa: PLC0415
@@ -262,6 +263,8 @@ class GitLabAPI:
             "per_page": per_page,
             "not[author_username]": reviewer,
         }
+        if updated_after:
+            query["updated_after"] = updated_after
         params = urlencode(query)
         data = self.get_json(f"merge_requests?{params}")
         if not isinstance(data, list):

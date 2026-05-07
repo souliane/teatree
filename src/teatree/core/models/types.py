@@ -24,8 +24,8 @@ class VisualQASummary(TypedDict, total=False):
 
 class TicketExtra(TypedDict, total=False):
     tests_passed: bool
-    mr_urls: list[str]
-    mr_title_override: str
+    pr_urls: list[str]
+    pr_title_override: str
     ignored_from: str
     visual_qa: VisualQASummary
     branch: str

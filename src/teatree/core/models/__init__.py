@@ -1,5 +1,5 @@
 from teatree.core.models.errors import InvalidTransitionError, QualityGateError
-from teatree.core.models.merge_request import MergeRequest
+from teatree.core.models.pull_request import PullRequest
 from teatree.core.models.session import Session
 from teatree.core.models.task import Task, TaskAttempt
 from teatree.core.models.ticket import Ticket
@@ -9,8 +9,8 @@ from teatree.core.models.worktree import Worktree, WorktreeEnvOverride
 
 __all__ = [
     "InvalidTransitionError",
-    "MergeRequest",
     "Ports",
+    "PullRequest",
     "QualityGateError",
     "Session",
     "Task",

@@ -18,7 +18,7 @@ class Command(TyperCommand):
 
         result = sync_followup()
         return {
-            "mrs_found": result.mrs_found,
+            "prs_found": result.prs_found,
             "tickets_created": result.tickets_created,
             "tickets_updated": result.tickets_updated,
             "worktrees_cleaned": result.worktrees_cleaned,

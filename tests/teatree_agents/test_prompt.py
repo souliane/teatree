@@ -154,10 +154,10 @@ class TestBuildTaskPrompt(TestCase):
         assert "reviewing" in prompt
         assert "Auto-scheduled review" in prompt
 
-    def test_includes_mr_context(self) -> None:
+    def test_includes_pr_context(self) -> None:
         ticket = Ticket.objects.create(
             extra={
-                "mrs": {
+                "prs": {
                     "backend": {
                         "url": "https://gitlab.com/mr/1",
                         "title": "Backend changes",
@@ -176,9 +176,9 @@ class TestBuildTaskPrompt(TestCase):
         assert "pipeline: success" in prompt
         assert "Backend changes" in prompt
 
-    def test_skips_non_dict_mr_items(self) -> None:
+    def test_skips_non_dict_pr_items(self) -> None:
         ticket = Ticket.objects.create(
-            extra={"mrs": {"bad": "not-a-dict", "good": {"url": "https://x.com/mr/2"}}},
+            extra={"prs": {"bad": "not-a-dict", "good": {"url": "https://x.com/mr/2"}}},
         )
         session = Session.objects.create(ticket=ticket)
         task = Task.objects.create(ticket=ticket, session=session)
@@ -194,9 +194,9 @@ class TestBuildTaskPrompt(TestCase):
         prompt = build_task_prompt(task)
         assert "Work on ticket" in prompt
 
-    def test_mr_without_title_or_pipeline(self) -> None:
+    def test_pr_without_title_or_pipeline(self) -> None:
         ticket = Ticket.objects.create(
-            extra={"mrs": {"repo": {"url": "https://x.com/mr/3", "draft": False}}},
+            extra={"prs": {"repo": {"url": "https://x.com/mr/3", "draft": False}}},
         )
         session = Session.objects.create(ticket=ticket)
         task = Task.objects.create(ticket=ticket, session=session)
@@ -206,13 +206,13 @@ class TestBuildTaskPrompt(TestCase):
         assert "(draft)" not in prompt
         assert "pipeline:" not in prompt
 
-    def test_non_dict_mrs_ignored(self) -> None:
-        ticket = Ticket.objects.create(extra={"mrs": "not-a-dict"})
+    def test_non_dict_prs_ignored(self) -> None:
+        ticket = Ticket.objects.create(extra={"prs": "not-a-dict"})
         session = Session.objects.create(ticket=ticket)
         task = Task.objects.create(ticket=ticket, session=session)
 
         prompt = build_task_prompt(task)
-        assert "merge requests" not in prompt.lower()
+        assert "pull requests" not in prompt.lower()
 
 
 # --- build_system_context ---
@@ -389,10 +389,10 @@ class TestBuildInteractiveContext(TestCase):
         assert "/test" in ctx
         assert "REQUIRED" in ctx
 
-    def test_with_mrs(self) -> None:
+    def test_with_prs(self) -> None:
         ticket = Ticket.objects.create(
             extra={
-                "mrs": {
+                "prs": {
                     "repo": {
                         "url": "https://gitlab.com/mr/5",
                         "title": "MR Title",
@@ -411,9 +411,9 @@ class TestBuildInteractiveContext(TestCase):
         assert "pipeline: failed" in ctx
         assert "MR Title" in ctx
 
-    def test_skips_non_dict_mr(self) -> None:
+    def test_skips_non_dict_pr(self) -> None:
         ticket = Ticket.objects.create(
-            extra={"mrs": {"bad": 42, "ok": {"url": "https://x.com/mr/7"}}},
+            extra={"prs": {"bad": 42, "ok": {"url": "https://x.com/mr/7"}}},
         )
         session = Session.objects.create(ticket=ticket)
         task = Task.objects.create(ticket=ticket, session=session)
@@ -421,17 +421,17 @@ class TestBuildInteractiveContext(TestCase):
         ctx = build_interactive_context(task, skills=[])
         assert "https://x.com/mr/7" in ctx
 
-    def test_non_dict_mrs(self) -> None:
-        ticket = Ticket.objects.create(extra={"mrs": "not-a-dict"})
+    def test_non_dict_prs(self) -> None:
+        ticket = Ticket.objects.create(extra={"prs": "not-a-dict"})
         session = Session.objects.create(ticket=ticket)
         task = Task.objects.create(ticket=ticket, session=session)
 
         ctx = build_interactive_context(task, skills=[])
-        assert "merge requests" not in ctx.lower()
+        assert "pull requests" not in ctx.lower()
 
-    def test_mr_no_title_no_pipeline(self) -> None:
+    def test_pr_no_title_no_pipeline(self) -> None:
         ticket = Ticket.objects.create(
-            extra={"mrs": {"repo": {"url": "https://x.com/mr/8"}}},
+            extra={"prs": {"repo": {"url": "https://x.com/mr/8"}}},
         )
         session = Session.objects.create(ticket=ticket)
         task = Task.objects.create(ticket=ticket, session=session)
