@@ -58,32 +58,87 @@ Entry point: t3 = teatree.cli:main
 ```
 src/teatree/
   __init__.py
-  cli/                 # Typer CLI package — bootstrap commands (no Django needed)
-  config.py             # ~/.teatree.toml parsing, overlay discovery
+  __main__.py
+  _overlay_api.py       # __overlay_api_version__ pin + import-time guard for overlays
+  config.py             # ~/.teatree.toml parsing, overlay discovery, UserSettings
+  settings.py           # Django settings — auto-discovers overlay apps from entry points
+  identity.py           # User identity + agent_signature suffix policy
+  project.py            # Project root discovery
+  triage.py             # Crash-report writers consumed by hooks
+  timeouts.py           # Per-CLI subprocess timeouts
+  types.py              # Shared TypedDicts / structural types (no deps)
+  urls.py               # Django URLConf (admin only — no HTML dashboard)
   skill_map.py          # Phase → companion skills delegation map
-  dev_settings.py       # Development Django settings
+  skill_deps.py         # Frontmatter `requires:` parser
+  skill_loading.py      # Hook-side skill suggestion + cache
+  skill_schema.py       # SKILL.md frontmatter schema
+  trigger_parser.py     # `triggers:` regex compiler for skill auto-loading
+  url_title_fetcher.py  # PR/issue title prefetch for hook trigger matching
+  visual_qa.py          # Pre-push browser sanity gate (Playwright)
+  cli_reference.py      # Generates docs/generated/cli-reference.md
+  claude_sessions.py    # Resume helpers for `claude --resume`
+
+  cli/                 # Typer CLI package — bootstrap commands (no Django needed)
+    __init__.py         # Top-level `t3` app + overlay subapp registration
+    agent.py            # `t3 agent`
+    assess.py           # `t3 assess`
+    ci.py               # `t3 ci ...`
+    config.py           # `t3 config ...`
+    doctor.py           # `t3 doctor ...`
+    info.py             # `t3 info`, `t3 startoverlay`, `t3 docs`
+    infra.py            # `t3 infra ...`
+    loop.py             # `t3 loop start|stop|status|tick`
+    overlay.py          # OverlayAppBuilder — builds the per-overlay subapp
+    overlay_dev.py      # `t3 overlay install|uninstall|status` (dev loop)
+    review.py           # `t3 review ...`
+    review_request.py   # `t3 review-request ...`
+    sessions.py         # `t3 sessions`
+    setup.py            # `t3 setup ...`
+    slack_setup.py      # `t3 setup slack-bot` walkthrough
+    tools.py            # `t3 tool ...`
 
   core/                 # Django app: the heart of teatree
     apps.py             # AppConfig with auto-admin registration
-    models/             # 5 FSM models (see §4)
+    models/             # FSM + supporting models (see §4)
     managers.py         # Custom QuerySet managers
     overlay.py          # OverlayBase ABC + OverlayConfig dataclass (see §6)
-    overlay_loader.py   # Settings-driven overlay instantiation
+    overlay_loader.py   # Entry-point overlay discovery + instantiation
+    backend_factory.py  # iter_overlay_backends, OverlayBackends bundles for the loop
     sync.py             # Shared types, SyncBackend ABC, orchestrator (sync_followup) — platform-agnostic
     cleanup.py          # Shared worktree cleanup + squash-merge-aware branch classifier
-    tasks.py            # django-tasks integration
+    clone_paths.py      # Workspace/clone path resolution
+    orphan_guard.py     # Detect orphan containers/DBs/dirs after teardown
+    provisioners.py     # WorktreeProvisioner — runs overlay provision steps
+    readiness.py        # HealthCheck + readiness-probe runner
+    reconcile.py        # State reconciler (see §14.11)
+    resolve.py          # Worktree-by-branch+repo lookup helper
+    signals.py          # post_transition signals
+    skill_cache.py      # Per-overlay skill metadata cache writer
+    step_runner.py      # ProvisionStep / PostDbStep / pre-run executor
+    tasks.py            # django-tasks workers (execute_provision, execute_ship, ...)
+    urls.py             # Admin URLConf
+    worktree_env.py     # render_env_cache + drift detection
+    worktree_tasks.py   # Worker bodies: provision, ship, retrospect, teardown
     client-term-redacted.py           # Overlay/skill documentation generation
     admin.py            # Auto-registered admin
+    runners/            # Phase runners (RetroExecutor, ShipExecutor, ...)
+    selectors/          # Read-only query helpers used by FSM transitions
+    migrations/         # Django migrations
     management/commands/ # django-typer commands (see §8)
       lifecycle.py      # Worktree provisioning
       workspace.py      # Workspace operations
+      worktree.py       # Per-worktree operations (provision/start/...)
       db.py             # Database operations
+      env.py            # `env set|show|check` for the env cache
       run.py            # Service runner
       followup.py       # PR sync (GitHub + GitLab via CodeHostBackend)
       pr.py             # PR creation and validation
+      ticket.py         # Ticket transitions and queries
+      tool.py           # Overlay-declared tool subcommands
+      e2e.py            # `e2e run|external|project`
       overlay.py        # Overlay inspection (config, info)
       tasks.py          # Task claiming and execution
-      loop.py           # /loop start/stop/status/tick management
+      generate_*.py     # generate_all_docs / generate_overlay_docs / generate_skill_docs
 
   agents/               # Headless executor runtime
     headless.py         # Headless execution via `claude -p` (kept slim — future SDK swap point)
@@ -93,36 +148,48 @@ src/teatree/
 
   loop/                 # /loop topology (see §5.6)
     tick.py             # One tick: scan in parallel, dispatch to phase agents when needed, render statusline
+    dispatch.py         # Signal → action mapping (statusline / agent / webhook)
+    statusline.py       # Statusline composition (zones, formatters) and file write
     scanners/           # Pure-Python signal collectors — one file each
+      base.py           # Scanner Protocol + ScanSignal dataclass
       my_prs.py
       reviewer_prs.py
-      review_channels.py
       slack_mentions.py
       notion_view.py
       assigned_issues.py
       pending_tasks.py
-    statusline.py       # Statusline composition (zones, formatters) and file write
 
   backends/             # Pluggable external service integrations
     protocols.py        # Protocol classes (see §7)
     loader.py           # Per-overlay backend loader (code-host + messaging) with lru_cache
-    github.py           # GitHub API client (httpx)
-    github_codehost.py  # GitHubCodeHost — implements CodeHostBackend
+    types.py            # Shared API TypedDicts (RawAPIDict, etc.)
+    github.py           # GitHub API client + GitHubCodeHost (implements CodeHostBackend)
     github_sync.py      # GitHubSyncBackend — consumes CodeHostBackend
-    gitlab.py           # GitLab API client (httpx)
-    gitlab_ci.py        # GitLab CI pipeline operations
-    gitlab_codehost.py  # GitLabCodeHost — implements CodeHostBackend (translates MR ↔ PR)
+    gitlab.py           # GitLab API client + GitLabCodeHost (translates MR ↔ PR)
+    gitlab_api.py       # Low-level GitLab REST helpers
+    gitlab_ci.py        # GitLabCIService — implements CIService
     gitlab_sync.py      # GitLabSyncBackend — consumes CodeHostBackend
+    gitlab_sync_approvals.py / gitlab_sync_terminal.py  # GitLab-specific sync helpers
+    slack.py            # Slack API client (httpx wrapper for SlackBotBackend)
     slack_bot.py        # SlackBotBackend — Socket Mode messaging client (implements MessagingBackend)
+    slack_reactions.py  # Reaction helpers used by transition signals
+    slack_review_sync.py # Review-thread → Slack post sync
     messaging_noop.py   # NoopMessagingBackend — default for overlays that opt out
     notion.py           # Notion read-only client (page fetch + n8n webhook trigger)
     sentry.py           # Sentry error tracking
 
   utils/                # Pure utility modules
-    (git helpers, port allocation, subprocess wrappers)
+    git.py, ports.py, run.py, secrets.py, db.py, django_db.py,
+    bad_artifacts.py, compose_contract.py, dep_drift.py, redis_container.py
 
   overlay_init/         # t3 startoverlay helpers
     generator.py        # Scaffold generation logic (called from cli/)
+
+  contrib/              # First-party overlays shipped with the package
+    t3_teatree/         # Teatree's own overlay (dogfood)
+
+  docker/               # Shared docker base-image build helpers (see §6.2a)
+  templates/overlay/    # Cookiecutter-style scaffold for `t3 startoverlay`
 
 .claude-plugin/         # Plugin manifest
   plugin.json           # Plugin identity (name: t3)
@@ -142,7 +209,7 @@ scripts/                # Standalone utility scripts
 
 ## 4. Domain Models
 
-Five models in `teatree.core.models/` (split into domain-specific modules), all using `django-fsm` for state machines.
+Five core lifecycle models in `teatree.core.models/` (split into domain-specific modules), all using `django-fsm` for state machines: **Ticket**, **Worktree**, **Session**, **Task**, **TaskAttempt**. Three supporting rows live alongside them — `PullRequest` (denormalized PR cache populated by sync), `TicketTransition` (audit trail of FSM moves), `WorktreeEnvOverride` (user-declared env entries layered onto the env cache). `core/models/errors.py` and `core/models/types.py` carry shared exceptions and TypedDicts (no DB tables).
 
 **Transitions own their work.** Every FSM transition composes the runners needed to make its new state true — git, PR I/O, retro writing, cleanup — and enqueues long work to an `@task` worker via `transaction.on_commit`. Transition bodies stay pure (state change + metadata + enqueue); the worker does the I/O, takes a row lock with `select_for_update()`, re-checks the source state for idempotency, and on success calls the next transition to advance the ticket. The single rule: to move the ticket, call the transition; the transition does the rest.
 
@@ -458,7 +525,7 @@ Each tick runs three stages:
 
 1. **Scan** — pure-Python scanners under `teatree.loop.scanners` collect signals from external sources in parallel. Scanners are deterministic, mockable, and fully covered by integration tests against stubbed backends. They never invoke Claude.
 2. **Dispatch** — the tick decides what each signal means and either acts inline (mechanical fix-and-push, n8n webhook trigger, statusline note) or delegates to one of the seven phase agents shipped with the plugin (§ 11.2). Phase agents are invoked via the standard Task tool the same way `t3:orchestrator` invokes them today; the loop is just one more caller.
-3. **Render** — `teatree.loop.statusline.render` writes `${XDG_DATA_HOME:-$HOME/.local/share}/teatree/statusline.txt` (or `$TEATREE_STATUSLINE_FILE` when set) with three zones (§ 5.6.1).
+3. **Render** — `teatree.loop.statusline.render` writes `${XDG_DATA_HOME:-$HOME/.local/share}/teatree/statusline.txt` with three zones (§ 5.6.1). The reader-side hook (`hooks/scripts/statusline.sh`) honours `$TEATREE_STATUSLINE_FILE` for tests and overrides; the renderer itself always writes to the default path so the hook and writer can never disagree on location.
 
 **Scanners (`teatree.loop.scanners.*`):**
 
@@ -650,9 +717,11 @@ Each external API concern is a `@runtime_checkable Protocol` in `teatree.backend
 
 | Protocol | Methods | Implementations |
 |---|---|---|
-| `CodeHostBackend` | `list_my_prs(*, author)`, `list_review_requested_prs(*, reviewer)`, `get_pr(pr_url)`, `get_pr_pipeline_status(pr_url)`, `get_pr_review_threads(pr_url)`, `post_pr_comment(pr_url, body)`, `post_pr_review(pr_url, comments)`, `create_pr(PullRequestSpec)`, `merge_pr(pr_url)`, `list_assigned_issues(*, assignee)`, `get_issue(issue_url)` | `GitHubCodeHost`, `GitLabCodeHost` |
-| `CIService` | `cancel_pipelines()`, `fetch_pipeline_errors()`, `fetch_failed_tests()`, `trigger_pipeline()`, `quality_check()` | `GitHubActionsCI`, `GitLabCI` |
-| `MessagingBackend` | `fetch_mentions(*, since)`, `fetch_dms(*, since)`, `post_message(channel, text, *, thread_ts)`, `post_reply(channel, ts, text)`, `react(channel, ts, emoji)`, `resolve_user_id(handle)` | `SlackBotBackend`, `NoopMessagingBackend` |
+| `CodeHostBackend` | `create_pr(PullRequestSpec)`, `current_user()`, `list_my_prs(*, author, updated_after=None)`, `list_review_requested_prs(*, reviewer, updated_after=None)`, `post_pr_comment(*, repo, pr_iid, body)`, `update_pr_comment(*, repo, pr_iid, comment_id, body)`, `list_pr_comments(*, repo, pr_iid)`, `upload_file(*, repo, filepath)`, `get_issue(issue_url)`, `list_assigned_issues(*, assignee)` | `GitHubCodeHost` (in `backends/github.py`), `GitLabCodeHost` (in `backends/gitlab.py`) |
+| `CIService` | `cancel_pipelines(*, project, ref)`, `fetch_pipeline_errors(*, project, ref)`, `fetch_failed_tests(*, project, ref)`, `trigger_pipeline(*, project, ref, variables=None)`, `quality_check(*, project, ref)` | `GitLabCIService` (GitHub Actions CI not yet implemented) |
+| `MessagingBackend` | `fetch_mentions(*, since="")`, `fetch_dms(*, since="")`, `post_message(*, channel, text, thread_ts="")`, `post_reply(*, channel, ts, text)`, `react(*, channel, ts, emoji)`, `resolve_user_id(handle)` | `SlackBotBackend`, `NoopMessagingBackend` |
+
+`PullRequestSpec(repo, branch, title, description, target_branch="", labels=[], assignee="", draft=False)` and `MessageSpec(channel, text, thread_ts="")` are the two frozen request dataclasses; both are `slots=True`. `repo + pr_iid` is the natural unit on both APIs (GitLab `merge_requests/<iid>`, GitHub `pulls/<number>`) — neither protocol method accepts a free-form PR URL.
 
 `backends.sentry.SentryClient` is a concrete client (no Protocol). The `IssueTracker` and `ChatNotifier` protocols are folded into `CodeHostBackend` (issue methods) and `MessagingBackend` (post methods) respectively — the previous split duplicated state across protocols and forced overlays to configure two backends for one platform.
 
@@ -746,11 +815,17 @@ Implementations: `GitHubSyncBackend` (`backends/github_sync.py`), `GitLabSyncBac
 - `sync()` → calls `sync_followup()` to create/update tickets from PRs
 - `discover-prs()` → discover open PRs awaiting review
 
-**workspace** — Workspace operations
+**workspace** — Workspace operations (ticket setup, status, finalize, cleanup)
+**worktree** — Per-worktree commands (`provision`, `start`, `verify`, `teardown`, `clean`, `ready`, `status`)
 **db** — Database operations
+**env** — Read/write the env cache (`set`, `show`, `check`)
 **run** — Service runner (uses `lifecycle.compose_project()` shared helper)
 **pr** — PR creation and validation
+**ticket** — Ticket transitions and queries (`list`, `transition`, ...)
+**tool** — Overlay-declared tool subcommands (declared via `OverlayBase.get_tool_commands()`)
+**e2e** — `e2e run|external|project` (Playwright dispatcher)
 **overlay** — Overlay inspection (`config`, `info`)
+**generate_all_docs / generate_overlay_docs / generate_skill_docs** — internal client-term-redacted entry points (called from pre-commit hooks)
 
 ### 8.2 Global CLI Commands (`t3`)
 
@@ -771,8 +846,9 @@ Typer-based, work without Django:
 - `t3 config write-skill-cache` — write overlay skill metadata to cache
 - `t3 doctor {check,repair}` — health checks and symlink repair
 - `t3 setup slack-bot --overlay <name>` — interactive walkthrough to register a Slack bot for an overlay; opens the app-manifest URL, captures bot+app tokens, stores them via `pass`, writes `slack_user_id` into `~/.teatree.toml`, smoke-tests with a round-trip DM (see § 10.1 for the manifest template and scopes). Subcommands of `t3 setup` short-circuit the global skill-install callback so the walkthrough runs without requiring `T3_REPO`.
-- `t3 graph <kind>` — render mermaid diagrams on demand. `<kind>` ∈ `{ticket, worktree, task, modules, loop}`. Prints to stdout; pipe to a viewer or paste into a markdown buffer.
-- `t3 loop {start,stop,status,tick}` — manage the long-lived `/loop`. `start` registers the loop in the active Claude Code session; `tick` runs one tick out-of-band (used by tests and by manual investigation).
+- `t3 assess` — codebase health check (ruff, coverage, complexity, dependency staleness)
+- `t3 infra` — infrastructure helpers (e.g. shared docker container management)
+- `t3 loop {start,stop,status,tick}` — manage the long-lived `/loop`. `start` registers the loop in the active Claude Code session; `tick` runs one tick out-of-band (used by tests and by manual investigation). `--overlay <name>` restricts a tick to a single overlay (default: scan every registered overlay).
 
 ### 8.3 Overlay Commands (`t3 <overlay> ...`)
 
@@ -1128,14 +1204,18 @@ The design is **broad allow, narrow deny**:
 
 ```
 tests/
-  teatree_core/       # Core model, view, command tests
-  teatree_agents/     # Agent execution tests
-  teatree_backends/   # Backend integration tests
-  test_config.py      # Config/overlay discovery
-  test_cli_agent_skills.py  # CLI + skill bundle tests
-  test_startproject.py      # Overlay scaffold tests
-  test_utils.py       # Utility module tests
+  conftest.py             # XDG isolation, port stubs, overlay env strip, immediate task backend
+  django_settings.py      # In-memory SQLite test settings
+  assets/                 # Test fixtures (sample dumps, snapshots, ...)
+  teatree_core/           # Core model, transition, manager, runner, selector tests
+  teatree_agents/         # Agent execution + prompt + skill bundle tests
+  teatree_backends/       # Backend integration tests (GitHub, GitLab, Slack, Notion)
+  teatree_loop/           # Loop tick + scanner + dispatch + statusline tests
+  test_config.py / test_cli_*.py / test_skill_*.py / test_*_hook.py / ... — top-level
+                          # cross-cutting suites for config, CLI, hooks, schemas, contrib
 ```
+
+`pytest -k <pattern>` is the usual filter; `pytest tests/teatree_loop/` runs the loop suite alone.
 
 ### 12.5 E2E Tests
 
