@@ -122,21 +122,23 @@ def _discover_frontend_port(project: str, default: int = 4200) -> int | None:
 
 
 def _build_e2e_env(frontend_url: str | None = None, *, headed: bool) -> dict[str, str]:
-    """Build environment dict for Playwright: BASE_URL, CUSTOMER, CI.
+    """Build environment dict for Playwright: ``BASE_URL``, overlay extras, ``CI``.
 
     When *frontend_url* is given it overrides ``BASE_URL``.
     When it is ``None`` the existing ``BASE_URL`` env var is preserved (DEV / staging mode).
+
+    Overlay-specific env vars (e.g. ``CUSTOMER``) come from
+    :meth:`OverlayBase.get_e2e_env_extras` — core only knows about ``BASE_URL``
+    and ``CI``.
     """
     env = {**os.environ}
     if frontend_url is not None:
         env["BASE_URL"] = frontend_url
 
-    if "CUSTOMER" not in env:
-        envfile = _find_env_cache(_get_user_cwd())
-        if envfile is not None:
-            variant = _parse_env_file(envfile).get("WT_VARIANT", "")
-            if variant:
-                env["CUSTOMER"] = variant
+    envfile = _find_env_cache(_get_user_cwd())
+    env_cache = _parse_env_file(envfile) if envfile is not None else {}
+    for key, value in get_overlay().get_e2e_env_extras(env_cache).items():
+        env.setdefault(key, value)
 
     if headed:
         env.pop("CI", None)
