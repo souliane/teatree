@@ -44,6 +44,7 @@ _STATUSLINE_ZONE_BY_KIND: dict[str, str] = {
     "slack.mention": "action_needed",
     "slack.dm": "action_needed",
     "assigned_issue.ready": "action_needed",
+    "ticket.disposition_candidate": "action_needed",
 }
 
 _PR_URL_RE = re.compile(r"https?://[^\s>|]+/(?:merge_requests|pull|pulls)/\d+")
