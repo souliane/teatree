@@ -23,6 +23,7 @@ from teatree.loop.scanners import (
     ReviewerPrsScanner,
     Scanner,
     SlackMentionsScanner,
+    TicketDispositionScanner,
 )
 from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.scanners.notion_view import NotionLike
@@ -124,6 +125,14 @@ def build_default_jobs(
                                 ready_labels=backend.ready_labels,
                                 auto_start=backend.auto_start_assigned_issues,
                                 max_concurrent=backend.max_concurrent_auto_starts,
+                                overlay_name=tag,
+                            ),
+                            overlay=tag,
+                        ),
+                        _ScannerJob(
+                            scanner=TicketDispositionScanner(
+                                host=backend.host,
+                                ready_labels=backend.ready_labels,
                                 overlay_name=tag,
                             ),
                             overlay=tag,
