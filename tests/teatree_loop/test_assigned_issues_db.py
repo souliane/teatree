@@ -25,12 +25,12 @@ class _Host:
         return self.issues
 
     # The scanner never calls these but the Protocol requires them.
-    def list_my_prs(self, *, author: str) -> list[RawAPIDict]:
-        _ = author
+    def list_my_prs(self, *, author: str, updated_after: str | None = None) -> list[RawAPIDict]:
+        _ = (author, updated_after)
         return []
 
-    def list_review_requested_prs(self, *, reviewer: str) -> list[RawAPIDict]:
-        _ = reviewer
+    def list_review_requested_prs(self, *, reviewer: str, updated_after: str | None = None) -> list[RawAPIDict]:
+        _ = (reviewer, updated_after)
         return []
 
     def create_pr(self, spec: Any) -> RawAPIDict:
