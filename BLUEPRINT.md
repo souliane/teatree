@@ -6,7 +6,7 @@ If the entire `src/` and `tests/` tree were deleted, this document alone — plu
 
 **Change policy:** Every code change to teatree must be reflected here. Before modifying this file, always ask the user for approval — this is the source of truth and the user validates every change.
 
-**Status:** This BLUEPRINT is the **current** architecture under issue [#541](https://github.com/souliane/teatree/issues/541). All phases (0-8) have shipped on the active branch. The statusline file is the persistent UI surface; the HTML dashboard, ttyd web terminal, ASGI/uvicorn scaffolding, and platform autostart helpers are gone; the code-host + messaging Protocols are unified, with `SlackBotBackend`/`NoopMessagingBackend` selectable via overlay config; `t3 setup slack-bot --overlay <name>` walks the user through Slack app registration; the fat loop + 6 scanners + dispatcher are wired through `t3 loop tick` (review-channel scanning is folded into the dispatcher's PR-URL detection); the headless executor is the deliberately-slim `claude -p` swap point for a future Anthropic SDK runtime; and the no-overlay-leak gate keeps the platform tenant-agnostic.
+**Status:** This BLUEPRINT is the **current** architecture under issue [#541](https://github.com/souliane/teatree/issues/541). All phases (0-8) have shipped on the active branch. The statusline file is the persistent UI surface; the HTML dashboard, ttyd web terminal, ASGI/uvicorn scaffolding, and platform autostart helpers are gone; the code-host + messaging Protocols are unified, with `SlackBotBackend`/`NoopMessagingBackend` selectable via overlay config; `t3 setup slack-bot --overlay <name>` walks the user through Slack app registration; the fat loop + 7 scanners + dispatcher are wired through `t3 loop tick` (review-channel scanning is folded into the dispatcher's PR-URL detection); the headless executor is the deliberately-slim `claude -p` swap point for a future Anthropic SDK runtime; and the no-overlay-leak gate keeps the platform tenant-agnostic.
 
 ---
 
@@ -158,6 +158,7 @@ src/teatree/
       notion_view.py
       assigned_issues.py
       pending_tasks.py
+      ticket_dispositions.py
 
   backends/             # Pluggable external service integrations
     protocols.py        # Protocol classes (see §7)

@@ -26,12 +26,12 @@ class FakeCodeHost:
     def current_user(self) -> str:
         return self.user
 
-    def list_my_prs(self, *, author: str) -> list[RawAPIDict]:
-        _ = author
+    def list_my_prs(self, *, author: str, updated_after: str | None = None) -> list[RawAPIDict]:
+        _ = (author, updated_after)
         return self.my_prs
 
-    def list_review_requested_prs(self, *, reviewer: str) -> list[RawAPIDict]:
-        _ = reviewer
+    def list_review_requested_prs(self, *, reviewer: str, updated_after: str | None = None) -> list[RawAPIDict]:
+        _ = (reviewer, updated_after)
         return self.review_requested_prs
 
     def list_assigned_issues(self, *, assignee: str) -> list[RawAPIDict]:
