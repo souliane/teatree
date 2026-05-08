@@ -37,7 +37,7 @@ Settings are defined in `overlay_settings.py` and overridden per-user in `~/.tea
 | `get_review_channel()` | `REVIEW_CHANNEL_ID/NAME` | Review request target |
 | `gitlab_url` | `GITLAB_URL` | GitLab instance base URL |
 | `known_variants` | `KNOWN_VARIANTS` | Multi-tenant variant list |
-| `mr_auto_labels` | `MR_AUTO_LABELS` | Labels applied to new MRs |
+| `pr_auto_labels` | `PR_AUTO_LABELS` | Labels applied to new PRs |
 | `frontend_repos` | `FRONTEND_REPOS` | Repos that need E2E tests |
 | `dev_env_url` | `DEV_ENV_URL` | Development environment URL |
 | `dashboard_logo` | `DASHBOARD_LOGO` | Custom dashboard branding |

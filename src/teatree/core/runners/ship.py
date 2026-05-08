@@ -30,7 +30,7 @@ def sanitize_close_keywords(description: str, *, close_ticket: bool) -> str:
 
 
 def overlay_pr_labels() -> list[str]:
-    raw = get_overlay().config.mr_auto_labels
+    raw = get_overlay().config.pr_auto_labels
     if isinstance(raw, str):
         values: Iterable[str] = raw.split(",")
     elif isinstance(raw, Iterable):
