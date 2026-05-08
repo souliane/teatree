@@ -132,6 +132,10 @@ class FullOverlay(OverlayBase):
     def get_compose_file(self, worktree: Worktree) -> str:
         return "/fake/docker-compose.yml"
 
+    def get_e2e_env_extras(self, env_cache: dict[str, str]) -> dict[str, str]:
+        variant = env_cache.get("WT_VARIANT", "")
+        return {"CUSTOMER": variant} if variant else {}
+
 
 class ServicesOverlay(FullOverlay):
     """Overlay with services config — used to test _start_services."""

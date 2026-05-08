@@ -386,6 +386,20 @@ class OverlayBase(ABC):  # noqa: PLR0904 — overlay extension API; hook count r
     def get_test_command(self, worktree: "Worktree") -> list[str] | RunCommand:
         return []
 
+    def get_e2e_env_extras(self, env_cache: dict[str, str]) -> dict[str, str]:
+        """Return overlay-specific env vars to add to the Playwright environment.
+
+        Receives the parsed worktree env cache (``.t3-env.cache``). Use this to
+        derive overlay-specific vars Playwright tests need (e.g. ``CUSTOMER``
+        from ``WT_VARIANT``). Existing values in ``os.environ`` win — this hook
+        only fills in missing keys. Default: no extras.
+
+        Keeps overlay-specific naming conventions (variant→customer, tenant→client)
+        out of core; each overlay owns its own mapping.
+        """
+        _ = env_cache
+        return {}
+
     def get_e2e_preflight(self, *, customer: str | None, base_url: str | None) -> list[Callable[[], None]]:
         """Return preflight checks to run before launching the external Playwright suite.
 
