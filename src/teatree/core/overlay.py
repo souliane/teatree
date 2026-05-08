@@ -106,7 +106,7 @@ class OverlayConfig:
     so merging the PR does not auto-close the linked issue.
     """
     known_variants: list[str]
-    mr_auto_labels: list[str]
+    pr_auto_labels: list[str]
     frontend_repos: list[str]
     workspace_repos: list[str]
     protected_branches: list[str]
@@ -115,7 +115,7 @@ class OverlayConfig:
     def __init__(self, settings_module: str = "", overlay_name: str = "") -> None:
         # Initialize mutable defaults per-instance
         self.known_variants = []
-        self.mr_auto_labels = []
+        self.pr_auto_labels = []
         self.frontend_repos = []
         self.workspace_repos = []
         self.protected_branches = []

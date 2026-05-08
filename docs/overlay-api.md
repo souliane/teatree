@@ -44,7 +44,7 @@ Set these as `UPPER_CASE` constants in a settings module, or as `lower_case` key
 | `github_project_number` | `0` | GitHub Projects v2 board number |
 | `require_ticket` | `False` | Whether to enforce a tracked issue before coding/shipping |
 | `known_variants` | `[]` | Tenant variant identifiers |
-| `mr_auto_labels` | `[]` | Labels auto-applied to merge requests |
+| `pr_auto_labels` | `[]` | Labels auto-applied to pull requests (GitLab MRs translated at the API edge) |
 | `frontend_repos` | `[]` | Frontend repo names (for build steps) |
 | `workspace_repos` | `[]` | Repo paths relative to `workspace_dir` (supports nested paths) |
 | `protected_branches` | `[]` | Branch names that should never be deleted during cleanup |
