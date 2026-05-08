@@ -119,7 +119,13 @@ def build_default_jobs(
                         _ScannerJob(scanner=MyPrsScanner(host=backend.host), overlay=tag),
                         _ScannerJob(scanner=ReviewerPrsScanner(host=backend.host), overlay=tag),
                         _ScannerJob(
-                            scanner=AssignedIssuesScanner(host=backend.host, ready_labels=backend.ready_labels),
+                            scanner=AssignedIssuesScanner(
+                                host=backend.host,
+                                ready_labels=backend.ready_labels,
+                                auto_start=backend.auto_start_assigned_issues,
+                                max_concurrent=backend.max_concurrent_auto_starts,
+                                overlay_name=tag,
+                            ),
                             overlay=tag,
                         ),
                     ]
