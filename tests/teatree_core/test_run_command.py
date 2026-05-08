@@ -234,6 +234,7 @@ class TestE2eExternalCommand(TestCase):
                         "T3_ORIG_CWD": str(worktree_dir),
                     },
                 ),
+                patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
                 patch.object(e2e_mod, "get_service_port", return_value=4299),
                 patch.object(utils_run_mod.subprocess, "run", side_effect=fake_run),
             ):
