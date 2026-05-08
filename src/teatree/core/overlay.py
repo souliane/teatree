@@ -97,6 +97,18 @@ class OverlayConfig:
 
     Used by ``AssignedIssuesScanner``. Empty disables the filter (every
     open assigned issue is considered ready)."""
+    auto_start_assigned_issues: bool = False
+    """When ``True``, the loop hands ready assigned issues to the orchestrator
+    agent to drive end-to-end through PR creation. When ``False`` (default),
+    ready issues only surface in the statusline; the operator decides when to
+    start them. The PR-merge gate (``require_human_approval_to_merge``) is the
+    final stopping point regardless of this flag."""
+    max_concurrent_auto_starts: int = 1
+    """Cap on auto-started tickets in flight. The scanner counts tickets in
+    states ``NOT_STARTED..SHIPPED`` whose ``extra.auto_started`` is ``True``
+    and emits at most ``max - in_flight`` new auto-start signals per tick.
+    Tickets in ``IN_REVIEW`` (PR open, awaiting human merge) and beyond no
+    longer occupy the auto-start budget."""
     notion_database_id: str = ""
     """Notion database id powering ``NotionViewScanner``. Empty disables the scanner."""
     mr_close_ticket: bool = False

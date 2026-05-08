@@ -35,7 +35,6 @@ _AGENT_BY_KIND: dict[str, str] = {
     "reviewer_pr.new_sha": "t3:reviewer",
     "reviewer_pr.unreviewed": "t3:reviewer",
     "pending_task": "t3:orchestrator",
-    "assigned_issue.ready": "t3:orchestrator",
 }
 
 _STATUSLINE_ZONE_BY_KIND: dict[str, str] = {
@@ -44,6 +43,7 @@ _STATUSLINE_ZONE_BY_KIND: dict[str, str] = {
     "my_pr.open": "in_flight",
     "slack.mention": "action_needed",
     "slack.dm": "action_needed",
+    "assigned_issue.ready": "action_needed",
 }
 
 _PR_URL_RE = re.compile(r"https?://[^\s>|]+/(?:merge_requests|pull|pulls)/\d+")
@@ -82,6 +82,11 @@ def dispatch(signals: list[ScanSignal]) -> list[DispatchAction]:
                         payload={"url": pr_url, **signal.payload},
                     )
                 )
+        if signal.kind == "assigned_issue.ready" and signal.payload.get("auto_start") is True:
+            actions.append(
+                DispatchAction(kind="agent", zone="t3:orchestrator", detail=signal.summary, payload=signal.payload)
+            )
+            continue
         agent = _AGENT_BY_KIND.get(signal.kind)
         if agent is not None:
             actions.append(DispatchAction(kind="agent", zone=agent, detail=signal.summary, payload=signal.payload))

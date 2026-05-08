@@ -35,6 +35,8 @@ class OverlayBackends:
     host: CodeHostBackend | None
     messaging: MessagingBackend | None
     ready_labels: tuple[str, ...]
+    auto_start_assigned_issues: bool = False
+    max_concurrent_auto_starts: int = 1
 
 
 @lru_cache(maxsize=1)
@@ -97,6 +99,8 @@ def iter_overlay_backends() -> list[OverlayBackends]:
                 host=host,
                 messaging=messaging,
                 ready_labels=tuple(overlay.config.ready_labels),
+                auto_start_assigned_issues=bool(overlay.config.auto_start_assigned_issues),
+                max_concurrent_auto_starts=int(overlay.config.max_concurrent_auto_starts),
             )
         )
     return out
