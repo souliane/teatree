@@ -84,7 +84,19 @@ def test_slack_signal_with_non_string_text_emits_only_statusline() -> None:
     assert [a.kind for a in actions] == ["statusline"]
 
 
-def test_assigned_issue_ready_dispatches_to_orchestrator() -> None:
-    actions = dispatch([ScanSignal(kind="assigned_issue.ready", summary="Issue 5")])
+def test_assigned_issue_ready_with_auto_start_dispatches_to_orchestrator() -> None:
+    actions = dispatch([ScanSignal(kind="assigned_issue.ready", summary="Issue 5", payload={"auto_start": True})])
     assert actions[0].kind == "agent"
     assert actions[0].zone == "t3:orchestrator"
+
+
+def test_assigned_issue_ready_without_auto_start_goes_to_statusline() -> None:
+    actions = dispatch([ScanSignal(kind="assigned_issue.ready", summary="Issue 5", payload={"auto_start": False})])
+    assert actions[0].kind == "statusline"
+    assert actions[0].zone == "action_needed"
+
+
+def test_assigned_issue_ready_default_payload_goes_to_statusline() -> None:
+    actions = dispatch([ScanSignal(kind="assigned_issue.ready", summary="Issue 5")])
+    assert actions[0].kind == "statusline"
+    assert actions[0].zone == "action_needed"

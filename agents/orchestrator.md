@@ -102,6 +102,29 @@ For new tickets, don't spawn a sub-agent. Handle directly:
 4. `t3 <overlay> worktree provision [VARIANT]`
 5. Report the worktree paths, then ask what phase to start.
 
+### 7. Auto-start mode
+
+When the loop dispatches an `assigned_issue.ready` signal with `auto_start: true`
+in the payload, you skip the intake question (§ 6 step 5) and chain the lifecycle
+through PR creation without further user input:
+
+1. Run § 6 steps 1–4 to set up the worktree.
+2. Mark the ticket as auto-started so the scanner counts it against the budget:
+   `t3 <overlay> ticket update <ID> --extra auto_started=true`
+3. Spawn `@coder`, then `@tester`, then `@reviewer`, then `@shipper` in order.
+   After each sub-agent returns, run `t3 <overlay> pr check-gates`. Advance the
+   ticket only when the gate passes.
+4. Stop after `@shipper` opens the PR. The PR-merge step is the configured
+   `require_human_approval_to_merge` gate — the loop surfaces the open PR via
+   `MyPrsScanner` and a human approves the merge.
+5. **On phase failure**: halt. Do not retry, do not run the next phase. The
+   ticket stays in its current state; `MyPrsScanner` and the `in_flight`
+   statusline zone keep the failure visible to the operator.
+
+The orchestrator never auto-merges, never overrides `require_ticket`, and never
+bypasses CI quality gates — auto-start only automates the work the operator
+would otherwise type by hand.
+
 ## Rules
 
 - NEVER write code, edit files, or run tests. Delegate ALL work.

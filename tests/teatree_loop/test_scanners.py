@@ -394,3 +394,11 @@ class TestAssignedIssuesScanner:
         )
         scanner = AssignedIssuesScanner(host=host, ready_labels=("ready",))
         assert scanner.scan() == []
+
+    def test_payload_carries_auto_start_flag(self) -> None:
+        host = FakeCodeHost(
+            user="alice",
+            assigned_issues=[{"web_url": "x", "title": "ready", "labels": ["ready"]}],
+        )
+        notify = AssignedIssuesScanner(host=host, ready_labels=("ready",), auto_start=False).scan()
+        assert notify[0].payload["auto_start"] is False
