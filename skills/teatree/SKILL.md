@@ -74,6 +74,8 @@ Overlays subclass `OverlayBase` and override methods:
 - `get_db_import_strategy(worktree)` — DSLR/dump import config
 - `get_services_config(worktree)` — Docker services
 - `get_visual_qa_targets(changed_files)` — URL paths the pre-push browser sanity gate should load (default: `[]` — opt in by mapping diff paths to URLs)
+- `get_e2e_env_extras(env_cache)` — overlay-specific env vars merged into the Playwright environment (e.g. map `WT_VARIANT` → `CUSTOMER`); default `{}`
+- `get_e2e_preflight(customer, base_url)` — pre-Playwright gates that fail fast on auth/SSO/network issues; default `[]`
 
 ## Skill Loading
 

@@ -45,6 +45,10 @@ class CommandOverlay(OverlayBase):
 
         return [ProvisionStep(name=f"pre-run-{service}", callable=remember_pre_run)]
 
+    def get_e2e_env_extras(self, env_cache: dict[str, str]) -> dict[str, str]:
+        variant = env_cache.get("WT_VARIANT", "")
+        return {"CUSTOMER": variant} if variant else {}
+
 
 COMMAND_OVERLAY = "tests.teatree_core.conftest.CommandOverlay"
 
