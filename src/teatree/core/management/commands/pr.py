@@ -301,8 +301,12 @@ class Command(TyperCommand):
 
         commit_subject, commit_body = git.last_commit_message(repo=repo_path)
         title = commit_subject or f"WIP: {branch_name}"
-        description = commit_body or f"PR auto-created to track branch `{branch_name}`."
-        description = sanitize_close_keywords(description, close_ticket=get_overlay().config.mr_close_ticket)
+        raw_description = (
+            f"{commit_subject}\n\n{commit_body}"
+            if commit_subject and commit_body
+            else (commit_subject or commit_body or f"PR auto-created to track branch `{branch_name}`.")
+        )
+        description = sanitize_close_keywords(raw_description, close_ticket=get_overlay().config.mr_close_ticket)
 
         remote = git.remote_url(repo=repo_path)
         repo_slug = _slug_from_remote(remote)
