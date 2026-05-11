@@ -27,6 +27,17 @@ from teatree.utils.run import run_allowed_to_fail
 
 logger = logging.getLogger(__name__)
 
+
+def _read_env_cache_value(worktree_path: Path, key: str) -> str:
+    cache_file = worktree_path / ".t3-cache" / ".t3-env.cache"
+    if not cache_file.is_file():
+        return ""
+    for line in cache_file.read_text(encoding="utf-8").splitlines():
+        if line.startswith(f"{key}="):
+            return line.split("=", maxsplit=1)[1]
+    return ""
+
+
 _PR_SUFFIX_RE = re.compile(r"(?:\s*\(#\d+\))+$")
 _RELEASE_NOTE_SUFFIX_RE = re.compile(r"\s*\[[^\]]*\]\s*\([^)]+\)\s*$")
 _TYPE_PREFIX_RE = re.compile(r"^[a-z]+(?:\([^)]+\))?!?:\s*", re.IGNORECASE)
@@ -272,7 +283,8 @@ def cleanup_worktree(worktree: Worktree, *, force: bool = False) -> str:
     step_errors.extend(_remove_git_worktree(repo_main, wt_path, worktree, force=force))
 
     if worktree.db_name:
-        drop_db(worktree.db_name)
+        db_user = _read_env_cache_value(Path(wt_path), "POSTGRES_USER")
+        drop_db(worktree.db_name, user=db_user)
 
     label = f"Cleaned: {worktree.repo_path} ({worktree.branch})"
     if step_errors:

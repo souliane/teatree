@@ -1,0 +1,179 @@
+"""Issue sync functions extracted from ``gitlab_sync.py``.
+
+Handles fetching assigned issues, resolving issues from URLs,
+fetching issue labels, and extracting variant/process labels.
+"""
+
+import logging
+import re
+from http import HTTPStatus
+from typing import TYPE_CHECKING
+
+import httpx
+
+from teatree.backends.gitlab import GitLabCodeHost
+from teatree.core.models import Ticket
+from teatree.core.sync import SyncResult
+
+if TYPE_CHECKING:
+    from teatree.backends.gitlab_api import GitLabAPI
+
+logger = logging.getLogger(__name__)
+
+_ISSUE_PARTS_RE = re.compile(r"https?://[^/]+/(.+?)/-/(?:issues|work_items)/(\d+)")
+
+
+def fetch_assigned_issues(
+    host: GitLabCodeHost,
+    username: str,
+    result: SyncResult,
+    *,
+    overlay_name: str = "",
+) -> None:
+    """Upsert tickets for issues assigned to *username* that have no PR yet.
+
+    Tickets keyed by the same ``issue_url`` are consolidated with PR-based
+    tickets so each ticket is represented by a single row.
+    """
+    try:
+        issues = host.list_assigned_issues(assignee=username)
+    except httpx.HTTPError as exc:
+        result.errors.append(f"Assigned issues fetch failed: {exc}")
+        return
+
+    for issue in issues:
+        if not isinstance(issue, dict):
+            continue
+        issue_url = str(issue.get("web_url", ""))
+        if not issue_url:
+            continue
+        result.issues_found += 1
+        repo_path = extract_issue_repo_path(issue_url)
+        repo_short = repo_path.rsplit("/", maxsplit=1)[-1] if repo_path else ""
+
+        existing = Ticket.objects.filter(issue_url=issue_url).first()
+        if existing is not None:
+            if repo_short and isinstance(existing.repos, list) and repo_short not in existing.repos:
+                existing.repos = [*existing.repos, repo_short]
+                existing.save(update_fields=["repos"])
+                result.tickets_updated += 1
+            continue
+
+        Ticket.objects.create(
+            issue_url=issue_url,
+            repos=[repo_short] if repo_short else [],
+            extra={"issue_title": str(issue.get("title", ""))},
+            state=Ticket.State.NOT_STARTED,
+            overlay=overlay_name,
+        )
+        result.tickets_created += 1
+
+
+def extract_issue_repo_path(issue_url: str) -> str:
+    match = _ISSUE_PARTS_RE.search(issue_url)
+    return match.group(1) if match else ""
+
+
+def resolve_issue(
+    client: "GitLabAPI",
+    issue_url: str,
+    *,
+    ticket: Ticket | None = None,
+) -> tuple[dict, str, int] | None:
+    match = _ISSUE_PARTS_RE.search(issue_url)
+    if not match:
+        return None
+    project_path, iid_str = match.group(1), match.group(2)
+    iid = int(iid_str)
+    if iid == 0:
+        return None
+    project = client.resolve_project(project_path)
+    if not project:
+        return None
+    try:
+        issue = client.get_issue(project.project_id, iid)
+    except httpx.HTTPStatusError as exc:
+        if ticket is not None and getattr(exc.response, "status_code", None) == HTTPStatus.NOT_FOUND:
+            mark_tracker_404(ticket, project_path, iid)
+        else:
+            logger.warning("Failed to fetch issue %s#%d: %s", project_path, iid, exc)
+        return None
+    return (issue, project_path, iid) if issue else None
+
+
+def mark_tracker_404(ticket: Ticket, project_path: str, iid: int) -> None:
+    extra = ticket.extra if isinstance(ticket.extra, dict) else {}
+    if extra.get("tracker_404"):
+        return
+    extra["tracker_404"] = True
+    ticket.extra = extra
+    ticket.save(update_fields=["extra"])
+    logger.info("Issue %s#%d returned 404; marked tracker_404 to skip future sync", project_path, iid)
+
+
+def apply_issue_data(client: "GitLabAPI", ticket: Ticket, issue: dict, project_path: str, iid: int) -> bool:
+    labels = issue.get("labels", [])
+    tracker_status = process_label(labels) if isinstance(labels, list) else None
+
+    if not tracker_status and "/work_items/" in ticket.issue_url:
+        tracker_status = client.get_work_item_status(project_path, iid) or tracker_status
+
+    extra = ticket.extra if isinstance(ticket.extra, dict) else {}
+    update_fields: list[str] = []
+
+    if tracker_status and extra.get("tracker_status") != tracker_status:
+        extra["tracker_status"] = tracker_status
+        update_fields.append("extra")
+
+    issue_title = str(issue.get("title", ""))
+    if issue_title and extra.get("issue_title") != issue_title:
+        extra["issue_title"] = issue_title
+        if "extra" not in update_fields:
+            update_fields.append("extra")
+
+    variant = extract_variant(list(labels)) if isinstance(labels, list) else ""
+    if variant and ticket.variant != variant:
+        ticket.variant = variant
+        update_fields.append("variant")
+
+    if update_fields:
+        ticket.extra = extra
+        ticket.save(update_fields=update_fields)
+        return True
+    return False
+
+
+def fetch_issue_labels(client: "GitLabAPI", result: SyncResult) -> None:
+    for ticket in Ticket.objects.exclude(issue_url="").filter(
+        issue_url__regex=r"/-/(issues|work_items)/\d+$",
+    ):
+        extra = ticket.extra if isinstance(ticket.extra, dict) else {}
+        if extra.get("tracker_404"):
+            continue
+        resolved = resolve_issue(client, ticket.issue_url, ticket=ticket)
+        if not resolved:
+            continue
+        issue, project_path, iid = resolved
+        if apply_issue_data(client, ticket, issue, project_path, iid):
+            result.labels_fetched += 1
+
+
+def extract_variant(labels: list[object]) -> str:
+    from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
+
+    known = get_overlay().config.known_variants
+    known_lower = {v.lower(): v for v in known}
+    for label in labels:
+        text = str(label)
+        match = known_lower.get(text.lower())
+        if match:
+            return match
+    return ""
+
+
+def process_label(labels: list[object]) -> str | None:
+    for label in labels:
+        text = str(label)
+        if text.startswith(("Process::", "Process:: ")):
+            return text
+    return None
