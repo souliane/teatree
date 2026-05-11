@@ -17,6 +17,11 @@ pytestmark = pytest.mark.integration
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = REPO_ROOT / "hooks" / "scripts" / "statusline.sh"
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m|\x1b\]8;[^\x1b]*\x1b\\")
+
+
+def _strip_ansi(text: str) -> str:
+    return _ANSI_RE.sub("", text)
 
 
 def _run(payload: dict, *, state_dir: Path, statusline_file: Path | None = None) -> subprocess.CompletedProcess:
@@ -47,7 +52,7 @@ class TestStatuslineHook:
         )
 
         assert result.returncode == 0, result.stderr
-        assert "skills: t3:code t3:debug" in result.stdout
+        assert "skills: t3:code | t3:debug" in _strip_ansi(result.stdout)
 
     def test_omits_skills_when_session_file_absent(self, tmp_path: Path) -> None:
         state_dir = tmp_path / "state"
@@ -59,7 +64,28 @@ class TestStatuslineHook:
         )
 
         assert result.returncode == 0, result.stderr
-        assert "skills:" not in result.stdout
+        assert "skills:" not in _strip_ansi(result.stdout)
+
+    def test_renders_rate_limits_from_stdin(self, tmp_path: Path) -> None:
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+
+        result = _run(
+            {
+                "session_id": "s1",
+                "model": {"display_name": "Claude Opus"},
+                "rate_limits": {
+                    "five_hour": {"used_percentage": 42, "resets_at": "1747047000"},
+                    "seven_day": {"used_percentage": 85},
+                },
+            },
+            state_dir=state_dir,
+        )
+
+        assert result.returncode == 0, result.stderr
+        plain = _strip_ansi(result.stdout)
+        assert "5h=42%" in plain
+        assert "7d=85%" in plain
 
     def test_renders_model_and_context_window_from_stdin(self, tmp_path: Path) -> None:
         state_dir = tmp_path / "state"
@@ -75,7 +101,7 @@ class TestStatuslineHook:
         )
 
         assert result.returncode == 0, result.stderr
-        plain = re.sub(r"\x1b\[[0-9;]*m", "", result.stdout)
+        plain = _strip_ansi(result.stdout)
         assert "model=Claude Sonnet" in plain
         assert "ctx=41%" in plain
 
@@ -92,7 +118,8 @@ class TestStatuslineHook:
         )
 
         assert result.returncode == 0, result.stderr
-        assert "model=Claude Opus" in result.stdout
+        plain = _strip_ansi(result.stdout)
+        assert "model=Claude Opus" in plain
         assert "tick @ 2026-05-07T12:00:00" in result.stdout
         assert "→ statusline: x" in result.stdout
 
@@ -108,7 +135,7 @@ class TestStatuslineHook:
         )
 
         assert result.returncode == 0, result.stderr
-        assert "model=Claude Opus" in result.stdout
+        assert "model=Claude Opus" in _strip_ansi(result.stdout)
 
     def test_no_session_id_emits_no_skills_section(self, tmp_path: Path) -> None:
         state_dir = tmp_path / "state"
@@ -122,5 +149,6 @@ class TestStatuslineHook:
         )
 
         assert result.returncode == 0, result.stderr
-        assert "skills:" not in result.stdout
-        assert "rogue" not in result.stdout
+        plain = _strip_ansi(result.stdout)
+        assert "skills:" not in plain
+        assert "rogue" not in plain
