@@ -69,6 +69,10 @@ _READONLY_CMD_PREFIX_RE = re.compile(
 # (compiled regex matching the Bash command, human-readable deny reason).
 _BLOCKED_COMMANDS: list[tuple[re.Pattern[str], str]] = [
     (
+        re.compile(r"\.venv/bin/"),
+        "BLOCKED: `.venv/bin/...` — use `uv run` instead so the resolved environment matches `pyproject.toml`.",
+    ),
+    (
         re.compile(r"manage\.py\s+runserver"),
         "BLOCKED: `manage.py runserver` — use `t3 <overlay> worktree start` instead.",
     ),
@@ -111,6 +115,18 @@ _BLOCKED_COMMANDS: list[tuple[re.Pattern[str], str]] = [
             "`t3 <overlay> db refresh --dslr-snapshot <name>` instead. "
             "Only `dslr list` and `dslr delete` are allowed."
         ),
+    ),
+    (
+        re.compile(r"\bgit\s+\S+.*--no-verify\b"),
+        "BLOCKED: `--no-verify` — fix the hook failure instead of bypassing it.",
+    ),
+    (
+        re.compile(r"\bgit\s+\S+.*--no-gpg-sign\b"),
+        "BLOCKED: `--no-gpg-sign` — do not bypass signing without explicit user approval.",
+    ),
+    (
+        re.compile(r"\bsafety\s+(?:check|scan)\b"),
+        "BLOCKED: `safety` — use `pip-audit` (or `uv audit`) instead.",
     ),
     (
         re.compile(r"\buv\s+run\s+(?:\S+\s+)*?t3(?:\s|$)"),
