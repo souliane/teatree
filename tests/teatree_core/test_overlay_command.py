@@ -78,7 +78,10 @@ class TestOverlayContractCheck:
         compose = tmp_path / "compose.yml"
         compose.write_text("services:\n  app:\n    image: ${UNKNOWN_VAR}\n")
 
-        with patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY):
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            pytest.raises(SystemExit),
+        ):
             call_command("overlay", "contract-check", "--compose", str(compose))
 
         captured = capsys.readouterr()

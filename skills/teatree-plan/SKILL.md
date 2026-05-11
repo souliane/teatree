@@ -112,4 +112,4 @@ This replaces guessing or asking the user what to work on — the board is the q
 After the board is prioritized, the user may want to execute tickets unattended or hunt for new bugs. These are separate skills:
 
 - **`/teatree-batch`** — work the prioritized backlog unattended, one ticket at a time.
-- **`/teatree-bughunt`** — dogfood the dashboard, file and fix whatever turns up.
+- **`/teatree-bughunt`** — dogfood the loop and statusline, file and fix whatever turns up.

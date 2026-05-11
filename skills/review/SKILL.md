@@ -30,7 +30,7 @@ This skill delegates the generic review doctrine to:
 - `requesting-code-review` — when to request an independent review pass
 - `verification-before-completion` — proof before any “review-ready” claim
 
-These are optional companion skills from [obra/superpowers](https://github.com/obra/superpowers). If not installed, this skill still works — you just won't get the external review and verification guidelines. TeaTree keeps the platform-specific review workflow locally: MR discussion handling, inline draft-note rules, and repo policy checks.
+Optional [obra/superpowers](https://github.com/obra/superpowers) companions provide generic methodology. TeaTree keeps the project-specific workflow locally.
 
 Both self-review and external review cycles.
 
@@ -90,7 +90,7 @@ After the cleanup checklist, **actively verify each changed file against the rep
 - Feature flag and multi-tenant rules (see [`references/multi-tenant-development.md`](../code/references/multi-tenant-development.md) § Review Checklist)
 - Banned patterns (e.g., manual `.subscribe()`, `any` types, hardcoded strings)
 
-3. **Check consistency across the changeset** — if the same pattern is applied differently in two files within the same MR, that's a finding.
+3. **Check consistency across the changeset** — if the same pattern is applied differently in two files within the same PR, that's a finding.
 4. **When a repo rule conflicts with a teatree or overlay skill rule**, do NOT silently pick one. Present both rules to the user with the specific conflict, ask which takes precedence, and save their decision to the agent's memory for future reference.
 
 This step catches the class of bugs where the rules exist but weren't applied during implementation — missed feature flags, wrong DI pattern, manual subscriptions where signals were required, etc.
@@ -119,7 +119,7 @@ When the diff adds or modifies test files, verify the new tests follow the repo'
 3. **Missing integration coverage.** If the diff adds a view, a management command, or a new CLI surface and only ships unit tests, flag it — the happy path belongs in an integration test.
 4. **Coverage preservation.** Any test rebalancing (removing units, adding integration) must keep the coverage gate satisfied. Report the before/after coverage number in the review.
 
-Accept a mock-heavy test only when the MR description justifies why a higher-level test couldn't cover the same behavior (e.g., a rare error branch that's painful to trigger through the real entry point).
+Accept a mock-heavy test only when the PR description justifies why a higher-level test couldn't cover the same behavior (e.g., a rare error branch that's painful to trigger through the real entry point).
 
 ### Quality Gate Verification (Verify-Fix-Repeat)
 
@@ -147,22 +147,22 @@ Run gates → Any failure? → Fix → Re-run gates → Repeat until clean
 
 **Pre-flight gate — complete BEFORE reading any diff:**
 
-1. Determine own vs external MR (Step -1)
-2. Fetch ticket context for every MR (Step 0) — without this you cannot judge correctness
-3. List all commits per MR (Step 0b)
+1. Determine own vs external PR (Step -1)
+2. Fetch ticket context for every PR (Step 0) — without this you cannot judge correctness
+3. List all commits per PR (Step 0b)
 4. Read the repo's `AGENTS.md` / agent instructions file and any project-specific coding guidelines
 
-Do NOT skip these steps to "save time" when reviewing multiple MRs. Each step exists because skipping it caused missed findings in real reviews.
+Do NOT skip these steps to "save time" when reviewing multiple PRs. Each step exists because skipping it caused missed findings in real reviews.
 
-**Step -1 — Own MR vs External MR:**
+**Step -1 — Own PR vs External PR:**
 
-When the MR under review belongs to the **user themselves**, do NOT post review comments. Instead, **implement the fixes directly** on the branch — commit and push. Present findings to the user as a summary of what you fixed, not as review comments to post. The user is asking you to take over and improve their code, not to leave notes for themselves.
+When the PR under review belongs to the **user themselves**, do NOT post review comments. Instead, **implement the fixes directly** on the branch — commit and push. Present findings to the user as a summary of what you fixed, not as review comments to post. The user is asking you to take over and improve their code, not to leave notes for themselves.
 
 **Step 0 — Gather Ticket Context:**
 
 Before reading any code, fetch the referenced ticket/issue to understand the *intended* behavior:
 
-1. Extract the ticket URL or number from the MR title/description.
+1. Extract the ticket URL or number from the PR title/description.
 2. Fetch the issue via the project's issue tracker CLI (e.g., `glab issue view`, `gh issue view`).
 3. **Fetch every attached spec** (PDFs, OpenAPI files, vendor docs) and every linked external requirement. For GitLab attachments, the working path is `glab api projects/<id>/uploads/<secret>/<filename>` — browser-style URLs (`gitlab.com/<group>/<repo>/uploads/...`, `gitlab.com/-/project/<id>/uploads/...`) require session cookies and return login HTML when hit with a PAT. Attachments are the authoritative spec; an author docstring summarising them is not a substitute.
 4. If external requirements links are referenced, fetch those too.
@@ -176,7 +176,7 @@ Without ticket context you cannot judge whether the implementation is correct �
 
 The combined diff can hide mistakes. Always check individual commits:
 
-1. List all MR commits (e.g., `glab api .../merge_requests/<IID>/commits`).
+1. List all PR commits (e.g., `glab api .../merge_requests/<IID>/commits`).
 2. Inspect each commit's diff individually — a later commit may accidentally revert an earlier fix.
 3. Look for "Tests fix" / "Fix tests" follow-up commits that change production code alongside test adjustments.
 
@@ -210,25 +210,25 @@ Investigate first by exhausting the sources you **can** reach:
 3. **Read the producer's schema / enum / migration** — whichever repo emits the value. If it's a Django model, check the field's `choices=` and the migration history. If it's a Pydantic model, check the field type.
 4. **Check commit history** for the rename, addition, or removal — `git log -S "<symbol>" --all --oneline` often shows exactly when and why the value changed.
 5. **Read the test fixtures** — realistic test inputs show what the producer actually sends.
-6. **Check related MRs** on the same or upstream repos for the same symbol — someone may have already merged or discussed it.
+6. **Check related PRs** on the same or upstream repos for the same symbol — someone may have already merged or discussed it.
 
 Only after all reachable sources are exhausted can you post a question-style comment — and only when the answer truly requires access you do not have (partner portal behind SSO, vendor-only documentation, product owner's desk knowledge). State what you checked and why the answer isn't reachable, so the author sees you did the work.
 
 **Scale severity to confidence.** A speculative "maybe wrong?" is a nit at best; drop it. A verified finding ("grepped `foo-producer`, canonical spelling is `X`, branch has `Y` — will fail at runtime") is a blocker and belongs in the review.
 
-**When the investigation confirms the code is correct, say nothing.** Silence on a check you performed is the correct outcome — not a "looks good, but…" comment. Positive comments belong in the summary to the user, not in the MR.
+**When the investigation confirms the code is correct, say nothing.** Silence on a check you performed is the correct outcome — not a "looks good, but…" comment. Positive comments belong in the summary to the user, not in the PR.
 
 **Step 0e — Don't Police Other Authors' Title/Description Format (Non-Negotiable):**
 
-Do NOT leave review comments about an external author's MR title format, description wording, commit-message style, work-item link spacing, or whether their description "reads better" in a different shape. These rules are enforced by CI and by the overlay's `validate_pr()` check — not by the reviewer. Raising them manually duplicates the bot and nags a colleague for something a machine already polices.
+Do NOT leave review comments about an external author's PR title format, description wording, commit-message style, work-item link spacing, or whether their description "reads better" in a different shape. These rules are enforced by CI and by the overlay's `validate_pr()` check — not by the reviewer. Raising them manually duplicates the bot and nags a colleague for something a machine already polices.
 
-The reviewer's responsibility is to ensure **their own** MRs pass the title/description check. On other authors' MRs, silence on formatting is the correct outcome. If something is objectively wrong in a way that affects traceability or release notes (e.g., the title references the wrong ticket), frame it as a **correctness** finding, not as a style nit.
+The reviewer's responsibility is to ensure **their own** PRs pass the title/description check. On other authors' PRs, silence on formatting is the correct outcome. If something is objectively wrong in a way that affects traceability or release notes (e.g., the title references the wrong ticket), frame it as a **correctness** finding, not as a style nit.
 
 **Step 0f — Respect the Overlay's Auto-Close Policy (Non-Negotiable):**
 
-Do NOT suggest adding `Closes #NNN`, `Fixes #NNN`, `Resolves #NNN`, or any other auto-close keyword to an MR description unless the active overlay's conventions explicitly require it. Many overlays manage issue closure via their own ticket/MR linking rather than via GitHub-style auto-close trailers, and suggesting them contradicts the overlay convention.
+Do NOT suggest adding `Closes #NNN`, `Fixes #NNN`, `Resolves #NNN`, or any other auto-close keyword to a PR description unless the active overlay's conventions explicitly require it. Many overlays manage issue closure via their own ticket/PR linking rather than via GitHub-style auto-close trailers, and suggesting them contradicts the overlay convention.
 
-Check the overlay skill's commit-message and MR-description rules **before** proposing any trailer. The default when the overlay is silent on the topic is: do not suggest auto-close trailers.
+Check the overlay skill's commit-message and PR-description rules **before** proposing any trailer. The default when the overlay is silent on the topic is: do not suggest auto-close trailers.
 
 **Step 0g — Cross-Service Verification (Non-Negotiable):**
 
@@ -236,7 +236,7 @@ A review of a service that talks to other services is incomplete until those oth
 
 **Before posting any comment about a name, contract, default value, schema field, response shape, or wire format, exhaust the cross-service grep:**
 
-1. **Enumerate the related services** at the start of the review. From the MR's repo, list every service that produces or consumes the same data: upstream gateway, downstream consumers (frontend, sibling backend, document generation, data warehouse), shared schema/proto repos. Discover them via `T3_WORKSPACE_DIR` (or the overlay's configured repo list) — never hardcode a user-specific path. State the list explicitly so the user can correct gaps before you start.
+1. **Enumerate the related services** at the start of the review. From the PR's repo, list every service that produces or consumes the same data: upstream gateway, downstream consumers (frontend, sibling backend, document generation, data warehouse), shared schema/proto repos. Discover them via `T3_WORKSPACE_DIR` (or the overlay's configured repo list) — never hardcode a user-specific path. State the list explicitly so the user can correct gaps before you start.
 2. **Grep every related service** for the symbol/string/identifier/field name. Frontend models, backend serializers, fixture files, generated docs, OpenAPI specs, migration histories. Note where each occurrence lives.
 3. **Cite the cross-service evidence in the comment.** "Frontend has 18 references to `idExpirationDate` in `libs/shared/data-model/...`; the gateway-side Python repo has matching references in `client-term-redacted/serializers/...`" is a finding. "I think this should be spelled differently" is a guess.
 4. **When the cross-service check reveals the comment was wrong, drop the comment.** A comment that survives the check survives because the platform-wide convention contradicts the diff. Silence is the correct outcome on a check that confirmed the diff is fine.
@@ -254,29 +254,29 @@ If none of those triggers apply (purely internal refactor, test-only change, com
 
 **Failure mode this step prevents:** a reviewer posts "the canonical name should be X" based on the local repo's pattern, the author replies "the FE has 20 usages of Y, please check before commenting", and the user (whose name is on the comment) loses credibility for a finding that would have been correct if the reviewer had grepped the FE first.
 
-**Step 0h — Discussion Venue: MR Over Chat (Non-Negotiable):**
+**Step 0h — Discussion Venue: PR Over Chat (Non-Negotiable):**
 
-Discussion topics that anchor to specific code in an MR — design questions about a function, a TODO in the diff, a missing call compared to a sibling endpoint, a hardcoded value, an architectural choice visible in the patch — belong on the **MR**, not in a Slack/Teams DM or chat thread. Default to MR notes whenever the topic references something the reviewer can point to in the diff.
+Discussion topics that anchor to specific code in a PR — design questions about a function, a TODO in the diff, a missing call compared to a sibling endpoint, a hardcoded value, an architectural choice visible in the patch — belong on the **PR**, not in a Slack/Teams DM or chat thread. Default to PR notes whenever the topic references something the reviewer can point to in the diff.
 
-**Why MR over chat:**
+**Why PR over chat:**
 
-- MR notes are persistent, threaded per topic, and resolve with the MR. Chat scrolls away.
-- Other reviewers and stakeholders see MR notes; chat is a private channel between two people.
-- MR notes attach to the line/file, so the conversation stays anchored to the code that triggered it.
+- PR notes are persistent, threaded per topic, and resolve with the PR. Chat scrolls away.
+- Other reviewers and stakeholders see PR notes; chat is a private channel between two people.
+- PR notes attach to the line/file, so the conversation stays anchored to the code that triggered it.
 - The ticket's audit trail benefits from the discussion living next to the code change.
 
 **When chat is the right venue:**
 
-- A heads-up that the review is ready and points to the MR for the discussion ("left some thoughts on !351").
+- A heads-up that the review is ready and points to the PR for the discussion ("left some thoughts on !351").
 - Coordination/scheduling ("can we pair on the LE flow tomorrow?").
 - Sensitive feedback that doesn't belong in a public review trail.
-- Topics genuinely unrelated to the diff (e.g., process discussion about how the team reviews MRs).
+- Topics genuinely unrelated to the diff (e.g., process discussion about how the team reviews PRs).
 
 **Inline first, general note second:**
 
-When posting on the MR, prefer **inline** (line-anchored) discussions over **general** MR comments. Inline notes show the exact code that triggered the question and let the author resolve them per topic. Use a general MR comment only when the topic is not anchorable to a single line — for example, an architectural question that spans the whole file or a code block that is not part of the MR's diff (so GitLab cannot anchor an inline note to it).
+When posting on the PR, prefer **inline** (line-anchored) discussions over **general** PR comments. Inline notes show the exact code that triggered the question and let the author resolve them per topic. Use a general PR comment only when the topic is not anchorable to a single line — for example, an architectural question that spans the whole file or a code block that is not part of the PR's diff (so GitLab cannot anchor an inline note to it).
 
-**Failure mode this step prevents:** the reviewer drafts a Slack message containing 5 design questions about specific lines of an MR, sends it as a DM, and the discussion lives in chat where it is invisible to the rest of the team and disconnected from the code. The author then has to copy-paste the chat back into MR comments to track resolution. The right move was to post the topics as MR discussions in the first place and send a one-line Slack heads-up pointing to the MR.
+**Failure mode this step prevents:** the reviewer drafts a Slack message containing 5 design questions about specific lines of a PR, sends it as a DM, and the discussion lives in chat where it is invisible to the rest of the team and disconnected from the code. The author then has to copy-paste the chat back into PR comments to track resolution. The right move was to post the topics as PR discussions in the first place and send a one-line Slack heads-up pointing to the PR.
 
 **Step 1 — Structured Review Checklist:**
 
@@ -288,13 +288,19 @@ When posting on the MR, prefer **inline** (line-anchored) discussions over **gen
 6. **Safety** — no security issues, no data loss risks?
 7. **Migrations** — reversible? data-safe? performance-safe?
 8. **Scope** — are unrelated changes bundled in? Flag only if genuinely unrelated; small related fixes alongside the main change are normal practice.
-9. **MR metadata** — title and description comply with the overlay's commit message format? If the overlay provides `validate_pr()`, run it programmatically rather than checking by eye.
+9. **PR metadata** — title and description comply with the overlay's commit message format? If the overlay provides `validate_pr()`, run it programmatically rather than checking by eye.
 
 **Step 2 — Review Tone & Formatting:**
 
 Follow the [Google Engineering Practices — Code Review Standard](https://google.github.io/eng-practices/review/reviewer/standard.html): approve if the CL improves overall code health, even if it isn't perfect. Don't block on style preferences or theoretical improvements. The bar is "does this improve the codebase?" — not "is this how I would have written it?"
 
 Comments are posted under the user's name. They must sound like a **real human colleague** wrote them — not an AI, not a linter, not a manager.
+
+**Verification belongs to the reviewer, not the author:**
+
+Before posting a concern, open the relevant file and verify it yourself. Comments like "worth checking" or "please confirm" push verification work onto the author when the reviewer has the same codebase access. Grep enums, read migrations, check sibling repos — silence when the code is correct.
+
+Speculative questions ("is this correct?", "could this cause issues?") without evidence waste the author's time. If unsure, investigate first — a concern backed by evidence is useful; a guess is noise.
 
 **Voice & attitude:**
 
@@ -304,7 +310,7 @@ Comments are posted under the user's name. They must sound like a **real human c
 - **Assume good intent.** A reverted line is more likely an accidental rebase artifact than carelessness. Frame it that way.
 - **Acknowledge what's good.** If the approach is sound, say so briefly before raising issues.
 - **Scale severity to impact.** A missing production code change that breaks tests is critical. A minor style nit is not. Don't escalate small things.
-- **Never demand separate tickets/MRs** for minor scope additions. A small related fix alongside the main change is normal — only raise scope if genuinely orthogonal work is smuggled in.
+- Separate tickets/PRs are not needed for minor scope additions. A small related fix alongside the main change is normal — only raise scope if genuinely orthogonal work is smuggled in.
 
 **Formatting rules:**
 
@@ -318,7 +324,7 @@ Comments are posted under the user's name. They must sound like a **real human c
 
 **Always use draft notes** (or the platform's equivalent "pending review" feature), not direct/immediate comments. Draft notes are only visible to the reviewer until explicitly submitted — this lets the user review, edit, and submit all comments as a batch.
 
-**Pre-flight: read existing comments (Non-Negotiable).** Before posting any new comments, fetch all existing discussions and notes on the MR (from all authors, not just the current user):
+**Pre-flight: read existing comments (Non-Negotiable).** Before posting any new comments, fetch all existing discussions and notes on the PR (from all authors, not just the current user):
 
 1. **List all discussions** via `GET .../merge_requests/<IID>/discussions?per_page=100` and read each note's `body`.
 2. **For each finding**, check whether an existing comment already raises the same concern — same file, same line range, same substance. If so, **do not post a duplicate**.
@@ -344,7 +350,7 @@ t3 review post-draft-note <REPO> <MR_IID> "Comment text" --file <path/to/file> -
 **Pre-flight: the file you anchor on MUST be the file the body discusses.** If the comment body describes code in `foo.py` (e.g., "`foo.py`'s `bar()` is missing X that the sibling `baz.py` got"), anchor the comment on `foo.py` — not on `baz.py`, even if `baz.py` has more added lines in the diff. Two defensible patterns when `foo.py` has no added lines:
 
 1. Pick the nearest added line in `foo.py` (even a whitespace or adjacent-line change) and open the body with "Note on an unchanged line below:" so the reader sees the anchor is a stand-in.
-2. Post a general (MR-level) note instead of anchoring on a sibling.
+2. Post a general (PR-level) note instead of anchoring on a sibling.
 A comment anchored on the wrong file is worse than a general note — the author opens `baz.py` looking for the problem, finds nothing, and loses trust in the review.
 
 **Post-flight: verify response.** Response must confirm the comment landed on the correct file/line — if position data is missing in the response, the comment landed as a general comment (wrong). After posting all notes, list them via the API and confirm the count and positions match expectations.
@@ -355,7 +361,7 @@ A comment anchored on the wrong file is worse than a general note — the author
 t3 review publish-draft-notes <REPO> <MR_IID>
 ```
 
-**`WARNING: inline position was not accepted`** means GitLab did not store the `position` data — the note will render as a general comment, not inline on the diff. Check that `--file` matches a path in the MR diff and `--line` is within the changed range.
+**`WARNING: inline position was not accepted`** means GitLab did not store the `position` data — the note will render as a general comment, not inline on the diff. Check that `--file` matches a path in the PR diff and `--line` is within the changed range.
 
 **If `t3 review delete-draft-note` returns 404** — the draft was already submitted (published to regular notes) by the user from the GitLab UI. Use `DELETE projects/{encoded_repo}/merge_requests/{iid}/notes/{note_id}` via the regular notes endpoint instead.
 

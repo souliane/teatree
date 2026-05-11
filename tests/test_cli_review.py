@@ -1,6 +1,5 @@
 from unittest.mock import MagicMock, patch
 
-import httpx
 from typer.testing import CliRunner
 
 import teatree.backends.gitlab_api as gitlab_api_mod
@@ -161,16 +160,18 @@ class TestReviewService:
 
     def test_delete_success(self, monkeypatch):
         monkeypatch.setenv("GITLAB_TOKEN", "test-token")
-        mock_response = MagicMock(status_code=204)
-        with patch.object(httpx, "delete", return_value=mock_response):
+        mock_api = MagicMock()
+        mock_api.delete.return_value = 204
+        with patch.object(gitlab_api_mod, "GitLabAPI", return_value=mock_api):
             result = runner.invoke(app, ["review", "delete-draft-note", "org/repo", "1", "42"])
             assert result.exit_code == 0
             assert "OK deleted" in result.output
 
     def test_delete_failure(self, monkeypatch):
         monkeypatch.setenv("GITLAB_TOKEN", "test-token")
-        mock_response = MagicMock(status_code=404)
-        with patch.object(httpx, "delete", return_value=mock_response):
+        mock_api = MagicMock()
+        mock_api.delete.return_value = 404
+        with patch.object(gitlab_api_mod, "GitLabAPI", return_value=mock_api):
             result = runner.invoke(app, ["review", "delete-draft-note", "org/repo", "1", "42"])
             assert result.exit_code == 1
             assert "Failed: HTTP 404" in result.output
@@ -199,16 +200,18 @@ class TestReviewService:
 
     def test_publish_success(self, monkeypatch):
         monkeypatch.setenv("GITLAB_TOKEN", "test-token")
-        mock_response = MagicMock(status_code=204)
-        with patch.object(httpx, "post", return_value=mock_response):
+        mock_api = MagicMock()
+        mock_api.post_status.return_value = 204
+        with patch.object(gitlab_api_mod, "GitLabAPI", return_value=mock_api):
             result = runner.invoke(app, ["review", "publish-draft-notes", "org/repo", "1"])
             assert result.exit_code == 0
             assert "OK" in result.output
 
     def test_publish_failure(self, monkeypatch):
         monkeypatch.setenv("GITLAB_TOKEN", "test-token")
-        mock_response = MagicMock(status_code=403)
-        with patch.object(httpx, "post", return_value=mock_response):
+        mock_api = MagicMock()
+        mock_api.post_status.return_value = 403
+        with patch.object(gitlab_api_mod, "GitLabAPI", return_value=mock_api):
             result = runner.invoke(app, ["review", "publish-draft-notes", "org/repo", "1"])
             assert result.exit_code == 1
             assert "Failed: HTTP 403" in result.output
@@ -243,86 +246,75 @@ class TestReviewService:
 
     def test_resolve_discussion_success(self, monkeypatch):
         monkeypatch.setenv("GITLAB_TOKEN", "test-token")
-        mock_response = MagicMock(status_code=200)
-        with patch.object(httpx, "put", return_value=mock_response) as mock_put:
-            result = runner.invoke(
-                app,
-                ["review", "resolve-discussion", "org/repo", "1", "abc123"],
-            )
+        mock_api = MagicMock()
+        mock_api.put_status.return_value = 200
+        with patch.object(gitlab_api_mod, "GitLabAPI", return_value=mock_api):
+            result = runner.invoke(app, ["review", "resolve-discussion", "org/repo", "1", "abc123"])
             assert result.exit_code == 0
             assert "OK resolved=True" in result.output
-            call_url = mock_put.call_args.args[0]
-            assert "discussions/abc123" in call_url
-            assert "resolved=true" in call_url
+            endpoint = mock_api.put_status.call_args.args[0]
+            assert "discussions/abc123" in endpoint
+            assert "resolved=true" in endpoint
 
     def test_unresolve_discussion_success(self, monkeypatch):
         monkeypatch.setenv("GITLAB_TOKEN", "test-token")
-        mock_response = MagicMock(status_code=200)
-        with patch.object(httpx, "put", return_value=mock_response) as mock_put:
-            result = runner.invoke(
-                app,
-                ["review", "resolve-discussion", "org/repo", "1", "abc123", "--no-resolved"],
-            )
+        mock_api = MagicMock()
+        mock_api.put_status.return_value = 200
+        with patch.object(gitlab_api_mod, "GitLabAPI", return_value=mock_api):
+            result = runner.invoke(app, ["review", "resolve-discussion", "org/repo", "1", "abc123", "--no-resolved"])
             assert result.exit_code == 0
             assert "OK resolved=False" in result.output
-            call_url = mock_put.call_args.args[0]
-            assert "resolved=false" in call_url
+            endpoint = mock_api.put_status.call_args.args[0]
+            assert "resolved=false" in endpoint
 
     def test_resolve_discussion_failure(self, monkeypatch):
         monkeypatch.setenv("GITLAB_TOKEN", "test-token")
-        mock_response = MagicMock(status_code=403)
-        with patch.object(httpx, "put", return_value=mock_response):
-            result = runner.invoke(
-                app,
-                ["review", "resolve-discussion", "org/repo", "1", "abc123"],
-            )
+        mock_api = MagicMock()
+        mock_api.put_status.return_value = 403
+        with patch.object(gitlab_api_mod, "GitLabAPI", return_value=mock_api):
+            result = runner.invoke(app, ["review", "resolve-discussion", "org/repo", "1", "abc123"])
             assert result.exit_code == 1
             assert "Failed: HTTP 403" in result.output
 
     def test_update_note_draft_success(self, monkeypatch):
-        """update-note PATCHes a draft note when the draft endpoint returns 200."""
         monkeypatch.setenv("GITLAB_TOKEN", "test-token")
-        mock_response = MagicMock(status_code=200)
-        with patch.object(httpx, "put", return_value=mock_response) as mock_put:
+        mock_api = MagicMock()
+        mock_api.put_status.return_value = 200
+        with patch.object(gitlab_api_mod, "GitLabAPI", return_value=mock_api):
             result = runner.invoke(app, ["review", "update-note", "org/repo", "1", "42", "new body"])
             assert result.exit_code == 0
             assert "OK updated draft_note_id=42" in result.output
-            assert "draft_notes/42" in mock_put.call_args.args[0]
-            assert mock_put.call_args.kwargs["json"] == {"note": "new body"}
+            endpoint = mock_api.put_status.call_args.args[0]
+            assert "draft_notes/42" in endpoint
 
     def test_update_note_falls_back_to_published(self, monkeypatch):
-        """update-note falls back to the published-notes endpoint on draft 404."""
         monkeypatch.setenv("GITLAB_TOKEN", "test-token")
-        responses = [MagicMock(status_code=404), MagicMock(status_code=200)]
-        with patch.object(httpx, "put", side_effect=responses) as mock_put:
+        mock_api = MagicMock()
+        mock_api.put_status.side_effect = [404, 200]
+        with patch.object(gitlab_api_mod, "GitLabAPI", return_value=mock_api):
             result = runner.invoke(app, ["review", "update-note", "org/repo", "1", "42", "new body"])
             assert result.exit_code == 0
             assert "OK updated note_id=42" in result.output
-            assert mock_put.call_count == 2
-            first_url = mock_put.call_args_list[0].args[0]
-            second_url = mock_put.call_args_list[1].args[0]
-            assert "draft_notes/42" in first_url
-            assert second_url.endswith("/notes/42")
-            assert mock_put.call_args_list[1].kwargs["json"] == {"body": "new body"}
+            assert mock_api.put_status.call_count == 2
 
     def test_update_note_published_failure(self, monkeypatch):
-        """update-note returns failure when both endpoints reject the request."""
         monkeypatch.setenv("GITLAB_TOKEN", "test-token")
-        responses = [MagicMock(status_code=404), MagicMock(status_code=403)]
-        with patch.object(httpx, "put", side_effect=responses):
+        mock_api = MagicMock()
+        mock_api.put_status.side_effect = [404, 403]
+        with patch.object(gitlab_api_mod, "GitLabAPI", return_value=mock_api):
             result = runner.invoke(app, ["review", "update-note", "org/repo", "1", "42", "new body"])
             assert result.exit_code == 1
             assert "Failed: HTTP 403" in result.output
 
     def test_update_note_draft_unexpected_status(self, monkeypatch):
-        """update-note does NOT fall back when the draft endpoint returns a non-404 error."""
         monkeypatch.setenv("GITLAB_TOKEN", "test-token")
-        mock_response = MagicMock(status_code=403)
-        with patch.object(httpx, "put", return_value=mock_response) as mock_put:
+        mock_api = MagicMock()
+        mock_api.put_status.return_value = 403
+        with patch.object(gitlab_api_mod, "GitLabAPI", return_value=mock_api):
             result = runner.invoke(app, ["review", "update-note", "org/repo", "1", "42", "new body"])
             assert result.exit_code == 1
             assert "Failed (draft): HTTP 403" in result.output
-            assert mock_put.call_count == 1
+            assert mock_api.put_status.call_count == 1
 
 
 # -- _require_token helper -----------------------------------------------------

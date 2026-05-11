@@ -5,12 +5,7 @@ from django.test import TestCase
 
 from teatree.core.cleanup import BranchClassification, BranchCommit
 from teatree.core.models import Ticket, Worktree
-from teatree.core.orphan_guard import (
-    BranchReport,
-    BranchStatus,
-    classify_branch,
-    find_orphans_in_workspace,
-)
+from teatree.core.orphan_guard import BranchReport, BranchStatus, classify_branch, find_orphans_in_workspace
 
 _patch_classify = patch("teatree.core.orphan_guard.classify_branch_commits")
 _patch_tree_match = patch("teatree.core.orphan_guard._branch_tree_matches_squash")

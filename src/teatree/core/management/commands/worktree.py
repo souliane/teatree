@@ -126,7 +126,8 @@ class Command(TyperCommand):
         variant: str = typer.Option("", help="Tenant variant. Updates ticket if provided."),
         overlay: str = typer.Option("", help="Overlay name (auto-detects if empty)."),
         slow_import: bool = typer.Option(  # noqa: FBT001
-            default=False, help="Allow slow DB fallbacks (pg_restore, remote dump). DSLR-only by default."
+            default=False,
+            help="Allow slow DB fallbacks (pg_restore, remote dump). DSLR-only by default.",
         ),
     ) -> int:
         """Run DB import + env cache + direnv + prek + overlay setup steps for one worktree.

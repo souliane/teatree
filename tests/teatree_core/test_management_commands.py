@@ -211,7 +211,8 @@ class TestTaskCommands(TestCase):
             patch.object(headless_mod.shutil, "which", return_value="/usr/bin/claude"),
         ):
             claimed_task_id = cast(
-                "int", call_command("tasks", "claim", execution_target="headless", claimed_by="worker-1")
+                "int",
+                call_command("tasks", "claim", execution_target="headless", claimed_by="worker-1"),
             )
             sdk_result = cast(
                 "dict[str, str]",
@@ -638,7 +639,7 @@ class TestTasksListCommand(TestCase):
                 phase="coding",
                 execution_reason="resume after user input",
                 claimed_by="",
-            )
+            ),
         ]
         buf = StringIO()
         _render_tasks_table(rows, stream=buf)

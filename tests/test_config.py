@@ -312,7 +312,9 @@ def test_discover_active_overlay_from_manage_py(tmp_path: Path, monkeypatch: pyt
 
 
 def test_discover_active_overlay_single_installed(
-    config_file: Path, elsewhere: Path, no_installed_overlays: None
+    config_file: Path,
+    elsewhere: Path,
+    no_installed_overlays: None,
 ) -> None:
     """Single TOML-declared overlay (no manage.py in cwd ancestors) is picked as active."""
     del elsewhere, no_installed_overlays
@@ -325,7 +327,9 @@ def test_discover_active_overlay_single_installed(
 
 
 def test_discover_active_overlay_none_when_multiple(
-    config_file: Path, elsewhere: Path, no_installed_overlays: None
+    config_file: Path,
+    elsewhere: Path,
+    no_installed_overlays: None,
 ) -> None:
     """Multiple declared overlays + no cwd hint → cannot pick an active one."""
     del elsewhere, no_installed_overlays
@@ -344,7 +348,9 @@ class = "b.settings"
 
 
 def test_discover_active_overlay_none_when_no_overlays(
-    config_file: Path, elsewhere: Path, no_installed_overlays: None
+    config_file: Path,
+    elsewhere: Path,
+    no_installed_overlays: None,
 ) -> None:
     """No TOML overlays + no entry points + no manage.py → None."""
     del config_file, elsewhere, no_installed_overlays
@@ -390,7 +396,9 @@ def test_discover_overlays_toml_wins_over_entry_point(tmp_path: Path) -> None:
 
 
 def test_discover_from_manage_py_no_settings(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, no_installed_overlays: None
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    no_installed_overlays: None,
 ) -> None:
     """discover_active_overlay returns None when manage.py has no settings module and no overlays installed."""
     del no_installed_overlays
@@ -514,7 +522,10 @@ class TestCheckForUpdates:
         assert check_for_updates(force=False) is None
 
     def test_cached_result_returned_when_fresh(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config_file: Path
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        config_file: Path,
     ) -> None:
         """Return cached message when within TTL."""
         _write_check_updates_toml(config_file, enabled=True)
@@ -530,7 +541,10 @@ class TestCheckForUpdates:
         assert check_for_updates(force=False) == "teatree v9.9 available"
 
     def test_cached_empty_message_returns_none(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config_file: Path
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        config_file: Path,
     ) -> None:
         """Cached empty message means up-to-date => None."""
         _write_check_updates_toml(config_file, enabled=True)
@@ -546,7 +560,10 @@ class TestCheckForUpdates:
         assert check_for_updates(force=False) is None
 
     def test_cached_corrupt_json_falls_through(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config_file: Path
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        config_file: Path,
     ) -> None:
         """Corrupt cache JSON is silently ignored, proceeds to network check."""
         _write_check_updates_toml(config_file, enabled=True)
@@ -579,7 +596,10 @@ class TestCheckForUpdates:
             assert check_for_updates(force=True) is None
 
     def test_subprocess_timeout_returns_none(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config_file: Path
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        config_file: Path,
     ) -> None:
         """TimeoutExpired from gh CLI returns None."""
         _write_check_updates_toml(config_file, enabled=True)
@@ -591,7 +611,10 @@ class TestCheckForUpdates:
             assert check_for_updates(force=True) is None
 
     def test_file_not_found_returns_none(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config_file: Path
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        config_file: Path,
     ) -> None:
         """FileNotFoundError (gh not installed) returns None."""
         _write_check_updates_toml(config_file, enabled=True)
@@ -603,7 +626,10 @@ class TestCheckForUpdates:
             assert check_for_updates(force=True) is None
 
     def test_newer_version_returns_upgrade_message(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config_file: Path
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        config_file: Path,
     ) -> None:
         """When latest != current, returns upgrade message."""
         _write_check_updates_toml(config_file, enabled=True)
@@ -629,7 +655,10 @@ class TestCheckForUpdates:
         assert "v2.0.0" in cached["message"]
 
     def test_same_version_returns_none_and_caches(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config_file: Path
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        config_file: Path,
     ) -> None:
         """When latest == current, returns None and caches empty."""
         _write_check_updates_toml(config_file, enabled=True)

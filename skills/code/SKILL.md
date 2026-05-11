@@ -33,7 +33,7 @@ This skill delegates the generic implementation doctrine to:
 - `test-driven-development` — red/green/refactor discipline and failing-test-first rules
 - `verification-before-completion` — proof before any completion claim
 
-These are optional companion skills from [obra/superpowers](https://github.com/obra/superpowers). If not installed, this skill still works — you just won't get the external TDD and verification guidelines. TeaTree keeps the project-facing parts locally: worktree-aware setup via `t3:workspace`, feature-flag and tenant expectations, and the repo-specific verification gates.
+Optional [obra/superpowers](https://github.com/obra/superpowers) companions provide generic methodology. TeaTree keeps the project-specific workflow locally.
 
 The implementation phase. Follow test-driven development and project conventions.
 
@@ -41,6 +41,12 @@ The implementation phase. Follow test-driven development and project conventions
 
 - **t3:workspace** (required) — provides dev servers for live reload. **Load `/t3:workspace` now** if not already loaded.
 - **Framework/language convention skills** (when backend is in scope) — e.g., Django conventions, Python style guides. TeaTree auto-detects the relevant `ac-*` skill from the repo shape. **If the loader didn't fire**, self-load the appropriate coding skill: `/ac-python` for Python code, `/ac-django` for Django projects. Load these **before writing any code**, not after.
+
+## TDD Discipline
+
+Write the **failing test first**, then the implementation that makes it pass. The test proves the feature works; writing it after implementation risks testing the implementation rather than the behavior. When fixing a bug, the test must reproduce the bug (red) before the fix (green).
+
+Misleading names are bugs — rename the symbol instead of explaining it with a comment.
 
 ## Workflow
 
@@ -112,24 +118,19 @@ Write failing test → Implement → Green → Refactor
 
 When tasks exist (via the agent's task tracking tools), mark each task `completed` **immediately after finishing it** — before moving to the next task. Never batch-update at the end. Never claim "all done" while the task list is stale.
 
-### 5. E2E Tests for Frontend Changes
+### 5. E2E Tests
 
-Any frontend change that affects UI behavior (new fields, form logic, visibility, navigation) requires **E2E tests as part of the implementation** — not as a follow-up. Include E2E test writing as an explicit task in the plan. If the project has a private test suite (`$T3_PRIVATE_TESTS`), write tests there. Post screenshots and a test plan to the MR before declaring complete.
+After TDD and commit, frontend changes that affect UI behavior need E2E tests as a follow-up step. Switch to `/t3:e2e` for writing Playwright tests, posting evidence, and the visual QA gate.
 
-- **When required:** new UI fields, changed form behavior, conditional visibility, new pages/routes
-- **When NOT required:** pure CSS, translation-only changes, backend-only changes, internal refactoring
-- **Backend/API changes with frontend-visible impact still require E2E.** If the frontend displays the changed data, prove the end-to-end path works.
-- **Establish a baseline before blaming your branch.** If E2E fails, run the same scenario on the default branch or unmodified code before treating it as your regression.
-- **Blocked by environment?** Flag it explicitly — don't silently skip E2E and declare done
-
-### 5b. When to Switch to `t3:test`
+### 5b. When to Switch Skills
 
 - Stay in `t3:code` for TDD, implementation-time tests, and feature-building.
-- Switch to `/t3:test` when the work becomes broader verification, E2E orchestration, CI failure analysis, test-plan writing, or MR evidence posting.
+- Switch to `/t3:e2e` for E2E test writing, evidence posting, and visual QA.
+- Switch to `/t3:test` for broader verification, CI failure analysis, or test-plan writing.
 
 ### 5c. Mass-Rename / Cross-Cutting Refactor Verification (Non-Negotiable)
 
-When the task is a rename, type-renaming, key-renaming, or any refactor that should remove **every occurrence** of an old name across the repo, the agent **must not declare "done" on the strength of a single grep iteration**. souliane/teatree#545's MR→PR rename produced four false-completion claims in a row (test files missed, single-quoted `'mrs'` missed, error message strings missed, `_infer_state_from_mrs` class name missed) because each pass was driven by a narrow grep that didn't cover all the surface forms.
+When the task is a rename, type-renaming, key-renaming, or any refactor that should remove **every occurrence** of an old name across the repo, the agent **must not declare "done" on the strength of a single grep iteration**. #545's MR→PR rename produced four false-completion claims in a row (test files missed, single-quoted `'mrs'` missed, error message strings missed, `_infer_state_from_mrs` class name missed) because each pass was driven by a narrow grep that didn't cover all the surface forms.
 
 **Before claiming a rename is finished, run an exhaustive sweep that covers every surface form the old name can take:**
 

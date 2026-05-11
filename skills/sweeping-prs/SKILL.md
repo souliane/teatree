@@ -1,6 +1,6 @@
 ---
 name: sweeping-prs
-description: Maintenance sweep across all your open PRs/MRs — merge the default branch, fix conflicts, monitor CI, push, and (per-repo policy) optionally squash-merge each PR before moving to the next. Never rebases. Use when user says "sweep PRs", "update all my MRs", "merge main into open PRs", or wants to keep open PRs up to date with main.
+description: Maintenance sweep across all your open PRs/PRs — merge the default branch, fix conflicts, monitor CI, push, and (per-repo policy) optionally squash-merge each PR before moving to the next. Never rebases. Use when user says "sweep PRs", "update all my PRs", "merge main into open PRs", or wants to keep open PRs up to date with main.
 compatibility: macOS/Linux, zsh, git, issue tracker CLI (glab, gh).
 requires:
   - workspace
@@ -18,7 +18,7 @@ metadata:
 
 # PR Sweep — Batch Maintenance for Open PRs
 
-Walk every open PR/MR you authored, sequentially, and bring each up to date with the default branch:
+Walk every open MR/PR you authored, sequentially, and bring each up to date with the default branch:
 
 1. Merge `origin/<default>` into the source branch (**never rebase**).
 2. If conflicts are mechanical, resolve and continue. If not, prompt the user.
@@ -94,7 +94,7 @@ Compare `target_branch` to the repo's default branch. If they differ, **stop and
 - Merge the parent branch into the PR (stacked PR — keep dependency intact).
 - Custom: ask for instructions.
 
-**Do not change the target branch under any circumstances** — see [`../rules/SKILL.md`](../rules/SKILL.md) § "Never Change MR Base Branch or Dependencies".
+**Do not change the target branch under any circumstances** — see [`../rules/SKILL.md`](../rules/SKILL.md) § "Never Change PR Base Branch or Dependencies".
 
 ### Gate 2 — Approved
 
@@ -165,7 +165,7 @@ Use clickable references — see [`../rules/SKILL.md`](../rules/SKILL.md) § "Cl
 
 ### Sequential Only (Non-Negotiable)
 
-Process one PR at a time in the main conversation. Never dispatch parallel agents for sweep work — each one would race on git operations, post duplicate MR comments, and corrupt worktrees. See [`../rules/SKILL.md`](../rules/SKILL.md) § "Never Post MR Comments from Parallel Agents".
+Process one PR at a time in the main conversation. Never dispatch parallel agents for sweep work — each one would race on git operations, post duplicate PR comments, and corrupt worktrees. See [`../rules/SKILL.md`](../rules/SKILL.md) § "Never Post PR Comments from Parallel Agents".
 
 ### Never Rebase (Non-Negotiable)
 

@@ -14,11 +14,7 @@ from pathlib import Path
 import pytest
 
 from teatree.core.worktree_env import _declared_core_keys
-from teatree.utils.compose_contract import (
-    ComposeVarRef,
-    check_contract,
-    extract_refs,
-)
+from teatree.utils.compose_contract import ComposeVarRef, check_contract, extract_refs
 
 REPO_ROOT = Path(__file__).parent.parent
 COMPOSE_FILES = [

@@ -76,4 +76,4 @@ class Command(TyperCommand):
             return f"ok — {len(paths)} compose file(s) check clean against {len(produced)} declared keys"
         for v in violations:
             typer.echo(v.format(), err=True)
-        raise typer.Exit(code=1)
+        raise SystemExit(1)

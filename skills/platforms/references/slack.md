@@ -36,7 +36,7 @@ Use the parent message's `ts` (timestamp) to reply in-thread:
 slack_send_message(channel: "#channel-name", text: "message text", thread_ts: "<parent_ts>")
 ```
 
-**Reminder format:** Post the **clean MR title as a Slack link to the original review request** (not the MR URL). Strip feature flag tags (`[flag_name]`) and ticket URLs from the title:
+**Reminder format:** Post the **clean PR title as a Slack link to the original review request** (not the PR URL). Strip feature flag tags (`[flag_name]`) and ticket URLs from the title:
 
 ```text
 <https://slack.com/archives/C.../p...|feat: expose deed_date in proof meta liability serializer>
@@ -64,9 +64,9 @@ Store in `$T3_DATA_DIR/tickets/<ticket_iid>/mr_review_messages.json`:
 }
 ```
 
-Create the directory if it doesn't exist. Merge with existing entries (don't overwrite — a ticket may have MRs sent at different times).
+Create the directory if it doesn't exist. Merge with existing entries (don't overwrite — a ticket may have PRs sent at different times).
 
-### MR Reminder Cache
+### PR Reminder Cache
 
 Store in `$T3_DATA_DIR/mr_reminders.json`:
 
@@ -84,12 +84,12 @@ Store in `$T3_DATA_DIR/mr_reminders.json`:
 }
 ```
 
-Remove entries where the MR is approved or merged to keep the cache small.
+Remove entries where the PR is approved or merged to keep the cache small.
 
 ## Rules
 
 - **Never post without user approval.** Always present a dry-run summary first.
 - **Never post duplicates.** Always search before posting.
 - **Cache aggressively.** Write to `mr_review_messages.json` after every search to avoid redundant API calls.
-- **Never expose MR URLs in reminders.** Post only the Slack permalink to the original review request.
-- **One reminder per day per MR.** Use `last_reminded` to prevent spamming.
+- PR URLs stay hidden in reminders. Post only the Slack permalink to the original review request.
+- **One reminder per day per PR.** Use `last_reminded` to prevent spamming.

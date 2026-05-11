@@ -20,12 +20,7 @@ import teatree.config as config_mod
 import teatree.core.overlay_loader as overlay_loader_mod
 import teatree.core.resolve as resolve_mod
 import teatree.utils.run as utils_run_mod
-from teatree.cli import (
-    _ensure_editable_if_contributing,
-    _find_overlay_project,
-    _find_project_root,
-    app,
-)
+from teatree.cli import _ensure_editable_if_contributing, _find_overlay_project, _find_project_root, app
 from teatree.cli import doctor as cli_doctor_mod
 from teatree.cli.agent import _detect_agent_ticket_status
 from teatree.cli.doctor import DoctorService, IntrospectionHelpers
@@ -423,8 +418,8 @@ class TestConfigCommands:
                         "workspace": ["rules", "workspace"],
                         "code": ["rules", "workspace", "code"],
                     },
-                }
-            )
+                },
+            ),
         )
         result = runner.invoke(app, ["config", "deps", "code"])
         assert result.exit_code == 0
@@ -448,8 +443,8 @@ class TestConfigCommands:
                         {"skill": "rules", "requires": []},
                         {"skill": "workspace", "requires": ["rules"]},
                     ],
-                }
-            )
+                },
+            ),
         )
         result = runner.invoke(app, ["config", "deps", "workspace"])
         assert result.exit_code == 0
@@ -474,8 +469,8 @@ class TestConfigCommands:
                             "end_of_session": False,
                         },
                     ],
-                }
-            )
+                },
+            ),
         )
         # Add scripts dir to path so skill_loader can be imported inside the CLI command.
         scripts_dir = str(Path(__file__).resolve().parent.parent / "scripts")
@@ -614,7 +609,9 @@ class TestLaunchClaude:
         with (
             patch("shutil.which", return_value="/usr/bin/claude"),
             patch.object(
-                cli_doctor_mod.IntrospectionHelpers, "editable_info", return_value=(True, "file:///src/teatree")
+                cli_doctor_mod.IntrospectionHelpers,
+                "editable_info",
+                return_value=(True, "file:///src/teatree"),
             ),
             patch.object(cli_agent_mod.os, "execvp") as mock_exec,
         ):

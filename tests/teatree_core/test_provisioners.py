@@ -7,11 +7,7 @@ from unittest.mock import MagicMock, patch
 from django.test import TestCase
 
 import teatree.core.provisioners as provisioners_mod
-from teatree.core.provisioners import (
-    apply_symlinks,
-    inject_settings,
-    start_services,
-)
+from teatree.core.provisioners import apply_symlinks, inject_settings, start_services
 
 
 class TestApplySymlinks(TestCase):

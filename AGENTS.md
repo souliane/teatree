@@ -27,7 +27,7 @@ It provides:
 - An overlay system for downstream project customization (`OverlayBase`)
 - Backend protocols for pluggable external integrations
 - Agent workflow skills (`skills/*/`) for the full development lifecycle
-- A dashboard (django-htmx) for monitoring tickets, tasks, and agent sessions
+- A statusline-based monitoring surface for tickets, PRs, and agent sessions
 
 ## Repo Layout
 
@@ -39,12 +39,12 @@ src/teatree/           Python package (the Django app + CLI)
   skill_deps.py        Transitive dependency and companion resolution
   core/                Django app: models, managers, views, selectors, management commands
     models/            Ticket, Worktree, Session, Task, TaskAttempt (FSM states)
-    selectors/         Selector functions for dashboard views (no domain logic in views)
+    selectors/         Selector functions (no domain logic in views)
     overlay.py         OverlayBase ABC — extension point for downstream projects
     overlay_loader.py  Loads the active overlay class from Django settings
     management/commands/  Django-typer commands (lifecycle, workspace, db, run, followup, pr, tasks)
-    views/             Dashboard views (dashboard.py, launch.py, actions.py)
-    templates/         HTMX-driven dashboard templates
+    views/             Admin views
+    templates/         Django admin templates
   backends/            Pluggable service integrations
     protocols.py       Protocol classes (CodeHost, CIService, IssueTracker, ChatNotifier, ErrorTracker)
     loader.py          Settings-driven backend loader (import_string, lru_cache)
@@ -67,7 +67,6 @@ src/teatree/           Python package (the Django app + CLI)
   overlay_init/        `t3 startoverlay` templates (overlay package + app)
 skills/*/              Workflow skills (SKILL.md + references/)
 tests/                 Pytest suite (>90% coverage required)
-e2e/                   Playwright E2E tests for dashboard
 scripts/               Standalone Python CLI scripts
 hooks/                 Agent platform hooks (Claude Code hook_router, statusline, etc.)
 ```
@@ -189,7 +188,6 @@ Interactive tasks launch through one of three strategies, picked by `TEATREE_TER
 | `new-window` | Spawns a fresh native terminal window via `osascript` / terminal-emulator IPC. | Yes |
 | `ttyd` | Spawns a `ttyd` process and returns a browser URL. Registered with the in-memory process registry, so it is killed on server shutdown. | No |
 
-- Dashboard Launch button → POST `/tasks/<id>/launch/` → native modes return `{"pid": ...}` and the OS terminal opens; ttyd mode returns `{"launch_url": "..."}` and JS opens it in a new tab.
 - Command: `claude --append-system-prompt <context>` (no `-p`, interactive mode).
 - ttyd-only requirements: must be installed (`brew install ttyd`) and spawned with `--writable`.
 - Terminal.app `new-tab` requires Accessibility permission for the host process (System Events keystroke).
@@ -209,26 +207,9 @@ SDK tasks run `claude -p <prompt> --append-system-prompt <context> --output-form
 
 Skills in `skills/*/` are loaded via the plugin system (see `hooks/hooks.json`) or installed as symlinks into agent skill directories. Skills with "Auto-loaded as a dependency" descriptions are not user-invocable — loaded via `requires:` in other skills' frontmatter.
 
-## Dashboard
+## Statusline
 
-Selector-backed views with django-htmx. No domain logic in views.
-
-**Panels** (auto-refresh via HTMX):
-
-- Runtime Summary — counter cards (in-flight tickets, active worktrees, pending SDK/user-input tasks)
-- In-Flight Tickets — table with MR data, pipeline status, approvals, Auto/Interactive task creation buttons
-- Sessions — unified panel showing tasks, running processes, and activity with filter tabs (All/Running/Queued/Completed/Failed)
-
-**CSS conventions:** Use `.pill` / `.pill-btn` classes defined in `dashboard.html <style>` for all badges and buttons. These enforce `whitespace-nowrap` globally. Sizes: `pill pill-sm` (standard badges), `pill pill-xs` (small badges), `pill-btn pill-xs` (action buttons). Only add color/border as Tailwind utilities alongside the CSS class — never inline the full utility pattern.
-
-**Endpoints:**
-
-- `GET /` — full dashboard
-- `GET /dashboard/panels/<panel>/` — HTMX panel refresh (requires HX-Request header)
-- `POST /dashboard/sync/` — trigger followup sync
-- `POST /tasks/<id>/launch/` — claim and execute (SDK) or launch ttyd (interactive)
-- `POST /tasks/<id>/cancel/` — cancel task (sets to FAILED)
-- `POST /tickets/<id>/create-task/` — create SDK or user_input task
+The persistent UI surface is a multi-line statusline rendered by `t3 loop tick`. Each zone (action_needed, in_flight, info) gets a distinct color. PR URLs render as terminal hyperlinks (OSC 8). `t3 loop status` shows the last-rendered output.
 
 ## Development Workflow
 
@@ -236,7 +217,6 @@ Selector-backed views with django-htmx. No domain logic in views.
 
 ```bash
 t3 --help                           # CLI help
-t3 acme dashboard                   # Start overlay dashboard (auto-finds free port)
 t3 acme agent                       # Launch Claude Code with overlay context
 t3 agent                            # Launch Claude Code (teatree-self development)
 ```
@@ -245,7 +225,6 @@ t3 agent                            # Launch Claude Code (teatree-self developme
 
 ```bash
 uv run pytest                       # Test suite with coverage (>93% required)
-uv run pytest e2e/ -x               # Dashboard E2E tests with Playwright
 prek run --all-files                # Pre-commit hooks (ruff, codespell, tach, ty)
 bash dev/test-matrix.sh             # Docker matrix: Python 3.13 + 3.14 (MANDATORY before push)
 ```
@@ -258,8 +237,7 @@ New tests — added in this repo or in any overlay repo — must lean **integrat
 
 **Preferred patterns (in order):**
 
-1. **Playwright E2E** (`e2e/`) for dashboard or browser-visible behavior.
-2. **Django test client** (`client.get(...)`, `client.post(...)`) for views, URLs, HTMX endpoints.
+1. **Django test client** (`client.get(...)`, `client.post(...)`) for views and URL endpoints.
 3. **`call_command("name", ...)`** for management commands — exercises the full Typer + Django glue.
 4. **`subprocess.run(["t3", ...])`** (marked `@pytest.mark.integration`) when the bug would only surface through the real entry point.
 5. **Real filesystem + real `git` under `tmp_path`** for anything that provisions worktrees, writes env files, or runs `git worktree add`. No mocking `Path`, `subprocess`, or git output.
@@ -305,16 +283,6 @@ After modifying skills: `prek run --all-files` then `uv run pytest` then commit.
 - User preferences belong in memory/config files, not skills.
 - Use extension points or `~/.teatree.toml` variables for project context.
 
-## Dashboard Smoke-Test Checklist
-
-After any dashboard fix, verify the full flow before declaring done:
-
-1. Dashboard loads (HTTP 200)
-2. Headless tasks launch without error (check task status after worker processes)
-3. Interactive tasks launch without error (check ttyd)
-4. Errors display in the UI (check queue panels for red banners)
-5. Concurrent launches don't cause SQLite locking
-
 ## Things That Catch People
 
 - The package is `teatree` (double-e) but the repo/CLI is `teatree`/`t3`.
@@ -326,7 +294,4 @@ After any dashboard fix, verify the full flow before declaring done:
 - ttyd without `--writable` = read-only terminal = claude can't work.
 - `claude -p` is headless (exits immediately). Interactive sessions use `claude` without `-p`.
 - E2E tests use a separate settings module (`e2e.settings`) with file-based SQLite.
-- **E2E pre-flight: kill zombie servers before running.** Long-lived `uvicorn --reload` processes (from `t3 dashboard`) pin CPU at ~93% each and cause Playwright timeouts (7+ min/test). Before any e2e run: `pkill -9 -f "uvicorn teatree.asgi" 2>/dev/null; pkill -9 -f "chrome-headless" 2>/dev/null; pkill -9 -f "playwright/driver" 2>/dev/null`. Verify with `ps aux | grep uvicorn | grep -v grep`.
-- **Each timed-out e2e run leaves zombie processes.** Kill them before retrying — otherwise the next run competes for CPU with its predecessors. Same kill commands as above.
-- **E2E tests take ~7 minutes each locally on a loaded machine.** For full suite validation, prefer CI (fast, clean environment) over local runs. Run a single focused test locally to check a specific assertion, then push and let CI validate the rest.
 - **Submodule shadowing in `cli/__init__.py`.** When `cli/__init__.py` re-exports a name from a same-named submodule (`from teatree.cli.agent import agent`), the imported function overwrites the `cli.agent` submodule attribute on the parent package. Tests that do `import teatree.cli.agent as cli_agent_mod` then receive the function, not the module — `patch.object(cli_agent_mod, "os", ...)` fails with `does not have the attribute 'os'`. Use `import teatree.cli.agent as _agent` in `__init__.py` and reference attributes (`_agent.agent`) instead. The aliasing form does not bind to the parent package, so the submodule attribute survives intact.

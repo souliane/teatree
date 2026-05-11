@@ -3,7 +3,7 @@
 Project-specific behavior lives in overlay packages. Each overlay subclasses `OverlayBase` and uses composition:
 
 - `overlay.config` — `OverlayConfig` instance (credentials, URLs, labels, settings)
-- `overlay.metadata` — `OverlayMetadata` instance (CI, MR, skills, tool commands)
+- `overlay.metadata` — `OverlayMetadata` instance (CI, PR, skills, tool commands)
 
 ## Architecture
 
@@ -31,7 +31,7 @@ Settings are defined in `overlay_settings.py` and overridden per-user in `~/.tea
 | Method / Attribute | Source | Purpose |
 |---|---|---|
 | `get_gitlab_token()` | `GITLAB_TOKEN_PASS_KEY` | GitLab API authentication |
-| `get_gitlab_username()` | `GITLAB_USERNAME` | MR author filtering |
+| `get_gitlab_username()` | `GITLAB_USERNAME` | PR author filtering |
 | `get_github_token()` | `GITHUB_TOKEN_PASS_KEY` | GitHub API authentication |
 | `get_slack_token()` | `SLACK_TOKEN_PASS_KEY` | Slack notifications |
 | `get_review_channel()` | `REVIEW_CHANNEL_ID/NAME` | Review request target |
@@ -40,16 +40,15 @@ Settings are defined in `overlay_settings.py` and overridden per-user in `~/.tea
 | `pr_auto_labels` | `PR_AUTO_LABELS` | Labels applied to new PRs |
 | `frontend_repos` | `FRONTEND_REPOS` | Repos that need E2E tests |
 | `dev_env_url` | `DEV_ENV_URL` | Development environment URL |
-| `dashboard_logo` | `DASHBOARD_LOGO` | Custom dashboard branding |
 | `github_owner` | `GITHUB_OWNER` | GitHub org/user for API calls |
 | `github_project_number` | `GITHUB_PROJECT_NUMBER` | GitHub Projects v2 board number |
 | `require_ticket` | `REQUIRE_TICKET` | Enforce ticket for all changes |
 
-## OverlayMetadata Methods (CI, MR, skills)
+## OverlayMetadata Methods (CI, PR, skills)
 
 | Method | Default | Override for... |
 |---|---|---|
-| `get_followup_repos()` | `[]` | Repos to sync MRs from |
+| `get_followup_repos()` | `[]` | Repos to sync PRs from |
 | `get_skill_metadata()` | `{}` | Skill delegation and phase mapping |
 | `get_ci_project_path()` | `""` | CI project path for pipeline triggers |
 | `get_e2e_config()` | `{}` | E2E test runner configuration |
