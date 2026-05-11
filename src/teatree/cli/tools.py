@@ -168,3 +168,40 @@ def claude_handover(
         f"reset={reset_at}; "
         f"recommended={recommendation}",
     )
+
+
+@tool_app.command("triage-issues")
+def triage_issues(
+    repo: str = typer.Argument(..., help="Repository in owner/name form (e.g. souliane/teatree)"),
+    *,
+    stale_days: int = typer.Option(30, "--stale-days", help="Inactivity threshold for stale-issue detection."),
+    close_resolved: bool = typer.Option(
+        False, "--close-resolved", help="Close resolved-but-open issues (with comment linking the merged PR)."
+    ),
+) -> None:
+    """Scan for resolved-but-open and stale issues."""
+    from teatree.triage import TriageScanner  # noqa: PLC0415
+
+    scanner = TriageScanner(repo)
+
+    resolved = scanner.find_resolved()
+    if resolved:
+        typer.echo(f"\n{'=' * 60}\n Resolved-but-open ({len(resolved)} issue(s))\n{'=' * 60}")
+        for r in resolved:
+            typer.echo(f"  #{r.issue_number}  {r.issue_title}")
+            typer.echo(f"    ↳ merged PR #{r.pr_number}: {r.pr_title}  [{r.confidence}]")
+        if close_resolved:
+            scanner.close_resolved(resolved)
+            typer.echo(f"Closed {len(resolved)} resolved issue(s).")
+        else:
+            typer.echo("\nRe-run with --close-resolved to close these issues.")
+    else:
+        typer.echo("No resolved-but-open issues found.")
+
+    stale = scanner.find_stale(days=stale_days)
+    if stale:
+        typer.echo(f"\n{'=' * 60}\n Stale issues — unlabeled, inactive >{stale_days}d ({len(stale)})\n{'=' * 60}")
+        for s in stale:
+            typer.echo(f"  #{s.issue_number}  {s.issue_title}  ({s.days_inactive}d inactive)")
+    else:
+        typer.echo(f"No stale issues (unlabeled, inactive >{stale_days}d).")
