@@ -162,6 +162,9 @@ EOF
 
                 gate_warning=""
                 case "$target_phase" in
+                    coding)
+                        echo "$visited" | grep -q "scoping" || gate_warning="⚠ Coding without scoping first. For features, run /t3:ticket or /brainstorming to clarify intent before implementing."
+                        ;;
                     reviewing)
                         echo "$visited" | grep -q "testing" || gate_warning="⚠ Reviewing without testing first. Run /t3:test first, or use --force in t3 ship."
                         ;;
