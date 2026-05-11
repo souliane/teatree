@@ -15,7 +15,7 @@ API recipes for issue trackers, CI systems, and chat platforms. Each platform ha
 
 | File | Platform |
 |---|---|
-| [`references/gitlab.md`](references/gitlab.md) | GitLab API, MR validation, pipeline control |
+| [`references/gitlab.md`](references/gitlab.md) | GitLab API, PR validation, pipeline control |
 | [`references/github.md`](references/github.md) | GitHub API, PR workflows |
 | [`references/slack.md`](references/slack.md) | Slack messaging, channel discovery |
 

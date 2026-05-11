@@ -59,7 +59,7 @@ Environment variables with auto-detected defaults:
 |---|---|---|
 | `T3_WORKSPACE_DIR` | `~/workspace` | Root directory containing all repos |
 | `T3_BRANCH_PREFIX` | Lowercase initials from `git config user.name` (fallback: `wt`) | Directory + branch name prefix |
-| `T3_ISSUE_TRACKER` | Auto-detected from `git remote -v` | Issue/MR platform (`gitlab`, `github`) |
+| `T3_ISSUE_TRACKER` | Auto-detected from `git remote -v` | Issue/PR platform (`gitlab`, `github`) |
 | `T3_CHAT_PLATFORM` | `none` | Team chat for review requests (`slack`, `teams`, `none`) |
 | `DJANGO_SUPERUSER_EMAIL` | `$(git config user.email)` | Django superuser email |
 | `DJANGO_SUPERUSER_PASSWORD` | `test` | Django superuser password |

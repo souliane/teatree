@@ -46,7 +46,7 @@ When adding a new test, default to an integration or E2E test — not a unit tes
 
 **Unit tests** are reserved for pure logic: parsers, formatters, branch-name / slug builders, regex validators, anything with no I/O. A unit test for glue code that's already covered by an integration test is duplicate coverage — delete it.
 
-The repo's `AGENTS.md` § "Test-Writing Doctrine" carries the authoritative rule and the review gate. `t3:review` enforces it per-MR (§ "New-Test Shape Check"). When rebalancing existing tests, the coverage gate must not drop.
+The repo's `AGENTS.md` § "Test-Writing Doctrine" carries the authoritative rule and the review gate. `t3:review` enforces it per-PR (§ "New-Test Shape Check"). When rebalancing existing tests, the coverage gate must not drop.
 
 ## Workflows
 
@@ -96,13 +96,13 @@ When CI fails:
 6. Monitor pipeline again
 7. Loop until green
 
-## Generate Test Plan for MR
+## Generate Test Plan for PR
 
-Analyze MR changes and produce a manual test plan. Use when the user says "test plan", "QA", or wants to document what to verify before merging.
+Analyze PR changes and produce a manual test plan. Use when the user says "test plan", "QA", or wants to document what to verify before merging.
 
 ### 1. Gather Context
 
-- Read MR description via the issue tracker CLI (e.g., `glab mr view`, `gh pr view`)
+- Read PR description via the issue tracker CLI (e.g., `glab mr view`, `gh pr view`)
 - Read the diff (`git diff main...HEAD` or via the CLI)
 - Read any linked ticket/specs for intended behavior
 
@@ -143,11 +143,11 @@ Analyze MR changes and produce a manual test plan. Use when the user says "test 
 | Acceptance rule | Rule triggers correctly, edge cases, existing rules unaffected |
 | Customer-specific config | Correct customer sees it, other customers don't |
 
-### 3. Post Test Plan to MR
+### 3. Post Test Plan to PR
 
-Post the test plan as a comment on the MR. If a test plan comment already exists, skip posting (don't duplicate).
+Post the test plan as a comment on the PR. If a test plan comment already exists, skip posting (don't duplicate).
 
-See your [issue tracker platform reference](../platforms/references/) § "MR Notes" for the posting recipe.
+See your [issue tracker platform reference](../platforms/references/) § "PR Notes" for the posting recipe.
 
 ## Evidence, Visual QA, and E2E Debugging
 

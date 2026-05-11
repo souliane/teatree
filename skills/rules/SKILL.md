@@ -41,7 +41,7 @@ Use `Ctrl+F`/`grep` to jump to a rule. Sections are grouped below by theme; numb
 
 14. [Clickable References](#clickable-references)
 15. [No AI Signature on Posts Made on the User's Behalf](#no-ai-signature-on-posts-made-on-the-users-behalf-non-negotiable)
-16. [Never Post MR Comments from Parallel Agents](#never-post-mr-comments-from-parallel-agents-non-negotiable)
+16. [Never Post PR Comments from Parallel Agents](#never-post-pr-comments-from-parallel-agents-non-negotiable)
 17. [Verify Repo Visibility Before Filing External Issues](#verify-repo-visibility-before-filing-external-issues-non-negotiable)
 18. [Leak Remediation — Silent Scrubs](#leak-remediation--silent-scrubs-non-negotiable)
 19. [GitLab Inline Comments](#gitlab-inline-comments)
@@ -69,7 +69,7 @@ Use `Ctrl+F`/`grep` to jump to a rule. Sections are grouped below by theme; numb
 32. [Teatree Extension Point Changes Must Update All Registered Overlays](#teatree-extension-point-changes-must-update-all-registered-overlays-non-negotiable)
 33. [Do Work Now, Don't Defer to "Later" Tickets](#do-work-now-dont-defer-to-later-tickets-non-negotiable)
 34. [Contribute Mode: Promote Findings to Skills, Not Personal Memory](#contribute-mode-promote-findings-to-skills-not-personal-memory-non-negotiable)
-35. [Never Change MR Base Branch or Dependencies](#never-change-mr-base-branch-or-dependencies-non-negotiable)
+35. [Never Change PR Base Branch or Dependencies](#never-change-pr-base-branch-or-dependencies-non-negotiable)
 36. [Run Retro Before Ending Non-Trivial Sessions](#run-retro-before-ending-non-trivial-sessions)
 37. [Commit Before Declaring Done](#commit-before-declaring-done-non-negotiable)
 38. [Pre-Commit Hook Failures on Unrelated Tests](#pre-commit-hook-failures-on-unrelated-tests)
@@ -167,12 +167,12 @@ If the user's message is ambiguous (references "this", "it", a link they forgot 
 
 ## Clickable References
 
-Every MR, ticket, issue, or note reference — in markdown files, platform comments, **and** agent responses — must be a clickable markdown link.
+Every PR, ticket, issue, or note reference — in markdown files, platform comments, **and** agent responses — must be a clickable markdown link.
 
 - `[!5657](https://example.com/org/repo/-/merge_requests/5657)` — not `!5657`
 - `[PROJ-1234](https://example.com/org/repo/-/issues/1234)` — not `PROJ-1234`
 
-This applies everywhere: MR/PR descriptions, inline comments, test evidence, chat messages, and responses to the user.
+This applies everywhere: PR/PR descriptions, inline comments, test evidence, chat messages, and responses to the user.
 
 ## Token Extraction
 
@@ -182,9 +182,9 @@ When extracting an API token from a CLI tool, always extract to a variable first
 
 ## Temp File Safety
 
-When using temporary files (for MR note bodies, test data, etc.):
+When using temporary files (for PR note bodies, test data, etc.):
 
-- **Never use hardcoded paths** like `/tmp/mr_note_body.md` — stale content from other sessions gets posted to the wrong MR.
+- Hardcoded paths are forbidden like `/tmp/mr_note_body.md` — stale content from other sessions gets posted to the wrong PR.
 - **Always use `mktemp`** or inline Python heredocs instead.
 - **Always use `>|`** (clobber override) not `>` — zsh `noclobber` silently prevents overwrite.
 - **Always clean up** the temp file immediately after use (`os.unlink()` in Python, `rm` in shell).
@@ -202,7 +202,7 @@ When fixing a broken UX mechanism (web terminal, browser launch, notification me
 
 ## No AI Signature on Posts Made on the User's Behalf (Non-Negotiable)
 
-Every artifact you publish under the user's identity — git commits, MR/PR descriptions, MR/PR comments and discussions, issue bodies, Slack/Teams messages, email drafts, release notes — must read as if the user wrote it. **Never append AI/agent signatures or footers**.
+Every artifact you publish under the user's identity — git commits, PR/PR descriptions, PR/PR comments and discussions, issue bodies, Slack/Teams messages, email drafts, release notes — must read as if the user wrote it. **Never append AI/agent signatures or footers**.
 
 **Canonical setting:** `[teatree] agent_signature` in `~/.teatree.toml` (default `false`). Programmatic teatree code paths that post on the user's behalf consult `teatree.identity.agent_signature_enabled()` (or wrap their suffix in `agent_signature_suffix(...)`). When you publish through an external tool (MCP Slack send, `gh` comment, `glab` discussion, raw `httpx`), apply the same policy by hand: omit the signature unless the setting is `true`.
 
@@ -216,13 +216,13 @@ Every artifact you publish under the user's identity — git commits, MR/PR desc
 
 **This rule is global, not commit-specific.** The original "no Co-Authored-By in commits" rule was a special case; the principle generalizes to every venue where the agent posts on the user's behalf. If you would not put `Co-Authored-By` on a commit, do not put `Sent using Claude` on a Slack message. The user is responsible for the content; the agent is the typist, not the author.
 
-**When the user is the author and explicitly invokes you:** if the user asks for a draft to review before sending themselves, no signature is needed (they will send it themselves anyway). When **you** post on their behalf (Slack DM, MR discussion, GitHub comment, email), the rule still applies — the message must be indistinguishable in form from one the user wrote.
+**When the user is the author and explicitly invokes you:** if the user asks for a draft to review before sending themselves, no signature is needed (they will send it themselves anyway). When **you** post on their behalf (Slack DM, PR discussion, GitHub comment, email), the rule still applies — the message must be indistinguishable in form from one the user wrote.
 
-**Failure mode this rule prevents:** the agent appends "Sent using Claude" to a Slack message it sends to a colleague on the user's behalf. The colleague now sees that the user did not write the message themselves; the user looks lazy or impersonal, and the rapport with the colleague is damaged. Same logic for `Co-Authored-By` in commits, "🤖 Generated" footers in MR descriptions, and "via the assistant" suffixes in issue comments.
+**Failure mode this rule prevents:** the agent appends "Sent using Claude" to a Slack message it sends to a colleague on the user's behalf. The colleague now sees that the user did not write the message themselves; the user looks lazy or impersonal, and the rapport with the colleague is damaged. Same logic for `Co-Authored-By` in commits, "🤖 Generated" footers in PR descriptions, and "via the assistant" suffixes in issue comments.
 
-## Never Post MR Comments from Parallel Agents (Non-Negotiable)
+## Never Post PR Comments from Parallel Agents (Non-Negotiable)
 
-MR/PR comment posting (test plans, evidence, review notes) must be **serialized** — never dispatch two parallel agents that both post comments on MRs. Parallel agents cannot check for each other's posts, resulting in duplicate comments. Post all MR comments from the main conversation thread, or serialize agent tasks so only one posts at a time.
+PR/PR comment posting (test plans, evidence, review notes) must be **serialized** — never dispatch two parallel agents that both post comments on PRs. Parallel agents cannot check for each other's posts, resulting in duplicate comments. Post all PR comments from the main conversation thread, or serialize agent tasks so only one posts at a time.
 
 ## Verify Repo Visibility Before Filing External Issues (Non-Negotiable)
 
@@ -271,7 +271,7 @@ Sub-agents (Agent tool) **lose all loaded skills, MCP access, and shell function
 
 **Exception:** Skills with `subagent_safe: true` in their YAML frontmatter are pure methodology/guidelines that work without shell functions, MCP tools, or cross-skill state.
 
-**Before delegating platform API work:** Read the relevant platform reference (`t3:platforms`) before writing sub-agent prompts that involve API calls (draft notes, discussions, MR operations). Sub-agents can't read skills themselves — copy the exact API recipe into the agent prompt.
+**Before delegating platform API work:** Read the relevant platform reference (`t3:platforms`) before writing sub-agent prompts that involve API calls (draft notes, discussions, PR operations). Sub-agents can't read skills themselves — copy the exact API recipe into the agent prompt.
 
 **After a sub-agent completes, re-read any files it modified.** Sub-agents get a forked copy of your file state — their edits don't update your cache. Writing to a file without re-reading first will silently overwrite their changes.
 
@@ -304,8 +304,8 @@ When you add, change, or remove a hook on `OverlayBase` (e.g. `get_required_port
 **How to apply:**
 
 1. Enumerate registered overlays on this machine: `uv run python -c "from importlib.metadata import entry_points; [print(ep.value) for ep in entry_points(group='teatree.overlays')]"`. Treat the output as the authoritative list — not memory, not assumptions about which overlays are installed.
-2. For each overlay, decide whether the new hook needs an explicit override and, if so, implement it in the same MR (or a paired MR opened in the same session). Do not file a "later" ticket — see § "Do Work Now, Don't Defer to 'Later' Tickets".
-3. Cite the overlay PR(s) in the teatree MR description so reviewers can confirm the chain landed end-to-end.
+2. For each overlay, decide whether the new hook needs an explicit override and, if so, implement it in the same PR (or a paired PR opened in the same session). Do not file a "later" ticket — see § "Do Work Now, Don't Defer to 'Later' Tickets".
+3. Cite the overlay PR(s) in the teatree PR description so reviewers can confirm the chain landed end-to-end.
 
 **Past failure mode this rule prevents.** A wave of teatree PRs added several overlay hooks. A registered overlay kept running on the no-op defaults — multiple worktrees collided on the same backend port because `get_required_ports` returned an empty set, and `worktree ready` reported green even when nothing was serving. The teatree side looked clean; the symptom only showed up downstream after weeks.
 
@@ -337,7 +337,7 @@ When the user asks for work that is actionable in the current session — a smal
 
 **Bundle Bugs Found Mid-Session into the Current PR (Non-Negotiable when in `auto` mode).**
 
-When you encounter a bug, broken behavior, or rough edge during any session — fix it on the spot, in the current MR if at all reasonable. Do not narrate the finding as a deferral, do not propose filing tickets, do not ask "should I fix this in a separate PR?" before doing the obvious work. Work unattended.
+When you encounter a bug, broken behavior, or rough edge during any session — fix it on the spot, in the current PR if at all reasonable. Do not narrate the finding as a deferral, do not propose filing tickets, do not ask "should I fix this in a separate PR?" before doing the obvious work. Work unattended.
 
 Decision rubric (apply silently — don't narrate to the user):
 
@@ -381,15 +381,15 @@ When `contribute = true` in `~/.teatree.toml`, retro findings and cross-cutting 
 
 When implementing features that require an external service (Notion, Slack, CI, etc.), ask "how do you authenticate with this service?" BEFORE writing any code. The answer (direct API token, CLI auth, MCP tool, OAuth, etc.) determines the entire architecture. Skipping this question leads to multiple implementation pivots.
 
-## Never Change MR Base Branch or Dependencies (Non-Negotiable)
+## Never Change PR Base Branch or Dependencies (Non-Negotiable)
 
-When an MR targets a non-default branch, that is intentional — it means the MR is part of a dependency chain. **Never** change an MR's target branch, rebase it onto a different base, or remove MR dependencies without explicit user instruction.
+When an PR targets a non-default branch, that is intentional — it means the PR is part of a dependency chain. **Never** change an PR's target branch, rebase it onto a different base, or remove PR dependencies without explicit user instruction.
 
 - If asked to "merge main" into a branch, merge the specified source — do not change what the branch is based on.
 - If a branch is based on another feature branch (not main/master), keep it that way.
 - If unsure about the dependency chain, **ask first**.
 
-Destroying MR dependency chains wastes hours of carefully organized work.
+Destroying PR dependency chains wastes hours of carefully organized work.
 
 ## Always Create Tasks
 
@@ -416,7 +416,7 @@ This rule does NOT override `User Instructions Are Priority 1` — explicit corr
 
 ## Publishing Actions Are Mode-Conditional (Non-Negotiable)
 
-The setting `teatree.mode` in `~/.teatree.toml` (or the `T3_MODE` env var) picks between two doctrines for publishing actions — push, MR create, MR merge, MR approve/unapprove, remote branch deletion, Slack posts, any write that leaves the local machine. The default is `interactive` (security-conservative). `auto` opts into full autonomy.
+The setting `teatree.mode` in `~/.teatree.toml` (or the `T3_MODE` env var) picks between two doctrines for publishing actions — push, PR create, PR merge, PR approve/unapprove, remote branch deletion, Slack posts, any write that leaves the local machine. The default is `interactive` (security-conservative). `auto` opts into full autonomy.
 
 ### Resolve the effective mode before every publishing decision
 
@@ -436,7 +436,7 @@ The most common failure mode is defaulting to `interactive` without performing s
 
 Commit approval ≠ push approval. **Squash approval ≠ push approval. "All done" ≠ push approval. Rebase approval ≠ force-push approval.** Always present the final state and ask "Push?" as a **separate question** after committing, squashing, or rebasing — use `AskUserQuestion`, not an inline question.
 
-- Every publishing action (push, MR create/update, MR merge, MR approve/unapprove, remote branch delete, Slack post) requires a separate explicit confirmation. "Recheck" / "re-review" / "look again" are verify-only instructions — they do **not** authorize re-approval.
+- Every publishing action (push, PR create/update, PR merge, PR approve/unapprove, remote branch delete, Slack post) requires a separate explicit confirmation. "Recheck" / "re-review" / "look again" are verify-only instructions — they do **not** authorize re-approval.
 - **Force-push (`--force-with-lease`)**: get separate explicit confirmation even if the user already approved the rebase. A rebase and a force-push are two decisions.
 
 ### Auto mode (`t3.mode = "auto"` or `T3_MODE=auto`)
@@ -444,7 +444,7 @@ Commit approval ≠ push approval. **Squash approval ≠ push approval. "All don
 The user has opted into end-to-end autonomy. The agent ships complete features without pausing for confirm prompts on the publishing actions listed above. In particular:
 
 - Push the feature branch after local quality gates pass (lint, tests, `makemigrations --dry-run --check`).
-- Open the MR, watch the pipeline, merge when green, delete the remote branch.
+- Open the PR, watch the pipeline, merge when green, delete the remote branch.
 - Post the overlay-approved Slack messages (review request, release note) as part of the normal flow.
 
 **Mode is per-overlay.** The setting can live under `[overlays.<name>]` and override the global `[teatree].mode`. A user can run `auto` mode on a personal dogfooding overlay while keeping `interactive` on a client overlay — the active overlay (resolved via `T3_OVERLAY_NAME`) determines which doctrine applies. See `BLUEPRINT.md` § 11.1.1.
@@ -495,7 +495,7 @@ When a pre-commit hook runs the full test suite and fails on tests **unrelated t
 
 **All development work MUST happen in a worktree**, never on the main clone. Use `t3 <overlay> workspace ticket` or the `using-git-worktrees` skill to create one before writing any code.
 
-**Pre-edit check — before editing ANY project file:** If the file path lives directly under `$T3_WORKSPACE_DIR/<repo>/` (not under a ticket subdirectory like `$T3_WORKSPACE_DIR/<ticket>/<repo>/`), **stop** — you are in the main clone. Find or create the correct worktree first via `t3 <overlay> workspace ticket`. The main clone may happen to be on the MR branch (from a previous checkout) — editing there "works" but pollutes the shared clone, risks merge conflicts for other worktrees, and violates isolation.
+**Pre-edit check — before editing ANY project file:** If the file path lives directly under `$T3_WORKSPACE_DIR/<repo>/` (not under a ticket subdirectory like `$T3_WORKSPACE_DIR/<ticket>/<repo>/`), **stop** — you are in the main clone. Find or create the correct worktree first via `t3 <overlay> workspace ticket`. The main clone may happen to be on the PR branch (from a previous checkout) — editing there "works" but pollutes the shared clone, risks merge conflicts for other worktrees, and violates isolation.
 
 **Pre-commit check — before running `git commit` (Non-Negotiable):** Run `git rev-parse --show-toplevel`. If the result is the main clone (e.g., `$T3_REPO`, `~/workspace/<repo>/<repo>` — i.e. NOT a `$T3_WORKSPACE_DIR/<ticket>/<repo>` path), **abort the commit**. Do not proceed to commit on `main` or any default branch in the main clone, even if the staged changes are already there from a prior session. Recovery path:
 
@@ -520,4 +520,4 @@ Assume another agent may be modifying the same repo concurrently. Never `git sta
 
 ## GitLab Inline Comments
 
-When posting inline MR comments, target **added lines only** — not context or unchanged lines.
+When posting inline PR comments, target **added lines only** — not context or unchanged lines.

@@ -124,7 +124,7 @@ After TDD and commit, frontend changes that affect UI behavior need E2E tests as
 
 ### 5c. Mass-Rename / Cross-Cutting Refactor Verification (Non-Negotiable)
 
-When the task is a rename, type-renaming, key-renaming, or any refactor that should remove **every occurrence** of an old name across the repo, the agent **must not declare "done" on the strength of a single grep iteration**. souliane/teatree#545's MR→PR rename produced four false-completion claims in a row (test files missed, single-quoted `'mrs'` missed, error message strings missed, `_infer_state_from_mrs` class name missed) because each pass was driven by a narrow grep that didn't cover all the surface forms.
+When the task is a rename, type-renaming, key-renaming, or any refactor that should remove **every occurrence** of an old name across the repo, the agent **must not declare "done" on the strength of a single grep iteration**. souliane/teatree#545's PR→PR rename produced four false-completion claims in a row (test files missed, single-quoted `'mrs'` missed, error message strings missed, `_infer_state_from_mrs` class name missed) because each pass was driven by a narrow grep that didn't cover all the surface forms.
 
 **Before claiming a rename is finished, run an exhaustive sweep that covers every surface form the old name can take:**
 
@@ -147,7 +147,7 @@ When the task is a rename, type-renaming, key-renaming, or any refactor that sho
 3. **Compound and CamelCase forms** — the old name may be embedded:
 
    ```bash
-   # If renaming MergeRequest → PullRequest, also catch MR/MREntry/_check_mr/list_open_mrs/MergeRequestSpec
+   # If renaming MergeRequest → PullRequest, also catch PR/MREntry/_check_mr/list_open_mrs/MergeRequestSpec
    rg -ni '\b(<OLD_SHORT>|<OLD_LONG>|<OLD_VARIANT_1>|<OLD_VARIANT_2>)\b'
    ```
 

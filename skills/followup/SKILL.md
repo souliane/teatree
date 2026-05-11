@@ -118,13 +118,13 @@ If not found in the external tracker, log a warning but continue — not all tic
 1. **Intake** (`/t3:ticket`): Fetch issue, create worktree (`t3 <overlay> workspace ticket`), run `t3 <overlay> worktree provision`, verify environment.
 2. **Implementation** (`/t3:code`): Implement with TDD. Check ALL repos in scope.
 3. **Testing** (`/t3:test`): Run tests, fix failures, ensure lint passes.
-4. **Delivery** (`/t3:ship`): Commit, push, create MRs for ALL repos with changes.
+4. **Delivery** (`/t3:ship`): Commit, push, create PRs for ALL repos with changes.
 
 **c. Report result** before moving to the next ticket:
 
 ```text
 ✓ #{IID} — {TITLE}
-  MRs: !123 (backend-repo), !456 (frontend-repo)
+  PRs: !123 (backend-repo), !456 (frontend-repo)
 ```
 
 **d. Proceed to next ticket.** Lessons from one ticket carry into the next.
@@ -149,7 +149,7 @@ Before running transition checks (§9) or status check mode (§10), ensure `$T3_
 
 1. **Detect repos.** List repos the user works in — scan `$T3_WORKSPACE_DIR` for known repo directories (e.g., `backend-api`, `frontend-app`), or use a configured repo list from the project overlay.
 
-2. **List open PRs.** For each repo, list all open, non-draft MRs authored by the current user (see [issue tracker platform reference](../platforms/references/) § "List MRs").
+2. **List open PRs.** For each repo, list all open, non-draft PRs authored by the current user (see [issue tracker platform reference](../platforms/references/) § "List PRs").
 
 3. **Extract ticket IID.** Parse the source branch name for the ticket number (first `\d+` match after the branch prefix). Skip PRs with no extractable ticket number.
 
@@ -173,7 +173,7 @@ After all tickets are processed (or when invoked in "check status" mode), scan i
 
 For each ticket with `Process::Doing`:
 
-1. List all MRs for the ticket's branch (via `ticket_get_mrs` extension point or the issue tracker CLI).
+1. List all PRs for the ticket's branch (via `ticket_get_mrs` extension point or the issue tracker CLI).
 2. Check `$T3_DATA_DIR/tickets/<iid>/mr_review_messages.json` for cached review request messages. See your [chat platform reference](../platforms/references/) § "Caching Chat Data".
 3. For PRs without a cache entry, search the team chat for the PR URL. Cache any results found.
 4. If ALL PRs have a review request message → transition the ticket.
@@ -182,7 +182,7 @@ For each ticket with `Process::Doing`:
 
 For each ticket with `Process::Technical Review`:
 
-1. Check if ALL associated MRs are merged (query PR state via the issue tracker CLI).
+1. Check if ALL associated PRs are merged (query PR state via the issue tracker CLI).
 2. Call `ticket_check_deployed` extension point to verify deployment to target environment.
 3. If all merged AND deployed → transition the ticket.
 
@@ -206,24 +206,24 @@ When invoked with "check status", "check tickets", or "advance tickets" (without
 
 | Ticket | Current Status | Gate | Ready? | Action |
 |--------|---------------|------|--------|--------|
-| #8166 | Doing | All MRs reviewed? | Yes (2/2) | → Technical Review |
+| #8166 | Doing | All PRs reviewed? | Yes (2/2) | → Technical Review |
 | #8170 | Technical Review | Merged + deployed? | Partial (merged, not deployed) | Waiting |
 
 5. Ask user confirmation before executing transitions.
 
 ### 11. PR Review Reminders
 
-Daily nudge for MRs that were sent for review but haven't been approved yet. Designed for daily use — caches aggressively to avoid redundant API calls.
+Daily nudge for PRs that were sent for review but haven't been approved yet. Designed for daily use — caches aggressively to avoid redundant API calls.
 
-#### 11a. Discover Unapproved MRs
+#### 11a. Discover Unapproved PRs
 
 For each repo the user works in:
 
-List all user's open PRs across repos, then filter to those that are **open**, **not draft**, **not yet approved**. See your [issue tracker platform reference](../platforms/references/) § "List MRs" and § "Check Approval Status" for CLI recipes.
+List all user's open PRs across repos, then filter to those that are **open**, **not draft**, **not yet approved**. See your [issue tracker platform reference](../platforms/references/) § "List PRs" and § "Check Approval Status" for CLI recipes.
 
 Also check for colleague comments (exclude system notes and author's own) via the PR notes API.
 
-**Cache PR metadata** in `$T3_DATA_DIR/mr_reminders.json` — see your [chat platform reference](../platforms/references/) § "MR Reminder Cache" for the format.
+**Cache PR metadata** in `$T3_DATA_DIR/mr_reminders.json` — see your [chat platform reference](../platforms/references/) § "PR Reminder Cache" for the format.
 
 Populate `original_review_permalink` from `$T3_DATA_DIR/tickets/<iid>/mr_review_messages.json`. If not cached there, search the team chat for the PR URL and cache the result.
 
@@ -231,24 +231,24 @@ Populate `original_review_permalink` from `$T3_DATA_DIR/tickets/<iid>/mr_review_
 
 #### 11b. Group by Channel and Present
 
-Group remaining MRs by their review channel. Present the filtered list:
+Group remaining PRs by their review channel. Present the filtered list:
 
-| # | Channel | MR | Pipeline | Title |
+| # | Channel | PR | Pipeline | Title |
 |---|---------|-----|----------|-------|
 | 1 | #code-review | !123 | success | feat: add login |
 | 2 | #code-review | !456 | success | fix: resolve timeout |
 
-Do **not** ask for confirmation on each PR individually — the auto-filtering already removed ineligible MRs. Present the full list once and ask the user to confirm or exclude specific MRs. Then post all confirmed MRs as **draft messages** (one per MR or grouped per ticket if multiple MRs belong to the same ticket).
+Do **not** ask for confirmation on each PR individually — the auto-filtering already removed ineligible PRs. Present the full list once and ask the user to confirm or exclude specific PRs. Then post all confirmed PRs as **draft messages** (one per PR or grouped per ticket if multiple PRs belong to the same ticket).
 
 **Never post without explicit approval of the batch.**
 
 #### 11c. Post Reminders
 
-For each channel with MRs to remind:
+For each channel with PRs to remind:
 
-1. **Post one message** to the channel: "Hey team, I have MRs waiting for review. Could you please have a look?"
+1. **Post one message** to the channel: "Hey team, I have PRs waiting for review. Could you please have a look?"
 
-2. **Reply in thread** — one message per MR, posting the **clean PR title as a link to the original review request** (not the PR URL). Strip feature flag tags (`[flag_name]`) and ticket URLs from the title. This keeps all discussion in the original review thread.
+2. **Reply in thread** — one message per PR, posting the **clean PR title as a link to the original review request** (not the PR URL). Strip feature flag tags (`[flag_name]`) and ticket URLs from the title. This keeps all discussion in the original review thread.
 
 3. **Update cache:** set `last_reminded` to today's date in `$T3_DATA_DIR/mr_reminders.json`.
 
@@ -256,7 +256,7 @@ See your [chat platform reference](../platforms/references/) for known limitatio
 
 #### 11d. Cleanup
 
-After posting (or during any follow-up invocation), remove entries from `mr_reminders.json` where the MR is now approved or merged. This keeps the cache file small.
+After posting (or during any follow-up invocation), remove entries from `mr_reminders.json` where the PR is now approved or merged. This keeps the cache file small.
 
 ### 12. Data Sync (First Action on Every Load)
 
@@ -271,8 +271,8 @@ Internally the command:
 1. Discovers open PRs across all configured repos.
 2. Enriches each entry with pipeline status, approvals, and colleague comments.
 3. Fetches issue labels for linked tickets.
-4. Detects MRs merged since the last run and logs them.
-5. Cleans review tracking entries for merged MRs.
+4. Detects PRs merged since the last run and logs them.
+5. Cleans review tracking entries for merged PRs.
 
 **During long sessions:** Also re-run data sync after significant events (ticket completed, PR pushed, context switch) — don't wait for the next explicit `/t3:followup` invocation.
 

@@ -16,8 +16,8 @@ Automated status transitions move tickets through the delivery pipeline based on
 | From | To | Gate (all must be true) |
 |---|---|---|
 | Not started | Doing | Follow-up starts ticket |
-| Doing | Technical Review | All MRs have review request messages |
-| Technical Review | DEV Review | All MRs merged to default branch AND deployed to target env |
+| Doing | Technical Review | All PRs have review request messages |
+| Technical Review | DEV Review | All PRs merged to default branch AND deployed to target env |
 
 Platform-specific label/status mappings are in the [platform reference files](../../platforms/references/) (e.g., `gitlab.md` § "Transition Logic").
 
@@ -27,19 +27,19 @@ Each transition also calls `ticket_update_external_tracker` (extension point) fo
 
 ### Doing → Technical Review
 
-1. List all open MRs for the ticket's branch across all repos.
+1. List all open PRs for the ticket's branch across all repos.
 2. For each PR, check `$T3_DATA_DIR/tickets/<iid>/mr_review_messages.json` for a cached review request permalink.
-3. For any MR without a cached entry, search the team chat for the MR URL. See your [chat platform reference](../../platforms/references/) § "Search for Messages".
+3. For any PR without a cached entry, search the team chat for the PR URL. See your [chat platform reference](../../platforms/references/) § "Search for Messages".
 4. If found, cache the permalink in `mr_review_messages.json`.
-5. If ALL MRs have a review request message → transition is ready.
+5. If ALL PRs have a review request message → transition is ready.
 
 This works regardless of whether the review was requested via t3:review-request or manually.
 
 ### Technical Review → DEV Review
 
-1. For each PR associated with the ticket, check if it's merged (MR state = "merged").
+1. For each PR associated with the ticket, check if it's merged (PR state = "merged").
 2. Call `ticket_check_deployed` extension point — project skill checks if the merged code is deployed to the target environment.
-3. Both conditions must be true for ALL MRs → transition is ready.
+3. Both conditions must be true for ALL PRs → transition is ready.
 
 ## Extension Points
 
@@ -47,7 +47,7 @@ This works regardless of whether the review was requested via t3:review-request 
 |---|---|---|
 | `ticket_check_deployed` | Return False | Project-specific deployment detection (CI pipeline, GCP, k8s, etc.) |
 | `ticket_update_external_tracker` | No-op (log "no external tracker configured") | Notion/Jira status updates |
-| `ticket_get_mrs` | List MRs by branch name via issue tracker CLI | Custom PR discovery (multi-repo, naming conventions) |
+| `ticket_get_mrs` | List PRs by branch name via issue tracker CLI | Custom PR discovery (multi-repo, naming conventions) |
 
 ## Transition Logic
 

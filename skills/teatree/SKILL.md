@@ -55,7 +55,7 @@ t3 <overlay> worktree status         # Show worktree state
 t3 <overlay> worktree teardown       # Stop services, clean up
 t3 <overlay> tasks work-next-sdk      # Claim and execute next headless task
 t3 <overlay> tasks work-next-user-input  # Claim and launch next interactive task
-t3 <overlay> followup sync            # Daily ticket/MR sync
+t3 <overlay> followup sync            # Daily ticket/PR sync
 ```
 
 ## Key Models

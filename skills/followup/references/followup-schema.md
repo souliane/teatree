@@ -28,7 +28,7 @@ The followup cache at `$T3_DATA_DIR/followup.json` is the single source of truth
       "review_channel": "#channel-name",
       "review_permalink": "Chat permalink or null",
       "review_comments": { "status": "addressed|pending|null", "details": "..." },
-      "e2e_test_plan_url": "URL to MR comment with test plan, or null",
+      "e2e_test_plan_url": "URL to PR comment with test plan, or null",
       "approvals": { "count": 0, "required": 1 },
       "skipped": false,
       "skip_reason": null
@@ -45,7 +45,7 @@ The followup cache at `$T3_DATA_DIR/followup.json` is the single source of truth
     "<repo>!<iid>": {
       "url": "PR web URL",
       "repo": "Repository short name",
-      "title": "MR title (without Draft: prefix)",
+      "title": "PR title (without Draft: prefix)",
       "pipeline_status": "success|failed|running|pending|null",
       "pipeline_url": "URL or null"
     }
