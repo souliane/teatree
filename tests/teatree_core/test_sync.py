@@ -9,6 +9,15 @@ from django.test import TestCase
 import teatree.core.overlay_loader as overlay_loader_mod
 from teatree.backends.gitlab_api import ProjectInfo
 from teatree.backends.gitlab_sync import GitLabSyncBackend
+from teatree.backends.gitlab_sync_issues import extract_variant, fetch_issue_labels, process_label, resolve_issue
+from teatree.backends.gitlab_sync_prs import (
+    classify_discussions,
+    detect_e2e_evidence,
+    extract_issue_url,
+    infer_state_from_prs,
+    merge_ticket_extras,
+    update_ticket,
+)
 from teatree.backends.gitlab_sync_terminal import apply_closed_status, apply_merged_status
 from teatree.backends.slack_review_sync import fetch_review_permalinks
 from teatree.core.models import Ticket, Worktree
@@ -334,10 +343,10 @@ class TestPREntry:
 
 class TestExtractIssueUrl:
     def test_from_description(self) -> None:
-        assert GitLabSyncBackend._extract_issue_url(_MR_WITH_ISSUE) == "https://gitlab.com/org/repo/-/issues/100"
+        assert extract_issue_url(_MR_WITH_ISSUE) == "https://gitlab.com/org/repo/-/issues/100"
 
     def test_returns_empty_when_none(self) -> None:
-        assert GitLabSyncBackend._extract_issue_url(_MR_WITHOUT_ISSUE) == ""
+        assert extract_issue_url(_MR_WITHOUT_ISSUE) == ""
 
 
 class TestExtractVariant:
@@ -345,55 +354,55 @@ class TestExtractVariant:
         """_extract_variant returns the matching known variant (line 424)."""
         overlay = SyncOverlay(known_variants=["Acme", "BigCorp"])
         with _patch_overlay(overlay):
-            result = GitLabSyncBackend._extract_variant(["Bug", "acme", "Priority::High"])
+            result = extract_variant(["Bug", "acme", "Priority::High"])
         assert result == "Acme"
 
     def test_returns_empty_for_unknown(self) -> None:
         """_extract_variant returns '' when no label matches."""
         overlay = SyncOverlay(known_variants=["Acme"])
         with _patch_overlay(overlay):
-            result = GitLabSyncBackend._extract_variant(["Bug", "Priority::High"])
+            result = extract_variant(["Bug", "Priority::High"])
         assert result == ""
 
 
 class TestProcessLabel:
     def test_returns_none_for_non_process_labels(self) -> None:
         """Labels without Process:: prefix should yield None."""
-        assert GitLabSyncBackend._process_label(["Priority::High", "Bug"]) is None
+        assert process_label(["Priority::High", "Bug"]) is None
 
     def test_returns_none_for_empty_labels(self) -> None:
-        assert GitLabSyncBackend._process_label([]) is None
+        assert process_label([]) is None
 
 
 class TestInferStateFromPrs:
     def test_empty_prs(self) -> None:
-        assert GitLabSyncBackend._infer_state_from_prs({}) == Ticket.State.NOT_STARTED
+        assert infer_state_from_prs({}) == Ticket.State.NOT_STARTED
 
     def test_corrupted_mrs(self) -> None:
-        assert GitLabSyncBackend._infer_state_from_prs({"x": "not-a-dict"}) == Ticket.State.NOT_STARTED
+        assert infer_state_from_prs({"x": "not-a-dict"}) == Ticket.State.NOT_STARTED
 
     def test_draft_mr(self) -> None:
         mrs = {"url1": {"draft": True}}
-        assert GitLabSyncBackend._infer_state_from_prs(mrs) == Ticket.State.STARTED
+        assert infer_state_from_prs(mrs) == Ticket.State.STARTED
 
     def test_non_draft_mr(self) -> None:
         mrs = {"url1": {"draft": False}}
-        assert GitLabSyncBackend._infer_state_from_prs(mrs) == Ticket.State.SHIPPED
+        assert infer_state_from_prs(mrs) == Ticket.State.SHIPPED
 
     def test_mr_with_approvals(self) -> None:
         mrs = {"url1": {"draft": False, "approvals": {"count": 1, "required": 1}}}
-        assert GitLabSyncBackend._infer_state_from_prs(mrs) == Ticket.State.IN_REVIEW
+        assert infer_state_from_prs(mrs) == Ticket.State.IN_REVIEW
 
     def test_mr_with_review_requested(self) -> None:
         mrs = {"url1": {"draft": False, "review_requested": True}}
-        assert GitLabSyncBackend._infer_state_from_prs(mrs) == Ticket.State.IN_REVIEW
+        assert infer_state_from_prs(mrs) == Ticket.State.IN_REVIEW
 
     def test_picks_highest_across_mrs(self) -> None:
         mrs = {
             "url1": {"draft": True},  # STARTED
             "url2": {"draft": False, "approvals": {"count": 1, "required": 1}},  # IN_REVIEW
         }
-        assert GitLabSyncBackend._infer_state_from_prs(mrs) == Ticket.State.IN_REVIEW
+        assert infer_state_from_prs(mrs) == Ticket.State.IN_REVIEW
 
     def test_second_mr_does_not_advance_when_lower(self) -> None:
         """When second MR infers a lower state than the first, best stays unchanged."""
@@ -402,24 +411,24 @@ class TestInferStateFromPrs:
             "url2": {"draft": True},  # STARTED (lower)
         }
         # Should pick the highest: IN_REVIEW
-        assert GitLabSyncBackend._infer_state_from_prs(mrs) == Ticket.State.IN_REVIEW
+        assert infer_state_from_prs(mrs) == Ticket.State.IN_REVIEW
 
 
 class TestClassifyDiscussions:
     def test_skips_non_dict_entries(self) -> None:
-        result = GitLabSyncBackend._classify_discussions(["not-a-dict", 42], "me")
+        result = classify_discussions(["not-a-dict", 42], "me")
         assert result == []
 
     def test_skips_individual_notes(self) -> None:
-        result = GitLabSyncBackend._classify_discussions([{"individual_note": True, "notes": [{"body": "x"}]}], "me")
+        result = classify_discussions([{"individual_note": True, "notes": [{"body": "x"}]}], "me")
         assert result == []
 
     def test_skips_empty_notes(self) -> None:
-        result = GitLabSyncBackend._classify_discussions([{"notes": []}], "me")
+        result = classify_discussions([{"notes": []}], "me")
         assert result == []
 
     def test_skips_non_list_notes(self) -> None:
-        result = GitLabSyncBackend._classify_discussions([{"notes": "not-a-list"}], "me")
+        result = classify_discussions([{"notes": "not-a-list"}], "me")
         assert result == []
 
     def test_addressed_when_all_resolved(self) -> None:
@@ -430,7 +439,7 @@ class TestClassifyDiscussions:
                 ],
             },
         ]
-        result = GitLabSyncBackend._classify_discussions(discussions, "me")
+        result = classify_discussions(discussions, "me")
         assert len(result) == 1
         assert result[0] == DiscussionSummary(status="addressed", detail="Fix this")
 
@@ -443,7 +452,7 @@ class TestClassifyDiscussions:
                 ],
             },
         ]
-        result = GitLabSyncBackend._classify_discussions(discussions, "me")
+        result = classify_discussions(discussions, "me")
         assert len(result) == 1
         assert result[0].status == "waiting_reviewer"
 
@@ -455,7 +464,7 @@ class TestClassifyDiscussions:
                 ],
             },
         ]
-        result = GitLabSyncBackend._classify_discussions(discussions, "me")
+        result = classify_discussions(discussions, "me")
         assert len(result) == 1
         assert result[0].status == "needs_reply"
 
@@ -469,7 +478,7 @@ class TestClassifyDiscussions:
                 ],
             },
         ]
-        result = GitLabSyncBackend._classify_discussions(discussions, "me")
+        result = classify_discussions(discussions, "me")
         assert result[0].status == "needs_reply"
 
     def test_non_dict_first_note_body(self) -> None:
@@ -482,7 +491,7 @@ class TestClassifyDiscussions:
                 ],
             },
         ]
-        result = GitLabSyncBackend._classify_discussions(discussions, "me")
+        result = classify_discussions(discussions, "me")
         assert result[0].detail == ""  # first_body from non-dict is ""
 
 
@@ -516,7 +525,7 @@ class TestUpdateTicket(TestCase):
         }
 
         mr_url = "https://gitlab.com/org/repo/-/merge_requests/50"
-        GitLabSyncBackend._update_ticket(ticket, new_mr_entry, mr_url, "repo")
+        update_ticket(ticket, new_mr_entry, mr_url, "repo")
 
         ticket.refresh_from_db()
         mr = ticket.extra["prs"]["https://gitlab.com/org/repo/-/merge_requests/50"]
@@ -541,7 +550,7 @@ class TestMergeTicketExtras(TestCase):
             repos=["repo-b"],
             extra={"prs": {"https://mr/2": {"title": "MR 2"}}},
         )
-        GitLabSyncBackend._merge_ticket_extras(target, source)
+        merge_ticket_extras(target, source)
         target.refresh_from_db()
 
         assert "https://mr/1" in target.extra["prs"]
@@ -563,7 +572,7 @@ class TestMergeTicketExtras(TestCase):
             repos=["repo-b"],
             extra={"prs": ["also-corrupt"]},
         )
-        GitLabSyncBackend._merge_ticket_extras(target, source)
+        merge_ticket_extras(target, source)
         target.refresh_from_db()
         assert target.repos == ["repo-a", "repo-b"]
 
@@ -581,7 +590,7 @@ class TestMergeTicketExtras(TestCase):
             repos=["repo-b", "repo-c"],
             extra={"prs": {"https://mr/1": {"title": "MR 1 dup"}, "https://mr/3": {"title": "MR 3"}}},
         )
-        GitLabSyncBackend._merge_ticket_extras(target, source)
+        merge_ticket_extras(target, source)
         target.refresh_from_db()
 
         assert target.extra["prs"]["https://mr/1"]["title"] == "MR 1"
@@ -788,7 +797,7 @@ class TestResolveIssueHandles404:
             request=MagicMock(),
             response=MagicMock(status_code=404),
         )
-        result = GitLabSyncBackend._resolve_issue(client, "https://gitlab.com/org/repo/-/issues/123")
+        result = resolve_issue(client, "https://gitlab.com/org/repo/-/issues/123")
         assert result is None
 
     def test_returns_issue_on_success(self) -> None:
@@ -799,7 +808,7 @@ class TestResolveIssueHandles404:
             short_name="repo",
         )
         client.get_issue.return_value = {"id": 123, "title": "Test issue", "labels": []}
-        result = GitLabSyncBackend._resolve_issue(client, "https://gitlab.com/org/repo/-/issues/123")
+        result = resolve_issue(client, "https://gitlab.com/org/repo/-/issues/123")
         assert result is not None
         assert result[0]["title"] == "Test issue"
 
@@ -824,7 +833,7 @@ class TestTracker404Memoization(TestCase):
     def test_resolve_issue_marks_ticket_on_404(self) -> None:
         ticket = Ticket.objects.create(issue_url="https://gitlab.com/org/repo/-/issues/123")
 
-        result = GitLabSyncBackend._resolve_issue(self._client_returning_404(), ticket.issue_url, ticket=ticket)
+        result = resolve_issue(self._client_returning_404(), ticket.issue_url, ticket=ticket)
 
         assert result is None
         ticket.refresh_from_db()
@@ -833,7 +842,7 @@ class TestTracker404Memoization(TestCase):
     def test_resolve_issue_does_not_mark_when_ticket_omitted(self) -> None:
         client = self._client_returning_404()
 
-        result = GitLabSyncBackend._resolve_issue(client, "https://gitlab.com/org/repo/-/issues/123")
+        result = resolve_issue(client, "https://gitlab.com/org/repo/-/issues/123")
 
         assert result is None  # original behavior preserved when no ticket is passed
 
@@ -851,7 +860,7 @@ class TestTracker404Memoization(TestCase):
         )
         client.get_issue.return_value = {"id": 124, "title": "Live", "labels": []}
 
-        GitLabSyncBackend._fetch_issue_labels(client, SyncResult())
+        fetch_issue_labels(client, SyncResult())
 
         called_iids = [call.kwargs.get("issue_iid") or call.args[1] for call in client.get_issue.call_args_list]
         assert called_iids == [124]
@@ -873,23 +882,23 @@ class TestDetectE2EEvidence:
                 ],
             },
         ]
-        url = GitLabSyncBackend._detect_e2e_evidence(discussions, "https://gitlab.com/org/repo/-/merge_requests/1")
+        url = detect_e2e_evidence(discussions, "https://gitlab.com/org/repo/-/merge_requests/1")
         assert url == "https://gitlab.com/org/repo/-/merge_requests/1#note_42"
 
     def test_skips_keyword_without_image(self) -> None:
         discussions = [{"notes": [{"id": 1, "body": "E2E tests look good"}]}]
-        assert GitLabSyncBackend._detect_e2e_evidence(discussions, "https://example.com") == ""
+        assert detect_e2e_evidence(discussions, "https://example.com") == ""
 
     def test_skips_image_without_keyword(self) -> None:
         discussions = [{"notes": [{"id": 1, "body": "![logo](/uploads/logo.png)"}]}]
-        assert GitLabSyncBackend._detect_e2e_evidence(discussions, "https://example.com") == ""
+        assert detect_e2e_evidence(discussions, "https://example.com") == ""
 
     def test_empty_discussions(self) -> None:
-        assert GitLabSyncBackend._detect_e2e_evidence([], "https://example.com") == ""
+        assert detect_e2e_evidence([], "https://example.com") == ""
 
     def test_non_dict_entries_skipped(self) -> None:
         bad_input: list[RawAPIDict] = ["not-a-dict"]  # type: ignore[list-item]
-        assert GitLabSyncBackend._detect_e2e_evidence(bad_input, "https://example.com") == ""
+        assert detect_e2e_evidence(bad_input, "https://example.com") == ""
 
 
 class TestApplyMergedStatusAllMerged(TestCase):

@@ -171,8 +171,10 @@ src/teatree/
     gitlab.py           # GitLab API client + GitLabCodeHost (translates MR ↔ PR)
     gitlab_api.py       # Low-level GitLab REST helpers
     gitlab_ci.py        # GitLabCIService — implements CIService
-    gitlab_sync.py      # GitLabSyncBackend — consumes CodeHostBackend
-    gitlab_sync_approvals.py / gitlab_sync_terminal.py  # GitLab-specific sync helpers
+    gitlab_sync.py      # GitLabSyncBackend orchestrator — thin, delegates to modules below
+    gitlab_sync_prs.py  # PR building, upserting, discussion parsing
+    gitlab_sync_issues.py  # Issue fetching, label resolution, variant extraction
+    gitlab_sync_approvals.py / gitlab_sync_terminal.py  # Approval and terminal-state sync helpers
     slack.py            # Slack API client (httpx wrapper for SlackBotBackend)
     slack_bot.py        # SlackBotBackend — Socket Mode messaging client (implements MessagingBackend)
     slack_reactions.py  # Reaction helpers used by transition signals
