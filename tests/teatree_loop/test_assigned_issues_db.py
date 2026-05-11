@@ -135,13 +135,12 @@ class AssignedIssuesAutoStartTests(TestCase):
         signals = self._scanner(host, max_concurrent=1).scan()
         assert [s.payload["url"] for s in signals] == [self.READY_URL_A]
 
-    def test_notify_mode_skips_db_lookup_and_dedup(self) -> None:
+    def test_notify_mode_dedupes_against_tracked_tickets(self) -> None:
         Ticket.objects.create(overlay=self.OVERLAY, issue_url=self.READY_URL_A, state=Ticket.State.STARTED)
         host = _Host(issues=[self._ready_issue(self.READY_URL_A)])
         scanner = AssignedIssuesScanner(host=host, ready_labels=("ready",), auto_start=False, overlay_name=self.OVERLAY)
         signals = scanner.scan()
-        assert [s.payload["url"] for s in signals] == [self.READY_URL_A]
-        assert signals[0].payload["auto_start"] is False
+        assert signals == []
 
     def test_payload_carries_auto_start_true_in_auto_mode(self) -> None:
         host = _Host(issues=[self._ready_issue(self.READY_URL_A)])
