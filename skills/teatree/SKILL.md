@@ -40,11 +40,14 @@ Each phase maps to a skill (`t3:ticket`, `t3:code`, etc.). The `Session` model t
 
 ## CLI Reference
 
-Top-level commands (no overlay needed): `t3 ci`, `t3 review`, `t3 doctor`, `t3 tool`, `t3 assess`, `t3 setup`, `t3 info`.
+Top-level commands (no overlay needed): `t3 loop`, `t3 ci`, `t3 review`, `t3 doctor`, `t3 tool`, `t3 assess`, `t3 setup`, `t3 info`.
 
 Overlay-scoped commands require `t3 <overlay> <subcommand>` (e.g., `t3 teatree`):
 
 ```bash
+t3 loop start                         # Spawn Claude Code session with the fat loop
+t3 loop tick                          # Run one loop tick (scans all overlays)
+t3 loop status                        # Show the loop's last-rendered statusline
 t3 <overlay> resetdb                  # Drop and recreate the SQLite database
 t3 <overlay> worktree provision          # Provision worktree (ports, DB, overlay steps)
 t3 <overlay> worktree start          # Start dev servers
