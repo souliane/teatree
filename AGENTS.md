@@ -27,7 +27,7 @@ It provides:
 - An overlay system for downstream project customization (`OverlayBase`)
 - Backend protocols for pluggable external integrations
 - Agent workflow skills (`skills/*/`) for the full development lifecycle
-- A dashboard (django-htmx) for monitoring tickets, tasks, and agent sessions
+- A statusline-based monitoring surface for tickets, PRs, and agent sessions
 
 ## Repo Layout
 
@@ -39,12 +39,12 @@ src/teatree/           Python package (the Django app + CLI)
   skill_deps.py        Transitive dependency and companion resolution
   core/                Django app: models, managers, views, selectors, management commands
     models/            Ticket, Worktree, Session, Task, TaskAttempt (FSM states)
-    selectors/         Selector functions for dashboard views (no domain logic in views)
+    selectors/         Selector functions (no domain logic in views)
     overlay.py         OverlayBase ABC — extension point for downstream projects
     overlay_loader.py  Loads the active overlay class from Django settings
     management/commands/  Django-typer commands (lifecycle, workspace, db, run, followup, pr, tasks)
-    views/             Dashboard views (dashboard.py, launch.py, actions.py)
-    templates/         HTMX-driven dashboard templates
+    views/             Admin views
+    templates/         Django admin templates
   backends/            Pluggable service integrations
     protocols.py       Protocol classes (CodeHost, CIService, IssueTracker, ChatNotifier, ErrorTracker)
     loader.py          Settings-driven backend loader (import_string, lru_cache)
@@ -67,7 +67,6 @@ src/teatree/           Python package (the Django app + CLI)
   overlay_init/        `t3 startoverlay` templates (overlay package + app)
 skills/*/              Workflow skills (SKILL.md + references/)
 tests/                 Pytest suite (>90% coverage required)
-e2e/                   Playwright E2E tests for dashboard
 scripts/               Standalone Python CLI scripts
 hooks/                 Agent platform hooks (Claude Code hook_router, statusline, etc.)
 ```
@@ -209,26 +208,9 @@ SDK tasks run `claude -p <prompt> --append-system-prompt <context> --output-form
 
 Skills in `skills/*/` are loaded via the plugin system (see `hooks/hooks.json`) or installed as symlinks into agent skill directories. Skills with "Auto-loaded as a dependency" descriptions are not user-invocable — loaded via `requires:` in other skills' frontmatter.
 
-## Dashboard
+## Statusline
 
-Selector-backed views with django-htmx. No domain logic in views.
-
-**Panels** (auto-refresh via HTMX):
-
-- Runtime Summary — counter cards (in-flight tickets, active worktrees, pending SDK/user-input tasks)
-- In-Flight Tickets — table with MR data, pipeline status, approvals, Auto/Interactive task creation buttons
-- Sessions — unified panel showing tasks, running processes, and activity with filter tabs (All/Running/Queued/Completed/Failed)
-
-**CSS conventions:** Use `.pill` / `.pill-btn` classes defined in `dashboard.html <style>` for all badges and buttons. These enforce `whitespace-nowrap` globally. Sizes: `pill pill-sm` (standard badges), `pill pill-xs` (small badges), `pill-btn pill-xs` (action buttons). Only add color/border as Tailwind utilities alongside the CSS class — never inline the full utility pattern.
-
-**Endpoints:**
-
-- `GET /` — full dashboard
-- `GET /dashboard/panels/<panel>/` — HTMX panel refresh (requires HX-Request header)
-- `POST /dashboard/sync/` — trigger followup sync
-- `POST /tasks/<id>/launch/` — claim and execute (SDK) or launch ttyd (interactive)
-- `POST /tasks/<id>/cancel/` — cancel task (sets to FAILED)
-- `POST /tickets/<id>/create-task/` — create SDK or user_input task
+The persistent UI surface is a multi-line statusline rendered by `t3 loop tick`. Each zone (action_needed, in_flight, info) gets a distinct color. PR URLs render as terminal hyperlinks (OSC 8). `t3 loop status` shows the last-rendered output.
 
 ## Development Workflow
 
