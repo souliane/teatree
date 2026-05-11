@@ -82,6 +82,7 @@ class AssignedIssuesScanner:
 
     host: CodeHostBackend
     ready_labels: tuple[str, ...] = field(default_factory=tuple)
+    exclude_labels: tuple[str, ...] = field(default_factory=tuple)
     auto_start: bool = False
     max_concurrent: int = 1
     overlay_name: str = ""
@@ -103,6 +104,8 @@ class AssignedIssuesScanner:
         for issue in issues:
             labels = _issue_labels(issue)
             if self.ready_labels and not any(label in labels for label in self.ready_labels):
+                continue
+            if self.exclude_labels and any(label in labels for label in self.exclude_labels):
                 continue
             url = _issue_url(issue)
             if self.auto_start and url and url in tracked:

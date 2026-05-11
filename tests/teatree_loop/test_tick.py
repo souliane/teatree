@@ -176,6 +176,75 @@ def test_build_default_jobs_tags_per_overlay() -> None:
     assert len(pending) == 1  # singleton across overlays
 
 
+def test_zones_groups_disposition_candidates_by_reason(tmp_path: Path) -> None:
+    from teatree.loop.dispatch import DispatchAction  # noqa: PLC0415
+    from teatree.loop.tick import _zones_for  # noqa: PLC0415
+
+    actions = [
+        DispatchAction(
+            kind="statusline",
+            zone="action_needed",
+            detail="Ticket 55 — issue_closed",
+            payload={"reason": "issue_closed", "overlay": "teatree"},
+        ),
+        DispatchAction(
+            kind="statusline",
+            zone="action_needed",
+            detail="Ticket 114 — issue_closed",
+            payload={"reason": "issue_closed", "overlay": "teatree"},
+        ),
+        DispatchAction(
+            kind="statusline",
+            zone="action_needed",
+            detail="Ticket 12 — unassigned",
+            payload={"reason": "unassigned", "overlay": "teatree"},
+        ),
+    ]
+    zones = _zones_for(actions)
+    texts = [item if isinstance(item, str) else item.text for item in zones.action_needed]
+    assert len(texts) == 1
+    assert "2 closed issues" in texts[0]
+    assert "1 reassigned away" in texts[0]
+    assert "[teatree]" in texts[0]
+
+
+def test_zones_caps_ready_to_start_entries(tmp_path: Path) -> None:
+    from teatree.loop.dispatch import DispatchAction  # noqa: PLC0415
+    from teatree.loop.tick import _MAX_READY_TO_START, _zones_for  # noqa: PLC0415
+
+    actions = [
+        DispatchAction(
+            kind="statusline",
+            zone="action_needed",
+            detail=f"Ready to start: Issue #{i}",
+            payload={"url": f"https://example.com/issues/{i}"},
+        )
+        for i in range(12)
+    ]
+    zones = _zones_for(actions)
+    texts = [item if isinstance(item, str) else item.text for item in zones.action_needed]
+    assert len(texts) == _MAX_READY_TO_START + 1
+    assert "… and 7 more ready to start" in texts[-1]
+
+
+def test_zones_no_overflow_when_ready_under_cap() -> None:
+    from teatree.loop.dispatch import DispatchAction  # noqa: PLC0415
+    from teatree.loop.tick import _zones_for  # noqa: PLC0415
+
+    actions = [
+        DispatchAction(
+            kind="statusline",
+            zone="action_needed",
+            detail="Ready to start: Small backlog",
+            payload={"url": "https://example.com/issues/1"},
+        )
+    ]
+    zones = _zones_for(actions)
+    texts = [item if isinstance(item, str) else item.text for item in zones.action_needed]
+    assert len(texts) == 1
+    assert "more ready to start" not in texts[0]
+
+
 def test_tick_multi_overlay_prefixes_summary(tmp_path: Path) -> None:
     """Signals collected via the multi-overlay path get an ``[overlay]`` prefix in the rendered line."""
     from unittest.mock import MagicMock  # noqa: PLC0415
