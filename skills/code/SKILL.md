@@ -112,20 +112,15 @@ Write failing test → Implement → Green → Refactor
 
 When tasks exist (via the agent's task tracking tools), mark each task `completed` **immediately after finishing it** — before moving to the next task. Never batch-update at the end. Never claim "all done" while the task list is stale.
 
-### 5. E2E Tests for Frontend Changes
+### 5. E2E Tests
 
-Any frontend change that affects UI behavior (new fields, form logic, visibility, navigation) requires **E2E tests as part of the implementation** — not as a follow-up. Include E2E test writing as an explicit task in the plan. If the project has a private test suite (`$T3_PRIVATE_TESTS`), write tests there. Post screenshots and a test plan to the MR before declaring complete.
+After TDD and commit, frontend changes that affect UI behavior need E2E tests as a follow-up step. Switch to `/t3:e2e` for writing Playwright tests, posting evidence, and the visual QA gate.
 
-- **When required:** new UI fields, changed form behavior, conditional visibility, new pages/routes
-- **When NOT required:** pure CSS, translation-only changes, backend-only changes, internal refactoring
-- **Backend/API changes with frontend-visible impact still require E2E.** If the frontend displays the changed data, prove the end-to-end path works.
-- **Establish a baseline before blaming your branch.** If E2E fails, run the same scenario on the default branch or unmodified code before treating it as your regression.
-- **Blocked by environment?** Flag it explicitly — don't silently skip E2E and declare done
-
-### 5b. When to Switch to `t3:test`
+### 5b. When to Switch Skills
 
 - Stay in `t3:code` for TDD, implementation-time tests, and feature-building.
-- Switch to `/t3:test` when the work becomes broader verification, E2E orchestration, CI failure analysis, test-plan writing, or MR evidence posting.
+- Switch to `/t3:e2e` for E2E test writing, evidence posting, and visual QA.
+- Switch to `/t3:test` for broader verification, CI failure analysis, or test-plan writing.
 
 ### 5c. Mass-Rename / Cross-Cutting Refactor Verification (Non-Negotiable)
 
