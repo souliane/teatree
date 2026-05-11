@@ -3,14 +3,14 @@ import os
 from pathlib import Path
 
 from teatree.core.models import Worktree
-from teatree.core.overlay import OverlayBase
+from teatree.core.overlay import OverlayBase, RunCommand
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.runners.base import RunnerBase, RunnerResult
 from teatree.core.step_runner import run_provision_steps
 from teatree.core.worktree_env import write_env_cache
 from teatree.timeouts import TimeoutConfig, load_timeouts
 from teatree.utils.ports import find_free_ports
-from teatree.utils.run import TimeoutExpired, run_allowed_to_fail
+from teatree.utils.run import DEVNULL, TimeoutExpired, run_allowed_to_fail, spawn
 
 logger = logging.getLogger(__name__)
 
@@ -106,12 +106,21 @@ class WorktreeStartRunner(RunnerBase):
         if not self._docker_compose_up(project, compose_file, env):
             return RunnerResult(ok=False, detail=f"docker compose up failed for {worktree.repo_path}")
 
+        host_pids = self._start_host_processes(commands, {**env, **port_env})
+
         extra = worktree.extra or {}
         extra["services"] = list(commands)
         extra["ports"] = self.ports
+        if host_pids:
+            extra["host_pids"] = host_pids
         worktree.extra = extra
         worktree.save(update_fields=["extra"])
-        return RunnerResult(ok=True, detail=f"started {len(commands)} service(s)")
+        total = len(commands)
+        host_count = len(host_pids)
+        return RunnerResult(
+            ok=True,
+            detail=f"started {total} service(s)" + (f" ({host_count} on host)" if host_count else ""),
+        )
 
     def _docker_compose_up(self, project: str, compose_file: str, env: dict[str, str]) -> bool:
         cmd = [
@@ -139,6 +148,32 @@ class WorktreeStartRunner(RunnerBase):
             )
             return False
         return True
+
+    @staticmethod
+    def _start_host_processes(
+        commands: dict[str, list[str] | RunCommand],
+        env: dict[str, str],
+    ) -> dict[str, int]:
+        """Launch ``host=True`` run commands as background processes.
+
+        Returns a mapping of service name → PID for each launched process.
+        """
+        pids: dict[str, int] = {}
+        for name, cmd in commands.items():
+            if not isinstance(cmd, RunCommand) or not cmd.host:
+                continue
+            cwd = str(cmd.cwd) if cmd.cwd else None
+            logger.info("Starting host process %s: %s (cwd=%s)", name, cmd.args, cwd)
+            proc = spawn(
+                cmd.args,
+                cwd=cwd,
+                env=env,
+                stdout=DEVNULL,
+                stderr=DEVNULL,
+            )
+            pids[name] = proc.pid
+            logger.info("Host process %s started (PID %d)", name, proc.pid)
+        return pids
 
     @staticmethod
     def _allocate_ports(overlay: OverlayBase, worktree: Worktree) -> dict[str, int]:

@@ -7,6 +7,7 @@ action_needed, in_flight) and live per-session info from Claude's stdin JSON
 
 import json
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -74,8 +75,9 @@ class TestStatuslineHook:
         )
 
         assert result.returncode == 0, result.stderr
-        assert "model=Claude Sonnet" in result.stdout
-        assert "ctx=41%" in result.stdout
+        plain = re.sub(r"\x1b\[[0-9;]*m", "", result.stdout)
+        assert "model=Claude Sonnet" in plain
+        assert "ctx=41%" in plain
 
     def test_appends_pre_rendered_loop_zones_file(self, tmp_path: Path) -> None:
         state_dir = tmp_path / "state"
