@@ -401,9 +401,9 @@ class TestWorkspaceTicket(TestCase):
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
     def test_auto_derives_slug_from_issue_title(self) -> None:
-        """When no description given, uses overlay.metadata.get_issue_title to derive slug."""
+        """When no description given, uses overlay.get_issue_title to derive slug."""
         overlay = import_string(FULL_OVERLAY)()
-        overlay.metadata.get_issue_title = lambda url: "Fix Login Flow"
+        overlay.get_issue_title = lambda url: "Fix Login Flow"
 
         with patch.object(overlay_loader_mod, "_discover_overlays", return_value={"test": overlay}):
             ticket_id = cast(
@@ -421,7 +421,7 @@ class TestWorkspaceTicket(TestCase):
     def test_falls_back_to_ticket_when_title_fetch_fails(self) -> None:
         """When get_issue_title returns empty, falls back to 'ticket' slug."""
         overlay = import_string(FULL_OVERLAY)()
-        overlay.metadata.get_issue_title = lambda url: ""
+        overlay.get_issue_title = lambda url: ""
 
         with patch.object(overlay_loader_mod, "_discover_overlays", return_value={"test": overlay}):
             ticket_id = cast(
