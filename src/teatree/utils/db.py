@@ -37,10 +37,9 @@ def _check_truncation(stderr: str, db_name: str, dump_path: str) -> None:
             raise RuntimeError(msg)
 
 
-def drop_db(db_name: str) -> None:
-    # ``--if-exists`` makes dropdb tolerate missing DBs (rc=0); any other non-zero is a real error.
+def drop_db(db_name: str, *, user: str = "") -> None:
     run_checked(
-        ["dropdb", "-h", pg_host(), "-U", pg_user(), "--if-exists", db_name],
+        ["dropdb", "-h", pg_host(), "-U", user or pg_user(), "--if-exists", db_name],
         env=pg_env(),
     )
 
