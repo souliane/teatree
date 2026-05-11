@@ -45,6 +45,22 @@ def get_code_host(overlay: "OverlayBase") -> CodeHostBackend | None:
     raise ValueError(msg)
 
 
+def get_code_host_for_url(overlay: "OverlayBase", issue_url: str) -> CodeHostBackend | None:
+    """Return the code host matching *issue_url*'s domain, using *overlay*'s tokens.
+
+    Unlike :func:`get_code_host` (which picks one platform per overlay),
+    this resolves per-URL — essential when an overlay's tickets span both
+    GitHub and GitLab.
+    """
+    if "github.com" in issue_url:
+        token = overlay.config.get_github_token()
+        return GitHubCodeHost(token=token) if token else None
+    if "gitlab" in issue_url:
+        token = overlay.config.get_gitlab_token()
+        return GitLabCodeHost(token=token, base_url=overlay.config.gitlab_url) if token else None
+    return get_code_host(overlay)
+
+
 def get_messaging(overlay: "OverlayBase") -> MessagingBackend:
     """Return the configured MessagingBackend for *overlay*.
 
