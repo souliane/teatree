@@ -16,6 +16,7 @@ from teatree.backends.protocols import CodeHostBackend, MessagingBackend
 from teatree.core.backend_factory import OverlayBackends
 from teatree.loop.dispatch import ActionPayload, DispatchAction, dispatch
 from teatree.loop.scanners import (
+    ActiveTicketsScanner,
     AssignedIssuesScanner,
     MyPrsScanner,
     NotionViewScanner,
@@ -115,6 +116,7 @@ def build_default_jobs(
     if backends:
         for backend in backends:
             tag = backend.name
+            jobs.append(_ScannerJob(scanner=ActiveTicketsScanner(overlay_name=tag), overlay=tag))
             if backend.host is not None:
                 jobs.extend(
                     [
@@ -236,6 +238,7 @@ class _ClassifiedActions:
     ready_counts: dict[str, int] = field(default_factory=dict)
     action_prs: dict[str, list[_PRRef]] = field(default_factory=dict)
     inflight_prs: dict[str, list[_PRRef]] = field(default_factory=dict)
+    active_tickets: dict[str, list[tuple[str, str]]] = field(default_factory=dict)
     other: list[tuple[str, StatuslineEntry]] = field(default_factory=list)
 
 
@@ -248,8 +251,11 @@ def _classify_actions(actions: list[DispatchAction]) -> _ClassifiedActions:
         prefix = f"[{overlay}] " if overlay else ""
 
         if action.kind == "statusline":
-            reason = payload.get("reason")
-            if isinstance(reason, str):
+            state = payload.get("state")
+            ticket_number = payload.get("ticket_number")
+            if action.zone == "anchors" and isinstance(state, str) and isinstance(ticket_number, str):
+                c.active_tickets.setdefault(overlay, []).append((ticket_number, state))
+            elif isinstance((reason := payload.get("reason")), str):
                 c.disposition_counts.setdefault(overlay, {}).setdefault(reason, 0)
                 c.disposition_counts[overlay][reason] += 1
             elif action.zone == "action_needed" and action.detail.startswith("Ready to start:"):
@@ -270,6 +276,11 @@ def _classify_actions(actions: list[DispatchAction]) -> _ClassifiedActions:
 def _zones_for(actions: list[DispatchAction]) -> StatuslineZones:
     zones = StatuslineZones()
     c = _classify_actions(actions)
+
+    for overlay_key, tickets in sorted(c.active_tickets.items()):
+        prefix = f"[{overlay_key}] " if overlay_key else ""
+        parts = [f"#{num} {state}" for num, state in tickets]
+        zones.anchors.append(f"{prefix}{' · '.join(parts)}")
 
     for overlay_key, refs in sorted(c.action_prs.items()):
         zones.action_needed.append(_render_pr_group(overlay_key, refs))

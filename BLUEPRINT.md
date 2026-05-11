@@ -6,7 +6,7 @@ If the entire `src/` and `tests/` tree were deleted, this document alone — plu
 
 **Change policy:** Every code change to teatree must be reflected here. Before modifying this file, always ask the user for approval — this is the source of truth and the user validates every change.
 
-**Status:** This BLUEPRINT is the **current** architecture under issue [#541](https://github.com/souliane/teatree/issues/541). All phases (0-8) have shipped on the active branch. The statusline file is the persistent UI surface; the HTML dashboard, ttyd web terminal, ASGI/uvicorn scaffolding, and platform autostart helpers are gone; the code-host + messaging Protocols are unified, with `SlackBotBackend`/`NoopMessagingBackend` selectable via overlay config; `t3 setup slack-bot --overlay <name>` walks the user through Slack app registration; the fat loop + 7 scanners + dispatcher are wired through `t3 loop tick` (review-channel scanning is folded into the dispatcher's PR-URL detection); the headless executor is the deliberately-slim `claude -p` swap point for a future Anthropic SDK runtime; and the no-overlay-leak gate keeps the platform tenant-agnostic.
+**Status:** This BLUEPRINT is the **current** architecture under issue [#541](https://github.com/souliane/teatree/issues/541). All phases (0-8) have shipped on the active branch. The statusline file is the persistent UI surface; the HTML dashboard, ttyd web terminal, ASGI/uvicorn scaffolding, and platform autostart helpers are gone; the code-host + messaging Protocols are unified, with `SlackBotBackend`/`NoopMessagingBackend` selectable via overlay config; `t3 setup slack-bot --overlay <name>` walks the user through Slack app registration; the fat loop + 8 scanners + dispatcher are wired through `t3 loop tick` (review-channel scanning is folded into the dispatcher's PR-URL detection); the headless executor is the deliberately-slim `claude -p` swap point for a future Anthropic SDK runtime; and the no-overlay-leak gate keeps the platform tenant-agnostic.
 
 ---
 
@@ -151,14 +151,15 @@ src/teatree/
     dispatch.py         # Signal → action mapping (statusline / agent / webhook)
     statusline.py       # Statusline composition (zones, formatters) and file write
     scanners/           # Pure-Python signal collectors — one file each
+      active_tickets.py
+      assigned_issues.py
       base.py           # Scanner Protocol + ScanSignal dataclass
       my_prs.py
+      notion_view.py
+      pending_tasks.py
       reviewer_prs.py
       slack_mentions.py
       ticket_completion.py
-      notion_view.py
-      assigned_issues.py
-      pending_tasks.py
       ticket_dispositions.py
 
   backends/             # Pluggable external service integrations
@@ -540,6 +541,7 @@ Each tick runs three stages:
 | `assigned_issues` | Open issues assigned to me on a configured code host that have reached "ready to work" state. | Create the `Ticket` + worktrees; the ticket FSM's `start()` transition then handles the rest (the orchestrator phase agent picks up coding when the worktrees are provisioned). |
 | `pending_tasks` | `Task` rows in `pending` state. | Run via the headless executor (§ 5.2), which dispatches to the appropriate phase agent. The Django `Task` model is resolved lazily through `apps.get_model("core", "Task")` so the scanner module is importable before `django.setup()` runs (the CLI imports the loop subapp at startup). |
 | `ticket_dispositions` | Active pre-PR `Ticket` rows whose remote issue has drifted (closed externally, reassigned away, ready-label removed). | Detection-only: emit `ticket.disposition_candidate` signals to the statusline `action_needed` zone — never auto-transition. The user reviews and decides whether to mark the ticket `IGNORED`, run `worktree teardown`, reassign back, etc. Tickets past `REVIEWED` are skipped: once a PR exists, `MyPrsScanner` covers downstream state. |
+| `active_tickets` | Non-terminal `Ticket` rows (any state except `delivered`/`ignored`). | Surface FSM state in the statusline anchors zone, grouped by overlay: `[acme] #123 started · #456 coded`. Gives at-a-glance lifecycle progress without requiring external API calls. |
 | `ticket_completion` | Post-ship `Ticket` rows (shipped/in_review/merged) whose upstream issue is done. | Mechanical inline action: transition the ticket through `request_review → mark_merged → retrospect` toward delivered. "Done" is overlay-configurable via `OverlayBase.is_issue_done()` — default checks GitHub issue state `∈ {closed, completed}`; GitLab overlays check for a process label (e.g. `Process:DEV Review`). This prevents marking multi-repo tickets done when only one MR merges. |
 
 **Why pure-Python scanners (not subagents):** the scan stage is deterministic I/O — fetch PR statuses, fetch mentions, query the DB. Modeling it as a Claude agent would burn tokens for work a typed Python function does cheaper, more reliably, and with reproducible tests. Claude is invoked only when judgment is needed (review the diff, decide the fix, draft a reply); for that, the loop calls the existing phase agents.

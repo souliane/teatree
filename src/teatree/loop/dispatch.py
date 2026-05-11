@@ -44,6 +44,7 @@ _STATUSLINE_ZONE_BY_KIND: dict[str, str] = {
     "slack.mention": "action_needed",
     "slack.dm": "action_needed",
     "assigned_issue.ready": "action_needed",
+    "ticket.active": "anchors",
     "ticket.disposition_candidate": "action_needed",
 }
 
