@@ -17,6 +17,7 @@ Tickets past ``REVIEWED`` are skipped: once the PR exists, the disposition
 concept no longer applies — ``MyPrsScanner`` already covers post-PR state.
 """
 
+import logging
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, cast
@@ -29,6 +30,8 @@ from teatree.loop.scanners.base import ScanSignal
 
 if TYPE_CHECKING:
     from teatree.core.models.ticket import Ticket
+
+logger = logging.getLogger(__name__)
 
 # States in which disposition checks make sense — pre-PR work the operator can
 # still cancel without tearing down published artifacts.
@@ -104,7 +107,11 @@ class TicketDispositionScanner:
         author = self.host.current_user()
         signals: list[ScanSignal] = []
         for ticket in self._candidate_tickets():
-            issue = self.host.get_issue(ticket.issue_url)
+            try:
+                issue = self.host.get_issue(ticket.issue_url)
+            except Exception:  # noqa: BLE001
+                logger.warning("Failed to fetch issue for ticket %s (%s), skipping", ticket.pk, ticket.issue_url)
+                continue
             snap = _snapshot(issue)
             if snap is None:
                 continue
