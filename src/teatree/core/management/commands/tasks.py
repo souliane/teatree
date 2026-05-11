@@ -63,7 +63,7 @@ class Command(TyperCommand):
         body = _resolve_reason(reason=reason, reason_file=reason_file)
         if not body.strip():
             self.stderr.write(
-                "--reason (or --reason-file, or stdin via '--reason -') is required and must not be blank.",
+                "--reason (or --reason-file, or stdin via '--reason -') is required and must not be blank."
             )
             raise SystemExit(1)
 

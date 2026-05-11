@@ -126,7 +126,7 @@ class BaseImageOverlay(OverlayBase):
                 lockfile="Pipfile.lock",
                 build_context=self._context,
                 env_var="MYAPP_BASE_IMAGE",
-            ),
+            )
         ]
 
 

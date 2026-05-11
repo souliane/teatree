@@ -239,7 +239,7 @@ def load_e2e_repos(path: Path | None = None) -> list[E2ERepo]:
                 url=entry.get("url", ""),
                 branch=entry.get("branch", "main"),
                 e2e_dir=entry.get("e2e_dir", "e2e"),
-            ),
+            )
         )
     return repos
 

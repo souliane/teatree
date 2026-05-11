@@ -385,8 +385,8 @@ class TestSuggestSkills:
                             "end_of_session": False,
                         },
                     ],
-                },
-            ),
+                }
+            )
         )
         with mock.patch.object(skill_loader_mod, "SKILL_METADATA_CACHE", cache):
             result = suggest_skills(
@@ -396,7 +396,7 @@ class TestSuggestSkills:
                     "loaded_skills": [],
                     "skill_search_dirs": [str(SKILLS_DIR)],
                     "supplementary_config": "",
-                },
+                }
             )
         assert "ac-django" in result["suggestions"]
         assert "review" in result["suggestions"]
@@ -418,8 +418,8 @@ class TestSuggestSkills:
                             "end_of_session": False,
                         },
                     ],
-                },
-            ),
+                }
+            )
         )
         with mock.patch.object(skill_loader_mod, "SKILL_METADATA_CACHE", cache):
             result = suggest_skills(
@@ -429,7 +429,7 @@ class TestSuggestSkills:
                     "loaded_skills": ["review", "ac-django", "workspace", "platforms", "code"],
                     "skill_search_dirs": [str(SKILLS_DIR)],
                     "supplementary_config": "",
-                },
+                }
             )
         assert "review" not in result["suggestions"]
         assert "ac-django" not in result["suggestions"]
@@ -451,8 +451,8 @@ class TestSuggestSkills:
                             "end_of_session": False,
                         },
                     ],
-                },
-            ),
+                }
+            )
         )
         with (
             mock.patch.object(skill_loader_mod, "SKILL_METADATA_CACHE", cache),
@@ -469,7 +469,7 @@ class TestSuggestSkills:
                     "loaded_skills": [],
                     "skill_search_dirs": [str(SKILLS_DIR)],
                     "supplementary_config": "",
-                },
+                }
             )
         assert "skills/t3:acme/SKILL.md" in result["suggestions"]
 
@@ -481,8 +481,8 @@ class TestSuggestSkills:
                     "skill_path": "skills/t3:acme/SKILL.md",
                     "remote_patterns": ["git@gitlab.com:acme-engineering/*"],
                     "trigger_index": [],
-                },
-            ),
+                }
+            )
         )
         with mock.patch.object(skill_loader_mod, "SKILL_METADATA_CACHE", cache):
             result = suggest_skills(
@@ -492,7 +492,7 @@ class TestSuggestSkills:
                     "loaded_skills": [],
                     "skill_search_dirs": [str(SKILLS_DIR)],
                     "supplementary_config": "",
-                },
+                }
             )
         assert result["suggestions"] == []
 
@@ -504,7 +504,7 @@ class TestSuggestSkills:
                 "loaded_skills": [],
                 "skill_search_dirs": [],
                 "supplementary_config": "",
-            },
+            }
         )
         assert result["suggestions"] == []
         assert result["intent"] == ""

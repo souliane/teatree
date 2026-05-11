@@ -137,7 +137,7 @@ def test_tick_signal_url_renders_as_osc8_hyperlink(tmp_path: Path) -> None:
                 kind="my_pr.open",
                 summary="PR #545: feat(loop)",
                 payload={"url": "https://github.com/owner/repo/pull/545"},
-            ),
+            )
         ],
     )
     statusline = tmp_path / "statusline.txt"
@@ -283,7 +283,7 @@ def test_tick_multi_overlay_prefixes_summary(tmp_path: Path) -> None:
     fake_host = MagicMock(spec=CodeHostBackend)
     fake_host.current_user.return_value = "souliane"
     fake_host.list_my_prs.return_value = [
-        {"iid": 545, "title": "feat(loop)", "html_url": "https://gh/x/y/pull/545", "user_notes_count": 0},
+        {"iid": 545, "title": "feat(loop)", "html_url": "https://gh/x/y/pull/545", "user_notes_count": 0}
     ]
     fake_host.list_review_requested_prs.return_value = []
     fake_host.list_assigned_issues.return_value = []

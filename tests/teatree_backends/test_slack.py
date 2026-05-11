@@ -76,7 +76,7 @@ def test_search_review_permalinks_returns_empty_when_no_token() -> None:
             channel_id="C123",
             channel_name="review",
             pr_urls=["https://gitlab.com/org/repo/-/merge_requests/1"],
-        ),
+        )
     )
     assert result == []
 
@@ -89,7 +89,7 @@ def test_search_review_permalinks_returns_empty_when_no_channel_id() -> None:
             channel_id="",
             channel_name="review",
             pr_urls=["https://gitlab.com/org/repo/-/merge_requests/1"],
-        ),
+        )
     )
     assert result == []
 
@@ -102,7 +102,7 @@ def test_search_review_permalinks_returns_empty_when_no_pr_urls() -> None:
             channel_id="C123",
             channel_name="review",
             pr_urls=[],
-        ),
+        )
     )
     assert result == []
 
@@ -129,7 +129,7 @@ def test_search_review_permalinks_finds_matching_mr(monkeypatch: pytest.MonkeyPa
             channel_id="C123",
             channel_name="review-crew",
             pr_urls=[pr_url],
-        ),
+        )
     )
 
     assert len(result) == 1
@@ -163,7 +163,7 @@ def test_search_review_permalinks_stops_when_all_found(monkeypatch: pytest.Monke
             channel_id="C456",
             channel_name="reviews",
             pr_urls=[pr_url],
-        ),
+        )
     )
 
     assert len(result) == 1
@@ -195,7 +195,7 @@ def test_search_review_permalinks_paginates(monkeypatch: pytest.MonkeyPatch) -> 
             channel_id="C789",
             channel_name="review",
             pr_urls=[pr_url1, pr_url2],
-        ),
+        )
     )
 
     assert len(result) == 2
@@ -214,7 +214,7 @@ def test_search_review_permalinks_stops_on_not_ok(monkeypatch: pytest.MonkeyPatc
             channel_id="C999",
             channel_name="review",
             pr_urls=["https://gitlab.com/org/repo/-/merge_requests/1"],
-        ),
+        )
     )
 
     assert result == []
@@ -240,7 +240,7 @@ def test_search_review_permalinks_skips_messages_without_ts(monkeypatch: pytest.
             channel_id="C111",
             channel_name="review",
             pr_urls=[pr_url],
-        ),
+        )
     )
 
     assert len(result) == 1
@@ -265,7 +265,7 @@ def test_search_review_permalinks_uses_provided_workspace_domain(monkeypatch: py
             channel_name="review",
             pr_urls=[pr_url],
             workspace_domain="custom.slack.com",
-        ),
+        )
     )
 
     assert len(result) == 1
@@ -292,7 +292,7 @@ def test_search_review_permalinks_deduplicates_same_mr(monkeypatch: pytest.Monke
             channel_id="C333",
             channel_name="review",
             pr_urls=[pr_url],
-        ),
+        )
     )
 
     assert len(result) == 1
@@ -315,7 +315,7 @@ def test_search_review_permalinks_stops_when_no_cursor(monkeypatch: pytest.Monke
             channel_id="C444",
             channel_name="review",
             pr_urls=["https://gitlab.com/org/repo/-/merge_requests/99"],
-        ),
+        )
     )
 
     assert result == []

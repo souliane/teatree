@@ -131,7 +131,7 @@ def find_duplicates(
 
     for match in matches:
         typer.echo(
-            f"  {match.score:.2f}  #{match.a_number} {match.a_title}\n         #{match.b_number} {match.b_title}",
+            f"  {match.score:.2f}  #{match.a_number} {match.a_title}\n         #{match.b_number} {match.b_title}"
         )
     typer.echo(f"\n{len(matches)} potential duplicate pair(s).")
 

@@ -8,13 +8,7 @@ import pytest
 from django.test import TestCase
 
 from teatree.core.overlay import ProvisionStep
-from teatree.core.step_runner import (
-    ProvisionReport,
-    StepResult,
-    run_callable_step,
-    run_provision_steps,
-    run_step,
-)
+from teatree.core.step_runner import ProvisionReport, StepResult, run_callable_step, run_provision_steps, run_step
 
 
 class TestStepResult(TestCase):
@@ -40,7 +34,7 @@ class TestProvisionReport(TestCase):
             steps=[
                 StepResult(name="a", success=True),
                 StepResult(name="b", success=True),
-            ],
+            ]
         )
         assert report.success is True
         assert report.failed_step is None
@@ -50,7 +44,7 @@ class TestProvisionReport(TestCase):
             steps=[
                 StepResult(name="a", success=True),
                 StepResult(name="b", success=False, error="fail"),
-            ],
+            ]
         )
         assert report.success is False
         assert report.failed_step == "b"
@@ -60,7 +54,7 @@ class TestProvisionReport(TestCase):
             steps=[
                 StepResult(name="a", success=True),
                 StepResult(name="b", success=False, error="oops"),
-            ],
+            ]
         )
         summary = report.summary()
         assert "1/2 steps succeeded" in summary
@@ -219,7 +213,7 @@ class TestRunProvisionSteps(TestCase):
             steps=[
                 StepResult(name="ok", success=True),
                 StepResult(name="broken", success=False, error="fail"),
-            ],
+            ]
         )
         assert report.failed_required_step == "broken"
 

@@ -21,7 +21,7 @@ if TYPE_CHECKING:
 # (PR is open, the loop is waiting on a human merge). Earlier states still
 # count: NOT_STARTED, SCOPED, STARTED, CODED, TESTED, REVIEWED, SHIPPED.
 _AUTO_START_BUDGET_STATES: frozenset[str] = frozenset(
-    {"not_started", "scoped", "started", "coded", "tested", "reviewed", "shipped"},
+    {"not_started", "scoped", "started", "coded", "tested", "reviewed", "shipped"}
 )
 # A ticket in any of these states "owns" its issue URL — the scanner skips
 # emitting another signal until the ticket reaches a terminal state.
@@ -37,7 +37,7 @@ _ACTIVE_TICKET_STATES: frozenset[str] = frozenset(
         "in_review",
         "merged",
         "retrospected",
-    },
+    }
 )
 
 
@@ -122,7 +122,7 @@ class AssignedIssuesScanner:
                         "labels": labels,
                         "auto_start": self.auto_start,
                     },
-                ),
+                )
             )
             if self.auto_start:
                 budget -= 1

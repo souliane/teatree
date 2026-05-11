@@ -132,11 +132,11 @@ class TestFetchProjectItems:
                                         "labels": {"nodes": [{"name": "bug"}]},
                                     },
                                 },
-                            ],
-                        },
-                    },
-                },
-            },
+                            ]
+                        }
+                    }
+                }
+            }
         }
         with patch.object(github_mod, "_gh_graphql", return_value=graphql_response):
             items = fetch_project_items("testuser", 1)
@@ -173,11 +173,11 @@ class TestFetchProjectItems:
                                     "fieldValueByName": None,
                                     "content": {},  # draft item with no number
                                 },
-                            ],
-                        },
-                    },
-                },
-            },
+                            ]
+                        }
+                    }
+                }
+            }
         }
         with patch.object(github_mod, "_gh_graphql", return_value=graphql_response):
             items = fetch_project_items("testuser", 1)
@@ -199,11 +199,11 @@ class TestFetchProjectItems:
                                         "labels": {"nodes": []},
                                     },
                                 },
-                            ],
-                        },
-                    },
-                },
-            },
+                            ]
+                        }
+                    }
+                }
+            }
         }
         with patch.object(github_mod, "_gh_graphql", return_value=graphql_response):
             items = fetch_project_items("testuser", 1)

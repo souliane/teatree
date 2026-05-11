@@ -109,7 +109,7 @@ class TicketDispositionScannerTests(TestCase):
                     "state": "closed",
                     "assignees": [{"username": "bob"}],
                     "labels": [{"name": "blocked"}],
-                },
+                }
             },
         )
         signals = self._scanner(host).scan()

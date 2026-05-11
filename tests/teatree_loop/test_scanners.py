@@ -109,7 +109,7 @@ class TestMyPrsScanner:
                     "title": "Fix thing",
                     "web_url": "https://gitlab/x/-/merge_requests/7",
                     "head_pipeline": {"status": "failed"},
-                },
+                }
             ],
         )
         signals = MyPrsScanner(host=host).scan()
@@ -141,7 +141,7 @@ class TestMyPrsScanner:
                     "title": "GH PR",
                     "html_url": "https://github.com/o/r/pull/11",
                     "status_check_rollup": {"state": "failure"},
-                },
+                }
             ],
         )
         signals = MyPrsScanner(host=host).scan()
@@ -156,7 +156,7 @@ class TestMyPrsScanner:
                     "title": "GH PR",
                     "html_url": "https://github.com/o/r/pull/12",
                     "mergeable_state": "error",
-                },
+                }
             ],
         )
         signals = MyPrsScanner(host=host).scan()

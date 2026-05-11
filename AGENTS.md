@@ -283,16 +283,6 @@ After modifying skills: `prek run --all-files` then `uv run pytest` then commit.
 - User preferences belong in memory/config files, not skills.
 - Use extension points or `~/.teatree.toml` variables for project context.
 
-## Dashboard Smoke-Test Checklist
-
-After any dashboard fix, verify the full flow before declaring done:
-
-1. Dashboard loads (HTTP 200)
-2. Headless tasks launch without error (check task status after worker processes)
-3. Interactive tasks launch without error (check ttyd)
-4. Errors display in the UI (check queue panels for red banners)
-5. Concurrent launches don't cause SQLite locking
-
 ## Things That Catch People
 
 - The package is `teatree` (double-e) but the repo/CLI is `teatree`/`t3`.
@@ -304,7 +294,4 @@ After any dashboard fix, verify the full flow before declaring done:
 - ttyd without `--writable` = read-only terminal = claude can't work.
 - `claude -p` is headless (exits immediately). Interactive sessions use `claude` without `-p`.
 - E2E tests use a separate settings module (`e2e.settings`) with file-based SQLite.
-- **E2E pre-flight: kill zombie servers before running.** Long-lived `uvicorn --reload` processes (from `t3 dashboard`) pin CPU at ~93% each and cause Playwright timeouts (7+ min/test). Before any e2e run: `pkill -9 -f "uvicorn teatree.asgi" 2>/dev/null; pkill -9 -f "chrome-headless" 2>/dev/null; pkill -9 -f "playwright/driver" 2>/dev/null`. Verify with `ps aux | grep uvicorn | grep -v grep`.
-- **Each timed-out e2e run leaves zombie processes.** Kill them before retrying — otherwise the next run competes for CPU with its predecessors. Same kill commands as above.
-- **E2E tests take ~7 minutes each locally on a loaded machine.** For full suite validation, prefer CI (fast, clean environment) over local runs. Run a single focused test locally to check a specific assertion, then push and let CI validate the rest.
 - **Submodule shadowing in `cli/__init__.py`.** When `cli/__init__.py` re-exports a name from a same-named submodule (`from teatree.cli.agent import agent`), the imported function overwrites the `cli.agent` submodule attribute on the parent package. Tests that do `import teatree.cli.agent as cli_agent_mod` then receive the function, not the module — `patch.object(cli_agent_mod, "os", ...)` fails with `does not have the attribute 'os'`. Use `import teatree.cli.agent as _agent` in `__init__.py` and reference attributes (`_agent.agent`) instead. The aliasing form does not bind to the parent package, so the submodule attribute survives intact.

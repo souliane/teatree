@@ -162,7 +162,7 @@ class DuplicateFinder:
                         a_title=title_a,
                         b_title=title_b,
                         score=score,
-                    ),
+                    )
                 )
         matches.sort(key=lambda m: m.score, reverse=True)
         return matches

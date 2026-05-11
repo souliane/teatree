@@ -405,7 +405,7 @@ class Command(TyperCommand):
                         f"{repo}: rebase failed — {exc}",
                         f"  To abort: git -C {repo_dir} rebase --abort",
                         f"  To resolve: fix conflicts, git add, then: git -C {repo_dir} rebase --continue",
-                    ],
+                    ]
                 )
         return "\n".join(results)
 

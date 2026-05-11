@@ -28,7 +28,7 @@ _KNOWN_TOP_LEVEL = frozenset(
         "companions",
         "metadata",
         "compatibility",
-    },
+    }
 )
 
 _KNOWN_TRIGGER_KEYS = frozenset(
@@ -38,7 +38,7 @@ _KNOWN_TRIGGER_KEYS = frozenset(
         "urls",
         "exclude",
         "end_of_session",
-    },
+    }
 )
 
 

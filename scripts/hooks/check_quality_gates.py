@@ -161,7 +161,7 @@ def main() -> int:
         "Remove the suppression and fix the underlying issue. If the\n"
         "suppression is genuinely required (e.g., trusted subprocess in a\n"
         "test fixture), move the affected code into a directory the hook\n"
-        "already exempts (tests/, scripts/hooks/, e2e/, skills/, docs/).",
+        "already exempts (tests/, scripts/hooks/, e2e/, skills/, docs/)."
     )
     return 1
 

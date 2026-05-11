@@ -96,7 +96,7 @@ class AssignedIssuesAutoStartTests(TestCase):
                 self._ready_issue(self.READY_URL_A),
                 self._ready_issue(self.READY_URL_B),
                 self._ready_issue(self.READY_URL_C),
-            ],
+            ]
         )
         signals = self._scanner(host, max_concurrent=2).scan()
         assert [s.payload["url"] for s in signals] == [self.READY_URL_A, self.READY_URL_B]

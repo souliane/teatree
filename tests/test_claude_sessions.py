@@ -25,7 +25,7 @@ class TestSessionEndStatus:
                 {"type": "assistant", "message": {"stop_reason": "end_turn"}},
                 {"type": "system", "subtype": "turn_duration"},
                 {"type": "last-prompt", "lastPrompt": "hello", "sessionId": "abc123"},
-            ),
+            )
         )
         assert _session_end_status(conv) == "finished"
 
@@ -36,7 +36,7 @@ class TestSessionEndStatus:
                 {"type": "user", "message": {"role": "user", "content": "hello"}},
                 {"type": "assistant", "message": {"stop_reason": "end_turn"}},
                 {"type": "user", "message": {"role": "user", "content": "another question"}},
-            ),
+            )
         )
         assert _session_end_status(conv) == "interrupted"
 
@@ -46,7 +46,7 @@ class TestSessionEndStatus:
             _jsonl(
                 {"type": "user", "message": {"role": "user", "content": "hello"}},
                 {"type": "progress", "data": "thinking..."},
-            ),
+            )
         )
         assert _session_end_status(conv) == "interrupted"
 
@@ -56,7 +56,7 @@ class TestSessionEndStatus:
             _jsonl(
                 {"type": "user", "message": {"role": "user", "content": "hello"}},
                 {"type": "assistant", "message": {"stop_reason": "end_turn"}},
-            ),
+            )
         )
         assert _session_end_status(conv) == "interrupted"
 
@@ -75,7 +75,7 @@ class TestSessionEndStatus:
             _jsonl(
                 {"type": "last-prompt", "lastPrompt": "hi", "sessionId": "abc123"},
             )
-            + "\n\n",
+            + "\n\n"
         )
         assert _session_end_status(conv) == "finished"
 
@@ -101,7 +101,7 @@ class TestBuildSessionIndex:
                     "project": "/home/user/proj",
                 },
                 {"sessionId": "s2", "display": "other session", "timestamp": 1700000002000, "project": "/tmp/other"},
-            ),
+            )
         )
         index = _build_session_index(history)
         assert len(index) == 2
@@ -115,7 +115,7 @@ class TestBuildSessionIndex:
             _jsonl(
                 {"sessionId": "s1", "display": "original", "timestamp": 100, "project": "/a"},
                 {"sessionId": "s1", "display": "later", "timestamp": 200, "project": "/b"},
-            ),
+            )
         )
         index = _build_session_index(history)
         assert index["s1"]["first_prompt"] == "original"
@@ -140,7 +140,7 @@ class TestExtractFirstUserMessage:
             _jsonl(
                 {"type": "file-history-snapshot", "snapshot": {}},
                 {"type": "user", "message": {"role": "user", "content": "what is this?"}, "timestamp": 42},
-            ),
+            )
         )
         prompt, ts = _extract_first_user_message(conv)
         assert prompt == "what is this?"
@@ -158,7 +158,7 @@ class TestExtractFirstUserMessage:
                     },
                     "timestamp": 99,
                 },
-            ),
+            )
         )
         prompt, ts = _extract_first_user_message(conv)
         assert prompt == "hello from list"
@@ -308,7 +308,7 @@ class TestListSessions:
         history.write_text(
             _jsonl(
                 {"sessionId": "s1", "display": "from history", "timestamp": 5000, "project": "/my/proj"},
-            ),
+            )
         )
 
         self._make_project(
@@ -352,7 +352,7 @@ class TestListSessions:
         sub = proj / "main" / "subagents"
         sub.mkdir(parents=True)
         (sub / "agent-xyz.jsonl").write_text(
-            _jsonl({"type": "last-prompt", "lastPrompt": "", "sessionId": "agent-xyz"}),
+            _jsonl({"type": "last-prompt", "lastPrompt": "", "sessionId": "agent-xyz"})
         )
 
         history = tmp_path / "history.jsonl"
@@ -459,7 +459,7 @@ class TestSessionEndStatusActive:
             _jsonl(
                 {"type": "user", "message": {"role": "user", "content": "hello"}},
                 {"type": "assistant", "message": {"stop_reason": "end_turn"}},
-            ),
+            )
         )
 
         assert _session_end_status(conv) == "active"
@@ -474,7 +474,7 @@ class TestBuildSessionIndexEdgeCases:
         history.write_text(
             "not valid json\n"
             + json.dumps({"sessionId": "s1", "display": "good", "timestamp": 100, "project": "/a"})
-            + "\n",
+            + "\n"
         )
         index = _build_session_index(history)
         assert len(index) == 1
@@ -534,7 +534,7 @@ class TestBuildSessionInfoEdgeCases:
             _jsonl(
                 {"type": "user", "message": {"role": "user", "content": "from conv"}, "timestamp": 0},
                 {"type": "last-prompt", "lastPrompt": "", "sessionId": "unknown-session"},
-            ),
+            )
         )
 
         results = list_sessions(
@@ -564,7 +564,7 @@ class TestBuildSessionInfoEdgeCases:
                     "timestamp": 5000,
                     "project": f"{home}/workspace/proj",
                 },
-            ),
+            )
         )
 
         conv = proj / "s1.jsonl"
@@ -590,7 +590,7 @@ class TestBuildSessionInfoEdgeCases:
         history.write_text(
             _jsonl(
                 {"sessionId": "s1", "display": "hello", "timestamp": 5000, "project": ""},
-            ),
+            )
         )
 
         conv = proj / "s1.jsonl"
@@ -637,7 +637,7 @@ class TestBuildSessionInfoEdgeCases:
             _jsonl(
                 {"type": "user", "message": {"role": "user", "content": "hello"}, "timestamp": 0},
                 {"type": "last-prompt", "lastPrompt": "", "sessionId": "no-index"},
-            ),
+            )
         )
 
         results = list_sessions(

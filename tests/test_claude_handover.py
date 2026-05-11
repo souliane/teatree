@@ -63,7 +63,7 @@ def test_get_claude_telemetry_path_supports_session_files(tmp_path: Path) -> Non
             },
         },
         {"runtime": "codex"},
-    ],
+    ]
 )
 def test_should_suggest_handover_uses_configured_threshold_from_agent_list() -> None:
     assert should_suggest_handover({"five_hour_used_percentage": 90}, runtime="claude-code") is True
@@ -103,7 +103,7 @@ def test_build_claude_handover_status_uses_session_specific_file(tmp_path: Path)
                 "session_id": "session-123",
                 "five_hour_used_percentage": 97,
                 "five_hour_resets_at": "2026-03-23T17:00:00Z",
-            },
+            }
         ),
         encoding="utf-8",
     )
@@ -156,7 +156,7 @@ def test_tool_claude_handover_reports_latest_status(tmp_path: Path) -> None:
                 "five_hour_used_percentage": 96,
                 "five_hour_resets_at": "2026-03-23T17:00:00Z",
                 "context_window_used_percentage": 42,
-            },
+            }
         ),
         encoding="utf-8",
     )
@@ -192,7 +192,7 @@ def test_tool_claude_handover_renders_plain_text(tmp_path: Path) -> None:
                 "session_id": "session-456",
                 "five_hour_used_percentage": 94,
                 "five_hour_resets_at": "2026-03-23T18:00:00Z",
-            },
+            }
         ),
         encoding="utf-8",
     )

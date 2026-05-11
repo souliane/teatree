@@ -125,7 +125,7 @@ This skill holds the core. Load the mode-specific skill for the task in hand —
 
 | Skill | When to load |
 |-------|--------------|
-| `/teatree-dogfood` | Validating a CLI, dashboard, or server startup change |
+| `/teatree-dogfood` | Validating a CLI, loop, or statusline change |
 | `/teatree-plan` | Prioritizing the backlog via the GitHub Projects v2 board |
 | `/teatree-batch` | Working the prioritized backlog unattended, one ticket at a time |
-| `/teatree-bughunt` | Self-QA on the dashboard — find, file, and fix bugs in one session |
+| `/teatree-bughunt` | Self-QA on the loop and statusline — find, file, and fix bugs in one session |

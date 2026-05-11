@@ -59,7 +59,7 @@ class SlackMentionsScanner:
                     kind="slack.mention",
                     summary=f"Mention {ts}: {_text(event)[:80]}",
                     payload={"ts": ts, "event": event},
-                ),
+                )
             )
             if ts:
                 cursors["mentions"] = max(cursors.get("mentions", ""), ts)
@@ -70,7 +70,7 @@ class SlackMentionsScanner:
                     kind="slack.dm",
                     summary=f"DM {ts}: {_text(event)[:80]}",
                     payload={"ts": ts, "event": event},
-                ),
+                )
             )
             if ts:
                 cursors["dms"] = max(cursors.get("dms", ""), ts)
