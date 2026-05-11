@@ -4,6 +4,13 @@
 
 ---
 
+## `ty` Version Bumps Break Pre-Commit
+
+- **Symptom:** `uv lock --upgrade` bumps `ty` by many minor versions; the new ty finds dozens of new type errors (e.g., `invalid-return-type`, `invalid-argument-type` on Django/FSM patterns).
+- **Cause:** `ty` releases frequently with new checks. A jump from e.g. 0.0.20 to 0.0.35 enables checks that didn't exist before.
+- **Fix:** Pin ty separately during dep upgrades: `uv lock --upgrade && uv lock --upgrade-package 'ty==<current>'` (where `<current>` is the version from `git show origin/main:uv.lock | grep -A1 'name = "ty"'`).
+- **Prevention:** The bump-deps script bumps the `>=` lower bound in `pyproject.toml`. Revert the ty bound if it was raised: keep `ty>=0.0.18` and let the lock file control the actual version. Upgrade ty intentionally in a dedicated PR with time to fix type errors.
+
 ## "Database Already Exists"
 
 - **Cause:** Previous `t3 <overlay> worktree provision` created the DB but was interrupted before completing.
