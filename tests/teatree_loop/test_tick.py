@@ -208,26 +208,7 @@ def test_zones_groups_disposition_candidates_by_reason(tmp_path: Path) -> None:
     assert "[teatree]" in texts[0]
 
 
-def test_zones_caps_ready_to_start_entries(tmp_path: Path) -> None:
-    from teatree.loop.dispatch import DispatchAction  # noqa: PLC0415
-    from teatree.loop.tick import _MAX_READY_TO_START, _zones_for  # noqa: PLC0415
-
-    actions = [
-        DispatchAction(
-            kind="statusline",
-            zone="action_needed",
-            detail=f"Ready to start: Issue #{i}",
-            payload={"url": f"https://example.com/issues/{i}"},
-        )
-        for i in range(12)
-    ]
-    zones = _zones_for(actions)
-    texts = [item if isinstance(item, str) else item.text for item in zones.action_needed]
-    assert len(texts) == _MAX_READY_TO_START + 1
-    assert "… and 7 more ready to start" in texts[-1]
-
-
-def test_zones_no_overflow_when_ready_under_cap() -> None:
+def test_zones_collapses_ready_to_start_into_count() -> None:
     from teatree.loop.dispatch import DispatchAction  # noqa: PLC0415
     from teatree.loop.tick import _zones_for  # noqa: PLC0415
 
@@ -235,14 +216,61 @@ def test_zones_no_overflow_when_ready_under_cap() -> None:
         DispatchAction(
             kind="statusline",
             zone="action_needed",
-            detail="Ready to start: Small backlog",
-            payload={"url": "https://example.com/issues/1"},
+            detail=f"Ready to start: Issue #{i}",
+            payload={"url": f"https://example.com/issues/{i}", "overlay": "acme"},
         )
+        for i in range(12)
     ]
     zones = _zones_for(actions)
     texts = [item if isinstance(item, str) else item.text for item in zones.action_needed]
     assert len(texts) == 1
-    assert "more ready to start" not in texts[0]
+    assert texts[0] == "[acme] 12 issues ready to start"
+
+
+def test_zones_groups_prs_per_overlay_on_one_line() -> None:
+    from teatree.loop.dispatch import DispatchAction  # noqa: PLC0415
+    from teatree.loop.tick import _zones_for  # noqa: PLC0415
+
+    actions = [
+        DispatchAction(
+            kind="statusline",
+            zone="in_flight",
+            detail=f"PR #{iid} open: feat",
+            payload={"url": f"https://example.com/pr/{iid}", "iid": iid, "overlay": "acme"},
+        )
+        for iid in [330, 1089, 7370]
+    ]
+    zones = _zones_for(actions)
+    assert len(zones.in_flight) == 1
+    text = zones.in_flight[0] if isinstance(zones.in_flight[0], str) else zones.in_flight[0].text
+    assert "[acme]" in text
+    assert "!330" in text
+    assert "!1089" in text
+    assert "!7370" in text
+
+
+def test_zones_pr_annotations_show_notes_and_failures() -> None:
+    from teatree.loop.dispatch import DispatchAction  # noqa: PLC0415
+    from teatree.loop.tick import _zones_for  # noqa: PLC0415
+
+    actions = [
+        DispatchAction(
+            kind="statusline",
+            zone="action_needed",
+            detail="PR #330 has 7 notes",
+            payload={"url": "https://x/330", "iid": 330, "draft_count": 7, "overlay": "o"},
+        ),
+        DispatchAction(
+            kind="statusline",
+            zone="action_needed",
+            detail="PR #99 pipeline failed",
+            payload={"url": "https://x/99", "iid": 99, "status": "failed", "overlay": "o"},
+        ),
+    ]
+    zones = _zones_for(actions)
+    text = zones.action_needed[0] if isinstance(zones.action_needed[0], str) else zones.action_needed[0].text
+    assert "!330 (7 notes)" in text
+    assert "!99 (pipeline failed)" in text
 
 
 def test_tick_multi_overlay_prefixes_summary(tmp_path: Path) -> None:
@@ -265,4 +293,4 @@ def test_tick_multi_overlay_prefixes_summary(tmp_path: Path) -> None:
     run_tick(TickRequest(backends=backends), statusline_path=statusline, colorize=False)
     contents = statusline.read_text(encoding="utf-8")
     assert "[teatree]" in contents
-    assert "PR #545" in contents
+    assert "!545" in contents
