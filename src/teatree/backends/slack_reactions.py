@@ -99,7 +99,7 @@ def add_reactions_for_transition(ticket: "Ticket", transition_name: str) -> int:
     Returns the number of successful reaction posts.  Missing credentials,
     missing permalinks, and unmapped transitions are all silent no-ops.
     """
-    overlay = get_overlay()
+    overlay = get_overlay(name=ticket.overlay or None)
     emoji = overlay.config.get_transition_emojis().get(transition_name)
     if not emoji:
         return 0
