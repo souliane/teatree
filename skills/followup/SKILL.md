@@ -169,30 +169,12 @@ This step is **idempotent** — running it multiple times only adds missing entr
 
 After all tickets are processed (or when invoked in "check status" mode), scan in-flight tickets for possible status transitions. This covers tickets discovered by §8b as well as any ticket with prior state in `$T3_DATA_DIR/tickets/`.
 
-**a. Doing → Technical Review:**
+Run the gate checks from [`references/ticket-transitions.md`](references/ticket-transitions.md) for each in-flight ticket:
 
-For each ticket with `Process::Doing`:
+- **Doing → Technical Review:** all PRs have review request messages cached
+- **Technical Review → DEV Review:** all PRs merged AND deployed
 
-1. List all PRs for the ticket's branch (via `ticket_get_mrs` extension point or the issue tracker CLI).
-2. Check `$T3_DATA_DIR/tickets/<iid>/mr_review_messages.json` for cached review request messages. See your [chat platform reference](../platforms/references/) § "Caching Chat Data".
-3. For PRs without a cache entry, search the team chat for the PR URL. Cache any results found.
-4. If ALL PRs have a review request message → transition the ticket.
-
-**b. Technical Review → DEV Review:**
-
-For each ticket with `Process::Technical Review`:
-
-1. Check if ALL associated PRs are merged (query PR state via the issue tracker CLI).
-2. Call `ticket_check_deployed` extension point to verify deployment to target environment.
-3. If all merged AND deployed → transition the ticket.
-
-**Transition actions** (for both a and b):
-
-- Update issue tracker label/status. See your [issue tracker platform reference](../platforms/references/) § "Transition Logic" for the CLI recipe.
-- Call `ticket_update_external_tracker` extension point (Notion, Jira, etc.).
-- Report: `Ticket #<IID> → <new status> (reason)`
-
-See [`references/ticket-transitions.md`](references/ticket-transitions.md) for the full transition system.
+Each transition updates the issue tracker and calls `ticket_update_external_tracker`. See the reference file for the full gate logic, storage format, and extension points.
 
 ### 10. Status Check Mode
 
