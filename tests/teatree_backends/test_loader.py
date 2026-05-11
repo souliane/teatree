@@ -11,6 +11,7 @@ from teatree.backends.gitlab_ci import GitLabCIService
 from teatree.backends.loader import (
     get_ci_service,
     get_code_host,
+    get_code_host_for_url,
     get_messaging,
     reset_backend_caches,
 )
@@ -104,3 +105,30 @@ def test_get_ci_service_returns_gitlab_when_token_present() -> None:
 def test_reset_backend_caches_clears_ci() -> None:
     reset_backend_caches()
     assert get_ci_service() is None
+
+
+def test_get_code_host_for_url_returns_github_for_github_url() -> None:
+    overlay = _build_overlay()
+    _stub_token(overlay, github="gh-tok", gitlab="gl-tok")
+    result = get_code_host_for_url(overlay, "https://github.com/org/repo/issues/1")
+    assert isinstance(result, GitHubCodeHost)
+
+
+def test_get_code_host_for_url_returns_gitlab_for_gitlab_url() -> None:
+    overlay = _build_overlay()
+    _stub_token(overlay, github="gh-tok", gitlab="gl-tok")
+    result = get_code_host_for_url(overlay, "https://gitlab.com/group/repo/-/issues/42")
+    assert isinstance(result, GitLabCodeHost)
+
+
+def test_get_code_host_for_url_falls_back_to_default_for_unknown_domain() -> None:
+    overlay = _build_overlay()
+    _stub_token(overlay, github="gh-tok")
+    result = get_code_host_for_url(overlay, "https://unknown.example.com/issues/1")
+    assert isinstance(result, GitHubCodeHost)
+
+
+def test_get_code_host_for_url_returns_none_when_no_matching_token() -> None:
+    overlay = _build_overlay()
+    _stub_token(overlay)
+    assert get_code_host_for_url(overlay, "https://github.com/org/repo/issues/1") is None

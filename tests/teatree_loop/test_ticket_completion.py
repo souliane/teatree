@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass, field
 from typing import Any
+from unittest.mock import patch
 
 from django.test import TestCase
 
@@ -96,9 +97,14 @@ class TicketCompletionScannerTests(TestCase):
 
     def _scanner(self, host: _Host, overlay: OverlayBase | None = None) -> TicketCompletionScanner:
         return TicketCompletionScanner(
-            host=host,
             overlay=overlay or _AcmeOverlay(),
             overlay_name=self.OVERLAY,
+        )
+
+    def _patch_host(self, host: _Host):
+        return patch(
+            "teatree.loop.scanners.ticket_completion.get_code_host_for_url",
+            return_value=host,
         )
 
     def _ticket(self, *, state: str = Ticket.State.SHIPPED, url: str | None = None) -> Ticket:
@@ -107,20 +113,23 @@ class TicketCompletionScannerTests(TestCase):
     def test_detects_closed_github_issue(self) -> None:
         self._ticket(state=Ticket.State.SHIPPED)
         host = _Host(issues_by_url={self.URL: {"state": "closed"}})
-        signals = self._scanner(host).scan()
+        with self._patch_host(host):
+            signals = self._scanner(host).scan()
         assert len(signals) == 1
         assert signals[0].kind == "ticket.completion_detected"
 
     def test_detects_completed_github_issue(self) -> None:
         self._ticket(state=Ticket.State.IN_REVIEW)
         host = _Host(issues_by_url={self.URL: {"state": "completed"}})
-        signals = self._scanner(host).scan()
+        with self._patch_host(host):
+            signals = self._scanner(host).scan()
         assert len(signals) == 1
 
     def test_no_signal_for_open_issue(self) -> None:
         self._ticket(state=Ticket.State.SHIPPED)
         host = _Host(issues_by_url={self.URL: {"state": "open"}})
-        assert self._scanner(host).scan() == []
+        with self._patch_host(host):
+            assert self._scanner(host).scan() == []
 
     def test_only_scans_post_ship_states(self) -> None:
         for state in (
@@ -133,7 +142,8 @@ class TicketCompletionScannerTests(TestCase):
         ):
             Ticket.objects.create(overlay=self.OVERLAY, issue_url=f"{self.URL}/{state}", state=state)
         host = _Host()
-        assert self._scanner(host).scan() == []
+        with self._patch_host(host):
+            assert self._scanner(host).scan() == []
         assert host.get_issue_calls == []
 
     def test_scans_shipped_in_review_merged(self) -> None:
@@ -150,18 +160,21 @@ class TicketCompletionScannerTests(TestCase):
                 f"{self.URL}/{Ticket.State.MERGED}": {"state": "closed"},
             }
         )
-        signals = self._scanner(host).scan()
+        with self._patch_host(host):
+            signals = self._scanner(host).scan()
         assert len(signals) == 3
 
     def test_skips_empty_url(self) -> None:
         Ticket.objects.create(overlay=self.OVERLAY, issue_url="", state=Ticket.State.SHIPPED)
         host = _Host()
-        assert self._scanner(host).scan() == []
+        with self._patch_host(host):
+            assert self._scanner(host).scan() == []
 
     def test_handles_error_response(self) -> None:
         self._ticket(state=Ticket.State.SHIPPED)
         host = _Host(issues_by_url={})
-        assert self._scanner(host).scan() == []
+        with self._patch_host(host):
+            assert self._scanner(host).scan() == []
 
     def test_gitlab_overlay_label_based_done(self) -> None:
         self._ticket(state=Ticket.State.IN_REVIEW)
@@ -173,7 +186,8 @@ class TicketCompletionScannerTests(TestCase):
                 }
             }
         )
-        signals = self._scanner(host, overlay=_GitLabOverlay()).scan()
+        with self._patch_host(host):
+            signals = self._scanner(host, overlay=_GitLabOverlay()).scan()
         assert len(signals) == 1
 
     def test_gitlab_overlay_not_done_without_label(self) -> None:
@@ -186,17 +200,20 @@ class TicketCompletionScannerTests(TestCase):
                 }
             }
         )
-        assert self._scanner(host, overlay=_GitLabOverlay()).scan() == []
+        with self._patch_host(host):
+            assert self._scanner(host, overlay=_GitLabOverlay()).scan() == []
 
     def test_filters_by_overlay_name(self) -> None:
         Ticket.objects.create(overlay="other-overlay", issue_url=self.URL, state=Ticket.State.SHIPPED)
         host = _Host(issues_by_url={self.URL: {"state": "closed"}})
-        assert self._scanner(host).scan() == []
+        with self._patch_host(host):
+            assert self._scanner(host).scan() == []
 
     def test_payload_contains_ticket_info(self) -> None:
         ticket = self._ticket(state=Ticket.State.MERGED)
         host = _Host(issues_by_url={self.URL: {"state": "closed"}})
-        signals = self._scanner(host).scan()
+        with self._patch_host(host):
+            signals = self._scanner(host).scan()
         assert signals[0].payload["ticket_id"] == ticket.pk
         assert signals[0].payload["ticket_state"] == "merged"
         assert signals[0].payload["issue_url"] == self.URL
