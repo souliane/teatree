@@ -213,7 +213,6 @@ Run verification in a Python 3.13 environment with TeaTree installed:
 uv run --python /opt/homebrew/bin/python3.13 \
   --with 'teatree @ file://'"$T3_REPO" \
   --with 'django>=5.2,<6.1' \
-  --with django-htmx \
   --with django-tasks \
   --with django-tasks-db \
   --with django-typer \

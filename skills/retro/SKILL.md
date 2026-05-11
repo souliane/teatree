@@ -202,15 +202,6 @@ flowchart TD
 
 **Scope-match check first (Non-Negotiable).** Before auditing individual failures, re-open the ticket/issue body that framed this session and map every acceptance criterion, phase, or deliverable to what actually shipped. If ANY AC is unshipped and the session was declared complete (MR merged with `Closes/Fixes`, `/t3:next` run, ticket marked done), that is a **False completion** finding and it outranks every tactical finding below. Re-reading the issue body is not optional — scoping→implementation drift is invisible from the conversation alone.
 
-**Check dashboard server logs next.** Inspect the teatree dashboard log for errors that may not have surfaced in the conversation:
-
-```bash
-LOG="$HOME/.local/share/teatree/$(basename "$PWD")/logs/dashboard.log"
-[ -f "$LOG" ] && grep -i "error\|traceback\|exception\|critical" "$LOG" | tail -30
-```
-
-Errors in the log (500s, tracebacks, failed task launches) are retro findings even if the user didn't mention them. Categorize them alongside conversation issues below.
-
 Review the full conversation and categorize every issue:
 
 | Category | Description | Example |

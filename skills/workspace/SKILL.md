@@ -76,7 +76,7 @@ Key variables used by this skill (see `/t3:setup` for the full config reference)
 
 ### Data Directory (XDG-Compliant)
 
-Teatree stores runtime data (ticket cache, MR reminders, followup dashboard) in:
+Teatree stores runtime data (ticket cache, PR reminders, followup state) in:
 
 ```text
 $T3_DATA_DIR  (default: ${XDG_DATA_HOME:-$HOME/.local/share}/teatree)

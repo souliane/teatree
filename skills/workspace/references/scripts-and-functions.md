@@ -20,7 +20,6 @@ t3 <overlay> --help            # overlay-specific commands (from overlay project
 | `t3 agent` | Launch Claude Code with auto-detected project context |
 | `t3 sessions` | List recent Claude conversation sessions with resume commands |
 | `t3 info` | Show binary, source paths, editable status, and installed overlays |
-| `t3 dashboard` | Migrate the database and start the dashboard dev server |
 | `t3 doctor check` | Verify imports, required tools, and editable-install sanity |
 | `t3 config autoload` | List skill auto-loading rules from `context-match.yml` |
 | `t3 config check-update` | Check if a newer version of teatree is available |
@@ -33,7 +32,7 @@ t3 <overlay> --help            # overlay-specific commands (from overlay project
 | `t3 ci fetch-failed-tests` | Extract failed test IDs from the latest CI pipeline |
 | `t3 ci quality-check` | Run quality analysis (fetch test report from latest pipeline) |
 | `t3 review post-draft-note` / `publish-draft-notes` / `delete-draft-note` / `list-draft-notes` / `update-note` / `reply-to-discussion` / `resolve-discussion` | Code review helpers |
-| `t3 review-request discover` | Discover open merge requests awaiting review |
+| `t3 review-request discover` | Discover open PRs awaiting review |
 | `t3 setup` | First-time setup and global skill management |
 | `t3 assess` | Codebase health assessment |
 | `t3 overlay` | Dev-mode overlay install/uninstall |
@@ -52,8 +51,8 @@ Run `t3 <overlay> --help` for the full list. Subcommand groups: `worktree`, `wor
 
 | Command | What it does |
 |---------|-------------|
-| `t3 <overlay> ship [TICKET_ID]` | Code to MR — create merge request for the ticket |
-| `t3 <overlay> daily` | Daily followup — sync MRs, check gates, remind reviewers |
+| `t3 <overlay> ship [TICKET_ID]` | Code to PR — create pull request for the ticket |
+| `t3 <overlay> daily` | Daily followup — sync PRs, check gates, remind reviewers |
 | `t3 <overlay> full-status` | Show ticket, worktree, and session state summary |
 | `t3 <overlay> agent` | Launch Claude Code with overlay context and auto-detected skills |
 | `t3 <overlay> resetdb` | Drop the SQLite database and re-run all migrations |
@@ -106,4 +105,3 @@ These run via `prek`, not via the CLI:
 - `check-banned-terms.sh` — reject banned terms in public repos
 - `check_skill_versions.py` — sync SKILL.md versions with pyproject.toml
 - `update_readme_skills.py` — regenerate skill index in README
-- `update_dashboard_screenshot.py` — update dashboard screenshot

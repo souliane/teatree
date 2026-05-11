@@ -512,7 +512,7 @@ When a pre-commit hook runs the full test suite and fails on tests **unrelated t
 
 **Why:** Parallel agents modifying the same checkout cause silent data loss — commits overwrite each other, stashes destroy in-progress work, and merge conflicts go undetected. This has cost hours of wasted work. Worktrees give each agent an isolated copy. The rules below are secondary defenses.
 
-**Pre-task check — before tackling a known issue (failing CI job, regression, "fix X" ticket):** Run `git worktree list` first. If a worktree branch name matches the bug surface (e.g., `ac/fix-e2e-dashboard-*` for dashboard E2E failures, or any branch with relevant commits in `git log --oneline main..HEAD`), **another agent is likely already on it**. Do NOT spawn a parallel worktree on the same problem — coordinate or stand down. The collision rule above catches conflicts at write-time; this catches them before any work starts.
+**Pre-task check — before tackling a known issue (failing CI job, regression, "fix X" ticket):** Run `git worktree list` first. If a worktree branch name matches the bug surface (e.g., `ac/fix-loop-scanner-*` for scanner failures, or any branch with relevant commits in `git log --oneline main..HEAD`), **another agent is likely already on it**. Do NOT spawn a parallel worktree on the same problem — coordinate or stand down. The collision rule above catches conflicts at write-time; this catches them before any work starts.
 
 ## Concurrent Agent Safety (Non-Negotiable)
 

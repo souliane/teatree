@@ -151,20 +151,6 @@ See your [issue tracker platform reference](../../platforms/references/) § "Kno
 - **Fix:** Unset the leaking env vars before committing: `unset DJANGO_SETTINGS_MODULE && git commit ...`. If the issue is `.pth`-based cross-contamination, use `SKIP=pytest git commit ...` and verify tests pass separately with explicit `PYTHONPATH`.
 - **Prevention:** When committing to a repo other than the current working directory (e.g., during skill reviews or retros), sanitize Django-related env vars first. The agent should detect when the target repo differs from the cwd and preemptively unset `DJANGO_SETTINGS_MODULE` and reset `VIRTUAL_ENV`. When a shared venv has editable installs from multiple Django projects, the pytest pre-commit hook may always fail — use `SKIP=pytest` and run tests manually.
 
-## `No module named uvicorn` When Running `t3 dashboard`
-
-- **Symptom:** `t3 dashboard` fails with `No module named uvicorn`.
-- **Cause:** `_uvicorn()` used `sys.executable` — the teatree venv's Python. But `uvicorn` is a dependency of the overlay project (e.g., t3-acme), not of teatree itself. The teatree venv has no `uvicorn` installed.
-- **Fix:** `_uvicorn()` now uses `uv --directory <project_path> run uvicorn` to run in the project's environment, falling back to `sys.executable` otherwise.
-- **Prevention:** When spawning overlay project commands from the `t3` CLI, always consider whether the command needs project-specific dependencies. If so, use `uv --directory <project_path>` to run in the correct environment.
-
-## `Could not import module "asgi"` When Running `t3 dashboard`
-
-- **Symptom:** `t3 dashboard` runs migrations successfully but then fails with `Error loading ASGI app. Could not import module "asgi"`.
-- **Cause:** `_uvicorn()` read `DJANGO_SETTINGS_MODULE` from `os.environ` to construct the ASGI module path (e.g., `acme.asgi:application`). But the overlay registration never set it in the environment — only the overlay entry object had the `settings_module`. With an empty env var, the ASGI path resolved to bare `"asgi:application"`.
-- **Fix:** Thread `settings_module` from the overlay entry through `_build_overlay_app` → `dashboard` → `_uvicorn` as a parameter, falling back to `os.environ` only if not provided.
-- **Prevention:** When adding CLI commands that need overlay metadata (settings module, project path), pass the metadata explicitly from the overlay entry rather than relying on environment variables that may not be set.
-
 ## `uv run` Silently Reverts Edits in Editable Installs
 
 - **Symptom:** After editing a source file in an editable install, running `uv run <anything>` rebuilds the package and overwrites your changes.
@@ -180,27 +166,6 @@ See your [issue tracker platform reference](../../platforms/references/) § "Kno
   1. `setattr(self, ...)` instead of `setattr(type(self), ...)` — instance-level binding prevents cross-test pollution.
   2. `from teatree.utils.secrets import read_pass` moved inside the closure body (late binding) — so `patch.object(_secrets_mod, "read_pass", ...)` works.
 - **Prevention:** Never use `setattr(type(self), ...)` for per-instance dynamic methods — it mutates the class and leaks across all instances. Use `setattr(self, ...)` for instance-scoped behavior.
-
-## Dashboard SSE Not Working (No Live Updates)
-
-- **Symptom:** Dashboard loads but panels never auto-refresh. No SSE events received. Browser console may show a 404 for `sse.js`.
-- **Cause:** The CDN URL for `htmx-ext-sse` referenced a nonexistent version (`@2.3.0`). The latest published version was `2.2.4`. The 404 response silently broke all SSE functionality.
-- **Fix (applied):** Vendored `htmx` and `htmx-ext-sse` as local static files (`src/teatree/core/static/teatree/js/`) to eliminate CDN dependency. Updated template `<script>` tags to use `{% static %}`.
-- **Prevention:** After changing any `<script src>` or `<link href>` in templates: (1) verify the URL resolves (`curl -sI <url>`), (2) if vendoring locally, verify file size is reasonable (a 45-byte file is an error page, not a JS library), (3) take a Playwright screenshot and check browser console for errors.
-
-## Dashboard SSE `SynchronousOnlyOperation` Under ASGI
-
-- **Symptom:** Dashboard 500s on the SSE endpoint with `SynchronousOnlyOperation: You cannot call this from an async context`.
-- **Cause:** `DashboardSSEView` is an async view (uses `async def get`), but `_detect_changed_panels` calls sync ORM builders directly.
-- **Fix (applied):** Wrap `_detect_changed_panels` in `sync_to_async()` in the SSE event loop.
-- **Prevention:** Any function called from an `async def` view that touches the ORM must go through `sync_to_async`. Grep for `async def` in views and verify no sync ORM calls in the call chain.
-
-## Git Pull Fails With "editor 'emacs -nw'" Error
-
-- **Symptom:** Dashboard "Git Pull" button fails with `error: there was a problem with the editor 'emacs -nw'`.
-- **Cause:** User has `pull.rebase = interactive` in git config, which opens an editor for the rebase todo list. The dashboard subprocess has no TTY, so the editor fails.
-- **Fix (applied):** Set `GIT_EDITOR=true` and `GIT_SEQUENCE_EDITOR=true` in the subprocess environment for `git pull`. This makes interactive rebase silently accept the default todo (equivalent to a normal rebase).
-- **Prevention:** Any `git` subprocess that might trigger an editor (pull, rebase, commit without `-m`) should set `GIT_EDITOR=true` in the env to avoid TTY dependency.
 
 ## GitHub Branch Protection Check Names Don't Match CI
 
@@ -249,7 +214,7 @@ See your [issue tracker platform reference](../../platforms/references/) § "Kno
 - **Cause:** `uv tool install --editable <path>` pins the global `t3` binary to whatever `<path>` was at install time. The tool's venv, Django settings module, and default DB all resolve relative to that original worktree. Changing `cwd` does **not** rebind them.
 - **Fix (one-shot):** Run Django commands through the current worktree's venv instead: `uv run python manage.py <cmd>` (or `uv run t3 <overlay> <cmd>` from the worktree root). This picks up the local `.venv` and settings.
 - **Fix (persistent):** Run `t3 setup` from the main clone (or with `T3_REPO` set). Setup re-anchors the global tool at the main clone and leaves intentional worktree-dogfood installs alone.
-- **Prevention:** For anything that mutates DB/fixtures/ports, prefer `uv run ...` from within the worktree. Reserve the global `t3` binary for read-only or cross-worktree commands (`t3 dashboard`, `t3 doctor`). See also § "TeaTree CLI Uses the Wrong Python Environment" for the Python-interpreter variant.
+- **Prevention:** For anything that mutates DB/fixtures/ports, prefer `uv run ...` from within the worktree. Reserve the global `t3` binary for read-only or cross-worktree commands (`t3 doctor`, `t3 info`). See also § "TeaTree CLI Uses the Wrong Python Environment" for the Python-interpreter variant.
 
 ## Global `t3` Fails With `ModuleNotFoundError: No module named 'teatree'`
 

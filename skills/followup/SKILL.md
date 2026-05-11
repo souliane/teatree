@@ -258,13 +258,7 @@ See your [chat platform reference](../platforms/references/) for known limitatio
 
 After posting (or during any follow-up invocation), remove entries from `mr_reminders.json` where the MR is now approved or merged. This keeps the cache file small.
 
-### 12. Dashboard
-
-The dashboard is a Django view served by teatree. Start it with `t3 dashboard` (top-level command, no overlay needed). It provides a live overview of all in-flight work, reading from the DB populated by `t3 <overlay> followup sync`.
-
-**Extension point: `followup_enrich_data`** — project overlays can add project-specific fields to followup entries (e.g., Notion status, tenant info).
-
-### 13. Data Sync (First Action on Every Load)
+### 12. Data Sync (First Action on Every Load)
 
 **Execute immediately when the skill is loaded** — before responding to the user, before asking what they want, before anything else. This is the first thing followup does on every invocation (both interactive and periodic). The user should never have to ask for a data refresh.
 

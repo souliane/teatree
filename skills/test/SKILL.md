@@ -36,10 +36,10 @@ Running tests, analyzing failures, quality checks, CI interaction, test plans, a
 
 When adding a new test, default to an integration or E2E test — not a unit test. Concretely:
 
-- **Django test client** (`client.get(...)`, `client.post(...)`) for views, URL, HTMX endpoints.
+- **Django test client** (`client.get(...)`, `client.post(...)`) for views and URL endpoints.
 - **`call_command("name", ...)`** for management commands (Typer + Django glue).
 - **Real overlay against `tmp_path`** with real `git init` for provisioning, worktrees, env files.
-- **Playwright** (in `e2e/` or the project's E2E repo) for dashboard or browser-visible behavior.
+- **Playwright** (in `e2e/` or the project's E2E repo) for browser-visible behavior.
 - **`subprocess.run(["t3", ...])`** (mark `@pytest.mark.integration`) when only the real CLI entry point reproduces the bug.
 
 **Mock only unstoppable externals:** network calls (GitHub / GitLab / Slack / Sentry), the clock (`time_machine`), third-party subprocesses. Don't mock teatree code, Django models, filesystem under `tmp_path`, or `git` — run the real thing. If setup is painful, that usually points at a design problem, not a need for mocks.
@@ -77,29 +77,6 @@ The repo's `AGENTS.md` § "Test-Writing Doctrine" carries the authoritative rule
 **`storageState` in Playwright:** `test.use({ storageState: undefined })` means "use default" (inherits global setup state). For truly unauthenticated tests, use `test.use({ storageState: { cookies: [], origins: [] } })`.
 
 **Establish baseline before attributing failures (Non-Negotiable):** When running E2E tests to validate a change, first run the same test on the **default branch** (or the unmodified code) to confirm it passes without your changes. If the test already fails on the default branch, it is a pre-existing failure — do not waste time debugging it as if your changes caused it. Report it as pre-existing and move on.
-
-**Pixel-stable visual snapshots** (`pytest-playwright-visual`, `assert_snapshot`): the plugin hard-fails on any single-pixel mismatch, so snapshot tests are only reproducible when every source of visual drift is pinned. Eliminate in this order before regenerating baselines:
-
-- **Dynamic data in seeded fixtures.** Freeze timestamps (`TaskAttempt.objects.update(started_at=frozen, ended_at=frozen)`), pin any `now()` values. Signal handlers that run on model creation (e.g. immediate-backend) add fresh timestamps — update them after the signal fires.
-- **Git metadata in headers.** The dashboard header prints `git rev-parse --short HEAD` + branch; these change on every commit. Override via env vars (`TEATREE_E2E_GIT_SHA`, `TEATREE_E2E_GIT_BRANCH`) read by the view. Set them at **module level** in `conftest.py` so `subprocess.Popen(env=os.environ)` propagates them to the uvicorn subprocess — patching the test process alone is not enough.
-- **Animations and caret blink.** Playwright's `animations="disabled"` only handles CSS animations it knows about. Add a session-scoped `page.add_init_script` that injects `*{animation-duration:0s!important;transition-duration:0s!important;caret-color:transparent!important}`. Combine with `reduced_motion: "reduce"` in `browser_context_args`.
-- **Font antialiasing across architectures.** Apple Silicon Docker (arm64) and x86_64 CI render fonts at different heights. Force `platform: linux/amd64` on the e2e compose service so locally-regenerated baselines match CI. Even then, leave ~0.5% pixel tolerance for residual antialiasing noise.
-- **Plugin pixel tolerance.** `pytest-playwright-visual`'s strict `if mismatch == 0:` check can be relaxed with `patchy`, but the fixture is decorated with `@pytest.fixture` — patchy's re-exec re-applies the decorator, producing a `FixtureFunctionDefinition` with no `__code__`. Patch `.__wrapped__` (the underlying function) while temporarily rebinding `pytest.fixture` to identity; the outer `FixtureFunctionDefinition` keeps wrapping the patched function. See `e2e/conftest.py` for the working pattern.
-
-**Regenerate baselines inside the same Docker image CI uses.** Never regenerate on the host with `uv run pytest --update-snapshots` — macOS Chromium renders differently. Use `t3 teatree e2e project --update-snapshots` (which runs in the pinned Docker image).
-
-**Recovering a baseline that was never committed.** Different from drift: Playwright fails with `A snapshot doesn't exist at ...`. If the test runs against a DEV/staging environment that can't be reproduced locally (shared SSO, external services), pull the `{name}-actual.png` from the failing job's artifacts and commit it as the baseline:
-
-```bash
-TOKEN=$(glab auth status --show-token 2>&1 | grep -o 'glpat-[^ ]*')  # see t3:platforms gitlab.md
-curl -sL -H "PRIVATE-TOKEN: $TOKEN" \
-  "https://gitlab.com/api/v4/projects/<path>/jobs/<job_id>/artifacts" \
-  -o /tmp/artifacts.zip
-unzip -j /tmp/artifacts.zip "<path-to>/<name>-actual.png" -d <baseline-dir>/
-mv <baseline-dir>/<name>-actual.png <baseline-dir>/<name>.png
-```
-
-Inspect the extracted PNG before committing — confirm it captures the intended deterministic state (mock data, masked dynamic rows) rather than a transient error page.
 
 ### Private Test Suite
 

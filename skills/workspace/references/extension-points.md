@@ -40,7 +40,6 @@ Settings are defined in `overlay_settings.py` and overridden per-user in `~/.tea
 | `pr_auto_labels` | `PR_AUTO_LABELS` | Labels applied to new PRs |
 | `frontend_repos` | `FRONTEND_REPOS` | Repos that need E2E tests |
 | `dev_env_url` | `DEV_ENV_URL` | Development environment URL |
-| `dashboard_logo` | `DASHBOARD_LOGO` | Custom dashboard branding |
 | `github_owner` | `GITHUB_OWNER` | GitHub org/user for API calls |
 | `github_project_number` | `GITHUB_PROJECT_NUMBER` | GitHub Projects v2 board number |
 | `require_ticket` | `REQUIRE_TICKET` | Enforce ticket for all changes |
