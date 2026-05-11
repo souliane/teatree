@@ -17,7 +17,7 @@ from typing import Any, Literal
 
 from teatree.loop.scanners.base import ScanSignal
 
-ActionKind = Literal["statusline", "agent", "webhook"]
+ActionKind = Literal["statusline", "agent", "webhook", "mechanical"]
 type ActionPayload = dict[str, Any]
 
 
@@ -91,6 +91,16 @@ def dispatch(signals: list[ScanSignal]) -> list[DispatchAction]:
         agent = _AGENT_BY_KIND.get(signal.kind)
         if agent is not None:
             actions.append(DispatchAction(kind="agent", zone=agent, detail=signal.summary, payload=signal.payload))
+            continue
+        if signal.kind == "ticket.completion_detected":
+            actions.append(
+                DispatchAction(
+                    kind="mechanical",
+                    zone="ticket_completion",
+                    detail=signal.summary,
+                    payload=signal.payload,
+                ),
+            )
             continue
         if signal.kind == "notion.unrouted":
             actions.append(DispatchAction(kind="webhook", zone="n8n", detail=signal.summary, payload=signal.payload))

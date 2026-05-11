@@ -16,6 +16,7 @@ from teatree.loop.scanners.notion_view import NotionViewScanner
 from teatree.loop.scanners.pending_tasks import PendingTasksScanner
 from teatree.loop.scanners.reviewer_prs import ReviewerPrsScanner
 from teatree.loop.scanners.slack_mentions import SlackMentionsScanner
+from teatree.loop.scanners.ticket_completion import TicketCompletionScanner
 from teatree.loop.scanners.ticket_dispositions import TicketDispositionScanner
 
 __all__ = [
@@ -27,5 +28,6 @@ __all__ = [
     "ScanSignal",
     "Scanner",
     "SlackMentionsScanner",
+    "TicketCompletionScanner",
     "TicketDispositionScanner",
 ]
