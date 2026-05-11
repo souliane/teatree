@@ -402,3 +402,31 @@ class TestAssignedIssuesScanner:
         )
         notify = AssignedIssuesScanner(host=host, ready_labels=("ready",), auto_start=False).scan()
         assert notify[0].payload["auto_start"] is False
+
+    def test_exclude_labels_filters_out_matching_issues(self) -> None:
+        host = FakeCodeHost(
+            user="alice",
+            assigned_issues=[
+                {"web_url": "x", "title": "actionable", "labels": ["ready"]},
+                {"web_url": "y", "title": "in review", "labels": ["ready", "DEV review"]},
+                {"web_url": "z", "title": "also done", "labels": ["ready", "Process::Technical review"]},
+            ],
+        )
+        scanner = AssignedIssuesScanner(
+            host=host,
+            ready_labels=("ready",),
+            exclude_labels=("DEV review", "Process::Technical review"),
+        )
+        signals = scanner.scan()
+        assert [s.payload["url"] for s in signals] == ["x"]
+
+    def test_exclude_labels_empty_means_no_exclusion(self) -> None:
+        host = FakeCodeHost(
+            user="alice",
+            assigned_issues=[
+                {"web_url": "x", "title": "first", "labels": ["DEV review"]},
+            ],
+        )
+        scanner = AssignedIssuesScanner(host=host, ready_labels=(), exclude_labels=())
+        signals = scanner.scan()
+        assert [s.payload["url"] for s in signals] == ["x"]
