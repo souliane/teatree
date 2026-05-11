@@ -8,6 +8,7 @@ testing lives here as plain Python.
 import datetime as dt
 import logging
 import os
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -370,13 +371,28 @@ def _execute_mechanical(report: TickReport) -> None:
     for action in report.actions:
         if action.kind != "mechanical":
             continue
-        if action.zone == "ticket_completion":
+        handler = _MECHANICAL_HANDLERS.get(action.zone)
+        if handler is not None:
             try:
-                _complete_ticket(action.payload)
+                handler(action.payload)
             except Exception as exc:
-                label = f"completion[{action.payload.get('ticket_id', '?')}]"
+                label = f"{action.zone}[{action.payload.get('ticket_id', '?')}]"
                 logger.exception("Mechanical action %s failed", label)
                 report.errors[label] = f"{type(exc).__name__}: {exc}"
+
+
+def _ignore_disposed_ticket(payload: ActionPayload) -> None:
+    from django.apps import apps  # noqa: PLC0415
+
+    ticket_model = apps.get_model("core", "Ticket")
+    ticket_id = payload.get("ticket_id")
+    if ticket_id is None:
+        return
+    ticket = ticket_model.objects.get(pk=ticket_id)
+    if hasattr(ticket, "ignore"):
+        ticket.ignore()
+        ticket.save()
+        logger.info("Auto-ignored ticket %s (reason: %s)", ticket_id, payload.get("reason", "?"))
 
 
 def _complete_ticket(payload: ActionPayload) -> None:
@@ -404,6 +420,12 @@ def _complete_ticket(payload: ActionPayload) -> None:
     if ticket.state == "merged":
         ticket.retrospect()
         ticket.save()
+
+
+_MECHANICAL_HANDLERS: dict[str, Callable[[ActionPayload], None]] = {
+    "ticket_disposition": _ignore_disposed_ticket,
+    "ticket_completion": _complete_ticket,
+}
 
 
 def _anchor_line(started_at: dt.datetime) -> str:

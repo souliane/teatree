@@ -94,11 +94,11 @@ class AssignedIssuesScanner:
             return []
         issues = self.host.list_assigned_issues(assignee=author)
 
-        if self.auto_start:
+        try:
             tracked, in_flight = self._tracked_urls_and_in_flight()
-            budget = max(0, self.max_concurrent - in_flight)
-        else:
-            tracked, budget = frozenset[str](), -1  # -1 sentinel = unbounded notify mode
+        except Exception:  # noqa: BLE001
+            tracked, in_flight = frozenset[str](), 0
+        budget = max(0, self.max_concurrent - in_flight) if self.auto_start else -1
 
         signals: list[ScanSignal] = []
         for issue in issues:
@@ -108,7 +108,7 @@ class AssignedIssuesScanner:
             if self.exclude_labels and any(label in labels for label in self.exclude_labels):
                 continue
             url = _issue_url(issue)
-            if self.auto_start and url and url in tracked:
+            if url and url in tracked:
                 continue
             if self.auto_start and budget == 0:
                 break
