@@ -21,6 +21,7 @@ from teatree.types import (
 if TYPE_CHECKING:
     from teatree.core.models import Worktree
     from teatree.core.readiness import Probe
+    from teatree.core.sync import RawAPIDict
 
 # Re-export all types so existing ``from teatree.core.overlay import X`` still works.
 __all__ = [
@@ -497,6 +498,22 @@ class OverlayBase(ABC):  # noqa: PLR0904 — overlay extension API; hook count r
         """
         _ = changed_files
         return []
+
+    # ── Loop hooks ───────────────────────────────────────────────────
+
+    def is_issue_done(self, issue_data: "RawAPIDict") -> bool:
+        """Return whether the upstream issue is fully done.
+
+        Called by ``TicketCompletionScanner`` to detect tickets whose upstream
+        issue indicates all work is complete — even across multiple repos/PRs.
+
+        Default (GitHub): ``state ∈ {closed, completed}``.
+        GitLab overlays override to check for a process label instead, since a
+        multi-repo ticket may have several MRs and the issue stays open until
+        the last one merges.
+        """
+        state = issue_data.get("state")
+        return isinstance(state, str) and state in {"closed", "completed"}
 
 
 # ── Health checks ───────────────────────────────────────────────────

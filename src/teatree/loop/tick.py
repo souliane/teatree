@@ -14,7 +14,7 @@ from pathlib import Path
 
 from teatree.backends.protocols import CodeHostBackend, MessagingBackend
 from teatree.core.backend_factory import OverlayBackends
-from teatree.loop.dispatch import DispatchAction, dispatch
+from teatree.loop.dispatch import ActionPayload, DispatchAction, dispatch
 from teatree.loop.scanners import (
     AssignedIssuesScanner,
     MyPrsScanner,
@@ -23,6 +23,7 @@ from teatree.loop.scanners import (
     ReviewerPrsScanner,
     Scanner,
     SlackMentionsScanner,
+    TicketCompletionScanner,
     TicketDispositionScanner,
 )
 from teatree.loop.scanners.base import ScanSignal
@@ -139,6 +140,17 @@ def build_default_jobs(
                         ),
                     ]
                 )
+                if backend.overlay is not None:
+                    jobs.append(
+                        _ScannerJob(
+                            scanner=TicketCompletionScanner(
+                                host=backend.host,
+                                overlay=backend.overlay,
+                                overlay_name=tag,
+                            ),
+                            overlay=tag,
+                        ),
+                    )
             if backend.messaging is not None:
                 jobs.append(_ScannerJob(scanner=SlackMentionsScanner(backend=backend.messaging), overlay=tag))
     else:
@@ -189,6 +201,8 @@ def _zones_for(actions: list[DispatchAction]) -> StatuslineZones:
             zone_list = getattr(zones, action.zone, None)
             if isinstance(zone_list, list):
                 zone_list.append(StatuslineEntry(text=f"{prefix}{action.detail}", url=url_str))
+        elif action.kind == "mechanical":
+            zones.in_flight.append(StatuslineEntry(text=f"⚙ {prefix}{action.detail}", url=url_str))
         else:  # "agent" or "webhook" — surface as in-flight progress
             text = f"→ {action.zone}: {prefix}{action.detail}"
             zones.in_flight.append(StatuslineEntry(text=text, url=url_str))
@@ -240,6 +254,7 @@ def run_tick(
                 report.errors[label] = error
 
     report.actions = dispatch(report.signals)
+    _execute_mechanical(report)
 
     zones = _zones_for(report.actions)
     zones.anchors.insert(0, _anchor_line(started_at))
@@ -247,6 +262,52 @@ def run_tick(
         zones.action_needed.append(f"scanner errors: {', '.join(report.errors)}")
     report.statusline_path = render(zones, target=statusline_path, colorize=colorize)
     return report
+
+
+def _execute_mechanical(report: TickReport) -> None:
+    """Execute inline mechanical actions (ticket completions, etc.).
+
+    Runs after dispatch but before statusline render so the statusline
+    reflects the post-transition state. Errors are captured in
+    ``report.errors`` — they never abort the tick.
+    """
+    for action in report.actions:
+        if action.kind != "mechanical":
+            continue
+        if action.zone == "ticket_completion":
+            try:
+                _complete_ticket(action.payload)
+            except Exception as exc:
+                label = f"completion[{action.payload.get('ticket_id', '?')}]"
+                logger.exception("Mechanical action %s failed", label)
+                report.errors[label] = f"{type(exc).__name__}: {exc}"
+
+
+def _complete_ticket(payload: ActionPayload) -> None:
+    """Transition a ticket from its current post-ship state toward delivered.
+
+    FSM path: shipped → request_review → mark_merged → retrospect.
+    Each step advances the ticket one state; ``mark_merged`` and
+    ``retrospect`` enqueue workers via ``on_commit`` for teardown and
+    retro I/O respectively.
+    """
+    from django.apps import apps  # noqa: PLC0415
+
+    ticket_model = apps.get_model("core", "Ticket")
+    ticket_id = payload.get("ticket_id")
+    if ticket_id is None:
+        return
+    ticket = ticket_model.objects.get(pk=ticket_id)
+
+    if ticket.state == "shipped":
+        ticket.request_review()
+        ticket.save()
+    if ticket.state == "in_review":
+        ticket.mark_merged()
+        ticket.save()
+    if ticket.state == "merged":
+        ticket.retrospect()
+        ticket.save()
 
 
 def _anchor_line(started_at: dt.datetime) -> str:
