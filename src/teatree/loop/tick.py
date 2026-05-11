@@ -124,6 +124,7 @@ def build_default_jobs(
                             scanner=AssignedIssuesScanner(
                                 host=backend.host,
                                 ready_labels=backend.ready_labels,
+                                exclude_labels=backend.exclude_labels,
                                 auto_start=backend.auto_start_assigned_issues,
                                 max_concurrent=backend.max_concurrent_auto_starts,
                                 overlay_name=tag,
@@ -189,8 +190,20 @@ def build_default_scanners(
     ]
 
 
+_DISPOSITION_LABELS: dict[str, str] = {
+    "issue_closed": "closed issues",
+    "unassigned": "reassigned away",
+    "label_removed": "ready-label removed",
+}
+
+_MAX_READY_TO_START = 5
+
+
 def _zones_for(actions: list[DispatchAction]) -> StatuslineZones:
     zones = StatuslineZones()
+    disposition_counts: dict[str, dict[str, int]] = {}
+    ready_entries: list[StatuslineEntry] = []
+
     for action in actions:
         url = action.payload.get("url") if isinstance(action.payload, dict) else None
         url_str = url if isinstance(url, str) else ""
@@ -198,14 +211,38 @@ def _zones_for(actions: list[DispatchAction]) -> StatuslineZones:
         prefix = f"[{overlay}] " if isinstance(overlay, str) and overlay else ""
 
         if action.kind == "statusline":
+            reason = action.payload.get("reason") if isinstance(action.payload, dict) else None
+            if isinstance(reason, str):
+                key = overlay if isinstance(overlay, str) else ""
+                disposition_counts.setdefault(key, {}).setdefault(reason, 0)
+                disposition_counts[key][reason] += 1
+                continue
+
+            entry = StatuslineEntry(text=f"{prefix}{action.detail}", url=url_str)
+            if action.zone == "action_needed" and action.detail.startswith("Ready to start:"):
+                ready_entries.append(entry)
+                continue
+
             zone_list = getattr(zones, action.zone, None)
             if isinstance(zone_list, list):
-                zone_list.append(StatuslineEntry(text=f"{prefix}{action.detail}", url=url_str))
+                zone_list.append(entry)
         elif action.kind == "mechanical":
             zones.in_flight.append(StatuslineEntry(text=f"⚙ {prefix}{action.detail}", url=url_str))
-        else:  # "agent" or "webhook" — surface as in-flight progress
+        else:
             text = f"→ {action.zone}: {prefix}{action.detail}"
             zones.in_flight.append(StatuslineEntry(text=text, url=url_str))
+
+    for overlay_key, reasons in sorted(disposition_counts.items()):
+        prefix = f"[{overlay_key}] " if overlay_key else ""
+        parts = [f"{count} {_DISPOSITION_LABELS.get(r, r)}" for r, count in reasons.items()]
+        zones.action_needed.append(f"{prefix}Stale tickets: {', '.join(parts)}")
+
+    for entry in ready_entries[:_MAX_READY_TO_START]:
+        zones.action_needed.append(entry)
+    overflow = len(ready_entries) - _MAX_READY_TO_START
+    if overflow > 0:
+        zones.action_needed.append(f"… and {overflow} more ready to start")
+
     return zones
 
 

@@ -98,6 +98,12 @@ class OverlayConfig:
 
     Used by ``AssignedIssuesScanner``. Empty disables the filter (every
     open assigned issue is considered ready)."""
+    exclude_labels: list[str]
+    """Labels that exclude an assigned issue from the statusline.
+
+    Issues carrying any of these labels are skipped by ``AssignedIssuesScanner``
+    even if they match ``ready_labels``. Useful for workflow stages like
+    "DEV review" where the developer's work is done."""
     auto_start_assigned_issues: bool = False
     """When ``True``, the loop hands ready assigned issues to the orchestrator
     agent to drive end-to-end through PR creation. When ``False`` (default),
@@ -133,6 +139,7 @@ class OverlayConfig:
         self.workspace_repos = []
         self.protected_branches = []
         self.ready_labels = []
+        self.exclude_labels = []
         if settings_module:
             self._load_settings(settings_module)
         if overlay_name:
