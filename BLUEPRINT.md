@@ -552,7 +552,7 @@ Each tick runs three stages:
 
 #### 5.6.1 Statusline rendering
 
-The statusline is the **only persistent UI surface**. It is written to a file by the loop and read by the statusline hook (`hooks/scripts/statusline.sh`) which is just a `cat`. This decouples render speed from content size.
+The statusline is the **only persistent UI surface**. It is written to a file by the loop and read by the statusline hook (`hooks/scripts/statusline.sh`). The hook composes a header line (model, context-window %, 5-hour and 7-day rate-limit usage with color-coded thresholds, loaded skills) from Claude's stdin JSON, then `cat`s the loop's pre-rendered zones file, then chains any extra statusline scripts listed in `[teatree] statusline_chain` (glob patterns resolved to the latest match, interpreter inferred from extension). This decouples render speed from content size.
 
 **Zones (three, fixed order):**
 
@@ -570,7 +570,7 @@ The render module lives at `src/teatree/loop/statusline.py` (`StatuslineZones` d
 
 The loop respects the active overlay's `mode` (§ 10.1, canonical default `interactive`). When an overlay opts into `mode = "auto"`, the training wheel `[teatree] require_human_approval_to_merge = true` (default) keeps merge gated even though push and PR creation run autonomously — merge requires a user reaction (👍 or `/merge`) on the statusline entry or the PR thread. The user flips the training wheel to `false` only when comfortable. In `interactive` overlays, every publishing action still prompts; the loop surfaces work but never publishes silently.
 
-`UserSettings.require_human_approval_to_merge` and `UserSettings.loop_cadence_seconds` (default 720) live in `src/teatree/config.py`; both are toml-overridable in `[teatree]` and per-overlay via `[overlays.<name>]` once registered in `OVERLAY_OVERRIDABLE_SETTINGS`.
+`UserSettings.require_human_approval_to_merge`, `UserSettings.loop_cadence_seconds` (default 720), and `UserSettings.statusline_chain` (default empty) live in `src/teatree/config.py`; the first two are toml-overridable in `[teatree]` and per-overlay via `[overlays.<name>]` once registered in `OVERLAY_OVERRIDABLE_SETTINGS`. `statusline_chain` is global-only (not per-overlay).
 
 ---
 
