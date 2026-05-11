@@ -281,6 +281,22 @@ class OverlayBase(ABC):  # noqa: PLR0904 — overlay extension API; hook count r
     def get_provision_steps(self, worktree: "Worktree") -> list[ProvisionStep]:
         raise NotImplementedError
 
+    # ── Issue title resolution ────────────────────────────────────────
+
+    def get_issue_title(self, url: str) -> str:
+        """Fetch the title of an issue from its URL via the code-host backend."""
+        from teatree.backends.loader import get_code_host  # noqa: PLC0415
+
+        try:
+            host = get_code_host(self)
+            if host is None:
+                return ""
+            data = host.get_issue(url)
+            title = data.get("title", "") if isinstance(data, dict) else ""
+            return str(title)
+        except Exception:  # noqa: BLE001
+            return ""
+
     # ── Provisioning hooks ───────────────────────────────────────────
 
     def get_env_extra(self, worktree: "Worktree") -> dict[str, str]:

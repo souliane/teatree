@@ -169,7 +169,7 @@ class Command(TyperCommand):
             ticket.repos = list(dict.fromkeys((ticket.repos or []) + repo_names))
 
             if not description:
-                description = overlay.metadata.get_issue_title(issue_url)
+                description = overlay.get_issue_title(issue_url)
 
             extra = cast("TicketExtra", ticket.extra or {})
             if not extra.get("branch"):
