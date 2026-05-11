@@ -1,12 +1,6 @@
 """Tests for backend protocol structural typing."""
 
-from teatree.backends.protocols import (
-    CIService,
-    CodeHostBackend,
-    MessageSpec,
-    MessagingBackend,
-    PullRequestSpec,
-)
+from teatree.backends.protocols import CIService, CodeHostBackend, MessageSpec, MessagingBackend, PullRequestSpec
 
 
 class _FakeCIService:

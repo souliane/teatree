@@ -18,11 +18,7 @@ from typing import Any
 import django
 import typer
 
-from teatree.core.backend_factory import (
-    code_host_from_overlay,
-    iter_overlay_backends,
-    messaging_from_overlay,
-)
+from teatree.core.backend_factory import code_host_from_overlay, iter_overlay_backends, messaging_from_overlay
 from teatree.loop.statusline import default_path
 from teatree.loop.tick import TickReport, TickRequest, run_tick
 

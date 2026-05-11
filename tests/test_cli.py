@@ -20,12 +20,7 @@ import teatree.config as config_mod
 import teatree.core.overlay_loader as overlay_loader_mod
 import teatree.core.resolve as resolve_mod
 import teatree.utils.run as utils_run_mod
-from teatree.cli import (
-    _ensure_editable_if_contributing,
-    _find_overlay_project,
-    _find_project_root,
-    app,
-)
+from teatree.cli import _ensure_editable_if_contributing, _find_overlay_project, _find_project_root, app
 from teatree.cli import doctor as cli_doctor_mod
 from teatree.cli.agent import _detect_agent_ticket_status
 from teatree.cli.doctor import DoctorService, IntrospectionHelpers

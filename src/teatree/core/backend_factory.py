@@ -10,14 +10,8 @@ from functools import lru_cache
 
 from django.core.exceptions import ImproperlyConfigured
 
-from teatree.backends.loader import (
-    get_ci_service,
-    get_code_host,
-    get_messaging,
-)
-from teatree.backends.loader import (
-    reset_backend_caches as _reset_loader_caches,
-)
+from teatree.backends.loader import get_ci_service, get_code_host, get_messaging
+from teatree.backends.loader import reset_backend_caches as _reset_loader_caches
 from teatree.backends.protocols import CIService, CodeHostBackend, MessagingBackend
 from teatree.core.overlay import OverlayBase
 from teatree.core.overlay_loader import get_all_overlays, get_overlay

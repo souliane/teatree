@@ -9,13 +9,7 @@ from django.test import TestCase
 
 import teatree.core.overlay_loader as overlay_loader_mod
 from teatree.core.models import Ticket, Worktree
-from teatree.core.reconcile import (
-    Drift,
-    EnvCacheDrift,
-    MissingEnvCache,
-    MissingWorktreeDir,
-    reconcile_ticket,
-)
+from teatree.core.reconcile import Drift, EnvCacheDrift, MissingEnvCache, MissingWorktreeDir, reconcile_ticket
 from teatree.core.worktree_env import write_env_cache
 from tests.teatree_core.conftest import CommandOverlay
 
