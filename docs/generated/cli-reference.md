@@ -553,6 +553,7 @@ Usage: t3 tool [OPTIONS] COMMAND [ARGS]...
 │                  keyword-matching title and body.                            │
 │ find-duplicates  Flag pairs of open issues with near-identical titles.       │
 │ claude-handover  Show Claude handover telemetry and runtime recommendations. │
+│ triage-issues    Scan for resolved-but-open and stale issues.                │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -672,6 +673,27 @@ Usage: t3 tool claude-handover [OPTIONS]
 │                                directory.                                    │
 │ --json                         Emit machine-readable JSON.                   │
 │ --help                         Show this message and exit.                   │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 tool triage-issues`
+
+```
+Usage: t3 tool triage-issues [OPTIONS] REPO
+
+ Scan for resolved-but-open and stale issues.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    repo      TEXT  Repository in owner/name form (e.g. souliane/teatree)   │
+│                      [required]                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --stale-days            INTEGER  Inactivity threshold for stale-issue        │
+│                                  detection.                                  │
+│                                  [default: 30]                               │
+│ --close-resolved                 Close resolved-but-open issues (with        │
+│                                  comment linking the merged PR).             │
+│ --help                           Show this message and exit.                 │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

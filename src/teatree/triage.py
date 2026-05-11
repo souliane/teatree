@@ -1,9 +1,10 @@
-"""Auto-labeling and duplicate detection for GitHub issues — triage tool (see #49)."""
+"""Auto-labeling, duplicate detection, and triage for GitHub issues (see #49)."""
 
 import json
 import re
 import sys
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from difflib import SequenceMatcher
 from itertools import combinations
 
@@ -166,3 +167,145 @@ class DuplicateFinder:
                 )
         matches.sort(key=lambda m: m.score, reverse=True)
         return matches
+
+
+_ISSUE_REF_IN_TITLE = re.compile(r"\(#(\d+)\)")
+
+
+@dataclass(frozen=True)
+class ResolvedIssue:
+    issue_number: int
+    issue_title: str
+    pr_number: int
+    pr_title: str
+
+    @property
+    def confidence(self) -> str:
+        return "high" if f"#{self.issue_number})" in self.pr_title else "medium"
+
+
+@dataclass(frozen=True)
+class StaleIssue:
+    issue_number: int
+    issue_title: str
+    days_inactive: int
+
+
+class TriageScanner:
+    """Find resolved-but-open issues and stale issues."""
+
+    def __init__(self, repo: str) -> None:
+        self.repo = repo
+
+    def _fetch_open_issues(self) -> list[dict]:
+        result = run_allowed_to_fail(
+            [
+                "gh",
+                "issue",
+                "list",
+                "--repo",
+                self.repo,
+                "--state",
+                "open",
+                "--limit",
+                "200",
+                "--json",
+                "number,title,body,labels,updatedAt",
+            ],
+            expected_codes=None,
+        )
+        if result.returncode != 0:
+            sys.stderr.write(f"gh issue list failed: {result.stderr.strip()}\n")
+            return []
+        return json.loads(result.stdout or "[]")
+
+    def _fetch_merged_prs(self) -> list[dict]:
+        result = run_allowed_to_fail(
+            [
+                "gh",
+                "pr",
+                "list",
+                "--repo",
+                self.repo,
+                "--state",
+                "merged",
+                "--limit",
+                "200",
+                "--json",
+                "number,title,mergedAt",
+            ],
+            expected_codes=None,
+        )
+        if result.returncode != 0:
+            return []
+        return json.loads(result.stdout or "[]")
+
+    def find_resolved(self) -> list[ResolvedIssue]:
+        issues = self._fetch_open_issues()
+        if not issues:
+            return []
+        prs = self._fetch_merged_prs()
+        if not prs:
+            return []
+
+        issue_numbers = {i["number"] for i in issues}
+        issue_by_number = {i["number"]: i for i in issues}
+
+        resolved: list[ResolvedIssue] = []
+        for pr in prs:
+            for match in _ISSUE_REF_IN_TITLE.finditer(pr["title"]):
+                ref_number = int(match.group(1))
+                if ref_number in issue_numbers:
+                    issue = issue_by_number[ref_number]
+                    resolved.append(
+                        ResolvedIssue(
+                            issue_number=ref_number,
+                            issue_title=issue["title"],
+                            pr_number=pr["number"],
+                            pr_title=pr["title"],
+                        )
+                    )
+        resolved.sort(key=lambda r: r.issue_number)
+        return resolved
+
+    def close_resolved(self, resolved: list[ResolvedIssue]) -> None:
+        for r in resolved:
+            run_allowed_to_fail(
+                [
+                    "gh",
+                    "issue",
+                    "close",
+                    str(r.issue_number),
+                    "--repo",
+                    self.repo,
+                    "--comment",
+                    f"Auto-closed: resolved by #{r.pr_number} ({r.pr_title}).",
+                ],
+                expected_codes=None,
+            )
+
+    def find_stale(self, *, days: int = 30) -> list[StaleIssue]:
+        issues = self._fetch_open_issues()
+        if not issues:
+            return []
+
+        now = datetime.now(tz=UTC)
+        stale: list[StaleIssue] = []
+        for issue in issues:
+            if issue.get("labels"):
+                continue
+            updated_str = issue.get("updatedAt", "")
+            if not updated_str:
+                continue
+            updated = datetime.fromisoformat(updated_str)
+            inactive_days = (now - updated).days
+            if inactive_days >= days:
+                stale.append(
+                    StaleIssue(
+                        issue_number=issue["number"],
+                        issue_title=issue["title"],
+                        days_inactive=inactive_days,
+                    )
+                )
+        stale.sort(key=lambda s: s.days_inactive, reverse=True)
+        return stale
