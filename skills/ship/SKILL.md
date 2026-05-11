@@ -121,7 +121,7 @@ If retro produces file edits (skill fixes, reference updates, docs), commit them
 
 ### 4b. Review Gate (Non-Negotiable)
 
-Before creating an PR, the `pr create` command automatically checks the session gate:
+Before creating a PR, the `pr create` command automatically checks the session gate:
 
 - **shipping** requires prior `testing`, `reviewing`, and `retro` phases.
 - If no review session ran for this ticket, `pr create` returns an error with a hint to run `/t3:review`.
@@ -172,7 +172,7 @@ Teatree has **two independent gates** layered on top of each other:
 
 **Why a sub-agent, not just self-review.** The implementer's context is contaminated by the implementation: every "looks done" judgment carries the same blind spots that produced the gaps. A sub-agent starts cold, reads the diff with fresh eyes, and applies the review skill's checklists without the implementer's "I already checked that" shortcuts. The cost of one extra `Agent` call is ~30s of wall time and a few hundred tokens; the cost of skipping it is multi-round push-fix-push cycles after the PR is already public.
 
-**Why the FSM, not just the session gate.** The session gate is a soft safety net that fail-opens when no session exists. The FSM is the actual contract — every downstream consumer (`pr create`, `execute_ship`, the loop dispatcher, the dashboard) reads `Ticket.state`. Bypassing the FSM produces tickets that look reviewed in the session record but are still `TESTED` in the source of truth, which then breaks every later transition until someone notices and rewinds by hand.
+**Why the FSM, not just the session gate.** The session gate is a soft safety net that fail-opens when no session exists. The FSM is the actual contract — every downstream consumer (`pr create`, `execute_ship`, the loop dispatcher, the statusline) reads `Ticket.state`. Bypassing the FSM produces tickets that look reviewed in the session record but are still `TESTED` in the source of truth, which then breaks every later transition until someone notices and rewinds by hand.
 
 ### 4c. Visual QA Gate
 
@@ -255,7 +255,7 @@ When fixing review comments on an already-existing PR:
 5. **Reply to the review comments on the PR.**
 6. **Do NOT send a review request notification** — reviewers are already watching.
 
-## Merging the Default Branch into an PR (Non-Negotiable)
+## Merging the Default Branch into a PR (Non-Negotiable)
 
 Before touching the PR branch to "prepare" it for a merge, reason through what a clean 3-way merge would produce on its own:
 
@@ -346,9 +346,9 @@ When a session uncovers a small unique commit on a now-stale branch (typical dur
 - **Verify PR state before claiming merge status.** Check with `gh pr view N --json state` or `glab mr view N --output json` — session memory of merge state drifts as other agents push/merge.
 - Untested code must not be pushed. Local verification by the user is mandatory before pushing. If the project requires E2E tests for UI changes, those tests must be **written and green** before pushing — not "pending" or "will do after PR".
 - **Never rewrite settled commits (Non-Negotiable).** Never rebase, amend, or force-push commits that are already on origin. This applies always — not just after review. Before any squash/fixup, check `git log origin/<branch>..HEAD` to confirm which commits are local-only. Even within local-only commits, **only squash commits from the current work session** — older commits on the branch that predate the current task are settled history. When the user says "squash what belongs together", ask which commit range is in scope rather than assuming the entire local history is fair game.
-- **No rebase / force push after review.** Once an PR has been reviewed, the branch history is shared. Only merge the default branch and push new commits.
+- **No rebase / force push after review.** Once a PR has been reviewed, the branch history is shared. Only merge the default branch and push new commits.
 - **Cancel stale pipelines** before every push to a branch with an existing PR.
-- **Cancel running pipelines when closing an MR/PR.** When an PR is closed (abandoned, superseded, or replaced), cancel any running or pending pipelines for that branch immediately — they waste CI resources on code that will never be merged.
+- **Cancel running pipelines when closing an MR/PR.** When a PR is closed (abandoned, superseded, or replaced), cancel any running or pending pipelines for that branch immediately — they waste CI resources on code that will never be merged.
 - **Clickable references:** Every PR, ticket, or note reference must be a markdown link — see [`../rules/SKILL.md`](../rules/SKILL.md) § "Clickable References".
 - **Commit early, commit often.** Never accumulate more than 1-2 tickets of uncommitted changes. Commit after completing each ticket or logical unit of work. Squash later with `t3 <overlay> workspace finalize`.
 - **Publishing actions are mode-conditional.** Canonical rule: see [`../rules/SKILL.md`](../rules/SKILL.md) § "Publishing Actions Are Mode-Conditional". In `interactive` mode (default) every push/PR/merge/remote-delete needs separate explicit approval. In `auto` mode (`t3.mode = "auto"` or `T3_MODE=auto`) the agent ships end-to-end without confirm prompts; only the always-gated list (force-push to defaults, history rewrites on shared defaults, destructive shared-state ops, unauthorised external writes, `--no-verify`) remains confirm-gated.

@@ -226,7 +226,7 @@ The reviewer's responsibility is to ensure **their own** PRs pass the title/desc
 
 **Step 0f — Respect the Overlay's Auto-Close Policy (Non-Negotiable):**
 
-Do NOT suggest adding `Closes #NNN`, `Fixes #NNN`, `Resolves #NNN`, or any other auto-close keyword to an PR description unless the active overlay's conventions explicitly require it. Many overlays manage issue closure via their own ticket/PR linking rather than via GitHub-style auto-close trailers, and suggesting them contradicts the overlay convention.
+Do NOT suggest adding `Closes #NNN`, `Fixes #NNN`, `Resolves #NNN`, or any other auto-close keyword to a PR description unless the active overlay's conventions explicitly require it. Many overlays manage issue closure via their own ticket/PR linking rather than via GitHub-style auto-close trailers, and suggesting them contradicts the overlay convention.
 
 Check the overlay skill's commit-message and PR-description rules **before** proposing any trailer. The default when the overlay is silent on the topic is: do not suggest auto-close trailers.
 
@@ -256,7 +256,7 @@ If none of those triggers apply (purely internal refactor, test-only change, com
 
 **Step 0h — Discussion Venue: PR Over Chat (Non-Negotiable):**
 
-Discussion topics that anchor to specific code in an PR — design questions about a function, a TODO in the diff, a missing call compared to a sibling endpoint, a hardcoded value, an architectural choice visible in the patch — belong on the **PR**, not in a Slack/Teams DM or chat thread. Default to PR notes whenever the topic references something the reviewer can point to in the diff.
+Discussion topics that anchor to specific code in a PR — design questions about a function, a TODO in the diff, a missing call compared to a sibling endpoint, a hardcoded value, an architectural choice visible in the patch — belong on the **PR**, not in a Slack/Teams DM or chat thread. Default to PR notes whenever the topic references something the reviewer can point to in the diff.
 
 **Why PR over chat:**
 
@@ -276,7 +276,7 @@ Discussion topics that anchor to specific code in an PR — design questions abo
 
 When posting on the PR, prefer **inline** (line-anchored) discussions over **general** PR comments. Inline notes show the exact code that triggered the question and let the author resolve them per topic. Use a general PR comment only when the topic is not anchorable to a single line — for example, an architectural question that spans the whole file or a code block that is not part of the PR's diff (so GitLab cannot anchor an inline note to it).
 
-**Failure mode this step prevents:** the reviewer drafts a Slack message containing 5 design questions about specific lines of an PR, sends it as a DM, and the discussion lives in chat where it is invisible to the rest of the team and disconnected from the code. The author then has to copy-paste the chat back into PR comments to track resolution. The right move was to post the topics as PR discussions in the first place and send a one-line Slack heads-up pointing to the PR.
+**Failure mode this step prevents:** the reviewer drafts a Slack message containing 5 design questions about specific lines of a PR, sends it as a DM, and the discussion lives in chat where it is invisible to the rest of the team and disconnected from the code. The author then has to copy-paste the chat back into PR comments to track resolution. The right move was to post the topics as PR discussions in the first place and send a one-line Slack heads-up pointing to the PR.
 
 **Step 1 — Structured Review Checklist:**
 

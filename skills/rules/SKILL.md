@@ -383,7 +383,7 @@ When implementing features that require an external service (Notion, Slack, CI, 
 
 ## Never Change PR Base Branch or Dependencies (Non-Negotiable)
 
-When an PR targets a non-default branch, that is intentional — it means the PR is part of a dependency chain. **Never** change an PR's target branch, rebase it onto a different base, or remove PR dependencies without explicit user instruction.
+When a PR targets a non-default branch, that is intentional — it means the PR is part of a dependency chain. **Never** change a PR's target branch, rebase it onto a different base, or remove PR dependencies without explicit user instruction.
 
 - If asked to "merge main" into a branch, merge the specified source — do not change what the branch is based on.
 - If a branch is based on another feature branch (not main/master), keep it that way.
