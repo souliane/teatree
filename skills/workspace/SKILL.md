@@ -76,7 +76,7 @@ Key variables used by this skill (see `/t3:setup` for the full config reference)
 
 ### Data Directory (XDG-Compliant)
 
-Teatree stores runtime data (ticket cache, MR reminders, followup dashboard) in:
+Teatree stores runtime data (ticket cache, PR reminders, followup state) in:
 
 ```text
 $T3_DATA_DIR  (default: ${XDG_DATA_HOME:-$HOME/.local/share}/teatree)
@@ -182,7 +182,7 @@ Each worktree gets its own **isolated environment** — dedicated database, port
 - Never use the main repo's database for worktree work
 - Never manually set ports — let `t3 <overlay> worktree provision` allocate them via `find_free_ports()`
 
-When testing an MR, create a full worktree (`t3 <overlay> workspace ticket` + `t3 <overlay> worktree provision` + `t3 <overlay> worktree start`).
+When testing a PR, create a full worktree (`t3 <overlay> workspace ticket` + `t3 <overlay> worktree provision` + `t3 <overlay> worktree start`).
 
 ### Validate After Provisioning (Non-Negotiable)
 

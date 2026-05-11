@@ -18,11 +18,7 @@ from typing import Any
 import django
 import typer
 
-from teatree.core.backend_factory import (
-    code_host_from_overlay,
-    iter_overlay_backends,
-    messaging_from_overlay,
-)
+from teatree.core.backend_factory import code_host_from_overlay, iter_overlay_backends, messaging_from_overlay
 from teatree.loop.statusline import default_path
 from teatree.loop.tick import TickReport, TickRequest, run_tick
 
@@ -52,7 +48,9 @@ def _report_to_dict(report: TickReport) -> ReportDict:
 def tick_command(
     *,
     statusline_file: Path = typer.Option(
-        None, "--statusline-file", help="Override the statusline output path (test hook)."
+        None,
+        "--statusline-file",
+        help="Override the statusline output path (test hook).",
     ),
     overlay: str = typer.Option(
         "",

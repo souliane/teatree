@@ -1,6 +1,7 @@
 import os
 import re
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import SupportsInt, cast
@@ -60,7 +61,7 @@ def _resolve_token() -> str:
     return read_pass("gitlab/pat")
 
 
-class GitLabAPI:
+class GitLabHTTPClient:
     def __init__(self, *, token: str = "", base_url: str = "https://gitlab.com/api/v4") -> None:
         self.token = token or _resolve_token()
         self.base_url = base_url.rstrip("/")
@@ -76,8 +77,10 @@ class GitLabAPI:
     def _set_cached(self, cache_key: str, value: object) -> None:
         self._response_cache[cache_key] = (time.monotonic(), value)
 
+    def _headers(self) -> dict[str, str]:
+        return {"PRIVATE-TOKEN": self.token}
+
     def clear_response_cache(self) -> None:
-        """Clear all cached API responses. Use before explicit sync operations."""
         self._response_cache.clear()
 
     def get_json(self, endpoint: str) -> dict[str, object] | list[dict[str, object]] | None:
@@ -85,7 +88,7 @@ class GitLabAPI:
             return None
         response = httpx.get(
             f"{self.base_url}/{endpoint.lstrip('/')}",
-            headers={"PRIVATE-TOKEN": self.token},
+            headers=self._headers(),
             timeout=10.0,
         )
         response.raise_for_status()
@@ -96,24 +99,56 @@ class GitLabAPI:
             return None
         response = httpx.post(
             f"{self.base_url}/{endpoint.lstrip('/')}",
-            headers={"PRIVATE-TOKEN": self.token},
+            headers=self._headers(),
             json=payload or {},
             timeout=10.0,
         )
         response.raise_for_status()
         return cast("dict[str, object]", response.json())
 
+    def post_status(self, endpoint: str, payload: Mapping[str, object] | None = None) -> int:
+        if not self.token:
+            return 0
+        response = httpx.post(
+            f"{self.base_url}/{endpoint.lstrip('/')}",
+            headers=self._headers(),
+            json=dict(payload) if payload else {},
+            timeout=10.0,
+        )
+        return response.status_code
+
     def put_json(self, endpoint: str, payload: dict[str, object] | None = None) -> dict[str, object] | None:
         if not self.token:
             return None
         response = httpx.put(
             f"{self.base_url}/{endpoint.lstrip('/')}",
-            headers={"PRIVATE-TOKEN": self.token},
+            headers=self._headers(),
             json=payload or {},
             timeout=10.0,
         )
         response.raise_for_status()
         return cast("dict[str, object]", response.json())
+
+    def put_status(self, endpoint: str, payload: Mapping[str, object] | None = None) -> int:
+        if not self.token:
+            return 0
+        response = httpx.put(
+            f"{self.base_url}/{endpoint.lstrip('/')}",
+            headers=self._headers(),
+            json=dict(payload) if payload else {},
+            timeout=10.0,
+        )
+        return response.status_code
+
+    def delete(self, endpoint: str) -> int:
+        if not self.token:
+            return 0
+        response = httpx.delete(
+            f"{self.base_url}/{endpoint.lstrip('/')}",
+            headers=self._headers(),
+            timeout=10.0,
+        )
+        return response.status_code
 
     def upload_file(self, project_id: int, filepath: str) -> dict[str, object] | None:
         if not self.token:
@@ -121,7 +156,7 @@ class GitLabAPI:
         with Path(filepath).open("rb") as f:
             response = httpx.post(
                 f"{self.base_url}/projects/{project_id}/uploads",
-                headers={"PRIVATE-TOKEN": self.token},
+                headers=self._headers(),
                 files={"file": (Path(filepath).name, f)},
                 timeout=30.0,
             )
@@ -134,13 +169,15 @@ class GitLabAPI:
         graphql_url = self.base_url.replace("/api/v4", "/api/graphql")
         response = httpx.post(
             graphql_url,
-            headers={"PRIVATE-TOKEN": self.token},
+            headers=self._headers(),
             json={"query": query, "variables": variables or {}},
             timeout=10.0,
         )
         response.raise_for_status()
         return cast("dict[str, object]", response.json())
 
+
+class GitLabAPI(GitLabHTTPClient):
     def get_work_item_status(self, project_path: str, iid: int) -> str | None:
         """Fetch the Status widget value for a GitLab work item via GraphQL."""
         cache_key = f"work_item_status:{project_path}:{iid}"
@@ -208,8 +245,6 @@ class GitLabAPI:
         updated_after: str | None = None,
     ) -> list[dict[str, object]]:
         """Fetch all open MRs authored by *author* across all accessible projects."""
-        from urllib.parse import urlencode  # noqa: PLC0415
-
         query: dict[str, str | int] = {
             "state": "opened",
             "author_username": author,
@@ -254,8 +289,6 @@ class GitLabAPI:
         updated_after: str | None = None,
     ) -> list[RawMR]:
         """Fetch all open MRs where *reviewer* is assigned as reviewer (not author)."""
-        from urllib.parse import urlencode  # noqa: PLC0415
-
         query: dict[str, str | int] = {
             "state": "opened",
             "reviewer_username": reviewer,
@@ -306,8 +339,6 @@ class GitLabAPI:
         updated_after: str | None,
         per_page: int,
     ) -> list[RawMR]:
-        from urllib.parse import urlencode  # noqa: PLC0415
-
         query: dict[str, str | int] = {
             "state": state,
             "author_username": author,

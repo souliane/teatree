@@ -196,7 +196,12 @@ def test_git_helpers_cover_run_check_current_branch_and_failure(monkeypatch: pyt
 
 def test_run_strict_raises_on_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     def fake_run(
-        args: list[str], *, capture_output: bool, text: bool = False, check: bool = False, **_: object
+        args: list[str],
+        *,
+        capture_output: bool,
+        text: bool = False,
+        check: bool = False,
+        **_: object,
     ) -> CompletedProcess[str]:
         if "bad" in args:
             return CompletedProcess(args, 1, "", "fatal")
@@ -213,7 +218,12 @@ def test_git_high_level_operations(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[list[str]] = []
 
     def fake_run(
-        args: list[str], *, capture_output: bool, text: bool = False, check: bool = False, **_kwargs: object
+        args: list[str],
+        *,
+        capture_output: bool,
+        text: bool = False,
+        check: bool = False,
+        **_kwargs: object,
     ) -> CompletedProcess[str]:
         calls.append(list(args))
         if "merge-base" in args:
@@ -248,7 +258,12 @@ def test_git_high_level_operations(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_git_worktree_and_branch_ops(monkeypatch: pytest.MonkeyPatch) -> None:
     def fake_run(
-        args: list[str], *, capture_output: bool, text: bool = False, check: bool = False, **_kwargs: object
+        args: list[str],
+        *,
+        capture_output: bool,
+        text: bool = False,
+        check: bool = False,
+        **_kwargs: object,
     ) -> CompletedProcess[str]:
         if "worktree" in args:
             return CompletedProcess(args, 0, "", "")
@@ -269,7 +284,12 @@ def test_fetch_without_ref(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[list[str]] = []
 
     def fake_run(
-        args: list[str], *, capture_output: bool, text: bool = False, check: bool = False, **_kwargs: object
+        args: list[str],
+        *,
+        capture_output: bool,
+        text: bool = False,
+        check: bool = False,
+        **_kwargs: object,
     ) -> CompletedProcess[str]:
         calls.append(list(args))
         return CompletedProcess(args, 0, "", "")
@@ -364,7 +384,12 @@ def test_worktree_add_with_and_without_create_branch(monkeypatch: pytest.MonkeyP
     calls: list[list[str]] = []
 
     def fake_run(
-        args: list[str], *, capture_output: bool, text: bool = False, check: bool = False, **_kwargs: object
+        args: list[str],
+        *,
+        capture_output: bool,
+        text: bool = False,
+        check: bool = False,
+        **_kwargs: object,
     ) -> CompletedProcess[str]:
         calls.append(list(args))
         return CompletedProcess(args, 0, "", "")
@@ -1196,10 +1221,10 @@ class TestGitLabAPICacheHits:
                     "data": {
                         "project": {
                             "workItems": {
-                                "nodes": [{"widgets": [{"type": "STATUS", "status": {"name": "In progress"}}]}]
-                            }
-                        }
-                    }
+                                "nodes": [{"widgets": [{"type": "STATUS", "status": {"name": "In progress"}}]}],
+                            },
+                        },
+                    },
                 }
             ),
         )

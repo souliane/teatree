@@ -6,12 +6,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from django.test import TestCase
 
-from teatree.core.cleanup import (
-    BranchClassification,
-    BranchCommit,
-    classify_branch_commits,
-    cleanup_worktree,
-)
+from teatree.core.cleanup import BranchClassification, BranchCommit, classify_branch_commits, cleanup_worktree
 from teatree.core.models import Ticket, Worktree
 
 _patch_config = patch("teatree.core.cleanup.load_config")

@@ -236,17 +236,18 @@ graph LR
 | `code` | Writing code with TDD methodology |
 | `contribute` | Push retro improvements to a branch, open a PR, and optionally create upstream issues |
 | `debug` | Troubleshooting and fixing — something is broken, find and fix it |
-| `followup` | Daily follow-up — batch process new tickets, check/advance ticket statuses, remind about MRs waiting for review |
+| `e2e` | End-to-end testing with Playwright — writing tests, running them, visual snapshots, evidence posting, and the pre-push visual QA gate |
+| `followup` | Daily follow-up — batch process new tickets, check/advance ticket statuses, remind about PRs waiting for review |
 | `handover` | Use when the user wants to transfer an in-flight TeaTree task from Claude to another runtime, or asks whether it is time to switch because Claude usage is getting high. |
 | `next` | Wrap up the current session — retro, structured result, pipeline handoff. |
 | `platforms` | Platform-specific API recipes for GitLab, GitHub, and Slack. Auto-loaded as a dependency by skills that interact with these platforms. |
 | `retro` | Conversation retrospective and skill improvement |
 | `review` | Code review — self-review before finalization, giving review, receiving review feedback |
-| `review-request` | Batch review requests — discover open MRs, validate metadata, check for duplicates, post to review channels |
+| `review-request` | Batch review requests — discover open PRs, validate metadata, check for duplicates, post to review channels |
 | `rules` | Cross-cutting agent safety rules — clickable refs, temp files, sub-agent limits, UX preservation. Auto-loaded as a dependency by other skills. |
 | `setup` | Bootstrap and validate teatree for local use — prerequisites, config, skill symlinks, optional agent hooks, and Django project scaffolding |
 | `ship` | Delivery — committing, pushing, creating MR/PR, pipeline monitoring, review requests |
-| `sweeping-prs` | Maintenance sweep across all your open PRs/MRs — merge the default branch, fix conflicts, monitor CI, push, and (per-repo policy) optionally squash-merge each PR before moving to the next. Never rebases |
+| `sweeping-prs` | Maintenance sweep across all your open PRs/PRs — merge the default branch, fix conflicts, monitor CI, push, and (per-repo policy) optionally squash-merge each PR before moving to the next. Never rebases |
 | `teatree` | TeaTree agent lifecycle platform — core architecture, lifecycle phases, CLI reference, overlay API, skill loading, and plugin hooks |
 | `teatree-batch` | Unattended batch ticket processing — work through a prioritized backlog one ticket at a time, sequentially. Create worktree, implement with TDD, self-review, push, merge, clean up. Skip tickets that need design decisions |
 | `teatree-bughunt` | Self-QA variant of batch mode — dogfood the teatree loop and statusline, find real bugs (missing signals, broken links, stale data, scanner errors), file them, then fix them in worktrees |

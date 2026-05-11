@@ -189,7 +189,9 @@ def slack_bot_setup(
     reset: bool = typer.Option(False, "--reset", help="Rotate the existing bot + app tokens; skip the manifest URL."),
     skip_smoke_test: bool = typer.Option(False, "--skip-smoke-test", help="Skip the round-trip DM verification."),
     config_path: Path = typer.Option(
-        CONFIG_PATH, "--config", help="Path to teatree config (default: ~/.teatree.toml)."
+        CONFIG_PATH,
+        "--config",
+        help="Path to teatree config (default: ~/.teatree.toml).",
     ),
 ) -> None:
     """Register a per-overlay Slack bot and store its tokens via ``pass``."""
