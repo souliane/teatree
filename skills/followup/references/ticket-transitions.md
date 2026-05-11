@@ -28,7 +28,7 @@ Each transition also calls `ticket_update_external_tracker` (extension point) fo
 ### Doing → Technical Review
 
 1. List all open MRs for the ticket's branch across all repos.
-2. For each MR, check `$T3_DATA_DIR/tickets/<iid>/mr_review_messages.json` for a cached review request permalink.
+2. For each PR, check `$T3_DATA_DIR/tickets/<iid>/mr_review_messages.json` for a cached review request permalink.
 3. For any MR without a cached entry, search the team chat for the MR URL. See your [chat platform reference](../../platforms/references/) § "Search for Messages".
 4. If found, cache the permalink in `mr_review_messages.json`.
 5. If ALL MRs have a review request message → transition is ready.
@@ -37,7 +37,7 @@ This works regardless of whether the review was requested via t3:review-request 
 
 ### Technical Review → DEV Review
 
-1. For each MR associated with the ticket, check if it's merged (MR state = "merged").
+1. For each PR associated with the ticket, check if it's merged (MR state = "merged").
 2. Call `ticket_check_deployed` extension point — project skill checks if the merged code is deployed to the target environment.
 3. Both conditions must be true for ALL MRs → transition is ready.
 
@@ -47,7 +47,7 @@ This works regardless of whether the review was requested via t3:review-request 
 |---|---|---|
 | `ticket_check_deployed` | Return False | Project-specific deployment detection (CI pipeline, GCP, k8s, etc.) |
 | `ticket_update_external_tracker` | No-op (log "no external tracker configured") | Notion/Jira status updates |
-| `ticket_get_mrs` | List MRs by branch name via issue tracker CLI | Custom MR discovery (multi-repo, naming conventions) |
+| `ticket_get_mrs` | List MRs by branch name via issue tracker CLI | Custom PR discovery (multi-repo, naming conventions) |
 
 ## Transition Logic
 

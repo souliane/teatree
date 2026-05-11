@@ -895,6 +895,49 @@ Refuses to run in the main clone (detected via a real `.git` directory). Tests i
 
 `TeatreeOverlay.get_provision_steps()` automates the same install for discovered overlays: after `uv sync`, an `install-overlays-editable` step iterates `discover_overlays()` and runs `uv pip install -e <overlay_worktree>` for each entry whose main `project_path` resolves inside the user's `workspace_dir`. Overlays outside `workspace_dir`, overlays without a sibling worktree under the ticket dir, and the teatree overlay itself (already handled by `uv sync`) are silently skipped — the installed package is the fallback.
 
+### 8.6 Teatree Source Resolution in Overlay Projects
+
+Overlay projects depend on `teatree` as a Python package. The `[tool.uv.sources]` entry controls where uv resolves it:
+
+| Mode | `[tool.uv.sources]` value | When |
+|------|--------------------------|------|
+| **CI / non-contributor** | `teatree = { git = "...teatree.git", rev = "<SHA>" }` | Default committed state. Deterministic, pinned to a tested SHA. |
+| **Local dev / WIP testing** | `teatree = { path = "../../souliane/teatree", editable = true }` | Testing unreleased teatree + overlay changes together. |
+
+**Switching between modes** uses `git update-index --skip-worktree pyproject.toml`:
+
+```bash
+# Enable editable mode (local dev):
+# 1. Edit pyproject.toml: teatree = { path = "../../souliane/teatree", editable = true }
+# 2. Protect from commits:
+git update-index --skip-worktree pyproject.toml
+uv lock && uv sync
+
+# Disable editable mode (back to CI state):
+git update-index --no-skip-worktree pyproject.toml
+git checkout pyproject.toml
+uv lock && uv sync
+```
+
+**Auto-detection:** When `contribute = true` in `~/.teatree.toml`, the CLI bootstrap (`_ensure_editable_if_contributing()`) detects non-editable teatree installs and auto-fixes them via `DoctorService.make_editable()`. This handles the common case where a contributor clones fresh.
+
+**Bumping the pinned SHA:** When teatree ships new features needed by the overlay, update the committed `rev` to the latest teatree main SHA:
+
+```bash
+cd <overlay-project>
+# Get latest teatree main SHA:
+TEATREE_SHA=$(git -C ../../souliane/teatree rev-parse origin/main)
+# Update pyproject.toml rev, re-lock, commit:
+sed -i '' "s/rev = \".*\"/rev = \"$TEATREE_SHA\"/" pyproject.toml
+uv lock && git add pyproject.toml uv.lock && git commit -m "chore(deps): bump teatree to ${TEATREE_SHA:0:7}"
+```
+
+**Pitfalls:**
+
+- `path = "."` is wrong — it points at the overlay itself, causing a name mismatch error.
+- `pyproject-fmt` may reformat the source entry — verify after running pre-commit.
+- After bumping the SHA, restore skip-worktree if using editable mode locally.
+
 ---
 
 ## 9. Code Host Sync (sync.py)
