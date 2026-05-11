@@ -3,6 +3,7 @@
 from unittest.mock import MagicMock
 
 from teatree.core.overlay import OverlayBase, ProvisionStep
+from teatree.core.runners.base import RunnerBase, RunnerResult
 
 
 class _MinimalOverlay(OverlayBase):
@@ -153,6 +154,29 @@ def test_abstract_methods_implemented():
     steps = overlay.get_provision_steps(wt)
     assert len(steps) == 1
     assert steps[0].name == "test"
+
+
+def test_runner_result_defaults():
+    r = RunnerResult(ok=True)
+    assert r.ok is True
+    assert r.detail == ""
+
+
+def test_runner_result_with_detail():
+    r = RunnerResult(ok=False, detail="something broke")
+    assert r.ok is False
+    assert r.detail == "something broke"
+
+
+def test_runner_base_run_raises_not_implemented():
+    import pytest  # noqa: PLC0415
+
+    class _CallsSuper(RunnerBase):
+        def run(self):
+            return super().run()
+
+    with pytest.raises(NotImplementedError):
+        _CallsSuper().run()
 
 
 def test_get_repos_raises_not_implemented():
