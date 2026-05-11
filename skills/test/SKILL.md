@@ -84,6 +84,10 @@ See [`../e2e/SKILL.md`](../e2e/SKILL.md) (`/t3:e2e`) for the full E2E workflow: 
 - Background polling for pipeline status.
 - Costs no tokens while waiting.
 
+### Green Means Root Cause
+
+"Make the pipeline green" means fix the root cause — not skip, xfail, or `pragma: no cover` the test. Urgency means being faster at diagnosing, not cutting corners. A test that fails on the default branch is pre-existing and reported as such, not silenced.
+
 ### Fix-Push-Monitor Loop
 
 When CI fails:

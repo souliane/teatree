@@ -343,6 +343,7 @@ When a session uncovers a small unique commit on a now-stale branch (typical dur
 
 ## Rules
 
+- **Verify PR state before claiming merge status.** Check with `gh pr view N --json state` or `glab mr view N --output json` — session memory of merge state drifts as other agents push/merge.
 - Untested code must not be pushed. Local verification by the user is mandatory before pushing. If the project requires E2E tests for UI changes, those tests must be **written and green** before pushing — not "pending" or "will do after PR".
 - **Never rewrite settled commits (Non-Negotiable).** Never rebase, amend, or force-push commits that are already on origin. This applies always — not just after review. Before any squash/fixup, check `git log origin/<branch>..HEAD` to confirm which commits are local-only. Even within local-only commits, **only squash commits from the current work session** — older commits on the branch that predate the current task are settled history. When the user says "squash what belongs together", ask which commit range is in scope rather than assuming the entire local history is fair game.
 - **No rebase / force push after review.** Once an PR has been reviewed, the branch history is shared. Only merge the default branch and push new commits.

@@ -518,6 +518,10 @@ When a pre-commit hook runs the full test suite and fails on tests **unrelated t
 
 Assume another agent may be modifying the same repo concurrently. Never `git stash`, `git checkout --`, or `git restore` files you didn't change — this destroys the other agent's in-progress work. Only stage and commit files you explicitly modified.
 
+## Deprecated Code
+
+When removing a function, class, flag, or CLI argument: delete it completely. Deprecated aliases, backward-compat re-exports, and `# removed` comments create maintenance debt. If callers exist, update them in the same change. Teatree is experimental — no deprecation warnings, no migration helpers. Break cleanly.
+
 ## GitLab Inline Comments
 
 When posting inline PR comments, target **added lines only** — not context or unchanged lines.

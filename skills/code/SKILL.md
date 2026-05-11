@@ -42,6 +42,12 @@ The implementation phase. Follow test-driven development and project conventions
 - **t3:workspace** (required) — provides dev servers for live reload. **Load `/t3:workspace` now** if not already loaded.
 - **Framework/language convention skills** (when backend is in scope) — e.g., Django conventions, Python style guides. TeaTree auto-detects the relevant `ac-*` skill from the repo shape. **If the loader didn't fire**, self-load the appropriate coding skill: `/ac-python` for Python code, `/ac-django` for Django projects. Load these **before writing any code**, not after.
 
+## TDD Discipline
+
+Write the **failing test first**, then the implementation that makes it pass. The test proves the feature works; writing it after implementation risks testing the implementation rather than the behavior. When fixing a bug, the test must reproduce the bug (red) before the fix (green).
+
+Misleading names are bugs — rename the symbol instead of explaining it with a comment.
+
 ## Workflow
 
 ### 0a. Scoping Gate — Warn When Skipped

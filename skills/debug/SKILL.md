@@ -40,6 +40,10 @@ These are optional companion skills from [obra/superpowers](https://github.com/o
 
 Reactive mode — something is wrong, find and fix it.
 
+## Root Cause, One Fix
+
+Diagnose the root cause and apply one targeted fix. Reactive patch loops (fix symptom → new symptom → patch that → new symptom) indicate the root cause was missed. When you find yourself applying a second patch, stop and re-diagnose from scratch.
+
 ## Dependencies
 
 - **workspace** (required) — provides server restart and environment context. **Load `/t3:workspace` now** if not already loaded.
