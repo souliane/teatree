@@ -19,6 +19,7 @@ from teatree.backends.loader import (
     reset_backend_caches as _reset_loader_caches,
 )
 from teatree.backends.protocols import CIService, CodeHostBackend, MessagingBackend
+from teatree.core.overlay import OverlayBase
 from teatree.core.overlay_loader import get_all_overlays, get_overlay
 
 
@@ -35,6 +36,7 @@ class OverlayBackends:
     host: CodeHostBackend | None
     messaging: MessagingBackend | None
     ready_labels: tuple[str, ...]
+    overlay: OverlayBase | None = None
     auto_start_assigned_issues: bool = False
     max_concurrent_auto_starts: int = 1
 
@@ -99,6 +101,7 @@ def iter_overlay_backends() -> list[OverlayBackends]:
                 host=host,
                 messaging=messaging,
                 ready_labels=tuple(overlay.config.ready_labels),
+                overlay=overlay,
                 auto_start_assigned_issues=bool(overlay.config.auto_start_assigned_issues),
                 max_concurrent_auto_starts=int(overlay.config.max_concurrent_auto_starts),
             )

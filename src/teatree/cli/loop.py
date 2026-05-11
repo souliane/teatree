@@ -137,6 +137,13 @@ def start_command(
         typer.echo(f"    {register_command}")
         typer.echo("")
         typer.echo("Override the cadence with `T3_LOOP_CADENCE=<seconds> t3 loop start` (default 720).")
+        typer.echo("")
+        typer.echo(
+            "The tick runs scanners, dispatches signals, renders the statusline, and"
+            " executes mechanical actions (ticket completions). Agent actions"
+            " (kind=agent in --json output) are left for the session to pick up"
+            " — run `t3 loop tick --json` and dispatch them via subagents."
+        )
         return
 
     claude_bin = shutil.which("claude")
