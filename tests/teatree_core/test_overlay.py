@@ -135,7 +135,7 @@ class TestOverlayBase(TestCase):
             assert overlay.get_required_ports(worktree) == set()
             assert overlay.uses_redis() is False
             assert overlay.get_port_env({}) == {}
-            assert overlay.metadata.validate_mr("title", "description") == {"errors": [], "warnings": []}
+            assert overlay.metadata.validate_pr("title", "description") == {"errors": [], "warnings": []}
             assert overlay.metadata.get_skill_metadata() == {}
 
     def test_get_port_env_renders_generic_host_port_keys(self) -> None:

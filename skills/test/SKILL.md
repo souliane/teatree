@@ -1,6 +1,6 @@
 ---
 name: test
-description: Testing, QA, and CI — running tests, analyzing failures, quality checks, CI interaction, test plans, and posting testing evidence. Use when user says "run tests", "pytest", "lint", "e2e", "CI failed", "pipeline", "test plan", "QA", or any test/CI task.
+description: Testing, QA, and CI — running tests, analyzing failures, quality checks, CI interaction, test plans, and posting testing evidence. Use when user says "run tests", "pytest", "lint", "CI failed", "pipeline", "test plan", "QA", or any test/CI task.
 compatibility: macOS/Linux, pytest, linting tools, CI CLI (glab/gh).
 requires:
   - workspace
@@ -9,12 +9,11 @@ requires:
 triggers:
   priority: 20
   keywords:
-    - '\b(run.*tests?|pytest|lint|sonar|e2e|ci fail|pipeline fail|what tests|tests? broke|test runner)\b'
+    - '\b(run.*tests?|pytest|lint|sonar|ci fail|pipeline fail|what tests|tests? broke|test runner)\b'
     - '\bpipeline\b.*(fail|red|broke)'
 search_hints:
   - test
   - pytest
-  - e2e
   - lint
   - ci
   - pipeline

@@ -60,13 +60,13 @@ Always present **two tables** before posting:
 
 **Table 1 — PR Overview** (sorted by updated_at descending):
 
-| PR | Title | CI | validate_mr | Review asked? | Ready? |
+| PR | Title | CI | validate_pr | Review asked? | Ready? |
 |---|---|---|---|---|---|
 | [!123](https://example.com/mrs/123) | fix(scope): description | ✅/❌/🔄 | ✅/❌ reason | [review request](https://example.com/chat/review-requests/123) / ❌ | ✅/⏳/❌ |
 
 - PR column: clickable link
 - CI: ✅ green, ❌ failed, 🔄 running
-- validate_mr: ✅ passes, or ❌ with specific failure reason
+- validate_pr: ✅ passes, or ❌ with specific failure reason
 - Review asked?: permalink to the existing request, or ❌ if not yet posted
 - Ready?: ✅ yes (CI green + valid + not yet asked), ⏳ wait for CI, ❌ needs fixes
 

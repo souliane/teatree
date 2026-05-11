@@ -199,7 +199,7 @@ src/teatree/
 .claude-plugin/         # Plugin manifest
   plugin.json           # Plugin identity (name: t3)
   marketplace.json      # Self-hosted marketplace
-agents/                 # Phase sub-agent definitions (orchestrator + 6 phase agents — see §11.2)
+agents/                 # Phase sub-agent definitions (orchestrator + 7 phase agents — see §11.2)
 skills/*/               # Workflow skills (SKILL.md + references/)
 hooks/                  # Plugin hooks
   hooks.json            # Event → script mapping
@@ -1179,19 +1179,20 @@ Attribution: the `rules` skill's "Invoke Skills Before ANY Response" and "Verifi
 
 ### 11.2 Sub-Agent Architecture
 
-Seven phase agents live in `agents/` (the plugin directory, shipped via APM and `/plugin install`). Each is a thin YAML+description wrapper that references skills via `skills:` frontmatter — no content duplication. Phase agents are invoked via the standard Task tool by lifecycle skills, by the headless executor (§ 5.2) when a phase task is claimed, and by the loop tick (§ 5.6) when a scanner signal calls for agent judgment.
+Eight phase agents live in `agents/` (the plugin directory, shipped via APM and `/plugin install`). Each is a thin YAML+description wrapper that references skills via `skills:` frontmatter — no content duplication. Phase agents are invoked via the standard Task tool by lifecycle skills, by the headless executor (§ 5.2) when a phase task is claimed, and by the loop tick (§ 5.6) when a scanner signal calls for agent judgment.
 
 | Agent | Skills | Role |
 |-------|--------|------|
 | `orchestrator` | rules, workspace | Routes phase tasks to specific agents |
 | `coder` | rules, workspace, code | Implements features with TDD |
 | `tester` | rules, workspace, test, platforms | Runs tests, analyzes CI |
+| `e2e` | rules, workspace, test, e2e, platforms | Playwright E2E tests and visual QA |
 | `reviewer` | rules, platforms, review, code | Read-only code review |
 | `shipper` | rules, workspace, platforms, ship, review-request | Delivery workflow |
 | `debugger` | rules, workspace, debug | Troubleshooting and fixes |
 | `followup` | rules, platforms, followup | PR/issue sync and reminders |
 
-The loop ships no additional agents — its scanners (§ 5.6) are pure Python, and its dispatch stage delegates to these same seven agents. This keeps the agent surface small enough to audit and works identically whether teatree is installed editable, via `pip install`, or via `uv tool install`.
+The loop ships no additional agents — its scanners (§ 5.6) are pure Python, and its dispatch stage delegates to these same eight agents. This keeps the agent surface small enough to audit and works identically whether teatree is installed editable, via `pip install`, or via `uv tool install`.
 
 Interactive-only skills (no agent): `retro`, `next`, `contribute`, `setup`.
 

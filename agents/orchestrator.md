@@ -54,7 +54,8 @@ Priority order:
  | Keywords | Agent |
    |----------|-------|
  | debug, fix, error, broken, crash | @debugger |
- | test, pytest, e2e, lint, ci, qa | @tester |
+ | test, pytest, lint, ci, qa | @tester |
+ | e2e, playwright, visual qa, screenshot | @e2e |
  | commit, push, ship, mr, merge request | @shipper |
  | review, feedback, check the code | @reviewer |
  | code, implement, build, feature | @coder |

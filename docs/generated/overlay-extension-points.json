@@ -89,8 +89,8 @@
       "signature": "(worktree: 'Worktree') -> set[str]"
     },
     {
-      "description": "Return merge-request validation problems for this overlay.",
-      "name": "metadata.validate_mr",
+      "description": "Return PR validation problems for this overlay.",
+      "name": "metadata.validate_pr",
       "required": false,
       "signature": "(title: str, description: str) -> teatree.types.ValidationResult"
     },
