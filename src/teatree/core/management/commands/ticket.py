@@ -98,23 +98,27 @@ class Command(TyperCommand):
         ``is_issue_done()`` for each, and transitions completed tickets toward
         delivered. Use ``--dry-run`` to preview without touching state.
         """
-        from teatree.backends.loader import get_code_host  # noqa: PLC0415
+        from teatree.backends.loader import get_code_host_for_url  # noqa: PLC0415
         from teatree.core.overlay_loader import get_all_overlays  # noqa: PLC0415
 
         completable_states = frozenset({"shipped", "in_review", "merged"})
         results: list[CompletionResult] = []
 
         for overlay_name, overlay in get_all_overlays().items():
-            host = get_code_host(overlay)
-            if host is None:
-                continue
             tickets = Ticket.objects.filter(
                 state__in=completable_states,
                 overlay=overlay_name,
             ).exclude(issue_url="")
 
             for ticket in tickets:
-                issue_data = host.get_issue(ticket.issue_url)
+                host = get_code_host_for_url(overlay, ticket.issue_url)
+                if host is None:
+                    continue
+                try:
+                    issue_data = host.get_issue(ticket.issue_url)
+                except Exception:  # noqa: BLE001
+                    logger.warning("Failed to fetch issue for ticket %s (%s)", ticket.pk, ticket.issue_url)
+                    continue
                 if not isinstance(issue_data, dict) or "error" in issue_data:
                     continue
                 if not overlay.is_issue_done(issue_data):

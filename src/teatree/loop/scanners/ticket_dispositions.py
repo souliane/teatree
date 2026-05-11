@@ -24,7 +24,9 @@ from typing import TYPE_CHECKING, cast
 
 from django.apps import apps
 
+from teatree.backends.loader import get_code_host_for_url
 from teatree.backends.protocols import CodeHostBackend
+from teatree.core.overlay import OverlayBase
 from teatree.core.sync import RawAPIDict
 from teatree.loop.scanners.base import ScanSignal
 
@@ -99,6 +101,7 @@ class TicketDispositionScanner:
     """
 
     host: CodeHostBackend
+    overlay: OverlayBase | None = None
     ready_labels: tuple[str, ...] = field(default_factory=tuple)
     overlay_name: str = ""
     name: str = "ticket_dispositions"
@@ -107,8 +110,11 @@ class TicketDispositionScanner:
         author = self.host.current_user()
         signals: list[ScanSignal] = []
         for ticket in self._candidate_tickets():
+            host = self._host_for_ticket(ticket)
+            if host is None:
+                continue
             try:
-                issue = self.host.get_issue(ticket.issue_url)
+                issue = host.get_issue(ticket.issue_url)
             except Exception:  # noqa: BLE001
                 logger.warning("Failed to fetch issue for ticket %s (%s), skipping", ticket.pk, ticket.issue_url)
                 continue
@@ -129,6 +135,11 @@ class TicketDispositionScanner:
                 for reason in self._detect_reasons(snap, author)
             )
         return signals
+
+    def _host_for_ticket(self, ticket: "Ticket") -> CodeHostBackend | None:
+        if self.overlay is not None:
+            return get_code_host_for_url(self.overlay, ticket.issue_url)
+        return self.host
 
     def _candidate_tickets(self) -> Iterable["Ticket"]:
         ticket_model = cast("type[Ticket]", apps.get_model("core", "Ticket"))
