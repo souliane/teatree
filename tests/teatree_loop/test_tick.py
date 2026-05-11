@@ -4,6 +4,7 @@ import datetime as dt
 from dataclasses import dataclass
 from pathlib import Path
 
+import django.test
 import pytest
 
 from teatree.loop.scanners.base import Scanner, ScanSignal
@@ -321,6 +322,17 @@ def test_agent_actions_shown_in_inflight() -> None:
     zones = _zones_for(actions)
     texts = [e if isinstance(e, str) else e.text for e in zones.in_flight]
     assert any("t3:reviewer" in t for t in texts)
+
+
+class TestDispositionMechanical(django.test.TestCase):
+    def test_closed_issue_auto_ignores(self) -> None:
+        from teatree.core.models.ticket import Ticket  # noqa: PLC0415
+        from teatree.loop.tick import _ignore_disposed_ticket  # noqa: PLC0415
+
+        ticket = Ticket.objects.create(overlay="acme", issue_url="https://x/1", state="not_started")
+        _ignore_disposed_ticket({"ticket_id": ticket.pk, "reason": "issue_closed"})
+        ticket.refresh_from_db()
+        assert ticket.state == "ignored"
 
 
 def test_tick_multi_overlay_prefixes_summary(tmp_path: Path) -> None:

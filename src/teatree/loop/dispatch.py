@@ -93,6 +93,16 @@ def dispatch(signals: list[ScanSignal]) -> list[DispatchAction]:
         if agent is not None:
             actions.append(DispatchAction(kind="agent", zone=agent, detail=signal.summary, payload=signal.payload))
             continue
+        if signal.kind == "ticket.disposition_candidate" and signal.payload.get("reason") == "issue_closed":
+            actions.append(
+                DispatchAction(
+                    kind="mechanical",
+                    zone="ticket_disposition",
+                    detail=signal.summary,
+                    payload=signal.payload,
+                ),
+            )
+            continue
         if signal.kind == "ticket.completion_detected":
             actions.append(
                 DispatchAction(
