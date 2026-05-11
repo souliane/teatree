@@ -393,7 +393,7 @@ class TestOverlayDefaults(TestCase):
         assert overlay.get_post_db_steps(worktree) == []
         assert overlay.get_symlinks(worktree) == []
         assert overlay.get_services_config(worktree) == {}
-        assert overlay.metadata.validate_mr("title", "desc") == {"errors": [], "warnings": []}
+        assert overlay.metadata.validate_pr("title", "desc") == {"errors": [], "warnings": []}
         assert overlay.metadata.get_ci_project_path() == ""
         assert overlay.metadata.get_e2e_config() == {}
         assert overlay.metadata.detect_variant() == ""

@@ -100,9 +100,9 @@ def test_get_docker_services_returns_empty_set():
     assert overlay.get_docker_services(_make_worktree()) == set()
 
 
-def test_validate_mr_returns_empty_errors_and_warnings():
+def test_validate_pr_returns_empty_errors_and_warnings():
     overlay = _MinimalOverlay()
-    result = overlay.metadata.validate_mr("title", "desc")
+    result = overlay.metadata.validate_pr("title", "desc")
     assert result == {"errors": [], "warnings": []}
 
 

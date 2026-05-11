@@ -237,7 +237,7 @@ class OverlayMetadata:
     Consumers access via ``overlay.metadata.get_skill_metadata()``.
     """
 
-    def validate_mr(self, title: str, description: str) -> ValidationResult:
+    def validate_pr(self, title: str, description: str) -> ValidationResult:
         return {"errors": [], "warnings": []}
 
     def get_followup_repos(self) -> list[str]:
