@@ -1,10 +1,14 @@
 """Tests for teatree.triage — label inference and duplicate detection for GitHub issues."""
 
 import json
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from teatree.triage import LABEL_KEYWORDS, DuplicateFinder, LabelSuggester, infer_labels, normalize_title
+from typer.testing import CliRunner
+
+from teatree.cli.tools import tool_app
+from teatree.triage import LABEL_KEYWORDS, DuplicateFinder, LabelSuggester, TriageScanner, infer_labels, normalize_title
 
 
 def _issue_fixture() -> list[dict]:
@@ -205,5 +209,143 @@ class TestDuplicateFinder:
         with patch("teatree.triage.run_allowed_to_fail") as mock_run:
             mock_run.return_value = SimpleNamespace(stdout="", stderr="gh: not found", returncode=1)
             matches = DuplicateFinder("souliane/teatree").find()
-
         assert matches == []
+
+
+def _pr_fixture(number: int, title: str) -> dict:
+    return {"number": number, "title": title, "mergedAt": "2026-05-01T00:00:00Z"}
+
+
+def _issue_with_age(number: int, title: str, *, labels: list[dict] | None = None, days_ago: int = 0) -> dict:
+    updated = (datetime.now(tz=UTC) - timedelta(days=days_ago)).isoformat()
+    return {"number": number, "title": title, "body": "", "labels": labels or [], "updatedAt": updated}
+
+
+class TestTriageScanner:
+    def test_finds_resolved_issues_by_title_reference(self) -> None:
+        issues = [_issue_with_age(42, "feat: add triage tool")]
+        prs = [_pr_fixture(100, "feat: add triage tool (#42)")]
+        with patch("teatree.triage.run_allowed_to_fail") as mock_run:
+            mock_run.side_effect = [
+                SimpleNamespace(stdout=json.dumps(issues), stderr="", returncode=0),
+                SimpleNamespace(stdout=json.dumps(prs), stderr="", returncode=0),
+            ]
+            scanner = TriageScanner("souliane/teatree")
+            resolved = scanner.find_resolved()
+        assert len(resolved) == 1
+        assert resolved[0].issue_number == 42
+        assert resolved[0].pr_number == 100
+
+    def test_ignores_issues_without_merged_pr(self) -> None:
+        issues = [_issue_with_age(42, "feat: add triage tool")]
+        prs: list[dict] = []
+        with patch("teatree.triage.run_allowed_to_fail") as mock_run:
+            mock_run.side_effect = [
+                SimpleNamespace(stdout=json.dumps(issues), stderr="", returncode=0),
+                SimpleNamespace(stdout=json.dumps(prs), stderr="", returncode=0),
+            ]
+            resolved = TriageScanner("souliane/teatree").find_resolved()
+        assert resolved == []
+
+    def test_finds_stale_issues(self) -> None:
+        issues = [
+            _issue_with_age(1, "Old issue", days_ago=60),
+            _issue_with_age(2, "Recent issue", days_ago=5),
+            _issue_with_age(3, "Another old one", days_ago=45),
+        ]
+        with patch("teatree.triage.run_allowed_to_fail") as mock_run:
+            mock_run.return_value = SimpleNamespace(stdout=json.dumps(issues), stderr="", returncode=0)
+            stale = TriageScanner("souliane/teatree").find_stale(days=30)
+        assert len(stale) == 2
+        assert {s.issue_number for s in stale} == {1, 3}
+
+    def test_stale_excludes_labeled_issues(self) -> None:
+        issues = [
+            _issue_with_age(1, "Old but labeled", labels=[{"name": "enhancement"}], days_ago=60),
+            _issue_with_age(2, "Old and unlabeled", days_ago=60),
+        ]
+        with patch("teatree.triage.run_allowed_to_fail") as mock_run:
+            mock_run.return_value = SimpleNamespace(stdout=json.dumps(issues), stderr="", returncode=0)
+            stale = TriageScanner("souliane/teatree").find_stale(days=30)
+        assert len(stale) == 1
+        assert stale[0].issue_number == 2
+
+    def test_find_resolved_gh_pr_failure_returns_empty(self) -> None:
+        issues = [_issue_with_age(42, "feat: thing")]
+        with patch("teatree.triage.run_allowed_to_fail") as mock_run:
+            mock_run.side_effect = [
+                SimpleNamespace(stdout=json.dumps(issues), stderr="", returncode=0),
+                SimpleNamespace(stdout="", stderr="error", returncode=1),
+            ]
+            assert TriageScanner("souliane/teatree").find_resolved() == []
+
+    def test_stale_skips_empty_updated_at(self) -> None:
+        issues = [{"number": 1, "title": "No date", "body": "", "labels": [], "updatedAt": ""}]
+        with patch("teatree.triage.run_allowed_to_fail") as mock_run:
+            mock_run.return_value = SimpleNamespace(stdout=json.dumps(issues), stderr="", returncode=0)
+            assert TriageScanner("souliane/teatree").find_stale(days=1) == []
+
+    def test_confidence_property(self) -> None:
+        issues = [_issue_with_age(42, "feat: triage")]
+        prs = [_pr_fixture(100, "feat: triage (#42)")]
+        with patch("teatree.triage.run_allowed_to_fail") as mock_run:
+            mock_run.side_effect = [
+                SimpleNamespace(stdout=json.dumps(issues), stderr="", returncode=0),
+                SimpleNamespace(stdout=json.dumps(prs), stderr="", returncode=0),
+            ]
+            resolved = TriageScanner("souliane/teatree").find_resolved()
+        assert resolved[0].confidence == "high"
+
+    def test_gh_failure_returns_empty(self) -> None:
+        with patch("teatree.triage.run_allowed_to_fail") as mock_run:
+            mock_run.return_value = SimpleNamespace(stdout="", stderr="error", returncode=1)
+            assert TriageScanner("souliane/teatree").find_resolved() == []
+            assert TriageScanner("souliane/teatree").find_stale() == []
+
+
+runner = CliRunner()
+
+
+class TestTriageIssuesCLI:
+    def test_shows_resolved_and_stale(self) -> None:
+        issues = [_issue_with_age(42, "feat: add triage tool", days_ago=60)]
+        prs = [_pr_fixture(100, "feat: add triage tool (#42)")]
+        with patch("teatree.triage.run_allowed_to_fail") as mock_run:
+            mock_run.side_effect = [
+                SimpleNamespace(stdout=json.dumps(issues), stderr="", returncode=0),
+                SimpleNamespace(stdout=json.dumps(prs), stderr="", returncode=0),
+                SimpleNamespace(stdout=json.dumps(issues), stderr="", returncode=0),
+            ]
+            result = runner.invoke(tool_app, ["triage-issues", "souliane/teatree", "--stale-days", "30"])
+        assert result.exit_code == 0
+        assert "#42" in result.output
+        assert "merged PR #100" in result.output
+        assert "60d inactive" in result.output
+
+    def test_no_findings(self) -> None:
+        issues = [_issue_with_age(1, "Recent labeled", labels=[{"name": "bug"}], days_ago=1)]
+        prs: list[dict] = []
+        with patch("teatree.triage.run_allowed_to_fail") as mock_run:
+            mock_run.side_effect = [
+                SimpleNamespace(stdout=json.dumps(issues), stderr="", returncode=0),
+                SimpleNamespace(stdout=json.dumps(prs), stderr="", returncode=0),
+                SimpleNamespace(stdout=json.dumps(issues), stderr="", returncode=0),
+            ]
+            result = runner.invoke(tool_app, ["triage-issues", "souliane/teatree"])
+        assert result.exit_code == 0
+        assert "No resolved-but-open" in result.output
+        assert "No stale" in result.output
+
+    def test_close_resolved_flag(self) -> None:
+        issues = [_issue_with_age(42, "feat: add triage tool")]
+        prs = [_pr_fixture(100, "feat: add triage tool (#42)")]
+        with patch("teatree.triage.run_allowed_to_fail") as mock_run:
+            mock_run.side_effect = [
+                SimpleNamespace(stdout=json.dumps(issues), stderr="", returncode=0),
+                SimpleNamespace(stdout=json.dumps(prs), stderr="", returncode=0),
+                SimpleNamespace(stdout="", stderr="", returncode=0),
+                SimpleNamespace(stdout=json.dumps(issues), stderr="", returncode=0),
+            ]
+            result = runner.invoke(tool_app, ["triage-issues", "souliane/teatree", "--close-resolved"])
+        assert result.exit_code == 0
+        assert "Closed 1" in result.output
