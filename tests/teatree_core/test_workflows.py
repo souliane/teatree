@@ -59,6 +59,9 @@ class WorkflowOverlay(OverlayBase):
             ProvisionStep(name="migrations", callable=_record_provision, description="Run migrations"),
         ]
 
+    def get_post_db_steps(self, worktree: Worktree) -> list[ProvisionStep]:
+        return [ProvisionStep(name="seed-data", callable=lambda: None, description="Seed test data")]
+
     def get_run_commands(self, worktree: Worktree) -> RunCommands:
         return {
             "backend": ["python", "manage.py", "runserver"],
