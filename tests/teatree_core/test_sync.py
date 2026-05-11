@@ -1018,6 +1018,38 @@ class TestApplyClosedStatus(TestCase):
         ticket.refresh_from_db()
         assert "discussions" not in ticket.extra["prs"]["url1"]
 
+    def test_noop_when_prs_empty(self) -> None:
+        ticket = Ticket.objects.create(
+            issue_url="https://gitlab.com/org/repo/-/issues/81",
+            state=Ticket.State.IN_REVIEW,
+            extra={"prs": {}},
+        )
+        result = SyncResult()
+        apply_closed_status(ticket, {"url1"}, result)
+        ticket.refresh_from_db()
+        assert result.prs_closed == 0
+
+    def test_noop_when_prs_not_dict(self) -> None:
+        ticket = Ticket.objects.create(
+            issue_url="https://gitlab.com/org/repo/-/issues/82",
+            state=Ticket.State.IN_REVIEW,
+            extra={"prs": "bad"},
+        )
+        result = SyncResult()
+        apply_closed_status(ticket, {"url1"}, result)
+        assert result.prs_closed == 0
+
+    def test_skips_non_dict_pr_entry(self) -> None:
+        ticket = Ticket.objects.create(
+            issue_url="https://gitlab.com/org/repo/-/issues/83",
+            state=Ticket.State.IN_REVIEW,
+            extra={"prs": {"url1": "not-a-dict", "url2": {"title": "MR2", "state": "opened"}}},
+        )
+        result = SyncResult()
+        apply_closed_status(ticket, {"url1", "url2"}, result)
+        ticket.refresh_from_db()
+        assert result.prs_closed == 1
+
     def test_does_not_clean_worktrees(self) -> None:
         """Closed MRs leave worktrees alone — user may reopen with new MR."""
         ticket = Ticket.objects.create(

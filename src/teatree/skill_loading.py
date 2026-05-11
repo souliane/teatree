@@ -33,8 +33,8 @@ DEFAULT_SKILLS_DIR = _default_skills_dir()
 
 _AGENT_TASK_KEYWORDS: dict[str, tuple[str, ...]] = {
     "debug": ("debug", "fix", "error", "broken", "crash", "not working", "bug", "trace"),
-    "test": ("test", "pytest", "lint", "ci", "pipeline", "qa"),
     "e2e": ("e2e", "playwright", "visual qa", "screenshot", "evidence"),
+    "test": ("test", "pytest", "lint", "ci", "pipeline", "qa"),
     "ship": ("commit", "push", "ship", "deliver", "mr", "merge request", "pull request"),
     "review": ("review", "feedback", "check the code"),
     "ticket": ("ticket", "issue", "start working on"),
