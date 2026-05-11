@@ -2,7 +2,6 @@
 
 from http import HTTPStatus
 
-import httpx
 import typer
 
 from teatree.utils.run import run_allowed_to_fail
@@ -103,20 +102,17 @@ class ReviewService:
         """Delete a draft note. Returns (message, exit_code)."""
         api = self._get_api()
         encoded = repo.replace("/", "%2F")
-        response = httpx.delete(
-            f"{api.base_url}/projects/{encoded}/merge_requests/{mr}/draft_notes/{note_id}",
-            headers={"PRIVATE-TOKEN": self.token},
-            timeout=10.0,
-        )
-        if response.status_code == HTTPStatus.NO_CONTENT:
+        status = api.delete(f"projects/{encoded}/merge_requests/{mr}/draft_notes/{note_id}")
+        if status == HTTPStatus.NO_CONTENT:
             return f"OK deleted draft_note_id={note_id}", 0
-        return f"Failed: HTTP {response.status_code}", 1
+        return f"Failed: HTTP {status}", 1
 
     def publish_draft_notes(self, repo: str, mr: int) -> tuple[str, int]:
+        import httpx as _httpx  # noqa: PLC0415
 
         api = self._get_api()
         encoded = repo.replace("/", "%2F")
-        response = httpx.post(
+        response = _httpx.post(
             f"{api.base_url}/projects/{encoded}/merge_requests/{mr}/draft_notes/bulk_publish",
             headers={"PRIVATE-TOKEN": self.token},
             timeout=10.0,
@@ -140,11 +136,13 @@ class ReviewService:
 
     def resolve_discussion(self, repo: str, mr: int, discussion_id: str, *, resolved: bool = True) -> tuple[str, int]:
         """Mark a discussion thread resolved or unresolved. Returns (message, exit_code)."""
+        import httpx as _httpx  # noqa: PLC0415
+
         api = self._get_api()
         encoded = repo.replace("/", "%2F")
         flag = "true" if resolved else "false"
-        response = httpx.put(
-            f"{api.base_url}/projects/{encoded}/merge_requests/{mr}/discussions/{discussion_id}?resolved={flag}",
+        response = _httpx.put(
+            f"{api.base_url}/{f'projects/{encoded}/merge_requests/{mr}/discussions/{discussion_id}?resolved={flag}'}",
             headers={"PRIVATE-TOKEN": self.token},
             timeout=10.0,
         )
@@ -153,16 +151,17 @@ class ReviewService:
         return f"Failed: HTTP {response.status_code}", 1
 
     def update_note(self, repo: str, mr: int, note_id: int, body: str) -> tuple[str, int]:
-        """Update a note (draft or published) on an MR. Returns (message, exit_code).
+        """Update a note (draft or published) on an MR.
 
-        Tries the draft-notes endpoint first; on 404 falls back to the published-notes
-        endpoint. The two endpoints use different payload keys (``note`` vs ``body``).
+        Tries draft-notes first; falls back to published-notes on 404.
         """
+        import httpx as _httpx  # noqa: PLC0415
+
         api = self._get_api()
         encoded = repo.replace("/", "%2F")
         headers = {"PRIVATE-TOKEN": self.token}
 
-        draft_response = httpx.put(
+        draft_response = _httpx.put(
             f"{api.base_url}/projects/{encoded}/merge_requests/{mr}/draft_notes/{note_id}",
             headers=headers,
             json={"note": body},
@@ -173,7 +172,7 @@ class ReviewService:
         if draft_response.status_code != HTTPStatus.NOT_FOUND:
             return f"Failed (draft): HTTP {draft_response.status_code}", 1
 
-        published_response = httpx.put(
+        published_response = _httpx.put(
             f"{api.base_url}/projects/{encoded}/merge_requests/{mr}/notes/{note_id}",
             headers=headers,
             json={"body": body},

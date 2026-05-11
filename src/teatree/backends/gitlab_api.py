@@ -115,6 +115,16 @@ class GitLabAPI:
         response.raise_for_status()
         return cast("dict[str, object]", response.json())
 
+    def delete(self, endpoint: str) -> int:
+        if not self.token:
+            return 0
+        response = httpx.delete(
+            f"{self.base_url}/{endpoint.lstrip('/')}",
+            headers={"PRIVATE-TOKEN": self.token},
+            timeout=10.0,
+        )
+        return response.status_code
+
     def upload_file(self, project_id: int, filepath: str) -> dict[str, object] | None:
         if not self.token:
             return None
