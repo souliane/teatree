@@ -118,6 +118,31 @@ With a design mockup available, use 3 columns:
 - **Update the existing test plan** — never post a second evidence comment.
 - **Match evidence type to PR type.** UI screenshots for frontend PRs; backend evidence (test output, API diffs) for backend PRs.
 
+### Evidence Source Integrity (Non-Negotiable)
+
+Evidence posted on tickets or MRs MUST come from the **deployed environment** (dev/staging), never from local builds. Violation is grounds for termination — it exposes the team to compliance and trust failures.
+
+**Prohibited evidence sources:**
+
+- Golden test PDFs from `build/test-results/` or `src/test/resources/`
+- `pdftotext` output from locally-rendered documents
+- Screenshots of locally-served pages that aren't deployed
+- Side-by-side comparisons using git-extracted PDFs from different commits
+
+**Required evidence sources:**
+
+- Browser screenshots of the actual deployed application (dev/staging URL)
+- API responses from the deployed environment
+- Documents regenerated on the deployed environment after merge + deploy
+
+**Before posting evidence, verify:**
+
+1. The MR is merged and deployed to the target environment
+2. Screenshots show a real environment URL in the browser bar (not `localhost`)
+3. The document was rendered by the deployed code, not a local build
+
+Golden test PDFs serve ONE purpose: CI regression testing. They prove the XSL transform is internally consistent. They do NOT prove the deployed system works correctly — the data, config, and rendering pipeline in the real environment can differ.
+
 ## Debugging E2E Failures
 
 ### Browser Console First (Non-Negotiable)
