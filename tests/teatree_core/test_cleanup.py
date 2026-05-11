@@ -75,7 +75,7 @@ class TestCleanupWorktree(TestCase):
 
         with patch("teatree.core.cleanup.drop_db") as mock_drop:
             cleanup_worktree(wt)
-            mock_drop.assert_called_once_with("wt_99")
+            mock_drop.assert_called_once_with("wt_99", user="")
 
     @_patch_overlay
     @_patch_git
