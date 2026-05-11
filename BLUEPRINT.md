@@ -1627,8 +1627,6 @@ Dev dependencies: ruff, pytest, pytest-cov, pytest-django, ty, import-linter, pr
 graph TD
     teatree.config --> teatree.utils
     teatree.utils --> teatree.config
-    teatree.autostart --> teatree.config
-    teatree.autostart --> teatree.utils
     teatree.timeouts --> teatree.config
     teatree.skill_loading --> teatree.types
     teatree.skill_loading --> teatree.utils
@@ -1657,7 +1655,6 @@ graph TD
     teatree.cli --> teatree.skill_schema
     teatree.cli --> teatree.claude_sessions
     teatree.cli --> teatree.overlay_init
-    teatree.cli --> teatree.autostart
     teatree.cli --> teatree.utils
     teatree.types
     teatree.templates
