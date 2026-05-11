@@ -33,7 +33,7 @@ This skill delegates the generic implementation doctrine to:
 - `test-driven-development` — red/green/refactor discipline and failing-test-first rules
 - `verification-before-completion` — proof before any completion claim
 
-These are optional companion skills from [obra/superpowers](https://github.com/obra/superpowers). If not installed, this skill still works — you just won't get the external TDD and verification guidelines. TeaTree keeps the project-facing parts locally: worktree-aware setup via `t3:workspace`, feature-flag and tenant expectations, and the repo-specific verification gates.
+Optional [obra/superpowers](https://github.com/obra/superpowers) companions provide generic methodology. TeaTree keeps the project-specific workflow locally.
 
 The implementation phase. Follow test-driven development and project conventions.
 

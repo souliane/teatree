@@ -35,7 +35,7 @@ This skill delegates the generic planning doctrine to:
 
 - `writing-plans` — turn requirements into an execution plan before implementation starts
 
-This is an optional companion skill from [obra/superpowers](https://github.com/obra/superpowers). If not installed, this skill still works — you just won't get the external planning guidelines. TeaTree keeps the project bootstrap locally: issue fetching, tenant detection, repo selection, and the worktree/lifecycle handoff to `t3:workspace`.
+Optional [obra/superpowers](https://github.com/obra/superpowers) companion provides generic methodology. TeaTree keeps the project-specific workflow locally.
 
 From zero to ready-to-code. Combines understanding the ticket with setting up the environment.
 

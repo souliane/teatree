@@ -30,7 +30,7 @@ This skill delegates the generic review doctrine to:
 - `requesting-code-review` — when to request an independent review pass
 - `verification-before-completion` — proof before any “review-ready” claim
 
-These are optional companion skills from [obra/superpowers](https://github.com/obra/superpowers). If not installed, this skill still works — you just won't get the external review and verification guidelines. TeaTree keeps the platform-specific review workflow locally: PR discussion handling, inline draft-note rules, and repo policy checks.
+Optional [obra/superpowers](https://github.com/obra/superpowers) companions provide generic methodology. TeaTree keeps the project-specific workflow locally.
 
 Both self-review and external review cycles.
 
