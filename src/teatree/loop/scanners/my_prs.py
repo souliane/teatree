@@ -82,7 +82,7 @@ class MyPrsScanner:
                         kind="my_pr.failed",
                         summary=f"PR #{iid} pipeline {status}: {title}",
                         payload=base_payload,
-                    )
+                    ),
                 )
                 continue
             draft_count = _int_field(pr, "user_notes_count", "review_comments")
@@ -92,7 +92,7 @@ class MyPrsScanner:
                         kind="my_pr.draft_notes",
                         summary=f"PR #{iid} has {draft_count} unresolved notes: {title}",
                         payload={**base_payload, "draft_count": draft_count},
-                    )
+                    ),
                 )
                 continue
             signals.append(
@@ -100,6 +100,6 @@ class MyPrsScanner:
                     kind="my_pr.open",
                     summary=f"PR #{iid} {status or 'open'}: {title}",
                     payload=base_payload,
-                )
+                ),
             )
         return signals

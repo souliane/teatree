@@ -222,7 +222,7 @@ class TestStatusCommand:
     def test_status_lists_installed_overlays(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         teatree_wt = _make_worktree(tmp_path / "ac-teatree-120-xyz" / "teatree")
         (teatree_wt / ".t3.local.json").write_text(
-            '{"overlays": {"example-overlay": {"source": "/tmp/example-overlay"}}}'
+            '{"overlays": {"example-overlay": {"source": "/tmp/example-overlay"}}}',
         )
         monkeypatch.chdir(teatree_wt)
 

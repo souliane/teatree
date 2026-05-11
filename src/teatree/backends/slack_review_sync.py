@@ -63,7 +63,7 @@ def fetch_review_permalinks(result: SyncResult) -> None:
                 channel_id=channel_id,
                 channel_name=channel_name,
                 pr_urls=pr_urls,
-            )
+            ),
         )
     except (httpx.HTTPError, RuntimeError, ValueError) as exc:
         result.errors.append(f"Slack review sync: {exc}")

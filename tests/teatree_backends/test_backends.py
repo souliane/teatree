@@ -154,7 +154,9 @@ def test_gitlab_api_upload_file(monkeypatch: pytest.MonkeyPatch, tmp_path: pytes
 
     def fake_post(url: str, *, headers: dict, files: dict, timeout: float) -> httpx.Response:
         return httpx.Response(
-            200, json={"markdown": "![test](/uploads/x/test.png)"}, request=httpx.Request("POST", url)
+            200,
+            json={"markdown": "![test](/uploads/x/test.png)"},
+            request=httpx.Request("POST", url),
         )
 
     monkeypatch.setattr(httpx, "post", fake_post)

@@ -26,7 +26,7 @@ STATE_DIR = Path(
     os.environ.get(
         "TEATREE_CLAUDE_STATUSLINE_STATE_DIR",
         os.environ.get("T3_HOOK_STATE_DIR", "/tmp/claude-statusline"),  # noqa: S108
-    )
+    ),
 )
 
 _FILE_PATH_TOOLS = {"Read", "Edit", "Write"}
@@ -500,7 +500,7 @@ def handle_read_dedup(data: dict) -> None:
         print(  # noqa: T201
             f"TOKEN SAVINGS HINT: {file_path} was already read this session "
             "and hasn't changed. Use your cached knowledge of its contents "
-            "instead of re-reading."
+            "instead of re-reading.",
         )
 
     # Update the reads file (overwrite to keep latest mtime per path)

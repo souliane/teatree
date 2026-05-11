@@ -29,7 +29,7 @@ class _ParserState:
             "search_hints": [],
             "requires": [],
             "companions": [],
-        }
+        },
     )
 
 

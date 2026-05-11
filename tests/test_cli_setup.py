@@ -667,7 +667,7 @@ class TestEnsureT3Installed:
         editable_source = tmp_path / "main-clone"
         editable_source.mkdir()
         (teatree_tool / "uv-receipt.toml").write_text(
-            f'[tool]\nrequirements = [{{ name = "teatree", editable = "{editable_source}" }}]\n'
+            f'[tool]\nrequirements = [{{ name = "teatree", editable = "{editable_source}" }}]\n',
         )
 
         with (
@@ -702,7 +702,7 @@ class TestEnsureT3Installed:
         teatree_tool.mkdir(parents=True)
         deleted_worktree = tmp_path / "deleted-worktree"
         (teatree_tool / "uv-receipt.toml").write_text(
-            f'[tool]\nrequirements = [{{ name = "teatree", editable = "{deleted_worktree}" }}]\n'
+            f'[tool]\nrequirements = [{{ name = "teatree", editable = "{deleted_worktree}" }}]\n',
         )
         main_clone = tmp_path / "main-clone"
         main_clone.mkdir()

@@ -106,7 +106,7 @@ def iter_overlay_backends() -> list[OverlayBackends]:
                 overlay=overlay,
                 auto_start_assigned_issues=bool(overlay.config.auto_start_assigned_issues),
                 max_concurrent_auto_starts=int(overlay.config.max_concurrent_auto_starts),
-            )
+            ),
         )
     return out
 

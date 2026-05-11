@@ -566,7 +566,7 @@ def _default_health_checks(overlay: OverlayBase, worktree: "Worktree") -> list[H
                 name="worktree-exists",
                 check=lambda: Path(wt_path).is_dir(),
                 description=f"Worktree directory exists: {wt_path}",
-            )
+            ),
         )
 
         # Verify symlinks point to valid, non-empty targets.
@@ -582,7 +582,7 @@ def _default_health_checks(overlay: OverlayBase, worktree: "Worktree") -> list[H
                         name=f"symlink-{spec.get('path', '?')}",
                         check=lambda d=dest, s=source: _symlink_source_healthy(d, s),
                         description=f"Symlink target populated: {spec.get('path', '')}",
-                    )
+                    ),
                 )
 
     return checks

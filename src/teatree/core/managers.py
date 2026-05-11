@@ -109,7 +109,7 @@ class TaskQuerySet(models.QuerySet):
                 Q(ticket__overlay=overlay)
                 | Q(session__overlay=overlay)
                 | Q(ticket__overlay="")
-                | Q(session__overlay="")
+                | Q(session__overlay=""),
             )
         return qs
 

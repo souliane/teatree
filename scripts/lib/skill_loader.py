@@ -106,7 +106,7 @@ _LIFECYCLE_SKILLS = frozenset(
         "followup",
         "handover",
         "setup",
-    }
+    },
 )
 
 _END_OF_SESSION_RE = re.compile(

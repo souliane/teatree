@@ -134,7 +134,7 @@ class TestCleanupWorktree(TestCase):
         mock_git.status_porcelain.return_value = ""
         mock_git.unsynced_commits.return_value = ["abc123 chore: cve fix"]
         mock_classify.return_value = BranchClassification(
-            genuinely_ahead=[BranchCommit(sha="abc123", subject="chore: cve fix", is_merge=False)]
+            genuinely_ahead=[BranchCommit(sha="abc123", subject="chore: cve fix", is_merge=False)],
         )
 
         wt = self._make_worktree(wt_path="/tmp/wt/org/repo")
@@ -171,7 +171,7 @@ class TestCleanupWorktree(TestCase):
         mock_git.status_porcelain.return_value = ""
         mock_git.unsynced_commits.return_value = ["abc123 retro: post-merge docs"]
         mock_classify.return_value = BranchClassification(
-            genuinely_ahead=[BranchCommit(sha="abc123", subject="retro: post-merge docs", is_merge=False)]
+            genuinely_ahead=[BranchCommit(sha="abc123", subject="retro: post-merge docs", is_merge=False)],
         )
         mock_git.check.return_value = True  # git diff --quiet returns 0 → tree-equal
 
@@ -199,7 +199,7 @@ class TestCleanupWorktree(TestCase):
         mock_git.status_porcelain.return_value = ""
         mock_git.unsynced_commits.return_value = ["abc123 feat: new work"]
         mock_classify.return_value = BranchClassification(
-            genuinely_ahead=[BranchCommit(sha="abc123", subject="feat: new work", is_merge=False)]
+            genuinely_ahead=[BranchCommit(sha="abc123", subject="feat: new work", is_merge=False)],
         )
         mock_git.check.return_value = False  # git diff --quiet returns 1 → tree differs
 

@@ -52,7 +52,9 @@ def _report_to_dict(report: TickReport) -> ReportDict:
 def tick_command(
     *,
     statusline_file: Path = typer.Option(
-        None, "--statusline-file", help="Override the statusline output path (test hook)."
+        None,
+        "--statusline-file",
+        help="Override the statusline output path (test hook).",
     ),
     overlay: str = typer.Option(
         "",

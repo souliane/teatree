@@ -81,11 +81,11 @@ def dispatch(signals: list[ScanSignal]) -> list[DispatchAction]:
                         zone="t3:reviewer",
                         detail=f"Review request: {pr_url}",
                         payload={"url": pr_url, **signal.payload},
-                    )
+                    ),
                 )
         if signal.kind == "assigned_issue.ready" and signal.payload.get("auto_start") is True:
             actions.append(
-                DispatchAction(kind="agent", zone="t3:orchestrator", detail=signal.summary, payload=signal.payload)
+                DispatchAction(kind="agent", zone="t3:orchestrator", detail=signal.summary, payload=signal.payload),
             )
             continue
         agent = _AGENT_BY_KIND.get(signal.kind)

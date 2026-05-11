@@ -38,7 +38,8 @@ def test_image_tag_changes_when_lockfile_changes(base_image_cfg: BaseImageConfig
 
 
 def test_ensure_base_image_skips_build_when_image_exists(
-    base_image_cfg: BaseImageConfig, monkeypatch: pytest.MonkeyPatch
+    base_image_cfg: BaseImageConfig,
+    monkeypatch: pytest.MonkeyPatch,
 ):
     """Second call with unchanged lockfile should only probe, never build."""
     calls: list[list[str]] = []

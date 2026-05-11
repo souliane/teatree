@@ -44,7 +44,7 @@ class TestPostToolUseSkillTracking:
                 "session_id": "sess-1",
                 "tool_name": "Skill",
                 "tool_input": {"skill": "t3:code"},
-            }
+            },
         )
         assert _read_skills("sess-1") == ["t3:code"]
 
@@ -55,7 +55,7 @@ class TestPostToolUseSkillTracking:
                     "session_id": "sess-2",
                     "tool_name": "Skill",
                     "tool_input": {"skill": "t3:debug"},
-                }
+                },
             )
         assert _read_skills("sess-2") == ["t3:debug"]
 
@@ -66,7 +66,7 @@ class TestPostToolUseSkillTracking:
                     "session_id": "sess-3",
                     "tool_name": "Skill",
                     "tool_input": {"skill": skill},
-                }
+                },
             )
         assert _read_skills("sess-3") == ["t3:code", "t3:debug", "t3:test"]
 
@@ -81,7 +81,7 @@ class TestPostToolUseSkillTracking:
                 "session_id": "sess-4",
                 "tool_name": "Skill",
                 "tool_input": {"skill": ""},
-            }
+            },
         )
         assert _read_skills("sess-4") == []
 
@@ -94,7 +94,7 @@ class TestInstructionsLoadedSkillTracking:
             {
                 "session_id": "sess-10",
                 "skills": [{"name": "t3:code"}, {"name": "t3:debug"}],
-            }
+            },
         )
         assert _read_skills("sess-10") == ["t3:code", "t3:debug"]
 
@@ -103,7 +103,7 @@ class TestInstructionsLoadedSkillTracking:
             {
                 "session_id": "sess-11",
                 "skills": ["t3:code", "t3:debug"],
-            }
+            },
         )
         assert _read_skills("sess-11") == ["t3:code", "t3:debug"]
 
@@ -112,7 +112,7 @@ class TestInstructionsLoadedSkillTracking:
             {
                 "session_id": "sess-12",
                 "skills": [{"name": "t3:code"}, "t3:debug"],
-            }
+            },
         )
         assert _read_skills("sess-12") == ["t3:code", "t3:debug"]
 
@@ -122,7 +122,7 @@ class TestInstructionsLoadedSkillTracking:
                 {
                     "session_id": "sess-13",
                     "skills": [{"name": "t3:code"}],
-                }
+                },
             )
         assert _read_skills("sess-13") == ["t3:code"]
 
@@ -131,7 +131,7 @@ class TestInstructionsLoadedSkillTracking:
             {
                 "session_id": "sess-14",
                 "skills": [{"name": ""}, {"name": "t3:code"}],
-            }
+            },
         )
         assert _read_skills("sess-14") == ["t3:code"]
 
@@ -140,7 +140,7 @@ class TestInstructionsLoadedSkillTracking:
             {
                 "session_id": "sess-15",
                 "skills": [42, None, {"name": "t3:code"}],
-            }
+            },
         )
         assert _read_skills("sess-15") == ["t3:code"]
 
@@ -154,7 +154,7 @@ class TestPostToolUsePrecedence:
                 "session_id": "sess-20",
                 "tool_input": {"skill": "t3:code"},
                 "skills": [{"name": "t3:debug"}],
-            }
+            },
         )
         # Only the PostToolUse path fires — t3:debug from InstructionsLoaded is NOT tracked
         assert _read_skills("sess-20") == ["t3:code"]

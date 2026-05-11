@@ -42,6 +42,6 @@ class NotionViewScanner:
                     kind="notion.unrouted",
                     summary=f"Notion item to route: {title}",
                     payload={"item": item},
-                )
+                ),
             )
         return signals

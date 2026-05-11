@@ -98,7 +98,7 @@ class ReviewerPrsScanner:
                     kind=kind,
                     summary=f"Review needed: {url}",
                     payload={"url": url, "head_sha": head, "previous_sha": previous, "raw": pr},
-                )
+                ),
             )
         return signals
 

@@ -116,7 +116,7 @@ class TestRunHeadless(TestCase):
                 "summary": "Blocked on design",
                 "needs_user_input": True,
                 "user_input_reason": "Need design decision",
-            }
+            },
         )
         with (
             patch.object(headless_mod.shutil, "which", return_value="/usr/bin/claude-code"),
@@ -124,7 +124,9 @@ class TestRunHeadless(TestCase):
         ):
             session = Session.objects.create(ticket=self.ticket, agent_id="agent-1")
             task = Task.objects.create(
-                ticket=self.ticket, session=session, execution_target=Task.ExecutionTarget.HEADLESS
+                ticket=self.ticket,
+                session=session,
+                execution_target=Task.ExecutionTarget.HEADLESS,
             )
 
             attempt = run_headless(task, phase="coding", overlay_skill_metadata={})
@@ -317,7 +319,7 @@ def test_parse_cli_envelope_extracts_usage_stats() -> None:
             "output_tokens": 1200,
             "cost_usd": 0.042,
             "num_turns": 3,
-        }
+        },
     )
     parsed = _parse_cli_envelope(envelope)
     assert parsed["input_tokens"] == "5000"

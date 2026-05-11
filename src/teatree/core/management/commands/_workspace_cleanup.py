@@ -64,7 +64,7 @@ def prune_squash_merged(repo: str, name: str, wt_map: dict[str, str]) -> str:
     unsynced = git.unsynced_commits(repo, name)
     if unsynced and not _branch_tree_matches_squash(repo, name):
         return f"SKIPPED '{name}': {len(unsynced)} unsynced commit(s) — push to a new branch:\n  " + "\n  ".join(
-            unsynced
+            unsynced,
         )
     wt_path = wt_map.get(name, "")
     if wt_path:

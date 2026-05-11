@@ -147,7 +147,7 @@ def main() -> int:
                 names = ", ".join(public_functions[:5])
                 violations.append(
                     f"  {filepath}: {len(public_functions)} public module-level functions "
-                    f"(max {MAX_MODULE_FUNCTIONS}). Move to a class. Examples: {names}"
+                    f"(max {MAX_MODULE_FUNCTIONS}). Move to a class. Examples: {names}",
                 )
 
         added_lines = _added_line_numbers(filepath)
@@ -169,7 +169,7 @@ def main() -> int:
         "Fix these before committing. Split the file by concern, move\n"
         "module-level functions to a class, or replace dict[str, object]\n"
         "with a typed dataclass / TypedDict. There is no bypass — refactor\n"
-        "before the commit lands."
+        "before the commit lands.",
     )
     return 1
 

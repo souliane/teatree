@@ -60,7 +60,10 @@ class TestGetRepos:
 
 class TestGetWorkspaceRepos:
     def test_falls_back_to_get_repos_when_discovery_empty(
-        self, tmp_path: Path, monkeypatch, isolated_config: Path
+        self,
+        tmp_path: Path,
+        monkeypatch,
+        isolated_config: Path,
     ) -> None:
         """Discovery empty → final fallback is ``get_repos()``."""
         workspace = tmp_path / "workspace"
@@ -146,7 +149,10 @@ class TestGetProvisionSteps(TestCase):
     def setUpTestData(cls) -> None:
         cls.ticket = Ticket.objects.create(overlay="t3-teatree")
         cls.worktree = Worktree.objects.create(
-            ticket=cls.ticket, overlay="t3-teatree", repo_path="/tmp/teatree", branch="main"
+            ticket=cls.ticket,
+            overlay="t3-teatree",
+            repo_path="/tmp/teatree",
+            branch="main",
         )
 
     def test_returns_sync_and_install_overlays_steps(self) -> None:
@@ -195,7 +201,10 @@ class TestInstallOverlaysEditableStep:
 
         ticket = Ticket.objects.create(overlay="t3-teatree")
         worktree = Worktree.objects.create(
-            ticket=ticket, overlay="t3-teatree", repo_path=str(teatree_wt), branch="main"
+            ticket=ticket,
+            overlay="t3-teatree",
+            repo_path=str(teatree_wt),
+            branch="main",
         )
 
         overlay = TeatreeOverlay()
@@ -229,7 +238,10 @@ class TestInstallOverlaysEditableStep:
 
         ticket = Ticket.objects.create(overlay="t3-teatree")
         worktree = Worktree.objects.create(
-            ticket=ticket, overlay="t3-teatree", repo_path=str(teatree_wt), branch="main"
+            ticket=ticket,
+            overlay="t3-teatree",
+            repo_path=str(teatree_wt),
+            branch="main",
         )
 
         overlay = TeatreeOverlay()
@@ -242,7 +254,10 @@ class TestInstallOverlaysEditableStep:
         mock_run.assert_not_called()
 
     def test_skips_self_when_teatree_overlay_is_discovered(
-        self, tmp_path: Path, monkeypatch, isolated_config: Path
+        self,
+        tmp_path: Path,
+        monkeypatch,
+        isolated_config: Path,
     ) -> None:
         """The teatree entry-point overlay resolves to the teatree worktree — skip to avoid redundant re-install."""
         workspace = tmp_path / "workspace"
@@ -260,7 +275,10 @@ class TestInstallOverlaysEditableStep:
 
         ticket = Ticket.objects.create(overlay="t3-teatree")
         worktree = Worktree.objects.create(
-            ticket=ticket, overlay="t3-teatree", repo_path=str(teatree_wt), branch="main"
+            ticket=ticket,
+            overlay="t3-teatree",
+            repo_path=str(teatree_wt),
+            branch="main",
         )
 
         overlay = TeatreeOverlay()
@@ -291,7 +309,10 @@ class TestInstallOverlaysEditableStep:
 
         ticket = Ticket.objects.create(overlay="t3-teatree")
         worktree = Worktree.objects.create(
-            ticket=ticket, overlay="t3-teatree", repo_path=str(teatree_wt), branch="main"
+            ticket=ticket,
+            overlay="t3-teatree",
+            repo_path=str(teatree_wt),
+            branch="main",
         )
 
         overlay = TeatreeOverlay()

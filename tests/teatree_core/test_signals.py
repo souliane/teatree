@@ -148,8 +148,8 @@ class TestSlackReactionsOnTransition(TestCase):
                 "mrs": {
                     "https://gitlab.com/org/repo/-/merge_requests/1": {
                         "review_permalink": "https://team.slack.com/archives/C999/p1700000000000100",
-                    }
-                }
+                    },
+                },
             },
         )
 

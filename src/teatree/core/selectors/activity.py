@@ -32,7 +32,7 @@ def build_active_sessions() -> list[ActiveSessionRow]:
             task__status__in=finished_statuses,
         )
         .exclude(agent_session_id="")
-        .values_list("agent_session_id", flat=True)
+        .values_list("agent_session_id", flat=True),
     )
 
     sessions: list[ActiveSessionRow] = []

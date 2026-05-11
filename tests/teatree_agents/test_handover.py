@@ -120,7 +120,7 @@ def test_handover_config_skips_missing_runtime_key() -> None:
 @override_settings(
     TEATREE_AGENT_HANDOVER=[
         {"runtime": "agent-a", "telemetry": {"switch_away_at_percent": 90}},
-    ]
+    ],
 )
 def test_handover_config_preserves_telemetry() -> None:
     config = get_agent_handover_config()
@@ -218,7 +218,7 @@ def test_switch_threshold_missing_field() -> None:
 @override_settings(
     TEATREE_AGENT_HANDOVER=[
         {"runtime": "test", "telemetry": {"switch_away_at_percent": "not-a-number"}},
-    ]
+    ],
 )
 def test_switch_threshold_non_numeric_value() -> None:
     threshold = _get_switch_threshold("test", "switch_away_at_percent")
@@ -228,7 +228,7 @@ def test_switch_threshold_non_numeric_value() -> None:
 @override_settings(
     TEATREE_AGENT_HANDOVER=[
         {"runtime": "test", "telemetry": {"val": 150}},
-    ]
+    ],
 )
 def test_switch_threshold_clamped_to_100() -> None:
     assert _get_switch_threshold("test", "val") == 100
@@ -237,7 +237,7 @@ def test_switch_threshold_clamped_to_100() -> None:
 @override_settings(
     TEATREE_AGENT_HANDOVER=[
         {"runtime": "test", "telemetry": {"val": -10}},
-    ]
+    ],
 )
 def test_switch_threshold_clamped_to_0() -> None:
     assert _get_switch_threshold("test", "val") == 0
@@ -246,7 +246,7 @@ def test_switch_threshold_clamped_to_0() -> None:
 @override_settings(
     TEATREE_AGENT_HANDOVER=[
         {"runtime": "test", "telemetry": {"val": 75.5}},
-    ]
+    ],
 )
 def test_switch_threshold_float_value() -> None:
     assert _get_switch_threshold("test", "val") == 75
@@ -400,7 +400,7 @@ def test_recommended_runtime_no_telemetry_on_preferred() -> None:
     TEATREE_AGENT_HANDOVER=[
         {"runtime": "a"},
         {"runtime": "b"},
-    ]
+    ],
 )
 def test_recommended_runtime_no_threshold_for_recovery() -> None:
     """When preferred runtime has no telemetry config, recovery returns empty."""
@@ -412,7 +412,7 @@ def test_recommended_runtime_no_threshold_for_recovery() -> None:
     TEATREE_AGENT_HANDOVER=[
         {"runtime": "a", "telemetry": {"switch_back_at_percent": 80}},
         {"runtime": "b"},
-    ]
+    ],
 )
 def test_recommended_runtime_recovery_non_numeric_used() -> None:
     """Non-numeric used percentage prevents recovery switch."""

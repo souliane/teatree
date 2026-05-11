@@ -140,7 +140,7 @@ def build_default_jobs(
                             ),
                             overlay=tag,
                         ),
-                    ]
+                    ],
                 )
                 if backend.overlay is not None:
                     jobs.append(
@@ -161,7 +161,7 @@ def build_default_jobs(
                     _ScannerJob(scanner=MyPrsScanner(host=host), overlay=""),
                     _ScannerJob(scanner=ReviewerPrsScanner(host=host), overlay=""),
                     _ScannerJob(scanner=AssignedIssuesScanner(host=host, ready_labels=ready_labels), overlay=""),
-                ]
+                ],
             )
         if messaging is not None:
             jobs.append(_ScannerJob(scanner=SlackMentionsScanner(backend=messaging), overlay=""))
