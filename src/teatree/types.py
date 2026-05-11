@@ -12,10 +12,16 @@ from typing import TypedDict
 
 @dataclass(frozen=True)
 class RunCommand:
-    """Structured run command with explicit working directory."""
+    """Structured run command with explicit working directory.
+
+    When ``host=True``, ``worktree start`` launches the process in the
+    background on the host after Docker services are up, instead of
+    relying on ``docker compose up`` to run it.
+    """
 
     args: list[str] = field(default_factory=list)
     cwd: Path | None = None
+    host: bool = False
 
 
 type RunCommands = dict[str, list[str] | RunCommand]
