@@ -28,7 +28,7 @@ from teatree.loop.scanners import (
 )
 from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.scanners.notion_view import NotionLike
-from teatree.loop.statusline import StatuslineEntry, StatuslineZones, render
+from teatree.loop.statusline import StatuslineEntry, StatuslineZones, _hyperlink, render
 
 logger = logging.getLogger(__name__)
 
@@ -196,52 +196,100 @@ _DISPOSITION_LABELS: dict[str, str] = {
     "label_removed": "ready-label removed",
 }
 
-_MAX_READY_TO_START = 5
+
+@dataclass(frozen=True, slots=True)
+class _PRRef:
+    iid: int
+    url: str
+    annotation: str
+
+
+def _pr_ref(action: DispatchAction) -> _PRRef | None:
+    payload = action.payload if isinstance(action.payload, dict) else {}
+    iid = payload.get("iid")
+    if not isinstance(iid, int) or iid == 0:
+        return None
+    url = payload.get("url", "")
+    draft_count = payload.get("draft_count")
+    status = payload.get("status", "")
+    if isinstance(draft_count, int) and draft_count > 0:
+        return _PRRef(iid=iid, url=url, annotation=f"{draft_count} notes")
+    if status in {"failed", "failure", "error"}:
+        return _PRRef(iid=iid, url=url, annotation=f"pipeline {status}")
+    return _PRRef(iid=iid, url=url, annotation="")
+
+
+def _render_pr_group(overlay: str, refs: list[_PRRef]) -> str:
+    prefix = f"[{overlay}] " if overlay else ""
+    parts: list[str] = []
+    for ref in refs:
+        label = f"!{ref.iid}"
+        if ref.annotation:
+            label += f" ({ref.annotation})"
+        parts.append(_hyperlink(label, ref.url) if ref.url else label)
+    return f"{prefix}{' · '.join(parts)}"
+
+
+@dataclass(slots=True)
+class _ClassifiedActions:
+    disposition_counts: dict[str, dict[str, int]] = field(default_factory=dict)
+    ready_counts: dict[str, int] = field(default_factory=dict)
+    action_prs: dict[str, list[_PRRef]] = field(default_factory=dict)
+    inflight_prs: dict[str, list[_PRRef]] = field(default_factory=dict)
+    other: list[tuple[str, StatuslineEntry]] = field(default_factory=list)
+
+
+def _classify_actions(actions: list[DispatchAction]) -> _ClassifiedActions:
+    c = _ClassifiedActions()
+    for action in actions:
+        payload = action.payload if isinstance(action.payload, dict) else {}
+        url_str = payload.get("url", "") if isinstance(payload.get("url"), str) else ""
+        overlay = payload.get("overlay", "") if isinstance(payload.get("overlay"), str) else ""
+        prefix = f"[{overlay}] " if overlay else ""
+
+        if action.kind == "statusline":
+            reason = payload.get("reason")
+            if isinstance(reason, str):
+                c.disposition_counts.setdefault(overlay, {}).setdefault(reason, 0)
+                c.disposition_counts[overlay][reason] += 1
+            elif action.zone == "action_needed" and action.detail.startswith("Ready to start:"):
+                c.ready_counts[overlay] = c.ready_counts.get(overlay, 0) + 1
+            elif (ref := _pr_ref(action)) is not None:
+                bucket = c.action_prs if action.zone == "action_needed" else c.inflight_prs
+                bucket.setdefault(overlay, []).append(ref)
+            else:
+                c.other.append((action.zone, StatuslineEntry(text=f"{prefix}{action.detail}", url=url_str)))
+        elif action.kind == "mechanical":
+            c.other.append(("in_flight", StatuslineEntry(text=f"⚙ {prefix}{action.detail}", url=url_str)))
+        else:
+            text = f"→ {action.zone}: {prefix}{action.detail}"
+            c.other.append(("in_flight", StatuslineEntry(text=text, url=url_str)))
+    return c
 
 
 def _zones_for(actions: list[DispatchAction]) -> StatuslineZones:
     zones = StatuslineZones()
-    disposition_counts: dict[str, dict[str, int]] = {}
-    ready_entries: list[StatuslineEntry] = []
+    c = _classify_actions(actions)
 
-    for action in actions:
-        url = action.payload.get("url") if isinstance(action.payload, dict) else None
-        url_str = url if isinstance(url, str) else ""
-        overlay = action.payload.get("overlay") if isinstance(action.payload, dict) else None
-        prefix = f"[{overlay}] " if isinstance(overlay, str) and overlay else ""
+    for overlay_key, refs in sorted(c.action_prs.items()):
+        zones.action_needed.append(_render_pr_group(overlay_key, refs))
 
-        if action.kind == "statusline":
-            reason = action.payload.get("reason") if isinstance(action.payload, dict) else None
-            if isinstance(reason, str):
-                key = overlay if isinstance(overlay, str) else ""
-                disposition_counts.setdefault(key, {}).setdefault(reason, 0)
-                disposition_counts[key][reason] += 1
-                continue
-
-            entry = StatuslineEntry(text=f"{prefix}{action.detail}", url=url_str)
-            if action.zone == "action_needed" and action.detail.startswith("Ready to start:"):
-                ready_entries.append(entry)
-                continue
-
-            zone_list = getattr(zones, action.zone, None)
-            if isinstance(zone_list, list):
-                zone_list.append(entry)
-        elif action.kind == "mechanical":
-            zones.in_flight.append(StatuslineEntry(text=f"⚙ {prefix}{action.detail}", url=url_str))
-        else:
-            text = f"→ {action.zone}: {prefix}{action.detail}"
-            zones.in_flight.append(StatuslineEntry(text=text, url=url_str))
-
-    for overlay_key, reasons in sorted(disposition_counts.items()):
+    for overlay_key, reasons in sorted(c.disposition_counts.items()):
         prefix = f"[{overlay_key}] " if overlay_key else ""
         parts = [f"{count} {_DISPOSITION_LABELS.get(r, r)}" for r, count in reasons.items()]
         zones.action_needed.append(f"{prefix}Stale tickets: {', '.join(parts)}")
 
-    for entry in ready_entries[:_MAX_READY_TO_START]:
-        zones.action_needed.append(entry)
-    overflow = len(ready_entries) - _MAX_READY_TO_START
-    if overflow > 0:
-        zones.action_needed.append(f"… and {overflow} more ready to start")
+    for overlay_key, count in sorted(c.ready_counts.items()):
+        prefix = f"[{overlay_key}] " if overlay_key else ""
+        zones.action_needed.append(f"{prefix}{count} issues ready to start")
+
+    for overlay_key, refs in sorted(c.inflight_prs.items()):
+        zones.in_flight.append(_render_pr_group(overlay_key, refs))
+
+    for zone_name, entry in c.other:
+        zone_list = getattr(zones, zone_name, None)
+        if isinstance(zone_list, list):
+            zone_list.append(entry)
 
     return zones
 
