@@ -2827,7 +2827,7 @@
         {
           "comment": "PackageSource: Local",
           "type": "distribution",
-          "url": "file:///Users/adrien/workspace/souliane/ac-codebase-review-2026-05-11/teatree"
+          "url": "file:///Users/adrien/workspace/souliane/teatree-wt-validate-pr-rename"
         }
       ],
       "licenses": [
@@ -3876,7 +3876,12 @@
     }
   ],
   "metadata": {
-    "timestamp": "2026-05-11T13:55:56.075599+00:00",
+    "properties": [
+      {
+        "name": "cdx:reproducible",
+        "value": "true"
+      }
+    ],
     "tools": {
       "components": [
         {
@@ -3980,7 +3985,6 @@
       ]
     }
   },
-  "serialNumber": "urn:uuid:a90cfa44-367e-436a-a79d-ddfb8a81a09d",
   "version": 1,
   "$schema": "http://cyclonedx.org/schema/bom-1.6.schema.json",
   "bomFormat": "CycloneDX",
