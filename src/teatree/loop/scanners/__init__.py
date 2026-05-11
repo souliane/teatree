@@ -9,6 +9,7 @@ Scanners are the only loop layer that touches external systems. They never
 invoke Claude — that is the dispatcher's job.
 """
 
+from teatree.loop.scanners.active_tickets import ActiveTicketsScanner
 from teatree.loop.scanners.assigned_issues import AssignedIssuesScanner
 from teatree.loop.scanners.base import Scanner, ScanSignal
 from teatree.loop.scanners.my_prs import MyPrsScanner
@@ -20,6 +21,7 @@ from teatree.loop.scanners.ticket_completion import TicketCompletionScanner
 from teatree.loop.scanners.ticket_dispositions import TicketDispositionScanner
 
 __all__ = [
+    "ActiveTicketsScanner",
     "AssignedIssuesScanner",
     "MyPrsScanner",
     "NotionViewScanner",

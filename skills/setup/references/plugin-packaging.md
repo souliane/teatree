@@ -28,8 +28,6 @@ Changes that affect external state (outside the git repo) require manual verific
 - `~/.claude/settings.json` hook paths
 - `~/.claude/skills/` symlinks
 - `~/.claude/plugins/` registrations
-- Dashboard URL namespace (`ROOT_URLCONF` must use `include()` for `app_name` to work)
-- Runtime dependencies (`uvicorn` must be in `pyproject.toml` if used by dashboard)
 
 ## Development vs Production Install
 

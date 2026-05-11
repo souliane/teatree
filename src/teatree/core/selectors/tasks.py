@@ -1,11 +1,6 @@
 from teatree.core.models import Task, Ticket, TicketTransition
 
-from ._types import (
-    TaskAttemptDetail,
-    TaskDetail,
-    TaskGraphNode,
-    TaskRelatedRow,
-)
+from ._types import TaskAttemptDetail, TaskDetail, TaskGraphNode, TaskRelatedRow
 
 
 def build_task_detail(task_id: int) -> TaskDetail | None:

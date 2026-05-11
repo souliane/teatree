@@ -8,12 +8,7 @@ bullets) without an accompanying change in ``src/``, ``hooks/scripts/``, or
 
 import pytest
 
-from scripts.hooks.check_skill_prose import (
-    NEW_RULE_PATTERN,
-    count_new_rule_lines,
-    has_companion_code_change,
-    main,
-)
+from scripts.hooks.check_skill_prose import NEW_RULE_PATTERN, count_new_rule_lines, has_companion_code_change, main
 
 _NEW_NN_DIFF = """\
 diff --git a/skills/ship/SKILL.md b/skills/ship/SKILL.md

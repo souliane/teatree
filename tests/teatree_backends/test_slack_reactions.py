@@ -67,8 +67,8 @@ class TestAddReaction:
     def test_already_reacted_counts_as_success(self, monkeypatch: pytest.MonkeyPatch) -> None:
         post = _FakePost(
             responses=[
-                httpx.Response(200, json={"ok": False, "error": "already_reacted"}, request=httpx.Request("POST", "x"))
-            ]
+                httpx.Response(200, json={"ok": False, "error": "already_reacted"}, request=httpx.Request("POST", "x")),
+            ],
         )
         monkeypatch.setattr(slack_reactions.httpx, "post", post)
         assert add_reaction("xoxb", "C1", "1.0", "tada") is True
@@ -77,9 +77,11 @@ class TestAddReaction:
         post = _FakePost(
             responses=[
                 httpx.Response(
-                    200, json={"ok": False, "error": "channel_not_found"}, request=httpx.Request("POST", "x")
-                )
-            ]
+                    200,
+                    json={"ok": False, "error": "channel_not_found"},
+                    request=httpx.Request("POST", "x"),
+                ),
+            ],
         )
         monkeypatch.setattr(slack_reactions.httpx, "post", post)
         assert add_reaction("xoxb", "C1", "1.0", "tada") is False
@@ -108,8 +110,8 @@ class TestIterPrPermalinks:
                     "c": {},
                     "d": {"review_permalink": 42},
                     "e": "not-a-dict",
-                }
-            }
+                },
+            },
         )
         assert _iter_pr_permalinks(ticket) == ["https://team.slack.com/archives/C1/p1700000000000100"]
 
@@ -161,7 +163,7 @@ class TestAddReactionsForTransition:
             [
                 "https://team.slack.com/archives/C111/p1700000001000100",
                 "https://team.slack.com/archives/C222/p1700000002000200",
-            ]
+            ],
         )
         assert add_reactions_for_transition(ticket, "mark_merged") == 2
         assert calls == [
@@ -208,7 +210,7 @@ class TestAddReactionsForTransition:
                 "https://team.slack.com/archives/C1/p1700000001000100",
                 "https://team.slack.com/archives/C2/p1700000002000100",
                 "https://team.slack.com/archives/C3/p1700000003000100",
-            ]
+            ],
         )
         assert add_reactions_for_transition(ticket, "mark_merged") == 2
 

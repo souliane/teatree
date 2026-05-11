@@ -401,9 +401,9 @@ class TestWorkspaceTicket(TestCase):
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
     def test_auto_derives_slug_from_issue_title(self) -> None:
-        """When no description given, uses overlay.metadata.get_issue_title to derive slug."""
+        """When no description given, uses overlay.get_issue_title to derive slug."""
         overlay = import_string(FULL_OVERLAY)()
-        overlay.metadata.get_issue_title = lambda url: "Fix Login Flow"
+        overlay.get_issue_title = lambda url: "Fix Login Flow"
 
         with patch.object(overlay_loader_mod, "_discover_overlays", return_value={"test": overlay}):
             ticket_id = cast(
@@ -421,7 +421,7 @@ class TestWorkspaceTicket(TestCase):
     def test_falls_back_to_ticket_when_title_fetch_fails(self) -> None:
         """When get_issue_title returns empty, falls back to 'ticket' slug."""
         overlay = import_string(FULL_OVERLAY)()
-        overlay.metadata.get_issue_title = lambda url: ""
+        overlay.get_issue_title = lambda url: ""
 
         with patch.object(overlay_loader_mod, "_discover_overlays", return_value={"test": overlay}):
             ticket_id = cast(
@@ -1111,7 +1111,9 @@ class TestWorkspaceCleanMerged(TestCase):
     @override_settings(**SETTINGS)
     def test_cleans_worktrees_of_merged_tickets(self) -> None:
         merged = Ticket.objects.create(
-            overlay="test", issue_url="https://example.com/issues/70", state=Ticket.State.MERGED
+            overlay="test",
+            issue_url="https://example.com/issues/70",
+            state=Ticket.State.MERGED,
         )
         Worktree.objects.create(overlay="test", ticket=merged, repo_path="repo", branch="ac-repo-70")
         other = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/71")
@@ -1128,7 +1130,9 @@ class TestWorkspaceCleanMerged(TestCase):
     @override_settings(**SETTINGS)
     def test_surfaces_cleanup_failures(self) -> None:
         merged = Ticket.objects.create(
-            overlay="test", issue_url="https://example.com/issues/72", state=Ticket.State.MERGED
+            overlay="test",
+            issue_url="https://example.com/issues/72",
+            state=Ticket.State.MERGED,
         )
         Worktree.objects.create(overlay="test", ticket=merged, repo_path="repo", branch="ac-repo-72")
 
@@ -2825,7 +2829,9 @@ class TestE2eExternal(TestCase):
             private_dir.mkdir()
 
             ticket = Ticket.objects.create(
-                overlay="test", issue_url="https://example.com/issues/variant", variant="acme"
+                overlay="test",
+                issue_url="https://example.com/issues/variant",
+                variant="acme",
             )
             Worktree.objects.create(
                 overlay="test",
@@ -3376,7 +3382,7 @@ class TestLifecycleSetup(TestCase):
         """Setup writes the overlay skill metadata to DATA_DIR/skill-metadata.json."""
         pytest.skip(
             "skill-metadata cache is now written on Django startup, "
-            "not during worktree provision — needs rewrite to assert startup behavior"
+            "not during worktree provision — needs rewrite to assert startup behavior",
         )
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -3560,7 +3566,7 @@ class TestLifecycleSetup(TestCase):
         """_print_diagnostics outputs a structured checklist with [OK]/[FAIL] markers."""
         pytest.skip(
             "_print_diagnostics removed in worktree FSM refactor — "
-            "diagnostics moved to the t3 worktree diagnose subcommand; needs rewrite"
+            "diagnostics moved to the t3 worktree diagnose subcommand; needs rewrite",
         )
         from teatree.core.step_runner import ProvisionReport, StepResult  # noqa: PLC0415
 
@@ -3587,7 +3593,7 @@ class TestLifecycleSetup(TestCase):
                 steps=[
                     StepResult(name="migrations", success=True, duration=1.0),
                     StepResult(name="docker-up", success=False, duration=0.5, error="exit 1"),
-                ]
+                ],
             )
 
             buf = StringIO()
@@ -4156,7 +4162,7 @@ class TestRunHealthChecks(TestCase):
         pytest.skip(
             "_run_health_checks command helper removed in worktree FSM refactor — "
             "health checks now run inside WorktreeVerifyRunner; needs rewrite as "
-            "integration test against call_command('worktree', 'verify', ...)"
+            "integration test against call_command('worktree', 'verify', ...)",
         )
 
     @_patch_overlays(FULL_OVERLAY)
@@ -4165,7 +4171,7 @@ class TestRunHealthChecks(TestCase):
         pytest.skip(
             "_run_health_checks command helper removed in worktree FSM refactor — "
             "health checks now run inside WorktreeVerifyRunner; needs rewrite as "
-            "integration test against call_command('worktree', 'verify', ...)"
+            "integration test against call_command('worktree', 'verify', ...)",
         )
 
 
@@ -4255,7 +4261,7 @@ class TestLifecycleRepoDiscovery(TestCase):
         """A git worktree added manually to the ticket dir gets auto-registered."""
         pytest.skip(
             "Auto-discovery of sibling repos removed in worktree FSM refactor — "
-            "the per-worktree command no longer scans the ticket dir"
+            "the per-worktree command no longer scans the ticket dir",
         )
 
     @_patch_overlays(FULL_OVERLAY)
@@ -4264,7 +4270,7 @@ class TestLifecycleRepoDiscovery(TestCase):
         """Directories with .git as a directory (main clones) are not registered."""
         pytest.skip(
             "Auto-discovery of sibling repos removed in worktree FSM refactor — "
-            "the per-worktree command no longer scans the ticket dir"
+            "the per-worktree command no longer scans the ticket dir",
         )
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -4299,7 +4305,7 @@ class TestLifecycleRepoDiscovery(TestCase):
         """Non-git subdirectories (logs, etc.) are not registered."""
         pytest.skip(
             "Auto-discovery of sibling repos removed in worktree FSM refactor — "
-            "the per-worktree command no longer scans the ticket dir"
+            "the per-worktree command no longer scans the ticket dir",
         )
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -4333,7 +4339,7 @@ class TestLifecycleRepoDiscovery(TestCase):
         """Running setup twice doesn't create duplicate Worktree records."""
         pytest.skip(
             "Auto-discovery of sibling repos removed in worktree FSM refactor — "
-            "the per-worktree command no longer scans the ticket dir"
+            "the per-worktree command no longer scans the ticket dir",
         )
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -4369,7 +4375,7 @@ class TestLifecycleRepoDiscovery(TestCase):
         """Setup provisions all worktrees for the ticket, not just the resolved one."""
         pytest.skip(
             "Bulk per-ticket provisioning moved to t3 workspace provision — "
-            "needs rewrite as call_command('workspace', 'provision', ...) test"
+            "needs rewrite as call_command('workspace', 'provision', ...) test",
         )
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -4425,7 +4431,10 @@ class TestLifecycleRepoDiscovery(TestCase):
 class TestCloneOrUpdateE2eRepo(TestCase):
     def _make_repo(self, *, e2e_dir: str = "e2e") -> "config_mod.E2ERepo":
         return config_mod.E2ERepo(
-            name="demo-svc", url="git@example.com:org/svc.git", branch="feature/e2e", e2e_dir=e2e_dir
+            name="demo-svc",
+            url="git@example.com:org/svc.git",
+            branch="feature/e2e",
+            e2e_dir=e2e_dir,
         )
 
     def test_clone_when_not_exists(self) -> None:

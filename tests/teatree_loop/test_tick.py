@@ -273,6 +273,56 @@ def test_zones_pr_annotations_show_notes_and_failures() -> None:
     assert "!99 (pipeline failed)" in text
 
 
+def test_active_tickets_shown_in_anchors() -> None:
+    from teatree.loop.dispatch import DispatchAction  # noqa: PLC0415
+    from teatree.loop.tick import _zones_for  # noqa: PLC0415
+
+    actions = [
+        DispatchAction(
+            kind="statusline",
+            zone="anchors",
+            detail="#123 started",
+            payload={"overlay": "acme", "ticket_number": "123", "state": "started"},
+        ),
+        DispatchAction(
+            kind="statusline",
+            zone="anchors",
+            detail="#456 coded",
+            payload={"overlay": "acme", "ticket_number": "456", "state": "coded"},
+        ),
+    ]
+    zones = _zones_for(actions)
+    anchor_texts = [a if isinstance(a, str) else a.text for a in zones.anchors]
+    assert any("#123 started" in t and "#456 coded" in t for t in anchor_texts)
+    assert any("[acme]" in t for t in anchor_texts)
+
+
+def test_mechanical_actions_shown_in_inflight() -> None:
+    from teatree.loop.dispatch import DispatchAction  # noqa: PLC0415
+    from teatree.loop.tick import _zones_for  # noqa: PLC0415
+
+    actions = [
+        DispatchAction(
+            kind="mechanical", zone="ticket_completion", detail="Ticket 42 done", payload={"overlay": "acme"}
+        ),
+    ]
+    zones = _zones_for(actions)
+    texts = [e if isinstance(e, str) else e.text for e in zones.in_flight]
+    assert any("⚙" in t and "Ticket 42 done" in t for t in texts)
+
+
+def test_agent_actions_shown_in_inflight() -> None:
+    from teatree.loop.dispatch import DispatchAction  # noqa: PLC0415
+    from teatree.loop.tick import _zones_for  # noqa: PLC0415
+
+    actions = [
+        DispatchAction(kind="agent", zone="t3:reviewer", detail="Review PR", payload={}),
+    ]
+    zones = _zones_for(actions)
+    texts = [e if isinstance(e, str) else e.text for e in zones.in_flight]
+    assert any("t3:reviewer" in t for t in texts)
+
+
 def test_tick_multi_overlay_prefixes_summary(tmp_path: Path) -> None:
     """Signals collected via the multi-overlay path get an ``[overlay]`` prefix in the rendered line."""
     from unittest.mock import MagicMock  # noqa: PLC0415

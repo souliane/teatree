@@ -64,6 +64,8 @@ def _auto_enqueue_headless_task(
 def register_signals() -> None:
     post_transition.connect(_log_ticket_transition, sender=Ticket, dispatch_uid="ticket_transition_audit")
     post_transition.connect(
-        _add_slack_reactions_on_transition, sender=Ticket, dispatch_uid="ticket_transition_slack_reactions"
+        _add_slack_reactions_on_transition,
+        sender=Ticket,
+        dispatch_uid="ticket_transition_slack_reactions",
     )
     post_save.connect(_auto_enqueue_headless_task, sender=Task, dispatch_uid="auto_enqueue_headless")

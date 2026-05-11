@@ -133,7 +133,7 @@ every runtime dir teatree detected along with the count of managed symlinks.
 
 Teatree ships a `hooks.json` that Claude Code loads automatically when the plugin is installed. All hooks route through `hook_router.py`, a unified Python router that handles event dispatch.
 
-If the user installed via `apm install -g souliane/teatree`, hooks are already configured. For manual installs or troubleshooting, verify the plugin is registered in `~/.claude/plugins.json`.
+If the user installed via `apm install -g <owner>/teatree`, hooks are already configured. For manual installs or troubleshooting, verify the plugin is registered in `~/.claude/plugins.json`.
 
 The hooks cover these events:
 
@@ -213,7 +213,6 @@ Run verification in a Python 3.13 environment with TeaTree installed:
 uv run --python /opt/homebrew/bin/python3.13 \
   --with 'teatree @ file://'"$T3_REPO" \
   --with 'django>=5.2,<6.1' \
-  --with django-htmx \
   --with django-tasks \
   --with django-tasks-db \
   --with django-typer \

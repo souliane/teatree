@@ -64,7 +64,10 @@ class TestDrainHeadlessQueue(TestCase):
 
         post_save.disconnect(_auto_enqueue_headless_task, sender=Task, dispatch_uid="auto_enqueue_headless")
         self.addCleanup(
-            post_save.connect, _auto_enqueue_headless_task, sender=Task, dispatch_uid="auto_enqueue_headless"
+            post_save.connect,
+            _auto_enqueue_headless_task,
+            sender=Task,
+            dispatch_uid="auto_enqueue_headless",
         )
 
     @override_settings(**IMMEDIATE_BACKEND)

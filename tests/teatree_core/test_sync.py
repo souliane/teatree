@@ -428,7 +428,7 @@ class TestClassifyDiscussions:
                 "notes": [
                     {"body": "Fix this", "resolvable": True, "resolved": True, "author": {"username": "reviewer"}},
                 ],
-            }
+            },
         ]
         result = GitLabSyncBackend._classify_discussions(discussions, "me")
         assert len(result) == 1
@@ -441,7 +441,7 @@ class TestClassifyDiscussions:
                     {"body": "Fix this", "resolvable": True, "resolved": False, "author": {"username": "reviewer"}},
                     {"body": "Done", "resolvable": False, "author": {"username": "me"}},
                 ],
-            }
+            },
         ]
         result = GitLabSyncBackend._classify_discussions(discussions, "me")
         assert len(result) == 1
@@ -453,7 +453,7 @@ class TestClassifyDiscussions:
                 "notes": [
                     {"body": "Please fix", "resolvable": True, "resolved": False, "author": {"username": "reviewer"}},
                 ],
-            }
+            },
         ]
         result = GitLabSyncBackend._classify_discussions(discussions, "me")
         assert len(result) == 1
@@ -467,7 +467,7 @@ class TestClassifyDiscussions:
                     {"body": "First note", "resolvable": True, "resolved": False, "author": {"username": "reviewer"}},
                     "not-a-dict",
                 ],
-            }
+            },
         ]
         result = GitLabSyncBackend._classify_discussions(discussions, "me")
         assert result[0].status == "needs_reply"
@@ -480,7 +480,7 @@ class TestClassifyDiscussions:
                     "not-a-dict",  # first note, non-dict
                     {"body": "Second", "resolvable": True, "resolved": False, "author": {"username": "reviewer"}},
                 ],
-            }
+            },
         ]
         result = GitLabSyncBackend._classify_discussions(discussions, "me")
         assert result[0].detail == ""  # first_body from non-dict is ""
@@ -779,7 +779,9 @@ class TestResolveIssueHandles404:
 
         client = MagicMock()
         client.resolve_project.return_value = ProjectInfo(
-            project_id=1, path_with_namespace="org/repo", short_name="repo"
+            project_id=1,
+            path_with_namespace="org/repo",
+            short_name="repo",
         )
         client.get_issue.side_effect = httpx.HTTPStatusError(
             "404 Not Found",
@@ -792,7 +794,9 @@ class TestResolveIssueHandles404:
     def test_returns_issue_on_success(self) -> None:
         client = MagicMock()
         client.resolve_project.return_value = ProjectInfo(
-            project_id=1, path_with_namespace="org/repo", short_name="repo"
+            project_id=1,
+            path_with_namespace="org/repo",
+            short_name="repo",
         )
         client.get_issue.return_value = {"id": 123, "title": "Test issue", "labels": []}
         result = GitLabSyncBackend._resolve_issue(client, "https://gitlab.com/org/repo/-/issues/123")
@@ -806,7 +810,9 @@ class TestTracker404Memoization(TestCase):
     def _client_returning_404(self) -> MagicMock:
         client = MagicMock()
         client.resolve_project.return_value = ProjectInfo(
-            project_id=1, path_with_namespace="org/repo", short_name="repo"
+            project_id=1,
+            path_with_namespace="org/repo",
+            short_name="repo",
         )
         client.get_issue.side_effect = httpx.HTTPStatusError(
             "404 Not Found",
@@ -839,7 +845,9 @@ class TestTracker404Memoization(TestCase):
         live = Ticket.objects.create(issue_url="https://gitlab.com/org/repo/-/issues/124")
         client = MagicMock()
         client.resolve_project.return_value = ProjectInfo(
-            project_id=1, path_with_namespace="org/repo", short_name="repo"
+            project_id=1,
+            path_with_namespace="org/repo",
+            short_name="repo",
         )
         client.get_issue.return_value = {"id": 124, "title": "Live", "labels": []}
 

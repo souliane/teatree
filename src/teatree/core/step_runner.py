@@ -26,6 +26,7 @@ class StepResult:
     stdout: str = ""
     stderr: str = ""
     error: str = ""
+    required: bool = True
 
     def summary(self) -> str:
         status = "OK" if self.success else "FAILED"
@@ -43,7 +44,7 @@ class ProvisionReport:
 
     @property
     def success(self) -> bool:
-        return all(s.success for s in self.steps)
+        return not any(s.required and not s.success for s in self.steps)
 
     @property
     def failed_step(self) -> str | None:
@@ -54,13 +55,10 @@ class ProvisionReport:
 
     @property
     def failed_required_step(self) -> str | None:
-        """Return the name of the first failed required step, if any.
-
-        This depends on the ``required`` flag from the original ProvisionStep.
-        Since StepResult doesn't carry ``required``, callers track this
-        externally when needed (see ``run_provision_steps``).
-        """
-        return self.failed_step
+        for s in self.steps:
+            if s.required and not s.success:
+                return s.name
+        return None
 
     def summary(self) -> str:
         lines = [s.summary() for s in self.steps]
@@ -180,6 +178,15 @@ def run_provision_steps(
     for step in steps:
         write(f"  Running: {step.name}")
         result = run_callable_step(step.name, step.callable)
+        result = StepResult(
+            name=result.name,
+            success=result.success,
+            duration=result.duration,
+            stdout=result.stdout,
+            stderr=result.stderr,
+            error=result.error,
+            required=step.required,
+        )
         report.steps.append(result)
 
         if verbose and result.stdout:

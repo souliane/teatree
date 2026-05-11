@@ -1,0 +1,150 @@
+---
+name: e2e
+description: End-to-end testing with Playwright — writing tests, running them, visual snapshots, evidence posting, and the pre-push visual QA gate. Use when user says "e2e", "playwright", "write e2e", "run e2e", "visual qa", "screenshot", "post evidence", or is working with Playwright-based tests.
+compatibility: macOS/Linux, Playwright, Node.js, t3 CLI.
+requires:
+  - test
+  - workspace
+  - platforms
+triggers:
+  priority: 15
+  keywords:
+    - '\b(e2e|playwright|end.to.end|visual.qa|screenshot|evidence|golden)\b'
+search_hints:
+  - e2e
+  - playwright
+  - screenshot
+  - evidence
+  - visual qa
+  - golden
+  - baseline
+metadata:
+  version: 0.0.1
+  subagent_safe: false
+---
+
+# E2E Testing
+
+Playwright-based end-to-end testing for overlay target applications. Covers writing tests, running them, visual snapshots, evidence posting, and the pre-push visual QA gate.
+
+## Dependencies
+
+- **t3:test** (required) — general testing patterns and CI interaction.
+- **t3:workspace** (required) — worktree and dev server management.
+
+## Setup & Prerequisites
+
+**Full worktree per PR (Non-Negotiable):** Each PR under test MUST have its own full worktree setup (backend + frontend via `t3 <overlay> worktree provision` + `t3 <overlay> worktree start`). Never mix backends from one worktree with frontends from another. Never patch an incomplete worktree by hand — if it's missing repos, env files, or DB, delete it and start over with `t3 <overlay> workspace ticket`.
+
+Always start dev servers via `t3 <overlay> worktree start` before running tests. Never start services manually. Before running E2E tests, verify that **translations are loaded** — the frontend i18n directory is gitignored and only populated at startup. If the frontend was started manually, translations will be missing. Quick check: open any page and confirm labels show human-readable text, not raw keys like `app.feature.xxx.label`.
+
+## Running E2E Tests
+
+- Run headless with `CI=1`.
+- `t3 <overlay> e2e` — run E2E tests locally.
+- `t3 ci trigger-e2e` — trigger E2E tests on CI.
+
+**E2E for backend/API changes:** When backend or microservice changes affect data visible in the frontend (e.g., webhook payload fields, API serializer fields, new model fields exposed via API), E2E tests are still required even if there is no frontend PR. The frontend form already has the fields — E2E proves the end-to-end data flow. Do NOT skip E2E just because the change is "backend-only."
+
+## Writing Tests
+
+**Test depth:** Don't just verify "page loads with 200". Read the source code to understand what the feature does, then test specific behaviors: form fields, filters, CRUD operations, access control, edge cases.
+
+**Component placement:** Before writing E2E tests for a UI component, check the **routing module** to find which page/route renders it. Components may only appear at specific wizard steps or behind navigation — not on the page you'd naively navigate to. Grep for the component selector in templates to find its host, then check the routing module for the URL path.
+
+**`storageState` in Playwright:** `test.use({ storageState: undefined })` means "use default" (inherits global setup state). For truly unauthenticated tests, use `test.use({ storageState: { cookies: [], origins: [] } })`.
+
+**Establish baseline before attributing failures (Non-Negotiable):** When running E2E tests to validate a change, first run the same test on the **default branch** (or the unmodified code) to confirm it passes without your changes. If the test already fails on the default branch, it is a pre-existing failure — do not waste time debugging it as if your changes caused it. Report it as pre-existing and move on.
+
+**Test integrity (Non-Negotiable):** Never weaken, simplify, or remove test cases to work around failures. If a test fails, fix the underlying issue (environment, selectors, timing) — don't dilute the test.
+
+## Pixel-Stable Visual Snapshots
+
+When using visual snapshot plugins (`pytest-playwright-visual`, `assert_snapshot`), snapshot tests are only reproducible when every source of visual drift is pinned. Eliminate in this order before regenerating baselines:
+
+- **Dynamic data in seeded fixtures.** Freeze timestamps, pin any `now()` values. Signal handlers that run on model creation add fresh timestamps — update them after the signal fires.
+- **Animations and caret blink.** Playwright's `animations="disabled"` only handles CSS animations it knows about. Add a session-scoped `page.add_init_script` that injects `*{animation-duration:0s!important;transition-duration:0s!important;caret-color:transparent!important}`. Combine with `reduced_motion: "reduce"` in `browser_context_args`.
+- **Font antialiasing across architectures.** Apple Silicon Docker (arm64) and x86_64 CI render fonts at different heights. Force `platform: linux/amd64` on the e2e compose service so locally-regenerated baselines match CI.
+
+**Regenerate baselines inside the same Docker image CI uses.** Never regenerate on the host with `uv run pytest --update-snapshots` — macOS Chromium renders differently. Use `t3 <overlay> e2e --update-snapshots` (which runs in the pinned Docker image).
+
+**Recovering a baseline that was never committed.** Playwright fails with `A snapshot doesn't exist at ...`. Pull the `{name}-actual.png` from the failing job's artifacts and commit it as the baseline. Inspect the extracted PNG before committing — confirm it captures the intended deterministic state rather than a transient error page.
+
+## Pre-Push Browser Sanity Gate (Visual QA)
+
+`t3 <overlay> pr create` runs a pre-push browser sanity gate as a side effect of the shipping flow. It loads the page(s) the branch diff touches, captures silent-render regressions (crashes, console errors, raw `app.*` keys, blocking 404s), and records the summary on `Ticket.extra['visual_qa']`. See `t3:ship` § "4c. Visual QA Gate" for the blocking behavior and bypass flags.
+
+This gate is **not a replacement for E2E evidence** — it only catches silent-render regressions before push.
+
+## Private Test Suite
+
+Sometimes a **separate test repo** reduces friction — no conflicts with the QA team's tests, no build pipeline overhead, freedom to use different tooling or test data.
+
+- Set `T3_PRIVATE_TESTS` in `~/.teatree.toml` to the path of your private test repo.
+- Structure tests by app and feature: `tests/<app>/<feature-area>/<test-file>`
+- Store artifacts (screenshots, recordings) in a git-tracked `artifacts/<TICKET>/` directory.
+
+## Post Testing Evidence on PR
+
+**Use `t3 <overlay> pr post-evidence` first.** If the CLI command handles uploading and posting, use it instead of manual API calls.
+
+After confirming a feature works, embed screenshot(s) and video(s) **directly in the test plan comment** — not as a separate comment.
+
+### Visual Comparison Format
+
+Evidence screenshots must use a **side-by-side comparison table**:
+
+```markdown
+| Before (current UI) | After (this PR) |
+|---|---|
+| ![before](url) | ![after](url) |
+```
+
+With a design mockup available, use 3 columns:
+
+```markdown
+| Before (current UI) | Design mockup | After (this PR) |
+|---|---|---|
+| ![before](url) | ![mockup](url) | ![after](url) |
+```
+
+### Rules
+
+- **One screenshot per verified section** — not per checkbox.
+- **Cover ALL sections on first post.**
+- Screenshots go below the section they verify, not at the bottom.
+- Write in first person, casual tone ("Tested on local...", "Works as expected").
+- Evidence must read as manual testing — no mentions of automation, E2E, Playwright, or scripts.
+- **Update the existing test plan** — never post a second evidence comment.
+- **Match evidence type to PR type.** UI screenshots for frontend PRs; backend evidence (test output, API diffs) for backend PRs.
+
+## Debugging E2E Failures
+
+### Browser Console First (Non-Negotiable)
+
+When an E2E test shows missing UI elements (empty form, blank section, component not rendering), **capture browser console errors before investigating component code.** Add `page.on('console', ...)` and `page.on('pageerror', ...)` listeners. Runtime errors like `"Undefined form configuration!"` reveal the root cause in seconds.
+
+### Screenshot Sanity Check (Non-Negotiable)
+
+Before claiming E2E success or posting screenshots as evidence, **visually inspect every screenshot** for environment issues. Reject and fix if any of these are present:
+
+- **Missing translations:** Labels show raw keys instead of human-readable text.
+- **Missing static files:** Broken images, unstyled pages, 404s for assets.
+- **Console errors:** Check for blocking JS errors.
+- **Feature element not visible:** The screenshot must show the specific UI element being tested. Use `element.scrollIntoViewIfNeeded()` before screenshots.
+
+### Store Contamination Check
+
+E2E tests for features that load data via a state management store must verify the data is loaded **from the tested page**, not from prior navigation. Each test must start from a clean state — navigate directly to the page under test. Empty dropdowns/lists are a red flag.
+
+## Test Tracking Files
+
+Each test file can have a sibling `.md` with the same basename — a single source of truth for what has been tested and posted per ticket.
+
+| Ticket | PR | Description | Comment |
+|--------|-----|-------------|---------|
+| [PROJ-1234](url) | [#5678](url) | Initial: feature X | [Plan + images](url) |
+
+## Re-Read Before Debugging
+
+When an E2E test fails or the environment misbehaves, **re-read this skill** before spending more than 2 minutes on ad-hoc debugging. Skill guidance loaded early in a session gets compressed out of context.

@@ -40,12 +40,14 @@ Each phase maps to a skill (`t3:ticket`, `t3:code`, etc.). The `Session` model t
 
 ## CLI Reference
 
-Top-level commands (no overlay needed): `t3 dashboard`, `t3 ci`, `t3 review`, `t3 doctor`, `t3 tool`, `t3 assess`, `t3 setup`, `t3 info`.
+Top-level commands (no overlay needed): `t3 loop`, `t3 ci`, `t3 review`, `t3 doctor`, `t3 tool`, `t3 assess`, `t3 setup`, `t3 info`.
 
 Overlay-scoped commands require `t3 <overlay> <subcommand>` (e.g., `t3 teatree`):
 
 ```bash
-t3 dashboard                          # Start dashboard + background worker (top-level)
+t3 loop start                         # Spawn Claude Code session with the fat loop
+t3 loop tick                          # Run one loop tick (scans all overlays)
+t3 loop status                        # Show the loop's last-rendered statusline
 t3 <overlay> resetdb                  # Drop and recreate the SQLite database
 t3 <overlay> worktree provision          # Provision worktree (ports, DB, overlay steps)
 t3 <overlay> worktree start          # Start dev servers
@@ -53,7 +55,7 @@ t3 <overlay> worktree status         # Show worktree state
 t3 <overlay> worktree teardown       # Stop services, clean up
 t3 <overlay> tasks work-next-sdk      # Claim and execute next headless task
 t3 <overlay> tasks work-next-user-input  # Claim and launch next interactive task
-t3 <overlay> followup sync            # Daily ticket/MR sync
+t3 <overlay> followup sync            # Daily ticket/PR sync
 ```
 
 ## Key Models
@@ -109,7 +111,7 @@ Canonical example: `src/teatree/core/management/commands/tasks.py` `create` subc
 `~/.teatree` sourced by hooks:
 
 ```bash
-T3_REPO="$HOME/workspace/souliane/teatree"  # teatree repo path
+T3_REPO="$HOME/workspace/<your-username>/teatree"  # teatree repo path
 T3_CONTRIBUTE=true                           # allow retro to modify core skills
 T3_PUSH=false                                # gate pushes behind an explicit prompt
 T3_AUTO_PUSH_FORK=false                      # auto-push to fork when T3_PUSH=true and origin ≠ T3_UPSTREAM
@@ -123,7 +125,7 @@ This skill holds the core. Load the mode-specific skill for the task in hand —
 
 | Skill | When to load |
 |-------|--------------|
-| `/teatree-dogfood` | Validating a CLI, dashboard, or server startup change |
+| `/teatree-dogfood` | Validating a CLI, loop, or statusline change |
 | `/teatree-plan` | Prioritizing the backlog via the GitHub Projects v2 board |
 | `/teatree-batch` | Working the prioritized backlog unattended, one ticket at a time |
-| `/teatree-bughunt` | Self-QA on the dashboard — find, file, and fix bugs in one session |
+| `/teatree-bughunt` | Self-QA on the loop and statusline — find, file, and fix bugs in one session |

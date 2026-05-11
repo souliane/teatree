@@ -8,13 +8,7 @@ import pytest
 from django.test import TestCase
 
 from teatree.core.overlay import ProvisionStep
-from teatree.core.step_runner import (
-    ProvisionReport,
-    StepResult,
-    run_callable_step,
-    run_provision_steps,
-    run_step,
-)
+from teatree.core.step_runner import ProvisionReport, StepResult, run_callable_step, run_provision_steps, run_step
 
 
 class TestStepResult(TestCase):

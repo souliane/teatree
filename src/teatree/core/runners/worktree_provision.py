@@ -80,7 +80,7 @@ class WorktreeProvisionRunner(RunnerBase):
         health_failures = self._run_health_checks()
 
         if not report.success:
-            failed = report.failed_step or "unknown"
+            failed = report.failed_required_step or "unknown"
             return RunnerResult(ok=False, detail=f"step '{failed}' failed")
         if health_failures:
             return RunnerResult(ok=False, detail=f"health checks failed: {', '.join(health_failures)}")

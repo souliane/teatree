@@ -4,13 +4,7 @@ import json
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from teatree.triage import (
-    LABEL_KEYWORDS,
-    DuplicateFinder,
-    LabelSuggester,
-    infer_labels,
-    normalize_title,
-)
+from teatree.triage import LABEL_KEYWORDS, DuplicateFinder, LabelSuggester, infer_labels, normalize_title
 
 
 def _issue_fixture() -> list[dict]:

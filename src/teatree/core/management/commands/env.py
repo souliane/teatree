@@ -14,13 +14,7 @@ from django_typer.management import TyperCommand, command
 
 from teatree.core.models import WorktreeEnvOverride
 from teatree.core.resolve import resolve_worktree
-from teatree.core.worktree_env import (
-    detect_drift,
-    load_overrides,
-    render_env_cache,
-    set_override,
-    write_env_cache,
-)
+from teatree.core.worktree_env import detect_drift, load_overrides, render_env_cache, set_override, write_env_cache
 
 
 class Command(TyperCommand):

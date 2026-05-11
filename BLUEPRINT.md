@@ -6,7 +6,7 @@ If the entire `src/` and `tests/` tree were deleted, this document alone — plu
 
 **Change policy:** Every code change to teatree must be reflected here. Before modifying this file, always ask the user for approval — this is the source of truth and the user validates every change.
 
-**Status:** This BLUEPRINT is the **current** architecture under issue [#541](https://github.com/souliane/teatree/issues/541). All phases (0-8) have shipped on the active branch. The statusline file is the persistent UI surface; the HTML dashboard, ttyd web terminal, ASGI/uvicorn scaffolding, and platform autostart helpers are gone; the code-host + messaging Protocols are unified, with `SlackBotBackend`/`NoopMessagingBackend` selectable via overlay config; `t3 setup slack-bot --overlay <name>` walks the user through Slack app registration; the fat loop + 7 scanners + dispatcher are wired through `t3 loop tick` (review-channel scanning is folded into the dispatcher's PR-URL detection); the headless executor is the deliberately-slim `claude -p` swap point for a future Anthropic SDK runtime; and the no-overlay-leak gate keeps the platform tenant-agnostic.
+**Status:** This BLUEPRINT is the **current** architecture under issue [#541](https://github.com/souliane/teatree/issues/541). All phases (0-8) have shipped on the active branch. The statusline file is the persistent UI surface; the HTML dashboard, ttyd web terminal, ASGI/uvicorn scaffolding, and platform autostart helpers are gone; the code-host + messaging Protocols are unified, with `SlackBotBackend`/`NoopMessagingBackend` selectable via overlay config; `t3 setup slack-bot --overlay <name>` walks the user through Slack app registration; the fat loop + 8 scanners + dispatcher are wired through `t3 loop tick` (review-channel scanning is folded into the dispatcher's PR-URL detection); the headless executor is the deliberately-slim `claude -p` swap point for a future Anthropic SDK runtime; and the no-overlay-leak gate keeps the platform tenant-agnostic.
 
 ---
 
@@ -151,14 +151,15 @@ src/teatree/
     dispatch.py         # Signal → action mapping (statusline / agent / webhook)
     statusline.py       # Statusline composition (zones, formatters) and file write
     scanners/           # Pure-Python signal collectors — one file each
+      active_tickets.py
+      assigned_issues.py
       base.py           # Scanner Protocol + ScanSignal dataclass
       my_prs.py
+      notion_view.py
+      pending_tasks.py
       reviewer_prs.py
       slack_mentions.py
       ticket_completion.py
-      notion_view.py
-      assigned_issues.py
-      pending_tasks.py
       ticket_dispositions.py
 
   backends/             # Pluggable external service integrations
@@ -540,6 +541,7 @@ Each tick runs three stages:
 | `assigned_issues` | Open issues assigned to me on a configured code host that have reached "ready to work" state. | Create the `Ticket` + worktrees; the ticket FSM's `start()` transition then handles the rest (the orchestrator phase agent picks up coding when the worktrees are provisioned). |
 | `pending_tasks` | `Task` rows in `pending` state. | Run via the headless executor (§ 5.2), which dispatches to the appropriate phase agent. The Django `Task` model is resolved lazily through `apps.get_model("core", "Task")` so the scanner module is importable before `django.setup()` runs (the CLI imports the loop subapp at startup). |
 | `ticket_dispositions` | Active pre-PR `Ticket` rows whose remote issue has drifted (closed externally, reassigned away, ready-label removed). | Detection-only: emit `ticket.disposition_candidate` signals to the statusline `action_needed` zone — never auto-transition. The user reviews and decides whether to mark the ticket `IGNORED`, run `worktree teardown`, reassign back, etc. Tickets past `REVIEWED` are skipped: once a PR exists, `MyPrsScanner` covers downstream state. |
+| `active_tickets` | Non-terminal `Ticket` rows (any state except `delivered`/`ignored`). | Surface FSM state in the statusline anchors zone, grouped by overlay: `[acme] #123 started · #456 coded`. Gives at-a-glance lifecycle progress without requiring external API calls. |
 | `ticket_completion` | Post-ship `Ticket` rows (shipped/in_review/merged) whose upstream issue is done. | Mechanical inline action: transition the ticket through `request_review → mark_merged → retrospect` toward delivered. "Done" is overlay-configurable via `OverlayBase.is_issue_done()` — default checks GitHub issue state `∈ {closed, completed}`; GitLab overlays check for a process label (e.g. `Process:DEV Review`). This prevents marking multi-repo tickets done when only one MR merges. |
 
 **Why pure-Python scanners (not subagents):** the scan stage is deterministic I/O — fetch PR statuses, fetch mentions, query the DB. Modeling it as a Claude agent would burn tokens for work a typed Python function does cheaper, more reliably, and with reproducible tests. Claude is invoked only when judgment is needed (review the diff, decide the fix, draft a reply); for that, the loop calls the existing phase agents.
@@ -894,6 +896,49 @@ Ships alongside the three-tier split above. Purpose: in a teatree feature worktr
 Refuses to run in the main clone (detected via a real `.git` directory). Tests in the teatree worktree stay deterministic because `tests/conftest.py` pins `T3_OVERLAY_NAME=t3-teatree`.
 
 `TeatreeOverlay.get_provision_steps()` automates the same install for discovered overlays: after `uv sync`, an `install-overlays-editable` step iterates `discover_overlays()` and runs `uv pip install -e <overlay_worktree>` for each entry whose main `project_path` resolves inside the user's `workspace_dir`. Overlays outside `workspace_dir`, overlays without a sibling worktree under the ticket dir, and the teatree overlay itself (already handled by `uv sync`) are silently skipped — the installed package is the fallback.
+
+### 8.6 Teatree Source Resolution in Overlay Projects
+
+Overlay projects depend on `teatree` as a Python package. The `[tool.uv.sources]` entry controls where uv resolves it:
+
+| Mode | `[tool.uv.sources]` value | When |
+|------|--------------------------|------|
+| **CI / non-contributor** | `teatree = { git = "...teatree.git", rev = "<SHA>" }` | Default committed state. Deterministic, pinned to a tested SHA. |
+| **Local dev / WIP testing** | `teatree = { path = "../../souliane/teatree", editable = true }` | Testing unreleased teatree + overlay changes together. |
+
+**Switching between modes** uses `git update-index --skip-worktree pyproject.toml`:
+
+```bash
+# Enable editable mode (local dev):
+# 1. Edit pyproject.toml: teatree = { path = "../../souliane/teatree", editable = true }
+# 2. Protect from commits:
+git update-index --skip-worktree pyproject.toml
+uv lock && uv sync
+
+# Disable editable mode (back to CI state):
+git update-index --no-skip-worktree pyproject.toml
+git checkout pyproject.toml
+uv lock && uv sync
+```
+
+**Auto-detection:** When `contribute = true` in `~/.teatree.toml`, the CLI bootstrap (`_ensure_editable_if_contributing()`) detects non-editable teatree installs and auto-fixes them via `DoctorService.make_editable()`. This handles the common case where a contributor clones fresh.
+
+**Bumping the pinned SHA:** When teatree ships new features needed by the overlay, update the committed `rev` to the latest teatree main SHA:
+
+```bash
+cd <overlay-project>
+# Get latest teatree main SHA:
+TEATREE_SHA=$(git -C ../../souliane/teatree rev-parse origin/main)
+# Update pyproject.toml rev, re-lock, commit:
+sed -i '' "s/rev = \".*\"/rev = \"$TEATREE_SHA\"/" pyproject.toml
+uv lock && git add pyproject.toml uv.lock && git commit -m "chore(deps): bump teatree to ${TEATREE_SHA:0:7}"
+```
+
+**Pitfalls:**
+
+- `path = "."` is wrong — it points at the overlay itself, causing a name mismatch error.
+- `pyproject-fmt` may reformat the source entry — verify after running pre-commit.
+- After bumping the SHA, restore skip-worktree if using editable mode locally.
 
 ---
 
