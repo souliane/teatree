@@ -1,6 +1,6 @@
 ---
 name: ship
-description: Delivery — committing, pushing, creating PR/PR, pipeline monitoring, review requests. Use when user says "commit", "push", "PR", "merge request", "pull request", "finalize", "deliver", "ship", or is in the delivery phase.
+description: Delivery — committing, pushing, creating MR/PR, pipeline monitoring, review requests. Use when user says "commit", "push", "PR", "merge request", "pull request", "finalize", "deliver", "ship", or is in the delivery phase.
 compatibility: macOS/Linux, git, glab or gh CLI, CI system.
 requires:
   - workspace
@@ -183,7 +183,7 @@ Teatree has **two independent gates** layered on top of each other:
 - Bypass: `t3 <overlay> pr create <ticket> --skip-visual-qa "<reason>"` or `T3_VISUAL_QA=disabled` in the environment.
 - Skipped when Playwright cannot start — fails open with a clear message rather than blocking the push.
 
-### 5. Create PR/PR
+### 5. Create MR/PR
 
 **`t3 <overlay> pr create` is mandatory (Non-Negotiable).** Raw `gh pr create` / `glab mr create` is forbidden whenever the active overlay exposes a `pr create` subcommand. The CLI is not a convenience wrapper — it is the **only** path that runs the shipping gate (§ 4b: testing + reviewing + retro phases visited), the visual-QA gate (§ 4c), the title/description format validator, the ticket URL injection, the assignee defaults, and the fork-vs-upstream remote resolution. Bypassing it ships PRs that look published but have skipped every guard — exactly the failure mode that produced souliane/teatree#545 (PR pushed via `gh pr create`, shipping gate never ran, six rounds of follow-up review fixes).
 
@@ -286,7 +286,7 @@ When a CI failure (or any bug found during work) is **pre-existing** — not int
 
 ## One Open PR Per Ticket (Non-Negotiable)
 
-Before opening a new PR/PR, check whether a sibling PR for the **same ticket** is already open on the same repo:
+Before opening a new MR/PR, check whether a sibling PR for the **same ticket** is already open on the same repo:
 
 ```bash
 gh pr list --repo <repo> --search "<ticket-ref> is:open" --json number,headRefName,baseRefName
@@ -348,7 +348,7 @@ When a session uncovers a small unique commit on a now-stale branch (typical dur
 - **Never rewrite settled commits (Non-Negotiable).** Never rebase, amend, or force-push commits that are already on origin. This applies always — not just after review. Before any squash/fixup, check `git log origin/<branch>..HEAD` to confirm which commits are local-only. Even within local-only commits, **only squash commits from the current work session** — older commits on the branch that predate the current task are settled history. When the user says "squash what belongs together", ask which commit range is in scope rather than assuming the entire local history is fair game.
 - **No rebase / force push after review.** Once an PR has been reviewed, the branch history is shared. Only merge the default branch and push new commits.
 - **Cancel stale pipelines** before every push to a branch with an existing PR.
-- **Cancel running pipelines when closing an PR/PR.** When an PR is closed (abandoned, superseded, or replaced), cancel any running or pending pipelines for that branch immediately — they waste CI resources on code that will never be merged.
+- **Cancel running pipelines when closing an MR/PR.** When an PR is closed (abandoned, superseded, or replaced), cancel any running or pending pipelines for that branch immediately — they waste CI resources on code that will never be merged.
 - **Clickable references:** Every PR, ticket, or note reference must be a markdown link — see [`../rules/SKILL.md`](../rules/SKILL.md) § "Clickable References".
 - **Commit early, commit often.** Never accumulate more than 1-2 tickets of uncommitted changes. Commit after completing each ticket or logical unit of work. Squash later with `t3 <overlay> workspace finalize`.
 - **Publishing actions are mode-conditional.** Canonical rule: see [`../rules/SKILL.md`](../rules/SKILL.md) § "Publishing Actions Are Mode-Conditional". In `interactive` mode (default) every push/PR/merge/remote-delete needs separate explicit approval. In `auto` mode (`t3.mode = "auto"` or `T3_MODE=auto`) the agent ships end-to-end without confirm prompts; only the always-gated list (force-push to defaults, history rewrites on shared defaults, destructive shared-state ops, unauthorised external writes, `--no-verify`) remains confirm-gated.

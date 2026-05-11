@@ -246,7 +246,7 @@ graph LR
 | `review-request` | Batch review requests — discover open PRs, validate metadata, check for duplicates, post to review channels |
 | `rules` | Cross-cutting agent safety rules — clickable refs, temp files, sub-agent limits, UX preservation. Auto-loaded as a dependency by other skills. |
 | `setup` | Bootstrap and validate teatree for local use — prerequisites, config, skill symlinks, optional agent hooks, and Django project scaffolding |
-| `ship` | Delivery — committing, pushing, creating PR/PR, pipeline monitoring, review requests |
+| `ship` | Delivery — committing, pushing, creating MR/PR, pipeline monitoring, review requests |
 | `sweeping-prs` | Maintenance sweep across all your open PRs/PRs — merge the default branch, fix conflicts, monitor CI, push, and (per-repo policy) optionally squash-merge each PR before moving to the next. Never rebases |
 | `teatree` | TeaTree agent lifecycle platform — core architecture, lifecycle phases, CLI reference, overlay API, skill loading, and plugin hooks |
 | `teatree-batch` | Unattended batch ticket processing — work through a prioritized backlog one ticket at a time, sequentially. Create worktree, implement with TDD, self-review, push, merge, clean up. Skip tickets that need design decisions |

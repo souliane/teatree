@@ -18,7 +18,7 @@ metadata:
 
 # PR Sweep — Batch Maintenance for Open PRs
 
-Walk every open PR/PR you authored, sequentially, and bring each up to date with the default branch:
+Walk every open MR/PR you authored, sequentially, and bring each up to date with the default branch:
 
 1. Merge `origin/<default>` into the source branch (**never rebase**).
 2. If conflicts are mechanical, resolve and continue. If not, prompt the user.

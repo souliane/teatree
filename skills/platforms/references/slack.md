@@ -10,7 +10,7 @@ Slack has no official CLI. Use MCP tools (e.g., `slack_send_message`, `slack_sea
 
 ## Search for Messages
 
-Search review channels for PR/PR URLs to avoid duplicate notifications.
+Search review channels for MR/PR URLs to avoid duplicate notifications.
 
 **Use private-inclusive search** — review channels may be private. Request `response_format: "detailed"` to get message **permalinks**.
 

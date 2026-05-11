@@ -172,7 +172,7 @@ Every PR, ticket, issue, or note reference — in markdown files, platform comme
 - `[!5657](https://example.com/org/repo/-/merge_requests/5657)` — not `!5657`
 - `[PROJ-1234](https://example.com/org/repo/-/issues/1234)` — not `PROJ-1234`
 
-This applies everywhere: PR/PR descriptions, inline comments, test evidence, chat messages, and responses to the user.
+This applies everywhere: MR/PR descriptions, inline comments, test evidence, chat messages, and responses to the user.
 
 ## Token Extraction
 
@@ -202,7 +202,7 @@ When fixing a broken UX mechanism (web terminal, browser launch, notification me
 
 ## No AI Signature on Posts Made on the User's Behalf (Non-Negotiable)
 
-Every artifact you publish under the user's identity — git commits, PR/PR descriptions, PR/PR comments and discussions, issue bodies, Slack/Teams messages, email drafts, release notes — must read as if the user wrote it. **Never append AI/agent signatures or footers**.
+Every artifact you publish under the user's identity — git commits, MR/PR descriptions, MR/PR comments and discussions, issue bodies, Slack/Teams messages, email drafts, release notes — must read as if the user wrote it. **Never append AI/agent signatures or footers**.
 
 **Canonical setting:** `[teatree] agent_signature` in `~/.teatree.toml` (default `false`). Programmatic teatree code paths that post on the user's behalf consult `teatree.identity.agent_signature_enabled()` (or wrap their suffix in `agent_signature_suffix(...)`). When you publish through an external tool (MCP Slack send, `gh` comment, `glab` discussion, raw `httpx`), apply the same policy by hand: omit the signature unless the setting is `true`.
 
@@ -222,7 +222,7 @@ Every artifact you publish under the user's identity — git commits, PR/PR desc
 
 ## Never Post PR Comments from Parallel Agents (Non-Negotiable)
 
-PR/PR comment posting (test plans, evidence, review notes) must be **serialized** — never dispatch two parallel agents that both post comments on PRs. Parallel agents cannot check for each other's posts, resulting in duplicate comments. Post all PR comments from the main conversation thread, or serialize agent tasks so only one posts at a time.
+MR/PR comment posting (test plans, evidence, review notes) must be **serialized** — never dispatch two parallel agents that both post comments on PRs. Parallel agents cannot check for each other's posts, resulting in duplicate comments. Post all PR comments from the main conversation thread, or serialize agent tasks so only one posts at a time.
 
 ## Verify Repo Visibility Before Filing External Issues (Non-Negotiable)
 

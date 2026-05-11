@@ -24,8 +24,8 @@ If you are already in a worktree from the session, commit there. If not, create 
 Retro commits go on the **teatree branch that was already used during the session** — never on a dedicated `retro-findings` or `retro/*` branch. Rules:
 
 1. **Session used a teatree branch in a worktree** (e.g., `feat/loop-scanner`) → commit there.
-2. **Session's branch was already merged** → create a new worktree from `main` (e.g., `fix/retro-<topic>`) and open an PR.
-3. **Session didn't touch any teatree branch** → create a new worktree from `main`, commit, and open an PR.
+2. **Session's branch was already merged** → create a new worktree from `main` (e.g., `fix/retro-<topic>`) and open a PR.
+3. **Session didn't touch any teatree branch** → create a new worktree from `main`, commit, and open a PR.
 
 ## Commit
 

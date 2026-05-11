@@ -123,7 +123,7 @@ After sending, remind the user about PRs that couldn't be sent:
 - **Never post without user approval.** Always present the summary tables first and wait for explicit "send" / "go ahead".
 - **Never post duplicates.** Always check team chat before posting.
 - **Draft PRs are invisible.** Exclude them from all tables and counts.
-- **Validate before posting.** Never send a review request for an PR that fails validation — fix it first.
+- **Validate before posting.** Never send a review request for a PR that fails validation — fix it first.
 - **Preserve description bodies.** When fixing the first line, never lose the rest of the description.
 - **Sort consistently.** Always sort by `updated_at` descending.
 

@@ -182,7 +182,7 @@ Each worktree gets its own **isolated environment** — dedicated database, port
 - Never use the main repo's database for worktree work
 - Never manually set ports — let `t3 <overlay> worktree provision` allocate them via `find_free_ports()`
 
-When testing an PR, create a full worktree (`t3 <overlay> workspace ticket` + `t3 <overlay> worktree provision` + `t3 <overlay> worktree start`).
+When testing a PR, create a full worktree (`t3 <overlay> workspace ticket` + `t3 <overlay> worktree provision` + `t3 <overlay> worktree start`).
 
 ### Validate After Provisioning (Non-Negotiable)
 
