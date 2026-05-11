@@ -168,10 +168,17 @@ class OverlayAppBuilder:
         self.overlay_name = overlay_name
         self.project_path = project_path
         self.settings_module = settings_module
+
         self.overlay_app = typer.Typer(no_args_is_help=True, help=f"Commands for the {overlay_name} overlay.")
 
     def build(self) -> typer.Typer:
         """Build and return the fully-configured overlay Typer app."""
+        overlay_name = self.overlay_name
+
+        @self.overlay_app.callback(invoke_without_command=True)
+        def _activate() -> None:
+            os.environ["T3_OVERLAY_NAME"] = overlay_name
+
         self._register_resetdb_command()
         self._register_worker_command()
         self._register_shortcut_commands()
