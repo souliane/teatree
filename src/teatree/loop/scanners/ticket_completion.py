@@ -13,18 +13,21 @@ the dispatcher transitions the ticket through the remaining FSM states
 involvement.
 """
 
+import logging
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 
 from django.apps import apps
 
-from teatree.backends.protocols import CodeHostBackend
+from teatree.backends.loader import get_code_host_for_url
 from teatree.core.overlay import OverlayBase
 from teatree.loop.scanners.base import ScanSignal
 
 if TYPE_CHECKING:
     from teatree.core.models import Ticket
+
+logger = logging.getLogger(__name__)
 
 _COMPLETABLE_STATES: frozenset[str] = frozenset({"shipped", "in_review", "merged"})
 
@@ -33,7 +36,6 @@ _COMPLETABLE_STATES: frozenset[str] = frozenset({"shipped", "in_review", "merged
 class TicketCompletionScanner:
     """Yield ``ticket.completion_detected`` for post-ship tickets whose issue is done."""
 
-    host: CodeHostBackend
     overlay: OverlayBase
     overlay_name: str = ""
     name: str = "ticket_completion"
@@ -41,7 +43,14 @@ class TicketCompletionScanner:
     def scan(self) -> list[ScanSignal]:
         signals: list[ScanSignal] = []
         for ticket in self._candidate_tickets():
-            issue_data = self.host.get_issue(ticket.issue_url)
+            host = get_code_host_for_url(self.overlay, ticket.issue_url)
+            if host is None:
+                continue
+            try:
+                issue_data = host.get_issue(ticket.issue_url)
+            except Exception:  # noqa: BLE001
+                logger.warning("Failed to fetch issue for ticket %s (%s), skipping", ticket.pk, ticket.issue_url)
+                continue
             if not isinstance(issue_data, dict) or "error" in issue_data:
                 continue
             if self.overlay.is_issue_done(issue_data):

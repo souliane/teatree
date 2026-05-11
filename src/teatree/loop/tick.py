@@ -133,6 +133,7 @@ def build_default_jobs(
                         _ScannerJob(
                             scanner=TicketDispositionScanner(
                                 host=backend.host,
+                                overlay=backend.overlay,
                                 ready_labels=backend.ready_labels,
                                 overlay_name=tag,
                             ),
@@ -144,7 +145,6 @@ def build_default_jobs(
                     jobs.append(
                         _ScannerJob(
                             scanner=TicketCompletionScanner(
-                                host=backend.host,
                                 overlay=backend.overlay,
                                 overlay_name=tag,
                             ),
