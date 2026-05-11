@@ -43,16 +43,22 @@ if [ -n "$session_id" ]; then
     fi
 fi
 
-_DIM=$'\033[0;37m'
+_CYN=$'\033[1;36m'
+_GRN=$'\033[1;32m'
 _YLW=$'\033[1;33m'
 _RED=$'\033[1;31m'
+_BLU=$'\033[1;34m'
+_MAG=$'\033[1;35m'
+_DIM=$'\033[2m'
 _RST=$'\033[0m'
+_OSC8=$'\033]8;'
+_ST=$'\033\\'
 
 color_pct() {
     local pct="$1"
     if (( pct >= 95 )); then printf "${_RED}%s%%${_RST}" "$pct"
     elif (( pct >= 80 )); then printf "${_YLW}%s%%${_RST}" "$pct"
-    else printf "${_DIM}%s%%${_RST}" "$pct"
+    else printf "${_GRN}%s%%${_RST}" "$pct"
     fi
 }
 
@@ -67,29 +73,34 @@ format_reset_time() {
             reset_time=$(date -d "@$resets_at" "+%H:%M" 2>/dev/null)
         fi
     fi
-    [ -n "$reset_time" ] && printf ' →%s' "$reset_time"
+    [ -n "$reset_time" ] && printf " ${_DIM}(until %s)${_RST}" "$reset_time"
+}
+
+osc8_link() {
+    printf '%s' "${_OSC8};${1}${_ST}${2}${_OSC8};${_ST}"
 }
 
 header=""
-sep=""
+sep="${_DIM} | ${_RST}"
 if [ -n "$model" ]; then
-    header="model=${model}"
-    sep=" | "
+    header="${_DIM}model=${_RST}${_GRN}${model}${_RST}"
 fi
 if [ -n "$ctx_pct" ] && [ "$ctx_pct" != "empty" ]; then
-    header="${header}${sep}ctx=$(color_pct "$ctx_pct")"
-    sep=" | "
+    header="${header}${sep}${_DIM}ctx=${_RST}$(color_pct "$ctx_pct")"
 fi
 if [ -n "$five_hour_pct" ] && [ "$five_hour_pct" != "empty" ]; then
-    header="${header}${sep}5h=$(color_pct "$five_hour_pct")$(format_reset_time "$five_hour_resets_at")"
-    sep=" | "
+    header="${header}${sep}${_DIM}5h=${_RST}$(color_pct "$five_hour_pct")$(format_reset_time "$five_hour_resets_at")"
 fi
 if [ -n "$seven_day_pct" ] && [ "$seven_day_pct" != "empty" ]; then
-    header="${header}${sep}7d=$(color_pct "$seven_day_pct")"
-    sep=" | "
+    header="${header}${sep}${_DIM}7d=${_RST}$(color_pct "$seven_day_pct")"
 fi
 if [ -n "$skills" ]; then
-    header="${header}${sep}skills: ${skills}"
+    _colored_skills=""
+    for _s in $skills; do
+        [ -n "$_colored_skills" ] && _colored_skills="${_colored_skills} ${_DIM}|${_RST} "
+        _colored_skills="${_colored_skills}${_MAG}${_s}${_RST}"
+    done
+    header="${header}${sep}${_DIM}skills:${_RST} ${_colored_skills}"
 fi
 
 [ -n "$header" ] && printf '%s\n' "$header"
@@ -98,8 +109,28 @@ if [[ -r "$target" ]]; then
     cat "$target"
 fi
 
-# Chain context-mode plugin statusline (token savings line).
-ctx_statusline=$(ls -d "$HOME"/.claude/plugins/cache/context-mode/context-mode/*/bin/statusline.mjs 2>/dev/null | sort -V | tail -1)
-if [ -n "$ctx_statusline" ] && [ -n "${input:-}" ]; then
-    printf '%s' "$input" | node "$ctx_statusline"
+# Chain extra statusline scripts from [teatree] statusline_chain in
+# ~/.teatree.toml. Each entry is a glob pattern; the latest match
+# (sort -V) is run with the Claude stdin JSON piped in.
+if [ -n "${input:-}" ]; then
+    _toml="$HOME/.teatree.toml"
+    if [ -r "$_toml" ]; then
+        _in_chain=false
+        while IFS= read -r _line; do
+            if [[ "$_line" =~ ^statusline_chain ]]; then _in_chain=true; continue; fi
+            $_in_chain || continue
+            [[ "$_line" =~ ^\] ]] && break
+            [[ "$_line" =~ ^[[:space:]]*\" ]] || continue
+            _pat=$(printf '%s' "$_line" | sed 's/.*"\(.*\)".*/\1/')
+            _pat="${_pat/#\~/$HOME}"
+            _resolved=$(ls -d $_pat 2>/dev/null | sort -V | tail -1)
+            [ -z "$_resolved" ] && continue
+            case "$_resolved" in
+                *.mjs|*.js) _runner="node" ;;
+                *.py)       _runner="python3" ;;
+                *)          _runner="bash" ;;
+            esac
+            printf '%s' "$input" | "$_runner" "$_resolved" 2>/dev/null
+        done < "$_toml"
+    fi
 fi

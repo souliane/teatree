@@ -175,6 +175,7 @@ class UserSettings:
     # `skills/rules/SKILL.md` § "No AI Signature on Posts Made on the User's
     # Behalf".
     agent_signature: bool = False
+    statusline_chain: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -217,6 +218,7 @@ def load_config(path: Path | None = None) -> TeaTreeConfig:
         require_human_approval_to_merge=bool(teatree.get("require_human_approval_to_merge", True)),
         claude_chrome=bool(teatree.get("claude_chrome", True)),
         agent_signature=bool(teatree.get("agent_signature", False)),
+        statusline_chain=[str(s) for s in teatree.get("statusline_chain", [])],
     )
 
     return TeaTreeConfig(user=user, raw=raw)
