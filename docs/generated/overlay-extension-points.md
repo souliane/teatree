@@ -19,7 +19,7 @@ Base class: `teatree.core.overlay.OverlayBase`
 | `get_services_config` | No | `(worktree: 'Worktree') -> dict[str, teatree.types.ServiceSpec]` | Return additional service metadata for worktree-lifecycle orchestration. |
 | `get_base_images` | No | `(worktree: 'Worktree') -> list[teatree.types.BaseImageConfig]` | Declare Docker base images teatree builds once and shares across worktrees. |
 | `get_docker_services` | No | `(worktree: 'Worktree') -> set[str]` | Declare service names that MUST run in Docker — enforced at `worktree provision`. |
-| `metadata.validate_mr` | No | `(title: str, description: str) -> teatree.types.ValidationResult` | Return merge-request validation problems for this overlay. |
+| `metadata.validate_pr` | No | `(title: str, description: str) -> teatree.types.ValidationResult` | Return PR validation problems for this overlay. |
 | `metadata.get_skill_metadata` | No | `() -> teatree.types.SkillMetadata` | Return the active overlay skill path and remote match patterns. |
 | `metadata.get_ci_project_path` | No | `() -> str` | Return the GitLab project path for CI operations. |
 | `metadata.get_e2e_config` | No | `() -> dict[str, str]` | Return E2E runner configuration (runner, test_dir, settings_module, project_path, ref). |

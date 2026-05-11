@@ -106,7 +106,7 @@ def _ship_dry_run(ticket: Ticket, worktree: Worktree) -> ShipDryRun:
 
 def _validate_pr_metadata(ticket: Ticket, worktree: Worktree) -> PrValidationError | None:
     _, title, description = _ship_preview(ticket, worktree)
-    validation = get_overlay().metadata.validate_mr(title, description)
+    validation = get_overlay().metadata.validate_pr(title, description)
     if validation["errors"]:
         return PrValidationError(error="PR validation failed", details=validation["errors"])
     return None

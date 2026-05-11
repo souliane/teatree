@@ -24,7 +24,7 @@ _OVERLAY_HOOK_ORDER = (
 )
 
 _METADATA_HOOK_ORDER = (
-    "validate_mr",
+    "validate_pr",
     "get_skill_metadata",
     "get_ci_project_path",
     "get_e2e_config",
@@ -50,7 +50,7 @@ _OVERLAY_HOOK_DESCRIPTIONS = {
 }
 
 _METADATA_HOOK_DESCRIPTIONS = {
-    "validate_mr": "Return merge-request validation problems for this overlay.",
+    "validate_pr": "Return PR validation problems for this overlay.",
     "get_skill_metadata": "Return the active overlay skill path and remote match patterns.",
     "get_ci_project_path": "Return the GitLab project path for CI operations.",
     "get_e2e_config": "Return E2E runner configuration (runner, test_dir, settings_module, project_path, ref).",
