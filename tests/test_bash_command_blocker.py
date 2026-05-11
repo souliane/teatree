@@ -66,6 +66,16 @@ class TestBlocksForbiddenCommands:
             ("cd /tmp && uv run t3 info", "install teatree"),
             ("dslr restore my_snap", "db"),
             ("T3_ALLOW_REMOTE_DUMP=1 t3 myapp db refresh", "T3_ALLOW_REMOTE_DUMP"),
+            ("git commit --no-verify -m 'skip hooks'", "--no-verify"),
+            ("git push --no-verify origin main", "--no-verify"),
+            ("git rebase --no-verify main", "--no-verify"),
+            ("git merge --no-verify feature", "--no-verify"),
+            ("git commit --no-gpg-sign -m 'skip'", "--no-gpg-sign"),
+            (".venv/bin/python manage.py shell", "uv run"),
+            (".venv/bin/pytest tests/", "uv run"),
+            (".venv/bin/pip install foo", "uv run"),
+            ("safety check", "pip-audit"),
+            ("safety scan --full-report", "pip-audit"),
         ],
     )
     def test_denies_with_t3_alternative(
@@ -112,6 +122,8 @@ class TestAllowsLegitimateCommands:
             "grep -r 'playwright' .",
             "dslr list",
             "dslr delete old_snap",
+            "git commit -m 'normal commit'",
+            "git rebase main",
         ],
     )
     def test_allows_command(
