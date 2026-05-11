@@ -108,18 +108,12 @@ class ReviewService:
         return f"Failed: HTTP {status}", 1
 
     def publish_draft_notes(self, repo: str, mr: int) -> tuple[str, int]:
-        import httpx as _httpx  # noqa: PLC0415
-
         api = self._get_api()
         encoded = repo.replace("/", "%2F")
-        response = _httpx.post(
-            f"{api.base_url}/projects/{encoded}/merge_requests/{mr}/draft_notes/bulk_publish",
-            headers={"PRIVATE-TOKEN": self.token},
-            timeout=10.0,
-        )
-        if response.status_code in {HTTPStatus.OK, HTTPStatus.NO_CONTENT}:
+        status = api.post_status(f"projects/{encoded}/merge_requests/{mr}/draft_notes/bulk_publish")
+        if status in {HTTPStatus.OK, HTTPStatus.NO_CONTENT}:
             return "OK — all draft notes published", 0
-        return f"Failed: HTTP {response.status_code}", 1
+        return f"Failed: HTTP {status}", 1
 
     def reply_to_discussion(self, repo: str, mr: int, discussion_id: str, body: str) -> tuple[str, int]:
         """Reply to an existing discussion thread on an MR. Returns (message, exit_code)."""
@@ -136,51 +130,38 @@ class ReviewService:
 
     def resolve_discussion(self, repo: str, mr: int, discussion_id: str, *, resolved: bool = True) -> tuple[str, int]:
         """Mark a discussion thread resolved or unresolved. Returns (message, exit_code)."""
-        import httpx as _httpx  # noqa: PLC0415
-
         api = self._get_api()
         encoded = repo.replace("/", "%2F")
         flag = "true" if resolved else "false"
-        response = _httpx.put(
-            f"{api.base_url}/{f'projects/{encoded}/merge_requests/{mr}/discussions/{discussion_id}?resolved={flag}'}",
-            headers={"PRIVATE-TOKEN": self.token},
-            timeout=10.0,
-        )
-        if response.status_code in {HTTPStatus.OK, HTTPStatus.NO_CONTENT}:
+        status = api.put_status(f"projects/{encoded}/merge_requests/{mr}/discussions/{discussion_id}?resolved={flag}")
+        if status in {HTTPStatus.OK, HTTPStatus.NO_CONTENT}:
             return f"OK resolved={resolved}", 0
-        return f"Failed: HTTP {response.status_code}", 1
+        return f"Failed: HTTP {status}", 1
 
     def update_note(self, repo: str, mr: int, note_id: int, body: str) -> tuple[str, int]:
         """Update a note (draft or published) on an MR.
 
         Tries draft-notes first; falls back to published-notes on 404.
         """
-        import httpx as _httpx  # noqa: PLC0415
-
         api = self._get_api()
         encoded = repo.replace("/", "%2F")
-        headers = {"PRIVATE-TOKEN": self.token}
 
-        draft_response = _httpx.put(
-            f"{api.base_url}/projects/{encoded}/merge_requests/{mr}/draft_notes/{note_id}",
-            headers=headers,
-            json={"note": body},
-            timeout=10.0,
+        draft_status = api.put_status(
+            f"projects/{encoded}/merge_requests/{mr}/draft_notes/{note_id}",
+            {"note": body},
         )
-        if draft_response.status_code == HTTPStatus.OK:
+        if draft_status == HTTPStatus.OK:
             return f"OK updated draft_note_id={note_id}", 0
-        if draft_response.status_code != HTTPStatus.NOT_FOUND:
-            return f"Failed (draft): HTTP {draft_response.status_code}", 1
+        if draft_status != HTTPStatus.NOT_FOUND:
+            return f"Failed (draft): HTTP {draft_status}", 1
 
-        published_response = _httpx.put(
-            f"{api.base_url}/projects/{encoded}/merge_requests/{mr}/notes/{note_id}",
-            headers=headers,
-            json={"body": body},
-            timeout=10.0,
+        pub_status = api.put_status(
+            f"projects/{encoded}/merge_requests/{mr}/notes/{note_id}",
+            {"body": body},
         )
-        if published_response.status_code == HTTPStatus.OK:
+        if pub_status == HTTPStatus.OK:
             return f"OK updated note_id={note_id}", 0
-        return f"Failed: HTTP {published_response.status_code}", 1
+        return f"Failed: HTTP {pub_status}", 1
 
     def list_draft_notes(self, repo: str, mr: int) -> tuple[str, int]:
         """List draft notes. Returns (message, exit_code)."""
