@@ -188,7 +188,6 @@ Interactive tasks launch through one of three strategies, picked by `TEATREE_TER
 | `new-window` | Spawns a fresh native terminal window via `osascript` / terminal-emulator IPC. | Yes |
 | `ttyd` | Spawns a `ttyd` process and returns a browser URL. Registered with the in-memory process registry, so it is killed on server shutdown. | No |
 
-- Dashboard Launch button → POST `/tasks/<id>/launch/` → native modes return `{"pid": ...}` and the OS terminal opens; ttyd mode returns `{"launch_url": "..."}` and JS opens it in a new tab.
 - Command: `claude --append-system-prompt <context>` (no `-p`, interactive mode).
 - ttyd-only requirements: must be installed (`brew install ttyd`) and spawned with `--writable`.
 - Terminal.app `new-tab` requires Accessibility permission for the host process (System Events keystroke).
@@ -218,7 +217,6 @@ The persistent UI surface is a multi-line statusline rendered by `t3 loop tick`.
 
 ```bash
 t3 --help                           # CLI help
-t3 acme dashboard                   # Start overlay dashboard (auto-finds free port)
 t3 acme agent                       # Launch Claude Code with overlay context
 t3 agent                            # Launch Claude Code (teatree-self development)
 ```
@@ -227,7 +225,6 @@ t3 agent                            # Launch Claude Code (teatree-self developme
 
 ```bash
 uv run pytest                       # Test suite with coverage (>93% required)
-uv run pytest e2e/ -x               # Dashboard E2E tests with Playwright
 prek run --all-files                # Pre-commit hooks (ruff, codespell, tach, ty)
 bash dev/test-matrix.sh             # Docker matrix: Python 3.13 + 3.14 (MANDATORY before push)
 ```
@@ -240,8 +237,7 @@ New tests — added in this repo or in any overlay repo — must lean **integrat
 
 **Preferred patterns (in order):**
 
-1. **Playwright E2E** (`e2e/`) for dashboard or browser-visible behavior.
-2. **Django test client** (`client.get(...)`, `client.post(...)`) for views, URLs, HTMX endpoints.
+1. **Django test client** (`client.get(...)`, `client.post(...)`) for views and URL endpoints.
 3. **`call_command("name", ...)`** for management commands — exercises the full Typer + Django glue.
 4. **`subprocess.run(["t3", ...])`** (marked `@pytest.mark.integration`) when the bug would only surface through the real entry point.
 5. **Real filesystem + real `git` under `tmp_path`** for anything that provisions worktrees, writes env files, or runs `git worktree add`. No mocking `Path`, `subprocess`, or git output.

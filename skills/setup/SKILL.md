@@ -133,7 +133,7 @@ every runtime dir teatree detected along with the count of managed symlinks.
 
 Teatree ships a `hooks.json` that Claude Code loads automatically when the plugin is installed. All hooks route through `hook_router.py`, a unified Python router that handles event dispatch.
 
-If the user installed via `apm install -g souliane/teatree`, hooks are already configured. For manual installs or troubleshooting, verify the plugin is registered in `~/.claude/plugins.json`.
+If the user installed via `apm install -g <owner>/teatree`, hooks are already configured. For manual installs or troubleshooting, verify the plugin is registered in `~/.claude/plugins.json`.
 
 The hooks cover these events:
 
