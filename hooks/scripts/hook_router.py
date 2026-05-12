@@ -267,12 +267,20 @@ def _session_has_loop(session_id: str) -> bool:
         return False
 
 
+def _cleanup_stale_pending(session_id: str) -> None:
+    """Remove loop-pending files from old sessions."""
+    for f in STATE_DIR.glob("*.loop-pending"):
+        if f.stem != session_id:
+            f.unlink(missing_ok=True)
+
+
 def handle_enforce_loop_on_prompt(data: dict) -> None:
     """On first prompt, check if the fat loop needs registration."""
     session_id = data.get("session_id", "")
     if not session_id:
         return
     _ensure_state_dir()
+    _cleanup_stale_pending(session_id)
     pending = _state_file(session_id, "loop-pending")
     if _session_has_loop(session_id):
         pending.unlink(missing_ok=True)
@@ -283,14 +291,14 @@ def handle_enforce_loop_on_prompt(data: dict) -> None:
     minutes = max(1, cadence // 60)
     pending.write_text("1", encoding="utf-8")
     print(  # noqa: T201
-        f"MANDATORY: Register the fat loop NOW. Call CronCreate with "
-        f'cron="*/{minutes} * * * *", prompt="{_LOOP_PROMPT}", recurring=true. '
-        f"Do this BEFORE any other work."
+        f"Session setup: the teatree background loop is not registered yet. "
+        f"Please call CronCreate with "
+        f'cron="*/{minutes} * * * *", prompt="{_LOOP_PROMPT}", recurring=true.'
     )
 
 
 def handle_enforce_loop_registration(data: dict) -> bool:
-    """Block tools until the fat loop cron is registered."""
+    """Block Bash/Edit/Write until the background loop cron is registered."""
     tool_name = data.get("tool_name", "")
     if tool_name in {"CronCreate", "CronDelete", "CronList", "ScheduleWakeup", "Skill", "ToolSearch"}:
         return False
@@ -306,9 +314,9 @@ def handle_enforce_loop_registration(data: dict) -> bool:
     cadence = int(os.environ.get("T3_LOOP_CADENCE", _LOOP_CADENCE_DEFAULT) or _LOOP_CADENCE_DEFAULT)
     minutes = max(1, cadence // 60)
     reason = (
-        f"LOOP REGISTRATION REQUIRED: Call CronCreate with "
-        f'cron="*/{minutes} * * * *", prompt="{_LOOP_PROMPT}", recurring=true '
-        f"BEFORE calling any other tool."
+        f"The teatree background loop is not registered yet. "
+        f"Please call CronCreate with "
+        f'cron="*/{minutes} * * * *", prompt="{_LOOP_PROMPT}", recurring=true.'
     )
     json.dump({"permissionDecision": "deny", "permissionDecisionReason": reason}, sys.stdout)
     return True
