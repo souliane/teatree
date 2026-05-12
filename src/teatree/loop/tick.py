@@ -364,16 +364,19 @@ def _running_tasks_lines() -> list[str]:
     """Query claimed tasks from the DB and render one line per overlay."""
     from django.apps import apps  # noqa: PLC0415
 
-    task_model = apps.get_model("core", "Task")
-    claimed = (
-        task_model.objects.filter(status="claimed")
-        .select_related("ticket")
-        .only("phase", "ticket__overlay", "ticket__issue_url")
-    )
-    by_overlay: dict[str, list[str]] = {}
-    for task in claimed:
-        overlay = task.ticket.overlay or ""
-        by_overlay.setdefault(overlay, []).append(task.phase)
+    try:
+        task_model = apps.get_model("core", "Task")
+        claimed = (
+            task_model.objects.filter(status="claimed")
+            .select_related("ticket")
+            .only("phase", "ticket__overlay", "ticket__issue_url")
+        )
+        by_overlay: dict[str, list[str]] = {}
+        for task in claimed:
+            overlay = task.ticket.overlay or ""
+            by_overlay.setdefault(overlay, []).append(task.phase)
+    except Exception:  # noqa: BLE001
+        return []
     lines: list[str] = []
     for overlay, phases in sorted(by_overlay.items()):
         prefix = f"[{overlay}] " if overlay else ""

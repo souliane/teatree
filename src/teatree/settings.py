@@ -4,11 +4,22 @@ Used when teatree is the Django project (the standard case).
 Auto-discovers overlay Django apps via entry points and adds them to INSTALLED_APPS.
 """
 
+import warnings
+
 from teatree.config import default_logging
 from teatree.paths import DATA_DIR
 
 _DATA_DIR = DATA_DIR
 _DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+_CANONICAL_DB = _DATA_DIR / "db.sqlite3"
+_STALE_PATHS = [_DATA_DIR / "teatree" / "db.sqlite3", _DATA_DIR / "dev" / "db.sqlite3"]
+for _stale in _STALE_PATHS:
+    if _stale.is_file():
+        warnings.warn(
+            f"Stale DB found at {_stale} — canonical DB is {_CANONICAL_DB}. Remove {_stale} to silence this warning.",
+            stacklevel=1,
+        )
 
 
 def _discover_overlay_apps() -> list[str]:
