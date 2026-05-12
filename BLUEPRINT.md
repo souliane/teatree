@@ -266,7 +266,7 @@ The central entity. One ticket per unit of work (maps to an issue/task in the tr
 
 `Ticket.has_shippable_diff()` returns True iff at least one `Worktree` has commits ahead of its base branch (resolved via `origin/<default>` or local `main` fallback). When False, `review()` advances state but skips `schedule_shipping()` — typical for meta-tracker tickets whose work shipped via sibling PRs. Manual `schedule_shipping()` callers (CLI, tests) remain permissive and bypass the gate.
 
-**`extra` structure:**
+**`extra` structure** (authoritative schema: `TicketExtra` TypedDict in `core/models/types.py`, validated by `validated_ticket_extra()`):
 
 ```python
 {
@@ -275,17 +275,23 @@ The central entity. One ticket per unit of work (maps to an issue/task in the tr
     "prs": {
         "<pr_id>": {
             "url": str, "title": str, "branch": str, "draft": bool,
-            "repo": str, "id": int,
+            "repo": str, "iid": int,
             "pipeline_status": str, "pipeline_url": str,
-            "approvals": {"required": int, "count": int},
-            "review_threads": [{"status": str, "detail": str}],
             "review_requested": bool, "reviewer_names": [str],
             "head_sha": str, "last_reviewed_sha": str,
         }
     },
+    "pr_title_override": str,
+    "branch": str,
+    "description": str,
+    "provision": {"...": "..."},
+    "ignored_from": str,
+    "shipping_skipped": str,
+    "visual_qa": {"targets": [...], "pages_checked": int, "errors": int, ...},
     "issue_title": str,
     "labels": [str],
-    "tracker_status": str,  # Inferred from "Process::" labels
+    "tracker_status": str,
+    "auto_started": bool,
 }
 ```
 

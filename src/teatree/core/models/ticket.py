@@ -1,7 +1,7 @@
 import logging
 import os
 import re
-from typing import TYPE_CHECKING, ClassVar, cast
+from typing import TYPE_CHECKING, ClassVar
 
 from django.apps import apps
 from django.db import models, transaction
@@ -9,6 +9,7 @@ from django_fsm import FSMField, TransitionNotAllowed, transition
 
 from teatree.config import Mode, get_effective_settings
 from teatree.core.managers import TicketManager
+from teatree.core.models.types import validated_ticket_extra
 from teatree.utils import git, redis_container
 from teatree.utils.run import CommandFailedError
 
@@ -16,15 +17,6 @@ logger = logging.getLogger(__name__)
 
 
 def _auto_ship_enabled() -> bool:
-    """Return True when shipping should run headlessly without user approval.
-
-    Two opt-ins, in order: ``teatree.mode = "auto"`` (or ``T3_MODE=auto``)
-    is the user's blanket autonomy switch and covers publishing actions
-    including the ship task; ``T3_AUTO_SHIP=true`` is the legacy
-    per-action override, still honored so users who haven't moved to
-    global auto mode keep the same behavior. Default is interactive —
-    shipping waits for explicit approval.
-    """
     if os.environ.get("T3_AUTO_SHIP", "").lower() == "true":
         return True
     return get_effective_settings().mode == Mode.AUTO
@@ -389,7 +381,7 @@ class Ticket(models.Model):
         )
 
     def _extra(self) -> "TicketExtra":
-        return cast("TicketExtra", self.extra or {})
+        return validated_ticket_extra(self.extra)
 
 
 def _worktree_has_commits_ahead(worktree: "Worktree") -> bool:
