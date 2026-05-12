@@ -87,7 +87,6 @@ Useful optional values:
 | `T3_PRIVATE_TESTS` | Private QA repo path | empty |
 | `T3_BRANCH_PREFIX` | Branch prefix for generated worktrees | derived from git user |
 | `T3_ISSUE_TRACKER` | `gitlab` or `github` | detected |
-| `T3_CHAT_PLATFORM` | `slack`, `teams`, or `none` | `none` |
 | `T3_SKILL_OWNERSHIP_FILE` | Ownership config for skill editing | `$HOME/.ac-reviewing-codebase` |
 
 Do not require `T3_OVERLAY`. The active overlay is discovered via entry points.
@@ -99,7 +98,6 @@ cat > ~/.teatree <<'EOF'
 T3_REPO="$HOME/workspace/teatree"
 T3_WORKSPACE_DIR="$HOME/workspace"
 T3_ISSUE_TRACKER="gitlab"
-T3_CHAT_PLATFORM="none"
 T3_CONTRIBUTE=false
 T3_PUSH=false
 T3_AUTO_PUSH_FORK=false
@@ -109,6 +107,19 @@ T3_PRIVATE_TESTS=""
 T3_BRANCH_PREFIX="ac"
 T3_SKILL_OWNERSHIP_FILE="$HOME/.ac-reviewing-codebase"
 EOF
+```
+
+### Slack integration (per-overlay)
+
+Messaging is configured per overlay in `~/.teatree.toml`, not via `T3_CHAT_PLATFORM`.
+Run `t3 setup slack-bot --overlay <name>` to register a Slack app and store tokens.
+Then start `t3 slack listen` for real-time event delivery via Socket Mode.
+
+```toml
+[overlays.<name>]
+messaging_backend = "slack"
+slack_user_id = "U..."
+slack_token_ref = "teatree/<name>/slack"
 ```
 
 ## Step 3: Install Skills

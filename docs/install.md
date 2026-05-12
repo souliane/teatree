@@ -129,6 +129,42 @@ t3 overlay uninstall <overlay-name>
 
 The main clone (detected via a real `.git` directory) refuses `install` — use this in worktrees only. Tracked overlays persist in `.t3.local.json` (gitignored).
 
+## Slack integration (optional)
+
+Each overlay can have its own Slack bot for bidirectional messaging
+(question mirroring, DM monitoring, mention scanning). Setup per overlay:
+
+```sh
+t3 setup slack-bot --overlay <name>
+```
+
+This walks through Slack app creation, generates a manifest, stores
+`xoxb-` (bot) and `xapp-` (app-level) tokens in `pass`, and writes the
+config to `~/.teatree.toml`. The bot needs Socket Mode enabled
+(`connections:write` scope on the app-level token).
+
+Start the event listener (runs in foreground, one WebSocket per overlay):
+
+```sh
+t3 slack listen                    # all slack-enabled overlays
+t3 slack listen --overlay <name>   # single overlay
+t3 slack status                    # check if the listener is running
+```
+
+The listener writes inbound events to a JSONL queue. The fat loop tick
+(`t3 loop tick`) drains the queue and surfaces mentions/DMs in the
+statusline. The Claude Code hook mirrors `AskUserQuestion` prompts to
+Slack DM so you can answer from your phone.
+
+Config lives in `~/.teatree.toml`:
+
+```toml
+[overlays.<name>]
+messaging_backend = "slack"
+slack_user_id = "U..."          # your Slack member ID
+slack_token_ref = "teatree/<name>/slack"  # pass entry prefix
+```
+
 ## Overlay discovery
 
 Overlays register via standard Python entry points in `pyproject.toml`:
