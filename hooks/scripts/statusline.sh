@@ -147,6 +147,43 @@ if [ -r "$_tick_meta" ] && command -v jq >/dev/null 2>&1; then
         fi
         header="${header}${sep}${_DIM}${_tick_label}${_RST}"
     fi
+
+    # Repo freshness from tick-meta.json .freshness
+    _freshness=$(jq -r '.freshness // empty' "$_tick_meta" 2>/dev/null)
+    if [ -n "$_freshness" ] && [ "$_freshness" != "null" ] && [ "$_freshness" != "{}" ]; then
+        _now=${_now:-$(date +%s)}
+        _fresh_parts=""
+        for _repo in $(echo "$_freshness" | jq -r 'keys[]' 2>/dev/null); do
+            _behind=$(echo "$_freshness" | jq -r ".\"$_repo\".behind // -1" 2>/dev/null)
+            _fetch_ep=$(echo "$_freshness" | jq -r ".\"$_repo\".fetch_epoch // 0" 2>/dev/null)
+            _age=""
+            if [ "$_fetch_ep" -gt 0 ] 2>/dev/null; then
+                _age_s=$(( _now - _fetch_ep ))
+                if (( _age_s < 3600 )); then
+                    _age="$(( _age_s / 60 ))m"
+                elif (( _age_s < 86400 )); then
+                    _age="$(( _age_s / 3600 ))h"
+                else
+                    _age="$(( _age_s / 86400 ))d"
+                fi
+            fi
+            if [ "$_behind" -ge 0 ] 2>/dev/null; then
+                if (( _behind == 0 )); then _fc="$_GRN"
+                elif (( _behind <= 5 )); then _fc="$_YLW"
+                else _fc="$_RED"
+                fi
+                _label="${_fc}${_repo}${_RST}${_DIM}=${_RST}${_fc}${_behind}${_RST}"
+                [ -n "$_age" ] && _label="${_label}${_DIM}(${_age})${_RST}"
+            elif [ -n "$_age" ]; then
+                _label="${_DIM}${_repo}=${_age}${_RST}"
+            else
+                continue
+            fi
+            [ -n "$_fresh_parts" ] && _fresh_parts="${_fresh_parts} "
+            _fresh_parts="${_fresh_parts}${_label}"
+        done
+        [ -n "$_fresh_parts" ] && header="${header}${sep}${_fresh_parts}"
+    fi
 fi
 
 [ -n "$header" ] && printf '%s\n' "$header"
