@@ -110,6 +110,40 @@ class TestStatusCommand:
         assert "running" in result.stdout
 
 
+class TestCheckCommand:
+    def test_exits_1_when_queue_empty(self) -> None:
+        with patch("teatree.backends.slack_receiver.drain_event_queue", return_value=[]):
+            result = runner.invoke(slack_app, ["check"])
+
+        assert result.exit_code == 1
+
+    def test_prints_user_messages_as_json(self) -> None:
+        events = [
+            {"overlay": "ov1", "event": {"type": "message", "user": "U1", "text": "hello", "ts": "1.0"}},
+            {"overlay": "ov1", "event": {"type": "app_mention", "user": "U2", "text": "hey @bot", "ts": "2.0"}},
+        ]
+        with patch("teatree.backends.slack_receiver.drain_event_queue", return_value=events):
+            result = runner.invoke(slack_app, ["check"])
+
+        assert result.exit_code == 0
+        lines = result.stdout.strip().splitlines()
+        assert len(lines) == 2
+
+    def test_filters_bot_messages(self) -> None:
+        events = [
+            {"overlay": "ov", "event": {"type": "message", "bot_id": "B1", "text": "bot msg"}},
+            {"overlay": "ov", "event": {"type": "message", "subtype": "bot_message", "text": "sub"}},
+            {"overlay": "ov", "event": {"type": "message", "user": "U1", "text": "human"}},
+        ]
+        with patch("teatree.backends.slack_receiver.drain_event_queue", return_value=events):
+            result = runner.invoke(slack_app, ["check"])
+
+        assert result.exit_code == 0
+        lines = result.stdout.strip().splitlines()
+        assert len(lines) == 1
+        assert "human" in lines[0]
+
+
 class TestListenCommand:
     def test_exits_when_no_overlays(self, tmp_path: Path) -> None:
         with (

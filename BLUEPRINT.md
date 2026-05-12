@@ -1062,7 +1062,7 @@ e2e_dir = "e2e"  # subdirectory containing playwright.config.ts (default: "e2e")
 
 The walkthrough never writes a bot token to disk in plaintext; tokens always go via `pass`. Re-running `t3 setup slack-bot --overlay <name> --reset` rotates both tokens.
 
-**Socket Mode listener** (`t3 slack listen`): a global singleton process that opens one WebSocket per slack-enabled overlay. Events are written to `$XDG_DATA_HOME/teatree/slack-events.jsonl` in real time. `t3 slack status` checks if the listener is running. The listener uses PID-file-based singleton detection — only one instance runs at a time. Start it as a background process or let the SessionStart hook manage its lifecycle.
+**Socket Mode listener** (`t3 slack listen`): a global singleton process that opens one WebSocket per slack-enabled overlay. Events are written to `$XDG_DATA_HOME/teatree/slack-events.jsonl` in real time. `t3 slack status` checks if the listener is running. `t3 slack check` drains the queue and prints user messages as JSON (exit 0 = messages found, 1 = empty) — designed for a fast cron (30s–1min). The listener uses PID-file-based singleton detection — only one instance runs at a time. Start it as a background process or let the SessionStart hook manage its lifecycle.
 
 **Operating mode (`teatree.mode`, env: `T3_MODE`)** — controls whether the agent
 pauses for confirmation on publishing actions (push, PR create, PR merge, messaging-backend
