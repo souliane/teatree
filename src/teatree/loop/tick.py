@@ -282,9 +282,6 @@ def _classify_actions(actions: list[DispatchAction]) -> _ClassifiedActions:
                 c.other.append((action.zone, StatuslineEntry(text=f"{prefix}{action.detail}", url=url_str)))
         elif action.kind == "mechanical":
             c.other.append(("in_flight", StatuslineEntry(text=f"⚙ {prefix}{action.detail}", url=url_str)))
-        else:
-            text = f"→ {action.zone}: {prefix}{action.detail}"
-            c.other.append(("in_flight", StatuslineEntry(text=text, url=url_str)))
     return c
 
 
@@ -363,10 +360,28 @@ def _render_action_line(
     return f"{prefix}{' · '.join(parts)}"
 
 
-def _zones_for(actions: list[DispatchAction]) -> StatuslineZones:
-    zones = StatuslineZones()
-    c = _classify_actions(actions)
+def _running_tasks_lines() -> list[str]:
+    """Query claimed tasks from the DB and render one line per overlay."""
+    from django.apps import apps  # noqa: PLC0415
 
+    task_model = apps.get_model("core", "Task")
+    claimed = (
+        task_model.objects.filter(status="claimed")
+        .select_related("ticket")
+        .only("phase", "ticket__overlay", "ticket__issue_url")
+    )
+    by_overlay: dict[str, list[str]] = {}
+    for task in claimed:
+        overlay = task.ticket.overlay or ""
+        by_overlay.setdefault(overlay, []).append(task.phase)
+    lines: list[str] = []
+    for overlay, phases in sorted(by_overlay.items()):
+        prefix = f"[{overlay}] " if overlay else ""
+        lines.append(f"{prefix}agents: {' · '.join(phases)}")
+    return lines
+
+
+def _populate_overlay_zones(zones: StatuslineZones, c: _ClassifiedActions) -> None:
     all_overlays = sorted({*c.active_tickets, *c.action_prs, *c.disposition_counts, *c.ready_counts, *c.inflight_prs})
 
     all_pr_refs: dict[str, dict[str, list[_PRRef]]] = {}
@@ -394,10 +409,18 @@ def _zones_for(actions: list[DispatchAction]) -> StatuslineZones:
         if inflight_refs:
             zones.in_flight.append(_render_pr_group(overlay_key, inflight_refs))
 
+
+def _zones_for(actions: list[DispatchAction]) -> StatuslineZones:
+    zones = StatuslineZones()
+    c = _classify_actions(actions)
+    _populate_overlay_zones(zones, c)
+
     for zone_name, entry in c.other:
         zone_list = getattr(zones, zone_name, None)
         if isinstance(zone_list, list):
             zone_list.append(entry)
+
+    zones.in_flight.extend(_running_tasks_lines())
 
     return zones
 
