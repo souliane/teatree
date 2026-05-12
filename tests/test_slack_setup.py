@@ -116,11 +116,11 @@ class TestWriteOverlaySettings:
             config,
             "acme",
             slack_user_id="U01ABCD1234",
-            slack_bot_token_ref="teatree/acme/slack",
+            slack_token_ref="teatree/acme/slack",
         )
         document = cast("dict[str, Any]", tomlkit.parse(config.read_text(encoding="utf-8")))
         assert document["overlays"]["acme"]["slack_user_id"] == "U01ABCD1234"
-        assert document["overlays"]["acme"]["slack_bot_token_ref"] == "teatree/acme/slack"
+        assert document["overlays"]["acme"]["slack_token_ref"] == "teatree/acme/slack"
         assert document["overlays"]["acme"]["messaging_backend"] == "slack"
 
     def test_preserves_unrelated_keys(self, tmp_path: Path) -> None:
@@ -135,7 +135,7 @@ class TestWriteOverlaySettings:
             config,
             "acme",
             slack_user_id="U01ABCD1234",
-            slack_bot_token_ref="teatree/acme/slack",
+            slack_token_ref="teatree/acme/slack",
         )
         document = cast("dict[str, Any]", tomlkit.parse(config.read_text(encoding="utf-8")))
         assert document["teatree"]["workspace_dir"] == "~/work"
@@ -147,18 +147,18 @@ class TestWriteOverlaySettings:
     def test_overwrites_existing_slack_settings(self, tmp_path: Path) -> None:
         config = tmp_path / "teatree.toml"
         config.write_text(
-            '[overlays.acme]\nslack_user_id = "U_OLD"\nslack_bot_token_ref = "old-ref"\n',
+            '[overlays.acme]\nslack_user_id = "U_OLD"\nslack_token_ref = "old-ref"\n',
             encoding="utf-8",
         )
         write_overlay_settings(
             config,
             "acme",
             slack_user_id="U_NEW",
-            slack_bot_token_ref="new-ref",
+            slack_token_ref="new-ref",
         )
         document = cast("dict[str, Any]", tomlkit.parse(config.read_text(encoding="utf-8")))
         assert document["overlays"]["acme"]["slack_user_id"] == "U_NEW"
-        assert document["overlays"]["acme"]["slack_bot_token_ref"] == "new-ref"
+        assert document["overlays"]["acme"]["slack_token_ref"] == "new-ref"
 
 
 class TestPatterns:
@@ -237,7 +237,7 @@ class TestSlackBotCommand:
         assert captured["teatree/acme/slack-app"] == "xapp-1-test"
         document = cast("dict[str, Any]", tomlkit.parse(config.read_text(encoding="utf-8")))
         assert document["overlays"]["acme"]["slack_user_id"] == "U01ABCD1234"
-        assert document["overlays"]["acme"]["slack_bot_token_ref"] == "teatree/acme/slack"
+        assert document["overlays"]["acme"]["slack_token_ref"] == "teatree/acme/slack"
 
     def test_reset_skips_manifest_url(self, tmp_path: Path) -> None:
         opened: list[str] = []

@@ -83,7 +83,7 @@ class OverlayConfig:
     """
     messaging_backend: str = "noop"
     """Selects the MessagingBackend implementation: ``"slack"`` or ``"noop"`` (default)."""
-    slack_bot_token_ref: str = ""
+    slack_token_ref: str = ""
     """``pass`` entry name prefix for Slack bot credentials.
 
     The loader reads ``<ref>-bot`` (xoxb token) and ``<ref>-app`` (xapp token).
