@@ -144,9 +144,16 @@ class TestEnableLocalPlugin:
 
         assert settings.stat().st_mtime == mtime_before
 
-    def test_noop_when_no_settings_file(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_creates_settings_when_missing(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: tmp_path))
-        _enable_local_plugin(tmp_path / "plugins" / "t3")  # should not raise
+        link = tmp_path / "plugins" / "t3"
+
+        _enable_local_plugin(link)
+
+        settings = tmp_path / ".claude" / "settings.json"
+        assert settings.is_file()
+        data = json.loads(settings.read_text())
+        assert data["enabledPlugins"][str(link)] is True
 
 
 class TestInstallClaudePlugin:

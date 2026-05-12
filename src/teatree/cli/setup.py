@@ -119,10 +119,12 @@ def _uninstall_marketplace_plugin(claude_bin: str) -> None:
 def _enable_local_plugin(link: Path) -> None:
     """Ensure the local plugin path is enabled in settings.json."""
     settings_path = Path.home() / ".claude" / "settings.json"
-    if not settings_path.is_file():
-        return
-    resolved = settings_path.resolve()
-    data = json.loads(resolved.read_text(encoding="utf-8"))
+    resolved = settings_path.resolve() if settings_path.is_file() else settings_path
+    if resolved.is_file():
+        data = json.loads(resolved.read_text(encoding="utf-8"))
+    else:
+        resolved.parent.mkdir(parents=True, exist_ok=True)
+        data = {}
     plugins = data.setdefault("enabledPlugins", {})
     key = str(link)
     if plugins.get(key) is True:

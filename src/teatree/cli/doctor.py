@@ -143,6 +143,13 @@ class DoctorService:
     @staticmethod
     def find_installed_claude_plugin() -> dict[str, str] | None:
         """Return plugin version/installPath/scope, or None when not installed."""
+        link = Path.home() / ".claude" / "plugins" / "t3"
+        if link.is_symlink():
+            return {
+                "version": "(local)",
+                "installPath": str(link.resolve()),
+                "scope": "symlink",
+            }
         plugins_json = Path.home() / ".claude" / "plugins" / "installed_plugins.json"
         if not plugins_json.is_file():
             return None
