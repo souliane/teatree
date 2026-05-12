@@ -113,10 +113,9 @@ class WorktreeProvisionRunner(RunnerBase):
 
     def _run_post_db_steps(self) -> ProvisionReport:
         steps = list(self.overlay.get_post_db_steps(self.worktree))
-        if steps:
-            reset_step = self.overlay.get_reset_passwords_command(self.worktree)
-            if reset_step:
-                steps.append(reset_step)
+        reset_step = self.overlay.get_reset_passwords_command(self.worktree)
+        if reset_step:
+            steps.append(reset_step)
         return run_provision_steps(steps, stop_on_required_failure=False)
 
     def _run_pre_run_steps(self) -> ProvisionReport:
