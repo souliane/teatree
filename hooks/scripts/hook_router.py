@@ -694,6 +694,98 @@ def handle_block_direct_commands(data: dict) -> bool:
     return True
 
 
+# ── PreToolUse: mirror-question-to-slack ─────────────────────────────
+
+
+def _slack_config_from_toml() -> tuple[str, str] | None:
+    """Return (bot_token_ref, user_id) from the first slack-enabled overlay."""
+    import tomllib  # noqa: PLC0415
+
+    config_path = Path.home() / ".teatree.toml"
+    if not config_path.is_file():
+        return None
+    try:
+        with config_path.open("rb") as f:
+            config = tomllib.load(f)
+    except Exception:  # noqa: BLE001
+        return None
+    for overlay_cfg in (config.get("overlays") or {}).values():
+        if overlay_cfg.get("messaging_backend") == "slack":
+            ref = overlay_cfg.get("slack_token_ref", "")
+            uid = overlay_cfg.get("slack_user_id", "")
+            if ref and uid:
+                return ref, uid
+    return None
+
+
+def _format_question_text(questions: list[dict]) -> str:
+    lines: list[str] = []
+    for q in questions:
+        lines.append(f"*{q.get('question', '')}*")
+        for i, opt in enumerate(q.get("options", []), 1):
+            label = opt.get("label", "")
+            desc = opt.get("description", "")
+            lines.append(f"  {i}. {label}" + (f" — {desc}" if desc else ""))
+    lines.append("\n_Reply with the number (e.g. `1`) or type your answer._")
+    return "\n".join(lines)
+
+
+def _slack_post_dm(bot_token: str, user_id: str, text: str) -> None:
+    import contextlib  # noqa: PLC0415
+    import urllib.request  # noqa: PLC0415
+
+    dm_payload = json.dumps({"users": user_id}).encode()
+    dm_req = urllib.request.Request(
+        "https://slack.com/api/conversations.open",
+        data=dm_payload,
+        headers={"Authorization": f"Bearer {bot_token}", "Content-Type": "application/json"},
+    )
+    try:
+        dm_resp = json.loads(urllib.request.urlopen(dm_req, timeout=5).read())  # noqa: S310
+    except Exception:  # noqa: BLE001
+        return
+    channel = dm_resp.get("channel", {}).get("id", "")
+    if not channel:
+        return
+
+    msg_payload = json.dumps({"channel": channel, "text": text}).encode()
+    msg_req = urllib.request.Request(
+        "https://slack.com/api/chat.postMessage",
+        data=msg_payload,
+        headers={"Authorization": f"Bearer {bot_token}", "Content-Type": "application/json"},
+    )
+    with contextlib.suppress(Exception):
+        urllib.request.urlopen(msg_req, timeout=5)  # noqa: S310
+
+
+def _post_question_to_slack(data: dict) -> None:
+    questions = data.get("tool_input", {}).get("questions", [])
+    if not questions:
+        return
+    slack_cfg = _slack_config_from_toml()
+    if slack_cfg is None:
+        return
+    token_ref, user_id = slack_cfg
+    result = subprocess.run(  # noqa: S603
+        ["pass", "show", f"{token_ref}-bot"],  # noqa: S607
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=False,
+    )
+    bot_token = result.stdout.strip() if result.returncode == 0 else ""
+    if not bot_token:
+        return
+    _slack_post_dm(bot_token, user_id, _format_question_text(questions))
+
+
+def handle_mirror_question_to_slack(data: dict) -> bool:
+    if data.get("tool_name") != "AskUserQuestion":
+        return False
+    _post_question_to_slack(data)
+    return False
+
+
 # ── Router ──────────────────────────────────────────────────────────
 
 _HANDLERS: dict[str, list] = {
@@ -703,6 +795,7 @@ _HANDLERS: dict[str, list] = {
         handle_enforce_skill_loading,
         handle_block_direct_commands,
         handle_validate_mr_metadata,
+        handle_mirror_question_to_slack,
     ],
     "PostToolUse": [handle_track_active_repo, handle_track_skill_usage, handle_read_dedup],
     "InstructionsLoaded": [handle_track_skill_usage],
