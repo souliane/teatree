@@ -83,6 +83,16 @@ See [`../e2e/SKILL.md`](../e2e/SKILL.md) (`/t3:e2e`) for the full E2E workflow: 
 - Background polling for pipeline status.
 - Costs no tokens while waiting.
 
+### Docker Coverage Before Push
+
+When the repo's pre-push hook uses `--no-cov` but CI enforces a coverage threshold, run the exact CI command locally before pushing:
+
+```bash
+docker run --rm -v "$PWD":/app:ro -e UV_PROJECT_ENVIRONMENT=/tmp/.venv -e COVERAGE_FILE=/tmp/.coverage teatree-test uv run -p 3.13 pytest --no-header -q -o cache_dir=/tmp/.pytest_cache
+```
+
+If the total is below the CI threshold, add tests before pushing.
+
 ### Green Means Root Cause
 
 "Make the pipeline green" means fix the root cause — not skip, xfail, or `pragma: no cover` the test. Urgency means being faster at diagnosing, not cutting corners. A test that fails on the default branch is pre-existing and reported as such, not silenced.
