@@ -7,6 +7,7 @@ need to extract tokens or branch on platform themselves.
 
 from dataclasses import dataclass
 from functools import lru_cache
+from pathlib import Path
 
 from django.core.exceptions import ImproperlyConfigured
 
@@ -34,6 +35,7 @@ class OverlayBackends:
     overlay: OverlayBase | None = None
     auto_start_assigned_issues: bool = False
     max_concurrent_auto_starts: int = 1
+    external_db: Path | None = None
 
 
 @lru_cache(maxsize=1)
@@ -124,7 +126,8 @@ def _backends_from_toml(already_found: set[str]) -> list[OverlayBackends]:
             continue
         host = _host_from_toml(overlay_cfg)
         messaging = _messaging_from_toml(overlay_cfg)
-        if host is None and messaging is None:
+        db_path = _find_external_db(name, overlay_cfg)
+        if host is None and messaging is None and db_path is None:
             continue
         result.append(
             OverlayBackends(
@@ -133,9 +136,19 @@ def _backends_from_toml(already_found: set[str]) -> list[OverlayBackends]:
                 messaging=messaging,
                 ready_labels=tuple(overlay_cfg.get("ready_labels", ())),
                 exclude_labels=tuple(overlay_cfg.get("exclude_labels", ())),
+                external_db=db_path,
             ),
         )
     return result
+
+
+def _find_external_db(name: str, cfg: dict) -> Path | None:
+    from teatree.loop.scanners.external_tickets import _find_overlay_db  # noqa: PLC0415
+
+    project_path = cfg.get("path", "")
+    if not project_path:
+        return None
+    return _find_overlay_db(name, project_path)
 
 
 def _host_from_toml(cfg: dict) -> CodeHostBackend | None:
