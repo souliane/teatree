@@ -46,8 +46,8 @@ def _find_main_clone() -> Path | None:
     targets the configured main clone.  When unset, fall back to
     ``DoctorService.find_teatree_repo`` (cwd → ``find_project_root``); if
     that returns a worktree, follow its ``.git`` file back to the main clone
-    so setup targets (``uv tool install --editable`` and Claude marketplace
-    registration) land on a stable path.
+    so setup targets (``uv tool install --editable`` and Claude plugin
+    symlink) land on a stable path.
     """
     env_path = os.environ.get("T3_REPO", "")
     if env_path:
@@ -104,30 +104,62 @@ def _run_captured(args: list[str], cwd: Path | None = None) -> CompletedProcess[
     return run_allowed_to_fail(args, cwd=cwd, expected_codes=None)
 
 
-def _register_claude_marketplace(claude_bin: str, repo: Path) -> bool:
-    """Register the teatree repo as a local Claude Code marketplace (idempotent)."""
-    result = _run_captured([claude_bin, "plugin", "marketplace", "add", str(repo)])
-    return result.returncode == 0 or "already" in result.stderr.lower()
-
-
-def _install_claude_plugin(repo: Path, *, scope: str) -> bool:
-    """Register the marketplace and install the t3 plugin via the Claude CLI."""
-    claude_bin = shutil.which("claude")
-    if not claude_bin:
-        typer.echo("WARN  Claude CLI not found — skipping plugin install.")
-        typer.echo("      Install: https://github.com/anthropics/claude-code")
-        return False
-
-    if not _register_claude_marketplace(claude_bin, repo):
-        typer.echo("WARN  Failed to register local marketplace — skipping plugin install.")
-        return False
-
+def _uninstall_marketplace_plugin(claude_bin: str) -> None:
+    """Remove the marketplace-cached plugin if present (replaced by local symlink)."""
     plugin_id = f"{_PLUGIN_NAME}@{_MARKETPLACE_NAME}"
-    result = _run_captured([claude_bin, "plugin", "install", plugin_id, "--scope", scope])
-    if result.returncode != 0:
-        typer.echo(f"WARN  Claude plugin install failed: {result.stderr.strip()}")
+    result = _run_captured([claude_bin, "plugin", "uninstall", plugin_id])
+    if result.returncode == 0:
+        typer.echo(f"OK    Removed stale marketplace plugin {plugin_id}.")
+
+    cache_root = Path.home() / ".claude" / "plugins" / "cache" / _MARKETPLACE_NAME / _PLUGIN_NAME
+    if cache_root.is_dir():
+        shutil.rmtree(cache_root)
+
+
+def _enable_local_plugin(link: Path) -> None:
+    """Ensure the local plugin path is enabled in settings.json."""
+    settings_path = Path.home() / ".claude" / "settings.json"
+    resolved = settings_path.resolve() if settings_path.is_file() else settings_path
+    if resolved.is_file():
+        data = json.loads(resolved.read_text(encoding="utf-8"))
+    else:
+        resolved.parent.mkdir(parents=True, exist_ok=True)
+        data = {}
+    plugins = data.setdefault("enabledPlugins", {})
+    key = str(link)
+    if plugins.get(key) is True:
+        return
+    plugins[key] = True
+    resolved.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+
+def _install_claude_plugin(repo: Path) -> bool:
+    """Link the t3 plugin to the local checkout (always live, no cache)."""
+    plugins_dir = Path.home() / ".claude" / "plugins"
+    plugins_dir.mkdir(parents=True, exist_ok=True)
+    link = plugins_dir / _PLUGIN_NAME
+
+    target = repo.resolve()
+    if link.is_symlink():
+        if link.resolve() == target:
+            typer.echo(f"OK    Plugin symlink already correct: {link} → {repo}")
+        else:
+            link.unlink()
+            link.symlink_to(target)
+            typer.echo(f"OK    Plugin symlink updated: {link} → {repo}")
+    elif link.exists():
+        typer.echo(f"WARN  {link} exists but is not a symlink — skipping plugin link.")
         return False
-    typer.echo(f"OK    Installed {plugin_id} via Claude CLI ({scope} scope).")
+    else:
+        link.symlink_to(target)
+        typer.echo(f"OK    Plugin symlink created: {link} → {repo}")
+
+    _enable_local_plugin(link)
+
+    claude_bin = shutil.which("claude")
+    if claude_bin:
+        _uninstall_marketplace_plugin(claude_bin)
+
     return True
 
 
@@ -144,6 +176,37 @@ def _print_path_hint(bin_dir: Path | None) -> None:
     target = bin_dir or Path.home() / ".local" / "bin"
     typer.echo(f"NOTE  `{target}` is not on your PATH.")
     typer.echo(f'      Add to your shell rc (~/.zshrc or ~/.bashrc): export PATH="{target}:$PATH"')
+
+
+_DRIFT_GUARD_ENV = "_T3_DRIFT_REPAIR_ATTEMPTED"
+
+
+def _check_drift_repairable(repo: Path, missing: list[str]) -> tuple[Path, str] | str:
+    """Check if drift can be auto-repaired.
+
+    Returns ``(source, uv_bin)`` on success, or a warning string on failure.
+    """
+    if os.environ.get(_DRIFT_GUARD_ENV):
+        return (
+            f"WARN  Dep drift repair already attempted but deps still missing: "
+            f"{', '.join(missing)}\n"
+            "      The running t3 may be installed in a different tool env than\n"
+            "      the one being repaired.  Manual fix: `uv tool install --editable "
+            f"{repo} --reinstall`."
+        )
+    source = editable_source_path()
+    if source is None:
+        return (
+            f"WARN  Teatree is missing declared deps: {', '.join(missing)}\n"
+            "      Reinstall: `uv tool upgrade teatree --reinstall`."
+        )
+    uv_bin = shutil.which("uv")
+    if not uv_bin:
+        return (
+            f"WARN  Editable install missing deps ({', '.join(missing)}) but `uv` "
+            "is not on PATH — install uv and re-run `t3 setup`."
+        )
+    return source, uv_bin
 
 
 def _repair_dep_drift(repo: Path) -> bool:
@@ -168,23 +231,12 @@ def _repair_dep_drift(repo: Path) -> bool:
     if not missing:
         return False
 
-    source = editable_source_path()
-    if source is None:
-        typer.echo(
-            f"WARN  Teatree is missing declared deps: {', '.join(missing)}\n"
-            "      Reinstall: `uv tool upgrade teatree --reinstall` "
-            "(or `pip install --upgrade teatree`).",
-        )
+    check = _check_drift_repairable(repo, missing)
+    if isinstance(check, str):
+        typer.echo(check)
         return False
 
-    uv_bin = shutil.which("uv")
-    if not uv_bin:
-        typer.echo(
-            f"WARN  Editable install missing deps ({', '.join(missing)}) but `uv` "
-            "is not on PATH — install uv and re-run `t3 setup`.",
-        )
-        return False
-
+    source, uv_bin = check
     typer.echo(
         f"NOTE  Editable install missing deps: {', '.join(missing)}.  Re-running "
         f"`uv tool install --editable {source} --reinstall` …",
@@ -195,6 +247,7 @@ def _repair_dep_drift(repo: Path) -> bool:
         return False
 
     typer.echo("OK    Reinstalled — restarting `t3 setup` against the refreshed venv.")
+    os.environ[_DRIFT_GUARD_ENV] = "1"
     t3_bin = shutil.which("t3") or sys.argv[0]
     os.execv(t3_bin, [t3_bin, *sys.argv[1:]])  # noqa: S606
     return True  # unreachable — execv replaces the process; here for the type-checker
@@ -414,16 +467,14 @@ def _validate_repo(repo: Path | None) -> Path:
 def run(
     ctx: typer.Context,
     *,
-    claude_scope: str = typer.Option("user", help="Claude plugin install scope: user or project."),
     skip_plugin: bool = typer.Option(False, "--skip-plugin", help="Skip Claude CLI plugin registration."),
 ) -> None:
     """Install and configure teatree skills globally.
 
-    Runs APM dependency install, syncs skill symlinks, and registers the
-    t3 plugin with Claude Code.  Safe to run from a teatree worktree — the
-    main clone is resolved via the worktree's ``.git`` file so the global
-    install stays anchored to a stable path.  Consumers without a local
-    clone can bootstrap via ``apm install -g souliane/teatree``.
+    Runs APM dependency install, syncs skill symlinks, and links the t3
+    plugin into ``~/.claude/plugins/t3``.  Safe to run from a teatree
+    worktree — the main clone is resolved via the worktree's ``.git``
+    file so the global install stays anchored to a stable path.
     """
     if ctx.invoked_subcommand is not None:
         return
@@ -468,7 +519,7 @@ def run(
             typer.echo(f"OK    {label}: removed {broken} broken symlink(s).")
 
     if not skip_plugin:
-        _install_claude_plugin(repo, scope=claude_scope)
+        _install_claude_plugin(repo)
 
     typer.echo("Done.")
 

@@ -13,9 +13,9 @@
 Install teatree, or an overlay (which pulls teatree as a dependency):
 
 ```sh
-uv pip install teatree           # teatree only
-uv pip install t3-acme           # overlay (includes teatree)
-t3 --help
+git clone https://github.com/souliane/teatree && cd teatree
+uv tool install --editable .     # global `t3` binary
+t3 setup                         # links plugin, syncs skills
 ```
 
 ### Work locally on an overlay

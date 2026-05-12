@@ -705,10 +705,8 @@ Usage: t3 setup [OPTIONS] COMMAND [ARGS]...
  First-time setup and global skill management.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --claude-scope        TEXT  Claude plugin install scope: user or project.    │
-│                             [default: user]                                  │
-│ --skip-plugin               Skip Claude CLI plugin registration.             │
-│ --help                      Show this message and exit.                      │
+│ --skip-plugin          Skip Claude CLI plugin registration.                  │
+│ --help                 Show this message and exit.                           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
 │ slack-bot  Register a per-overlay Slack bot and store its tokens via         │

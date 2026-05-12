@@ -276,6 +276,18 @@ class TestFindInstalledClaudePlugin:
             "scope": "user",
         }
 
+    def test_detects_symlink_install(self, tmp_path, monkeypatch):
+        _stage_home(tmp_path, monkeypatch)
+        plugins_dir = tmp_path / ".claude" / "plugins"
+        plugins_dir.mkdir(parents=True)
+        target = tmp_path / "teatree-clone"
+        target.mkdir()
+        (plugins_dir / "t3").symlink_to(target)
+        result = DoctorService.find_installed_claude_plugin()
+        assert result is not None
+        assert result["scope"] == "symlink"
+        assert result["installPath"] == str(target)
+
     def test_returns_none_when_file_missing(self, tmp_path, monkeypatch):
         _stage_home(tmp_path, monkeypatch)
         assert DoctorService.find_installed_claude_plugin() is None

@@ -6,7 +6,14 @@ If the entire `src/` and `tests/` tree were deleted, this document alone — plu
 
 **Change policy:** Every code change to teatree must be reflected here. Before modifying this file, always ask the user for approval — this is the source of truth and the user validates every change.
 
-**Status:** This BLUEPRINT is the **current** architecture under issue [#541](https://github.com/souliane/teatree/issues/541). All phases (0-8) have shipped on the active branch. The statusline file is the persistent UI surface; the HTML dashboard, ttyd web terminal, ASGI/uvicorn scaffolding, and platform autostart helpers are gone; the code-host + messaging Protocols are unified, with `SlackBotBackend`/`NoopMessagingBackend` selectable via overlay config; `t3 setup slack-bot --overlay <name>` walks the user through Slack app registration; the fat loop + 8 scanners + dispatcher are wired through `t3 loop tick` (review-channel scanning is folded into the dispatcher's PR-URL detection); the headless executor is the deliberately-slim `claude -p` swap point for a future Anthropic SDK runtime; and the no-overlay-leak gate keeps the platform tenant-agnostic.
+**Status:** current architecture under [#541](https://github.com/souliane/teatree/issues/541). All phases (0–8) shipped.
+
+- Statusline file is the only persistent UI surface (HTML dashboard, ttyd, ASGI/uvicorn, platform autostart helpers removed)
+- Code-host + messaging Protocols unified: `SlackBotBackend`/`NoopMessagingBackend` selectable via overlay config
+- `t3 setup slack-bot --overlay <name>` walks through Slack app registration
+- Fat loop + 9 scanners + dispatcher wired through `t3 loop tick` (review-channel scanning folded into dispatcher's PR-URL detection)
+- Headless executor is a deliberately slim `claude -p` swap point for a future Anthropic SDK runtime
+- No-overlay-leak grep gate keeps the platform tenant-agnostic
 
 ---
 
@@ -141,6 +148,7 @@ src/teatree/
       generate_*.py     # generate_all_docs / generate_overlay_docs / generate_skill_docs
 
   agents/               # Headless executor runtime
+    handover.py         # Session handover between runtimes (uses TEATREE_CLAUDE_STATUSLINE_STATE_DIR)
     headless.py         # Headless execution via `claude -p` (kept slim — future SDK swap point)
     prompt.py           # System context and task prompt builders
     skill_bundle.py     # Skill dependency resolution for agent launch
@@ -198,7 +206,6 @@ src/teatree/
 
 .claude-plugin/         # Plugin manifest
   plugin.json           # Plugin identity (name: t3)
-  marketplace.json      # Self-hosted marketplace
 agents/                 # Phase sub-agent definitions (orchestrator + 7 phase agents — see §11.2)
 skills/*/               # Workflow skills (SKILL.md + references/)
 hooks/                  # Plugin hooks
@@ -560,11 +567,13 @@ Each tick runs three stages:
 
 #### 5.6.1 Statusline rendering
 
-The statusline is the **only persistent UI surface**. It is written to a file by the loop and read by the statusline hook (`hooks/scripts/statusline.sh`). The hook composes a header line (model, context-window %, 5-hour and 7-day rate-limit usage with color-coded thresholds, loaded skills) from Claude's stdin JSON, then `cat`s the loop's pre-rendered zones file, then chains any extra statusline scripts listed in `[teatree] statusline_chain` (glob patterns resolved to the latest match, interpreter inferred from extension). This decouples render speed from content size.
+The statusline is the **only persistent UI surface**. It is written to a file by the loop and read by the statusline hook (`hooks/scripts/statusline.sh`). The hook composes a header line (model, context-window %, 5-hour and 7-day rate-limit usage with color-coded thresholds, RAM usage, next-tick countdown, and loaded skills) from Claude's stdin JSON and the `tick-meta.json` sidecar, then `cat`s the loop's pre-rendered zones file, then chains any extra statusline scripts listed in `[teatree] statusline_chain` (glob patterns resolved to the latest match, interpreter inferred from extension). This decouples render speed from content size.
+
+**Header line segments:** `model=Opus 4.6 | ctx=42% | 5h=12% | 7d=3% | ram=64% 15.4/24G | tick in 7m | skills: code | review`. All segments are color-coded (green < 80%, yellow 80–94%, red ≥ 95% for percentage-based; dim for labels). The tick countdown is derived from `tick-meta.json` (`next_epoch` and `cadence`), written atomically by each `run_tick()` call alongside the zones file.
 
 **Zones (three, fixed order):**
 
-1. **Anchors** — always shown: active overlay, current ticket (if any), branch, last-tick timestamp, context-window usage.
+1. **Anchors** — always shown: active overlay, current ticket (if any), branch, context-window usage.
 2. **Action needed** — items requiring my attention this tick: failing pipelines on my PRs, mentions and DMs the loop couldn't auto-handle, PRs with new pushes since my last review, new assigned issues awaiting kickoff.
 3. **In flight** — what the loop is doing: PR sweeps in progress, headless tasks claimed, current `/loop` cadence and tick count.
 
@@ -796,14 +805,15 @@ Implementations: `GitHubSyncBackend` (`backends/github_sync.py`), `GitLabSyncBac
 
 ---
 
-## 8. Three-Tier Command Split
+## 8. Command Tiers
 
 | Tier | Tool | Needs Django? | Examples |
 |------|------|---------------|----------|
 | Runtime commands | django-typer management commands | Yes | `worktree provision`, `tasks work-next-sdk`, `followup refresh` |
 | Bootstrap commands | Typer CLI (`t3`) | No | `t3 startoverlay`, `t3 info`, `t3 ci cancel` |
 | Overlay commands | Typer CLI delegating to manage.py | Via subprocess | `t3 acme start-ticket`, `t3 acme worktree start` |
-| Internal utilities | Python modules in `utils/` | No | Port allocation, git helpers, DB ops |
+
+Internal utilities (`utils/`) — port allocation, git helpers, DB ops — are Python modules, not CLI-facing commands. They underpin all three tiers but are not a tier themselves.
 
 ### 8.1 Management Commands (django-typer)
 
@@ -901,46 +911,56 @@ Refuses to run in the main clone (detected via a real `.git` directory). Tests i
 
 ### 8.6 Teatree Source Resolution in Overlay Projects
 
-Overlay projects depend on `teatree` as a Python package. The `[tool.uv.sources]` entry controls where uv resolves it:
+Overlay projects depend on `teatree` as a Python package. The `[tool.uv.sources]` entry in `pyproject.toml` always points to a **local relative path**:
 
-| Mode | `[tool.uv.sources]` value | When |
-|------|--------------------------|------|
-| **CI / non-contributor** | `teatree = { git = "...teatree.git", rev = "<SHA>" }` | Default committed state. Deterministic, pinned to a tested SHA. |
-| **Local dev / WIP testing** | `teatree = { path = "../../souliane/teatree", editable = true }` | Testing unreleased teatree + overlay changes together. |
-
-**Switching between modes** uses `git update-index --skip-worktree pyproject.toml`:
-
-```bash
-# Enable editable mode (local dev):
-# 1. Edit pyproject.toml: teatree = { path = "../../souliane/teatree", editable = true }
-# 2. Protect from commits:
-git update-index --skip-worktree pyproject.toml
-uv lock && uv sync
-
-# Disable editable mode (back to CI state):
-git update-index --no-skip-worktree pyproject.toml
-git checkout pyproject.toml
-uv lock && uv sync
+```toml
+[tool.uv.sources]
+teatree = { path = "../../souliane/teatree", editable = true }
 ```
 
-**Auto-detection:** When `contribute = true` in `~/.teatree.toml`, the CLI bootstrap (`_ensure_editable_if_contributing()`) detects non-editable teatree installs and auto-fixes them via `DoctorService.make_editable()`. This handles the common case where a contributor clones fresh.
+This is the committed default — no SHA pinning, no mode switching.
 
-**Bumping the pinned SHA:** When teatree ships new features needed by the overlay, update the committed `rev` to the latest teatree main SHA:
+**Local dev:** teatree is already checked out at the expected relative path (`../../souliane/teatree` from the overlay project root). `uv sync` resolves it as an editable install. Changes to teatree code are immediately visible without re-installing.
+
+**CI:** the overlay's CI workflow clones teatree at the same relative path before `uv sync`:
+
+```yaml
+# .github/workflows/ci.yml — add to every job, before setup-uv
+- uses: actions/checkout@v6
+  with:
+    repository: souliane/teatree
+    path: teatree-upstream
+- run: mkdir -p ../../souliane && ln -s "$GITHUB_WORKSPACE/teatree-upstream" ../../souliane/teatree
+```
+
+CI always tests against teatree's latest `main`. There is no pinned SHA to bump — overlay CI tracks teatree head, and local dev uses whatever is checked out locally.
+
+**Picking up new teatree changes (local):**
 
 ```bash
-cd <overlay-project>
-# Get latest teatree main SHA:
-TEATREE_SHA=$(git -C ../../souliane/teatree rev-parse origin/main)
-# Update pyproject.toml rev, re-lock, commit:
-sed -i '' "s/rev = \".*\"/rev = \"$TEATREE_SHA\"/" pyproject.toml
-uv lock && git add pyproject.toml uv.lock && git commit -m "chore(deps): bump teatree to ${TEATREE_SHA:0:7}"
+cd ../../souliane/teatree && git pull
+cd - && uv lock && uv sync
 ```
+
+If `uv.lock` changes because teatree's dependencies shifted, commit the lock file.
+
+**Why not a git rev pin?**
+
+The previous approach (`teatree = { git = "...", rev = "<SHA>" }` committed, `skip-worktree` locally) caused persistent friction:
+
+- The SHA went stale within days, requiring manual bumps.
+- `skip-worktree` / `assume-unchanged` flags were invisible and easy to forget, leading to accidental commits of local paths or accidental reversions to stale SHAs.
+- `t3 doctor make_editable()` existed to auto-fix but wasn't reliably triggered.
+- Debugging "which teatree version is this?" required checking both the committed SHA and the local override state.
+
+The local-path-first approach eliminates all of these. CI clones fresh on every run, so determinism comes from the CI workflow (always `main` HEAD), not from a pinned SHA that drifts.
 
 **Pitfalls:**
 
 - `path = "."` is wrong — it points at the overlay itself, causing a name mismatch error.
 - `pyproject-fmt` may reformat the source entry — verify after running pre-commit.
-- After bumping the SHA, restore skip-worktree if using editable mode locally.
+- The relative path `../../souliane/teatree` assumes the standard workspace layout where both repos live under the same parent. Adjust if the layout differs.
+- For private overlays on GitHub Actions, the teatree checkout step needs no extra auth (teatree is public). For private teatree forks, add a PAT to the checkout step.
 
 ---
 
@@ -1179,7 +1199,7 @@ Attribution: the `rules` skill's "Invoke Skills Before ANY Response" and "Verifi
 
 ### 11.2 Sub-Agent Architecture
 
-Eight phase agents live in `agents/` (the plugin directory, shipped via APM and `/plugin install`). Each is a thin YAML+description wrapper that references skills via `skills:` frontmatter — no content duplication. Phase agents are invoked via the standard Task tool by lifecycle skills, by the headless executor (§ 5.2) when a phase task is claimed, and by the loop tick (§ 5.6) when a scanner signal calls for agent judgment.
+Eight phase agents live in `agents/` (the plugin directory, shipped as part of the local clone, loaded via symlink). Each is a thin YAML+description wrapper that references skills via `skills:` frontmatter — no content duplication. Phase agents are invoked via the standard Task tool by lifecycle skills, by the headless executor (§ 5.2) when a phase task is claimed, and by the loop tick (§ 5.6) when a scanner signal calls for agent judgment.
 
 | Agent | Skills | Role |
 |-------|--------|------|
@@ -1192,17 +1212,16 @@ Eight phase agents live in `agents/` (the plugin directory, shipped via APM and 
 | `debugger` | rules, workspace, debug | Troubleshooting and fixes |
 | `followup` | rules, platforms, followup | PR/issue sync and reminders |
 
-The loop ships no additional agents — its scanners (§ 5.6) are pure Python, and its dispatch stage delegates to these same eight agents. This keeps the agent surface small enough to audit and works identically whether teatree is installed editable, via `pip install`, or via `uv tool install`.
+The loop ships no additional agents — its scanners (§ 5.6) are pure Python, and its dispatch stage delegates to these same eight agents. This keeps the agent surface small enough to audit and works identically whether teatree is installed editable or via `uv tool install`.
 
 Interactive-only skills (no agent): `retro`, `next`, `contribute`, `setup`.
 
 ### 11.3 Distribution
 
-Three install paths, one source of truth:
+Two install paths, one source of truth:
 
 - **APM**: `apm install souliane/teatree` — deploys to any supported agent
-- **Claude Code plugin**: `/plugin install t3@souliane-teatree` — Claude-specific
-- **CLI-first**: `uv tool install teatree && t3 setup` — bootstraps from Python (runs APM install, syncs skill symlinks, and registers the Claude plugin in one step). `t3 setup` also auto-runs `uv tool install --editable <repo>` when the global `t3` binary is missing, so `uv run t3 setup` from a fresh checkout upgrades itself in-place. On every run it additionally reads `[project].dependencies` from the resolved main clone, compares against `importlib.metadata.distributions()`, and — when an editable install is missing a declared dep — re-runs `uv tool install --editable <source> --reinstall` and `execv`-restarts itself against the refreshed venv (see `teatree.utils.dep_drift` and `cli/setup.py:_repair_dep_drift`). Closes the catch-22 where adding a new top-level teatree dep used to break every existing editable install until the user manually reinstalled.
+- **CLI-first**: `git clone … && uv tool install --editable . && t3 setup` — bootstraps from a local clone (runs APM install, syncs skill symlinks, and creates the plugin symlink `~/.claude/plugins/t3 → <clone>` in one step). `t3 setup` also auto-runs `uv tool install --editable <repo>` when the global `t3` binary is missing, so `uv run t3 setup` from a fresh checkout upgrades itself in-place. On every run it additionally reads `[project].dependencies` from the resolved main clone, compares against `importlib.metadata.distributions()`, and — when an editable install is missing a declared dep — re-runs `uv tool install --editable <source> --reinstall` and `execv`-restarts itself against the refreshed venv (see `teatree.utils.dep_drift` and `cli/setup.py:_repair_dep_drift`). Closes the catch-22 where adding a new top-level teatree dep used to break every existing editable install until the user manually reinstalled.
 
 The agent-facing hook layer (`hooks/scripts/hook_router.py`) blocks `uv run t3` Bash invocations and directs agents to call the globally installed `t3` instead.
 
