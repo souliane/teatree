@@ -27,16 +27,6 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "AskUserQuestion",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/hook_router.py --event PreToolUse",
-            "timeout": 8
-          }
-        ]
-      },
-      {
         "matcher": "Bash|Edit|Write",
         "hooks": [
           {
@@ -48,6 +38,16 @@
       }
     ],
     "PostToolUse": [
+      {
+        "matcher": "AskUserQuestion",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/hook_router.py --event PostToolUse",
+            "timeout": 8
+          }
+        ]
+      },
       {
         "matcher": "Bash|Write|Edit|Read|Grep|Glob",
         "hooks": [
