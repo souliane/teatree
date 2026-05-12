@@ -177,13 +177,15 @@ if [ -r "$_tick_meta" ] && command -v jq >/dev/null 2>&1; then
         _diff=$(( _next_epoch - _now ))
         _overdue=$(( -_diff ))
         if (( _diff > 0 && _diff < 60 )); then
-            _tick_label="${_DIM}tick in ${_diff}s${_RST}"
+            _tick_label="${_CYN}tick${_RST}${_DIM}→${_diff}s${_RST}"
+        elif (( _diff > 0 && _diff < 120 )); then
+            _tick_label="${_YLW}tick${_RST}${_DIM}→$(( _diff / 60 ))m${_RST}"
         elif (( _diff > 0 )); then
-            _tick_label="${_DIM}tick in $(( _diff / 60 ))m${_RST}"
+            _tick_label="${_GRN}tick${_RST}${_DIM}→$(( _diff / 60 ))m${_RST}"
         elif (( _overdue > _tick_cadence * 2 )); then
-            _tick_label="${_RED}loop stale${_RST}"
+            _tick_label="${_RED}tick stale${_RST}"
         else
-            _tick_label="${_DIM}tick now${_RST}"
+            _tick_label="${_CYN}tick now${_RST}"
         fi
         header="${header}${sep}${_tick_label}"
     fi
