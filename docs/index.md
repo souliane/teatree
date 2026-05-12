@@ -26,7 +26,7 @@ Two surfaces sit on top:
 
 ```bash
 # Install teatree
-pip install teatree   # or: uv add teatree
+git clone https://github.com/souliane/teatree && cd teatree && uv tool install --editable . && t3 setup
 
 # Create an overlay package for your project
 t3 startoverlay my-overlay ~/workspace/my-overlay

@@ -206,7 +206,6 @@ src/teatree/
 
 .claude-plugin/         # Plugin manifest
   plugin.json           # Plugin identity (name: t3)
-  marketplace.json      # Self-hosted marketplace
 agents/                 # Phase sub-agent definitions (orchestrator + 7 phase agents — see §11.2)
 skills/*/               # Workflow skills (SKILL.md + references/)
 hooks/                  # Plugin hooks
@@ -1198,7 +1197,7 @@ Attribution: the `rules` skill's "Invoke Skills Before ANY Response" and "Verifi
 
 ### 11.2 Sub-Agent Architecture
 
-Eight phase agents live in `agents/` (the plugin directory, shipped via APM and `/plugin install`). Each is a thin YAML+description wrapper that references skills via `skills:` frontmatter — no content duplication. Phase agents are invoked via the standard Task tool by lifecycle skills, by the headless executor (§ 5.2) when a phase task is claimed, and by the loop tick (§ 5.6) when a scanner signal calls for agent judgment.
+Eight phase agents live in `agents/` (the plugin directory, shipped as part of the local clone, loaded via symlink). Each is a thin YAML+description wrapper that references skills via `skills:` frontmatter — no content duplication. Phase agents are invoked via the standard Task tool by lifecycle skills, by the headless executor (§ 5.2) when a phase task is claimed, and by the loop tick (§ 5.6) when a scanner signal calls for agent judgment.
 
 | Agent | Skills | Role |
 |-------|--------|------|
@@ -1211,17 +1210,16 @@ Eight phase agents live in `agents/` (the plugin directory, shipped via APM and 
 | `debugger` | rules, workspace, debug | Troubleshooting and fixes |
 | `followup` | rules, platforms, followup | PR/issue sync and reminders |
 
-The loop ships no additional agents — its scanners (§ 5.6) are pure Python, and its dispatch stage delegates to these same eight agents. This keeps the agent surface small enough to audit and works identically whether teatree is installed editable, via `pip install`, or via `uv tool install`.
+The loop ships no additional agents — its scanners (§ 5.6) are pure Python, and its dispatch stage delegates to these same eight agents. This keeps the agent surface small enough to audit and works identically whether teatree is installed editable or via `uv tool install`.
 
 Interactive-only skills (no agent): `retro`, `next`, `contribute`, `setup`.
 
 ### 11.3 Distribution
 
-Three install paths, one source of truth:
+Two install paths, one source of truth:
 
 - **APM**: `apm install souliane/teatree` — deploys to any supported agent
-- **Claude Code plugin**: `/plugin install t3@souliane-teatree` — Claude-specific
-- **CLI-first**: `uv tool install teatree && t3 setup` — bootstraps from Python (runs APM install, syncs skill symlinks, and registers the Claude plugin in one step). `t3 setup` also auto-runs `uv tool install --editable <repo>` when the global `t3` binary is missing, so `uv run t3 setup` from a fresh checkout upgrades itself in-place. On every run it additionally reads `[project].dependencies` from the resolved main clone, compares against `importlib.metadata.distributions()`, and — when an editable install is missing a declared dep — re-runs `uv tool install --editable <source> --reinstall` and `execv`-restarts itself against the refreshed venv (see `teatree.utils.dep_drift` and `cli/setup.py:_repair_dep_drift`). Closes the catch-22 where adding a new top-level teatree dep used to break every existing editable install until the user manually reinstalled.
+- **CLI-first**: `git clone … && uv tool install --editable . && t3 setup` — bootstraps from a local clone (runs APM install, syncs skill symlinks, and creates the plugin symlink `~/.claude/plugins/t3 → <clone>` in one step). `t3 setup` also auto-runs `uv tool install --editable <repo>` when the global `t3` binary is missing, so `uv run t3 setup` from a fresh checkout upgrades itself in-place. On every run it additionally reads `[project].dependencies` from the resolved main clone, compares against `importlib.metadata.distributions()`, and — when an editable install is missing a declared dep — re-runs `uv tool install --editable <source> --reinstall` and `execv`-restarts itself against the refreshed venv (see `teatree.utils.dep_drift` and `cli/setup.py:_repair_dep_drift`). Closes the catch-22 where adding a new top-level teatree dep used to break every existing editable install until the user manually reinstalled.
 
 The agent-facing hook layer (`hooks/scripts/hook_router.py`) blocks `uv run t3` Bash invocations and directs agents to call the globally installed `t3` instead.
 

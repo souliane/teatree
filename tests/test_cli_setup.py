@@ -13,11 +13,11 @@ import pytest
 from teatree.cli.setup import (
     CORE_EXCLUDED_SKILLS,
     _clean_broken_symlinks,
+    _enable_local_plugin,
     _ensure_skill_link,
     _ensure_t3_installed,
     _find_main_clone,
     _install_claude_plugin,
-    _register_claude_marketplace,
     _remove_excluded_skills,
     _repair_dep_drift,
     _run_apm_install,
@@ -117,64 +117,90 @@ class TestRunApmInstall:
             assert args[0][0] == ["/usr/bin/apm", "install", "-g", "--target", "claude"]
 
 
-class TestRegisterClaudeMarketplace:
-    def test_returns_true_on_success(self, tmp_path: Path) -> None:
-        with patch("subprocess.run") as mock_run:
-            mock_run.return_value.returncode = 0
-            mock_run.return_value.stderr = ""
-            assert _register_claude_marketplace("/usr/bin/claude", tmp_path) is True
+class TestEnableLocalPlugin:
+    def test_adds_plugin_to_settings(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: tmp_path))
+        claude_dir = tmp_path / ".claude"
+        claude_dir.mkdir()
+        settings = claude_dir / "settings.json"
+        settings.write_text(json.dumps({"key": "value"}))
+        link = tmp_path / "plugins" / "t3"
 
-    def test_treats_already_registered_as_success(self, tmp_path: Path) -> None:
-        with patch("subprocess.run") as mock_run:
-            mock_run.return_value.returncode = 1
-            mock_run.return_value.stderr = "marketplace already added"
-            assert _register_claude_marketplace("/usr/bin/claude", tmp_path) is True
+        _enable_local_plugin(link)
 
-    def test_returns_false_on_other_failure(self, tmp_path: Path) -> None:
-        with patch("subprocess.run") as mock_run:
-            mock_run.return_value.returncode = 1
-            mock_run.return_value.stderr = "permission denied"
-            assert _register_claude_marketplace("/usr/bin/claude", tmp_path) is False
+        data = json.loads(settings.read_text())
+        assert data["enabledPlugins"][str(link)] is True
+
+    def test_noop_when_already_enabled(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: tmp_path))
+        claude_dir = tmp_path / ".claude"
+        claude_dir.mkdir()
+        link = tmp_path / "plugins" / "t3"
+        settings = claude_dir / "settings.json"
+        settings.write_text(json.dumps({"enabledPlugins": {str(link): True}}))
+        mtime_before = settings.stat().st_mtime
+
+        _enable_local_plugin(link)
+
+        assert settings.stat().st_mtime == mtime_before
+
+    def test_noop_when_no_settings_file(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: tmp_path))
+        _enable_local_plugin(tmp_path / "plugins" / "t3")  # should not raise
 
 
 class TestInstallClaudePlugin:
-    def test_skips_when_claude_missing(self, tmp_path: Path) -> None:
-        with patch("shutil.which", return_value=None):
-            assert _install_claude_plugin(tmp_path, scope="user") is False
+    def test_creates_symlink(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: tmp_path))
+        repo = tmp_path / "teatree-clone"
+        repo.mkdir()
+        with patch("teatree.cli.setup.shutil.which", return_value=None):
+            assert _install_claude_plugin(repo) is True
+        link = tmp_path / ".claude" / "plugins" / "t3"
+        assert link.is_symlink()
+        assert link.resolve() == repo.resolve()
 
-    def test_returns_false_when_marketplace_fails(self, tmp_path: Path) -> None:
+    def test_updates_stale_symlink(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: tmp_path))
+        plugins_dir = tmp_path / ".claude" / "plugins"
+        plugins_dir.mkdir(parents=True)
+        link = plugins_dir / "t3"
+        old_target = tmp_path / "old-clone"
+        old_target.mkdir()
+        link.symlink_to(old_target)
+
+        new_repo = tmp_path / "new-clone"
+        new_repo.mkdir()
+        with patch("teatree.cli.setup.shutil.which", return_value=None):
+            assert _install_claude_plugin(new_repo) is True
+        assert link.resolve() == new_repo.resolve()
+
+    def test_uninstalls_marketplace_version(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: tmp_path))
+        repo = tmp_path / "teatree-clone"
+        repo.mkdir()
+
+        completed = SimpleNamespace(returncode=0, stdout="", stderr="")
         with (
-            patch("shutil.which", return_value="/usr/bin/claude"),
-            patch("subprocess.run") as mock_run,
+            patch("teatree.cli.setup.shutil.which", return_value="/usr/bin/claude"),
+            patch("teatree.cli.setup._run_captured", return_value=completed) as mock_run,
         ):
-            mock_run.return_value.returncode = 1
-            mock_run.return_value.stderr = "boom"
-            assert _install_claude_plugin(tmp_path, scope="user") is False
+            _install_claude_plugin(repo)
 
-    def test_installs_via_claude_cli(self, tmp_path: Path) -> None:
-        with (
-            patch("shutil.which", return_value="/usr/bin/claude"),
-            patch("subprocess.run") as mock_run,
-        ):
-            mock_run.return_value.returncode = 0
-            mock_run.return_value.stderr = ""
-            assert _install_claude_plugin(tmp_path, scope="user") is True
-            assert mock_run.call_count == 2  # marketplace add + plugin install
+        uninstall_calls = [c for c in mock_run.call_args_list if "uninstall" in c.args[0]]
+        assert len(uninstall_calls) == 1
+        assert "t3@souliane" in uninstall_calls[0].args[0]
 
-    def test_returns_false_when_plugin_install_fails(self, tmp_path: Path) -> None:
-        from subprocess import CompletedProcess  # noqa: PLC0415
+    def test_returns_false_for_non_symlink_path(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: tmp_path))
+        plugins_dir = tmp_path / ".claude" / "plugins"
+        plugins_dir.mkdir(parents=True)
+        (plugins_dir / "t3").mkdir()  # regular dir, not symlink
 
-        with (
-            patch("shutil.which", return_value="/usr/bin/claude"),
-            patch(
-                "subprocess.run",
-                side_effect=[
-                    CompletedProcess(args=[], returncode=0, stderr=""),
-                    CompletedProcess(args=[], returncode=1, stderr="install failed"),
-                ],
-            ),
-        ):
-            assert _install_claude_plugin(tmp_path, scope="user") is False
+        repo = tmp_path / "teatree-clone"
+        repo.mkdir()
+        with patch("teatree.cli.setup.shutil.which", return_value=None):
+            assert _install_claude_plugin(repo) is False
 
 
 class TestStripApmHooks:
@@ -512,7 +538,7 @@ class TestSetupSyncsCodexWhenDirExists:
             mock_load.return_value.user.contribute = False
             mock_load.return_value.user.excluded_skills = []
             mock_load.return_value.user.workspace_dir = str(tmp_path / "workspace")
-            setup_module.run(SimpleNamespace(invoked_subcommand=None), claude_scope="user", skip_plugin=True)
+            setup_module.run(SimpleNamespace(invoked_subcommand=None), skip_plugin=True)
 
         assert not (claude_skills / "code").exists()
         assert (codex_skills / "code").is_symlink()
@@ -555,7 +581,7 @@ class TestSetupSyncsCodexWhenDirExists:
             mock_load.return_value.user.contribute = False
             mock_load.return_value.user.excluded_skills = []
             mock_load.return_value.user.workspace_dir = str(tmp_path / "workspace")
-            setup_module.run(SimpleNamespace(invoked_subcommand=None), claude_scope="user", skip_plugin=True)
+            setup_module.run(SimpleNamespace(invoked_subcommand=None), skip_plugin=True)
 
         assert not (claude_skills / "code").exists()
 
@@ -591,7 +617,7 @@ class TestSetupSyncsCodexWhenDirExists:
             mock_load.return_value.user.contribute = False
             mock_load.return_value.user.excluded_skills = []
             mock_load.return_value.user.workspace_dir = str(tmp_path / "workspace")
-            setup_module.run(SimpleNamespace(invoked_subcommand=None), claude_scope="user", skip_plugin=True)
+            setup_module.run(SimpleNamespace(invoked_subcommand=None), skip_plugin=True)
 
         assert not (home / ".codex").exists()
 
