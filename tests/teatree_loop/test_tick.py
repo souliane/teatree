@@ -340,7 +340,7 @@ def test_active_tickets_shown_in_anchors() -> None:
     assert "[acme]" in anchor_texts[0]
 
 
-def test_mechanical_actions_shown_in_inflight() -> None:
+def test_mechanical_actions_not_rendered_in_statusline() -> None:
     from teatree.loop.dispatch import DispatchAction  # noqa: PLC0415
     from teatree.loop.tick import _zones_for  # noqa: PLC0415
 
@@ -351,7 +351,7 @@ def test_mechanical_actions_shown_in_inflight() -> None:
     ]
     zones = _zones_for(actions)
     texts = [e if isinstance(e, str) else e.text for e in zones.in_flight]
-    assert any("⚙" in t and "Ticket 42 done" in t for t in texts)
+    assert not any("Ticket 42 done" in t for t in texts)
 
 
 def test_agent_actions_not_rendered_in_statusline() -> None:
