@@ -6,8 +6,10 @@ testing lives here as plain Python.
 """
 
 import datetime as dt
+import json
 import logging
 import os
+import tomllib
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -475,10 +477,9 @@ def _ignore_disposed_ticket(payload: ActionPayload) -> None:
     if ticket_id is None:
         return
     ticket = ticket_model.objects.get(pk=ticket_id)
-    if hasattr(ticket, "ignore"):
-        ticket.ignore()
-        ticket.save()
-        logger.info("Auto-ignored ticket %s (reason: %s)", ticket_id, payload.get("reason", "?"))
+    ticket.ignore()
+    ticket.save()
+    logger.info("Auto-ignored ticket %s (reason: %s)", ticket_id, payload.get("reason", "?"))
 
 
 def _complete_ticket(payload: ActionPayload) -> None:
@@ -536,8 +537,6 @@ def _repo_freshness(repo_path: Path) -> dict[str, int | str] | None:
 
 
 def _collect_repo_freshness() -> dict[str, dict[str, int | str]]:
-    import tomllib  # noqa: PLC0415
-
     repos: dict[str, Path] = {}
     t3_repo = os.environ.get("T3_REPO")
     if t3_repo:
@@ -565,8 +564,6 @@ def _write_tick_meta(started_at: dt.datetime, *, target: Path | None = None) -> 
     meta_path = (target or default_path()).with_name("tick-meta.json")
     cadence = int(os.environ.get("T3_LOOP_CADENCE", "720") or "720")
     next_epoch = int(started_at.timestamp()) + cadence
-    import json  # noqa: PLC0415
-
     freshness = _collect_repo_freshness()
     meta_path.write_text(
         json.dumps({"next_epoch": next_epoch, "cadence": cadence, "freshness": freshness}) + "\n",

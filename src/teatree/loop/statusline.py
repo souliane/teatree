@@ -109,7 +109,7 @@ def render(zones: StatuslineZones, *, target: Path | None = None, colorize: bool
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(body)
         Path(tmp_path).replace(target)
-    except Exception:
+    except BaseException:
         tmp_path.unlink(missing_ok=True)
         raise
 
