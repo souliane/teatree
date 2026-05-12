@@ -67,6 +67,7 @@ src/teatree/
   __init__.py
   __main__.py
   _overlay_api.py       # __overlay_api_version__ pin + import-time guard for overlays
+  paths.py              # XDG-compliant DATA_DIR + get_data_dir (leaf module, no deps)
   config.py             # ~/.teatree.toml parsing, overlay discovery, UserSettings
   settings.py           # Django settings — auto-discovers overlay apps from entry points
   identity.py           # User identity + agent_signature suffix policy
@@ -1647,12 +1648,14 @@ Dev dependencies: ruff, pytest, pytest-cov, pytest-django, ty, import-linter, pr
 
 ```mermaid
 graph TD
+    teatree.config --> teatree.paths
     teatree.config --> teatree.utils
-    teatree.utils --> teatree.config
+    teatree.utils --> teatree.paths
     teatree.timeouts --> teatree.config
     teatree.skill_loading --> teatree.types
     teatree.skill_loading --> teatree.utils
     teatree.core --> teatree.types
+    teatree.core --> teatree.paths
     teatree.core --> teatree.config
     teatree.core --> teatree.utils
     teatree.core --> teatree.timeouts
@@ -1669,6 +1672,7 @@ graph TD
     teatree.contrib --> teatree.core
     teatree.contrib --> teatree.config
     teatree.contrib --> teatree.utils
+    teatree.cli --> teatree.paths
     teatree.cli --> teatree.config
     teatree.cli --> teatree.core
     teatree.cli --> teatree.agents
@@ -1678,6 +1682,7 @@ graph TD
     teatree.cli --> teatree.claude_sessions
     teatree.cli --> teatree.overlay_init
     teatree.cli --> teatree.utils
+    teatree.paths
     teatree.types
     teatree.templates
     teatree.claude_sessions

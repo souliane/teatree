@@ -11,7 +11,6 @@ import logging
 import shutil
 from subprocess import CompletedProcess
 
-from teatree.config import load_config
 from teatree.utils.run import run_allowed_to_fail, run_checked
 
 logger = logging.getLogger(__name__)
@@ -21,9 +20,7 @@ IMAGE = "redis:7-alpine"
 HOST_PORT = 6379
 
 
-def redis_db_count() -> int:
-    """Return the number of Redis DB slots (``~/.teatree.toml``, default 16)."""
-    return load_config().user.redis_db_count
+DEFAULT_DB_COUNT = 16
 
 
 def _docker() -> str:
@@ -50,7 +47,7 @@ def status() -> str:
     return result.stdout.strip() or "missing"
 
 
-def ensure_running() -> None:
+def ensure_running(db_count: int = DEFAULT_DB_COUNT) -> None:
     """Start the shared Redis container if not already running."""
     current = status()
     if current == "running":
@@ -69,7 +66,7 @@ def ensure_running() -> None:
             IMAGE,
             "redis-server",
             "--databases",
-            str(redis_db_count()),
+            str(db_count),
         )
         return
     logger.info("Starting existing %s container (status=%s)", CONTAINER_NAME, current)
@@ -83,13 +80,13 @@ def stop() -> None:
     _docker_tolerant("stop", CONTAINER_NAME)
 
 
-def flushdb(index: int) -> None:
+def flushdb(index: int, db_count: int = DEFAULT_DB_COUNT) -> None:
     """FLUSHDB on the given Redis DB index.
 
     Called when a ticket releases its slot so the next ticket to grab the
     slot starts with a clean cache/queue.
     """
-    count = redis_db_count()
+    count = db_count
     if not 0 <= index < count:
         msg = f"redis db index {index} out of range 0..{count - 1}"
         raise ValueError(msg)

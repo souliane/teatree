@@ -1,6 +1,6 @@
 """Tests for `t3 infra redis {up,down,status}` CLI."""
 
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 import pytest
 from typer.testing import CliRunner
@@ -29,7 +29,7 @@ class TestInfraRedisUp:
         ):
             result = runner.invoke(infra_app, ["redis", "up"])
         assert result.exit_code == 0
-        mock_up.assert_called_once_with()
+        mock_up.assert_called_once_with(db_count=ANY)
 
 
 class TestInfraRedisDown:

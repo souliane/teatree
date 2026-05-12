@@ -2,6 +2,7 @@
 
 import typer
 
+from teatree.config import load_config
 from teatree.utils import redis_container
 
 infra_app = typer.Typer(no_args_is_help=True, help="Teatree-wide infrastructure services.")
@@ -13,7 +14,7 @@ infra_app.add_typer(redis_app, name="redis")
 @redis_app.command(name="up")
 def redis_up() -> None:
     """Start the shared Redis container (idempotent)."""
-    redis_container.ensure_running()
+    redis_container.ensure_running(db_count=load_config().user.redis_db_count)
     typer.echo(f"{redis_container.CONTAINER_NAME}: {redis_container.status()}")
 
 
