@@ -1,6 +1,6 @@
 """``NoopMessagingBackend`` — default for overlays that don't declare a chat backend."""
 
-from teatree.core.sync import RawAPIDict
+from teatree.types import RawAPIDict
 
 
 class NoopMessagingBackend:

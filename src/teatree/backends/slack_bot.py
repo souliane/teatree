@@ -14,7 +14,7 @@ from typing import cast
 
 import httpx
 
-from teatree.core.sync import RawAPIDict
+from teatree.types import RawAPIDict
 
 type SlackPayload = dict[str, object]
 

@@ -20,7 +20,7 @@ from teatree.core.models.types import TicketExtra, VisualQASummary
 from teatree.core.orphan_guard import BranchStatus, classify_branch
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.runners.ship import overlay_pr_labels, sanitize_close_keywords
-from teatree.core.sync import RawAPIDict
+from teatree.types import RawAPIDict
 from teatree.utils import git
 
 

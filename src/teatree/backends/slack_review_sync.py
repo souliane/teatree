@@ -7,7 +7,7 @@ import httpx
 from teatree.backends.slack import SlackReviewSearchRequest, search_review_permalinks
 from teatree.core.models import Ticket
 from teatree.core.overlay_loader import get_overlay
-from teatree.core.sync import SyncResult
+from teatree.types import SyncResult
 
 logger = logging.getLogger(__name__)
 

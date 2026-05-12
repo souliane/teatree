@@ -5,7 +5,7 @@ from urllib.parse import urlparse
 from teatree.backends import gitlab_api as _gitlab_api
 from teatree.backends.gitlab_api import GitLabAPI, ProjectInfo
 from teatree.backends.protocols import PullRequestSpec
-from teatree.core.sync import RawAPIDict
+from teatree.types import RawAPIDict
 
 _ISSUE_URL_RE = re.compile(r"^/(?P<path>.+?)/-/issues/(?P<iid>\d+)/?$")
 
