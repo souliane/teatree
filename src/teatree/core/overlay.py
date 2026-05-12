@@ -78,8 +78,7 @@ class OverlayConfig:
     code_host: str = ""
     """Selects the CodeHostBackend implementation: ``"github"``, ``"gitlab"``, or ``""``.
 
-    Empty falls back to whichever token the config exposes — legacy behaviour
-    preserved for overlays that predate the explicit field.
+    Empty falls back to whichever token the config exposes.
     """
     messaging_backend: str = "noop"
     """Selects the MessagingBackend implementation: ``"slack"`` or ``"noop"`` (default)."""

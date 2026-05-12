@@ -1,0 +1,167 @@
+"""Tests for ``t3 slack listen`` and ``t3 slack status`` CLI commands."""
+
+import os
+from pathlib import Path
+from unittest.mock import patch
+
+from typer.testing import CliRunner
+
+from teatree.cli.slack_listen import _pid_alive, _resolve_overlays, slack_app
+
+runner = CliRunner()
+
+
+class TestPidAlive:
+    def test_current_process_is_alive(self) -> None:
+        assert _pid_alive(os.getpid()) is True
+
+    def test_nonexistent_pid_is_dead(self) -> None:
+        assert _pid_alive(999999999) is False
+
+
+class TestResolveOverlays:
+    def test_returns_empty_when_no_config(self, tmp_path: Path, monkeypatch) -> None:
+        monkeypatch.setattr("teatree.cli.slack_listen.Path.home", lambda: tmp_path)
+        assert _resolve_overlays("") == []
+
+    def test_reads_overlays_from_toml(self, tmp_path: Path, monkeypatch) -> None:
+        config = tmp_path / ".teatree.toml"
+        config.write_text(
+            '[overlays.myapp]\nmessaging_backend = "slack"\nslack_token_ref = "test/ref"\n',
+            encoding="utf-8",
+        )
+        monkeypatch.setattr("teatree.cli.slack_listen.Path.home", lambda: tmp_path)
+        with patch("teatree.cli.slack_listen.read_pass", side_effect=["xoxb-bot", "xapp-app"]):
+            result = _resolve_overlays("")
+
+        assert len(result) == 1
+        assert result[0][0] == "myapp"
+
+    def test_skips_non_slack_overlays(self, tmp_path: Path, monkeypatch) -> None:
+        config = tmp_path / ".teatree.toml"
+        config.write_text(
+            '[overlays.myapp]\nmessaging_backend = "email"\n',
+            encoding="utf-8",
+        )
+        monkeypatch.setattr("teatree.cli.slack_listen.Path.home", lambda: tmp_path)
+        assert _resolve_overlays("") == []
+
+    def test_warns_when_tokens_missing(self, tmp_path: Path, monkeypatch, capsys) -> None:
+        config = tmp_path / ".teatree.toml"
+        config.write_text(
+            '[overlays.broken]\nmessaging_backend = "slack"\nslack_token_ref = "broken/ref"\n',
+            encoding="utf-8",
+        )
+        monkeypatch.setattr("teatree.cli.slack_listen.Path.home", lambda: tmp_path)
+        with patch("teatree.cli.slack_listen.read_pass", return_value=""):
+            result = _resolve_overlays("")
+
+        assert result == []
+
+    def test_restricts_to_named_overlay(self, tmp_path: Path, monkeypatch) -> None:
+        config = tmp_path / ".teatree.toml"
+        config.write_text(
+            '[overlays.a]\nmessaging_backend = "slack"\nslack_token_ref = "a/ref"\n'
+            '[overlays.b]\nmessaging_backend = "slack"\nslack_token_ref = "b/ref"\n',
+            encoding="utf-8",
+        )
+        monkeypatch.setattr("teatree.cli.slack_listen.Path.home", lambda: tmp_path)
+        with patch("teatree.cli.slack_listen.read_pass", side_effect=["xoxb-bot", "xapp-app"]):
+            result = _resolve_overlays("a")
+
+        assert len(result) == 1
+        assert result[0][0] == "a"
+
+
+class TestStatusCommand:
+    def test_no_pid_file(self, tmp_path: Path) -> None:
+        with patch("teatree.cli.slack_listen.default_queue_path", return_value=tmp_path / "events.jsonl"):
+            result = runner.invoke(slack_app, ["status"])
+
+        assert result.exit_code == 1
+        assert "not running" in result.stdout
+
+    def test_stale_pid_file(self, tmp_path: Path) -> None:
+        pid_file = tmp_path / "slack-listener.pid"
+        pid_file.write_text("999999999\n", encoding="utf-8")
+        with patch("teatree.cli.slack_listen.default_queue_path", return_value=tmp_path / "events.jsonl"):
+            result = runner.invoke(slack_app, ["status"])
+
+        assert result.exit_code == 1
+        assert "dead" in result.stdout
+
+    def test_garbled_pid_file(self, tmp_path: Path) -> None:
+        pid_file = tmp_path / "slack-listener.pid"
+        pid_file.write_text("not-a-number\n", encoding="utf-8")
+        with patch("teatree.cli.slack_listen.default_queue_path", return_value=tmp_path / "events.jsonl"):
+            result = runner.invoke(slack_app, ["status"])
+
+        assert result.exit_code == 1
+        assert "stale" in result.stdout
+        assert not pid_file.is_file()
+
+    def test_running_pid(self, tmp_path: Path) -> None:
+        pid_file = tmp_path / "slack-listener.pid"
+        pid_file.write_text(f"{os.getpid()}\n", encoding="utf-8")
+        with patch("teatree.cli.slack_listen.default_queue_path", return_value=tmp_path / "events.jsonl"):
+            result = runner.invoke(slack_app, ["status"])
+
+        assert result.exit_code == 0
+        assert "running" in result.stdout
+
+
+class TestListenCommand:
+    def test_exits_when_no_overlays(self, tmp_path: Path) -> None:
+        with (
+            patch("teatree.cli.slack_listen.default_queue_path", return_value=tmp_path / "events.jsonl"),
+            patch("teatree.cli.slack_listen._resolve_overlays", return_value=[]),
+        ):
+            result = runner.invoke(slack_app, ["listen"])
+
+        assert result.exit_code == 1
+        assert "No slack-enabled overlays" in result.stdout
+
+    def test_exits_when_already_running(self, tmp_path: Path) -> None:
+        pid_file = tmp_path / "slack-listener.pid"
+        pid_file.write_text(f"{os.getpid()}\n", encoding="utf-8")
+        with patch("teatree.cli.slack_listen.default_queue_path", return_value=tmp_path / "events.jsonl"):
+            result = runner.invoke(slack_app, ["listen"])
+
+        assert result.exit_code == 1
+        assert "already running" in result.stdout
+
+    def test_replaces_stale_pid_and_proceeds(self, tmp_path: Path) -> None:
+        pid_file = tmp_path / "slack-listener.pid"
+        pid_file.write_text("999999999\n", encoding="utf-8")
+        with (
+            patch("teatree.cli.slack_listen.default_queue_path", return_value=tmp_path / "events.jsonl"),
+            patch("teatree.cli.slack_listen._resolve_overlays", return_value=[("ov", "xapp", "xoxb")]),
+            patch("teatree.cli.slack_listen.run_listener"),
+        ):
+            result = runner.invoke(slack_app, ["listen"])
+
+        assert result.exit_code == 0
+        assert "Listening on ov" in result.stdout
+
+    def test_cleans_pid_file_after_run(self, tmp_path: Path) -> None:
+        with (
+            patch("teatree.cli.slack_listen.default_queue_path", return_value=tmp_path / "events.jsonl"),
+            patch("teatree.cli.slack_listen._resolve_overlays", return_value=[("ov", "xapp", "xoxb")]),
+            patch("teatree.cli.slack_listen.run_listener"),
+        ):
+            runner.invoke(slack_app, ["listen"])
+
+        pid_file = tmp_path / "slack-listener.pid"
+        assert not pid_file.is_file()
+
+    def test_cleans_pid_on_exception(self, tmp_path: Path) -> None:
+        with (
+            patch("teatree.cli.slack_listen.default_queue_path", return_value=tmp_path / "events.jsonl"),
+            patch("teatree.cli.slack_listen._resolve_overlays", return_value=[("ov", "xapp", "xoxb")]),
+            patch("teatree.cli.slack_listen.run_listener", side_effect=RuntimeError("boom")),
+        ):
+            result = runner.invoke(slack_app, ["listen"])
+
+        pid_file = tmp_path / "slack-listener.pid"
+        assert not pid_file.is_file()
+        assert result.exit_code != 0

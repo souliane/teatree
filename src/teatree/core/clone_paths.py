@@ -53,9 +53,8 @@ def find_clone_path(workspace: Path, repo_name: str) -> Path | None:
 def resolve_clone_path(workspace: Path, worktree: Worktree) -> Path | None:
     """Return the source clone path for *worktree*, with namespace fallback.
 
-    Prefers ``worktree.extra['clone_path']`` (set at provision time when the
-    namespace-aware lookup was used). Falls back to a fresh
-    :func:`find_clone_path` scan for legacy rows that pre-date the field.
+    Prefers ``worktree.extra['clone_path']`` (set at provision time). Falls
+    back to a fresh :func:`find_clone_path` scan for rows without the field.
     Returns ``None`` when no clone exists anywhere.
     """
     stored = (worktree.extra or {}).get("clone_path", "")
