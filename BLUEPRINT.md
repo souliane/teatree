@@ -6,7 +6,7 @@ If the entire `src/` and `tests/` tree were deleted, this document alone — plu
 
 **Change policy:** Every code change to teatree must be reflected here. Before modifying this file, always ask the user for approval — this is the source of truth and the user validates every change.
 
-**Status:** This BLUEPRINT is the **current** architecture under issue [#541](https://github.com/souliane/teatree/issues/541). All phases (0-8) have shipped on the active branch. The statusline file is the persistent UI surface; the HTML dashboard, ttyd web terminal, ASGI/uvicorn scaffolding, and platform autostart helpers are gone; the code-host + messaging Protocols are unified, with `SlackBotBackend`/`NoopMessagingBackend` selectable via overlay config; `t3 setup slack-bot --overlay <name>` walks the user through Slack app registration; the fat loop + 8 scanners + dispatcher are wired through `t3 loop tick` (review-channel scanning is folded into the dispatcher's PR-URL detection); the headless executor is the deliberately-slim `claude -p` swap point for a future Anthropic SDK runtime; and the no-overlay-leak gate keeps the platform tenant-agnostic.
+**Status:** This BLUEPRINT is the **current** architecture under issue [#541](https://github.com/souliane/teatree/issues/541). All phases (0-8) have shipped on the active branch. The statusline file is the persistent UI surface; the HTML dashboard, ttyd web terminal, ASGI/uvicorn scaffolding, and platform autostart helpers are gone; the code-host + messaging Protocols are unified, with `SlackBotBackend`/`NoopMessagingBackend` selectable via overlay config; `t3 setup slack-bot --overlay <name>` walks the user through Slack app registration; the fat loop + 9 scanners + dispatcher are wired through `t3 loop tick` (review-channel scanning is folded into the dispatcher's PR-URL detection); the headless executor is the deliberately-slim `claude -p` swap point for a future Anthropic SDK runtime; and the no-overlay-leak gate keeps the platform tenant-agnostic.
 
 ---
 
@@ -141,6 +141,7 @@ src/teatree/
       generate_*.py     # generate_all_docs / generate_overlay_docs / generate_skill_docs
 
   agents/               # Headless executor runtime
+    handover.py         # Session handover between runtimes (uses TEATREE_CLAUDE_STATUSLINE_STATE_DIR)
     headless.py         # Headless execution via `claude -p` (kept slim — future SDK swap point)
     prompt.py           # System context and task prompt builders
     skill_bundle.py     # Skill dependency resolution for agent launch
@@ -796,14 +797,15 @@ Implementations: `GitHubSyncBackend` (`backends/github_sync.py`), `GitLabSyncBac
 
 ---
 
-## 8. Three-Tier Command Split
+## 8. Command Tiers
 
 | Tier | Tool | Needs Django? | Examples |
 |------|------|---------------|----------|
 | Runtime commands | django-typer management commands | Yes | `worktree provision`, `tasks work-next-sdk`, `followup refresh` |
 | Bootstrap commands | Typer CLI (`t3`) | No | `t3 startoverlay`, `t3 info`, `t3 ci cancel` |
 | Overlay commands | Typer CLI delegating to manage.py | Via subprocess | `t3 acme start-ticket`, `t3 acme worktree start` |
-| Internal utilities | Python modules in `utils/` | No | Port allocation, git helpers, DB ops |
+
+Internal utilities (`utils/`) — port allocation, git helpers, DB ops — are Python modules, not CLI-facing commands. They underpin all three tiers but are not a tier themselves.
 
 ### 8.1 Management Commands (django-typer)
 
