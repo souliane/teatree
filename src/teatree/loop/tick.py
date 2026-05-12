@@ -239,7 +239,7 @@ class _ClassifiedActions:
     ready_counts: dict[str, int] = field(default_factory=dict)
     action_prs: dict[str, list[_PRRef]] = field(default_factory=dict)
     inflight_prs: dict[str, list[_PRRef]] = field(default_factory=dict)
-    active_tickets: dict[str, list[tuple[str, str]]] = field(default_factory=dict)
+    active_tickets: dict[str, list[tuple[str, str, str]]] = field(default_factory=dict)
     other: list[tuple[str, StatuslineEntry]] = field(default_factory=list)
 
 
@@ -255,7 +255,10 @@ def _classify_actions(actions: list[DispatchAction]) -> _ClassifiedActions:
             state = payload.get("state")
             ticket_number = payload.get("ticket_number")
             if action.zone == "anchors" and isinstance(state, str) and isinstance(ticket_number, str):
-                c.active_tickets.setdefault(overlay, []).append((ticket_number, state))
+                issue_url = payload.get("issue_url", "")
+                if not isinstance(issue_url, str):
+                    issue_url = ""
+                c.active_tickets.setdefault(overlay, []).append((ticket_number, state, issue_url))
             elif isinstance((reason := payload.get("reason")), str):
                 c.disposition_counts.setdefault(overlay, {}).setdefault(reason, 0)
                 c.disposition_counts[overlay][reason] += 1
@@ -274,29 +277,91 @@ def _classify_actions(actions: list[DispatchAction]) -> _ClassifiedActions:
     return c
 
 
+_NOISE_STATES = frozenset({"not_started", "merged", "delivered"})
+_MAX_PER_STATE = 5
+
+
+def _render_ticket_line(
+    overlay: str,
+    tickets: list[tuple[str, str, str]],
+    pr_map: dict[str, list[_PRRef]],
+) -> str:
+    """One compact line per overlay: ``[ov] started: #1 (!5) #2 · shipped: #3``."""
+    prefix = f"[{overlay}] " if overlay else ""
+    by_state: dict[str, list[str]] = {}
+    for num, state, _url in tickets:
+        if state in _NOISE_STATES:
+            continue
+        ticket_label = f"#{num}"
+        prs = pr_map.get(num, [])
+        if prs:
+            pr_labels = " ".join(f"!{r.iid}" for r in prs)
+            ticket_label += f" ({pr_labels})"
+        by_state.setdefault(state, []).append(ticket_label)
+    if not by_state:
+        return ""
+    groups: list[str] = []
+    for state, items in by_state.items():
+        shown = items[:_MAX_PER_STATE]
+        overflow = len(items) - len(shown)
+        label = " ".join(shown)
+        if overflow > 0:
+            label += f" (+{overflow})"
+        groups.append(f"{state}: {label}")
+    return f"{prefix}{' · '.join(groups)}"
+
+
+def _render_action_line(
+    overlay: str,
+    *,
+    pr_refs: list[_PRRef],
+    disposition_counts: dict[str, int],
+    ready_count: int,
+) -> str:
+    """One compact action-needed line per overlay."""
+    prefix = f"[{overlay}] " if overlay else ""
+    parts: list[str] = []
+    if pr_refs:
+        parts.append(_render_pr_group(overlay, pr_refs).removeprefix(f"[{overlay}] "))
+    for reason, count in disposition_counts.items():
+        parts.append(f"{count} {_DISPOSITION_LABELS.get(reason, reason)}")
+    if ready_count:
+        parts.append(f"{ready_count} ready to start")
+    if not parts:
+        return ""
+    return f"{prefix}{' · '.join(parts)}"
+
+
 def _zones_for(actions: list[DispatchAction]) -> StatuslineZones:
     zones = StatuslineZones()
     c = _classify_actions(actions)
 
-    for overlay_key, tickets in sorted(c.active_tickets.items()):
-        prefix = f"[{overlay_key}] " if overlay_key else ""
-        parts = [f"#{num} {state}" for num, state in tickets]
-        zones.anchors.append(f"{prefix}{' · '.join(parts)}")
+    all_overlays = sorted({*c.active_tickets, *c.action_prs, *c.disposition_counts, *c.ready_counts, *c.inflight_prs})
 
-    for overlay_key, refs in sorted(c.action_prs.items()):
-        zones.action_needed.append(_render_pr_group(overlay_key, refs))
+    all_pr_refs: dict[str, dict[str, list[_PRRef]]] = {}
+    for overlay_key in all_overlays:
+        for refs in (c.action_prs.get(overlay_key, []), c.inflight_prs.get(overlay_key, [])):
+            for ref in refs:
+                all_pr_refs.setdefault(overlay_key, {}).setdefault(str(ref.iid), []).append(ref)
 
-    for overlay_key, reasons in sorted(c.disposition_counts.items()):
-        prefix = f"[{overlay_key}] " if overlay_key else ""
-        parts = [f"{count} {_DISPOSITION_LABELS.get(r, r)}" for r, count in reasons.items()]
-        zones.action_needed.append(f"{prefix}Stale tickets: {', '.join(parts)}")
+    for overlay_key in all_overlays:
+        pr_map = all_pr_refs.get(overlay_key, {})
+        ticket_line = _render_ticket_line(overlay_key, c.active_tickets.get(overlay_key, []), pr_map)
+        if ticket_line:
+            zones.anchors.append(ticket_line)
 
-    for overlay_key, count in sorted(c.ready_counts.items()):
-        prefix = f"[{overlay_key}] " if overlay_key else ""
-        zones.action_needed.append(f"{prefix}{count} issues ready to start")
+        action_line = _render_action_line(
+            overlay_key,
+            pr_refs=c.action_prs.get(overlay_key, []),
+            disposition_counts=c.disposition_counts.get(overlay_key, {}),
+            ready_count=c.ready_counts.get(overlay_key, 0),
+        )
+        if action_line:
+            zones.action_needed.append(action_line)
 
-    for overlay_key, refs in sorted(c.inflight_prs.items()):
-        zones.in_flight.append(_render_pr_group(overlay_key, refs))
+        inflight_refs = c.inflight_prs.get(overlay_key, [])
+        if inflight_refs:
+            zones.in_flight.append(_render_pr_group(overlay_key, inflight_refs))
 
     for zone_name, entry in c.other:
         zone_list = getattr(zones, zone_name, None)
