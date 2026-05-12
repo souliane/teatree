@@ -79,10 +79,18 @@ def build_manifest(*, overlay_name: str, display_name: str = "") -> SlackManifes
     }
 
 
+_SLACK_CREATE_APP_URL = "https://api.slack.com/apps?new_app=1&manifest_json="
+
+
 def manifest_install_url(manifest: SlackManifest) -> str:
-    """Return the Slack ``api.slack.com/apps`` URL pre-filled with *manifest*."""
+    """Return the Slack ``api.slack.com/apps`` URL pre-filled with *manifest*.
+
+    Slack may ignore the ``manifest_json`` query parameter depending on
+    the workspace auth state. :func:`slack_bot_setup` prints the manifest
+    JSON as a fallback so the user can always paste it manually.
+    """
     encoded = urllib.parse.quote(json.dumps(manifest, separators=(",", ":")))
-    return f"https://api.slack.com/apps?new_app=1&manifest_json={encoded}"
+    return f"{_SLACK_CREATE_APP_URL}{encoded}"
 
 
 def write_overlay_settings(
@@ -201,12 +209,22 @@ def slack_bot_setup(
     if not reset:
         manifest = build_manifest(overlay_name=overlay)
         url = manifest_install_url(manifest)
-        typer.echo("Step 1/4 — Open the Slack app-manifest URL and install the app to your workspace:")
-        typer.echo(f"      {url}")
+        typer.echo("Step 1/4 — Create the Slack app.")
+        typer.echo("")
+        typer.echo("      Opening https://api.slack.com/apps …")
         webbrowser.open(url)
-        typer.echo("      (The browser should open automatically. Copy the URL above if it didn't.)")
+        typer.echo("")
+        typer.echo('      → Click "Create New App" → "From an app manifest"')
+        typer.echo("      → Pick your workspace → switch to JSON tab → paste this manifest:")
+        typer.echo("")
+        typer.echo(json.dumps(manifest, indent=2))
+        typer.echo("")
+        typer.echo('      → Click "Create" → "Install to Workspace" → "Allow"')
+        typer.echo("      → Copy the Bot User OAuth Token (xoxb-…) from OAuth & Permissions")
+        typer.echo("      → Generate an App-Level Token (xapp-…) from Basic Information")
+        typer.echo('        (scope: connections:write, name: "teatree")')
     else:
-        typer.echo("Step 1/4 — Reset mode: skipping manifest URL.")
+        typer.echo("Step 1/4 — Reset mode: skipping manifest.")
 
     typer.echo("Step 2/4 — Paste the bot token (`xoxb-…`) and app-level token (`xapp-…`).")
     bot_token = _prompt_token("bot token", _BOT_TOKEN_RE)
