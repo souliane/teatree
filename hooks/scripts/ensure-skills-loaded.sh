@@ -57,7 +57,13 @@ _SOURCE_ROOT_EARLY="$(cd "$_T3_ROOT/.." 2>/dev/null && pwd -P)"
 if [ -f "$_T3_SCRIPTS/lib/skill_loader.py" ]; then
     # Auto-populate skill metadata cache if empty or missing
     _cache_file="${XDG_DATA_HOME:-$HOME/.local/share}/teatree/skill-metadata.json"
+    _cache_stale=false
     if [ ! -s "$_cache_file" ] || [ "$(cat "$_cache_file" 2>/dev/null)" = "{}" ]; then
+        _cache_stale=true
+    elif [ -n "$(find "$_T3_ROOT/skills" -name 'SKILL.md' -newer "$_cache_file" 2>/dev/null | head -1)" ]; then
+        _cache_stale=true
+    fi
+    if $_cache_stale; then
         PYTHONPATH="$_T3_SCRIPTS" python3 -c "
 import json
 from pathlib import Path

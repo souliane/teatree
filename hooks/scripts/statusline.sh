@@ -103,6 +103,52 @@ if [ -n "$skills" ]; then
     header="${header}${sep}${_DIM}skills:${_RST} ${_colored_skills}"
 fi
 
+# RAM usage (macOS/Linux)
+_ram_segment=""
+if [[ "$OSTYPE" == "darwin"* ]]; then
+    _ram_total=$(sysctl -n hw.memsize 2>/dev/null)
+    if [ -n "$_ram_total" ]; then
+        _vmstat=$(vm_stat 2>/dev/null)
+        _page_sz=$(awk '/page size of/{gsub(/[^0-9]/,"",$8); print $8}' <<< "$_vmstat")
+        _free=$(awk '/Pages free/{gsub(/\./,"",$3); print $3}' <<< "$_vmstat")
+        _inact=$(awk '/Pages inactive/{gsub(/\./,"",$3); print $3}' <<< "$_vmstat")
+        _ram_used=$(( _ram_total - (_free + _inact) * _page_sz ))
+        _ram_pct=$(( _ram_used * 100 / _ram_total ))
+        _ram_used_gb=$(awk "BEGIN{printf \"%.1f\", $_ram_used / 1073741824}")
+        _ram_total_gb=$(awk "BEGIN{printf \"%.0f\", $_ram_total / 1073741824}")
+        _ram_segment="${_DIM}ram=${_RST}$(color_pct "$_ram_pct")${_DIM} ${_ram_used_gb}/${_ram_total_gb}G${_RST}"
+    fi
+elif [ -r /proc/meminfo ]; then
+    _ram_total_kb=$(awk '/MemTotal/{print $2}' /proc/meminfo)
+    _ram_avail_kb=$(awk '/MemAvailable/{print $2}' /proc/meminfo)
+    _ram_used_kb=$(( _ram_total_kb - _ram_avail_kb ))
+    _ram_pct=$(( _ram_used_kb * 100 / _ram_total_kb ))
+    _ram_used_gb=$(awk "BEGIN{printf \"%.1f\", $_ram_used_kb / 1048576}")
+    _ram_total_gb=$(awk "BEGIN{printf \"%.0f\", $_ram_total_kb / 1048576}")
+    _ram_segment="${_DIM}ram=${_RST}$(color_pct "$_ram_pct")${_DIM} ${_ram_used_gb}/${_ram_total_gb}G${_RST}"
+fi
+[ -n "$_ram_segment" ] && header="${header}${sep}${_ram_segment}"
+
+# Next tick countdown from tick-meta.json
+_tick_meta="${target%.txt}-meta.json"
+# Also check the canonical sidecar name written by tick.py
+[ ! -r "$_tick_meta" ] && _tick_meta="$(dirname "$target")/tick-meta.json"
+if [ -r "$_tick_meta" ] && command -v jq >/dev/null 2>&1; then
+    _next_epoch=$(jq -r '.next_epoch // empty' "$_tick_meta" 2>/dev/null)
+    if [ -n "$_next_epoch" ]; then
+        _now=$(date +%s)
+        _diff=$(( _next_epoch - _now ))
+        if (( _diff <= 0 )); then
+            _tick_label="tick now"
+        elif (( _diff < 60 )); then
+            _tick_label="tick in ${_diff}s"
+        else
+            _tick_label="tick in $(( _diff / 60 ))m"
+        fi
+        header="${header}${sep}${_DIM}${_tick_label}${_RST}"
+    fi
+fi
+
 [ -n "$header" ] && printf '%s\n' "$header"
 
 if [[ -r "$target" ]]; then

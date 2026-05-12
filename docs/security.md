@@ -9,7 +9,7 @@ overlay authors must honour.
 
 Overlays are **trusted, locally-installed Python packages**.
 A user installs an overlay the same way they install any Python
-dependency — `pip install`, `uv add`, or a local editable install.
+dependency — a local editable install (`uv tool install --editable .`).
 Code that runs inside an overlay has the same privilege level as the
 user's shell.
 

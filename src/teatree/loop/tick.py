@@ -338,10 +338,11 @@ def run_tick(
 
     if not jobs:
         report.statusline_path = render(
-            StatuslineZones(anchors=[_anchor_line(started_at)]),
+            StatuslineZones(),
             target=statusline_path,
             colorize=colorize,
         )
+        _write_tick_meta(started_at, target=statusline_path)
         return report
 
     with ThreadPoolExecutor(max_workers=max(1, len(jobs))) as pool:
@@ -354,7 +355,7 @@ def run_tick(
     _execute_mechanical(report)
 
     zones = _zones_for(report.actions)
-    zones.anchors.insert(0, _anchor_line(started_at))
+    _write_tick_meta(started_at, target=statusline_path)
     if report.errors:
         zones.action_needed.append(f"scanner errors: {', '.join(report.errors)}")
     report.statusline_path = render(zones, target=statusline_path, colorize=colorize)
@@ -428,7 +429,15 @@ _MECHANICAL_HANDLERS: dict[str, Callable[[ActionPayload], None]] = {
 }
 
 
-def _anchor_line(started_at: dt.datetime) -> str:
-    overlays = os.environ.get("T3_OVERLAY_NAME", "").strip()
-    suffix = f"  ({overlays})" if overlays else ""
-    return f"tick @ {started_at.isoformat(timespec='seconds')}{suffix}"
+def _write_tick_meta(started_at: dt.datetime, *, target: Path | None = None) -> None:
+    from teatree.loop.statusline import default_path  # noqa: PLC0415
+
+    meta_path = (target or default_path()).with_name("tick-meta.json")
+    cadence = int(os.environ.get("T3_LOOP_CADENCE", "720") or "720")
+    next_epoch = int(started_at.timestamp()) + cadence
+    import json  # noqa: PLC0415
+
+    meta_path.write_text(
+        json.dumps({"next_epoch": next_epoch, "cadence": cadence}) + "\n",
+        encoding="utf-8",
+    )
