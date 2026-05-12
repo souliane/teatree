@@ -29,6 +29,16 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+
+def _has_draft_mrs(ticket: "Ticket") -> bool:
+    """Return True if any MR in the ticket's extra is still a draft."""
+    extra = ticket.extra if isinstance(ticket.extra, dict) else {}
+    mrs = extra.get("mrs", {})
+    if not isinstance(mrs, dict):
+        return False
+    return any(isinstance(mr, dict) and mr.get("draft") for mr in mrs.values())
+
+
 _COMPLETABLE_STATES: frozenset[str] = frozenset({"shipped", "in_review", "merged"})
 
 
@@ -43,6 +53,20 @@ class TicketCompletionScanner:
     def scan(self) -> list[ScanSignal]:
         signals: list[ScanSignal] = []
         for ticket in self._candidate_tickets():
+            if _has_draft_mrs(ticket):
+                signals.append(
+                    ScanSignal(
+                        kind="ticket.reopen_needed",
+                        summary=f"Ticket {ticket.ticket_number} — draft MRs exist, reopening",
+                        payload={
+                            "ticket_id": ticket.pk,
+                            "ticket_state": ticket.state,
+                            "issue_url": ticket.issue_url,
+                        },
+                    ),
+                )
+                continue
+
             host = get_code_host_for_url(self.overlay, ticket.issue_url)
             if host is None:
                 continue
