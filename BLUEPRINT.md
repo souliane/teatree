@@ -901,46 +901,56 @@ Refuses to run in the main clone (detected via a real `.git` directory). Tests i
 
 ### 8.6 Teatree Source Resolution in Overlay Projects
 
-Overlay projects depend on `teatree` as a Python package. The `[tool.uv.sources]` entry controls where uv resolves it:
+Overlay projects depend on `teatree` as a Python package. The `[tool.uv.sources]` entry in `pyproject.toml` always points to a **local relative path**:
 
-| Mode | `[tool.uv.sources]` value | When |
-|------|--------------------------|------|
-| **CI / non-contributor** | `teatree = { git = "...teatree.git", rev = "<SHA>" }` | Default committed state. Deterministic, pinned to a tested SHA. |
-| **Local dev / WIP testing** | `teatree = { path = "../../souliane/teatree", editable = true }` | Testing unreleased teatree + overlay changes together. |
-
-**Switching between modes** uses `git update-index --skip-worktree pyproject.toml`:
-
-```bash
-# Enable editable mode (local dev):
-# 1. Edit pyproject.toml: teatree = { path = "../../souliane/teatree", editable = true }
-# 2. Protect from commits:
-git update-index --skip-worktree pyproject.toml
-uv lock && uv sync
-
-# Disable editable mode (back to CI state):
-git update-index --no-skip-worktree pyproject.toml
-git checkout pyproject.toml
-uv lock && uv sync
+```toml
+[tool.uv.sources]
+teatree = { path = "../../souliane/teatree", editable = true }
 ```
 
-**Auto-detection:** When `contribute = true` in `~/.teatree.toml`, the CLI bootstrap (`_ensure_editable_if_contributing()`) detects non-editable teatree installs and auto-fixes them via `DoctorService.make_editable()`. This handles the common case where a contributor clones fresh.
+This is the committed default — no SHA pinning, no mode switching.
 
-**Bumping the pinned SHA:** When teatree ships new features needed by the overlay, update the committed `rev` to the latest teatree main SHA:
+**Local dev:** teatree is already checked out at the expected relative path (`../../souliane/teatree` from the overlay project root). `uv sync` resolves it as an editable install. Changes to teatree code are immediately visible without re-installing.
+
+**CI:** the overlay's CI workflow clones teatree at the same relative path before `uv sync`:
+
+```yaml
+# .github/workflows/ci.yml — add to every job, before setup-uv
+- uses: actions/checkout@v6
+  with:
+    repository: souliane/teatree
+    path: teatree-upstream
+- run: mkdir -p ../../souliane && ln -s "$GITHUB_WORKSPACE/teatree-upstream" ../../souliane/teatree
+```
+
+CI always tests against teatree's latest `main`. There is no pinned SHA to bump — overlay CI tracks teatree head, and local dev uses whatever is checked out locally.
+
+**Picking up new teatree changes (local):**
 
 ```bash
-cd <overlay-project>
-# Get latest teatree main SHA:
-TEATREE_SHA=$(git -C ../../souliane/teatree rev-parse origin/main)
-# Update pyproject.toml rev, re-lock, commit:
-sed -i '' "s/rev = \".*\"/rev = \"$TEATREE_SHA\"/" pyproject.toml
-uv lock && git add pyproject.toml uv.lock && git commit -m "chore(deps): bump teatree to ${TEATREE_SHA:0:7}"
+cd ../../souliane/teatree && git pull
+cd - && uv lock && uv sync
 ```
+
+If `uv.lock` changes because teatree's dependencies shifted, commit the lock file.
+
+**Why not a git rev pin?**
+
+The previous approach (`teatree = { git = "...", rev = "<SHA>" }` committed, `skip-worktree` locally) caused persistent friction:
+
+- The SHA went stale within days, requiring manual bumps.
+- `skip-worktree` / `assume-unchanged` flags were invisible and easy to forget, leading to accidental commits of local paths or accidental reversions to stale SHAs.
+- `t3 doctor make_editable()` existed to auto-fix but wasn't reliably triggered.
+- Debugging "which teatree version is this?" required checking both the committed SHA and the local override state.
+
+The local-path-first approach eliminates all of these. CI clones fresh on every run, so determinism comes from the CI workflow (always `main` HEAD), not from a pinned SHA that drifts.
 
 **Pitfalls:**
 
 - `path = "."` is wrong — it points at the overlay itself, causing a name mismatch error.
 - `pyproject-fmt` may reformat the source entry — verify after running pre-commit.
-- After bumping the SHA, restore skip-worktree if using editable mode locally.
+- The relative path `../../souliane/teatree` assumes the standard workspace layout where both repos live under the same parent. Adjust if the layout differs.
+- For private overlays on GitHub Actions, the teatree checkout step needs no extra auth (teatree is public). For private teatree forks, add a PAT to the checkout step.
 
 ---
 
