@@ -26,8 +26,7 @@ def get_code_host(overlay: "OverlayBase") -> CodeHostBackend | None:
     """Return the configured CodeHostBackend for *overlay*, or ``None``.
 
     Selection follows ``overlay.config.code_host``; falls back to inspecting
-    the available tokens when the field is unset (legacy behaviour kept so
-    older overlays that haven't migrated still work).
+    the available tokens when the field is unset.
     """
     choice = getattr(overlay.config, "code_host", "")
     github_token = overlay.config.get_github_token()

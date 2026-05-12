@@ -67,7 +67,7 @@ class TickRequest:
     """What to scan in one tick — overlays, backends, or an explicit scanner list.
 
     Pass *backends* to scan many overlays in one tick. Pass *host*/*messaging*
-    for the legacy single-overlay path. Pass *scanners* to bypass default
+    for the single-overlay path. Pass *scanners* to bypass default
     scanner construction entirely (mostly used by tests).
     """
 
@@ -109,7 +109,7 @@ def build_default_jobs(
     """Build the default scanner jobs from one or more overlays.
 
     Pass *backends* to scan multiple overlays in one tick (each gets its
-    own host/messaging credentials). The legacy *host*/*messaging* shape
+    own host/messaging credentials). The *host*/*messaging* shape
     is preserved for callers that resolve a single overlay themselves.
     """
     jobs: list[_ScannerJob] = [_ScannerJob(scanner=PendingTasksScanner(), overlay="")]
