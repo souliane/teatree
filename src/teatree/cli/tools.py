@@ -170,6 +170,33 @@ def claude_handover(
     )
 
 
+@tool_app.command("audit-memory")
+def audit_memory(
+    *,
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Show matched patterns for each entry."),
+) -> None:
+    """Scan Claude memory files for entries that should be promoted to skills."""
+    from teatree.memory_audit import scan_all  # noqa: PLC0415
+
+    entries = scan_all()
+    if not entries:
+        typer.echo("No promotable memory entries found.")
+        return
+
+    by_skill: dict[str, list] = {}
+    for entry in entries:
+        by_skill.setdefault(entry.suggested_skill, []).append(entry)
+
+    typer.echo(f"Found {len(entries)} promotable memory entries:\n")
+    for skill, skill_entries in sorted(by_skill.items()):
+        typer.echo(f"  → t3:{skill} ({len(skill_entries)} entries)")
+        for entry in skill_entries:
+            typer.echo(f"    {entry.name}  [{entry.entry_type}]  {entry.path}")
+            if verbose:
+                for pattern in entry.matched_patterns:
+                    typer.echo(f"      matched: {pattern}")
+
+
 @tool_app.command("triage-issues")
 def triage_issues(
     repo: str = typer.Argument(..., help="Repository in owner/name form (e.g. souliane/teatree)"),

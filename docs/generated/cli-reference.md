@@ -554,6 +554,8 @@ Usage: t3 tool [OPTIONS] COMMAND [ARGS]...
 │                  keyword-matching title and body.                            │
 │ find-duplicates  Flag pairs of open issues with near-identical titles.       │
 │ claude-handover  Show Claude handover telemetry and runtime recommendations. │
+│ audit-memory     Scan Claude memory files for entries that should be         │
+│                  promoted to skills.                                         │
 │ triage-issues    Scan for resolved-but-open and stale issues.                │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -674,6 +676,19 @@ Usage: t3 tool claude-handover [OPTIONS]
 │                                directory.                                    │
 │ --json                         Emit machine-readable JSON.                   │
 │ --help                         Show this message and exit.                   │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 tool audit-memory`
+
+```
+Usage: t3 tool audit-memory [OPTIONS]
+
+ Scan Claude memory files for entries that should be promoted to skills.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --verbose  -v        Show matched patterns for each entry.                   │
+│ --help               Show this message and exit.                             │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
