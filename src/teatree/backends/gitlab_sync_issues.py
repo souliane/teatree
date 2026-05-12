@@ -13,7 +13,7 @@ import httpx
 
 from teatree.backends.gitlab import GitLabCodeHost
 from teatree.core.models import Ticket
-from teatree.core.sync import SyncResult
+from teatree.types import SyncResult
 
 if TYPE_CHECKING:
     from teatree.backends.gitlab_api import GitLabAPI

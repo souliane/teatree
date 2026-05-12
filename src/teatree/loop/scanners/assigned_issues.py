@@ -11,8 +11,8 @@ from typing import TYPE_CHECKING, cast
 from django.apps import apps
 
 from teatree.backends.protocols import CodeHostBackend
-from teatree.core.sync import RawAPIDict
 from teatree.loop.scanners.base import ScanSignal
+from teatree.types import RawAPIDict
 
 if TYPE_CHECKING:
     from teatree.core.models.ticket import Ticket

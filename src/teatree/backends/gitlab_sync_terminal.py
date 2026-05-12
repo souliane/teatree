@@ -18,7 +18,7 @@ import httpx
 
 from teatree.core.cleanup import cleanup_worktree
 from teatree.core.models import Ticket, Worktree
-from teatree.core.sync import PREntryDict, RawAPIDict, SyncResult
+from teatree.types import PREntryDict, RawAPIDict, SyncResult
 
 if TYPE_CHECKING:
     from collections.abc import Callable

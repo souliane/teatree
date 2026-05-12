@@ -23,7 +23,8 @@ from teatree.backends.slack_review_sync import fetch_review_permalinks
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay import OverlayBase, OverlayConfig, ProvisionStep
 from teatree.core.overlay_loader import reset_overlay_cache
-from teatree.core.sync import (
+from teatree.core.sync import _merge_results, _overlay_name, fetch_notion_statuses, sync_followup
+from teatree.types import (
     LAST_SYNC_CACHE_KEY,
     PENDING_REVIEWS_CACHE_KEY,
     DiscussionSummary,
@@ -31,10 +32,6 @@ from teatree.core.sync import (
     PREntryDict,
     RawAPIDict,
     SyncResult,
-    _merge_results,
-    _overlay_name,
-    fetch_notion_statuses,
-    sync_followup,
 )
 
 # ---------------------------------------------------------------------------

@@ -11,9 +11,9 @@ from pathlib import Path
 from typing import cast
 
 from teatree.backends.protocols import CodeHostBackend
-from teatree.core.sync import RawAPIDict
 from teatree.loop.scanners.base import ScanSignal
 from teatree.paths import DATA_DIR
+from teatree.types import RawAPIDict
 
 
 def _default_cache_path() -> Path:

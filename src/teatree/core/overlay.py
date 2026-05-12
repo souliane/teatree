@@ -21,7 +21,7 @@ from teatree.types import (
 if TYPE_CHECKING:
     from teatree.core.models import Worktree
     from teatree.core.readiness import Probe
-    from teatree.core.sync import RawAPIDict
+    from teatree.types import RawAPIDict
 
 # Re-export all types so existing ``from teatree.core.overlay import X`` still works.
 __all__ = [

@@ -27,8 +27,8 @@ from django.apps import apps
 from teatree.backends.loader import get_code_host_for_url
 from teatree.backends.protocols import CodeHostBackend
 from teatree.core.overlay import OverlayBase
-from teatree.core.sync import RawAPIDict
 from teatree.loop.scanners.base import ScanSignal
+from teatree.types import RawAPIDict
 
 if TYPE_CHECKING:
     from teatree.core.models.ticket import Ticket

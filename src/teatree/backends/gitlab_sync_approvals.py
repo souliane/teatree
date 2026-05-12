@@ -15,7 +15,7 @@ import operator
 import re
 from dataclasses import dataclass
 
-from teatree.core.sync import RawAPIDict
+from teatree.types import RawAPIDict
 
 _DISMISSED_BODY_RE = re.compile(r"^removed all approvals", re.IGNORECASE)
 _APPROVED_BODY_RE = re.compile(r"^approved (this )?merge request", re.IGNORECASE)
