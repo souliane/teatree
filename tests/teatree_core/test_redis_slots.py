@@ -7,16 +7,17 @@ across tickets. Slot count is configurable via ``teatree.redis_db_count`` in
 RedisSlotsExhaustedError. Slots are released on ticket cleanup (FLUSHDB + clear field).
 """
 
-from unittest.mock import patch
+from dataclasses import replace as _replace
+from unittest.mock import ANY, patch
 
 import pytest
 from django.test import TestCase
 
+from teatree.config import load_config
 from teatree.core.models import Ticket
 from teatree.core.models.errors import RedisSlotsExhaustedError
-from teatree.utils.redis_container import redis_db_count
 
-REDIS_DB_COUNT = redis_db_count()
+REDIS_DB_COUNT = load_config().user.redis_db_count
 
 
 class TestAllocateRedisSlot(TestCase):
@@ -58,7 +59,10 @@ class TestAllocateRedisSlot(TestCase):
             Ticket.objects.allocate_redis_slot(overflow)
 
     def test_slot_count_is_configurable(self) -> None:
-        with patch("teatree.core.managers.redis_db_count", return_value=2):
+        cfg = load_config()
+        patched_user = _replace(cfg.user, redis_db_count=2)
+        patched_cfg = _replace(cfg, user=patched_user)
+        with patch("teatree.core.managers.load_config", return_value=patched_cfg):
             a = Ticket.objects.create()
             b = Ticket.objects.create()
             Ticket.objects.allocate_redis_slot(a)
@@ -74,7 +78,7 @@ class TestReleaseRedisSlot(TestCase):
         index = Ticket.objects.allocate_redis_slot(ticket)
         with patch("teatree.utils.redis_container.flushdb") as mock_flush:
             ticket.release_redis_slot()
-        mock_flush.assert_called_once_with(index)
+        mock_flush.assert_called_once_with(index, db_count=ANY)
         ticket.refresh_from_db()
         assert ticket.redis_db_index is None
 

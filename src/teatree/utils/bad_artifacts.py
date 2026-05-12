@@ -7,7 +7,7 @@ fail restore or migration.
 
 import json
 
-from teatree.config import DATA_DIR
+from teatree.paths import DATA_DIR
 
 _CACHE_FILE = DATA_DIR / "bad_artifacts.json"
 
