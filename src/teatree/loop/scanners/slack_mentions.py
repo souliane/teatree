@@ -5,7 +5,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from teatree.backends.protocols import MessagingBackend
-from teatree.backends.slack_receiver import drain_event_queue
 from teatree.loop.scanners.base import ScanSignal
 from teatree.paths import DATA_DIR
 from teatree.types import RawAPIDict
@@ -52,6 +51,8 @@ class SlackMentionsScanner:
         cursors = _read_cursors(self.cursor_path)
         mentions = self.backend.fetch_mentions(since=cursors.get("mentions", ""))
         dms = self.backend.fetch_dms(since=cursors.get("dms", ""))
+
+        from teatree.backends.slack_receiver import drain_event_queue  # noqa: PLC0415
 
         for queued in drain_event_queue():
             event = queued.get("event", {})

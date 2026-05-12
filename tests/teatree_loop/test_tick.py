@@ -265,7 +265,7 @@ def test_zones_collapses_ready_to_start_into_count() -> None:
     zones = _zones_for(actions)
     texts = [item if isinstance(item, str) else item.text for item in zones.action_needed]
     assert len(texts) == 1
-    assert texts[0] == "[acme] 12 issues ready to start"
+    assert texts[0] == "[acme] 12 ready to start"
 
 
 def test_zones_groups_prs_per_overlay_on_one_line() -> None:
@@ -334,8 +334,10 @@ def test_active_tickets_shown_in_anchors() -> None:
     ]
     zones = _zones_for(actions)
     anchor_texts = [a if isinstance(a, str) else a.text for a in zones.anchors]
-    assert any("#123 started" in t and "#456 coded" in t for t in anchor_texts)
-    assert any("[acme]" in t for t in anchor_texts)
+    assert len(anchor_texts) == 1
+    assert "started: #123" in anchor_texts[0]
+    assert "coded: #456" in anchor_texts[0]
+    assert "[acme]" in anchor_texts[0]
 
 
 def test_mechanical_actions_shown_in_inflight() -> None:

@@ -37,6 +37,7 @@ class ActiveTicketsScanner:
                     "ticket_id": ticket.pk,
                     "ticket_number": ticket.ticket_number,
                     "state": ticket.state,
+                    "issue_url": ticket.issue_url,
                 },
             )
             for ticket in qs.only("id", "state", "overlay", "issue_url")

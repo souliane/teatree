@@ -138,7 +138,7 @@ class TestStatuslineColors:
         render(zones, target=target, colorize=True)
         content = target.read_text()
 
-        assert "\033[2;37m" in content  # dim for anchors
+        assert "\033[1;36m" in content  # cyan for anchors
         assert "\033[1;31m" in content  # red for action_needed
         assert "\033[1;36m" in content  # cyan for in_flight
         assert "\033[0m" in content  # reset after each line
