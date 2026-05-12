@@ -1,10 +1,10 @@
 from abc import ABC, abstractmethod
 from collections.abc import Callable
-from dataclasses import dataclass
 from importlib import import_module
-from pathlib import Path
 from typing import TYPE_CHECKING
 
+from teatree.core.health import HealthCheck
+from teatree.core.health import default_health_checks as _default_health_checks
 from teatree.types import (
     BaseImageConfig,
     DbImportStrategy,
@@ -28,6 +28,7 @@ __all__ = [
     "DEFAULT_TRANSITION_EMOJIS",
     "BaseImageConfig",
     "DbImportStrategy",
+    "HealthCheck",
     "OverlayBase",
     "OverlayConfig",
     "OverlayMetadata",
@@ -57,72 +58,22 @@ DEFAULT_TRANSITION_EMOJIS: dict[str, str] = {
 
 
 class OverlayConfig:
-    """Overlay-specific configuration — credentials, project settings, URLs.
-
-    Configure via an ``overlay_settings`` module (Django-style) referenced by
-    the overlay class, or by subclassing and setting attributes directly.
-
-    Settings modules use ``UPPER_CASE`` constants that map to ``lower_case``
-    attributes on this class.  Settings ending in ``_PASS_KEY`` become secret
-    readers: ``GITHUB_TOKEN_PASS_KEY = "github/token"`` makes
-    ``get_github_token()`` read from the ``pass`` password store.
-    """
-
     # ── Static settings (override via settings module or subclass) ───
 
     gitlab_url: str = "https://gitlab.com/api/v4"
     github_owner: str = ""
-    """GitHub user or org that owns the project board."""
     github_project_number: int = 0
-    """GitHub Projects v2 board number (0 = not configured)."""
     code_host: str = ""
-    """Selects the CodeHostBackend implementation: ``"github"``, ``"gitlab"``, or ``""``.
-
-    Empty falls back to whichever token the config exposes.
-    """
     messaging_backend: str = "noop"
-    """Selects the MessagingBackend implementation: ``"slack"`` or ``"noop"`` (default)."""
     slack_token_ref: str = ""
-    """``pass`` entry name prefix for Slack bot credentials.
-
-    The loader reads ``<ref>-bot`` (xoxb token) and ``<ref>-app`` (xapp token).
-    Empty falls back to ``get_slack_token()`` for one-shot webhook posts.
-    """
     slack_user_id: str = ""
-    """Slack user id of the human the bot speaks for; used to filter @mentions."""
     require_ticket: bool = False
-    """Whether to enforce a tracked issue before coding/shipping."""
     ready_labels: list[str]
-    """Labels that mark an assigned issue as ready for the loop to pick up.
-
-    Used by ``AssignedIssuesScanner``. Empty disables the filter (every
-    open assigned issue is considered ready)."""
     exclude_labels: list[str]
-    """Labels that exclude an assigned issue from the statusline.
-
-    Issues carrying any of these labels are skipped by ``AssignedIssuesScanner``
-    even if they match ``ready_labels``. Useful for workflow stages like
-    "DEV review" where the developer's work is done."""
     auto_start_assigned_issues: bool = False
-    """When ``True``, the loop hands ready assigned issues to the orchestrator
-    agent to drive end-to-end through PR creation. When ``False`` (default),
-    ready issues only surface in the statusline; the operator decides when to
-    start them. The PR-merge gate (``require_human_approval_to_merge``) is the
-    final stopping point regardless of this flag."""
     max_concurrent_auto_starts: int = 1
-    """Cap on auto-started tickets in flight. The scanner counts tickets in
-    states ``NOT_STARTED..SHIPPED`` whose ``extra.auto_started`` is ``True``
-    and emits at most ``max - in_flight`` new auto-start signals per tick.
-    Tickets in ``IN_REVIEW`` (PR open, awaiting human merge) and beyond no
-    longer occupy the auto-start budget."""
     notion_database_id: str = ""
-    """Notion database id powering ``NotionViewScanner``. Empty disables the scanner."""
     mr_close_ticket: bool = False
-    """Whether PR descriptions should use auto-closing keywords (Closes #N).
-
-    When ``False`` (default), close keywords are replaced with ``Relates to #N``
-    so merging the PR does not auto-close the linked issue.
-    """
     known_variants: list[str]
     pr_auto_labels: list[str]
     frontend_repos: list[str]
@@ -145,10 +96,6 @@ class OverlayConfig:
             self._load_toml_overrides(overlay_name)
 
     def _load_settings(self, module_path: str) -> None:
-        """Load UPPER_CASE constants from a settings module as attributes.
-
-        ``*_PASS_KEY`` settings register a secret reader via ``pass``.
-        """
         mod = import_module(module_path)
         for name in dir(mod):
             if not name.isupper() or name.startswith("_"):
@@ -162,11 +109,6 @@ class OverlayConfig:
                 setattr(self, name.lower(), value)
 
     def _load_toml_overrides(self, overlay_name: str) -> None:
-        """Load overlay-specific overrides from ``~/.teatree.toml``.
-
-        Reads ``[overlays.<name>]`` section. Keys ending in ``_pass_key``
-        register secret readers, others set attributes directly.
-        """
         from teatree.config import load_config  # noqa: PLC0415
 
         config = load_config()
@@ -181,7 +123,6 @@ class OverlayConfig:
                 setattr(self, key, value)
 
     def _register_secret(self, attr_name: str, pass_key: str) -> None:
-        """Create a ``get_<attr_name>()`` method that reads from ``pass``."""
 
         def _reader(_key: str = pass_key) -> str:
             from teatree.utils.secrets import read_pass  # noqa: PLC0415
@@ -210,16 +151,9 @@ class OverlayConfig:
     # ── Structured getters (need logic, can't be plain constants) ────
 
     def get_review_channel(self) -> tuple[str, str]:
-        """Return (channel_name, channel_id) for review notifications."""
         return ("", "")
 
     def get_transition_emojis(self) -> dict[str, str]:
-        """Map FSM transition names to Slack emoji reactions.
-
-        Override via the settings module (``TRANSITION_EMOJIS = {...}``) or
-        by subclassing. The override is *merged* on top of the defaults so
-        overlays only need to specify the keys they change.
-        """
         override = getattr(self, "transition_emojis", None)
         if isinstance(override, dict):
             return {**DEFAULT_TRANSITION_EMOJIS, **override}
@@ -230,12 +164,6 @@ class OverlayConfig:
 
 
 class OverlayMetadata:
-    """Project metadata, CI integration, PR validation, and skill registration.
-
-    Subclass and assign to ``OverlayBase.metadata`` for project-specific values.
-    Consumers access via ``overlay.metadata.get_skill_metadata()``.
-    """
-
     def validate_pr(self, title: str, description: str) -> ValidationResult:
         return {"errors": [], "warnings": []}
 
@@ -258,7 +186,6 @@ class OverlayMetadata:
         return []
 
     def get_issue_title(self, url: str) -> str:
-        """Fetch the title of an issue from its URL. Returns empty string on failure."""
         return ""
 
 
@@ -283,7 +210,6 @@ class OverlayBase(ABC):  # noqa: PLR0904 — overlay extension API; hook count r
     # ── Issue title resolution ────────────────────────────────────────
 
     def get_issue_title(self, url: str) -> str:
-        """Fetch the title of an issue from its URL via the code-host backend."""
         from teatree.backends.loader import get_code_host  # noqa: PLC0415
 
         try:
@@ -302,26 +228,9 @@ class OverlayBase(ABC):  # noqa: PLR0904 — overlay extension API; hook count r
         return {}
 
     def declared_env_keys(self) -> set[str]:
-        """Return every env key this overlay may contribute to the cache.
-
-        Used by ``tests/test_env_contract.py`` to assert that every
-        ``${VAR}`` reference in overlay compose templates has a declared
-        producer.  Default is the empty set — overlays that contribute
-        nothing extra need not override this.
-        """
         return set()
 
     def declared_secret_env_keys(self) -> set[str]:
-        """Return env keys whose values must NOT be persisted to ``.t3-env.cache``.
-
-        Keys returned here are still produced by ``get_env_extra()`` — callers
-        passing the dict as subprocess ``env=`` (e.g. ``t3 <overlay> run backend``,
-        ``worktree_start``) keep them — but ``render_env_cache`` filters them out
-        of the on-disk file. Use this for credentials read from ``pass`` or any
-        value that should live only in process memory.
-
-        Default empty: overlays that don't source secrets need not override.
-        """
         return set()
 
     def get_db_import_strategy(self, worktree: "Worktree") -> DbImportStrategy | None:
@@ -354,60 +263,26 @@ class OverlayBase(ABC):  # noqa: PLR0904 — overlay extension API; hook count r
         return {}
 
     def get_compose_file(self, worktree: "Worktree") -> str:
-        """Return the path to the docker-compose file for this worktree."""
         return ""
 
     def get_base_images(self, worktree: "Worktree") -> list[BaseImageConfig]:
-        """Return base images teatree builds once and shares across worktrees.
-
-        Each image is tagged ``{image_name}:deps-{sha256(lockfile)[:12]}``;
-        teatree skips the build when the tag already exists.  Code changes
-        reach containers through the worktree's volume mount — no rebuild.
-        Default: no base images (opt-in — overlays keep working until they
-        opt in).
-        """
         _ = worktree
         return []
 
     def get_docker_services(self, worktree: "Worktree") -> set[str]:
-        """Service names (as declared in ``get_services_config``) that MUST run in Docker.
-
-        Teatree rejects ``worktree provision`` if any name returned here is not
-        declared in ``get_services_config`` — prevents drift between the
-        enforcement list and the service specs.  Default: empty set (opt-in).
-        """
         _ = worktree
         return set()
 
     # ── Port hooks ───────────────────────────────────────────────────
 
     def get_required_ports(self, worktree: "Worktree") -> set[str]:
-        """Return the set of port keys this overlay needs allocated per worktree.
-
-        Default: empty set. Overlays opt in by declaring the keys they map in
-        their compose templates (e.g., ``{"backend", "frontend", "postgres"}``).
-        Pure-Python overlays without docker compose declare nothing here.
-        """
         _ = worktree
         return set()
 
     def get_port_env(self, ports: dict[str, int]) -> dict[str, str]:
-        """Return the env vars that publish allocated host *ports* to compose.
-
-        Default mapping is generic: each key ``X`` becomes ``X_HOST_PORT``
-        (uppercased). Overlays override to add convention-specific aliases
-        (e.g. ``POSTGRES_PORT`` for ``psql``, ``CORS_WHITE_FRONT`` for
-        Django CORS) without changing core.
-        """
         return {f"{key.upper()}_HOST_PORT": str(port) for key, port in ports.items()}
 
     def uses_redis(self) -> bool:
-        """Return True when this overlay needs the shared teatree-redis container.
-
-        Default ``False`` — single-service overlays (CLI tools, doc generators,
-        teatree itself) skip the redis-allocation step. Multi-service overlays
-        with Celery/RQ/cache override to ``True``.
-        """
         return False
 
     # ── Run hooks ────────────────────────────────────────────────────
@@ -422,182 +297,40 @@ class OverlayBase(ABC):  # noqa: PLR0904 — overlay extension API; hook count r
         return []
 
     def get_e2e_env_extras(self, env_cache: dict[str, str]) -> dict[str, str]:
-        """Return overlay-specific env vars to add to the Playwright environment.
-
-        Receives the parsed worktree env cache (``.t3-env.cache``). Use this to
-        derive overlay-specific vars Playwright tests need (e.g. ``CUSTOMER``
-        from ``WT_VARIANT``). Existing values in ``os.environ`` win — this hook
-        only fills in missing keys. Default: no extras.
-
-        Keeps overlay-specific naming conventions (variant→customer, tenant→client)
-        out of core; each overlay owns its own mapping.
-        """
         _ = env_cache
         return {}
 
     def get_e2e_preflight(self, *, customer: str | None, base_url: str | None) -> list[Callable[[], None]]:
-        """Return preflight checks to run before launching the external Playwright suite.
-
-        Each callable raises :class:`RuntimeError` on failure with a human-readable
-        message; the ``e2e external`` command will print the message and exit
-        non-zero before any test starts. Default: no checks.
-
-        Overlays use this to fail fast on environment problems they alone can detect
-        (auth chains, network reachability, vendor SSO availability) without leaking
-        overlay-specific knowledge into core.
-        """
         _ = customer, base_url
         return []
 
     def get_verify_endpoints(self, worktree: "Worktree") -> dict[str, str]:
-        """Return custom health-check paths per service.
-
-        Keys match ``worktree.ports`` entries (e.g. ``"backend"``, ``"frontend"``).
-        Values are URL paths (e.g. ``"/admin/login/"``).
-        Services not listed here fall back to ``/``.
-        """
         return {}
 
     def get_timeouts(self) -> dict[str, int]:
-        """Return overlay-specific timeout overrides (seconds).
-
-        Keys match ``teatree.timeouts`` operation names (e.g. ``"setup"``,
-        ``"db_import"``).  ``0`` disables the timeout for that operation.
-        Only return overrides — missing keys fall through to core defaults.
-        """
         return {}
 
     def get_cleanup_steps(self, worktree: "Worktree") -> list[ProvisionStep]:
-        """Return extra cleanup steps run before a worktree is removed.
-
-        Use for overlay-specific teardown (Docker containers, cache dirs, etc.).
-        """
         return []
 
     def get_health_checks(self, worktree: "Worktree") -> list["HealthCheck"]:
-        """Return post-provision health checks to verify the worktree is functional.
-
-        Overlays can override to add project-specific checks (e.g., verify
-        specific DB tables exist, check custom symlinks).  The default checks
-        verify: worktree path exists, symlinks are valid, and DB name is set.
-        """
         return _default_health_checks(self, worktree)
 
     def get_readiness_probes(self, worktree: "Worktree") -> list["Probe"]:
-        """Return runtime readiness probes for a started worktree.
-
-        Health checks (``get_health_checks``) verify post-provision invariants
-        (symlinks, db name set) — they answer "did setup do its job?". Probes
-        verify post-start runtime behaviour — they answer "is the env actually
-        serving?". Overlays declare HTTP endpoints, command checks, and custom
-        probes that an operator can trust as the truth-tellers for ready.
-
-        Default empty: an overlay with no probes makes no claim about ready.
-        """
         _ = worktree
         return []
 
     def get_workspace_repos(self) -> list[str]:
-        """Return repo paths relative to ``workspace_dir``.
-
-        Supports nested paths (e.g. ``souliane/teatree``).  Reads from
-        ``config.workspace_repos`` first; falls back to ``get_repos()``.
-        """
         if self.config.workspace_repos:
             return list(self.config.workspace_repos)
         return self.get_repos()
 
     def get_visual_qa_targets(self, changed_files: list[str]) -> list[str]:
-        """Return URL paths the pre-push browser sanity gate should load.
-
-        Each path is appended to the worktree base URL (e.g. ``"/"`` →
-        ``http://127.0.0.1:8000/``).  Return ``[]`` to skip the gate for
-        this diff.  Default: skip — overlays opt in by mapping diff paths
-        to the URLs they care about.
-
-        Called from the shipping gate as a side effect of PR creation;
-        results are recorded on ``Ticket.extra['visual_qa']``.
-        """
         _ = changed_files
         return []
 
     # ── Loop hooks ───────────────────────────────────────────────────
 
     def is_issue_done(self, issue_data: "RawAPIDict") -> bool:
-        """Return whether the upstream issue is fully done.
-
-        Called by ``TicketCompletionScanner`` to detect tickets whose upstream
-        issue indicates all work is complete — even across multiple repos/PRs.
-
-        Default (GitHub): ``state ∈ {closed, completed}``.
-        GitLab overlays override to check for a process label instead, since a
-        multi-repo ticket may have several MRs and the issue stays open until
-        the last one merges.
-        """
         state = issue_data.get("state")
         return isinstance(state, str) and state in {"closed", "completed"}
-
-
-# ── Health checks ───────────────────────────────────────────────────
-
-
-@dataclass(frozen=True, slots=True)
-class HealthCheck:
-    name: str
-    check: Callable[[], bool]
-    description: str = ""
-
-
-def _symlink_source_healthy(dest: Path, source: Path) -> bool:
-    """Return True when *dest* contains populated content.
-
-    Two valid end states: a symlink at *dest* pointing to a populated
-    *source*, or a real populated directory at *dest* (e.g. after
-    ``npm install`` ran in the worktree, replacing the symlink with a
-    real directory — see #480).
-    """
-    if dest.is_symlink():
-        if not source.exists():
-            return False
-        if source.is_dir():
-            return any(source.iterdir())
-        return True
-    if not dest.exists():
-        return False
-    if dest.is_dir():
-        return any(dest.iterdir())
-    return True
-
-
-def _default_health_checks(overlay: OverlayBase, worktree: "Worktree") -> list[HealthCheck]:
-    """Return standard post-provision checks applicable to any overlay."""
-    checks: list[HealthCheck] = []
-    extra = worktree.extra or {}
-    wt_path = extra.get("worktree_path", "")
-
-    if wt_path:
-        checks.append(
-            HealthCheck(
-                name="worktree-exists",
-                check=lambda: Path(wt_path).is_dir(),
-                description=f"Worktree directory exists: {wt_path}",
-            ),
-        )
-
-        # Verify symlinks point to valid, non-empty targets.
-        # An empty source directory (e.g. a pre-existing but never-populated
-        # `node_modules/`) previously passed the check and masked broken
-        # provisioning — see t3-o.#55.
-        for spec in overlay.get_symlinks(worktree):
-            dest = Path(wt_path) / spec.get("path", "")
-            source = Path(spec.get("source", ""))
-            if spec.get("mode", "symlink") == "symlink" and source.exists():
-                checks.append(
-                    HealthCheck(
-                        name=f"symlink-{spec.get('path', '?')}",
-                        check=lambda d=dest, s=source: _symlink_source_healthy(d, s),
-                        description=f"Symlink target populated: {spec.get('path', '')}",
-                    ),
-                )
-
-    return checks

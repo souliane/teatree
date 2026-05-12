@@ -1,5 +1,7 @@
 from teatree.utils.run import CommandFailedError, run_allowed_to_fail, run_checked
 
+# ── Low-level runners ───────────────────────────────────────────────
+
 
 def run(*, repo: str = ".", args: list[str]) -> str:
     result = run_allowed_to_fail(["git", "-C", repo, *args], expected_codes=None)
@@ -32,14 +34,6 @@ def log_oneline(repo: str = ".", range_spec: str = "") -> str:
 
 
 def unsynced_commits(repo: str, branch: str, target: str = "origin/main") -> list[str]:
-    """Return one-line commit descriptions on *branch* not reachable from *target*.
-
-    An empty list means the branch is fully captured by ``target`` (default
-    ``origin/main``). Compared against the default branch — not against
-    every remote tracking ref — so a feature branch that has been pushed
-    to its own remote ref still surfaces commits that haven't landed on
-    main yet.
-    """
     output = run(repo=repo, args=["log", branch, "--not", target, "--oneline"])
     return [line for line in output.splitlines() if line.strip()]
 
@@ -104,7 +98,6 @@ def default_branch(repo: str = ".") -> str:
 
 
 def branch_merged(repo: str, branch: str, target: str = "origin/main") -> bool:
-    """Return True if *branch* has been merged into *target*."""
     output = run(repo=repo, args=["branch", "--merged", target])
     return any(line.strip() == branch for line in output.splitlines())
 
@@ -114,18 +107,10 @@ def current_branch(repo: str = ".") -> str:
 
 
 def remote_url(repo: str = ".", remote: str = "origin") -> str:
-    """Return the fetch URL for the given remote, or empty string if not found."""
     return run(repo=repo, args=["remote", "get-url", remote])
 
 
 def remote_slug(repo: str = ".", remote: str = "origin") -> str:
-    """Return ``owner/repo`` (or ``group/sub/.../proj``) for the given remote.
-
-    When ``repo`` is already a slug (no leading ``/``, no ``:`` or ``@``,
-    contains a ``/``), it is returned unchanged.  Otherwise the remote URL is
-    parsed.  Returns the empty string when no slug can be resolved so callers
-    can fall back to a default.
-    """
     if "/" in repo and not repo.startswith("/") and ":" not in repo and "@" not in repo:
         return repo
     url = remote_url(repo=repo, remote=remote)
@@ -134,10 +119,8 @@ def remote_slug(repo: str = ".", remote: str = "origin") -> str:
     cleaned = url.rstrip("/")
     cleaned = cleaned.removesuffix(".git")
     if "@" in cleaned and ":" in cleaned and "://" not in cleaned:
-        # scp-like form: git@github.com:owner/repo
         return cleaned.split(":", 1)[1]
     if "://" in cleaned:
-        # https://host/owner/repo or ssh://git@host/owner/repo
         host_and_path = cleaned.split("://", 1)[1].split("/", 1)
         if len(host_and_path) > 1:
             return host_and_path[1]
@@ -145,12 +128,10 @@ def remote_slug(repo: str = ".", remote: str = "origin") -> str:
 
 
 def config_value(repo: str = ".", key: str = "") -> str:
-    """Return a git config value, or empty string if not set."""
     return run(repo=repo, args=["config", key])
 
 
 def last_commit_message(repo: str = ".") -> tuple[str, str]:
-    """Return ``(subject, body)`` from the last git commit."""
     output = run(repo=repo, args=["log", "-1", "--format=%s%n%n%b"])
     lines = output.split("\n", 1)
     subject = lines[0].strip()
@@ -159,7 +140,6 @@ def last_commit_message(repo: str = ".") -> tuple[str, str]:
 
 
 def worktree_add(repo: str, path: str, branch: str, *, create_branch: bool = True) -> bool:
-    """Add a git worktree. Returns True on success."""
     args = ["worktree", "add"]
     if create_branch:
         args.extend(["-b", branch])
@@ -171,3 +151,80 @@ def worktree_add(repo: str, path: str, branch: str, *, create_branch: bool = Tru
     except CommandFailedError:
         return False
     return True
+
+
+# ── GitRepo class ────────────────────────────────────────────────────
+
+
+class GitRepo:
+    """OOP wrapper — encapsulates repo path, delegates to module-level functions.
+
+    Module-level functions remain the canonical implementation so that
+    ``patch.object(git_mod, "run", ...)`` in tests intercepts all call paths.
+    """
+
+    def __init__(self, path: str = ".") -> None:
+        self.path = path
+
+    def merge_base(self, target: str = "origin/main") -> str:
+        return merge_base(self.path, target)
+
+    def rev_count(self, range_spec: str = "") -> int:
+        return rev_count(self.path, range_spec)
+
+    def log_oneline(self, range_spec: str = "") -> str:
+        return log_oneline(self.path, range_spec)
+
+    def unsynced_commits(self, branch: str, target: str = "origin/main") -> list[str]:
+        return unsynced_commits(self.path, branch, target)
+
+    def status_porcelain(self) -> str:
+        return status_porcelain(self.path)
+
+    def soft_reset(self, target: str = "") -> None:
+        soft_reset(self.path, target)
+
+    def commit(self, message: str = "") -> None:
+        commit(self.path, message)
+
+    def fetch(self, remote: str = "origin", ref: str = "") -> None:
+        fetch(self.path, remote, ref)
+
+    def rebase(self, target: str = "") -> None:
+        rebase(self.path, target)
+
+    def worktree_remove(self, path: str = "") -> bool:
+        return worktree_remove(self.path, path)
+
+    def branch_delete(self, branch: str = "") -> bool:
+        return branch_delete(self.path, branch)
+
+    def pull_ff_only(self) -> bool:
+        return pull_ff_only(self.path)
+
+    def push(self, remote: str = "origin", branch: str = "") -> None:
+        push(self.path, remote, branch)
+
+    def default_branch(self) -> str:
+        return default_branch(self.path)
+
+    def branch_merged(self, branch: str, target: str = "origin/main") -> bool:
+        return branch_merged(self.path, branch, target)
+
+    def current_branch(self) -> str:
+        return current_branch(self.path)
+
+    def remote_url(self, remote: str = "origin") -> str:
+        return remote_url(self.path, remote)
+
+    def remote_slug(self, remote: str = "origin") -> str:
+        return remote_slug(self.path, remote)
+
+    def config_value(self, key: str = "") -> str:
+        return config_value(self.path, key)
+
+    def last_commit_message(self) -> tuple[str, str]:
+        return last_commit_message(self.path)
+
+    def worktree_add(self, path: str, branch: str, *, create_branch: bool = True) -> bool:
+        return worktree_add(self.path, path, branch, create_branch=create_branch)
