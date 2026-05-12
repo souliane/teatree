@@ -1053,12 +1053,15 @@ e2e_dir = "e2e"  # subdirectory containing playwright.config.ts (default: "e2e")
 
 **Slack bot setup** (`t3 setup slack-bot --overlay <name>`): an interactive walkthrough scaffolds the per-overlay Slack app and stores its tokens. Steps:
 
-1. Open the Slack-side "Create app from manifest" URL with a teatree-owned manifest pre-filled. The manifest declares Socket Mode (no public webhook needed), the standard scope set (`channels:history`, `channels:read`, `chat:write`, `groups:history`, `groups:read`, `im:history`, `im:read`, `im:write`, `mpim:history`, `mpim:read`, `reactions:read`, `reactions:write`, `users:read`, `users:read.email`), and bot events (`app_mention`, `message.im`).
-2. After the user installs the app to their workspace, capture the bot token (`xoxb-…`) and the app-level token (`xapp-…`) into `pass` entries `<slack_token_ref>-bot` and `<slack_token_ref>-app`.
-3. Capture the user's Slack ID (`U01ABCD1234`) and write it to `[overlays.<name>] slack_user_id` in `~/.teatree.toml`. The walkthrough mutates only the per-overlay block; nothing else in the file is touched.
-4. Smoke-test by sending a DM via the bot and waiting for the user to react with ✅ on the message.
+1. Print the manifest JSON (with `messages_tab_enabled`, `app_mentions:read` scope, Socket Mode, bot events `app_mention` + `message.im`) and open the Slack app creation page. The user pastes the manifest, creates the app, installs it to the workspace, and generates an app-level token with `connections:write` scope.
+2. Capture the bot token (`xoxb-…`) and app-level token (`xapp-…`) into `pass` entries `<slack_token_ref>-bot` and `<slack_token_ref>-app`.
+3. Auto-detect the user's Slack ID from `git config user.email` via the Slack API. Falls back to a manual prompt when detection fails.
+4. Write `messaging_backend`, `slack_user_id`, and `slack_token_ref` to `[overlays.<name>]` in `~/.teatree.toml`.
+5. Smoke-test by sending a DM via the bot and waiting for the user to react with ✅.
 
 The walkthrough never writes a bot token to disk in plaintext; tokens always go via `pass`. Re-running `t3 setup slack-bot --overlay <name> --reset` rotates both tokens.
+
+**Socket Mode listener** (`t3 slack listen`): a global singleton process that opens one WebSocket per slack-enabled overlay. Events are written to `$XDG_DATA_HOME/teatree/slack-events.jsonl` in real time. `t3 slack status` checks if the listener is running. The listener uses PID-file-based singleton detection — only one instance runs at a time. Start it as a background process or let the SessionStart hook manage its lifecycle.
 
 **Operating mode (`teatree.mode`, env: `T3_MODE`)** — controls whether the agent
 pauses for confirmation on publishing actions (push, PR create, PR merge, messaging-backend
