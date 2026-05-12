@@ -4,7 +4,8 @@ Used when teatree is the Django project (the standard case).
 Auto-discovers overlay Django apps via entry points and adds them to INSTALLED_APPS.
 """
 
-from teatree.config import default_logging, get_data_dir
+from teatree.config import default_logging
+from teatree.paths import get_data_dir
 
 _DATA_DIR = get_data_dir("teatree")
 

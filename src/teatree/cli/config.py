@@ -23,7 +23,8 @@ def write_skill_cache() -> None:
     """Write overlay skill metadata + trigger index to XDG cache for hook consumption."""
     import django  # noqa: PLC0415
 
-    from teatree.config import DATA_DIR, discover_active_overlay  # noqa: PLC0415
+    from teatree.config import discover_active_overlay  # noqa: PLC0415
+    from teatree.paths import DATA_DIR  # noqa: PLC0415
 
     discover_active_overlay()
     os.environ.setdefault("DJANGO_SETTINGS_MODULE", "teatree.settings")
@@ -63,7 +64,7 @@ def cache() -> None:
     """Show the XDG skill-metadata cache content."""
     import json as _json  # noqa: PLC0415
 
-    from teatree.config import DATA_DIR  # noqa: PLC0415
+    from teatree.paths import DATA_DIR  # noqa: PLC0415
 
     cache_path = DATA_DIR / "skill-metadata.json"
     if not cache_path.is_file():
@@ -81,7 +82,7 @@ def deps(skill: str) -> None:
     """Show resolved dependency chain for a skill."""
     import json as _json  # noqa: PLC0415
 
-    from teatree.config import DATA_DIR  # noqa: PLC0415
+    from teatree.paths import DATA_DIR  # noqa: PLC0415
     from teatree.skill_deps import resolve_all  # noqa: PLC0415
 
     cache_path = DATA_DIR / "skill-metadata.json"
@@ -109,7 +110,7 @@ def test_trigger(prompt: str) -> None:
     import json as _json  # noqa: PLC0415
 
     from teatree import find_project_root as _find_root  # noqa: PLC0415
-    from teatree.config import DATA_DIR  # noqa: PLC0415
+    from teatree.paths import DATA_DIR  # noqa: PLC0415
 
     root = _find_root()
     scripts_lib = root / "scripts" / "lib" if root else Path(__file__).resolve().parent

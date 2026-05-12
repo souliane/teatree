@@ -9,12 +9,16 @@ exclude = [
 source_roots = ["tests", "src", "e2e"]
 
 [[modules]]
+path = "teatree.paths"
+depends_on = []
+
+[[modules]]
 path = "teatree.types"
 depends_on = []
 
 [[modules]]
 path = "teatree.config"
-depends_on = ["teatree.utils"]
+depends_on = ["teatree.paths", "teatree.utils"]
 
 [[modules]]
 path = "teatree.templates"
@@ -30,7 +34,7 @@ depends_on = []
 
 [[modules]]
 path = "teatree.utils"
-depends_on = ["teatree.config"]
+depends_on = ["teatree.paths"]
 
 [[modules]]
 path = "teatree.timeouts"
@@ -48,6 +52,7 @@ depends_on = []
 path = "teatree.core"
 depends_on = [
   "teatree.types",
+  "teatree.paths",
   "teatree.config",
   "teatree.utils",
   "teatree.timeouts",
@@ -79,6 +84,7 @@ depends_on = ["teatree.types", "teatree.core", "teatree.config", "teatree.utils"
 [[modules]]
 path = "teatree.cli"
 depends_on = [
+  "teatree.paths",
   "teatree.config",
   "teatree.core",
   "teatree.agents",

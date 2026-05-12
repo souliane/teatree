@@ -16,6 +16,7 @@ import typer
 from django.db import transaction
 from django_typer.management import TyperCommand, command
 
+from teatree.config import load_config
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay import OverlayBase
 from teatree.core.overlay_loader import get_overlay
@@ -146,7 +147,7 @@ class Command(TyperCommand):
         _update_ticket_variant(ticket, variant)
         resolved_overlay = get_overlay()
         if resolved_overlay.uses_redis():
-            redis_container.ensure_running()
+            redis_container.ensure_running(db_count=load_config().user.redis_db_count)
             Ticket.objects.allocate_redis_slot(ticket)
         validate_docker_service_contract(resolved_overlay, worktree)
         _build_base_images(resolved_overlay, worktree, writer=self.stdout.write)

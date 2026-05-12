@@ -265,7 +265,7 @@ def test_loop_cadence_seconds_override(tmp_path: Path) -> None:
 
 
 def test_get_data_dir_creates_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("teatree.config.DATA_DIR", tmp_path / "data")
+    monkeypatch.setattr("teatree.paths.DATA_DIR", tmp_path / "data")
     result = get_data_dir("test-namespace")
     assert result == tmp_path / "data" / "test-namespace"
     assert result.is_dir()
@@ -275,7 +275,7 @@ def test_get_data_dir_creates_directory(tmp_path: Path, monkeypatch: pytest.Monk
 
 
 def test_default_logging_returns_dict(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("teatree.config.DATA_DIR", tmp_path / "data")
+    monkeypatch.setattr("teatree.paths.DATA_DIR", tmp_path / "data")
     config = default_logging("test-ns")
     assert config["version"] == 1
     assert "file" in config["handlers"]

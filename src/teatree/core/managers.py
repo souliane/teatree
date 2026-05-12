@@ -4,8 +4,8 @@ from django.db import models
 from django.db.models import Q
 from django.utils import timezone
 
+from teatree.config import load_config
 from teatree.core.models.errors import RedisSlotsExhaustedError
-from teatree.utils.redis_container import redis_db_count
 
 if TYPE_CHECKING:
     from teatree.core.models.ticket import Ticket
@@ -38,7 +38,7 @@ class TicketQuerySet(_OverlayFilterMixin, models.QuerySet):
         """
         if ticket.redis_db_index is not None:
             return int(ticket.redis_db_index)
-        count = redis_db_count()
+        count = load_config().user.redis_db_count
         taken = set(self.filter(redis_db_index__isnull=False).values_list("redis_db_index", flat=True))
         for index in range(count):
             if index not in taken:

@@ -7,7 +7,7 @@ from django.apps import apps
 from django.db import models, transaction
 from django_fsm import FSMField, TransitionNotAllowed, transition
 
-from teatree.config import Mode, get_effective_settings
+from teatree.config import Mode, get_effective_settings, load_config
 from teatree.core.managers import TicketManager
 from teatree.utils import git, redis_container
 from teatree.utils.run import CommandFailedError
@@ -353,7 +353,7 @@ class Ticket(models.Model):
         if self.redis_db_index is None:
             return
         index = self.redis_db_index
-        redis_container.flushdb(index)
+        redis_container.flushdb(index, db_count=load_config().user.redis_db_count)
         self.redis_db_index = None
         self.save(update_fields=["redis_db_index"])
 
