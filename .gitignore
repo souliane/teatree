@@ -24,6 +24,9 @@ htmlcov/
 *.map
 
 
+# Local plugin marketplace self-reference (created by t3 setup)
+plugins/
+
 # APM dependencies
 apm_modules/
 docs/plans/

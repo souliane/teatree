@@ -1,0 +1,19 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "souliane",
+  "owner": {
+    "name": "souliane",
+    "url": "https://github.com/souliane"
+  },
+  "plugins": [
+    {
+      "name": "t3",
+      "description": "Personal code factory for multi-repo projects",
+      "version": "0.0.1",
+      "author": {
+        "name": "souliane"
+      },
+      "source": "./plugins/t3"
+    }
+  ]
+}
