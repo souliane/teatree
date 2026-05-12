@@ -462,7 +462,10 @@ def _resolve_main_clone() -> Path | None:
         candidate = Path(env_path).expanduser()
         if (candidate / "pyproject.toml").is_file():
             return candidate
-    repo = DoctorService.find_teatree_repo()
+    try:
+        repo = DoctorService.find_teatree_repo()
+    except OSError:
+        return None
     if not repo:
         return None
     git = repo / ".git"
@@ -528,7 +531,15 @@ def _ensure_plugin_registered() -> bool:
     """Verify and auto-repair t3 plugin registration.
 
     Called at every ``t3 doctor check`` (and thus every Claude session start).
+    Best-effort — never fails the check if the repo or filesystem is unavailable.
     """
+    try:
+        return _do_ensure_plugin_registered()
+    except OSError:
+        return True
+
+
+def _do_ensure_plugin_registered() -> bool:
     repo = _resolve_main_clone()
     if not repo:
         return True
