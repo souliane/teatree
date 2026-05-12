@@ -69,7 +69,7 @@ def get_messaging(overlay: "OverlayBase") -> MessagingBackend:
     """
     choice = getattr(overlay.config, "messaging_backend", "") or "noop"
     if choice == "slack":
-        token_ref = getattr(overlay.config, "slack_bot_token_ref", "")
+        token_ref = getattr(overlay.config, "slack_token_ref", "")
         return SlackBotBackend(
             bot_token=read_pass(f"{token_ref}-bot") if token_ref else overlay.config.get_slack_token(),
             app_token=read_pass(f"{token_ref}-app") if token_ref else "",

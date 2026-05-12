@@ -99,7 +99,7 @@ def write_overlay_settings(
     overlay_name: str,
     *,
     slack_user_id: str,
-    slack_bot_token_ref: str,
+    slack_token_ref: str,
     messaging_backend: str = "slack",
 ) -> None:
     """Persist Slack settings on the per-overlay block of *config_path*.
@@ -127,7 +127,7 @@ def write_overlay_settings(
 
     overlay_block["messaging_backend"] = messaging_backend
     overlay_block["slack_user_id"] = slack_user_id
-    overlay_block["slack_bot_token_ref"] = slack_bot_token_ref
+    overlay_block["slack_token_ref"] = slack_token_ref
 
     config_path.write_text(tomlkit.dumps(document), encoding="utf-8")
 
@@ -238,9 +238,9 @@ def slack_bot_setup(
         config_path,
         overlay,
         slack_user_id=user_id,
-        slack_bot_token_ref=token_ref,
+        slack_token_ref=token_ref,
     )
-    typer.echo(f"OK    Wrote `[overlays.{overlay}]` slack_user_id and slack_bot_token_ref to {config_path}.")
+    typer.echo(f"OK    Wrote `[overlays.{overlay}]` slack_user_id and slack_token_ref to {config_path}.")
 
     typer.echo("Step 4/4 — Smoke test.")
     if skip_smoke_test:
