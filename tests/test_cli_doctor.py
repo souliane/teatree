@@ -59,14 +59,10 @@ def _stage_home(tmp_path: Path, monkeypatch) -> Path:
     return tmp_path
 
 
-def _stub_overlay_instance(module: str = "my_overlay.overlay") -> object:
-    """Return an instance whose ``type(inst).__module__`` is *module*.
-
-    ``_resolve_overlay_dists`` inspects the instance's class module, not the
-    instance module. A plain ``MagicMock`` would report ``unittest.mock``.
-    """
-    cls = type("_OverlayStub", (), {"__module__": module})
-    return cls()
+def _fake_entry_point(dist_name: str = "my-overlay") -> object:
+    """Return a fake ``importlib.metadata.EntryPoint`` with ``dist.name``."""
+    dist = type("_FakeDist", (), {"name": dist_name})()
+    return type("_FakeEP", (), {"name": f"t3-{dist_name}", "dist": dist})()
 
 
 def _editable_map(**dists: tuple[bool, str]):
@@ -436,7 +432,7 @@ class TestRepairSymlinks:
 class TestCheckEditableSanity:
     """End-to-end sanity check wired to a real ``~/.teatree.toml``.
 
-    ``editable_info`` and ``get_all_overlays`` are the two external boundaries
+    ``editable_info`` and ``entry_points`` are the two external boundaries
     we cannot make real without installing actual packages, so they stay as
     mocks. Everything else (config loading, repo discovery) runs live.
     """
@@ -445,20 +441,14 @@ class TestCheckEditableSanity:
         _stage_home(tmp_path, monkeypatch)
         _write_teatree_toml(tmp_path / ".teatree.toml", "[teatree]\ncontribute = false\n")
 
-        with (
-            patch.object(IntrospectionHelpers, "editable_info", return_value=(False, "")),
-            patch.object(teatree_overlay_loader, "get_all_overlays", return_value={}),
-        ):
+        with patch.object(IntrospectionHelpers, "editable_info", return_value=(False, "")):
             assert DoctorService.check_editable_sanity() == []
 
     def test_empty_when_contribute_true_and_all_editable(self, tmp_path, monkeypatch):
         _stage_home(tmp_path, monkeypatch)
         _write_teatree_toml(tmp_path / ".teatree.toml", "[teatree]\ncontribute = true\n")
 
-        with (
-            patch.object(IntrospectionHelpers, "editable_info", return_value=(True, "file:///src")),
-            patch.object(teatree_overlay_loader, "get_all_overlays", return_value={}),
-        ):
+        with patch.object(IntrospectionHelpers, "editable_info", return_value=(True, "file:///src")):
             assert DoctorService.check_editable_sanity() == []
 
     def test_auto_fixes_teatree_when_contribute_true(self, tmp_path, monkeypatch):
@@ -472,7 +462,6 @@ class TestCheckEditableSanity:
 
         with (
             patch.object(IntrospectionHelpers, "editable_info", return_value=(False, "")),
-            patch.object(teatree_overlay_loader, "get_all_overlays", return_value={}),
             patch.object(DoctorService, "make_editable") as mock_fix,
         ):
             problems = DoctorService.check_editable_sanity()
@@ -488,7 +477,6 @@ class TestCheckEditableSanity:
 
         with (
             patch.object(IntrospectionHelpers, "editable_info", return_value=(False, "")),
-            patch.object(teatree_overlay_loader, "get_all_overlays", return_value={}),
             patch("teatree.find_project_root", return_value=None),
         ):
             problems = DoctorService.check_editable_sanity()
@@ -499,10 +487,7 @@ class TestCheckEditableSanity:
         _stage_home(tmp_path, monkeypatch)
         _write_teatree_toml(tmp_path / ".teatree.toml", "[teatree]\ncontribute = false\n")
 
-        with (
-            patch.object(IntrospectionHelpers, "editable_info", return_value=(True, "file:///src")),
-            patch.object(teatree_overlay_loader, "get_all_overlays", return_value={}),
-        ):
+        with patch.object(IntrospectionHelpers, "editable_info", return_value=(True, "file:///src")):
             problems = DoctorService.check_editable_sanity()
 
         assert any("contribute=false" in p for p in problems)
@@ -516,22 +501,16 @@ class TestCheckEditableSanity:
         overlay_repo = tmp_path / "my-overlay"
         overlay_repo.mkdir()
         (overlay_repo / "pyproject.toml").write_text('[project]\nname = "my-overlay"\n')
+        monkeypatch.setattr(
+            "importlib.metadata.entry_points",
+            lambda **_kw: [_fake_entry_point("my-overlay")],
+        )
 
         with (
             patch.object(
                 IntrospectionHelpers,
                 "editable_info",
                 side_effect=_editable_map(teatree=(True, ""), **{"my-overlay": (False, "")}),
-            ),
-            patch.object(
-                teatree_overlay_loader,
-                "get_all_overlays",
-                return_value={"test": _stub_overlay_instance()},
-            ),
-            patch.object(
-                teatree_cli_doctor,
-                "packages_distributions",
-                return_value={"my_overlay": ["my-overlay"]},
             ),
             patch.object(DoctorService, "make_editable") as mock_fix,
         ):
@@ -543,23 +522,15 @@ class TestCheckEditableSanity:
     def test_warns_when_overlay_editable_but_contribute_false(self, tmp_path, monkeypatch):
         _stage_home(tmp_path, monkeypatch)
         _write_teatree_toml(tmp_path / ".teatree.toml", "[teatree]\ncontribute = false\n")
+        monkeypatch.setattr(
+            "importlib.metadata.entry_points",
+            lambda **_kw: [_fake_entry_point("my-overlay")],
+        )
 
-        with (
-            patch.object(
-                IntrospectionHelpers,
-                "editable_info",
-                side_effect=_editable_map(teatree=(False, ""), **{"my-overlay": (True, "file:///src")}),
-            ),
-            patch.object(
-                teatree_overlay_loader,
-                "get_all_overlays",
-                return_value={"test": _stub_overlay_instance()},
-            ),
-            patch.object(
-                teatree_cli_doctor,
-                "packages_distributions",
-                return_value={"my_overlay": ["my-overlay"]},
-            ),
+        with patch.object(
+            IntrospectionHelpers,
+            "editable_info",
+            side_effect=_editable_map(teatree=(False, ""), **{"my-overlay": (True, "file:///src")}),
         ):
             problems = DoctorService.check_editable_sanity()
 
@@ -568,20 +539,12 @@ class TestCheckEditableSanity:
     def test_empty_when_all_states_align_with_contribute_false(self, tmp_path, monkeypatch):
         _stage_home(tmp_path, monkeypatch)
         _write_teatree_toml(tmp_path / ".teatree.toml", "[teatree]\ncontribute = false\n")
+        monkeypatch.setattr(
+            "importlib.metadata.entry_points",
+            lambda **_kw: [_fake_entry_point("my-overlay")],
+        )
 
-        with (
-            patch.object(IntrospectionHelpers, "editable_info", return_value=(False, "")),
-            patch.object(
-                teatree_overlay_loader,
-                "get_all_overlays",
-                return_value={"test": _stub_overlay_instance()},
-            ),
-            patch.object(
-                teatree_cli_doctor,
-                "packages_distributions",
-                return_value={"my_overlay": ["my-overlay"]},
-            ),
-        ):
+        with patch.object(IntrospectionHelpers, "editable_info", return_value=(False, "")):
             assert DoctorService.check_editable_sanity() == []
 
     def test_warns_when_overlay_repo_not_found(self, tmp_path, monkeypatch):
@@ -591,23 +554,15 @@ class TestCheckEditableSanity:
             f'[teatree]\ncontribute = true\nworkspace_dir = "{tmp_path}"\n',
         )
         # No ``my-overlay`` directory under workspace_dir.
+        monkeypatch.setattr(
+            "importlib.metadata.entry_points",
+            lambda **_kw: [_fake_entry_point("my-overlay")],
+        )
 
-        with (
-            patch.object(
-                IntrospectionHelpers,
-                "editable_info",
-                side_effect=_editable_map(teatree=(True, ""), **{"my-overlay": (False, "")}),
-            ),
-            patch.object(
-                teatree_overlay_loader,
-                "get_all_overlays",
-                return_value={"test": _stub_overlay_instance()},
-            ),
-            patch.object(
-                teatree_cli_doctor,
-                "packages_distributions",
-                return_value={"my_overlay": ["my-overlay"]},
-            ),
+        with patch.object(
+            IntrospectionHelpers,
+            "editable_info",
+            side_effect=_editable_map(teatree=(True, ""), **{"my-overlay": (False, "")}),
         ):
             problems = DoctorService.check_editable_sanity()
 
@@ -712,7 +667,7 @@ class TestMakeEditable:
 
         assert "ephemeral" in capsys.readouterr().out
 
-    def test_reports_fail_when_pyproject_has_no_source_entry(self, tmp_path, capsys):
+    def test_reports_warn_when_pyproject_has_no_source_entry(self, tmp_path, capsys):
         pyproject = tmp_path / "pyproject.toml"
         pyproject.write_text('[project]\nname = "myproject"\n')
         (tmp_path / "manage.py").write_text("")
@@ -720,7 +675,7 @@ class TestMakeEditable:
         with patch("teatree.cli.doctor._find_host_project_root", return_value=tmp_path):
             DoctorService.make_editable("teatree", Path("/tmp/teatree"))
 
-        assert "FAIL" in capsys.readouterr().out
+        assert "uv tool install" in capsys.readouterr().out
 
     def test_reports_fail_without_host_project_when_install_fails(self, tmp_path):
         failure = subprocess.CompletedProcess([], 1, "", "install failed")
