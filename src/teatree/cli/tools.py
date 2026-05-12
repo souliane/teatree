@@ -205,3 +205,38 @@ def triage_issues(
             typer.echo(f"  #{s.issue_number}  {s.issue_title}  ({s.days_inactive}d inactive)")
     else:
         typer.echo(f"No stale issues (unlabeled, inactive >{stale_days}d).")
+
+
+@tool_app.command("notion-download")
+def notion_download(
+    url: str = typer.Argument(..., help="file.notion.so URL from browser tab."),
+    dest: Path = typer.Option(Path(), "--dest", "-d", help="Destination directory."),
+) -> None:
+    """Download a Notion file attachment using browser cookies."""
+    import re  # noqa: PLC0415
+    from urllib.parse import parse_qs, urlparse  # noqa: PLC0415
+
+    from teatree.backends.notion import download_notion_file  # noqa: PLC0415
+
+    parsed = urlparse(url)
+    qs = parse_qs(parsed.query)
+    path_match = re.match(r"/f/f/([^/]+)/([^/]+)/(.+)", parsed.path)
+    if not path_match:
+        typer.echo(f"Cannot parse file URL: {url}")
+        raise typer.Exit(1)
+
+    space_id = path_match.group(1)
+    attachment_id = path_match.group(2)
+    filename = path_match.group(3)
+    block_id = qs.get("id", [""])[0]
+    out = dest / filename if dest.is_dir() else dest
+    typer.echo(f"Downloading {filename}...")
+
+    result = download_notion_file(
+        space_id=space_id,
+        attachment_id=attachment_id,
+        block_id=block_id,
+        filename=filename,
+        dest=out,
+    )
+    typer.echo(f"Saved: {result} ({result.stat().st_size:,} bytes)")
