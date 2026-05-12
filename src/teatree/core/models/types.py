@@ -22,9 +22,25 @@ class VisualQASummary(TypedDict, total=False):
     details: list[VisualQAPageDetail]
 
 
+class PREntrySerialized(TypedDict, total=False):
+    url: str
+    title: str
+    branch: str
+    draft: bool
+    repo: str
+    iid: int
+    pipeline_status: str
+    pipeline_url: str
+    review_requested: bool
+    reviewer_names: list[str]
+    head_sha: str
+    last_reviewed_sha: str
+
+
 class TicketExtra(TypedDict, total=False):
     tests_passed: bool
     pr_urls: list[str]
+    prs: dict[str, PREntrySerialized]
     pr_title_override: str
     ignored_from: str
     visual_qa: VisualQASummary
@@ -32,6 +48,19 @@ class TicketExtra(TypedDict, total=False):
     description: str
     provision: dict[str, str]
     shipping_skipped: str
+    tracker_status: str
+    issue_title: str
+    labels: list[str]
+    auto_started: bool
+
+
+_TICKET_EXTRA_KEYS = frozenset(TicketExtra.__annotations__)
+
+
+def validated_ticket_extra(raw: dict | None) -> TicketExtra:
+    if not raw:
+        return TicketExtra()
+    return TicketExtra(**{k: v for k, v in raw.items() if k in _TICKET_EXTRA_KEYS})
 
 
 class WorktreeExtra(TypedDict, total=False):
