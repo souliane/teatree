@@ -133,11 +133,27 @@ class TestHTTPProbe:
         probe = http_probe(
             name="dead",
             description="d",
-            spec=HTTPProbeSpec(url=f"http://127.0.0.1:{port}/", timeout_seconds=1.0),
+            spec=HTTPProbeSpec(url=f"http://127.0.0.1:{port}/", timeout_seconds=1.0, retries=0),
         )
         result = probe.check()
         assert result.passed is False
         assert any(token in result.reason for token in ("ConnectError", "ConnectionRefused", "OSError"))
+
+    def test_retries_on_connect_error(self) -> None:
+        port = _free_port()
+        probe = http_probe(
+            name="retry",
+            description="d",
+            spec=HTTPProbeSpec(
+                url=f"http://127.0.0.1:{port}/",
+                timeout_seconds=0.5,
+                retries=2,
+                retry_delay=0.1,
+            ),
+        )
+        result = probe.check()
+        assert result.passed is False
+        assert "after 2 retries" in result.reason
 
     def test_checks_response_header_value(self, http_server: tuple[str, type[_Handler]]) -> None:
         url, handler = http_server
