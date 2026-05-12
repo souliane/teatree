@@ -10,14 +10,13 @@ import json
 import logging
 import os
 import tomllib
-from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from teatree.backends.protocols import CodeHostBackend, MessagingBackend
 from teatree.core.backend_factory import OverlayBackends
-from teatree.loop.dispatch import ActionPayload, DispatchAction, dispatch
+from teatree.loop.dispatch import DispatchAction, dispatch
 from teatree.loop.scanners import (
     ActiveTicketsScanner,
     AssignedIssuesScanner,
@@ -281,11 +280,8 @@ def _classify_actions(actions: list[DispatchAction]) -> _ClassifiedActions:
                 bucket.setdefault(overlay, []).append(ref)
             else:
                 c.other.append((action.zone, StatuslineEntry(text=f"{prefix}{action.detail}", url=url_str)))
-        elif action.kind == "mechanical":
-            c.other.append(("in_flight", StatuslineEntry(text=f"⚙ {prefix}{action.detail}", url=url_str)))
-        else:
-            text = f"→ {action.zone}: {prefix}{action.detail}"
-            c.other.append(("in_flight", StatuslineEntry(text=text, url=url_str)))
+        elif action.kind in {"mechanical", "agent", "webhook"}:
+            pass
     return c
 
 
@@ -364,10 +360,31 @@ def _render_action_line(
     return f"{prefix}{' · '.join(parts)}"
 
 
-def _zones_for(actions: list[DispatchAction]) -> StatuslineZones:
-    zones = StatuslineZones()
-    c = _classify_actions(actions)
+def _running_tasks_lines() -> list[str]:
+    """Query claimed tasks from the DB and render one line per overlay."""
+    from django.apps import apps  # noqa: PLC0415
 
+    try:
+        task_model = apps.get_model("core", "Task")
+        claimed = (
+            task_model.objects.filter(status="claimed")
+            .select_related("ticket")
+            .only("phase", "ticket__overlay", "ticket__issue_url")
+        )
+        by_overlay: dict[str, list[str]] = {}
+        for task in claimed:
+            overlay = task.ticket.overlay or ""
+            by_overlay.setdefault(overlay, []).append(task.phase)
+    except Exception:  # noqa: BLE001
+        return []
+    lines: list[str] = []
+    for overlay, phases in sorted(by_overlay.items()):
+        prefix = f"[{overlay}] " if overlay else ""
+        lines.append(f"{prefix}agents: {' · '.join(phases)}")
+    return lines
+
+
+def _populate_overlay_zones(zones: StatuslineZones, c: _ClassifiedActions) -> None:
     all_overlays = sorted({*c.active_tickets, *c.action_prs, *c.disposition_counts, *c.ready_counts, *c.inflight_prs})
 
     all_pr_refs: dict[str, dict[str, list[_PRRef]]] = {}
@@ -395,10 +412,18 @@ def _zones_for(actions: list[DispatchAction]) -> StatuslineZones:
         if inflight_refs:
             zones.in_flight.append(_render_pr_group(overlay_key, inflight_refs))
 
+
+def _zones_for(actions: list[DispatchAction]) -> StatuslineZones:
+    zones = StatuslineZones()
+    c = _classify_actions(actions)
+    _populate_overlay_zones(zones, c)
+
     for zone_name, entry in c.other:
         zone_list = getattr(zones, zone_name, None)
         if isinstance(zone_list, list):
             zone_list.append(entry)
+
+    zones.in_flight.extend(_running_tasks_lines())
 
     return zones
 
@@ -466,10 +491,12 @@ def _execute_mechanical(report: TickReport) -> None:
     reflects the post-transition state. Errors are captured in
     ``report.errors`` — they never abort the tick.
     """
+    from teatree.loop.mechanical import HANDLERS  # noqa: PLC0415
+
     for action in report.actions:
         if action.kind != "mechanical":
             continue
-        handler = _MECHANICAL_HANDLERS.get(action.zone)
+        handler = HANDLERS.get(action.zone)
         if handler is not None:
             try:
                 handler(action.payload)
@@ -477,52 +504,6 @@ def _execute_mechanical(report: TickReport) -> None:
                 label = f"{action.zone}[{action.payload.get('ticket_id', '?')}]"
                 logger.exception("Mechanical action %s failed", label)
                 report.errors[label] = f"{type(exc).__name__}: {exc}"
-
-
-def _ignore_disposed_ticket(payload: ActionPayload) -> None:
-    from django.apps import apps  # noqa: PLC0415
-
-    ticket_model = apps.get_model("core", "Ticket")
-    ticket_id = payload.get("ticket_id")
-    if ticket_id is None:
-        return
-    ticket = ticket_model.objects.get(pk=ticket_id)
-    ticket.ignore()
-    ticket.save()
-    logger.info("Auto-ignored ticket %s (reason: %s)", ticket_id, payload.get("reason", "?"))
-
-
-def _complete_ticket(payload: ActionPayload) -> None:
-    """Transition a ticket from its current post-ship state toward delivered.
-
-    FSM path: shipped → request_review → mark_merged → retrospect.
-    Each step advances the ticket one state; ``mark_merged`` and
-    ``retrospect`` enqueue workers via ``on_commit`` for teardown and
-    retro I/O respectively.
-    """
-    from django.apps import apps  # noqa: PLC0415
-
-    ticket_model = apps.get_model("core", "Ticket")
-    ticket_id = payload.get("ticket_id")
-    if ticket_id is None:
-        return
-    ticket = ticket_model.objects.get(pk=ticket_id)
-
-    if ticket.state == "shipped":
-        ticket.request_review()
-        ticket.save()
-    if ticket.state == "in_review":
-        ticket.mark_merged()
-        ticket.save()
-    if ticket.state == "merged":
-        ticket.retrospect()
-        ticket.save()
-
-
-_MECHANICAL_HANDLERS: dict[str, Callable[[ActionPayload], None]] = {
-    "ticket_disposition": _ignore_disposed_ticket,
-    "ticket_completion": _complete_ticket,
-}
 
 
 def _repo_freshness(repo_path: Path) -> dict[str, int | str] | None:
@@ -546,26 +527,35 @@ def _repo_freshness(repo_path: Path) -> dict[str, int | str] | None:
     return {"behind": behind, "fetch_epoch": fetch_epoch}
 
 
+def _repos_from_toml() -> dict[str, Path]:
+    """Extract repo paths from ~/.teatree.toml overlays."""
+    toml_path = Path.home() / ".teatree.toml"
+    if not toml_path.is_file():
+        return {}
+    try:
+        data = tomllib.loads(toml_path.read_text(encoding="utf-8"))
+    except tomllib.TOMLDecodeError:
+        return {}
+    workspace_dir = Path(str(data.get("teatree", {}).get("workspace_dir", "~/workspace"))).expanduser()
+    repos: dict[str, Path] = {}
+    for name, overlay in (data.get("overlays") or {}).items():
+        if not isinstance(overlay, dict):
+            continue
+        if "path" in overlay:
+            repos[name] = Path(str(overlay["path"])).expanduser()
+        for repo_slug in overlay.get("workspace_repos", []):
+            if isinstance(repo_slug, str):
+                repos[repo_slug.split("/")[-1]] = workspace_dir / repo_slug
+    return repos
+
+
 def _collect_repo_freshness() -> dict[str, dict[str, int | str]]:
     repos: dict[str, Path] = {}
     t3_repo = os.environ.get("T3_REPO")
     if t3_repo:
         repos["t3"] = Path(t3_repo).expanduser()
-    toml_path = Path.home() / ".teatree.toml"
-    if toml_path.is_file():
-        try:
-            data = tomllib.loads(toml_path.read_text(encoding="utf-8"))
-        except tomllib.TOMLDecodeError:
-            data = {}
-        for name, overlay in (data.get("overlays") or {}).items():
-            if isinstance(overlay, dict) and "path" in overlay:
-                repos[name] = Path(str(overlay["path"])).expanduser()
-    result: dict[str, dict[str, int | str]] = {}
-    for label, path in repos.items():
-        info = _repo_freshness(path)
-        if info is not None:
-            result[label] = info
-    return result
+    repos.update(_repos_from_toml())
+    return {label: info for label, path in repos.items() if (info := _repo_freshness(path)) is not None}
 
 
 def _write_tick_meta(started_at: dt.datetime, *, target: Path | None = None) -> None:

@@ -144,8 +144,8 @@ def test_build_default_scanners_adds_messaging_and_notion_scanners() -> None:
     assert "notion_view" in names
 
 
-def test_tick_renders_agent_actions_in_in_flight_zone(tmp_path: Path) -> None:
-    """Non-statusline actions surface as in_flight progress lines."""
+def test_tick_dispatches_agent_actions_without_rendering_them(tmp_path: Path) -> None:
+    """Agent actions are dispatched but not rendered in the statusline."""
     scanner = _FixedScanner(
         name="reviewer_prs",
         out=[ScanSignal(kind="reviewer_pr.new_sha", summary="MR review")],
@@ -153,7 +153,7 @@ def test_tick_renders_agent_actions_in_in_flight_zone(tmp_path: Path) -> None:
     statusline = tmp_path / "statusline.txt"
     report = run_tick(TickRequest(scanners=[scanner]), statusline_path=statusline)
     contents = statusline.read_text(encoding="utf-8")
-    assert "→ t3:reviewer" in contents
+    assert "→ t3:reviewer" not in contents
     assert any(a.kind == "agent" for a in report.actions)
 
 
@@ -340,7 +340,7 @@ def test_active_tickets_shown_in_anchors() -> None:
     assert "[acme]" in anchor_texts[0]
 
 
-def test_mechanical_actions_shown_in_inflight() -> None:
+def test_mechanical_actions_not_rendered_in_statusline() -> None:
     from teatree.loop.dispatch import DispatchAction  # noqa: PLC0415
     from teatree.loop.tick import _zones_for  # noqa: PLC0415
 
@@ -351,10 +351,10 @@ def test_mechanical_actions_shown_in_inflight() -> None:
     ]
     zones = _zones_for(actions)
     texts = [e if isinstance(e, str) else e.text for e in zones.in_flight]
-    assert any("⚙" in t and "Ticket 42 done" in t for t in texts)
+    assert not any("Ticket 42 done" in t for t in texts)
 
 
-def test_agent_actions_shown_in_inflight() -> None:
+def test_agent_actions_not_rendered_in_statusline() -> None:
     from teatree.loop.dispatch import DispatchAction  # noqa: PLC0415
     from teatree.loop.tick import _zones_for  # noqa: PLC0415
 
@@ -363,16 +363,16 @@ def test_agent_actions_shown_in_inflight() -> None:
     ]
     zones = _zones_for(actions)
     texts = [e if isinstance(e, str) else e.text for e in zones.in_flight]
-    assert any("t3:reviewer" in t for t in texts)
+    assert not any("t3:reviewer" in t for t in texts)
 
 
 class TestDispositionMechanical(django.test.TestCase):
     def test_closed_issue_auto_ignores(self) -> None:
         from teatree.core.models.ticket import Ticket  # noqa: PLC0415
-        from teatree.loop.tick import _ignore_disposed_ticket  # noqa: PLC0415
+        from teatree.loop.mechanical import ignore_disposed_ticket  # noqa: PLC0415
 
         ticket = Ticket.objects.create(overlay="acme", issue_url="https://x/1", state="not_started")
-        _ignore_disposed_ticket({"ticket_id": ticket.pk, "reason": "issue_closed"})
+        ignore_disposed_ticket({"ticket_id": ticket.pk, "reason": "issue_closed"})
         ticket.refresh_from_db()
         assert ticket.state == "ignored"
 

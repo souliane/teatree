@@ -43,6 +43,7 @@ class TicketExtra(TypedDict, total=False):
     prs: dict[str, PREntrySerialized]
     pr_title_override: str
     ignored_from: str
+    reopened_from: str
     visual_qa: VisualQASummary
     branch: str
     description: str

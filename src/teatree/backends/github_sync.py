@@ -19,6 +19,15 @@ logger = logging.getLogger(__name__)
 
 
 class GitHubSyncBackend(SyncBackend):
+    @staticmethod
+    def _overlay_name(overlay: object) -> str:
+        from teatree.core.overlay_loader import get_all_overlays  # noqa: PLC0415
+
+        for name, ov in get_all_overlays().items():
+            if ov is overlay:
+                return name
+        return ""
+
     @override
     def is_configured(self, overlay: object) -> bool:
         from teatree.core.overlay import OverlayBase  # noqa: PLC0415
@@ -72,6 +81,7 @@ class GitHubSyncBackend(SyncBackend):
                     repos=[owner.split("/")[-1]],
                     state=state,
                     extra=extra,
+                    overlay=self._overlay_name(overlay),
                 )
                 result.tickets_created += 1
             else:
