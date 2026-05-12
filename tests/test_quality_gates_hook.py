@@ -123,7 +123,7 @@ class TestMainDetection:
 
         monkeypatch.setattr(mod, "_staged_diff", fake_diff)
         monkeypatch.setattr("sys.argv", ["check_quality_gates.py"])
-        assert mod.main() == 1
+        assert mod.main() == 0  # inline suppressions are warnings, not blockers
 
     def test_relax_commit_message_does_not_bypass(
         self,
