@@ -15,7 +15,7 @@ _ANSI_CYAN = "\033[1;36m"
 _ANSI_BOLD = "\033[1m"
 
 _ZONE_COLORS: dict[str, str] = {
-    "anchors": _ANSI_CYAN,
+    "anchors": _ANSI_DIM,
     "action_needed": _ANSI_RED,
     "in_flight": _ANSI_CYAN,
 }
