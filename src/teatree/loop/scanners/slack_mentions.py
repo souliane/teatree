@@ -5,9 +5,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from teatree.backends.protocols import MessagingBackend
-from teatree.config import DATA_DIR
 from teatree.core.sync import RawAPIDict
 from teatree.loop.scanners.base import ScanSignal
+from teatree.paths import DATA_DIR
 
 
 def _default_cursor_path() -> Path:

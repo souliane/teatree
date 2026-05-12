@@ -9,10 +9,10 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
+from teatree.paths import DATA_DIR, get_data_dir
 from teatree.utils.run import TimeoutExpired, run_allowed_to_fail
 
 CONFIG_PATH = Path.home() / ".teatree.toml"
-DATA_DIR = Path(os.environ.get("XDG_DATA_HOME", str(Path.home() / ".local" / "share"))) / "teatree"
 
 
 class Mode(StrEnum):
@@ -45,13 +45,6 @@ class Mode(StrEnum):
             valid = ", ".join(m.value for m in cls)
             msg = f"Invalid t3 mode {value!r}; valid values: {valid}"
             raise ValueError(msg) from exc
-
-
-def get_data_dir(namespace: str) -> Path:
-    """Return the data directory for a given namespace, creating it if needed."""
-    data_dir = DATA_DIR / namespace
-    data_dir.mkdir(parents=True, exist_ok=True)
-    return data_dir
 
 
 def default_logging(namespace: str) -> dict:

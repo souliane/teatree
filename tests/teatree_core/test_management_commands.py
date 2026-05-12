@@ -3,7 +3,7 @@ from collections.abc import Iterator
 from contextlib import AbstractContextManager
 from pathlib import Path
 from typing import cast
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 import pytest
 from django.core.management import call_command
@@ -97,7 +97,7 @@ class TestLifecycleCommands(TestCase):
                 mock_sp.run.return_value = MagicMock(returncode=0)
                 call_command("worktree", "provision")
 
-            mock_ensure.assert_called_once_with()
+            mock_ensure.assert_called_once_with(db_count=ANY)
             ticket.refresh_from_db()
             assert ticket.redis_db_index == 0
 

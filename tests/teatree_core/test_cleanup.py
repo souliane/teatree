@@ -1,7 +1,7 @@
 import shutil
 import subprocess
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 import pytest
 from django.test import TestCase
@@ -275,7 +275,7 @@ class TestCleanupWorktree(TestCase):
         with patch("teatree.utils.redis_container.flushdb") as mock_flush:
             cleanup_worktree(wt)
 
-        mock_flush.assert_called_once_with(3)
+        mock_flush.assert_called_once_with(3, db_count=ANY)
         ticket.refresh_from_db()
         assert ticket.redis_db_index is None
 

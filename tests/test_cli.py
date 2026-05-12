@@ -385,7 +385,7 @@ class TestConfigCommands:
 
     def test_cache_shows_content(self, tmp_path, monkeypatch):
         """Config cache displays skill-metadata.json content."""
-        monkeypatch.setattr("teatree.config.DATA_DIR", tmp_path)
+        monkeypatch.setattr("teatree.paths.DATA_DIR", tmp_path)
         cache_path = tmp_path / "skill-metadata.json"
         cache_path.write_text('{"skill_path": "skills/test/SKILL.md"}\n')
 
@@ -395,7 +395,7 @@ class TestConfigCommands:
 
     def test_cache_no_file(self, tmp_path, monkeypatch):
         """Config cache fails when no cache file exists."""
-        monkeypatch.setattr("teatree.config.DATA_DIR", tmp_path)
+        monkeypatch.setattr("teatree.paths.DATA_DIR", tmp_path)
 
         result = runner.invoke(app, ["config", "cache"])
         assert result.exit_code == 1
@@ -403,7 +403,7 @@ class TestConfigCommands:
 
     def test_deps_shows_chain(self, tmp_path, monkeypatch):
         """Config deps shows resolved dependency chain from cache."""
-        monkeypatch.setattr("teatree.config.DATA_DIR", tmp_path)
+        monkeypatch.setattr("teatree.paths.DATA_DIR", tmp_path)
         cache = tmp_path / "skill-metadata.json"
         cache.write_text(
             json.dumps(
@@ -427,14 +427,14 @@ class TestConfigCommands:
 
     def test_deps_no_cache(self, tmp_path, monkeypatch):
         """Config deps fails when no cache exists."""
-        monkeypatch.setattr("teatree.config.DATA_DIR", tmp_path)
+        monkeypatch.setattr("teatree.paths.DATA_DIR", tmp_path)
         result = runner.invoke(app, ["config", "deps", "test"])
         assert result.exit_code == 1
         assert "No cache found" in result.output
 
     def test_deps_computes_when_not_precomputed(self, tmp_path, monkeypatch):
         """Config deps computes deps on the fly if resolved_requires is missing."""
-        monkeypatch.setattr("teatree.config.DATA_DIR", tmp_path)
+        monkeypatch.setattr("teatree.paths.DATA_DIR", tmp_path)
         cache = tmp_path / "skill-metadata.json"
         cache.write_text(
             json.dumps(
@@ -454,7 +454,7 @@ class TestConfigCommands:
         """Config test-trigger shows matching skill and pattern."""
         import sys  # noqa: PLC0415
 
-        monkeypatch.setattr("teatree.config.DATA_DIR", tmp_path)
+        monkeypatch.setattr("teatree.paths.DATA_DIR", tmp_path)
         cache = tmp_path / "skill-metadata.json"
         cache.write_text(
             json.dumps(
@@ -485,7 +485,7 @@ class TestConfigCommands:
         """Config test-trigger shows no match for unrelated prompt."""
         import sys  # noqa: PLC0415
 
-        monkeypatch.setattr("teatree.config.DATA_DIR", tmp_path)
+        monkeypatch.setattr("teatree.paths.DATA_DIR", tmp_path)
         cache = tmp_path / "skill-metadata.json"
         cache.write_text(json.dumps({"trigger_index": []}))
         scripts_dir = str(Path(__file__).resolve().parent.parent / "scripts")
