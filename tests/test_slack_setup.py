@@ -2,6 +2,7 @@
 
 import subprocess
 import sys
+from collections.abc import Generator
 from pathlib import Path
 from typing import Any, cast
 from unittest.mock import patch
@@ -196,6 +197,11 @@ def _stub_overlays() -> list[OverlayEntry]:
 
 
 class TestSlackBotCommand:
+    @pytest.fixture(autouse=True)
+    def _no_auto_resolve(self) -> Generator[None]:
+        with patch("teatree.cli.slack_setup._resolve_user_id", return_value=None):
+            yield
+
     def _invoke(self, tmp_path: Path, *, inputs: str, args: list[str]) -> "object":
         runner = CliRunner()
         config = tmp_path / "teatree.toml"

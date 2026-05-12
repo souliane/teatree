@@ -148,6 +148,19 @@ def _prompt_token(label: str, pattern: re.Pattern[str]) -> str:
         typer.echo(f"      Invalid {label} format — try again.")
 
 
+def _resolve_user_id(bot_token: str) -> str | None:
+    """Auto-detect the installing user's Slack ID via email lookup."""
+    from teatree.utils.run import run_allowed_to_fail  # noqa: PLC0415
+
+    result = run_allowed_to_fail(["git", "config", "user.email"], expected_codes=None, timeout=3)
+    email = result.stdout.strip() if result.returncode == 0 else ""
+    if not email:
+        return None
+    backend = SlackBotBackend(bot_token=bot_token, user_id="")
+    user_id = backend.resolve_user_id(email)
+    return user_id if _USER_ID_RE.match(user_id) else None
+
+
 def _prompt_user_id() -> str:
     while True:
         value = typer.prompt("Your Slack user id (e.g. U01ABCD1234)").strip()
@@ -210,7 +223,7 @@ def slack_bot_setup(
     if not reset:
         manifest = build_manifest(overlay_name=overlay)
         url = manifest_install_url(manifest)
-        typer.echo("Step 1/4 — Create the Slack app.")
+        typer.echo("Step 1/3 — Create the Slack app.")
         typer.echo("")
         typer.echo("      Opening https://api.slack.com/apps …")
         webbrowser.open(url)
@@ -225,15 +238,19 @@ def slack_bot_setup(
         typer.echo("      → Generate an App-Level Token (xapp-…) from Basic Information")
         typer.echo('        (scope: connections:write, name: "teatree")')
     else:
-        typer.echo("Step 1/4 — Reset mode: skipping manifest.")
+        typer.echo("Step 1/3 — Reset mode: skipping manifest.")
 
-    typer.echo("Step 2/4 — Paste the bot token (`xoxb-…`) and app-level token (`xapp-…`).")
+    typer.echo("Step 2/3 — Paste the bot token (`xoxb-…`) and app-level token (`xapp-…`).")
     bot_token = _prompt_token("bot token", _BOT_TOKEN_RE)
     app_token = _prompt_token("app-level token", _APP_TOKEN_RE)
     _store_tokens(token_ref, bot_token=bot_token, app_token=app_token)
 
-    typer.echo("Step 3/4 — Record your Slack user id so the bot knows who to talk to.")
-    user_id = _prompt_user_id()
+    user_id = _resolve_user_id(bot_token)
+    if user_id:
+        typer.echo(f"OK    Auto-detected Slack user id: {user_id}")
+    else:
+        typer.echo("      Could not auto-detect Slack user id from git email.")
+        user_id = _prompt_user_id()
     write_overlay_settings(
         config_path,
         overlay,
@@ -242,7 +259,7 @@ def slack_bot_setup(
     )
     typer.echo(f"OK    Wrote `[overlays.{overlay}]` slack_user_id and slack_token_ref to {config_path}.")
 
-    typer.echo("Step 4/4 — Smoke test.")
+    typer.echo("Step 3/3 — Smoke test.")
     if skip_smoke_test:
         typer.echo("      Skipped per `--skip-smoke-test`.")
         return
