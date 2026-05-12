@@ -23,6 +23,6 @@ _cron_minutes=$(( _cadence / 60 ))
 
 cat <<JSON
 {
-  "additionalContext": "MANDATORY SESSION SETUP (from teatree SessionStart hook): Create a recurring fat loop NOW by calling the CronCreate tool with these exact parameters: cron=\"*/${_cron_minutes} * * * *\", recurring=true, prompt=\"Run \`t3 loop tick\` in Bash. Then call TaskList — flag any task in_progress >15 min without a commit, scan for deferred work. Report briefly.\". Do NOT skip this step — it is required for session health monitoring."
+  "additionalContext": "MANDATORY SESSION SETUP (from teatree SessionStart hook): Create TWO recurring cron jobs NOW:\n\n1. FAT LOOP (every ${_cron_minutes} min): CronCreate with cron=\"*/${_cron_minutes} * * * *\", recurring=true, prompt=\"Run \`t3 loop tick\` in Bash. Then call TaskList — flag any task in_progress >15 min without a commit, scan for deferred work. Report briefly.\"\n\n2. SLACK MESSAGE CHECK (every 1 min): CronCreate with cron=\"*/1 * * * *\", recurring=true, prompt=\"Run \`t3 slack check\` in Bash. If it exits 0, it printed new Slack messages from the user — read them and respond or act on them. If exit code 1, no new messages.\"\n\nAlso start the Slack listener if not running: run \`t3 slack status\` — if it fails, run \`t3 slack listen &\` in the background.\n\nDo NOT skip these steps."
 }
 JSON
