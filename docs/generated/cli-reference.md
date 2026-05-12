@@ -29,6 +29,7 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │ overlay         Dev-mode overlay install/uninstall.                          │
 │ infra           Teatree-wide infrastructure services.                        │
 │ loop            Manage the long-lived fat loop.                              │
+│ slack           Slack integration commands.                                  │
 │ teatree         Commands for the t3-teatree overlay.                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -988,6 +989,52 @@ Usage: t3 loop start [OPTIONS]
 Usage: t3 loop stop [OPTIONS]
 
  Print the slot id to stop in the Claude Code session.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+### `t3 slack`
+
+```
+Usage: t3 slack [OPTIONS] COMMAND [ARGS]...
+
+ Slack integration commands.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ listen  Run the Socket Mode receiver for all (or one) slack-enabled          │
+│         overlays.                                                            │
+│ status  Check if the Socket Mode listener is running.                        │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 slack listen`
+
+```
+Usage: t3 slack listen [OPTIONS]
+
+ Run the Socket Mode receiver for all (or one) slack-enabled overlays.
+
+ Maintains one WebSocket per overlay, writes events to a JSONL queue
+ file that the fat loop tick drains. Runs until SIGTERM or SIGINT.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --overlay           TEXT  Restrict to a single overlay (default: all).       │
+│ --queue-file        PATH  Override the event queue path (test hook).         │
+│ --help                    Show this message and exit.                        │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 slack status`
+
+```
+Usage: t3 slack status [OPTIONS]
+
+ Check if the Socket Mode listener is running.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
