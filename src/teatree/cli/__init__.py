@@ -28,6 +28,7 @@ from teatree.cli.overlay_dev import overlay_dev_app
 from teatree.cli.review import review_app
 from teatree.cli.review_request import review_request_app
 from teatree.cli.setup import setup_app
+from teatree.cli.slack_listen import slack_app
 from teatree.cli.tools import tool_app
 
 logger = logging.getLogger(__name__)
@@ -91,6 +92,7 @@ app.add_typer(assess_app, name="assess")
 app.add_typer(overlay_dev_app, name="overlay")
 app.add_typer(infra_app, name="infra")
 app.add_typer(loop_app, name="loop")
+app.add_typer(slack_app, name="slack")
 
 
 # ── Django-dependent overlay command groups ───────────────────────────

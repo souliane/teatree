@@ -186,6 +186,7 @@ src/teatree/
     gitlab_sync_approvals.py / gitlab_sync_terminal.py  # Approval and terminal-state sync helpers
     slack.py            # Slack API client (httpx wrapper for SlackBotBackend)
     slack_bot.py        # SlackBotBackend — Socket Mode messaging client (implements MessagingBackend)
+    slack_receiver.py   # Socket Mode receiver — writes inbound events to JSONL queue (t3 slack listen)
     slack_reactions.py  # Reaction helpers used by transition signals
     slack_review_sync.py # Review-thread → Slack post sync
     messaging_noop.py   # NoopMessagingBackend — default for overlays that opt out
@@ -775,15 +776,17 @@ The loop's PR-sweep scanners (§ 5.6) iterate registered overlays, instantiate e
 
 ### 7.3 Messaging Selection
 
-Per-overlay `messaging_backend` declaration follows the same pattern. Default is `"noop"` — overlays opt in. A single Slack workspace can serve multiple overlays (one bot, one token, distinct channel routing), or each overlay can declare its own bot via `slack_bot_token_ref` (a `pass` entry name; see § 10.1).
+Per-overlay `messaging_backend` declaration follows the same pattern. Default is `"noop"` — overlays opt in. A single Slack workspace can serve multiple overlays (one bot, one token, distinct channel routing), or each overlay can declare its own bot via `slack_token_ref` (a `pass` entry name prefix; see § 10.1).
+
+**Inbound events.** `t3 slack listen` runs a global singleton Socket Mode receiver that opens one WebSocket per slack-enabled overlay. Events (`app_mention`, `message.im`) are written to an append-only JSONL queue at `$XDG_DATA_HOME/teatree/slack-events.jsonl`. The fat loop tick drains the queue via `SlackMentionsScanner`. When the receiver is not running, `fetch_dms` falls back to `conversations.history` API polling. Install the optional `slack_sdk` dependency with `uv tool install --editable '.[slack]'`.
 
 ```python
 def get_messaging(overlay: OverlayBase) -> MessagingBackend:
     match overlay.config.messaging_backend:
         case "slack":
             return SlackBotBackend(
-                bot_token=pass_get(overlay.config.slack_bot_token_ref + "-bot"),
-                app_token=pass_get(overlay.config.slack_bot_token_ref + "-app"),
+                bot_token=pass_get(overlay.config.slack_token_ref + "-bot"),
+                app_token=pass_get(overlay.config.slack_token_ref + "-app"),
                 user_id=overlay.config.slack_user_id,
             )
         case "noop" | "":
@@ -1029,14 +1032,14 @@ agent_signature = false  # never append agent identity (Co-Authored-By, "Sent us
 path = "~/workspace/myproject"
 code_host = "github"                       # "github" | "gitlab"
 messaging_backend = "slack"                # "slack" | "noop" (default)
-slack_bot_token_ref = "teatree/slack/myproject"   # `pass` entry prefix; -bot and -app suffixes resolve the two tokens
+slack_token_ref = "teatree/slack/myproject"   # `pass` entry prefix; -bot and -app suffixes resolve the two tokens
 slack_user_id = "U01ABCD1234"              # my Slack user ID (used to filter mentions/DMs)
 
 [overlays.another-project]
 path = "~/workspace/another-project"
 code_host = "gitlab"
 messaging_backend = "slack"
-slack_bot_token_ref = "teatree/slack/another-project"
+slack_token_ref = "teatree/slack/another-project"
 slack_user_id = "U01ABCD1234"
 
 # External Playwright E2E repos — used by `t3 e2e external --repo <name>`
@@ -1051,7 +1054,7 @@ e2e_dir = "e2e"  # subdirectory containing playwright.config.ts (default: "e2e")
 **Slack bot setup** (`t3 setup slack-bot --overlay <name>`): an interactive walkthrough scaffolds the per-overlay Slack app and stores its tokens. Steps:
 
 1. Open the Slack-side "Create app from manifest" URL with a teatree-owned manifest pre-filled. The manifest declares Socket Mode (no public webhook needed), the standard scope set (`channels:history`, `channels:read`, `chat:write`, `groups:history`, `groups:read`, `im:history`, `im:read`, `im:write`, `mpim:history`, `mpim:read`, `reactions:read`, `reactions:write`, `users:read`, `users:read.email`), and bot events (`app_mention`, `message.im`).
-2. After the user installs the app to their workspace, capture the bot token (`xoxb-…`) and the app-level token (`xapp-…`) into `pass` entries `<slack_bot_token_ref>-bot` and `<slack_bot_token_ref>-app`.
+2. After the user installs the app to their workspace, capture the bot token (`xoxb-…`) and the app-level token (`xapp-…`) into `pass` entries `<slack_token_ref>-bot` and `<slack_token_ref>-app`.
 3. Capture the user's Slack ID (`U01ABCD1234`) and write it to `[overlays.<name>] slack_user_id` in `~/.teatree.toml`. The walkthrough mutates only the per-overlay block; nothing else in the file is touched.
 4. Smoke-test by sending a DM via the bot and waiting for the user to react with ✅ on the message.
 
@@ -1142,7 +1145,7 @@ Overlay-specific configuration lives on `overlay.config` (an `OverlayConfig` dat
 | Method / property | Return type | Default | Purpose |
 |---|---|---|---|
 | `messaging_backend` | `Literal["slack", "noop"]` | `"noop"` | Selects which `MessagingBackend` the loader returns |
-| `slack_bot_token_ref` | `str` | `""` | `pass` entry prefix; `<ref>-bot` and `<ref>-app` resolve the two tokens |
+| `slack_token_ref` | `str` | `""` | `pass` entry prefix; `<ref>-bot` and `<ref>-app` resolve the two tokens |
 | `slack_user_id` | `str` | `""` | The user's Slack ID (used to filter mentions/DMs) |
 | `get_review_channel()` | `tuple[str, str]` | `("", "")` | (channel name, channel ID) for review-request messages |
 | `get_transition_emojis()` | `dict[str, str]` | `DEFAULT_TRANSITION_EMOJIS` | Emoji reactions per ticket-state transition |
