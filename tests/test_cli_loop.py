@@ -1,107 +1,50 @@
-"""Tests for the ``t3 loop`` CLI commands."""
+"""Tests for the ``t3 loop`` CLI commands (non-Django: start, stop, status, cadence).
 
-import datetime as dt
-import json
+Tick-specific tests live in ``teatree_core/test_loop_tick_command.py`` since
+tick is now a Django management command.
+"""
+
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 from typer.testing import CliRunner
 
-from teatree.cli.loop import _cadence_for_loop_slot, _report_to_dict, loop_app
-from teatree.loop.dispatch import DispatchAction
-from teatree.loop.scanners.base import ScanSignal
-from teatree.loop.tick import TickReport
+from teatree.cli.loop import _cadence_for_loop_slot, loop_app
 
 runner = CliRunner()
 
 
-def _build_report(*, statusline_path: Path | None = None, errors: dict[str, str] | None = None) -> TickReport:
-    return TickReport(
-        started_at=dt.datetime(2026, 1, 1, tzinfo=dt.UTC),
-        signals=[ScanSignal(kind="my_pr.open", summary="x")],
-        actions=[DispatchAction(kind="statusline", zone="in_flight", detail="x")],
-        statusline_path=statusline_path,
-        errors=errors or {},
-    )
-
-
-class TestReportToDict:
-    def test_serialises_full_report(self, tmp_path: Path) -> None:
-        report = _build_report(statusline_path=tmp_path / "sl.txt", errors={"my_prs": "boom"})
-
-        data = _report_to_dict(report)
-
-        assert data["started_at"] == "2026-01-01T00:00:00+00:00"
-        assert data["signal_count"] == 1
-        assert data["action_count"] == 1
-        assert data["statusline_path"].endswith("sl.txt")
-        assert data["errors"] == {"my_prs": "boom"}
-        assert data["actions"][0]["zone"] == "in_flight"
-
-    def test_empty_statusline_path_serialises_to_empty_string(self) -> None:
-        report = _build_report(statusline_path=None)
-
-        data = _report_to_dict(report)
-
-        assert data["statusline_path"] == ""
-
-
-class TestTickCommand:
-    def test_text_output(self, tmp_path: Path) -> None:
-        statusline_file = tmp_path / "sl.txt"
-        report = _build_report(statusline_path=statusline_file)
+class TestTickCommandDelegation:
+    def test_delegates_to_management_command(self, tmp_path: Path) -> None:
         with (
-            patch("teatree.cli.loop.code_host_from_overlay", return_value=None),
-            patch("teatree.cli.loop.messaging_from_overlay", return_value=None),
-            patch("teatree.cli.loop.run_tick", return_value=report) as run_tick_mock,
+            patch("django.setup"),
+            patch("django.core.management.call_command") as call_mock,
         ):
-            result = runner.invoke(loop_app, ["tick", "--statusline-file", str(statusline_file)])
+            result = runner.invoke(loop_app, ["tick", "--statusline-file", str(tmp_path / "sl.txt")])
 
         assert result.exit_code == 0
-        assert "1 signal(s)" in result.stdout
-        assert "statusline" in result.stdout
-        run_tick_mock.assert_called_once()
+        call_mock.assert_called_once_with("loop_tick", statusline_file=str(tmp_path / "sl.txt"))
 
-    def test_calls_django_setup_before_scanning(self, tmp_path: Path) -> None:
-        """Regression: scanners hit Django ORM, so django.setup() must run first."""
-        report = _build_report(statusline_path=tmp_path / "sl.txt")
+    def test_passes_overlay_and_json_flags(self) -> None:
         with (
-            patch("teatree.cli.loop.django.setup") as setup_mock,
-            patch("teatree.cli.loop.code_host_from_overlay", return_value=None),
-            patch("teatree.cli.loop.messaging_from_overlay", return_value=None),
-            patch("teatree.cli.loop.run_tick", return_value=report),
+            patch("django.setup"),
+            patch("django.core.management.call_command") as call_mock,
+        ):
+            result = runner.invoke(loop_app, ["tick", "--overlay", "myoverlay", "--json"])
+
+        assert result.exit_code == 0
+        call_mock.assert_called_once_with("loop_tick", overlay="myoverlay", json_output=True)
+
+    def test_no_args_calls_with_empty_kwargs(self) -> None:
+        with (
+            patch("django.setup"),
+            patch("django.core.management.call_command") as call_mock,
         ):
             result = runner.invoke(loop_app, ["tick"])
 
         assert result.exit_code == 0
-        setup_mock.assert_called_once()
-
-    def test_text_output_includes_scanner_errors(self, tmp_path: Path) -> None:
-        report = _build_report(errors={"my_prs": "RuntimeError: x"})
-        with (
-            patch("teatree.cli.loop.code_host_from_overlay", return_value=None),
-            patch("teatree.cli.loop.messaging_from_overlay", return_value=None),
-            patch("teatree.cli.loop.run_tick", return_value=report),
-        ):
-            result = runner.invoke(loop_app, ["tick"])
-
-        assert result.exit_code == 0
-        assert "WARN  my_prs" in result.stdout
-
-    def test_json_output(self, tmp_path: Path) -> None:
-        report = _build_report(statusline_path=tmp_path / "sl.txt")
-        with (
-            patch("teatree.cli.loop.code_host_from_overlay", return_value=None),
-            patch("teatree.cli.loop.messaging_from_overlay", return_value=None),
-            patch("teatree.cli.loop.run_tick", return_value=report),
-        ):
-            result = runner.invoke(loop_app, ["tick", "--json"])
-
-        assert result.exit_code == 0
-        payload = json.loads(result.stdout)
-        assert payload["signal_count"] == 1
-        assert payload["action_count"] == 1
+        call_mock.assert_called_once_with("loop_tick")
 
 
 class TestStatusCommand:

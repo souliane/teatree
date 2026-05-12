@@ -5,43 +5,22 @@ slot's lifecycle and exposes ``tick`` for out-of-band invocations
 (tests, manual debugging). ``start`` spawns a Claude Code session
 with the loop pre-registered; ``stop`` prints the slot id to unregister
 from inside the session.
+
+The ``tick`` subcommand delegates to the ``loop_tick`` Django management
+command via subprocess — anything that touches the Django ORM must be a
+management command, not a plain typer command with manual ``django.setup()``.
 """
 
-import json
 import os
 import shutil
 import sys
-from dataclasses import asdict
 from pathlib import Path
-from typing import Any
 
-import django
 import typer
 
-from teatree.core.backend_factory import code_host_from_overlay, iter_overlay_backends, messaging_from_overlay
 from teatree.loop.statusline import default_path
-from teatree.loop.tick import TickReport, TickRequest, run_tick
 
 loop_app = typer.Typer(name="loop", help="Manage the long-lived fat loop.", no_args_is_help=True)
-
-
-def _ensure_django_ready() -> None:
-    os.environ.setdefault("DJANGO_SETTINGS_MODULE", "teatree.settings")
-    django.setup()
-
-
-type ReportDict = dict[str, Any]
-
-
-def _report_to_dict(report: TickReport) -> ReportDict:
-    return {
-        "started_at": report.started_at.isoformat(),
-        "signal_count": report.signal_count,
-        "action_count": report.action_count,
-        "statusline_path": str(report.statusline_path) if report.statusline_path else "",
-        "errors": report.errors,
-        "actions": [asdict(action) for action in report.actions],
-    }
 
 
 @loop_app.command("tick")
@@ -61,26 +40,26 @@ def tick_command(
 ) -> None:
     """Run one tick: scan in parallel, dispatch, render statusline.
 
-    Without ``--overlay``, every registered overlay is scanned in
-    parallel — useful when you maintain multiple GitHub identities
-    (one per overlay). With ``--overlay <name>``, only that overlay's
-    credentials are used.
+    Delegates to the ``loop_tick`` Django management command so that
+    Django is bootstrapped by the management framework (not manual
+    ``django.setup()``).  All heavy imports (ORM, backends, scanners)
+    live in the management command module, not here.
     """
-    _ensure_django_ready()
+    import django  # noqa: PLC0415
+
+    os.environ.setdefault("DJANGO_SETTINGS_MODULE", "teatree.settings")
+    django.setup()
+
+    from django.core.management import call_command  # noqa: PLC0415
+
+    kwargs: dict[str, str | bool | None] = {}
+    if statusline_file is not None:
+        kwargs["statusline_file"] = str(statusline_file)
     if overlay:
-        request = TickRequest(host=code_host_from_overlay(), messaging=messaging_from_overlay())
-    else:
-        request = TickRequest(backends=iter_overlay_backends())
-    report = run_tick(request, statusline_path=statusline_file)
+        kwargs["overlay"] = overlay
     if json_output:
-        typer.echo(json.dumps(_report_to_dict(report), indent=2))
-        return
-    typer.echo(f"OK    {report.signal_count} signal(s), {report.action_count} action(s).")
-    if report.errors:
-        for name, message in report.errors.items():
-            typer.echo(f"WARN  {name}: {message}")
-    if report.statusline_path:
-        typer.echo(f"      statusline → {report.statusline_path}")
+        kwargs["json_output"] = True
+    call_command("loop_tick", **kwargs)
 
 
 @loop_app.command("status")
