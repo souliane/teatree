@@ -27,6 +27,7 @@ from teatree.utils.secrets import write_pass
 type SlackManifest = dict[str, Any]
 
 _BOT_SCOPES = [
+    "app_mentions:read",
     "channels:history",
     "channels:read",
     "chat:write",
