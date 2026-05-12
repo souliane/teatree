@@ -165,11 +165,11 @@ def _http_get_with_retry(
     retries: int,
     retry_delay: float,
 ) -> httpx.Response:
-    last_exc = httpx.ConnectError("no attempts made")
+    last_exc = httpx.NetworkError("no attempts made")
     for attempt in range(max(1, retries + 1)):
         try:
             return httpx.get(url, headers=headers, timeout=timeout)
-        except httpx.ConnectError as exc:
+        except httpx.NetworkError as exc:
             last_exc = exc
             if attempt < retries:
                 time.sleep(retry_delay * (2**attempt))
