@@ -7,6 +7,7 @@ import re
 import shutil
 import sys
 import tomllib
+from datetime import UTC, datetime
 from pathlib import Path
 
 import typer
@@ -104,62 +105,132 @@ def _run_captured(args: list[str], cwd: Path | None = None) -> CompletedProcess[
     return run_allowed_to_fail(args, cwd=cwd, expected_codes=None)
 
 
-def _uninstall_marketplace_plugin(claude_bin: str) -> None:
-    """Remove the marketplace-cached plugin if present (replaced by local symlink)."""
-    plugin_id = f"{_PLUGIN_NAME}@{_MARKETPLACE_NAME}"
-    result = _run_captured([claude_bin, "plugin", "uninstall", plugin_id])
-    if result.returncode == 0:
-        typer.echo(f"OK    Removed stale marketplace plugin {plugin_id}.")
+_PLUGIN_ID = f"{_PLUGIN_NAME}@{_MARKETPLACE_NAME}"
 
-    cache_root = Path.home() / ".claude" / "plugins" / "cache" / _MARKETPLACE_NAME / _PLUGIN_NAME
+
+def _read_json(path: Path) -> dict:
+    if path.is_file():
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            pass
+    return {}
+
+
+def _write_json(path: Path, data: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+
+def _settings_path() -> Path:
+    """Return the resolved settings.json path (follows symlinks)."""
+    path = Path.home() / ".claude" / "settings.json"
+    return path.resolve() if path.is_file() else path
+
+
+def _register_installed_plugin(repo: Path) -> None:
+    """Register t3 in installed_plugins.json with installPath pointing to the main clone."""
+    plugins_json = Path.home() / ".claude" / "plugins" / "installed_plugins.json"
+    data = _read_json(plugins_json)
+    data.setdefault("version", 2)
+    plugins = data.setdefault("plugins", {})
+
+    target = str(repo.resolve())
+    now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+    existing = plugins.get(_PLUGIN_ID, [])
+    if existing and existing[0].get("installPath") == target:
+        return
+
+    plugins[_PLUGIN_ID] = [
+        {
+            "scope": "user",
+            "installPath": target,
+            "version": "local",
+            "installedAt": existing[0].get("installedAt", now) if existing else now,
+            "lastUpdated": now,
+        },
+    ]
+    _write_json(plugins_json, data)
+
+
+def _enable_plugin() -> None:
+    """Ensure t3@souliane is enabled in settings.json."""
+    resolved = _settings_path()
+    data = _read_json(resolved)
+    plugins = data.setdefault("enabledPlugins", {})
+    if plugins.get(_PLUGIN_ID) is True:
+        return
+    plugins[_PLUGIN_ID] = True
+    _write_json(resolved, data)
+
+
+def _cleanup_legacy_plugin() -> None:
+    """Remove legacy symlink-based plugin setup from before marketplace-style registration."""
+    plugins_dir = Path.home() / ".claude" / "plugins"
+    link = plugins_dir / _PLUGIN_NAME
+    if link.is_symlink():
+        link.unlink()
+        typer.echo(f"OK    Removed legacy plugin symlink: {link}")
+
+    resolved = _settings_path()
+    data = _read_json(resolved)
+    enabled = data.get("enabledPlugins", {})
+    legacy_keys = [k for k in enabled if k.startswith("/") and k.endswith(f"/{_PLUGIN_NAME}")]
+    if legacy_keys:
+        for key in legacy_keys:
+            del enabled[key]
+        _write_json(resolved, data)
+        typer.echo(f"OK    Removed {len(legacy_keys)} legacy enabledPlugins path entry(ies).")
+
+    cache_root = plugins_dir / "cache" / _MARKETPLACE_NAME / _PLUGIN_NAME
     if cache_root.is_dir():
         shutil.rmtree(cache_root)
 
 
-def _enable_local_plugin(link: Path) -> None:
-    """Ensure the local plugin path is enabled in settings.json."""
-    settings_path = Path.home() / ".claude" / "settings.json"
-    resolved = settings_path.resolve() if settings_path.is_file() else settings_path
-    if resolved.is_file():
-        data = json.loads(resolved.read_text(encoding="utf-8"))
-    else:
-        resolved.parent.mkdir(parents=True, exist_ok=True)
-        data = {}
-    plugins = data.setdefault("enabledPlugins", {})
-    key = str(link)
-    if plugins.get(key) is True:
+def _ensure_marketplace_symlink(repo: Path) -> None:
+    """Create ``plugins/t3 -> ..`` inside the repo for marketplace source resolution."""
+    plugins_dir = repo / "plugins"
+    link = plugins_dir / _PLUGIN_NAME
+    if link.is_symlink():
         return
-    plugins[key] = True
-    resolved.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    plugins_dir.mkdir(exist_ok=True)
+    link.symlink_to("..")
+
+
+def _register_marketplace(repo: Path) -> None:
+    """Ensure the ``souliane`` marketplace is registered in known_marketplaces.json."""
+    _ensure_marketplace_symlink(repo)
+    marketplaces_json = Path.home() / ".claude" / "plugins" / "known_marketplaces.json"
+    data = _read_json(marketplaces_json)
+    target = str(repo.resolve())
+    now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+    existing = data.get(_MARKETPLACE_NAME, {})
+    if existing.get("installLocation") == target:
+        return
+
+    data[_MARKETPLACE_NAME] = {
+        "source": {"source": "directory", "path": target},
+        "installLocation": target,
+        "lastUpdated": now,
+    }
+    _write_json(marketplaces_json, data)
 
 
 def _install_claude_plugin(repo: Path) -> bool:
-    """Link the t3 plugin to the local checkout (always live, no cache)."""
-    plugins_dir = Path.home() / ".claude" / "plugins"
-    plugins_dir.mkdir(parents=True, exist_ok=True)
-    link = plugins_dir / _PLUGIN_NAME
+    """Register the t3 plugin pointing directly at the local main clone.
 
-    target = repo.resolve()
-    if link.is_symlink():
-        if link.resolve() == target:
-            typer.echo(f"OK    Plugin symlink already correct: {link} → {repo}")
-        else:
-            link.unlink()
-            link.symlink_to(target)
-            typer.echo(f"OK    Plugin symlink updated: {link} → {repo}")
-    elif link.exists():
-        typer.echo(f"WARN  {link} exists but is not a symlink — skipping plugin link.")
-        return False
-    else:
-        link.symlink_to(target)
-        typer.echo(f"OK    Plugin symlink created: {link} → {repo}")
-
-    _enable_local_plugin(link)
-
-    claude_bin = shutil.which("claude")
-    if claude_bin:
-        _uninstall_marketplace_plugin(claude_bin)
-
+    Uses the same ``installed_plugins.json`` format as marketplace-installed
+    plugins so Claude Code treats it identically (namespaced skills, visible
+    in ``claude plugin list``).  The ``installPath`` points directly at the
+    main clone — no cache copy, always live.
+    """
+    _cleanup_legacy_plugin()
+    _register_marketplace(repo)
+    _register_installed_plugin(repo)
+    _enable_plugin()
+    typer.echo(f"OK    Plugin {_PLUGIN_ID} registered (installPath: {repo.resolve()}).")
     return True
 
 
@@ -420,6 +491,7 @@ def _sync_skill_symlinks(
     created = 0
     fixed = 0
 
+    core_skill_names: set[str] = set()
     if sync_core:
         for skill in sorted(DEFAULT_SKILLS_DIR.iterdir()):
             if not (skill / "SKILL.md").is_file():
@@ -429,8 +501,11 @@ def _sync_skill_symlinks(
             fixed += f
     else:
         _remove_core_skill_links(runtime_skills, DEFAULT_SKILLS_DIR)
+        core_skill_names = {s.name for s in DEFAULT_SKILLS_DIR.iterdir() if (s / "SKILL.md").is_file()}
 
     for target, link_name in DoctorService.collect_overlay_skills():
+        if link_name in core_skill_names:
+            continue
         c, f = _ensure_skill_link(target, runtime_skills / link_name, workspace_dir)
         created += c
         fixed += f

@@ -143,29 +143,29 @@ class DoctorService:
     @staticmethod
     def find_installed_claude_plugin() -> dict[str, str] | None:
         """Return plugin version/installPath/scope, or None when not installed."""
+        plugins_json = Path.home() / ".claude" / "plugins" / "installed_plugins.json"
+        if plugins_json.is_file():
+            try:
+                data = json.loads(plugins_json.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                data = {}
+            entries = (data.get("plugins") or {}).get(_CLAUDE_PLUGIN_ID) or []
+            if entries:
+                first = entries[0]
+                return {
+                    "version": first.get("version", ""),
+                    "installPath": first.get("installPath", ""),
+                    "scope": first.get("scope", ""),
+                }
+        # Legacy: symlink in plugins dir (pre-marketplace registration).
         link = Path.home() / ".claude" / "plugins" / "t3"
         if link.is_symlink():
             return {
-                "version": "(local)",
+                "version": "(legacy-symlink)",
                 "installPath": str(link.resolve()),
                 "scope": "symlink",
             }
-        plugins_json = Path.home() / ".claude" / "plugins" / "installed_plugins.json"
-        if not plugins_json.is_file():
-            return None
-        try:
-            data = json.loads(plugins_json.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            return None
-        entries = (data.get("plugins") or {}).get(_CLAUDE_PLUGIN_ID) or []
-        if not entries:
-            return None
-        first = entries[0]
-        return {
-            "version": first.get("version", ""),
-            "installPath": first.get("installPath", ""),
-            "scope": first.get("scope", ""),
-        }
+        return None
 
     @staticmethod
     def collect_overlay_skills() -> list[tuple[Path, str]]:
@@ -447,6 +447,107 @@ def _check_skills() -> bool:
     return ok
 
 
+def _read_json_safe(path: Path) -> dict:
+    if not path.is_file():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def _resolve_main_clone() -> Path | None:
+    env_path = os.environ.get("T3_REPO", "")
+    if env_path:
+        candidate = Path(env_path).expanduser()
+        if (candidate / "pyproject.toml").is_file():
+            return candidate
+    repo = DoctorService.find_teatree_repo()
+    if not repo:
+        return None
+    git = repo / ".git"
+    if git.is_file():
+        match = re.match(r"^gitdir:\s*(.+)$", git.read_text().strip())
+        if match:
+            main_git = Path(match.group(1)).parent.parent
+            if main_git.name == ".git" and main_git.is_dir():
+                return main_git.parent
+    return repo
+
+
+def _repair_marketplace_json(plugins_dir: Path, target: str, now: str) -> bool:
+    path = plugins_dir / "known_marketplaces.json"
+    data = _read_json_safe(path)
+    mp_name = _CLAUDE_PLUGIN_ID.split("@", 1)[1]
+    if data.get(mp_name, {}).get("installLocation") == target:
+        return False
+    data[mp_name] = {
+        "source": {"source": "directory", "path": target},
+        "installLocation": target,
+        "lastUpdated": now,
+    }
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    return True
+
+
+def _repair_installed_plugins(plugins_dir: Path, target: str, now: str) -> bool:
+    path = plugins_dir / "installed_plugins.json"
+    data = _read_json_safe(path)
+    plugins = data.setdefault("plugins", {})
+    entries = plugins.get(_CLAUDE_PLUGIN_ID, [])
+    if entries and entries[0].get("installPath") == target:
+        return False
+    data.setdefault("version", 2)
+    plugins[_CLAUDE_PLUGIN_ID] = [
+        {
+            "scope": "user",
+            "installPath": target,
+            "version": "local",
+            "installedAt": entries[0].get("installedAt", now) if entries else now,
+            "lastUpdated": now,
+        },
+    ]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    return True
+
+
+def _repair_enabled_plugins() -> bool:
+    settings_path = Path.home() / ".claude" / "settings.json"
+    resolved = settings_path.resolve() if settings_path.is_file() else settings_path
+    data = _read_json_safe(resolved)
+    enabled = data.setdefault("enabledPlugins", {})
+    if enabled.get(_CLAUDE_PLUGIN_ID) is True:
+        return False
+    enabled[_CLAUDE_PLUGIN_ID] = True
+    resolved.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    return True
+
+
+def _ensure_plugin_registered() -> bool:
+    """Verify and auto-repair t3 plugin registration.
+
+    Called at every ``t3 doctor check`` (and thus every Claude session start).
+    """
+    repo = _resolve_main_clone()
+    if not repo:
+        return True
+
+    from datetime import UTC, datetime  # noqa: PLC0415
+
+    target = str(repo.resolve())
+    now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    plugins_dir = Path.home() / ".claude" / "plugins"
+
+    repaired = _repair_marketplace_json(plugins_dir, target, now)
+    repaired = _repair_installed_plugins(plugins_dir, target, now) or repaired
+    repaired = _repair_enabled_plugins() or repaired
+
+    if repaired:
+        typer.echo(f"OK    Auto-repaired {_CLAUDE_PLUGIN_ID} plugin → {target}")
+    return True
+
+
 @doctor_app.command()
 def check() -> bool:
     """Verify imports, required tools, and editable-install sanity."""
@@ -466,6 +567,7 @@ def check() -> bool:
 
     ok = _check_editable_sanity() and ok
     ok = _check_skills() and ok
+    _ensure_plugin_registered()
 
     if ok:
         typer.echo("All checks passed")
