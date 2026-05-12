@@ -10,13 +10,13 @@ User-facing CLI output flows through ``self.stdout`` / ``self.stderr``
 on ``DjangoDbImporter`` (Django ``BaseCommand`` pattern), which keeps
 the source free of bare ``print`` calls and lets tests capture output
 by passing an ``io.StringIO``.
+
+DSLR snapshot helpers live in ``django_db_dslr``.
 """
 
 import enum
 import logging
 import os
-import re
-import shutil
 import sys
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -24,25 +24,11 @@ from pathlib import Path
 from typing import TextIO
 
 from teatree.utils import bad_artifacts
+from teatree.utils import django_db_dslr as _dslr
+from teatree.utils.django_db_dslr import prune_dslr_snapshots
 from teatree.utils.run import CommandFailedError, TimeoutExpired, run_allowed_to_fail
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass(frozen=True)
-class DjangoDbImportConfig:
-    ref_db_name: str
-    ticket_db_name: str
-    main_repo_path: str
-    dump_dir: str
-    dump_glob: str
-    ci_dump_glob: str
-    snapshot_tool: str = "dslr"
-    remote_db_url: str = ""
-    migrate_env_extra: dict[str, str] = field(default_factory=dict)
-    dump_timeout: int = 1800
-    dslr_snapshot: str = ""  # Force a specific DSLR snapshot name (skip auto-discovery)
-    dump_path: str = ""  # Force a specific .pgsql dump file (skip DSLR and dump discovery)
 
 
 # ---------------------------------------------------------------------------
@@ -97,98 +83,6 @@ def _terminate_connections(db_name: str, pg_host: str, pg_user: str, pg_env: dic
     )
 
 
-def _find_dslr_cmd(tool_name: str, _main_repo_path: str = "") -> list[str]:
-    """Return a command prefix for invoking dslr.
-
-    Uses ``uv run`` from the **host project** (where dslr + psycopg live as
-    hard dependencies), not from the target repo.  The *main_repo_path* arg
-    is accepted for backward compatibility but ignored — dslr must be in the
-    teatree host project's venv.
-
-    Honour ``DSLR_CMD`` env var as an explicit override.
-    """
-    dslr = os.environ.get("DSLR_CMD", "")
-    if dslr and shutil.which(dslr):
-        return [dslr]
-    if shutil.which("uv"):
-        return ["uv", "run", tool_name]
-    return []
-
-
-def _dslr_env(ref_db: str) -> dict[str, str]:
-    url = _local_db_url(ref_db)
-    return {**os.environ, "DATABASE_URL": url, "DSLR_DB_URL": url}
-
-
-def _dslr_snap_name(ref_db: str) -> str:
-    today = datetime.now(tz=UTC).strftime("%Y%m%d")
-    return f"{today}_{ref_db}"
-
-
-def _dslr_artifact_key(snap_name: str) -> str:
-    return f"dslr:{snap_name}"
-
-
-def _find_dslr_snapshots(dslr_cmd: list[str], env: dict[str, str], ref_db: str) -> list[str]:
-    """Return matching DSLR snapshots sorted newest-first, excluding bad artifacts."""
-    suffix = f"_{ref_db}"
-    result = run_allowed_to_fail([*dslr_cmd, "list"], env=env, expected_codes=None)
-    if result.returncode != 0:
-        return []
-    names: list[str] = []
-    for line in result.stdout.splitlines():
-        token = line.strip().split()[0] if line.strip() else ""
-        if token.endswith(suffix) and not bad_artifacts.is_bad(_dslr_artifact_key(token)):
-            names.append(token)
-    names.sort(reverse=True)
-    return names
-
-
-def _is_env_error(stderr: str) -> bool:
-    """Return True if the error is environmental (connection, auth), not data corruption."""
-    env_patterns = [
-        "connection refused",
-        "could not connect",
-        "password authentication failed",
-        "SSL",
-        "ssl",
-        "no pg_hba.conf entry",
-        "timeout expired",
-        "server closed the connection",
-    ]
-    lower = stderr.lower()
-    return any(p.lower() in lower for p in env_patterns)
-
-
-def _restore_ref_from_dslr(dslr_cmd: list[str], env: dict[str, str], snap_name: str) -> tuple[bool, bool, str]:
-    """Restore a DSLR snapshot. Returns (success, is_env_error, stderr)."""
-    result = run_allowed_to_fail([*dslr_cmd, "restore", snap_name], env=env, expected_codes=None)
-    if result.returncode == 0:
-        return True, False, ""
-    return False, _is_env_error(result.stderr), result.stderr.strip()
-
-
-def _extract_failing_migration(stdout: str) -> str | None:
-    match = re.search(r"Applying (\w+\.\w+)\.\.\.", stdout)
-    return match.group(1) if match else None
-
-
-def _parse_dslr_snapshots(stdout: str) -> dict[str, list[str]]:
-    """Parse ``dslr list`` output, group snapshot names by tenant (suffix after date)."""
-    by_tenant: dict[str, list[str]] = {}
-    for line in stdout.splitlines():
-        token = line.strip().split()[0] if line.strip() else ""
-        if not token:
-            continue
-        # Snapshot names: <date>_<tenant>  e.g. "20260401_development-acme"
-        if "_" in token:
-            tenant = token.split("_", maxsplit=1)[1]
-            by_tenant.setdefault(tenant, []).append(token)
-    for names in by_tenant.values():
-        names.sort(reverse=True)
-    return by_tenant
-
-
 def validate_dump(dump_path: Path) -> bool:
     if dump_path.stat().st_size == 0:
         return False
@@ -197,6 +91,22 @@ def validate_dump(dump_path: Path) -> bool:
         sys.stdout.write(f"  WARNING: Dump appears truncated: {dump_path.name} (delete and re-fetch)\n")
         return False
     return True
+
+
+@dataclass(frozen=True)
+class DjangoDbImportConfig:
+    ref_db_name: str
+    ticket_db_name: str
+    main_repo_path: str
+    dump_dir: str
+    dump_glob: str
+    ci_dump_glob: str
+    snapshot_tool: str = "dslr"
+    remote_db_url: str = ""
+    migrate_env_extra: dict[str, str] = field(default_factory=dict)
+    dump_timeout: int = 1800
+    dslr_snapshot: str = ""
+    dump_path: str = ""
 
 
 _MAX_MIGRATE_RETRIES = 20
@@ -236,8 +146,10 @@ class DjangoDbImporter:
         self.cfg = cfg
         self.stdout: TextIO = stdout if stdout is not None else sys.stdout
         self.stderr: TextIO = stderr if stderr is not None else sys.stderr
-        self.dslr_cmd: list[str] = _find_dslr_cmd(cfg.snapshot_tool, cfg.main_repo_path) if cfg.snapshot_tool else []
-        self.dslr_env: dict[str, str] = _dslr_env(cfg.ref_db_name) if self.dslr_cmd else {}
+        self.dslr_cmd: list[str] = (
+            _dslr.find_dslr_cmd(cfg.snapshot_tool, cfg.main_repo_path) if cfg.snapshot_tool else []
+        )
+        self.dslr_env: dict[str, str] = _dslr.dslr_env(cfg.ref_db_name) if self.dslr_cmd else {}
         pg_host, pg_user, pg_env = _pg_args()
         self.pg_host = pg_host
         self.pg_user = pg_user
@@ -272,7 +184,7 @@ class DjangoDbImporter:
         return True
 
     def _take_dslr_snapshot(self) -> None:
-        snap_name = _dslr_snap_name(self.cfg.ref_db_name)
+        snap_name = _dslr.dslr_snap_name(self.cfg.ref_db_name)
         self.stdout.write(f"  Taking DSLR snapshot: {snap_name}\n")
         run_allowed_to_fail([*self.dslr_cmd, "snapshot", "-y", snap_name], env=self.dslr_env, expected_codes=None)
 
@@ -321,7 +233,7 @@ class DjangoDbImporter:
         if "already exists" not in combined and "does not exist" not in combined:
             return "Cannot migrate reference DB (non-fakeable error), skipping."
 
-        failing = _extract_failing_migration(stdout)
+        failing = _dslr.extract_failing_migration(stdout)
         if not failing:
             return "Cannot identify failing migration, skipping reference migration."
 
@@ -401,13 +313,13 @@ class DjangoDbImporter:
     def _resolve_dslr_snapshots(self) -> list[str]:
         if self.cfg.dslr_snapshot:
             return [self.cfg.dslr_snapshot]
-        return _find_dslr_snapshots(self.dslr_cmd, self.dslr_env, self.cfg.ref_db_name)
+        return _dslr.find_dslr_snapshots(self.dslr_cmd, self.dslr_env, self.cfg.ref_db_name)
 
     def _log_dslr_restore_failure(self, snap_name: str, *, is_env: bool, stderr: str) -> None:
         if is_env:
             self.stdout.write(f"  WARNING: DSLR restore failed (environment error, not marking bad): {snap_name}\n")
         else:
-            bad_artifacts.mark_bad(_dslr_artifact_key(snap_name))
+            bad_artifacts.mark_bad(_dslr.dslr_artifact_key(snap_name))
             self.stdout.write(
                 f"  BAD ARTIFACT: DSLR snapshot '{snap_name}' marked bad (delete: dslr delete {snap_name})\n",
             )
@@ -428,7 +340,7 @@ class DjangoDbImporter:
             return False
         for snap_name in snapshots:
             self.stdout.write(f"  Restoring {self.cfg.ref_db_name} from DSLR snapshot: {snap_name}\n")
-            ok, is_env, stderr = _restore_ref_from_dslr(self.dslr_cmd, self.dslr_env, snap_name)
+            ok, is_env, stderr = _dslr.restore_ref_from_dslr(self.dslr_cmd, self.dslr_env, snap_name)
             if not ok:
                 self._log_dslr_restore_failure(snap_name, is_env=is_env, stderr=stderr)
                 continue
@@ -627,22 +539,10 @@ def django_db_import(
     )
 
 
-def prune_dslr_snapshots(*, keep: int = 1, snapshot_tool: str = "dslr", main_repo_path: str = "") -> list[str]:
-    """Delete old DSLR snapshots, keeping the *keep* newest per tenant.
-
-    Returns a list of deleted snapshot names.
-    """
-    dslr_cmd = _find_dslr_cmd(snapshot_tool, main_repo_path)
-    if not dslr_cmd:
-        return []
-    result = run_allowed_to_fail([*dslr_cmd, "list"], expected_codes=None)
-    if result.returncode != 0:
-        return []
-    by_tenant = _parse_dslr_snapshots(result.stdout)
-    deleted: list[str] = []
-    for tenant, names in by_tenant.items():
-        for old in names[keep:]:
-            sys.stdout.write(f"  Pruning DSLR snapshot: {old} (tenant={tenant})\n")
-            run_allowed_to_fail([*dslr_cmd, "delete", "-y", old], expected_codes=None)
-            deleted.append(old)
-    return deleted
+__all__ = [
+    "DjangoDbImportConfig",
+    "DjangoDbImporter",
+    "django_db_import",
+    "prune_dslr_snapshots",
+    "validate_dump",
+]

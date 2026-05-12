@@ -417,29 +417,20 @@ class IntrospectionHelpers:
             return editable, url
 
 
-@doctor_app.command()
-def check() -> bool:
-    """Verify imports, required tools, and editable-install sanity."""
+def _check_editable_sanity() -> bool:
     ok = True
-
     try:
-        import django  # noqa: PLC0415, F401
-
-        import teatree.core  # noqa: PLC0415, F401
-    except ImportError as exc:
-        typer.echo(f"FAIL  Import check: {exc}")
-        return False
-
-    for tool in _REQUIRED_TOOLS:
-        if not shutil.which(tool):
-            typer.echo(f"FAIL  Required tool not found: {tool}")
+        for problem in DoctorService.check_editable_sanity():
+            typer.echo(f"WARN  {problem}")
             ok = False
-
-    for problem in DoctorService.check_editable_sanity():
-        typer.echo(f"WARN  {problem}")
+    except Exception as exc:  # noqa: BLE001 — overlay loading can fail in many ways
+        typer.echo(f"FAIL  Editable sanity check crashed: {exc.__class__.__name__}: {exc}")
         ok = False
+    return ok
 
-    # Validate SKILL.md frontmatter.
+
+def _check_skills() -> bool:
+    ok = True
     claude_skills = Path.home() / ".claude" / "skills"
     if claude_skills.is_dir():
         from teatree.skill_schema import validate_directory  # noqa: PLC0415
@@ -453,6 +444,28 @@ def check() -> bool:
         if not errors:
             skill_count = sum(1 for d in claude_skills.iterdir() if d.is_dir() and (d / "SKILL.md").is_file())
             typer.echo(f"OK    {skill_count} skill(s) validated")
+    return ok
+
+
+@doctor_app.command()
+def check() -> bool:
+    """Verify imports, required tools, and editable-install sanity."""
+    try:
+        import django  # noqa: PLC0415, F401
+
+        import teatree.core  # noqa: PLC0415, F401
+    except ImportError as exc:
+        typer.echo(f"FAIL  Import check: {exc}")
+        return False
+
+    ok = True
+    for tool in _REQUIRED_TOOLS:
+        if not shutil.which(tool):
+            typer.echo(f"FAIL  Required tool not found: {tool}")
+            ok = False
+
+    ok = _check_editable_sanity() and ok
+    ok = _check_skills() and ok
 
     if ok:
         typer.echo("All checks passed")
