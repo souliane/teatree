@@ -555,6 +555,7 @@ Usage: t3 tool [OPTIONS] COMMAND [ARGS]...
 │ find-duplicates  Flag pairs of open issues with near-identical titles.       │
 │ claude-handover  Show Claude handover telemetry and runtime recommendations. │
 │ triage-issues    Scan for resolved-but-open and stale issues.                │
+│ notion-download  Download a Notion file attachment using browser cookies.    │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -695,6 +696,22 @@ Usage: t3 tool triage-issues [OPTIONS] REPO
 │ --close-resolved                 Close resolved-but-open issues (with        │
 │                                  comment linking the merged PR).             │
 │ --help                           Show this message and exit.                 │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 tool notion-download`
+
+```
+Usage: t3 tool notion-download [OPTIONS] URL
+
+ Download a Notion file attachment using browser cookies.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    url      TEXT  file.notion.so URL from browser tab. [required]          │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --dest  -d      PATH  Destination directory. [default: .]                    │
+│ --help                Show this message and exit.                            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
