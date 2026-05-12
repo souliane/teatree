@@ -115,10 +115,11 @@ EOF
 
 `t3 setup` installs teatree's skills per runtime:
 
-- **Claude** — core skills ship inside the `t3@souliane` plugin, so `t3 setup`
-  does **not** symlink them into `~/.claude/skills/`. Any leftover core
-  symlinks from pre-plugin installs are pruned to avoid duplicate entries.
-  Overlay skills (not shipped by the plugin) are still symlinked.
+- **Claude** — core skills ship inside the plugin (loaded via symlink at
+  `~/.claude/plugins/t3 → <clone>`), so `t3 setup` does **not** symlink
+  them into `~/.claude/skills/`. Any leftover core symlinks from
+  pre-plugin installs are pruned to avoid duplicate entries. Overlay
+  skills (not shipped by the plugin) are still symlinked.
 - **Other runtimes** listed in `teatree.cli.setup.AGENT_SKILL_RUNTIMES`
   (e.g. Codex) are targeted when their home directory already exists, and
   receive symlinks for both core and overlay skills.
@@ -131,9 +132,9 @@ every runtime dir teatree detected along with the count of managed symlinks.
 
 ## Step 4: Claude Code Plugin Hooks
 
-Teatree ships a `hooks.json` that Claude Code loads automatically when the plugin is installed. All hooks route through `hook_router.py`, a unified Python router that handles event dispatch.
+Teatree ships a `hooks.json` that Claude Code loads automatically via the plugin symlink at `~/.claude/plugins/t3`. All hooks route through `hook_router.py`, a unified Python router that handles event dispatch.
 
-If the user installed via `apm install -g <owner>/teatree`, hooks are already configured. For manual installs or troubleshooting, verify the plugin is registered in `~/.claude/plugins.json`.
+Verify the symlink exists: `ls -la ~/.claude/plugins/t3`.
 
 The hooks cover these events:
 

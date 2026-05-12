@@ -90,7 +90,7 @@ Source: `claurst/spec/11_special_systems.md` § 4.1–4.4
 3. **Project settings** (`.claude/skills/` walking up to workspace root)
 4. **Additional dirs** (`--add-dir`)
 5. **Legacy commands** (`.claude/commands/`)
-6. **Plugin skills** (marketplace or `--plugin-dir`)
+6. **Plugin skills** (symlink in `~/.claude/plugins/`)
 7. **Bundled skills** (compiled into binary)
 8. **MCP skills** (generated from MCP tool definitions)
 

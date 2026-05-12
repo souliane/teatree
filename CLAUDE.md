@@ -21,7 +21,7 @@ Teatree IS the Django project. Overlays are lightweight Python packages:
 - Overlay-specific config lives on `OverlayBase` methods (not Django settings)
 - `OverlayBase` uses composition: `overlay.config` is an `OverlayConfig` instance (credentials, URLs, labels)
 - Multi-overlay support: `overlay` CharField on Ticket, Worktree, Session
-- `pip install teatree` works — no repo checkout or `uv` needed
+- Installed from a local clone via `uv tool install --editable .` then `t3 setup`
 - CLI: `t3 startoverlay` (not `startproject`) creates lightweight overlay packages
 
 ## Running things

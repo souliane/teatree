@@ -1,11 +1,28 @@
 #!/usr/bin/env bash
-# SessionStart hook: inject a mandatory completeness-check /loop directive.
-# The agent MUST set up a recurring self-check loop at session start.
-# This is deterministic: the hook fires every session, the directive is
-# in additionalContext, and the /loop skill handles the scheduling.
+# SessionStart hook: ensure a durable teatree fat loop exists.
+#
+# Checks ~/.claude/scheduled_tasks.json for an existing "t3 loop tick"
+# entry. If found, stays silent (singleton). If absent, injects an
+# additionalContext directive telling the agent to create one via
+# CronCreate with durable: true.
+#
+# The fat loop tick combines:
+#  - Scanner dispatch and statusline render (t3 loop tick)
+#  - Task completeness checks (TaskList, deferred-work scan)
 
-cat <<'JSON'
+_tasks_file="$HOME/.claude/scheduled_tasks.json"
+_marker="t3 loop tick"
+
+if [ -f "$_tasks_file" ] && grep -q "$_marker" "$_tasks_file" 2>/dev/null; then
+    exit 0
+fi
+
+_cadence="${T3_LOOP_CADENCE:-720}"
+_cron_minutes=$(( _cadence / 60 ))
+[ "$_cron_minutes" -lt 1 ] && _cron_minutes=1
+
+cat <<JSON
 {
-  "additionalContext": "MANDATORY SESSION SETUP (from teatree SessionStart hook): Create a recurring completeness check NOW by running: /loop 10m — On each tick: (1) call TaskList and verify progress, (2) flag any task in_progress >15 min without a commit, (3) scan conversation for deferred work ('for another session', 'out of scope', 'TODO', 'later'), (4) retro-create TaskCreate entries for any discovered skipped items, (5) if all tasks completed and no deferrals remain, stop the loop. This loop prevents premature completion claims and captures orphaned work items. Do NOT skip this step."
+  "additionalContext": "MANDATORY SESSION SETUP (from teatree SessionStart hook): A durable teatree fat loop is NOT yet registered. Create one NOW by calling the CronCreate tool with these exact parameters: cron=\"*/${_cron_minutes} * * * *\", durable=true, recurring=true, prompt=\"Run \`t3 loop tick\` in Bash. Then call TaskList — flag any task in_progress >15 min without a commit, and scan the conversation for deferred work ('for another session', 'out of scope', 'TODO', 'later'). Create TaskCreate entries for any discovered skipped items. Report briefly.\". Do NOT skip this step — it is required for session health monitoring."
 }
 JSON
