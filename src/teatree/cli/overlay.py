@@ -202,9 +202,9 @@ class OverlayAppBuilder:
         @overlay_app.command()
         def resetdb() -> None:
             """Drop the SQLite database and re-run all migrations."""
-            from teatree.paths import get_data_dir  # noqa: PLC0415
+            from teatree.paths import DATA_DIR  # noqa: PLC0415
 
-            db_path = get_data_dir(overlay_name) / "db.sqlite3"
+            db_path = DATA_DIR / "db.sqlite3"
             if db_path.exists():
                 db_path.unlink()
                 typer.echo(f"Deleted {db_path}")

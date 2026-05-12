@@ -280,8 +280,8 @@ def _classify_actions(actions: list[DispatchAction]) -> _ClassifiedActions:
                 bucket.setdefault(overlay, []).append(ref)
             else:
                 c.other.append((action.zone, StatuslineEntry(text=f"{prefix}{action.detail}", url=url_str)))
-        elif action.kind == "mechanical":
-            c.other.append(("in_flight", StatuslineEntry(text=f"⚙ {prefix}{action.detail}", url=url_str)))
+        elif action.kind in {"mechanical", "agent", "webhook"}:
+            pass
     return c
 
 
@@ -527,26 +527,35 @@ def _repo_freshness(repo_path: Path) -> dict[str, int | str] | None:
     return {"behind": behind, "fetch_epoch": fetch_epoch}
 
 
+def _repos_from_toml() -> dict[str, Path]:
+    """Extract repo paths from ~/.teatree.toml overlays."""
+    toml_path = Path.home() / ".teatree.toml"
+    if not toml_path.is_file():
+        return {}
+    try:
+        data = tomllib.loads(toml_path.read_text(encoding="utf-8"))
+    except tomllib.TOMLDecodeError:
+        return {}
+    workspace_dir = Path(str(data.get("teatree", {}).get("workspace_dir", "~/workspace"))).expanduser()
+    repos: dict[str, Path] = {}
+    for name, overlay in (data.get("overlays") or {}).items():
+        if not isinstance(overlay, dict):
+            continue
+        if "path" in overlay:
+            repos[name] = Path(str(overlay["path"])).expanduser()
+        for repo_slug in overlay.get("workspace_repos", []):
+            if isinstance(repo_slug, str):
+                repos[repo_slug.split("/")[-1]] = workspace_dir / repo_slug
+    return repos
+
+
 def _collect_repo_freshness() -> dict[str, dict[str, int | str]]:
     repos: dict[str, Path] = {}
     t3_repo = os.environ.get("T3_REPO")
     if t3_repo:
         repos["t3"] = Path(t3_repo).expanduser()
-    toml_path = Path.home() / ".teatree.toml"
-    if toml_path.is_file():
-        try:
-            data = tomllib.loads(toml_path.read_text(encoding="utf-8"))
-        except tomllib.TOMLDecodeError:
-            data = {}
-        for name, overlay in (data.get("overlays") or {}).items():
-            if isinstance(overlay, dict) and "path" in overlay:
-                repos[name] = Path(str(overlay["path"])).expanduser()
-    result: dict[str, dict[str, int | str]] = {}
-    for label, path in repos.items():
-        info = _repo_freshness(path)
-        if info is not None:
-            result[label] = info
-    return result
+    repos.update(_repos_from_toml())
+    return {label: info for label, path in repos.items() if (info := _repo_freshness(path)) is not None}
 
 
 def _write_tick_meta(started_at: dt.datetime, *, target: Path | None = None) -> None:
