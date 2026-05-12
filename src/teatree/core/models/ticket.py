@@ -67,6 +67,25 @@ class Ticket(models.Model):
     def __str__(self) -> str:
         return str(self.issue_url or f"ticket-{self.pk}")
 
+    def save(self, *args: object, **kwargs: object) -> None:
+        if not self.overlay and self.issue_url:
+            self.overlay = self._infer_overlay()
+        super().save(*args, **kwargs)  # type: ignore[arg-type]
+
+    def _infer_overlay(self) -> str:
+        """Derive overlay name from issue_url by matching workspace_repos in config."""
+        from teatree.core.overlay_loader import get_all_overlays  # noqa: PLC0415
+
+        url = self.issue_url
+        for name, overlay in get_all_overlays().items():
+            config = getattr(overlay, "config", None)
+            if config is None:
+                continue
+            for repo_slug in getattr(config, "workspace_repos", []):
+                if isinstance(repo_slug, str) and repo_slug in url:
+                    return name
+        return ""
+
     @property
     def ticket_number(self) -> str:
         match = re.search(r"(\d+)$", self.issue_url)
@@ -307,6 +326,23 @@ class Ticket(models.Model):
     def rework(self) -> None:
         extra = self._extra()
         extra.pop("tests_passed", None)
+        self.extra = extra
+        self._cancel_pending_tasks()
+
+    @transition(
+        field=state,
+        source=[State.SHIPPED, State.IN_REVIEW, State.MERGED, State.RETROSPECTED],
+        target=State.STARTED,
+    )
+    def reopen(self) -> None:
+        """Reopen a post-ship ticket back to STARTED.
+
+        Triggered when new draft MRs appear after the ticket was shipped,
+        indicating additional work is needed.
+        """
+        extra = self._extra()
+        extra.pop("tests_passed", None)
+        extra["reopened_from"] = self.state
         self.extra = extra
         self._cancel_pending_tasks()
 

@@ -9,6 +9,7 @@ import json
 import os
 import re
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -136,6 +137,60 @@ class TestStatuslineHook:
 
         assert result.returncode == 0, result.stderr
         assert "model=Claude Opus" in _strip_ansi(result.stdout)
+
+    def test_renders_cron_jobs_from_state_file(self, tmp_path: Path) -> None:
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+        crons = {
+            "jobs": {
+                "job-1": {"name": "tick", "cron": "*/12 * * * *", "cadence": 720, "created_at": 0},
+                "job-2": {"name": "followup", "cron": "*/5 * * * *", "cadence": 300, "created_at": 0},
+            },
+            "wakeup": None,
+        }
+        (state_dir / "s-cron.crons").write_text(json.dumps(crons), encoding="utf-8")
+
+        result = _run(
+            {"session_id": "s-cron", "model": {"display_name": "Claude Opus"}},
+            state_dir=state_dir,
+        )
+
+        assert result.returncode == 0, result.stderr
+        plain = _strip_ansi(result.stdout)
+        assert "loops:" in plain
+        assert "tick(12m)" in plain
+        assert "followup(5m)" in plain
+
+    def test_renders_schedule_wakeup_countdown(self, tmp_path: Path) -> None:
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+        crons = {
+            "jobs": {},
+            "wakeup": {"name": "checking build", "next_epoch": int(time.time()) + 180},
+        }
+        (state_dir / "s-wake.crons").write_text(json.dumps(crons), encoding="utf-8")
+
+        result = _run(
+            {"session_id": "s-wake", "model": {"display_name": "Claude Opus"}},
+            state_dir=state_dir,
+        )
+
+        assert result.returncode == 0, result.stderr
+        plain = _strip_ansi(result.stdout)
+        assert "loops:" in plain
+        assert "checking build" in plain
+
+    def test_omits_loops_when_no_crons_file(self, tmp_path: Path) -> None:
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+
+        result = _run(
+            {"session_id": "s-none", "model": {"display_name": "Claude Opus"}},
+            state_dir=state_dir,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert "loops:" not in _strip_ansi(result.stdout)
 
     def test_no_session_id_emits_no_skills_section(self, tmp_path: Path) -> None:
         state_dir = tmp_path / "state"

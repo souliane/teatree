@@ -103,6 +103,42 @@ if [ -n "$skills" ]; then
     header="${header}${sep}${_DIM}skills:${_RST} ${_colored_skills}"
 fi
 
+# Active loops from CronCreate / ScheduleWakeup (written by hook_router.py)
+_crons_file="$state_dir/${session_id}.crons"
+if [ -n "$session_id" ] && [ -r "$_crons_file" ] && command -v jq >/dev/null 2>&1; then
+    _now=${_now:-$(date +%s)}
+    _loop_parts=""
+    for _jid in $(jq -r '.jobs // {} | keys[]' "$_crons_file" 2>/dev/null); do
+        _jname=$(jq -r ".jobs[\"$_jid\"].name // \"loop\"" "$_crons_file" 2>/dev/null)
+        _jcadence=$(jq -r ".jobs[\"$_jid\"].cadence // empty" "$_crons_file" 2>/dev/null)
+        if [ -n "$_jcadence" ] && [ "$_jcadence" != "null" ]; then
+            _jmin=$(( _jcadence / 60 ))
+            _jlabel="${_CYN}${_jname}${_RST}${_DIM}(${_jmin}m)${_RST}"
+        else
+            _jcron=$(jq -r ".jobs[\"$_jid\"].cron // empty" "$_crons_file" 2>/dev/null)
+            _jlabel="${_CYN}${_jname}${_RST}${_DIM}(${_jcron})${_RST}"
+        fi
+        [ -n "$_loop_parts" ] && _loop_parts="${_loop_parts} ${_DIM}·${_RST} "
+        _loop_parts="${_loop_parts}${_jlabel}"
+    done
+    _wakeup_epoch=$(jq -r '.wakeup.next_epoch // empty' "$_crons_file" 2>/dev/null)
+    if [ -n "$_wakeup_epoch" ] && [ "$_wakeup_epoch" != "null" ]; then
+        _wname=$(jq -r '.wakeup.name // "loop"' "$_crons_file" 2>/dev/null)
+        _wdiff=$(( _wakeup_epoch - _now ))
+        if (( _wdiff > 60 )); then
+            _wtiming="$(( _wdiff / 60 ))m"
+        elif (( _wdiff > 0 )); then
+            _wtiming="${_wdiff}s"
+        else
+            _wtiming="now"
+        fi
+        _wlabel="${_CYN}${_wname}${_RST}${_DIM}→${_wtiming}${_RST}"
+        [ -n "$_loop_parts" ] && _loop_parts="${_loop_parts} ${_DIM}·${_RST} "
+        _loop_parts="${_loop_parts}${_wlabel}"
+    fi
+    [ -n "$_loop_parts" ] && header="${header}${sep}${_DIM}loops:${_RST} ${_loop_parts}"
+fi
+
 # RAM usage (macOS/Linux)
 _ram_segment=""
 if [[ "$OSTYPE" == "darwin"* ]]; then
@@ -141,13 +177,15 @@ if [ -r "$_tick_meta" ] && command -v jq >/dev/null 2>&1; then
         _diff=$(( _next_epoch - _now ))
         _overdue=$(( -_diff ))
         if (( _diff > 0 && _diff < 60 )); then
-            _tick_label="${_DIM}tick in ${_diff}s${_RST}"
+            _tick_label="${_CYN}tick${_RST}${_DIM}→${_diff}s${_RST}"
+        elif (( _diff > 0 && _diff < 120 )); then
+            _tick_label="${_YLW}tick${_RST}${_DIM}→$(( _diff / 60 ))m${_RST}"
         elif (( _diff > 0 )); then
-            _tick_label="${_DIM}tick in $(( _diff / 60 ))m${_RST}"
+            _tick_label="${_GRN}tick${_RST}${_DIM}→$(( _diff / 60 ))m${_RST}"
         elif (( _overdue > _tick_cadence * 2 )); then
-            _tick_label="${_RED}loop stale${_RST}"
+            _tick_label="${_RED}tick stale${_RST}"
         else
-            _tick_label="${_DIM}tick now${_RST}"
+            _tick_label="${_CYN}tick now${_RST}"
         fi
         header="${header}${sep}${_tick_label}"
     fi
