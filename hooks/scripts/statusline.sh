@@ -127,7 +127,7 @@ elif [ -r /proc/meminfo ]; then
     _ram_total_gb=$(awk "BEGIN{printf \"%.0f\", $_ram_total_kb / 1048576}")
     _ram_segment="${_DIM}ram=${_RST}$(color_pct "$_ram_pct")${_DIM} ${_ram_used_gb}/${_ram_total_gb}G${_RST}"
 fi
-[ -n "$_ram_segment" ] && header="${header}${sep}${_ram_segment}"
+# RAM segment is appended last (after tick countdown and freshness)
 
 # Next tick countdown from tick-meta.json
 _tick_meta="${target%.txt}-meta.json"
@@ -189,6 +189,9 @@ if [ -r "$_tick_meta" ] && command -v jq >/dev/null 2>&1; then
         [ -n "$_fresh_parts" ] && header="${header}${sep}${_fresh_parts}"
     fi
 fi
+
+# RAM last on the header line
+[ -n "$_ram_segment" ] && header="${header}${sep}${_ram_segment}"
 
 [ -n "$header" ] && printf '%s\n' "$header"
 
