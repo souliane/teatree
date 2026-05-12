@@ -9,7 +9,7 @@ import django.test
 import pytest
 
 from teatree.loop.scanners.base import Scanner, ScanSignal
-from teatree.loop.tick import TickRequest, build_default_scanners, run_tick
+from teatree.loop.tick import TickRequest, _repo_freshness, build_default_scanners, run_tick
 
 
 @dataclass(slots=True)
@@ -78,6 +78,37 @@ def test_tick_with_no_scanners_writes_tick_meta(tmp_path: Path) -> None:
     data = json.loads(meta.read_text(encoding="utf-8"))
     assert data["next_epoch"] > 0
     assert data["cadence"] == 720
+
+
+def test_repo_freshness_on_real_git_repo(tmp_path: Path) -> None:
+    from teatree.utils.run import run_allowed_to_fail  # noqa: PLC0415
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    run_allowed_to_fail(["git", "init"], cwd=repo, expected_codes=None)
+    run_allowed_to_fail(["git", "commit", "--allow-empty", "-m", "init"], cwd=repo, expected_codes=None)
+    info = _repo_freshness(repo)
+    assert info is not None
+    assert isinstance(info["behind"], int)
+    assert isinstance(info["fetch_epoch"], int)
+
+
+def test_repo_freshness_returns_none_for_non_git(tmp_path: Path) -> None:
+    assert _repo_freshness(tmp_path) is None
+
+
+def test_tick_meta_includes_freshness(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    statusline = tmp_path / "statusline.txt"
+    monkeypatch.setenv("T3_REPO", str(tmp_path.parent))
+    run_tick(
+        TickRequest(scanners=[]),
+        statusline_path=statusline,
+        now=dt.datetime(2026, 5, 12, tzinfo=dt.UTC),
+    )
+    meta = tmp_path / "tick-meta.json"
+    assert meta.is_file()
+    data = json.loads(meta.read_text(encoding="utf-8"))
+    assert "freshness" in data
 
 
 def test_build_default_scanners_starts_with_pending_tasks() -> None:
