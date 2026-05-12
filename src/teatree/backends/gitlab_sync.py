@@ -21,7 +21,8 @@ from teatree.backends.gitlab_sync_prs import _PRContext, extract_repo_path, upse
 from teatree.backends.gitlab_sync_terminal import detect_closed_prs, detect_merged_prs
 from teatree.backends.slack_review_sync import fetch_review_permalinks
 from teatree.core.models import Ticket
-from teatree.core.sync import LAST_SYNC_CACHE_KEY, PENDING_REVIEWS_CACHE_KEY, SyncBackend, SyncResult, _overlay_name
+from teatree.core.sync import _overlay_name
+from teatree.types import LAST_SYNC_CACHE_KEY, PENDING_REVIEWS_CACHE_KEY, SyncBackend, SyncResult
 
 logger = logging.getLogger(__name__)
 

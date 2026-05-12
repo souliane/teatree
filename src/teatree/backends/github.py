@@ -8,7 +8,7 @@ from typing import TypedDict, cast
 from urllib.parse import quote_plus, urlparse
 
 from teatree.backends.protocols import PullRequestSpec
-from teatree.core.sync import RawAPIDict
+from teatree.types import RawAPIDict
 from teatree.utils import git
 from teatree.utils.run import CompletedProcess, run_checked
 

@@ -4,8 +4,8 @@ from typing import cast
 
 import httpx
 
-from teatree.core.sync import RawAPIDict
 from teatree.identity import agent_signature_suffix
+from teatree.types import RawAPIDict
 
 
 def post_webhook_message(webhook_url: str, text: str, *, signature: str = "") -> RawAPIDict:
