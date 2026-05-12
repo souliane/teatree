@@ -1,10 +1,11 @@
-"""Scan Slack mentions and DMs delivered by the active overlay's MessagingBackend."""
+"""Scan Slack mentions and DMs from the MessagingBackend and the Socket Mode queue."""
 
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from teatree.backends.protocols import MessagingBackend
+from teatree.backends.slack_receiver import drain_event_queue
 from teatree.loop.scanners.base import ScanSignal
 from teatree.paths import DATA_DIR
 from teatree.types import RawAPIDict
@@ -51,6 +52,17 @@ class SlackMentionsScanner:
         cursors = _read_cursors(self.cursor_path)
         mentions = self.backend.fetch_mentions(since=cursors.get("mentions", ""))
         dms = self.backend.fetch_dms(since=cursors.get("dms", ""))
+
+        for queued in drain_event_queue():
+            event = queued.get("event", {})
+            event_type = event.get("type", "")
+            if event_type == "app_mention":
+                mentions.append(event)
+            elif event_type == "message":
+                channel_type = event.get("channel_type", "")
+                if channel_type == "im":
+                    dms.append(event)
+
         signals: list[ScanSignal] = []
         for event in mentions:
             ts = _ts(event)
