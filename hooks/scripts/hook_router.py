@@ -527,6 +527,37 @@ def handle_read_dedup(data: dict) -> None:
     )
 
 
+# ── PreCompact: retro-before-compact ──────────────────────────────
+
+
+def handle_pre_compact(data: dict) -> None:
+    """Inject retro directive before compaction destroys session knowledge."""
+    session_id = data.get("session_id", "")
+    if not session_id:
+        return
+
+    skills_file = _state_file(session_id, "skills")
+    loaded: set[str] = set()
+    if skills_file.is_file():
+        loaded = {line.strip() for line in skills_file.read_text(encoding="utf-8").splitlines() if line.strip()}
+
+    lifecycle_skills = {"t3:code", "t3:debug", "t3:test", "t3:ship", "t3:review", "t3:ticket"}
+    if not (loaded & lifecycle_skills):
+        return
+
+    json.dump(
+        {
+            "additionalContext": (
+                "COMPACTION IMMINENT — lifecycle skills were active this session "
+                f"({', '.join(sorted(loaded & lifecycle_skills))}). "
+                "Run /t3:retro NOW to persist session learnings to memory before "
+                "context is compressed. After retro completes, compaction will proceed."
+            ),
+        },
+        sys.stdout,
+    )
+
+
 # ── PostCompact: recover-temp-files ───────────────────────────────
 
 
@@ -803,6 +834,7 @@ _HANDLERS: dict[str, list] = {
         handle_read_dedup,
     ],
     "InstructionsLoaded": [handle_track_skill_usage],
+    "PreCompact": [handle_pre_compact],
     "PostCompact": [handle_post_compact],
     "SessionEnd": [handle_session_end],
 }
