@@ -396,6 +396,53 @@ def test_slack_fetch_dms_returns_empty_when_api_fails(monkeypatch: pytest.Monkey
     assert backend.fetch_dms() == []
 
 
+def test_slack_resolve_bot_id_caches_result(monkeypatch: pytest.MonkeyPatch) -> None:
+    call_count = 0
+
+    def fake_post(url: str, **kwargs: object) -> httpx.Response:
+        nonlocal call_count
+        if "conversations.open" in url:
+            return httpx.Response(200, json={"ok": True, "channel": {"id": "D1"}}, request=httpx.Request("POST", url))
+        if "auth.test" in url:
+            call_count += 1
+            return httpx.Response(200, json={"ok": True, "user_id": "UBOT"}, request=httpx.Request("POST", url))
+        return httpx.Response(200, json={"ok": True}, request=httpx.Request("POST", url))
+
+    def fake_get(url: str, **kwargs: object) -> httpx.Response:
+        return httpx.Response(200, json={"ok": True, "messages": []}, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(slack_bot.httpx, "post", fake_post)
+    monkeypatch.setattr(slack_bot.httpx, "get", fake_get)
+    backend = SlackBotBackend(bot_token="xoxb-test", user_id="U1")
+
+    backend.fetch_dms()
+    backend.fetch_dms()
+    assert call_count == 1
+
+
+def test_slack_resolve_bot_id_returns_empty_on_api_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_post(url: str, **kwargs: object) -> httpx.Response:
+        if "conversations.open" in url:
+            return httpx.Response(200, json={"ok": True, "channel": {"id": "D1"}}, request=httpx.Request("POST", url))
+        if "auth.test" in url:
+            return httpx.Response(200, json={"ok": False}, request=httpx.Request("POST", url))
+        return httpx.Response(200, json={"ok": True}, request=httpx.Request("POST", url))
+
+    def fake_get(url: str, **kwargs: object) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"ok": True, "messages": [{"user": "UHUMAN", "text": "x", "ts": "1.0"}]},
+            request=httpx.Request("GET", url),
+        )
+
+    monkeypatch.setattr(slack_bot.httpx, "post", fake_post)
+    monkeypatch.setattr(slack_bot.httpx, "get", fake_get)
+    backend = SlackBotBackend(bot_token="xoxb-test", user_id="U1")
+
+    dms = backend.fetch_dms()
+    assert len(dms) == 1
+
+
 def test_slack_post_reply_includes_thread_ts(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, object] = {}
 
