@@ -117,7 +117,17 @@ def build_default_jobs(
     if backends:
         for backend in backends:
             tag = backend.name
-            jobs.append(_ScannerJob(scanner=ActiveTicketsScanner(overlay_name=tag), overlay=tag))
+            if backend.external_db is not None:
+                from teatree.loop.scanners.external_tickets import ExternalTicketsScanner  # noqa: PLC0415
+
+                jobs.append(
+                    _ScannerJob(
+                        scanner=ExternalTicketsScanner(overlay_name=tag, db_path=backend.external_db),
+                        overlay=tag,
+                    ),
+                )
+            else:
+                jobs.append(_ScannerJob(scanner=ActiveTicketsScanner(overlay_name=tag), overlay=tag))
             if backend.host is not None:
                 jobs.extend(
                     [
