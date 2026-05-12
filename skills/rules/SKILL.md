@@ -414,6 +414,8 @@ This rule does NOT override `User Instructions Are Priority 1` — explicit corr
 
 **Never ask questions inline in text responses.** Always use the `AskUserQuestion` tool — it gives the user a structured UI to respond and prevents questions from being buried in output. One question at a time; wait for the answer before asking the next.
 
+**Why this matters beyond UX:** when Slack is configured, the `PreToolUse` hook automatically mirrors every `AskUserQuestion` call to the user's Slack DM. The user can see pending questions on their phone even when away from the terminal. Plain-text questions bypass this mirror and are invisible on Slack.
+
 ## Publishing Actions Are Mode-Conditional (Non-Negotiable)
 
 The setting `teatree.mode` in `~/.teatree.toml` (or the `T3_MODE` env var) picks between two doctrines for publishing actions — push, PR create, PR merge, PR approve/unapprove, remote branch deletion, Slack posts, any write that leaves the local machine. The default is `interactive` (security-conservative). `auto` opts into full autonomy.
