@@ -238,6 +238,82 @@ def handle_user_prompt_submit(data: dict) -> None:
     print("\n".join(parts))  # noqa: T201
 
 
+# ── UserPromptSubmit + PreToolUse: enforce-loop-registration ──────────
+
+_LOOP_CADENCE_DEFAULT = 720
+_LOOP_PROMPT = "Run `t3 loop tick` in Bash, then briefly report the tick summary."
+
+
+def _tick_meta_stale() -> bool:
+    xdg = os.environ.get("XDG_DATA_HOME", str(Path.home() / ".local" / "share"))
+    meta = Path(xdg) / "teatree" / "tick-meta.json"
+    if not meta.is_file():
+        return True
+    cadence = int(os.environ.get("T3_LOOP_CADENCE", _LOOP_CADENCE_DEFAULT) or _LOOP_CADENCE_DEFAULT)
+    import time  # noqa: PLC0415
+
+    age = int(time.time()) - int(meta.stat().st_mtime)
+    return age > cadence * 2
+
+
+def _session_has_loop(session_id: str) -> bool:
+    crons_file = _state_file(session_id, "crons")
+    if not crons_file.is_file():
+        return False
+    try:
+        data = json.loads(crons_file.read_text(encoding="utf-8"))
+        return bool(data.get("jobs"))
+    except (json.JSONDecodeError, OSError):
+        return False
+
+
+def handle_enforce_loop_on_prompt(data: dict) -> None:
+    """On first prompt, check if the fat loop needs registration."""
+    session_id = data.get("session_id", "")
+    if not session_id:
+        return
+    _ensure_state_dir()
+    pending = _state_file(session_id, "loop-pending")
+    if _session_has_loop(session_id):
+        pending.unlink(missing_ok=True)
+        return
+    if not _tick_meta_stale():
+        return
+    cadence = int(os.environ.get("T3_LOOP_CADENCE", _LOOP_CADENCE_DEFAULT) or _LOOP_CADENCE_DEFAULT)
+    minutes = max(1, cadence // 60)
+    pending.write_text("1", encoding="utf-8")
+    print(  # noqa: T201
+        f"MANDATORY: Register the fat loop NOW. Call CronCreate with "
+        f'cron="*/{minutes} * * * *", prompt="{_LOOP_PROMPT}", recurring=true. '
+        f"Do this BEFORE any other work."
+    )
+
+
+def handle_enforce_loop_registration(data: dict) -> bool:
+    """Block tools until the fat loop cron is registered."""
+    tool_name = data.get("tool_name", "")
+    if tool_name in {"CronCreate", "CronDelete", "CronList", "ScheduleWakeup", "Skill", "ToolSearch"}:
+        return False
+    session_id = data.get("session_id", "")
+    if not session_id:
+        return False
+    pending = _state_file(session_id, "loop-pending")
+    if not pending.is_file():
+        return False
+    if _session_has_loop(session_id):
+        pending.unlink(missing_ok=True)
+        return False
+    cadence = int(os.environ.get("T3_LOOP_CADENCE", _LOOP_CADENCE_DEFAULT) or _LOOP_CADENCE_DEFAULT)
+    minutes = max(1, cadence // 60)
+    reason = (
+        f"LOOP REGISTRATION REQUIRED: Call CronCreate with "
+        f'cron="*/{minutes} * * * *", prompt="{_LOOP_PROMPT}", recurring=true '
+        f"BEFORE calling any other tool."
+    )
+    json.dump({"permissionDecision": "deny", "permissionDecisionReason": reason}, sys.stdout)
+    return True
+
+
 # ── PreToolUse: enforce-skill-loading ───────────────────────────────
 
 
@@ -746,6 +822,7 @@ def handle_track_cron_jobs(data: dict) -> None:
             "cadence": cadence,
             "created_at": now,
         }
+        _state_file(session_id, "loop-pending").unlink(missing_ok=True)
     elif tool_name == "CronDelete":
         job_id = tool_input.get("id", "")
         state["jobs"].pop(job_id, None)
@@ -912,8 +989,9 @@ def handle_mirror_question_to_slack(data: dict) -> bool:
 # ── Router ──────────────────────────────────────────────────────────
 
 _HANDLERS: dict[str, list] = {
-    "UserPromptSubmit": [handle_user_prompt_submit],
+    "UserPromptSubmit": [handle_enforce_loop_on_prompt, handle_user_prompt_submit],
     "PreToolUse": [
+        handle_enforce_loop_registration,
         handle_protect_default_branch,
         handle_enforce_skill_loading,
         handle_block_direct_commands,
