@@ -176,6 +176,37 @@ def _print_path_hint(bin_dir: Path | None) -> None:
     typer.echo(f'      Add to your shell rc (~/.zshrc or ~/.bashrc): export PATH="{target}:$PATH"')
 
 
+_DRIFT_GUARD_ENV = "_T3_DRIFT_REPAIR_ATTEMPTED"
+
+
+def _check_drift_repairable(repo: Path, missing: list[str]) -> tuple[Path, str] | str:
+    """Check if drift can be auto-repaired.
+
+    Returns ``(source, uv_bin)`` on success, or a warning string on failure.
+    """
+    if os.environ.get(_DRIFT_GUARD_ENV):
+        return (
+            f"WARN  Dep drift repair already attempted but deps still missing: "
+            f"{', '.join(missing)}\n"
+            "      The running t3 may be installed in a different tool env than\n"
+            "      the one being repaired.  Manual fix: `uv tool install --editable "
+            f"{repo} --reinstall`."
+        )
+    source = editable_source_path()
+    if source is None:
+        return (
+            f"WARN  Teatree is missing declared deps: {', '.join(missing)}\n"
+            "      Reinstall: `uv tool upgrade teatree --reinstall`."
+        )
+    uv_bin = shutil.which("uv")
+    if not uv_bin:
+        return (
+            f"WARN  Editable install missing deps ({', '.join(missing)}) but `uv` "
+            "is not on PATH — install uv and re-run `t3 setup`."
+        )
+    return source, uv_bin
+
+
 def _repair_dep_drift(repo: Path) -> bool:
     """Reinstall the editable teatree if its venv is missing declared deps.
 
@@ -198,23 +229,12 @@ def _repair_dep_drift(repo: Path) -> bool:
     if not missing:
         return False
 
-    source = editable_source_path()
-    if source is None:
-        typer.echo(
-            f"WARN  Teatree is missing declared deps: {', '.join(missing)}\n"
-            "      Reinstall: `uv tool upgrade teatree --reinstall` "
-            "(or `pip install --upgrade teatree`).",
-        )
+    check = _check_drift_repairable(repo, missing)
+    if isinstance(check, str):
+        typer.echo(check)
         return False
 
-    uv_bin = shutil.which("uv")
-    if not uv_bin:
-        typer.echo(
-            f"WARN  Editable install missing deps ({', '.join(missing)}) but `uv` "
-            "is not on PATH — install uv and re-run `t3 setup`.",
-        )
-        return False
-
+    source, uv_bin = check
     typer.echo(
         f"NOTE  Editable install missing deps: {', '.join(missing)}.  Re-running "
         f"`uv tool install --editable {source} --reinstall` …",
@@ -225,6 +245,7 @@ def _repair_dep_drift(repo: Path) -> bool:
         return False
 
     typer.echo("OK    Reinstalled — restarting `t3 setup` against the refreshed venv.")
+    os.environ[_DRIFT_GUARD_ENV] = "1"
     t3_bin = shutil.which("t3") or sys.argv[0]
     os.execv(t3_bin, [t3_bin, *sys.argv[1:]])  # noqa: S606
     return True  # unreachable — execv replaces the process; here for the type-checker

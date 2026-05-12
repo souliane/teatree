@@ -872,7 +872,8 @@ class TestRepairDepDrift:
             assert _repair_dep_drift(repo) is False
         assert "uv` is not on PATH" in capsys.readouterr().out
 
-    def test_reinstalls_and_re_execs_on_editable_drift(self, tmp_path: Path) -> None:
+    def test_reinstalls_and_re_execs_on_editable_drift(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("_T3_DRIFT_REPAIR_ATTEMPTED", raising=False)
         repo = tmp_path / "repo"
         _write_pyproject(repo, ["tomlkit"])
         source = tmp_path / "main-clone"
@@ -909,8 +910,10 @@ class TestRepairDepDrift:
     def test_returns_false_when_reinstall_fails(
         self,
         tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
         capsys: "pytest.CaptureFixture[str]",
     ) -> None:
+        monkeypatch.delenv("_T3_DRIFT_REPAIR_ATTEMPTED", raising=False)
         repo = tmp_path / "repo"
         _write_pyproject(repo, ["tomlkit"])
         source = tmp_path / "main-clone"
@@ -925,3 +928,18 @@ class TestRepairDepDrift:
             assert _repair_dep_drift(repo) is False
             mock_execv.assert_not_called()
         assert "Reinstall failed" in capsys.readouterr().out
+
+    def test_guard_prevents_infinite_loop(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: "pytest.CaptureFixture[str]",
+    ) -> None:
+        repo = tmp_path / "repo"
+        _write_pyproject(repo, ["tomlkit"])
+        monkeypatch.setenv("_T3_DRIFT_REPAIR_ATTEMPTED", "1")
+        with patch("teatree.cli.setup.find_missing_dependencies", return_value=["tomlkit"]):
+            assert _repair_dep_drift(repo) is False
+        out = capsys.readouterr().out
+        assert "already attempted" in out
+        assert "tomlkit" in out
