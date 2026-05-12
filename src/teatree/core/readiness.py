@@ -12,6 +12,7 @@ inline by passing their own ``check_fn`` to ``Probe(...)`` directly.
 """
 
 import shlex
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
@@ -69,6 +70,11 @@ class HTTPProbeSpec:
 
     ``response_header_equals`` enables CORS round-trip assertions
     (``Access-Control-Allow-Origin`` reflected with the configured origin).
+
+    ``retries`` controls how many times to retry on connection errors (not
+    on wrong status codes — those fail immediately). The default of 5 with
+    a 2-second initial delay handles the common case where Django inside
+    Docker needs a few seconds to boot after ``docker compose up``.
     """
 
     url: str
@@ -77,6 +83,8 @@ class HTTPProbeSpec:
     response_header_equals: "Mapping[str, str] | None" = None
     request_headers: "Mapping[str, str] | None" = None
     timeout_seconds: float = 5.0
+    retries: int = 5
+    retry_delay: float = 2.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -150,17 +158,42 @@ def run_and_report_probes(
     return ProbeRunSummary(total=len(results), failures=failures)
 
 
+def _http_get_with_retry(
+    url: str,
+    headers: dict[str, str],
+    timeout: float,
+    retries: int,
+    retry_delay: float,
+) -> httpx.Response:
+    last_exc = httpx.ConnectError("no attempts made")
+    for attempt in range(max(1, retries + 1)):
+        try:
+            return httpx.get(url, headers=headers, timeout=timeout)
+        except httpx.ConnectError as exc:
+            last_exc = exc
+            if attempt < retries:
+                time.sleep(retry_delay * (2**attempt))
+    raise last_exc
+
+
 def _check_http(name: str, spec: HTTPProbeSpec) -> ProbeResult:
     evidence = f"GET {spec.url}"
     headers = dict(spec.request_headers or {})
     expected_headers = dict(spec.response_header_equals or {})
     try:
-        response = httpx.get(spec.url, headers=headers, timeout=spec.timeout_seconds)
+        response = _http_get_with_retry(
+            spec.url,
+            headers,
+            spec.timeout_seconds,
+            spec.retries,
+            spec.retry_delay,
+        )
     except httpx.HTTPError as exc:
+        retried = f" (after {spec.retries} retries)" if spec.retries else ""
         return ProbeResult(
             name=name,
             passed=False,
-            reason=f"{type(exc).__name__}: {exc}",
+            reason=f"{type(exc).__name__}: {exc}{retried}",
             evidence=evidence,
         )
     status = response.status_code

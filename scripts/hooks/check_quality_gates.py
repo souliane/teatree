@@ -152,11 +152,22 @@ def main() -> int:
     if not violations:
         return 0
 
-    print("Quality gate relaxation detected:")
+    is_code_suppression = all(any(p in v for p in _CODE_RELAXATION_PATTERNS) for v in violations)
+
+    if is_code_suppression:
+        print("WARNING: inline type/coverage suppression detected (allowed when necessary):")
+    else:
+        print("Quality gate relaxation detected:")
     print()
     for v in violations:
         print(v)
     print()
+
+    if is_code_suppression:
+        print("Inline suppressions are allowed when genuinely necessary.")
+        print("Review at PR time — bare `# noqa` without a rule code is bad form.")
+        return 0
+
     print(
         "Remove the suppression and fix the underlying issue. If the\n"
         "suppression is genuinely required (e.g., trusted subprocess in a\n"
