@@ -1,6 +1,7 @@
 """Tests for ``teatree.loop.tick`` — orchestrator that runs scanners + dispatch."""
 
 import datetime as dt
+import json
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -45,8 +46,12 @@ def test_tick_renders_statusline_to_file(tmp_path: Path) -> None:
     assert statusline.is_file()
     contents = statusline.read_text(encoding="utf-8")
     assert "oops" in contents
-    assert "tick @" in contents
     assert report.statusline_path == statusline
+    meta = tmp_path / "tick-meta.json"
+    assert meta.is_file()
+    data = json.loads(meta.read_text(encoding="utf-8"))
+    assert "next_epoch" in data
+    assert "cadence" in data
 
 
 def test_tick_records_scanner_errors_without_failing(tmp_path: Path) -> None:
@@ -59,7 +64,7 @@ def test_tick_records_scanner_errors_without_failing(tmp_path: Path) -> None:
     assert "scanner blew up" in report.errors["boom"]
 
 
-def test_tick_with_no_scanners_still_renders_anchors(tmp_path: Path) -> None:
+def test_tick_with_no_scanners_writes_tick_meta(tmp_path: Path) -> None:
     statusline = tmp_path / "statusline.txt"
     report = run_tick(
         TickRequest(scanners=[]),
@@ -67,8 +72,12 @@ def test_tick_with_no_scanners_still_renders_anchors(tmp_path: Path) -> None:
         now=dt.datetime(2026, 5, 6, tzinfo=dt.UTC),
     )
     assert statusline.is_file()
-    assert "tick @ 2026-05-06" in statusline.read_text(encoding="utf-8")
     assert report.signal_count == 0
+    meta = tmp_path / "tick-meta.json"
+    assert meta.is_file()
+    data = json.loads(meta.read_text(encoding="utf-8"))
+    assert data["next_epoch"] > 0
+    assert data["cadence"] == 720
 
 
 def test_build_default_scanners_starts_with_pending_tasks() -> None:

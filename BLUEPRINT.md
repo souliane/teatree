@@ -567,11 +567,13 @@ Each tick runs three stages:
 
 #### 5.6.1 Statusline rendering
 
-The statusline is the **only persistent UI surface**. It is written to a file by the loop and read by the statusline hook (`hooks/scripts/statusline.sh`). The hook composes a header line (model, context-window %, 5-hour and 7-day rate-limit usage with color-coded thresholds, loaded skills) from Claude's stdin JSON, then `cat`s the loop's pre-rendered zones file, then chains any extra statusline scripts listed in `[teatree] statusline_chain` (glob patterns resolved to the latest match, interpreter inferred from extension). This decouples render speed from content size.
+The statusline is the **only persistent UI surface**. It is written to a file by the loop and read by the statusline hook (`hooks/scripts/statusline.sh`). The hook composes a header line (model, context-window %, 5-hour and 7-day rate-limit usage with color-coded thresholds, RAM usage, next-tick countdown, and loaded skills) from Claude's stdin JSON and the `tick-meta.json` sidecar, then `cat`s the loop's pre-rendered zones file, then chains any extra statusline scripts listed in `[teatree] statusline_chain` (glob patterns resolved to the latest match, interpreter inferred from extension). This decouples render speed from content size.
+
+**Header line segments:** `model=Opus 4.6 | ctx=42% | 5h=12% | 7d=3% | ram=64% 15.4/24G | tick in 7m | skills: code | review`. All segments are color-coded (green < 80%, yellow 80–94%, red ≥ 95% for percentage-based; dim for labels). The tick countdown is derived from `tick-meta.json` (`next_epoch` and `cadence`), written atomically by each `run_tick()` call alongside the zones file.
 
 **Zones (three, fixed order):**
 
-1. **Anchors** — always shown: active overlay, current ticket (if any), branch, last-tick timestamp, context-window usage.
+1. **Anchors** — always shown: active overlay, current ticket (if any), branch, context-window usage.
 2. **Action needed** — items requiring my attention this tick: failing pipelines on my PRs, mentions and DMs the loop couldn't auto-handle, PRs with new pushes since my last review, new assigned issues awaiting kickoff.
 3. **In flight** — what the loop is doing: PR sweeps in progress, headless tasks claimed, current `/loop` cadence and tick count.
 
