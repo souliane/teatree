@@ -1008,6 +1008,7 @@ Usage: t3 slack [OPTIONS] COMMAND [ARGS]...
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
 │ listen  Run the Socket Mode receiver for all (or one) slack-enabled          │
 │         overlays.                                                            │
+│ check   Drain the event queue and print new user messages.                   │
 │ status  Check if the Socket Mode listener is running.                        │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -1026,6 +1027,23 @@ Usage: t3 slack listen [OPTIONS]
 │ --overlay           TEXT  Restrict to a single overlay (default: all).       │
 │ --queue-file        PATH  Override the event queue path (test hook).         │
 │ --help                    Show this message and exit.                        │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 slack check`
+
+```
+Usage: t3 slack check [OPTIONS]
+
+ Drain the event queue and print new user messages.
+
+ Reads the JSONL queue written by ``t3 slack listen``, filters for
+ user messages (ignoring bot posts), and prints each as a line.
+ Returns exit code 0 when messages were found, 1 when the queue
+ was empty. Designed to be called from a fast cron (every 30s).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

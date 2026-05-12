@@ -81,6 +81,38 @@ def listen_command(
         pid_path.unlink(missing_ok=True)
 
 
+@slack_app.command("check")
+def check_command() -> None:
+    """Drain the event queue and print new user messages.
+
+    Reads the JSONL queue written by ``t3 slack listen``, filters for
+    user messages (ignoring bot posts), and prints each as a line.
+    Returns exit code 0 when messages were found, 1 when the queue
+    was empty. Designed to be called from a fast cron (every 30s).
+    """
+    import json  # noqa: PLC0415
+
+    from teatree.backends.slack_receiver import drain_event_queue  # noqa: PLC0415
+
+    events = drain_event_queue()
+    messages: list[dict[str, str]] = []
+    for entry in events:
+        event = entry.get("event", {})
+        if not isinstance(event, dict):
+            continue
+        if event.get("bot_id") or event.get("subtype"):
+            continue
+        text = event.get("text", "")
+        user = event.get("user", "")
+        overlay = entry.get("overlay", "")
+        if text and user:
+            messages.append({"overlay": overlay, "user": user, "text": text, "ts": event.get("ts", "")})
+    if not messages:
+        raise typer.Exit(code=1)
+    for msg in messages:
+        typer.echo(json.dumps(msg))
+
+
 @slack_app.command("status")
 def status_command() -> None:
     """Check if the Socket Mode listener is running."""
