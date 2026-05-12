@@ -83,10 +83,11 @@ def listen_command(
 
 @slack_app.command("check")
 def check_command() -> None:
-    """Drain the event queue and print new user messages.
+    """Drain the event queue, ack with 👀, and print new user messages.
 
     Reads the JSONL queue written by ``t3 slack listen``, filters for
-    user messages (ignoring bot posts), and prints each as a line.
+    user messages (ignoring bot posts), reacts with ``eyes`` on each
+    to signal the bot has seen it, then prints each as a JSON line.
     Returns exit code 0 when messages were found, 1 when the queue
     was empty. Designed to be called from a fast cron (every 30s).
     """
@@ -106,11 +107,36 @@ def check_command() -> None:
         user = event.get("user", "")
         overlay = entry.get("overlay", "")
         if text and user:
-            messages.append({"overlay": overlay, "user": user, "text": text, "ts": event.get("ts", "")})
+            channel = event.get("channel", "")
+            ts = event.get("ts", "")
+            messages.append({"overlay": overlay, "user": user, "text": text, "ts": ts, "channel": channel})
     if not messages:
         raise typer.Exit(code=1)
+    _ack_messages(messages)
     for msg in messages:
         typer.echo(json.dumps(msg))
+
+
+def _ack_messages(messages: list[dict[str, str]]) -> None:
+    """React with 👀 on each message to signal the bot has read it."""
+    bot_tokens = {name: bot_token for name, bot_token, _app_token in _resolve_overlays("")}
+    for msg in messages:
+        token = bot_tokens.get(msg.get("overlay", ""), "")
+        channel = msg.get("channel", "")
+        ts = msg.get("ts", "")
+        if not token or not channel or not ts:
+            continue
+        try:
+            import httpx  # noqa: PLC0415
+
+            httpx.post(
+                "https://slack.com/api/reactions.add",
+                headers={"Authorization": f"Bearer {token}"},
+                json={"channel": channel, "timestamp": ts, "name": "eyes"},
+                timeout=5.0,
+            )
+        except Exception:
+            logging.getLogger(__name__).debug("Failed to ack message %s", ts, exc_info=True)
 
 
 @slack_app.command("status")
