@@ -15,6 +15,38 @@ from teatree.cli.loop import _cadence_for_loop_slot, loop_app
 runner = CliRunner()
 
 
+class TestTickCommandDelegation:
+    def test_delegates_to_management_command(self, tmp_path: Path) -> None:
+        with (
+            patch("django.setup"),
+            patch("django.core.management.call_command") as call_mock,
+        ):
+            result = runner.invoke(loop_app, ["tick", "--statusline-file", str(tmp_path / "sl.txt")])
+
+        assert result.exit_code == 0
+        call_mock.assert_called_once_with("loop_tick", statusline_file=str(tmp_path / "sl.txt"))
+
+    def test_passes_overlay_and_json_flags(self) -> None:
+        with (
+            patch("django.setup"),
+            patch("django.core.management.call_command") as call_mock,
+        ):
+            result = runner.invoke(loop_app, ["tick", "--overlay", "myoverlay", "--json"])
+
+        assert result.exit_code == 0
+        call_mock.assert_called_once_with("loop_tick", overlay="myoverlay", json_output=True)
+
+    def test_no_args_calls_with_empty_kwargs(self) -> None:
+        with (
+            patch("django.setup"),
+            patch("django.core.management.call_command") as call_mock,
+        ):
+            result = runner.invoke(loop_app, ["tick"])
+
+        assert result.exit_code == 0
+        call_mock.assert_called_once_with("loop_tick")
+
+
 class TestStatusCommand:
     def test_returns_one_when_no_statusline_file_yet(self, tmp_path: Path) -> None:
         with patch("teatree.cli.loop.default_path", return_value=tmp_path / "missing.txt"):
