@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, override
 from django.core.cache import cache
 
 from teatree.core.cleanup import cleanup_worktree
-from teatree.core.sync import PENDING_REVIEWS_CACHE_KEY, RawAPIDict, SyncBackend, SyncResult
+from teatree.types import PENDING_REVIEWS_CACHE_KEY, RawAPIDict, SyncBackend, SyncResult
 from teatree.utils.run import run_allowed_to_fail
 
 if TYPE_CHECKING:

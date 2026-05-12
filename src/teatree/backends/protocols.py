@@ -11,7 +11,7 @@ multiple concerns (e.g. GitLab provides code hosting and CI in one client).
 from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
 
-from teatree.core.sync import RawAPIDict
+from teatree.types import RawAPIDict
 
 
 @dataclass(frozen=True, slots=True)

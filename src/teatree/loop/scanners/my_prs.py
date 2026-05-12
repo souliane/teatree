@@ -4,8 +4,8 @@ from dataclasses import dataclass
 from typing import cast
 
 from teatree.backends.protocols import CodeHostBackend
-from teatree.core.sync import RawAPIDict
 from teatree.loop.scanners.base import ScanSignal, SignalPayload
+from teatree.types import RawAPIDict
 
 
 def _str_field(data: RawAPIDict, *names: str) -> str:

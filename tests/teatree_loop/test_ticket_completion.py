@@ -8,10 +8,10 @@ from django.test import TestCase
 
 from teatree.core.models.ticket import Ticket
 from teatree.core.overlay import OverlayBase
-from teatree.core.sync import RawAPIDict
 from teatree.loop.dispatch import dispatch
 from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.scanners.ticket_completion import TicketCompletionScanner
+from teatree.types import RawAPIDict
 
 
 @dataclass

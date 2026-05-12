@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, SupportsInt, cast
 
 from teatree.backends.gitlab_sync_approvals import detect_approval_dismissal
 from teatree.core.models import Ticket
-from teatree.core.sync import DiscussionSummary, PREntry, PREntryDict, RawAPIDict, SyncResult
+from teatree.types import DiscussionSummary, PREntry, PREntryDict, RawAPIDict, SyncResult
 
 if TYPE_CHECKING:
     from teatree.backends.gitlab_api import GitLabAPI, ProjectInfo

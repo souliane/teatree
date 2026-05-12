@@ -1672,6 +1672,7 @@ graph TD
     teatree.agents --> teatree.core
     teatree.agents --> teatree.skill_loading
     teatree.agents --> teatree.utils
+    teatree.backends --> teatree.types
     teatree.backends --> teatree.utils
     teatree.backends --> teatree.core
     teatree.contrib --> teatree.types

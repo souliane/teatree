@@ -5,12 +5,12 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
 
-from teatree.core.sync import RawAPIDict
 from teatree.loop.scanners.assigned_issues import AssignedIssuesScanner
 from teatree.loop.scanners.my_prs import MyPrsScanner
 from teatree.loop.scanners.notion_view import NotionViewScanner
 from teatree.loop.scanners.reviewer_prs import ReviewerPrsScanner
 from teatree.loop.scanners.slack_mentions import SlackMentionsScanner
+from teatree.types import RawAPIDict
 
 
 @dataclass

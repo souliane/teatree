@@ -6,8 +6,8 @@ from typing import Any
 from django.test import TestCase
 
 from teatree.core.models.ticket import Ticket
-from teatree.core.sync import RawAPIDict
 from teatree.loop.scanners.ticket_dispositions import TicketDispositionScanner
+from teatree.types import RawAPIDict
 
 
 @dataclass

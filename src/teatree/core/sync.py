@@ -6,97 +6,10 @@ GitLab backend translates to MR internally.
 """
 
 import logging
-from abc import ABC, abstractmethod
-from dataclasses import asdict, dataclass, field
 
-LAST_SYNC_CACHE_KEY = "teatree_followup_last_sync"
-PENDING_REVIEWS_CACHE_KEY = "teatree_pending_reviews"
-
-# Type aliases for untyped external data (GitLab/GitHub API responses)
-# and serialized internal data stored in JSONFields.
-type RawAPIDict = dict[str, object]
-type PREntryDict = dict[str, object]
+from teatree.types import SyncBackend, SyncResult
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass(slots=True)
-class SyncResult:
-    prs_found: int = 0
-    issues_found: int = 0
-    tickets_created: int = 0
-    tickets_updated: int = 0
-    labels_fetched: int = 0
-    prs_merged: int = 0
-    prs_closed: int = 0
-    reviews_synced: int = 0
-    worktrees_cleaned: int = 0
-    errors: list[str] = field(default_factory=list)
-
-
-@dataclass(frozen=True, slots=True)
-class DiscussionSummary:
-    status: str
-    detail: str
-
-    def to_dict(self) -> dict[str, str]:
-        return asdict(self)
-
-
-@dataclass(slots=True)
-class PREntry:
-    url: str
-    title: str
-    branch: str
-    draft: bool
-    repo: str
-    iid: int
-    updated_at: str
-    state: str = "opened"  # opened | closed | merged | locked — from the upstream PR API
-    pipeline_status: str | None = None
-    pipeline_url: str | None = None
-    approvals: RawAPIDict | None = None
-    discussions: list[DiscussionSummary] | None = None
-    e2e_test_plan_url: str | None = None
-    review_requested: bool | None = None
-    reviewer_names: list[str] | None = None
-    review_permalink: str | None = None
-    review_channel: str | None = None
-    notion_status: str | None = None
-    notion_url: str | None = None
-    draft_comments_pending: bool | None = None
-    draft_comments_count: int | None = None
-    approvals_dismissed_at: str | None = None
-    dismissed_approvers: list[str] | None = None
-
-    def to_dict(self) -> PREntryDict:
-        result: PREntryDict = {}
-        for k in self.__slots__:
-            v = getattr(self, k)
-            if v is None:
-                continue
-            if k == "discussions":
-                result[k] = [d.to_dict() for d in v]
-            else:
-                result[k] = v
-        return result
-
-
-class SyncBackend(ABC):
-    """Abstract base for code host sync backends.
-
-    Implementations live in ``teatree.backends.*_sync`` and are iterated by
-    ``sync_followup()``.  A single backend is responsible for one code host
-    (GitHub, GitLab, …).
-    """
-
-    @abstractmethod
-    def is_configured(self, overlay: object) -> bool:
-        """Return True if this backend has valid credentials in *overlay*."""
-
-    @abstractmethod
-    def sync(self, overlay: object) -> SyncResult:
-        """Sync from this code host into the local database."""
 
 
 def _merge_results(a: SyncResult, b: SyncResult) -> SyncResult:
@@ -171,19 +84,3 @@ def fetch_notion_statuses() -> None:
         "to populate ticket.extra['notion_status']."
     )
     raise NotImplementedError(msg)
-
-
-__all__ = [
-    "LAST_SYNC_CACHE_KEY",
-    "PENDING_REVIEWS_CACHE_KEY",
-    "DiscussionSummary",
-    "PREntry",
-    "PREntryDict",
-    "RawAPIDict",
-    "SyncBackend",
-    "SyncResult",
-    "_merge_results",
-    "_overlay_name",
-    "fetch_notion_statuses",
-    "sync_followup",
-]
