@@ -75,13 +75,19 @@ def ci_service_from_overlay() -> CIService | None:
 
 
 def iter_overlay_backends() -> list[OverlayBackends]:
-    """Yield :class:`OverlayBackends` for every registered overlay.
+    """Build :class:`OverlayBackends` for every registered overlay.
 
     Overlays whose credentials don't resolve get ``host=None`` /
     ``messaging=None`` — the caller decides whether to skip them.
+
+    Also includes TOML-configured overlays that have credentials but no
+    Python class (project-directory-only overlays reached via subprocess).
     """
     out: list[OverlayBackends] = []
+    found_names: set[str] = set()
+
     for name, overlay in get_all_overlays().items():
+        found_names.add(name)
         try:
             host = get_code_host(overlay)
         except (ImproperlyConfigured, ValueError):
@@ -102,7 +108,73 @@ def iter_overlay_backends() -> list[OverlayBackends]:
                 max_concurrent_auto_starts=int(overlay.config.max_concurrent_auto_starts),
             ),
         )
+
+    out.extend(_backends_from_toml(found_names))
     return out
+
+
+def _backends_from_toml(already_found: set[str]) -> list[OverlayBackends]:
+    """Build backends for TOML overlays not discovered via entry points."""
+    from teatree.config import load_config  # noqa: PLC0415
+
+    result: list[OverlayBackends] = []
+    config = load_config()
+    for name, overlay_cfg in (config.raw.get("overlays") or {}).items():
+        if name in already_found or not isinstance(overlay_cfg, dict):
+            continue
+        host = _host_from_toml(overlay_cfg)
+        messaging = _messaging_from_toml(overlay_cfg)
+        if host is None and messaging is None:
+            continue
+        result.append(
+            OverlayBackends(
+                name=name,
+                host=host,
+                messaging=messaging,
+                ready_labels=tuple(overlay_cfg.get("ready_labels", ())),
+                exclude_labels=tuple(overlay_cfg.get("exclude_labels", ())),
+            ),
+        )
+    return result
+
+
+def _host_from_toml(cfg: dict) -> CodeHostBackend | None:
+    from teatree.utils.secrets import read_pass  # noqa: PLC0415
+
+    gitlab_token_ref = cfg.get("gitlab_token_ref", "")
+    github_token_ref = cfg.get("github_token_ref", "")
+    gitlab_url = cfg.get("gitlab_url", "https://gitlab.com")
+
+    if gitlab_token_ref:
+        token = read_pass(gitlab_token_ref)
+        if token:
+            from teatree.backends.gitlab import GitLabCodeHost  # noqa: PLC0415
+
+            return GitLabCodeHost(token=token, base_url=gitlab_url)
+    if github_token_ref:
+        token = read_pass(github_token_ref)
+        if token:
+            from teatree.backends.github import GitHubCodeHost  # noqa: PLC0415
+
+            return GitHubCodeHost(token=token)
+    return None
+
+
+def _messaging_from_toml(cfg: dict) -> MessagingBackend | None:
+    if cfg.get("messaging_backend") != "slack":
+        return None
+    from teatree.backends.slack_bot import SlackBotBackend  # noqa: PLC0415
+    from teatree.utils.secrets import read_pass  # noqa: PLC0415
+
+    token_ref = cfg.get("slack_token_ref", "")
+    if not token_ref:
+        return None
+    bot_token = read_pass(f"{token_ref}-bot")
+    app_token = read_pass(f"{token_ref}-app")
+    user_id = cfg.get("slack_user_id", "")
+    if bot_token:
+        return SlackBotBackend(bot_token=bot_token, app_token=app_token or "", user_id=user_id)
+    return None
 
 
 def reset_backend_caches() -> None:

@@ -277,7 +277,16 @@ def _classify_actions(actions: list[DispatchAction]) -> _ClassifiedActions:
     return c
 
 
-_NOISE_STATES = frozenset({"not_started", "merged", "delivered"})
+_NOISE_STATES = frozenset(
+    {
+        "not_started",
+        "merged",
+        "delivered",
+        "shipped",
+        "in_review",
+        "retrospected",
+    }
+)
 _MAX_PER_STATE = 5
 
 
@@ -286,18 +295,29 @@ def _render_ticket_line(
     tickets: list[tuple[str, str, str]],
     pr_map: dict[str, list[_PRRef]],
 ) -> str:
-    """One compact line per overlay: ``[ov] started: #1 (!5) #2 · shipped: #3``."""
+    """One compact line per overlay with inline hyperlinks.
+
+    Format: ``[ov] started: #1 (!5) #2 · coded: #3``
+    Each ``#N`` is an OSC8 hyperlink when an issue URL is available.
+    """
     prefix = f"[{overlay}] " if overlay else ""
     by_state: dict[str, list[str]] = {}
-    for num, state, _url in tickets:
+    for num, state, url in tickets:
         if state in _NOISE_STATES:
             continue
-        ticket_label = f"#{num}"
+        ticket_text = f"#{num}"
+        if url:
+            ticket_text = _hyperlink(ticket_text, url)
         prs = pr_map.get(num, [])
         if prs:
-            pr_labels = " ".join(f"!{r.iid}" for r in prs)
-            ticket_label += f" ({pr_labels})"
-        by_state.setdefault(state, []).append(ticket_label)
+            pr_parts = []
+            for r in prs:
+                pr_text = f"!{r.iid}"
+                if r.url:
+                    pr_text = _hyperlink(pr_text, r.url)
+                pr_parts.append(pr_text)
+            ticket_text += f" ({' '.join(pr_parts)})"
+        by_state.setdefault(state, []).append(ticket_text)
     if not by_state:
         return ""
     groups: list[str] = []
