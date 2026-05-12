@@ -397,10 +397,8 @@ def discover_overlays(config_path: Path | None = None) -> list[OverlayEntry]:
         path_str = overlay_cfg.get("path", "")
         project_path = Path(path_str).expanduser() if path_str else None
         if not overlay_class and project_path:
-            # Backward compat: derive settings module from manage.py for TOML overlays
             manage_py = project_path / "manage.py"
             settings_module = _extract_settings_module(manage_py) if manage_py.is_file() else ""
-            # Store settings module as overlay_class fallback so callers can still use it
             overlay_class = settings_module
         overrides: dict[str, Any] = {}
         for key, parser in OVERLAY_OVERRIDABLE_SETTINGS.items():

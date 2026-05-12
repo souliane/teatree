@@ -127,14 +127,12 @@ def run_step(  # noqa: PLR0913
 def run_callable_step(name: str, fn: Callable[[], object]) -> StepResult:
     """Execute a Python callable and return a structured result.
 
-    Wraps arbitrary callables (including legacy ``partial(subprocess.run, ...)``
-    patterns) with timing and error capture.
+    Wraps arbitrary callables with timing and error capture.
     """
     start = time.monotonic()
     try:
         result = fn()
         duration = time.monotonic() - start
-        # Handle legacy subprocess.run return values
         if isinstance(result, subprocess.CompletedProcess):
             stdout = result.stdout if isinstance(result.stdout, str) else ""
             stderr = result.stderr if isinstance(result.stderr, str) else ""
