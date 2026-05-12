@@ -135,17 +135,21 @@ _tick_meta="${target%.txt}-meta.json"
 [ ! -r "$_tick_meta" ] && _tick_meta="$(dirname "$target")/tick-meta.json"
 if [ -r "$_tick_meta" ] && command -v jq >/dev/null 2>&1; then
     _next_epoch=$(jq -r '.next_epoch // empty' "$_tick_meta" 2>/dev/null)
+    _tick_cadence=$(jq -r '.cadence // 720' "$_tick_meta" 2>/dev/null)
     if [ -n "$_next_epoch" ]; then
         _now=$(date +%s)
         _diff=$(( _next_epoch - _now ))
-        if (( _diff <= 0 )); then
-            _tick_label="tick now"
-        elif (( _diff < 60 )); then
-            _tick_label="tick in ${_diff}s"
+        _overdue=$(( -_diff ))
+        if (( _diff > 0 && _diff < 60 )); then
+            _tick_label="${_DIM}tick in ${_diff}s${_RST}"
+        elif (( _diff > 0 )); then
+            _tick_label="${_DIM}tick in $(( _diff / 60 ))m${_RST}"
+        elif (( _overdue > _tick_cadence * 2 )); then
+            _tick_label="${_RED}loop stale${_RST}"
         else
-            _tick_label="tick in $(( _diff / 60 ))m"
+            _tick_label="${_DIM}tick now${_RST}"
         fi
-        header="${header}${sep}${_DIM}${_tick_label}${_RST}"
+        header="${header}${sep}${_tick_label}"
     fi
 
     # Repo freshness from tick-meta.json .freshness
