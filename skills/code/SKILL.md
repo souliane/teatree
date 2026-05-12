@@ -90,6 +90,8 @@ When the active overlay has `require_ticket = True` in its configuration, a trac
 - **Removing or replacing a CLI parameter**: Ask the user what the replacement API should look like BEFORE writing code. Don't assume auto-detect-only — the user may want a human-readable argument (e.g., `--path` instead of a DB ID). Design the API first, then update source, then update tests. Running tests before committing is mandatory — don't rely on pre-commit hooks to catch failures.
 - **Extracting overlay code to core** (generalization, refactoring): Write the BLUEPRINT spec first, then have the user review it before coding. Existing overlay code evolved organically — extracting it as-is copies its shortcuts. Design the clean-slate API from the spec, not from the existing implementation.
 
+- **UI layout / multi-column structures**: Ask for the full desired layout (column order, which columns to show/hide) BEFORE writing any template code. Rewriting headers and cell blocks for repeated column-order changes wastes time.
+
 **How to decide:** If you would normally ask the user "is this approach okay?" before coding, that's a complex task — use plan mode.
 
 ### 2. TDD Cycle

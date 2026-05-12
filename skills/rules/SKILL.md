@@ -74,6 +74,13 @@ Use `Ctrl+F`/`grep` to jump to a rule. Sections are grouped below by theme; numb
 37. [Commit Before Declaring Done](#commit-before-declaring-done-non-negotiable)
 38. [Pre-Commit Hook Failures on Unrelated Tests](#pre-commit-hook-failures-on-unrelated-tests)
 
+**Design principles**
+
+39. [Prefer Standard Over Clever](#prefer-standard-over-clever)
+40. [Never Slim Skills](#never-slim-skills)
+41. [Session Scope Management](#session-scope-management)
+42. [Skill Auto-Loading Must Work](#skill-auto-loading-must-work)
+
 ## Invoke Skills Before ANY Response
 
 _Adapted from [superpowers/using-superpowers](https://github.com/obra/superpowers)._
@@ -527,3 +534,19 @@ When removing a function, class, flag, or CLI argument: delete it completely. De
 ## GitLab Inline Comments
 
 When posting inline PR comments, target **added lines only** — not context or unchanged lines.
+
+## Prefer Standard Over Clever
+
+When choosing between a clever in-process approach and the framework's standard approach, choose the standard. Prefer explicit/standard/boring over clever/implicit. If you're uncertain which is better, that uncertainty is the signal to go standard. Django's `setup()` is designed to be called once per process — subprocess via `__main__.py` beats in-process `call_command()` for entry-point overlays.
+
+## Never Slim Skills
+
+Never extract SKILL.md content into `references/` files to save tokens. Agents don't reliably load reference files on demand, so critical instructions get ignored. When optimizing context consumption, focus on phase-scoped loading (only embed the skills needed for the task), not on shrinking individual skills.
+
+## Session Scope Management
+
+Don't let sessions grow unbounded. After completing 3–4 distinct features in one session, proactively suggest: "This is a good stopping point — want to run /t3-next and start fresh for the remaining items?" The user should not have to explicitly say "stop accepting new requests."
+
+## Skill Auto-Loading Must Work
+
+The user should never have to manually call a teatree or overlay skill. Skills must either auto-load or be explicitly called by the teatree mechanism. When reviewing teatree, check that the hook/autoloading mechanism covers all cases: Django projects auto-load `ac-django`, overlay projects auto-load their overlay skill, lifecycle skills chain-load companions. Fix gaps in the autoloading mechanism rather than documenting manual workarounds.

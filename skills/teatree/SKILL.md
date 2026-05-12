@@ -119,6 +119,10 @@ T3_AUTO_SHIP=false                           # when true, shipping tasks are hea
 T3_PRIVACY=strict                            # block commits with PII
 ```
 
+## Interactive vs Headless Output
+
+The `{"summary":..., "files_modified":...}` JSON result block from `/t3:next` is consumed by the headless pipeline. In interactive sessions it's noise — skip it and only show the text summary.
+
 ## Related Skills
 
 This skill holds the core. Load the mode-specific skill for the task in hand — none `require:` this one, to keep per-invocation context small.

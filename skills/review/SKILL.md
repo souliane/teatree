@@ -110,6 +110,19 @@ After verifying repo rules, **check the full file** (not just changed lines) of 
 
 This step prevents architectural drift. Each diff looks fine in isolation — this check catches the cumulative effect by examining the full module.
 
+#### Read BLUEPRINT.md Before Designing (Non-Negotiable)
+
+Before proposing a design that changes how existing code is structured, read `BLUEPRINT.md` and any architectural-invariants doc FIRST, not last. Inventory existing patterns touching the same subsystem before proposing new ones. If the proposed design reverses a BLUEPRINT invariant, surface that to the user BEFORE designing around it — the user decides whether to overturn the invariant; if yes, update BLUEPRINT.md in the same change.
+
+#### Architecture Refactor Blast-Radius Checklist
+
+After any architectural refactor, before declaring done:
+
+1. **Grep all file types** for old API names — not just `.py` but `.md`, `.toml`, skill files, mermaid diagrams, comments.
+2. **Lint rules are architectural guardrails** — never suppress; fix the design instead.
+3. **Cross-repo consumers** must be updated in the same session.
+4. **Documentation drift is invisible to tests** — re-read every doc/skill file that references the changed subsystem. 100% test coverage does not catch stale docs.
+
 #### New-Test Shape Check (Non-Negotiable)
 
 When the diff adds or modifies test files, verify the new tests follow the repo's test-writing doctrine (see the repo's `AGENTS.md` § "Test-Writing Doctrine" — teatree and every overlay repo carry the same rule):
