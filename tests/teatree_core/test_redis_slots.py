@@ -7,6 +7,7 @@ across tickets. Slot count is configurable via ``teatree.redis_db_count`` in
 RedisSlotsExhaustedError. Slots are released on ticket cleanup (FLUSHDB + clear field).
 """
 
+from dataclasses import replace as _replace
 from unittest.mock import ANY, patch
 
 import pytest
@@ -59,8 +60,6 @@ class TestAllocateRedisSlot(TestCase):
 
     def test_slot_count_is_configurable(self) -> None:
         cfg = load_config()
-        from dataclasses import replace as _replace  # noqa: PLC0415
-
         patched_user = _replace(cfg.user, redis_db_count=2)
         patched_cfg = _replace(cfg, user=patched_user)
         with patch("teatree.core.managers.load_config", return_value=patched_cfg):
