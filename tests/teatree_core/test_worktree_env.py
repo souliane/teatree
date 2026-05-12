@@ -82,6 +82,22 @@ class ExtraOnlyOverlay(OverlayBase):
         return {"EXTRA_KEY"}
 
 
+class PostgresPasswordOverlay(OverlayBase):
+    """Overlay that returns POSTGRES_PASSWORD without declaring it secret."""
+
+    def get_repos(self) -> list[str]:
+        return ["backend"]
+
+    def get_provision_steps(self, worktree: Worktree) -> list[ProvisionStep]:
+        return []
+
+    def get_env_extra(self, worktree: Worktree) -> dict[str, str]:
+        return {"POSTGRES_PASSWORD": "s3cr3t-pw", "EXTRA_KEY": "extra_value"}
+
+    def declared_env_keys(self) -> set[str]:
+        return {"POSTGRES_PASSWORD", "EXTRA_KEY"}
+
+
 class SecretOverlay(OverlayBase):
     """Overlay whose get_env_extra includes both public and secret keys."""
 
@@ -134,6 +150,7 @@ _SHARED_PG = {"test": SharedPostgresOverlay()}
 _ENV_EXTRA_COLLIDES = {"test": EnvExtraOverrideOverlay()}
 _EXTRA_ONLY = {"test": ExtraOnlyOverlay()}
 _SECRET = {"test": SecretOverlay()}
+_POSTGRES_PW = {"test": PostgresPasswordOverlay()}
 _COMMAND = {"test": CommandOverlay()}
 
 
@@ -195,6 +212,16 @@ class TestRenderEnvCache(TestCase):
             assert "PUBLIC_KEY" in spec.keys
             assert "SECRET_PASSWORD" not in spec.keys
             assert "DATABASE_URL" not in spec.keys
+
+    def test_core_filters_postgres_password_without_overlay_declaring_it(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            wt, _ = _make_worktree(tmp, ticket_name="tp", ticket_url="https://ex.com/2", variant="acme")
+            with patch.object(overlay_loader_mod, "_discover_overlays", return_value=_POSTGRES_PW):
+                spec = render_env_cache(wt)
+            assert spec is not None
+            assert "EXTRA_KEY=extra_value" in spec.content
+            assert "POSTGRES_PASSWORD" not in spec.content
+            assert "s3cr3t-pw" not in spec.content
 
 
 class TestWriteEnvCache(TestCase):

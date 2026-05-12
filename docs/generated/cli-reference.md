@@ -1089,6 +1089,7 @@ Usage: t3 teatree [OPTIONS] COMMAND [ARGS]...
 │ tasks        Async task queue.                                               │
 │ followup     Follow-up snapshots.                                            │
 │ lifecycle    Session lifecycle and phase tracking.                           │
+│ ticket       Ticket state management.                                        │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -2231,7 +2232,7 @@ Usage: t3 teatree lifecycle [OPTIONS] COMMAND [ARGS]...
 ```
 Usage: t3 teatree lifecycle visit-phase [OPTIONS] TICKET_ID PHASE
 
- Mark a phase as visited on the ticket's latest session.
+ Mark a phase as visited and advance the ticket FSM if applicable.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    ticket_id      INTEGER  [required]                                      │
@@ -2239,5 +2240,74 @@ Usage: t3 teatree lifecycle visit-phase [OPTIONS] TICKET_ID PHASE
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 teatree ticket`
+
+```
+Usage: t3 teatree ticket [OPTIONS] COMMAND [ARGS]...
+
+ Ticket state management.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ transition        Transition a ticket to a new state.                        │
+│ list              List tickets, optionally filtered by state and/or overlay. │
+│ sync-completions  Check post-ship tickets against upstream issues and        │
+│                   advance completed ones.                                    │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree ticket transition`
+
+```
+Usage: t3 teatree ticket transition [OPTIONS] TICKET_ID TRANSITION_NAME
+
+ Transition a ticket to a new state.
+
+ Accepts any of the allowed transition names: scope, start, code, test,
+ review, ship, request_review, mark_merged, retrospect, mark_delivered, rework.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    ticket_id            INTEGER  [required]                                │
+│ *    transition_name      TEXT     [required]                                │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree ticket list`
+
+```
+Usage: t3 teatree ticket list [OPTIONS]
+
+ List tickets, optionally filtered by state and/or overlay.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --state          TEXT                                                        │
+│ --overlay        TEXT                                                        │
+│ --help                 Show this message and exit.                           │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree ticket sync-completions`
+
+```
+Usage: t3 teatree ticket sync-completions [OPTIONS]
+
+ Check post-ship tickets against upstream issues and advance completed ones.
+
+ Walks tickets in shipped/in_review/merged states, calls the overlay's
+ ``is_issue_done()`` for each, and transitions completed tickets toward
+ delivered. Use ``--dry-run`` to preview without touching state.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --dry-run    --no-dry-run      Show what would transition without acting.    │
+│                                [default: no-dry-run]                         │
+│ --help                         Show this message and exit.                   │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
