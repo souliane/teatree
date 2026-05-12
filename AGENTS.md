@@ -106,9 +106,32 @@ hooks/                 Agent platform hooks (Claude Code hook_router, statusline
 
 | Tier | Tool | Examples | Needs Django? |
 |------|------|----------|---------------|
-| Runtime commands | Django management commands (django-typer) | `worktree provision`, `tasks work-next-sdk`, `followup refresh` | Yes |
-| Bootstrap commands | `t3` Typer CLI | `t3 startoverlay`, `t3 agent`, `t3 info` | No |
+| Runtime commands | Django management commands (django-typer) | `worktree provision`, `tasks work-next-sdk`, `followup refresh`, `loop_tick` | Yes |
+| Bootstrap commands | `t3` Typer CLI | `t3 startoverlay`, `t3 agent`, `t3 info`, `t3 loop start/stop/status` | No |
 | Internal utilities | Python modules in `utils/` | Port allocation, git helpers, DB ops | Imported by commands |
+
+### Deciding Where a New Command Lives (Non-Negotiable)
+
+**Rule: anything that touches the Django ORM — models, querysets, `apps.get_model()`, inline `from teatree.core.models import ...` — MUST be a Django management command** in `core/management/commands/`, not a plain Typer command with manual `django.setup()`.
+
+Why: manual `django.setup()` in CLI modules causes module-level import chains that pull in Django models before Django is bootstrapped. This breaks test isolation (test hangs, real backend imports) and is architecturally wrong — the management command framework exists to solve this.
+
+**Pattern for CLI → management command delegation:**
+
+1. Create the management command in `core/management/commands/<name>.py` using `TyperCommand` from `django-typer`. All heavy imports (backends, ORM, scanners) go here — **inline in `handle()`**, not at module level.
+2. The CLI command in `cli/<group>.py` stays thin: it calls `django.setup()` + `call_command("<name>", ...)`. The CLI module imports **nothing** from `core/` or `backends/` at module level.
+3. Tests for the management command use `call_command()` with `django.test.TestCase`. Tests for the CLI wrapper (if any) test only the delegation, not the business logic.
+
+**Example — `t3 loop tick`:**
+
+```
+cli/loop.py (thin)          →  django.setup() + call_command("loop_tick", ...)
+core/management/commands/loop_tick.py  →  all tick logic, inline ORM imports
+```
+
+**Overlay commands** (`t3 <overlay> worktree provision`, etc.) use a different delegation mechanism: `managepy()` runs `python manage.py <cmd>` in a subprocess via `OverlayAppBuilder`. Cross-overlay commands (like `loop_tick`) use in-process `call_command` instead.
+
+**When NOT to use a management command:** commands that never touch Django — `t3 info`, `t3 startoverlay`, `t3 loop start/stop/status`, `t3 slack listen`. These are pure Typer commands in `cli/`.
 
 ## Overlay System
 

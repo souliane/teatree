@@ -95,7 +95,7 @@ src/teatree/
     doctor.py           # `t3 doctor ...`
     info.py             # `t3 info`, `t3 startoverlay`, `t3 docs`
     infra.py            # `t3 infra ...`
-    loop.py             # `t3 loop start|stop|status|tick`
+    loop.py             # `t3 loop start|stop|status|tick` (tick delegates to loop_tick mgmt cmd)
     overlay.py          # OverlayAppBuilder — builds the per-overlay subapp
     overlay_dev.py      # `t3 overlay install|uninstall|status` (dev loop)
     review.py           # `t3 review ...`
@@ -144,6 +144,7 @@ src/teatree/
       ticket.py         # Ticket transitions and queries
       tool.py           # Overlay-declared tool subcommands
       e2e.py            # `e2e run|external|project`
+      loop_tick.py      # One tick of the fat loop (scan, dispatch, statusline)
       overlay.py        # Overlay inspection (config, info)
       tasks.py          # Task claiming and execution
       generate_*.py     # generate_all_docs / generate_overlay_docs / generate_skill_docs

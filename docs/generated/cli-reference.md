@@ -936,10 +936,10 @@ Usage: t3 loop tick [OPTIONS]
 
  Run one tick: scan in parallel, dispatch, render statusline.
 
- Without ``--overlay``, every registered overlay is scanned in
- parallel — useful when you maintain multiple GitHub identities
- (one per overlay). With ``--overlay <name>``, only that overlay's
- credentials are used.
+ Delegates to the ``loop_tick`` Django management command so that
+ Django is bootstrapped by the management framework (not manual
+ ``django.setup()``).  All heavy imports (ORM, backends, scanners)
+ live in the management command module, not here.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --statusline-file        PATH  Override the statusline output path (test     │
