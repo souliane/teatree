@@ -95,10 +95,45 @@ class SlackBotBackend:
         return events
 
     def fetch_dms(self, *, since: str = "") -> list[RawAPIDict]:
-        """Drain queued Socket Mode DMs. See :meth:`fetch_mentions`."""
-        _ = since
-        events, self._dms = self._dms, []
-        return events
+        """Return new DMs from the user.
+
+        Drains the Socket Mode queue first (populated by a running receiver).
+        When the queue is empty, falls back to polling ``conversations.history``
+        on the bot's DM channel with the configured user. Only messages FROM
+        the user are returned (bot's own messages are filtered out).
+        """
+        if self._dms:
+            events, self._dms = self._dms, []
+            return events
+        if not self._user_id or not self._bot_token:
+            return []
+        channel = self.open_dm(self._user_id)
+        if not channel:
+            return []
+        params: dict[str, str | int] = {"channel": channel, "limit": 20}
+        if since:
+            params["oldest"] = since
+        data = self._get("conversations.history", params)
+        if not data.get("ok"):
+            return []
+        messages = data.get("messages")
+        if not isinstance(messages, list):
+            return []
+        bot_id = self._resolve_bot_id()
+        result: list[RawAPIDict] = []
+        for m in messages:
+            if not isinstance(m, dict):
+                continue
+            msg = cast("RawAPIDict", m)
+            if msg.get("user") != bot_id and msg.get("bot_id") != bot_id:
+                result.append(msg)
+        return result
+
+    def _resolve_bot_id(self) -> str:
+        if not hasattr(self, "_cached_bot_id"):
+            data = self._post("auth.test", {})
+            self._cached_bot_id = data.get("user_id", "") if data.get("ok") else ""
+        return self._cached_bot_id
 
     def post_message(self, *, channel: str, text: str, thread_ts: str = "") -> RawAPIDict:
         payload: SlackPayload = {"channel": channel, "text": text}

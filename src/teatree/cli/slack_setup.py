@@ -67,6 +67,11 @@ def build_manifest(*, overlay_name: str, display_name: str = "") -> SlackManifes
             "description": f"Teatree agent bot for the {overlay_name} overlay.",
         },
         "features": {
+            "app_home": {
+                "home_tab_enabled": False,
+                "messages_tab_enabled": True,
+                "messages_tab_read_only_enabled": False,
+            },
             "bot_user": {"display_name": name, "always_online": True},
         },
         "oauth_config": {"scopes": {"bot": _BOT_SCOPES}},
