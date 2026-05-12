@@ -1,7 +1,9 @@
 """TeaTree configuration — overlay discovery from ~/.teatree.toml."""
 
 import importlib.util
+import json
 import os
+import time
 import tomllib
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
@@ -319,9 +321,6 @@ def check_for_updates(*, force: bool = False) -> str | None:
 
     Results are cached for 24 h in ``DATA_DIR / "update-check.json"``.
     """
-    import json  # noqa: PLC0415
-    import time  # noqa: PLC0415
-
     config = load_config()
     if not force and not config.user.check_updates:
         return None
@@ -367,9 +366,6 @@ def check_for_updates(*, force: bool = False) -> str | None:
 
 def _write_update_cache(cache_path: Path, message: str) -> None:
     """Persist the update-check result so we don't hit the network every invocation."""
-    import json  # noqa: PLC0415
-    import time  # noqa: PLC0415
-
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     cache_path.write_text(
         json.dumps({"ts": time.time(), "message": message}),

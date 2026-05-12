@@ -28,7 +28,7 @@ def get_code_host(overlay: "OverlayBase") -> CodeHostBackend | None:
     Selection follows ``overlay.config.code_host``; falls back to inspecting
     the available tokens when the field is unset.
     """
-    choice = getattr(overlay.config, "code_host", "")
+    choice = overlay.config.code_host
     github_token = overlay.config.get_github_token()
     gitlab_token = overlay.config.get_gitlab_token()
 
@@ -66,13 +66,13 @@ def get_messaging(overlay: "OverlayBase") -> MessagingBackend:
     Default is :class:`NoopMessagingBackend` so callers always get a
     Protocol-conforming object — no per-call ``is None`` guards.
     """
-    choice = getattr(overlay.config, "messaging_backend", "") or "noop"
+    choice = overlay.config.messaging_backend or "noop"
     if choice == "slack":
-        token_ref = getattr(overlay.config, "slack_token_ref", "")
+        token_ref = overlay.config.slack_token_ref
         return SlackBotBackend(
             bot_token=read_pass(f"{token_ref}-bot") if token_ref else overlay.config.get_slack_token(),
             app_token=read_pass(f"{token_ref}-app") if token_ref else "",
-            user_id=getattr(overlay.config, "slack_user_id", ""),
+            user_id=overlay.config.slack_user_id,
         )
     if choice == "noop":
         return NoopMessagingBackend()

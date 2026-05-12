@@ -34,6 +34,7 @@ class SlackBotBackend:
         self._bot_token = bot_token
         self._app_token = app_token
         self._user_id = user_id
+        self._cached_bot_id: str | None = None
         # Inbound queues populated by the Phase 3.6 Socket Mode receiver. Each
         # tick the loop scanner drains them via ``fetch_mentions`` /
         # ``fetch_dms``; the receiver calls ``enqueue_mention`` / ``enqueue_dm``.
@@ -130,9 +131,9 @@ class SlackBotBackend:
         return result
 
     def _resolve_bot_id(self) -> str:
-        if not hasattr(self, "_cached_bot_id"):
+        if self._cached_bot_id is None:
             data = self._post("auth.test", {})
-            self._cached_bot_id = data.get("user_id", "") if data.get("ok") else ""
+            self._cached_bot_id = str(data.get("user_id", "")) if data.get("ok") else ""
         return self._cached_bot_id
 
     def post_message(self, *, channel: str, text: str, thread_ts: str = "") -> RawAPIDict:

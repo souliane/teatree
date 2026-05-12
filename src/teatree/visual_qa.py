@@ -21,7 +21,7 @@ import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from teatree.core.models.types import VisualQAPageDetail, VisualQAPageError, VisualQASummary
 from teatree.core.overlay import OverlayBase
@@ -30,19 +30,13 @@ from teatree.utils import git
 if TYPE_CHECKING:
     from playwright.sync_api import BrowserContext
 
-# Playwright is imported lazily so ``pip install teatree`` does not require it.
-# When it is absent, ``run_check`` raises ``VisualQAUnavailableError`` and the
-# gate fails open with a clear message instead of blocking the push.
 PlaywrightError: type[BaseException] = Exception
-sync_playwright: Any = None
 try:
     from playwright.sync_api import Error as _PlaywrightError
-    from playwright.sync_api import sync_playwright as _sync_playwright
 except ImportError:
     pass
 else:
     PlaywrightError = _PlaywrightError
-    sync_playwright = _sync_playwright
 
 # Default file patterns that warrant a browser sanity check.
 # Overlays can override via ``OverlayBase.get_visual_qa_targets()``.
@@ -178,9 +172,11 @@ def run_check(targets: list[str], base_url: str, screenshot_dir: str = DEFAULT_S
     ``VisualQAUnavailableError`` when Playwright cannot start so callers
     can fail open with a clear message rather than blocking the push.
     """
-    if sync_playwright is None:
+    try:
+        from playwright.sync_api import sync_playwright  # noqa: PLC0415
+    except ImportError:
         msg = "playwright is not installed. Run: uv sync && playwright install chromium"
-        raise VisualQAUnavailableError(msg)
+        raise VisualQAUnavailableError(msg) from None
 
     out_dir = Path(screenshot_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
