@@ -4154,6 +4154,30 @@ class TestLifecycleVisitPhase(TestCase):
         assert "reviewing" in session.visited_phases
         assert str(session.pk) in result
 
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_advances_fsm_alongside_session_visit(self) -> None:
+        ticket = Ticket.objects.create(
+            overlay="test", issue_url="https://example.com/issues/vp3", state=Ticket.State.NOT_STARTED
+        )
+        cast("str", call_command("lifecycle", "visit-phase", str(ticket.pk), "scoping"))
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.SCOPED
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_fsm_mismatch_does_not_block_phase_visit(self) -> None:
+        ticket = Ticket.objects.create(
+            overlay="test", issue_url="https://example.com/issues/vp4", state=Ticket.State.NOT_STARTED
+        )
+        cast("str", call_command("lifecycle", "visit-phase", str(ticket.pk), "reviewing"))
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.NOT_STARTED
+        session = ticket.sessions.first()
+        assert "reviewing" in session.visited_phases
+
 
 class TestRunHealthChecks(TestCase):
     @_patch_overlays(FULL_OVERLAY)
