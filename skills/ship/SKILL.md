@@ -351,6 +351,8 @@ When a session uncovers a small unique commit on a now-stale branch (typical dur
 - **Cancel running pipelines when closing an MR/PR.** When a PR is closed (abandoned, superseded, or replaced), cancel any running or pending pipelines for that branch immediately — they waste CI resources on code that will never be merged.
 - **Clickable references:** Every PR, ticket, or note reference must be a markdown link — see [`../rules/SKILL.md`](../rules/SKILL.md) § "Clickable References".
 - **Commit early, commit often.** Never accumulate more than 1-2 tickets of uncommitted changes. Commit after completing each ticket or logical unit of work. Squash later with `t3 <overlay> workspace finalize`.
+- **Prefer `git commit -a`** when committing changes that touch files the linter might reformat. Pre-commit hooks (ruff-format, end-of-file-fixer) modify files and re-stage them. If you stage specific files, the hook may modify OTHER files that remain unstaged. The pre-push hook then stashes these unstaged changes and fails to restore the patch. Use selective staging only when you specifically need to exclude files.
+- **Verify static asset URLs** after any change to `<script src>` or `<link href>` in templates: (1) check the URL resolves (`curl -sI <url>`), (2) if vendoring locally, verify file size > 1KB (a 45-byte file is an error page), (3) Playwright screenshot + console error check.
 - **Publishing actions are mode-conditional.** Canonical rule: see [`../rules/SKILL.md`](../rules/SKILL.md) § "Publishing Actions Are Mode-Conditional". In `interactive` mode (default) every push/PR/merge/remote-delete needs separate explicit approval. In `auto` mode (`t3.mode = "auto"` or `T3_MODE=auto`) the agent ships end-to-end without confirm prompts; only the always-gated list (force-push to defaults, history rewrites on shared defaults, destructive shared-state ops, unauthorised external writes, `--no-verify`) remains confirm-gated.
 - **Commit trailer preferences** (`Co-Authored-By`) live in the user's global agent config — check it before committing; when in doubt, omit the trailer.
 
@@ -359,3 +361,5 @@ When a session uncovers a small unique commit on a now-stale branch (typical dur
 When rewriting commit messages, use `filter-branch --msg-filter` (matches by full hash). Do NOT use `git rebase -i` with `GIT_SEQUENCE_EDITOR="sed"` — the short hash may differ from `git log --oneline`, causing a silent no-op.
 
 **Post-rewrite verification (Non-Negotiable):** After ANY rebase or filter-branch, verify the hash changed. Same hash = no-op.
+
+**Rebase todo shorthand:** When automating `git rebase -i` with `GIT_SEQUENCE_EDITOR`, the todo list uses single-letter shorthand (`p` not `pick`, `f` not `fixup`). Match on `^p` not `^pick`. Use `sed -e '/^p <hash>/s/^p/f/'` for fixup squashing.
