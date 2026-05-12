@@ -144,8 +144,8 @@ def test_build_default_scanners_adds_messaging_and_notion_scanners() -> None:
     assert "notion_view" in names
 
 
-def test_tick_renders_agent_actions_in_in_flight_zone(tmp_path: Path) -> None:
-    """Non-statusline actions surface as in_flight progress lines."""
+def test_tick_dispatches_agent_actions_without_rendering_them(tmp_path: Path) -> None:
+    """Agent actions are dispatched but not rendered in the statusline."""
     scanner = _FixedScanner(
         name="reviewer_prs",
         out=[ScanSignal(kind="reviewer_pr.new_sha", summary="MR review")],
@@ -153,7 +153,7 @@ def test_tick_renders_agent_actions_in_in_flight_zone(tmp_path: Path) -> None:
     statusline = tmp_path / "statusline.txt"
     report = run_tick(TickRequest(scanners=[scanner]), statusline_path=statusline)
     contents = statusline.read_text(encoding="utf-8")
-    assert "→ t3:reviewer" in contents
+    assert "→ t3:reviewer" not in contents
     assert any(a.kind == "agent" for a in report.actions)
 
 
