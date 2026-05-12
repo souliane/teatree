@@ -5,7 +5,7 @@ import os
 import re
 import shutil
 import sys
-from importlib.metadata import PackageNotFoundError, distribution, packages_distributions
+from importlib.metadata import PackageNotFoundError, distribution
 from pathlib import Path
 
 import typer
@@ -25,17 +25,6 @@ AGENT_SKILL_RUNTIMES: tuple[str, ...] = ("claude", "codex")
 def agent_skill_dirs() -> list[tuple[str, Path]]:
     """Return (runtime_label, skills_dir) pairs, resolved against the current HOME."""
     return [(name, Path.home() / f".{name}" / "skills") for name in AGENT_SKILL_RUNTIMES]
-
-
-def _resolve_overlay_dists(overlays: dict) -> list[str]:
-    """Map overlay instances to their distribution package names."""
-    dist_map = packages_distributions()
-    result: list[str] = []
-    for overlay_inst in overlays.values():
-        top_package = type(overlay_inst).__module__.split(".", maxsplit=1)[0]
-        dist_names = dist_map.get(top_package, [top_package])
-        result.append(dist_names[0] if dist_names else top_package)
-    return result
 
 
 _DEV_SOURCES_FILE = ".t3-dev-sources"
@@ -243,10 +232,12 @@ class DoctorService:
                     "Fix: set T3_REPO env var or run `uv pip install -e <teatree-path>`",
                 )
 
-        # Overlays — resolve dist names once, check both directions
-        from teatree.core.overlay_loader import get_all_overlays  # noqa: PLC0415
+        # Overlays — resolve dist names from entry points metadata (no Django needed).
+        import importlib.metadata  # noqa: PLC0415
 
-        overlay_dists = _resolve_overlay_dists(get_all_overlays())
+        overlay_dists = [
+            ep.dist.name if ep.dist else ep.name for ep in importlib.metadata.entry_points(group="teatree.overlays")
+        ]
 
         for overlay_dist in overlay_dists:
             overlay_is_editable, _ = IntrospectionHelpers.editable_info(overlay_dist)
@@ -294,8 +285,18 @@ class DoctorService:
         """Find the overlay repo in the workspace directory."""
         from teatree.config import load_config  # noqa: PLC0415
 
-        workspace = Path(load_config().user.workspace_dir).expanduser()
-        # Try common layouts: workspace/<dist>, workspace/*/<dist>
+        config = load_config()
+        workspace = Path(config.user.workspace_dir).expanduser()
+
+        # Check TOML overlay paths first — they're explicit and authoritative.
+        for overlay_cfg in (config.raw.get("overlays") or {}).values():
+            path_str = overlay_cfg.get("path", "")
+            if path_str:
+                candidate = Path(path_str).expanduser()
+                if (candidate / "pyproject.toml").is_file():
+                    return candidate
+
+        # Fallback: scan workspace for dist_name directory.
         for candidate in [workspace / dist_name, *workspace.glob(f"*/{dist_name}")]:
             if (candidate / "pyproject.toml").is_file():
                 return candidate
@@ -345,7 +346,9 @@ class DoctorService:
             else:
                 typer.echo(f"FAIL  uv sync failed after patching sources: {result.stderr.strip()}")
         else:
-            typer.echo(f"FAIL  Could not patch [tool.uv.sources] for {package}")
+            typer.echo(
+                f"WARN  {package} is not in host pyproject.toml sources. Fix: `uv tool install --editable {repo_path}`"
+            )
 
     @staticmethod
     def restore_sources(project_root: Path) -> None:
