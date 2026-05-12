@@ -878,7 +878,7 @@ Typer-based, work without Django:
 - `t3 <overlay> e2e project [<test-path>] [--update-snapshots]` — explicit project runner: pytest-playwright in the overlay's own test dir, executed in the canonical Docker image by default
 - `t3 review {post-draft-note,delete-draft-note,list-draft-notes,publish-draft-notes,update-note,reply-to-discussion,resolve-discussion}` — code-host draft notes (post/delete/list/publish), in-place edits of draft or published notes, plus immediate replies on existing discussion threads and resolve/unresolve toggle. Routes to GitHub or GitLab via the active overlay's `CodeHostBackend`.
 - `t3 review-request discover` — discover open PRs awaiting review
-- `t3 tool {privacy-scan,analyze-video,bump-deps,label-issues,find-duplicates,triage-issues}` — standalone utilities
+- `t3 tool {privacy-scan,analyze-video,bump-deps,label-issues,find-duplicates,triage-issues,audit-memory}` — standalone utilities
 - `t3 config write-skill-cache` — write overlay skill metadata to cache
 - `t3 doctor {check,repair}` — health checks and symlink repair
 - `t3 setup slack-bot --overlay <name>` — interactive walkthrough to register a Slack bot for an overlay; opens the app-manifest URL, captures bot+app tokens, stores them via `pass`, writes `slack_user_id` into `~/.teatree.toml`, smoke-tests with a round-trip DM (see § 10.1 for the manifest template and scopes). Subcommands of `t3 setup` short-circuit the global skill-install callback so the walkthrough runs without requiring `T3_REPO`.
