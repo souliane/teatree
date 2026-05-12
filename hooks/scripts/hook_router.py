@@ -682,6 +682,98 @@ def handle_session_end(data: dict) -> None:
     json.dump({"additionalContext": "\n\n".join(parts)}, sys.stdout)
 
 
+# ── PostToolUse: track-cron-jobs ──────────────────────────────────────
+
+
+def _derive_loop_name(prompt: str) -> str:
+    """Derive a short display name from a cron/loop prompt."""
+    prompt = prompt.strip()
+    if prompt.startswith("!"):
+        prompt = prompt[1:].strip()
+    if prompt.startswith("/"):
+        prompt = prompt[1:].strip()
+    parts = prompt.split()
+    if not parts:
+        return "loop"
+    cmd = parts[-1] if len(parts) > 1 else parts[0]
+    cmd = cmd.split("/")[-1]
+    return cmd[:20]
+
+
+def _load_crons(path: Path) -> dict:
+    if not path.is_file():
+        return {"jobs": {}, "wakeup": None}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {"jobs": {}, "wakeup": None}
+
+
+def _save_crons(path: Path, data: dict) -> None:
+    path.write_text(json.dumps(data) + "\n", encoding="utf-8")
+
+
+def handle_track_cron_jobs(data: dict) -> None:
+    """Track CronCreate/CronDelete/ScheduleWakeup for statusline display."""
+    tool_name = data.get("tool_name", "")
+    if tool_name not in {"CronCreate", "CronDelete", "ScheduleWakeup"}:
+        return
+
+    session_id = data.get("session_id", "")
+    if not session_id:
+        return
+
+    _ensure_state_dir()
+    crons_file = _state_file(session_id, "crons")
+    state = _load_crons(crons_file)
+    if "jobs" not in state:
+        state["jobs"] = {}
+
+    import time  # noqa: PLC0415
+
+    now = int(time.time())
+    tool_input = data.get("tool_input", {})
+
+    if tool_name == "CronCreate":
+        prompt = tool_input.get("prompt", "")
+        cron_expr = tool_input.get("cron", "")
+        name = _derive_loop_name(prompt)
+        job_id = data.get("tool_result", {}).get("id", "") or f"job-{now}"
+        cadence = _cron_cadence_seconds(cron_expr)
+        state["jobs"][job_id] = {
+            "name": name,
+            "cron": cron_expr,
+            "cadence": cadence,
+            "created_at": now,
+        }
+    elif tool_name == "CronDelete":
+        job_id = tool_input.get("id", "")
+        state["jobs"].pop(job_id, None)
+    elif tool_name == "ScheduleWakeup":
+        delay = int(tool_input.get("delaySeconds", 0))
+        reason = tool_input.get("reason", "")
+        state["wakeup"] = {
+            "name": reason[:30] if reason else "loop",
+            "next_epoch": now + delay,
+        }
+
+    _save_crons(crons_file, state)
+
+
+def _cron_cadence_seconds(cron_expr: str) -> int | None:
+    """Extract cadence in seconds from simple */N minute patterns."""
+    parts = cron_expr.strip().split()
+    if len(parts) != 5:  # noqa: PLR2004
+        return None
+    minute = parts[0]
+    if minute.startswith("*/") and all(p == "*" for p in parts[1:]):
+        try:
+            return int(minute[2:]) * 60
+        except ValueError:
+            return None
+    return None
+
+
 # ── PreToolUse: block-direct-commands ────────────────────────────────
 
 
@@ -831,6 +923,7 @@ _HANDLERS: dict[str, list] = {
         handle_mirror_question_to_slack,
         handle_track_active_repo,
         handle_track_skill_usage,
+        handle_track_cron_jobs,
         handle_read_dedup,
     ],
     "InstructionsLoaded": [handle_track_skill_usage],

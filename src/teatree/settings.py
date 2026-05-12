@@ -5,9 +5,10 @@ Auto-discovers overlay Django apps via entry points and adds them to INSTALLED_A
 """
 
 from teatree.config import default_logging
-from teatree.paths import get_data_dir
+from teatree.paths import DATA_DIR
 
-_DATA_DIR = get_data_dir("teatree")
+_DATA_DIR = DATA_DIR
+_DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def _discover_overlay_apps() -> list[str]:

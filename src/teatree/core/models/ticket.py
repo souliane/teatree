@@ -312,6 +312,23 @@ class Ticket(models.Model):
 
     @transition(
         field=state,
+        source=[State.SHIPPED, State.IN_REVIEW, State.MERGED, State.RETROSPECTED],
+        target=State.STARTED,
+    )
+    def reopen(self) -> None:
+        """Reopen a post-ship ticket back to STARTED.
+
+        Triggered when new draft MRs appear after the ticket was shipped,
+        indicating additional work is needed.
+        """
+        extra = self._extra()
+        extra.pop("tests_passed", None)
+        extra["reopened_from"] = self.state
+        self.extra = extra
+        self._cancel_pending_tasks()
+
+    @transition(
+        field=state,
         source=[
             State.NOT_STARTED,
             State.SCOPED,

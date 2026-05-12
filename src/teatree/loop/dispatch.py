@@ -113,6 +113,16 @@ def dispatch(signals: list[ScanSignal]) -> list[DispatchAction]:
                 ),
             )
             continue
+        if signal.kind == "ticket.reopen_needed":
+            actions.append(
+                DispatchAction(
+                    kind="mechanical",
+                    zone="ticket_reopen",
+                    detail=signal.summary,
+                    payload=signal.payload,
+                ),
+            )
+            continue
         if signal.kind == "notion.unrouted":
             actions.append(DispatchAction(kind="webhook", zone="n8n", detail=signal.summary, payload=signal.payload))
             continue

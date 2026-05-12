@@ -369,10 +369,10 @@ def test_agent_actions_shown_in_inflight() -> None:
 class TestDispositionMechanical(django.test.TestCase):
     def test_closed_issue_auto_ignores(self) -> None:
         from teatree.core.models.ticket import Ticket  # noqa: PLC0415
-        from teatree.loop.tick import _ignore_disposed_ticket  # noqa: PLC0415
+        from teatree.loop.mechanical import ignore_disposed_ticket  # noqa: PLC0415
 
         ticket = Ticket.objects.create(overlay="acme", issue_url="https://x/1", state="not_started")
-        _ignore_disposed_ticket({"ticket_id": ticket.pk, "reason": "issue_closed"})
+        ignore_disposed_ticket({"ticket_id": ticket.pk, "reason": "issue_closed"})
         ticket.refresh_from_db()
         assert ticket.state == "ignored"
 

@@ -10,14 +10,13 @@ import json
 import logging
 import os
 import tomllib
-from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from teatree.backends.protocols import CodeHostBackend, MessagingBackend
 from teatree.core.backend_factory import OverlayBackends
-from teatree.loop.dispatch import ActionPayload, DispatchAction, dispatch
+from teatree.loop.dispatch import DispatchAction, dispatch
 from teatree.loop.scanners import (
     ActiveTicketsScanner,
     AssignedIssuesScanner,
@@ -466,10 +465,12 @@ def _execute_mechanical(report: TickReport) -> None:
     reflects the post-transition state. Errors are captured in
     ``report.errors`` — they never abort the tick.
     """
+    from teatree.loop.mechanical import HANDLERS  # noqa: PLC0415
+
     for action in report.actions:
         if action.kind != "mechanical":
             continue
-        handler = _MECHANICAL_HANDLERS.get(action.zone)
+        handler = HANDLERS.get(action.zone)
         if handler is not None:
             try:
                 handler(action.payload)
@@ -477,52 +478,6 @@ def _execute_mechanical(report: TickReport) -> None:
                 label = f"{action.zone}[{action.payload.get('ticket_id', '?')}]"
                 logger.exception("Mechanical action %s failed", label)
                 report.errors[label] = f"{type(exc).__name__}: {exc}"
-
-
-def _ignore_disposed_ticket(payload: ActionPayload) -> None:
-    from django.apps import apps  # noqa: PLC0415
-
-    ticket_model = apps.get_model("core", "Ticket")
-    ticket_id = payload.get("ticket_id")
-    if ticket_id is None:
-        return
-    ticket = ticket_model.objects.get(pk=ticket_id)
-    ticket.ignore()
-    ticket.save()
-    logger.info("Auto-ignored ticket %s (reason: %s)", ticket_id, payload.get("reason", "?"))
-
-
-def _complete_ticket(payload: ActionPayload) -> None:
-    """Transition a ticket from its current post-ship state toward delivered.
-
-    FSM path: shipped → request_review → mark_merged → retrospect.
-    Each step advances the ticket one state; ``mark_merged`` and
-    ``retrospect`` enqueue workers via ``on_commit`` for teardown and
-    retro I/O respectively.
-    """
-    from django.apps import apps  # noqa: PLC0415
-
-    ticket_model = apps.get_model("core", "Ticket")
-    ticket_id = payload.get("ticket_id")
-    if ticket_id is None:
-        return
-    ticket = ticket_model.objects.get(pk=ticket_id)
-
-    if ticket.state == "shipped":
-        ticket.request_review()
-        ticket.save()
-    if ticket.state == "in_review":
-        ticket.mark_merged()
-        ticket.save()
-    if ticket.state == "merged":
-        ticket.retrospect()
-        ticket.save()
-
-
-_MECHANICAL_HANDLERS: dict[str, Callable[[ActionPayload], None]] = {
-    "ticket_disposition": _ignore_disposed_ticket,
-    "ticket_completion": _complete_ticket,
-}
 
 
 def _repo_freshness(repo_path: Path) -> dict[str, int | str] | None:
