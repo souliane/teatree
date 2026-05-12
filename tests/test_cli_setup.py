@@ -13,11 +13,12 @@ import pytest
 from teatree.cli.setup import (
     CORE_EXCLUDED_SKILLS,
     _clean_broken_symlinks,
-    _enable_local_plugin,
+    _enable_plugin,
     _ensure_skill_link,
     _ensure_t3_installed,
     _find_main_clone,
     _install_claude_plugin,
+    _register_installed_plugin,
     _remove_excluded_skills,
     _repair_dep_drift,
     _run_apm_install,
@@ -117,57 +118,76 @@ class TestRunApmInstall:
             assert args[0][0] == ["/usr/bin/apm", "install", "-g", "--target", "claude"]
 
 
-class TestEnableLocalPlugin:
+class TestEnablePlugin:
     def test_adds_plugin_to_settings(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: tmp_path))
         claude_dir = tmp_path / ".claude"
         claude_dir.mkdir()
         settings = claude_dir / "settings.json"
         settings.write_text(json.dumps({"key": "value"}))
-        link = tmp_path / "plugins" / "t3"
 
-        _enable_local_plugin(link)
+        _enable_plugin()
 
         data = json.loads(settings.read_text())
-        assert data["enabledPlugins"][str(link)] is True
+        assert data["enabledPlugins"]["t3@souliane"] is True
 
     def test_noop_when_already_enabled(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: tmp_path))
         claude_dir = tmp_path / ".claude"
         claude_dir.mkdir()
-        link = tmp_path / "plugins" / "t3"
         settings = claude_dir / "settings.json"
-        settings.write_text(json.dumps({"enabledPlugins": {str(link): True}}))
+        settings.write_text(json.dumps({"enabledPlugins": {"t3@souliane": True}}))
         mtime_before = settings.stat().st_mtime
 
-        _enable_local_plugin(link)
+        _enable_plugin()
 
         assert settings.stat().st_mtime == mtime_before
 
-    def test_creates_settings_when_missing(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+
+class TestRegisterInstalledPlugin:
+    def test_registers_plugin_in_json(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: tmp_path))
-        link = tmp_path / "plugins" / "t3"
+        (tmp_path / ".claude" / "plugins").mkdir(parents=True)
+        repo = tmp_path / "teatree-clone"
+        repo.mkdir()
 
-        _enable_local_plugin(link)
+        _register_installed_plugin(repo)
 
-        settings = tmp_path / ".claude" / "settings.json"
-        assert settings.is_file()
-        data = json.loads(settings.read_text())
-        assert data["enabledPlugins"][str(link)] is True
+        data = json.loads((tmp_path / ".claude" / "plugins" / "installed_plugins.json").read_text())
+        entries = data["plugins"]["t3@souliane"]
+        assert len(entries) == 1
+        assert entries[0]["installPath"] == str(repo.resolve())
+        assert entries[0]["version"] == "local"
+
+    def test_noop_when_already_correct(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: tmp_path))
+        plugins_dir = tmp_path / ".claude" / "plugins"
+        plugins_dir.mkdir(parents=True)
+        repo = tmp_path / "teatree-clone"
+        repo.mkdir()
+
+        _register_installed_plugin(repo)
+        mtime = (plugins_dir / "installed_plugins.json").stat().st_mtime
+
+        _register_installed_plugin(repo)
+        assert (plugins_dir / "installed_plugins.json").stat().st_mtime == mtime
 
 
 class TestInstallClaudePlugin:
-    def test_creates_symlink(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_registers_plugin_and_marketplace(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: tmp_path))
         repo = tmp_path / "teatree-clone"
         repo.mkdir()
-        with patch("teatree.cli.setup.shutil.which", return_value=None):
-            assert _install_claude_plugin(repo) is True
-        link = tmp_path / ".claude" / "plugins" / "t3"
-        assert link.is_symlink()
-        assert link.resolve() == repo.resolve()
+        assert _install_claude_plugin(repo) is True
 
-    def test_updates_stale_symlink(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        data = json.loads((tmp_path / ".claude" / "plugins" / "installed_plugins.json").read_text())
+        assert "t3@souliane" in data["plugins"]
+        assert data["plugins"]["t3@souliane"][0]["installPath"] == str(repo.resolve())
+
+        settings = json.loads((tmp_path / ".claude" / "settings.json").read_text())
+        assert settings["enabledPlugins"]["t3@souliane"] is True
+
+    def test_removes_legacy_symlink(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: tmp_path))
         plugins_dir = tmp_path / ".claude" / "plugins"
         plugins_dir.mkdir(parents=True)
@@ -176,38 +196,26 @@ class TestInstallClaudePlugin:
         old_target.mkdir()
         link.symlink_to(old_target)
 
-        new_repo = tmp_path / "new-clone"
-        new_repo.mkdir()
-        with patch("teatree.cli.setup.shutil.which", return_value=None):
-            assert _install_claude_plugin(new_repo) is True
-        assert link.resolve() == new_repo.resolve()
-
-    def test_uninstalls_marketplace_version(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: tmp_path))
         repo = tmp_path / "teatree-clone"
         repo.mkdir()
+        _install_claude_plugin(repo)
 
-        completed = SimpleNamespace(returncode=0, stdout="", stderr="")
-        with (
-            patch("teatree.cli.setup.shutil.which", return_value="/usr/bin/claude"),
-            patch("teatree.cli.setup._run_captured", return_value=completed) as mock_run,
-        ):
-            _install_claude_plugin(repo)
+        assert not link.exists()
 
-        uninstall_calls = [c for c in mock_run.call_args_list if "uninstall" in c.args[0]]
-        assert len(uninstall_calls) == 1
-        assert "t3@souliane" in uninstall_calls[0].args[0]
-
-    def test_returns_false_for_non_symlink_path(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_removes_legacy_enabled_path(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: tmp_path))
-        plugins_dir = tmp_path / ".claude" / "plugins"
-        plugins_dir.mkdir(parents=True)
-        (plugins_dir / "t3").mkdir()  # regular dir, not symlink
+        claude_dir = tmp_path / ".claude"
+        claude_dir.mkdir()
+        settings = claude_dir / "settings.json"
+        settings.write_text(json.dumps({"enabledPlugins": {"/some/path/t3": True}}))
 
         repo = tmp_path / "teatree-clone"
         repo.mkdir()
-        with patch("teatree.cli.setup.shutil.which", return_value=None):
-            assert _install_claude_plugin(repo) is False
+        _install_claude_plugin(repo)
+
+        data = json.loads(settings.read_text())
+        assert "/some/path/t3" not in data["enabledPlugins"]
+        assert data["enabledPlugins"]["t3@souliane"] is True
 
 
 class TestStripApmHooks:
