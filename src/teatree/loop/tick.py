@@ -429,6 +429,51 @@ _MECHANICAL_HANDLERS: dict[str, Callable[[ActionPayload], None]] = {
 }
 
 
+def _repo_freshness(repo_path: Path) -> dict[str, int | str] | None:
+    from teatree.utils.run import run_allowed_to_fail  # noqa: PLC0415
+
+    git_dir = repo_path / ".git"
+    if not git_dir.exists():
+        return None
+    result = run_allowed_to_fail(
+        ["git", "rev-list", "HEAD..origin/main", "--count"],
+        cwd=repo_path,
+        expected_codes=None,
+        timeout=5,
+    )
+    try:
+        behind = int(result.stdout.strip()) if result.returncode == 0 else -1
+    except ValueError:
+        behind = -1
+    fetch_head = git_dir / "FETCH_HEAD"
+    fetch_epoch = int(fetch_head.stat().st_mtime) if fetch_head.is_file() else 0
+    return {"behind": behind, "fetch_epoch": fetch_epoch}
+
+
+def _collect_repo_freshness() -> dict[str, dict[str, int | str]]:
+    import tomllib  # noqa: PLC0415
+
+    repos: dict[str, Path] = {}
+    t3_repo = os.environ.get("T3_REPO")
+    if t3_repo:
+        repos["t3"] = Path(t3_repo).expanduser()
+    toml_path = Path.home() / ".teatree.toml"
+    if toml_path.is_file():
+        try:
+            data = tomllib.loads(toml_path.read_text(encoding="utf-8"))
+        except tomllib.TOMLDecodeError:
+            data = {}
+        for name, overlay in (data.get("overlays") or {}).items():
+            if isinstance(overlay, dict) and "path" in overlay:
+                repos[name] = Path(str(overlay["path"])).expanduser()
+    result: dict[str, dict[str, int | str]] = {}
+    for label, path in repos.items():
+        info = _repo_freshness(path)
+        if info is not None:
+            result[label] = info
+    return result
+
+
 def _write_tick_meta(started_at: dt.datetime, *, target: Path | None = None) -> None:
     from teatree.loop.statusline import default_path  # noqa: PLC0415
 
@@ -437,7 +482,8 @@ def _write_tick_meta(started_at: dt.datetime, *, target: Path | None = None) -> 
     next_epoch = int(started_at.timestamp()) + cadence
     import json  # noqa: PLC0415
 
+    freshness = _collect_repo_freshness()
     meta_path.write_text(
-        json.dumps({"next_epoch": next_epoch, "cadence": cadence}) + "\n",
+        json.dumps({"next_epoch": next_epoch, "cadence": cadence, "freshness": freshness}) + "\n",
         encoding="utf-8",
     )
