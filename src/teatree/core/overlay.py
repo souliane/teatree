@@ -230,8 +230,10 @@ class OverlayBase(ABC):  # noqa: PLR0904 — overlay extension API; hook count r
     def declared_env_keys(self) -> set[str]:
         return set()
 
+    _CORE_SECRET_KEYS: frozenset[str] = frozenset({"POSTGRES_PASSWORD"})
+
     def declared_secret_env_keys(self) -> set[str]:
-        return set()
+        return set(self._CORE_SECRET_KEYS)
 
     def get_db_import_strategy(self, worktree: "Worktree") -> DbImportStrategy | None:
         return None

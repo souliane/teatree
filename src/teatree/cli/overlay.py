@@ -120,6 +120,14 @@ DJANGO_GROUPS: dict[str, tuple[str, list[tuple[str, str]]]] = {
             ("visit-phase", "Mark a phase as visited on the ticket's latest session."),
         ],
     ),
+    "ticket": (
+        "Ticket state management.",
+        [
+            ("transition", "Transition a ticket to a new state."),
+            ("list", "List tickets, optionally filtered by state and/or overlay."),
+            ("sync-completions", "Check post-ship tickets against upstream issues and advance completed ones."),
+        ],
+    ),
 }
 
 
