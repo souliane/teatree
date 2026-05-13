@@ -10,6 +10,7 @@ from pathlib import Path
 import typer
 
 from teatree.utils.run import run_streamed, spawn
+from teatree.utils.singleton import AlreadyRunningError, singleton
 
 logger = logging.getLogger(__name__)
 
@@ -146,6 +147,38 @@ def _base_env() -> dict[str, str]:
     return env
 
 
+def _run_workers(project_path: Path, overlay_name: str, count: int, interval: float) -> None:
+    """Spawn *count* ``db_worker`` subprocesses and block until they exit."""
+    manage_py = str(project_path / "manage.py")
+    env = {k: v for k, v in os.environ.items() if k != "DJANGO_SETTINGS_MODULE"}
+    if overlay_name:
+        env["T3_OVERLAY_NAME"] = overlay_name
+    processes = [
+        spawn(
+            [
+                *uv_cmd(project_path, "python", manage_py, "db_worker"),
+                "--interval",
+                str(interval),
+                "--no-startup-delay",
+                "--no-reload",
+            ],
+            cwd=project_path,
+            env=env,
+        )
+        for _ in range(count)
+    ]
+    typer.echo(f"Started {count} worker(s). Press Ctrl+C to stop.")
+    try:
+        for p in processes:
+            p.wait()
+    except KeyboardInterrupt:
+        typer.echo("Shutting down workers...")
+        for p in processes:
+            p.terminate()
+        for p in processes:
+            p.wait(timeout=5)
+
+
 def managepy(project_path: Path | None, *args: str, overlay_name: str = "") -> None:
     """Run a Django management command for an overlay.
 
@@ -210,12 +243,11 @@ class OverlayAppBuilder:
         @overlay_app.command()
         def resetdb() -> None:
             """Drop the SQLite database and re-run all migrations."""
-            from teatree.paths import DATA_DIR  # noqa: PLC0415
+            from teatree.paths import CANONICAL_DB  # noqa: PLC0415
 
-            db_path = DATA_DIR / "db.sqlite3"
-            if db_path.exists():
-                db_path.unlink()
-                typer.echo(f"Deleted {db_path}")
+            if CANONICAL_DB.exists():
+                CANONICAL_DB.unlink()
+                typer.echo(f"Deleted {CANONICAL_DB}")
             managepy(project_path, "migrate", "--no-input", overlay_name=overlay_name)
             typer.echo("Database recreated.")
 
@@ -230,40 +262,21 @@ class OverlayAppBuilder:
             count: int = typer.Option(3, help="Number of worker processes"),
             interval: float = typer.Option(1.0, help="Polling interval in seconds"),
         ) -> None:
-            """Start background task workers."""
+            """Start background task workers.
+
+            Singleton across the machine: a second invocation refuses to start
+            while one is alive, since both would drain the same canonical DB.
+            """
             if project_path is None:
                 typer.echo("Cannot find overlay project directory.")
                 raise typer.Exit(code=1)
 
-            manage_py = str(project_path / "manage.py")
-            env = {k: v for k, v in os.environ.items() if k != "DJANGO_SETTINGS_MODULE"}
-            if overlay_name:
-                env["T3_OVERLAY_NAME"] = overlay_name
-            processes = []
-            for _ in range(count):
-                p = spawn(
-                    [
-                        *uv_cmd(project_path, "python", manage_py, "db_worker"),
-                        "--interval",
-                        str(interval),
-                        "--no-startup-delay",
-                        "--no-reload",
-                    ],
-                    cwd=project_path,
-                    env=env,
-                )
-                processes.append(p)
-
-            typer.echo(f"Started {count} worker(s). Press Ctrl+C to stop.")
             try:
-                for p in processes:
-                    p.wait()
-            except KeyboardInterrupt:
-                typer.echo("Shutting down workers...")
-                for p in processes:  # pragma: no branch
-                    p.terminate()
-                for p in processes:  # pragma: no branch
-                    p.wait(timeout=5)
+                with singleton("teatree-worker"):
+                    _run_workers(project_path, overlay_name, count, interval)
+            except AlreadyRunningError as exc:
+                typer.echo(f"WARN  {exc}. Stop it before starting another.")
+                raise typer.Exit(code=1) from None
 
     def _register_shortcut_commands(self) -> None:
         """Register overlay-scoped workflow shortcuts."""
