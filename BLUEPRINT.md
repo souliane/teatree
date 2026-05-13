@@ -1559,25 +1559,25 @@ The `worktree start` command brings up Docker infrastructure and application ser
 
 ```mermaid
 flowchart TD
-    A["worktree start(worktree_id)"] --> B["Start Docker services\n(overlay.get_services_config)"]
-    B --> C["For each service:\nrun start_command\n(e.g. docker compose up -d db rd)"]
-    C --> D["Pre-run steps per service\n(overlay.get_pre_run_steps)"]
-    D --> E["Regenerate .t3-env.cache\n(write_env_cache, unconditional)"]
-    E --> F["Build subprocess env\n(os.environ + overlay.get_env_extra\n- VIRTUAL_ENV)"]
-    F --> G["Create log directory\n(ticket_dir/../logs/)"]
-    G --> H["For each run command:\nlaunch as background Popen"]
-    H --> I["Sleep 1s per process\nthen check for immediate exit"]
-    I --> J{"Any process\nexited immediately?"}
-    J -- Yes --> K["Log failure\nadd to failed_services"]
-    J -- No --> L["Record PID in extra"]
-    K --> L
-    L --> M["worktree.start_services()\n→ provisioned → services_up"]
-    M --> N["Save PIDs + failed_services\nto worktree.extra"]
+    A["worktree start(worktree_id)"] --> B["docker compose down\n(idempotent reset)"]
+    B --> C["Set port env\n(overlay.get_port_env)"]
+    C --> D["Pre-run steps per service\n(overlay.get_pre_run_steps,\ndedup by step name)"]
+    D --> E["Regenerate .t3-env.cache\n(write_env_cache)"]
+    E --> F{"overlay.get_compose_file()"}
+    F -- empty --> X["ok: no compose file\n(translation-only worktree)"]
+    F -- path --> G["Image preflight:\ndocker compose config --format json\n→ docker image inspect each\n→ docker compose build <missing>"]
+    G --> H["docker compose up -d\n--no-build --pull=never"]
+    H --> I{"compose up exit 0?"}
+    I -- No --> Y["FAIL: docker compose up failed"]
+    I -- Yes --> J["Save worktree.extra:\nservices + ports"]
+    J --> K["worktree.start_services()\n→ provisioned → services_up"]
 ```
 
-**Docker services** are started first (typically Postgres and Redis) — these are long-lived shared containers identified by the overlay's `get_services_config()`. Each spec includes a `start_command` (e.g., `docker compose up -d --no-build db`).
+**Docker services** are started by `docker compose up` — Postgres and Redis live in the shared global containers (out of scope here), and per-worktree services (backend, sidecars, the pre-built frontend served by `nginx:alpine`) come up together from the worktree's compose file + override. The overlay's `get_services_config()` declares what must be in compose; the runner does not spawn anything on the host.
 
-**Application servers** (backend, frontend) are launched as background processes via `Popen`, with stdout/stderr redirected to per-service log files. The overlay's `get_run_commands()` provides the shell commands (e.g., `manage.py runserver`, `npx nx serve`).
+**Image preflight** (landed in [#660](https://github.com/souliane/teatree/pull/660)) catches the first-start case where a compose service builds from a sibling Dockerfile and its image isn't on the daemon yet. `compose config --format json` enumerates services that have a `build:` section, `docker image inspect` checks each image tag, and the runner runs `docker compose build <missing>` before the `up --no-build --pull=never` call. Best-effort: any failure of `compose config` falls through to the normal `up` path.
+
+**Run-command metadata.** `OverlayBase.get_run_commands(worktree)` returns argv + cwd entries per service, used by other CLI verbs (`t3 <overlay> run tests`, `t3 <overlay> run backend`, `t3 <overlay> run build-frontend`). The runner does not iterate this dict to spawn host processes — that mode (`RunCommand(host=True)`, plus the `t3 <overlay> run frontend` host-spawn verb) was retired when overlays switched to pre-built frontends served by nginx in compose.
 
 **Verification** is a separate step (`run verify`):
 

@@ -2246,59 +2246,6 @@ class TestRunBackend(TestCase):
             assert "no docker-compose file" in result.lower()
 
 
-class TestRunFrontend(TestCase):
-    @_patch_overlays(FULL_OVERLAY)
-    @override_settings(**SETTINGS)
-    def test_starts_locally_on_host(self) -> None:
-        """Frontend always runs on host (nx serve needs 6GB+ RAM, exceeds Docker limits)."""
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            wt_dir = tmp_path / "frontend"
-            wt_dir.mkdir()
-            ticket = Ticket.objects.create(overlay="test")
-            Worktree.objects.create(
-                overlay="test",
-                ticket=ticket,
-                repo_path="/tmp/frontend",
-                branch="feature",
-                extra={"worktree_path": str(wt_dir)},
-            )
-
-            mock_config = MagicMock()
-            mock_config.user.workspace_dir = tmp_path
-
-            with (
-                patch.object(utils_run_mod.subprocess, "Popen") as mock_popen,
-                patch.object(run_mod, "find_free_ports", return_value={"frontend": 4201, "backend": 8001}),
-                patch("teatree.config.load_config", return_value=mock_config),
-                patch("teatree.utils.ports.free_port", return_value=None),
-            ):
-                result = cast("str", call_command("run", "frontend", path=str(wt_dir)))
-
-            mock_popen.assert_called_once()
-            assert "4201" in result
-
-    @_patch_overlays(MINIMAL_OVERLAY)
-    @override_settings(**SETTINGS)
-    def test_no_command_configured_returns_message(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            wt_dir = tmp_path / "frontend"
-            wt_dir.mkdir()
-            ticket = Ticket.objects.create(overlay="test")
-            Worktree.objects.create(
-                overlay="test",
-                ticket=ticket,
-                repo_path="/tmp/frontend",
-                branch="feature",
-                extra={"worktree_path": str(wt_dir)},
-            )
-
-            result = cast("str", call_command("run", "frontend", path=str(wt_dir)))
-
-            assert "no frontend command" in result.lower()
-
-
 class TestRunBuildFrontend(TestCase):
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
@@ -2551,57 +2498,13 @@ class TestDetectLocalPort:
             assert e2e_mod._detect_local_port(8080) is None
 
 
-class TestDetectNxServePort:
-    def _ps_output(self, lines: list[str]) -> MagicMock:
-        result = MagicMock()
-        result.stdout = "\n".join(lines)
-        return result
-
-    def test_returns_port_when_nx_serve_matches_worktree_path(self) -> None:
-        ps_output = self._ps_output(["node nx serve --port=4210 /home/user/tickets/my-ticket/frontend"])
-        with patch.object(utils_run_mod.subprocess, "run", return_value=ps_output):
-            assert e2e_mod._detect_nx_serve_port("/home/user/tickets/my-ticket/frontend") == 4210
-
-    def test_returns_none_when_worktree_path_does_not_match(self) -> None:
-        ps_output = self._ps_output(["node nx serve --port=4210 /home/user/tickets/other-ticket/frontend"])
-        with patch.object(utils_run_mod.subprocess, "run", return_value=ps_output):
-            assert e2e_mod._detect_nx_serve_port("/home/user/tickets/my-ticket/frontend") is None
-
-    def test_returns_none_when_no_nx_serve_running(self) -> None:
-        ps_output = self._ps_output(["python manage.py runserver"])
-        with patch.object(utils_run_mod.subprocess, "run", return_value=ps_output):
-            assert e2e_mod._detect_nx_serve_port("/any/path") is None
-
-
-_no_envfile = patch("teatree.core.management.commands.e2e._find_env_cache", return_value=None)
-
-
 class TestDiscoverFrontendPort:
-    def test_returns_nx_port_when_nx_running_in_worktree(self) -> None:
-        with (
-            patch.object(e2e_mod, "_find_env_cache", return_value=Path("/wt/.t3-env.cache")),
-            patch.object(e2e_mod, "_detect_nx_serve_port", return_value=4215),
-        ):
-            assert e2e_mod._discover_frontend_port("project") == 4215
-
-    def test_returns_docker_port_when_nx_not_running(self) -> None:
-        with (
-            patch.object(e2e_mod, "_find_env_cache", return_value=Path("/wt/.t3-env.cache")),
-            patch.object(e2e_mod, "_detect_nx_serve_port", return_value=None),
-            patch.object(e2e_mod, "get_service_port", return_value=4201),
-        ):
-            assert e2e_mod._discover_frontend_port("project") == 4201
-
-    def test_returns_docker_port_when_no_envfile(self) -> None:
-        with (
-            _no_envfile,
-            patch.object(e2e_mod, "get_service_port", return_value=4201),
-        ):
+    def test_returns_docker_port_when_compose_reports_it(self) -> None:
+        with patch.object(e2e_mod, "get_service_port", return_value=4201):
             assert e2e_mod._discover_frontend_port("project") == 4201
 
     def test_scans_local_ports_as_final_fallback(self) -> None:
         with (
-            _no_envfile,
             patch.object(e2e_mod, "get_service_port", return_value=None),
             patch.object(e2e_mod, "_detect_local_port", side_effect=lambda p: 4203 if p == 4203 else None),
         ):
@@ -2609,7 +2512,6 @@ class TestDiscoverFrontendPort:
 
     def test_returns_none_when_no_port_found(self) -> None:
         with (
-            _no_envfile,
             patch.object(e2e_mod, "get_service_port", return_value=None),
             patch.object(e2e_mod, "_detect_local_port", return_value=None),
         ):

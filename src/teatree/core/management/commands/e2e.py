@@ -1,7 +1,6 @@
 """E2E test commands: trigger CI, run from external repo, run from project."""
 
 import os
-import re
 import socket
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -14,7 +13,7 @@ from teatree.core.resolve import _find_env_cache, _get_user_cwd, _parse_env_file
 from teatree.core.runners.worktree_start import compose_project
 from teatree.paths import get_data_dir
 from teatree.utils.ports import get_service_port
-from teatree.utils.run import run_allowed_to_fail, run_checked, run_streamed
+from teatree.utils.run import run_checked, run_streamed
 
 
 @dataclass
@@ -45,25 +44,6 @@ def _detect_local_port(port: int) -> int | None:
         s.settimeout(0.3)
         if s.connect_ex(("127.0.0.1", port)) == 0:
             return port
-    return None
-
-
-def _detect_nx_serve_port(worktree_path: str) -> int | None:
-    """Find a running ``nx serve`` whose args contain *worktree_path* and extract ``--port``.
-
-    Prevents multi-worktree port collisions: a plain port scan finds the first
-    listening process and can pick up another worktree's frontend. Matching by
-    worktree path ensures we discover the right ``nx serve`` instance.
-    """
-    result = run_allowed_to_fail(["ps", "axo", "args"], expected_codes=None)
-    for line in result.stdout.splitlines():
-        if "nx serve" not in line or "--port=" not in line:
-            continue
-        if worktree_path not in line:
-            continue
-        match = re.search(r"--port=(\d+)", line)
-        if match:
-            return int(match.group(1))
     return None
 
 
@@ -100,18 +80,13 @@ def _resolve_private_tests_path() -> Path | None:
 
 
 def _discover_frontend_port(project: str, default: int = 4200) -> int | None:
-    """Discover frontend port: nx serve match → docker-compose → local port scan.
+    """Discover frontend port via docker-compose, falling back to a local scan.
 
-    nx serve process matching is tried first when a worktree env file is found.
-    A plain port scan would return the first listening port in the range, which
-    in multi-worktree setups can be another worktree's frontend.
+    The frontend is served by the compose ``frontend`` service (nginx serving
+    the pre-built dist/). ``docker compose port`` is the authoritative answer
+    when the stack is up; the local scan is a last-ditch fallback for users
+    who started compose outside the teatree runner.
     """
-    cwd = _get_user_cwd()
-    envfile = _find_env_cache(cwd)
-    if envfile is not None:
-        nx_port = _detect_nx_serve_port(str(envfile.parent))
-        if nx_port is not None:
-            return nx_port
     port = get_service_port(project, "frontend", default)
     if port is not None:
         return port
@@ -274,7 +249,7 @@ class Command(TyperCommand):
             if frontend_port is None:
                 return (
                     f"Frontend not running (no docker service in '{project}', no local process on 4200). "
-                    "Run `t3 run frontend` first."
+                    "Run `t3 <overlay> worktree start` first."
                 )
             frontend_url = f"http://localhost:{frontend_port}"
 

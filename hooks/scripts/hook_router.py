@@ -98,7 +98,10 @@ _BLOCKED_COMMANDS: list[tuple[re.Pattern[str], str]] = [
     ),
     (
         re.compile(r"\bnpm\s+run\b"),
-        "BLOCKED: `npm run` — use `t3 <overlay> run frontend` instead.",
+        (
+            "BLOCKED: `npm run` — use `t3 <overlay> run build-frontend` "
+            "(rebuild dist) or `t3 <overlay> worktree start` (full stack) instead."
+        ),
     ),
     (
         re.compile(r"\b(?:pipenv|pip)\s+install\b"),
