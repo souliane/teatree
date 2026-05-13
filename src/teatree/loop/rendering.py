@@ -263,16 +263,37 @@ def _render_action_line(
     ticket_index: dict[str, str] | None = None,
 ) -> str:
     prefix = f"[{overlay}] " if overlay else ""
+    prs_by_ticket: dict[str, list[_PRRef]] = {}
+    for ref in pr_refs:
+        parent = (ticket_index or {}).get(ref.url, "")
+        if parent and parent != str(ref.iid):
+            prs_by_ticket.setdefault(parent, []).append(ref)
+    consumed_pr_urls: set[str] = set()
+
     parts: list[str] = []
-    if pr_refs:
-        parts.append(_render_pr_group(overlay, pr_refs, ticket_index=ticket_index).removeprefix(prefix))
     for reason, refs in disposition_refs.items():
         label = _DISPOSITION_LABELS.get(reason, reason)
         items = " ".join(_link(r.label, r.url) for r in refs)
         parts.append(f"{label}: {items}")
     if ready_refs:
-        items = " ".join(_link(r.label, r.url) for r in ready_refs)
-        parts.append(f"ready: {items}")
+        items: list[str] = []
+        for ref in ready_refs:
+            text = _link(ref.label, ref.url)
+            number = ref.label.lstrip("#")
+            prs = prs_by_ticket.get(number, [])
+            if prs:
+                pr_parts = [_link(f"!{p.iid}", p.url) for p in prs]
+                text += f" ({' '.join(pr_parts)})"
+                consumed_pr_urls.update(p.url for p in prs)
+            items.append(text)
+        parts.append(f"ready: {' '.join(items)}")
+    if pr_refs:
+        remaining = [r for r in pr_refs if r.url not in consumed_pr_urls]
+        if remaining:
+            parts.insert(
+                0,
+                _render_pr_group(overlay, remaining, ticket_index=ticket_index).removeprefix(prefix),
+            )
     if not parts:
         return ""
     return f"{prefix}{' · '.join(parts)}"
