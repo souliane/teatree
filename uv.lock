@@ -1710,6 +1710,7 @@ slack = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "browser-cookie3" },
     { name = "cyclonedx-bom" },
     { name = "django-types" },
     { name = "patchy" },
@@ -1749,6 +1750,7 @@ provides-extras = ["notion", "slack"]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "browser-cookie3", specifier = ">=0.20" },
     { name = "cyclonedx-bom", specifier = ">=6" },
     { name = "django-types", specifier = ">=0.23" },
     { name = "patchy", specifier = ">=2.7" },
