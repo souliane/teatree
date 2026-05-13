@@ -227,6 +227,23 @@ if [ -r "$_tick_meta" ] && command -v jq >/dev/null 2>&1; then
         for _repo in $(echo "$_freshness" | jq -r 'keys[]' 2>/dev/null); do
             _behind=$(echo "$_freshness" | jq -r ".\"$_repo\".behind // -1" 2>/dev/null)
             _fetch_ep=$(echo "$_freshness" | jq -r ".\"$_repo\".fetch_epoch // 0" 2>/dev/null)
+            _path=$(echo "$_freshness" | jq -r ".\"$_repo\".path // empty" 2>/dev/null)
+            # Recompute behind inline when FETCH_HEAD has been touched since the
+            # tick wrote this entry (e.g. a manual `git pull` in another terminal).
+            # Cheap: one local `git rev-list` per repo, no network.
+            if [ -n "$_path" ] && [ -f "$_path/.git/FETCH_HEAD" ]; then
+                # Linux stat (-c) first, BSD/macOS (-f) fallback. The reverse
+                # order silently produces wrong output on Linux because
+                # `stat -f` exists there too with a different meaning.
+                _disk_ep=$(stat -c %Y "$_path/.git/FETCH_HEAD" 2>/dev/null || stat -f %m "$_path/.git/FETCH_HEAD" 2>/dev/null || echo 0)
+                if [ "$_disk_ep" -gt "$_fetch_ep" ] 2>/dev/null; then
+                    _fresh_behind=$(git -C "$_path" rev-list HEAD..origin/main --count 2>/dev/null)
+                    if [ -n "$_fresh_behind" ]; then
+                        _behind="$_fresh_behind"
+                        _fetch_ep="$_disk_ep"
+                    fi
+                fi
+            fi
             _age=""
             if [ "$_fetch_ep" -gt 0 ] 2>/dev/null; then
                 _age_s=$(( _now - _fetch_ep ))
