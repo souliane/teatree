@@ -67,7 +67,7 @@ src/teatree/
   __init__.py
   __main__.py
   _overlay_api.py       # __overlay_api_version__ pin + import-time guard for overlays
-  paths.py              # XDG-compliant DATA_DIR + get_data_dir (leaf module, no deps)
+  paths.py              # XDG-compliant DATA_DIR, CANONICAL_DB, get_data_dir, find_stale_dbs
   config.py             # ~/.teatree.toml parsing, overlay discovery, UserSettings
   settings.py           # Django settings — auto-discovers overlay apps from entry points
   identity.py           # User identity + agent_signature suffix policy
@@ -898,7 +898,7 @@ Each registered overlay gets a subcommand group (e.g., `t3 acme`). Commands dele
 - `t3 <overlay> full-status` — ticket/worktree/session summary
 - `t3 <overlay> agent [TASK]` — launch Claude Code with overlay context
 - `t3 <overlay> resetdb` — drop and recreate SQLite database
-- `t3 <overlay> worker` — start background task workers
+- `t3 <overlay> worker` — start background task workers (singleton — refuses a second instance while one is alive; uses `teatree.utils.singleton` over `$XDG_DATA_HOME/teatree/teatree-worker.pid`)
 
 **Management command groups** (each exposed as a sub-typer):
 

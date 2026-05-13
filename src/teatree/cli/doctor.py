@@ -420,6 +420,30 @@ class IntrospectionHelpers:
             return editable, url
 
 
+def _check_single_db() -> bool:
+    """Warn if any ``db.sqlite3`` other than the canonical path exists under DATA_DIR."""
+    from teatree.paths import CANONICAL_DB, DATA_DIR, find_stale_dbs  # noqa: PLC0415
+
+    stale = list(find_stale_dbs(DATA_DIR, canonical=CANONICAL_DB))
+    if not stale:
+        return True
+    for path in stale:
+        typer.echo(f"WARN  Stale DB at {path} — canonical DB is {CANONICAL_DB}. Remove to silence.")
+    return False
+
+
+def _check_singletons() -> bool:
+    """Clean up stale pid files for known singleton processes."""
+    from teatree.utils.singleton import default_pid_path, read_pid  # noqa: PLC0415
+
+    for name in ("teatree-worker", "slack-listener"):
+        path = default_pid_path(name)
+        had_file = path.is_file()
+        if read_pid(path) is None and had_file:
+            typer.echo(f"OK    Cleared stale {name} pid file")
+    return True
+
+
 def _check_editable_sanity() -> bool:
     ok = True
     try:
@@ -581,6 +605,8 @@ def check() -> bool:
 
     ok = _check_editable_sanity() and ok
     ok = _check_skills() and ok
+    ok = _check_single_db() and ok
+    _check_singletons()
     _ensure_plugin_registered()
 
     if ok:
