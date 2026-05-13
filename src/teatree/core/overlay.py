@@ -283,15 +283,6 @@ class OverlayBase(ABC):  # noqa: PLR0904 — overlay extension API; hook count r
         _ = worktree
         return set()
 
-    # ── Port hooks ───────────────────────────────────────────────────
-
-    def get_required_ports(self, worktree: "Worktree") -> set[str]:
-        _ = worktree
-        return set()
-
-    def get_port_env(self, ports: dict[str, int]) -> dict[str, str]:
-        return {f"{key.upper()}_HOST_PORT": str(port) for key, port in ports.items()}
-
     def uses_redis(self) -> bool:
         return False
 

@@ -35,7 +35,6 @@ from teatree.core.runners import (
 from teatree.core.worktree_env import write_env_cache
 from teatree.utils import git
 from teatree.utils.db import drop_db
-from teatree.utils.ports import find_free_ports
 from teatree.utils.run import CommandFailedError, run_checked
 
 if TYPE_CHECKING:
@@ -244,20 +243,16 @@ class Command(TyperCommand):
     ) -> str:
         """Start docker for every worktree in the current ticket workspace.
 
-        Allocates one shared port set across the workspace, then fires
-        ``Worktree.start_services()`` on each worktree (CLI runs the
-        runner synchronously). After every worktree starts, runs each
-        overlay's readiness probes — exits 1 if any probe fails.
+        Fires ``Worktree.start_services()`` on each worktree (CLI runs the
+        runner synchronously). Each runner brings up docker-compose, which
+        auto-maps host ports; the actual ports are then queried via
+        ``docker compose port`` and stored on ``Worktree.extra["ports"]``.
+        After every worktree starts, runs each overlay's readiness probes —
+        exits 1 if any probe fails.
         """
         anchor = resolve_worktree(path)
         ticket = Ticket.objects.get(pk=anchor.ticket.pk)
         overlay = get_overlay()
-
-        ports = find_free_ports(
-            str(load_config().user.workspace_dir),
-            overlay.get_required_ports(anchor),
-        )
-        self.stdout.write(f"  Ports: {ports}")
 
         worktrees = list(ticket.worktrees.all())
         failures: list[str] = []
@@ -267,7 +262,7 @@ class Command(TyperCommand):
             with transaction.atomic():
                 wt.start_services(services=commands)
                 wt.save()
-            result = WorktreeStartRunner(wt, overlay=overlay, ports=ports).run()
+            result = WorktreeStartRunner(wt, overlay=overlay).run()
             self.stdout.write(f"    {result.detail}")
             if not result.ok:
                 failures.append(wt.repo_path)

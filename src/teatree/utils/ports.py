@@ -1,135 +1,24 @@
-import fcntl
-import socket
-from pathlib import Path
-
 from teatree.utils.run import run_allowed_to_fail
 
 # Duplicated from teatree.core.models.types to avoid circular import
 # through Django model registration.
 type Ports = dict[str, int]
 
-# Container-internal ports (fixed). Only host ports vary per worktree.
-# Redis is shared across all tickets via the `teatree-redis` container on
-# localhost:6379 with a per-ticket DB index — never per-worktree.
+# Container-internal ports (fixed). Host ports are auto-mapped by Docker
+# Compose when the override declares ``ports: ["<container_port>"]`` with
+# no left side — Docker picks a free host port, and ``docker compose port``
+# is the single source of truth for which one it picked.
 CONTAINER_PORTS: dict[str, int] = {
     "backend": 8000,
-    "frontend": 4200,
+    "frontend": 80,
     "postgres": 5432,
 }
 
-# Default compose service → container port mapping.
 COMPOSE_SERVICE_MAP: dict[str, tuple[str, int]] = {
     "web": ("backend", 8000),
-    "frontend": ("frontend", 4200),
+    "frontend": ("frontend", 80),
     "db": ("postgres", 5432),
 }
-
-
-def port_in_use(port: int) -> bool:
-    """Return True if *port* is already bound on localhost."""
-    for family in (socket.AF_INET, socket.AF_INET6):
-        sock = socket.socket(family, socket.SOCK_STREAM)
-        try:
-            sock.bind(("localhost", port))
-        except OSError:
-            return True
-        finally:
-            sock.close()
-    return False
-
-
-def find_free_port() -> int:
-    """Return a single free port (OS-assigned on localhost)."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
-
-
-def _next_free_port(start: int, *, used: set[int]) -> int:
-    """Walk from *start* until a free port is found."""
-    port = start
-    while port in used or port_in_use(port):
-        used.add(port)
-        port += 1
-    return port
-
-
-# Default starting host ports per known key. Overlays declaring a key not
-# listed here fall back to ``DEFAULT_START_PORT`` for sequential allocation.
-START_PORTS: dict[str, int] = {
-    "backend": 8001,
-    "frontend": 4201,
-    # Postgres: default 5432 for shared server, 5433+ for isolated.
-    "postgres": 5432,
-}
-DEFAULT_START_PORT = 9001
-
-
-def find_free_ports(workspace_dir: str, keys: set[str]) -> Ports:
-    """Find a free host port for each *key* the overlay requested.
-
-    Returns a ``Ports`` dict with exactly the requested ``keys``. The empty
-    set yields an empty dict — overlays that need no host ports (e.g.
-    pure-Python tools without docker compose) opt out simply by declaring
-    no required ports.
-
-    Uses a file lock in *workspace_dir* to prevent concurrent allocations
-    from picking the same ports.  Port availability is checked via socket
-    bind only — no file scanning.
-    """
-    if not keys:
-        return {}
-
-    lock_file = Path(workspace_dir) / ".port-allocation.lock"
-    lock_file.parent.mkdir(parents=True, exist_ok=True)
-
-    handle = lock_file.open("w", encoding="utf-8")
-    try:
-        fcntl.flock(handle, fcntl.LOCK_EX)
-        used: set[int] = set()
-        result: Ports = {}
-        # Allocate in deterministic order for reproducibility.
-        for key in sorted(keys):
-            start = START_PORTS.get(key, DEFAULT_START_PORT)
-            port = _next_free_port(start, used=used)
-            used.add(port)
-            result[key] = port
-        return result
-    finally:
-        fcntl.flock(handle, fcntl.LOCK_UN)
-        handle.close()
-
-
-def revalidate_ports(ports: Ports, workspace_dir: str) -> Ports:
-    """Check allocated ports and replace any that became occupied.
-
-    Returns a new ``Ports`` dict with the same keys. Ports that are still
-    free are kept; occupied ports are replaced with fresh allocations.
-    """
-    lock_file = Path(workspace_dir) / ".port-allocation.lock"
-    lock_file.parent.mkdir(parents=True, exist_ok=True)
-
-    handle = lock_file.open("w", encoding="utf-8")
-    try:
-        fcntl.flock(handle, fcntl.LOCK_EX)
-        used: set[int] = set(ports.values())
-        result: Ports = {}
-        for name, port in ports.items():
-            if not port_in_use(port):
-                result[name] = port
-            else:
-                start = START_PORTS.get(name, port + 1)
-                new_port = _next_free_port(start, used=used)
-                used.add(new_port)
-                result[name] = new_port
-        return result
-    finally:
-        fcntl.flock(handle, fcntl.LOCK_UN)
-        handle.close()
-
-
-# ── Docker Compose port discovery ────────────────────────────────────
 
 
 def get_service_port(
@@ -139,10 +28,6 @@ def get_service_port(
     *,
     compose_file: str = "",
 ) -> int | None:
-    """Ask docker-compose for the host port bound to *service:container_port*.
-
-    Returns ``None`` if the service is not running or the port is not mapped.
-    """
     cmd = ["docker", "compose", "-p", compose_project]
     if compose_file:
         cmd.extend(["-f", compose_file])
@@ -151,8 +36,9 @@ def get_service_port(
     result = run_allowed_to_fail(cmd, expected_codes=None)
     if result.returncode != 0:
         return None
-    # Output format: "0.0.0.0:8002\n" or ":::8002\n"
-    output = result.stdout.strip()
+    output = result.stdout.strip() if isinstance(result.stdout, str) else ""
+    if ":" not in output:
+        return None
     _, _, port_str = output.rpartition(":")
     return int(port_str) if port_str.isdigit() else None
 
@@ -162,30 +48,9 @@ def get_worktree_ports(
     *,
     compose_file: str = "",
 ) -> Ports:
-    """Query all compose services for their current host ports.
-
-    Returns a dict like ``{"backend": 8002, "frontend": 4242, ...}``.
-    Services that are not running are omitted.
-    """
     ports: Ports = {}
     for service, (name, container_port) in COMPOSE_SERVICE_MAP.items():
         host_port = get_service_port(compose_project, service, container_port, compose_file=compose_file)
         if host_port is not None:
             ports[name] = host_port
     return ports
-
-
-def free_port(port: int) -> int | None:
-    """Kill the process holding *port* and return its PID, or ``None``."""
-    import os  # noqa: PLC0415
-    import signal  # noqa: PLC0415
-
-    if not port_in_use(port):
-        return None
-    result = run_allowed_to_fail(["lsof", "-ti", f":{port}"], expected_codes=None)
-    pids = [int(p) for p in result.stdout.split() if p.strip().isdigit()]
-    if not pids:
-        return None
-    pid = pids[0]
-    os.kill(pid, signal.SIGTERM)
-    return pid
