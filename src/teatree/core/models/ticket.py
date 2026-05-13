@@ -9,6 +9,7 @@ from django_fsm import FSMField, TransitionNotAllowed, transition
 
 from teatree.config import Mode, get_effective_settings, load_config
 from teatree.core.managers import TicketManager
+from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.models.types import validated_ticket_extra
 from teatree.utils import git, redis_container
 from teatree.utils.run import CommandFailedError
@@ -44,11 +45,16 @@ class Ticket(models.Model):
         DELIVERED = "delivered", "Delivered"
         IGNORED = "ignored", "Ignored"
 
+    class Role(models.TextChoices):
+        AUTHOR = "author", "Author"
+        REVIEWER = "reviewer", "Reviewer"
+
     overlay = models.CharField(max_length=255)
     issue_url = models.URLField(max_length=500, blank=True)
     variant = models.CharField(max_length=100, blank=True)
     repos = models.JSONField(default=list, blank=True)
     state = FSMField(max_length=32, choices=State.choices, default=State.NOT_STARTED)
+    role = models.CharField(max_length=16, choices=Role.choices, default=Role.AUTHOR)
     extra = models.JSONField(default=dict, blank=True)
     redis_db_index = models.IntegerField(null=True, blank=True, unique=True)
 
@@ -176,6 +182,9 @@ class Ticket(models.Model):
         from teatree.core.models.session import Session  # noqa: PLC0415
         from teatree.core.models.task import Task  # noqa: PLC0415
 
+        if self.role != self.Role.AUTHOR:
+            msg = f"schedule_coding requires role=author (got role={self.role!r})"
+            raise InvalidTransitionError(msg)
         session = Session.objects.create(ticket=self, agent_id="coding")
         return Task.objects.create(
             ticket=self,
@@ -252,6 +261,37 @@ class Ticket(models.Model):
             execution_reason=reason,
             parent_task=parent_task,
         )
+
+    @transition(
+        field=state,
+        source=[
+            State.NOT_STARTED,
+            State.SCOPED,
+            State.STARTED,
+            State.CODED,
+            State.TESTED,
+            State.REVIEWED,
+        ],
+        target=State.DELIVERED,
+        conditions=[
+            lambda t: t.role == Ticket.Role.REVIEWER and t.tasks.filter(phase="reviewing", status="completed").exists(),
+        ],
+    )
+    def mark_reviewed_externally(self) -> None:
+        """Reviewer-role short-circuit: any pre-shipped state → DELIVERED.
+
+        External review tickets bypass the implementation lifecycle. Once
+        the reviewing task completes, the ticket is done — the reviewer has
+        posted their review on someone else's PR. We also update the
+        ``ReviewerPrsScanner`` cache here so the next tick doesn't re-spawn
+        for the same PR @ SHA.
+        """
+        from teatree.loop.scanners.reviewer_prs import mark_reviewed  # noqa: PLC0415
+
+        pr_url = self.issue_url
+        sha = str(self._extra().get("reviewed_sha", ""))
+        if pr_url and sha:
+            mark_reviewed(url=pr_url, sha=sha)
 
     @transition(field=state, source=[State.REVIEWED, State.SHIPPED], target=State.SHIPPED)
     def ship(self) -> None:
@@ -418,6 +458,35 @@ class Ticket(models.Model):
 
     def _extra(self) -> "TicketExtra":
         return validated_ticket_extra(self.extra)
+
+
+def schedule_external_review(ticket: Ticket, *, parent_task: "Task | None" = None) -> "Task":
+    """Create a reviewing task for a reviewer-role ticket (external PR).
+
+    Reviewer-role tickets represent PRs the user is requested to review
+    in someone else's repo — they have no implementation/test/ship
+    phases. After the review task completes, the ticket short-circuits
+    to ``DELIVERED`` via ``mark_reviewed_externally``.
+
+    Lives at module scope (not on ``Ticket``) to keep the model's
+    public-method count under the project's lint cap; semantically it is
+    a sibling of ``ticket.schedule_coding`` and friends.
+    """
+    from teatree.core.models.session import Session  # noqa: PLC0415
+    from teatree.core.models.task import Task  # noqa: PLC0415
+
+    if ticket.role != Ticket.Role.REVIEWER:
+        msg = f"schedule_external_review requires role=reviewer (got role={ticket.role!r})"
+        raise InvalidTransitionError(msg)
+    session = Session.objects.create(ticket=ticket, agent_id="external-review")
+    return Task.objects.create(
+        ticket=ticket,
+        session=session,
+        phase="reviewing",
+        execution_target=Task.ExecutionTarget.HEADLESS,
+        execution_reason=f"Auto-scheduled external review — review {ticket.issue_url}",
+        parent_task=parent_task,
+    )
 
 
 def _worktree_has_commits_ahead(worktree: "Worktree") -> bool:
