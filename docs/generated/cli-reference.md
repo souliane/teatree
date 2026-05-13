@@ -1144,6 +1144,9 @@ Usage: t3 teatree worker [OPTIONS]
 
  Start background task workers.
 
+ Singleton across the machine: a second invocation refuses to start
+ while one is alive, since both would drain the same canonical DB.
+
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --count           INTEGER  Number of worker processes [default: 3]           │
 │ --interval        FLOAT    Polling interval in seconds [default: 1.0]        │
