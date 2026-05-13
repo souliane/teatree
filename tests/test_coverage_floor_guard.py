@@ -96,3 +96,44 @@ class TestPytestConfigNotBypassed:
             "Default pytest invocation no longer measures coverage. "
             "Coverage must run by default so the gate fires on every test run."
         )
+
+
+# Minimum acceptable per-module floor. Lowering this constant requires the
+# same explicit-approval rationale as MIN_FAIL_UNDER above.
+MIN_PER_MODULE_FLOOR = 80
+
+
+class TestPerModuleFloorsConfig:
+    """Assert ``[tool.teatree.coverage] per_module_floors`` is well-formed.
+
+    These are tighter floors than the project-wide 93% gate for newly-added
+    modules where a small file dropping to 30% would still leave the project
+    above 93%. Actual percentages are enforced by ``t3 ci coverage`` (run
+    after pytest); this test verifies the config itself stays sane.
+    """
+
+    def test_entries_have_required_keys(self, pyproject: dict) -> None:
+        entries = pyproject["tool"]["teatree"]["coverage"]["per_module_floors"]
+        assert entries, "Per-module floors removed — every newly-added module should declare one."
+        for entry in entries:
+            assert set(entry.keys()) == {"path", "floor"}, (
+                f"Each per_module_floors entry must have exactly 'path' and 'floor' keys; got {entry}"
+            )
+
+    def test_paths_exist(self, pyproject: dict) -> None:
+        entries = pyproject["tool"]["teatree"]["coverage"]["per_module_floors"]
+        for entry in entries:
+            module_path = _REPO_ROOT / entry["path"]
+            assert module_path.exists(), (
+                f"Per-module floor refers to a missing path: {entry['path']}. "
+                f"Either restore the module or remove the floor entry."
+            )
+
+    def test_floors_meet_minimum(self, pyproject: dict) -> None:
+        entries = pyproject["tool"]["teatree"]["coverage"]["per_module_floors"]
+        for entry in entries:
+            assert entry["floor"] >= MIN_PER_MODULE_FLOOR, (
+                f"Per-module floor for {entry['path']} was lowered to {entry['floor']}. "
+                f"Expected >= {MIN_PER_MODULE_FLOOR}. Lower MIN_PER_MODULE_FLOOR in the same PR "
+                f"if the drop is intentional."
+            )

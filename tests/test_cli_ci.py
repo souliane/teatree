@@ -2,6 +2,7 @@
 
 from unittest.mock import MagicMock, patch
 
+import pytest
 from typer.testing import CliRunner
 
 import teatree.backends.gitlab_api as gitlab_api_mod
@@ -314,3 +315,96 @@ class TestCICommands:
         ):
             result = runner.invoke(app, ["ci", "quality-check"])
             assert result.exit_code == 1
+
+
+# ── ci coverage ──────────────────────────────────────────────────────
+
+
+class TestCICoverage:
+    def test_prints_floor_when_no_coverage_file(self, monkeypatch, tmp_path):
+        """When .coverage is absent, print the configured floor and exit non-zero."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "pyproject.toml").write_text(
+            "[tool.coverage.report]\nfail_under = 93\n",
+            encoding="utf-8",
+        )
+        result = runner.invoke(app, ["ci", "coverage"])
+        assert "Coverage floor" in result.output
+        assert "93" in result.output
+        assert "not measured" in result.output.lower() or "no .coverage" in result.output.lower()
+        assert result.exit_code == 1
+
+    def test_passes_when_overall_above_floor(self, monkeypatch, tmp_path):
+        """When the report passes, command exits 0."""
+        import teatree.cli.ci as ci_mod  # noqa: PLC0415
+        from teatree.utils.coverage_floor import CoverageReport  # noqa: PLC0415
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "pyproject.toml").write_text(
+            "[tool.coverage.report]\nfail_under = 93\n",
+            encoding="utf-8",
+        )
+        fake = CoverageReport(overall_percent=95.5, overall_floor=93, module_results=[])
+        with patch.object(ci_mod, "measure_coverage", return_value=fake):
+            result = runner.invoke(app, ["ci", "coverage"])
+        assert result.exit_code == 0
+        assert "95.5" in result.output
+        assert "93" in result.output
+
+    def test_fails_when_overall_below_floor(self, monkeypatch, tmp_path):
+        import teatree.cli.ci as ci_mod  # noqa: PLC0415
+        from teatree.utils.coverage_floor import CoverageReport  # noqa: PLC0415
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "pyproject.toml").write_text(
+            "[tool.coverage.report]\nfail_under = 93\n",
+            encoding="utf-8",
+        )
+        fake = CoverageReport(overall_percent=80.0, overall_floor=93, module_results=[])
+        with patch.object(ci_mod, "measure_coverage", return_value=fake):
+            result = runner.invoke(app, ["ci", "coverage"])
+        assert result.exit_code == 1
+
+    def test_fails_when_module_below_floor(self, monkeypatch, tmp_path):
+        import teatree.cli.ci as ci_mod  # noqa: PLC0415
+        from teatree.utils.coverage_floor import CoverageReport, ModuleCoverage  # noqa: PLC0415
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "pyproject.toml").write_text(
+            "[tool.coverage.report]\nfail_under = 93\n",
+            encoding="utf-8",
+        )
+        fake = CoverageReport(
+            overall_percent=95.0,
+            overall_floor=93,
+            module_results=[ModuleCoverage(path="src/teatree/loop/persistence.py", floor=80, percent=50.0)],
+        )
+        with patch.object(ci_mod, "measure_coverage", return_value=fake):
+            result = runner.invoke(app, ["ci", "coverage"])
+        assert result.exit_code == 1
+        assert "persistence.py" in result.output
+        assert "50" in result.output
+
+    def test_json_output(self, monkeypatch, tmp_path):
+        import json  # noqa: PLC0415
+
+        import teatree.cli.ci as ci_mod  # noqa: PLC0415
+        from teatree.utils.coverage_floor import CoverageReport, ModuleCoverage  # noqa: PLC0415
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "pyproject.toml").write_text(
+            "[tool.coverage.report]\nfail_under = 93\n",
+            encoding="utf-8",
+        )
+        fake = CoverageReport(
+            overall_percent=95.0,
+            overall_floor=93,
+            module_results=[ModuleCoverage(path="x.py", floor=80, percent=85.0)],
+        )
+        with patch.object(ci_mod, "measure_coverage", return_value=fake):
+            result = runner.invoke(app, ["ci", "coverage", "--json"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["overall_percent"] == pytest.approx(95.0)
+        assert data["overall_floor"] == 93
+        assert data["modules"][0]["path"] == "x.py"
