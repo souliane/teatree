@@ -222,6 +222,64 @@ class TestOverlayConfig(TestCase):
         with patch("teatree.utils.secrets.read_pass", return_value="secret-value"):
             assert config.get_github_token() == "secret-value"
 
+    def test_entry_point_overlays_receive_toml_overrides(self) -> None:
+        # _discover_overlays must call apply_toml_overrides on every
+        # entry-point overlay so [overlays.<name>] in ~/.teatree.toml wins
+        # over the overlay's settings module — same precedence as TOML-only
+        # overlays. Without this, every OverlayConfig subclass would have
+        # to opt in via super().__init__(overlay_name=...).
+        from teatree.core.overlay_loader import _discover_overlays  # noqa: PLC0415
+
+        # Use the existing DummyOverlay registered above as the entry-point target.
+        ep = MagicMock()
+        ep.name = "dummy-ep"
+        ep.value = "tests.teatree_core.test_overlay:DummyOverlay"
+        ep.load.return_value = DummyOverlay
+
+        mock_config = MagicMock()
+        mock_config.raw = {
+            "overlays": {
+                "dummy-ep": {
+                    "exclude_labels": ["Process::DEV review"],
+                },
+            },
+        }
+
+        reset_overlay_cache()
+        try:
+            with (
+                patch("importlib.metadata.entry_points", return_value=[ep]),
+                patch("teatree.config.load_config", return_value=mock_config),
+            ):
+                overlays = _discover_overlays()
+        finally:
+            reset_overlay_cache()
+
+        assert "dummy-ep" in overlays
+        assert overlays["dummy-ep"].config.exclude_labels == ["Process::DEV review"]
+
+    def test_apply_toml_overrides_after_init_overwrites_subclass_defaults(self) -> None:
+        # Subclasses that pass only ``settings_module`` (like AcmeConfig) miss
+        # TOML overrides unless apply_toml_overrides is called explicitly.
+        # Entry-point discovery uses that call site to keep overlay names
+        # honest, so the method must be callable after __init__ and must
+        # win against any subclass default.
+        config = OverlayConfig()
+        config.exclude_labels = ["from-subclass-default"]
+
+        mock_config = MagicMock()
+        mock_config.raw = {
+            "overlays": {
+                "test-overlay": {
+                    "exclude_labels": ["Process::DEV review", "Process::QA review"],
+                },
+            },
+        }
+        with patch("teatree.config.load_config", return_value=mock_config):
+            config.apply_toml_overrides("test-overlay")
+
+        assert config.exclude_labels == ["Process::DEV review", "Process::QA review"]
+
 
 class TestDefaultHealthChecks(TestCase):
     def test_includes_worktree_and_symlink_checks(self) -> None:
