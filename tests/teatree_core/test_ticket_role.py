@@ -1,32 +1,11 @@
 """Ticket.role: schedule helpers + FSM short-circuit for reviewer-role tickets."""
 
-import json
-import tempfile
-from pathlib import Path
-
 import pytest
 from django.test import TestCase
 
 from teatree.core.models import Task, Ticket
 from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.models.ticket import schedule_external_review
-from teatree.loop.scanners import reviewer_prs
-
-
-class _ReviewerCacheTmpMixin:
-    """Redirect the reviewer cache to a per-test tmp dir."""
-
-    def setUp(self) -> None:
-        super().setUp()
-        self._cache_tmp = tempfile.TemporaryDirectory()
-        self._cache_path = Path(self._cache_tmp.name) / "reviewer_prs.json"
-        self._original_default_path = reviewer_prs._default_cache_path
-        reviewer_prs._default_cache_path = lambda: self._cache_path  # ty: ignore[invalid-assignment]
-
-    def tearDown(self) -> None:
-        reviewer_prs._default_cache_path = self._original_default_path
-        self._cache_tmp.cleanup()
-        super().tearDown()
 
 
 class TestTicketRoleField(TestCase):
@@ -74,7 +53,7 @@ class TestScheduleCodingRefusesReviewer(TestCase):
             ticket.schedule_coding()
 
 
-class TestMarkReviewedExternally(_ReviewerCacheTmpMixin, TestCase):
+class TestMarkReviewedExternally(TestCase):
     def test_transitions_to_delivered_on_review_complete(self) -> None:
         ticket = Ticket.objects.create(
             overlay="acme",
@@ -88,10 +67,10 @@ class TestMarkReviewedExternally(_ReviewerCacheTmpMixin, TestCase):
 
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.DELIVERED
-        cache = json.loads(self._cache_path.read_text())
-        # New schema records both the head sha and the reviewer's state so
-        # the next scan can detect approval dismissals on force-push.
-        assert cache == {"https://example.com/pr/5": {"sha": "deadbeef", "state": "approved"}}
+        # ``mark_reviewed`` upserts the same reviewer ticket via the DB —
+        # head sha + last review state should be persisted on ``extra``.
+        assert ticket.extra["reviewed_sha"] == "deadbeef"
+        assert ticket.extra["last_review_state"] == "approved"
 
     def test_does_not_advance_author_ticket(self) -> None:
         ticket = Ticket.objects.create(overlay="acme", issue_url="https://example.com/issues/6")

@@ -1,15 +1,10 @@
 """Tick → DB persistence: kind=agent actions become Ticket + Task rows."""
 
-import json
-import tempfile
-from pathlib import Path
-
 from django.test import TestCase
 
 from teatree.core.models import Task, Ticket
 from teatree.loop.dispatch import DispatchAction
 from teatree.loop.persistence import persist_agent_actions
-from teatree.loop.scanners import reviewer_prs
 
 
 class TestPersistReviewer(TestCase):
@@ -146,19 +141,7 @@ class TestPersistIgnoredKinds(TestCase):
 
 
 class TestReviewerCacheUpdate(TestCase):
-    """Completing the reviewing task on a reviewer ticket updates the scanner cache."""
-
-    def setUp(self) -> None:
-        super().setUp()
-        self._cache_tmp = tempfile.TemporaryDirectory()
-        self._cache_path = Path(self._cache_tmp.name) / "reviewer_prs.json"
-        self._original_default_path = reviewer_prs._default_cache_path
-        reviewer_prs._default_cache_path = lambda: self._cache_path  # ty: ignore[invalid-assignment]
-
-    def tearDown(self) -> None:
-        reviewer_prs._default_cache_path = self._original_default_path
-        self._cache_tmp.cleanup()
-        super().tearDown()
+    """Completing the reviewing task on a reviewer ticket records the reviewed SHA + state on the ticket."""
 
     def test_mark_reviewed_externally_writes_scanner_cache(self) -> None:
         action = DispatchAction(
@@ -172,8 +155,9 @@ class TestReviewerCacheUpdate(TestCase):
         task = created[0]
         task.complete()
 
-        assert self._cache_path.is_file()
-        data = json.loads(self._cache_path.read_text())
-        # New schema records both the head sha and the reviewer's state
-        # so the next scan can detect approval dismissals on force-push.
-        assert data == {"https://example.com/pr/7": {"sha": "zzz", "state": "approved"}}
+        # The reviewer ticket's ``extra`` stamp doubles as the cache —
+        # ReviewerPrsScanner reads it on the next tick to decide whether
+        # to re-dispatch the reviewer agent.
+        ticket = Ticket.objects.get(role=Ticket.Role.REVIEWER, issue_url="https://example.com/pr/7")
+        assert ticket.extra["reviewed_sha"] == "zzz"
+        assert ticket.extra["last_review_state"] == "approved"

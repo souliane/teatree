@@ -5,21 +5,25 @@ fires the reviewer phase agent when the PR has new commits since the
 last review pass, OR when the reviewer's prior approval was dismissed
 (e.g. invalidated on force-push, re-requested after a dismissal).
 
-The cache values are ``{"sha": ..., "state": ...}`` dicts. Legacy string
-values are read transparently as ``{"sha": value, "state": ""}`` and
-rewritten in the new shape on the next update — no migration command
-required.
+The cache lives on ``Ticket(role="reviewer")`` rows in ``extra``
+(`reviewed_sha`, `last_review_state`). On first run, any legacy
+``loop/reviewer_prs.json`` file is imported into matching tickets and
+then deleted — no migration command required.
 """
 
-import json
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 from teatree.backends.protocols import CodeHostBackend, ReviewState
 from teatree.loop.scanners.base import ScanSignal
-from teatree.paths import DATA_DIR
 from teatree.types import RawAPIDict
+
+if TYPE_CHECKING:
+    from teatree.core.models import Ticket as _Ticket
+
+    TicketModel = type[_Ticket]
+else:
+    TicketModel = object
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,37 +34,93 @@ class CacheEntry:
     state: str = ""
 
 
-def _default_cache_path() -> Path:
-    return DATA_DIR / "loop" / "reviewer_prs.json"
+def _ticket_model() -> "TicketModel | None":
+    """Return the ``core.Ticket`` model, or ``None`` if Django isn't ready."""
+    try:
+        from django.apps import apps  # noqa: PLC0415
+
+        return cast("TicketModel", apps.get_model("core", "Ticket"))
+    except Exception:  # noqa: BLE001
+        return None
 
 
-def _read_cache(path: Path) -> dict[str, CacheEntry]:
+def _migrate_legacy_json_cache_once() -> None:
+    """Import legacy ``loop/reviewer_prs.json`` into reviewer tickets, then delete.
+
+    Idempotent: after the file is removed, subsequent runs are no-ops. Keeps the
+    upgrade silent — users never run a migration command.
+    """
+    import json  # noqa: PLC0415
+
+    from teatree.paths import DATA_DIR  # noqa: PLC0415
+
+    path = DATA_DIR / "loop" / "reviewer_prs.json"
     if not path.is_file():
-        return {}
+        return
+    ticket_model = _ticket_model()
+    if ticket_model is None:
+        return
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return {}
+        path.unlink(missing_ok=True)
+        return
     if not isinstance(data, dict):
-        return {}
-    result: dict[str, CacheEntry] = {}
-    for key, value in data.items():
+        path.unlink(missing_ok=True)
+        return
+    for url, value in data.items():
+        if not isinstance(url, str) or not url:
+            continue
         if isinstance(value, str):
-            result[str(key)] = CacheEntry(sha=value, state="")
+            entry = CacheEntry(sha=value, state="")
         elif isinstance(value, dict):
             sha = value.get("sha")
             state = value.get("state")
-            result[str(key)] = CacheEntry(
+            entry = CacheEntry(
                 sha=sha if isinstance(sha, str) else "",
                 state=state if isinstance(state, str) else "",
             )
+        else:
+            continue
+        _persist_entry(ticket_model, url, entry)
+    path.unlink(missing_ok=True)
+
+
+def _persist_entry(ticket_model: "TicketModel", url: str, entry: CacheEntry) -> None:
+    """Upsert a reviewer-role ticket's cached SHA/state in its ``extra`` dict."""
+    ticket, _ = ticket_model.objects.get_or_create(
+        role="reviewer",
+        issue_url=url,
+        defaults={"overlay": ""},
+    )
+    extra = dict(ticket.extra or {})
+    if entry.sha:
+        extra["reviewed_sha"] = entry.sha
+    if entry.state:
+        extra["last_review_state"] = entry.state
+    ticket.extra = extra
+    ticket.save(update_fields=["extra"])
+
+
+def _read_cache() -> dict[str, CacheEntry]:
+    """Build the URL → CacheEntry map from reviewer-role tickets."""
+    ticket_model = _ticket_model()
+    if ticket_model is None:
+        return {}
+    result: dict[str, CacheEntry] = {}
+    rows = ticket_model.objects.filter(role="reviewer").values_list("issue_url", "extra")
+    for url, extra in rows:
+        if not isinstance(url, str) or not url:
+            continue
+        if not isinstance(extra, dict):
+            continue
+        sha = extra.get("reviewed_sha", "")
+        state = extra.get("last_review_state", "")
+        result[url] = CacheEntry(
+            sha=sha if isinstance(sha, str) else "",
+            state=state if isinstance(state, str) else "",
+        )
     return result
-
-
-def _write_cache(path: Path, data: dict[str, CacheEntry]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    serialised = {url: {"sha": entry.sha, "state": entry.state} for url, entry in data.items()}
-    path.write_text(json.dumps(serialised, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
 def _head_sha(pr: RawAPIDict) -> str:
@@ -112,17 +172,20 @@ class ReviewerPrsScanner:
     """
 
     host: CodeHostBackend
-    cache_path: Path = field(default_factory=_default_cache_path)
     name: str = "reviewer_prs"
+    _migrated: bool = field(default=False, init=False)
 
     def scan(self) -> list[ScanSignal]:
+        if not self._migrated:
+            _migrate_legacy_json_cache_once()
+            self._migrated = True
         reviewer = self.host.current_user()
         if not reviewer:
             return []
         prs = self.host.list_review_requested_prs(reviewer=reviewer)
-        cache = _read_cache(self.cache_path)
+        cache = _read_cache()
+        ticket_model = _ticket_model()
         signals: list[ScanSignal] = []
-        updates: dict[str, CacheEntry] = {}
         for pr in prs:
             url = _pr_url(pr)
             if not url:
@@ -135,9 +198,10 @@ class ReviewerPrsScanner:
                         kind="reviewer_pr.new_sha",
                         summary=f"Review needed: {url}",
                         payload={"url": url, "head_sha": head, "previous_sha": previous.sha, "raw": pr},
-                    )
+                    ),
                 )
-                updates[url] = CacheEntry(sha=head, state=previous.state)
+                if ticket_model is not None:
+                    _persist_entry(ticket_model, url, CacheEntry(sha=head, state=previous.state))
                 continue
             if not previous.sha:
                 signals.append(
@@ -145,7 +209,7 @@ class ReviewerPrsScanner:
                         kind="reviewer_pr.unreviewed",
                         summary=f"Review needed: {url}",
                         payload={"url": url, "head_sha": head, "previous_sha": "", "raw": pr},
-                    )
+                    ),
                 )
                 continue
             current = self.host.get_review_state(pr_url=url, reviewer=reviewer)
@@ -161,31 +225,24 @@ class ReviewerPrsScanner:
                             "current_state": current.value,
                             "raw": pr,
                         },
-                    )
+                    ),
                 )
-            if current.value != previous.state:
-                updates[url] = CacheEntry(sha=previous.sha, state=current.value)
-        if updates:
-            cache.update(updates)
-            _write_cache(self.cache_path, cache)
+            if current.value != previous.state and ticket_model is not None:
+                _persist_entry(ticket_model, url, CacheEntry(sha=previous.sha, state=current.value))
         return signals
 
-    def mark_reviewed(self, *, url: str, sha: str, state: str = "") -> None:
-        """Record that *url* has been reviewed at *sha*; called by the dispatcher."""
-        mark_reviewed(url=url, sha=sha, state=state, cache_path=self.cache_path)
 
-
-def mark_reviewed(*, url: str, sha: str, state: str = "", cache_path: Path | None = None) -> None:
+def mark_reviewed(*, url: str, sha: str, state: str = "") -> None:
     """Module-level entry point to update the reviewer cache without owning a scanner instance.
 
     Called from ``Ticket.mark_reviewed_externally`` when a reviewer-role
-    ticket's reviewing task completes — the model layer should not
-    instantiate a backend just to write one JSON file. ``state`` defaults
+    ticket's reviewing task completes — the model layer doesn't need to
+    instantiate a backend just to record one observation. ``state`` defaults
     to ``"approved"`` when not supplied so the next scan can detect a
     dismissal of the recorded approval.
     """
-    path = cache_path or _default_cache_path()
-    cache = _read_cache(path)
+    ticket_model = _ticket_model()
+    if ticket_model is None:
+        return
     resolved_state = state or ReviewState.APPROVED.value
-    cache[url] = CacheEntry(sha=sha, state=resolved_state)
-    _write_cache(path, cache)
+    _persist_entry(ticket_model, url, CacheEntry(sha=sha, state=resolved_state))
