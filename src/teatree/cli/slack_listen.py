@@ -1,13 +1,13 @@
 """``t3 slack listen`` — run the Socket Mode receiver for Slack events."""
 
 import logging
-import os
 from pathlib import Path
 
 import typer
 
 from teatree.backends.slack_receiver import default_queue_path, run_listener
 from teatree.utils.secrets import read_pass
+from teatree.utils.singleton import AlreadyRunningError, read_pid, singleton
 
 slack_app = typer.Typer(name="slack", help="Slack integration commands.", no_args_is_help=True)
 
@@ -58,27 +58,18 @@ def listen_command(
         format="%(asctime)s %(levelname)-5s %(name)s %(message)s",
     )
     pid_path = default_queue_path().with_name("slack-listener.pid")
-    pid_path.parent.mkdir(parents=True, exist_ok=True)
-    if pid_path.is_file():
-        old_pid = pid_path.read_text(encoding="utf-8").strip()
-        if old_pid.isdigit() and _pid_alive(int(old_pid)):
-            typer.echo(f"WARN  Listener already running (PID {old_pid}). Use --overlay for a second instance.")
-            raise typer.Exit(code=1)
-    pid_path.write_text(str(os.getpid()) + "\n", encoding="utf-8")
-
-    overlays = _resolve_overlays(overlay)
-    if not overlays:
-        typer.echo("ERROR No slack-enabled overlays found in ~/.teatree.toml")
-        pid_path.unlink(missing_ok=True)
-        raise typer.Exit(code=1)
-
-    for name, _app, _bot in overlays:
-        typer.echo(f"OK    Listening on {name}")
-
     try:
-        run_listener(overlays, queue_path=queue_file)
-    finally:
-        pid_path.unlink(missing_ok=True)
+        with singleton("slack-listener", pid_path=pid_path):
+            overlays = _resolve_overlays(overlay)
+            if not overlays:
+                typer.echo("ERROR No slack-enabled overlays found in ~/.teatree.toml")
+                raise typer.Exit(code=1)
+            for name, _app, _bot in overlays:
+                typer.echo(f"OK    Listening on {name}")
+            run_listener(overlays, queue_path=queue_file)
+    except AlreadyRunningError as exc:
+        typer.echo(f"WARN  {exc}. Stop it before starting another.")
+        raise typer.Exit(code=1) from None
 
 
 @slack_app.command("check")
@@ -143,28 +134,8 @@ def _ack_messages(messages: list[dict[str, str]]) -> None:
 def status_command() -> None:
     """Check if the Socket Mode listener is running."""
     pid_path = default_queue_path().with_name("slack-listener.pid")
-    if not pid_path.is_file():
-        typer.echo("Listener: not running (no PID file)")
+    pid = read_pid(pid_path)
+    if pid is None:
+        typer.echo("Listener: not running")
         raise typer.Exit(code=1)
-    pid_str = pid_path.read_text(encoding="utf-8").strip()
-    if not pid_str.isdigit():
-        typer.echo("Listener: stale PID file")
-        pid_path.unlink(missing_ok=True)
-        raise typer.Exit(code=1)
-    pid = int(pid_str)
-    if _pid_alive(pid):
-        typer.echo(f"Listener: running (PID {pid})")
-    else:
-        typer.echo(f"Listener: dead (PID {pid} not found)")
-        pid_path.unlink(missing_ok=True)
-        raise typer.Exit(code=1)
-
-
-def _pid_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
+    typer.echo(f"Listener: running (PID {pid})")
