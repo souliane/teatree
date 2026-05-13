@@ -81,7 +81,13 @@ def _discover_overlays() -> "dict[str, OverlayBase]":
         if not issubclass(cls, OverlayBase):
             msg = f"Entry point {ep.name!r} ({ep.value}) does not subclass OverlayBase"
             raise ImproperlyConfigured(msg)
-        result[ep.name] = cls()
+        overlay = cls()
+        # Apply [overlays.<name>] TOML overrides so entry-point overlays
+        # are configurable from ~/.teatree.toml on the same footing as
+        # TOML-only overlays. Without this, OverlayConfig subclasses
+        # would have to opt in by passing overlay_name to super().__init__.
+        overlay.config.apply_toml_overrides(ep.name)
+        result[ep.name] = overlay
 
     # 2. TOML-configured overlays (not already found via entry points)
     result.update(_discover_toml_overlays(OverlayBase, set(result)))
