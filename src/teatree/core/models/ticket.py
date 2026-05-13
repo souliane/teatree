@@ -282,16 +282,19 @@ class Ticket(models.Model):
 
         External review tickets bypass the implementation lifecycle. Once
         the reviewing task completes, the ticket is done — the reviewer has
-        posted their review on someone else's PR. We also update the
-        ``ReviewerPrsScanner`` cache here so the next tick doesn't re-spawn
-        for the same PR @ SHA.
+        posted their review on someone else's PR. We also stamp the head
+        SHA + ``last_review_state`` on ``extra`` so ``ReviewerPrsScanner``
+        won't re-spawn the reviewer agent for the same PR until either the
+        SHA moves or the forge dismisses the approval.
         """
-        from teatree.loop.scanners.reviewer_prs import mark_reviewed  # noqa: PLC0415
+        from teatree.backends.protocols import ReviewState  # noqa: PLC0415
 
-        pr_url = self.issue_url
-        sha = str(self._extra().get("reviewed_sha", ""))
-        if pr_url and sha:
-            mark_reviewed(url=pr_url, sha=sha)
+        extra = self._extra()
+        sha = str(extra.get("reviewed_sha", ""))
+        if self.issue_url and sha:
+            extra["reviewed_sha"] = sha
+            extra["last_review_state"] = ReviewState.APPROVED.value
+            self.extra = extra
 
     @transition(field=state, source=[State.REVIEWED, State.SHIPPED], target=State.SHIPPED)
     def ship(self) -> None:
