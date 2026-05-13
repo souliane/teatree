@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
 
+from teatree.backends.protocols import ReviewState
 from teatree.loop.scanners.assigned_issues import AssignedIssuesScanner
 from teatree.loop.scanners.my_prs import MyPrsScanner
 from teatree.loop.scanners.notion_view import NotionViewScanner
@@ -22,6 +23,8 @@ class FakeCodeHost:
     review_requested_prs: list[RawAPIDict] = field(default_factory=list)
     assigned_issues: list[RawAPIDict] = field(default_factory=list)
     list_assigned_issues_calls: list[str] = field(default_factory=list)
+    review_state_by_url: dict[str, ReviewState] = field(default_factory=dict)
+    get_review_state_calls: list[tuple[str, str]] = field(default_factory=list)
 
     def current_user(self) -> str:
         return self.user
@@ -37,6 +40,10 @@ class FakeCodeHost:
     def list_assigned_issues(self, *, assignee: str) -> list[RawAPIDict]:
         self.list_assigned_issues_calls.append(assignee)
         return self.assigned_issues
+
+    def get_review_state(self, *, pr_url: str, reviewer: str) -> ReviewState:
+        self.get_review_state_calls.append((pr_url, reviewer))
+        return self.review_state_by_url.get(pr_url, ReviewState.NONE)
 
     def create_pr(self, spec: Any) -> RawAPIDict:
         _ = spec
@@ -267,6 +274,116 @@ class TestReviewerPrsScanner:
         assert _head_sha({"sha": 123}) == ""
         assert _head_sha({"head": {"sha": 99}}) == ""
         assert _head_sha({"diff_refs": {"head_sha": True}}) == ""
+
+    def test_dismissed_after_approval_emits_approval_dismissed_signal(self, tmp_path: Path) -> None:
+        url = "https://gitlab/x/-/merge_requests/9"
+        host = FakeCodeHost(
+            user="alice",
+            review_requested_prs=[{"web_url": url, "sha": "same"}],
+            review_state_by_url={url: ReviewState.DISMISSED},
+        )
+        scanner = ReviewerPrsScanner(host=host, cache_path=tmp_path / "cache.json")
+        scanner.mark_reviewed(url=url, sha="same", state=ReviewState.APPROVED.value)
+        signals = scanner.scan()
+        assert [s.kind for s in signals] == ["reviewer_pr.approval_dismissed"]
+        assert signals[0].payload["previous_state"] == ReviewState.APPROVED.value
+        assert signals[0].payload["current_state"] == ReviewState.DISMISSED.value
+        assert host.get_review_state_calls == [(url, "alice")]
+
+    def test_pending_after_approval_emits_approval_dismissed_signal(self, tmp_path: Path) -> None:
+        """A re-request after dismissal surfaces as ``PENDING`` on the forge."""
+        url = "https://github.com/o/r/pull/7"
+        host = FakeCodeHost(
+            user="alice",
+            review_requested_prs=[{"html_url": url, "sha": "same"}],
+            review_state_by_url={url: ReviewState.PENDING},
+        )
+        scanner = ReviewerPrsScanner(host=host, cache_path=tmp_path / "cache.json")
+        scanner.mark_reviewed(url=url, sha="same", state=ReviewState.APPROVED.value)
+        signals = scanner.scan()
+        assert [s.kind for s in signals] == ["reviewer_pr.approval_dismissed"]
+
+    def test_state_unchanged_emits_no_signal_and_skips_state_fetch_when_sha_changes(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """SHA-only path stays cheap — no per-PR review-state fetch when SHA differs."""
+        url = "https://gitlab/x/-/merge_requests/3"
+        host = FakeCodeHost(
+            user="alice",
+            review_requested_prs=[{"web_url": url, "sha": "newer"}],
+            review_state_by_url={url: ReviewState.DISMISSED},
+        )
+        scanner = ReviewerPrsScanner(host=host, cache_path=tmp_path / "cache.json")
+        scanner.mark_reviewed(url=url, sha="older", state=ReviewState.APPROVED.value)
+        signals = scanner.scan()
+        assert [s.kind for s in signals] == ["reviewer_pr.new_sha"]
+        assert host.get_review_state_calls == []
+
+    def test_already_approved_still_approved_emits_nothing(self, tmp_path: Path) -> None:
+        url = "https://gitlab/x/-/merge_requests/3"
+        host = FakeCodeHost(
+            user="alice",
+            review_requested_prs=[{"web_url": url, "sha": "same"}],
+            review_state_by_url={url: ReviewState.APPROVED},
+        )
+        scanner = ReviewerPrsScanner(host=host, cache_path=tmp_path / "cache.json")
+        scanner.mark_reviewed(url=url, sha="same", state=ReviewState.APPROVED.value)
+        assert scanner.scan() == []
+
+    def test_changes_requested_after_approval_emits_nothing(self, tmp_path: Path) -> None:
+        """Author addressing changes is not the same as an approval being dismissed."""
+        url = "https://gitlab/x/-/merge_requests/3"
+        host = FakeCodeHost(
+            user="alice",
+            review_requested_prs=[{"web_url": url, "sha": "same"}],
+            review_state_by_url={url: ReviewState.CHANGES_REQUESTED},
+        )
+        scanner = ReviewerPrsScanner(host=host, cache_path=tmp_path / "cache.json")
+        scanner.mark_reviewed(url=url, sha="same", state=ReviewState.APPROVED.value)
+        assert scanner.scan() == []
+
+    def test_cache_migrates_legacy_string_schema_on_read(self, tmp_path: Path) -> None:
+        """Old-format ``{url: "sha"}`` entries are read as ``(sha, state="")``."""
+        cache = tmp_path / "cache.json"
+        cache.write_text('{"https://gitlab/x/-/merge_requests/3": "older"}', encoding="utf-8")
+        host = FakeCodeHost(
+            user="alice",
+            review_requested_prs=[{"web_url": "https://gitlab/x/-/merge_requests/3", "sha": "newer"}],
+        )
+        scanner = ReviewerPrsScanner(host=host, cache_path=cache)
+        signals = scanner.scan()
+        # Legacy sha differs from current → new_sha, not unreviewed.
+        assert [s.kind for s in signals] == ["reviewer_pr.new_sha"]
+        assert signals[0].payload["previous_sha"] == "older"
+
+    def test_cache_migration_writes_new_schema(self, tmp_path: Path) -> None:
+        """After a scan touches a legacy entry, the cache rewrites in the new dict form."""
+        import json as _json  # noqa: PLC0415
+
+        cache = tmp_path / "cache.json"
+        cache.write_text('{"https://gitlab/x/-/merge_requests/3": "older"}', encoding="utf-8")
+        url = "https://gitlab/x/-/merge_requests/3"
+        host = FakeCodeHost(
+            user="alice",
+            review_requested_prs=[{"web_url": url, "sha": "older"}],
+            review_state_by_url={url: ReviewState.APPROVED},
+        )
+        # Trigger a write: the state value changed (legacy "" → "approved")
+        ReviewerPrsScanner(host=host, cache_path=cache).scan()
+        parsed = _json.loads(cache.read_text(encoding="utf-8"))
+        assert parsed == {url: {"sha": "older", "state": ReviewState.APPROVED.value}}
+
+    def test_mark_reviewed_defaults_state_to_approved(self, tmp_path: Path) -> None:
+        """Existing callers that omit ``state`` get the natural default."""
+        import json as _json  # noqa: PLC0415
+
+        cache = tmp_path / "cache.json"
+        from teatree.loop.scanners.reviewer_prs import mark_reviewed  # noqa: PLC0415
+
+        mark_reviewed(url="https://gitlab/x/-/merge_requests/3", sha="abc", cache_path=cache)
+        parsed = _json.loads(cache.read_text(encoding="utf-8"))
+        assert parsed["https://gitlab/x/-/merge_requests/3"]["state"] == ReviewState.APPROVED.value
 
 
 class TestSlackMentionsScanner:

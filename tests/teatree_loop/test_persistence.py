@@ -174,4 +174,6 @@ class TestReviewerCacheUpdate(TestCase):
 
         assert self._cache_path.is_file()
         data = json.loads(self._cache_path.read_text())
-        assert data == {"https://example.com/pr/7": "zzz"}
+        # New schema records both the head sha and the reviewer's state
+        # so the next scan can detect approval dismissals on force-push.
+        assert data == {"https://example.com/pr/7": {"sha": "zzz", "state": "approved"}}

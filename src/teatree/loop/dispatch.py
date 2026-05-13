@@ -34,6 +34,7 @@ class DispatchAction:
 _AGENT_BY_KIND: dict[str, str] = {
     "reviewer_pr.new_sha": "t3:reviewer",
     "reviewer_pr.unreviewed": "t3:reviewer",
+    "reviewer_pr.approval_dismissed": "t3:reviewer",
     "pending_task": "t3:orchestrator",
 }
 
@@ -51,6 +52,7 @@ _STATUSLINE_ZONE_BY_KIND: dict[str, str] = {
     # pending review without waiting on the agent to act.
     "reviewer_pr.new_sha": "action_needed",
     "reviewer_pr.unreviewed": "action_needed",
+    "reviewer_pr.approval_dismissed": "action_needed",
 }
 
 _PR_URL_RE = re.compile(r"https?://[^\s>|]+/(?:merge_requests|pull|pulls)/\d+")
@@ -70,7 +72,9 @@ def _slack_pr_url(signal: ScanSignal) -> str:
 
 # Reviewer signals dispatch to the agent AND mirror into the statusline so
 # the user sees the pending review before the agent acts.
-_DUAL_DISPATCH: frozenset[str] = frozenset({"reviewer_pr.new_sha", "reviewer_pr.unreviewed"})
+_DUAL_DISPATCH: frozenset[str] = frozenset(
+    {"reviewer_pr.new_sha", "reviewer_pr.unreviewed", "reviewer_pr.approval_dismissed"},
+)
 
 # Signal kind → (DispatchAction kind, zone) when the side-effect is a
 # fire-and-forget mechanical handler or webhook rather than an agent.

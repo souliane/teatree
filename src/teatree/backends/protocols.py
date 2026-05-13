@@ -9,9 +9,26 @@ multiple concerns (e.g. GitLab provides code hosting and CI in one client).
 """
 
 from dataclasses import dataclass, field
+from enum import StrEnum
 from typing import Protocol, runtime_checkable
 
 from teatree.types import RawAPIDict
+
+
+class ReviewState(StrEnum):
+    """A reviewer's current state on a single pull/merge request.
+
+    Used by ``CodeHostBackend.get_review_state`` and by
+    ``ReviewerPrsScanner`` to detect approval dismissals — e.g. when a
+    forge invalidates a prior approval on force-push, or when a reviewer
+    is re-requested after being dismissed.
+    """
+
+    NONE = "none"
+    PENDING = "pending"
+    APPROVED = "approved"
+    CHANGES_REQUESTED = "changes_requested"
+    DISMISSED = "dismissed"
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,6 +80,8 @@ class CodeHostBackend(Protocol):
         reviewer: str,
         updated_after: str | None = None,
     ) -> list[RawAPIDict]: ...  # pragma: no branch
+
+    def get_review_state(self, *, pr_url: str, reviewer: str) -> ReviewState: ...  # pragma: no branch
 
     def post_pr_comment(self, *, repo: str, pr_iid: int, body: str) -> RawAPIDict: ...  # pragma: no branch
 

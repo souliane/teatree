@@ -257,3 +257,100 @@ def test_get_issue_returns_error_when_api_returns_none() -> None:
     result = host.get_issue("https://gitlab.com/org/repo/-/issues/9")
 
     assert "error" in result
+
+
+def test_get_review_state_returns_approved_when_user_in_approved_by() -> None:
+    from teatree.backends.protocols import ReviewState  # noqa: PLC0415
+
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = _project()
+    client.get_mr_approvals.return_value = {"approved_by": ["adrien", "carol"]}
+    host = GitLabCodeHost(client=client)
+
+    result = host.get_review_state(
+        pr_url="https://gitlab.com/org/repo/-/merge_requests/12",
+        reviewer="adrien",
+    )
+
+    assert result == ReviewState.APPROVED
+    client.resolve_project.assert_called_once_with("org/repo")
+    client.get_mr_approvals.assert_called_once_with(42, 12)
+    client.get_json.assert_not_called()
+
+
+def test_get_review_state_returns_pending_when_assigned_but_not_approved() -> None:
+    from teatree.backends.protocols import ReviewState  # noqa: PLC0415
+
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = _project()
+    client.get_mr_approvals.return_value = {"approved_by": []}
+    client.get_json.return_value = {"reviewers": [{"username": "adrien"}]}
+    host = GitLabCodeHost(client=client)
+
+    result = host.get_review_state(
+        pr_url="https://gitlab.com/org/repo/-/merge_requests/12",
+        reviewer="adrien",
+    )
+
+    assert result == ReviewState.PENDING
+    client.get_json.assert_called_once_with("projects/42/merge_requests/12")
+
+
+def test_get_review_state_returns_none_when_user_neither_approved_nor_assigned() -> None:
+    from teatree.backends.protocols import ReviewState  # noqa: PLC0415
+
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = _project()
+    client.get_mr_approvals.return_value = {"approved_by": []}
+    client.get_json.return_value = {"reviewers": []}
+    host = GitLabCodeHost(client=client)
+
+    assert (
+        host.get_review_state(
+            pr_url="https://gitlab.com/org/repo/-/merge_requests/12",
+            reviewer="adrien",
+        )
+        == ReviewState.NONE
+    )
+
+
+def test_get_review_state_returns_none_for_unparseable_url() -> None:
+    from teatree.backends.protocols import ReviewState  # noqa: PLC0415
+
+    client = MagicMock(spec=GitLabAPI)
+    host = GitLabCodeHost(client=client)
+
+    assert host.get_review_state(pr_url="https://github.com/o/r/pull/7", reviewer="adrien") == ReviewState.NONE
+    client.resolve_project.assert_not_called()
+
+
+def test_get_review_state_returns_none_when_project_unresolved() -> None:
+    from teatree.backends.protocols import ReviewState  # noqa: PLC0415
+
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = None
+    host = GitLabCodeHost(client=client)
+
+    assert (
+        host.get_review_state(
+            pr_url="https://gitlab.com/org/repo/-/merge_requests/12",
+            reviewer="adrien",
+        )
+        == ReviewState.NONE
+    )
+
+
+def test_get_review_state_returns_none_when_reviewer_empty() -> None:
+    from teatree.backends.protocols import ReviewState  # noqa: PLC0415
+
+    client = MagicMock(spec=GitLabAPI)
+    host = GitLabCodeHost(client=client)
+
+    assert (
+        host.get_review_state(
+            pr_url="https://gitlab.com/org/repo/-/merge_requests/12",
+            reviewer="",
+        )
+        == ReviewState.NONE
+    )
+    client.resolve_project.assert_not_called()
