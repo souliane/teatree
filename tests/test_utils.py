@@ -1,3 +1,4 @@
+import os
 import signal
 import socket
 from pathlib import Path
@@ -699,6 +700,24 @@ def test_pg_env_omits_port_when_unset(monkeypatch: pytest.MonkeyPatch) -> None:
     env = db.pg_env()
 
     assert "PGPORT" not in env
+
+
+def test_pg_env_resolves_password_via_pass_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``pg_env`` reads the password from ``pass`` when ``POSTGRES_PASSWORD_PASS_KEY`` is set.
+
+    The literal value never appears in ``os.environ`` — the only secret
+    delivery channel is the in-memory ``PGPASSWORD`` value placed on the
+    returned ``env`` dict.
+    """
+    from unittest.mock import patch  # noqa: PLC0415
+
+    monkeypatch.delenv("POSTGRES_PASSWORD", raising=False)
+    monkeypatch.setenv("POSTGRES_PASSWORD_PASS_KEY", "teatree/wt/42/postgres")
+    with patch("teatree.utils.postgres_secret.secrets.read_pass", return_value="from-pass"):
+        env = db.pg_env()
+    assert env["PGPASSWORD"] == "from-pass"
+    # The literal value must not be planted into the original process env.
+    assert os.environ.get("POSTGRES_PASSWORD", "") == ""
 
 
 def test_gitlab_api_graphql_sends_post_request(monkeypatch: pytest.MonkeyPatch) -> None:

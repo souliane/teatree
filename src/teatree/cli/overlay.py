@@ -121,6 +121,17 @@ DJANGO_GROUPS: dict[str, tuple[str, list[tuple[str, str]]]] = {
             ("visit-phase", "Mark a phase as visited on the ticket's latest session."),
         ],
     ),
+    "env": (
+        "Inspect and mutate the worktree env cache.",
+        [
+            ("show", "Print the env cache as the DB would render it."),
+            ("set-var", "Persist an override on the worktree and refresh the cache."),
+            ("unset", "Delete an override row and refresh the cache."),
+            ("overrides", "List user-declared overrides for this worktree."),
+            ("check", "Exit non-zero if the on-disk cache diverges from the DB render."),
+            ("migrate-secrets", "Move POSTGRES_PASSWORD literals out of .t3-env.cache into pass."),
+        ],
+    ),
     "ticket": (
         "Ticket state management.",
         [

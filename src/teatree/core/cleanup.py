@@ -23,6 +23,7 @@ from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay_loader import get_overlay
 from teatree.utils import git
 from teatree.utils.db import drop_db
+from teatree.utils.postgres_secret import remove_postgres_pass_entry
 from teatree.utils.run import run_allowed_to_fail
 
 logger = logging.getLogger(__name__)
@@ -285,6 +286,11 @@ def cleanup_worktree(worktree: Worktree, *, force: bool = False) -> str:
     if worktree.db_name:
         db_user = _read_env_cache_value(Path(wt_path), "POSTGRES_USER")
         drop_db(worktree.db_name, user=db_user)
+
+    if getattr(overlay.config, "teardown_removes_pass_entries", False) is True:
+        ticket = worktree.ticket
+        if ticket is not None:
+            remove_postgres_pass_entry(ticket.ticket_number)
 
     label = f"Cleaned: {worktree.repo_path} ({worktree.branch})"
     if step_errors:
