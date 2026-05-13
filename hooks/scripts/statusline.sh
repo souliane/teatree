@@ -49,7 +49,11 @@ _YLW=$'\033[1;33m'
 _RED=$'\033[1;31m'
 _BLU=$'\033[1;34m'
 _MAG=$'\033[1;35m'
-_DIM=$'\033[2m'
+# Labels (`model=`, `ctx=`, separators…) used to use \033[2m (dim) which is
+# unreadable on most themes. Switch to a regular light-gray that still reads
+# as "metadata" without disappearing into the background.
+_LBL=$'\033[38;5;244m'
+_DIM=$'\033[38;5;244m'
 _RST=$'\033[0m'
 _OSC8=$'\033]8;'
 _ST=$'\033\\'
@@ -80,31 +84,55 @@ osc8_link() {
     printf '%s' "${_OSC8};${1}${_ST}${2}${_OSC8};${_ST}"
 }
 
-header=""
-sep="${_DIM} | ${_RST}"
+# Visual grouping: within a group, segments are joined by a mid-dot; between
+# groups we use a vertical bar so the eye can pick out context vs usage vs
+# loops vs updates vs resource at a glance.
+isep="${_LBL} · ${_RST}"
+gsep="${_LBL} │ ${_RST}"
+sep="$gsep"   # legacy alias still used by later segments
+
+# Each `g_*` accumulates the colored content of one logical group. We join
+# groups together at the end with the outer separator.
+g_context=""
+g_usage=""
+g_loops=""
+g_updates=""
+g_resource=""
+
 if [ -n "$model" ]; then
-    header="${_DIM}model=${_RST}${_GRN}${model}${_RST}"
+    g_context="${_LBL}model=${_RST}${_GRN}${model}${_RST}"
 fi
 if [ -n "$ctx_pct" ] && [ "$ctx_pct" != "empty" ]; then
-    header="${header}${sep}${_DIM}ctx=${_RST}$(color_pct "$ctx_pct")"
+    [ -n "$g_context" ] && g_context="${g_context}${isep}"
+    g_context="${g_context}${_LBL}ctx=${_RST}$(color_pct "$ctx_pct")"
 fi
 if [ -n "$five_hour_pct" ] && [ "$five_hour_pct" != "empty" ]; then
-    header="${header}${sep}${_DIM}5h=${_RST}$(color_pct "$five_hour_pct")$(format_reset_time "$five_hour_resets_at")"
+    g_usage="${_LBL}5h=${_RST}$(color_pct "$five_hour_pct")$(format_reset_time "$five_hour_resets_at")"
 fi
 if [ -n "$seven_day_pct" ] && [ "$seven_day_pct" != "empty" ]; then
-    header="${header}${sep}${_DIM}7d=${_RST}$(color_pct "$seven_day_pct")"
+    [ -n "$g_usage" ] && g_usage="${g_usage}${isep}"
+    g_usage="${g_usage}${_LBL}7d=${_RST}$(color_pct "$seven_day_pct")"
 fi
+
+# Skills are kept aside and tacked on last (or on their own line — see below)
+# so they never push critical info off a narrow terminal.
+_skills_segment=""
+_skill_count=0
 if [ -n "$skills" ]; then
     _colored_skills=""
     for _s in $skills; do
-        [ -n "$_colored_skills" ] && _colored_skills="${_colored_skills} ${_DIM}|${_RST} "
+        # Skills already render as colored magenta tokens — a separator between
+        # them is visual noise. Use a single space.
+        [ -n "$_colored_skills" ] && _colored_skills="${_colored_skills} "
         _colored_skills="${_colored_skills}${_MAG}${_s}${_RST}"
+        _skill_count=$((_skill_count + 1))
     done
-    header="${header}${sep}${_DIM}skills:${_RST} ${_colored_skills}"
+    _skills_segment="${_LBL}skills:${_RST} ${_colored_skills}"
 fi
 
 # Active loops from CronCreate / ScheduleWakeup (written by hook_router.py)
 _crons_file="$state_dir/${session_id}.crons"
+_loops_segment=""
 if [ -n "$session_id" ] && [ -r "$_crons_file" ] && command -v jq >/dev/null 2>&1; then
     _now=${_now:-$(date +%s)}
     _loop_parts=""
@@ -113,12 +141,12 @@ if [ -n "$session_id" ] && [ -r "$_crons_file" ] && command -v jq >/dev/null 2>&
         _jcadence=$(jq -r ".jobs[\"$_jid\"].cadence // empty" "$_crons_file" 2>/dev/null)
         if [ -n "$_jcadence" ] && [ "$_jcadence" != "null" ]; then
             _jmin=$(( _jcadence / 60 ))
-            _jlabel="${_CYN}${_jname}${_RST}${_DIM}(${_jmin}m)${_RST}"
+            _jlabel="${_CYN}${_jname}${_RST}${_LBL}(${_jmin}m)${_RST}"
         else
             _jcron=$(jq -r ".jobs[\"$_jid\"].cron // empty" "$_crons_file" 2>/dev/null)
-            _jlabel="${_CYN}${_jname}${_RST}${_DIM}(${_jcron})${_RST}"
+            _jlabel="${_CYN}${_jname}${_RST}${_LBL}(${_jcron})${_RST}"
         fi
-        [ -n "$_loop_parts" ] && _loop_parts="${_loop_parts} ${_DIM}·${_RST} "
+        [ -n "$_loop_parts" ] && _loop_parts="${_loop_parts}${isep}"
         _loop_parts="${_loop_parts}${_jlabel}"
     done
     _wakeup_epoch=$(jq -r '.wakeup.next_epoch // empty' "$_crons_file" 2>/dev/null)
@@ -132,11 +160,11 @@ if [ -n "$session_id" ] && [ -r "$_crons_file" ] && command -v jq >/dev/null 2>&
         else
             _wtiming="now"
         fi
-        _wlabel="${_CYN}${_wname}${_RST}${_DIM}→${_wtiming}${_RST}"
-        [ -n "$_loop_parts" ] && _loop_parts="${_loop_parts} ${_DIM}·${_RST} "
+        _wlabel="${_CYN}${_wname}${_RST}${_LBL}→${_wtiming}${_RST}"
+        [ -n "$_loop_parts" ] && _loop_parts="${_loop_parts}${isep}"
         _loop_parts="${_loop_parts}${_wlabel}"
     fi
-    [ -n "$_loop_parts" ] && header="${header}${sep}${_DIM}loops:${_RST} ${_loop_parts}"
+    [ -n "$_loop_parts" ] && _loops_segment="${_LBL}loops:${_RST} ${_loop_parts}"
 fi
 
 # RAM usage (macOS/Linux)
@@ -152,7 +180,7 @@ if [[ "$OSTYPE" == "darwin"* ]]; then
         _ram_pct=$(( _ram_used * 100 / _ram_total ))
         _ram_used_gb=$(awk "BEGIN{printf \"%.1f\", $_ram_used / 1073741824}")
         _ram_total_gb=$(awk "BEGIN{printf \"%.0f\", $_ram_total / 1073741824}")
-        _ram_segment="${_DIM}ram=${_RST}$(color_pct "$_ram_pct")${_DIM} ${_ram_used_gb}/${_ram_total_gb}G${_RST}"
+        _ram_segment="${_LBL}ram=${_RST}$(color_pct "$_ram_pct")${_LBL} ${_ram_used_gb}/${_ram_total_gb}G${_RST}"
     fi
 elif [ -r /proc/meminfo ]; then
     _ram_total_kb=$(awk '/MemTotal/{print $2}' /proc/meminfo)
@@ -161,14 +189,16 @@ elif [ -r /proc/meminfo ]; then
     _ram_pct=$(( _ram_used_kb * 100 / _ram_total_kb ))
     _ram_used_gb=$(awk "BEGIN{printf \"%.1f\", $_ram_used_kb / 1048576}")
     _ram_total_gb=$(awk "BEGIN{printf \"%.0f\", $_ram_total_kb / 1048576}")
-    _ram_segment="${_DIM}ram=${_RST}$(color_pct "$_ram_pct")${_DIM} ${_ram_used_gb}/${_ram_total_gb}G${_RST}"
+    _ram_segment="${_LBL}ram=${_RST}$(color_pct "$_ram_pct")${_LBL} ${_ram_used_gb}/${_ram_total_gb}G${_RST}"
 fi
-# RAM segment is appended last (after tick countdown and freshness)
+g_resource="$_ram_segment"
 
 # Next tick countdown from tick-meta.json
 _tick_meta="${target%.txt}-meta.json"
 # Also check the canonical sidecar name written by tick.py
 [ ! -r "$_tick_meta" ] && _tick_meta="$(dirname "$target")/tick-meta.json"
+_tick_segment=""
+_freshness_segment=""
 if [ -r "$_tick_meta" ] && command -v jq >/dev/null 2>&1; then
     _next_epoch=$(jq -r '.next_epoch // empty' "$_tick_meta" 2>/dev/null)
     _tick_cadence=$(jq -r '.cadence // 720' "$_tick_meta" 2>/dev/null)
@@ -177,17 +207,16 @@ if [ -r "$_tick_meta" ] && command -v jq >/dev/null 2>&1; then
         _diff=$(( _next_epoch - _now ))
         _overdue=$(( -_diff ))
         if (( _diff > 0 && _diff < 60 )); then
-            _tick_label="${_CYN}tick${_RST}${_DIM}→${_diff}s${_RST}"
+            _tick_segment="${_CYN}tick${_RST}${_LBL}→${_diff}s${_RST}"
         elif (( _diff > 0 && _diff < 120 )); then
-            _tick_label="${_YLW}tick${_RST}${_DIM}→$(( _diff / 60 ))m${_RST}"
+            _tick_segment="${_YLW}tick${_RST}${_LBL}→$(( _diff / 60 ))m${_RST}"
         elif (( _diff > 0 )); then
-            _tick_label="${_GRN}tick${_RST}${_DIM}→$(( _diff / 60 ))m${_RST}"
+            _tick_segment="${_GRN}tick${_RST}${_LBL}→$(( _diff / 60 ))m${_RST}"
         elif (( _overdue > _tick_cadence * 2 )); then
-            _tick_label="${_RED}tick stale${_RST}"
+            _tick_segment="${_RED}tick stale${_RST}"
         else
-            _tick_label="${_CYN}tick now${_RST}"
+            _tick_segment="${_CYN}tick now${_RST}"
         fi
-        header="${header}${sep}${_tick_label}"
     fi
 
     # Repo freshness from tick-meta.json .freshness
@@ -214,24 +243,56 @@ if [ -r "$_tick_meta" ] && command -v jq >/dev/null 2>&1; then
                 elif (( _behind <= 5 )); then _fc="$_YLW"
                 else _fc="$_RED"
                 fi
-                _label="${_fc}${_repo}${_RST}${_DIM}=${_RST}${_fc}${_behind}${_RST}"
-                [ -n "$_age" ] && _label="${_label}${_DIM}(${_age})${_RST}"
+                _label="${_fc}${_repo}${_RST}${_LBL}=${_RST}${_fc}${_behind}${_RST}"
+                [ -n "$_age" ] && _label="${_label}${_LBL}(${_age})${_RST}"
             elif [ -n "$_age" ]; then
-                _label="${_DIM}${_repo}=${_age}${_RST}"
+                _label="${_LBL}${_repo}=${_age}${_RST}"
             else
                 continue
             fi
-            [ -n "$_fresh_parts" ] && _fresh_parts="${_fresh_parts} "
+            [ -n "$_fresh_parts" ] && _fresh_parts="${_fresh_parts}${isep}"
             _fresh_parts="${_fresh_parts}${_label}"
         done
-        [ -n "$_fresh_parts" ] && header="${header}${sep}${_fresh_parts}"
+        [ -n "$_fresh_parts" ] && _freshness_segment="${_fresh_parts}"
     fi
 fi
 
-# RAM last on the header line
-[ -n "$_ram_segment" ] && header="${header}${sep}${_ram_segment}"
+# Combine tick + loops into the "loops" group (operational signals).
+g_loops="$_tick_segment"
+if [ -n "$_loops_segment" ]; then
+    [ -n "$g_loops" ] && g_loops="${g_loops}${isep}${_loops_segment}" || g_loops="$_loops_segment"
+fi
+g_updates="$_freshness_segment"
+
+# Join all groups with the between-group separator.
+header=""
+for _g in g_context g_usage g_loops g_updates g_resource; do
+    _val=$(eval "printf '%s' \"\${$_g}\"")
+    [ -z "$_val" ] && continue
+    if [ -z "$header" ]; then
+        header="$_val"
+    else
+        header="${header}${gsep}${_val}"
+    fi
+done
+
+# Skills inline only when ≤ 4 are loaded — otherwise they get their own line
+# below so the main header stays readable in narrow terminals.
+_skills_on_own_line=0
+if [ -n "$_skills_segment" ]; then
+    if [ "$_skill_count" -le 4 ]; then
+        if [ -z "$header" ]; then
+            header="$_skills_segment"
+        else
+            header="${header}${gsep}${_skills_segment}"
+        fi
+    else
+        _skills_on_own_line=1
+    fi
+fi
 
 [ -n "$header" ] && printf '%s\n' "$header"
+[ "$_skills_on_own_line" = "1" ] && printf '%s\n' "$_skills_segment"
 
 if [[ -r "$target" ]]; then
     cat "$target"

@@ -1,4 +1,5 @@
 import os
+import re
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -8,7 +9,9 @@ from pathlib import Path
 # the ``NO_COLOR`` standard (https://no-color.org/) by passing
 # ``colorize=False`` to :func:`render`.
 _ANSI_RESET = "\033[0m"
-_ANSI_DIM = "\033[2;37m"
+# 256-color light gray reads better than legacy DIM (``\033[2m``) on most
+# themes — DIM is essentially invisible on dark backgrounds with low contrast.
+_ANSI_DIM = "\033[38;5;244m"
 _ANSI_RED = "\033[1;31m"
 _ANSI_YELLOW = "\033[1;33m"
 _ANSI_CYAN = "\033[1;36m"
@@ -20,11 +23,11 @@ _ZONE_COLORS: dict[str, str] = {
     "in_flight": _ANSI_CYAN,
 }
 
-_ZONE_HEADERS: dict[str, str] = {
-    "anchors": "",
-    "action_needed": "Action needed:",
-    "in_flight": "In flight:",
-}
+# Zone-level "Action needed:" / "In flight:" headers used to live above each
+# block but color (red/cyan) already carries that meaning — the legend at the
+# bottom of :func:`render` makes the contract explicit without using a line
+# of vertical space per zone.
+_OVERLAY_PREFIX_RE = re.compile(r"^\[([^\]]+)\] ")
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,15 +75,25 @@ def _format_item(item: ZoneItem, color: str, *, colorize: bool) -> str:
     return text
 
 
-def _format_header(name: str, *, colorize: bool) -> str:
-    header = _ZONE_HEADERS[name]
-    if not header:
-        return ""
-    return f"{_ANSI_BOLD}{header}{_ANSI_RESET}" if colorize else header
+def _overlay_of(item: ZoneItem) -> str:
+    """Pull the ``[ov]`` prefix from a line, or return '' when there is none.
+
+    Each renderer in :mod:`teatree.loop.tick` prefixes its lines with
+    ``[ov] …`` so we can group all of an overlay's anchors / action / in-flight
+    rows together by reading the prefix back here.
+    """
+    text = item.text if isinstance(item, StatuslineEntry) else item
+    match = _OVERLAY_PREFIX_RE.match(text)
+    return match.group(1) if match else ""
 
 
 def render(zones: StatuslineZones, *, target: Path | None = None, colorize: bool | None = None) -> Path:
     """Atomically write *zones* to *target* (or the default path).
+
+    Output is grouped by overlay rather than by zone — each ``[ov]`` block
+    shows its anchors (dim), action-needed rows (red), and in-flight rows
+    (cyan) consecutively. The per-zone "Action needed:" / "In flight:"
+    headers are gone — color carries the signal.
 
     *colorize* defaults to ``True`` unless the ``NO_COLOR`` environment
     variable is set. Tests can pass ``colorize=False`` to assert plain
@@ -91,17 +104,27 @@ def render(zones: StatuslineZones, *, target: Path | None = None, colorize: bool
     if colorize is None:
         colorize = "NO_COLOR" not in os.environ
 
-    sections: list[str] = []
+    # Group every line by its [overlay] prefix, preserving insertion order.
+    by_overlay: dict[str, dict[str, list[ZoneItem]]] = {}
+    order: list[str] = []
     for name in ("anchors", "action_needed", "in_flight"):
-        items: list[ZoneItem] = getattr(zones, name)
-        if not items:
-            continue
-        color = _ZONE_COLORS.get(name, "")
-        rendered = "\n".join(_format_item(item, color, colorize=colorize) for item in items)
-        header = _format_header(name, colorize=colorize)
-        sections.append(f"{header}\n{rendered}" if header else rendered)
+        for item in getattr(zones, name):
+            overlay = _overlay_of(item)
+            if overlay not in by_overlay:
+                by_overlay[overlay] = {"anchors": [], "action_needed": [], "in_flight": []}
+                order.append(overlay)
+            by_overlay[overlay][name].append(item)
 
-    body = "\n\n".join(sections) + "\n"
+    sections: list[str] = []
+    for overlay in order:
+        lines: list[str] = []
+        for name in ("anchors", "action_needed", "in_flight"):
+            color = _ZONE_COLORS.get(name, "")
+            lines.extend(_format_item(item, color, colorize=colorize) for item in by_overlay[overlay][name])
+        if lines:
+            sections.append("\n".join(lines))
+
+    body = ("\n\n".join(sections) + "\n") if sections else ""
 
     fd, tmp_str = tempfile.mkstemp(prefix=".statusline-", suffix=".tmp", dir=str(target.parent))
     tmp_path = Path(tmp_str)
