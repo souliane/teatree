@@ -220,8 +220,10 @@ class TestRenderEnvCache(TestCase):
                 spec = render_env_cache(wt)
             assert spec is not None
             assert "EXTRA_KEY=extra_value" in spec.content
-            assert "POSTGRES_PASSWORD" not in spec.content
+            assert "POSTGRES_PASSWORD=" not in spec.content
             assert "s3cr3t-pw" not in spec.content
+            # The symbolic pass-key reference replaces the stripped literal.
+            assert "POSTGRES_PASSWORD_PASS_KEY=teatree/wt/" in spec.content
 
 
 class TestWriteEnvCache(TestCase):

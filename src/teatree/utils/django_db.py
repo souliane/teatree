@@ -46,8 +46,9 @@ def _local_db_url(db_name: str) -> str:
     from urllib.parse import quote  # noqa: PLC0415
 
     from teatree.utils.db import pg_host, pg_user  # noqa: PLC0415
+    from teatree.utils.postgres_secret import resolve_postgres_password  # noqa: PLC0415
 
-    pw = os.environ.get("POSTGRES_PASSWORD", "")
+    pw = resolve_postgres_password()
     port = os.environ.get("POSTGRES_PORT", "5432")
     return f"postgres://{pg_user()}:{quote(pw, safe='')}@{pg_host()}:{port}/{db_name}"
 
