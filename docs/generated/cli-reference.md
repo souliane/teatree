@@ -1187,6 +1187,7 @@ Usage: t3 teatree [OPTIONS] COMMAND [ARGS]...
 │ tasks        Async task queue.                                               │
 │ followup     Follow-up snapshots.                                            │
 │ lifecycle    Session lifecycle and phase tracking.                           │
+│ env          Inspect and mutate the worktree env cache.                      │
 │ ticket       Ticket state management.                                        │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -2341,6 +2342,130 @@ Usage: t3 teatree lifecycle visit-phase [OPTIONS] TICKET_ID PHASE
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 teatree env`
+
+```
+Usage: t3 teatree env [OPTIONS] COMMAND [ARGS]...
+
+ Inspect and mutate the worktree env cache.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ show             Print the env cache as the DB would render it.              │
+│ set-var          Persist an override on the worktree and refresh the cache.  │
+│ unset            Delete an override row and refresh the cache.               │
+│ overrides        List user-declared overrides for this worktree.             │
+│ check            Exit non-zero if the on-disk cache diverges from the DB     │
+│                  render.                                                     │
+│ migrate-secrets  Move POSTGRES_PASSWORD literals out of .t3-env.cache into   │
+│                  pass.                                                       │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree env show`
+
+```
+Usage: t3 teatree env show [OPTIONS]
+
+ Print the current env as the DB would render it.
+
+ Never reads the cache file — always renders fresh from the DB.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --path          TEXT  Worktree path (auto-detects from PWD if empty).        │
+│ --format        TEXT  shell | json [default: shell]                          │
+│ --help                Show this message and exit.                            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree env set-var`
+
+```
+Usage: t3 teatree env set-var [OPTIONS] KEY_VALUE
+
+ Persist an override on the worktree and refresh the cache.
+
+ Rejects keys owned by core (edit the model field instead).
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    key_value      TEXT  KEY=VALUE. [required]                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --path        TEXT  Worktree path (auto-detects from PWD if empty).          │
+│ --help              Show this message and exit.                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree env unset`
+
+```
+Usage: t3 teatree env unset [OPTIONS] KEY
+
+ Delete an override row and refresh the cache.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    key      TEXT  Override key to remove. [required]                       │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --path        TEXT  Worktree path (auto-detects from PWD if empty).          │
+│ --help              Show this message and exit.                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree env overrides`
+
+```
+Usage: t3 teatree env overrides [OPTIONS]
+
+ List user-declared overrides for this worktree.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --path        TEXT  Worktree path (auto-detects from PWD if empty).          │
+│ --help              Show this message and exit.                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree env check`
+
+```
+Usage: t3 teatree env check [OPTIONS]
+
+ Exit non-zero if the on-disk cache diverges from the DB render.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --path        TEXT  Worktree path (auto-detects from PWD if empty).          │
+│ --help              Show this message and exit.                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree env migrate-secrets`
+
+```
+Usage: t3 teatree env migrate-secrets [OPTIONS]
+
+ Move ``POSTGRES_PASSWORD`` literals out of ``.t3-env.cache`` into ``pass``.
+
+ For each targeted worktree this command:
+
+ 1. Reads the literal ``POSTGRES_PASSWORD=`` line from the on-disk cache.
+ 2. Stores it in ``pass`` under the canonical key for that worktree.
+ 3. Regenerates the cache so it now contains only the symbolic
+     ``POSTGRES_PASSWORD_PASS_KEY`` reference.
+
+ Idempotent — caches that already lack a literal are reported as
+ ``already migrated`` and left alone.  Exits 0 when every targeted
+ worktree finished successfully, non-zero when at least one needs
+ attention (no pass installed, cache missing, etc.).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --path        TEXT  Worktree path (migrates only this worktree). Empty =     │
+│                     migrate every worktree.                                  │
+│ --help              Show this message and exit.                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

@@ -642,7 +642,7 @@ Defined in `teatree.core.overlay`. All methods receive the `worktree` instance f
 | Method | Signature | Default | Purpose |
 |--------|-----------|---------|---------|
 | `get_env_extra(worktree)` | `→ dict[str, str]` | `{}` | Extra environment variables |
-| `declared_secret_env_keys()` | `→ set[str]` | `set()` | Keys whose values must NOT land in `.t3-env.cache` (still produced by `get_env_extra` so subprocess `env=` callers receive them, but `render_env_cache` filters them out of the on-disk file). Use for `pass`-sourced credentials. |
+| `declared_secret_env_keys()` | `→ set[str]` | `set()` | Keys whose values must NOT land in `.t3-env.cache` (still produced by `get_env_extra` so subprocess `env=` callers receive them, but `render_env_cache` filters them out of the on-disk file). Core auto-includes `POSTGRES_PASSWORD` and writes a `POSTGRES_PASSWORD_PASS_KEY` reference instead — runtime callers resolve the literal via `teatree.utils.postgres_secret.resolve_postgres_password`. Use this hook for additional `pass`-sourced credentials. |
 | `get_required_ports(worktree)` | `→ set[str]` | `set()` | Port keys to allocate per worktree (e.g. `{"backend", "frontend", "postgres"}`). Empty set means no docker-compose ports — single-service overlays opt out. |
 | `get_port_env(ports)` | `→ dict[str, str]` | `{KEY_HOST_PORT: ...}` | Env vars exported to compose for allocated host ports. Default renders `${KEY}_HOST_PORT` for each key; overlays override to add convention-specific aliases (e.g. `POSTGRES_PORT`, `CORS_WHITE_FRONT`). |
 | `uses_redis()` | `→ bool` | `False` | Whether the shared `teatree-redis` container should be ensured and a per-ticket DB index allocated. Multi-service overlays with Celery/RQ/cache opt in; single-service overlays leave the default. |
@@ -858,7 +858,7 @@ Internal utilities (`utils/`) — port allocation, git helpers, DB ops — are P
 **workspace** — Workspace operations (ticket setup, status, finalize, cleanup)
 **worktree** — Per-worktree commands (`provision`, `start`, `verify`, `teardown`, `clean`, `ready`, `status`)
 **db** — Database operations
-**env** — Read/write the env cache (`set`, `show`, `check`)
+**env** — Read/write the env cache (`set`, `show`, `check`, `migrate-secrets`). `migrate-secrets` moves any `POSTGRES_PASSWORD=<literal>` line out of `.t3-env.cache` into the local `pass` store under `teatree/wt/<ticket_id>/postgres` so the on-disk cache only carries the symbolic `POSTGRES_PASSWORD_PASS_KEY` reference.
 **run** — Service runner (uses `lifecycle.compose_project()` shared helper)
 **pr** — PR creation and validation
 **ticket** — Ticket transitions and queries (`list`, `transition`, ...)

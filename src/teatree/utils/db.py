@@ -1,11 +1,12 @@
 import os
 
+from teatree.utils.postgres_secret import resolve_postgres_password
 from teatree.utils.run import CommandFailedError, run_allowed_to_fail, run_checked
 
 
 def pg_env() -> dict[str, str]:
     env = os.environ.copy()
-    if password := os.environ.get("POSTGRES_PASSWORD", ""):
+    if password := resolve_postgres_password(env):
         env["PGPASSWORD"] = password
     if port := os.environ.get("POSTGRES_PORT", ""):
         env["PGPORT"] = port

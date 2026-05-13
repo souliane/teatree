@@ -21,6 +21,7 @@ from teatree.core.models import Ticket, Worktree, WorktreeEnvOverride
 from teatree.core.models.types import WorktreeExtra, validated_worktree_extra
 from teatree.core.overlay_loader import get_overlay
 from teatree.docker.build import image_tag_for_lockfile
+from teatree.utils.postgres_secret import PASS_KEY_ENV, postgres_pass_key
 
 if TYPE_CHECKING:
     from teatree.core.overlay import OverlayBase
@@ -75,6 +76,7 @@ def _core_env_pairs(worktree: Worktree) -> list[tuple[str, str]]:
         ("TICKET_URL", ticket.issue_url),
         ("WT_DB_NAME", worktree.db_name),
         ("COMPOSE_PROJECT_NAME", f"{worktree.repo_path}-wt{ticket.ticket_number}"),
+        (PASS_KEY_ENV, postgres_pass_key(ticket.ticket_number)),
     ]
     if ticket.redis_db_index is not None:
         pairs.append(("REDIS_DB_INDEX", str(ticket.redis_db_index)))
@@ -91,6 +93,7 @@ def _declared_core_keys() -> set[str]:
         "COMPOSE_PROJECT_NAME",
         "REDIS_DB_INDEX",
         "POSTGRES_HOST",
+        PASS_KEY_ENV,
     }
 
 

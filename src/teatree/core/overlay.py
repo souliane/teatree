@@ -74,6 +74,7 @@ class OverlayConfig:
     max_concurrent_auto_starts: int = 1
     notion_database_id: str = ""
     mr_close_ticket: bool = False
+    teardown_removes_pass_entries: bool = False
     known_variants: list[str]
     pr_auto_labels: list[str]
     frontend_repos: list[str]
