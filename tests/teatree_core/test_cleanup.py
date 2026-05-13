@@ -98,6 +98,43 @@ class TestCleanupWorktree(TestCase):
     @_patch_overlay
     @_patch_git
     @_patch_config
+    def test_skips_pass_remove_when_setting_disabled(
+        self,
+        mock_config: MagicMock,
+        mock_git: MagicMock,
+        mock_overlay: MagicMock,
+    ) -> None:
+        _mock_workspace(mock_config)
+        mock_overlay.return_value.get_cleanup_steps.return_value = []
+        mock_overlay.return_value.config.teardown_removes_pass_entries = False
+
+        wt = self._make_worktree(wt_path="/tmp/wt/org/repo")
+        with patch("teatree.core.cleanup.remove_postgres_pass_entry") as mock_remove:
+            cleanup_worktree(wt)
+        mock_remove.assert_not_called()
+
+    @_patch_overlay
+    @_patch_git
+    @_patch_config
+    def test_removes_pass_entry_when_setting_enabled(
+        self,
+        mock_config: MagicMock,
+        mock_git: MagicMock,
+        mock_overlay: MagicMock,
+    ) -> None:
+        _mock_workspace(mock_config)
+        mock_overlay.return_value.get_cleanup_steps.return_value = []
+        mock_overlay.return_value.config.teardown_removes_pass_entries = True
+
+        wt = self._make_worktree(wt_path="/tmp/wt/org/repo")
+        ticket_number = wt.ticket.ticket_number
+        with patch("teatree.core.cleanup.remove_postgres_pass_entry") as mock_remove:
+            cleanup_worktree(wt)
+        mock_remove.assert_called_once_with(ticket_number)
+
+    @_patch_overlay
+    @_patch_git
+    @_patch_config
     def test_deletes_worktree_record(
         self,
         mock_config: MagicMock,

@@ -218,6 +218,7 @@ pythonpath = [ ".", "src", "scripts", "scripts/hooks", "tests" ]
 filterwarnings = [
   "error",
   "ignore:In Typer, only the parameter 'autocompletion' is supported.*:DeprecationWarning",
+  "ignore:POSTGRES_PASSWORD literal is deprecated.*:DeprecationWarning",
 ]
 xfail_strict = true
 markers = [

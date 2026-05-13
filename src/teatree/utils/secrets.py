@@ -29,3 +29,22 @@ def write_pass(key: str, value: str) -> bool:
     except (CommandFailedError, FileNotFoundError):
         return False
     return True
+
+
+def remove_pass(key: str) -> bool:
+    """Remove *key* from the ``pass`` password store.
+
+    Uses ``pass rm --force`` so the entry is deleted without prompting.
+    Returns ``True`` on success, ``False`` if the entry was absent, ``pass``
+    is not installed, or the call failed.
+    """
+    try:
+        run_checked(["pass", "rm", "--force", key])
+    except (CommandFailedError, FileNotFoundError):
+        return False
+    return True
+
+
+def pass_entry_exists(key: str) -> bool:
+    """Return ``True`` when *key* resolves to a non-empty entry in ``pass``."""
+    return bool(read_pass(key))
