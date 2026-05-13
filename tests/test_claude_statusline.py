@@ -209,3 +209,104 @@ class TestStatuslineHook:
         plain = _strip_ansi(result.stdout)
         assert "skills:" not in plain
         assert "rogue" not in plain
+
+
+class TestFreshnessInlineRefresh:
+    """statusline.sh recomputes ``behind`` inline when FETCH_HEAD is newer than the tick."""
+
+    def _make_repo_behind_main(self, repo: Path, *, behind_by: int) -> int:
+        """Create a tiny git repo with ``behind_by`` commits on origin/main not on HEAD.
+
+        Returns the FETCH_HEAD mtime so the test can choose to mark it
+        newer or older than the cached ``fetch_epoch``.
+        """
+        repo.mkdir(parents=True, exist_ok=True)
+        env = {**os.environ, "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null"}
+        run = lambda *args: subprocess.run(args, cwd=repo, env=env, check=True, capture_output=True)  # noqa: E731
+        run("git", "init", "-q", "-b", "main")
+        run("git", "config", "user.email", "a@b.c")
+        run("git", "config", "user.name", "t")
+        (repo / "README").write_text("x")
+        run("git", "add", "README")
+        run("git", "commit", "-q", "-m", "base")
+        # Build "origin/main" as a remote-tracking ref ahead of HEAD by N commits.
+        bare = repo.parent / "origin.git"
+        run("git", "clone", "-q", "--bare", str(repo), str(bare))
+        run("git", "remote", "add", "origin", str(bare))
+        for i in range(behind_by):
+            wt = repo.parent / "pusher"
+            if not wt.exists():
+                subprocess.run(["git", "clone", "-q", str(bare), str(wt)], env=env, check=True, capture_output=True)  # noqa: S607
+                subprocess.run(["git", "config", "user.email", "a@b.c"], cwd=wt, check=True)  # noqa: S607
+                subprocess.run(["git", "config", "user.name", "t"], cwd=wt, check=True)  # noqa: S607
+            (wt / f"f{i}").write_text("y")
+            subprocess.run(["git", "add", f"f{i}"], cwd=wt, env=env, check=True)  # noqa: S607
+            subprocess.run(["git", "commit", "-q", "-m", f"c{i}"], cwd=wt, env=env, check=True)  # noqa: S607
+            subprocess.run(["git", "push", "-q", "origin", "main"], cwd=wt, env=env, check=True)  # noqa: S607
+        run("git", "fetch", "-q", "origin", "main")
+        fetch_head = repo / ".git" / "FETCH_HEAD"
+        return int(fetch_head.stat().st_mtime)
+
+    def test_uses_cached_value_when_fetch_head_not_newer(self, tmp_path: Path) -> None:
+        repo = tmp_path / "repo"
+        fetch_epoch = self._make_repo_behind_main(repo, behind_by=2)
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+        sl = tmp_path / "statusline.txt"
+        sl.write_text("anchors\n")
+        # tick-meta says behind=99 (stale-but-cached value) with a fetch_epoch
+        # at or after the on-disk FETCH_HEAD mtime → script must NOT recompute.
+        meta = sl.with_name("tick-meta.json")
+        meta.write_text(
+            json.dumps(
+                {
+                    "freshness": {
+                        "repo": {"behind": 99, "fetch_epoch": fetch_epoch + 60, "path": str(repo)},
+                    },
+                },
+            ),
+        )
+
+        result = _run({"model": {"display_name": "Claude Opus"}}, state_dir=state_dir, statusline_file=sl)
+        plain = _strip_ansi(result.stdout)
+        assert "repo=99" in plain
+
+    def test_recomputes_when_fetch_head_is_newer(self, tmp_path: Path) -> None:
+        repo = tmp_path / "repo"
+        fetch_epoch_now = self._make_repo_behind_main(repo, behind_by=2)
+        # Simulate a pre-pull tick that recorded behind=99 with an older fetch_epoch.
+        # On-disk FETCH_HEAD is newer → script must refresh and show 2.
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+        sl = tmp_path / "statusline.txt"
+        sl.write_text("anchors\n")
+        meta = sl.with_name("tick-meta.json")
+        meta.write_text(
+            json.dumps(
+                {
+                    "freshness": {
+                        "repo": {"behind": 99, "fetch_epoch": fetch_epoch_now - 3600, "path": str(repo)},
+                    },
+                },
+            ),
+        )
+
+        result = _run({"model": {"display_name": "Claude Opus"}}, state_dir=state_dir, statusline_file=sl)
+        plain = _strip_ansi(result.stdout)
+        assert "repo=2" in plain
+        assert "repo=99" not in plain
+
+    def test_no_path_field_falls_back_to_cached_behind(self, tmp_path: Path) -> None:
+        # Older tick-meta.json without `path` should still render (no crash).
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+        sl = tmp_path / "statusline.txt"
+        sl.write_text("anchors\n")
+        meta = sl.with_name("tick-meta.json")
+        meta.write_text(
+            json.dumps({"freshness": {"old": {"behind": 5, "fetch_epoch": int(time.time())}}}),
+        )
+
+        result = _run({"model": {"display_name": "Claude Opus"}}, state_dir=state_dir, statusline_file=sl)
+        plain = _strip_ansi(result.stdout)
+        assert "old=5" in plain
