@@ -104,6 +104,17 @@ class ReviewerPrsScanner:
 
     def mark_reviewed(self, *, url: str, sha: str) -> None:
         """Record that *url* has been reviewed at *sha*; called by the dispatcher."""
-        cache = _read_cache(self.cache_path)
-        cache[url] = sha
-        _write_cache(self.cache_path, cache)
+        mark_reviewed(url=url, sha=sha, cache_path=self.cache_path)
+
+
+def mark_reviewed(*, url: str, sha: str, cache_path: Path | None = None) -> None:
+    """Module-level entry point to update the reviewer cache without owning a scanner instance.
+
+    Called from ``Ticket.mark_reviewed_externally`` when a reviewer-role
+    ticket's reviewing task completes — the model layer should not
+    instantiate a backend just to write one JSON file.
+    """
+    path = cache_path or _default_cache_path()
+    cache = _read_cache(path)
+    cache[url] = sha
+    _write_cache(path, cache)

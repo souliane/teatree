@@ -72,6 +72,53 @@ def status_command() -> None:
     typer.echo(target.read_text(encoding="utf-8"))
 
 
+@loop_app.command("pending-spawn")
+def pending_spawn_command(
+    *,
+    json_output: bool = typer.Option(False, "--json", help="Emit pending list as JSON."),
+) -> None:
+    """List pending Tasks the ``/loop`` slot should spawn in-session.
+
+    Reads the dispatch DB (``Task`` rows in PENDING status) and prints
+    each with its ``subagent`` hint. The slot's session iterates and
+    calls ``Agent(subagent_type=…)`` once per entry, then calls
+    ``t3 loop spawn-claim <task_id>`` to mark the dispatch acknowledged.
+    """
+    import django  # noqa: PLC0415
+
+    os.environ.setdefault("DJANGO_SETTINGS_MODULE", "teatree.settings")
+    django.setup()
+
+    from django.core.management import call_command  # noqa: PLC0415
+
+    kwargs: dict[str, bool] = {}
+    if json_output:
+        kwargs["json_output"] = True
+    call_command("loop_dispatch", "pending-spawn", **kwargs)
+
+
+@loop_app.command("spawn-claim")
+def spawn_claim_command(
+    task_id: int = typer.Argument(..., help="Task PK to mark claimed."),
+    *,
+    claimed_by: str = typer.Option("loop-slot", "--claimed-by"),
+) -> None:
+    """Claim a Task so the next tick doesn't re-surface it.
+
+    Slot calls this immediately after dispatching ``Agent(...)`` for a
+    pending Task. Claim is the boundary; ``complete`` happens when the
+    spawned sub-agent reports back via the standard TaskAttempt flow.
+    """
+    import django  # noqa: PLC0415
+
+    os.environ.setdefault("DJANGO_SETTINGS_MODULE", "teatree.settings")
+    django.setup()
+
+    from django.core.management import call_command  # noqa: PLC0415
+
+    call_command("loop_dispatch", "spawn-claim", str(task_id), claimed_by=claimed_by)
+
+
 def _cadence_for_loop_slot() -> str:
     """Return the ``/loop <duration>`` argument from ``T3_LOOP_CADENCE`` (seconds, default 720)."""
     raw = os.environ.get("T3_LOOP_CADENCE", "720").strip() or "720"
@@ -107,7 +154,13 @@ def start_command(
     printing the slash command for manual entry.
     """
     cadence = _cadence_for_loop_slot()
-    register_command = f"/loop {cadence} !t3 loop tick"
+    register_command = (
+        f"/loop {cadence} Run `t3 loop tick`, then run `t3 loop pending-spawn --json`."
+        " For each entry returned, call the Agent tool with subagent_type=entry.subagent,"
+        " description=entry.execution_reason, and a prompt that includes entry.issue_url."
+        " Immediately after dispatching each Agent, run `t3 loop spawn-claim <task_id>`"
+        " so the next tick does not re-surface it."
+    )
 
     if print_only or os.environ.get("CLAUDECODE") or not _stdin_is_terminal():
         typer.echo("Run this in your interactive Claude Code session to register the loop:")
@@ -116,10 +169,10 @@ def start_command(
         typer.echo("Override the cadence with `T3_LOOP_CADENCE=<seconds> t3 loop start` (default 720).")
         typer.echo("")
         typer.echo(
-            "The tick runs scanners, dispatches signals, renders the statusline, and"
-            " executes mechanical actions (ticket completions). Agent actions"
-            " (kind=agent in --json output) are left for the session to pick up"
-            " — run `t3 loop tick --json` and dispatch them via subagents."
+            "The tick scans, dispatches, persists agent dispatches as Ticket+Task DB"
+            " rows, and renders the statusline (display only). The slot reads pending"
+            " Tasks via `t3 loop pending-spawn` and spawns sub-agents in-session via"
+            " its Agent tool. No detached `claude -p`, no queue files."
         )
         return
 

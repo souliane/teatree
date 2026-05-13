@@ -252,6 +252,7 @@ def run_tick(
 
     report.actions = dispatch(report.signals)
     _execute_mechanical(report)
+    _persist_agent_dispatches(report)
 
     zones = zones_for(report.actions)
     _write_tick_meta(started_at, target=statusline_path)
@@ -259,6 +260,28 @@ def run_tick(
         zones.action_needed.append(f"scanner errors: {', '.join(report.errors)}")
     report.statusline_path = render(zones, target=statusline_path, colorize=colorize)
     return report
+
+
+def _persist_agent_dispatches(report: TickReport) -> None:
+    """Convert ``kind="agent"`` actions into Ticket + Task DB rows.
+
+    The DB is the dispatch queue; the ``/loop`` slot's session reads
+    pending Tasks via ``t3 loop pending-spawn`` and spawns sub-agents
+    in-session via its ``Agent`` tool. The statusline is purely visual
+    and never an orchestration channel.
+
+    Idempotent: if a Ticket already exists for ``(role, issue_url)`` with
+    a non-completed reviewing/coding Task, no new rows are created. The
+    bidirectional ``ReviewerPrsScanner`` cache (updated when the review
+    Task completes) prevents re-spawning at the same SHA.
+    """
+    from teatree.loop.persistence import persist_agent_actions  # noqa: PLC0415
+
+    try:
+        persist_agent_actions(report.actions)
+    except Exception as exc:
+        logger.exception("Persisting agent dispatches failed")
+        report.errors["dispatch_persist"] = f"{type(exc).__name__}: {exc}"
 
 
 def _execute_mechanical(report: TickReport) -> None:

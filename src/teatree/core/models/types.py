@@ -53,6 +53,7 @@ class TicketExtra(TypedDict, total=False):
     issue_title: str
     labels: list[str]
     auto_started: bool
+    reviewed_sha: str
 
 
 _TICKET_EXTRA_KEYS = frozenset(TicketExtra.__annotations__)
