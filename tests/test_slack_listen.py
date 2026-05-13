@@ -6,17 +6,9 @@ from unittest.mock import patch
 
 from typer.testing import CliRunner
 
-from teatree.cli.slack_listen import _pid_alive, _resolve_overlays, slack_app
+from teatree.cli.slack_listen import _resolve_overlays, slack_app
 
 runner = CliRunner()
-
-
-class TestPidAlive:
-    def test_current_process_is_alive(self) -> None:
-        assert _pid_alive(os.getpid()) is True
-
-    def test_nonexistent_pid_is_dead(self) -> None:
-        assert _pid_alive(999999999) is False
 
 
 class TestResolveOverlays:
@@ -88,7 +80,8 @@ class TestStatusCommand:
             result = runner.invoke(slack_app, ["status"])
 
         assert result.exit_code == 1
-        assert "dead" in result.stdout
+        assert "not running" in result.stdout
+        assert not pid_file.is_file()
 
     def test_garbled_pid_file(self, tmp_path: Path) -> None:
         pid_file = tmp_path / "slack-listener.pid"
@@ -97,7 +90,7 @@ class TestStatusCommand:
             result = runner.invoke(slack_app, ["status"])
 
         assert result.exit_code == 1
-        assert "stale" in result.stdout
+        assert "not running" in result.stdout
         assert not pid_file.is_file()
 
     def test_running_pid(self, tmp_path: Path) -> None:
