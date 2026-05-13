@@ -400,6 +400,33 @@ class TestDispositionMechanical(django.test.TestCase):
         assert ticket.state == "ignored"
 
 
+class TestTickReapsStaleClaims(django.test.TestCase):
+    def test_run_tick_reaps_claims_with_expired_lease(self) -> None:
+        import tempfile  # noqa: PLC0415
+        from datetime import timedelta  # noqa: PLC0415
+
+        from django.utils import timezone  # noqa: PLC0415
+
+        from teatree.core.models import Session, Task, Ticket  # noqa: PLC0415
+
+        ticket = Ticket.objects.create(state=Ticket.State.STARTED)
+        session = Session.objects.create(ticket=ticket, agent_id="agent")
+        stale = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            execution_target=Task.ExecutionTarget.HEADLESS,
+            status=Task.Status.CLAIMED,
+            claimed_by="dead-worker",
+            lease_expires_at=timezone.now() - timedelta(minutes=5),
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            run_tick(TickRequest(scanners=[]), statusline_path=Path(tmp) / "statusline.txt")
+
+        stale.refresh_from_db()
+        assert stale.status == Task.Status.FAILED
+
+
 def test_tick_multi_overlay_prefixes_summary(tmp_path: Path) -> None:
     """Signals collected via the multi-overlay path get an ``[overlay]`` prefix in the rendered line."""
     from unittest.mock import MagicMock  # noqa: PLC0415

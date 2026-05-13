@@ -625,6 +625,30 @@ class TestTasksListCommand(TestCase):
         assert len(result) == 1
         assert result[0]["execution_target"] == "interactive"
 
+    def test_list_reaps_stale_claims_before_returning_rows(self) -> None:
+        from datetime import timedelta  # noqa: PLC0415
+
+        from django.utils import timezone  # noqa: PLC0415
+
+        ticket = Ticket.objects.create(overlay="test")
+        session = Session.objects.create(ticket=ticket, overlay="test")
+        stale = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            execution_target=Task.ExecutionTarget.HEADLESS,
+            status=Task.Status.CLAIMED,
+            claimed_by="dead-worker",
+            lease_expires_at=timezone.now() - timedelta(minutes=5),
+        )
+
+        result = cast("list[dict[str, object]]", call_command("tasks", "list"))
+
+        stale.refresh_from_db()
+        assert stale.status == Task.Status.FAILED
+        statuses = [row["status"] for row in result]
+        assert "claimed" not in statuses
+        assert "failed" in statuses
+
     def test_render_tasks_table_formats_rows(self) -> None:
         from io import StringIO  # noqa: PLC0415
 
