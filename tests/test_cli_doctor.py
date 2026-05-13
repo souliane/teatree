@@ -964,3 +964,35 @@ class TestRestoreSources:
 
     def test_noop_when_no_marker(self, tmp_path):
         DoctorService.restore_sources(tmp_path)  # must not raise
+
+
+class TestResolveMainClone:
+    """``_resolve_main_clone`` follows ``.git`` worktree pointer files.
+
+    On a fresh CI clone, ``.git`` is a directory and the worktree-branch is
+    skipped. The worktree case must be exercised explicitly here so it's
+    covered regardless of where the test runs.
+    """
+
+    def test_walks_gitdir_pointer_to_main_clone(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("T3_REPO", raising=False)
+        main_clone = tmp_path / "main"
+        main_clone.mkdir()
+        (main_clone / ".git").mkdir()
+        (main_clone / "pyproject.toml").write_text("")
+        worktree = tmp_path / "wt"
+        worktree.mkdir()
+        # .git file points at <main>/.git/worktrees/<name>
+        worktree_gitdir = main_clone / ".git" / "worktrees" / "wt"
+        (worktree / ".git").write_text(f"gitdir: {worktree_gitdir}\n", encoding="utf-8")
+
+        with patch.object(DoctorService, "find_teatree_repo", return_value=worktree):
+            assert teatree_cli_doctor._resolve_main_clone() == main_clone
+
+    def test_returns_worktree_when_pointer_unreadable(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("T3_REPO", raising=False)
+        worktree = tmp_path / "wt"
+        worktree.mkdir()
+        (worktree / ".git").write_text("not a gitdir pointer\n", encoding="utf-8")
+        with patch.object(DoctorService, "find_teatree_repo", return_value=worktree):
+            assert teatree_cli_doctor._resolve_main_clone() == worktree
