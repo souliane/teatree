@@ -363,6 +363,7 @@ Usage: t3 review [OPTIONS] COMMAND [ARGS]...
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
 │ post-draft-note      Post a draft note on a GitLab MR (inline or general).   │
+│ post-comment         Post an immediate (non-draft) comment on a GitLab MR.   │
 │ delete-draft-note    Delete a draft note from a GitLab MR.                   │
 │ publish-draft-notes  Publish all draft notes on a GitLab MR (bulk submit).   │
 │ list-draft-notes     List draft notes on a GitLab MR.                        │
@@ -381,6 +382,31 @@ Usage: t3 review [OPTIONS] COMMAND [ARGS]...
 Usage: t3 review post-draft-note [OPTIONS] REPO MR NOTE
 
  Post a draft note on a GitLab MR (inline or general).
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    repo      TEXT     GitLab project path (e.g., my-org/my-repo)           │
+│                         [required]                                           │
+│ *    mr        INTEGER  Merge request IID [required]                         │
+│ *    note      TEXT     Comment text (markdown) [required]                   │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --file        TEXT     File path for inline comment (omit for general note)  │
+│ --line        INTEGER  Line number in the new file (must be an added line)   │
+│                        [default: 0]                                          │
+│ --help                 Show this message and exit.                           │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 review post-comment`
+
+```
+Usage: t3 review post-comment [OPTIONS] REPO MR NOTE
+
+ Post an immediate (non-draft) comment on a GitLab MR.
+
+ Useful when `post-draft-note` fails to anchor inline because the file's
+ diff is collapsed (large files). This bypasses the draft workflow and
+ posts straight to a discussion, where GitLab's anchoring works.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    repo      TEXT     GitLab project path (e.g., my-org/my-repo)           │
