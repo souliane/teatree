@@ -3808,6 +3808,205 @@ class TestLifecycleStart(TestCase):
                     call_command("worktree", "start", path=str(wt_path))
 
 
+class TestImagePreflight(TestCase):
+    """`worktree start` auto-builds compose service images that are missing locally.
+
+    Background: `docker compose up --no-build --pull=never` fails hard on the
+    first start of a worktree whose compose override declares a `build:`-only
+    service (e.g. an overlay's PDF-renderer sidecar). The fix is a preflight: ask
+    compose for each service's resolved image, `docker image inspect` it, and
+    `docker compose build` any that are missing before the `up` call. Once
+    built, subsequent `up --no-build` calls reuse the local image — code
+    changes still rely on volume-mounted source for hot reload.
+
+    Tests assert the call sequence on the patched subprocess so we don't need
+    a real Docker daemon.
+    """
+
+    def _setup(self, tmp_path: Path) -> tuple[Path, "MagicMock", "MagicMock"]:
+        wt_path = tmp_path / "worktree"
+        wt_path.mkdir()
+        ticket = Ticket.objects.create(
+            overlay="test",
+            issue_url="https://example.com/issues/483",
+            variant="acme",
+        )
+        Worktree.objects.create(
+            overlay="test",
+            ticket=ticket,
+            repo_path="/tmp/backend",
+            branch="feature",
+            extra={"worktree_path": str(wt_path)},
+            db_name="wt_483_acme",
+            state=Worktree.State.PROVISIONED,
+        )
+
+        mock_overlay = MagicMock()
+        mock_overlay.get_run_commands.return_value = {"backend": "run-backend"}
+        mock_overlay.get_pre_run_steps.return_value = []
+        mock_overlay.get_env_extra.return_value = {}
+        mock_overlay.get_envrc_lines.return_value = []
+        mock_overlay.get_db_import_strategy.return_value = None
+        mock_overlay.get_provision_steps.return_value = []
+        mock_overlay.get_post_db_steps.return_value = []
+        mock_overlay.get_health_checks.return_value = []
+        mock_overlay.get_reset_passwords_command.return_value = None
+        mock_overlay.get_compose_file.return_value = "/fake/docker-compose.yml"
+
+        mock_config = MagicMock()
+        mock_config.user.workspace_dir = tmp_path
+        return wt_path, mock_overlay, mock_config
+
+    @staticmethod
+    def _docker_subcommand(cmd: list[str]) -> tuple[str, ...]:
+        """Identify the docker subcommand from a recorded argv list.
+
+        Examples: ``docker compose -p x -f y config --format json`` → ``("compose", "config")``;
+        ``docker image inspect img:tag`` → ``("image", "inspect")``;
+        ``docker compose -p x build svc`` → ``("compose", "build")``.
+        """
+        if not isinstance(cmd, list) or len(cmd) < 2 or cmd[0] != "docker":
+            return ()
+        if cmd[1] == "image":
+            return ("image", cmd[2]) if len(cmd) >= 3 else ("image",)
+        if cmd[1] == "compose":
+            i = 2
+            while i < len(cmd) and cmd[i] in {"-p", "-f", "--project-name", "--file"}:
+                i += 2
+            return ("compose", cmd[i]) if i < len(cmd) else ("compose",)
+        return (cmd[1],) if len(cmd) >= 2 else ()
+
+    @staticmethod
+    def _recorded_subcommands(mock_sp) -> list[tuple[str, ...]]:
+        recorded: list[tuple[str, ...]] = []
+        for call_args in mock_sp.run.call_args_list:
+            cmd = call_args.args[0] if call_args.args else call_args.kwargs.get("args", [])
+            shape = TestImagePreflight._docker_subcommand(cmd)
+            if shape:
+                recorded.append(shape)
+        return recorded
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_builds_missing_image_before_up(self) -> None:
+        """When compose config declares a build: service whose image is absent, build it first."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            wt_path, mock_overlay, mock_config = self._setup(tmp_path)
+
+            compose_config_json = (
+                '{"services": {"sidecar": {"image": "myapp-wt483-sidecar:latest", '
+                '"build": {"context": "../sidecar"}}, "web": {"image": "myapp-web:cached"}}}'
+            )
+
+            def _mock_run(cmd, **kwargs):
+                shape = TestImagePreflight._docker_subcommand(cmd)
+                if shape == ("compose", "config"):
+                    return MagicMock(returncode=0, stdout=compose_config_json, stderr="")
+                if shape == ("image", "inspect"):
+                    # web image present, sidecar image missing
+                    missing = "sidecar" in cmd[-1]
+                    return MagicMock(returncode=1 if missing else 0, stdout="", stderr="")
+                return MagicMock(returncode=0, stdout="", stderr="")
+
+            with (
+                patch.object(worktree_mod, "get_overlay", return_value=mock_overlay),
+                patch.object(utils_run_mod, "subprocess") as mock_sp,
+                patch.object(
+                    worktree_mod,
+                    "find_free_ports",
+                    return_value={"backend": 8001, "frontend": 4201, "postgres": 5432, "redis": 6379},
+                ),
+                patch("teatree.config.load_config", return_value=mock_config),
+            ):
+                mock_sp.run.side_effect = _mock_run
+                call_command("worktree", "start", path=str(wt_path))
+
+            recorded = TestImagePreflight._recorded_subcommands(mock_sp)
+            # The preflight must run before up: config → image inspect → build → up.
+            assert ("compose", "config") in recorded
+            assert ("image", "inspect") in recorded
+            assert ("compose", "build") in recorded
+            assert ("compose", "up") in recorded
+            assert recorded.index(("compose", "build")) < recorded.index(("compose", "up"))
+            # And `build` must come AFTER we discovered the missing image.
+            assert recorded.index(("image", "inspect")) < recorded.index(("compose", "build"))
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_skips_build_when_all_images_present(self) -> None:
+        """When every buildable service's image already exists, no `compose build` call is made."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            wt_path, mock_overlay, mock_config = self._setup(tmp_path)
+
+            compose_config_json = (
+                '{"services": {"sidecar": {"image": "myapp-wt483-sidecar:latest", "build": {"context": "../sidecar"}}}}'
+            )
+
+            def _mock_run(cmd, **kwargs):
+                shape = TestImagePreflight._docker_subcommand(cmd)
+                if shape == ("compose", "config"):
+                    return MagicMock(returncode=0, stdout=compose_config_json, stderr="")
+                if shape == ("image", "inspect"):
+                    return MagicMock(returncode=0, stdout="[]", stderr="")  # present
+                return MagicMock(returncode=0, stdout="", stderr="")
+
+            with (
+                patch.object(worktree_mod, "get_overlay", return_value=mock_overlay),
+                patch.object(utils_run_mod, "subprocess") as mock_sp,
+                patch.object(
+                    worktree_mod,
+                    "find_free_ports",
+                    return_value={"backend": 8001, "frontend": 4201, "postgres": 5432, "redis": 6379},
+                ),
+                patch("teatree.config.load_config", return_value=mock_config),
+            ):
+                mock_sp.run.side_effect = _mock_run
+                call_command("worktree", "start", path=str(wt_path))
+
+            recorded = TestImagePreflight._recorded_subcommands(mock_sp)
+            assert ("compose", "build") not in recorded
+            assert ("compose", "up") in recorded
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_falls_through_when_config_fails(self) -> None:
+        """If `docker compose config` errors, fall through to `up` rather than aborting.
+
+        Compose versions without `--format json`, malformed compose files, or
+        permission issues should not prevent `worktree start` from attempting
+        `up`. The user's existing flow (build manually or accept the natural
+        `up` failure) stays available.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            wt_path, mock_overlay, mock_config = self._setup(tmp_path)
+
+            def _mock_run(cmd, **kwargs):
+                shape = TestImagePreflight._docker_subcommand(cmd)
+                if shape == ("compose", "config"):
+                    return MagicMock(returncode=1, stdout="", stderr="unknown flag: --format")
+                return MagicMock(returncode=0, stdout="", stderr="")
+
+            with (
+                patch.object(worktree_mod, "get_overlay", return_value=mock_overlay),
+                patch.object(utils_run_mod, "subprocess") as mock_sp,
+                patch.object(
+                    worktree_mod,
+                    "find_free_ports",
+                    return_value={"backend": 8001, "frontend": 4201, "postgres": 5432, "redis": 6379},
+                ),
+                patch("teatree.config.load_config", return_value=mock_config),
+            ):
+                mock_sp.run.side_effect = _mock_run
+                call_command("worktree", "start", path=str(wt_path))
+
+            recorded = TestImagePreflight._recorded_subcommands(mock_sp)
+            assert ("compose", "build") not in recorded
+            assert ("compose", "up") in recorded
+
+
 class TestLifecycleClean(TestCase):
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
