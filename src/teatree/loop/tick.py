@@ -307,6 +307,12 @@ def _execute_mechanical(report: TickReport) -> None:
 
 
 def _repo_freshness(repo_path: Path) -> dict[str, int | str] | None:
+    """Snapshot a repo's freshness for the statusline header.
+
+    The ``path`` field is included so the statusline hook can recompute
+    ``behind`` inline after a ``git pull`` — otherwise the cached value
+    stays stale until the next tick (~12 min later).
+    """
     from teatree.utils.run import run_allowed_to_fail  # noqa: PLC0415
 
     git_dir = repo_path / ".git"
@@ -324,7 +330,7 @@ def _repo_freshness(repo_path: Path) -> dict[str, int | str] | None:
         behind = -1
     fetch_head = git_dir / "FETCH_HEAD"
     fetch_epoch = int(fetch_head.stat().st_mtime) if fetch_head.is_file() else 0
-    return {"behind": behind, "fetch_epoch": fetch_epoch}
+    return {"behind": behind, "fetch_epoch": fetch_epoch, "path": str(repo_path)}
 
 
 def _repos_from_toml() -> dict[str, Path]:
