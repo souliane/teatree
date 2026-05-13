@@ -53,7 +53,9 @@ class TestStatuslineHook:
         )
 
         assert result.returncode == 0, result.stderr
-        assert "skills: t3:code | t3:debug" in _strip_ansi(result.stdout)
+        # Skill tokens are space-separated now (previously `|`) — the colored
+        # magenta names provide enough visual separation on their own.
+        assert "skills: t3:code t3:debug" in _strip_ansi(result.stdout)
 
     def test_omits_skills_when_session_file_absent(self, tmp_path: Path) -> None:
         state_dir = tmp_path / "state"
