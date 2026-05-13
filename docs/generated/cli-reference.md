@@ -722,7 +722,9 @@ Usage: t3 tool notion-download [OPTIONS] URL
  Download a Notion file attachment using browser cookies.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    url      TEXT  file.notion.so URL from browser tab. [required]          │
+│ *    url      TEXT  file.notion.so URL from browser tab (must include        │
+│                     signature).                                              │
+│                     [required]                                               │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --dest  -d      PATH  Destination directory. [default: .]                    │
