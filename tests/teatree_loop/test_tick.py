@@ -421,3 +421,119 @@ def test_tick_multi_overlay_prefixes_summary(tmp_path: Path) -> None:
     contents = statusline.read_text(encoding="utf-8")
     assert "[teatree]" in contents
     assert "!545" in contents
+
+
+def test_canonical_overlay_names_maps_toml_keys(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from unittest.mock import patch  # noqa: PLC0415
+
+    from teatree.loop.tick import _canonical_overlay_names  # noqa: PLC0415
+
+    toml_path = tmp_path / ".teatree.toml"
+    toml_path.write_text(
+        '[teatree]\nworkspace_dir = "~/ws"\n[overlays.teatree]\n[overlays.acme]\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    overlays = {"t3-teatree": object(), "acme": object()}
+    with patch("teatree.core.overlay_loader.get_all_overlays", return_value=overlays):
+        mapping = _canonical_overlay_names()
+    assert mapping == {"teatree": "t3-teatree"}
+
+
+def test_canonical_overlay_names_returns_empty_without_toml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from teatree.loop.tick import _canonical_overlay_names  # noqa: PLC0415
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    assert _canonical_overlay_names() == {}
+
+
+def test_canonical_overlay_names_handles_invalid_toml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from unittest.mock import patch  # noqa: PLC0415
+
+    from teatree.loop.tick import _canonical_overlay_names  # noqa: PLC0415
+
+    toml_path = tmp_path / ".teatree.toml"
+    toml_path.write_text("not = valid = toml = at = all\n", encoding="utf-8")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    with patch("teatree.core.overlay_loader.get_all_overlays", return_value={"t3-teatree": object()}):
+        assert _canonical_overlay_names() == {}
+
+
+def test_issue_ref_from_falls_back_to_ticket_number() -> None:
+    from teatree.loop.rendering import _issue_ref_from  # noqa: PLC0415
+
+    # Corrupt issue_url (a branch name) + ticket_number → label uses #N,
+    # url stays empty so the renderer doesn't make a broken hyperlink.
+    ref = _issue_ref_from(issue_url="auto:ac/some-branch", ticket_number="313")
+    assert ref.label == "#313"
+    assert ref.url == ""
+
+
+def test_issue_ref_from_falls_back_to_title_snippet() -> None:
+    from teatree.loop.rendering import _issue_ref_from  # noqa: PLC0415
+
+    long_title = "A" * 50
+    ref = _issue_ref_from(title=long_title)
+    # Title gets sliced to 29 chars + "…" to stay readable on a narrow line.
+    assert ref.label.endswith("…")
+    assert ref.label.count("A") == 29
+
+
+def test_issue_ref_from_returns_question_mark_when_nothing_known() -> None:
+    from teatree.loop.rendering import _issue_ref_from  # noqa: PLC0415
+
+    assert _issue_ref_from().label == "?"
+
+
+def test_render_pr_group_buckets_under_parent_ticket() -> None:
+    from teatree.loop.rendering import _PRRef, _render_pr_group  # noqa: PLC0415
+
+    refs = [
+        _PRRef(iid=370, url="https://gitlab.com/x/y/-/merge_requests/370", annotation=""),
+        _PRRef(iid=399, url="https://gitlab.com/x/y/-/merge_requests/399", annotation=""),
+    ]
+    ticket_index = {
+        "https://gitlab.com/x/y/-/merge_requests/370": "855",
+        "https://gitlab.com/x/y/-/merge_requests/399": "855",
+    }
+    line = _render_pr_group("acme", refs, ticket_index=ticket_index)
+    assert "#855:" in line
+    assert "!370" in line
+    assert "!399" in line
+
+
+def test_render_pr_group_lists_orphans_when_no_match() -> None:
+    from teatree.loop.rendering import _PRRef, _render_pr_group  # noqa: PLC0415
+
+    refs = [_PRRef(iid=42, url="https://example.com/mr/42", annotation="")]
+    line = _render_pr_group("t3-teatree", refs, ticket_index={})
+    assert "!42" in line
+    assert "#" not in line  # no ticket prefix
+
+
+def test_reviewer_pr_signal_surfaces_in_statusline() -> None:
+    from teatree.loop.dispatch import dispatch  # noqa: PLC0415
+    from teatree.loop.rendering import zones_for  # noqa: PLC0415
+
+    signal = ScanSignal(
+        kind="reviewer_pr.new_sha",
+        summary="Review needed: https://gitlab.com/x/y/-/merge_requests/371",
+        payload={
+            "url": "https://gitlab.com/x/y/-/merge_requests/371",
+            "head_sha": "abc",
+            "previous_sha": "def",
+            "raw": {},
+            "overlay": "acme",
+        },
+    )
+    actions = dispatch([signal])
+    kinds = sorted({a.kind for a in actions})
+    # Reviewer signals now produce BOTH an agent action (to the t3:reviewer
+    # phase agent) AND a statusline action_needed row so the user sees the
+    # pending review without waiting on the agent to act.
+    assert kinds == ["agent", "statusline"]
+    zones = zones_for(actions)
+    rendered = "\n".join(item if isinstance(item, str) else item.text for item in zones.action_needed)
+    assert "!371" in rendered
+    assert "review" in rendered
+    assert "[acme]" in rendered

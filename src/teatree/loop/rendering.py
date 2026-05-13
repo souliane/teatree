@@ -52,10 +52,18 @@ class _IssueRef:
 
 def _pr_ref(action: DispatchAction) -> _PRRef | None:
     payload = action.payload if isinstance(action.payload, dict) else {}
+    url = payload.get("url", "")
     iid = payload.get("iid")
     if not isinstance(iid, int) or iid == 0:
+        # Reviewer-pr signals don't ship `iid` in the payload but the MR URL
+        # ends with the numeric ref — derive it so the row renders as `!N`
+        # under the right overlay. Other signal kinds still fall through
+        # without an iid (rendered as a generic line).
+        if action.detail.startswith("Review needed:") and isinstance(url, str):
+            tail = _ticket_number_from_url(url)
+            if tail.isdigit():
+                return _PRRef(iid=int(tail), url=url, annotation="review")
         return None
-    url = payload.get("url", "")
     draft_count = payload.get("draft_count")
     status = payload.get("status", "")
     if isinstance(draft_count, int) and draft_count > 0:

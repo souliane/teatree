@@ -43,10 +43,11 @@ class TestStatuslineRender:
 
         content = target.read_text()
         assert "overlay=teatree" in content
-        # The "Action needed:" / "In flight:" zone headers were removed once
-        # color became the signal — only the legend at the bottom names them.
+        # The "Action needed:" / "In flight:" zone headers were removed —
+        # color carries the signal, no separate label is rendered.
         assert "Action needed:" not in content
         assert "In flight:" not in content
+        assert "legend:" not in content
 
     def test_creates_parent_directory(self, tmp_path: Path) -> None:
         target = tmp_path / "deep" / "nested" / "statusline.txt"
@@ -55,11 +56,7 @@ class TestStatuslineRender:
         render(zones, target=target, colorize=False)
 
         assert target.exists()
-        # Content now includes a legend line below the zones — verify both the
-        # zone content and the legend made it through atomically.
-        body = target.read_text()
-        assert body.startswith("x\n")
-        assert "legend:" in body
+        assert target.read_text().strip() == "x"
 
     def test_overwrites_previous_content(self, tmp_path: Path) -> None:
         target = tmp_path / "statusline.txt"

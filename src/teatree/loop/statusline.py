@@ -87,30 +87,13 @@ def _overlay_of(item: ZoneItem) -> str:
     return match.group(1) if match else ""
 
 
-def _legend(*, colorize: bool) -> str:
-    """One-line color legend printed at the bottom of the statusline.
-
-    Replaces the per-zone "Action needed:" / "In flight:" headers — color
-    already carries that signal, the legend just makes the contract explicit.
-    """
-    if not colorize:
-        return "legend: dim=tracked · red=action · cyan=in-flight"
-    return (
-        f"{_ANSI_DIM}legend:{_ANSI_RESET} "
-        f"{_ANSI_DIM}dim=tracked{_ANSI_RESET} · "
-        f"{_ANSI_RED}red=action{_ANSI_RESET} · "
-        f"{_ANSI_CYAN}cyan=in-flight{_ANSI_RESET}"
-    )
-
-
 def render(zones: StatuslineZones, *, target: Path | None = None, colorize: bool | None = None) -> Path:
     """Atomically write *zones* to *target* (or the default path).
 
     Output is grouped by overlay rather than by zone — each ``[ov]`` block
     shows its anchors (dim), action-needed rows (red), and in-flight rows
-    (cyan) consecutively. A single legend line at the end documents the
-    color contract so the per-zone "Action needed:" / "In flight:" headers
-    are no longer needed.
+    (cyan) consecutively. The per-zone "Action needed:" / "In flight:"
+    headers are gone — color carries the signal.
 
     *colorize* defaults to ``True`` unless the ``NO_COLOR`` environment
     variable is set. Tests can pass ``colorize=False`` to assert plain
@@ -141,11 +124,7 @@ def render(zones: StatuslineZones, *, target: Path | None = None, colorize: bool
         if lines:
             sections.append("\n".join(lines))
 
-    has_content = bool(sections)
-    body_parts = list(sections)
-    if has_content:
-        body_parts.append(_legend(colorize=colorize))
-    body = ("\n\n".join(body_parts) + "\n") if body_parts else ""
+    body = ("\n\n".join(sections) + "\n") if sections else ""
 
     fd, tmp_str = tempfile.mkstemp(prefix=".statusline-", suffix=".tmp", dir=str(target.parent))
     tmp_path = Path(tmp_str)
