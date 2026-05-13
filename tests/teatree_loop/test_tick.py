@@ -511,6 +511,42 @@ def test_render_pr_group_lists_orphans_when_no_match() -> None:
     assert "#" not in line  # no ticket prefix
 
 
+def test_render_action_line_inlines_mrs_after_ready_tickets() -> None:
+    from teatree.loop.rendering import _IssueRef, _PRRef, _render_action_line  # noqa: PLC0415
+
+    pr_refs = [
+        _PRRef(iid=370, url="https://gitlab.com/x/y/-/merge_requests/370", annotation=""),
+        _PRRef(iid=368, url="https://gitlab.com/x/y/-/merge_requests/368", annotation=""),
+    ]
+    ready_refs = [
+        _IssueRef(label="#855", url="https://gitlab.com/x/y/-/issues/855"),
+        _IssueRef(label="#854", url="https://gitlab.com/x/y/-/issues/854"),
+    ]
+    ticket_index = {
+        "https://gitlab.com/x/y/-/merge_requests/370": "855",
+        # !368 is an orphan — no parent ticket
+    }
+
+    line = _render_action_line(
+        "acme",
+        pr_refs=pr_refs,
+        disposition_refs={},
+        ready_refs=ready_refs,
+        ticket_index=ticket_index,
+    )
+
+    # !370 should appear inline after #855, !368 should remain in the standalone PR group.
+    assert "#855" in line
+    assert "!370" in line
+    assert "#854" in line
+    assert "!368" in line
+    pos_855 = line.index("#855")
+    pos_370 = line.index("!370")
+    assert pos_855 < pos_370, "!370 must follow #855"
+    # !370 should not also appear in the standalone PR-group section (de-dup).
+    assert line.count("!370") == 1
+
+
 def test_reviewer_pr_signal_surfaces_in_statusline() -> None:
     from teatree.loop.dispatch import dispatch  # noqa: PLC0415
     from teatree.loop.rendering import zones_for  # noqa: PLC0415
