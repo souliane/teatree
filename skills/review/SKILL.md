@@ -350,15 +350,27 @@ This prevents noise from multiple review passes or multiple reviewers covering t
 
 When reviewing an external MR/PR, **always post comments inline on the correct file and line** in the diff view. For comments that aren't tied to a specific line (e.g., description feedback), post a general note without position data.
 
-**Extend the CLI, never inline API recipes.** If a `t3 review` operation is missing, implement it in `src/teatree/cli/review.py` — do NOT document a raw API snippet or inline script here. Skills describe what command to run, not how to replicate missing CLI functionality. Current subcommands: `post-draft-note`, `delete-draft-note`, `publish-draft-notes`, `list-draft-notes`, `update-note`, `reply-to-discussion`, `resolve-discussion`.
+**Extend the CLI, never inline API recipes.** If a `t3 review` operation is missing, implement it in `src/teatree/cli/review.py` — do NOT document a raw API snippet or inline script here. Skills describe what command to run, not how to replicate missing CLI functionality. Current subcommands: `post-draft-note`, `post-comment`, `delete-draft-note`, `publish-draft-notes`, `list-draft-notes`, `update-note`, `reply-to-discussion`, `resolve-discussion`.
 
-**Use `t3 review post-draft-note` (Mandatory).** It handles token extraction, diff refs, position serialization, and added-line validation. Never use raw API calls.
+**Use `t3 review post-draft-note` (Mandatory).** It handles token extraction, diff refs, position validation, and post-flight anchor verification. Never use raw API calls.
 
 ```bash
 t3 review post-draft-note <REPO> <MR_IID> "Comment text" --file <path/to/file> --line <line_number>
 ```
 
-**Pre-flight: verify target line is an added line.** Before posting each inline note, confirm the target `new_line` corresponds to an added (`+`) or modified line in the diff — never a context (unchanged) line. Targeting a context line causes GitLab to render the comment in **every hunk** that references that line, creating duplicates. When the finding is about an unchanged line, target the nearest added line and reference the unchanged line in the comment text instead.
+The CLI validates the target line is an added (`+`) line in the MR diff before posting, and verifies the response anchored correctly (non-null `line_code`). When something goes wrong it refuses upfront — common rejected cases:
+
+- **Context line:** the target is unchanged in the diff. CLI rejects and lists the nearby added lines so you can pick one.
+- **File not in diff:** the file path isn't part of the MR. CLI rejects with the list of changed files.
+- **Collapsed-diff file:** GitLab's draft-note anchoring fails on large files whose diff was collapsed server-side. CLI detects the null `line_code` after posting, deletes the broken draft, and suggests `post-comment` (below).
+
+**Workaround for collapsed-diff files — `t3 review post-comment`.** When the file is too large for GitLab to anchor a draft, post an immediate (non-draft) inline discussion via the `/discussions` endpoint, which anchors fine even on collapsed diffs:
+
+```bash
+t3 review post-comment <REPO> <MR_IID> "Comment text" --file <path/to/file> --line <line_number>
+```
+
+The comment posts immediately rather than batching with a review. Reserve this for the cases where `post-draft-note` explicitly errors with the collapsed-diff message.
 
 **Pre-flight: the file you anchor on MUST be the file the body discusses.** If the comment body describes code in `foo.py` (e.g., "`foo.py`'s `bar()` is missing X that the sibling `baz.py` got"), anchor the comment on `foo.py` — not on `baz.py`, even if `baz.py` has more added lines in the diff. Two defensible patterns when `foo.py` has no added lines:
 
@@ -373,8 +385,6 @@ A comment anchored on the wrong file is worse than a general note — the author
 ```bash
 t3 review publish-draft-notes <REPO> <MR_IID>
 ```
-
-**`WARNING: inline position was not accepted`** means GitLab did not store the `position` data — the note will render as a general comment, not inline on the diff. Check that `--file` matches a path in the PR diff and `--line` is within the changed range.
 
 **If `t3 review delete-draft-note` returns 404** — the draft was already submitted (published to regular notes) by the user from the GitLab UI. Use `DELETE projects/{encoded_repo}/merge_requests/{iid}/notes/{note_id}` via the regular notes endpoint instead.
 

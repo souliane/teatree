@@ -1,13 +1,59 @@
 """Review CLI commands — GitLab draft note operations."""
 
+import re
 from http import HTTPStatus
+from typing import TypedDict
 
 import typer
 
 from teatree.utils.run import run_allowed_to_fail
 
+
+class InlinePosition(TypedDict):
+    """GitLab inline-note position payload (text diff anchoring)."""
+
+    position_type: str
+    base_sha: str
+    head_sha: str
+    start_sha: str
+    old_path: str
+    new_path: str
+    new_line: int
+
+
 review_app = typer.Typer(no_args_is_help=True, help="Code review helpers.")
 _TOKEN_PARTS_COUNT = 2
+_HUNK_HEADER = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
+_NEARBY_LINE_RANGE = 5
+
+
+def _find_added_line(diff_text: str, target_line: int) -> tuple[bool, list[int]]:
+    """Scan a unified-diff hunk text for ``target_line`` in the new file.
+
+    Returns ``(is_added, nearby_added_lines)`` — ``is_added`` is True when the
+    target line corresponds to an added (``+``) line in any hunk; the second
+    element lists added line numbers within ±5 of the target for error hints.
+    """
+    is_added = False
+    nearby: list[int] = []
+    nl: int | None = None
+    for line in diff_text.splitlines():
+        m = _HUNK_HEADER.match(line)
+        if m:
+            nl = int(m.group(1))
+            continue
+        if nl is None:
+            continue
+        sign = line[:1] if line else " "
+        if sign == "-":
+            continue
+        if sign == "+":
+            if nl == target_line:
+                is_added = True
+            if abs(nl - target_line) <= _NEARBY_LINE_RANGE:
+                nearby.append(nl)
+        nl += 1
+    return is_added, sorted(set(nearby))
 
 
 class ReviewService:
@@ -49,54 +95,165 @@ class ReviewService:
         except Exception:  # noqa: BLE001
             return os.environ.get("GITLAB_URL", "https://gitlab.com/api/v4")
 
+    def _fetch_diff_refs(self, encoded_repo: str, mr: int) -> tuple[dict[str, str] | None, str]:
+        """Return the MR's diff_refs (base/head/start SHAs) or an error message."""
+        api = self._get_api()
+        mr_data = api.get_json(f"projects/{encoded_repo}/merge_requests/{mr}")
+        if not isinstance(mr_data, dict):
+            return None, f"Could not fetch MR !{mr}"
+        diff_refs_raw = mr_data.get("diff_refs", {})
+        if not isinstance(diff_refs_raw, dict):
+            return None, "MR has no diff_refs"
+        return {str(k): str(v) for k, v in diff_refs_raw.items()}, ""
+
+    def _fetch_file_diff(self, encoded_repo: str, mr: int, file: str) -> tuple[str | None, str]:
+        """Return the raw unified diff for ``file`` in the MR, or an error message.
+
+        Uses ``access_raw_diffs=true`` so large files collapsed by the default
+        ``/diffs`` endpoint still surface their full hunks.
+        """
+        api = self._get_api()
+        changes = api.get_json(f"projects/{encoded_repo}/merge_requests/{mr}/changes?access_raw_diffs=true")
+        if not isinstance(changes, dict):
+            return None, "Could not fetch MR changes to validate inline target"
+        files = changes.get("changes")
+        if not isinstance(files, list):
+            return None, "MR changes response had no `changes` array"
+        match = next(
+            (f for f in files if isinstance(f, dict) and (f.get("new_path") == file or f.get("old_path") == file)),
+            None,
+        )
+        if match is None:
+            paths = [str(f.get("new_path")) for f in files if isinstance(f, dict)]
+            return None, f"File {file!r} is not changed in MR !{mr}. Changed files: {paths}"
+        diff_text = str(match.get("diff") or "")
+        if not diff_text:
+            return None, (
+                f"File {file!r} has no diff content in the MR API response (likely a collapsed large diff). "
+                "draft_notes cannot anchor on collapsed files — use `t3 review post-comment` instead, "
+                "or pick a smaller file."
+            )
+        return diff_text, ""
+
+    def _resolve_inline_position(
+        self,
+        encoded_repo: str,
+        mr: int,
+        file: str,
+        line: int,
+    ) -> tuple[InlinePosition | None, str]:
+        """Build a GitLab inline-note ``position`` dict, or return an error message.
+
+        Validates that ``file:line`` is an added (``+``) line in the MR diff.
+        """
+        diff_refs, refs_error = self._fetch_diff_refs(encoded_repo, mr)
+        if diff_refs is None:
+            return None, refs_error
+        diff_text, diff_error = self._fetch_file_diff(encoded_repo, mr, file)
+        if diff_text is None:
+            return None, diff_error
+        is_added, nearby = _find_added_line(diff_text, line)
+        if not is_added:
+            hint = f" Nearby added lines in this file: {nearby}." if nearby else ""
+            return None, (
+                f"Line {line} in {file} is not an added (`+`) line in the MR diff — "
+                f"inline notes only anchor on added lines.{hint}"
+            )
+        position: InlinePosition = {
+            "position_type": "text",
+            "base_sha": diff_refs["base_sha"],
+            "head_sha": diff_refs["head_sha"],
+            "start_sha": diff_refs["start_sha"],
+            "old_path": file,
+            "new_path": file,
+            "new_line": line,
+        }
+        return position, ""
+
     def post_draft_note(self, repo: str, mr: int, note: str, *, file: str = "", line: int = 0) -> tuple[str, int]:
-        """Post a draft note. Returns (message, exit_code)."""
+        """Post a draft note. Returns (message, exit_code).
+
+        For inline notes (file+line), validates that the target line is an added
+        (``+``) line in the MR diff, then verifies after posting that GitLab
+        actually anchored the draft (``line_code`` non-null). Broken drafts
+        (anchor refused, usually because the file diff is collapsed) are
+        deleted and surfaced as an error so they cannot be published silently.
+        """
+        api = self._get_api()
+        encoded = repo.replace("/", "%2F")
+        endpoint = f"projects/{encoded}/merge_requests/{mr}/draft_notes"
+
+        if not (file and line):
+            result = api.post_json(endpoint, {"note": note})
+            if not result:
+                return "Failed to post draft note", 1
+            return f"OK draft_note_id={dict(result).get('id')}", 0
+
+        position, error = self._resolve_inline_position(encoded, mr, file, line)
+        if position is None:
+            return error, 1
+
+        result = api.post_json(endpoint, {"note": note, "position": position})
+        if not result:
+            return "Failed to post draft note", 1
+        result_dict = dict(result) if isinstance(result, dict) else {}
+        note_id = result_dict.get("id")
+        line_code = result_dict.get("line_code")
+        if line_code:
+            return f"OK draft_note_id={note_id}\nline_code={line_code}", 0
+
+        if isinstance(note_id, int):
+            api.delete(f"{endpoint}/{note_id}")
+        return (
+            f"GitLab refused to anchor the draft on {file}:{line} (line_code came back null). "
+            "This usually means the file diff is collapsed because of its size; the draft_notes "
+            "API cannot anchor on collapsed-diff files. Workaround: "
+            f"`t3 review post-comment {repo} {mr} ... --file {file} --line {line}` "
+            "(creates an immediate non-draft inline discussion)."
+        ), 1
+
+    def post_comment(
+        self,
+        repo: str,
+        mr: int,
+        note: str,
+        *,
+        file: str = "",
+        line: int = 0,
+    ) -> tuple[str, int]:
+        """Post an immediate (non-draft) MR comment via ``/discussions``.
+
+        Use when ``post_draft_note`` fails because the file diff is collapsed
+        — the discussions endpoint anchors inline notes even on large files,
+        but the comment posts immediately instead of batching with a review.
+        """
         api = self._get_api()
         encoded = repo.replace("/", "%2F")
 
-        if file and line:
-            mr_data = api.get_json(f"projects/{encoded}/merge_requests/{mr}")
-            if not isinstance(mr_data, dict):
-                return f"Could not fetch MR !{mr} from {repo}", 1
+        if not (file and line):
+            result = api.post_json(f"projects/{encoded}/merge_requests/{mr}/notes", {"body": note})
+            if not result:
+                return "Failed to post comment", 1
+            return f"OK note_id={dict(result).get('id')}", 0
 
-            diff_refs_raw = mr_data.get("diff_refs", {})
-            if not isinstance(diff_refs_raw, dict):
-                return "MR has no diff_refs", 1
-            diff_refs: dict[str, str] = {str(k): str(v) for k, v in diff_refs_raw.items()}
+        position, error = self._resolve_inline_position(encoded, mr, file, line)
+        if position is None:
+            return error, 1
 
-            payload: dict[str, object] = {
-                "note": note,
-                "position": {
-                    "position_type": "text",
-                    "base_sha": diff_refs["base_sha"],
-                    "head_sha": diff_refs["head_sha"],
-                    "start_sha": diff_refs["start_sha"],
-                    "old_path": file,
-                    "new_path": file,
-                    "new_line": line,
-                },
-            }
-        else:
-            payload = {"note": note}
-
-        result = api.post_json(f"projects/{encoded}/merge_requests/{mr}/draft_notes", payload)
+        result = api.post_json(
+            f"projects/{encoded}/merge_requests/{mr}/discussions",
+            {"body": note, "position": position},
+        )
         if not result:
-            return "Failed to post draft note", 1
-
+            return "Failed to post comment", 1
         result_dict = dict(result) if isinstance(result, dict) else {}
-        note_id = result_dict.get("id")
-        position_raw = result_dict.get("position")
-        position = dict(position_raw) if isinstance(position_raw, dict) else {}
-        line_code = position.get("line_code")
-
-        parts = [f"OK draft_note_id={note_id}"]
-        if line_code:
-            parts.append(f"line_code={line_code}")
-        position_stored = bool(position.get("new_path"))
-        if file and line and not position_stored:
-            parts.insert(0, f"WARNING: inline position was not accepted by GitLab (line {line} in {file}).")
-
-        return "\n".join(parts), 0
+        discussion_id = result_dict.get("id")
+        notes = result_dict.get("notes")
+        first_note = notes[0] if isinstance(notes, list) and notes else {}
+        note_type = first_note.get("type") if isinstance(first_note, dict) else None
+        if note_type != "DiffNote":
+            return f"Comment posted but not anchored inline (type={note_type!r}). discussion_id={discussion_id}", 1
+        return f"OK discussion_id={discussion_id} (inline DiffNote)", 0
 
     def delete_draft_note(self, repo: str, mr: int, note_id: int) -> tuple[str, int]:
         """Delete a draft note. Returns (message, exit_code)."""
@@ -205,6 +362,27 @@ def post_draft_note(
     """Post a draft note on a GitLab MR (inline or general)."""
     service = _require_token()
     msg, code = service.post_draft_note(repo, mr, note, file=file, line=line)
+    typer.echo(msg)
+    if code:
+        raise typer.Exit(code=code)
+
+
+@review_app.command(name="post-comment")
+def post_comment(
+    repo: str = typer.Argument(help="GitLab project path (e.g., my-org/my-repo)"),
+    mr: int = typer.Argument(help="Merge request IID"),
+    note: str = typer.Argument(help="Comment text (markdown)"),
+    file: str = typer.Option("", help="File path for inline comment (omit for general note)"),
+    line: int = typer.Option(0, help="Line number in the new file (must be an added line)"),
+) -> None:
+    """Post an immediate (non-draft) comment on a GitLab MR.
+
+    Useful when `post-draft-note` fails to anchor inline because the file's
+    diff is collapsed (large files). This bypasses the draft workflow and
+    posts straight to a discussion, where GitLab's anchoring works.
+    """
+    service = _require_token()
+    msg, code = service.post_comment(repo, mr, note, file=file, line=line)
     typer.echo(msg)
     if code:
         raise typer.Exit(code=code)
