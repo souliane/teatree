@@ -12,7 +12,7 @@ from teatree.core.overlay_loader import get_overlay
 from teatree.core.resolve import resolve_worktree
 from teatree.core.runners.worktree_start import compose_project
 from teatree.types import RunCommand, RunCommands
-from teatree.utils.ports import find_free_ports, get_worktree_ports
+from teatree.utils.ports import get_worktree_ports
 from teatree.utils.run import run_streamed
 
 
@@ -80,7 +80,7 @@ class Command(TyperCommand):
 
     @command()
     def backend(self, path: str = typer.Option("", help="Worktree path (auto-detects from PWD if empty).")) -> str:
-        """Start the backend via docker-compose."""
+        """Start the backend via docker-compose. Host port is auto-mapped."""
         worktree = resolve_worktree(path)
         project = compose_project(worktree)
         overlay = get_overlay()
@@ -88,11 +88,7 @@ class Command(TyperCommand):
         if not compose_file:
             return "No docker-compose file found."
 
-        from teatree.config import load_config  # noqa: PLC0415
-        from teatree.core.runners.worktree_start import _compose_env  # noqa: PLC0415
-
-        ports = find_free_ports(str(load_config().user.workspace_dir), overlay.get_required_ports(worktree))
-        env = {**os.environ, **overlay.get_env_extra(worktree), **_compose_env(ports, overlay)}
+        env = {**os.environ, **overlay.get_env_extra(worktree)}
         env.pop("VIRTUAL_ENV", None)
 
         cmd = ["docker", "compose", "-p", project, "-f", compose_file, "up", "-d", "web"]

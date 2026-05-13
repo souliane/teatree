@@ -132,17 +132,9 @@ class TestOverlayBase(TestCase):
             assert overlay.get_post_db_steps(worktree) == []
             assert overlay.get_symlinks(worktree) == []
             assert overlay.get_services_config(worktree) == {}
-            assert overlay.get_required_ports(worktree) == set()
             assert overlay.uses_redis() is False
-            assert overlay.get_port_env({}) == {}
             assert overlay.metadata.validate_pr("title", "description") == {"errors": [], "warnings": []}
             assert overlay.metadata.get_skill_metadata() == {}
-
-    def test_get_port_env_renders_generic_host_port_keys(self) -> None:
-        """Default ``get_port_env`` produces ``${KEY}_HOST_PORT`` for each port."""
-        overlay = DummyOverlay()
-        env = overlay.get_port_env({"backend": 8001, "web": 9100})
-        assert env == {"BACKEND_HOST_PORT": "8001", "WEB_HOST_PORT": "9100"}
 
     def test_abstract_fallthroughs_raise_not_implemented(self) -> None:
         overlay = SuperCallingOverlay()

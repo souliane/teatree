@@ -339,13 +339,13 @@ One worktree per repository per ticket.
 
 **Readiness gate:** ``worktree start``, ``worktree verify``, ``worktree ready``, and ``workspace start`` run ``overlay.get_readiness_probes(worktree)`` after their primary work and exit 1 if any probe fails. Probes are runtime checks against started services (HTTP endpoints, dependency round-trips, content invariants on seeded data); ``HealthCheck`` covers post-provision file/symlink/env invariants instead. See ``teatree.core.readiness``.
 
-**Port allocation (Non-Negotiable — see §16):** Ports are NEVER stored in the database or in the `.t3-env.cache` file. They are allocated fresh at `worktree start` time via `find_free_ports(workspace, overlay.get_required_ports(worktree))` and exported via `overlay.get_port_env(ports)` to `docker compose`. Discovery uses `docker compose port` at runtime — the running containers are the single source of truth. Overlays that need no docker-compose ports return `set()` and the allocator yields an empty dict.
+**Port allocation (Non-Negotiable — see §16):** Ports are NEVER stored in the database or the `.t3-env.cache` file. The compose override declares container ports with **no host binding** (`ports: ["<container_port>"]`), so Docker auto-maps to a free host port at compose-up time. After `compose up`, `WorktreeStartRunner` queries the running project via `docker compose port <service> <container_port>` and stores the result on `Worktree.extra["ports"]` for downstream callers (URL printing, `worktree status`, E2E discovery). The running containers are the single source of truth.
 
-Default starting ports for the conventional keys (overlays may declare additional keys, allocated from `9001+`):
+Canonical container ports (from `teatree.utils.ports.CONTAINER_PORTS`; consumed by `COMPOSE_SERVICE_MAP` to query host ports back):
 
-- `backend`: 8001+
-- `frontend`: 4201+
-- `postgres`: 5432+
+- `backend`: 8000 (Django runserver in `web` container)
+- `frontend`: 80 (nginx-served Angular dist)
+- `postgres`: 5432 (shared host postgres; per-worktree isolation via DB names, not ports)
 - `redis`: not per-worktree. Overlays opting in via `uses_redis()` share `teatree-redis` on `localhost:6379`; per-ticket isolation comes from `Ticket.redis_db_index` → `REDIS_DB_INDEX` env var; slot count from `teatree.redis_db_count` in `~/.teatree.toml`, default 16.
 
 **Database naming:** `wt_{ticket_number}_{variant}` (variant suffix omitted if empty).
@@ -643,8 +643,6 @@ Defined in `teatree.core.overlay`. All methods receive the `worktree` instance f
 |--------|-----------|---------|---------|
 | `get_env_extra(worktree)` | `→ dict[str, str]` | `{}` | Extra environment variables |
 | `declared_secret_env_keys()` | `→ set[str]` | `set()` | Keys whose values must NOT land in `.t3-env.cache` (still produced by `get_env_extra` so subprocess `env=` callers receive them, but `render_env_cache` filters them out of the on-disk file). Core auto-includes `POSTGRES_PASSWORD` and writes a `POSTGRES_PASSWORD_PASS_KEY` reference instead — runtime callers resolve the literal via `teatree.utils.postgres_secret.resolve_postgres_password`. Use this hook for additional `pass`-sourced credentials. |
-| `get_required_ports(worktree)` | `→ set[str]` | `set()` | Port keys to allocate per worktree (e.g. `{"backend", "frontend", "postgres"}`). Empty set means no docker-compose ports — single-service overlays opt out. |
-| `get_port_env(ports)` | `→ dict[str, str]` | `{KEY_HOST_PORT: ...}` | Env vars exported to compose for allocated host ports. Default renders `${KEY}_HOST_PORT` for each key; overlays override to add convention-specific aliases (e.g. `POSTGRES_PORT`, `CORS_WHITE_FRONT`). |
 | `uses_redis()` | `→ bool` | `False` | Whether the shared `teatree-redis` container should be ensured and a per-ticket DB index allocated. Multi-service overlays with Celery/RQ/cache opt in; single-service overlays leave the default. |
 | `get_run_commands(worktree)` | `→ dict[str, str]` | `{}` | Named service run commands |
 | `get_test_command(worktree)` | `→ str` | `""` | Test suite command |
@@ -1525,7 +1523,7 @@ flowchart TD
     P --> Q["Return worktree.pk"]
 ```
 
-**Port allocation** uses a file lock (`$T3_WORKSPACE_DIR/.port-allocation.lock`) to prevent races when multiple worktrees start simultaneously. Each overlay declares its required ports via `get_required_ports(worktree) -> set[str]`; the allocator returns a dict scoped to those keys. Known keys (`backend`, `frontend`, `postgres`) start from convention-aligned bases (8001, 4201, 5432); unknown keys start from `DEFAULT_START_PORT` (9001). Allocated ports become env vars via `overlay.get_port_env(ports)` — by default each `KEY` is exposed as `${KEY}_HOST_PORT`; overlays override to add aliases like `POSTGRES_PORT` or `CORS_WHITE_FRONT`. They are **never written to files or the database** — discovery uses `docker compose port <service> <container_port>` at runtime. Single-service overlays (CLI tools, doc generators, teatree itself) declare `set()` and skip docker-compose port allocation entirely. Redis is gated behind `OverlayBase.uses_redis() -> bool` (default `False`); overlays that opt in share the `teatree-redis` container on `localhost:6379`, with `Ticket.redis_db_index` providing logical isolation via Redis DBs 0..N-1.
+**Port allocation** is delegated to Docker. The overlay's compose override declares container ports with no host binding (`ports: ["<container_port>"]`), so Docker picks a free host port at compose-up time. After `compose up`, `WorktreeStartRunner` queries the running project via `docker compose -p <project> port <service> <container_port>` and stores the result on `Worktree.extra["ports"]` for downstream callers. Inter-service traffic uses compose service DNS (`web:8000`, `client-term-redacted:8080`) and never goes through the host port. Ports are **never written to files or the database** — the running containers are the single source of truth. Single-service overlays (CLI tools, doc generators, teatree itself) declare no compose services and skip the host-port query entirely. Redis is gated behind `OverlayBase.uses_redis() -> bool` (default `False`); overlays that opt in share the `teatree-redis` container on `localhost:6379`, with `Ticket.redis_db_index` providing logical isolation via Redis DBs 0..N-1.
 
 **`.t3-env.cache` contents** (generated by `write_env_cache()`):
 
@@ -1560,15 +1558,15 @@ The `worktree start` command brings up Docker infrastructure and application ser
 ```mermaid
 flowchart TD
     A["worktree start(worktree_id)"] --> B["docker compose down\n(idempotent reset)"]
-    B --> C["Set port env\n(overlay.get_port_env)"]
-    C --> D["Pre-run steps per service\n(overlay.get_pre_run_steps,\ndedup by step name)"]
+    B --> D["Pre-run steps per service\n(overlay.get_pre_run_steps,\ndedup by step name)"]
     D --> E["Regenerate .t3-env.cache\n(write_env_cache)"]
     E --> F{"overlay.get_compose_file()"}
     F -- empty --> X["ok: no compose file\n(translation-only worktree)"]
     F -- path --> G["Image preflight:\ndocker compose config --format json\n→ docker image inspect each\n→ docker compose build <missing>"]
-    G --> H["docker compose up -d\n--no-build --pull=never"]
+    G --> H["docker compose up -d\n--no-build --pull=never\n(host ports auto-mapped)"]
     H --> I{"compose up exit 0?"}
     I -- No --> Y["FAIL: docker compose up failed"]
+    I -- Yes --> J["get_worktree_ports(project)\n→ Worktree.extra['ports']"]
     I -- Yes --> J["Save worktree.extra:\nservices + ports"]
     J --> K["worktree.start_services()\n→ provisioned → services_up"]
 ```
@@ -1652,7 +1650,7 @@ Dev dependencies: ruff, pytest, pytest-cov, pytest-django, ty, import-linter, pr
 - Management commands use `django-typer`, not `BaseCommand`.
 - Package is `teatree` (double-e), repo/CLI is `teatree`/`t3`.
 - `DJANGO_SETTINGS_MODULE` is stripped from env when running `_managepy()` so the overlay's own settings win.
-- **Port allocation is ephemeral (Non-Negotiable).** Ports are allocated at `worktree start` via `find_free_ports()` (file-locked in `teatree.utils.ports`), passed as env vars to `docker compose`, and discovered at runtime via `docker compose port`. Ports are **never** written to `.env.worktree`, the database, or any other persistent store. Docker services are discoverable via `docker compose port` (single source of truth). Host-process services (e.g. frontend dev servers) use the allocated port directly.
+- **Port allocation is ephemeral (Non-Negotiable).** Host ports are **auto-mapped by Docker** at `worktree start` — the compose override declares container ports with no host binding (`ports: ["<container_port>"]`). After compose up, `WorktreeStartRunner` queries the running project via `docker compose port` and stores the result on `Worktree.extra["ports"]`. Ports are **never** written to `.env.worktree`, the database, or any other persistent store. Docker services are discoverable via `docker compose port` (single source of truth). Inter-service traffic uses compose service DNS — no host port involved.
 - Coverage omits only migrations. Everything else must be covered.
 - `claude -p` is headless (exits immediately). The user's interactive session running `/loop` is the only persistent Claude Code session.
 - Statusline state is rendered to a file (`${XDG_DATA_HOME:-$HOME/.local/share}/teatree/statusline.txt`, override via `TEATREE_STATUSLINE_FILE`) by the loop and `cat`-ed by the hook — the hook itself does no DB or network I/O. The file lives under XDG data, not `~/.teatree` (which is the user's shell config file, not a directory).
