@@ -1,13 +1,27 @@
 import re
 from pathlib import Path
+from typing import TypedDict, cast
 from urllib.parse import urlparse
 
 from teatree.backends import gitlab_api as _gitlab_api
 from teatree.backends.gitlab_api import GitLabAPI, ProjectInfo
-from teatree.backends.protocols import PullRequestSpec
+from teatree.backends.protocols import PullRequestSpec, ReviewState
 from teatree.types import RawAPIDict
 
 _ISSUE_URL_RE = re.compile(r"^/(?P<path>.+?)/-/issues/(?P<iid>\d+)/?$")
+_MR_URL_RE = re.compile(r"^/(?P<path>.+?)/-/merge_requests/(?P<iid>\d+)/?$")
+
+
+class _GitLabUser(TypedDict, total=False):
+    """Subset of the GitLab user payload that teatree reads."""
+
+    username: str
+
+
+class _GitLabMergeRequestSummary(TypedDict, total=False):
+    """Subset of the GitLab MR response read for the review state lookup."""
+
+    reviewers: list[_GitLabUser]
 
 
 def get_client(*, token: str = "", base_url: str = "") -> GitLabAPI:
@@ -114,6 +128,39 @@ class GitLabCodeHost:
         if project is None:
             return {"error": f"Could not resolve project: {repo}"}
         return self._client.upload_file(project.project_id, filepath) or {}
+
+    def get_review_state(self, *, pr_url: str, reviewer: str) -> ReviewState:
+        """Return *reviewer*'s current review state on the MR at *pr_url*.
+
+        GitLab does not expose a per-reviewer review timeline, so we infer
+        state from the MR's approval list and reviewer assignment. When the
+        reviewer's username is in ``approved_by``, they are ``APPROVED``;
+        when they are still a requested reviewer but not in ``approved_by``
+        they are ``PENDING`` (a fresh re-request, or an approval that the
+        forge dropped on force-push). Unparsable URLs yield ``NONE``.
+        """
+        path = urlparse(pr_url).path
+        match = _MR_URL_RE.match(path)
+        if match is None or not reviewer:
+            return ReviewState.NONE
+
+        project = self._client.resolve_project(match["path"])
+        if project is None:
+            return ReviewState.NONE
+
+        approvals = self._client.get_mr_approvals(project.project_id, int(match["iid"]))
+        approved_by = approvals.get("approved_by")
+        if isinstance(approved_by, list) and reviewer in approved_by:
+            return ReviewState.APPROVED
+
+        mr = self._client.get_json(f"projects/{project.project_id}/merge_requests/{match['iid']}")
+        if isinstance(mr, dict):
+            reviewers = cast("_GitLabMergeRequestSummary", mr).get("reviewers")
+            if isinstance(reviewers, list):
+                for entry in reviewers:
+                    if isinstance(entry, dict) and entry.get("username") == reviewer:
+                        return ReviewState.PENDING
+        return ReviewState.NONE
 
     def get_issue(self, issue_url: str) -> RawAPIDict:
         """Fetch a GitLab issue from its full URL.

@@ -1,6 +1,13 @@
 """Tests for backend protocol structural typing."""
 
-from teatree.backends.protocols import CIService, CodeHostBackend, MessageSpec, MessagingBackend, PullRequestSpec
+from teatree.backends.protocols import (
+    CIService,
+    CodeHostBackend,
+    MessageSpec,
+    MessagingBackend,
+    PullRequestSpec,
+    ReviewState,
+)
 
 
 class _FakeCIService:
@@ -46,6 +53,10 @@ class _FakeCodeHost:
     def list_review_requested_prs(self, *, reviewer: str) -> list[dict[str, object]]:
         _ = reviewer
         return []
+
+    def get_review_state(self, *, pr_url: str, reviewer: str) -> ReviewState:
+        _ = (pr_url, reviewer)
+        return ReviewState.NONE
 
     def post_pr_comment(self, *, repo: str, pr_iid: int, body: str) -> dict[str, object]:
         _ = (repo, pr_iid, body)

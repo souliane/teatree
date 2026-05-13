@@ -23,6 +23,14 @@ def test_reviewer_pr_new_sha_dispatches_to_reviewer_agent() -> None:
     assert actions[0].zone == "t3:reviewer"
 
 
+def test_reviewer_pr_approval_dismissed_dispatches_to_reviewer_agent() -> None:
+    actions = dispatch([ScanSignal(kind="reviewer_pr.approval_dismissed", summary="MR x")])
+    kinds = [(a.kind, a.zone) for a in actions]
+    # Dual dispatch: agent + statusline mirror in action_needed.
+    assert ("agent", "t3:reviewer") in kinds
+    assert ("statusline", "action_needed") in kinds
+
+
 def test_pending_task_dispatches_to_orchestrator() -> None:
     actions = dispatch([ScanSignal(kind="pending_task", summary="Task 1 pending")])
     assert actions[0].kind == "agent"
