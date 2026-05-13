@@ -7,18 +7,39 @@ from dataclasses import dataclass
 from typing import TypedDict, cast
 from urllib.parse import quote_plus, urlparse
 
-from teatree.backends.protocols import PullRequestSpec
+from teatree.backends.protocols import PullRequestSpec, ReviewState
 from teatree.types import RawAPIDict
 from teatree.utils import git
 from teatree.utils.run import CompletedProcess, run_checked
 
 _ISSUE_URL_RE = re.compile(r"^/(?P<owner>[^/]+)/(?P<repo>[^/]+)/issues/(?P<number>\d+)/?$")
+_PR_URL_RE = re.compile(r"^/(?P<owner>[^/]+)/(?P<repo>[^/]+)/pulls?/(?P<number>\d+)/?$")
+
+_GH_REVIEW_STATE_MAP: dict[str, ReviewState] = {
+    "APPROVED": ReviewState.APPROVED,
+    "CHANGES_REQUESTED": ReviewState.CHANGES_REQUESTED,
+    "DISMISSED": ReviewState.DISMISSED,
+    "PENDING": ReviewState.PENDING,
+}
 
 
 class _GitHubUser(TypedDict, total=False):
     """Subset of the GitHub ``/user`` response that teatree reads."""
 
     login: str
+
+
+class _GitHubReviewEntry(TypedDict, total=False):
+    """Subset of the GitHub PR-review response that teatree reads."""
+
+    user: _GitHubUser
+    state: str
+
+
+class _GitHubPullRequestSummary(TypedDict, total=False):
+    """Subset of the GitHub PR response read for the review state lookup."""
+
+    requested_reviewers: list[_GitHubUser]
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,6 +64,37 @@ def _run_gh(*args: str, token: str = "") -> CompletedProcess[str]:
     """
     env = {**os.environ, "GH_TOKEN": token} if token else None
     return run_checked(list(args), env=env)
+
+
+def _latest_review_state_from_reviews(reviews: object, reviewer: str) -> ReviewState | None:
+    """Return the most recent terminal review state by *reviewer*, or ``None``."""
+    if not isinstance(reviews, list):
+        return None
+    for raw_entry in reversed(reviews):
+        if not isinstance(raw_entry, dict):
+            continue
+        entry = cast("_GitHubReviewEntry", raw_entry)
+        user = entry.get("user")
+        login = user.get("login") if isinstance(user, dict) else None
+        if login != reviewer:
+            continue
+        state_str = entry.get("state")
+        if not isinstance(state_str, str):
+            continue
+        mapped = _GH_REVIEW_STATE_MAP.get(state_str.upper())
+        if mapped is not None:
+            return mapped
+    return None
+
+
+def _reviewer_is_requested(pr: object, reviewer: str) -> bool:
+    """Return True iff *reviewer* appears on the PR's ``requested_reviewers``."""
+    if not isinstance(pr, dict):
+        return False
+    requested = cast("_GitHubPullRequestSummary", pr).get("requested_reviewers")
+    if not isinstance(requested, list):
+        return False
+    return any(isinstance(entry, dict) and entry.get("login") == reviewer for entry in requested)
 
 
 def _gh_api_get(endpoint: str, *, token: str = "") -> object:
@@ -296,3 +348,29 @@ class GitHubCodeHost:
         endpoint = f"repos/{match['owner']}/{match['repo']}/issues/{match['number']}"
         data = _gh_api_get(endpoint, token=self._token)
         return cast("RawAPIDict", data) if isinstance(data, dict) else {"error": f"Issue not found: {issue_url}"}
+
+    def get_review_state(self, *, pr_url: str, reviewer: str) -> ReviewState:
+        """Return *reviewer*'s current review state on the PR at *pr_url*.
+
+        Walks the PR's review timeline (most recent first) and returns the
+        latest non-comment state the reviewer has submitted: ``APPROVED``,
+        ``CHANGES_REQUESTED``, ``DISMISSED``, or ``PENDING``. When the
+        reviewer has no terminal state but is still listed as a requested
+        reviewer (e.g. a re-request after a dismissal), the result is
+        ``PENDING``. Unparsable URLs and unknown reviewers yield ``NONE``.
+        """
+        path = urlparse(pr_url).path
+        match = _PR_URL_RE.match(path)
+        if match is None or not reviewer:
+            return ReviewState.NONE
+
+        base = f"repos/{match['owner']}/{match['repo']}/pulls/{match['number']}"
+        reviews = _gh_api_get(f"{base}/reviews?per_page=100", token=self._token)
+        terminal = _latest_review_state_from_reviews(reviews, reviewer)
+        if terminal is not None:
+            return terminal
+
+        pr = _gh_api_get(base, token=self._token)
+        if _reviewer_is_requested(pr, reviewer):
+            return ReviewState.PENDING
+        return ReviewState.NONE

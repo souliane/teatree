@@ -439,3 +439,81 @@ class TestGitHubCodeHost:
             host = GitHubCodeHost()
             result = host.get_issue("https://github.com/souliane/teatree/issues/9")
         assert "error" in result
+
+    def test_get_review_state_returns_approved_for_latest_review(self) -> None:
+        from teatree.backends.protocols import ReviewState  # noqa: PLC0415
+
+        reviews = [
+            {"user": {"login": "alice"}, "state": "COMMENTED"},
+            {"user": {"login": "alice"}, "state": "APPROVED"},
+        ]
+        with patch.object(github_mod, "_gh_api_get", return_value=reviews) as mock_get:
+            host = GitHubCodeHost(token="tok")
+            result = host.get_review_state(
+                pr_url="https://github.com/o/r/pull/7",
+                reviewer="alice",
+            )
+        assert result == ReviewState.APPROVED
+        mock_get.assert_called_once_with("repos/o/r/pulls/7/reviews?per_page=100", token="tok")
+
+    def test_get_review_state_returns_dismissed_when_latest_is_dismissed(self) -> None:
+        from teatree.backends.protocols import ReviewState  # noqa: PLC0415
+
+        reviews = [
+            {"user": {"login": "alice"}, "state": "APPROVED"},
+            {"user": {"login": "alice"}, "state": "DISMISSED"},
+        ]
+        with patch.object(github_mod, "_gh_api_get", return_value=reviews):
+            host = GitHubCodeHost()
+            assert host.get_review_state(pr_url="https://github.com/o/r/pull/7", reviewer="alice") == (
+                ReviewState.DISMISSED
+            )
+
+    def test_get_review_state_ignores_comment_only_state(self) -> None:
+        from teatree.backends.protocols import ReviewState  # noqa: PLC0415
+
+        # COMMENTED is not a terminal state and is dropped; falls through
+        # to requested_reviewers lookup, which lists Alice → PENDING.
+        with patch.object(github_mod, "_gh_api_get") as mock_get:
+            mock_get.side_effect = [
+                [{"user": {"login": "alice"}, "state": "COMMENTED"}],
+                {"requested_reviewers": [{"login": "alice"}]},
+            ]
+            host = GitHubCodeHost()
+            result = host.get_review_state(pr_url="https://github.com/o/r/pull/7", reviewer="alice")
+        assert result == ReviewState.PENDING
+
+    def test_get_review_state_returns_pending_when_in_requested_reviewers(self) -> None:
+        from teatree.backends.protocols import ReviewState  # noqa: PLC0415
+
+        with patch.object(github_mod, "_gh_api_get") as mock_get:
+            mock_get.side_effect = [
+                [],  # no reviews submitted
+                {"requested_reviewers": [{"login": "alice"}, {"login": "bob"}]},
+            ]
+            host = GitHubCodeHost()
+            assert host.get_review_state(pr_url="https://github.com/o/r/pull/7", reviewer="alice") == (
+                ReviewState.PENDING
+            )
+
+    def test_get_review_state_returns_none_for_unparseable_url(self) -> None:
+        from teatree.backends.protocols import ReviewState  # noqa: PLC0415
+
+        host = GitHubCodeHost()
+        assert host.get_review_state(pr_url="https://gitlab.com/x/-/merge_requests/1", reviewer="alice") == (
+            ReviewState.NONE
+        )
+
+    def test_get_review_state_returns_none_when_no_match_anywhere(self) -> None:
+        from teatree.backends.protocols import ReviewState  # noqa: PLC0415
+
+        with patch.object(github_mod, "_gh_api_get") as mock_get:
+            mock_get.side_effect = [[], {"requested_reviewers": []}]
+            host = GitHubCodeHost()
+            assert host.get_review_state(pr_url="https://github.com/o/r/pull/7", reviewer="alice") == (ReviewState.NONE)
+
+    def test_get_review_state_returns_none_when_reviewer_empty(self) -> None:
+        from teatree.backends.protocols import ReviewState  # noqa: PLC0415
+
+        host = GitHubCodeHost()
+        assert host.get_review_state(pr_url="https://github.com/o/r/pull/7", reviewer="") == ReviewState.NONE

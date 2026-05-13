@@ -89,7 +89,9 @@ class TestMarkReviewedExternally(_ReviewerCacheTmpMixin, TestCase):
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.DELIVERED
         cache = json.loads(self._cache_path.read_text())
-        assert cache == {"https://example.com/pr/5": "deadbeef"}
+        # New schema records both the head sha and the reviewer's state so
+        # the next scan can detect approval dismissals on force-push.
+        assert cache == {"https://example.com/pr/5": {"sha": "deadbeef", "state": "approved"}}
 
     def test_does_not_advance_author_ticket(self) -> None:
         ticket = Ticket.objects.create(overlay="acme", issue_url="https://example.com/issues/6")
