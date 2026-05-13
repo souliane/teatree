@@ -1,6 +1,5 @@
 from pathlib import Path
 from typing import cast
-from urllib.parse import urlencode
 
 import httpx
 
@@ -18,16 +17,14 @@ def _brave_cookies(domain: str) -> httpx.Cookies:
 
 def download_notion_file(
     *,
-    space_id: str,
-    attachment_id: str,
-    block_id: str,
-    filename: str,
+    url: str,
     dest: Path,
 ) -> Path:
-    """Download a Notion file attachment using browser cookies."""
-    base = f"https://file.notion.so/f/f/{space_id}/{attachment_id}/{filename}"
-    params = urlencode({"table": "block", "id": block_id, "spaceId": space_id})
-    url = f"{base}?{params}"
+    """Download a Notion file attachment using browser cookies.
+
+    The full signed URL (with signature + expirationTimestamp) must be passed in;
+    file.notion.so returns 400 without those params even when cookies are valid.
+    """
     cookies = _brave_cookies("notion.so")
 
     with httpx.Client(
