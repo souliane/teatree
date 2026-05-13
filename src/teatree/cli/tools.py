@@ -236,34 +236,24 @@ def triage_issues(
 
 @tool_app.command("notion-download")
 def notion_download(
-    url: str = typer.Argument(..., help="file.notion.so URL from browser tab."),
+    url: str = typer.Argument(..., help="file.notion.so URL from browser tab (must include signature)."),
     dest: Path = typer.Option(Path(), "--dest", "-d", help="Destination directory."),
 ) -> None:
     """Download a Notion file attachment using browser cookies."""
     import re  # noqa: PLC0415
-    from urllib.parse import parse_qs, urlparse  # noqa: PLC0415
+    from urllib.parse import urlparse  # noqa: PLC0415
 
     from teatree.backends.notion import download_notion_file  # noqa: PLC0415
 
     parsed = urlparse(url)
-    qs = parse_qs(parsed.query)
-    path_match = re.match(r"/f/f/([^/]+)/([^/]+)/(.+)", parsed.path)
+    path_match = re.match(r"/f/f/[^/]+/[^/]+/(.+)", parsed.path)
     if not path_match:
         typer.echo(f"Cannot parse file URL: {url}")
         raise typer.Exit(1)
 
-    space_id = path_match.group(1)
-    attachment_id = path_match.group(2)
-    filename = path_match.group(3)
-    block_id = qs.get("id", [""])[0]
+    filename = path_match.group(1)
     out = dest / filename if dest.is_dir() else dest
     typer.echo(f"Downloading {filename}...")
 
-    result = download_notion_file(
-        space_id=space_id,
-        attachment_id=attachment_id,
-        block_id=block_id,
-        filename=filename,
-        dest=out,
-    )
+    result = download_notion_file(url=url, dest=out)
     typer.echo(f"Saved: {result} ({result.stat().st_size:,} bytes)")
