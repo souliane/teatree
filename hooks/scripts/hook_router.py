@@ -966,13 +966,7 @@ def _slack_post_dm(bot_token: str, user_id: str, text: str) -> None:
         urllib.request.urlopen(msg_req, timeout=5)  # noqa: S310
 
 
-def _post_question_to_slack(data: dict) -> None:
-    questions = data.get("tool_input", {}).get("questions", [])
-    if not questions:
-        return
-    slack_cfg = _slack_config_from_toml()
-    if slack_cfg is None:
-        return
+def _perform_slack_post(slack_cfg: tuple[str, str], questions: list[dict]) -> None:
     token_ref, user_id = slack_cfg
     result = subprocess.run(  # noqa: S603
         ["pass", "show", f"{token_ref}-bot"],  # noqa: S607
@@ -985,6 +979,33 @@ def _post_question_to_slack(data: dict) -> None:
     if not bot_token:
         return
     _slack_post_dm(bot_token, user_id, _format_question_text(questions))
+
+
+def _dispatch_slack_post_detached(slack_cfg: tuple[str, str], questions: list[dict]) -> None:
+    """Fork and post in the child so the agent's PreToolUse hook returns immediately.
+
+    The Slack HTTP round-trip (pass show + conversations.open + chat.postMessage) can
+    take seconds on a slow link; if we did it inline the agent's tool call would block
+    on the hook timeout before showing the user the prompt.
+    """
+    pid = os.fork()
+    if pid != 0:
+        return
+    os.setsid()  # pragma: no cover
+    try:  # pragma: no cover
+        _perform_slack_post(slack_cfg, questions)
+    finally:  # pragma: no cover
+        os._exit(0)
+
+
+def _post_question_to_slack(data: dict) -> None:
+    questions = data.get("tool_input", {}).get("questions", [])
+    if not questions:
+        return
+    slack_cfg = _slack_config_from_toml()
+    if slack_cfg is None:
+        return
+    _dispatch_slack_post_detached(slack_cfg, questions)
 
 
 def handle_mirror_question_to_slack(data: dict) -> bool:
@@ -1004,9 +1025,9 @@ _HANDLERS: dict[str, list] = {
         handle_enforce_skill_loading,
         handle_block_direct_commands,
         handle_validate_mr_metadata,
+        handle_mirror_question_to_slack,
     ],
     "PostToolUse": [
-        handle_mirror_question_to_slack,
         handle_track_active_repo,
         handle_track_skill_usage,
         handle_track_cron_jobs,
