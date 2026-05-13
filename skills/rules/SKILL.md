@@ -42,6 +42,7 @@ Use `Ctrl+F`/`grep` to jump to a rule. Sections are grouped below by theme; numb
 14. [Clickable References](#clickable-references)
 15. [No AI Signature on Posts Made on the User's Behalf](#no-ai-signature-on-posts-made-on-the-users-behalf-non-negotiable)
 16. [Never Post PR Comments from Parallel Agents](#never-post-pr-comments-from-parallel-agents-non-negotiable)
+17a. [Evidence Comes From the Deployed Environment](#evidence-comes-from-the-deployed-environment-non-negotiable)
 17. [Verify Repo Visibility Before Filing External Issues](#verify-repo-visibility-before-filing-external-issues-non-negotiable)
 18. [Leak Remediation — Silent Scrubs](#leak-remediation--silent-scrubs-non-negotiable)
 19. [GitLab Inline Comments](#gitlab-inline-comments)
@@ -230,6 +231,15 @@ Every artifact you publish under the user's identity — git commits, MR/PR desc
 ## Never Post PR Comments from Parallel Agents (Non-Negotiable)
 
 MR/PR comment posting (test plans, evidence, review notes) must be **serialized** — never dispatch two parallel agents that both post comments on PRs. Parallel agents cannot check for each other's posts, resulting in duplicate comments. Post all PR comments from the main conversation thread, or serialize agent tasks so only one posts at a time.
+
+## Evidence Comes From the Deployed Environment (Non-Negotiable)
+
+Before posting any screenshot, PDF, or "proof it works" artifact on an MR/PR/issue, **load `/t3:e2e`** and follow § "Evidence Source Integrity". The short version that every agent must remember even without the full skill loaded:
+
+- **Required:** browser screenshots from the deployed dev/staging URL, OR documents regenerated on the deployed environment after merge + deploy.
+- **Prohibited:** golden test PDFs from `build/test-results/` or `src/test/resources/`, `pdftotext` from a local build, screenshots of `localhost`, **and side-by-side comparisons assembled from PDFs extracted at different git commits**.
+
+A passing local test suite is not evidence. The deployed system is the only artifact that proves a user-visible feature works. If the proper evidence requires steps you can't complete this session, say so explicitly in the comment — don't substitute a prohibited source.
 
 ## Verify Repo Visibility Before Filing External Issues (Non-Negotiable)
 

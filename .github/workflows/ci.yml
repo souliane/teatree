@@ -70,6 +70,11 @@ jobs:
           tags: teatree-test-${{ matrix.python-version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      # ``--cov-fail-under=93`` is also configured in ``[tool.coverage.report]
+      # fail_under``; passing it on the CLI makes the gate explicit at the
+      # invocation site so a future ``pyproject.toml`` edit can't silently
+      # disarm CI. Both must agree — ``tests/test_coverage_floor_guard.py``
+      # locks the floor value.
       - run: >
           docker run --rm
           -v "$PWD":/app
@@ -79,6 +84,15 @@ jobs:
           uv run -p ${{ matrix.python-version }} pytest --no-header -q
           -o cache_dir=/tmp/.pytest_cache
           --cov-report=xml:/app/coverage.xml
+          --cov-fail-under=93
+      - name: Enforce per-module coverage floors
+        run: >
+          docker run --rm
+          -v "$PWD":/app
+          -e UV_PROJECT_ENVIRONMENT=/tmp/.venv
+          -e COVERAGE_FILE=/app/.coverage
+          teatree-test-${{ matrix.python-version }}
+          uv run -p ${{ matrix.python-version }} t3 ci coverage
       - uses: actions/upload-artifact@v7
         if: always()
         with:
