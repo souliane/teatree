@@ -56,7 +56,7 @@ class CoverageReport:
     def passes(self) -> bool:
         if self.overall_percent is None:
             return False
-        if self.overall_percent < self.overall_floor:
+        if round(self.overall_percent) < self.overall_floor:
             return False
         return all(m.passes() for m in self.module_results)
 

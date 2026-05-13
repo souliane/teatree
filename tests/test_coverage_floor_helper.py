@@ -161,6 +161,14 @@ class TestCoverageReportPasses:
         assert len(failed) == 1
         assert failed[0].path == "a.py"
 
+    def test_overall_rounded_to_int_to_match_coverage_fail_under(self) -> None:
+        # ``coverage --fail-under`` rounds to int precision by default — 92.7
+        # is reported as "93%" and pytest-cov passes. ``passes()`` must agree.
+        report = CoverageReport(overall_percent=92.7, overall_floor=93, module_results=[])
+        assert report.passes()
+        report_below = CoverageReport(overall_percent=92.4, overall_floor=93, module_results=[])
+        assert not report_below.passes()
+
     def test_fails_when_overall_unmeasured(self) -> None:
         report = CoverageReport(overall_percent=None, overall_floor=93, module_results=[])
         assert not report.passes()
