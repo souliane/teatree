@@ -247,6 +247,18 @@ source = [
 ]
 omit = [ "src/teatree/core/migrations/*.py" ]
 
+# Per-module coverage floors — read by ``t3 ci coverage`` and enforced by
+# ``tests/test_coverage_floor_guard.py::TestPerModuleFloorsConfig``.
+# Tighter than the project-wide 93% floor for newly-added modules where a
+# small file dropping to 30% would still leave the project >= 93%.
+
+[tool.teatree.coverage]
+per_module_floors = [
+  { path = "src/teatree/loop/persistence.py", floor = 80 },
+  { path = "src/teatree/loop/rendering.py", floor = 80 },
+  { path = "src/teatree/loop/dispatch.py", floor = 80 },
+]
+
 [tool.uv.build-backend]
 module-name = [ "teatree", "t3_bootstrap" ]
 
