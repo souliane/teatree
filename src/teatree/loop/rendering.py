@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from teatree.loop.dispatch import DispatchAction
+from teatree.loop.pr_ticket_index import build_ticket_index
 from teatree.loop.statusline import StatuslineEntry, StatuslineZones, _hyperlink
 
 # DispatchAction payloads are `dict[str, Any]` by contract (see dispatch.py).
@@ -300,7 +301,12 @@ def _running_tasks_lines() -> list[str]:
     return lines
 
 
-def _populate_overlay_zones(zones: StatuslineZones, c: _ClassifiedActions) -> None:
+def _populate_overlay_zones(
+    zones: StatuslineZones,
+    c: _ClassifiedActions,
+    *,
+    ticket_index: dict[str, str],
+) -> None:
     all_overlays = sorted({*c.active_tickets, *c.action_prs, *c.disposition_refs, *c.ready_refs, *c.inflight_prs})
 
     all_pr_refs: dict[str, dict[str, list[_PRRef]]] = {}
@@ -308,11 +314,6 @@ def _populate_overlay_zones(zones: StatuslineZones, c: _ClassifiedActions) -> No
         for refs in (c.action_prs.get(overlay_key, []), c.inflight_prs.get(overlay_key, [])):
             for ref in refs:
                 all_pr_refs.setdefault(overlay_key, {}).setdefault(str(ref.iid), []).append(ref)
-
-    ticket_index_by_overlay: dict[str, dict[str, str]] = {
-        overlay_key: {url: num for num, _state, url in anchors if _is_url(url)}
-        for overlay_key, anchors in c.active_tickets.items()
-    }
 
     live_pr_urls_by_overlay: dict[str, set[str]] = {}
     for overlay_key in all_overlays:
@@ -322,7 +323,6 @@ def _populate_overlay_zones(zones: StatuslineZones, c: _ClassifiedActions) -> No
 
     for overlay_key in all_overlays:
         pr_map = all_pr_refs.get(overlay_key, {})
-        ticket_index = ticket_index_by_overlay.get(overlay_key, {})
         ticket_line = _render_ticket_line(
             overlay_key,
             c.active_tickets.get(overlay_key, []),
@@ -350,7 +350,8 @@ def _populate_overlay_zones(zones: StatuslineZones, c: _ClassifiedActions) -> No
 def zones_for(actions: list[DispatchAction]) -> StatuslineZones:
     zones = StatuslineZones()
     c = _classify_actions(actions)
-    _populate_overlay_zones(zones, c)
+    ticket_index = build_ticket_index(actions)
+    _populate_overlay_zones(zones, c, ticket_index=ticket_index)
 
     for zone_name, entry in c.other:
         zone_list = getattr(zones, zone_name, None)
