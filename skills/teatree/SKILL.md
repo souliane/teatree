@@ -119,6 +119,22 @@ T3_AUTO_SHIP=false                           # when true, shipping tasks are hea
 T3_PRIVACY=strict                            # block commits with PII
 ```
 
+## Fat Loop — Agent Dispatch Contract
+
+`t3 loop tick` text output may contain lines of the form:
+
+```text
+SPAWN_AGENT subagent=<name> detail='<one-line summary>' url=<optional url>
+```
+
+These lines are **dispatch directives** the `/loop` slot's Claude session is expected to fulfil by calling the `Agent` tool with the named subagent. Each scanner that emits an agent action keeps its own dedup state (e.g., `ReviewerPrsScanner` caches last-reviewed SHA per PR), so the same item never re-spawns until something material changes (new commit, new mention, new PR).
+
+Rules for the loop session:
+
+- Treat every `SPAWN_AGENT` line as authoritative — do not second-guess. The scanners already filtered out duplicates and stale items.
+- Spawn each agent with `subagent_type=<name>` and a prompt that includes the `detail` and the optional `url`.
+- Run independent dispatches in parallel where the agents are read-only (reviewers); serialize when they may post artifacts (use the rule in `/t3:rules` § "Never Post PR Comments from Parallel Agents").
+
 ## Interactive vs Headless Output
 
 The `{"summary":..., "files_modified":...}` JSON result block from `/t3:next` is consumed by the headless pipeline. In interactive sessions it's noise — skip it and only show the text summary.

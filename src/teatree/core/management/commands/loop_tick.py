@@ -13,6 +13,7 @@ from typing import Annotated, Any
 import typer
 from django_typer.management import TyperCommand
 
+from teatree.loop.dispatch import DispatchAction
 from teatree.loop.tick import TickReport
 
 type ReportDict = dict[str, Any]
@@ -27,6 +28,20 @@ def _report_to_dict(report: TickReport) -> ReportDict:
         "errors": report.errors,
         "actions": [asdict(action) for action in report.actions],
     }
+
+
+def _spawn_directive(action: DispatchAction) -> str:
+    """Render an agent action as a Spawn-Agent directive for the /loop slot.
+
+    The slot is a Claude Code session that reads ``t3 loop tick`` text
+    output. When an agent action surfaces here, the session is expected
+    to call its ``Agent`` tool with the named subagent. Dedup is handled
+    upstream by each scanner's last-seen cache, so the same PR-at-SHA
+    appears here only once.
+    """
+    url = action.payload.get("url") or action.payload.get("issue_url") or ""
+    url_clause = f" url={url}" if url else ""
+    return f"SPAWN_AGENT subagent={action.zone} detail={action.detail!r}{url_clause}"
 
 
 class Command(TyperCommand):
@@ -70,3 +85,6 @@ class Command(TyperCommand):
                     self.stdout.write(f"WARN  {name}: {message}")
             if report.statusline_path:
                 self.stdout.write(f"      statusline → {report.statusline_path}")
+            agent_actions = [a for a in report.actions if a.kind == "agent"]
+            for action in agent_actions:
+                self.stdout.write(_spawn_directive(action))

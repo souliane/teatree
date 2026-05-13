@@ -60,6 +60,41 @@ class TestLoopTickCommand(TestCase):
         assert "1 signal(s)" in output
         assert "statusline" in output
 
+    def test_text_output_emits_spawn_directive_for_agent_actions(self) -> None:
+        agent_action = DispatchAction(
+            kind="agent",
+            zone="t3:reviewer",
+            detail="Review needed: https://example.com/owner/repo/pull/42",
+            payload={"url": "https://example.com/owner/repo/pull/42"},
+        )
+        report = TickReport(
+            started_at=dt.datetime(2026, 1, 1, tzinfo=dt.UTC),
+            signals=[ScanSignal(kind="reviewer_pr.new_sha", summary="x")],
+            actions=[agent_action],
+            statusline_path=Path("/tmp/sl.txt"),
+        )
+        stdout = StringIO()
+        with (
+            patch("teatree.core.backend_factory.iter_overlay_backends", return_value=[]),
+            patch("teatree.loop.tick.run_tick", return_value=report),
+        ):
+            call_command("loop_tick", stdout=stdout)
+
+        output = stdout.getvalue()
+        assert "SPAWN_AGENT subagent=t3:reviewer" in output
+        assert "url=https://example.com/owner/repo/pull/42" in output
+
+    def test_text_output_omits_spawn_directive_for_non_agent_actions(self) -> None:
+        report = _build_report(statusline_path=Path("/tmp/sl.txt"))
+        stdout = StringIO()
+        with (
+            patch("teatree.core.backend_factory.iter_overlay_backends", return_value=[]),
+            patch("teatree.loop.tick.run_tick", return_value=report),
+        ):
+            call_command("loop_tick", stdout=stdout)
+
+        assert "SPAWN_AGENT" not in stdout.getvalue()
+
     def test_text_output_includes_scanner_errors(self) -> None:
         report = _build_report(errors={"my_prs": "RuntimeError: x"})
         stdout = StringIO()

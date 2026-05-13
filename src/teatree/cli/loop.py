@@ -117,9 +117,10 @@ def start_command(
         typer.echo("")
         typer.echo(
             "The tick runs scanners, dispatches signals, renders the statusline, and"
-            " executes mechanical actions (ticket completions). Agent actions"
-            " (kind=agent in --json output) are left for the session to pick up"
-            " — run `t3 loop tick --json` and dispatch them via subagents."
+            " executes mechanical actions (ticket completions). Lines starting with"
+            " `SPAWN_AGENT subagent=…` in the tick output are agent dispatches the"
+            " session should fulfil via its `Agent` tool — each scanner dedups by"
+            " state (e.g. last-seen SHA), so the same item never re-spawns."
         )
         return
 
