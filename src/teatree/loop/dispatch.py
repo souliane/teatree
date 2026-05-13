@@ -46,6 +46,11 @@ _STATUSLINE_ZONE_BY_KIND: dict[str, str] = {
     "assigned_issue.ready": "action_needed",
     "ticket.active": "anchors",
     "ticket.disposition_candidate": "action_needed",
+    # Reviewer-assigned PRs also dispatch to the t3:reviewer agent below,
+    # but we mirror them into the statusline so the user sees what's
+    # pending review without waiting on the agent to act.
+    "reviewer_pr.new_sha": "action_needed",
+    "reviewer_pr.unreviewed": "action_needed",
 }
 
 _PR_URL_RE = re.compile(r"https?://[^\s>|]+/(?:merge_requests|pull|pulls)/\d+")
@@ -63,6 +68,64 @@ def _slack_pr_url(signal: ScanSignal) -> str:
     return match.group(0) if match else ""
 
 
+# Reviewer signals dispatch to the agent AND mirror into the statusline so
+# the user sees the pending review before the agent acts.
+_DUAL_DISPATCH: frozenset[str] = frozenset({"reviewer_pr.new_sha", "reviewer_pr.unreviewed"})
+
+# Signal kind → (DispatchAction kind, zone) when the side-effect is a
+# fire-and-forget mechanical handler or webhook rather than an agent.
+_MECHANICAL_BY_KIND: dict[str, tuple[ActionKind, str]] = {
+    "ticket.completion_detected": ("mechanical", "ticket_completion"),
+    "ticket.reopen_needed": ("mechanical", "ticket_reopen"),
+    "notion.unrouted": ("webhook", "n8n"),
+}
+
+
+def _dispatch_one(signal: ScanSignal) -> list[DispatchAction]:
+    if signal.kind in {"slack.mention", "slack.dm"}:
+        pr_url = _slack_pr_url(signal)
+        if pr_url:
+            return [
+                DispatchAction(
+                    kind="agent",
+                    zone="t3:reviewer",
+                    detail=f"Review request: {pr_url}",
+                    payload={"url": pr_url, **signal.payload},
+                ),
+                DispatchAction(
+                    kind="statusline",
+                    zone=_STATUSLINE_ZONE_BY_KIND[signal.kind],
+                    detail=signal.summary,
+                    payload=signal.payload,
+                ),
+            ]
+    if signal.kind == "assigned_issue.ready" and signal.payload.get("auto_start") is True:
+        return [DispatchAction(kind="agent", zone="t3:orchestrator", detail=signal.summary, payload=signal.payload)]
+    agent = _AGENT_BY_KIND.get(signal.kind)
+    if agent is not None:
+        actions = [DispatchAction(kind="agent", zone=agent, detail=signal.summary, payload=signal.payload)]
+        if signal.kind in _DUAL_DISPATCH:
+            actions.append(
+                DispatchAction(
+                    kind="statusline",
+                    zone=_STATUSLINE_ZONE_BY_KIND.get(signal.kind, "in_flight"),
+                    detail=signal.summary,
+                    payload=signal.payload,
+                ),
+            )
+        return actions
+    if signal.kind == "ticket.disposition_candidate" and signal.payload.get("reason") == "issue_closed":
+        return [
+            DispatchAction(kind="mechanical", zone="ticket_disposition", detail=signal.summary, payload=signal.payload),
+        ]
+    mech = _MECHANICAL_BY_KIND.get(signal.kind)
+    if mech is not None:
+        kind, zone = mech
+        return [DispatchAction(kind=kind, zone=zone, detail=signal.summary, payload=signal.payload)]
+    zone = _STATUSLINE_ZONE_BY_KIND.get(signal.kind, "in_flight")
+    return [DispatchAction(kind="statusline", zone=zone, detail=signal.summary, payload=signal.payload)]
+
+
 def dispatch(signals: list[ScanSignal]) -> list[DispatchAction]:
     """Turn a flat list of signals into the actions the runtime should perform.
 
@@ -73,59 +136,5 @@ def dispatch(signals: list[ScanSignal]) -> list[DispatchAction]:
     """
     actions: list[DispatchAction] = []
     for signal in signals:
-        if signal.kind in {"slack.mention", "slack.dm"}:
-            pr_url = _slack_pr_url(signal)
-            if pr_url:
-                actions.append(
-                    DispatchAction(
-                        kind="agent",
-                        zone="t3:reviewer",
-                        detail=f"Review request: {pr_url}",
-                        payload={"url": pr_url, **signal.payload},
-                    ),
-                )
-        if signal.kind == "assigned_issue.ready" and signal.payload.get("auto_start") is True:
-            actions.append(
-                DispatchAction(kind="agent", zone="t3:orchestrator", detail=signal.summary, payload=signal.payload),
-            )
-            continue
-        agent = _AGENT_BY_KIND.get(signal.kind)
-        if agent is not None:
-            actions.append(DispatchAction(kind="agent", zone=agent, detail=signal.summary, payload=signal.payload))
-            continue
-        if signal.kind == "ticket.disposition_candidate" and signal.payload.get("reason") == "issue_closed":
-            actions.append(
-                DispatchAction(
-                    kind="mechanical",
-                    zone="ticket_disposition",
-                    detail=signal.summary,
-                    payload=signal.payload,
-                ),
-            )
-            continue
-        if signal.kind == "ticket.completion_detected":
-            actions.append(
-                DispatchAction(
-                    kind="mechanical",
-                    zone="ticket_completion",
-                    detail=signal.summary,
-                    payload=signal.payload,
-                ),
-            )
-            continue
-        if signal.kind == "ticket.reopen_needed":
-            actions.append(
-                DispatchAction(
-                    kind="mechanical",
-                    zone="ticket_reopen",
-                    detail=signal.summary,
-                    payload=signal.payload,
-                ),
-            )
-            continue
-        if signal.kind == "notion.unrouted":
-            actions.append(DispatchAction(kind="webhook", zone="n8n", detail=signal.summary, payload=signal.payload))
-            continue
-        zone = _STATUSLINE_ZONE_BY_KIND.get(signal.kind, "in_flight")
-        actions.append(DispatchAction(kind="statusline", zone=zone, detail=signal.summary, payload=signal.payload))
+        actions.extend(_dispatch_one(signal))
     return actions

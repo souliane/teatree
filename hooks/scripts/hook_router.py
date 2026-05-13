@@ -938,32 +938,113 @@ def _format_question_text(questions: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def _slack_post_dm(bot_token: str, user_id: str, text: str) -> None:
-    import contextlib  # noqa: PLC0415
+def _slack_dm_cache_path() -> Path:
+    base = Path(os.environ.get("XDG_DATA_HOME", str(Path.home() / ".local" / "share")))
+    return base / "teatree" / "slack_dm_channels.json"
+
+
+def _read_dm_channel_cache(user_id: str) -> str:
+    path = _slack_dm_cache_path()
+    if not path.is_file():
+        return ""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return ""
+    if not isinstance(data, dict):
+        return ""
+    cached = data.get(user_id)
+    return cached if isinstance(cached, str) else ""
+
+
+def _write_dm_channel_cache(user_id: str, channel: str) -> None:
+    path = _slack_dm_cache_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        existing = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        existing = {}
+    if not isinstance(existing, dict):
+        existing = {}
+    existing[user_id] = channel
+    path.write_text(json.dumps(existing, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _slack_open_dm(bot_token: str, user_id: str, *, timeout: float) -> str:
     import urllib.request  # noqa: PLC0415
 
-    dm_payload = json.dumps({"users": user_id}).encode()
-    dm_req = urllib.request.Request(
+    payload = json.dumps({"users": user_id}).encode()
+    req = urllib.request.Request(
         "https://slack.com/api/conversations.open",
-        data=dm_payload,
+        data=payload,
         headers={"Authorization": f"Bearer {bot_token}", "Content-Type": "application/json"},
     )
     try:
-        dm_resp = json.loads(urllib.request.urlopen(dm_req, timeout=5).read())  # noqa: S310
+        resp = json.loads(urllib.request.urlopen(req, timeout=timeout).read())  # noqa: S310
     except Exception:  # noqa: BLE001
-        return
-    channel = dm_resp.get("channel", {}).get("id", "")
-    if not channel:
-        return
+        return ""
+    if not isinstance(resp, dict):
+        return ""
+    channel = resp.get("channel")
+    if not isinstance(channel, dict):
+        return ""
+    cid = channel.get("id")
+    return cid if isinstance(cid, str) else ""
 
-    msg_payload = json.dumps({"channel": channel, "text": text}).encode()
-    msg_req = urllib.request.Request(
+
+def _slack_post_message(bot_token: str, channel: str, text: str, *, timeout: float) -> bool:
+    """Post ``text`` to ``channel``. Return True iff Slack acknowledged success."""
+    import urllib.request  # noqa: PLC0415
+
+    payload = json.dumps({"channel": channel, "text": text}).encode()
+    req = urllib.request.Request(
         "https://slack.com/api/chat.postMessage",
-        data=msg_payload,
+        data=payload,
         headers={"Authorization": f"Bearer {bot_token}", "Content-Type": "application/json"},
     )
-    with contextlib.suppress(Exception):
-        urllib.request.urlopen(msg_req, timeout=5)  # noqa: S310
+    try:
+        resp = json.loads(urllib.request.urlopen(req, timeout=timeout).read())  # noqa: S310
+    except Exception:  # noqa: BLE001
+        return False
+    return bool(isinstance(resp, dict) and resp.get("ok") is True)
+
+
+def _slack_post_dm(bot_token: str, user_id: str, text: str, *, timeout: float = 2.0) -> None:
+    """Post ``text`` to ``user_id``'s DM. Resolves channel via cache when possible.
+
+    Cache hit → single ``chat.postMessage`` call (sub-second on a normal
+    connection, fits inside the 3s hook timeout). Cache miss or
+    ``channel_not_found`` → open the DM, cache the channel id, retry.
+    """
+    cached = _read_dm_channel_cache(user_id)
+    if cached and _slack_post_message(bot_token, cached, text, timeout=timeout):
+        return
+    channel = _slack_open_dm(bot_token, user_id, timeout=timeout)
+    if not channel:
+        return
+    if _slack_post_message(bot_token, channel, text, timeout=timeout):
+        _write_dm_channel_cache(user_id, channel)
+
+
+def _perform_slack_post(slack_cfg: tuple[str, str], questions: list[dict]) -> None:
+    """Resolve the bot token and post the question — runs synchronously.
+
+    Synchronous so the Slack DM lands **before** the AskUserQuestion prompt
+    renders in the terminal. The previous fork-and-detach variant caused
+    the message to arrive *after* the user had already answered.
+    """
+    token_ref, user_id = slack_cfg
+    result = subprocess.run(  # noqa: S603
+        ["pass", "show", f"{token_ref}-bot"],  # noqa: S607
+        capture_output=True,
+        text=True,
+        timeout=2,
+        check=False,
+    )
+    bot_token = result.stdout.strip() if result.returncode == 0 else ""
+    if not bot_token:
+        return
+    _slack_post_dm(bot_token, user_id, _format_question_text(questions))
 
 
 def _post_question_to_slack(data: dict) -> None:
@@ -973,18 +1054,7 @@ def _post_question_to_slack(data: dict) -> None:
     slack_cfg = _slack_config_from_toml()
     if slack_cfg is None:
         return
-    token_ref, user_id = slack_cfg
-    result = subprocess.run(  # noqa: S603
-        ["pass", "show", f"{token_ref}-bot"],  # noqa: S607
-        capture_output=True,
-        text=True,
-        timeout=5,
-        check=False,
-    )
-    bot_token = result.stdout.strip() if result.returncode == 0 else ""
-    if not bot_token:
-        return
-    _slack_post_dm(bot_token, user_id, _format_question_text(questions))
+    _perform_slack_post(slack_cfg, questions)
 
 
 def handle_mirror_question_to_slack(data: dict) -> bool:
@@ -1004,9 +1074,9 @@ _HANDLERS: dict[str, list] = {
         handle_enforce_skill_loading,
         handle_block_direct_commands,
         handle_validate_mr_metadata,
+        handle_mirror_question_to_slack,
     ],
     "PostToolUse": [
-        handle_mirror_question_to_slack,
         handle_track_active_repo,
         handle_track_skill_usage,
         handle_track_cron_jobs,

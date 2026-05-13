@@ -67,7 +67,7 @@ src/teatree/
   __init__.py
   __main__.py
   _overlay_api.py       # __overlay_api_version__ pin + import-time guard for overlays
-  paths.py              # XDG-compliant DATA_DIR + get_data_dir (leaf module, no deps)
+  paths.py              # XDG-compliant DATA_DIR, CANONICAL_DB, get_data_dir, find_stale_dbs
   config.py             # ~/.teatree.toml parsing, overlay discovery, UserSettings
   settings.py           # Django settings — auto-discovers overlay apps from entry points
   identity.py           # User identity + agent_signature suffix policy
@@ -159,6 +159,7 @@ src/teatree/
   loop/                 # /loop topology (see §5.6)
     tick.py             # One tick: scan in parallel, dispatch to phase agents when needed, render statusline
     dispatch.py         # Signal → action mapping (statusline / agent / webhook)
+    rendering.py        # Classify dispatched actions per overlay; render anchor / action / in-flight rows
     statusline.py       # Statusline composition (zones, formatters) and file write
     scanners/           # Pure-Python signal collectors — one file each
       active_tickets.py
@@ -562,6 +563,8 @@ Each tick runs three stages:
 | `active_tickets` | Non-terminal `Ticket` rows (any state except `delivered`/`ignored`). | Surface FSM state in the statusline anchors zone, grouped by overlay and state: `[acme] started: #123 #456 · coded: #789`. Noise states (not_started, merged, delivered, shipped, in_review, retrospected) are filtered. For TOML overlays with their own project DB, `ExternalTicketsScanner` reads tickets via raw SQLite. |
 | `ticket_completion` | Post-ship `Ticket` rows (shipped/in_review/merged) whose upstream issue is done. | Mechanical inline action: transition the ticket through `request_review → mark_merged → retrospect` toward delivered. "Done" is overlay-configurable via `OverlayBase.is_issue_done()` — default checks GitHub issue state `∈ {closed, completed}`; GitLab overlays check for a process label (e.g. `Process:DEV Review`). This prevents marking multi-repo tickets done when only one MR merges. |
 
+**Agent dispatch via DB (not stdout, not files).** Every ``DispatchAction(kind="agent", …)`` produced by the dispatcher is persisted as a ``Ticket`` + initial ``Task`` row by ``teatree.loop.persistence.persist_agent_actions``. ``t3:reviewer`` agent actions create a ``Ticket(role="reviewer", issue_url=<pr_url>)`` plus a ``Task(phase="reviewing")``; ``t3:orchestrator`` auto-start actions create a ``Ticket(role="author")`` plus a ``Task(phase="coding")``. The ``/loop`` slot reads pending Tasks via ``t3 loop pending-spawn`` (Django queryset, no file IO) and spawns sub-agents in-session via its ``Agent`` tool, then claims each via ``t3 loop spawn-claim <task_id>`` so the next tick doesn't re-surface them. The statusline file is **display-only** and never an orchestration channel; tick stdout is also not used to ferry dispatches. When the reviewing task completes, ``Ticket.mark_reviewed_externally`` short-circuits the reviewer-role ticket to ``DELIVERED`` and writes the reviewed SHA back to ``ReviewerPrsScanner``'s cache, preventing re-spawn at the same SHA.
+
 **Why pure-Python scanners (not subagents):** the scan stage is deterministic I/O — fetch PR statuses, fetch mentions, query the DB. Modeling it as a Claude agent would burn tokens for work a typed Python function does cheaper, more reliably, and with reproducible tests. Claude is invoked only when judgment is needed (review the diff, decide the fix, draft a reply); for that, the loop calls the existing phase agents.
 
 **Why fat-loop, not many small loops:** Claude Code's `/loop` is session-scoped with a 50-task and 7-day expiry. One fat loop calling commands and skills costs one slot; N small loops would saturate the slot budget.
@@ -898,7 +901,7 @@ Each registered overlay gets a subcommand group (e.g., `t3 acme`). Commands dele
 - `t3 <overlay> full-status` — ticket/worktree/session summary
 - `t3 <overlay> agent [TASK]` — launch Claude Code with overlay context
 - `t3 <overlay> resetdb` — drop and recreate SQLite database
-- `t3 <overlay> worker` — start background task workers
+- `t3 <overlay> worker` — start background task workers (singleton — refuses a second instance while one is alive; uses `teatree.utils.singleton` over `$XDG_DATA_HOME/teatree/teatree-worker.pid`)
 
 **Management command groups** (each exposed as a sub-typer):
 
