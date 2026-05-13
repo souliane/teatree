@@ -1,12 +1,18 @@
 """CI CLI commands — pipeline helpers."""
 
+import json
 import os
+from pathlib import Path
 
 import typer
+from rich.console import Console
+from rich.table import Table
 
 from teatree.backends.protocols import CIService
+from teatree.utils.coverage_floor import measure_coverage
 
 ci_app = typer.Typer(no_args_is_help=True, help="CI pipeline helpers.")
+_console = Console()
 
 
 class CICommands:
@@ -149,6 +155,63 @@ def trigger_e2e(
         typer.echo(f"Error: {result['error']}")
         raise typer.Exit(code=1)
     typer.echo(f"Pipeline triggered: {result.get('web_url', result.get('id', 'unknown'))}")
+
+
+@ci_app.command(name="coverage")
+def coverage(
+    *,
+    output_json: bool = typer.Option(False, "--json", help="Output raw JSON"),
+    coverage_file: Path = typer.Option(
+        Path(".coverage"),
+        "--coverage-file",
+        help="Path to .coverage data file",
+    ),
+    pyproject: Path = typer.Option(
+        Path("pyproject.toml"),
+        "--pyproject",
+        help="Path to pyproject.toml",
+    ),
+) -> None:
+    """Print current coverage and the configured floor; non-zero on failure.
+
+    Reads ``[tool.coverage.report] fail_under`` and ``[tool.teatree.coverage]
+    per_module_floors`` from ``pyproject.toml``. Loads ``.coverage`` for the
+    measured percentages. Exits 1 if any floor is missed.
+    """
+    report = measure_coverage(pyproject_path=pyproject, coverage_data_file=coverage_file)
+
+    if output_json:
+        typer.echo(json.dumps(report.to_dict(), indent=2))
+        if not report.passes():
+            raise typer.Exit(code=1)
+        return
+
+    _console.print(f"[bold]Coverage floor:[/bold] {report.overall_floor}%")
+    if report.overall_percent is None:
+        _console.print(
+            f"[yellow]Coverage not measured (no .coverage at {coverage_file}). Run `uv run pytest` first.[/yellow]",
+        )
+        raise typer.Exit(code=1)
+
+    color = "green" if report.overall_percent >= report.overall_floor else "red"
+    _console.print(f"[bold]Overall:[/bold] [{color}]{report.overall_percent:.1f}%[/{color}]")
+
+    if report.module_results:
+        table = Table(title="Per-module floors", show_lines=False)
+        table.add_column("Module")
+        table.add_column("Floor", justify="right")
+        table.add_column("Actual", justify="right")
+        table.add_column("Status", justify="right")
+        for m in report.module_results:
+            actual = f"{m.percent:.1f}%" if m.percent is not None else "—"
+            ok = m.passes()
+            status_color = "green" if ok else "red"
+            status = "OK" if ok else "FAIL"
+            table.add_row(m.path, f"{m.floor}%", actual, f"[{status_color}]{status}[/{status_color}]")
+        _console.print(table)
+
+    if not report.passes():
+        raise typer.Exit(code=1)
 
 
 @ci_app.command(name="quality-check")

@@ -236,6 +236,8 @@ Usage: t3 ci [OPTIONS] COMMAND [ARGS]...
 │ fetch-errors        Fetch error logs from the latest CI pipeline.            │
 │ fetch-failed-tests  Extract failed test IDs from the latest CI pipeline.     │
 │ trigger-e2e         Trigger E2E tests on CI.                                 │
+│ coverage            Print current coverage and the configured floor;         │
+│                     non-zero on failure.                                     │
 │ quality-check       Run quality analysis (fetch test report from latest      │
 │                     pipeline).                                               │
 ╰──────────────────────────────────────────────────────────────────────────────╯
@@ -310,6 +312,27 @@ Usage: t3 ci trigger-e2e [OPTIONS] [BRANCH]
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 ci coverage`
+
+```
+Usage: t3 ci coverage [OPTIONS]
+
+ Print current coverage and the configured floor; non-zero on failure.
+
+ Reads `` fail_under`` and ``
+ per_module_floors`` from ``pyproject.toml``. Loads ``.coverage`` for the
+ measured percentages. Exits 1 if any floor is missed.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --json                       Output raw JSON                                 │
+│ --coverage-file        PATH  Path to .coverage data file                     │
+│                              [default: .coverage]                            │
+│ --pyproject            PATH  Path to pyproject.toml                          │
+│                              [default: pyproject.toml]                       │
+│ --help                       Show this message and exit.                     │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
