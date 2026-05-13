@@ -257,6 +257,7 @@ per_module_floors = [
   { path = "src/teatree/loop/persistence.py", floor = 80 },
   { path = "src/teatree/loop/rendering.py", floor = 80 },
   { path = "src/teatree/loop/dispatch.py", floor = 80 },
+  { path = "src/teatree/loop/pr_ticket_index.py", floor = 80 },
 ]
 
 [tool.uv.build-backend]

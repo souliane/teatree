@@ -20,9 +20,10 @@ from teatree.loop.dispatch import DispatchAction
 type Payload = Mapping[str, Any]
 
 # Matches ``Closes #123`` / ``Fixes: #456`` / ``Resolves #789`` (and the
-# plural/punctuation variants). Anchored at a word boundary so it doesn't
-# match ``preCloses#`` or similar. Same vocabulary as
-# ``teatree.core.runners.ship.sanitize_close_keywords`` to stay consistent.
+# plural/past-tense variants the platforms recognise — ``closed``, ``fixed``,
+# ``resolved``). Broader than ``sanitize_close_keywords`` in ship.py because
+# the parser must accept anything GitHub/GitLab auto-link, not just the
+# subset we emit. Anchored at a word boundary so ``preCloses#`` doesn't match.
 _CLOSE_KEYWORD_RE = re.compile(
     r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b[\s:]*#(\d+)",
     re.IGNORECASE,
