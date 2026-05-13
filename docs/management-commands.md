@@ -49,7 +49,6 @@ Service management.
 | `verify` | `--path` | dict | Checks that dev services respond via HTTP, then advances FSM. Discovers ports from docker-compose. |
 | `services` | `--path` | `RunCommands` | Returns the overlay's run commands for this worktree |
 | `backend` | `--path` | string | Starts the backend via docker-compose with allocated ports |
-| `frontend` | `--path` | string | Starts the frontend dev server on the host (background process) with dynamic port allocation |
 | `build-frontend` | `--path` | string | Builds the frontend app for production/testing via the overlay's `build-frontend` command |
 | `tests` | `--path`, `-- <extra args>` | string | Runs the project test suite. Extra arguments after `--` are appended to the test command. |
 

@@ -141,7 +141,7 @@ Commands to run services (backend, frontend, build-frontend, etc.) for a worktre
 
 #### `get_pre_run_steps(worktree: Worktree, service: str) -> list[ProvisionStep]`
 
-Steps to run before starting a specific service (e.g., copy customer config, refresh translations). Called for each service during `worktree start` and `run frontend`. Defaults to `[]`.
+Steps to run before starting a specific service (e.g., copy customer config, refresh translations). Called for each service during `worktree start`. Defaults to `[]`.
 
 #### `get_test_command(worktree: Worktree) -> list[str] | RunCommand`
 

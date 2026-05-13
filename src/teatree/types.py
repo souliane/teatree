@@ -15,14 +15,15 @@ from typing import TypedDict
 class RunCommand:
     """Structured run command with explicit working directory.
 
-    When ``host=True``, ``worktree start`` launches the process in the
-    background on the host after Docker services are up, instead of
-    relying on ``docker compose up`` to run it.
+    Used by ``OverlayBase.get_run_commands()`` to describe how each service
+    is launched. Every service comes up via ``docker compose up`` — the
+    overlay supplies argv + cwd metadata that other CLI verbs reuse
+    (``t3 <overlay> run tests``, ``run backend``, ``run build-frontend``).
+    The runner never spawns anything on the host.
     """
 
     args: list[str] = field(default_factory=list)
     cwd: Path | None = None
-    host: bool = False
 
 
 type RunCommands = dict[str, list[str] | RunCommand]
