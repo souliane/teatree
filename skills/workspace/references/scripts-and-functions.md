@@ -65,9 +65,8 @@ Run `t3 <overlay> --help` for the full list. Subcommand groups: `worktree`, `wor
 | `t3 <overlay> workspace ticket` | Create ticket workspace with git worktrees |
 | `t3 <overlay> workspace finalize` | Squash commits + rebase on default branch |
 | `t3 <overlay> workspace clean-all` | Prune merged/gone worktrees |
-| `t3 <overlay> run backend` | Start backend dev server |
-| `t3 <overlay> run frontend` | Start frontend dev server |
-| `t3 <overlay> run build-frontend` | Build frontend app |
+| `t3 <overlay> run backend` | Start backend dev server (docker compose) |
+| `t3 <overlay> run build-frontend` | Build frontend dist (served by the nginx service in compose) |
 | `t3 <overlay> run tests` | Run project tests |
 | `t3 <overlay> run verify` | Verify dev services respond via HTTP |
 | `t3 <overlay> e2e trigger-ci` | Trigger E2E tests on CI |
