@@ -93,7 +93,12 @@ class TestStartCommand:
         result = runner.invoke(loop_app, ["start", "--print-only"])
 
         assert result.exit_code == 0
-        assert "/loop 12m !t3 loop tick" in result.stdout
+        # The registration prompt now includes tick + pending-spawn dispatch instructions
+        # so the slot can call its Agent tool in-session for each pending Task.
+        assert "/loop 12m " in result.stdout
+        assert "t3 loop tick" in result.stdout
+        assert "t3 loop pending-spawn" in result.stdout
+        assert "t3 loop spawn-claim" in result.stdout
         assert "T3_LOOP_CADENCE" in result.stdout
 
     def test_inside_claude_session_falls_back_to_print(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -125,7 +130,12 @@ class TestStartCommand:
         ):
             runner.invoke(loop_app, ["start"])
 
-        execv_mock.assert_called_once_with("/usr/bin/claude", ["/usr/bin/claude", "/loop 10m !t3 loop tick"])
+        assert execv_mock.call_count == 1
+        argv = execv_mock.call_args.args[1]
+        assert argv[0] == "/usr/bin/claude"
+        assert argv[1].startswith("/loop 10m ")
+        assert "t3 loop tick" in argv[1]
+        assert "t3 loop pending-spawn" in argv[1]
 
 
 class TestStopCommand:

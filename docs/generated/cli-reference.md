@@ -954,10 +954,13 @@ Usage: t3 loop [OPTIONS] COMMAND [ARGS]...
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ tick    Run one tick: scan in parallel, dispatch, render statusline.         │
-│ status  Show the loop's last-rendered statusline.                            │
-│ start   Spawn a Claude Code session with the fat loop pre-registered.        │
-│ stop    Print the slot id to stop in the Claude Code session.                │
+│ tick           Run one tick: scan in parallel, dispatch, render statusline.  │
+│ status         Show the loop's last-rendered statusline.                     │
+│ pending-spawn  List pending Tasks the ``/loop`` slot should spawn            │
+│                in-session.                                                   │
+│ spawn-claim    Claim a Task so the next tick doesn't re-surface it.          │
+│ start          Spawn a Claude Code session with the fat loop pre-registered. │
+│ stop           Print the slot id to stop in the Claude Code session.         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -992,6 +995,44 @@ Usage: t3 loop status [OPTIONS]
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 loop pending-spawn`
+
+```
+Usage: t3 loop pending-spawn [OPTIONS]
+
+ List pending Tasks the ``/loop`` slot should spawn in-session.
+
+ Reads the dispatch DB (``Task`` rows in PENDING status) and prints
+ each with its ``subagent`` hint. The slot's session iterates and
+ calls ``Agent(subagent_type=…)`` once per entry, then calls
+ ``t3 loop spawn-claim <task_id>`` to mark the dispatch acknowledged.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --json          Emit pending list as JSON.                                   │
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 loop spawn-claim`
+
+```
+Usage: t3 loop spawn-claim [OPTIONS] TASK_ID
+
+ Claim a Task so the next tick doesn't re-surface it.
+
+ Slot calls this immediately after dispatching ``Agent(...)`` for a
+ pending Task. Claim is the boundary; ``complete`` happens when the
+ spawned sub-agent reports back via the standard TaskAttempt flow.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    task_id      INTEGER  Task PK to mark claimed. [required]               │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --claimed-by        TEXT  [default: loop-slot]                               │
+│ --help                    Show this message and exit.                        │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
