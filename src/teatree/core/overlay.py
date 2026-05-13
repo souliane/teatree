@@ -93,7 +93,7 @@ class OverlayConfig:
         if settings_module:
             self._load_settings(settings_module)
         if overlay_name:
-            self._load_toml_overrides(overlay_name)
+            self.apply_toml_overrides(overlay_name)
 
     def _load_settings(self, module_path: str) -> None:
         mod = import_module(module_path)
@@ -108,7 +108,14 @@ class OverlayConfig:
             else:
                 setattr(self, name.lower(), value)
 
-    def _load_toml_overrides(self, overlay_name: str) -> None:
+    def apply_toml_overrides(self, overlay_name: str) -> None:
+        """Apply ``[overlays.<overlay_name>]`` overrides from ``~/.teatree.toml``.
+
+        Called automatically by ``__init__`` when an ``overlay_name`` is
+        supplied, and by ``overlay_loader._discover_overlays`` for every
+        entry-point overlay (so ``OverlayConfig`` subclasses don't have to
+        opt in by threading ``overlay_name`` through every ``super().__init__``).
+        """
         from teatree.config import load_config  # noqa: PLC0415
 
         config = load_config()
