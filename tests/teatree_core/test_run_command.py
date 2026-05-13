@@ -181,11 +181,6 @@ class TestRunCommand(TestCase):
                 patch.object(run_mod, "get_overlay", return_value=mock_overlay),
                 patch.object(utils_run_mod.subprocess, "run", side_effect=fake_run),
                 patch("teatree.config.load_config", return_value=mock_config),
-                patch.object(
-                    run_mod,
-                    "find_free_ports",
-                    return_value={"backend": 8001, "frontend": 4201, "postgres": 5432, "redis": 6379},
-                ),
             ):
                 result = cast("str", call_command("run", "backend", path=wt_path))
 

@@ -161,11 +161,6 @@ class TestLifecycleCommands(TestCase):
                 patch.dict("os.environ", {"T3_ORIG_CWD": wt_path}),
                 patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
                 patch.object(utils_run_mod, "subprocess") as mock_sp,
-                patch.object(
-                    worktree_cmd,
-                    "find_free_ports",
-                    return_value={"backend": 8001, "frontend": 4201, "postgres": 5432, "redis": 6379},
-                ),
                 patch.object(worktree_cmd, "get_worktree_ports", return_value={"backend": 8001, "frontend": 4201}),
                 patch("teatree.utils.redis_container.ensure_running"),
                 patch("teatree.utils.redis_container.flushdb"),

@@ -78,7 +78,6 @@ class TestWorktreeStartChainsProbes(TestCase):
                 patch.object(worktree_mod, "resolve_worktree", return_value=wt),
                 patch.object(worktree_mod, "get_overlay", return_value=mock_overlay),
                 patch.object(worktree_mod, "WorktreeStartRunner", return_value=mock_runner),
-                patch.object(worktree_mod, "find_free_ports", return_value={"backend": 8001}),
                 patch("teatree.config.load_config", return_value=mock_config),
                 pytest.raises(SystemExit) as exc,
             ):
@@ -105,7 +104,6 @@ class TestWorktreeStartChainsProbes(TestCase):
                 patch.object(worktree_mod, "resolve_worktree", return_value=wt),
                 patch.object(worktree_mod, "get_overlay", return_value=mock_overlay),
                 patch.object(worktree_mod, "WorktreeStartRunner", return_value=mock_runner),
-                patch.object(worktree_mod, "find_free_ports", return_value={"backend": 8001}),
                 patch("teatree.config.load_config", return_value=mock_config),
             ):
                 result = call_command("worktree", "start", path=str(wt_path))
@@ -131,7 +129,6 @@ class TestWorktreeStartChainsProbes(TestCase):
                 patch.object(worktree_mod, "resolve_worktree", return_value=wt),
                 patch.object(worktree_mod, "get_overlay", return_value=mock_overlay),
                 patch.object(worktree_mod, "WorktreeStartRunner", return_value=mock_runner),
-                patch.object(worktree_mod, "find_free_ports", return_value={"backend": 8001}),
                 patch("teatree.config.load_config", return_value=mock_config),
             ):
                 result = call_command("worktree", "start", path=str(wt_path))
@@ -237,7 +234,6 @@ class TestWorkspaceStartChainsProbes(TestCase):
                 patch.object(workspace_mod, "resolve_worktree", return_value=anchor),
                 patch.object(workspace_mod, "get_overlay", return_value=mock_overlay),
                 patch.object(workspace_mod, "WorktreeStartRunner", return_value=mock_runner),
-                patch.object(workspace_mod, "find_free_ports", return_value={"backend": 8001}),
                 pytest.raises(SystemExit) as exc,
             ):
                 call_command("workspace", "start", path=str(wt_a))
@@ -271,7 +267,6 @@ class TestWorkspaceStartChainsProbes(TestCase):
                 patch.object(workspace_mod, "resolve_worktree", return_value=anchor),
                 patch.object(workspace_mod, "get_overlay", return_value=mock_overlay),
                 patch.object(workspace_mod, "WorktreeStartRunner", return_value=mock_runner),
-                patch.object(workspace_mod, "find_free_ports", return_value={"backend": 8001}),
             ):
                 result = call_command("workspace", "start", path=str(wt_a))
             assert "started" in result
@@ -304,7 +299,6 @@ class TestWorkspaceStartChainsProbes(TestCase):
                 patch.object(workspace_mod, "resolve_worktree", return_value=anchor),
                 patch.object(workspace_mod, "get_overlay", return_value=mock_overlay),
                 patch.object(workspace_mod, "WorktreeStartRunner", return_value=mock_runner),
-                patch.object(workspace_mod, "find_free_ports", return_value={"backend": 8001}),
             ):
                 result = call_command("workspace", "start", path=str(wt_a))
             assert "started" in result
