@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 from pathlib import Path
@@ -13,6 +14,9 @@ from teatree.utils.ports import find_free_ports
 from teatree.utils.run import DEVNULL, TimeoutExpired, run_allowed_to_fail, spawn
 
 logger = logging.getLogger(__name__)
+
+# Build can take minutes on first start — much longer than the 60s default for `up`.
+DOCKER_COMPOSE_BUILD_TIMEOUT = 600
 
 
 def compose_project(worktree: Worktree) -> str:
@@ -123,6 +127,7 @@ class WorktreeStartRunner(RunnerBase):
         )
 
     def _docker_compose_up(self, project: str, compose_file: str, env: dict[str, str]) -> bool:
+        self._ensure_images_built(project, compose_file, env)
         cmd = [
             "docker",
             "compose",
@@ -148,6 +153,98 @@ class WorktreeStartRunner(RunnerBase):
             )
             return False
         return True
+
+    def _ensure_images_built(self, project: str, compose_file: str, env: dict[str, str]) -> None:
+        """Build any compose service whose ``build:`` image is missing locally.
+
+        ``up --no-build --pull=never`` fails the first time a worktree's
+        compose override references a service that builds from a Dockerfile
+        (e.g. an overlay's docgen sidecar) — neither pull nor build runs, so
+        the missing image is a hard error. Pre-flight per service, build the
+        missing ones once, then let the subsequent ``up`` reuse the local
+        images on every later start.
+        """
+        services = self._enumerate_buildable_services(project, compose_file, env)
+        if not services:
+            return
+        missing = sorted(name for name, image in services.items() if not self._image_exists(image, env))
+        if not missing:
+            return
+        logger.info("Building missing compose images for services: %s", missing)
+        cmd = [
+            "docker",
+            "compose",
+            "-p",
+            project,
+            *_compose_files(compose_file),
+            "build",
+            *missing,
+        ]
+        timeout = self.timeouts.get("docker_compose_build") or DOCKER_COMPOSE_BUILD_TIMEOUT
+        try:
+            result = run_allowed_to_fail(cmd, env=env, expected_codes=None, timeout=timeout)
+        except TimeoutExpired:
+            logger.warning("docker compose build timed out after %ss", timeout)
+            return
+        if result.returncode != 0:
+            logger.warning(
+                "docker compose build failed (exit %s): %s",
+                result.returncode,
+                result.stderr.strip()[:500],
+            )
+
+    @staticmethod
+    def _enumerate_buildable_services(project: str, compose_file: str, env: dict[str, str]) -> dict[str, str]:
+        """Return ``{service_name: resolved_image_tag}`` for services with a ``build:`` section.
+
+        Returns an empty dict on any failure — older compose versions without
+        ``--format json``, unreachable daemons, malformed configs. The caller
+        treats an empty dict as "nothing to preflight" and lets ``up`` proceed
+        naturally; if ``up`` then fails on a missing image, the existing
+        warning path surfaces the cause.
+        """
+        cmd = [
+            "docker",
+            "compose",
+            "-p",
+            project,
+            *_compose_files(compose_file),
+            "config",
+            "--format",
+            "json",
+        ]
+        try:
+            result = run_allowed_to_fail(cmd, env=env, expected_codes=None, timeout=30)
+        except TimeoutExpired:
+            logger.warning("docker compose config timed out — skipping image preflight")
+            return {}
+        if result.returncode != 0:
+            logger.info(
+                "docker compose config failed (exit %s) — skipping image preflight",
+                result.returncode,
+            )
+            return {}
+        try:
+            config = json.loads(result.stdout)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            logger.info("docker compose config returned non-JSON — skipping image preflight")
+            return {}
+        if not isinstance(config, dict):
+            return {}
+        services: dict[str, str] = {}
+        for name, spec in (config.get("services") or {}).items():
+            if isinstance(spec, dict) and "build" in spec and isinstance(spec.get("image"), str):
+                services[name] = spec["image"]
+        return services
+
+    @staticmethod
+    def _image_exists(image: str, env: dict[str, str]) -> bool:
+        cmd = ["docker", "image", "inspect", image]
+        try:
+            result = run_allowed_to_fail(cmd, env=env, expected_codes=None, timeout=10)
+        except TimeoutExpired:
+            return False
+        return result.returncode == 0
 
     @staticmethod
     def _start_host_processes(
