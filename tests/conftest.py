@@ -136,16 +136,6 @@ def _clean_registry() -> Iterator[None]:
     clear()
 
 
-@pytest.fixture(autouse=True)
-def _no_system_port_checks(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Prevent lsof calls from find_free_ports during tests (legacy scripts only)."""
-    try:
-        import lib.env  # noqa: PLC0415, F401
-    except ImportError:
-        return
-    monkeypatch.setattr("lib.env.port_in_use", lambda _port: False)
-
-
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     """Prefer django.test.TestCase for DB-heavy tests; allow @pytest.mark.django_db on classes.
 

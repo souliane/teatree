@@ -16,7 +16,6 @@ from django.core.management import call_command
 from django.test import TestCase, override_settings
 
 import teatree.core.management.commands._workspace_cleanup as ws_cleanup_mod
-import teatree.core.management.commands.run as run_mod
 import teatree.core.management.commands.workspace as workspace_mod
 import teatree.core.management.commands.worktree as worktree_mod
 import teatree.core.overlay_loader as overlay_loader_mod
@@ -221,12 +220,6 @@ class TestLifecycleProvision(TestCase):
         with (
             _patch_overlay(),
             patch.object(utils_run_mod, "subprocess") as mock_start_sp,
-            patch.object(
-                worktree_mod,
-                "find_free_ports",
-                return_value={"backend": 8001, "frontend": 4201, "postgres": 5432, "redis": 6379},
-            ),
-            patch("teatree.config.load_config", return_value=mock_config),
         ):
             mock_start_sp.run.return_value = MagicMock(returncode=0)
             call_command("worktree", "start", path=backend_path)
@@ -540,11 +533,6 @@ class TestRunBackend(TestCase):
             _patch_overlay(),
             patch.object(utils_run_mod.subprocess, "run", return_value=MagicMock(returncode=0)) as mock_sp_run,
             patch("teatree.config.load_config", return_value=mock_config),
-            patch.object(
-                run_mod,
-                "find_free_ports",
-                return_value={"backend": 8001, "frontend": 4201, "postgres": 5432, "redis": 6379},
-            ),
         ):
             result = cast("str", call_command("run", "backend", path=str(wt_dir)))
 
@@ -647,11 +635,6 @@ class TestRunBackend(TestCase):
             _patch_overlay(),
             patch.object(utils_run_mod.subprocess, "run", return_value=MagicMock(returncode=0)) as mock_run_sp,
             patch("teatree.config.load_config", return_value=mock_config),
-            patch.object(
-                run_mod,
-                "find_free_ports",
-                return_value={"backend": 8001, "frontend": 4201, "postgres": 5432, "redis": 6379},
-            ),
         ):
             run_result = cast("str", call_command("run", "backend", path=backend_wt_path))
 

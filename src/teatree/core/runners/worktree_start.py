@@ -10,7 +10,7 @@ from teatree.core.runners.base import RunnerBase, RunnerResult
 from teatree.core.step_runner import run_provision_steps
 from teatree.core.worktree_env import write_env_cache
 from teatree.timeouts import TimeoutConfig, load_timeouts
-from teatree.utils.ports import find_free_ports
+from teatree.utils.ports import get_worktree_ports
 from teatree.utils.run import TimeoutExpired, run_allowed_to_fail
 
 logger = logging.getLogger(__name__)
@@ -23,11 +23,6 @@ def compose_project(worktree: Worktree) -> str:
     """Return the docker-compose project name for this worktree."""
     ticket = worktree.ticket
     return f"{worktree.repo_path}-wt{ticket.ticket_number}" if ticket else worktree.repo_path
-
-
-def _compose_env(ports: dict[str, int], overlay: OverlayBase) -> dict[str, str]:
-    """Render ``${KEY}_HOST_PORT`` env vars (plus overlay-specific aliases) for compose."""
-    return overlay.get_port_env(ports)
 
 
 def _compose_files(compose_file: str) -> list[str]:
@@ -56,10 +51,10 @@ class WorktreeStartRunner(RunnerBase):
     """Run the docker side-effects of ``Worktree.start_services()``.
 
     Executes after the FSM advances to ``SERVICES_UP``. Stops any previous
-    containers, refreshes the env cache with the freshly allocated ports,
-    runs overlay pre-run steps, and starts the docker-compose project.
-    Idempotent: re-firing replays the down/up cycle so a partially-failed
-    previous run gets a clean retry.
+    containers, runs overlay pre-run steps, brings up docker-compose, then
+    queries the auto-mapped host ports and stores them in
+    ``Worktree.extra["ports"]``. Idempotent: re-firing replays the down/up
+    cycle so a partially-failed previous run gets a clean retry.
     """
 
     def __init__(
@@ -67,12 +62,10 @@ class WorktreeStartRunner(RunnerBase):
         worktree: Worktree,
         *,
         overlay: OverlayBase | None = None,
-        ports: dict[str, int] | None = None,
         timeouts: TimeoutConfig | None = None,
     ) -> None:
         self.worktree = worktree
         self.overlay = overlay or get_overlay()
-        self.ports = ports if ports is not None else self._allocate_ports(self.overlay, worktree)
         self.timeouts = timeouts or load_timeouts(self.overlay)
 
     def run(self) -> RunnerResult:
@@ -82,13 +75,7 @@ class WorktreeStartRunner(RunnerBase):
 
         docker_compose_down(project, timeout=self.timeouts.get("docker_compose_down"))
 
-        port_env = _compose_env(self.ports, overlay)
-        for key, value in port_env.items():
-            os.environ[key] = value
-
         commands = overlay.get_run_commands(worktree)
-        # Dedupe by step name — overlays commonly return the same provisioning
-        # steps for related services (e.g. frontend + build-frontend share setup).
         seen_step_names: set[str] = set()
         pre_run_steps = []
         for service_name in commands:
@@ -105,14 +92,15 @@ class WorktreeStartRunner(RunnerBase):
         if not compose_file:
             return RunnerResult(ok=True, detail=f"no compose file for {worktree.repo_path}")
 
-        env = {**os.environ, **port_env, **overlay.get_env_extra(worktree)}
+        env = {**os.environ, **overlay.get_env_extra(worktree)}
         env.pop("VIRTUAL_ENV", None)
         if not self._docker_compose_up(project, compose_file, env):
             return RunnerResult(ok=False, detail=f"docker compose up failed for {worktree.repo_path}")
 
+        ports = get_worktree_ports(project, compose_file=compose_file)
         extra = worktree.extra or {}
         extra["services"] = list(commands)
-        extra["ports"] = self.ports
+        extra["ports"] = ports
         worktree.extra = extra
         worktree.save(update_fields=["extra"])
         return RunnerResult(ok=True, detail=f"started {len(commands)} service(s)")
@@ -236,10 +224,3 @@ class WorktreeStartRunner(RunnerBase):
         except TimeoutExpired:
             return False
         return result.returncode == 0
-
-    @staticmethod
-    def _allocate_ports(overlay: OverlayBase, worktree: Worktree) -> dict[str, int]:
-        from teatree.config import load_config  # noqa: PLC0415
-
-        workspace = str(load_config().user.workspace_dir)
-        return find_free_ports(workspace, overlay.get_required_ports(worktree))

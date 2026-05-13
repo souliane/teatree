@@ -32,7 +32,7 @@ from teatree.core.runners.worktree_start import compose_project
 from teatree.core.worktree_env import CACHE_FILENAME
 from teatree.docker.build import ensure_base_image
 from teatree.utils import redis_container
-from teatree.utils.ports import find_free_ports, get_worktree_ports
+from teatree.utils.ports import get_worktree_ports
 from teatree.utils.run import TimeoutExpired, run_allowed_to_fail
 
 
@@ -191,27 +191,21 @@ class Command(TyperCommand):
         Thin wrapper around ``Worktree.start_services()``: the FSM advances
         to SERVICES_UP and enqueues ``execute_worktree_start``; the runner
         also runs synchronously here so the operator sees immediate output.
-        Allocates free host ports, refreshes the env cache, runs overlay
-        pre-run steps, then ``docker compose up -d``. After the runner
-        succeeds, runs the overlay's readiness probes — exits 1 if any fail.
+        Refreshes the env cache, runs overlay pre-run steps, then
+        ``docker compose up -d``. Docker auto-maps host ports; the actual
+        ports are then queried via ``docker compose port`` and stored on
+        ``Worktree.extra["ports"]``. After the runner succeeds, runs the
+        overlay's readiness probes — exits 1 if any fail.
         """
         worktree = resolve_worktree(path)
         resolved_overlay = get_overlay()
-
-        from teatree.config import load_config  # noqa: PLC0415
-
-        ports = find_free_ports(
-            str(load_config().user.workspace_dir),
-            resolved_overlay.get_required_ports(worktree),
-        )
-        self.stdout.write(f"  Ports: {ports}")
 
         commands = list(resolved_overlay.get_run_commands(worktree))
         with transaction.atomic():
             worktree.start_services(services=commands)
             worktree.save()
 
-        result = WorktreeStartRunner(worktree, overlay=resolved_overlay, ports=ports).run()
+        result = WorktreeStartRunner(worktree, overlay=resolved_overlay).run()
         worktree.refresh_from_db()
         self.stdout.write(f"  {result.detail}")
         if not result.ok:

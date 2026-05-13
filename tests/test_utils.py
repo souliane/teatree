@@ -1,6 +1,4 @@
 import os
-import signal
-import socket
 from pathlib import Path
 from subprocess import CompletedProcess
 from unittest.mock import patch
@@ -10,89 +8,6 @@ import pytest
 from teatree.backends import gitlab_api
 from teatree.utils import db, git, ports
 from teatree.utils import run as utils_run_mod
-
-
-def test_find_free_ports_returns_only_requested_keys(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """find_free_ports returns a dict with exactly the keys the overlay requested.
-
-    Redis is not allocated per-worktree: a single shared teatree-redis
-    container on localhost:6379 serves every ticket.
-    """
-    monkeypatch.setattr(ports, "port_in_use", lambda port: False)
-
-    result = ports.find_free_ports(str(tmp_path), {"backend", "frontend", "postgres"})
-    assert isinstance(result, dict)
-    assert set(result.keys()) == {"backend", "frontend", "postgres"}
-    assert result["backend"] >= 8001
-    assert result["frontend"] >= 4201
-    assert result["postgres"] >= 5432
-
-
-def test_find_free_ports_returns_empty_for_no_keys(tmp_path: Path) -> None:
-    """find_free_ports returns an empty dict when the overlay declares no required ports."""
-    result = ports.find_free_ports(str(tmp_path), set())
-    assert result == {}
-
-
-def test_find_free_ports_supports_custom_key(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """find_free_ports allocates a port for an overlay-declared custom key."""
-    monkeypatch.setattr(ports, "port_in_use", lambda port: False)
-    result = ports.find_free_ports(str(tmp_path), {"web"})
-    assert set(result.keys()) == {"web"}
-    assert isinstance(result["web"], int)
-    assert result["web"] > 0
-
-
-def test_find_free_ports_skips_occupied(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """find_free_ports skips ports that are already in use."""
-    occupied = {8001, 4201}
-    monkeypatch.setattr(ports, "port_in_use", lambda port: port in occupied)
-
-    result = ports.find_free_ports(str(tmp_path), {"backend", "frontend"})
-    assert result["backend"] > 8001  # skipped 8001
-    assert result["frontend"] > 4201  # skipped 4201
-
-
-def test_revalidate_ports_keeps_free_ports(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """revalidate_ports keeps ports that are still free."""
-    monkeypatch.setattr(ports, "port_in_use", lambda port: False)
-    original = {"backend": 8001, "frontend": 4201, "postgres": 5432}
-    result = ports.revalidate_ports(original, str(tmp_path))
-    assert result == original
-
-
-def test_revalidate_ports_replaces_occupied(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """revalidate_ports replaces ports that became occupied."""
-    occupied = {8001}
-    monkeypatch.setattr(ports, "port_in_use", lambda port: port in occupied)
-    original = {"backend": 8001, "frontend": 4201, "postgres": 5432}
-    result = ports.revalidate_ports(original, str(tmp_path))
-    assert result["backend"] != 8001
-    assert result["backend"] > 8000
-    assert result["frontend"] == 4201  # unchanged
-
-
-def test_port_in_use_detects_bound_socket() -> None:
-    """port_in_use returns True for a bound port and False for an unbound one."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.bind(("localhost", 0))
-        sock.listen()
-        occupied_port = sock.getsockname()[1]
-        assert ports.port_in_use(occupied_port) is True
-
-
-def test_port_in_use_returns_false_for_dummy_socket(monkeypatch: pytest.MonkeyPatch) -> None:
-    """port_in_use returns False when bind succeeds."""
-
-    class DummySocket:
-        def bind(self, _address: tuple[str, int]) -> None:
-            return None
-
-        def close(self) -> None:
-            return None
-
-    monkeypatch.setattr(ports.socket, "socket", lambda family, sock_type: DummySocket())
-    assert ports.port_in_use(12345) is False
 
 
 def test_get_service_port_parses_docker_compose_output(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -119,7 +34,7 @@ def test_get_worktree_ports_queries_all_services(monkeypatch: pytest.MonkeyPatch
     """get_worktree_ports queries all compose services and returns named ports."""
     port_map = {
         ("web", 8000): "0.0.0.0:8042\n",
-        ("frontend", 4200): "0.0.0.0:4242\n",
+        ("frontend", 80): "0.0.0.0:4242\n",
         ("db", 5432): "",  # not running
     }
 
@@ -403,34 +318,6 @@ def test_worktree_add_with_and_without_create_branch(monkeypatch: pytest.MonkeyP
     assert git.worktree_add("/tmp/r", "/tmp/wt2", "feat-1", create_branch=False) is True
     assert "-b" not in calls[-1]
     assert "feat-1" in calls[-1]
-
-
-def test_free_port_kills_process(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(ports, "port_in_use", lambda _port: True)
-    monkeypatch.setattr(
-        utils_run_mod.subprocess,
-        "run",
-        lambda *_a, **_k: CompletedProcess([], 0, stdout="12345\n"),
-    )
-    killed: list[tuple[int, int]] = []
-    with patch("os.kill", side_effect=lambda pid, sig: killed.append((pid, sig))):
-        assert ports.free_port(8001) == 12345
-    assert killed == [(12345, signal.SIGTERM)]
-
-
-def test_free_port_returns_none_when_not_in_use(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(ports, "port_in_use", lambda _port: False)
-    assert ports.free_port(8001) is None
-
-
-def test_free_port_returns_none_when_lsof_finds_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(ports, "port_in_use", lambda _port: True)
-    monkeypatch.setattr(
-        utils_run_mod.subprocess,
-        "run",
-        lambda *_a, **_k: CompletedProcess([], 1, stdout=""),
-    )
-    assert ports.free_port(8001) is None
 
 
 def test_db_restore_uses_pg_restore_when_supported(monkeypatch: pytest.MonkeyPatch) -> None:

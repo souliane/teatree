@@ -2204,11 +2204,6 @@ class TestRunBackend(TestCase):
             with (
                 patch.object(utils_run_mod.subprocess, "run") as mock_run,
                 patch("teatree.config.load_config", return_value=mock_config),
-                patch.object(
-                    run_mod,
-                    "find_free_ports",
-                    return_value={"backend": 8001, "frontend": 4201, "postgres": 5432, "redis": 6379},
-                ),
             ):
                 result = cast("str", call_command("run", "backend", path=str(wt_dir)))
 
@@ -2235,11 +2230,6 @@ class TestRunBackend(TestCase):
             mock_config.user.workspace_dir = tmp_path
             with (
                 patch("teatree.config.load_config", return_value=mock_config),
-                patch.object(
-                    run_mod,
-                    "find_free_ports",
-                    return_value={"backend": 8001, "frontend": 4201, "postgres": 5432, "redis": 6379},
-                ),
             ):
                 result = cast("str", call_command("run", "backend", path=str(wt_dir)))
 
@@ -3582,11 +3572,6 @@ class TestLifecycleStart(TestCase):
             with (
                 patch.object(worktree_mod, "get_overlay", return_value=mock_overlay),
                 patch.object(utils_run_mod, "subprocess") as mock_sp,
-                patch.object(
-                    worktree_mod,
-                    "find_free_ports",
-                    return_value={"backend": 8001, "frontend": 4201, "postgres": 5432, "redis": 6379},
-                ),
                 patch("teatree.config.load_config", return_value=mock_config),
             ):
                 mock_sp.run.return_value = MagicMock(returncode=0)
@@ -3637,11 +3622,6 @@ class TestLifecycleStart(TestCase):
             with (
                 patch.object(worktree_mod, "get_overlay", return_value=mock_overlay),
                 patch.object(utils_run_mod, "subprocess") as mock_sp,
-                patch.object(
-                    worktree_mod,
-                    "find_free_ports",
-                    return_value={"backend": 8001, "frontend": 4201, "postgres": 5432, "redis": 6379},
-                ),
                 patch("teatree.config.load_config", return_value=mock_config),
             ):
                 mock_sp.run.return_value = MagicMock(returncode=0)
@@ -3698,11 +3678,6 @@ class TestLifecycleStart(TestCase):
             with (
                 patch.object(worktree_mod, "get_overlay", return_value=mock_overlay),
                 patch.object(utils_run_mod, "subprocess") as mock_sp,
-                patch.object(
-                    worktree_mod,
-                    "find_free_ports",
-                    return_value={"backend": 8001, "frontend": 4201, "postgres": 5432, "redis": 6379},
-                ),
                 patch("teatree.config.load_config", return_value=mock_config),
             ):
                 mock_sp.run.side_effect = _mock_run
@@ -3814,11 +3789,6 @@ class TestImagePreflight(TestCase):
             with (
                 patch.object(worktree_mod, "get_overlay", return_value=mock_overlay),
                 patch.object(utils_run_mod, "subprocess") as mock_sp,
-                patch.object(
-                    worktree_mod,
-                    "find_free_ports",
-                    return_value={"backend": 8001, "frontend": 4201, "postgres": 5432, "redis": 6379},
-                ),
                 patch("teatree.config.load_config", return_value=mock_config),
             ):
                 mock_sp.run.side_effect = _mock_run
@@ -3857,11 +3827,6 @@ class TestImagePreflight(TestCase):
             with (
                 patch.object(worktree_mod, "get_overlay", return_value=mock_overlay),
                 patch.object(utils_run_mod, "subprocess") as mock_sp,
-                patch.object(
-                    worktree_mod,
-                    "find_free_ports",
-                    return_value={"backend": 8001, "frontend": 4201, "postgres": 5432, "redis": 6379},
-                ),
                 patch("teatree.config.load_config", return_value=mock_config),
             ):
                 mock_sp.run.side_effect = _mock_run
@@ -3894,11 +3859,6 @@ class TestImagePreflight(TestCase):
             with (
                 patch.object(worktree_mod, "get_overlay", return_value=mock_overlay),
                 patch.object(utils_run_mod, "subprocess") as mock_sp,
-                patch.object(
-                    worktree_mod,
-                    "find_free_ports",
-                    return_value={"backend": 8001, "frontend": 4201, "postgres": 5432, "redis": 6379},
-                ),
                 patch("teatree.config.load_config", return_value=mock_config),
             ):
                 mock_sp.run.side_effect = _mock_run
