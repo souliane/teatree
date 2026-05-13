@@ -121,7 +121,10 @@ class Task(models.Model):
         ticket = self.ticket
         ticket.refresh_from_db()
         with transaction.atomic():
-            if self.phase == "scoping" and ticket.state == Ticket.State.SCOPED:
+            if self.phase == "reviewing" and ticket.role == Ticket.Role.REVIEWER:
+                ticket.mark_reviewed_externally()
+                ticket.save()
+            elif self.phase == "scoping" and ticket.state == Ticket.State.SCOPED:
                 ticket.start()
                 ticket.save()
             elif self.phase == "coding" and ticket.state == Ticket.State.STARTED:
