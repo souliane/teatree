@@ -47,11 +47,45 @@ From zero to ready-to-code. Combines understanding the ticket with setting up th
 
 ### 1. Fetch Issue Context
 
-- Fetch full issue description + ALL comments using the project's issue tracker (e.g., `glab issue view`).
-- If linked to a PR: `glab mr view` for review-comment tasks.
-- Download all embedded images from the issue. **Before reading any image**, validate it with `file <path>` — only read raster images (PNG, JPEG, GIF, WebP). Non-raster files (SVG, XML, HTML) or corrupt/empty files will poison the conversation context with unrecoverable "Could not process image" errors.
-- For referenced external context (Notion, Slack, etc.): use CLI tools when available, MCP only for services without a CLI.
-- **Deep-fetch linked pages:** When external context (Notion, Confluence, etc.) contains links to sub-pages, automatically fetch those too — including their discussions/comments. Don't wait for the user to ask. Enable `include_discussions: true` when fetching Notion pages to surface resolved discussions that clarify requirements.
+#### One URL Is Enough (Non-Negotiable)
+
+When the user pastes **any single URL** — Notion page, GitLab/GitHub issue/MR/PR, Slack message — that is the **starting point**, not the complete brief. Traverse outward exhaustively until every reachable artifact has been gathered. Do not ask the user for more URLs that you could have followed from the one they gave you.
+
+The user should be able to type "review <one URL>" and have the agent assemble:
+
+- the page/issue body
+- every comment, discussion, inline thread, and resolved discussion
+- every linked sub-page, child Notion page, attached PDF, attached image
+- every linked GitLab/GitHub issue or MR/PR — recursively (an issue's linked MRs link back to comments worth reading)
+- every linked Slack thread (parent message + all replies)
+- the ticket's referenced spec attachments — never skip a PDF just because it's hard to download
+
+Asking the user for additional URLs they've already cross-linked is a retro-worthy failure.
+
+#### Per-Platform Traversal
+
+| Starting URL | What to traverse |
+|---|---|
+| **Notion page** | Page text with `include_discussions=true`. Every `<page-discussions>` entry. Every embedded image. Every `<file>` attachment → download with `t3 tool notion-download` (signed URL from a Brave click). The `GitLab Reference` / `Source` / `Linked Issue` properties → fetch that issue too. Any `notion.so/<id>` links inside the body → fetch each as a child. Slack `archives/.../p<ts>` mentions → fetch that thread. |
+| **GitLab issue / MR** | Body, `/discussions`, `/notes` (paginated), `related_merge_requests` for issues — fetch every related MR's discussions too. Author + assignees. Description-embedded URLs (Notion, Slack, sibling MRs). Any uploaded files (`uploads/<secret>/<file>`). |
+| **GitHub issue / PR** | Body, all comments, review comments, linked PRs/issues, every embedded image. |
+| **Slack message link** (`archives/<channel>/p<ts>`) | The thread parent + all replies via `slack_read_thread`. Any mentioned tickets / Notion pages in the thread → recurse. |
+
+#### Tooling Rules
+
+- **CLI over MCP** — use `glab`, `gh`, `t3 tool notion-download` first; reach for MCP only for services without a CLI.
+- **Image safety** — before reading any downloaded image, validate it with `file <path>`. Only raster (PNG/JPEG/GIF/WebP) are safe to read. Non-raster (SVG/XML/HTML) or empty/corrupt files will poison the conversation context with unrecoverable "Could not process image" errors.
+- **Pagination** — `glab api .../notes` returns one page (typically 20). Use `?per_page=100` or `--paginate` and de-duplicate.
+- **Inaccessible sources** — if a link points to a source you cannot reach (e.g., partner Jira behind SSO), STOP and report it. Do not silently proceed with a partial picture.
+
+#### Stop Conditions
+
+Stop traversing only when:
+
+- Every link encountered has been visited or explicitly classified as out-of-scope (e.g., the overlay declares a host as inaccessible).
+- The signal-to-noise ratio of further fetches is clearly low (e.g., a 200-comment thread where the last 50 are reactions/emojis).
+
+If you stop before exhausting the reachable graph, **explicitly tell the user what you skipped and why**.
 
 ### 1b. Check For Resolved-But-Open Issues
 
