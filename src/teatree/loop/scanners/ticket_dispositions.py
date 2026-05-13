@@ -127,6 +127,7 @@ class TicketDispositionScanner:
                     summary=f"Ticket {ticket.ticket_number} — {reason}",
                     payload={
                         "ticket_id": ticket.pk,
+                        "ticket_number": ticket.ticket_number,
                         "ticket_state": ticket.state,
                         "issue_url": ticket.issue_url,
                         "reason": reason,
