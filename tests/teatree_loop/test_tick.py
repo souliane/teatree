@@ -160,7 +160,7 @@ def test_tick_dispatches_agent_actions_without_rendering_them(tmp_path: Path) ->
 def test_tick_renders_unknown_action_zone_as_in_flight(tmp_path: Path) -> None:
     """A statusline action with an unrecognized zone falls back to in_flight."""
     from teatree.loop.dispatch import DispatchAction  # noqa: PLC0415
-    from teatree.loop.tick import _zones_for  # noqa: PLC0415
+    from teatree.loop.rendering import zones_for as _zones_for  # noqa: PLC0415
 
     actions = [DispatchAction(kind="statusline", zone="bogus_zone", detail="x")]
     zones = _zones_for(actions)
@@ -219,39 +219,57 @@ def test_build_default_jobs_tags_per_overlay() -> None:
 
 def test_zones_groups_disposition_candidates_by_reason(tmp_path: Path) -> None:
     from teatree.loop.dispatch import DispatchAction  # noqa: PLC0415
-    from teatree.loop.tick import _zones_for  # noqa: PLC0415
+    from teatree.loop.rendering import zones_for as _zones_for  # noqa: PLC0415
 
     actions = [
         DispatchAction(
             kind="statusline",
             zone="action_needed",
             detail="Ticket 55 — issue_closed",
-            payload={"reason": "issue_closed", "overlay": "teatree"},
+            payload={
+                "reason": "issue_closed",
+                "overlay": "teatree",
+                "url": "https://example.com/issues/55",
+            },
         ),
         DispatchAction(
             kind="statusline",
             zone="action_needed",
             detail="Ticket 114 — issue_closed",
-            payload={"reason": "issue_closed", "overlay": "teatree"},
+            payload={
+                "reason": "issue_closed",
+                "overlay": "teatree",
+                "url": "https://example.com/issues/114",
+            },
         ),
         DispatchAction(
             kind="statusline",
             zone="action_needed",
             detail="Ticket 12 — unassigned",
-            payload={"reason": "unassigned", "overlay": "teatree"},
+            payload={
+                "reason": "unassigned",
+                "overlay": "teatree",
+                "url": "https://example.com/issues/12",
+            },
         ),
     ]
     zones = _zones_for(actions)
     texts = [item if isinstance(item, str) else item.text for item in zones.action_needed]
     assert len(texts) == 1
-    assert "2 closed issues" in texts[0]
-    assert "1 reassigned away" in texts[0]
+    # Each disposition is rendered as a clickable ``#N`` token grouped by
+    # reason (`closed:` / `reassigned:` / `label-removed:`) instead of an
+    # opaque "N closed issues" aggregate — the reader can jump to the source.
+    assert "closed:" in texts[0]
+    assert "#55" in texts[0]
+    assert "#114" in texts[0]
+    assert "reassigned:" in texts[0]
+    assert "#12" in texts[0]
     assert "[teatree]" in texts[0]
 
 
-def test_zones_collapses_ready_to_start_into_count() -> None:
+def test_zones_lists_ready_to_start_as_clickable_refs() -> None:
     from teatree.loop.dispatch import DispatchAction  # noqa: PLC0415
-    from teatree.loop.tick import _zones_for  # noqa: PLC0415
+    from teatree.loop.rendering import zones_for as _zones_for  # noqa: PLC0415
 
     actions = [
         DispatchAction(
@@ -260,17 +278,22 @@ def test_zones_collapses_ready_to_start_into_count() -> None:
             detail=f"Ready to start: Issue #{i}",
             payload={"url": f"https://example.com/issues/{i}", "overlay": "acme"},
         )
-        for i in range(12)
+        for i in range(3)
     ]
     zones = _zones_for(actions)
     texts = [item if isinstance(item, str) else item.text for item in zones.action_needed]
     assert len(texts) == 1
-    assert texts[0] == "[acme] 12 ready to start"
+    # Replaces the legacy "[acme] N ready to start" aggregate — each ready
+    # issue is its own ``#N`` link so the reader can jump straight to it.
+    assert texts[0].startswith("[acme] ready:")
+    assert "#0" in texts[0]
+    assert "#1" in texts[0]
+    assert "#2" in texts[0]
 
 
 def test_zones_groups_prs_per_overlay_on_one_line() -> None:
     from teatree.loop.dispatch import DispatchAction  # noqa: PLC0415
-    from teatree.loop.tick import _zones_for  # noqa: PLC0415
+    from teatree.loop.rendering import zones_for as _zones_for  # noqa: PLC0415
 
     actions = [
         DispatchAction(
@@ -292,7 +315,7 @@ def test_zones_groups_prs_per_overlay_on_one_line() -> None:
 
 def test_zones_pr_annotations_show_notes_and_failures() -> None:
     from teatree.loop.dispatch import DispatchAction  # noqa: PLC0415
-    from teatree.loop.tick import _zones_for  # noqa: PLC0415
+    from teatree.loop.rendering import zones_for as _zones_for  # noqa: PLC0415
 
     actions = [
         DispatchAction(
@@ -316,7 +339,7 @@ def test_zones_pr_annotations_show_notes_and_failures() -> None:
 
 def test_active_tickets_shown_in_anchors() -> None:
     from teatree.loop.dispatch import DispatchAction  # noqa: PLC0415
-    from teatree.loop.tick import _zones_for  # noqa: PLC0415
+    from teatree.loop.rendering import zones_for as _zones_for  # noqa: PLC0415
 
     actions = [
         DispatchAction(
@@ -342,7 +365,7 @@ def test_active_tickets_shown_in_anchors() -> None:
 
 def test_mechanical_actions_not_rendered_in_statusline() -> None:
     from teatree.loop.dispatch import DispatchAction  # noqa: PLC0415
-    from teatree.loop.tick import _zones_for  # noqa: PLC0415
+    from teatree.loop.rendering import zones_for as _zones_for  # noqa: PLC0415
 
     actions = [
         DispatchAction(
@@ -356,7 +379,7 @@ def test_mechanical_actions_not_rendered_in_statusline() -> None:
 
 def test_agent_actions_not_rendered_in_statusline() -> None:
     from teatree.loop.dispatch import DispatchAction  # noqa: PLC0415
-    from teatree.loop.tick import _zones_for  # noqa: PLC0415
+    from teatree.loop.rendering import zones_for as _zones_for  # noqa: PLC0415
 
     actions = [
         DispatchAction(kind="agent", zone="t3:reviewer", detail="Review PR", payload={}),

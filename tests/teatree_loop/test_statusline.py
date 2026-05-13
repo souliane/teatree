@@ -43,8 +43,10 @@ class TestStatuslineRender:
 
         content = target.read_text()
         assert "overlay=teatree" in content
-        assert "Action" not in content
-        assert "In flight" not in content
+        # The "Action needed:" / "In flight:" zone headers were removed once
+        # color became the signal — only the legend at the bottom names them.
+        assert "Action needed:" not in content
+        assert "In flight:" not in content
 
     def test_creates_parent_directory(self, tmp_path: Path) -> None:
         target = tmp_path / "deep" / "nested" / "statusline.txt"
@@ -53,7 +55,11 @@ class TestStatuslineRender:
         render(zones, target=target, colorize=False)
 
         assert target.exists()
-        assert target.read_text().strip() == "x"
+        # Content now includes a legend line below the zones — verify both the
+        # zone content and the legend made it through atomically.
+        body = target.read_text()
+        assert body.startswith("x\n")
+        assert "legend:" in body
 
     def test_overwrites_previous_content(self, tmp_path: Path) -> None:
         target = tmp_path / "statusline.txt"
@@ -138,7 +144,9 @@ class TestStatuslineColors:
         render(zones, target=target, colorize=True)
         content = target.read_text()
 
-        assert "\033[2;37m" in content  # dim for anchors
+        # Light-gray 256-color for anchors (replaces legacy dim `\033[2;37m`,
+        # which is unreadable on dark themes).
+        assert "\033[38;5;244m" in content  # dim/gray for anchors
         assert "\033[1;31m" in content  # red for action_needed
         assert "\033[1;36m" in content  # cyan for in_flight
         assert "\033[0m" in content  # reset after each line

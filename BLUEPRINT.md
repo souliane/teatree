@@ -159,6 +159,7 @@ src/teatree/
   loop/                 # /loop topology (see §5.6)
     tick.py             # One tick: scan in parallel, dispatch to phase agents when needed, render statusline
     dispatch.py         # Signal → action mapping (statusline / agent / webhook)
+    rendering.py        # Classify dispatched actions per overlay; render anchor / action / in-flight rows
     statusline.py       # Statusline composition (zones, formatters) and file write
     scanners/           # Pure-Python signal collectors — one file each
       active_tickets.py
