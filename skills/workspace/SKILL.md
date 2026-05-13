@@ -161,7 +161,7 @@ When a generated file is wrong or incomplete, **re-run the setup tool** — don'
 
 ### Never Run Infrastructure Commands Directly
 
-Use the `t3` CLI (`t3 <overlay> worktree start`, `t3 <overlay> run backend`, `t3 <overlay> run frontend`, etc.) instead of running `docker compose`, language-specific dev servers, or build tools directly. The CLI commands handle:
+Use the `t3` CLI (`t3 <overlay> worktree start`, `t3 <overlay> run backend`, `t3 <overlay> run build-frontend`, etc.) instead of running `docker compose`, language-specific dev servers, or build tools directly. The CLI commands handle:
 
 - Environment variable loading from generated files
 - Service ordering (data store → migrations → application)

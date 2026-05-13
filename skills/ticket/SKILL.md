@@ -152,7 +152,7 @@ Delegate to `/t3:workspace`:
 
 Delegate to `/t3:workspace`:
 
-- `t3 <overlay> worktree start` or `t3 <overlay> run backend`/`t3 <overlay> run frontend` as needed.
+- `t3 <overlay> worktree start` (brings the whole compose stack up — backend, sidecars, nginx-served frontend) or `t3 <overlay> run backend` / `t3 <overlay> run build-frontend` for targeted restarts.
 - Verify services are running before declaring ready.
 
 ## Agent Rules
