@@ -249,6 +249,18 @@ def test_require_human_approval_to_merge_can_be_disabled(tmp_path: Path) -> None
     assert load_config(config_path).user.require_human_approval_to_merge is False
 
 
+def test_require_human_approval_to_answer_defaults_on(tmp_path: Path) -> None:
+    config_path = tmp_path / ".teatree.toml"
+    _write_toml(config_path, "[teatree]\n")
+    assert load_config(config_path).user.require_human_approval_to_answer is True
+
+
+def test_require_human_approval_to_answer_can_be_disabled(tmp_path: Path) -> None:
+    config_path = tmp_path / ".teatree.toml"
+    _write_toml(config_path, "[teatree]\nrequire_human_approval_to_answer = false\n")
+    assert load_config(config_path).user.require_human_approval_to_answer is False
+
+
 def test_loop_cadence_seconds_defaults_to_720(tmp_path: Path) -> None:
     config_path = tmp_path / ".teatree.toml"
     _write_toml(config_path, "[teatree]\n")
@@ -1008,3 +1020,34 @@ mode = "auto"
         )
 
         assert get_effective_settings().mode is Mode.AUTO
+
+    def test_overlay_can_override_require_human_approval_to_answer(
+        self,
+        config_file: Path,
+        elsewhere: Path,
+        no_installed_overlays: None,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Answerer-autonomy is per-overlay overridable.
+
+        It flows through the generic ``OVERLAY_OVERRIDABLE_SETTINGS``
+        registry — a trusted overlay can opt into direct posting without
+        flipping the global.
+        """
+        del elsewhere, no_installed_overlays
+        monkeypatch.delenv("T3_MODE", raising=False)
+        monkeypatch.setenv("T3_OVERLAY_NAME", "trusted")
+
+        _write_toml(
+            config_file,
+            """
+[teatree]
+require_human_approval_to_answer = true
+
+[overlays.trusted]
+class = "x.y:Z"
+require_human_approval_to_answer = false
+""",
+        )
+
+        assert get_effective_settings().require_human_approval_to_answer is False

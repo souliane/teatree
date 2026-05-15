@@ -600,9 +600,9 @@ The render module lives at `src/teatree/loop/statusline.py` (`StatuslineZones` d
 
 #### 5.6.2 Mode + training-wheel
 
-The loop respects the active overlay's `mode` (§ 10.1, canonical default `interactive`). When an overlay opts into `mode = "auto"`, the training wheel `[teatree] require_human_approval_to_merge = true` (default) keeps merge gated even though push and PR creation run autonomously — merge requires a user reaction (👍 or `/merge`) on the statusline entry or the PR thread. The user flips the training wheel to `false` only when comfortable. In `interactive` overlays, every publishing action still prompts; the loop surfaces work but never publishes silently.
+The loop respects the active overlay's `mode` (§ 10.1, canonical default `interactive`). When an overlay opts into `mode = "auto"`, the training wheel `[teatree] require_human_approval_to_merge = true` (default) keeps merge gated even though push and PR creation run autonomously — merge requires a user reaction (👍 or `/merge`) on the statusline entry or the PR thread. The companion training wheel `[teatree] require_human_approval_to_answer = true` (default) gates the `t3:answerer` capability the same way: the agent drafts a reply to an inbound `question` intent, DMs the user for approval, and posts only on confirmation; set it `false` per-overlay to let answers post directly. The user flips either training wheel to `false` only when comfortable. In `interactive` overlays, every publishing action still prompts; the loop surfaces work but never publishes silently.
 
-`UserSettings.require_human_approval_to_merge`, `UserSettings.loop_cadence_seconds` (default 720), and `UserSettings.statusline_chain` (default empty) live in `src/teatree/config.py`; the first two are toml-overridable in `[teatree]` and per-overlay via `[overlays.<name>]` once registered in `OVERLAY_OVERRIDABLE_SETTINGS`. `statusline_chain` is global-only (not per-overlay).
+`UserSettings.require_human_approval_to_merge`, `UserSettings.require_human_approval_to_answer`, `UserSettings.loop_cadence_seconds` (default 720), and `UserSettings.statusline_chain` (default empty) live in `src/teatree/config.py`; the first three are toml-overridable in `[teatree]` and per-overlay via `[overlays.<name>]` once registered in `OVERLAY_OVERRIDABLE_SETTINGS`. `statusline_chain` is global-only (not per-overlay).
 
 ---
 
@@ -1028,6 +1028,7 @@ privacy = "strict"
 mode = "interactive"                       # global default — confirm before publishing actions. Per-overlay override to "auto" enables loop-driven autonomy.
 loop_cadence_seconds = 720                 # /loop tick interval (default 12 min)
 require_human_approval_to_merge = true     # training-wheel for `auto` overlays: push + PR create autonomous, merge stays gated
+require_human_approval_to_answer = true    # training-wheel: t3:answerer drafts + DMs for approval, posts only on confirm
 
 [user]
 claude_chrome = true   # spawn `claude` with --chrome so sessions can drive the browser
