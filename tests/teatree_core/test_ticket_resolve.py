@@ -37,6 +37,20 @@ class TestTicketResolve(TestCase):
         )
         assert Ticket.objects.resolve(str(first.pk)).pk == first.pk
 
+    def test_resolves_bare_number_issue_url(self) -> None:
+        # #707: issue_url stored as the bare string "694" (not a forge URL).
+        # `pr create 694` must resolve, not raise DoesNotExist.
+        ticket = Ticket.objects.create(overlay="test", issue_url="694")
+        resolved = Ticket.objects.resolve("694")
+        assert resolved.pk == ticket.pk
+
+    def test_pk_precedence_over_bare_number_issue_url(self) -> None:
+        # A ticket whose issue_url is the bare string equal to another
+        # ticket's pk must not shadow the pk lookup.
+        by_pk = Ticket.objects.create(overlay="test")
+        Ticket.objects.create(overlay="test", issue_url=str(by_pk.pk))
+        assert Ticket.objects.resolve(str(by_pk.pk)).pk == by_pk.pk
+
     def test_raises_does_not_exist_for_unknown_ref(self) -> None:
         with pytest.raises(Ticket.DoesNotExist):
             Ticket.objects.resolve("https://github.com/souliane/teatree/issues/12345")
