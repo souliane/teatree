@@ -21,6 +21,8 @@ Use `Ctrl+F`/`grep` to jump to a rule. Sections are grouped below by theme; numb
 2. [Verification Before Completion](#verification-before-completion-non-negotiable)
 3. [Grep Before Claiming Cross-Reference Coverage](#grep-before-claiming-cross-reference-coverage-non-negotiable)
 4. [Verify Imports Before Applying External Code](#verify-imports-before-applying-external-code)
+4a. [Read the Canonical Source Before Fixing a Conformance Bug](#read-the-canonical-source-before-fixing-a-conformance-bug)
+4b. [Re-Verify Cross-Agent State Before Reporting a Dependent Request](#re-verify-cross-agent-state-before-reporting-a-dependent-request)
 
 **User intent, interruptions, and asking**
 
@@ -171,6 +173,18 @@ When the auto-mode classifier denies a tool call (Bash command rejected, MCP cal
 ## Re-Derive the Minimal Blocker
 
 When an operation is blocked — a classifier denial, a failing gate, an external or human-gated wait — re-derive the **minimal** set of work that genuinely depends on that exact operation before declaring anything else blocked. A blocked merge does not block PR creation, implementation, review, or research; a blocked deploy does not block the next feature. Before reporting "nothing actionable", ask of each pending task: does it consume the blocked operation's output, or does it merely share a goal (or sit later in the same chain) reachable by a different, available path? Reporting "nothing actionable" for two or more cycles behind a single external block is itself the signal to audit for a non-blocked path rather than continue idling. This complements the Classifier Denial Protocol (which governs the denied operation itself); this rule governs not over-propagating that block to independent work.
+
+## Read the Canonical Source Before Fixing a Conformance Bug
+
+When a bug's root cause is "our code disagrees with an external authority" — a CI validator, a wire protocol, a spec, a sibling service's schema, an upstream library's behaviour — **read that authority's actual source before writing the fix or the red test**, not after. The fix for a conformance bug is _parity with the authority_, so the authority's exact behaviour (regexes, normalization, edge cases, what it does and does NOT check) is the specification. Implementing from the symptom or from an assumed root cause produces a fix that re-diverges differently: a discarded implement-and-test cycle, then a re-implement against the source that should have been read first.
+
+- Locate the authority's source (vendored copy, sibling repo under the workspace, pinned dependency, the CI job's invoked script) and read the relevant function end to end.
+- Derive the red test from the authority's behaviour, not from a hypothesis about it. If the authority does NOT enforce the thing you assumed, the bug is elsewhere — discover that before coding.
+- Prefer vendoring the authority verbatim (pointer comment + drift-detecting parity test) over hand-reimplementing its rules, so future divergence is caught mechanically rather than by the next incident.
+
+## Re-Verify Cross-Agent State Before Reporting a Dependent Request
+
+In a multi-agent / multi-loop environment, another agent may have advanced a shared artifact (a PR merged, an issue closed, a branch rebased, a baseline moved) while your task was running. Before reporting a request or recommendation whose validity depends on that artifact's state ("dispatch a reviewer for PR N", "merge X next", "rebase Y"), **re-fetch the artifact's current state in the same turn you report it**. A request built on the artifact's state at task-start is stale by the time a long task finishes; reporting it makes the agent look out of sync and wastes the coordinator's turn correcting it. The cost of one `gh pr view` / `glab mr view` before the report is trivial; the cost of a stale dependent request is a wasted round-trip.
 
 ## Context Transparency
 
