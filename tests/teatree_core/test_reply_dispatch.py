@@ -24,7 +24,7 @@ class TestReplyDispatch(TestCase):
 
         assert dispatch.pk is not None
         choices = {value for value, _label in ReplyDispatch.Status.choices}
-        assert choices == {"pending", "sent", "failed"}
+        assert choices == {"pending", "sent", "failed", "dead_letter"}
 
     def test_idempotency_key_is_unique(self) -> None:
         from django.db import IntegrityError  # noqa: PLC0415
