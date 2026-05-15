@@ -7,9 +7,10 @@ Auto-discovers overlay Django apps via entry points and adds them to INSTALLED_A
 import warnings
 
 from teatree.config import default_logging
-from teatree.paths import CANONICAL_DB, DATA_DIR, find_stale_dbs
+from teatree.paths import CANONICAL_DB, DATA_DIR, find_stale_dbs, seed_isolated_db
 
 _DATA_DIR = DATA_DIR
+seed_isolated_db(_DATA_DIR)
 _DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 for _stale in find_stale_dbs(_DATA_DIR, canonical=CANONICAL_DB):
