@@ -67,9 +67,9 @@ src/teatree/
   __init__.py
   __main__.py
   _overlay_api.py       # __overlay_api_version__ pin + import-time guard for overlays
-  paths.py              # XDG-compliant DATA_DIR, CANONICAL_DB, get_data_dir, find_stale_dbs
+  paths.py              # XDG-compliant DATA_DIR/CANONICAL_DB; worktree-aware: code run from a git worktree (`.git` is a file) auto-isolates onto a per-worktree DB under the sibling `~/.local/share/teatree-worktrees/<slug>/` root (never nested under the scanned canonical dir, so doctor/stale-DB checks stay clean); resolve_data_dir() returns (path, auto_isolated); an explicit canonical target from a worktree hard-fails (CanonicalDBFromWorktreeError) so unmerged migrations can never corrupt the canonical control DB
   config.py             # ~/.teatree.toml parsing, overlay discovery, UserSettings
-  settings.py           # Django settings — auto-discovers overlay apps from entry points
+  settings.py           # Django settings — auto-discovers overlay apps; seed_isolated_db() takes a consistent SQLite snapshot of the canonical DB into an auto-isolated worktree dir on first use, atomically (temp file + locked rename) and only for the auto-isolated case
   identity.py           # User identity + agent_signature suffix policy
   project.py            # Project root discovery
   triage.py             # Crash-report writers consumed by hooks
