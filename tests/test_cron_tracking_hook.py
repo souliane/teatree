@@ -122,16 +122,50 @@ class TestDeriveLoopName:
     @pytest.mark.parametrize(
         ("prompt", "expected"),
         [
+            # Canonical teatree loop prompt → stable readable name.
+            (router._LOOP_PROMPT, "tick"),
+            (router._LOOP_PROMPT + " extra trailing words", "tick"),
             ("!t3 loop tick", "tick"),
+            # Slash-command forms (leading or embedded token).
             ("/followup", "followup"),
             ("/t3-followup", "t3-followup"),
-            ("check the deploy status", "status"),
+            ("!/foo", "foo"),
+            ("/foo", "foo"),
+            ("/loop 5m /babysit-prs", "babysit-prs"),
+            # Prose prompt → short label from the first meaningful word,
+            # with surrounding punctuation/backticks stripped.
+            ("check the deploy status", "check"),
+            ("`backtick-word` then more", "backtick-word"),
+            ("Deploy.", "Deploy"),
+            # Degenerate inputs fall back to a stable label.
             ("!", "loop"),
+            ("/", "loop"),
             ("", "loop"),
         ],
     )
     def test_name_derivation(self, prompt: str, expected: str) -> None:
         assert router._derive_loop_name(prompt) == expected
+
+    def test_no_trailing_punctuation_or_backtick(self) -> None:
+        name = router._derive_loop_name(router._LOOP_PROMPT)
+        assert not name.endswith(".")
+        assert "`" not in name
+
+    def test_canonical_prompt_persisted_name_via_handler(self) -> None:
+        """Integration: the canonical loop prompt persists a readable job name."""
+        handle_track_cron_jobs(
+            {
+                "session_id": "loop-s",
+                "tool_name": "CronCreate",
+                "tool_input": {"cron": "*/12 * * * *", "prompt": router._LOOP_PROMPT},
+                "tool_result": {"id": "job-loop"},
+            }
+        )
+
+        crons_file = router.STATE_DIR / "loop-s.crons"
+        assert crons_file.is_file()
+        state = json.loads(crons_file.read_text(encoding="utf-8"))
+        assert state["jobs"]["job-loop"]["name"] == "tick"
 
 
 class TestCronCadenceSeconds:
