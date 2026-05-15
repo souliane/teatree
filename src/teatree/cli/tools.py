@@ -244,24 +244,42 @@ def triage_issues(
 
 @tool_app.command("notion-download")
 def notion_download(
-    url: str = typer.Argument(..., help="file.notion.so URL from browser tab (must include signature)."),
+    url: str = typer.Argument(
+        ...,
+        help="Either the `file://%7B…%7D` src from `notion-fetch` (resolved "
+        "automatically via Notion's API — no browser click needed) or a "
+        "pre-signed file.notion.so URL.",
+    ),
     dest: Path = typer.Option(Path(), "--dest", "-d", help="Destination directory."),
 ) -> None:
-    """Download a Notion file attachment using browser cookies."""
+    """Download a Notion file attachment using the Brave browser session.
+
+    Accepts the `file://`-prefixed reference string that `t3`'s notion-fetch
+    emits for `<file>` blocks; the signed URL is resolved server-side, so no
+    manual browser click is required.
+    """
     import re  # noqa: PLC0415
     from urllib.parse import urlparse  # noqa: PLC0415
 
-    from teatree.backends.notion import download_notion_file  # noqa: PLC0415
+    from teatree.backends.notion import NotionFileRef, download_notion_file  # noqa: PLC0415
+
+    ref = NotionFileRef.from_fetch_src(url)
+    if ref is not None:
+        filename = ref.filename
+        out = dest / filename if dest.is_dir() else dest
+        typer.echo(f"Resolving + downloading {filename} (via Notion API)...")
+        result = download_notion_file(ref=ref, dest=out)
+        typer.echo(f"Saved: {result} ({result.stat().st_size:,} bytes)")
+        return
 
     parsed = urlparse(url)
     path_match = re.match(r"/f/f/[^/]+/[^/]+/(.+)", parsed.path)
     if not path_match:
-        typer.echo(f"Cannot parse file URL: {url}")
+        typer.echo(f"Cannot parse file URL or notion-fetch ref: {url}")
         raise typer.Exit(1)
 
-    filename = path_match.group(1)
+    filename = path_match.group(1).split("?", 1)[0]
     out = dest / filename if dest.is_dir() else dest
     typer.echo(f"Downloading {filename}...")
-
     result = download_notion_file(url=url, dest=out)
     typer.echo(f"Saved: {result} ({result.stat().st_size:,} bytes)")
