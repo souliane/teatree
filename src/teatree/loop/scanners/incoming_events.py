@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, cast
 
 from django.apps import apps
+from django.db import OperationalError, ProgrammingError
 
 from teatree.core.event_router import RoutedAction, route_event
 from teatree.core.intent_classifier import classify_event
@@ -44,7 +45,20 @@ class IncomingEventsScanner:
 
     def scan(self) -> list[ScanSignal]:
         event_model = cast("type[IncomingEvent]", apps.get_model("core", "IncomingEvent"))
-        events = event_model.objects.unprocessed().order_by("received_at", "pk")[: self.limit]
+        try:
+            # Materialise here so a present-but-un-migrated DB (the
+            # `teatree_incoming_event` table doesn't exist yet on a
+            # pre-migration install) is a silent no-op instead of a
+            # per-tick WARN. Only the missing-relation errors are
+            # swallowed — sqlite raises OperationalError "no such table",
+            # Postgres raises ProgrammingError "relation does not exist".
+            # Transient OperationalError (lock timeout, connection drop)
+            # and any other DatabaseError keep propagating to
+            # `tick._run_job`, which surfaces them on the statusline.
+            events = list(event_model.objects.unprocessed().order_by("received_at", "pk")[: self.limit])
+        except (OperationalError, ProgrammingError):
+            logger.info("IncomingEventsScanner: teatree_incoming_event unavailable (DB not migrated yet) — skipping")
+            return []
         signals: list[ScanSignal] = []
         for event in events:
             try:
