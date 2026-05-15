@@ -13,7 +13,7 @@ from typing import Any
 
 from teatree.loop.dispatch import DispatchAction
 from teatree.loop.pr_ticket_index import build_ticket_index
-from teatree.loop.statusline import StatuslineEntry, StatuslineZones, _hyperlink
+from teatree.loop.statusline import StatuslineEntry, StatuslineZones, _hyperlink, colorize_enabled, plain_link
 
 # DispatchAction payloads are `dict[str, Any]` by contract (see dispatch.py).
 # Renderer-side reads only ever look up scalar fields, so we narrow to
@@ -32,9 +32,9 @@ def _is_url(text: object) -> bool:
     return isinstance(text, str) and text.startswith(("http://", "https://"))
 
 
-def _link(text: str, url: object) -> str:
+def _link(text: str, url: object, *, colorize: bool) -> str:
     if isinstance(url, str) and url.startswith(("http://", "https://")):
-        return _hyperlink(text, url)
+        return _hyperlink(text, url) if colorize else plain_link(text, url)
     return text
 
 
@@ -49,6 +49,19 @@ class _PRRef:
 class _IssueRef:
     label: str
     url: str
+
+
+@dataclass(frozen=True, slots=True)
+class _OverlayActionRefs:
+    """One overlay's slice of classified refs for the action-needed row.
+
+    Bundling the three ref collections keeps ``_render_action_line``'s
+    signature small (composition over a long positional list).
+    """
+
+    pr_refs: list[_PRRef]
+    disposition_refs: dict[str, list[_IssueRef]]
+    ready_refs: list[_IssueRef]
 
 
 def _pr_ref(action: DispatchAction) -> _PRRef | None:
@@ -79,7 +92,13 @@ def _ticket_number_from_url(url: str) -> str:
     return match.group(1) if match else ""
 
 
-def _render_pr_group(overlay: str, refs: list[_PRRef], *, ticket_index: dict[str, str] | None = None) -> str:
+def _render_pr_group(
+    overlay: str,
+    refs: list[_PRRef],
+    *,
+    ticket_index: dict[str, str] | None = None,
+    colorize: bool,
+) -> str:
     """Render a flat list of PR refs, grouped per parent ticket when known."""
     prefix = f"[{overlay}] " if overlay else ""
     if not refs:
@@ -97,7 +116,7 @@ def _render_pr_group(overlay: str, refs: list[_PRRef], *, ticket_index: dict[str
         text = f"!{ref.iid}"
         if ref.annotation:
             text += f" ({ref.annotation})"
-        return _link(text, ref.url)
+        return _link(text, ref.url, colorize=colorize)
 
     chunks: list[str] = []
     for tnum in sorted(by_ticket):
@@ -226,6 +245,7 @@ def _render_ticket_line(
     pr_map: dict[str, list[_PRRef]],
     *,
     live_pr_urls: set[str] | None = None,
+    colorize: bool,
 ) -> str:
     prefix = f"[{overlay}] " if overlay else ""
     live = live_pr_urls or set()
@@ -235,10 +255,10 @@ def _render_ticket_line(
             continue
         if _is_pr_url(url) and url not in live:
             continue
-        ticket_text = _link(f"#{num}", url)
+        ticket_text = _link(f"#{num}", url, colorize=colorize)
         prs = pr_map.get(num, [])
         if prs:
-            pr_parts = [_link(f"!{r.iid}", r.url) for r in prs]
+            pr_parts = [_link(f"!{r.iid}", r.url, colorize=colorize) for r in prs]
             ticket_text += f" ({' '.join(pr_parts)})"
         by_state.setdefault(state, []).append(ticket_text)
     if not by_state:
@@ -256,43 +276,42 @@ def _render_ticket_line(
 
 def _render_action_line(
     overlay: str,
+    action_refs: _OverlayActionRefs,
     *,
-    pr_refs: list[_PRRef],
-    disposition_refs: dict[str, list[_IssueRef]],
-    ready_refs: list[_IssueRef],
     ticket_index: dict[str, str] | None = None,
+    colorize: bool,
 ) -> str:
     prefix = f"[{overlay}] " if overlay else ""
     prs_by_ticket: dict[str, list[_PRRef]] = {}
-    for ref in pr_refs:
+    for ref in action_refs.pr_refs:
         parent = (ticket_index or {}).get(ref.url, "")
         if parent and parent != str(ref.iid):
             prs_by_ticket.setdefault(parent, []).append(ref)
     consumed_pr_urls: set[str] = set()
 
     parts: list[str] = []
-    for reason, refs in disposition_refs.items():
+    for reason, refs in action_refs.disposition_refs.items():
         label = _DISPOSITION_LABELS.get(reason, reason)
-        items = " ".join(_link(r.label, r.url) for r in refs)
+        items = " ".join(_link(r.label, r.url, colorize=colorize) for r in refs)
         parts.append(f"{label}: {items}")
-    if ready_refs:
+    if action_refs.ready_refs:
         items: list[str] = []
-        for ref in ready_refs:
-            text = _link(ref.label, ref.url)
+        for ref in action_refs.ready_refs:
+            text = _link(ref.label, ref.url, colorize=colorize)
             number = ref.label.lstrip("#")
             prs = prs_by_ticket.get(number, [])
             if prs:
-                pr_parts = [_link(f"!{p.iid}", p.url) for p in prs]
+                pr_parts = [_link(f"!{p.iid}", p.url, colorize=colorize) for p in prs]
                 text += f" ({' '.join(pr_parts)})"
                 consumed_pr_urls.update(p.url for p in prs)
             items.append(text)
         parts.append(f"ready: {' '.join(items)}")
-    if pr_refs:
-        remaining = [r for r in pr_refs if r.url not in consumed_pr_urls]
+    if action_refs.pr_refs:
+        remaining = [r for r in action_refs.pr_refs if r.url not in consumed_pr_urls]
         if remaining:
             parts.insert(
                 0,
-                _render_pr_group(overlay, remaining, ticket_index=ticket_index).removeprefix(prefix),
+                _render_pr_group(overlay, remaining, ticket_index=ticket_index, colorize=colorize).removeprefix(prefix),
             )
     if not parts:
         return ""
@@ -327,6 +346,7 @@ def _populate_overlay_zones(
     c: _ClassifiedActions,
     *,
     ticket_index: dict[str, str],
+    colorize: bool,
 ) -> None:
     all_overlays = sorted({*c.active_tickets, *c.action_prs, *c.disposition_refs, *c.ready_refs, *c.inflight_prs})
 
@@ -349,30 +369,45 @@ def _populate_overlay_zones(
             c.active_tickets.get(overlay_key, []),
             pr_map,
             live_pr_urls=live_pr_urls_by_overlay.get(overlay_key, set()),
+            colorize=colorize,
         )
         if ticket_line:
             zones.anchors.append(ticket_line)
 
         action_line = _render_action_line(
             overlay_key,
-            pr_refs=c.action_prs.get(overlay_key, []),
-            disposition_refs=c.disposition_refs.get(overlay_key, {}),
-            ready_refs=c.ready_refs.get(overlay_key, []),
+            _OverlayActionRefs(
+                pr_refs=c.action_prs.get(overlay_key, []),
+                disposition_refs=c.disposition_refs.get(overlay_key, {}),
+                ready_refs=c.ready_refs.get(overlay_key, []),
+            ),
             ticket_index=ticket_index,
+            colorize=colorize,
         )
         if action_line:
             zones.action_needed.append(action_line)
 
         inflight_refs = c.inflight_prs.get(overlay_key, [])
         if inflight_refs:
-            zones.in_flight.append(_render_pr_group(overlay_key, inflight_refs, ticket_index=ticket_index))
+            zones.in_flight.append(
+                _render_pr_group(overlay_key, inflight_refs, ticket_index=ticket_index, colorize=colorize)
+            )
 
 
-def zones_for(actions: list[DispatchAction]) -> StatuslineZones:
+def zones_for(actions: list[DispatchAction], *, colorize: bool | None = None) -> StatuslineZones:
+    """Build statusline zones from dispatched actions.
+
+    *colorize* threads the OSC 8 vs. plain ``text <url>`` decision into the
+    line builder so ``NO_COLOR`` is honoured at the point links are formed
+    (#721). ``None`` resolves from the environment via
+    :func:`~teatree.loop.statusline.colorize_enabled`, matching
+    :func:`~teatree.loop.statusline.render`'s own default.
+    """
+    colorize = colorize_enabled(colorize=colorize)
     zones = StatuslineZones()
     c = _classify_actions(actions)
     ticket_index = build_ticket_index(actions)
-    _populate_overlay_zones(zones, c, ticket_index=ticket_index)
+    _populate_overlay_zones(zones, c, ticket_index=ticket_index, colorize=colorize)
 
     for zone_name, entry in c.other:
         zone_list = getattr(zones, zone_name, None)

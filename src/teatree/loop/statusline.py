@@ -58,9 +58,28 @@ def default_path() -> Path:
     return base / "teatree" / "statusline.txt"
 
 
+def colorize_enabled(*, colorize: bool | None = None) -> bool:
+    """Resolve the effective colour decision (single source of truth).
+
+    ``None`` resolves from the ``NO_COLOR`` standard (https://no-color.org/):
+    colour is on unless ``NO_COLOR`` is present in the environment. Both
+    :func:`render` and the line builder in :mod:`teatree.loop.rendering`
+    consult this so the OSC 8 / plain-``text <url>`` decision is made in
+    exactly one place (#721).
+    """
+    if colorize is not None:
+        return colorize
+    return "NO_COLOR" not in os.environ
+
+
 def _hyperlink(text: str, url: str) -> str:
     """Wrap *text* in an OSC 8 terminal hyperlink pointing at *url*."""
     return f"\033]8;;{url}\033\\{text}\033]8;;\033\\"
+
+
+def plain_link(text: str, url: str) -> str:
+    """The NO_COLOR fallback form — identical to ``_format_item``'s."""
+    return f"{text} <{url}>"
 
 
 def _format_item(item: ZoneItem, color: str, *, colorize: bool) -> str:
@@ -71,7 +90,7 @@ def _format_item(item: ZoneItem, color: str, *, colorize: bool) -> str:
             text = _hyperlink(text, url)
         return f"{color}{text}{_ANSI_RESET}"
     if url:
-        return f"{text} <{url}>"
+        return plain_link(text, url)
     return text
 
 
@@ -101,8 +120,7 @@ def render(zones: StatuslineZones, *, target: Path | None = None, colorize: bool
     """
     target = target or default_path()
     target.parent.mkdir(parents=True, exist_ok=True)
-    if colorize is None:
-        colorize = "NO_COLOR" not in os.environ
+    colorize = colorize_enabled(colorize=colorize)
 
     # Group every line by its [overlay] prefix, preserving insertion order.
     by_overlay: dict[str, dict[str, list[ZoneItem]]] = {}
