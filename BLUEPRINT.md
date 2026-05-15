@@ -142,7 +142,7 @@ src/teatree/
       run.py            # Service runner
       followup.py       # PR sync (GitHub + GitLab via CodeHostBackend)
       pr.py             # PR creation and validation
-      ticket.py         # Ticket transitions and queries
+      ticket.py         # Ticket transitions, queries, and tracker comments
       tool.py           # Overlay-declared tool subcommands
       e2e.py            # `e2e run|external|project`
       loop_tick.py      # One tick of the fat loop (scan, dispatch, statusline)
@@ -865,7 +865,7 @@ Internal utilities (`utils/`) — port allocation, git helpers, DB ops — are P
 **env** — Read/write the env cache (`set`, `show`, `check`, `migrate-secrets`). `migrate-secrets` moves any `POSTGRES_PASSWORD=<literal>` line out of `.t3-env.cache` into the local `pass` store under `teatree/wt/<ticket_id>/postgres` so the on-disk cache only carries the symbolic `POSTGRES_PASSWORD_PASS_KEY` reference.
 **run** — Service runner (uses `lifecycle.compose_project()` shared helper)
 **pr** — PR creation and validation
-**ticket** — Ticket transitions and queries (`list`, `transition`, ...)
+**ticket** — Ticket transitions and queries (`list`, `transition`, `sync-completions`, `comment`). `comment <issue_url> --body/--body-file` posts a tracker comment via the per-URL `CodeHostBackend` (GitLab issues + work items, GitHub issues).
 **tool** — Overlay-declared tool subcommands (declared via `OverlayBase.get_tool_commands()`)
 **e2e** — `e2e run|external|project` (Playwright dispatcher)
 **overlay** — Overlay inspection (`config`, `info`)
