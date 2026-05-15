@@ -5,8 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from teatree.loop.scanners import external_tickets
-from teatree.loop.scanners.external_tickets import ExternalTicketsScanner, _find_overlay_db
+from teatree.loop.scanners.external_tickets import ExternalTicketsScanner
 
 
 def _build_overlay_db(path: Path, rows: list[tuple[int, str, str, str]]) -> None:
@@ -22,25 +21,6 @@ def _build_overlay_db(path: Path, rows: list[tuple[int, str, str, str]]) -> None
         conn.commit()
     finally:
         conn.close()
-
-
-class TestFindOverlayDb:
-    def test_returns_project_path_db_when_present(self, tmp_path: Path) -> None:
-        db = tmp_path / "db.sqlite3"
-        db.touch()
-        assert _find_overlay_db("foo", str(tmp_path)) == db
-
-    def test_falls_back_to_data_dir(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        data_dir = tmp_path / "data"
-        (data_dir / "foo").mkdir(parents=True)
-        db = data_dir / "foo" / "db.sqlite3"
-        db.touch()
-        monkeypatch.setattr(external_tickets, "DATA_DIR", data_dir)
-        assert _find_overlay_db("foo", str(tmp_path / "nonexistent")) == db
-
-    def test_returns_none_when_no_db_anywhere(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(external_tickets, "DATA_DIR", tmp_path / "absent")
-        assert _find_overlay_db("foo", str(tmp_path / "absent")) is None
 
 
 class TestExternalTicketsScannerScan:

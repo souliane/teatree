@@ -4,6 +4,7 @@ These types have no Django dependencies and no imports from ``teatree.core``,
 so they can be used by any layer without introducing cycles.
 """
 
+import hashlib
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
@@ -72,6 +73,10 @@ class BaseImageConfig:
     build_context: Path
     env_var: str
     build_args: dict[str, str] = field(default_factory=dict)
+
+    def image_tag(self) -> str:
+        digest = hashlib.sha256((self.build_context / self.lockfile).read_bytes()).hexdigest()[:12]
+        return f"{self.image_name}:deps-{digest}"
 
 
 class DbImportStrategy(TypedDict, total=False):
