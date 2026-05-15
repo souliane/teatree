@@ -58,6 +58,24 @@ def _scan_line(line: str, banned_re: re.Pattern[str] | None) -> list[tuple[str, 
     return findings
 
 
+def _plain_summary(findings: list[dict[str, str | int]]) -> str:
+    """Deterministic plain-text findings summary for non-TTY callers.
+
+    Stable, greppable, line-oriented (one finding per line: line number,
+    category, redacted match). Consumed verbatim by the pre-push gate's
+    refusal message and by any scripted caller of ``t3 tool
+    privacy-scan``. The redaction of the match itself is already applied
+    upstream in ``_scan_line`` (api keys are truncated to a 20-char
+    prefix); other categories carry the raw match by design so the user
+    can locate the offending text.
+    """
+    if not findings:
+        return "Privacy scan: clean (0 findings)"
+    header = f"Privacy scan: {len(findings)} finding(s)"
+    rows = [f"  line {f['line']}: {f['category']}: {f['match']}" for f in findings]
+    return "\n".join([header, *rows])
+
+
 @app.command()
 def main(
     input_file: str = typer.Argument("-", help="File to scan (- for stdin, or a file path)"),
@@ -78,16 +96,24 @@ def main(
 
     if json_output:
         print(json.dumps(all_findings, indent=2))
-    elif all_findings:
-        table = Table(title="Privacy Scan Findings")
-        table.add_column("Line", style="dim", justify="right")
-        table.add_column("Category", style="bold")
-        table.add_column("Match")
-        for f in all_findings:
-            table.add_row(str(f["line"]), str(f["category"]), str(f["match"]))
-        console.print(table)
     else:
-        console.print("[green]Privacy scan: clean[/]")
+        # Always emit a deterministic, plain-text summary on **stdout**.
+        # This is the stream a piped/non-TTY caller reliably sees: the
+        # pre-push gate captures it with ``> report 2>&1`` and
+        # ``ToolRunner.run_script`` re-emits it. The rich table is a
+        # TTY-only nicety on stderr; it must never be the *only* output,
+        # or scripted callers get "exit 1, no diagnostics" (#696).
+        print(_plain_summary(all_findings))
+        if all_findings:
+            table = Table(title="Privacy Scan Findings")
+            table.add_column("Line", style="dim", justify="right")
+            table.add_column("Category", style="bold")
+            table.add_column("Match")
+            for f in all_findings:
+                table.add_row(str(f["line"]), str(f["category"]), str(f["match"]))
+            console.print(table)
+        else:
+            console.print("[green]Privacy scan: clean[/]")
 
     if all_findings and strict:
         raise SystemExit(1)
