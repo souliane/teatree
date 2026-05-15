@@ -37,7 +37,7 @@ def _make_remote(tmp_path: Path, name: str = "remote") -> Path:
     seed = tmp_path / f"{name}-seed"
     seed.mkdir()
     _git(seed, "init", "-b", "main")
-    _git(seed, "config", "user.email", "t@e.st")
+    _git(seed, "config", "user.email", "t@e.st")  # privacy-scan:allow (fake test git-config email, not PII)
     _git(seed, "config", "user.name", "Tester")
     (seed / "f.txt").write_text("v1\n")
     _git(seed, "add", "f.txt")
@@ -51,7 +51,7 @@ def _make_remote(tmp_path: Path, name: str = "remote") -> Path:
 def _clone(tmp_path: Path, bare: Path, name: str = "clone") -> Path:
     clone = tmp_path / name
     _git(tmp_path, "clone", str(bare), str(clone))
-    _git(clone, "config", "user.email", "t@e.st")
+    _git(clone, "config", "user.email", "t@e.st")  # privacy-scan:allow (fake test git-config email, not PII)
     _git(clone, "config", "user.name", "Tester")
     return clone
 
@@ -60,7 +60,7 @@ def _advance_remote(tmp_path: Path, bare: Path) -> str:
     """Push a new commit to the bare remote; return its short sha."""
     work = tmp_path / "advance"
     _git(tmp_path, "clone", str(bare), str(work))
-    _git(work, "config", "user.email", "t@e.st")
+    _git(work, "config", "user.email", "t@e.st")  # privacy-scan:allow (fake test git-config email, not PII)
     _git(work, "config", "user.name", "Tester")
     (work / "f.txt").write_text("v2\n")
     _git(work, "add", "f.txt")
@@ -125,7 +125,7 @@ class TestUpdateRepoSkips:
         seed = tmp_path / "no-remote"
         seed.mkdir()
         _git(seed, "init", "-b", "main")
-        _git(seed, "config", "user.email", "t@e.st")
+        _git(seed, "config", "user.email", "t@e.st")  # privacy-scan:allow (fake test git-config email, not PII)
         _git(seed, "config", "user.name", "Tester")
         (seed / "f.txt").write_text("v1\n")
         _git(seed, "add", "f.txt")
