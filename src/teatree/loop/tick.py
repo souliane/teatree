@@ -223,6 +223,7 @@ def run_tick(
     """
     request = request or TickRequest()
     started_at = now or dt.datetime.now(dt.UTC)
+    _reap_stale_task_claims()
     if request.scanners is not None:
         jobs = [_ScannerJob(scanner=s, overlay="") for s in request.scanners]
     else:
@@ -260,6 +261,20 @@ def run_tick(
         zones.action_needed.append(f"scanner errors: {', '.join(report.errors)}")
     report.statusline_path = render(zones, target=statusline_path, colorize=colorize)
     return report
+
+
+def _reap_stale_task_claims() -> None:
+    """Sweep CLAIMED tasks whose lease has expired so the statusline reflects fresh state.
+
+    Best-effort: if the test harness blocks DB access (pytest-django without
+    a ``db`` marker), the loop tick should still render scanners and signals.
+    """
+    import contextlib  # noqa: PLC0415
+
+    from teatree.core.models import Task  # noqa: PLC0415
+
+    with contextlib.suppress(RuntimeError):
+        Task.objects.reap_stale_claims()
 
 
 def _persist_agent_dispatches(report: TickReport) -> None:
