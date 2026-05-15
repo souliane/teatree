@@ -113,10 +113,14 @@ def _validate_pr_metadata(ticket: Ticket, worktree: Worktree) -> PrValidationErr
 
 
 def _check_shipping_gate(ticket: Ticket) -> ShippingGateFailure | None:
-    """Return an error dict if the ticket hasn't passed the review gate.
+    """Reconcile ``ticket.state`` from the session, or block with missing phases.
 
-    Returns structured JSON with ``missing`` phases so the calling agent
-    can spawn a sub-agent to satisfy the gate rather than failing outright.
+    ``Session.visited_phases`` is the single source of truth (#694). When the
+    required phases are present this auto-walks the FSM to REVIEWED so
+    ``ticket.ship()`` is legal — the gate and ``ticket.state`` can no longer
+    disagree. When phases are missing it returns structured JSON with the
+    exact ``missing`` list so the calling agent can satisfy the gate rather
+    than hitting a raw ``TransitionNotAllowed``.
     """
     from teatree.core.models.errors import QualityGateError  # noqa: PLC0415
 
@@ -135,6 +139,13 @@ def _check_shipping_gate(ticket: Ticket) -> ShippingGateFailure | None:
             missing=missing,
             hint="Spawn a review sub-agent to satisfy the reviewing gate, then retry.",
         )
+
+    # Gate passed -> the work is attested. Reconcile the FSM from the single
+    # source of truth so ``ship()`` (source [REVIEWED, SHIPPED]) is legal.
+    if ticket.state not in {Ticket.State.REVIEWED, Ticket.State.SHIPPED}:
+        with transaction.atomic():
+            ticket.reconcile_reviewed()
+            ticket.save()
     return None
 
 
@@ -187,27 +198,13 @@ def _run_visual_qa_gate(ticket: Ticket, *, skip_reason: str = "") -> VisualQAGat
 
 
 def _resolve_ticket(ref: str) -> Ticket:
-    """Resolve a ticket from a numeric pk or an issue URL.
+    """Resolve a ticket by pk / issue number / issue URL.
 
-    Accepts a numeric pk (``"314"`` — direct DB lookup), a full issue URL
-    (``"https://github.com/owner/repo/issues/466"`` — exact match on
-    ``issue_url``), or a bare issue number when no pk exists (``"466"`` —
-    falls back to ``issue_url`` ending in ``/466``). Lets users paste the
-    GitHub/GitLab issue number without looking up the internal DB pk.
+    Thin wrapper over ``Ticket.objects.resolve`` — the shared resolver so
+    ``pr create`` and ``lifecycle visit-phase`` accept the same identifier
+    set (#694).
     """
-    if ref.isdigit():
-        try:
-            return Ticket.objects.get(pk=int(ref))
-        except Ticket.DoesNotExist:
-            ticket = Ticket.objects.filter(issue_url__endswith=f"/{ref}").first()
-            if ticket is not None:
-                return ticket
-            raise
-    ticket = Ticket.objects.filter(issue_url=ref).first()
-    if ticket is None:
-        msg = f"No ticket matching {ref!r} (looked up by pk and issue_url)"
-        raise Ticket.DoesNotExist(msg)
-    return ticket
+    return Ticket.objects.resolve(ref)
 
 
 class Command(TyperCommand):

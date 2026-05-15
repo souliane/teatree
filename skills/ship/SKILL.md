@@ -129,16 +129,14 @@ Before creating a PR, the `pr create` command automatically checks the session g
 
 **The `reviewing` phase MUST be earned by spawning the `t3:reviewer` sub-agent — not by self-review against repo rules alone.** § 3b ("Self-Review Against Repo Rules") is necessary but not sufficient: it is the implementer reviewing their own work, which is the exact pattern that allowed #545 to claim "implementation finished" while review later found six rounds of missed renames, broken tests, undocumented contract changes, and a bypassed shipping gate. An independent reviewer that has not seen the implementation conversation is the corrective.
 
-#### Drive the FSM, never just visit phases (Non-Negotiable)
+#### Single source of truth: the session feeds the FSM (#694)
 
-Teatree has **two independent gates** layered on top of each other:
+Teatree has **two stores**, but they can no longer disagree:
 
-1. **`Ticket.state` FSM** (`STARTED → CODED → TESTED → REVIEWED → SHIPPED → IN_REVIEW → ...`) — owned by `django_fsm` transitions on `core.models.ticket.Ticket`. This is the system of record. `pr create` calls `ticket.ship()` and refuses if the state isn't `REVIEWED`.
-2. **`Session.visited_phases`** — a flat record consulted by `_check_shipping_gate` when a session exists.
+1. **`Session.visited_phases`** — the **single source of truth**. Both the loop path (`Task.complete()` → `_record_phase_visit()`) and the CLI path (`lifecycle visit-phase`) write canonical phase tokens here. `lifecycle visit-phase` resolves the ticket by pk / issue number / issue URL (same identifier set as `pr create`), normalizes the phase name (short verbs and gerunds both work), and logs a WARNING + reports the resulting state when a transition is not legal — out-of-order calls fail loudly, never silently.
+2. **`Ticket.state` FSM** (`STARTED → CODED → TESTED → REVIEWED → SHIPPED → IN_REVIEW → ...`) — `django_fsm` transitions on `core.models.ticket.Ticket`. At the shipping gate, `_check_shipping_gate` **reconciles `ticket.state` from `visited_phases`**: when the required phases are present it auto-walks the FSM to `REVIEWED` (`reconcile_reviewed()`) so `ticket.ship()` is legal; when phases are missing it blocks with the exact missing-phase list. `pr create` therefore **never raises a raw `TransitionNotAllowed`** — it either ships or returns a structured gate failure.
 
-`t3 <overlay> lifecycle visit-phase` only writes the second one. **Calling it directly leaves the FSM untouched**, so the ticket state stays at `TESTED` (or earlier), `pr create` errors `"Transition 'ship' not allowed from state 'tested'"`, and the workflow is silently inconsistent — exactly the breakage the user flagged after #545.
-
-**The agent must drive transitions, not visit phases.** The transition-driven path keeps both gates aligned automatically: `Task.complete()` → `_advance_ticket()` → fires the matching FSM transition → `_consume_pending_phase_tasks` clears stragglers → next-phase task auto-scheduled.
+**Still prefer driving transitions through task completion.** It keeps the task ledger clean: `Task.complete()` → `_record_phase_visit()` records the phase, `_advance_ticket()` fires the matching FSM transition → `_consume_pending_phase_tasks` clears stragglers → next-phase task auto-scheduled. `lifecycle visit-phase` is a valid fallback on the human/CLI path — the gate reconciles either way — but the reviewing phase must still be **earned by an independent reviewer** (see the maker≠checker rule above), not self-attested to skip review.
 
 #### How to satisfy the gate (the only sanctioned path)
 
@@ -166,9 +164,9 @@ Teatree has **two independent gates** layered on top of each other:
    - **Preferred — complete the reviewing task**, which auto-fires `ticket.review()` via `Task._advance_ticket()`. This matches how every other phase advances and keeps the task ledger clean.
    - **Direct transition fallback** when the agent doesn't have the task ID handy: `t3 <overlay> ticket transition <ticket_id> review`. The FSM still requires a completed `reviewing` task as a `conditions=` predicate, so this only works after step 3 has already produced one.
 
-   Do **not** use `t3 <overlay> lifecycle visit-phase <ticket_id> reviewing` as a substitute. It only writes `Session.visited_phases` and leaves `Ticket.state` stuck at `TESTED`, which will cause `pr create` to fail at the FSM layer even though the session gate looks satisfied.
+   Do **not** use `t3 <overlay> lifecycle visit-phase <ticket_id> reviewing` to *skip* an independent review. Since #694 the gate reconciles `Ticket.state` from `Session.visited_phases`, so a manual visit *will* let `pr create` proceed — which is exactly why marking `reviewing` visited without an independent reviewer having actually reviewed the diff defeats the quality gate. Earn the phase (step 2), then record it; never record it to dodge step 2.
 
-5. **Verify before pushing.** `t3 <overlay> ticket list --state reviewed` (or `--id <ticket_id>`) should show the ticket in `reviewed`. If it's still `tested`, the transition didn't fire — re-check that the reviewing task actually completed (`task.status == COMPLETED`) and that no FSM `conditions=` predicate is still failing. Don't paper over with `lifecycle visit-phase`; fix the root cause.
+5. **Verify before pushing.** `t3 <overlay> ticket list --state reviewed` (or `--id <ticket_id>`) should show the ticket in `reviewed` once the reviewing task completed. If the loop path advanced phases but the state still reads `tested`/`started`, that is expected — the shipping gate reconciles it to `reviewed` at `pr create` time. A blocked `pr create` returns the missing-phase list; satisfy those phases (run the reviewer / retro), don't bypass with `--skip-validation`.
 
 **Why a sub-agent, not just self-review.** The implementer's context is contaminated by the implementation: every "looks done" judgment carries the same blind spots that produced the gaps. A sub-agent starts cold, reads the diff with fresh eyes, and applies the review skill's checklists without the implementer's "I already checked that" shortcuts. The cost of one extra `Agent` call is ~30s of wall time and a few hundred tokens; the cost of skipping it is multi-round push-fix-push cycles after the PR is already public.
 

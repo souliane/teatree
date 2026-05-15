@@ -258,6 +258,7 @@ The central entity. One ticket per unit of work (maps to an issue/task in the tr
 | `code()` | started → coded | Calls `schedule_testing()` |
 | `test(passed=True)` | coded → tested | Stores `tests_passed` in extra; calls `schedule_review()` |
 | `review()` | tested → reviewed | Condition: reviewing task completed. Calls `schedule_shipping()` only if `has_shippable_diff()` returns True (otherwise stamps `extra["shipping_skipped"]` for triage — guards meta-tickets from spurious shipping tasks). |
+| `reconcile_reviewed()` | not_started/scoped/started/coded/tested/reviewed → reviewed | Gate-driven catch-up (#694). No reviewing-task condition — the shipping gate verifies the required phases on `Session.visited_phases` (the single source of truth) before calling this, so `ship()` is legal and `pr create` never raises a raw `TransitionNotAllowed`. No side effects. |
 | `ship()` | reviewed → shipped | Enqueues `execute_ship` worker. Worker runs `ShipExecutor` and calls `request_review()` on success. |
 | `request_review()` | shipped → in_review | — |
 | `mark_merged()` | in_review → merged | Enqueues `execute_teardown` worker. Worker runs `WorktreeTeardown` (best-effort cleanup of git worktrees, branches, per-worktree DBs, overlay hooks). Errors do NOT block the FSM — `retrospect()` can advance the ticket regardless. |
@@ -352,7 +353,9 @@ Canonical container ports (from `teatree.utils.ports.CONTAINER_PORTS`; consumed 
 
 ### 4.3 Session — Quality gate tracker (FK → Ticket)
 
-Tracks which workflow phases an agent visited within a conversation, to enforce ordering.
+Tracks which workflow phases an agent visited within a conversation, to enforce ordering. `Session.visited_phases` is the **single source of truth** for the shipping gate (#694): `ticket.state` is reconciled *from* it, never the reverse. Both the loop path (`Task.complete()` records the visited phase via `_record_phase_visit()`) and the CLI path (`lifecycle visit-phase`) write canonical phase tokens here, so the gate and the FSM cannot disagree.
+
+**Phase vocabulary (`teatree.core.phases`).** Skills emit short verbs (`scope`, `code`, `test`, `review`, `ship`, `retro`); older code and `_REQUIRED_PHASES` use gerunds. `normalize_phase()` collapses every spelling to one canonical token (the form stored in `visited_phases`/`_REQUIRED_PHASES`); `phase_transition()` maps a phase to its `Ticket` FSM transition. `lifecycle visit-phase` and `pr create` both resolve the ticket via the shared `Ticket.objects.resolve()` (pk / issue number / issue URL), so callers can pass the forge issue number without hitting a silent `DoesNotExist`.
 
 **Fields:**
 

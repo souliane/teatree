@@ -118,6 +118,7 @@ class Task(models.Model):
         if self._last_attempt_needs_user_input():
             self._schedule_interactive_followup()
             return
+        self._record_phase_visit()
         ticket = self.ticket
         ticket.refresh_from_db()
         with transaction.atomic():
@@ -139,6 +140,21 @@ class Task(models.Model):
             elif self.phase == "shipping" and ticket.state == Ticket.State.REVIEWED:
                 ticket.ship()
                 ticket.save()
+
+    def _record_phase_visit(self) -> None:
+        """Record this task's phase on its session as completion happens (#694).
+
+        Couples the FSM to the work: finishing a phase task *is* the phase
+        visit, so the shipping gate's single source of truth
+        (``Session.visited_phases``) is fed by the loop path without a
+        separate ``lifecycle visit-phase`` CLI call. The phase is normalized
+        so the loop path and the CLI path write the same canonical token.
+        """
+        from teatree.core.phases import normalize_phase  # noqa: PLC0415
+
+        if not self.phase:
+            return
+        self.session.visit_phase(normalize_phase(self.phase), agent_id=self.session.agent_id)
 
     def _last_attempt_needs_user_input(self) -> bool:
         last = self.attempts.order_by("-pk").first()  # ty: ignore[unresolved-attribute]
