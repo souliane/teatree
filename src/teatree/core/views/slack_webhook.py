@@ -5,13 +5,13 @@ import logging
 import time
 
 from django.conf import settings
-from django.db import IntegrityError, transaction
 from django.http import HttpRequest, HttpResponse, JsonResponse
 from django.utils.decorators import method_decorator
 from django.views import View
 from django.views.decorators.csrf import csrf_exempt
 
 from teatree.core.models import IncomingEvent
+from teatree.core.views._webhook_persistence import IngestionRecord, persist_incoming_event
 
 logger = logging.getLogger(__name__)
 
@@ -62,16 +62,14 @@ class SlackWebhookView(View):
         event = payload.get("event") or {}
         event_id = payload.get("event_id") or ""
         idempotency_key = f"slack:{event_id}" if event_id else f"slack:{int(time.time() * 1000)}"
-        try:
-            with transaction.atomic():
-                IncomingEvent.objects.create(
-                    source=IncomingEvent.Source.SLACK,
-                    actor=event.get("user", "") or "",
-                    channel_ref=event.get("channel", "") or "",
-                    thread_ref=event.get("thread_ts", "") or event.get("ts", "") or "",
-                    body=event.get("text", "") or "",
-                    payload_json=payload,
-                    idempotency_key=idempotency_key,
-                )
-        except IntegrityError:
-            logger.debug("Slack event %s already ingested — replay suppressed", idempotency_key)
+        persist_incoming_event(
+            IngestionRecord(
+                source=IncomingEvent.Source.SLACK,
+                idempotency_key=idempotency_key,
+                actor=event.get("user", "") or "",
+                channel_ref=event.get("channel", "") or "",
+                thread_ref=event.get("thread_ts", "") or event.get("ts", "") or "",
+                body=event.get("text", "") or "",
+                payload_json=payload,
+            ),
+        )
