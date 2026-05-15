@@ -24,7 +24,7 @@ from teatree.core.overlay_loader import get_overlay
 from teatree.utils import git
 from teatree.utils.db import drop_db
 from teatree.utils.postgres_secret import remove_postgres_pass_entry
-from teatree.utils.run import run_allowed_to_fail
+from teatree.utils.run import CommandFailedError, run_allowed_to_fail
 
 logger = logging.getLogger(__name__)
 
@@ -232,8 +232,21 @@ def _raise_if_unpushed(repo_main: str, worktree: Worktree) -> None:
     here — the work survives on the remote. Only commits absent from every
     ``refs/remotes/*`` block teardown. The error names the branch, the count,
     and up to ``_SUBJECT_PREVIEW_LIMIT`` short SHAs so the loss is loud.
+
+    **Fails closed.** If the probe itself errors (invalid/missing branch,
+    corrupt repo, any ``git log`` failure) it raises ``CommandFailedError``;
+    we translate that into a refusal rather than proceeding, because an
+    inconclusive probe means we cannot prove the commits are pushed.
     """
-    unpushed = git.commits_absent_from_all_remotes(repo_main, worktree.branch)
+    try:
+        unpushed = git.commits_absent_from_all_remotes(repo_main, worktree.branch)
+    except CommandFailedError as exc:
+        msg = (
+            f"{worktree.repo_path} ({worktree.branch}): "
+            f"refused teardown — could not verify the branch is pushed "
+            f"(git probe failed: {exc}). Push the branch or pass force=True to discard."
+        )
+        raise RuntimeError(msg) from exc
     if not unpushed:
         return
     preview = unpushed[:_SUBJECT_PREVIEW_LIMIT]
@@ -280,10 +293,22 @@ def _remove_git_worktree(
     if not repo_main.is_dir():
         return [f"source repo missing at {repo_main}"]
     if not force:
-        # #706 — the data-loss guard runs first and is the single seam every
-        # teardown caller funnels through. It blocks removal of commits that
-        # exist on no remote at all (the bug that destroyed worktrees). It is
-        # never skipped except by an explicit force override.
+        # #706 — the data-loss guard runs first. It is the seam every
+        # Worktree-row-driven teardown caller funnels through (execute_teardown
+        # / WorktreeTeardown, WorktreeTeardownRunner, clean-merged, clean-all,
+        # sync-backend merge cleanup, abandon) and blocks removal of commits
+        # that exist on no remote at all (the bug that destroyed worktrees).
+        # It is never skipped except by an explicit force override.
+        #
+        # One narrower path is NOT routed here: _workspace_cleanup.
+        # prune_squash_merged() deletes a branch+worktree directly via
+        # git.worktree_remove/branch_delete, but only AFTER is_squash_merged()
+        # has confirmed the content is on a remote (merged PR or empty diff vs
+        # origin/<default>), so it is low risk. Routing it through this guard
+        # would require synthesising a Worktree row and would risk false-
+        # blocking legitimately squash-merged branches whose local SHAs differ
+        # from the squash commit. Unifying that path is tracked as follow-up
+        # (see #706 review) rather than forced here.
         _raise_if_unpushed(str(repo_main), worktree)
         # The squash-merge-aware origin/main hygiene gate is stricter: it also
         # blocks pushed-but-unmerged branches. Sync backends and interactive

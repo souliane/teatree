@@ -1341,3 +1341,34 @@ class TestCommitsAbsentFromAllRemotes:
         result = git.commits_absent_from_all_remotes(str(local), "feature")
         assert len(result) == 1
         assert "never pushed" in result[0]
+
+    def test_git_error_raises_instead_of_returning_empty(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """#706 fail-closed on a non-zero git exit.
+
+        A git error must NOT be read as "nothing unpushed" — it raises so the
+        data-loss guard refuses teardown.
+        """
+        monkeypatch.setattr(
+            utils_run_mod.subprocess,
+            "run",
+            lambda *_a, **_k: CompletedProcess([], 128, stdout="", stderr="fatal: bad revision"),
+        )
+        with pytest.raises(utils_run_mod.CommandFailedError):
+            git.commits_absent_from_all_remotes("/repo", "feature")
+
+    def test_missing_branch_raises_not_silently_empty(self, tmp_path: Path) -> None:
+        """An unknown branch makes ``git log`` exit 128 → must raise, not return []."""
+        bare = tmp_path / "remote.git"
+        utils_run_mod.run_checked(["git", "init", "--bare", str(bare)])
+        local = tmp_path / "local"
+        utils_run_mod.run_checked(["git", "clone", str(bare), str(local)])
+        for k, v in {"user.email": "t@x", "user.name": "t", "commit.gpgsign": "false"}.items():
+            utils_run_mod.run_checked(["git", "-C", str(local), "config", k, v])
+        (local / "a").write_text("1\n")
+        utils_run_mod.run_checked(["git", "-C", str(local), "add", "a"])
+        utils_run_mod.run_checked(["git", "-C", str(local), "commit", "-m", "main commit"])
+        utils_run_mod.run_checked(["git", "-C", str(local), "branch", "-M", "main"])
+        utils_run_mod.run_checked(["git", "-C", str(local), "push", "origin", "main"])
+
+        with pytest.raises(utils_run_mod.CommandFailedError):
+            git.commits_absent_from_all_remotes(str(local), "does-not-exist")

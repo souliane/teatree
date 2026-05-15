@@ -49,8 +49,16 @@ def commits_absent_from_all_remotes(repo: str, branch: str) -> list[str]:
     non-empty result means these commits exist on NO remote: removing the
     worktree would destroy them irrecoverably. Returns ``"<sha> <subject>"``
     lines (newest first).
+
+    **Fails closed.** Uses :func:`run_strict` so a non-zero ``git log`` exit
+    (invalid/missing branch, corrupt repo, any git error) raises
+    ``CommandFailedError`` rather than yielding an empty list. For a data-loss
+    guard, "we couldn't determine whether the commits are pushed" must block
+    teardown, not allow it. The legitimate empty case (``git log`` exits 0 with
+    no output because the branch genuinely has nothing absent from remotes)
+    still returns ``[]`` and allows teardown.
     """
-    output = run(repo=repo, args=["log", branch, "--not", "--remotes", "--oneline"])
+    output = run_strict(repo=repo, args=["log", branch, "--not", "--remotes", "--oneline"])
     return [line for line in output.splitlines() if line.strip()]
 
 

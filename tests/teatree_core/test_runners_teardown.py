@@ -214,3 +214,53 @@ class TestWorktreeTeardownUnpushedGuard(TestCase):
 
         assert result.ok is True, result.detail
         assert not self.wt_path.exists()
+
+    def test_fail_closed_when_branch_unknown_to_git(self) -> None:
+        """#706 fail-closed when the data-loss probe cannot run.
+
+        Here the Worktree row names a branch git doesn't know, so the probe
+        errors. Teardown must REFUSE — we cannot prove the commits are pushed,
+        so we must not destroy the worktree.
+        """
+        ticket = Ticket.objects.create(
+            overlay="test",
+            issue_url="https://example.com/issues/706",
+            state=Ticket.State.MERGED,
+        )
+        Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path="myrepo",
+            branch="branch-git-never-heard-of",
+            extra={"worktree_path": str(self.wt_path)},
+        )
+
+        result = self._teardown(ticket)
+
+        assert result.ok is False
+        assert self.wt_path.exists(), "worktree destroyed despite an inconclusive data-loss probe"
+        assert Worktree.objects.filter(branch="branch-git-never-heard-of").exists()
+
+    def test_force_still_overrides_when_probe_would_error(self) -> None:
+        """Force bypasses the probe entirely.
+
+        The explicit force escape hatch skips the data-loss probe, so an
+        unknown branch does not block a forced teardown.
+        """
+        ticket = Ticket.objects.create(
+            overlay="test",
+            issue_url="https://example.com/issues/706",
+            state=Ticket.State.MERGED,
+        )
+        Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path="myrepo",
+            branch="branch-git-never-heard-of",
+            extra={"worktree_path": str(self.wt_path)},
+        )
+
+        result = self._teardown(ticket, force=True)
+
+        assert result.ok is True, result.detail
+        assert not self.wt_path.exists()
