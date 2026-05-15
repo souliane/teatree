@@ -400,6 +400,79 @@ class TestDispositionMechanical(django.test.TestCase):
         assert ticket.state == "ignored"
 
 
+class TestTickReapsStaleClaims(django.test.TestCase):
+    def test_run_tick_reaps_claims_with_expired_lease(self) -> None:
+        import tempfile  # noqa: PLC0415
+        from datetime import timedelta  # noqa: PLC0415
+
+        from django.utils import timezone  # noqa: PLC0415
+
+        from teatree.core.models import Session, Task, Ticket  # noqa: PLC0415
+
+        ticket = Ticket.objects.create(state=Ticket.State.STARTED)
+        session = Session.objects.create(ticket=ticket, agent_id="agent")
+        stale = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            execution_target=Task.ExecutionTarget.HEADLESS,
+            status=Task.Status.CLAIMED,
+            claimed_by="dead-worker",
+            lease_expires_at=timezone.now() - timedelta(minutes=5),
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            run_tick(TickRequest(scanners=[]), statusline_path=Path(tmp) / "statusline.txt")
+
+        stale.refresh_from_db()
+        assert stale.status == Task.Status.FAILED
+
+
+def test_tick_captures_mechanical_handler_exception(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A raising mechanical handler must not abort the tick — it lands in ``report.errors``."""
+    from teatree.loop import mechanical  # noqa: PLC0415
+
+    def boom(_payload: dict) -> None:
+        msg = "handler exploded"
+        raise RuntimeError(msg)
+
+    monkeypatch.setitem(mechanical.HANDLERS, "ticket_completion", boom)
+
+    signal = ScanSignal(
+        kind="ticket.completion_detected",
+        summary="ticket 42 ready",
+        payload={"ticket_id": 42},
+    )
+    scanner = _FixedScanner(name="completion", out=[signal])
+    statusline = tmp_path / "statusline.txt"
+    report = run_tick(TickRequest(scanners=[scanner]), statusline_path=statusline)
+
+    assert any("ticket_completion" in label for label in report.errors)
+    assert any("handler exploded" in msg for msg in report.errors.values())
+
+
+def test_tick_captures_persist_agent_dispatches_exception(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If ``persist_agent_actions`` raises, the tick records it instead of crashing."""
+
+    def boom(_actions: object) -> None:
+        msg = "persistence down"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr("teatree.loop.persistence.persist_agent_actions", boom)
+
+    scanner = _FixedScanner(name="ok", out=[ScanSignal(kind="my_pr.open", summary="x")])
+    statusline = tmp_path / "statusline.txt"
+    report = run_tick(TickRequest(scanners=[scanner]), statusline_path=statusline)
+
+    assert "dispatch_persist" in report.errors
+    assert "persistence down" in report.errors["dispatch_persist"]
+
+
 def test_tick_multi_overlay_prefixes_summary(tmp_path: Path) -> None:
     """Signals collected via the multi-overlay path get an ``[overlay]`` prefix in the rendered line."""
     from unittest.mock import MagicMock  # noqa: PLC0415
@@ -421,6 +494,42 @@ def test_tick_multi_overlay_prefixes_summary(tmp_path: Path) -> None:
     contents = statusline.read_text(encoding="utf-8")
     assert "[teatree]" in contents
     assert "!545" in contents
+
+
+def test_repos_from_toml_extracts_path_and_workspace_repos(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from teatree.loop.tick import _repos_from_toml  # noqa: PLC0415
+
+    toml_path = tmp_path / ".teatree.toml"
+    toml_path.write_text(
+        '[teatree]\nworkspace_dir = "~/ws"\n'
+        '[overlays.acme]\npath = "~/code/acme"\nworkspace_repos = ["acme/api", "acme/web"]\n'
+        "[overlays.broken]\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    repos = _repos_from_toml()
+
+    assert repos["acme"] == Path.home() / "code" / "acme"
+    assert repos["api"].name == "api"
+    assert repos["web"].name == "web"
+
+
+def test_repos_from_toml_returns_empty_on_invalid_toml(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from teatree.loop.tick import _repos_from_toml  # noqa: PLC0415
+
+    toml_path = tmp_path / ".teatree.toml"
+    toml_path.write_text("not = valid = toml = at = all", encoding="utf-8")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    assert _repos_from_toml() == {}
 
 
 def test_canonical_overlay_names_maps_toml_keys(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
