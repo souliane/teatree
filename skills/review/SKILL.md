@@ -49,7 +49,7 @@ Both self-review and external review cycles.
 
 1. Spawn the `t3:reviewer` sub-agent from the main conversation via the `Agent` tool. The full Agent invocation snippet, FSM transition mechanics, and "drive transitions, not visit phases" rules live in [`../ship/SKILL.md`](../ship/SKILL.md) § "Review Gate" — that section is the source of truth.
 2. Apply every finding the sub-agent surfaces. Reviewer agents are read-only; the implementing conversation owns the edits.
-3. Drive the FSM `review` transition (by completing the reviewing task, which auto-fires `ticket.review()`). **Never** use `t3 <overlay> lifecycle visit-phase reviewing` as a substitute — it writes the session record without advancing the FSM, leaving `Ticket.state` stuck at `TESTED`.
+3. Drive the FSM `review` transition by completing the reviewing task (auto-fires `ticket.review()` and keeps the task ledger clean). **Never** use `t3 <overlay> lifecycle visit-phase reviewing` to *skip* the independent reviewer — since #694 the shipping gate reconciles `Ticket.state` from `Session.visited_phases`, so a manual visit *will* unblock `pr create`; that is precisely why recording `reviewing` without an independent review having happened defeats the gate. Earn the phase first, then record it.
 
 The "Self-Review Before Finalization" workflow below is a **complement** to the sub-agent pass, not a replacement. Run it first to catch the obvious things, then spawn the reviewer.
 

@@ -21,6 +21,33 @@ class _OverlayFilterMixin:
 
 
 class TicketQuerySet(_OverlayFilterMixin, models.QuerySet):
+    def resolve(self, ref: str) -> "Ticket":
+        """Resolve a ticket from a numeric pk, an issue number, or an issue URL.
+
+        Accepts a numeric pk (``"314"`` — direct DB lookup), a full issue URL
+        (``"https://github.com/owner/repo/issues/466"`` — exact match on
+        ``issue_url``), or a bare issue number when no pk exists (``"466"`` —
+        falls back to ``issue_url`` ending in ``/466``). Shared by
+        ``pr create`` and ``lifecycle visit-phase`` so both accept the same
+        identifier set (#694) — callers naturally pass the forge issue number
+        and must not silently hit ``DoesNotExist``.
+        """
+        from teatree.core.models.ticket import Ticket  # noqa: PLC0415
+
+        if ref.isdigit():
+            try:
+                return self.get(pk=int(ref))
+            except Ticket.DoesNotExist:
+                ticket = self.filter(issue_url__endswith=f"/{ref}").first()
+                if ticket is not None:
+                    return ticket
+                raise
+        ticket = self.filter(issue_url=ref).first()
+        if ticket is None:
+            msg = f"No ticket matching {ref!r} (looked up by pk and issue_url)"
+            raise Ticket.DoesNotExist(msg)
+        return ticket
+
     def in_flight(self, overlay: str | None = None) -> models.QuerySet:
         from teatree.core.models.ticket import Ticket  # noqa: PLC0415
 
