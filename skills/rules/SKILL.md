@@ -463,12 +463,16 @@ Commit approval ≠ push approval. **Squash approval ≠ push approval. "All don
 The user has opted into end-to-end autonomy. The agent ships complete features without pausing for confirm prompts on the publishing actions listed above. In particular:
 
 - Push the feature branch after local quality gates pass (lint, tests, `makemigrations --dry-run --check`).
-- Open the PR, watch the pipeline, merge when green, delete the remote branch.
+- Open the PR, watch the pipeline, **merge when green unless `require_human_approval_to_merge` is `true` for the active overlay**, delete the remote branch.
 - Post the overlay-approved Slack messages (review request, release note) as part of the normal flow.
+
+**`require_human_approval_to_merge` is the merge-only carve-out.** Some overlays opt into auto-push but keep auto-merge gated because the upstream enforces a human-review gate (e.g., GitLab Code Review approval rules where CI green is necessary but not sufficient). The setting lives on `UserSettings` and is overridable per-overlay via `[overlays.<name>].require_human_approval_to_merge = true`. When `true`, the agent pushes and opens the PR/MR without asking but stops before queuing `gh pr merge --auto` / `glab mr merge --auto-merge`. The user flips it to `false` once they're comfortable trusting CI green alone. Default is `true` (training wheel on). The setting is intentionally orthogonal to `mode`: `mode = "auto"` everywhere is fine while `require_human_approval_to_merge` stays `true` on client/team overlays.
 
 **Mode is per-overlay.** The setting can live under `[overlays.<name>]` and override the global `[teatree].mode`. A user can run `auto` mode on a personal dogfooding overlay while keeping `interactive` on a client overlay — the active overlay (resolved via `T3_OVERLAY_NAME`) determines which doctrine applies. See `BLUEPRINT.md` § 11.1.1.
 
 **Quality gates still run — they just don't depend on user confirmation.** The objection auto mode answers is "stop gating on _confirmation_," not "skip quality checks."
+
+**Don't ask after resolving to `auto`.** Once steps 1–3 of the resolution order resolve to `auto`, asking "should I push?" or "should I open the PR?" reads as ignoring the user's configured preference and forces them to repeat it every session. Just push and open the PR. The only place you still ask is the merge step, and only when `require_human_approval_to_merge` is `true` for the active overlay.
 
 ### Always-Gated Actions (Non-Negotiable, both modes)
 
