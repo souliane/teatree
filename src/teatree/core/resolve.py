@@ -177,7 +177,7 @@ def _workspace_owner_ticket(cwd_path: Path) -> Ticket | None:
     workspace-dir invariant; if violated the first match wins.
     """
     workspace_candidates = set(_candidate_paths(str(cwd_path.parent)))
-    for wt in Worktree.objects.exclude(extra__worktree_path__isnull=True):
+    for wt in Worktree.objects.exclude(extra__worktree_path__isnull=True).order_by("pk"):
         recorded = (wt.extra or {}).get("worktree_path", "")
         if not recorded:
             continue
