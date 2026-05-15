@@ -10,12 +10,13 @@ import re
 from typing import TypedDict, cast
 
 from django.db import transaction
+from django_fsm import TransitionNotAllowed
 from django_typer.management import TyperCommand, command
 
 from teatree import visual_qa
 from teatree.backends.protocols import PullRequestSpec
 from teatree.core.backend_factory import code_host_from_overlay
-from teatree.core.models import Ticket, Worktree
+from teatree.core.models import Session, Ticket, Worktree
 from teatree.core.models.types import TicketExtra, VisualQASummary
 from teatree.core.orphan_guard import BranchStatus, classify_branch
 from teatree.core.overlay_loader import get_overlay
@@ -126,7 +127,17 @@ def _check_shipping_gate(ticket: Ticket) -> ShippingGateFailure | None:
 
     session = ticket.sessions.order_by("-pk").first()  # ty: ignore[unresolved-attribute]
     if session is None:
-        return None
+        # No session => no attested work; nothing to reconcile. Returning
+        # ``None`` here would let ``ticket.ship()`` raise a raw
+        # ``TransitionNotAllowed`` from a non-REVIEWED state, breaking the
+        # "pr create never raises a raw TransitionNotAllowed" invariant.
+        required = Session._REQUIRED_PHASES.get("shipping", [])  # noqa: SLF001
+        return ShippingGateFailure(
+            allowed=False,
+            error="No session: no attested work to reconcile.",
+            missing=list(required),
+            hint="Run the work through the loop (or `lifecycle visit-phase`) so the phases are recorded, then retry.",
+        )
     try:
         session.check_gate("shipping")
     except QualityGateError as exc:
@@ -147,6 +158,33 @@ def _check_shipping_gate(ticket: Ticket) -> ShippingGateFailure | None:
             ticket.reconcile_reviewed()
             ticket.save()
     return None
+
+
+def _enqueue_ship(ticket: Ticket, title: str) -> ShipEnqueued | ShippingGateFailure:
+    """Run the ``ship()`` transition, converting an illegal hop to JSON.
+
+    Invariant (#694): ``pr create`` never raises a raw
+    ``TransitionNotAllowed`` — even on the ``--skip-validation`` path, where
+    the gate reconcile is bypassed and ``ship()`` may be illegal from the
+    current (non-REVIEWED) state. The failure is reported as the same
+    structured shape the gate-fail path returns.
+    """
+    try:
+        with transaction.atomic():
+            if title:
+                extra = cast("TicketExtra", ticket.extra or {})
+                extra["pr_title_override"] = title
+                ticket.extra = extra
+            ticket.ship()
+            ticket.save()
+    except TransitionNotAllowed:
+        return ShippingGateFailure(
+            allowed=False,
+            error=f"Cannot ship from state '{ticket.state}': FSM not in REVIEWED.",
+            missing=[],
+            hint="Drop --skip-validation so the gate can reconcile the FSM, or record the missing phases.",
+        )
+    return ShipEnqueued(ticket_id=int(ticket.pk), state=str(ticket.state))
 
 
 def _resolve_base_url(worktree: Worktree | None) -> str:
@@ -251,14 +289,7 @@ class Command(TyperCommand):
         if dry_run:
             return _ship_dry_run(ticket, worktree)
 
-        with transaction.atomic():
-            if title:
-                extra = cast("TicketExtra", ticket.extra or {})
-                extra["pr_title_override"] = title
-                ticket.extra = extra
-            ticket.ship()
-            ticket.save()
-        return ShipEnqueued(ticket_id=int(ticket.pk), state=str(ticket.state))
+        return _enqueue_ship(ticket, title)
 
     @command(name="ensure-pr")
     def ensure_pr(

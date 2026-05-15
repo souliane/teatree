@@ -34,7 +34,12 @@ class Command(TyperCommand):
         session = ticket.sessions.order_by("-pk").first()
         if session is None:
             session = Session.objects.create(ticket=ticket)
-        session.visit_phase(canonical)
+        # Thread the session's identity, symmetric with the loop path
+        # (Task._record_phase_visit). Without an ``agent_id`` the phase
+        # never lands in ``phase_visits`` and ``_check_maker_checker``
+        # silently skips it — a CLI ``visit-phase reviewing`` would then
+        # evade the maker≠checker pairing (#694, review nit 2).
+        session.visit_phase(canonical, agent_id=session.agent_id)
 
         transition_name = phase_transition(canonical)
         if transition_name:

@@ -11,6 +11,7 @@ separate CLI call.
 from typing import cast
 from unittest.mock import patch
 
+import pytest
 from django.core.management import call_command
 from django.test import TestCase
 
@@ -183,6 +184,147 @@ class TestPrCreateNeverRaisesTransitionNotAllowed(TestCase):
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.SHIPPED
         assert result == {"ticket_id": ticket.pk, "state": Ticket.State.SHIPPED}
+
+    def test_pr_create_title_override_is_persisted_on_ship(self) -> None:
+        # The --title override path (now in _enqueue_ship) records
+        # pr_title_override on ticket.extra so the ship worker reads it.
+        reset_overlay_cache()
+        self.addCleanup(reset_overlay_cache)
+        ticket = _ticket(state=Ticket.State.STARTED)
+        session = Session.objects.create(ticket=ticket, overlay="test")
+        session.visit_phase("testing")
+        session.visit_phase("reviewing")
+        session.visit_phase("retro")
+        Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path="/tmp/backend",
+            branch="feature-branch",
+            extra={"worktree_path": "/tmp/backend"},
+        )
+        with (
+            patch(
+                "teatree.core.overlay_loader._discover_overlays",
+                return_value={"test": CommandOverlay()},
+            ),
+            patch.object(pr_command, "_run_visual_qa_gate", return_value=None),
+            patch.object(pr_command, "_validate_pr_metadata", return_value=None),
+        ):
+            result = cast(
+                "dict[str, object]",
+                call_command("pr", "create", str(ticket.pk), "--title", "Custom PR title"),
+            )
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.SHIPPED
+        assert result == {"ticket_id": ticket.pk, "state": Ticket.State.SHIPPED}
+        assert ticket.extra["pr_title_override"] == "Custom PR title"
+
+
+class TestShippingGateNoSession(TestCase):
+    def test_gate_blocks_with_structured_failure_when_no_session(self) -> None:
+        # No session => no attested work; the gate must return a structured
+        # failure, NOT None (which would let `ship()` raise a raw
+        # TransitionNotAllowed from a non-REVIEWED state).
+        ticket = _ticket(state=Ticket.State.STARTED)
+        assert ticket.sessions.count() == 0
+
+        result = _check_shipping_gate(ticket)
+        assert result is not None
+        assert result["allowed"] is False
+        assert result["missing"] == ["testing", "reviewing", "retro"]
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.STARTED  # not advanced
+
+
+class TestPrCreateNeverRaisesEvenOnNoSessionOrSkipValidation(TestCase):
+    def _worktree(self, ticket: Ticket) -> None:
+        Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path="/tmp/backend",
+            branch="feature-branch",
+            extra={"worktree_path": "/tmp/backend"},
+        )
+
+    def test_pr_create_no_session_returns_structured_failure_not_raise(self) -> None:
+        ticket = _ticket(state=Ticket.State.STARTED)
+        self._worktree(ticket)
+        result = cast("dict[str, object]", call_command("pr", "create", str(ticket.pk)))
+        assert result["allowed"] is False
+        assert "missing" in result
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.STARTED
+
+    def test_pr_create_skip_validation_from_non_reviewed_returns_structured_failure(self) -> None:
+        # --skip-validation bypasses the gate check; the raw ticket.ship()
+        # from STARTED would raise TransitionNotAllowed. The invariant
+        # "pr create never raises a raw TransitionNotAllowed" must still hold.
+        ticket = _ticket(state=Ticket.State.STARTED)
+        self._worktree(ticket)
+        result = cast(
+            "dict[str, object]",
+            call_command("pr", "create", str(ticket.pk), "--skip-validation"),
+        )
+        assert result["allowed"] is False
+        assert "error" in result
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.STARTED
+
+
+class TestCliVisitPhaseFeedsMakerChecker(TestCase):
+    def test_cli_visit_phase_records_into_phase_visits_keyed_by_session_identity(self) -> None:
+        # The nit: CLI `visit-phase` recorded phases WITHOUT an agent_id, so
+        # they never landed in `phase_visits` and `_check_maker_checker`
+        # silently `continue`d past them. After the fix the CLI must thread
+        # the session identity (symmetric with the loop path) so the phase
+        # IS recorded in phase_visits and the maker≠checker check can see it.
+        ticket = _ticket(state=Ticket.State.STARTED)
+        session = Session.objects.create(ticket=ticket, agent_id="cli-actor")
+        call_command("lifecycle", "visit-phase", str(ticket.pk), "review")
+
+        session.refresh_from_db()
+        assert "reviewing" in session.visited_phases
+        # The bug was: reviewing recorded in visited_phases but NOT in
+        # phase_visits, so maker≠checker skipped it. Now it lands here.
+        assert "reviewing" in session.phase_visits
+        assert session.phase_visits["reviewing"]["agent_id"] == "cli-actor"
+
+    def test_cli_recorded_conflicting_phases_same_session_trip_maker_checker(self) -> None:
+        # When both conflicting phases land on the SAME session via the CLI
+        # (e.g. out-of-order / free-form recording that does not auto-schedule
+        # a fresh review session), the same identity for coding+reviewing
+        # must now trip maker≠checker rather than silently bypassing it.
+        from teatree.core.models.errors import QualityGateError  # noqa: PLC0415
+
+        ticket = _ticket(state=Ticket.State.REVIEWED)  # no FSM auto-scheduling
+        session = Session.objects.create(ticket=ticket, agent_id="same-agent")
+        # Record the prerequisite + both conflicting phases via the CLI on
+        # this single session (REVIEWED state => no schedule_* spawns a new
+        # session, so all three land on `session`).
+        call_command("lifecycle", "visit-phase", str(ticket.pk), "code")
+        call_command("lifecycle", "visit-phase", str(ticket.pk), "test")
+        call_command("lifecycle", "visit-phase", str(ticket.pk), "review")
+
+        session.refresh_from_db()
+        assert session.phase_visits["coding"]["agent_id"] == "same-agent"
+        assert session.phase_visits["reviewing"]["agent_id"] == "same-agent"
+        with pytest.raises(QualityGateError, match="Maker≠checker violation"):
+            session.check_gate("reviewing")
+
+    def test_cli_distinct_agents_pass_maker_checker(self) -> None:
+        # Honest path: a distinct reviewing identity does NOT trip the check.
+        ticket = _ticket(state=Ticket.State.REVIEWED)
+        session = Session.objects.create(ticket=ticket, agent_id="checker")
+        session.visit_phase("coding", agent_id="maker")
+        session.visit_phase("testing", agent_id="maker")
+        call_command("lifecycle", "visit-phase", str(ticket.pk), "review")
+
+        session.refresh_from_db()
+        assert session.phase_visits["coding"]["agent_id"] == "maker"
+        assert session.phase_visits["reviewing"]["agent_id"] == "checker"
+        # Different agents across the pair — gate passes (no raise).
+        session.check_gate("reviewing")
 
 
 class TestLoopPathRecordsVisitedPhase(TestCase):
