@@ -262,6 +262,55 @@ class TestRefusePublicPushWithLeak:
         result = _run_hook(work, env, _push_stdin(work))
         assert result.returncode == 0, result.stdout + result.stderr
 
+    def test_blocks_public_push_when_only_the_commit_message_leaks(self, tmp_path: Path) -> None:
+        """Commit messages reach public history too (#703).
+
+        The file diff is clean, but the message body carries a
+        secret-shaped token. The gate must scan ``git log`` bodies in the
+        push range, not only ``git diff`` — a ``Co-authored-by:`` trailer
+        with an internal/customer-domain address is the real-world case
+        that motivated this.
+        """
+        work, env = _clone_with_remote(tmp_path, "PUBLIC")
+        (work / "feature.txt").write_text("a perfectly clean feature line\n", encoding="utf-8")
+        _git(work, "add", "feature.txt")
+        _git(
+            work,
+            "commit",
+            "-m",
+            "add feature",
+            "-m",
+            "token = glpat-XXXXXXXXXXXXXXXX",  # privacy-scan:allow test fixture
+        )
+
+        result = _run_hook(work, env, _push_stdin(work))
+
+        assert result.returncode == 1, result.stdout + result.stderr
+        combined = (result.stdout + result.stderr).lower()
+        assert "privacy" in combined
+
+    def test_allows_public_push_with_clean_multiline_commit_message(self, tmp_path: Path) -> None:
+        """Message scanning must not become a blanket block on trailers.
+
+        A clean diff plus a clean multi-paragraph message (including a
+        benign example-domain ``Co-authored-by`` trailer) still passes.
+        """
+        work, env = _clone_with_remote(tmp_path, "PUBLIC")
+        (work / "feature.txt").write_text("another clean feature line\n", encoding="utf-8")
+        _git(work, "add", "feature.txt")
+        _git(
+            work,
+            "commit",
+            "-m",
+            "add feature",
+            "-m",
+            "Longer body explaining the change in plain prose.\n\nCo-authored-by: A Dev <dev@example.com>",
+        )
+
+        result = _run_hook(work, env, _push_stdin(work))
+
+        assert result.returncode == 0, result.stdout + result.stderr
+
     def test_hook_is_executable(self) -> None:
         assert os.access(HOOK, os.X_OK), f"{HOOK} must be chmod +x"
 
