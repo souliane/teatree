@@ -135,6 +135,29 @@ class TestRefusePublicPushWithLeak:
         combined = (result.stdout + result.stderr).lower()
         assert "privacy" in combined
 
+    def test_refusal_message_includes_concrete_finding_detail(self, tmp_path: Path) -> None:
+        """The gate must show *which* file/line/category tripped it (#696).
+
+        Not just "carries privacy findings" — the scanner's plain-text
+        summary (category + redacted match + line) must be in the
+        caller-visible refusal output so the user can act without a
+        manual rerun.
+        """
+        work, env = _clone_with_remote(tmp_path, "PUBLIC")
+        (work / "leak.txt").write_text(
+            "token = glpat-XXXXXXXXXXXXXXXX\n",  # privacy-scan:allow test fixture
+            encoding="utf-8",
+        )
+        _git(work, "add", "leak.txt")
+        _git(work, "commit", "-m", "add config")
+
+        result = _run_hook(work, env, _push_stdin(work))
+
+        assert result.returncode == 1, result.stdout + result.stderr
+        combined = result.stdout + result.stderr
+        assert "api_key" in combined, combined
+        assert "glpat-" in combined, combined
+
     def test_blocks_public_push_with_internal_path(self, tmp_path: Path) -> None:
         work, env = _clone_with_remote(tmp_path, "PUBLIC")
         planted = "see /Users/someone/secret/path\n"  # privacy-scan:allow test fixture
