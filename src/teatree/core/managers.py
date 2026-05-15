@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import TYPE_CHECKING
 
 from django.db import models
@@ -74,6 +75,21 @@ class IncomingEventQuerySet(models.QuerySet):
         return self.filter(processed_at__isnull=True)
 
 
+class ReplyDispatchQuerySet(models.QuerySet):
+    def due_for_retry(self, now: datetime | None = None) -> models.QuerySet:
+        from django.utils import timezone  # noqa: PLC0415
+
+        from teatree.core.models.reply_dispatch import ReplyDispatch  # noqa: PLC0415
+
+        moment = now or timezone.now()
+        return (
+            self.filter(status=ReplyDispatch.Status.FAILED)
+            .exclude(action_name="dead_letter_alert")
+            .filter(models.Q(next_retry_at__isnull=True) | models.Q(next_retry_at__lte=moment))
+            .order_by("dispatched_at", "pk")
+        )
+
+
 class TaskQuerySet(models.QuerySet):
     def claimable_for_headless(self, overlay: str | None = None) -> models.QuerySet:
         from teatree.core.models.task import Task  # noqa: PLC0415
@@ -124,3 +140,4 @@ WorktreeManager = models.Manager.from_queryset(WorktreeQuerySet)
 SessionManager = models.Manager.from_queryset(SessionQuerySet)
 TaskManager = models.Manager.from_queryset(TaskQuerySet)
 IncomingEventManager = models.Manager.from_queryset(IncomingEventQuerySet)
+ReplyDispatchManager = models.Manager.from_queryset(ReplyDispatchQuerySet)
