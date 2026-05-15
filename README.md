@@ -233,6 +233,7 @@ graph LR
 <!-- BEGIN SKILLS -->
 | Skill | Phase |
 |-------|-------|
+| `answerer` | Draft a reply to an inbound question, DM the user for approval, post on confirmation |
 | `code` | Writing code with TDD methodology |
 | `contribute` | Push retro improvements to a branch, open a PR, and optionally create upstream issues |
 | `debug` | Troubleshooting and fixing — something is broken, find and fix it |
