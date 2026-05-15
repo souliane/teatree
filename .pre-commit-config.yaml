@@ -25,6 +25,14 @@ repos:
         always_run: true
         stages: [commit]
 
+      - id: refuse-public-push-with-leak
+        name: Refuse pushing a privacy-leaking diff to a PUBLIC repo (#685)
+        language: system
+        entry: scripts/hooks/refuse-public-push-with-leak.sh
+        pass_filenames: false
+        always_run: true
+        stages: [push]
+
   # Phase 1 - Init
   - repo: https://github.com/astral-sh/uv-pre-commit
     rev: 5ab6bd930e86ba0e929eedcee2be458f6b8e4936  # 0.8.16
