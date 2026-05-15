@@ -369,9 +369,15 @@ class TestSweep(TestCase):
 
 
 class TestCheckShippingGate(TestCase):
-    def test_returns_none_when_no_session(self) -> None:
+    def test_returns_structured_failure_when_no_session(self) -> None:
+        # #694 nit 1: no session => no attested work. The gate must return a
+        # structured failure (not None), otherwise ``ship()`` raises a raw
+        # TransitionNotAllowed from a non-REVIEWED state.
         ticket = Ticket.objects.create()
-        assert _check_shipping_gate(ticket) is None
+        result = _check_shipping_gate(ticket)
+        assert result is not None
+        assert result["allowed"] is False
+        assert result["missing"] == ["testing", "reviewing", "retro"]
 
     def test_returns_none_when_gate_passes(self) -> None:
         ticket = Ticket.objects.create()
