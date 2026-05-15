@@ -110,6 +110,7 @@ Write failing test → Implement → Green → Refactor
 - Language/framework conventions from the project's convention skills (when loaded).
 - Repository-specific patterns take precedence over generic guidance.
 - Feature flag rules for new features (see [`references/multi-tenant-development.md`](references/multi-tenant-development.md)).
+- **Verify a config-resolution chain against the specific setting's registration before documenting it — never copy the generic resolver's docstring.** A setting's effective-value chain depends on which override registries it is registered in (e.g. an env layer exists only if the setting is in the env-override registry; a per-overlay layer only if it is in the overridable registry). Documenting "env → per-overlay → global → default" by analogy with a sibling setting, without grepping the registries, produces a chain that names layers that do not exist for that setting. Before writing any "resolved through X → Y → Z" prose in a docstring/skill/BLUEPRINT, grep the registries for the exact setting name and describe only the layers it is actually registered in.
 
 ### 3b. Tooling Decisions
 

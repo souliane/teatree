@@ -15,6 +15,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
+from teatree.config import get_effective_settings
+from teatree.core.phases import normalize_phase
 from teatree.loop.scanners.base import ScanSignal
 
 ActionKind = Literal["statusline", "agent", "webhook", "mechanical"]
@@ -91,7 +93,42 @@ _MECHANICAL_BY_KIND: dict[str, tuple[ActionKind, str]] = {
 }
 
 
-def _dispatch_one(signal: ScanSignal) -> list[DispatchAction]:
+def _dispatch_answering(signal: ScanSignal) -> list[DispatchAction]:
+    """Route an ``answering``-phase task to the ``t3:answerer`` skill (#670).
+
+    Mirrors the reviewer dual-dispatch: the inbound question becomes a
+    ``t3:answerer`` agent invocation plus a statusline mirror so the user
+    sees the pending answer before the agent acts. The autonomy level
+    (``require_human_approval_to_answer``) is resolved here through the
+    standard active-overlay → global → default chain (mirrors
+    ``require_human_approval_to_merge``) and stamped into the agent
+    payload as an advisory convenience mirror; the answerer skill
+    re-resolves the setting at task start (see ``skills/answerer/SKILL.md``
+    § Autonomy Gate), so the stamp is a hint, not the source of truth.
+    ``coding``-phase task_needed signals are left to the statusline
+    fallback — auto ticket creation from inbound chat is a separate
+    decision pass (see ``IncomingEventsScanner``).
+    """
+    require_approval = get_effective_settings().require_human_approval_to_answer
+    payload: ActionPayload = {**signal.payload, "require_human_approval_to_answer": require_approval}
+    return [
+        DispatchAction(kind="agent", zone="t3:answerer", detail=signal.summary, payload=payload),
+        DispatchAction(
+            kind="statusline",
+            zone=_STATUSLINE_ZONE_BY_KIND.get(signal.kind, "action_needed"),
+            detail=signal.summary,
+            payload=signal.payload,
+        ),
+    ]
+
+
+def _conditional_dispatch(signal: ScanSignal) -> list[DispatchAction] | None:
+    """Payload-conditional special cases that precede the generic lookups.
+
+    Returns ``None`` when no special case matches so ``_dispatch_one`` falls
+    through to the ``_AGENT_BY_KIND`` / ``_MECHANICAL_BY_KIND`` / statusline
+    chain. Keeping these here keeps ``_dispatch_one`` flat.
+    """
     if signal.kind in {"slack.mention", "slack.dm"}:
         pr_url = _slack_pr_url(signal)
         if pr_url:
@@ -111,6 +148,16 @@ def _dispatch_one(signal: ScanSignal) -> list[DispatchAction]:
             ]
     if signal.kind == "assigned_issue.ready" and signal.payload.get("auto_start") is True:
         return [DispatchAction(kind="agent", zone="t3:orchestrator", detail=signal.summary, payload=signal.payload)]
+    phase = normalize_phase(str(signal.payload.get("phase", "")))
+    if signal.kind == "incoming_event.task_needed" and phase == "answering":
+        return _dispatch_answering(signal)
+    return None
+
+
+def _dispatch_one(signal: ScanSignal) -> list[DispatchAction]:
+    conditional = _conditional_dispatch(signal)
+    if conditional is not None:
+        return conditional
     agent = _AGENT_BY_KIND.get(signal.kind)
     if agent is not None:
         actions = [DispatchAction(kind="agent", zone=agent, detail=signal.summary, payload=signal.payload)]
