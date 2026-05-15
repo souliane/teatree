@@ -64,11 +64,11 @@ Walk the output of the tick **and** the rendered statusline. The tick must agree
 - `errors` is empty. Any entry like `"my_prs[teatree]": "AuthError: ..."` is bug #1 — surface it before doing anything else.
 - `signal_count` and `action_count` are non-zero when the registered overlays have open work. A clean inbox is plausible; a 0/0 tick on an overlay you know has open PRs is a scanner bug.
 - Every scanner that should run on the active overlay shows up: `pending_tasks` (always, no overlay tag), `my_prs[<overlay>]`, `reviewer_prs[<overlay>]`, `assigned_issues[<overlay>]`, `slack_mentions[<overlay>]` if messaging is configured, `notion_view` if a Notion client is wired. A missing scanner with no error means the overlay declared it but the loop dropped it — file it.
-- Every signal kind in the JSON is one the dispatcher knows about (see § "Reference"). An unknown kind silently falls through to `in_flight` — that's a bug, not a feature.
+- Every signal kind in the JSON is one the dispatcher knows about (see § "Reference"). A kind not in `_STATUSLINE_ZONE_BY_KIND` falls through to a context-specific default (`_dispatch_one` → `in_flight`, `_dispatch_answering` → `action_needed` — see `src/teatree/loop/dispatch.py`); a brand-new kind nobody mapped is a bug, not a feature.
 
 **Rendered (`statusline.txt`):**
 
-- Anchor line first, dim grey, with `tick @ <iso>`. Missing → renderer broken.
+- `render()` writes only the per-overlay zone blocks (`anchors` dim grey, `action_needed` bright red, `in_flight` bright cyan). It does **not** emit a `tick @ <iso>` line — the tick/freshness countdown the user sees (`tick→Nm` / `tick stale`) is composed by `hooks/scripts/statusline.sh` from the `tick-meta.json` sidecar (`next_epoch`/`cadence`), not by the renderer. A missing tick countdown is a `statusline.sh`/`tick-meta.json` issue, not "renderer broken".
 - Action-needed lines bright red, in-flight bright cyan. If a `my_pr.failed` ends up cyan, the zone map drifted.
 - Lines with a `url` payload render as OSC 8 hyperlinks — the raw bytes are `\033]8;;<url>\033\\<text>\033]8;;\033\\`. A line with a URL in JSON but **no** OSC 8 in the file is a render bug. (Run `od -c ~/.local/share/teatree/statusline.txt | head` if your terminal hides escapes.)
 - Multi-overlay ticks prefix lines with `[<overlay>]`. A signal with `payload.overlay = "teatree"` and no `[teatree]` prefix is a `_zones_for` bug.
@@ -125,7 +125,7 @@ Verify against the source before quoting in a bug report — these can drift.
   - `reviewer_pr.new_sha`, `reviewer_pr.unreviewed` → agent `t3:reviewer`
   - `pending_task`, `assigned_issue.ready` → agent `t3:orchestrator`
   - `notion.unrouted` → webhook `n8n`
-  - Any unknown kind → `in_flight` (silent fallback — flag it)
+  - A kind absent from `_STATUSLINE_ZONE_BY_KIND` falls back per dispatch path: `_dispatch_one` → `in_flight`, `_dispatch_answering` → `action_needed` (the dual-dispatch mirror uses `in_flight`). `src/teatree/loop/dispatch.py` is the source of truth — quote it, don't memorise it. A genuinely unmapped *new* kind is the bug to flag, not the fallback itself.
 
 ## Rules
 
