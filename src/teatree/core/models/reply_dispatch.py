@@ -3,6 +3,7 @@ from typing import ClassVar
 from django.db import models
 from django.utils import timezone
 
+from teatree.core.managers import ReplyDispatchManager
 from teatree.core.models.incoming_event import IncomingEvent
 
 
@@ -19,6 +20,7 @@ class ReplyDispatch(models.Model):
         PENDING = "pending", "Pending"
         SENT = "sent", "Sent"
         FAILED = "failed", "Failed"
+        DEAD_LETTER = "dead_letter", "Dead letter"
 
     event = models.ForeignKey(
         IncomingEvent,
@@ -29,14 +31,20 @@ class ReplyDispatch(models.Model):
     action_name = models.CharField(max_length=64)
     idempotency_key = models.CharField(max_length=255, unique=True)
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING)
+    body = models.TextField(blank=True)
     error_message = models.TextField(blank=True)
+    retry_count = models.PositiveSmallIntegerField(default=0)
+    next_retry_at = models.DateTimeField(null=True, blank=True)
     dispatched_at = models.DateTimeField(default=timezone.now)
+
+    objects = ReplyDispatchManager()
 
     class Meta:
         db_table = "teatree_reply_dispatch"
         ordering: ClassVar = ["-dispatched_at"]
         indexes: ClassVar = [
             models.Index(fields=["status", "dispatched_at"]),
+            models.Index(fields=["status", "next_retry_at"]),
         ]
 
     def __str__(self) -> str:

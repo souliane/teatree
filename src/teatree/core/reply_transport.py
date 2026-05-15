@@ -72,6 +72,8 @@ class Replier(Protocol):
         idempotency_key: str,
     ) -> ReplyDispatch: ...
 
+    def redeliver(self, dispatch: ReplyDispatch) -> None: ...
+
 
 class _BaseReplier:
     """Shared post_* dispatch, idempotency, and outcome recording.
@@ -168,11 +170,31 @@ class _BaseReplier:
                     action_name=spec.action_name,
                     idempotency_key=spec.idempotency_key,
                     status=status,
+                    body=spec.body,
                     error_message=error_message,
                 )
         except IntegrityError:
             logger.debug("Reply %s already recorded — idempotent no-op", spec.idempotency_key)
             return ReplyDispatch.objects.get(idempotency_key=spec.idempotency_key)
+
+    def redeliver(self, dispatch: ReplyDispatch) -> None:
+        """Re-attempt a previously-recorded dispatch (the retry-sweep path).
+
+        Rebuilds the ``ReplySpec`` from the persisted row and calls
+        ``_deliver``. Raises on failure. Does NOT touch the row — the
+        sweep owns the status/retry bookkeeping so the idempotency
+        short-circuit in ``_send`` (which would just return the existing
+        FAILED row) is bypassed.
+        """
+        self._deliver(
+            ReplySpec(
+                event=dispatch.event,
+                target_ref=dispatch.target_ref,
+                body=dispatch.body,
+                idempotency_key=dispatch.idempotency_key,
+                action_name=dispatch.action_name,
+            ),
+        )
 
     def _deliver(self, spec: ReplySpec) -> None:
         raise NotImplementedError
