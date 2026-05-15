@@ -149,9 +149,13 @@ class TestListenCommand:
         assert "No slack-enabled overlays" in result.stdout
 
     def test_exits_when_already_running(self, tmp_path: Path) -> None:
+        from teatree.utils.singleton import singleton  # noqa: PLC0415
+
         pid_file = tmp_path / "slack-listener.pid"
-        pid_file.write_text(f"{os.getpid()}\n", encoding="utf-8")
-        with patch("teatree.cli.slack_listen.default_queue_path", return_value=tmp_path / "events.jsonl"):
+        with (
+            singleton("slack-listener", pid_path=pid_file),
+            patch("teatree.cli.slack_listen.default_queue_path", return_value=tmp_path / "events.jsonl"),
+        ):
             result = runner.invoke(slack_app, ["listen"])
 
         assert result.exit_code == 1
@@ -170,7 +174,16 @@ class TestListenCommand:
         assert result.exit_code == 0
         assert "Listening on ov" in result.stdout
 
-    def test_cleans_pid_file_after_run(self, tmp_path: Path) -> None:
+    def test_lock_released_after_run(self, tmp_path: Path) -> None:
+        """The flock releases on clean exit so the lock is re-acquirable.
+
+        The lock file itself persists by design (unlinking a path another
+        opener may already hold reintroduces a double-acquire race — see
+        ``teatree.utils.singleton``); release is proven by re-acquiring,
+        not by file absence.
+        """
+        from teatree.utils.singleton import singleton  # noqa: PLC0415
+
         with (
             patch("teatree.cli.slack_listen.default_queue_path", return_value=tmp_path / "events.jsonl"),
             patch("teatree.cli.slack_listen._resolve_overlays", return_value=[("ov", "xapp", "xoxb")]),
@@ -179,9 +192,12 @@ class TestListenCommand:
             runner.invoke(slack_app, ["listen"])
 
         pid_file = tmp_path / "slack-listener.pid"
-        assert not pid_file.is_file()
+        with singleton("slack-listener", pid_path=pid_file) as held:
+            assert held == pid_file
 
-    def test_cleans_pid_on_exception(self, tmp_path: Path) -> None:
+    def test_lock_released_on_exception(self, tmp_path: Path) -> None:
+        from teatree.utils.singleton import singleton  # noqa: PLC0415
+
         with (
             patch("teatree.cli.slack_listen.default_queue_path", return_value=tmp_path / "events.jsonl"),
             patch("teatree.cli.slack_listen._resolve_overlays", return_value=[("ov", "xapp", "xoxb")]),
@@ -189,6 +205,7 @@ class TestListenCommand:
         ):
             result = runner.invoke(slack_app, ["listen"])
 
-        pid_file = tmp_path / "slack-listener.pid"
-        assert not pid_file.is_file()
         assert result.exit_code != 0
+        pid_file = tmp_path / "slack-listener.pid"
+        with singleton("slack-listener", pid_path=pid_file) as held:
+            assert held == pid_file

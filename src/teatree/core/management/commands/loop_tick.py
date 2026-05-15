@@ -54,12 +54,22 @@ class Command(TyperCommand):
             messaging_from_overlay,
         )
         from teatree.loop.tick import TickRequest, run_tick  # noqa: PLC0415
+        from teatree.utils.singleton import AlreadyRunningError, singleton  # noqa: PLC0415
 
-        if overlay:
-            request = TickRequest(host=code_host_from_overlay(), messaging=messaging_from_overlay())
-        else:
-            request = TickRequest(backends=iter_overlay_backends())
-        report = run_tick(request, statusline_path=statusline_file)
+        try:
+            with singleton("loop-tick"):
+                if overlay:
+                    request = TickRequest(host=code_host_from_overlay(), messaging=messaging_from_overlay())
+                else:
+                    request = TickRequest(backends=iter_overlay_backends())
+                report = run_tick(request, statusline_path=statusline_file)
+        except AlreadyRunningError:
+            if json_output:
+                self.stdout.write(json.dumps({"skipped": "another tick is already running"}))
+            else:
+                self.stdout.write("SKIP  another tick is already running — singleton lock held.")
+            return
+
         result = _report_to_dict(report)
         if json_output:
             self.stdout.write(json.dumps(result, indent=2))
