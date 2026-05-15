@@ -139,10 +139,14 @@ def _check_shipping_gate(ticket: Ticket) -> ShippingGateFailure | None:
             hint="Run the work through the loop (or `lifecycle visit-phase`) so the phases are recorded, then retry.",
         )
     try:
-        session.check_gate("shipping")
+        # Single source of truth = the union of phase records across ALL
+        # the ticket's sessions, not just the latest (#694). FSM-advancing
+        # `visit-phase` forks fresh sessions by design; the required phases
+        # are legitimately scattered across the ticket lifecycle.
+        session.check_gate_across_ticket("shipping")
     except QualityGateError as exc:
-        visited = session.visited_phases or []
-        required = session._REQUIRED_PHASES.get("shipping", [])  # noqa: SLF001
+        visited, _ = ticket.aggregate_phase_records()
+        required = Session._REQUIRED_PHASES.get("shipping", [])  # noqa: SLF001
         missing = [p for p in required if p not in visited]
         return ShippingGateFailure(
             allowed=False,

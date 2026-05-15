@@ -191,6 +191,29 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
         ``TransitionNotAllowed`` at ``pr create``.
         """
 
+    def aggregate_phase_records(self) -> tuple[list[str], dict[str, dict[str, str]]]:
+        """Union the phase records across all of this ticket's sessions (#694).
+
+        Returns ``(visited_phases, phase_visits)`` merged across
+        ``self.sessions`` in creation order. ``visited_phases`` is a
+        de-duplicated list; ``phase_visits`` keeps the first recorded
+        ``agent_id`` per phase (earliest session wins) so maker≠checker
+        attribution stays deterministic. The shipping gate consumes this
+        because FSM-advancing ``visit-phase`` forks fresh sessions by
+        design — the required phases are legitimately scattered, and the
+        single source of truth is the ticket's lifecycle, not one session.
+        """
+        visited: list[str] = []
+        visits: dict[str, dict[str, str]] = {}
+        for session in self.sessions.order_by("pk"):  # ty: ignore[unresolved-attribute]
+            for phase in session.visited_phases or []:
+                if phase not in visited:
+                    visited.append(phase)
+            for phase, record in (session.phase_visits or {}).items():
+                if phase not in visits:
+                    visits[phase] = record
+        return visited, visits
+
     def has_shippable_diff(self) -> bool:
         """Return True iff at least one worktree has commits ahead of its base branch.
 

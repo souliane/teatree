@@ -134,6 +134,77 @@ class TestShippingGateReconciliation(TestCase):
         assert _check_shipping_gate(ticket) is None
 
 
+class TestShippingGateCrossSessionUnion(TestCase):
+    """The required phases may be scattered across the ticket's sessions.
+
+    FSM-advancing ``visit-phase`` forks a fresh session by design
+    (bias-free maker≠checker). The shipping gate's single source of truth
+    is therefore the UNION of phase data across all of the ticket's
+    sessions — not the latest session alone.
+    """
+
+    def test_gate_passes_when_required_phases_scattered_across_sessions(self) -> None:
+        ticket = _ticket(state=Ticket.State.STARTED)
+        s1 = Session.objects.create(ticket=ticket, agent_id="maker")
+        s1.visit_phase("testing", agent_id="maker")
+        s2 = Session.objects.create(ticket=ticket, agent_id="checker")
+        s2.visit_phase("reviewing", agent_id="checker")
+        s3 = Session.objects.create(ticket=ticket, agent_id="retro-actor")
+        s3.visit_phase("retro", agent_id="retro-actor")
+
+        # No single session has all three, but the union does.
+        assert _check_shipping_gate(ticket) is None
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.REVIEWED
+
+    def test_gate_still_blocks_when_a_required_phase_is_genuinely_missing(self) -> None:
+        ticket = _ticket(state=Ticket.State.STARTED)
+        s1 = Session.objects.create(ticket=ticket, agent_id="maker")
+        s1.visit_phase("testing", agent_id="maker")
+        s2 = Session.objects.create(ticket=ticket, agent_id="checker")
+        s2.visit_phase("reviewing", agent_id="checker")
+        # `retro` never recorded on ANY session.
+
+        result = _check_shipping_gate(ticket)
+        assert result is not None
+        assert result["allowed"] is False
+        assert result["missing"] == ["retro"]
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.STARTED
+
+    def test_maker_checker_still_blocks_same_agent_across_sessions(self) -> None:
+        # The conflicting pair (coding, reviewing) recorded by the SAME
+        # agent_id but on DIFFERENT sessions must still trip maker≠checker
+        # once the union is evaluated — integrity preserved, not weakened.
+        ticket = _ticket(state=Ticket.State.STARTED)
+        s1 = Session.objects.create(ticket=ticket, agent_id="same-agent")
+        s1.visit_phase("coding", agent_id="same-agent")
+        s1.visit_phase("testing", agent_id="same-agent")
+        s2 = Session.objects.create(ticket=ticket, agent_id="same-agent")
+        s2.visit_phase("reviewing", agent_id="same-agent")
+        s2.visit_phase("retro", agent_id="same-agent")
+
+        result = _check_shipping_gate(ticket)
+        assert result is not None
+        assert result["allowed"] is False
+        assert "Maker≠checker violation" in result["error"]
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.STARTED
+
+    def test_maker_checker_passes_distinct_agents_across_sessions(self) -> None:
+        ticket = _ticket(state=Ticket.State.STARTED)
+        s1 = Session.objects.create(ticket=ticket, agent_id="maker")
+        s1.visit_phase("coding", agent_id="maker")
+        s1.visit_phase("testing", agent_id="maker")
+        s2 = Session.objects.create(ticket=ticket, agent_id="checker")
+        s2.visit_phase("reviewing", agent_id="checker")
+        s2.visit_phase("retro", agent_id="checker")
+
+        assert _check_shipping_gate(ticket) is None
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.REVIEWED
+
+
 class TestPrCreateNeverRaisesTransitionNotAllowed(TestCase):
     def test_pr_create_blocks_instead_of_raising_when_fsm_behind(self) -> None:
         # FSM stuck at STARTED, no phases visited — pr create must return a
