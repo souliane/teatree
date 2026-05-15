@@ -138,3 +138,23 @@ class TestIncomingEventsScanner(TestCase):
         processed_count = IncomingEvent.objects.filter(processed_at__isnull=False).count()
         assert processed_count == 2
         assert len(signals) <= 2
+
+    def test_unmigrated_db_is_a_silent_noop(self) -> None:
+        """A present-but-un-migrated DB is a silent no-op.
+
+        With the `teatree_incoming_event` table genuinely absent (the
+        pre-migration install state), `scan()` returns `[]` instead of
+        raising the real engine error that `tick._run_job` would surface
+        as a per-tick WARN. Drops the real table with raw DDL so the
+        production query hits the real missing-relation exception (per
+        AGENTS.md Test-Writing Doctrine — real DB, not a mocked
+        manager); the TestCase transaction rolls the DROP back.
+        """
+        from django.db import connection  # noqa: PLC0415
+
+        with connection.cursor() as cursor:
+            cursor.execute("DROP TABLE teatree_incoming_event")
+
+        signals = IncomingEventsScanner().scan()
+
+        assert signals == []
