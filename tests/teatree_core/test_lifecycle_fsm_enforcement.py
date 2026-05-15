@@ -254,7 +254,10 @@ class TestPrCreateNeverRaisesTransitionNotAllowed(TestCase):
 
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.SHIPPED
-        assert result == {"ticket_id": ticket.pk, "state": Ticket.State.SHIPPED}
+        assert result["ticket_id"] == ticket.pk
+        assert result["state"] == Ticket.State.SHIPPED
+        assert result["queued"] is True
+        assert "QUEUED, not performed" in result["warning"]
 
     def test_pr_create_title_override_is_persisted_on_ship(self) -> None:
         # The --title override path (now in _enqueue_ship) records
@@ -288,7 +291,10 @@ class TestPrCreateNeverRaisesTransitionNotAllowed(TestCase):
 
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.SHIPPED
-        assert result == {"ticket_id": ticket.pk, "state": Ticket.State.SHIPPED}
+        assert result["ticket_id"] == ticket.pk
+        assert result["state"] == Ticket.State.SHIPPED
+        assert result["queued"] is True
+        assert "QUEUED, not performed" in result["warning"]
         assert ticket.extra["pr_title_override"] == "Custom PR title"
 
 
