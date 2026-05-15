@@ -9,6 +9,7 @@ import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
 from typer.testing import CliRunner
 
 import teatree.agents.skill_bundle as skill_bundle_mod
@@ -713,14 +714,58 @@ class TestCheckUpdateCommand:
 
 
 class TestMaybeShowUpdateNotice:
-    def test_shows_notice_on_stderr(self) -> None:
+    def test_shows_notice_on_stderr(self, capsys, monkeypatch) -> None:
+        monkeypatch.setattr("sys.argv", ["t3", "info"])
         with patch.object(config_mod, "check_for_updates", return_value="Update available"):
             cli_mod._maybe_show_update_notice()
-            # No assertion needed — just verifying it doesn't crash
+        captured = capsys.readouterr()
+        assert "Update available" in captured.err
+        assert captured.out == ""
 
-    def test_suppresses_exceptions(self) -> None:
+    def test_suppresses_exceptions(self, monkeypatch) -> None:
+        monkeypatch.setattr("sys.argv", ["t3", "info"])
         with patch.object(config_mod, "check_for_updates", side_effect=RuntimeError("boom")):
             cli_mod._maybe_show_update_notice()  # should not raise
+
+    def test_suppressed_in_json_mode(self, capsys, monkeypatch) -> None:
+        """The human banner must never pollute machine-readable output (#719)."""
+        monkeypatch.setattr("sys.argv", ["t3", "ci", "coverage", "--json"])
+        with patch.object(config_mod, "check_for_updates", return_value="Update available"):
+            cli_mod._maybe_show_update_notice()
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert captured.err == ""
+
+    def test_json_eq_form_also_suppressed(self, capsys, monkeypatch) -> None:
+        monkeypatch.setattr("sys.argv", ["t3", "tool", "audit-memory", "--json=true"])
+        with patch.object(config_mod, "check_for_updates", return_value="Update available"):
+            cli_mod._maybe_show_update_notice()
+        captured = capsys.readouterr()
+        assert captured.err == ""
+
+
+class TestUpdateNoticeDoesNotPolluteJsonStdout:
+    """End-to-end: `t3 ci coverage --json` stdout must be valid JSON (#719)."""
+
+    def test_ci_coverage_json_is_parseable_with_update_available(self, monkeypatch, tmp_path) -> None:
+        import teatree.cli.ci as ci_mod  # noqa: PLC0415
+        from teatree.utils.coverage_floor import CoverageReport, ModuleCoverage  # noqa: PLC0415
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "pyproject.toml").write_text("[tool.coverage.report]\nfail_under = 93\n", encoding="utf-8")
+        fake = CoverageReport(
+            overall_percent=95.0,
+            overall_floor=93,
+            module_results=[ModuleCoverage(path="x.py", floor=80, percent=85.0)],
+        )
+        with (
+            patch.object(config_mod, "check_for_updates", return_value="Update available"),
+            patch.object(ci_mod, "measure_coverage", return_value=fake),
+        ):
+            result = runner.invoke(app, ["ci", "coverage", "--json"])
+        assert result.exit_code == 0
+        data = json.loads(result.stdout)
+        assert data["overall_percent"] == pytest.approx(95.0)
 
 
 class TestEnsureEditableIfContributing:
