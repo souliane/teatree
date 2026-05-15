@@ -1,13 +1,26 @@
-"""Pid-file singleton guards for long-running processes.
+"""Flock-backed singleton guards for long-running processes.
 
-One teatree instance shares one SQLite DB and one queue of background tasks.
-Two concurrent ``t3 <overlay> worker`` invocations would compete for the same
-rows and double-execute side effects; two concurrent ``t3 slack listen``
-processes would double-ack every Slack event. Both commands wrap their main
-loop with :func:`singleton` so a second invocation refuses to start while
-the first is alive.
+One teatree instance shares one SQLite DB and one queue of background
+tasks. Two concurrent ``t3 <overlay> worker`` invocations would compete
+for the same rows and double-execute side effects; two concurrent
+``t3 slack listen`` processes would double-ack every Slack event; and N
+concurrent ``t3 loop tick`` processes (one per open Claude Code session,
+each registered by the session-start hook's ``CronCreate``) would race
+on scanner state, the statusline file, and per-row dispatch dedup. Each
+of these wraps its main loop with :func:`singleton` so a second
+invocation refuses to start while the first is alive.
+
+The guard is a non-blocking ``fcntl.flock``. It is kernel-enforced:
+crash-safe (the lock releases when the holder's process dies, with no
+stale-pid window to steal), and free of the read-pid/write-pid TOCTOU
+race the previous pid-file implementation had. The lock file still
+records the holder's pid so ``t3 doctor`` and ``read_pid`` can report
+*who* holds it — but the pid is diagnostic only; the ``flock`` is the
+lock.
 """
 
+import contextlib
+import fcntl
 import os
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -43,8 +56,11 @@ def default_pid_path(name: str) -> Path:
 def read_pid(pid_path: Path) -> int | None:
     """Return the live pid recorded at ``pid_path``, or ``None``.
 
-    Returns ``None`` when the file is missing, malformed, or the pid is dead.
-    Removes the file in the malformed/dead cases so the caller can claim it.
+    Diagnostic helper (consumed by ``t3 doctor``). Returns ``None`` when
+    the file is missing, malformed, or the recorded pid is dead, and
+    removes the file in the malformed/dead cases. Safe alongside the
+    ``flock``: a live holder always keeps its own (live) pid in the
+    file, so this never unlinks an actively-held lock file.
     """
     if not pid_path.is_file():
         return None
@@ -59,20 +75,41 @@ def read_pid(pid_path: Path) -> int | None:
     return pid
 
 
+def _recorded_pid(path: Path) -> int:
+    try:
+        raw = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return 0
+    return int(raw) if raw.isdigit() else 0
+
+
 @contextmanager
 def singleton(name: str, *, pid_path: Path | None = None) -> Iterator[Path]:
     """Acquire a singleton lock named ``name`` for the lifetime of the block.
 
-    Raises :class:`AlreadyRunningError` if another live process owns the lock.
-    Writes the current pid on entry and clears it on exit (including crashes).
+    Raises :class:`AlreadyRunningError` if another live process owns the
+    lock. The kernel releases the lock on context exit OR on process
+    death — there is no stale state to clean up. The lock file is NOT
+    unlinked on exit (unlinking a path another opener may have already
+    ``open()``-ed reintroduces a double-acquire race); it is reused in
+    place by the next acquirer.
     """
     path = pid_path or default_pid_path(name)
     path.parent.mkdir(parents=True, exist_ok=True)
-    live_pid = read_pid(path)
-    if live_pid is not None:
-        raise AlreadyRunningError(name, live_pid, path)
-    path.write_text(f"{os.getpid()}\n", encoding="utf-8")
+    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
     try:
-        yield path
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            holder = _recorded_pid(path)
+            os.close(fd)
+            raise AlreadyRunningError(name, holder, path) from exc
+        os.ftruncate(fd, 0)
+        os.write(fd, f"{os.getpid()}\n".encode())
+        try:
+            yield path
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
     finally:
-        path.unlink(missing_ok=True)
+        with contextlib.suppress(OSError):
+            os.close(fd)

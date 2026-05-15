@@ -436,7 +436,7 @@ def _check_singletons() -> bool:
     """Clean up stale pid files for known singleton processes."""
     from teatree.utils.singleton import default_pid_path, read_pid  # noqa: PLC0415
 
-    for name in ("teatree-worker", "slack-listener"):
+    for name in ("teatree-worker", "slack-listener", "loop-tick"):
         path = default_pid_path(name)
         had_file = path.is_file()
         if read_pid(path) is None and had_file:

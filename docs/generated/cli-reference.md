@@ -1381,9 +1381,11 @@ Usage: t3 teatree worktree start [OPTIONS]
  Thin wrapper around ``Worktree.start_services()``: the FSM advances
  to SERVICES_UP and enqueues ``execute_worktree_start``; the runner
  also runs synchronously here so the operator sees immediate output.
- Allocates free host ports, refreshes the env cache, runs overlay
- pre-run steps, then ``docker compose up -d``. After the runner
- succeeds, runs the overlay's readiness probes — exits 1 if any fail.
+ Refreshes the env cache, runs overlay pre-run steps, then
+ ``docker compose up -d``. Docker auto-maps host ports; the actual
+ ports are then queried via ``docker compose port`` and stored on
+ ``Worktree.extra["ports"]``. After the runner succeeds, runs the
+ overlay's readiness probes — exits 1 if any fail.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --path        TEXT  Worktree path (auto-detects from PWD if empty).          │
@@ -1581,10 +1583,12 @@ Usage: t3 teatree workspace start [OPTIONS]
 
  Start docker for every worktree in the current ticket workspace.
 
- Allocates one shared port set across the workspace, then fires
- ``Worktree.start_services()`` on each worktree (CLI runs the
- runner synchronously). After every worktree starts, runs each
- overlay's readiness probes — exits 1 if any probe fails.
+ Fires ``Worktree.start_services()`` on each worktree (CLI runs the
+ runner synchronously). Each runner brings up docker-compose, which
+ auto-maps host ports; the actual ports are then queried via
+ ``docker compose port`` and stored on ``Worktree.extra["ports"]``.
+ After every worktree starts, runs each overlay's readiness probes —
+ exits 1 if any probe fails.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --path        TEXT  Worktree path inside the workspace (auto-detects from    │
@@ -1770,7 +1774,7 @@ Usage: t3 teatree run services [OPTIONS]
 ```
 Usage: t3 teatree run backend [OPTIONS]
 
- Start the backend via docker-compose.
+ Start the backend via docker-compose. Host port is auto-mapped.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --path        TEXT  Worktree path (auto-detects from PWD if empty).          │
@@ -1783,16 +1787,7 @@ Usage: t3 teatree run backend [OPTIONS]
 ```
 Usage: t3 teatree run frontend [OPTIONS]
 
- Start the frontend dev server on the host.
-
- Angular's nx serve needs 6GB+ RAM which exceeds typical Docker memory
- limits. The frontend always runs on the host; backend/redis stay in Docker.
- In CI, use build-frontend + nginx instead (see docker-compose.e2e.yml).
-
-╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --path        TEXT  Worktree path (auto-detects from PWD if empty).          │
-│ --help              Show this message and exit.                              │
-╰──────────────────────────────────────────────────────────────────────────────╯
+ Start the frontend dev server.
 ```
 
 ##### `t3 teatree run build-frontend`
