@@ -793,6 +793,190 @@ def handle_post_compact(data: dict) -> None:
     json.dump({"additionalContext": context}, sys.stdout)
 
 
+# ── SessionStart: singleton loop orchestration bootstrap ────────────
+#
+# Issue #718. On every session start, emit an ``additionalContext``
+# directive that idempotently establishes (or re-attaches to) the four
+# machine-wide singleton loop sub-agents (the `t3-` loop roster). A
+# second concurrent Claude session must NOT double-spawn the loops — it
+# re-attaches to the recorded owner by agent id instead.
+#
+# The registry reuses the existing file + pid-liveness pattern (mirrors
+# ``teatree.utils.singleton.read_pid``): a small JSON file in the teatree
+# data dir, keyed by loop name, recording the live owner's session id +
+# agent id + pid. It is deliberately NOT a DB row — this hook runs on
+# every session start and the router is Django-free by design.
+#
+# Liveness subtlety: the hook router is a short-lived subprocess that
+# exits the instant the hook returns, so ``os.getpid()`` would be dead
+# before a second session ever starts (defeating the singleton). The
+# owner-liveness pid must be the *Claude session* process — the hook's
+# parent (``os.getppid()``) — which lives for the whole session. The
+# SessionEnd hook additionally clears the entry on a clean exit, so the
+# registry self-heals on both crash (pid dies) and graceful shutdown.
+
+LOOP_AGENT_NAMES: tuple[str, str, str, str] = (
+    "t3-main-loop",
+    "t3-review-loop",
+    "t3-cross-review-loop",
+    "t3-bug-hunt",
+)
+
+# The ownership anchor: whichever session owns the main loop owns the
+# logical orchestration (and the "TEATREE LOOP" session name).
+_OWNER_LOOP = LOOP_AGENT_NAMES[0]
+
+# Overridable for tests; the controlling terminal otherwise.
+_TTY_PATH = "/dev/tty"
+
+
+def _loop_registry_path() -> Path:
+    """Return the machine-wide loop-registry JSON path.
+
+    Sits alongside the existing ``*.pid`` flock files in the teatree
+    data dir. ``T3_LOOP_REGISTRY_DIR`` overrides the directory (tests).
+    Resolved without importing Django-heavy ``teatree.paths`` — the
+    canonical default mirrors ``paths._TRUE_CANONICAL_DATA_DIR``.
+    """
+    override = os.environ.get("T3_LOOP_REGISTRY_DIR", "")
+    base = (
+        Path(override)
+        if override
+        else Path(os.environ.get("XDG_DATA_HOME", str(Path.home() / ".local" / "share"))) / "teatree"
+    )
+    return base / "loop-registry.json"
+
+
+def _read_loop_registry() -> dict[str, dict]:
+    path = _loop_registry_path()
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _write_loop_registry(registry: dict[str, dict]) -> None:
+    path = _loop_registry_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(registry, indent=2, sort_keys=True), encoding="utf-8")
+    tmp.replace(path)
+
+
+def _prune_dead_owner(registry: dict[str, dict]) -> dict[str, dict]:
+    """Drop registry entries whose recorded owner pid is no longer alive.
+
+    Reuses the existing ``teatree.utils.singleton.pid_alive`` primitive
+    rather than re-implementing pid liveness — the locked design calls
+    for preferring the existing singleton/pid mechanism. Imported lazily
+    to keep this Django-free hook fast on the common path (mirrors the
+    lazy ``teatree.skill_deps`` import elsewhere in this module).
+    """
+    from teatree.utils.singleton import pid_alive  # noqa: PLC0415
+
+    return {
+        name: entry
+        for name, entry in registry.items()
+        if isinstance(entry, dict) and pid_alive(int(entry.get("pid", 0) or 0))
+    }
+
+
+def _emit_osc_title() -> None:
+    """Best-effort set the terminal tab title for the loop-owner session.
+
+    The interactive-TTY guard IS the openability of the controlling
+    terminal: a non-interactive/headless session has no writable tty, so
+    the ``open`` fails and the OSC is silently skipped. Never raised.
+    """
+    with contextlib.suppress(OSError), open(_TTY_PATH, "a", encoding="utf-8") as tty:  # noqa: PTH123
+        tty.write("\033]0;TEATREE LOOP\007")
+
+
+_SPAWN_DIRECTIVE = (
+    "TEATREE LOOP ORCHESTRATION — establish the singleton loop sub-agents.\n\n"
+    "This session OWNS the teatree loop orchestration (no other live session holds it). "
+    "Idempotently establish/verify these four machine-wide SINGLETON loop sub-agents "
+    "(all always-started) — spawn each only if not already live, otherwise verify it:\n"
+    "  1. t3-main-loop — backlog/ticket-implementation loop. Spawns >=1 sub-agent "
+    "PER TICKET; each per-ticket sub-agent spawns sub-sub-agents per workflow step "
+    "(scope/code/review/ship) where it fits.\n"
+    "  2. t3-review-loop — reviews EVERY merged PR (in addition to the maker!=checker "
+    "self-review done while implementing a ticket).\n"
+    "  3. t3-cross-review-loop — architectural & cross-repo review; serialized "
+    "against t3-review-loop (shared private repos).\n"
+    "  4. t3-bug-hunt — proactively hunts bugs in teatree core + its registered "
+    "overlay; self-QA on loop/statusline/CLI (the /teatree-bughunt skill); files "
+    "issues and fixes worktree-isolated; never touches branches/PRs the other "
+    "loops own.\n\n"
+    "Reminder (UI-only, cannot be automated): run `/rename TEATREE LOOP` to name this "
+    "owner session. The terminal tab title was set automatically where a TTY was available."
+)
+
+
+def _reattach_directive(owner: dict) -> str:
+    agent_id = owner.get("agent_id") or "(agent id not recorded — re-attach by the live loop's agentId)"
+    return (
+        "TEATREE LOOP ORCHESTRATION — re-attach, do NOT spawn.\n\n"
+        "Another live session already owns the teatree loop orchestration "
+        f"(owner session {owner.get('session_id', '?')}). The singleton loop sub-agents "
+        "are already established. RE-ATTACH to the existing logical loop by the recorded "
+        f"agent id: {agent_id}. Do not spawn duplicate t3-main-loop / t3-review-loop / "
+        "t3-cross-review-loop / t3-bug-hunt sub-agents and do not fight the owner "
+        "session — that double-reviews and races on PR creation."
+    )
+
+
+def handle_session_start_bootstrap(data: dict) -> None:
+    """Emit the idempotent singleton-loop bootstrap directive on session start."""
+    session_id = data.get("session_id", "")
+    if not session_id:
+        return
+
+    registry = _prune_dead_owner(_read_loop_registry())
+    owner = registry.get(_OWNER_LOOP)
+
+    if owner is not None and owner.get("session_id") != session_id:
+        # A different live session already owns the loop — re-attach.
+        _write_loop_registry(registry)  # persist the prune
+        context = _reattach_directive(owner)
+    else:
+        # No live owner, or this very session is the owner — (re)claim it.
+        # Record the parent pid: the long-lived Claude session process,
+        # NOT this ephemeral hook subprocess (which exits immediately).
+        registry[_OWNER_LOOP] = {
+            "session_id": session_id,
+            "agent_id": data.get("agent_id", ""),
+            "pid": os.getppid(),
+        }
+        _write_loop_registry(registry)
+        _emit_osc_title()
+        context = _SPAWN_DIRECTIVE
+
+    json.dump({"additionalContext": context}, sys.stdout)
+
+
+def handle_session_end_loop_registry(data: dict) -> None:
+    """Release the loop-registry ownership slot when the owner session ends.
+
+    The lifecycle counterpart to :func:`handle_session_start_bootstrap`:
+    a clean session exit relinquishes ownership immediately so the next
+    session becomes owner without waiting for pid-liveness to expire.
+    Only the recorded owner's own SessionEnd clears the slot — a
+    non-owner ending must not evict the live owner.
+    """
+    session_id = data.get("session_id", "")
+    if not session_id:
+        return
+    registry = _read_loop_registry()
+    owner = registry.get(_OWNER_LOOP)
+    if owner is not None and owner.get("session_id") == session_id:
+        del registry[_OWNER_LOOP]
+        _write_loop_registry(registry)
+
+
 _SESSION_END_ORPHAN_TIMEOUT = 4
 _SESSION_END_ORPHAN_PREVIEW = 5
 
@@ -1223,9 +1407,10 @@ _HANDLERS: dict[str, list] = {
         handle_read_dedup,
     ],
     "InstructionsLoaded": [handle_track_skill_usage],
+    "SessionStart": [handle_session_start_bootstrap],
     "PreCompact": [handle_pre_compact],
     "PostCompact": [handle_post_compact],
-    "SessionEnd": [handle_session_end],
+    "SessionEnd": [handle_session_end, handle_session_end_loop_registry],
 }
 
 
