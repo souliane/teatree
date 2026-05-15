@@ -10,6 +10,7 @@ from django.views import View
 from django.views.decorators.csrf import csrf_exempt
 
 from teatree.core.models import IncomingEvent
+from teatree.core.views._rate_limit import webhook_rate_limiter
 from teatree.core.views._webhook_persistence import IngestionRecord, persist_incoming_event
 
 logger = logging.getLogger(__name__)
@@ -33,6 +34,10 @@ class GitHubWebhookView(View):
 
         if not self._authenticated(request, secret=secret):
             return HttpResponse(status=401)
+
+        if not webhook_rate_limiter().allow(IncomingEvent.Source.GITHUB):
+            logger.warning("GitHub webhook throttled — per-source rate limit exceeded")
+            return HttpResponse(status=429)
 
         payload = json.loads(request.body or b"{}")
         delivery = request.headers.get("X-GitHub-Delivery", "") or hashlib.sha256(request.body or b"").hexdigest()[:16]

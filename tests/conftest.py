@@ -87,6 +87,16 @@ def _clear_backend_caches() -> Iterator[None]:
     reset_overlay_cache()
 
 
+@pytest.fixture(autouse=True)
+def _reset_webhook_rate_limiter() -> Iterator[None]:
+    """Drop the process-singleton webhook limiter so buckets don't leak across tests."""
+    from teatree.core.views._rate_limit import reset_webhook_rate_limiter  # noqa: PLC0415
+
+    reset_webhook_rate_limiter()
+    yield
+    reset_webhook_rate_limiter()
+
+
 @pytest.fixture
 def workspace(tmp_path: Path) -> Path:
     """Create a minimal workspace structure with a main repo."""
