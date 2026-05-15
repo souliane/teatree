@@ -7,7 +7,7 @@ from teatree.core.models import Worktree
 from teatree.core.overlay import OverlayBase
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.runners.base import RunnerBase, RunnerResult
-from teatree.core.step_runner import run_provision_steps
+from teatree.core.runners.service_launch import ServiceLauncher
 from teatree.core.worktree_env import write_env_cache
 from teatree.timeouts import TimeoutConfig, load_timeouts
 from teatree.utils.ports import get_worktree_ports
@@ -76,15 +76,7 @@ class WorktreeStartRunner(RunnerBase):
         docker_compose_down(project, timeout=self.timeouts.get("docker_compose_down"))
 
         commands = overlay.get_run_commands(worktree)
-        seen_step_names: set[str] = set()
-        pre_run_steps = []
-        for service_name in commands:
-            for step in overlay.get_pre_run_steps(worktree, service_name):
-                if step.name in seen_step_names:
-                    continue
-                seen_step_names.add(step.name)
-                pre_run_steps.append(step)
-        run_provision_steps(pre_run_steps, stop_on_required_failure=False)
+        ServiceLauncher.prepare_all(worktree, list(commands), overlay=overlay)
 
         write_env_cache(worktree)
 

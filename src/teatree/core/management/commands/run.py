@@ -10,6 +10,7 @@ from django_typer.management import TyperCommand, command
 
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.resolve import resolve_worktree
+from teatree.core.runners.service_launch import ServiceLauncher
 from teatree.core.runners.worktree_start import compose_project
 from teatree.types import RunCommand, RunCommands
 from teatree.utils.ports import get_worktree_ports
@@ -101,15 +102,7 @@ class Command(TyperCommand):
         path: str = typer.Option("", help="Worktree path (auto-detects from PWD if empty)."),
     ) -> str:
         """Build the frontend app for production/testing."""
-        worktree = resolve_worktree(path)
-        commands = get_overlay().get_run_commands(worktree)
-        cmd = commands.get("build-frontend", [])
-        if not cmd:
-            return "No build-frontend command configured in the overlay."
-        run_args = cmd.args if isinstance(cmd, RunCommand) else list(cmd)
-        cwd = cmd.cwd if isinstance(cmd, RunCommand) else None
-        run_streamed(run_args, cwd=cwd)
-        return "Frontend built."
+        return ServiceLauncher(resolve_worktree(path), "build-frontend").run().detail
 
     @command(context_settings={"allow_extra_args": True, "allow_interspersed_args": False})
     def tests(
