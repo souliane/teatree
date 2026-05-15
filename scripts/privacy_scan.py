@@ -33,6 +33,21 @@ _API_KEY_RE = re.compile(r"\b(?:glpat-|sk-|ghp_|gho_|github_pat_|xoxb-|xoxp-)[a-
 _HOSTNAME_RE = re.compile(r"\b[a-z0-9-]+\.internal\.[a-z]+\b|\b[a-z0-9-]+\.corp\.[a-z]+\b")
 _FALSE_POSITIVE_RE = re.compile(r"example\.com|user@example|jane|bob|placeholder")
 
+# An SSH git remote — ``git@<host>:<org>/<repo>(.git)`` — is transport
+# syntax, never an email/PII. ``_EMAIL_RE`` matches the ``git@<host>``
+# prefix, so any test or code carrying a normal SSH remote URL would
+# otherwise trip the public-repo privacy gate (a recurring false
+# positive). The SSH user is always literally ``git`` and the host is
+# followed by ``:<path>`` — a real email never has a ``:path`` after the
+# domain — so this is a tight, non-weakening exclusion.
+_SSH_GIT_REMOTE_RE = re.compile(r"\bgit@[a-zA-Z0-9.-]+:[A-Za-z0-9._/~-]+")
+
+
+def _is_ssh_git_remote(line: str, match: re.Match[str]) -> bool:
+    """True when an email match is actually the ``git@host`` of an SSH remote."""
+    return any(rm.start() <= match.start() and match.end() <= rm.end() for rm in _SSH_GIT_REMOTE_RE.finditer(line))
+
+
 # Inline allow-annotation, mirroring gitleaks' ``gitleaks:allow`` idiom.
 # A line carrying this literal marker is exempt from all findings — used
 # so a repo's own privacy-scanner test fixtures and the gate's own
@@ -54,7 +69,11 @@ def _scan_line(line: str, banned_re: re.Pattern[str] | None) -> list[tuple[str, 
     findings: list[tuple[str, str]] = []
     if _ALLOW_MARKER in line:
         return findings
-    findings.extend(("email", m.group()) for m in _EMAIL_RE.finditer(line) if not _FALSE_POSITIVE_RE.search(m.group()))
+    findings.extend(
+        ("email", m.group())
+        for m in _EMAIL_RE.finditer(line)
+        if not _FALSE_POSITIVE_RE.search(m.group()) and not _is_ssh_git_remote(line, m)
+    )
     findings.extend(("home_path", m.group()) for m in _HOME_PATH_RE.finditer(line))
     findings.extend(("private_ip", m.group()) for m in _IP_RE.finditer(line))
     findings.extend(("api_key", m.group()[:20] + "...") for m in _API_KEY_RE.finditer(line))

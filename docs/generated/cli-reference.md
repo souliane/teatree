@@ -598,18 +598,20 @@ Usage: t3 tool [OPTIONS] COMMAND [ARGS]...
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
 │ privacy-scan     Scan text for privacy-sensitive patterns (emails, keys,     │
 │                  IPs).                                                       │
+│ validate-mr      Validate MR/PR title+description against the active         │
+│                  overlay's rules.                                            │
 │ analyze-video    Decompose video into frames for AI analysis.                │
 │ bump-deps        Bump pyproject.toml dependencies from uv.lock.              │
 │ sonar-check      Run local SonarQube analysis via Docker.                    │
-│ label-issues     Suggest labels for unlabeled open issues by                 │
-│                  keyword-matching title and body.                            │
-│ find-duplicates  Flag pairs of open issues with near-identical titles.       │
 │ claude-handover  Show Claude handover telemetry and runtime recommendations. │
 │ audit-memory     Scan Claude memory files for entries that should be         │
 │                  promoted to skills.                                         │
-│ triage-issues    Scan for resolved-but-open and stale issues.                │
 │ notion-download  Download a Notion file attachment using the Brave browser   │
 │                  session.                                                    │
+│ label-issues     Suggest labels for unlabeled open issues by                 │
+│                  keyword-matching title and body.                            │
+│ find-duplicates  Flag pairs of open issues with near-identical titles.       │
+│ triage-issues    Scan for resolved-but-open and stale issues.                │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -625,6 +627,26 @@ Usage: t3 tool privacy-scan [OPTIONS] [PATH]
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 tool validate-mr`
+
+```
+Usage: t3 tool validate-mr [OPTIONS]
+
+ Validate MR/PR title+description against the active overlay's rules.
+
+ Runs the active overlay's ``validate_pr`` (the same verdict used by
+ ``t3 <overlay> pr create``). Exits non-zero and prints each error when
+ the metadata is invalid. The pre-push hook invokes this by default so a
+ bad title/description is rejected BEFORE the push — no env-var opt-in
+ (#119).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --title              TEXT  MR/PR title                                       │
+│ --description        TEXT  MR/PR description                                 │
+│ --help                     Show this message and exit.                       │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -677,6 +699,61 @@ Usage: t3 tool sonar-check [OPTIONS] [REPO_PATH]
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
+#### `t3 tool claude-handover`
+
+```
+Usage: t3 tool claude-handover [OPTIONS]
+
+ Show Claude handover telemetry and runtime recommendations.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --current-runtime        TEXT  Current CLI runtime. Defaults to the          │
+│                                highest-priority configured runtime.          │
+│ --session-id             TEXT  Claude session ID to inspect. Defaults to     │
+│                                latest telemetry.                             │
+│ --state-dir              PATH  Override the Claude statusline telemetry      │
+│                                directory.                                    │
+│ --json                         Emit machine-readable JSON.                   │
+│ --help                         Show this message and exit.                   │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 tool audit-memory`
+
+```
+Usage: t3 tool audit-memory [OPTIONS]
+
+ Scan Claude memory files for entries that should be promoted to skills.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --verbose  -v        Show matched patterns for each entry.                   │
+│ --help               Show this message and exit.                             │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 tool notion-download`
+
+```
+Usage: t3 tool notion-download [OPTIONS] URL
+
+ Download a Notion file attachment using the Brave browser session.
+
+ Accepts the `file://`-prefixed reference string that `t3`'s notion-fetch
+ emits for `<file>` blocks; the signed URL is resolved server-side, so no
+ manual browser click is required.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    url      TEXT  Either the `file://%7B…%7D` src from `notion-fetch`      │
+│                     (resolved automatically via Notion's API — no browser    │
+│                     click needed) or a pre-signed file.notion.so URL.        │
+│                     [required]                                               │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --dest  -d      PATH  Destination directory. [default: .]                    │
+│ --help                Show this message and exit.                            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
 #### `t3 tool label-issues`
 
 ```
@@ -713,38 +790,6 @@ Usage: t3 tool find-duplicates [OPTIONS] REPO
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
-#### `t3 tool claude-handover`
-
-```
-Usage: t3 tool claude-handover [OPTIONS]
-
- Show Claude handover telemetry and runtime recommendations.
-
-╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --current-runtime        TEXT  Current CLI runtime. Defaults to the          │
-│                                highest-priority configured runtime.          │
-│ --session-id             TEXT  Claude session ID to inspect. Defaults to     │
-│                                latest telemetry.                             │
-│ --state-dir              PATH  Override the Claude statusline telemetry      │
-│                                directory.                                    │
-│ --json                         Emit machine-readable JSON.                   │
-│ --help                         Show this message and exit.                   │
-╰──────────────────────────────────────────────────────────────────────────────╯
-```
-
-#### `t3 tool audit-memory`
-
-```
-Usage: t3 tool audit-memory [OPTIONS]
-
- Scan Claude memory files for entries that should be promoted to skills.
-
-╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --verbose  -v        Show matched patterns for each entry.                   │
-│ --help               Show this message and exit.                             │
-╰──────────────────────────────────────────────────────────────────────────────╯
-```
-
 #### `t3 tool triage-issues`
 
 ```
@@ -763,29 +808,6 @@ Usage: t3 tool triage-issues [OPTIONS] REPO
 │ --close-resolved                 Close resolved-but-open issues (with        │
 │                                  comment linking the merged PR).             │
 │ --help                           Show this message and exit.                 │
-╰──────────────────────────────────────────────────────────────────────────────╯
-```
-
-#### `t3 tool notion-download`
-
-```
-Usage: t3 tool notion-download [OPTIONS] URL
-
- Download a Notion file attachment using the Brave browser session.
-
- Accepts the `file://`-prefixed reference string that `t3`'s notion-fetch
- emits for `<file>` blocks; the signed URL is resolved server-side, so no
- manual browser click is required.
-
-╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    url      TEXT  Either the `file://%7B…%7D` src from `notion-fetch`      │
-│                     (resolved automatically via Notion's API — no browser    │
-│                     click needed) or a pre-signed file.notion.so URL.        │
-│                     [required]                                               │
-╰──────────────────────────────────────────────────────────────────────────────╯
-╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --dest  -d      PATH  Destination directory. [default: .]                    │
-│ --help                Show this message and exit.                            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

@@ -219,7 +219,7 @@ This gate exists because the CI `validate_mr_title_and_description` job fails on
 - **PR description first line = same format as title** (CI validates it). NEVER start with `## Summary` — that fails validation.
 - **Always assign to the user.** The `t3 <overlay> pr create` command handles the correct flags automatically.
 
-> **PreToolUse hook:** A `validate-mr-metadata.sh` hook automatically intercepts PR create/update commands in project repos. It validates the title and description first line against the release-notes format rules and **blocks** non-compliant calls with a clear error. Fix the reported issues and retry — no manual validation needed.
+> **PreToolUse hook:** The unified hook router intercepts `glab mr create/update` (and the MCP equivalents) and validates title + description against the active overlay's rules **by default** via `t3 tool validate-mr` — no env-var opt-in — **blocking** non-compliant calls before the push with a clear error. The verdict is the same one `t3 <overlay> pr create` enforces. Fix the reported issues and retry — no manual validation needed.
 
 ### 5b. Multi-Phase PRs Must Name Every Phase in the Title (Non-Negotiable)
 
@@ -237,6 +237,8 @@ When a PR ships work spanning more than one numbered phase of an issue (e.g. `ph
 
 - Background polling for pipeline status.
 - On failure → delegate to fix-push-monitor loop (see `/t3:test`).
+
+**Not-green == red (Non-Negotiable).** When monitoring a pipeline, the *only* acceptable terminal state is every required job `success`. Any job that is **not** `success` — `failed`/`error`, `canceled`, `skipped`, `manual` (not run), `blocked`, an `allow_failure: true` job that is failing, or a gray/unknown state — is a **failure**: find the cause, fix it, re-trigger the job, and confirm it goes green. Never report a pipeline OK while any job is non-green, never "walk away" from a gray/skipped/manual job, and never treat `allow_failure: true` as "safe to ignore" — `allow_failure` keeps the *pipeline* green but the job still failed and must be investigated. A still-running/pending job is not yet a failure — wait for it to reach a terminal state, then apply this rule. (Enforced in the loop's PR scanner: `teatree.loop.scanners.my_prs._needs_attention`.)
 
 ### 7. Review Request
 
