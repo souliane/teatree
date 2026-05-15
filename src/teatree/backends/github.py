@@ -349,6 +349,25 @@ class GitHubCodeHost:
         data = _gh_api_get(endpoint, token=self._token)
         return cast("RawAPIDict", data) if isinstance(data, dict) else {"error": f"Issue not found: {issue_url}"}
 
+    def post_issue_comment(self, *, issue_url: str, body: str) -> RawAPIDict:
+        """Post a comment to a GitHub issue.
+
+        Supports ``https://github.com/<owner>/<repo>/issues/<number>``.
+        Returns ``{"error": ...}`` when the URL is not a recognised GitHub
+        issue URL.
+        """
+        path = urlparse(issue_url).path
+        match = _ISSUE_URL_RE.match(path)
+        if match is None:
+            return {"error": f"Not a GitHub issue URL: {issue_url}"}
+
+        data = _gh_api_post(
+            f"repos/{match['owner']}/{match['repo']}/issues/{match['number']}/comments",
+            {"body": body},
+            token=self._token,
+        )
+        return cast("RawAPIDict", data) if isinstance(data, dict) else {}
+
     def get_review_state(self, *, pr_url: str, reviewer: str) -> ReviewState:
         """Return *reviewer*'s current review state on the PR at *pr_url*.
 
