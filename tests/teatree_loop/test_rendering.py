@@ -77,3 +77,47 @@ class TestNoColorPipeline:
             for item in zone
         )
         assert "\033]8;;" in blob
+
+
+def _statusline_action(*, detail: str, url: str) -> DispatchAction:
+    """Build a reviewer-pr dual-dispatch statusline action.
+
+    Mirrors what ``dispatch._dispatch_one`` produces: ``detail`` is the
+    scanner summary and the payload carries ``url``/``overlay`` but no
+    ``iid`` (reviewer scanners never ship an iid — see
+    ``scanners/reviewer_prs.py``).
+    """
+    return DispatchAction(
+        kind="statusline",
+        zone="action_needed",
+        detail=detail,
+        payload={"url": url, "overlay": "teatree"},
+    )
+
+
+class TestReviewerPrRefRendering:
+    """Reviewer-pr signals render as a clickable per-overlay ``!N`` ref.
+
+    They carry only ``url`` (no ``iid``); the renderer derives the iid
+    from the URL tail. ``approval_dismissed`` uses a different summary
+    ("Approval dismissed:") than new_sha/unreviewed ("Review needed:"),
+    so the derivation must cover both prefixes.
+    """
+
+    _PR_URL = "https://gitlab.example.com/g/p/-/merge_requests/123"
+
+    def test_review_needed_renders_clickable_pr_ref(self) -> None:
+        action = _statusline_action(detail=f"Review needed: {self._PR_URL}", url=self._PR_URL)
+        zones = zones_for([action], colorize=False)
+        action_blob = "".join(item if isinstance(item, str) else item.text for item in zones.action_needed)
+        assert "[teatree] !123" in action_blob, repr(action_blob)
+
+    def test_approval_dismissed_renders_clickable_pr_ref(self) -> None:
+        zones = zones_for(
+            [_statusline_action(detail=f"Approval dismissed: {self._PR_URL}", url=self._PR_URL)],
+            colorize=False,
+        )
+        action_blob = "".join(item if isinstance(item, str) else item.text for item in zones.action_needed)
+        # Before the fix this collapsed into a generic "Approval dismissed:
+        # <url>" line with no per-overlay `!N` grouping.
+        assert "[teatree] !123" in action_blob, repr(action_blob)
