@@ -7,8 +7,10 @@
 #     XDG path. Decoupling render from read keeps this hook fast (<10ms).
 #  2. Live per-session info from Claude's stdin JSON: model, context-window %,
 #     5-hour and 7-day rate-limit usage, and skills loaded this session —
-#     the latter populated by hook_router.py / track-skill-usage.sh into
-#     ${state_dir}/<session_id>.skills.
+#     the latter populated by hook_router.py into
+#     ${state_dir}/<session_id>.skills. Each loaded skill is expanded to its
+#     resolved `requires:` dependency closure so the segment reflects the
+#     full active set, not just explicitly tool-invoked names.
 
 set -u
 
