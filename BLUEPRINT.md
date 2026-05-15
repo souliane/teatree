@@ -544,6 +544,8 @@ Can be overridden via a markdown file at `references/skill-delegation.md` with `
 
 TeaTree drives the day from a single long-lived Claude Code session running a fat `/loop`. The loop fires on a fixed cadence (default 12 minutes, configured via `[teatree] loop_cadence_seconds`). The tick body is Python code (`teatree.loop.tick.run_tick`), not prose — so it is tested, typed, and version-controlled.
 
+**Tick is a machine-wide singleton.** Every open Claude Code session registers its own `CronCreate` for `t3 loop tick` via the session-start hook, so N concurrent sessions would otherwise fire N overlapping ticks racing on scanner state, the statusline file, and per-row dispatch dedup. The `loop_tick` management command wraps `run_tick` in `teatree.utils.singleton.singleton("loop-tick")` (the same flock-backed primitive used by `t3 <overlay> worker` and `t3 slack listen`). A second concurrent tick gets `AlreadyRunningError`, prints `SKIP`, and exits 0 — the holding tick's cron re-fires on the next cadence anyway.
+
 Each tick runs three stages:
 
 1. **Scan** — pure-Python scanners under `teatree.loop.scanners` collect signals from external sources in parallel. Scanners are deterministic, mockable, and fully covered by integration tests against stubbed backends. They never invoke Claude.
@@ -900,7 +902,7 @@ Each registered overlay gets a subcommand group (e.g., `t3 acme`). Commands dele
 - `t3 <overlay> full-status` — ticket/worktree/session summary
 - `t3 <overlay> agent [TASK]` — launch Claude Code with overlay context
 - `t3 <overlay> resetdb` — drop and recreate SQLite database
-- `t3 <overlay> worker` — start background task workers (singleton — refuses a second instance while one is alive; uses `teatree.utils.singleton` over `$XDG_DATA_HOME/teatree/teatree-worker.pid`)
+- `t3 <overlay> worker` — start background task workers (singleton — refuses a second instance while one is alive; uses `teatree.utils.singleton`, a non-blocking `flock` over `$XDG_DATA_HOME/teatree/teatree-worker.pid`)
 
 **Management command groups** (each exposed as a sub-typer):
 
@@ -1064,7 +1066,7 @@ e2e_dir = "e2e"  # subdirectory containing playwright.config.ts (default: "e2e")
 
 The walkthrough never writes a bot token to disk in plaintext; tokens always go via `pass`. Re-running `t3 setup slack-bot --overlay <name> --reset` rotates both tokens.
 
-**Socket Mode listener** (`t3 slack listen`): a global singleton process that opens one WebSocket per slack-enabled overlay. Events are written to `$XDG_DATA_HOME/teatree/slack-events.jsonl` in real time. `t3 slack status` checks if the listener is running. `t3 slack check` drains the queue and prints user messages as JSON (exit 0 = messages found, 1 = empty) — designed for a fast cron (30s–1min). The listener uses PID-file-based singleton detection — only one instance runs at a time. Start it as a background process or let the SessionStart hook manage its lifecycle.
+**Socket Mode listener** (`t3 slack listen`): a global singleton process that opens one WebSocket per slack-enabled overlay. Events are written to `$XDG_DATA_HOME/teatree/slack-events.jsonl` in real time. `t3 slack status` checks if the listener is running. `t3 slack check` drains the queue and prints user messages as JSON (exit 0 = messages found, 1 = empty) — designed for a fast cron (30s–1min). The listener uses the shared `teatree.utils.singleton` flock primitive (kernel-enforced, crash-safe) — only one instance runs at a time. Start it as a background process or let the SessionStart hook manage its lifecycle.
 
 **Operating mode (`teatree.mode`, env: `T3_MODE`)** — controls whether the agent
 pauses for confirmation on publishing actions (push, PR create, PR merge, messaging-backend

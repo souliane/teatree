@@ -96,3 +96,34 @@ class TestLoopTickCommand(TestCase):
             call_command("loop_tick", "--overlay", "myoverlay", stdout=stdout)
 
         host_mock.assert_called_once()
+
+    def test_skips_tick_when_singleton_lock_held(self) -> None:
+        """Holding the real `loop-tick` lock makes the command skip the tick.
+
+        No mock of the lock itself — a genuine concurrent holder is
+        simulated by acquiring `singleton("loop-tick")` in this process
+        first, exercising the exact production refusal path.
+        """
+        from teatree.utils.singleton import singleton  # noqa: PLC0415
+
+        stdout = StringIO()
+        with (
+            singleton("loop-tick"),
+            patch("teatree.loop.tick.run_tick") as run_tick_mock,
+        ):
+            call_command("loop_tick", stdout=stdout)
+
+        run_tick_mock.assert_not_called()
+        output = stdout.getvalue()
+        assert "SKIP" in output
+        assert "another tick is already running" in output
+
+    def test_skip_emits_json_when_requested(self) -> None:
+        from teatree.utils.singleton import singleton  # noqa: PLC0415
+
+        stdout = StringIO()
+        with singleton("loop-tick"):
+            call_command("loop_tick", "--json", stdout=stdout)
+
+        payload = json.loads(stdout.getvalue())
+        assert payload == {"skipped": "another tick is already running"}
