@@ -103,6 +103,7 @@ src/teatree/
     sessions.py         # `t3 sessions`
     setup.py            # `t3 setup ...`
     slack_setup.py      # `t3 setup slack-bot` walkthrough
+    update.py           # `t3 update` (sync core + overlays ff-only)
     tools.py            # `t3 tool ...`
 
   core/                 # Django app: the heart of teatree
@@ -885,6 +886,7 @@ Typer-based, work without Django:
 - `t3 tool {privacy-scan,analyze-video,bump-deps,label-issues,find-duplicates,triage-issues,audit-memory}` — standalone utilities
 - `t3 config write-skill-cache` — write overlay skill metadata to cache
 - `t3 doctor {check,repair}` — health checks and symlink repair
+- `t3 update` — fetch + fast-forward (ff-only) teatree core and every registered overlay repo to its default branch, reinstall advanced editable installs, then re-run the idempotent `t3 setup`. A dirty tree, a non-default-branch checkout, or a missing upstream is skipped with a reason (never stashed/reset/clobbered); exit is non-zero only on a hard fetch/pull failure, not a skip. Kept separate from `t3 setup` so routine bootstrap can never silently jump the running code to newer `main`.
 - `t3 setup slack-bot --overlay <name>` — interactive walkthrough to register a Slack bot for an overlay; opens the app-manifest URL, captures bot+app tokens, stores them via `pass`, writes `slack_user_id` into `~/.teatree.toml`, smoke-tests with a round-trip DM (see § 10.1 for the manifest template and scopes). Subcommands of `t3 setup` short-circuit the global skill-install callback so the walkthrough runs without requiring `T3_REPO`.
 - `t3 assess` — codebase health check (ruff, coverage, complexity, dependency staleness)
 - `t3 infra` — infrastructure helpers (e.g. shared docker container management)
