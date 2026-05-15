@@ -18,6 +18,7 @@ import contextlib
 import json
 import os
 import re
+import shutil
 import subprocess  # noqa: S404
 import sys
 import tempfile
@@ -444,14 +445,22 @@ def handle_protect_default_branch(data: dict) -> bool:
 # ── PreToolUse: validate-mr-metadata ────────────────────────────────
 
 
-def _extract_mr_fields(data: dict) -> tuple[str, str]:
+def _extract_mr_fields(data: dict) -> tuple[str, str] | None:
+    """Return ``(title, description)`` for an MR create/update, else ``None``.
+
+    ``None`` means "not a `glab mr create/update`" — nothing to validate.
+    A returned tuple means the command IS an MR mutation and must be
+    validated *even if title/description are empty* — an empty/missing
+    title is exactly the kind of bad metadata the pre-push gate must
+    reject, not silently pass (#119).
+    """
     tool_name = data.get("tool_name", "")
     tool_input = data.get("tool_input", {})
 
     if tool_name == "Bash":
         command = tool_input.get("command", "")
         if "glab mr create" not in command and "glab mr update" not in command:
-            return "", ""
+            return None
         title_match = re.search(r"""--title\s+['"]([^'"]+)['"]""", command)
         desc_match = re.search(r"""--description\s+['"]([^'"]+)['"]""", command)
         return (title_match.group(1) if title_match else ""), (desc_match.group(1) if desc_match else "")
@@ -459,35 +468,65 @@ def _extract_mr_fields(data: dict) -> tuple[str, str]:
     if tool_name in _MR_TOOLS:
         return tool_input.get("title", ""), tool_input.get("description", "")
 
-    return "", ""
+    return None
+
+
+def _mr_validate_argv() -> list[str] | None:
+    """Resolve the command that validates MR metadata.
+
+    Default (no opt-in): ``t3 tool validate-mr`` — runs the active
+    overlay's ``validate_pr``, the same verdict ``t3 <overlay> pr create``
+    uses, so a bad title/description is rejected BEFORE the push every time
+    (#119). ``T3_MR_VALIDATE_SCRIPT`` remains an explicit override escape
+    hatch. Returns ``None`` when no validator is resolvable (fail open —
+    don't block the agent on a broken environment, matching the other
+    t3-shelling hooks).
+    """
+    script = os.environ.get("T3_MR_VALIDATE_SCRIPT", "")
+    if script and Path(script).is_file():
+        return ["python3", script]
+    t3_bin = shutil.which("t3")
+    if t3_bin:
+        return [t3_bin, "tool", "validate-mr"]
+    return None
 
 
 def handle_validate_mr_metadata(data: dict) -> bool:
-    """Validate MR title/description against project-specific rules."""
-    validate_script = os.environ.get("T3_MR_VALIDATE_SCRIPT", "")
-    if not validate_script or not Path(validate_script).is_file():
-        return False
+    """Block a non-compliant ``glab mr create/update`` before it runs.
 
-    title, description = _extract_mr_fields(data)
-    if not title:
+    Validates by default via the active overlay's ``validate_pr`` (no
+    env-var opt-in) so the pre-push gate is always live (#119 Part 3).
+    """
+    fields = _extract_mr_fields(data)
+    if fields is None:
+        return False
+    title, description = fields
+
+    argv = _mr_validate_argv()
+    if argv is None:
         return False
 
     try:
-        subprocess.run(  # noqa: S603
-            ["python3", validate_script, "--title", title, "--description", description],  # noqa: S607
+        result = subprocess.run(  # noqa: S603
+            [*argv, "--title", title, "--description", description],
             capture_output=True,
             text=True,
-            check=True,
-            timeout=5,
+            check=False,
+            timeout=10,
         )
-    except subprocess.CalledProcessError as exc:
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return False
+
+    if result.returncode != 0:
         json.dump(
-            {"permissionDecision": "deny", "permissionDecisionReason": exc.stdout or exc.stderr},
+            {
+                "permissionDecision": "deny",
+                "permissionDecisionReason": (result.stderr or result.stdout or "").strip()
+                or "MR title/description failed overlay validation.",
+            },
             sys.stdout,
         )
         return True
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        pass
     return False
 
 
@@ -983,8 +1022,6 @@ _SESSION_END_ORPHAN_PREVIEW = 5
 
 def _fetch_orphans() -> list[dict]:
     """Invoke ``t3 teatree workspace list-orphans`` and return its JSON, or ``[]``."""
-    import shutil  # noqa: PLC0415
-
     t3_bin = shutil.which("t3")
     if not t3_bin:
         return []

@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
 
+import pytest
 from django.test import TestCase
 
 from teatree.backends.protocols import ReviewState
@@ -174,7 +175,7 @@ class TestMyPrsScanner:
         assert [s.kind for s in signals] == ["my_pr.failed"]
 
     def test_pr_without_url_or_title_still_emits_open_signal(self) -> None:
-        """`_str_field` returns '' when neither web_url nor html_url is a string."""
+        """No pipeline yet (blank status) = legitimately not-started, not red."""
         host = FakeCodeHost(
             user="alice",
             my_prs=[{"iid": 0, "title": None, "web_url": None}],
@@ -183,6 +184,49 @@ class TestMyPrsScanner:
         assert [s.kind for s in signals] == ["my_pr.open"]
         assert signals[0].payload["url"] == ""
         assert signals[0].payload["title"] == ""
+
+    @pytest.mark.parametrize(
+        "status",
+        ["canceled", "cancelled", "skipped", "manual", "blocked", "stale", "neutral", "action_required"],
+    )
+    def test_non_green_terminal_status_is_treated_as_failed(self, status: str) -> None:
+        """Not-green == red.
+
+        A pipeline that is not ``success`` and not legitimately
+        in-progress (canceled / skipped / manual-not-run / any unknown
+        terminal state) must surface as action-needed, never silently as
+        a benign open PR.
+        """
+        host = FakeCodeHost(
+            user="alice",
+            my_prs=[
+                {
+                    "iid": 21,
+                    "title": "Gray pipeline",
+                    "web_url": "x",
+                    "head_pipeline": {"status": status},
+                }
+            ],
+        )
+        signals = MyPrsScanner(host=host).scan()
+        assert [s.kind for s in signals] == ["my_pr.failed"], status
+
+    @pytest.mark.parametrize("status", ["running", "pending", "created", "preparing", "scheduled"])
+    def test_in_progress_status_is_not_treated_as_failed(self, status: str) -> None:
+        """A pipeline still legitimately running is not yet red."""
+        host = FakeCodeHost(
+            user="alice",
+            my_prs=[
+                {
+                    "iid": 22,
+                    "title": "Still running",
+                    "web_url": "x",
+                    "head_pipeline": {"status": status},
+                }
+            ],
+        )
+        signals = MyPrsScanner(host=host).scan()
+        assert [s.kind for s in signals] == ["my_pr.open"], status
 
 
 class TestReviewerPrsScanner(TestCase):
