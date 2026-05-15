@@ -350,12 +350,18 @@ class Command(TyperCommand):
     def teardown(
         self,
         path: str = typer.Option("", help="Worktree path inside the workspace (auto-detects from PWD)."),
+        *,
+        force: bool = typer.Option(
+            default=False,
+            help="Tear down even when a branch has commits not on any remote (data loss).",
+        ),
     ) -> str:
         """Tear down every worktree in the current ticket workspace.
 
         Fires ``Worktree.teardown()`` on each worktree. Continues past
         per-worktree failures to maximise cleanup; surfaces them in the
-        final summary.
+        final summary. Refuses to remove a worktree whose branch carries
+        unpushed commits unless ``--force`` is passed.
         """
         ticket = _resolve_workspace_ticket(path)
 
@@ -372,6 +378,7 @@ class Command(TyperCommand):
                 wt.save()
             result = WorktreeTeardownRunner(
                 wt,
+                force=force,
                 snapshot_db_name=snapshot_db_name,
                 snapshot_extra=snapshot_extra,
             ).run()
@@ -447,7 +454,7 @@ class Command(TyperCommand):
                 continue
             for wt in worktrees:
                 try:
-                    cleaned.append(cleanup_worktree(wt, force=True))
+                    cleaned.append(cleanup_worktree(wt, strict_hygiene=False))
                 except RuntimeError as exc:
                     cleaned.append(f"FAILED {wt.repo_path} ({wt.branch}): {exc}")
         if not cleaned:

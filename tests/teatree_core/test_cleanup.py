@@ -15,6 +15,17 @@ _patch_overlay = patch("teatree.core.cleanup.get_overlay")
 _patch_classify = patch("teatree.core.cleanup.classify_branch_commits")
 
 
+def _no_unpushed(mock_git: MagicMock) -> None:
+    """Default the #706 data-loss guard helper to "nothing unpushed".
+
+    Tests exercising unrelated cleanup behaviour share the wholesale ``git``
+    mock; without this the guard sees a truthy ``MagicMock`` and refuses
+    spuriously. Tests that target the guard override the return value after
+    calling this.
+    """
+    mock_git.commits_absent_from_all_remotes.return_value = []
+
+
 def _mock_workspace(mock_config: MagicMock) -> None:
     mock_config.return_value.user.workspace_dir.__truediv__ = lambda self, x: MagicMock(is_dir=lambda: True)
 
@@ -45,6 +56,7 @@ class TestCleanupWorktree(TestCase):
         mock_overlay: MagicMock,
     ) -> None:
         _mock_workspace(mock_config)
+        _no_unpushed(mock_git)
         mock_overlay.return_value.get_cleanup_steps.return_value = []
         mock_git.status_porcelain.return_value = ""
         mock_git.unsynced_commits.return_value = []
@@ -69,6 +81,7 @@ class TestCleanupWorktree(TestCase):
         mock_overlay: MagicMock,
     ) -> None:
         _mock_workspace(mock_config)
+        _no_unpushed(mock_git)
         mock_overlay.return_value.get_cleanup_steps.return_value = []
 
         wt = self._make_worktree(db_name="wt_99")
@@ -87,6 +100,7 @@ class TestCleanupWorktree(TestCase):
         mock_overlay: MagicMock,
     ) -> None:
         _mock_workspace(mock_config)
+        _no_unpushed(mock_git)
         step_fn = MagicMock()
         mock_overlay.return_value.get_cleanup_steps.return_value = [MagicMock(callable=step_fn)]
 
@@ -105,6 +119,7 @@ class TestCleanupWorktree(TestCase):
         mock_overlay: MagicMock,
     ) -> None:
         _mock_workspace(mock_config)
+        _no_unpushed(mock_git)
         mock_overlay.return_value.get_cleanup_steps.return_value = []
         mock_overlay.return_value.config.teardown_removes_pass_entries = False
 
@@ -123,6 +138,7 @@ class TestCleanupWorktree(TestCase):
         mock_overlay: MagicMock,
     ) -> None:
         _mock_workspace(mock_config)
+        _no_unpushed(mock_git)
         mock_overlay.return_value.get_cleanup_steps.return_value = []
         mock_overlay.return_value.config.teardown_removes_pass_entries = True
 
@@ -142,6 +158,7 @@ class TestCleanupWorktree(TestCase):
         mock_overlay: MagicMock,
     ) -> None:
         _mock_workspace(mock_config)
+        _no_unpushed(mock_git)
         mock_overlay.return_value.get_cleanup_steps.return_value = []
 
         wt = self._make_worktree()
@@ -162,6 +179,7 @@ class TestCleanupWorktree(TestCase):
         mock_classify: MagicMock,
     ) -> None:
         _mock_workspace(mock_config)
+        _no_unpushed(mock_git)
         mock_overlay.return_value.get_cleanup_steps.return_value = []
         mock_git.status_porcelain.return_value = ""
         mock_git.unsynced_commits.return_value = ["abc123 chore: cve fix"]
@@ -199,6 +217,7 @@ class TestCleanupWorktree(TestCase):
         is already captured by the squash tree.
         """
         _mock_workspace(mock_config)
+        _no_unpushed(mock_git)
         mock_overlay.return_value.get_cleanup_steps.return_value = []
         mock_git.status_porcelain.return_value = ""
         mock_git.unsynced_commits.return_value = ["abc123 retro: post-merge docs"]
@@ -227,6 +246,7 @@ class TestCleanupWorktree(TestCase):
     ) -> None:
         """Genuinely ahead commits whose tree differs from the squash carry real work."""
         _mock_workspace(mock_config)
+        _no_unpushed(mock_git)
         mock_overlay.return_value.get_cleanup_steps.return_value = []
         mock_git.status_porcelain.return_value = ""
         mock_git.unsynced_commits.return_value = ["abc123 feat: new work"]
@@ -255,6 +275,7 @@ class TestCleanupWorktree(TestCase):
     ) -> None:
         """Branches whose only "unsynced" commits are squash-merged or merge commits are safe to clean."""
         _mock_workspace(mock_config)
+        _no_unpushed(mock_git)
         mock_overlay.return_value.get_cleanup_steps.return_value = []
         mock_git.status_porcelain.return_value = ""
         mock_git.unsynced_commits.return_value = ["abc123 feat: squashed on main"]
@@ -280,6 +301,7 @@ class TestCleanupWorktree(TestCase):
         mock_overlay: MagicMock,
     ) -> None:
         _mock_workspace(mock_config)
+        _no_unpushed(mock_git)
         mock_overlay.return_value.get_cleanup_steps.return_value = []
         mock_git.status_porcelain.return_value = ""
         mock_git.unsynced_commits.return_value = ["abc123 chore: cve fix"]
@@ -293,6 +315,140 @@ class TestCleanupWorktree(TestCase):
     @_patch_overlay
     @_patch_git
     @_patch_config
+    def test_raises_when_commits_absent_from_all_remotes(
+        self,
+        mock_config: MagicMock,
+        mock_git: MagicMock,
+        mock_overlay: MagicMock,
+    ) -> None:
+        """#706 data-loss guard — branch with commits on no remote blocks teardown."""
+        _mock_workspace(mock_config)
+        _no_unpushed(mock_git)
+        mock_overlay.return_value.get_cleanup_steps.return_value = []
+        mock_git.status_porcelain.return_value = ""
+        mock_git.commits_absent_from_all_remotes.return_value = [
+            "abc1234 feat: never pushed",
+            "def5678 fix: also local",
+        ]
+
+        wt = self._make_worktree(wt_path="/tmp/wt/org/repo")
+        with pytest.raises(RuntimeError, match=r"on NO remote \(data loss\)"):
+            cleanup_worktree(wt)
+
+        mock_git.worktree_remove.assert_not_called()
+        mock_git.branch_delete.assert_not_called()
+
+    @_patch_overlay
+    @_patch_git
+    @_patch_config
+    def test_unpushed_guard_message_truncates_sha_preview(
+        self,
+        mock_config: MagicMock,
+        mock_git: MagicMock,
+        mock_overlay: MagicMock,
+    ) -> None:
+        """More than the preview limit of unpushed commits is summarised with an ellipsis."""
+        _mock_workspace(mock_config)
+        _no_unpushed(mock_git)
+        mock_overlay.return_value.get_cleanup_steps.return_value = []
+        mock_git.status_porcelain.return_value = ""
+        mock_git.commits_absent_from_all_remotes.return_value = [f"sha{i} commit {i}" for i in range(5)]
+
+        wt = self._make_worktree(wt_path="/tmp/wt/org/repo")
+        with pytest.raises(RuntimeError, match=r"5 commit\(s\) on NO remote.*…") as excinfo:
+            cleanup_worktree(wt)
+        assert "sha0" in str(excinfo.value)
+        assert "sha4" not in str(excinfo.value)
+
+    @_patch_overlay
+    @_patch_git
+    @_patch_config
+    def test_force_bypasses_unpushed_guard(
+        self,
+        mock_config: MagicMock,
+        mock_git: MagicMock,
+        mock_overlay: MagicMock,
+    ) -> None:
+        """An explicit force override discards even commits on no remote."""
+        _mock_workspace(mock_config)
+        _no_unpushed(mock_git)
+        mock_overlay.return_value.get_cleanup_steps.return_value = []
+        mock_git.status_porcelain.return_value = ""
+        mock_git.commits_absent_from_all_remotes.return_value = ["abc123 feat: unpushed"]
+
+        wt = self._make_worktree(wt_path="/tmp/wt/org/repo")
+        cleanup_worktree(wt, force=True)
+
+        mock_git.worktree_remove.assert_called_once()
+        mock_git.commits_absent_from_all_remotes.assert_not_called()
+
+    @_patch_classify
+    @_patch_overlay
+    @_patch_git
+    @_patch_config
+    def test_strict_hygiene_refuses_pushed_but_unmerged_branch(
+        self,
+        mock_config: MagicMock,
+        mock_git: MagicMock,
+        mock_overlay: MagicMock,
+        mock_classify: MagicMock,
+    ) -> None:
+        """Pushed-but-unmerged branch is refused under strict hygiene (default).
+
+        The origin/main hygiene gate still blocks it — the sync-backend /
+        clean-all contract is unchanged.
+        """
+        _mock_workspace(mock_config)
+        _no_unpushed(mock_git)
+        mock_overlay.return_value.get_cleanup_steps.return_value = []
+        mock_git.status_porcelain.return_value = ""
+        mock_git.commits_absent_from_all_remotes.return_value = []  # pushed → data-loss guard passes
+        mock_git.unsynced_commits.return_value = ["abc123 feat: pushed not merged"]
+        mock_classify.return_value = BranchClassification(
+            genuinely_ahead=[BranchCommit(sha="abc123", subject="feat: pushed not merged", is_merge=False)]
+        )
+
+        wt = self._make_worktree(wt_path="/tmp/wt/org/repo")
+        with (
+            patch("teatree.core.cleanup._pr_merge_commit_sha", return_value=""),
+            pytest.raises(RuntimeError, match="unsynced commit"),
+        ):
+            cleanup_worktree(wt, strict_hygiene=True)
+        mock_git.worktree_remove.assert_not_called()
+
+    @_patch_classify
+    @_patch_overlay
+    @_patch_git
+    @_patch_config
+    def test_non_strict_hygiene_allows_pushed_but_unmerged_branch(
+        self,
+        mock_config: MagicMock,
+        mock_git: MagicMock,
+        mock_overlay: MagicMock,
+        mock_classify: MagicMock,
+    ) -> None:
+        """Pushed-but-unmerged branch is allowed when strict hygiene is off.
+
+        This is the automated FSM teardown contract — a branch pushed to its
+        own remote ref passes; only the data-loss guard still applies.
+        """
+        _mock_workspace(mock_config)
+        _no_unpushed(mock_git)
+        mock_overlay.return_value.get_cleanup_steps.return_value = []
+        mock_git.status_porcelain.return_value = ""
+        mock_git.commits_absent_from_all_remotes.return_value = []  # pushed
+        mock_git.unsynced_commits.return_value = ["abc123 feat: pushed not merged"]
+        mock_classify.return_value = BranchClassification(
+            genuinely_ahead=[BranchCommit(sha="abc123", subject="feat: pushed not merged", is_merge=False)]
+        )
+
+        wt = self._make_worktree(wt_path="/tmp/wt/org/repo")
+        cleanup_worktree(wt, strict_hygiene=False)
+        mock_git.worktree_remove.assert_called_once()
+
+    @_patch_overlay
+    @_patch_git
+    @_patch_config
     def test_releases_redis_slot_when_last_worktree_removed(
         self,
         mock_config: MagicMock,
@@ -300,6 +456,7 @@ class TestCleanupWorktree(TestCase):
         mock_overlay: MagicMock,
     ) -> None:
         _mock_workspace(mock_config)
+        _no_unpushed(mock_git)
         mock_overlay.return_value.get_cleanup_steps.return_value = []
         mock_git.status_porcelain.return_value = ""
         mock_git.unsynced_commits.return_value = []
@@ -326,6 +483,7 @@ class TestCleanupWorktree(TestCase):
         mock_overlay: MagicMock,
     ) -> None:
         _mock_workspace(mock_config)
+        _no_unpushed(mock_git)
         mock_overlay.return_value.get_cleanup_steps.return_value = []
         mock_git.status_porcelain.return_value = ""
         mock_git.unsynced_commits.return_value = []
@@ -360,6 +518,7 @@ class TestCleanupWorktree(TestCase):
         mock_overlay: MagicMock,
     ) -> None:
         _mock_workspace(mock_config)
+        _no_unpushed(mock_git)
         mock_overlay.return_value.get_cleanup_steps.return_value = []
         mock_git.status_porcelain.return_value = ""
         mock_git.unsynced_commits.return_value = []
