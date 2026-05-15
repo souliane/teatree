@@ -160,6 +160,134 @@ class TestPostToolUsePrecedence:
         assert _read_skills("sess-20") == ["t3:code"]
 
 
+def _write_skill(skills_dir: Path, name: str, *, requires: list[str] | None = None) -> None:
+    """Write a real SKILL.md fixture with frontmatter the resolver parses."""
+    skill_dir = skills_dir / name
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    lines = [
+        "---",
+        f"name: {name}",
+        f"description: Fixture skill {name}.",
+    ]
+    if requires:
+        lines.append("requires:")
+        lines.extend(f"  - {dep}" for dep in requires)
+    lines += [
+        "triggers:",
+        "  priority: 50",
+        "  keywords:",
+        f"    - '\\b{name}\\b'",
+        "---",
+        "",
+        f"# {name}",
+        "",
+        f"Body of {name}.",
+    ]
+    (skill_dir / "SKILL.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+@pytest.fixture
+def skill_fixture_tree(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Create a real skill tree and point the closure resolver at it.
+
+    No mocking of the dependency resolver: ``build_trigger_index`` parses
+    these real SKILL.md files and ``resolve_requires`` walks them.
+    """
+    skills_dir = tmp_path / "skills"
+    # rules has no deps; workspace requires rules; code requires workspace;
+    # review requires code (which transitively pulls workspace + rules).
+    _write_skill(skills_dir, "rules")
+    _write_skill(skills_dir, "workspace", requires=["rules"])
+    _write_skill(skills_dir, "code", requires=["workspace"])
+    _write_skill(skills_dir, "review", requires=["code"])
+    _write_skill(skills_dir, "debug", requires=["rules"])
+    monkeypatch.setenv("T3_SKILL_SEARCH_DIRS", str(skills_dir))
+
+
+@pytest.mark.usefixtures("skill_fixture_tree")
+class TestRequiresClosureTracking:
+    """Loading a skill records its resolved ``requires:`` closure (#689)."""
+
+    def test_post_tool_use_expands_to_requires_closure(self) -> None:
+        handle_track_skill_usage(
+            {
+                "session_id": "sess-clo-1",
+                "tool_name": "Skill",
+                "tool_input": {"skill": "code"},
+            }
+        )
+        # code requires workspace, workspace requires rules — all must appear,
+        # deps before dependents (topological order).
+        assert _read_skills("sess-clo-1") == ["rules", "workspace", "code"]
+
+    def test_instructions_loaded_expands_to_requires_closure(self) -> None:
+        handle_track_skill_usage(
+            {
+                "session_id": "sess-clo-2",
+                "skills": [{"name": "review"}],
+            }
+        )
+        # review -> code -> workspace -> rules
+        assert _read_skills("sess-clo-2") == ["rules", "workspace", "code", "review"]
+
+    def test_closure_deduplicates_across_events(self) -> None:
+        handle_track_skill_usage(
+            {
+                "session_id": "sess-clo-3",
+                "tool_name": "Skill",
+                "tool_input": {"skill": "code"},
+            }
+        )
+        handle_track_skill_usage(
+            {
+                "session_id": "sess-clo-3",
+                "tool_name": "Skill",
+                "tool_input": {"skill": "debug"},
+            }
+        )
+        # rules/workspace/code from the first call; debug adds only itself
+        # (rules already present) — no duplicates.
+        assert _read_skills("sess-clo-3") == ["rules", "workspace", "code", "debug"]
+
+    def test_string_names_in_instructions_loaded_get_closure(self) -> None:
+        handle_track_skill_usage(
+            {
+                "session_id": "sess-clo-4",
+                "skills": ["code"],
+            }
+        )
+        assert _read_skills("sess-clo-4") == ["rules", "workspace", "code"]
+
+    def test_unknown_skill_passes_through_without_error(self) -> None:
+        # A framework skill with no trigger entry (ac-django) must still be
+        # recorded — it just has no closure to expand.
+        handle_track_skill_usage(
+            {
+                "session_id": "sess-clo-5",
+                "tool_name": "Skill",
+                "tool_input": {"skill": "ac-django"},
+            }
+        )
+        assert _read_skills("sess-clo-5") == ["ac-django"]
+
+    def test_suggested_but_not_loaded_skills_are_not_tracked(self) -> None:
+        # Only genuinely-loaded skills + their closure are tracked. A skill
+        # that was merely suggested (never the subject of a Skill tool call
+        # or an InstructionsLoaded entry) must not appear.
+        handle_track_skill_usage(
+            {
+                "session_id": "sess-clo-6",
+                "tool_name": "Skill",
+                "tool_input": {"skill": "debug"},
+            }
+        )
+        tracked = _read_skills("sess-clo-6")
+        assert tracked == ["rules", "debug"]
+        # "code"/"workspace"/"review" were never loaded — suggested != loaded.
+        assert "code" not in tracked
+        assert "review" not in tracked
+
+
 class TestSessionEndRetro:
     """SessionEnd hook suggests retro when lifecycle skills were loaded."""
 
