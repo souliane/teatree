@@ -81,3 +81,7 @@ def main(
 
     if all_findings and strict:
         raise SystemExit(1)
+
+
+if __name__ == "__main__":
+    app()
