@@ -116,6 +116,7 @@ class Command(TyperCommand):
         status: Annotated[str | None, typer.Option(help="Filter by status")] = None,
         execution_target: Annotated[str | None, typer.Option(help="Filter by execution target")] = None,
     ) -> list[TaskRow]:
+        Task.objects.reap_stale_claims()
         qs = Task.objects.all().order_by("pk")
         if status:
             qs = qs.filter(status=status)
