@@ -218,6 +218,36 @@ def _raise_if_genuinely_ahead(repo_main: str, worktree: Worktree) -> None:
     raise RuntimeError(msg)
 
 
+def _raise_if_unpushed(repo_main: str, worktree: Worktree) -> None:
+    """Raise ``RuntimeError`` when the branch has commits on NO remote ref (#706).
+
+    The data-loss guard. The lifecycle FSM can read a teardown-eligible state
+    (MERGED / shipped) while the branch was never actually pushed — async ship
+    never drained (#707/#708). Removing the git worktree then destroys those
+    commits irrecoverably once refs are pruned or ``git gc`` runs.
+
+    This is intentionally distinct from :func:`_raise_if_genuinely_ahead`
+    (squash-merge-aware, ``origin/main``-relative cleanup hygiene). A branch
+    pushed to its own remote tracking ref but not yet merged to main is SAFE
+    here — the work survives on the remote. Only commits absent from every
+    ``refs/remotes/*`` block teardown. The error names the branch, the count,
+    and up to ``_SUBJECT_PREVIEW_LIMIT`` short SHAs so the loss is loud.
+    """
+    unpushed = git.commits_absent_from_all_remotes(repo_main, worktree.branch)
+    if not unpushed:
+        return
+    preview = unpushed[:_SUBJECT_PREVIEW_LIMIT]
+    shas = ", ".join(preview)
+    if len(unpushed) > _SUBJECT_PREVIEW_LIMIT:
+        shas += ", …"
+    msg = (
+        f"{worktree.repo_path} ({worktree.branch}): "
+        f"refused teardown — {len(unpushed)} commit(s) on NO remote (data loss): "
+        f"{shas}. Push the branch or pass force=True to discard."
+    )
+    raise RuntimeError(msg)
+
+
 def _resolve_worktree_path(workspace: Path, worktree: Worktree) -> str:
     """Return the on-disk worktree path, preferring extras and falling back to the canonical layout.
 
@@ -233,7 +263,14 @@ def _resolve_worktree_path(workspace: Path, worktree: Worktree) -> str:
     return str(workspace / worktree.branch / Path(worktree.repo_path).name)
 
 
-def _remove_git_worktree(repo_main: Path, wt_path: str, worktree: Worktree, *, force: bool) -> list[str]:
+def _remove_git_worktree(
+    repo_main: Path,
+    wt_path: str,
+    worktree: Worktree,
+    *,
+    force: bool,
+    strict_hygiene: bool,
+) -> list[str]:
     """Remove the git worktree + branch from the source repo, returning any error messages.
 
     Returns an empty list on success. The source repo missing, the git worktree
@@ -243,7 +280,18 @@ def _remove_git_worktree(repo_main: Path, wt_path: str, worktree: Worktree, *, f
     if not repo_main.is_dir():
         return [f"source repo missing at {repo_main}"]
     if not force:
-        _raise_if_genuinely_ahead(str(repo_main), worktree)
+        # #706 — the data-loss guard runs first and is the single seam every
+        # teardown caller funnels through. It blocks removal of commits that
+        # exist on no remote at all (the bug that destroyed worktrees). It is
+        # never skipped except by an explicit force override.
+        _raise_if_unpushed(str(repo_main), worktree)
+        # The squash-merge-aware origin/main hygiene gate is stricter: it also
+        # blocks pushed-but-unmerged branches. Sync backends and interactive
+        # clean-all want it (they clean only on detected merge / orphan reap);
+        # the automated FSM teardown path does not (the ticket is MERGED and
+        # the work is already preserved on the remote).
+        if strict_hygiene:
+            _raise_if_genuinely_ahead(str(repo_main), worktree)
     errors: list[str] = []
     if not git.worktree_remove(str(repo_main), wt_path):
         errors.append(f"git worktree remove failed for {wt_path}")
@@ -252,7 +300,7 @@ def _remove_git_worktree(repo_main: Path, wt_path: str, worktree: Worktree, *, f
     return errors
 
 
-def cleanup_worktree(worktree: Worktree, *, force: bool = False) -> str:
+def cleanup_worktree(worktree: Worktree, *, force: bool = False, strict_hygiene: bool = True) -> str:
     """Remove a single worktree: git worktree, branch, DB, overlay cleanup.
 
     Deletes the Worktree record from the database and returns a summary label.
@@ -260,10 +308,21 @@ def cleanup_worktree(worktree: Worktree, *, force: bool = False) -> str:
     still succeeds, but they are surfaced in the returned label so the caller
     can detect partial failures.
 
-    Raises ``RuntimeError`` when *force* is ``False`` and the branch has local
-    commits that are genuinely ahead of the default branch (i.e. not merge
-    commits and not squash-merged under a new SHA). Pass ``force=True`` only
-    from trusted callers (e.g. tests, programmatic API).
+    Two guards protect against losing work, both bypassed only by an explicit
+    ``force=True``.
+
+    Data-loss guard (#706, always on): raises ``RuntimeError`` when the branch
+    has commits on NO remote ref — removing the worktree would destroy them
+    irrecoverably.
+
+    Hygiene gate (``strict_hygiene``, default on): additionally raises when the
+    branch is genuinely ahead of ``origin/main`` and not squash-merged. Sync
+    backends and interactive ``clean-all`` keep this on; the automated FSM
+    teardown path passes ``strict_hygiene=False`` (the ticket is MERGED and the
+    branch is already on its remote).
+
+    Pass ``force=True`` only from trusted callers (explicit operator override,
+    tests, programmatic API).
     """
     workspace = load_config().user.workspace_dir
     wt_path = _resolve_worktree_path(workspace, worktree)
@@ -281,7 +340,7 @@ def cleanup_worktree(worktree: Worktree, *, force: bool = False) -> str:
             step_errors.append(f"{step.description}: {exc}")
 
     repo_main = resolve_clone_path(workspace, worktree) or workspace / worktree.repo_path
-    step_errors.extend(_remove_git_worktree(repo_main, wt_path, worktree, force=force))
+    step_errors.extend(_remove_git_worktree(repo_main, wt_path, worktree, force=force, strict_hygiene=strict_hygiene))
 
     if worktree.db_name:
         db_user = _read_env_cache_value(Path(wt_path), "POSTGRES_USER")

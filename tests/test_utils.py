@@ -1268,3 +1268,76 @@ class TestUnsyncedCommits:
         result = git.unsynced_commits(str(local), "feature")
         assert len(result) == 1
         assert "feature work" in result[0]
+
+
+class TestCommitsAbsentFromAllRemotes:
+    """#706 data-loss guard helper — commits reachable from no remote ref."""
+
+    def test_returns_empty_when_nothing_unpushed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            utils_run_mod.subprocess,
+            "run",
+            lambda *_a, **_k: CompletedProcess([], 0, stdout="", stderr=""),
+        )
+        assert git.commits_absent_from_all_remotes("/repo", "feature") == []
+
+    def test_returns_lines_and_filters_blanks(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        output = "abc123 unpushed work\n\n   \ndef456 more local\n"
+        monkeypatch.setattr(
+            utils_run_mod.subprocess,
+            "run",
+            lambda *_a, **_k: CompletedProcess([], 0, stdout=output, stderr=""),
+        )
+        assert git.commits_absent_from_all_remotes("/repo", "feature") == [
+            "abc123 unpushed work",
+            "def456 more local",
+        ]
+
+    def test_pushed_branch_not_on_main_is_considered_safe(self, tmp_path: Path) -> None:
+        """A pushed-but-unmerged branch has nothing absent from all remotes.
+
+        The work survives on its own remote ref, so teardown is safe. This is
+        the inverse of ``unsynced_commits`` and the reason #706 needs a
+        distinct helper.
+        """
+        bare = tmp_path / "remote.git"
+        utils_run_mod.run_checked(["git", "init", "--bare", str(bare)])
+        local = tmp_path / "local"
+        utils_run_mod.run_checked(["git", "clone", str(bare), str(local)])
+        for k, v in {"user.email": "t@x", "user.name": "t", "commit.gpgsign": "false"}.items():
+            utils_run_mod.run_checked(["git", "-C", str(local), "config", k, v])
+        (local / "a").write_text("1\n")
+        utils_run_mod.run_checked(["git", "-C", str(local), "add", "a"])
+        utils_run_mod.run_checked(["git", "-C", str(local), "commit", "-m", "main commit"])
+        utils_run_mod.run_checked(["git", "-C", str(local), "branch", "-M", "main"])
+        utils_run_mod.run_checked(["git", "-C", str(local), "push", "origin", "main"])
+        utils_run_mod.run_checked(["git", "-C", str(local), "checkout", "-b", "feature"])
+        (local / "b").write_text("2\n")
+        utils_run_mod.run_checked(["git", "-C", str(local), "add", "b"])
+        utils_run_mod.run_checked(["git", "-C", str(local), "commit", "-m", "feature work"])
+        utils_run_mod.run_checked(["git", "-C", str(local), "push", "origin", "feature"])
+
+        # Pushed → reachable from refs/remotes/origin/feature → nothing absent.
+        assert git.commits_absent_from_all_remotes(str(local), "feature") == []
+
+    def test_local_only_commit_is_flagged(self, tmp_path: Path) -> None:
+        """A commit that was never pushed anywhere is reported (data loss risk)."""
+        bare = tmp_path / "remote.git"
+        utils_run_mod.run_checked(["git", "init", "--bare", str(bare)])
+        local = tmp_path / "local"
+        utils_run_mod.run_checked(["git", "clone", str(bare), str(local)])
+        for k, v in {"user.email": "t@x", "user.name": "t", "commit.gpgsign": "false"}.items():
+            utils_run_mod.run_checked(["git", "-C", str(local), "config", k, v])
+        (local / "a").write_text("1\n")
+        utils_run_mod.run_checked(["git", "-C", str(local), "add", "a"])
+        utils_run_mod.run_checked(["git", "-C", str(local), "commit", "-m", "main commit"])
+        utils_run_mod.run_checked(["git", "-C", str(local), "branch", "-M", "main"])
+        utils_run_mod.run_checked(["git", "-C", str(local), "push", "origin", "main"])
+        utils_run_mod.run_checked(["git", "-C", str(local), "checkout", "-b", "feature"])
+        (local / "b").write_text("2\n")
+        utils_run_mod.run_checked(["git", "-C", str(local), "add", "b"])
+        utils_run_mod.run_checked(["git", "-C", str(local), "commit", "-m", "never pushed"])
+
+        result = git.commits_absent_from_all_remotes(str(local), "feature")
+        assert len(result) == 1
+        assert "never pushed" in result[0]
