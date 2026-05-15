@@ -30,6 +30,7 @@ from teatree.cli.review_request import review_request_app
 from teatree.cli.setup import setup_app
 from teatree.cli.slack_listen import slack_app
 from teatree.cli.tools import tool_app
+from teatree.cli.update import update_app
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +89,7 @@ app.add_typer(review_request_app, name="review-request")
 app.add_typer(doctor_app, name="doctor")
 app.add_typer(tool_app, name="tool")
 app.add_typer(setup_app, name="setup")
+app.add_typer(update_app, name="update")
 app.add_typer(assess_app, name="assess")
 app.add_typer(overlay_dev_app, name="overlay")
 app.add_typer(infra_app, name="infra")

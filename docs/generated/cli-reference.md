@@ -25,6 +25,8 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │ doctor          Smoke-test hooks, imports, services.                         │
 │ tool            Standalone utilities.                                        │
 │ setup           First-time setup and global skill management.                │
+│ update          Sync teatree core and registered overlays to their default   │
+│                 branch.                                                      │
 │ assess          Codebase health assessment.                                  │
 │ overlay         Dev-mode overlay install/uninstall.                          │
 │ infra           Teatree-wide infrastructure services.                        │
@@ -816,6 +818,18 @@ Usage: t3 setup slack-bot [OPTIONS]
 │                                   ~/.teatree.toml).                          │
 │                                   [default: /Users/adrien/.teatree.toml]     │
 │    --help                         Show this message and exit.                │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+### `t3 update`
+
+```
+Usage: t3 update [OPTIONS] COMMAND [ARGS]...
+
+ Sync teatree core and registered overlays to their default branch.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
