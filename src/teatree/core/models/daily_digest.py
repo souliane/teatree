@@ -7,11 +7,13 @@ from django.utils import timezone
 class DailyDigestThread(models.Model):
     """One rolling DM thread per day (#654 phase 8, #672).
 
-    All user-facing comms for a given UTC day — AskUserQuestion mirrors,
-    error escalations, "PR merged" notices, the end-of-day recap — land
-    as replies under this thread's root message. A new row (new Slack
-    thread) is opened the first time anything posts on a new UTC date;
-    the previous day's thread is closed by its end-of-day recap.
+    All user-facing comms for a given digest day — AskUserQuestion
+    mirrors, error escalations, "PR merged" notices, the end-of-day
+    recap — land as replies under this thread's root message. The day
+    rolls at 08:00 local time (configured ``TIME_ZONE``; hour via
+    ``TEATREE_DAILY_DIGEST_ROLL_HOUR``). A new row (new Slack thread)
+    opens the first time anything posts in a new window; the previous
+    window's thread is closed by its end-of-day recap.
     """
 
     date = models.DateField(unique=True)

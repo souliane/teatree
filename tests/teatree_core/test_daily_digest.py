@@ -3,7 +3,7 @@
 import datetime as dt
 from unittest.mock import MagicMock
 
-from django.test import TestCase
+from django.test import TestCase, override_settings
 
 from teatree.core.daily_digest import DailyDigest
 from teatree.core.models import DailyDigestMessage, DailyDigestThread
@@ -21,6 +21,7 @@ def _at(y: int, mo: int, d: int, h: int = 12) -> dt.datetime:
     return dt.datetime(y, mo, d, h, tzinfo=dt.UTC)
 
 
+@override_settings(TIME_ZONE="UTC")  # deterministic roll boundary regardless of CI tz
 class TestDailyDigest(TestCase):
     def test_first_post_of_day_opens_dm_and_creates_thread(self) -> None:
         backend = _backend()
@@ -51,14 +52,15 @@ class TestDailyDigest(TestCase):
         assert backend.post_reply.call_count == 2
         assert DailyDigestThread.objects.count() == 1
 
-    def test_next_utc_day_rolls_to_new_thread(self) -> None:
+    def test_rolls_at_0800_local_not_midnight(self) -> None:
+        """A post at 07:00 belongs to the *previous* window; 09:00 opens a new one."""
         backend = _backend()
-        clock = _at(2026, 5, 15, 23)
+        clock = _at(2026, 5, 16, 7)  # before the 08:00 roll → window of the 15th
         digest = DailyDigest(backend=backend, user_id="U_ME", now=lambda: clock)
-        digest.post("late on the 15th", idempotency_key="k1")
+        digest.post("pre-roll", idempotency_key="k1")
 
-        clock = _at(2026, 5, 16, 1)
-        digest.post("early on the 16th", idempotency_key="k2")
+        clock = _at(2026, 5, 16, 9)  # after the 08:00 roll → window of the 16th
+        digest.post("post-roll", idempotency_key="k2")
 
         assert DailyDigestThread.objects.count() == 2
         assert set(DailyDigestThread.objects.values_list("date", flat=True)) == {
@@ -66,6 +68,21 @@ class TestDailyDigest(TestCase):
             dt.date(2026, 5, 16),
         }
         assert backend.open_dm.call_count == 2
+
+    def test_configurable_roll_hour(self) -> None:
+        """`TEATREE_DAILY_DIGEST_ROLL_HOUR` moves the boundary."""
+        backend = _backend()
+        clock = _at(2026, 5, 16, 9)  # 09:00
+        digest = DailyDigest(backend=backend, user_id="U_ME", now=lambda: clock)
+
+        with override_settings(TEATREE_DAILY_DIGEST_ROLL_HOUR=10):
+            # 09:00 is before a 10:00 roll → still the 15th's window
+            t1 = digest.post("before 10:00", idempotency_key="k1")
+            clock = _at(2026, 5, 16, 11)  # after the 10:00 roll → the 16th
+            t2 = digest.post("after 10:00", idempotency_key="k2")
+
+        assert t1.date == dt.date(2026, 5, 15)
+        assert t2.date == dt.date(2026, 5, 16)
 
     def test_duplicate_idempotency_key_does_not_repost(self) -> None:
         backend = _backend()

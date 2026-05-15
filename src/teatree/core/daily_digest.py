@@ -1,17 +1,23 @@
 """Rolling daily DM digest (#654 phase 8, #672).
 
-One Slack DM thread per UTC day. All user-facing comms — AskUserQuestion
-mirrors, error escalations, "PR merged" notices, the end-of-day recap —
-post as replies under that day's root message. The first post of a new
-UTC date opens a fresh thread (new ``DailyDigestThread`` row + new Slack
-root message); the previous day's thread is closed by its recap.
+One Slack DM thread per digest day. The day rolls at 08:00 *local*
+time (configured ``TIME_ZONE``; hour overridable via
+``TEATREE_DAILY_DIGEST_ROLL_HOUR``, default 8) — #654 phase 8. All
+user-facing comms — AskUserQuestion mirrors, error escalations, "PR
+merged" notices, the end-of-day recap — post as replies under that
+day's root message. The first post of a new digest window opens a
+fresh thread (new ``DailyDigestThread`` row + new Slack root message);
+the previous window's thread is closed by its recap.
 
 This is a standalone service over the messaging backend, intentionally
 *not* routed through ``Replier``/``ReplyDispatch``: digest posts
 (errors, summaries, question mirrors) have no originating
 ``IncomingEvent``, and ``ReplyDispatch.event`` is non-nullable. The
 ``DailyDigestThread`` row is the durable state; ``DailyDigestMessage``
-(unique ``idempotency_key``) makes a retried post a no-op.
+(unique ``idempotency_key``) collapses a retried post — at-least-once
+with happy-path dedup, not exactly-once: a crash between the Slack
+``post_reply`` and the dedup-row ``create`` lets the retry repost,
+same as the rest of the stack (``reply_transport``, webhook ingestion).
 
 Rewiring every existing user-facing comms path (the AskUserQuestion DM
 hook, error escalation, ``Replier.post_dm`` mirroring) to funnel
@@ -23,6 +29,7 @@ import datetime as dt
 import logging
 from collections.abc import Callable
 
+from django.conf import settings
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 
@@ -30,6 +37,8 @@ from teatree.backends.protocols import MessagingBackend
 from teatree.core.models import DailyDigestMessage, DailyDigestThread
 
 logger = logging.getLogger(__name__)
+
+_DEFAULT_ROLL_HOUR = 8
 
 
 class DailyDigest:
@@ -73,12 +82,32 @@ class DailyDigest:
         thread.save(update_fields=["closed_at"])
         return thread
 
+    def _digest_date(self) -> dt.date:
+        """The digest-window date: rolls at ``roll_hour`` *local* time.
+
+        The window runs ``roll_hour:00`` → next-day ``roll_hour:00``
+        (default 08:00, ``TEATREE_DAILY_DIGEST_ROLL_HOUR``). A timestamp
+        before the roll hour belongs to the previous day's window.
+        Anchoring by subtracting ``roll_hour`` hours from local time and
+        taking ``.date()`` yields that windowed date in one step.
+        """
+        roll_hour = int(getattr(settings, "TEATREE_DAILY_DIGEST_ROLL_HOUR", _DEFAULT_ROLL_HOUR))
+        local_now = timezone.localtime(self._now())
+        return (local_now - dt.timedelta(hours=roll_hour)).date()
+
     def _ensure_thread(self) -> DailyDigestThread:
-        today = self._now().date()
+        today = self._digest_date()
         existing = DailyDigestThread.objects.filter(date=today).first()
         if existing is not None:
             return existing
 
+        # Bounded double-open window: two concurrent first-posts of a new
+        # day would each post a Slack root, then unique(date) lets one
+        # INSERT win and the other refetches (the loser's root is an
+        # orphaned empty message). Bounded in practice by the #676
+        # loop-tick flock singleton — the only caller is the single
+        # loop process; same accepted at-least-once shape as
+        # reply_transport._send.
         channel = self._backend.open_dm(self._user_id)
         opener = self._backend.post_message(
             channel=channel,
