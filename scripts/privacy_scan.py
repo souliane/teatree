@@ -16,7 +16,17 @@ from rich.table import Table
 app = typer.Typer(add_completion=False)
 console = Console(stderr=True)
 
-_EMAIL_RE = re.compile(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z]{2,}", re.ASCII)
+# Require a plausible local part: it may contain ``.+-`` internally but
+# must *end* in an email-local char (alphanumeric/underscore) immediately
+# before ``@``. This drops the decorator/attribute class of false
+# positives — ``+@pytest.fixture`` (diff ``+`` as a fake local part),
+# ``@app.route``, ``@module.attr`` — where the char before ``@`` is a diff
+# marker, whitespace, or absent, while still matching genuine addresses
+# (``user@example.com``, ``t@e.st``) whose local part ends in a real char.
+_EMAIL_RE = re.compile(
+    r"[a-zA-Z0-9_]([a-zA-Z0-9_.+-]*[a-zA-Z0-9_])?@[a-zA-Z0-9-]+\.[a-zA-Z]{2,}",
+    re.ASCII,
+)
 _HOME_PATH_RE = re.compile(r"(?:/Users/|/home/)[a-zA-Z0-9_.-]+")
 _IP_RE = re.compile(r"\b(?:10|172\.(?:1[6-9]|2\d|3[01])|192\.168)\.\d{1,3}\.\d{1,3}\b")
 _API_KEY_RE = re.compile(r"\b(?:glpat-|sk-|ghp_|gho_|github_pat_|xoxb-|xoxp-)[a-zA-Z0-9_-]{10,}")
