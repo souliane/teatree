@@ -94,5 +94,34 @@ depends_on = [
   "teatree.skill_schema",
   "teatree.claude_sessions",
   "teatree.overlay_init",
+  "teatree.loop",
   "teatree.utils"
 ]
+
+[[modules]]
+path = "teatree.core.management"
+depends_on = [
+  "teatree.core",
+  "teatree.agents",
+  "teatree.backends",
+  "teatree.config",
+  "teatree.docker",
+  "teatree.loop",
+  "teatree.paths",
+  "teatree.types",
+  "teatree.utils"
+]
+
+[[modules]]
+path = "teatree.loop"
+depends_on = [
+  "teatree.types",
+  "teatree.paths",
+  "teatree.utils",
+  "teatree.core",
+  "teatree.backends"
+]
+
+[[modules]]
+path = "teatree.docker"
+depends_on = ["teatree.types", "teatree.utils"]

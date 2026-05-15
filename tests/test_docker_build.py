@@ -5,7 +5,7 @@ from subprocess import CompletedProcess
 
 import pytest
 
-from teatree.docker.build import ensure_base_image, image_tag_for_lockfile
+from teatree.docker.build import ensure_base_image
 from teatree.types import BaseImageConfig
 
 
@@ -23,17 +23,17 @@ def base_image_cfg(tmp_path: Path) -> BaseImageConfig:
 
 
 def test_image_tag_is_deterministic_for_same_lockfile(base_image_cfg: BaseImageConfig):
-    tag1 = image_tag_for_lockfile(base_image_cfg)
-    tag2 = image_tag_for_lockfile(base_image_cfg)
+    tag1 = base_image_cfg.image_tag()
+    tag2 = base_image_cfg.image_tag()
     assert tag1 == tag2
     assert tag1.startswith("myapp-local:deps-")
     assert len(tag1.split(":deps-")[1]) == 12
 
 
 def test_image_tag_changes_when_lockfile_changes(base_image_cfg: BaseImageConfig):
-    tag1 = image_tag_for_lockfile(base_image_cfg)
+    tag1 = base_image_cfg.image_tag()
     (base_image_cfg.build_context / base_image_cfg.lockfile).write_text('{"_meta": {"hash": "different"}}\n')
-    tag2 = image_tag_for_lockfile(base_image_cfg)
+    tag2 = base_image_cfg.image_tag()
     assert tag1 != tag2
 
 

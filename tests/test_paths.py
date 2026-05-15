@@ -5,11 +5,13 @@ from pathlib import Path
 
 import pytest
 
+from teatree import paths
 from teatree.paths import (
     CanonicalDBFromWorktreeError,
     ResolvedDataDir,
     _seed_isolated_db,
     _worktree_isolation_root,
+    find_overlay_db,
     find_stale_dbs,
     resolve_data_dir,
     running_from_worktree,
@@ -207,3 +209,22 @@ def test_finds_nested_layouts(tmp_path: Path) -> None:
     nested.touch()
 
     assert list(find_stale_dbs(tmp_path, canonical=canonical)) == [nested]
+
+
+class TestFindOverlayDb:
+    def test_returns_project_path_db_when_present(self, tmp_path: Path) -> None:
+        db = tmp_path / "db.sqlite3"
+        db.touch()
+        assert find_overlay_db("foo", str(tmp_path)) == db
+
+    def test_falls_back_to_data_dir(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        data_dir = tmp_path / "data"
+        (data_dir / "foo").mkdir(parents=True)
+        db = data_dir / "foo" / "db.sqlite3"
+        db.touch()
+        monkeypatch.setattr(paths, "DATA_DIR", data_dir)
+        assert find_overlay_db("foo", str(tmp_path / "nonexistent")) == db
+
+    def test_returns_none_when_no_db_anywhere(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(paths, "DATA_DIR", tmp_path / "absent")
+        assert find_overlay_db("foo", str(tmp_path / "absent")) is None

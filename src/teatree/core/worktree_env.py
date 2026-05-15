@@ -20,7 +20,6 @@ from typing import TYPE_CHECKING, cast
 from teatree.core.models import Ticket, Worktree, WorktreeEnvOverride
 from teatree.core.models.types import WorktreeExtra, validated_worktree_extra
 from teatree.core.overlay_loader import get_overlay
-from teatree.docker.build import image_tag_for_lockfile
 from teatree.utils.postgres_secret import PASS_KEY_ENV, postgres_pass_key
 
 if TYPE_CHECKING:
@@ -131,7 +130,7 @@ def render_env_cache(worktree: Worktree) -> EnvCacheSpec | None:
     pairs.update(overlay.get_env_extra(worktree))
 
     for cfg in overlay.get_base_images(worktree):
-        pairs[cfg.env_var] = image_tag_for_lockfile(cfg)
+        pairs[cfg.env_var] = cfg.image_tag()
 
     # Drop secret keys from the on-disk cache — they remain in ``get_env_extra``
     # so subprocess callers (run backend, worktree_start) still receive them

@@ -1705,7 +1705,24 @@ graph TD
     teatree.cli --> teatree.skill_schema
     teatree.cli --> teatree.claude_sessions
     teatree.cli --> teatree.overlay_init
+    teatree.cli --> teatree.loop
     teatree.cli --> teatree.utils
+    teatree.core.management --> teatree.core
+    teatree.core.management --> teatree.agents
+    teatree.core.management --> teatree.backends
+    teatree.core.management --> teatree.config
+    teatree.core.management --> teatree.docker
+    teatree.core.management --> teatree.loop
+    teatree.core.management --> teatree.paths
+    teatree.core.management --> teatree.types
+    teatree.core.management --> teatree.utils
+    teatree.loop --> teatree.types
+    teatree.loop --> teatree.paths
+    teatree.loop --> teatree.utils
+    teatree.loop --> teatree.core
+    teatree.loop --> teatree.backends
+    teatree.docker --> teatree.types
+    teatree.docker --> teatree.utils
     teatree.paths
     teatree.types
     teatree.templates
