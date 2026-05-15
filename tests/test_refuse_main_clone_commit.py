@@ -60,6 +60,23 @@ class TestRefuseMainCloneCommit:
         assert "worktree" in combined.lower()
         assert "t3" in combined
 
+    def test_refuses_from_a_subdirectory_of_the_main_clone(self, tmp_path: Path) -> None:
+        """Refuse from a subdirectory of the main clone.
+
+        The load-bearing case: cwd is a subdir, so `git rev-parse
+        --git-dir` returns an *absolute* path and the cd-resolution must
+        still equate it with `<toplevel>/.git`.
+        """
+        repo = _make_main_clone(tmp_path)
+        _git(repo, "checkout", "-b", "ac/sub")
+        subdir = repo / "scripts"
+        subdir.mkdir()
+
+        result = _run_hook(subdir)
+
+        assert result.returncode == 1
+        assert "worktree" in (result.stdout + result.stderr).lower()
+
     def test_allows_commit_in_a_worktree_on_feature_branch(self, tmp_path: Path) -> None:
         repo = _make_main_clone(tmp_path)
         wt = tmp_path / "wt"

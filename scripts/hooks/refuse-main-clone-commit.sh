@@ -35,7 +35,7 @@ default_branch=${default_branch:-main}
 
 if [ "${current}" != "${default_branch}" ]; then
   echo "✗ refuse: main clone is on '${current}' (default is '${default_branch}') — develop in a worktree."
-  echo "  Run: t3 teatree workspace ticket <issue_url>"
+  echo "  Run: t3 <overlay> workspace ticket <issue_url>"
   echo "  (worktree-first is non-negotiable — see /t3:rules § Worktree-First Work)"
   exit 1
 fi
