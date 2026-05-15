@@ -21,6 +21,7 @@ from teatree.loop.rendering import zones_for
 from teatree.loop.scanners import (
     ActiveTicketsScanner,
     AssignedIssuesScanner,
+    IncomingEventsScanner,
     MyPrsScanner,
     NotionViewScanner,
     PendingTasksScanner,
@@ -114,7 +115,10 @@ def build_default_jobs(
     own host/messaging credentials). The *host*/*messaging* shape
     is preserved for callers that resolve a single overlay themselves.
     """
-    jobs: list[_ScannerJob] = [_ScannerJob(scanner=PendingTasksScanner(), overlay="")]
+    jobs: list[_ScannerJob] = [
+        _ScannerJob(scanner=PendingTasksScanner(), overlay=""),
+        _ScannerJob(scanner=IncomingEventsScanner(), overlay=""),
+    ]
 
     if backends:
         for backend in backends:

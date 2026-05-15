@@ -111,9 +111,9 @@ def test_tick_meta_includes_freshness(tmp_path: Path, monkeypatch: pytest.Monkey
     assert "freshness" in data
 
 
-def test_build_default_scanners_starts_with_pending_tasks() -> None:
+def test_build_default_scanners_starts_with_pending_tasks_and_incoming_events() -> None:
     scanners: list[Scanner] = build_default_scanners(host=None, messaging=None)
-    assert [s.name for s in scanners] == ["pending_tasks"]
+    assert [s.name for s in scanners] == ["pending_tasks", "incoming_events"]
 
 
 def test_build_default_scanners_adds_host_scanners(monkeypatch: pytest.MonkeyPatch) -> None:
