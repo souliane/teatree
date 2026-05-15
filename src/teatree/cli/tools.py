@@ -7,7 +7,7 @@ from pathlib import Path
 
 import typer
 
-from teatree.triage import DuplicateFinder, LabelSuggester
+from teatree.core.overlay_loader import get_overlay
 from teatree.utils.run import run_allowed_to_fail
 
 tool_app = typer.Typer(no_args_is_help=True, help="Standalone utilities.")
@@ -49,6 +49,27 @@ def privacy_scan(
 ) -> None:
     """Scan text for privacy-sensitive patterns (emails, keys, IPs)."""
     ToolRunner.run_script("privacy_scan", path)
+
+
+@tool_app.command("validate-mr")
+def validate_mr(
+    title: str = typer.Option("", "--title", help="MR/PR title"),
+    description: str = typer.Option("", "--description", help="MR/PR description"),
+) -> None:
+    """Validate MR/PR title+description against the active overlay's rules.
+
+    Runs the active overlay's ``validate_pr`` (the same verdict used by
+    ``t3 <overlay> pr create``). Exits non-zero and prints each error when
+    the metadata is invalid. The pre-push hook invokes this by default so a
+    bad title/description is rejected BEFORE the push — no env-var opt-in
+    (#119).
+    """
+    result = get_overlay().metadata.validate_pr(title, description)
+    errors = result.get("errors", [])
+    if errors:
+        for err in errors:
+            typer.echo(err, err=True)
+        raise typer.Exit(code=1)
 
 
 @tool_app.command("analyze-video")
@@ -93,55 +114,6 @@ def sonar_check(
         cmd.append("--remote-status")
     result = run_allowed_to_fail(cmd, expected_codes=None)
     raise typer.Exit(code=result.returncode)
-
-
-@tool_app.command("label-issues")
-def label_issues(
-    repo: str = typer.Argument(..., help="Repository in owner/name form (e.g. souliane/teatree)"),
-    *,
-    apply: bool = typer.Option(False, "--apply", help="Apply labels via `gh issue edit` (default: print only)."),
-) -> None:
-    """Suggest labels for unlabeled open issues by keyword-matching title and body."""
-    suggester = LabelSuggester(repo)
-    suggestions = suggester.collect_suggestions()
-    if not suggestions:
-        typer.echo("No labelable issues found.")
-        return
-
-    for s in suggestions:
-        typer.echo(f"#{s.number} {s.title}  -> {', '.join(s.labels)}")
-
-    if apply:
-        suggester.apply(suggestions)
-        typer.echo(f"Applied labels to {len(suggestions)} issue(s).")
-    else:
-        typer.echo(f"\n{len(suggestions)} issue(s) to label. Re-run with --apply to apply.")
-
-
-@tool_app.command("find-duplicates")
-def find_duplicates(
-    repo: str = typer.Argument(..., help="Repository in owner/name form (e.g. souliane/teatree)"),
-    *,
-    threshold: float = typer.Option(
-        0.75,
-        "--threshold",
-        min=0.0,
-        max=1.0,
-        help="Similarity ratio required to flag a pair (0.0-1.0).",
-    ),
-) -> None:
-    """Flag pairs of open issues with near-identical titles."""
-    finder = DuplicateFinder(repo, threshold=threshold)
-    matches = finder.find()
-    if not matches:
-        typer.echo("No potential duplicates found.")
-        return
-
-    for match in matches:
-        typer.echo(
-            f"  {match.score:.2f}  #{match.a_number} {match.a_title}\n         #{match.b_number} {match.b_title}"
-        )
-    typer.echo(f"\n{len(matches)} potential duplicate pair(s).")
 
 
 @tool_app.command("claude-handover")
@@ -203,43 +175,6 @@ def audit_memory(
             if verbose:
                 for pattern in entry.matched_patterns:
                     typer.echo(f"      matched: {pattern}")
-
-
-@tool_app.command("triage-issues")
-def triage_issues(
-    repo: str = typer.Argument(..., help="Repository in owner/name form (e.g. souliane/teatree)"),
-    *,
-    stale_days: int = typer.Option(30, "--stale-days", help="Inactivity threshold for stale-issue detection."),
-    close_resolved: bool = typer.Option(
-        False, "--close-resolved", help="Close resolved-but-open issues (with comment linking the merged PR)."
-    ),
-) -> None:
-    """Scan for resolved-but-open and stale issues."""
-    from teatree.triage import TriageScanner  # noqa: PLC0415
-
-    scanner = TriageScanner(repo)
-
-    resolved = scanner.find_resolved()
-    if resolved:
-        typer.echo(f"\n{'=' * 60}\n Resolved-but-open ({len(resolved)} issue(s))\n{'=' * 60}")
-        for r in resolved:
-            typer.echo(f"  #{r.issue_number}  {r.issue_title}")
-            typer.echo(f"    ↳ merged PR #{r.pr_number}: {r.pr_title}  [{r.confidence}]")
-        if close_resolved:
-            scanner.close_resolved(resolved)
-            typer.echo(f"Closed {len(resolved)} resolved issue(s).")
-        else:
-            typer.echo("\nRe-run with --close-resolved to close these issues.")
-    else:
-        typer.echo("No resolved-but-open issues found.")
-
-    stale = scanner.find_stale(days=stale_days)
-    if stale:
-        typer.echo(f"\n{'=' * 60}\n Stale issues — unlabeled, inactive >{stale_days}d ({len(stale)})\n{'=' * 60}")
-        for s in stale:
-            typer.echo(f"  #{s.issue_number}  {s.issue_title}  ({s.days_inactive}d inactive)")
-    else:
-        typer.echo(f"No stale issues (unlabeled, inactive >{stale_days}d).")
 
 
 @tool_app.command("notion-download")

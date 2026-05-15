@@ -24,6 +24,37 @@ def _int_field(data: RawAPIDict, *names: str) -> int:
     return 0
 
 
+# A pipeline is green only when it explicitly succeeded.
+_GREEN_STATUSES = {"success", "succeeded", "passed"}
+
+# Legitimately still in progress — not green yet, but not red either. Blank
+# ("") means no pipeline has started; treat that as not-yet-running, not a
+# failure (a brand-new PR or a no-CI repo shouldn't spam action-needed).
+_IN_PROGRESS_STATUSES = {
+    "running",
+    "pending",
+    "created",
+    "preparing",
+    "waiting_for_resource",
+    "scheduled",
+    "",
+}
+
+
+def _needs_attention(status: str) -> bool:
+    """Not-green == red.
+
+    Any pipeline state that is neither an explicit success nor a
+    legitimately-in-progress state — ``failed``/``error``/``canceled``/
+    ``skipped``/``manual``/``blocked``/any unknown terminal value — must
+    surface as action-needed. The old code only treated three literals
+    (``failed``/``failure``/``error``) as failure and silently passed
+    everything else (gray/skipped/manual/canceled) as a benign open PR;
+    that is the "walked away from a gray job" failure mode this fixes.
+    """
+    return status not in _GREEN_STATUSES and status not in _IN_PROGRESS_STATUSES
+
+
 def _pipeline_status(pr: RawAPIDict) -> str:
     """Return the most relevant pipeline state across host shapes.
 
@@ -76,11 +107,11 @@ class MyPrsScanner:
                 "status": status,
                 "raw": pr,
             }
-            if status in {"failed", "failure", "error"}:
+            if _needs_attention(status):
                 signals.append(
                     ScanSignal(
                         kind="my_pr.failed",
-                        summary=f"PR #{iid} pipeline {status}: {title}",
+                        summary=f"PR #{iid} pipeline {status or 'no-status'} (not green): {title}",
                         payload=base_payload,
                     )
                 )

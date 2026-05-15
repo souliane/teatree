@@ -84,12 +84,28 @@ def _slug_from_remote(remote_url: str) -> str:
 
 
 def _ship_preview(ticket: Ticket, worktree: Worktree) -> tuple[str, str, str]:
-    """Return ``(repo_path, title, description)`` previewed from the last commit."""
+    """Return ``(repo_path, title, description)`` previewed from the last commit.
+
+    Invariant (MR title/description divergence guard): the description's
+    first line is built from the *same* string as the title, so they can
+    never diverge by construction. A diverged title vs. description-first-
+    line is exactly what blocks the release-notes pipeline; building the
+    first line from ``title`` (not a separately-derived ``subject``) makes
+    that regression impossible.
+    """
     repo_path = (worktree.extra or {}).get("worktree_path", "") or worktree.repo_path
     subject, body = git.last_commit_message(repo=repo_path)
-    title = subject or f"Resolve {ticket.issue_url}"
-    raw_description = f"{subject}\n\n{body}" if subject and body else (subject or body)
-    description = sanitize_close_keywords(raw_description, close_ticket=get_overlay().config.mr_close_ticket)
+    close_ticket = get_overlay().config.mr_close_ticket
+    # Sanitize the TITLE first, then build the description's first line from
+    # that exact sanitized string. Applying close-keyword sanitization only
+    # to the description (the old behaviour) silently diverged it from the
+    # title whenever the title carried a close-keyword (e.g. the "Resolve
+    # <url>" fallback, or a "fix: resolve X" subject) — the title/
+    # description divergence class. Sanitizing the title and reusing it
+    # makes the first line == title by construction.
+    title = sanitize_close_keywords(subject or f"Resolve {ticket.issue_url}", close_ticket=close_ticket)
+    raw_body = sanitize_close_keywords(body, close_ticket=close_ticket) if body else ""
+    description = f"{title}\n\n{raw_body}" if raw_body else title
     return repo_path, title, description
 
 

@@ -12,6 +12,7 @@ from teatree.core.management.commands.pr import (
     _check_shipping_gate,
     _resolve_base_url,
     _run_visual_qa_gate,
+    _ship_preview,
     _slug_from_remote,
 )
 from teatree.core.models import Session, Ticket, Worktree
@@ -132,6 +133,83 @@ class TestPrCreateThinWrapper(TestCase):
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.REVIEWED  # not advanced
         assert result["allowed"] is False
+
+
+class TestShipPreviewTitleDescriptionInvariant(TestCase):
+    """The description's first line must always equal the title.
+
+    A diverged title vs. description-first-line is what blocks the
+    release-notes pipeline. ``_ship_preview`` must build them so they can
+    never differ by construction, regardless of body presence, the
+    fallback title path, or close-keyword sanitization.
+    """
+
+    def _ticket_with_worktree(self) -> Ticket:
+        ticket = Ticket.objects.create(
+            overlay="test",
+            state=Ticket.State.REVIEWED,
+            issue_url="https://github.com/souliane/teatree/issues/119",
+        )
+        Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path="/tmp/backend",
+            branch="feature-branch",
+            extra={"worktree_path": "/tmp/backend"},
+        )
+        return ticket
+
+    def _first_line(self, description: str) -> str:
+        return description.split("\n", 1)[0]
+
+    def test_first_line_equals_title_with_body(self) -> None:
+        ticket = self._ticket_with_worktree()
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch.object(
+                pr_command.git,
+                "last_commit_message",
+                return_value=("feat: add X [FLAG] (proj#119)", "Body paragraph.\n"),
+            ),
+        ):
+            _, title, description = _ship_preview(ticket, ticket.worktrees.first())
+        assert self._first_line(description) == title
+
+    def test_first_line_equals_title_without_body(self) -> None:
+        ticket = self._ticket_with_worktree()
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch.object(pr_command.git, "last_commit_message", return_value=("fix: y (proj#119)", "")),
+        ):
+            _, title, description = _ship_preview(ticket, ticket.worktrees.first())
+        assert self._first_line(description) == title
+        assert title == "fix: y (proj#119)"
+
+    def test_first_line_equals_title_on_fallback_title(self) -> None:
+        ticket = self._ticket_with_worktree()
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch.object(pr_command.git, "last_commit_message", return_value=("", "")),
+        ):
+            _, title, description = _ship_preview(ticket, ticket.worktrees.first())
+        # Invariant holds even when the fallback title carries a close
+        # keyword ("Resolve") that close-keyword sanitization rewrites.
+        assert self._first_line(description) == title
+        assert ticket.issue_url in title
+
+    def test_first_line_equals_title_when_subject_has_close_keyword(self) -> None:
+        ticket = self._ticket_with_worktree()
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch.object(
+                pr_command.git,
+                "last_commit_message",
+                return_value=("fix: resolves #119 the corridor bug (proj#119)", "Body."),
+            ),
+        ):
+            _, title, description = _ship_preview(ticket, ticket.worktrees.first())
+        # Title and first line are both the *sanitized* string -> still equal.
+        assert self._first_line(description) == title
 
 
 class TestSlugFromRemote(TestCase):

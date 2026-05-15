@@ -189,3 +189,37 @@ class TestDecoratorIsNotAnEmail:
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+class TestGitSshRemoteIsNotAnEmail:
+    """`git@host:org/repo.git` SSH remote URLs are not emails (#119 follow-up).
+
+    The email regex matched the ``git@<host>`` transport prefix of an SSH
+    git remote, so any test or code carrying a normal SSH remote URL
+    (``git@<host>:<org>/<repo>.git``) tripped the public-repo privacy
+    gate — a recurring false positive on perfectly benign, public,
+    non-PII git syntax. An SSH-remote ``git@`` is followed by
+    ``host:path``; a real email never has a ``:path`` after the domain.
+    """
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            'assert _slug("git@github.com:souliane/teatree.git") == "souliane/teatree"',
+            "git@gitlab.com:acme/team/backend.git",
+            "+    remote = 'git@github.com:o/r.git'",
+            "git@bitbucket.org:team/repo.git",
+            "  url = git@github.com-host-alias:souliane/teatree.git",
+        ],
+    )
+    def test_ssh_remote_not_flagged(self, line: str) -> None:
+        result = _run(line + "\n")
+        assert result.returncode == 0, result.stdout + result.stderr
+
+    def test_real_email_next_to_ssh_remote_still_caught(self) -> None:
+        # Suppressing the SSH-remote prefix must not mask a genuine email
+        # elsewhere on the same line.
+        line = "git@github.com:o/r.git  # owner someone@gmail.com"  # privacy-scan:allow self-fixture
+        result = _run(line + "\n")
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert "email" in result.stdout
