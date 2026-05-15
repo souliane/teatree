@@ -1,0 +1,113 @@
+import tempfile
+from pathlib import Path
+from typing import ClassVar
+
+from django.test import TestCase
+
+from teatree.core.models import Ticket, Worktree
+from teatree.core.overlay import ProvisionStep, RunCommands
+from teatree.core.runners.service_launch import ServiceLauncher
+from teatree.types import RunCommand
+from tests.teatree_core.conftest import CommandOverlay
+
+
+class OrderRecordingOverlay(CommandOverlay):
+    """Pre-run step and command both append to one file to prove ordering."""
+
+    def __init__(self, order_file: Path) -> None:
+        self.order_file = order_file
+
+    def get_run_commands(self, worktree: Worktree) -> RunCommands:
+        return {
+            "frontend": RunCommand(args=["sh", "-lc", f"echo cmd >> {self.order_file}"]),
+            "backend": ["true"],
+        }
+
+    def get_pre_run_steps(self, worktree: Worktree, service: str) -> list[ProvisionStep]:
+        def record() -> None:
+            with self.order_file.open("a") as fh:
+                fh.write(f"pre-{service}\n")
+
+        return [ProvisionStep(name=f"pre-run-{service}", callable=record)]
+
+
+class ServiceLauncherTests(TestCase):
+    def setUp(self) -> None:
+        self.ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/1")
+        self.worktree = Worktree.objects.create(ticket=self.ticket, repo_path="backend", branch="b")
+        self._tmp = tempfile.TemporaryDirectory()
+        self.order_file = Path(self._tmp.name) / "order.txt"
+        self.overlay = OrderRecordingOverlay(self.order_file)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_run_executes_pre_run_steps_before_command(self) -> None:
+        result = ServiceLauncher(self.worktree, "frontend", overlay=self.overlay).run()
+        assert result.ok
+        assert self.order_file.read_text().splitlines() == ["pre-frontend", "cmd"]
+
+    def test_run_returns_not_ok_when_service_has_no_command(self) -> None:
+        result = ServiceLauncher(self.worktree, "missing", overlay=self.overlay).run()
+        assert not result.ok
+        assert "missing" in result.detail
+        # Pre-run still ran — prerequisites are never conditional on the command.
+        assert self.order_file.read_text().splitlines() == ["pre-missing"]
+
+    def test_prepare_all_runs_pre_run_for_every_service(self) -> None:
+        ServiceLauncher.prepare_all(self.worktree, ["frontend", "backend"], overlay=self.overlay)
+        assert self.order_file.read_text().splitlines() == ["pre-frontend", "pre-backend"]
+
+
+class RealisticStackOverlay(CommandOverlay):
+    """Generic realistic stack: a django backend, a fastapi microservice, a frontend."""
+
+    PREREQS: ClassVar[dict[str, list[str]]] = {
+        "backend": ["migrate"],
+        "microservice": ["uvicorn-deps"],
+        "frontend": ["npm-install", "link-node-modules"],
+    }
+
+    def __init__(self, order_file: Path) -> None:
+        self.order_file = order_file
+
+    def get_run_commands(self, worktree: Worktree) -> RunCommands:
+        return {svc: RunCommand(args=["sh", "-lc", f"echo run-{svc} >> {self.order_file}"]) for svc in self.PREREQS}
+
+    def get_pre_run_steps(self, worktree: Worktree, service: str) -> list[ProvisionStep]:
+        def make(step_name: str) -> ProvisionStep:
+            def record() -> None:
+                with self.order_file.open("a") as fh:
+                    fh.write(f"{step_name}\n")
+
+            return ProvisionStep(name=f"{service}-{step_name}", callable=record)
+
+        return [make(name) for name in self.PREREQS.get(service, [])]
+
+
+class RealisticStackWorkflowTests(TestCase):
+    """Drift-net: prereqs-then-command holds for every service shape, both entry points."""
+
+    def setUp(self) -> None:
+        self.ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/2")
+        self.worktree = Worktree.objects.create(ticket=self.ticket, repo_path="backend", branch="b")
+        self._tmp = tempfile.TemporaryDirectory()
+        self.order_file = Path(self._tmp.name) / "order.txt"
+        self.overlay = RealisticStackOverlay(self.order_file)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_run_each_service_runs_its_prereqs_before_its_command(self) -> None:
+        for svc, prereqs in RealisticStackOverlay.PREREQS.items():
+            self.order_file.write_text("")
+            result = ServiceLauncher(self.worktree, svc, overlay=self.overlay).run()
+            assert result.ok, svc
+            assert self.order_file.read_text().splitlines() == [*prereqs, f"run-{svc}"], svc
+
+    def test_worktree_start_path_prepares_every_service(self) -> None:
+        ServiceLauncher.prepare_all(self.worktree, list(RealisticStackOverlay.PREREQS), overlay=self.overlay)
+        ran = set(self.order_file.read_text().splitlines())
+        assert ran == {"migrate", "uvicorn-deps", "npm-install", "link-node-modules"}
+        # No run-* markers — prepare_all wires prerequisites, never commands.
+        assert not any(line.startswith("run-") for line in self.order_file.read_text().splitlines())

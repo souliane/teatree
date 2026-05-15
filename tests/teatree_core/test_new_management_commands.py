@@ -2271,7 +2271,10 @@ class TestRunBuildFrontend(TestCase):
                 result = cast("str", call_command("run", "build-frontend", path=str(wt_dir)))
 
             mock_run.assert_called_once()
-            assert "built" in result.lower()
+            # build-frontend now routes through ServiceLauncher (pre-run steps
+            # then the command); the launcher reports the service + exit code.
+            assert "build-frontend" in result.lower()
+            assert "rc=0" in result
 
     @_patch_overlays(MINIMAL_OVERLAY)
     @override_settings(**SETTINGS)
@@ -2291,7 +2294,8 @@ class TestRunBuildFrontend(TestCase):
 
             result = cast("str", call_command("run", "build-frontend", path=str(wt_dir)))
 
-            assert "no build-frontend command" in result.lower()
+            assert "no run command configured" in result.lower()
+            assert "build-frontend" in result.lower()
 
 
 class TestRunTests(TestCase):
