@@ -14,6 +14,7 @@ Exits 0 silently for passthrough.
 """
 
 import argparse
+import contextlib
 import json
 import os
 import re
@@ -539,8 +540,78 @@ def handle_track_active_repo(data: dict) -> None:
 # ── PostToolUse + InstructionsLoaded: track-skill-usage ─────────────
 
 
+def _skill_search_dirs() -> list[Path]:
+    """Directories scanned to build the trigger index for closure resolution.
+
+    ``T3_SKILL_SEARCH_DIRS`` (os.pathsep-separated) overrides the defaults —
+    used by tests to point at a fixture skill tree. Otherwise: the plugin's
+    own ``skills/`` directory plus the agent skill install locations.
+    """
+    override = os.environ.get("T3_SKILL_SEARCH_DIRS", "")
+    if override:
+        return [Path(d) for d in override.split(os.pathsep) if d]
+
+    home = os.environ.get("HOME", "")
+    candidates = [
+        Path(__file__).resolve().parents[2] / "skills",
+        Path(home) / ".agents" / "skills",
+        Path(home) / ".claude" / "skills",
+    ]
+    return [d for d in candidates if d.is_dir()]
+
+
+def _resolve_skill_closure(skills: list[str]) -> list[str]:
+    """Expand *skills* to their ``requires:`` dependency closure.
+
+    Uses the real trigger index (parsed from real SKILL.md frontmatter) and
+    the real :func:`teatree.skill_deps.resolve_requires` resolver — a loaded
+    skill's transitive dependencies are genuinely active and must be tracked.
+    Unknown skills (framework skills with no trigger entry) pass through
+    unchanged. On any resolution failure, fall back to the input skills so
+    tracking never silently drops a genuinely-loaded skill.
+    """
+    if not skills:
+        return []
+
+    scripts_dir = Path(__file__).resolve().parents[2] / "scripts"
+    src_dir = Path(__file__).resolve().parents[2] / "src"
+    added: list[str] = []
+    for extra in (str(scripts_dir), str(src_dir)):
+        if extra not in sys.path:
+            sys.path.insert(0, extra)
+            added.append(extra)
+    try:
+        from lib.skill_loader import build_trigger_index  # noqa: PLC0415
+
+        from teatree.skill_deps import resolve_requires  # noqa: PLC0415
+
+        index = build_trigger_index(_skill_search_dirs())
+        return resolve_requires(skills, index)
+    except Exception:  # noqa: BLE001
+        return list(skills)
+    finally:
+        for extra in added:
+            with contextlib.suppress(ValueError):
+                sys.path.remove(extra)
+
+
+def _record_skills(skills_file: Path, existing: set[str], skills: list[str]) -> None:
+    """Append the resolved closure of *skills*, preserving order, deduped."""
+    for name in _resolve_skill_closure(skills):
+        if name and name not in existing:
+            existing.add(name)
+            _append_line(skills_file, name)
+
+
 def handle_track_skill_usage(data: dict) -> None:
-    """Track which skills have been invoked in this session."""
+    """Track which skills are active this session, including their closure.
+
+    A genuinely-loaded skill (Skill tool call or InstructionsLoaded entry)
+    is expanded to its resolved ``requires:`` dependency closure before
+    being recorded, so the statusline reflects the full active set — not
+    just the explicitly tool-invoked name (#689). Suggested-but-not-loaded
+    skills are never recorded here.
+    """
     session_id = data.get("session_id", "")
     if not session_id:
         return
@@ -552,11 +623,11 @@ def handle_track_skill_usage(data: dict) -> None:
     # PostToolUse: single skill from tool_input
     skill_name = data.get("tool_input", {}).get("skill", "")
     if skill_name:
-        if skill_name not in existing:
-            _append_line(skills_file, skill_name)
+        _record_skills(skills_file, existing, [skill_name])
         return
 
     # InstructionsLoaded: array of skill objects or skill name strings
+    loaded: list[str] = []
     for skill_obj in data.get("skills", []):
         if isinstance(skill_obj, dict):
             name = skill_obj.get("name", "")
@@ -564,9 +635,9 @@ def handle_track_skill_usage(data: dict) -> None:
             name = skill_obj
         else:
             continue
-        if name and name not in existing:
-            existing.add(name)
-            _append_line(skills_file, name)
+        if name:
+            loaded.append(name)
+    _record_skills(skills_file, existing, loaded)
 
 
 # ── PostToolUse: read-dedup ────────────────────────────────────────
