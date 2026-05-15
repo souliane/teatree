@@ -843,19 +843,52 @@ def handle_session_end(data: dict) -> None:
 # ── PostToolUse: track-cron-jobs ──────────────────────────────────────
 
 
+_LOOP_NAME_MAX = 20
+
+
+def _clean_token(token: str) -> str:
+    """Strip surrounding/trailing punctuation and backticks from a token."""
+    return token.strip("`").strip(".,;:!?\"'()[]{}/").strip("`")
+
+
 def _derive_loop_name(prompt: str) -> str:
-    """Derive a short display name from a cron/loop prompt."""
+    """Derive a short display name from a cron/loop prompt.
+
+    - The canonical teatree loop prompt maps to a stable readable name.
+    - Slash-command prompts use the command token.
+    - Otherwise a short label is taken from the first meaningful word.
+
+    Surrounding punctuation and backticks are always stripped.
+    """
     prompt = prompt.strip()
+
+    # 1. Canonical teatree loop prompt → stable name (it runs `t3 loop tick`).
+    if prompt == _LOOP_PROMPT or prompt.startswith(_LOOP_PROMPT):
+        return "tick"
+
     if prompt.startswith("!"):
         prompt = prompt[1:].strip()
-    if prompt.startswith("/"):
-        prompt = prompt[1:].strip()
+
     parts = prompt.split()
     if not parts:
         return "loop"
-    cmd = parts[-1] if len(parts) > 1 else parts[0]
-    cmd = cmd.split("/")[-1]
-    return cmd[:20]
+
+    # `t3 loop <subcommand>` shell form → the subcommand (e.g. `tick`).
+    if parts[:2] == ["t3", "loop"] and len(parts) > 2:  # noqa: PLR2004
+        return _clean_token(parts[2])[:_LOOP_NAME_MAX] or "loop"
+
+    # 2. Slash-command form: a leading `/foo` or an embedded `/foo` token.
+    #    `/loop 5m /babysit-prs` wraps the real command — use the last token.
+    slash_tokens = [p for p in parts if p.startswith("/") and len(p) > 1]
+    if slash_tokens:
+        return _clean_token(slash_tokens[-1].split("/")[-1])[:_LOOP_NAME_MAX] or "loop"
+
+    # 3. Prose: first meaningful word, punctuation/backticks stripped.
+    for part in parts:
+        cleaned = _clean_token(part)
+        if cleaned:
+            return cleaned[:_LOOP_NAME_MAX]
+    return "loop"
 
 
 def _load_crons(path: Path) -> dict:
