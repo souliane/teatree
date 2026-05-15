@@ -100,6 +100,10 @@ class _FakeMessaging:
         _ = (channel, ts, text)
         return {}
 
+    def open_dm(self, user_id: str) -> str:
+        _ = user_id
+        return ""
+
     def react(self, *, channel: str, ts: str, emoji: str) -> dict[str, object]:
         _ = (channel, ts, emoji)
         return {}
