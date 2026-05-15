@@ -10,6 +10,7 @@ shared across modules.
 """
 
 import logging
+import sys
 from pathlib import Path
 
 import typer
@@ -45,8 +46,26 @@ def _root_callback(ctx: typer.Context) -> None:
     _maybe_show_update_notice()
 
 
+def _machine_readable_invocation() -> bool:
+    """True when the CLI is producing machine-readable output.
+
+    A consumer that runs ``t3 ... --json`` parses the output; the human
+    update banner — even on stderr — corrupts that contract (a caller
+    capturing combined output, or stderr, gets non-JSON noise). The
+    ``--json`` flag (both ``--json`` and ``--json=...`` forms) is the
+    canonical machine-readable signal across the teatree CLI.
+    """
+    return any(arg == "--json" or arg.startswith("--json=") for arg in sys.argv[1:])
+
+
 def _maybe_show_update_notice() -> None:
-    """Show update notice at most once per day, if enabled in user settings."""
+    """Show update notice at most once per day, if enabled in user settings.
+
+    Suppressed entirely in machine-readable invocations (``--json``) so
+    the banner never pollutes parseable output (#719).
+    """
+    if _machine_readable_invocation():
+        return
     try:
         from teatree.config import check_for_updates  # noqa: PLC0415
 
