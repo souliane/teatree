@@ -89,7 +89,11 @@ while read -r local_ref local_sha remote_ref remote_sha; do
   report=$(mktemp "${TMPDIR:-/tmp}/t3-privacy-gate.XXXXXX")
   if ! printf '%s\n' "${diff}" | ${scan_cmd} - >"${report}" 2>&1; then
     echo "✗ refuse: push to PUBLIC repo '${slug}' carries privacy findings on '${local_ref}'."
-    cat "${report}" 2>/dev/null || true
+    echo "  Findings (line / category / redacted match):"
+    # The scanner writes a deterministic plain-text summary to stdout
+    # (captured here via 2>&1), so the user sees exactly which line/
+    # category tripped the gate — not just a generic "carries findings".
+    sed 's/^/  /' "${report}" 2>/dev/null || cat "${report}" 2>/dev/null || true
     echo "  Scrub the diff (generic placeholders) before pushing to a public repo."
     echo "  (public-repo privacy gate — see /t3:rules § Verify Repo Visibility Before Filing External Issues)"
     blocked=1

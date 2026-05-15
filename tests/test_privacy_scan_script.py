@@ -42,6 +42,65 @@ class TestPrivacyScanScriptEntrypoint:
         assert result.returncode == 0, result.stdout + result.stderr
 
 
+class TestPrivacyScanCallerVisibleSummary:
+    """Findings must reach a piped/non-TTY caller without a manual rerun (#696).
+
+    The historical bug: findings were rendered only via a ``rich`` table on
+    ``Console(stderr=True)``, which is invisible to scripted callers (and is
+    captured-and-discarded by ``ToolRunner.run_script``). The scanner now
+    always writes a deterministic plain-text summary to **stdout** so a
+    piped caller reliably sees the offending line, category, and redacted
+    match. ``capture_output=True`` below is exactly how ``run_script`` and
+    the pre-push gate consume it — no TTY, no mocking of the scanner.
+    """
+
+    def test_planted_secret_summary_is_on_stdout_for_piped_caller(self) -> None:
+        result = _run("token = glpat-XXXXXXXXXXXXXXXX\n")  # privacy-scan:allow self-fixture
+        assert result.returncode == 1, result.stdout + result.stderr
+        # The caller (run_script / the gate) reads stdout — the finding
+        # detail must be there, not only in a stderr rich table.
+        assert "api_key" in result.stdout
+        assert "1" in result.stdout  # the offending line number
+        assert "glpat-" in result.stdout  # redacted match prefix
+
+    def test_internal_path_category_and_line_visible_on_stdout(self) -> None:
+        result = _run("ok\nsee /Users/someone/secret/path\n")  # privacy-scan:allow self-fixture
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert "home_path" in result.stdout
+        assert "2" in result.stdout  # finding is on the second line
+
+    def test_clean_input_prints_clear_clean_line_on_stdout(self) -> None:
+        result = _run("a perfectly ordinary line of prose\n")
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "clean" in result.stdout.lower()
+
+    def test_json_output_still_valid(self) -> None:
+        proc = subprocess.run(
+            [sys.executable, str(SCRIPT), "-", "--json"],
+            input="token = glpat-XXXXXXXXXXXXXXXX\n",  # privacy-scan:allow self-fixture
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        import json  # noqa: PLC0415
+
+        parsed = json.loads(proc.stdout)
+        assert isinstance(parsed, list)
+        assert parsed[0]["category"] == "api_key"
+        assert parsed[0]["line"] == 1
+
+    def test_no_strict_warns_but_exits_zero_with_visible_summary(self) -> None:
+        proc = subprocess.run(
+            [sys.executable, str(SCRIPT), "-", "--no-strict"],
+            input="token = glpat-XXXXXXXXXXXXXXXX\n",  # privacy-scan:allow self-fixture
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        assert "api_key" in proc.stdout
+
+
 class TestPrivacyScanAllowAnnotation:
     """A line carrying the inline ``privacy-scan:allow`` annotation is exempt.
 
