@@ -120,8 +120,11 @@ def _seed_isolated_db(data_dir: Path, *, canonical_db: Path, isolation_root: Pat
     Only seeds paths inside ``isolation_root`` — a primary clone or an explicit
     ``XDG_DATA_HOME`` sandbox is never under it, so it is never seeded
     regardless of how this is called. The snapshot is written to a temp file
-    and atomically renamed under an exclusive lock, so concurrent worktree
-    startups never observe a partial DB and never both do the work.
+    in the target dir and published with a same-filesystem atomic rename, so a
+    reader never observes a partial DB even under concurrent startup. The
+    exclusive lock around the rename is an optimisation that prevents two
+    startups from redundantly re-doing the snapshot; correctness rests on the
+    atomic rename, not the lock.
     """
     try:
         data_dir.resolve().relative_to(isolation_root.resolve())
