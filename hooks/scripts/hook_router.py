@@ -806,6 +806,14 @@ def handle_post_compact(data: dict) -> None:
 # data dir, keyed by loop name, recording the live owner's session id +
 # agent id + pid. It is deliberately NOT a DB row — this hook runs on
 # every session start and the router is Django-free by design.
+#
+# Liveness subtlety: the hook router is a short-lived subprocess that
+# exits the instant the hook returns, so ``os.getpid()`` would be dead
+# before a second session ever starts (defeating the singleton). The
+# owner-liveness pid must be the *Claude session* process — the hook's
+# parent (``os.getppid()``) — which lives for the whole session. The
+# SessionEnd hook additionally clears the entry on a clean exit, so the
+# registry self-heals on both crash (pid dies) and graceful shutdown.
 
 LOOP_AGENT_NAMES: tuple[str, str, str] = (
     "teatree-main-loop",
@@ -931,16 +939,37 @@ def handle_session_start_bootstrap(data: dict) -> None:
         context = _reattach_directive(owner)
     else:
         # No live owner, or this very session is the owner — (re)claim it.
+        # Record the parent pid: the long-lived Claude session process,
+        # NOT this ephemeral hook subprocess (which exits immediately).
         registry[_OWNER_LOOP] = {
             "session_id": session_id,
             "agent_id": data.get("agent_id", ""),
-            "pid": os.getpid(),
+            "pid": os.getppid(),
         }
         _write_loop_registry(registry)
         _emit_osc_title()
         context = _SPAWN_DIRECTIVE
 
     json.dump({"additionalContext": context}, sys.stdout)
+
+
+def handle_session_end_loop_registry(data: dict) -> None:
+    """Release the loop-registry ownership slot when the owner session ends.
+
+    The lifecycle counterpart to :func:`handle_session_start_bootstrap`:
+    a clean session exit relinquishes ownership immediately so the next
+    session becomes owner without waiting for pid-liveness to expire.
+    Only the recorded owner's own SessionEnd clears the slot — a
+    non-owner ending must not evict the live owner.
+    """
+    session_id = data.get("session_id", "")
+    if not session_id:
+        return
+    registry = _read_loop_registry()
+    owner = registry.get(_OWNER_LOOP)
+    if owner is not None and owner.get("session_id") == session_id:
+        del registry[_OWNER_LOOP]
+        _write_loop_registry(registry)
 
 
 _SESSION_END_ORPHAN_TIMEOUT = 4
@@ -1376,7 +1405,7 @@ _HANDLERS: dict[str, list] = {
     "SessionStart": [handle_session_start_bootstrap],
     "PreCompact": [handle_pre_compact],
     "PostCompact": [handle_post_compact],
-    "SessionEnd": [handle_session_end],
+    "SessionEnd": [handle_session_end, handle_session_end_loop_registry],
 }
 
 
