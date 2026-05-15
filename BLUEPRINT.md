@@ -1721,6 +1721,7 @@ graph TD
     teatree.loop --> teatree.types
     teatree.loop --> teatree.paths
     teatree.loop --> teatree.utils
+    teatree.loop --> teatree.config
     teatree.loop --> teatree.core
     teatree.loop --> teatree.backends
     teatree.docker --> teatree.types
