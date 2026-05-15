@@ -32,6 +32,11 @@ class NoopMessagingBackend:
         return {}
 
     @staticmethod
+    def open_dm(user_id: str) -> str:
+        _ = user_id
+        return ""
+
+    @staticmethod
     def react(*, channel: str, ts: str, emoji: str) -> RawAPIDict:
         _ = channel, ts, emoji
         return {}

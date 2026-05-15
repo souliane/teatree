@@ -141,6 +141,8 @@ class MessagingBackend(Protocol):
 
     def post_reply(self, *, channel: str, ts: str, text: str) -> RawAPIDict: ...  # pragma: no branch
 
+    def open_dm(self, user_id: str) -> str: ...  # pragma: no branch
+
     def react(self, *, channel: str, ts: str, emoji: str) -> RawAPIDict: ...  # pragma: no branch
 
     def resolve_user_id(self, handle: str) -> str: ...  # pragma: no branch
