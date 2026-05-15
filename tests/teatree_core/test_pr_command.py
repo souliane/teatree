@@ -67,7 +67,12 @@ class TestPrCreateThinWrapper(TestCase):
 
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.SHIPPED
-        assert result == {"ticket_id": ticket.pk, "state": Ticket.State.SHIPPED}
+        # Default (async) path: queued, with an explicit no-worker warning (#708).
+        assert result["ticket_id"] == ticket.pk
+        assert result["state"] == Ticket.State.SHIPPED
+        assert result["queued"] is True
+        assert "QUEUED, not performed" in result["warning"]
+        assert "--sync" in result["warning"]
 
     def test_returns_error_when_no_worktree(self) -> None:
         ticket = Ticket.objects.create(overlay="test", state=Ticket.State.REVIEWED)
@@ -133,6 +138,94 @@ class TestPrCreateThinWrapper(TestCase):
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.REVIEWED  # not advanced
         assert result["allowed"] is False
+
+
+class TestPrCreateSyncShip(TestCase):
+    """`pr create --sync` runs the ship inline; async warns it is queued (#708)."""
+
+    @pytest.fixture(autouse=True)
+    def _inject(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._monkeypatch = monkeypatch
+
+    def test_sync_runs_execute_ship_inline(self) -> None:
+        ticket = _shippable_ticket()
+        ship_mock = MagicMock()
+        ship_mock.call.return_value = {"ticket_id": ticket.pk, "ok": True, "detail": "PR opened"}
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch.object(pr_command, "_run_visual_qa_gate", return_value=None),
+            patch.object(pr_command, "_validate_pr_metadata", return_value=None),
+            patch("teatree.core.tasks.execute_ship", ship_mock),
+        ):
+            result = cast(
+                "dict[str, object]",
+                call_command("pr", "create", str(ticket.id), sync=True),
+            )
+
+        ship_mock.call.assert_called_once_with(ticket.pk)
+        assert result["synced"] is True
+        assert result["ok"] is True
+        assert result["detail"] == "PR opened"
+        assert result["ticket_id"] == ticket.pk
+
+    def test_sync_reports_ship_failure_without_raising(self) -> None:
+        ticket = _shippable_ticket()
+        ship_mock = MagicMock()
+        ship_mock.call.return_value = {"ticket_id": ticket.pk, "ok": False, "detail": "push rejected"}
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch.object(pr_command, "_run_visual_qa_gate", return_value=None),
+            patch.object(pr_command, "_validate_pr_metadata", return_value=None),
+            patch("teatree.core.tasks.execute_ship", ship_mock),
+        ):
+            result = cast(
+                "dict[str, object]",
+                call_command("pr", "create", str(ticket.id), sync=True),
+            )
+
+        assert result["synced"] is True
+        assert result["ok"] is False
+        assert result["detail"] == "push rejected"
+
+    def test_async_default_does_not_call_execute_ship_inline(self) -> None:
+        ticket = _shippable_ticket()
+        ship_mock = MagicMock()
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch.object(pr_command, "_run_visual_qa_gate", return_value=None),
+            patch.object(pr_command, "_validate_pr_metadata", return_value=None),
+            patch("teatree.core.tasks.execute_ship", ship_mock),
+        ):
+            result = cast(
+                "dict[str, object]",
+                call_command("pr", "create", str(ticket.id)),
+            )
+
+        ship_mock.call.assert_not_called()
+        assert result["queued"] is True
+        assert "QUEUED, not performed" in result["warning"]
+
+    def test_sync_illegal_transition_returns_gate_failure(self) -> None:
+        # Not REVIEWED and validation skipped -> ship() illegal -> structured
+        # failure, never a raw TransitionNotAllowed, even on the sync path (#694).
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.STARTED)
+        Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path="/tmp/backend",
+            branch="feature-branch",
+            extra={"worktree_path": "/tmp/backend"},
+        )
+        with patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY):
+            result = cast(
+                "dict[str, object]",
+                call_command("pr", "create", str(ticket.id), sync=True, skip_validation=True),
+            )
+        assert result["allowed"] is False
+        assert "Cannot ship from state" in result["error"]
 
 
 class TestShipPreviewTitleDescriptionInvariant(TestCase):

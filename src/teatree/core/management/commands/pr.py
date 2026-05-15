@@ -54,6 +54,16 @@ class WorktreeMissingError(TypedDict):
 class ShipEnqueued(TypedDict):
     ticket_id: int
     state: str
+    queued: bool
+    warning: str
+
+
+class ShipExecuted(TypedDict):
+    ticket_id: int
+    state: str
+    synced: bool
+    ok: bool
+    detail: str
 
 
 class ShippingGateFailure(TypedDict):
@@ -180,14 +190,15 @@ def _check_shipping_gate(ticket: Ticket) -> ShippingGateFailure | None:
     return None
 
 
-def _enqueue_ship(ticket: Ticket, title: str) -> ShipEnqueued | ShippingGateFailure:
-    """Run the ``ship()`` transition, converting an illegal hop to JSON.
+def _do_ship_transition(ticket: Ticket, title: str) -> ShippingGateFailure | None:
+    """Run the ``ship()`` FSM transition; return a gate failure or ``None``.
 
     Invariant (#694): ``pr create`` never raises a raw
     ``TransitionNotAllowed`` — even on the ``--skip-validation`` path, where
     the gate reconcile is bypassed and ``ship()`` may be illegal from the
     current (non-REVIEWED) state. The failure is reported as the same
-    structured shape the gate-fail path returns.
+    structured shape the gate-fail path returns. ``ship()`` schedules
+    ``execute_ship.enqueue`` via ``transaction.on_commit``.
     """
     try:
         with transaction.atomic():
@@ -204,7 +215,59 @@ def _enqueue_ship(ticket: Ticket, title: str) -> ShipEnqueued | ShippingGateFail
             missing=[],
             hint="Drop --skip-validation so the gate can reconcile the FSM, or record the missing phases.",
         )
-    return ShipEnqueued(ticket_id=int(ticket.pk), state=str(ticket.state))
+    return None
+
+
+def _enqueue_ship(ticket: Ticket, title: str) -> ShipEnqueued | ShippingGateFailure:
+    """Async ship: enqueue ``execute_ship`` and warn it needs a worker.
+
+    The push + PR are NOT performed here — they run in ``execute_ship``,
+    which only fires when a worker drains the django-tasks queue. In a
+    no-worker context (e.g. an interactive ``uv run`` invocation) the ship
+    silently never completes; the explicit ``warning`` makes that visible
+    instead of looking like a successful ship (#708). Use ``--sync`` to
+    push + open the PR inline in this process.
+    """
+    failure = _do_ship_transition(ticket, title)
+    if failure is not None:
+        return failure
+    return ShipEnqueued(
+        ticket_id=int(ticket.pk),
+        state=str(ticket.state),
+        queued=True,
+        warning=(
+            "Ship was QUEUED, not performed. The branch push and PR creation "
+            "run in the `execute_ship` task and will NOT complete until a "
+            "worker drains the queue (`t3 <overlay> tasks work-next-sdk`). "
+            "Re-run with `--sync` to push and open the PR inline now."
+        ),
+    )
+
+
+def _ship_sync(ticket: Ticket, title: str) -> ShipExecuted | ShippingGateFailure:
+    """Synchronous ship: run ``execute_ship`` inline in this process (#708).
+
+    After the FSM transition commits, invoke the ship task synchronously
+    via django-tasks' ``.call()`` so the push + PR happen before the
+    command returns — no queue worker required. ``execute_ship`` is
+    idempotent (re-checks state under ``select_for_update``), so the
+    ``on_commit`` enqueue scheduled by ``ship()`` is a safe no-op if a
+    worker later picks it up (state is no longer SHIPPED).
+    """
+    from teatree.core.tasks import execute_ship  # noqa: PLC0415
+
+    failure = _do_ship_transition(ticket, title)
+    if failure is not None:
+        return failure
+    result = execute_ship.call(int(ticket.pk))
+    ticket.refresh_from_db()
+    return ShipExecuted(
+        ticket_id=int(ticket.pk),
+        state=str(ticket.state),
+        synced=True,
+        ok=bool(result.get("ok", False)),
+        detail=str(result.get("detail", "")),
+    )
 
 
 def _resolve_base_url(worktree: Worktree | None) -> str:
@@ -255,6 +318,26 @@ def _run_visual_qa_gate(ticket: Ticket, *, skip_reason: str = "") -> VisualQAGat
     )
 
 
+def _run_ship_gates(
+    ticket: Ticket,
+    worktree: Worktree,
+    *,
+    skip_visual_qa: str = "",
+) -> ShippingGateFailure | VisualQAGateFailure | PrValidationError | None:
+    """Run the pre-ship gates in order; return the first failure or ``None``.
+
+    Composed out of ``create`` so the command stays within the
+    return-count gate and the gate sequence is independently testable.
+    """
+    gate_error = _check_shipping_gate(ticket)
+    if gate_error is not None:
+        return gate_error
+    visual_qa_error = _run_visual_qa_gate(ticket, skip_reason=skip_visual_qa)
+    if visual_qa_error is not None:
+        return visual_qa_error
+    return _validate_pr_metadata(ticket, worktree)
+
+
 def _resolve_ticket(ref: str) -> Ticket:
     """Resolve a ticket by pk / issue number / issue URL.
 
@@ -267,7 +350,12 @@ def _resolve_ticket(ref: str) -> Ticket:
 
 class Command(TyperCommand):
     @command()
-    def create(
+    # PLR0913: this signature IS the CLI contract — django-typer derives
+    # --title/--dry-run/--skip-validation/--skip-visual-qa/--sync by
+    # introspecting these kwargs; bundling them into a dataclass would delete
+    # the flags. Same targeted-noqa-for-framework-reality pattern as the
+    # repo's PLC0415 (import-in-function) and SLF001 (framework internals).
+    def create(  # noqa: PLR0913
         self,
         ticket_id: str,
         *,
@@ -275,20 +363,33 @@ class Command(TyperCommand):
         dry_run: bool = False,
         skip_validation: bool = False,
         skip_visual_qa: str = "",
+        sync: bool = False,
     ) -> (
-        ShipEnqueued | ShipDryRun | PrValidationError | VisualQAGateFailure | ShippingGateFailure | WorktreeMissingError
+        ShipEnqueued
+        | ShipExecuted
+        | ShipDryRun
+        | PrValidationError
+        | VisualQAGateFailure
+        | ShippingGateFailure
+        | WorktreeMissingError
     ):
         """Validate ship gates and trigger the ship transition.
 
-        On success the ``execute_ship`` worker pushes the branch, opens the PR,
-        and advances ``SHIPPED → IN_REVIEW``. The return value reports the PR
-        URL once the worker completes (synchronous in interactive mode).
+        Default (async): the ship is *queued* — ``execute_ship`` pushes the
+        branch and opens the PR only when a worker drains the django-tasks
+        queue. The result carries an explicit ``warning`` so a no-worker
+        context does not look like a completed ship (#708).
+
+        ``--sync``: run ``execute_ship`` inline in this process so the push
+        and PR happen before the command returns — no worker required. Use
+        this for interactive / ``uv run`` invocations where nothing is
+        draining the queue.
 
         ``ticket_id`` accepts the internal DB pk, the full issue URL, or the
         bare issue number (resolved against ``Ticket.issue_url``).
 
         ``--title`` overrides the PR title (default: last commit subject).
-        Stored on ``ticket.extra['pr_title_override']`` so the worker reads it.
+        Stored on ``ticket.extra['pr_title_override']`` so the ship reads it.
         """
         ticket = _resolve_ticket(ticket_id)
         worktree = ticket.worktrees.first()  # ty: ignore[unresolved-attribute]
@@ -296,19 +397,14 @@ class Command(TyperCommand):
             return WorktreeMissingError(error="ticket has no worktree")
 
         if not skip_validation:
-            gate_error = _check_shipping_gate(ticket)
-            if gate_error:
-                return gate_error
-            visual_qa_error = _run_visual_qa_gate(ticket, skip_reason=skip_visual_qa)
-            if visual_qa_error:
-                return visual_qa_error
-            validation_error = _validate_pr_metadata(ticket, worktree)
-            if validation_error:
-                return validation_error
+            gate_failure = _run_ship_gates(ticket, worktree, skip_visual_qa=skip_visual_qa)
+            if gate_failure is not None:
+                return gate_failure
 
         if dry_run:
             return _ship_dry_run(ticket, worktree)
-
+        if sync:
+            return _ship_sync(ticket, title)
         return _enqueue_ship(ticket, title)
 
     @command(name="ensure-pr")
