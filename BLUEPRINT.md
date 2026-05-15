@@ -67,9 +67,9 @@ src/teatree/
   __init__.py
   __main__.py
   _overlay_api.py       # __overlay_api_version__ pin + import-time guard for overlays
-  paths.py              # XDG-compliant DATA_DIR, CANONICAL_DB, get_data_dir, find_stale_dbs
+  paths.py              # XDG-compliant DATA_DIR/CANONICAL_DB; worktree-aware: code run from a git worktree (`.git` is a file) auto-isolates onto a per-worktree DB under the sibling `~/.local/share/teatree-worktrees/<slug>/` root (never nested under the scanned canonical dir, so doctor/stale-DB checks stay clean); resolve_data_dir() returns (path, auto_isolated); an explicit canonical target from a worktree hard-fails (CanonicalDBFromWorktreeError) so unmerged migrations can never corrupt the canonical control DB
   config.py             # ~/.teatree.toml parsing, overlay discovery, UserSettings
-  settings.py           # Django settings — auto-discovers overlay apps from entry points
+  settings.py           # Django settings — auto-discovers overlay apps; seed_isolated_db() takes a consistent SQLite snapshot of the canonical DB into an auto-isolated worktree dir on first use, atomically (temp file + locked rename) and only for the auto-isolated case
   identity.py           # User identity + agent_signature suffix policy
   project.py            # Project root discovery
   triage.py             # Crash-report writers consumed by hooks
@@ -259,6 +259,7 @@ The central entity. One ticket per unit of work (maps to an issue/task in the tr
 | `code()` | started → coded | Calls `schedule_testing()` |
 | `test(passed=True)` | coded → tested | Stores `tests_passed` in extra; calls `schedule_review()` |
 | `review()` | tested → reviewed | Condition: reviewing task completed. Calls `schedule_shipping()` only if `has_shippable_diff()` returns True (otherwise stamps `extra["shipping_skipped"]` for triage — guards meta-tickets from spurious shipping tasks). |
+| `reconcile_reviewed()` | not_started/scoped/started/coded/tested/reviewed → reviewed | Gate-driven catch-up (#694). No reviewing-task condition — the shipping gate verifies the required phases across the union of the ticket's sessions (`Ticket.aggregate_phase_records()`, the single source of truth) before calling this, so `ship()` is legal and `pr create` never raises a raw `TransitionNotAllowed`. No side effects. |
 | `ship()` | reviewed → shipped | Enqueues `execute_ship` worker. Worker runs `ShipExecutor` and calls `request_review()` on success. |
 | `request_review()` | shipped → in_review | — |
 | `mark_merged()` | in_review → merged | Enqueues `execute_teardown` worker. Worker runs `WorktreeTeardown` (best-effort cleanup of git worktrees, branches, per-worktree DBs, overlay hooks). Errors do NOT block the FSM — `retrospect()` can advance the ticket regardless. |
@@ -353,7 +354,9 @@ Canonical container ports (from `teatree.utils.ports.CONTAINER_PORTS`; consumed 
 
 ### 4.3 Session — Quality gate tracker (FK → Ticket)
 
-Tracks which workflow phases an agent visited within a conversation, to enforce ordering.
+Tracks which workflow phases an agent visited within a conversation, to enforce ordering. The phase records across **all of a ticket's sessions** are the **single source of truth** for the shipping gate (#694): `ticket.state` is reconciled *from* their union (`Ticket.aggregate_phase_records()`), never the reverse. FSM-advancing `visit-phase` forks a fresh session by design (bias-free maker≠checker), so the required phases are legitimately scattered — the gate consumes the cross-session union, not the latest session alone. Both the loop path (`Task.complete()` records the visited phase via `_record_phase_visit()`) and the CLI path (`lifecycle visit-phase`) write canonical phase tokens here, so the gate and the FSM cannot disagree.
+
+**Phase vocabulary (`teatree.core.phases`).** Skills emit short verbs (`scope`, `code`, `test`, `review`, `ship`, `retro`); older code and `_REQUIRED_PHASES` use gerunds. `normalize_phase()` collapses every spelling to one canonical token (the form stored in `visited_phases`/`_REQUIRED_PHASES`); `phase_transition()` maps a phase to its `Ticket` FSM transition. `lifecycle visit-phase` and `pr create` both resolve the ticket via the shared `Ticket.objects.resolve()` (pk / issue number / issue URL), so callers can pass the forge issue number without hitting a silent `DoesNotExist`.
 
 **Fields:**
 
@@ -376,7 +379,7 @@ _REQUIRED_PHASES = {
 }
 ```
 
-`check_gate(phase, force=False)` raises `QualityGateError` if required phases haven't been visited. `force=True` bypasses.
+`check_gate(phase, force=False)` raises `QualityGateError` if required phases haven't been visited *on this session*; `force=True` bypasses. `check_gate_across_ticket(phase)` runs the same missing-phase + maker≠checker logic over the **union** of the ticket's sessions (`Ticket.aggregate_phase_records()`) — this is what the shipping gate uses. `_check_maker_checker(visits)` is shared by both and still catches a same-`agent_id` conflicting pair even when the two phases were recorded on different sessions.
 
 ### 4.4 Task — Agent work unit (FK → Ticket, Session)
 
@@ -601,9 +604,9 @@ The render module lives at `src/teatree/loop/statusline.py` (`StatuslineZones` d
 
 #### 5.6.2 Mode + training-wheel
 
-The loop respects the active overlay's `mode` (§ 10.1, canonical default `interactive`). When an overlay opts into `mode = "auto"`, the training wheel `[teatree] require_human_approval_to_merge = true` (default) keeps merge gated even though push and PR creation run autonomously — merge requires a user reaction (👍 or `/merge`) on the statusline entry or the PR thread. The user flips the training wheel to `false` only when comfortable. In `interactive` overlays, every publishing action still prompts; the loop surfaces work but never publishes silently.
+The loop respects the active overlay's `mode` (§ 10.1, canonical default `interactive`). When an overlay opts into `mode = "auto"`, the training wheel `[teatree] require_human_approval_to_merge = true` (default) keeps merge gated even though push and PR creation run autonomously — merge requires a user reaction (👍 or `/merge`) on the statusline entry or the PR thread. The companion training wheel `[teatree] require_human_approval_to_answer = true` (default) gates the `t3:answerer` capability the same way: the agent drafts a reply to an inbound `question` intent, DMs the user for approval, and posts only on confirmation; set it `false` per-overlay to let answers post directly. The user flips either training wheel to `false` only when comfortable. In `interactive` overlays, every publishing action still prompts; the loop surfaces work but never publishes silently.
 
-`UserSettings.require_human_approval_to_merge`, `UserSettings.loop_cadence_seconds` (default 720), and `UserSettings.statusline_chain` (default empty) live in `src/teatree/config.py`; the first two are toml-overridable in `[teatree]` and per-overlay via `[overlays.<name>]` once registered in `OVERLAY_OVERRIDABLE_SETTINGS`. `statusline_chain` is global-only (not per-overlay).
+`UserSettings.require_human_approval_to_merge`, `UserSettings.require_human_approval_to_answer`, `UserSettings.loop_cadence_seconds` (default 720), and `UserSettings.statusline_chain` (default empty) live in `src/teatree/config.py`; the first three are toml-overridable in `[teatree]` and per-overlay via `[overlays.<name>]` once registered in `OVERLAY_OVERRIDABLE_SETTINGS`. `statusline_chain` is global-only (not per-overlay).
 
 ---
 
@@ -1030,6 +1033,7 @@ privacy = "strict"
 mode = "interactive"                       # global default — confirm before publishing actions. Per-overlay override to "auto" enables loop-driven autonomy.
 loop_cadence_seconds = 720                 # /loop tick interval (default 12 min)
 require_human_approval_to_merge = true     # training-wheel for `auto` overlays: push + PR create autonomous, merge stays gated
+require_human_approval_to_answer = true    # training-wheel: t3:answerer drafts + DMs for approval, posts only on confirm
 
 [user]
 claude_chrome = true   # spawn `claude` with --chrome so sessions can drive the browser

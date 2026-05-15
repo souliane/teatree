@@ -38,6 +38,30 @@ def unsynced_commits(repo: str, branch: str, target: str = "origin/main") -> lis
     return [line for line in output.splitlines() if line.strip()]
 
 
+def commits_absent_from_all_remotes(repo: str, branch: str) -> list[str]:
+    """Return ``branch`` commits not reachable from ANY ``refs/remotes/*`` ref.
+
+    The data-loss guard for worktree teardown (#706). Unlike
+    :func:`unsynced_commits` (which compares against ``origin/main`` only and
+    therefore flags pushed-but-unmerged branches), ``--not --remotes`` is empty
+    whenever the branch tip was pushed anywhere — to its own remote tracking
+    ref, to main, or captured by a squash-merge that was itself pushed. A
+    non-empty result means these commits exist on NO remote: removing the
+    worktree would destroy them irrecoverably. Returns ``"<sha> <subject>"``
+    lines (newest first).
+
+    **Fails closed.** Uses :func:`run_strict` so a non-zero ``git log`` exit
+    (invalid/missing branch, corrupt repo, any git error) raises
+    ``CommandFailedError`` rather than yielding an empty list. For a data-loss
+    guard, "we couldn't determine whether the commits are pushed" must block
+    teardown, not allow it. The legitimate empty case (``git log`` exits 0 with
+    no output because the branch genuinely has nothing absent from remotes)
+    still returns ``[]`` and allows teardown.
+    """
+    output = run_strict(repo=repo, args=["log", branch, "--not", "--remotes", "--oneline"])
+    return [line for line in output.splitlines() if line.strip()]
+
+
 def status_porcelain(repo: str = ".") -> str:
     return run(repo=repo, args=["status", "--porcelain"])
 

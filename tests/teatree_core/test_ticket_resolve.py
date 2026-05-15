@@ -1,0 +1,46 @@
+"""Shared ticket-reference resolution lives on the manager (#694).
+
+``visit-phase`` and ``pr create`` must accept the *same* identifier set
+(pk / issue number / issue URL). Before #694 ``visit-phase`` did a pk-only
+``Ticket.objects.get(pk=...)`` so passing an issue number raised
+``DoesNotExist`` and silently dropped the phase.
+"""
+
+import pytest
+from django.test import TestCase
+
+from teatree.core.models import Ticket
+
+
+class TestTicketResolve(TestCase):
+    def test_resolves_by_pk(self) -> None:
+        ticket = Ticket.objects.create(overlay="test")
+        assert Ticket.objects.resolve(str(ticket.pk)).pk == ticket.pk
+
+    def test_resolves_by_issue_url(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://github.com/souliane/teatree/issues/694")
+        resolved = Ticket.objects.resolve("https://github.com/souliane/teatree/issues/694")
+        assert resolved.pk == ticket.pk
+
+    def test_resolves_by_bare_issue_number_when_no_such_pk(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://github.com/souliane/teatree/issues/694")
+        # pk is small (1); 694 is not a pk -> falls back to issue_url match.
+        resolved = Ticket.objects.resolve("694")
+        assert resolved.pk == ticket.pk
+
+    def test_pk_takes_precedence_over_issue_number(self) -> None:
+        first = Ticket.objects.create(overlay="test", issue_url="https://github.com/souliane/teatree/issues/999")
+        # Create a ticket whose issue_url ends in /<first.pk> to prove pk wins.
+        Ticket.objects.create(
+            overlay="test",
+            issue_url=f"https://github.com/souliane/teatree/issues/{first.pk}",
+        )
+        assert Ticket.objects.resolve(str(first.pk)).pk == first.pk
+
+    def test_raises_does_not_exist_for_unknown_ref(self) -> None:
+        with pytest.raises(Ticket.DoesNotExist):
+            Ticket.objects.resolve("https://github.com/souliane/teatree/issues/12345")
+
+    def test_raises_does_not_exist_for_unknown_number(self) -> None:
+        with pytest.raises(Ticket.DoesNotExist):
+            Ticket.objects.resolve("87654")

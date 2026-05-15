@@ -119,6 +119,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "excluded_skills": _parse_excluded_skills,
     "loop_cadence_seconds": int,
     "require_human_approval_to_merge": bool,
+    "require_human_approval_to_answer": bool,
 }
 
 # ``T3_*`` env vars that win over both the per-overlay override and the
@@ -156,6 +157,15 @@ class UserSettings:
     # comfortable (BLUEPRINT § 5.6.2). No effect in `interactive` mode,
     # where every publishing action prompts regardless.
     require_human_approval_to_merge: bool = True
+    # Training-wheel for the `t3:answerer` capability (#670, resolving
+    # #654 Open Question #3): when true, the agent drafts a reply to an
+    # inbound question, DMs the user for approval, and posts only on
+    # confirmation. Set false to let the agent post answers directly — a
+    # deliberate opt-in the user flips only once comfortable with answer
+    # quality. Per-overlay overridable (a trusted overlay can opt into
+    # direct posting without flipping the global). Default on, mirroring
+    # `require_human_approval_to_merge`.
+    require_human_approval_to_answer: bool = True
     # Pass --chrome to every spawned `claude` session so Claude in Chrome is
     # available wherever it could be useful (browser inspection, UI debugging,
     # E2E selector drafting, bug hunts). Costs ~300 lines of system prompt per
@@ -211,6 +221,7 @@ def load_config(path: Path | None = None) -> TeaTreeConfig:
         mode=mode,
         loop_cadence_seconds=int(teatree.get("loop_cadence_seconds", 720)),
         require_human_approval_to_merge=bool(teatree.get("require_human_approval_to_merge", True)),
+        require_human_approval_to_answer=bool(teatree.get("require_human_approval_to_answer", True)),
         claude_chrome=bool(teatree.get("claude_chrome", True)),
         agent_signature=bool(teatree.get("agent_signature", False)),
         statusline_chain=[str(s) for s in teatree.get("statusline_chain", [])],
