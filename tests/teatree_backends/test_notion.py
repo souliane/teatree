@@ -9,8 +9,22 @@ import httpx
 import pytest
 import typer.testing
 
-from teatree.backends.notion import NotionClient, _brave_cookies, download_notion_file
+from teatree.backends.notion import (
+    NotionClient,
+    NotionFileRef,
+    _brave_cookies,
+    _is_signed,
+    download_notion_file,
+    resolve_signed_url,
+)
 from teatree.cli.tools import tool_app
+
+# A `file://`-prefixed ref as emitted by `notion-fetch` for a <file> block.
+VALID_FETCH_SRC = (
+    "file://%7B%22source%22%3A%20%22attachment%3Aatt-123%3AMy%20Report.pdf%22%2C"
+    "%20%22permissionRecord%22%3A%20%7B%22table%22%3A%20%22block%22%2C%20%22id%22"
+    "%3A%20%22blk-9%22%2C%20%22spaceId%22%3A%20%22sp-7%22%7D%7D"
+)
 
 
 @dataclass
@@ -136,3 +150,134 @@ class TestNotionClient:
         assert seen["url"] == "https://api.notion.com/v1/pages/page-1"
         assert seen["auth"] == "Bearer secret"
         assert seen["version"] == "2026-01-01"
+
+
+class TestNotionFileRef:
+    def test_parses_valid_fetch_src(self) -> None:
+        ref = NotionFileRef.from_fetch_src(VALID_FETCH_SRC)
+
+        assert ref is not None
+        assert ref.space_id == "sp-7"
+        assert ref.attachment_id == "att-123"
+        assert ref.filename == "My Report.pdf"
+        assert ref.block_id == "blk-9"
+
+    def test_stored_url_uses_s3_origin_form(self) -> None:
+        ref = NotionFileRef.from_fetch_src(VALID_FETCH_SRC)
+
+        assert ref is not None
+        assert ref.stored_url == ("https://prod-files-secure.s3.us-west-2.amazonaws.com/sp-7/att-123/My Report.pdf")
+
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            "file://not-json",
+            "file://%7B%22source%22%3A%20%22nope%22%7D",  # not an attachment:
+            "https://file.notion.so/f/f/s/a/x.pdf?signature=abc",  # plain URL, not a ref
+        ],
+    )
+    def test_returns_none_for_unparseable(self, bad: str) -> None:
+        assert NotionFileRef.from_fetch_src(bad) is None
+
+
+class TestIsSigned:
+    @pytest.mark.parametrize(
+        ("url", "expected"),
+        [
+            ("https://file.notion.so/f/f/s/a/x.pdf?signature=abc", True),
+            ("https://x/y?X-Amz-Signature=z", True),
+            ("https://x/y?expirationTimestamp=9999", True),
+            ("https://prod-files-secure.s3.amazonaws.com/s/a/x.pdf", False),
+        ],
+    )
+    def test_detects_signature_markers(self, url: str, *, expected: bool) -> None:
+        assert _is_signed(url) is expected
+
+
+class TestResolveSignedUrl:
+    def _patch(self, monkeypatch: pytest.MonkeyPatch, handler: Any) -> dict[str, Any]:
+        original = httpx.Client.__init__
+
+        def patched(self: httpx.Client, **kwargs: Any) -> None:
+            kwargs["transport"] = httpx.MockTransport(handler)
+            original(self, **kwargs)
+
+        monkeypatch.setattr(httpx.Client, "__init__", patched)
+        return {}
+
+    def test_posts_stored_url_and_returns_signed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        seen: dict[str, Any] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen["url"] = str(request.url)
+            seen["body"] = request.content.decode()
+            return httpx.Response(200, json={"signedUrls": ["https://signed.example/x.pdf?sig=1"]})
+
+        self._patch(monkeypatch, handler)
+        ref = NotionFileRef.from_fetch_src(VALID_FETCH_SRC)
+        assert ref is not None
+
+        signed = resolve_signed_url(ref, httpx.Cookies())
+
+        assert signed == "https://signed.example/x.pdf?sig=1"
+        assert seen["url"] == "https://www.notion.so/api/v3/getSignedFileUrls"
+        assert "prod-files-secure.s3" in seen["body"]
+        assert "blk-9" in seen["body"]
+
+    def test_raises_when_no_signed_url_in_body(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._patch(monkeypatch, lambda _: httpx.Response(200, json={"other": []}))
+        ref = NotionFileRef.from_fetch_src(VALID_FETCH_SRC)
+        assert ref is not None
+
+        with pytest.raises(RuntimeError, match="no signed URL"):
+            resolve_signed_url(ref, httpx.Cookies())
+
+
+class TestDownloadViaRef:
+    def test_resolves_ref_then_downloads(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("teatree.backends.notion._brave_cookies", lambda _: httpx.Cookies())
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/api/v3/getSignedFileUrls":
+                return httpx.Response(200, json={"signedUrls": ["https://signed/x.pdf?signature=ok"]})
+            return httpx.Response(200, content=b"REF-BYTES")
+
+        original = httpx.Client.__init__
+
+        def patched(self: httpx.Client, **kwargs: Any) -> None:
+            kwargs["transport"] = httpx.MockTransport(handler)
+            original(self, **kwargs)
+
+        monkeypatch.setattr(httpx.Client, "__init__", patched)
+        ref = NotionFileRef.from_fetch_src(VALID_FETCH_SRC)
+
+        dest = download_notion_file(ref=ref, dest=tmp_path / "out.pdf")
+
+        assert dest.read_bytes() == b"REF-BYTES"
+
+    def test_rejects_unsigned_url_without_ref(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("teatree.backends.notion._brave_cookies", lambda _: httpx.Cookies())
+
+        with pytest.raises(ValueError, match="not signed"):
+            download_notion_file(url="https://plain.example/x.pdf", dest=tmp_path / "x.pdf")
+
+
+class TestNotionDownloadCLIRef:
+    def test_detects_fetch_ref_and_resolves(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        captured: dict[str, Any] = {}
+
+        def fake_download(*, ref: Any = None, url: str = "", dest: Path) -> Path:
+            captured["ref"] = ref
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(b"PDF")
+            return dest
+
+        monkeypatch.setattr("teatree.backends.notion.download_notion_file", fake_download)
+
+        result = typer.testing.CliRunner().invoke(
+            tool_app, ["notion-download", VALID_FETCH_SRC, "--dest", str(tmp_path)]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert captured["ref"].filename == "My Report.pdf"
+        assert (tmp_path / "My Report.pdf").read_bytes() == b"PDF"

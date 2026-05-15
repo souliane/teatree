@@ -252,7 +252,7 @@ class Command(TyperCommand):
         ticket = _resolve_workspace_ticket(path)
         overlay = get_overlay()
 
-        worktrees = list(ticket.worktrees.all())
+        worktrees = list(Worktree.objects.filter(ticket=ticket))
         for wt in worktrees:
             self.stdout.write(f"  Provisioning {wt.repo_path}…")
             with transaction.atomic():
@@ -283,7 +283,7 @@ class Command(TyperCommand):
         ticket = _resolve_workspace_ticket(path)
         overlay = get_overlay()
 
-        worktrees = list(ticket.worktrees.all())
+        worktrees = list(Worktree.objects.filter(ticket=ticket))
         failures: list[str] = []
         for wt in worktrees:
             self.stdout.write(f"  Starting {wt.repo_path}…")
@@ -329,7 +329,7 @@ class Command(TyperCommand):
         ticket = _resolve_workspace_ticket(path)
         overlay = get_overlay()
 
-        worktrees = list(ticket.worktrees.all())
+        worktrees = list(Worktree.objects.filter(ticket=ticket))
         total = 0
         total_failures = 0
         for wt in worktrees:
@@ -359,7 +359,7 @@ class Command(TyperCommand):
         """
         ticket = _resolve_workspace_ticket(path)
 
-        worktrees = list(ticket.worktrees.all())
+        worktrees = list(Worktree.objects.filter(ticket=ticket))
         labels: list[str] = []
         failures: list[str] = []
         for wt in worktrees:

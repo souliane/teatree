@@ -36,8 +36,7 @@ class NotionFileRef:
         # file.notion.so/f/f/… display form is rejected ("Invalid secure
         # file URL").
         return (
-            "https://prod-files-secure.s3.us-west-2.amazonaws.com/"
-            f"{self.space_id}/{self.attachment_id}/{self.filename}"
+            f"https://prod-files-secure.s3.us-west-2.amazonaws.com/{self.space_id}/{self.attachment_id}/{self.filename}"
         )
 
     @classmethod
@@ -47,7 +46,7 @@ class NotionFileRef:
         Decodes to ``{"source":"attachment:<aid>:<name>","permissionRecord":
         {"table":"block","id":"<blockId>","spaceId":"<spaceId>"}}``.
         """
-        payload = src[len("file://") :] if src.startswith("file://") else src
+        payload = src.removeprefix("file://")
         try:
             data = json.loads(unquote(payload))
         except (json.JSONDecodeError, ValueError):
