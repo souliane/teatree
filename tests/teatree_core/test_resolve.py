@@ -434,3 +434,40 @@ class TestAutoRegisterReusesExistingWorktree(TestCase):
         assert result.repo_path == "my-repo"
         assert result.ticket.issue_url == "auto:feat/branch"
         assert Worktree.objects.count() == 2
+
+    def test_reuses_workspace_owner_ticket_for_sibling_branch(self) -> None:
+        """A sibling worktree under the same workspace dir reuses its ticket (#641).
+
+        Workspace ``ticket <real_url>`` owns repoA on branch A. Resolving a
+        *different* repo/branch under the SAME workspace dir must attach to
+        that ticket, not fork a new ``auto:<branch>`` ticket.
+        """
+        owner_ticket = Ticket.objects.create(issue_url="https://gitlab.com/org/repo/-/issues/94")
+        repo_a = self._make_git_worktree("repo-a")
+        Worktree.objects.create(
+            ticket=owner_ticket,
+            repo_path="repo-a",
+            branch="ac/real-work",
+            extra={"worktree_path": str(repo_a)},
+        )
+        repo_b = self._make_git_worktree("repo-b")  # sibling under the same tmp_path
+
+        with patch("teatree.core.resolve.git.current_branch", return_value="docgen/other"):
+            result = _auto_register_from_git(str(repo_b))
+
+        assert result is not None
+        assert result.ticket_id == owner_ticket.pk
+        assert result.repo_path == "repo-b"
+        assert result.branch == "docgen/other"
+        assert not Ticket.objects.filter(issue_url="auto:docgen/other").exists()
+        assert Ticket.objects.count() == 1
+
+    def test_no_workspace_owner_still_creates_auto_ticket(self) -> None:
+        """When no sibling worktree shares the workspace dir, the auto: path stands."""
+        wt_dir = self._make_git_worktree("lonely-repo")
+
+        with patch("teatree.core.resolve.git.current_branch", return_value="feat/solo"):
+            result = _auto_register_from_git(str(wt_dir))
+
+        assert result is not None
+        assert result.ticket.issue_url == "auto:feat/solo"

@@ -140,9 +140,12 @@ def _auto_register_from_git(cwd: str) -> Worktree | None:
             existing.save(update_fields=["extra"])
         return existing
 
-    ticket, _created = Ticket.objects.get_or_create(
-        issue_url=f"auto:{branch}",
-        defaults={"variant": "", "repos": [repo_name]},
+    ticket = (
+        _workspace_owner_ticket(cwd_path)
+        or Ticket.objects.get_or_create(
+            issue_url=f"auto:{branch}",
+            defaults={"variant": "", "repos": [repo_name]},
+        )[0]
     )
     wt, _wt_created = Worktree.objects.get_or_create(
         ticket=ticket,
@@ -153,6 +156,24 @@ def _auto_register_from_git(cwd: str) -> Worktree | None:
         },
     )
     return wt
+
+
+def _workspace_owner_ticket(cwd_path: Path) -> Ticket | None:
+    """Return the ticket that already owns *cwd_path*'s workspace dir, if any.
+
+    A per-ticket workspace dir holds one repo worktree per affected repo
+    (e.g. ``<workspace>/<ticket>/<repoA>``, ``…/<repoB>``). When a sibling
+    worktree under the same parent directory is already registered, its
+    ticket owns the workspace — a different branch/repo resolved from the
+    same workspace must attach to that ticket rather than fork a fresh
+    ``auto:<branch>`` ticket (#641).
+    """
+    workspace_dir = str(cwd_path.parent)
+    for wt in Worktree.objects.exclude(extra__worktree_path__isnull=True):
+        recorded = (wt.extra or {}).get("worktree_path", "")
+        if recorded and str(Path(recorded).parent) == workspace_dir:
+            return wt.ticket
+    return None
 
 
 def _is_main_clone(path: str) -> bool:
