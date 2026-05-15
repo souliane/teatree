@@ -30,7 +30,7 @@ if TYPE_CHECKING:
     from teatree.core.models.worktree import Worktree
 
 
-class Ticket(models.Model):
+class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method count reflects the lifecycle state graph, not poor encapsulation.
     class State(models.TextChoices):
         NOT_STARTED = "not_started", "Not started"
         SCOPED = "scoped", "Scoped"
@@ -165,6 +165,54 @@ class Ticket(models.Model):
         extra = self._extra()
         extra["shipping_skipped"] = "no shippable diff — likely meta or already-shipped work"
         self.extra = extra
+
+    @transition(
+        field=state,
+        source=[
+            State.NOT_STARTED,
+            State.SCOPED,
+            State.STARTED,
+            State.CODED,
+            State.TESTED,
+            State.REVIEWED,
+        ],
+        target=State.REVIEWED,
+    )
+    def reconcile_reviewed(self) -> None:
+        """Gate-driven catch-up: any pre-REVIEWED state → REVIEWED (#694).
+
+        The shipping gate is the single source of truth: it verifies the
+        required phases on ``Session.visited_phases`` *before* calling this.
+        Unlike ``review()``, there is no completed-reviewing-task condition —
+        the session record already attests the work was done. This exists so
+        the loop path (which advances ``visited_phases`` without always
+        firing every FSM hop) and the CLI path cannot disagree: a passing
+        gate implies a shippable FSM state, so ``ship()`` never raises a raw
+        ``TransitionNotAllowed`` at ``pr create``.
+        """
+
+    def aggregate_phase_records(self) -> tuple[list[str], dict[str, dict[str, str]]]:
+        """Union the phase records across all of this ticket's sessions (#694).
+
+        Returns ``(visited_phases, phase_visits)`` merged across
+        ``self.sessions`` in creation order. ``visited_phases`` is a
+        de-duplicated list; ``phase_visits`` keeps the first recorded
+        ``agent_id`` per phase (earliest session wins) so maker≠checker
+        attribution stays deterministic. The shipping gate consumes this
+        because FSM-advancing ``visit-phase`` forks fresh sessions by
+        design — the required phases are legitimately scattered, and the
+        single source of truth is the ticket's lifecycle, not one session.
+        """
+        visited: list[str] = []
+        visits: dict[str, dict[str, str]] = {}
+        for session in self.sessions.order_by("pk"):  # ty: ignore[unresolved-attribute]
+            for phase in session.visited_phases or []:
+                if phase not in visited:
+                    visited.append(phase)
+            for phase, record in (session.phase_visits or {}).items():
+                if phase not in visits:
+                    visits[phase] = record
+        return visited, visits
 
     def has_shippable_diff(self) -> bool:
         """Return True iff at least one worktree has commits ahead of its base branch.

@@ -256,6 +256,7 @@ graph LR
 | `teatree-plan` | Backlog prioritization with the GitHub Projects v2 board as single source of truth. Syncs repo issues to the board, walks the user through prioritization one question at a time, and reorders/updates board columns |
 | `test` | Testing, QA, and CI — running tests, analyzing failures, quality checks, CI interaction, test plans, and posting testing evidence |
 | `ticket` | Ticket intake and kickoff — from zero to ready-to-code |
+| `update` | WHEN to bring teatree core and registered overlays up to date with their default branch, and the safety guarantees of doing so |
 | `workspace` | Environment and workspace lifecycle — worktree creation, setup, DB provisioning, dev servers, cleanup |
 <!-- END SKILLS -->
 

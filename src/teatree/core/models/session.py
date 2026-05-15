@@ -62,17 +62,33 @@ class Session(models.Model):
         return phase in self._visited_phases()
 
     def check_gate(self, target_phase: str, *, force: bool = False) -> None:
+        """Check this session's own phase records against the gate."""
         if force:
             return
+        self._check_phases(target_phase, self._visited_phases(), self._phase_visits())
 
-        visited_phases = self._visited_phases()
-        missing = [phase for phase in self._REQUIRED_PHASES.get(target_phase, []) if phase not in visited_phases]
+    def check_gate_across_ticket(self, target_phase: str) -> None:
+        """Check the gate against the UNION of all the ticket's sessions.
+
+        FSM-advancing ``visit-phase`` forks a fresh session by design
+        (bias-free maker≠checker), so the required phases for a ticket are
+        legitimately scattered across its lifecycle sessions. The single
+        source of truth is therefore the union, not the latest session.
+        ``_check_maker_checker`` runs over the merged ``phase_visits`` so
+        a same-agent conflicting pair is still caught even when the two
+        phases were recorded on different sessions — integrity preserved.
+        """
+        visited, visits = self.ticket.aggregate_phase_records()
+        self._check_phases(target_phase, visited, visits)
+
+    def _check_phases(self, target_phase: str, visited: list[str], visits: dict[str, dict[str, str]]) -> None:
+        missing = [phase for phase in self._REQUIRED_PHASES.get(target_phase, []) if phase not in visited]
         if missing:
             joined = ", ".join(missing)
             msg = f"{target_phase} requires: {joined}"
             raise QualityGateError(msg)
 
-        self._check_maker_checker(target_phase)
+        self._check_maker_checker(visits)
 
     def mark_repo_modified(self, repo: str) -> None:
         repos = cast("list[str]", self.repos_modified or [])
@@ -95,8 +111,8 @@ class Session(models.Model):
         self.ended_at = timezone.now()
         self.save(update_fields=["ended_at"])
 
-    def _check_maker_checker(self, _target_phase: str) -> None:
-        visits = self._phase_visits()
+    @staticmethod
+    def _check_maker_checker(visits: dict[str, dict[str, str]]) -> None:
         for phase_a, phase_b in _CONFLICTING_PHASE_PAIRS:
             if phase_a not in visits or phase_b not in visits:
                 continue

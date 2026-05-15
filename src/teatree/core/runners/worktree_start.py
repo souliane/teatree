@@ -94,8 +94,12 @@ class WorktreeStartRunner(RunnerBase):
 
         env = {**os.environ, **overlay.get_env_extra(worktree)}
         env.pop("VIRTUAL_ENV", None)
-        if not self._docker_compose_up(project, compose_file, env):
-            return RunnerResult(ok=False, detail=f"docker compose up failed for {worktree.repo_path}")
+        ok, reason = self._docker_compose_up(project, compose_file, env)
+        if not ok:
+            return RunnerResult(
+                ok=False,
+                detail=f"docker compose up failed for {worktree.repo_path}: {reason}",
+            )
 
         ports = get_worktree_ports(project, compose_file=compose_file)
         extra = worktree.extra or {}
@@ -105,8 +109,16 @@ class WorktreeStartRunner(RunnerBase):
         worktree.save(update_fields=["extra"])
         return RunnerResult(ok=True, detail=f"started {len(commands)} service(s)")
 
-    def _docker_compose_up(self, project: str, compose_file: str, env: dict[str, str]) -> bool:
-        self._ensure_images_built(project, compose_file, env)
+    def _docker_compose_up(self, project: str, compose_file: str, env: dict[str, str]) -> tuple[bool, str]:
+        """Bring the stack up.
+
+        Returns ``(ok, reason)`` — *reason* carries the real failure cause
+        (build error, timeout, or compose stderr) so the caller can surface
+        it instead of a generic "failed" message.
+        """
+        build_error = self._ensure_images_built(project, compose_file, env)
+        if build_error:
+            return False, build_error
         cmd = [
             "docker",
             "compose",
@@ -122,18 +134,17 @@ class WorktreeStartRunner(RunnerBase):
         try:
             result = run_allowed_to_fail(cmd, env=env, expected_codes=None, timeout=timeout)
         except TimeoutExpired:
-            logger.warning("docker compose up timed out after %ss", timeout)
-            return False
+            msg = f"compose up timed out after {timeout}s"
+            logger.warning(msg)
+            return False, msg
         if result.returncode != 0:
-            logger.warning(
-                "docker compose up failed (exit %s): %s",
-                result.returncode,
-                result.stderr.strip()[:500],
-            )
-            return False
-        return True
+            stderr = result.stderr.strip()
+            logger.warning("docker compose up failed (exit %s): %s", result.returncode, stderr[:500])
+            tail = stderr.splitlines()[-1] if stderr else "(no stderr)"
+            return False, f"exit {result.returncode}: {tail}"
+        return True, ""
 
-    def _ensure_images_built(self, project: str, compose_file: str, env: dict[str, str]) -> None:
+    def _ensure_images_built(self, project: str, compose_file: str, env: dict[str, str]) -> str | None:
         """Build any compose service whose ``build:`` image is missing locally.
 
         ``up --no-build --pull=never`` fails the first time a worktree's
@@ -142,13 +153,17 @@ class WorktreeStartRunner(RunnerBase):
         the missing image is a hard error. Pre-flight per service, build the
         missing ones once, then let the subsequent ``up`` reuse the local
         images on every later start.
+
+        Returns ``None`` on success, or a short error string when the build
+        fails or times out so the caller surfaces the real cause instead of a
+        generic "docker compose up failed".
         """
         services = self._enumerate_buildable_services(project, compose_file, env)
         if not services:
-            return
+            return None
         missing = sorted(name for name, image in services.items() if not self._image_exists(image, env))
         if not missing:
-            return
+            return None
         logger.info("Building missing compose images for services: %s", missing)
         cmd = [
             "docker",
@@ -163,14 +178,15 @@ class WorktreeStartRunner(RunnerBase):
         try:
             result = run_allowed_to_fail(cmd, env=env, expected_codes=None, timeout=timeout)
         except TimeoutExpired:
-            logger.warning("docker compose build timed out after %ss", timeout)
-            return
+            msg = f"image build for {missing} timed out after {timeout}s"
+            logger.warning(msg)
+            return msg
         if result.returncode != 0:
-            logger.warning(
-                "docker compose build failed (exit %s): %s",
-                result.returncode,
-                result.stderr.strip()[:500],
-            )
+            stderr = result.stderr.strip()
+            logger.warning("docker compose build failed (exit %s): %s", result.returncode, stderr[:500])
+            tail = stderr.splitlines()[-1] if stderr else "(no stderr)"
+            return f"image build for {missing} failed (exit {result.returncode}): {tail}"
+        return None
 
     @staticmethod
     def _enumerate_buildable_services(project: str, compose_file: str, env: dict[str, str]) -> dict[str, str]:

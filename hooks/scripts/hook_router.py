@@ -326,6 +326,35 @@ def handle_enforce_loop_registration(data: dict) -> bool:
     return True
 
 
+# ── UserPromptSubmit: todo-freshness nudge ──────────────────────────
+
+_TODO_FRESHNESS_NUDGE = (
+    "Session housekeeping: keep the task/TODO list current. "
+    "Reflect finished work as completed and surface any newly discovered work "
+    "as its own task before continuing."
+)
+
+
+def handle_todo_freshness_nudge(data: dict) -> None:
+    """Once per session, nudge keeping the task/TODO list current.
+
+    Ordinary per-session housekeeping — fires in-session, never as a sub-agent
+    and unrelated to the monitor/work-trigger loop. Idempotent via a
+    per-session ``<session>.todo-nudged`` marker, mirroring the loop-pending
+    precedent. Advisory only: prints additionalContext, never emits a deny,
+    so it can never block tool use.
+    """
+    session_id = data.get("session_id", "")
+    if not session_id:
+        return
+    _ensure_state_dir()
+    marker = _state_file(session_id, "todo-nudged")
+    if marker.exists():
+        return
+    marker.write_text("1", encoding="utf-8")
+    print(_TODO_FRESHNESS_NUDGE)  # noqa: T201
+
+
 # ── PreToolUse: enforce-skill-loading ───────────────────────────────
 
 
@@ -1174,7 +1203,11 @@ def handle_mirror_question_to_slack(data: dict) -> bool:
 # ── Router ──────────────────────────────────────────────────────────
 
 _HANDLERS: dict[str, list] = {
-    "UserPromptSubmit": [handle_enforce_loop_on_prompt, handle_user_prompt_submit],
+    "UserPromptSubmit": [
+        handle_enforce_loop_on_prompt,
+        handle_todo_freshness_nudge,
+        handle_user_prompt_submit,
+    ],
     "PreToolUse": [
         handle_enforce_loop_registration,
         handle_protect_default_branch,

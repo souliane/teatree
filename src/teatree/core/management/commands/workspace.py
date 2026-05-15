@@ -25,7 +25,7 @@ from teatree.core.orphan_guard import find_orphans_in_workspace
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.readiness import run_and_report_probes
 from teatree.core.reconcile import Drift, reconcile_all, reconcile_ticket
-from teatree.core.resolve import resolve_worktree
+from teatree.core.resolve import WorktreeNotFoundError, _get_user_cwd, resolve_worktree
 from teatree.core.runners import (
     WorktreeProvisioner,
     WorktreeProvisionRunner,
@@ -66,6 +66,37 @@ def _warn_orphans(write: Callable[[str], None]) -> None:
 
 def _workspace_dir() -> Path:
     return load_config().user.workspace_dir
+
+
+def _resolve_workspace_ticket(path: str) -> Ticket:
+    """Resolve the ticket for a workspace-scoped command.
+
+    Workspace commands (provision/start/ready/teardown) act on *every*
+    worktree in a ticket, so they should be runnable both from inside a
+    worktree subdir and from the ticket workspace root that holds those
+    subdirs. First try the normal worktree resolution; if that fails
+    because we're at the workspace root, match child worktree dirs back
+    to their ticket.
+    """
+    try:
+        anchor = resolve_worktree(path)
+        return Ticket.objects.get(pk=anchor.ticket.pk)
+    except WorktreeNotFoundError:
+        base = Path(path).resolve() if path else Path(_get_user_cwd()).resolve()
+        ticket_pks: set[int] = set()
+        for wt in Worktree.objects.exclude(extra__worktree_path__isnull=True):
+            wt_path = (wt.extra or {}).get("worktree_path", "")
+            if wt_path and Path(wt_path).resolve().parent == base:
+                ticket_pks.add(wt.ticket_id)
+        if len(ticket_pks) == 1:
+            return Ticket.objects.get(pk=ticket_pks.pop())
+        if len(ticket_pks) > 1:
+            msg = (
+                f"{base} holds worktrees from multiple tickets ({sorted(ticket_pks)}).\n"
+                "Run the command from a specific worktree subdir."
+            )
+            raise WorktreeNotFoundError(msg) from None
+        raise
 
 
 def _fix_drift(drift: Drift) -> list[str]:
@@ -218,11 +249,10 @@ class Command(TyperCommand):
         feedback. Stops at the first failure so the operator can fix the
         offending worktree before retrying.
         """
-        anchor = resolve_worktree(path)
-        ticket = Ticket.objects.get(pk=anchor.ticket.pk)
+        ticket = _resolve_workspace_ticket(path)
         overlay = get_overlay()
 
-        worktrees = list(ticket.worktrees.all())
+        worktrees = list(Worktree.objects.filter(ticket=ticket))
         for wt in worktrees:
             self.stdout.write(f"  Provisioning {wt.repo_path}…")
             with transaction.atomic():
@@ -250,11 +280,10 @@ class Command(TyperCommand):
         After every worktree starts, runs each overlay's readiness probes —
         exits 1 if any probe fails.
         """
-        anchor = resolve_worktree(path)
-        ticket = Ticket.objects.get(pk=anchor.ticket.pk)
+        ticket = _resolve_workspace_ticket(path)
         overlay = get_overlay()
 
-        worktrees = list(ticket.worktrees.all())
+        worktrees = list(Worktree.objects.filter(ticket=ticket))
         failures: list[str] = []
         for wt in worktrees:
             self.stdout.write(f"  Starting {wt.repo_path}…")
@@ -297,11 +326,10 @@ class Command(TyperCommand):
         apply to a variant, the overlay's ``get_readiness_probes`` returns
         an empty list (or omits that probe) for that worktree.
         """
-        anchor = resolve_worktree(path)
-        ticket = Ticket.objects.get(pk=anchor.ticket.pk)
+        ticket = _resolve_workspace_ticket(path)
         overlay = get_overlay()
 
-        worktrees = list(ticket.worktrees.all())
+        worktrees = list(Worktree.objects.filter(ticket=ticket))
         total = 0
         total_failures = 0
         for wt in worktrees:
@@ -322,17 +350,22 @@ class Command(TyperCommand):
     def teardown(
         self,
         path: str = typer.Option("", help="Worktree path inside the workspace (auto-detects from PWD)."),
+        *,
+        force: bool = typer.Option(
+            default=False,
+            help="Tear down even when a branch has commits not on any remote (data loss).",
+        ),
     ) -> str:
         """Tear down every worktree in the current ticket workspace.
 
         Fires ``Worktree.teardown()`` on each worktree. Continues past
         per-worktree failures to maximise cleanup; surfaces them in the
-        final summary.
+        final summary. Refuses to remove a worktree whose branch carries
+        unpushed commits unless ``--force`` is passed.
         """
-        anchor = resolve_worktree(path)
-        ticket = Ticket.objects.get(pk=anchor.ticket.pk)
+        ticket = _resolve_workspace_ticket(path)
 
-        worktrees = list(ticket.worktrees.all())
+        worktrees = list(Worktree.objects.filter(ticket=ticket))
         labels: list[str] = []
         failures: list[str] = []
         for wt in worktrees:
@@ -345,6 +378,7 @@ class Command(TyperCommand):
                 wt.save()
             result = WorktreeTeardownRunner(
                 wt,
+                force=force,
                 snapshot_db_name=snapshot_db_name,
                 snapshot_extra=snapshot_extra,
             ).run()
@@ -420,7 +454,7 @@ class Command(TyperCommand):
                 continue
             for wt in worktrees:
                 try:
-                    cleaned.append(cleanup_worktree(wt, force=True))
+                    cleaned.append(cleanup_worktree(wt, strict_hygiene=False))
                 except RuntimeError as exc:
                     cleaned.append(f"FAILED {wt.repo_path} ({wt.branch}): {exc}")
         if not cleaned:
