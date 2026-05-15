@@ -47,6 +47,25 @@ class TestWebhookRateLimiter:
         # gitlab has its own bucket — unaffected by slack exhaustion
         assert limiter.allow("gitlab") is True
 
+    def test_unknown_source_is_rejected_without_creating_a_bucket(self, caplog) -> None:
+        clock = [0.0]
+        limiter = WebhookRateLimiter(capacity=10, refill_per_second=0.0, now=lambda: clock[0])
+
+        with caplog.at_level("WARNING", logger="teatree.core.views._rate_limit"):
+            assert limiter.allow("bogus-source") is False
+            assert limiter.allow("bogus-source") is False
+
+        # No unbounded bucket was created for the unknown source.
+        assert "bogus-source" not in limiter._buckets
+        assert any("bogus-source" in r.message for r in caplog.records)
+
+    def test_every_known_source_value_is_allowed(self) -> None:
+        clock = [0.0]
+        limiter = WebhookRateLimiter(capacity=1, refill_per_second=0.0, now=lambda: clock[0])
+
+        for source in IncomingEvent.Source.values:
+            assert limiter.allow(source) is True
+
 
 SIGNING_SECRET = "test-signing-secret"
 

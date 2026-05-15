@@ -21,10 +21,13 @@ CPU/DoS guard (unauthenticated floods already 401 before any DB write
 and are intentionally not bucketed).
 """
 
+import logging
 import threading
 from collections.abc import Callable
 
 from django.conf import settings
+
+logger = logging.getLogger(__name__)
 
 _DEFAULT_CAPACITY = 60
 _DEFAULT_REFILL_PER_SECOND = 1.0
@@ -74,6 +77,14 @@ class WebhookRateLimiter:
         self._lock = threading.Lock()
 
     def allow(self, source: str) -> bool:
+        # An unknown source must not mint an unbounded bucket — a
+        # misconfigured/forged platform value would otherwise get an
+        # uncapped allowance. Treat it as rate-limited (rejected).
+        from teatree.core.models import IncomingEvent  # noqa: PLC0415
+
+        if source not in IncomingEvent.Source.values:
+            logger.warning("Rejecting webhook from unknown source %r — not creating a bucket", source)
+            return False
         with self._lock:
             bucket = self._buckets.get(source)
             if bucket is None:

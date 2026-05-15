@@ -27,9 +27,10 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from django.db import IntegrityError, transaction
 from django.utils import timezone
 
-from teatree.core.models import ReplyDispatch
+from teatree.core.models import IncomingEvent, ReplyDispatch
 from teatree.core.reply_transport import Replier
 
 logger = logging.getLogger(__name__)
@@ -73,7 +74,16 @@ class RetrySweep:
             dispatch.status = ReplyDispatch.Status.SENT
             dispatch.error_message = ""
             dispatch.next_retry_at = None
-            dispatch.save(update_fields=["status", "error_message", "next_retry_at"])
+            try:
+                with transaction.atomic():
+                    dispatch.save(update_fields=["status", "error_message", "next_retry_at"])
+            except Exception:
+                logger.warning(
+                    "Dispatch %s redelivered but the success-status save could not be saved — "
+                    "the row stays FAILED and will be retried (bounded double-fire)",
+                    dispatch.pk,
+                    exc_info=True,
+                )
         return attempted
 
     def _handle_failure(self, dispatch: ReplyDispatch, replier: Replier, exc: Exception) -> None:
@@ -101,10 +111,42 @@ class RetrySweep:
                 event=event,
                 actor=event.actor,
                 body=body,
+                # The :deadletter suffix assumes a dispatch is dead-lettered
+                # at most once (the sweep flips status to DEAD_LETTER, which
+                # due_for_retry excludes, so the row is never re-swept).
                 idempotency_key=f"{dispatch.idempotency_key}:deadletter",
             )
-        except Exception:
+        except Exception as alert_exc:
             logger.exception("Dead-letter alert for dispatch %s could not be delivered", dispatch.pk)
+            RetrySweep._persist_failed_alert(dispatch, event, alert_exc)
+
+    @staticmethod
+    def _persist_failed_alert(dispatch: ReplyDispatch, event: IncomingEvent, exc: Exception) -> None:
+        """Record a terminal audit row when the dead-letter alert itself fails.
+
+        A permanently-broken DM channel would otherwise silently drop the
+        dead letter. The row uses a FAILED status (excluded from
+        ``due_for_retry`` via ``action_name="dead_letter_alert"``) so it
+        leaves an auditable trail without entering the retry storm. The
+        ``:deadletter-alert`` idempotency-key suffix and the
+        ``IntegrityError`` recovery make a repeated sweep a safe no-op.
+        """
+        try:
+            with transaction.atomic():
+                ReplyDispatch.objects.create(
+                    event=event,
+                    target_ref=event.actor,
+                    action_name="dead_letter_alert",
+                    idempotency_key=f"{dispatch.idempotency_key}:deadletter-alert",
+                    status=ReplyDispatch.Status.FAILED,
+                    body="dead-letter alert delivery failed",
+                    error_message=str(exc),
+                )
+        except IntegrityError:
+            logger.debug(
+                "Dead-letter alert audit row for dispatch %s already recorded — idempotent no-op",
+                dispatch.pk,
+            )
 
 
 def sweep_failed_dispatches(

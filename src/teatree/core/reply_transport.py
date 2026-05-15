@@ -139,43 +139,54 @@ class _BaseReplier:
         )
 
     def _send(self, spec: ReplySpec) -> ReplyDispatch:
-        # Idempotency is enforced on the ReplyDispatch *record*. The
-        # platform side effect (the actual post) has a theoretical
-        # double-fire window between this SELECT and the INSERT — bounded
-        # in practice by the machine-wide `t3 loop tick` flock singleton
-        # (#676), which serialises the only caller.
-        existing = ReplyDispatch.objects.filter(idempotency_key=spec.idempotency_key).first()
-        if existing is not None:
-            logger.debug("Reply %s already recorded — idempotent no-op", spec.idempotency_key)
-            return existing
-        try:
-            self._deliver(spec)
-        except Exception as exc:  # noqa: BLE001 — any backend failure becomes a FAILED row
-            logger.warning("Reply %s delivery failed: %s", spec.idempotency_key, exc)
-            return self._record(spec, status=ReplyDispatch.Status.FAILED, error_message=str(exc))
-        return self._record(spec, status=ReplyDispatch.Status.SENT)
-
-    @staticmethod
-    def _record(
-        spec: ReplySpec,
-        *,
-        status: str,
-        error_message: str = "",
-    ) -> ReplyDispatch:
+        # Idempotency is intrinsic to the ReplyDispatch *record*: the
+        # idempotency key is atomically reserved with a PENDING row
+        # *before* the side effect, so a second caller racing on the same
+        # key (including a non-loop / cron caller without the machine-wide
+        # `t3 loop tick` flock #676) reuses the reserved row and never
+        # re-delivers. The IntegrityError recovery below remains as
+        # defense-in-depth for the create-vs-create race.
         try:
             with transaction.atomic():
-                return ReplyDispatch.objects.create(
-                    event=spec.event,
-                    target_ref=spec.target_ref,
-                    action_name=spec.action_name,
+                dispatch, created = ReplyDispatch.objects.get_or_create(
                     idempotency_key=spec.idempotency_key,
-                    status=status,
-                    body=spec.body,
-                    error_message=error_message,
+                    defaults={
+                        "event": spec.event,
+                        "target_ref": spec.target_ref,
+                        "action_name": spec.action_name,
+                        "status": ReplyDispatch.Status.PENDING,
+                        "body": spec.body,
+                    },
                 )
         except IntegrityError:
             logger.debug("Reply %s already recorded — idempotent no-op", spec.idempotency_key)
             return ReplyDispatch.objects.get(idempotency_key=spec.idempotency_key)
+        if not created:
+            logger.debug("Reply %s already recorded — idempotent no-op", spec.idempotency_key)
+            return dispatch
+        try:
+            # Savepoint so a DB-level error raised inside subclass
+            # `_deliver` (e.g. a create-vs-create race) does not poison
+            # the outer transaction and the FAILED finalize can still run.
+            with transaction.atomic():
+                self._deliver(spec)
+        except Exception as exc:  # noqa: BLE001 — any backend failure becomes a FAILED row
+            logger.warning("Reply %s delivery failed: %s", spec.idempotency_key, exc)
+            return self._finalize(dispatch, status=ReplyDispatch.Status.FAILED, error_message=str(exc))
+        return self._finalize(dispatch, status=ReplyDispatch.Status.SENT)
+
+    @staticmethod
+    def _finalize(
+        dispatch: ReplyDispatch,
+        *,
+        status: ReplyDispatch.Status,
+        error_message: str = "",
+    ) -> ReplyDispatch:
+        dispatch.status = status
+        dispatch.error_message = error_message
+        with transaction.atomic():
+            dispatch.save(update_fields=["status", "error_message"])
+        return dispatch
 
     def redeliver(self, dispatch: ReplyDispatch) -> None:
         """Re-attempt a previously-recorded dispatch (the retry-sweep path).

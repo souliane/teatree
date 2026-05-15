@@ -14,6 +14,7 @@ from teatree.core.resolve import (
     _match_worktree_by_path,
     _parse_env_file,
     _warn_cwd_mismatch,
+    _workspace_owner_ticket,
     resolve_worktree,
 )
 
@@ -500,3 +501,45 @@ class TestAutoRegisterReusesExistingWorktree(TestCase):
 
         assert result is not None
         assert result.ticket.issue_url == "auto:feat/solo"
+
+
+class TestWorkspaceOwnerTicketIsDeterministic(TestCase):
+    @pytest.fixture(autouse=True)
+    def _inject_fixtures(self, tmp_path: Path) -> None:
+        self._tmp_path = tmp_path
+
+    def test_lowest_pk_wins_when_multiple_siblings_share_workspace(self) -> None:
+        """Resolution stays deterministic if the invariant is violated.
+
+        The one-ticket-per-workspace invariant being violated, the
+        lowest-``pk`` worktree's ticket wins. Without ``.order_by("pk")``
+        the "first match wins" comment is a lie — the unordered queryset's
+        iteration order is backend-dependent.
+        """
+        repo_a = self._tmp_path / "repo-a"
+        repo_b = self._tmp_path / "repo-b"
+        repo_a.mkdir()
+        repo_b.mkdir()
+
+        first_ticket = Ticket.objects.create(issue_url="https://gitlab.com/org/repo/-/issues/1")
+        second_ticket = Ticket.objects.create(issue_url="https://gitlab.com/org/repo/-/issues/2")
+        first_wt = Worktree.objects.create(
+            ticket=first_ticket,
+            repo_path="repo-a",
+            branch="ac/first",
+            extra={"worktree_path": str(repo_a)},
+        )
+        Worktree.objects.create(
+            ticket=second_ticket,
+            repo_path="repo-b",
+            branch="ac/second",
+            extra={"worktree_path": str(repo_b)},
+        )
+
+        # Resolving a third sibling under the same workspace dir: cwd's
+        # parent is tmp_path, matching both stored worktree_path parents.
+        owner = _workspace_owner_ticket((self._tmp_path / "repo-c").resolve())
+
+        assert owner is not None
+        assert owner.pk == first_ticket.pk
+        assert owner.pk == first_wt.ticket.pk
