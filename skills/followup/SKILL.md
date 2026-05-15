@@ -17,7 +17,7 @@ metadata:
 
 # Follow-Up — Daily Routine & Batch Processing
 
-Fetch all "Not started" issues assigned to the current user, then implement each one sequentially in the main conversation using the full delivery cycle (code, test, push, PR). See § Rules for the sequential-only constraint.
+Fetch all "Not started" issues assigned to the current user, then implement each one sequentially using the full delivery cycle (code, test, push, PR) — the cycle itself is the single one documented in [`../teatree-batch/SKILL.md`](../teatree-batch/SKILL.md) § Workflow. Interactive followup runs that cycle in the main conversation; see § Rules for the sequential-only constraint and how it relates to the batch-mode singleton sub-agent exception.
 
 ## Periodic Mode
 
@@ -113,12 +113,7 @@ If the project uses an external tracker (e.g., Notion), update the ticket status
 
 If not found in the external tracker, log a warning but continue — not all tickets have an entry.
 
-**b. Run the full lifecycle** using the loaded skills — each phase uses the corresponding lifecycle skill:
-
-1. **Intake** (`/t3:ticket`): Fetch issue, create worktree (`t3 <overlay> workspace ticket`), run `t3 <overlay> worktree provision`, verify environment.
-2. **Implementation** (`/t3:code`): Implement with TDD. Check ALL repos in scope.
-3. **Testing** (`/t3:test`): Run tests, fix failures, ensure lint passes.
-4. **Delivery** (`/t3:ship`): Commit, push, create PRs for ALL repos with changes.
+**b. Run the full per-ticket delivery cycle.** The delivery cycle (intake → implementation → testing → delivery) is documented once in [`../teatree-batch/SKILL.md`](../teatree-batch/SKILL.md) § Workflow and is not restated here — followup runs the same cycle. The two skills differ only in how the cycle is hosted: batch mode delegates each ticket to a singleton delivery sub-agent (its § Rules "Singleton delivery sub-agent" exception), whereas interactive followup runs the cycle in the main conversation per the constraint in § Rules below.
 
 **c. Report result** before moving to the next ticket:
 
@@ -266,7 +261,7 @@ See [`references/followup-schema.md`](references/followup-schema.md) for the ful
 
 ### Interactive mode (default)
 
-- **Sequential only.** Never use sub-agents for ticket implementation. See [`../rules/SKILL.md`](../rules/SKILL.md) § "Sub-Agent Limitations".
+- **Sequential only.** Interactive followup runs each ticket's delivery cycle in the main conversation and does not delegate ticket implementation to sub-agents — the [`../rules/SKILL.md`](../rules/SKILL.md) § "Sub-Agent Limitations" default applies here. The batch-mode singleton delivery sub-agent (the explicit exception documented in that same section and in [`../teatree-batch/SKILL.md`](../teatree-batch/SKILL.md) § Rules) is the deliberate carve-out for unattended batch runs, not for interactive followup; the two are not in conflict because they apply to different hosting modes.
 - **Never start without user approval.** Always show the confirmation table first.
 - **Always pre-fetch external context.** Read all specs before starting implementation.
 - **Always run scope analysis.** The issue tracker project ≠ the implementation repo.
