@@ -1,10 +1,10 @@
 """Tests for the SessionStart hook handler (singleton loop orchestration bootstrap).
 
 Covers issue #718: a SessionStart hook emits ``additionalContext`` that
-idempotently establishes / re-attaches the three machine-wide singleton loop
-sub-agents, prints the ``/rename`` reminder only for the loop owner, and
-best-effort sets the terminal title via an OSC escape gated on an interactive
-TTY + owner-only.
+idempotently establishes / re-attaches the four machine-wide singleton loop
+sub-agents (the ``t3-`` roster), prints the ``/rename`` reminder only for the
+loop owner, and best-effort sets the terminal title via an OSC escape gated on
+an interactive TTY + owner-only.
 """
 
 import json
@@ -66,8 +66,8 @@ class TestLoopRegistry:
 
     def test_write_then_read_roundtrip(self) -> None:
         entry = {"session_id": "s1", "agent_id": "a1", "pid": _live_pid()}
-        _write_loop_registry({"teatree-main-loop": entry})
-        assert _read_loop_registry() == {"teatree-main-loop": entry}
+        _write_loop_registry({"t3-main-loop": entry})
+        assert _read_loop_registry() == {"t3-main-loop": entry}
 
     def test_read_corrupt_registry_returns_empty(self) -> None:
         _loop_registry_path().write_text("{ not json", encoding="utf-8")
@@ -75,21 +75,22 @@ class TestLoopRegistry:
 
     def test_prune_removes_dead_owner(self) -> None:
         # PID 999999 is (almost certainly) not alive.
-        reg = {"teatree-main-loop": {"session_id": "s1", "agent_id": "a1", "pid": 999999}}
+        reg = {"t3-main-loop": {"session_id": "s1", "agent_id": "a1", "pid": 999999}}
         _write_loop_registry(reg)
         pruned = _prune_dead_owner(_read_loop_registry())
         assert pruned == {}
 
     def test_prune_keeps_live_owner(self) -> None:
-        reg = {"teatree-main-loop": {"session_id": "s1", "agent_id": "a1", "pid": _live_pid()}}
+        reg = {"t3-main-loop": {"session_id": "s1", "agent_id": "a1", "pid": _live_pid()}}
         _write_loop_registry(reg)
         assert _prune_dead_owner(_read_loop_registry()) == reg
 
-    def test_loop_agent_names_are_the_three_singletons(self) -> None:
+    def test_loop_agent_names_are_the_four_t3_singletons(self) -> None:
         assert LOOP_AGENT_NAMES == (
-            "teatree-main-loop",
-            "teatree-review-loop",
-            "teatree-cross-review-loop",
+            "t3-main-loop",
+            "t3-review-loop",
+            "t3-cross-review-loop",
+            "t3-bug-hunt",
         )
 
 
@@ -103,9 +104,10 @@ class TestHandleSessionStartBootstrap:
 
         out = json.loads(capsys.readouterr().out)
         ctx = out["additionalContext"]
-        assert "teatree-main-loop" in ctx
-        assert "teatree-review-loop" in ctx
-        assert "teatree-cross-review-loop" in ctx
+        assert "t3-main-loop" in ctx
+        assert "t3-review-loop" in ctx
+        assert "t3-cross-review-loop" in ctx
+        assert "t3-bug-hunt" in ctx
         assert "spawn" in ctx.lower()
         # Owner gets the rename reminder.
         assert "/rename TEATREE LOOP" in ctx
@@ -113,23 +115,23 @@ class TestHandleSessionStartBootstrap:
         assert "per ticket" in ctx.lower() or "per-ticket" in ctx.lower()
 
         reg = _read_loop_registry()
-        assert reg["teatree-main-loop"]["session_id"] == "owner-1"
+        assert reg["t3-main-loop"]["session_id"] == "owner-1"
         # The recorded owner pid is the SESSION process (the hook's parent),
         # never the ephemeral hook subprocess's own pid — otherwise the pid
         # is dead before a second session starts and the singleton breaks.
         # (Dedicated regression: TestOwnerPidIsSessionNotHookSubprocess.)
-        assert reg["teatree-main-loop"]["pid"] == _owner_pid()
+        assert reg["t3-main-loop"]["pid"] == _owner_pid()
 
     def test_owner_records_agent_id_when_present(self, capsys: pytest.CaptureFixture[str]) -> None:
         handle_session_start_bootstrap({"session_id": "owner-1", "agent_id": "agent-xyz"})
         capsys.readouterr()
-        assert _read_loop_registry()["teatree-main-loop"]["agent_id"] == "agent-xyz"
+        assert _read_loop_registry()["t3-main-loop"]["agent_id"] == "agent-xyz"
 
     def test_second_live_session_instructs_reattach_not_spawn(self, capsys: pytest.CaptureFixture[str]) -> None:
         # First session claims ownership with a LIVE pid.
         _write_loop_registry(
             {
-                "teatree-main-loop": {
+                "t3-main-loop": {
                     "session_id": "owner-1",
                     "agent_id": "agent-owner",
                     "pid": _live_pid(),
@@ -149,12 +151,12 @@ class TestHandleSessionStartBootstrap:
         # Non-owner must NOT get the rename reminder.
         assert "/rename TEATREE LOOP" not in ctx
         # Ownership is unchanged.
-        assert _read_loop_registry()["teatree-main-loop"]["session_id"] == "owner-1"
+        assert _read_loop_registry()["t3-main-loop"]["session_id"] == "owner-1"
 
     def test_same_session_restart_is_idempotent_still_owner(self, capsys: pytest.CaptureFixture[str]) -> None:
         _write_loop_registry(
             {
-                "teatree-main-loop": {
+                "t3-main-loop": {
                     "session_id": "owner-1",
                     "agent_id": "agent-owner",
                     "pid": _live_pid(),
@@ -167,12 +169,12 @@ class TestHandleSessionStartBootstrap:
         ctx = json.loads(capsys.readouterr().out)["additionalContext"]
         assert "spawn" in ctx.lower()
         assert "/rename TEATREE LOOP" in ctx
-        assert _read_loop_registry()["teatree-main-loop"]["session_id"] == "owner-1"
+        assert _read_loop_registry()["t3-main-loop"]["session_id"] == "owner-1"
 
     def test_dead_owner_is_reclaimed_by_new_session(self, capsys: pytest.CaptureFixture[str]) -> None:
         _write_loop_registry(
             {
-                "teatree-main-loop": {
+                "t3-main-loop": {
                     "session_id": "dead-owner",
                     "agent_id": "ghost",
                     "pid": 999999,
@@ -184,7 +186,7 @@ class TestHandleSessionStartBootstrap:
 
         ctx = json.loads(capsys.readouterr().out)["additionalContext"]
         assert "spawn" in ctx.lower()
-        assert _read_loop_registry()["teatree-main-loop"]["session_id"] == "new-owner"
+        assert _read_loop_registry()["t3-main-loop"]["session_id"] == "new-owner"
 
     def test_owner_with_tty_emits_osc_title(self, registry_paths) -> None:
         _, tty_path = registry_paths
@@ -209,7 +211,7 @@ class TestHandleSessionStartBootstrap:
         Path(tty_path).write_text("", encoding="utf-8")
         _write_loop_registry(
             {
-                "teatree-main-loop": {
+                "t3-main-loop": {
                     "session_id": "owner-1",
                     "agent_id": "agent-owner",
                     "pid": _live_pid(),
@@ -235,7 +237,7 @@ class TestOwnerPidIsSessionNotHookSubprocess:
     def test_recorded_pid_is_parent_not_self(self, capsys: pytest.CaptureFixture[str]) -> None:
         handle_session_start_bootstrap({"session_id": "owner-1"})
         capsys.readouterr()
-        recorded = _read_loop_registry()["teatree-main-loop"]["pid"]
+        recorded = _read_loop_registry()["t3-main-loop"]["pid"]
         assert recorded == os.getppid()
 
     def test_owner_survives_a_simulated_second_session(self, capsys: pytest.CaptureFixture[str]) -> None:
@@ -248,23 +250,23 @@ class TestOwnerPidIsSessionNotHookSubprocess:
         ctx = json.loads(capsys.readouterr().out)["additionalContext"]
         assert "re-attach" in ctx.lower()
         assert "agent-1" in ctx
-        assert _read_loop_registry()["teatree-main-loop"]["session_id"] == "owner-1"
+        assert _read_loop_registry()["t3-main-loop"]["session_id"] == "owner-1"
 
 
 class TestSessionEndReleasesOwnership:
     def test_owner_session_end_clears_slot(self) -> None:
-        _write_loop_registry({"teatree-main-loop": {"session_id": "owner-1", "agent_id": "a", "pid": _live_pid()}})
+        _write_loop_registry({"t3-main-loop": {"session_id": "owner-1", "agent_id": "a", "pid": _live_pid()}})
         handle_session_end_loop_registry({"session_id": "owner-1"})
         assert _read_loop_registry() == {}
 
     def test_non_owner_session_end_keeps_slot(self) -> None:
-        reg = {"teatree-main-loop": {"session_id": "owner-1", "agent_id": "a", "pid": _live_pid()}}
+        reg = {"t3-main-loop": {"session_id": "owner-1", "agent_id": "a", "pid": _live_pid()}}
         _write_loop_registry(reg)
         handle_session_end_loop_registry({"session_id": "some-other-session"})
         assert _read_loop_registry() == reg
 
     def test_session_end_no_session_id_is_noop(self) -> None:
-        reg = {"teatree-main-loop": {"session_id": "owner-1", "agent_id": "a", "pid": _live_pid()}}
+        reg = {"t3-main-loop": {"session_id": "owner-1", "agent_id": "a", "pid": _live_pid()}}
         _write_loop_registry(reg)
         handle_session_end_loop_registry({})
         assert _read_loop_registry() == reg

@@ -796,10 +796,10 @@ def handle_post_compact(data: dict) -> None:
 # ── SessionStart: singleton loop orchestration bootstrap ────────────
 #
 # Issue #718. On every session start, emit an ``additionalContext``
-# directive that idempotently establishes (or re-attaches to) the three
-# machine-wide singleton loop sub-agents. A second concurrent Claude
-# session must NOT double-spawn the loops — it re-attaches to the
-# recorded owner by agent id instead.
+# directive that idempotently establishes (or re-attaches to) the four
+# machine-wide singleton loop sub-agents (the `t3-` loop roster). A
+# second concurrent Claude session must NOT double-spawn the loops — it
+# re-attaches to the recorded owner by agent id instead.
 #
 # The registry reuses the existing file + pid-liveness pattern (mirrors
 # ``teatree.utils.singleton.read_pid``): a small JSON file in the teatree
@@ -815,10 +815,11 @@ def handle_post_compact(data: dict) -> None:
 # SessionEnd hook additionally clears the entry on a clean exit, so the
 # registry self-heals on both crash (pid dies) and graceful shutdown.
 
-LOOP_AGENT_NAMES: tuple[str, str, str] = (
-    "teatree-main-loop",
-    "teatree-review-loop",
-    "teatree-cross-review-loop",
+LOOP_AGENT_NAMES: tuple[str, str, str, str] = (
+    "t3-main-loop",
+    "t3-review-loop",
+    "t3-cross-review-loop",
+    "t3-bug-hunt",
 )
 
 # The ownership anchor: whichever session owns the main loop owns the
@@ -897,15 +898,19 @@ def _emit_osc_title() -> None:
 _SPAWN_DIRECTIVE = (
     "TEATREE LOOP ORCHESTRATION — establish the singleton loop sub-agents.\n\n"
     "This session OWNS the teatree loop orchestration (no other live session holds it). "
-    "Idempotently establish/verify these three machine-wide SINGLETON loop sub-agents — "
-    "spawn each only if not already live, otherwise verify it:\n"
-    "  1. teatree-main-loop — backlog/ticket-implementation loop. Spawns >=1 sub-agent "
+    "Idempotently establish/verify these four machine-wide SINGLETON loop sub-agents "
+    "(all always-started) — spawn each only if not already live, otherwise verify it:\n"
+    "  1. t3-main-loop — backlog/ticket-implementation loop. Spawns >=1 sub-agent "
     "PER TICKET; each per-ticket sub-agent spawns sub-sub-agents per workflow step "
     "(scope/code/review/ship) where it fits.\n"
-    "  2. teatree-review-loop — reviews EVERY merged PR (in addition to the maker!=checker "
+    "  2. t3-review-loop — reviews EVERY merged PR (in addition to the maker!=checker "
     "self-review done while implementing a ticket).\n"
-    "  3. teatree-cross-review-loop — architectural & cross-repo review; serialized "
-    "against teatree-review-loop (shared private repos).\n\n"
+    "  3. t3-cross-review-loop — architectural & cross-repo review; serialized "
+    "against t3-review-loop (shared private repos).\n"
+    "  4. t3-bug-hunt — proactively hunts bugs in teatree core + its registered "
+    "overlay; self-QA on loop/statusline/CLI (the /teatree-bughunt skill); files "
+    "issues and fixes worktree-isolated; never touches branches/PRs the other "
+    "loops own.\n\n"
     "Reminder (UI-only, cannot be automated): run `/rename TEATREE LOOP` to name this "
     "owner session. The terminal tab title was set automatically where a TTY was available."
 )
@@ -918,9 +923,9 @@ def _reattach_directive(owner: dict) -> str:
         "Another live session already owns the teatree loop orchestration "
         f"(owner session {owner.get('session_id', '?')}). The singleton loop sub-agents "
         "are already established. RE-ATTACH to the existing logical loop by the recorded "
-        f"agent id: {agent_id}. Do not spawn duplicate teatree-main-loop / "
-        "teatree-review-loop / teatree-cross-review-loop sub-agents and do not fight the "
-        "owner session — that double-reviews and races on PR creation."
+        f"agent id: {agent_id}. Do not spawn duplicate t3-main-loop / t3-review-loop / "
+        "t3-cross-review-loop / t3-bug-hunt sub-agents and do not fight the owner "
+        "session — that double-reviews and races on PR creation."
     )
 
 
