@@ -118,6 +118,7 @@ depends_on = [
   "teatree.types",
   "teatree.paths",
   "teatree.utils",
+  "teatree.config",
   "teatree.core",
   "teatree.backends"
 ]
