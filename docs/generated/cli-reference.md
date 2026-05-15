@@ -608,7 +608,8 @@ Usage: t3 tool [OPTIONS] COMMAND [ARGS]...
 │ audit-memory     Scan Claude memory files for entries that should be         │
 │                  promoted to skills.                                         │
 │ triage-issues    Scan for resolved-but-open and stale issues.                │
-│ notion-download  Download a Notion file attachment using browser cookies.    │
+│ notion-download  Download a Notion file attachment using the Brave browser   │
+│                  session.                                                    │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -770,11 +771,16 @@ Usage: t3 tool triage-issues [OPTIONS] REPO
 ```
 Usage: t3 tool notion-download [OPTIONS] URL
 
- Download a Notion file attachment using browser cookies.
+ Download a Notion file attachment using the Brave browser session.
+
+ Accepts the `file://`-prefixed reference string that `t3`'s notion-fetch
+ emits for `<file>` blocks; the signed URL is resolved server-side, so no
+ manual browser click is required.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    url      TEXT  file.notion.so URL from browser tab (must include        │
-│                     signature).                                              │
+│ *    url      TEXT  Either the `file://%7B…%7D` src from `notion-fetch`      │
+│                     (resolved automatically via Notion's API — no browser    │
+│                     click needed) or a pre-signed file.notion.so URL.        │
 │                     [required]                                               │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
@@ -1454,11 +1460,16 @@ Usage: t3 teatree worktree teardown [OPTIONS]
  CREATED and enqueues ``execute_worktree_teardown``; the runner
  also runs synchronously here so the operator sees immediate
  output. Folds the previous ``teardown`` + ``clean`` commands
- into a single canonical path.
+ into a single canonical path. Refuses to remove a worktree whose
+ branch carries unpushed commits unless ``--force`` is passed.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --path        TEXT  Worktree path (auto-detects from PWD if empty).          │
-│ --help              Show this message and exit.                              │
+│ --path                   TEXT  Worktree path (auto-detects from PWD if       │
+│                                empty).                                       │
+│ --force    --no-force          Tear down even when the branch has commits    │
+│                                not on any remote (data loss).                │
+│                                [default: no-force]                           │
+│ --help                         Show this message and exit.                   │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -1639,12 +1650,16 @@ Usage: t3 teatree workspace teardown [OPTIONS]
 
  Fires ``Worktree.teardown()`` on each worktree. Continues past
  per-worktree failures to maximise cleanup; surfaces them in the
- final summary.
+ final summary. Refuses to remove a worktree whose branch carries
+ unpushed commits unless ``--force`` is passed.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --path        TEXT  Worktree path inside the workspace (auto-detects from    │
-│                     PWD).                                                    │
-│ --help              Show this message and exit.                              │
+│ --path                   TEXT  Worktree path inside the workspace            │
+│                                (auto-detects from PWD).                      │
+│ --force    --no-force          Tear down even when a branch has commits not  │
+│                                on any remote (data loss).                    │
+│                                [default: no-force]                           │
+│ --help                         Show this message and exit.                   │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -2371,9 +2386,17 @@ Usage: t3 teatree lifecycle visit-phase [OPTIONS] TICKET_ID PHASE
 
  Mark a phase as visited and advance the ticket FSM if applicable.
 
+ ``ticket_id`` accepts the same identifier set as ``pr create`` — DB
+ pk, forge issue number, or full issue URL (#694). The phase is
+ normalized to the canonical vocabulary so both the short verbs the
+ skills emit (``code``, ``test``, ``review``, ``ship``, ``retro``,
+ ``scope``) and the older gerunds advance the FSM. The resulting
+ ``ticket.state`` is included in the output so a skipped or refused
+ transition is visible rather than silently swallowed.
+
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    ticket_id      INTEGER  [required]                                      │
-│ *    phase          TEXT     [required]                                      │
+│ *    ticket_id      TEXT  [required]                                         │
+│ *    phase          TEXT  [required]                                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
@@ -2519,6 +2542,7 @@ Usage: t3 teatree ticket [OPTIONS] COMMAND [ARGS]...
 │ list              List tickets, optionally filtered by state and/or overlay. │
 │ sync-completions  Check post-ship tickets against upstream issues and        │
 │                   advance completed ones.                                    │
+│ comment           Post a comment to an issue or work item by its URL.        │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -2570,5 +2594,27 @@ Usage: t3 teatree ticket sync-completions [OPTIONS]
 │ --dry-run    --no-dry-run      Show what would transition without acting.    │
 │                                [default: no-dry-run]                         │
 │ --help                         Show this message and exit.                   │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree ticket comment`
+
+```
+Usage: t3 teatree ticket comment [OPTIONS] ISSUE_URL
+
+ Post a comment to an issue or work item by its URL.
+
+ Resolves the code host per-URL across all registered overlays, so it
+ works for any tracker an overlay is configured for (GitLab issues and
+ work items, GitHub issues). Pass the body inline with ``--body`` or
+ from a file with ``--body-file``.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    issue_url      TEXT  [required]                                         │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --body             TEXT  Comment body text.                                  │
+│ --body-file        TEXT  Path to a file containing the comment body.         │
+│ --help                   Show this message and exit.                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```

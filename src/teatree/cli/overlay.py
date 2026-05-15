@@ -138,6 +138,7 @@ DJANGO_GROUPS: dict[str, tuple[str, list[tuple[str, str]]]] = {
             ("transition", "Transition a ticket to a new state."),
             ("list", "List tickets, optionally filtered by state and/or overlay."),
             ("sync-completions", "Check post-ship tickets against upstream issues and advance completed ones."),
+            ("comment", "Post a comment to an issue or work item by its URL."),
         ],
     ),
 }
