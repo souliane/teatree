@@ -3,19 +3,39 @@
 Teatree worktree checkouts run unmerged code, including unmerged control-DB
 migrations. Applying those to the real canonical DB corrupts the migration
 history the installed ``t3`` and the live loop depend on. This module makes
-that outcome impossible regardless of entry point: worktree code is
-auto-isolated onto a per-worktree DB copy, and an explicit attempt to point
-worktree code at the true canonical DB is a hard error.
+that outcome impossible regardless of entry point.
+
+Worktree code is auto-isolated onto a per-worktree DB under the sibling
+``teatree-worktrees`` root, never nested under the canonical data dir, so
+``find_stale_dbs``/doctor/settings never mistake it for stale state. That DB
+is seeded from a consistent SQLite snapshot, atomically, and only for paths
+inside the managed isolation root. An explicit attempt to point worktree code
+at the true canonical DB is a hard error.
 """
 
+import fcntl
 import hashlib
 import os
-import shutil
+import sqlite3
+import tempfile
 from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
+from typing import NamedTuple
 
 _TRUE_CANONICAL_DATA_DIR = Path.home() / ".local" / "share" / "teatree"
 _TRUE_CANONICAL_DB = _TRUE_CANONICAL_DATA_DIR / "db.sqlite3"
+
+
+class ResolvedDataDir(NamedTuple):
+    """The resolved data dir plus whether it was auto-isolated for a worktree.
+
+    ``auto_isolated`` is ``True`` only for the worktree-without-explicit-XDG
+    case — the single case that may be seeded from the canonical DB.
+    """
+
+    path: Path
+    auto_isolated: bool
 
 
 class CanonicalDBFromWorktreeError(RuntimeError):
@@ -40,47 +60,104 @@ def _code_repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
-def resolve_data_dir(*, env: dict[str, str], home: Path, repo_root: Path) -> Path:
-    """Resolve the teatree data dir.
+def _worktree_isolation_root(home: Path) -> Path:
+    """Sibling of the canonical data dir — never recursively scanned by it."""
+    return home / ".local" / "share" / "teatree-worktrees"
+
+
+def resolve_data_dir(*, env: dict[str, str], home: Path, repo_root: Path) -> ResolvedDataDir:
+    """Resolve the teatree data dir and whether it was auto-isolated.
 
     Primary clone: ``$XDG_DATA_HOME/teatree`` (or ``~/.local/share/teatree``) —
-    unchanged. Worktree code: auto-isolated onto a deterministic per-worktree
-    path unless the caller explicitly chose a sandbox via ``XDG_DATA_HOME``.
-    Worktree code resolving to the true canonical dir is refused — use ``t3``
-    (which isolates automatically) or fix the broken ``t3`` command and retry;
-    never work around it.
+    unchanged, ``auto_isolated=False``. Worktree code with no explicit
+    ``XDG_DATA_HOME``: a deterministic per-worktree dir under the sibling
+    ``teatree-worktrees`` root, ``auto_isolated=True``. Worktree code with an
+    explicit sandbox ``XDG_DATA_HOME``: that sandbox, ``auto_isolated=False``
+    (the caller chose it deliberately; never seed it). Worktree code resolving
+    to the true canonical dir is refused — use ``t3`` (which isolates
+    automatically) or fix the broken ``t3`` command and retry.
     """
     explicit = env.get("XDG_DATA_HOME")
     base = Path(explicit) if explicit else home / ".local" / "share"
     data_dir = base / "teatree"
     if not running_from_worktree(repo_root):
-        return data_dir
-    true_canonical = home / ".local" / "share" / "teatree"
-    if explicit and data_dir.resolve() == true_canonical.resolve():
-        raise CanonicalDBFromWorktreeError(repo_root)
+        return ResolvedDataDir(data_dir, auto_isolated=False)
     if explicit:
-        return data_dir
+        if data_dir.resolve() == (home / ".local" / "share" / "teatree").resolve():
+            raise CanonicalDBFromWorktreeError(repo_root)
+        return ResolvedDataDir(data_dir, auto_isolated=False)
     slug = hashlib.sha256(str(repo_root).encode()).hexdigest()[:12]
-    return home / ".local" / "share" / "teatree" / "_worktrees" / slug
+    return ResolvedDataDir(_worktree_isolation_root(home) / slug, auto_isolated=True)
+
+
+@contextmanager
+def _exclusive_lock(lock_path: Path) -> Iterator[None]:
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+
+
+def _sqlite_snapshot(src: Path, dst: Path) -> None:
+    """Consistent point-in-time copy even if a live writer holds ``src``."""
+    source = sqlite3.connect(f"file:{src}?mode=ro", uri=True)
+    try:
+        dest = sqlite3.connect(dst)
+        try:
+            source.backup(dest)
+        finally:
+            dest.close()
+    finally:
+        source.close()
+
+
+def _seed_isolated_db(data_dir: Path, *, canonical_db: Path, isolation_root: Path) -> None:
+    """Seed an auto-isolated worktree dir from a consistent canonical snapshot.
+
+    Only seeds paths inside ``isolation_root`` — a primary clone or an explicit
+    ``XDG_DATA_HOME`` sandbox is never under it, so it is never seeded
+    regardless of how this is called. The snapshot is written to a temp file
+    and atomically renamed under an exclusive lock, so concurrent worktree
+    startups never observe a partial DB and never both do the work.
+    """
+    try:
+        data_dir.resolve().relative_to(isolation_root.resolve())
+    except ValueError:
+        return
+    if not canonical_db.exists():
+        return
+    target = data_dir / "db.sqlite3"
+    if target.exists():
+        return
+    data_dir.mkdir(parents=True, exist_ok=True)
+    with _exclusive_lock(data_dir / ".seed.lock"):
+        if target.exists():
+            return
+        fd, tmp_name = tempfile.mkstemp(prefix=".seed-", suffix=".sqlite3", dir=data_dir)
+        os.close(fd)
+        tmp_path = Path(tmp_name)
+        try:
+            _sqlite_snapshot(canonical_db, tmp_path)
+            tmp_path.replace(target)
+        finally:
+            tmp_path.unlink(missing_ok=True)
 
 
 def seed_isolated_db(data_dir: Path) -> None:
-    """Copy the true canonical DB into an auto-isolated worktree dir on first use.
-
-    Branch migrations then run against a snapshot of merged state, never the
-    original. No-op for the canonical dir itself and when the copy already
-    exists or there is nothing to copy.
-    """
-    if data_dir.resolve() == _TRUE_CANONICAL_DATA_DIR.resolve():
-        return
-    target = data_dir / "db.sqlite3"
-    if target.exists() or not _TRUE_CANONICAL_DB.exists():
-        return
-    data_dir.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(_TRUE_CANONICAL_DB, target)
+    """Module-level binding of :func:`_seed_isolated_db` to the real canonical DB."""
+    _seed_isolated_db(
+        data_dir,
+        canonical_db=_TRUE_CANONICAL_DB,
+        isolation_root=_worktree_isolation_root(Path.home()),
+    )
 
 
-DATA_DIR = resolve_data_dir(env=dict(os.environ), home=Path.home(), repo_root=_code_repo_root())
+_RESOLVED = resolve_data_dir(env=dict(os.environ), home=Path.home(), repo_root=_code_repo_root())
+DATA_DIR = _RESOLVED.path
+DATA_DIR_AUTO_ISOLATED = _RESOLVED.auto_isolated
 CANONICAL_DB = DATA_DIR / "db.sqlite3"
 
 
@@ -95,6 +172,8 @@ def find_stale_dbs(data_dir: Path, *, canonical: Path) -> Iterator[Path]:
 
     Walks recursively under ``data_dir`` so any legacy namespaced layout
     (``data_dir/<name>/db.sqlite3``) surfaces. The canonical path is skipped.
+    Auto-isolated worktree DBs live under the sibling ``teatree-worktrees``
+    root, never under ``data_dir``, so they are structurally excluded here.
     Used by both the settings warning and the ``t3 doctor`` check.
     """
     if not data_dir.is_dir():

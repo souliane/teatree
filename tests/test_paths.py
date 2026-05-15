@@ -1,10 +1,19 @@
 """Tests for ``teatree.paths`` helpers."""
 
+import sqlite3
 from pathlib import Path
 
 import pytest
 
-from teatree.paths import CanonicalDBFromWorktreeError, find_stale_dbs, resolve_data_dir, running_from_worktree
+from teatree.paths import (
+    CanonicalDBFromWorktreeError,
+    ResolvedDataDir,
+    _seed_isolated_db,
+    _worktree_isolation_root,
+    find_stale_dbs,
+    resolve_data_dir,
+    running_from_worktree,
+)
 
 
 def _make_repo(root: Path, *, worktree: bool) -> Path:
@@ -15,6 +24,17 @@ def _make_repo(root: Path, *, worktree: bool) -> Path:
     else:
         git.mkdir()
     return root
+
+
+def _make_sqlite_db(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(path)
+    try:
+        conn.execute("CREATE TABLE marker (id INTEGER PRIMARY KEY, note TEXT)")
+        conn.execute("INSERT INTO marker (note) VALUES ('canonical')")
+        conn.commit()
+    finally:
+        conn.close()
 
 
 class TestRunningFromWorktree:
@@ -35,25 +55,33 @@ class TestResolveDataDir:
     def test_primary_clone_uses_canonical(self, tmp_path: Path) -> None:
         home = tmp_path / "home"
         repo = _make_repo(tmp_path / "main", worktree=False)
-        assert resolve_data_dir(env={}, home=home, repo_root=repo) == home / ".local" / "share" / "teatree"
+        resolved = resolve_data_dir(env={}, home=home, repo_root=repo)
+        assert resolved == ResolvedDataDir(home / ".local" / "share" / "teatree", auto_isolated=False)
 
     def test_primary_clone_respects_xdg(self, tmp_path: Path) -> None:
         home = tmp_path / "home"
         repo = _make_repo(tmp_path / "main", worktree=False)
         xdg = tmp_path / "xdg"
-        got = resolve_data_dir(env={"XDG_DATA_HOME": str(xdg)}, home=home, repo_root=repo)
-        assert got == xdg / "teatree"
+        resolved = resolve_data_dir(env={"XDG_DATA_HOME": str(xdg)}, home=home, repo_root=repo)
+        assert resolved == ResolvedDataDir(xdg / "teatree", auto_isolated=False)
 
     def test_worktree_auto_isolates_deterministically(self, tmp_path: Path) -> None:
         home = tmp_path / "home"
         repo = _make_repo(tmp_path / "wt", worktree=True)
         first = resolve_data_dir(env={}, home=home, repo_root=repo)
         second = resolve_data_dir(env={}, home=home, repo_root=repo)
-        canonical = home / ".local" / "share" / "teatree"
         assert first == second
-        assert first.parent == canonical / "_worktrees"
-        assert first != canonical
-        assert first / "db.sqlite3" != canonical / "db.sqlite3"
+        assert first.auto_isolated is True
+        assert first.path.parent == _worktree_isolation_root(home)
+
+    def test_auto_isolated_path_is_not_under_canonical_data_dir(self, tmp_path: Path) -> None:
+        """H1 regression: isolated DBs must not live under the scanned canonical dir."""
+        home = tmp_path / "home"
+        repo = _make_repo(tmp_path / "wt", worktree=True)
+        resolved = resolve_data_dir(env={}, home=home, repo_root=repo)
+        canonical_data_dir = home / ".local" / "share" / "teatree"
+        with pytest.raises(ValueError, match=r"subpath|does not start with"):
+            resolved.path.resolve().relative_to(canonical_data_dir.resolve())
 
     def test_worktree_isolation_differs_per_repo(self, tmp_path: Path) -> None:
         home = tmp_path / "home"
@@ -65,8 +93,8 @@ class TestResolveDataDir:
         home = tmp_path / "home"
         repo = _make_repo(tmp_path / "wt", worktree=True)
         sandbox = tmp_path / "sbx"
-        got = resolve_data_dir(env={"XDG_DATA_HOME": str(sandbox)}, home=home, repo_root=repo)
-        assert got == sandbox / "teatree"
+        resolved = resolve_data_dir(env={"XDG_DATA_HOME": str(sandbox)}, home=home, repo_root=repo)
+        assert resolved == ResolvedDataDir(sandbox / "teatree", auto_isolated=False)
 
     def test_worktree_pointing_at_true_canonical_hard_fails(self, tmp_path: Path) -> None:
         home = tmp_path / "home"
@@ -74,6 +102,76 @@ class TestResolveDataDir:
         canonical_xdg = home / ".local" / "share"
         with pytest.raises(CanonicalDBFromWorktreeError):
             resolve_data_dir(env={"XDG_DATA_HOME": str(canonical_xdg)}, home=home, repo_root=repo)
+
+
+class TestSeedIsolatedDb:
+    def test_seeds_auto_isolated_dir_from_canonical(self, tmp_path: Path) -> None:
+        canonical = tmp_path / "canonical" / "db.sqlite3"
+        _make_sqlite_db(canonical)
+        root = tmp_path / "teatree-worktrees"
+        data_dir = root / "abc123"
+        _seed_isolated_db(data_dir, canonical_db=canonical, isolation_root=root)
+        seeded = data_dir / "db.sqlite3"
+        assert seeded.exists()
+        conn = sqlite3.connect(seeded)
+        try:
+            assert conn.execute("SELECT note FROM marker").fetchone()[0] == "canonical"
+            assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        finally:
+            conn.close()
+
+    def test_does_not_seed_explicit_sandbox(self, tmp_path: Path) -> None:
+        """H2 regression: a path outside the isolation root is never seeded."""
+        canonical = tmp_path / "canonical" / "db.sqlite3"
+        _make_sqlite_db(canonical)
+        root = tmp_path / "teatree-worktrees"
+        sandbox = tmp_path / "sbx" / "teatree"
+        _seed_isolated_db(sandbox, canonical_db=canonical, isolation_root=root)
+        assert not (sandbox / "db.sqlite3").exists()
+
+    def test_does_not_seed_when_canonical_absent(self, tmp_path: Path) -> None:
+        root = tmp_path / "teatree-worktrees"
+        data_dir = root / "abc123"
+        _seed_isolated_db(data_dir, canonical_db=tmp_path / "missing.sqlite3", isolation_root=root)
+        assert not (data_dir / "db.sqlite3").exists()
+
+    def test_seed_is_idempotent_and_does_not_overwrite(self, tmp_path: Path) -> None:
+        canonical = tmp_path / "canonical" / "db.sqlite3"
+        _make_sqlite_db(canonical)
+        root = tmp_path / "teatree-worktrees"
+        data_dir = root / "abc123"
+        _seed_isolated_db(data_dir, canonical_db=canonical, isolation_root=root)
+        seeded = data_dir / "db.sqlite3"
+        seeded.write_text("local-changes", encoding="utf-8")
+        _seed_isolated_db(data_dir, canonical_db=canonical, isolation_root=root)
+        assert seeded.read_text(encoding="utf-8") == "local-changes"
+
+    def test_seed_leaves_no_temp_files(self, tmp_path: Path) -> None:
+        canonical = tmp_path / "canonical" / "db.sqlite3"
+        _make_sqlite_db(canonical)
+        root = tmp_path / "teatree-worktrees"
+        data_dir = root / "abc123"
+        _seed_isolated_db(data_dir, canonical_db=canonical, isolation_root=root)
+        leftovers = [p.name for p in data_dir.iterdir() if p.name.startswith(".seed-")]
+        assert leftovers == []
+
+
+class TestStaleScanStaysCleanAfterSeed:
+    def test_canonical_scan_ignores_relocated_isolated_db(self, tmp_path: Path) -> None:
+        """H1 end-to-end: a seeded worktree DB must not be flagged on canonical runs."""
+        home = tmp_path / "home"
+        canonical_data_dir = home / ".local" / "share" / "teatree"
+        canonical_db = canonical_data_dir / "db.sqlite3"
+        _make_sqlite_db(canonical_db)
+        repo = _make_repo(tmp_path / "wt", worktree=True)
+        resolved = resolve_data_dir(env={}, home=home, repo_root=repo)
+        _seed_isolated_db(
+            resolved.path,
+            canonical_db=canonical_db,
+            isolation_root=_worktree_isolation_root(home),
+        )
+        assert (resolved.path / "db.sqlite3").exists()
+        assert list(find_stale_dbs(canonical_data_dir, canonical=canonical_db)) == []
 
 
 def test_no_stale_dbs(tmp_path: Path) -> None:
