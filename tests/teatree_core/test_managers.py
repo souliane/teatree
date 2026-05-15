@@ -3,7 +3,7 @@ from datetime import timedelta
 from django.test import TestCase
 from django.utils import timezone
 
-from teatree.core.models import Session, Task, Ticket, Worktree
+from teatree.core.models import IncomingEvent, ReplyDispatch, Session, Task, Ticket, Worktree
 
 
 class TestTicketQuerySet(TestCase):
@@ -94,3 +94,46 @@ class TestTaskQuerySet(TestCase):
 
         assert sdk_tasks == [sdk_ready, sdk_reclaimable]
         assert user_tasks == [user_ready]
+
+
+class TestReplyDispatchQuerySet(TestCase):
+    def test_due_for_retry_orders_by_oldest_due_first(self) -> None:
+        """``due_for_retry`` returns rows oldest-due-first by ``next_retry_at``.
+
+        Not oldest-dispatched-first — this matches the
+        ``Index(["status", "next_retry_at"])`` on the model.
+        """
+        event = IncomingEvent.objects.create(
+            source=IncomingEvent.Source.SLACK,
+            actor="U_ALICE",
+            channel_ref="C-eng",
+            thread_ref="t1",
+            body="orig",
+            idempotency_key="slack:e1",
+        )
+        now = timezone.now()
+        early_dispatch_late_retry = ReplyDispatch.objects.create(
+            event=event,
+            target_ref="C-eng",
+            action_name="post_in_thread",
+            idempotency_key="k-early-dispatch",
+            status=ReplyDispatch.Status.FAILED,
+            dispatched_at=now - timedelta(hours=5),
+            next_retry_at=now - timedelta(minutes=1),
+        )
+        late_dispatch_early_retry = ReplyDispatch.objects.create(
+            event=event,
+            target_ref="C-eng",
+            action_name="post_in_thread",
+            idempotency_key="k-late-dispatch",
+            status=ReplyDispatch.Status.FAILED,
+            dispatched_at=now - timedelta(hours=1),
+            next_retry_at=now - timedelta(minutes=30),
+        )
+
+        # Ordered by next_retry_at: the one due longest ago comes first,
+        # regardless of dispatched_at.
+        assert list(ReplyDispatch.objects.due_for_retry(now)) == [
+            late_dispatch_early_retry,
+            early_dispatch_late_retry,
+        ]
