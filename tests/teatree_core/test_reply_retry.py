@@ -1,7 +1,7 @@
 """Behaviour tests for the failed-ReplyDispatch retry sweep (#673 items 1+2)."""
 
 import datetime as dt
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from django.test import TestCase
 from django.utils import timezone
@@ -123,6 +123,68 @@ class TestSweepFailedDispatches(TestCase):
         d.refresh_from_db()
         assert d.status == ReplyDispatch.Status.DEAD_LETTER
         assert swept == 1
+
+    def test_dead_letter_alert_failure_persists_auditable_row(self) -> None:
+        """A permanently-broken DM channel leaves an auditable record.
+
+        Rather than silently dropping the dead letter.
+        """
+        event = _event()
+        d = _failed(event, key="k1", retry_count=4)
+        replier = MagicMock()
+        replier.redeliver.side_effect = RuntimeError("permanently down")
+        replier.post_dm.side_effect = RuntimeError("DM channel also broken")
+
+        sweep_failed_dispatches(resolver=lambda _src: replier, max_retries=5)
+
+        audit = ReplyDispatch.objects.get(idempotency_key=f"{d.idempotency_key}:deadletter-alert")
+        assert audit.status == ReplyDispatch.Status.FAILED
+        assert "DM channel also broken" in audit.error_message
+        # Excluded from the retry sweep — a broken DM channel must not storm.
+        assert audit not in list(ReplyDispatch.objects.due_for_retry())
+
+    def test_dead_letter_alert_audit_row_is_idempotent(self) -> None:
+        """Re-running the sweep must not crash on the unique idempotency key.
+
+        Holds when a dead-letter-alert audit row already exists.
+        """
+        event = _event()
+        d = _failed(event, key="k1", retry_count=4)
+        ReplyDispatch.objects.create(
+            event=event,
+            target_ref="U_ALICE",
+            action_name="dead_letter_alert",
+            idempotency_key=f"{d.idempotency_key}:deadletter-alert",
+            status=ReplyDispatch.Status.FAILED,
+            body="prior audit row",
+        )
+        replier = MagicMock()
+        replier.redeliver.side_effect = RuntimeError("permanently down")
+        replier.post_dm.side_effect = RuntimeError("DM channel also broken")
+
+        swept = sweep_failed_dispatches(resolver=lambda _src: replier, max_retries=5)
+
+        d.refresh_from_db()
+        assert d.status == ReplyDispatch.Status.DEAD_LETTER
+        assert swept == 1
+        assert ReplyDispatch.objects.filter(idempotency_key=f"{d.idempotency_key}:deadletter-alert").count() == 1
+
+    def test_post_success_save_failure_is_logged(self) -> None:
+        """A post-success / save-failure is logged explicitly.
+
+        Elevated from a docstring caveat to a logged WARNING.
+        """
+        event = _event()
+        _failed(event, key="k1")
+        replier = MagicMock()
+
+        with (
+            patch.object(ReplyDispatch, "save", side_effect=RuntimeError("db gone")),
+            self.assertLogs("teatree.core.reply_retry", level="WARNING") as logs,
+        ):
+            sweep_failed_dispatches(resolver=lambda _src: replier)
+
+        assert any("db gone" in m or "could not be saved" in m for m in logs.output)
 
     def test_no_replier_leaves_dispatch_untouched(self) -> None:
         event = _event()
