@@ -1877,7 +1877,11 @@ class TestPrCreate(TestCase):
 
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.SHIPPED
-        assert result == {"ticket_id": ticket.pk, "state": Ticket.State.SHIPPED}
+        # Default (async) path is queued with an explicit no-worker warning (#708).
+        assert result["ticket_id"] == ticket.pk
+        assert result["state"] == Ticket.State.SHIPPED
+        assert result["queued"] is True
+        assert "QUEUED, not performed" in result["warning"]
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
