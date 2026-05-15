@@ -404,7 +404,10 @@ class TestCICoverage:
         with patch.object(ci_mod, "measure_coverage", return_value=fake):
             result = runner.invoke(app, ["ci", "coverage", "--json"])
         assert result.exit_code == 0
-        data = json.loads(result.output)
+        # Read stdout (not .output): Click 8.3 mixes stderr into .output, and
+        # any stderr (e.g. a deprecation warning) would break json.loads. The
+        # JSON payload is on stdout; the #719 fix keeps the update banner out.
+        data = json.loads(result.stdout)
         assert data["overall_percent"] == pytest.approx(95.0)
         assert data["overall_floor"] == 93
         assert data["modules"][0]["path"] == "x.py"
