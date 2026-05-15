@@ -163,9 +163,9 @@ class TestDecoratorIsNotAnEmail:
     @pytest.mark.parametrize(
         "line",
         [
-            "+contact me at someone@gmail.com please",
-            "real address: t@e.st in this diff",
-            "+    leak = 'someone@gmail.com'",
+            "+contact me at someone@gmail.com please",  # privacy-scan:allow (dummy example address, test input)
+            "real address: t@e.st in this diff",  # privacy-scan:allow (dummy example address, test input)
+            "+    leak = 'someone@gmail.com'",  # privacy-scan:allow (dummy example address, test input)
         ],
     )
     def test_real_email_still_caught(self, line: str) -> None:
@@ -181,7 +181,8 @@ class TestDecoratorIsNotAnEmail:
         assert "api_key" in result.stdout
 
     def test_real_email_on_same_line_as_decorator_still_flagged(self) -> None:
-        result = _run("@app.route  # owner someone@gmail.com\n")
+        line = "@app.route  # owner someone@gmail.com"  # privacy-scan:allow (dummy example address, test input)
+        result = _run(line + "\n")
         assert result.returncode == 1, result.stdout + result.stderr
         assert "email" in result.stdout
 

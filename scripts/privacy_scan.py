@@ -22,7 +22,7 @@ console = Console(stderr=True)
 # positives — ``+@pytest.fixture`` (diff ``+`` as a fake local part),
 # ``@app.route``, ``@module.attr`` — where the char before ``@`` is a diff
 # marker, whitespace, or absent, while still matching genuine addresses
-# (``user@example.com``, ``t@e.st``) whose local part ends in a real char.
+# whose local part ends in a real char (including a one-char local part).
 _EMAIL_RE = re.compile(
     r"[a-zA-Z0-9_]([a-zA-Z0-9_.+-]*[a-zA-Z0-9_])?@[a-zA-Z0-9-]+\.[a-zA-Z]{2,}",
     re.ASCII,
