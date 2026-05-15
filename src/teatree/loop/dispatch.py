@@ -53,6 +53,12 @@ _STATUSLINE_ZONE_BY_KIND: dict[str, str] = {
     "reviewer_pr.new_sha": "action_needed",
     "reviewer_pr.unreviewed": "action_needed",
     "reviewer_pr.approval_dismissed": "action_needed",
+    # Inbound webhook events (#669). `recorded` is the passive status-update
+    # case — relegated to in_flight so a noisy CI doesn't flood action_needed.
+    "incoming_event.alert": "action_needed",
+    "incoming_event.task_needed": "action_needed",
+    "incoming_event.merge_needed": "action_needed",
+    "incoming_event.recorded": "in_flight",
 }
 
 _PR_URL_RE = re.compile(r"https?://[^\s>|]+/(?:merge_requests|pull|pulls)/\d+")
