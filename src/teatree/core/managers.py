@@ -86,7 +86,7 @@ class ReplyDispatchQuerySet(models.QuerySet):
             self.filter(status=ReplyDispatch.Status.FAILED)
             .exclude(action_name="dead_letter_alert")
             .filter(models.Q(next_retry_at__isnull=True) | models.Q(next_retry_at__lte=moment))
-            .order_by("dispatched_at", "pk")
+            .order_by("next_retry_at", "pk")
         )
 
 

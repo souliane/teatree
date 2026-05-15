@@ -212,6 +212,43 @@ class TestRecordRaceRecovery(TestCase):
         assert ReplyDispatch.objects.filter(idempotency_key="slack:race:d").count() == 1
 
 
+class TestIntrinsicIdempotency(TestCase):
+    def test_concurrent_caller_with_same_key_does_not_double_deliver(self) -> None:
+        """The idempotency guarantee is intrinsic to the key reservation.
+
+        Not dependent on an external flock: a second caller racing on the
+        same key reuses the reserved row and never calls ``_deliver``
+        twice.
+        """
+        event = _event(IncomingEvent.Source.SLACK, key="slack:intrinsic")
+        deliveries: list[str] = []
+
+        class CountingReplier(NoopReplier):
+            def _deliver(self, spec: ReplySpec) -> None:
+                deliveries.append(spec.idempotency_key)
+
+        replier = CountingReplier()
+        first = replier.post_dm(event=event, actor="U", body="x", idempotency_key="slack:intr:d")
+        second = replier.post_dm(event=event, actor="U", body="x", idempotency_key="slack:intr:d")
+
+        assert first.pk == second.pk
+        assert deliveries == ["slack:intr:d"]
+        assert ReplyDispatch.objects.filter(idempotency_key="slack:intr:d").count() == 1
+
+    def test_failed_delivery_still_recorded_once(self) -> None:
+        event = _event(IncomingEvent.Source.SLACK, key="slack:intrinsic-fail")
+        bot = MagicMock()
+        bot.open_dm.return_value = "D-1"
+        bot.post_message.side_effect = RuntimeError("backend down")
+        replier = SlackReplier(bot=bot)
+
+        dispatch = replier.post_dm(event=event, actor="U", body="x", idempotency_key="slack:intr:f")
+
+        assert dispatch.status == ReplyDispatch.Status.FAILED
+        assert "backend down" in dispatch.error_message
+        assert ReplyDispatch.objects.filter(idempotency_key="slack:intr:f").count() == 1
+
+
 class TestReplierFactory(TestCase):
     def test_returns_slack_replier_for_slack_source(self) -> None:
         assert isinstance(replier_for(IncomingEvent.Source.SLACK, bot=MagicMock()), SlackReplier)
