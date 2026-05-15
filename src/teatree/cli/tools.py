@@ -31,6 +31,14 @@ class ToolRunner:
             raise typer.Exit(code=1)
         cmd = [sys.executable, str(script), *args]
         result = run_allowed_to_fail(cmd, expected_codes=None)
+        # ``run_allowed_to_fail`` captures the child's streams. Re-emit
+        # them so scripted callers actually see the script's diagnostics
+        # — without this, ``t3 tool privacy-scan`` exits non-zero with no
+        # visible findings, defeating the gate it powers (#696).
+        if result.stdout:
+            sys.stdout.write(result.stdout)
+        if result.stderr:
+            sys.stderr.write(result.stderr)
         if result.returncode != 0:
             raise typer.Exit(code=result.returncode)
 
