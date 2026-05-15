@@ -102,6 +102,19 @@ hooks/                 Agent platform hooks (Claude Code hook_router, statusline
 - **Fields:** task (FK), execution_target, ended_at, exit_code, error, result (JSONField), launch_url
 - Enables cross-task failure querying and audit trail
 
+### New model queried on the always-run path (Non-Negotiable)
+
+When a new model is read by code that runs on every loop tick or at
+import/startup — loop scanners registered in `build_default_jobs`,
+signal handlers, statusline builders — that query MUST tolerate a
+missing table. A fresh or pre-migration install runs the code before
+`migrate` creates the table; an unguarded queryset turns into a
+per-tick error for *every* user until they migrate. Materialise the
+queryset inside `except (OperationalError, ProgrammingError): return
+<empty>` — narrow to the missing-relation classes so a genuine DB
+outage still surfaces via `_run_job`. Canonical exemplars:
+`IncomingEventsScanner.scan`, `_reap_stale_task_claims`.
+
 ## Three-Tier Command Split
 
 | Tier | Tool | Examples | Needs Django? |
@@ -263,7 +276,7 @@ New tests — added in this repo or in any overlay repo — must lean **integrat
 1. **Django test client** (`client.get(...)`, `client.post(...)`) for views and URL endpoints.
 3. **`call_command("name", ...)`** for management commands — exercises the full Typer + Django glue.
 4. **`subprocess.run(["t3", ...])`** (marked `@pytest.mark.integration`) when the bug would only surface through the real entry point.
-5. **Real filesystem + real `git` under `tmp_path`** for anything that provisions worktrees, writes env files, or runs `git worktree add`. No mocking `Path`, `subprocess`, or git output.
+5. **Real filesystem + real `git` under `tmp_path`** for anything that provisions worktrees, writes env files, or runs `git worktree add`. No mocking `Path`, `subprocess`, or git output. **Run those `git`/script subprocesses with a `GIT_*`-stripped env** (`{k: v for k, v in os.environ.items() if not k.startswith("GIT_")}`): the suite can run from the inline pre-commit `pytest` hook, where the outer `git commit` exports `GIT_DIR`/`GIT_INDEX_FILE`/`GIT_WORK_TREE` — inherited, they hijack the tmp-repo git calls so the test mutates the real repo. A test that passes standalone but fails under `git commit` is this.
 6. **Real Django ORM against the test DB** — use factories or `Model.objects.create(...)`, not mocked querysets.
 
 **When a unit test is justified:**
