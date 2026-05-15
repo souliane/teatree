@@ -69,6 +69,11 @@ class SessionQuerySet(_OverlayFilterMixin, models.QuerySet):
         return self.filter(agent_id=agent_id).order_by("pk")
 
 
+class IncomingEventQuerySet(models.QuerySet):
+    def unprocessed(self) -> models.QuerySet:
+        return self.filter(processed_at__isnull=True)
+
+
 class TaskQuerySet(models.QuerySet):
     def claimable_for_headless(self, overlay: str | None = None) -> models.QuerySet:
         from teatree.core.models.task import Task  # noqa: PLC0415
@@ -118,3 +123,4 @@ TicketManager = models.Manager.from_queryset(TicketQuerySet)
 WorktreeManager = models.Manager.from_queryset(WorktreeQuerySet)
 SessionManager = models.Manager.from_queryset(SessionQuerySet)
 TaskManager = models.Manager.from_queryset(TaskQuerySet)
+IncomingEventManager = models.Manager.from_queryset(IncomingEventQuerySet)
