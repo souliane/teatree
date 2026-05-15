@@ -84,6 +84,8 @@ See [`../e2e/SKILL.md`](../e2e/SKILL.md) (`/t3:e2e`) for the full E2E workflow: 
 - Background polling for pipeline status.
 - Costs no tokens while waiting.
 
+**Not-green == red (Non-Negotiable).** A pipeline is only OK when every required job is `success`. Treat any non-`success` job as a failure to fix, re-trigger, and confirm green: `failed`/`error`, `canceled`, `skipped`, `manual` (not run), `blocked`, a failing `allow_failure: true` job, or any gray/unknown state. `allow_failure: true` keeps the *pipeline* green but the *job* still failed — investigate it, do not skip it. Never declare CI passing, and never end a monitoring loop, while any job is non-green; a still-running/pending job is not yet terminal — wait, then re-apply. Canonical statement: `/t3:ship` § 6 "Not-green == red"; enforced in code by `teatree.loop.scanners.my_prs._needs_attention`.
+
 ### Docker Coverage Before Push
 
 When the repo's pre-push hook uses `--no-cov` but CI enforces a coverage threshold, run the exact CI command locally before pushing:

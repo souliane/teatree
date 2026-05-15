@@ -1,7 +1,7 @@
 import subprocess
 import sys
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from typer.testing import CliRunner
 
@@ -188,56 +188,39 @@ class TestSonarCheck:
             assert "/original/worktree" in args
 
 
-class TestLabelIssues:
-    def test_no_suggestions_prints_message(self):
-        with patch("teatree.cli.tools.LabelSuggester") as suggester_cls:
-            suggester_cls.return_value.collect_suggestions.return_value = []
-            result = runner.invoke(app, ["tool", "label-issues", "owner/repo"])
+class TestValidateMrCommand:
+    """`t3 tool validate-mr` runs the active overlay's validate_pr (#119 Part 3).
 
-        assert result.exit_code == 0
-        assert "No labelable issues" in result.output
+    This is the command the pre-push hook invokes by default so a bad MR
+    title/description is rejected BEFORE push, with no env-var opt-in.
+    """
 
-    def test_lists_suggestions_without_apply(self):
-        suggestion = type("S", (), {"number": 7, "title": "bug", "labels": ["bug"]})()
-        with patch("teatree.cli.tools.LabelSuggester") as suggester_cls:
-            suggester_cls.return_value.collect_suggestions.return_value = [suggestion]
-            result = runner.invoke(app, ["tool", "label-issues", "owner/repo"])
+    def _overlay(self, errors: list[str], warnings: list[str] | None = None):
+        ov = MagicMock()
+        ov.metadata.validate_pr.return_value = {"errors": errors, "warnings": warnings or []}
+        return ov
 
-        assert result.exit_code == 0
-        assert "#7 bug" in result.output
-        assert "Re-run with --apply" in result.output
-        suggester_cls.return_value.apply.assert_not_called()
+    def test_valid_metadata_exits_zero(self):
+        with patch("teatree.cli.tools.get_overlay", return_value=self._overlay([])):
+            result = runner.invoke(
+                app,
+                ["tool", "validate-mr", "--title", "fix: x (p#1)", "--description", "fix: x (p#1)\n\nB"],
+            )
+        assert result.exit_code == 0, result.output
 
-    def test_apply_invokes_suggester(self):
-        suggestion = type("S", (), {"number": 7, "title": "bug", "labels": ["bug"]})()
-        with patch("teatree.cli.tools.LabelSuggester") as suggester_cls:
-            suggester_cls.return_value.collect_suggestions.return_value = [suggestion]
-            result = runner.invoke(app, ["tool", "label-issues", "owner/repo", "--apply"])
+    def test_invalid_metadata_exits_nonzero_and_prints_errors(self):
+        ov = self._overlay(["Title is empty.", "MR description is empty."])
+        with patch("teatree.cli.tools.get_overlay", return_value=ov):
+            result = runner.invoke(app, ["tool", "validate-mr", "--title", "", "--description", ""])
+        assert result.exit_code != 0
+        assert "Title is empty." in result.output
+        assert "MR description is empty." in result.output
 
-        assert result.exit_code == 0
-        assert "Applied labels to 1" in result.output
-        suggester_cls.return_value.apply.assert_called_once()
-
-
-class TestFindDuplicates:
-    def test_no_matches(self):
-        with patch("teatree.cli.tools.DuplicateFinder") as finder_cls:
-            finder_cls.return_value.find.return_value = []
-            result = runner.invoke(app, ["tool", "find-duplicates", "owner/repo"])
-
-        assert result.exit_code == 0
-        assert "No potential duplicates" in result.output
-
-    def test_lists_matches(self):
-        match = type(
-            "M",
-            (),
-            {"score": 0.91, "a_number": 1, "a_title": "A", "b_number": 2, "b_title": "B"},
-        )()
-        with patch("teatree.cli.tools.DuplicateFinder") as finder_cls:
-            finder_cls.return_value.find.return_value = [match]
-            result = runner.invoke(app, ["tool", "find-duplicates", "owner/repo", "--threshold", "0.5"])
-
-        assert result.exit_code == 0
-        assert "0.91" in result.output
-        assert "#1 A" in result.output
+    def test_passes_title_and_description_through_to_overlay(self):
+        ov = self._overlay([])
+        with patch("teatree.cli.tools.get_overlay", return_value=ov):
+            runner.invoke(
+                app,
+                ["tool", "validate-mr", "--title", "feat: a [f] (p#1)", "--description", "body here"],
+            )
+        ov.metadata.validate_pr.assert_called_once_with("feat: a [f] (p#1)", "body here")
