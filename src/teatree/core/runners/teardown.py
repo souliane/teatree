@@ -14,10 +14,20 @@ class WorktreeTeardown(RunnerBase):
     each one (git worktree removal, branch deletion, DB drop, overlay
     cleanup hooks). Errors on a single worktree are captured but do not
     abort the rest — the runner reports a combined success/failure label.
+
+    This is the *automated* teardown path: ``execute_teardown`` enqueues it
+    when the ticket FSM reaches MERGED. The FSM can read MERGED while the
+    branch was never actually pushed (async ship never drained — #707/#708),
+    so this path must NOT force-bypass ``cleanup_worktree``'s unsynced-commit
+    guard. ``force`` defaults to ``False`` (the guard fires); pass
+    ``force=True`` only from an explicit operator override (e.g.
+    ``--force``). #706 — forcing here physically destroyed worktrees with
+    unpushed work.
     """
 
-    def __init__(self, ticket: Ticket) -> None:
+    def __init__(self, ticket: Ticket, *, force: bool = False) -> None:
         self.ticket = ticket
+        self.force = force
 
     def run(self) -> RunnerResult:
         ticket = self.ticket
@@ -29,7 +39,7 @@ class WorktreeTeardown(RunnerBase):
         errors: list[str] = []
         for worktree in worktrees:
             try:
-                labels.append(cleanup_worktree(worktree, force=True))
+                labels.append(cleanup_worktree(worktree, force=self.force, strict_hygiene=False))
             except RuntimeError as exc:
                 logger.exception("teardown failed for %s", worktree.repo_path)
                 errors.append(f"{worktree.repo_path} ({worktree.branch}): {exc}")

@@ -14,6 +14,7 @@ Exits 0 silently for passthrough.
 """
 
 import argparse
+import contextlib
 import json
 import os
 import re
@@ -325,6 +326,35 @@ def handle_enforce_loop_registration(data: dict) -> bool:
     return True
 
 
+# ── UserPromptSubmit: todo-freshness nudge ──────────────────────────
+
+_TODO_FRESHNESS_NUDGE = (
+    "Session housekeeping: keep the task/TODO list current. "
+    "Reflect finished work as completed and surface any newly discovered work "
+    "as its own task before continuing."
+)
+
+
+def handle_todo_freshness_nudge(data: dict) -> None:
+    """Once per session, nudge keeping the task/TODO list current.
+
+    Ordinary per-session housekeeping — fires in-session, never as a sub-agent
+    and unrelated to the monitor/work-trigger loop. Idempotent via a
+    per-session ``<session>.todo-nudged`` marker, mirroring the loop-pending
+    precedent. Advisory only: prints additionalContext, never emits a deny,
+    so it can never block tool use.
+    """
+    session_id = data.get("session_id", "")
+    if not session_id:
+        return
+    _ensure_state_dir()
+    marker = _state_file(session_id, "todo-nudged")
+    if marker.exists():
+        return
+    marker.write_text("1", encoding="utf-8")
+    print(_TODO_FRESHNESS_NUDGE)  # noqa: T201
+
+
 # ── PreToolUse: enforce-skill-loading ───────────────────────────────
 
 
@@ -539,8 +569,78 @@ def handle_track_active_repo(data: dict) -> None:
 # ── PostToolUse + InstructionsLoaded: track-skill-usage ─────────────
 
 
+def _skill_search_dirs() -> list[Path]:
+    """Directories scanned to build the trigger index for closure resolution.
+
+    ``T3_SKILL_SEARCH_DIRS`` (os.pathsep-separated) overrides the defaults —
+    used by tests to point at a fixture skill tree. Otherwise: the plugin's
+    own ``skills/`` directory plus the agent skill install locations.
+    """
+    override = os.environ.get("T3_SKILL_SEARCH_DIRS", "")
+    if override:
+        return [Path(d) for d in override.split(os.pathsep) if d]
+
+    home = os.environ.get("HOME", "")
+    candidates = [
+        Path(__file__).resolve().parents[2] / "skills",
+        Path(home) / ".agents" / "skills",
+        Path(home) / ".claude" / "skills",
+    ]
+    return [d for d in candidates if d.is_dir()]
+
+
+def _resolve_skill_closure(skills: list[str]) -> list[str]:
+    """Expand *skills* to their ``requires:`` dependency closure.
+
+    Uses the real trigger index (parsed from real SKILL.md frontmatter) and
+    the real :func:`teatree.skill_deps.resolve_requires` resolver — a loaded
+    skill's transitive dependencies are genuinely active and must be tracked.
+    Unknown skills (framework skills with no trigger entry) pass through
+    unchanged. On any resolution failure, fall back to the input skills so
+    tracking never silently drops a genuinely-loaded skill.
+    """
+    if not skills:
+        return []
+
+    scripts_dir = Path(__file__).resolve().parents[2] / "scripts"
+    src_dir = Path(__file__).resolve().parents[2] / "src"
+    added: list[str] = []
+    for extra in (str(scripts_dir), str(src_dir)):
+        if extra not in sys.path:
+            sys.path.insert(0, extra)
+            added.append(extra)
+    try:
+        from lib.skill_loader import build_trigger_index  # noqa: PLC0415
+
+        from teatree.skill_deps import resolve_requires  # noqa: PLC0415
+
+        index = build_trigger_index(_skill_search_dirs())
+        return resolve_requires(skills, index)
+    except Exception:  # noqa: BLE001
+        return list(skills)
+    finally:
+        for extra in added:
+            with contextlib.suppress(ValueError):
+                sys.path.remove(extra)
+
+
+def _record_skills(skills_file: Path, existing: set[str], skills: list[str]) -> None:
+    """Append the resolved closure of *skills*, preserving order, deduped."""
+    for name in _resolve_skill_closure(skills):
+        if name and name not in existing:
+            existing.add(name)
+            _append_line(skills_file, name)
+
+
 def handle_track_skill_usage(data: dict) -> None:
-    """Track which skills have been invoked in this session."""
+    """Track which skills are active this session, including their closure.
+
+    A genuinely-loaded skill (Skill tool call or InstructionsLoaded entry)
+    is expanded to its resolved ``requires:`` dependency closure before
+    being recorded, so the statusline reflects the full active set — not
+    just the explicitly tool-invoked name (#689). Suggested-but-not-loaded
+    skills are never recorded here.
+    """
     session_id = data.get("session_id", "")
     if not session_id:
         return
@@ -552,11 +652,11 @@ def handle_track_skill_usage(data: dict) -> None:
     # PostToolUse: single skill from tool_input
     skill_name = data.get("tool_input", {}).get("skill", "")
     if skill_name:
-        if skill_name not in existing:
-            _append_line(skills_file, skill_name)
+        _record_skills(skills_file, existing, [skill_name])
         return
 
     # InstructionsLoaded: array of skill objects or skill name strings
+    loaded: list[str] = []
     for skill_obj in data.get("skills", []):
         if isinstance(skill_obj, dict):
             name = skill_obj.get("name", "")
@@ -564,9 +664,9 @@ def handle_track_skill_usage(data: dict) -> None:
             name = skill_obj
         else:
             continue
-        if name and name not in existing:
-            existing.add(name)
-            _append_line(skills_file, name)
+        if name:
+            loaded.append(name)
+    _record_skills(skills_file, existing, loaded)
 
 
 # ── PostToolUse: read-dedup ────────────────────────────────────────
@@ -772,19 +872,52 @@ def handle_session_end(data: dict) -> None:
 # ── PostToolUse: track-cron-jobs ──────────────────────────────────────
 
 
+_LOOP_NAME_MAX = 20
+
+
+def _clean_token(token: str) -> str:
+    """Strip surrounding/trailing punctuation and backticks from a token."""
+    return token.strip("`").strip(".,;:!?\"'()[]{}/").strip("`")
+
+
 def _derive_loop_name(prompt: str) -> str:
-    """Derive a short display name from a cron/loop prompt."""
+    """Derive a short display name from a cron/loop prompt.
+
+    - The canonical teatree loop prompt maps to a stable readable name.
+    - Slash-command prompts use the command token.
+    - Otherwise a short label is taken from the first meaningful word.
+
+    Surrounding punctuation and backticks are always stripped.
+    """
     prompt = prompt.strip()
+
+    # 1. Canonical teatree loop prompt → stable name (it runs `t3 loop tick`).
+    if prompt == _LOOP_PROMPT or prompt.startswith(_LOOP_PROMPT):
+        return "tick"
+
     if prompt.startswith("!"):
         prompt = prompt[1:].strip()
-    if prompt.startswith("/"):
-        prompt = prompt[1:].strip()
+
     parts = prompt.split()
     if not parts:
         return "loop"
-    cmd = parts[-1] if len(parts) > 1 else parts[0]
-    cmd = cmd.split("/")[-1]
-    return cmd[:20]
+
+    # `t3 loop <subcommand>` shell form → the subcommand (e.g. `tick`).
+    if parts[:2] == ["t3", "loop"] and len(parts) > 2:  # noqa: PLR2004
+        return _clean_token(parts[2])[:_LOOP_NAME_MAX] or "loop"
+
+    # 2. Slash-command form: a leading `/foo` or an embedded `/foo` token.
+    #    `/loop 5m /babysit-prs` wraps the real command — use the last token.
+    slash_tokens = [p for p in parts if p.startswith("/") and len(p) > 1]
+    if slash_tokens:
+        return _clean_token(slash_tokens[-1].split("/")[-1])[:_LOOP_NAME_MAX] or "loop"
+
+    # 3. Prose: first meaningful word, punctuation/backticks stripped.
+    for part in parts:
+        cleaned = _clean_token(part)
+        if cleaned:
+            return cleaned[:_LOOP_NAME_MAX]
+    return "loop"
 
 
 def _load_crons(path: Path) -> dict:
@@ -1070,7 +1203,11 @@ def handle_mirror_question_to_slack(data: dict) -> bool:
 # ── Router ──────────────────────────────────────────────────────────
 
 _HANDLERS: dict[str, list] = {
-    "UserPromptSubmit": [handle_enforce_loop_on_prompt, handle_user_prompt_submit],
+    "UserPromptSubmit": [
+        handle_enforce_loop_on_prompt,
+        handle_todo_freshness_nudge,
+        handle_user_prompt_submit,
+    ],
     "PreToolUse": [
         handle_enforce_loop_registration,
         handle_protect_default_branch,

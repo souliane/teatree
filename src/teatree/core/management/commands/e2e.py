@@ -87,9 +87,15 @@ def _discover_frontend_port(project: str, default: int = 4200) -> int | None:
     when the stack is up; the local scan is a last-ditch fallback for users
     who started compose outside the teatree runner.
     """
-    port = get_service_port(project, "frontend", default)
-    if port is not None:
-        return port
+    # The compose `frontend` service is nginx serving the pre-built dist on
+    # container port 80; a raw dev-server setup instead listens on 4200.
+    # Query both container ports — `default` is the host-scan fallback, not
+    # the container port, so it must not be passed to `docker compose port`
+    # (that always missed the nginx:80 service).
+    for container_port in (80, default):
+        port = get_service_port(project, "frontend", container_port)
+        if port is not None:
+            return port
     # Scan the allocation range — ports start at 4200 and go up
     for candidate in range(4200, 4211):
         if _detect_local_port(candidate) is not None:

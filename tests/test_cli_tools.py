@@ -1,4 +1,5 @@
 import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -77,6 +78,55 @@ class TestToolCommands:
             result = runner.invoke(app, ["tool", "bump-deps"])
             assert result.exit_code == 0
             mock.assert_called_once_with("bump-pyproject-deps-from-lock-file")
+
+
+class TestPrivacyScanWrapperSurfacesFindings:
+    """``t3 tool privacy-scan`` must surface the scanner's findings (#696).
+
+    ``ToolRunner.run_script`` spawns the scanner via
+    ``run_allowed_to_fail`` which uses ``capture_output=True``. Before the
+    fix the captured stdout/stderr were discarded, so a piped caller saw
+    "exit 1, no output". The wrapper must re-emit what the scanner wrote so
+    the finding (line/category/redacted match) is caller-visible. The real
+    scanner subprocess is exercised here — nothing is mocked.
+    """
+
+    # ``ToolRunner.run_script`` spawns a fresh ``python`` child that reads
+    # the *real* stdin, so the only faithful reproduction of the
+    # ``printf ... | t3 tool privacy-scan -`` flow is a real subprocess
+    # that drives ``run_script`` with piped stdin. Monkeypatching
+    # ``sys.stdin`` in-process would not reach the grandchild scanner.
+    _DRIVER = (
+        "from teatree.cli.tools import ToolRunner\n"
+        "try:\n"
+        "    ToolRunner.run_script('privacy_scan', '-')\n"
+        "except SystemExit as e:\n"
+        "    raise\n"
+        "except Exception as e:\n"
+        "    import sys; sys.exit(getattr(e, 'exit_code', 3))\n"
+    )
+
+    def _invoke(self, stdin_text: str) -> tuple[int, str]:
+        proc = subprocess.run(
+            [sys.executable, "-c", self._DRIVER],
+            input=stdin_text,
+            capture_output=True,
+            text=True,
+            check=False,
+            cwd=str(Path(__file__).resolve().parents[1]),
+        )
+        return proc.returncode, proc.stdout + proc.stderr
+
+    def test_planted_secret_finding_reaches_caller(self) -> None:
+        code, out = self._invoke("token = glpat-XXXXXXXXXXXXXXXX\n")  # privacy-scan:allow self-fixture
+        assert code == 1, out
+        assert "api_key" in out
+        assert "glpat-" in out
+
+    def test_clean_input_reaches_caller(self) -> None:
+        code, out = self._invoke("an ordinary line\n")
+        assert code == 0, out
+        assert "clean" in out.lower()
 
 
 class TestSonarCheck:

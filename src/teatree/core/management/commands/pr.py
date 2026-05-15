@@ -10,12 +10,13 @@ import re
 from typing import TypedDict, cast
 
 from django.db import transaction
+from django_fsm import TransitionNotAllowed
 from django_typer.management import TyperCommand, command
 
 from teatree import visual_qa
 from teatree.backends.protocols import PullRequestSpec
 from teatree.core.backend_factory import code_host_from_overlay
-from teatree.core.models import Ticket, Worktree
+from teatree.core.models import Session, Ticket, Worktree
 from teatree.core.models.types import TicketExtra, VisualQASummary
 from teatree.core.orphan_guard import BranchStatus, classify_branch
 from teatree.core.overlay_loader import get_overlay
@@ -113,21 +114,39 @@ def _validate_pr_metadata(ticket: Ticket, worktree: Worktree) -> PrValidationErr
 
 
 def _check_shipping_gate(ticket: Ticket) -> ShippingGateFailure | None:
-    """Return an error dict if the ticket hasn't passed the review gate.
+    """Reconcile ``ticket.state`` from the session, or block with missing phases.
 
-    Returns structured JSON with ``missing`` phases so the calling agent
-    can spawn a sub-agent to satisfy the gate rather than failing outright.
+    ``Session.visited_phases`` is the single source of truth (#694). When the
+    required phases are present this auto-walks the FSM to REVIEWED so
+    ``ticket.ship()`` is legal — the gate and ``ticket.state`` can no longer
+    disagree. When phases are missing it returns structured JSON with the
+    exact ``missing`` list so the calling agent can satisfy the gate rather
+    than hitting a raw ``TransitionNotAllowed``.
     """
     from teatree.core.models.errors import QualityGateError  # noqa: PLC0415
 
     session = ticket.sessions.order_by("-pk").first()  # ty: ignore[unresolved-attribute]
     if session is None:
-        return None
+        # No session => no attested work; nothing to reconcile. Returning
+        # ``None`` here would let ``ticket.ship()`` raise a raw
+        # ``TransitionNotAllowed`` from a non-REVIEWED state, breaking the
+        # "pr create never raises a raw TransitionNotAllowed" invariant.
+        required = Session._REQUIRED_PHASES.get("shipping", [])  # noqa: SLF001
+        return ShippingGateFailure(
+            allowed=False,
+            error="No session: no attested work to reconcile.",
+            missing=list(required),
+            hint="Run the work through the loop (or `lifecycle visit-phase`) so the phases are recorded, then retry.",
+        )
     try:
-        session.check_gate("shipping")
+        # Single source of truth = the union of phase records across ALL
+        # the ticket's sessions, not just the latest (#694). FSM-advancing
+        # `visit-phase` forks fresh sessions by design; the required phases
+        # are legitimately scattered across the ticket lifecycle.
+        session.check_gate_across_ticket("shipping")
     except QualityGateError as exc:
-        visited = session.visited_phases or []
-        required = session._REQUIRED_PHASES.get("shipping", [])  # noqa: SLF001
+        visited, _ = ticket.aggregate_phase_records()
+        required = Session._REQUIRED_PHASES.get("shipping", [])  # noqa: SLF001
         missing = [p for p in required if p not in visited]
         return ShippingGateFailure(
             allowed=False,
@@ -135,7 +154,41 @@ def _check_shipping_gate(ticket: Ticket) -> ShippingGateFailure | None:
             missing=missing,
             hint="Spawn a review sub-agent to satisfy the reviewing gate, then retry.",
         )
+
+    # Gate passed -> the work is attested. Reconcile the FSM from the single
+    # source of truth so ``ship()`` (source [REVIEWED, SHIPPED]) is legal.
+    if ticket.state not in {Ticket.State.REVIEWED, Ticket.State.SHIPPED}:
+        with transaction.atomic():
+            ticket.reconcile_reviewed()
+            ticket.save()
     return None
+
+
+def _enqueue_ship(ticket: Ticket, title: str) -> ShipEnqueued | ShippingGateFailure:
+    """Run the ``ship()`` transition, converting an illegal hop to JSON.
+
+    Invariant (#694): ``pr create`` never raises a raw
+    ``TransitionNotAllowed`` — even on the ``--skip-validation`` path, where
+    the gate reconcile is bypassed and ``ship()`` may be illegal from the
+    current (non-REVIEWED) state. The failure is reported as the same
+    structured shape the gate-fail path returns.
+    """
+    try:
+        with transaction.atomic():
+            if title:
+                extra = cast("TicketExtra", ticket.extra or {})
+                extra["pr_title_override"] = title
+                ticket.extra = extra
+            ticket.ship()
+            ticket.save()
+    except TransitionNotAllowed:
+        return ShippingGateFailure(
+            allowed=False,
+            error=f"Cannot ship from state '{ticket.state}': FSM not in REVIEWED.",
+            missing=[],
+            hint="Drop --skip-validation so the gate can reconcile the FSM, or record the missing phases.",
+        )
+    return ShipEnqueued(ticket_id=int(ticket.pk), state=str(ticket.state))
 
 
 def _resolve_base_url(worktree: Worktree | None) -> str:
@@ -187,27 +240,13 @@ def _run_visual_qa_gate(ticket: Ticket, *, skip_reason: str = "") -> VisualQAGat
 
 
 def _resolve_ticket(ref: str) -> Ticket:
-    """Resolve a ticket from a numeric pk or an issue URL.
+    """Resolve a ticket by pk / issue number / issue URL.
 
-    Accepts a numeric pk (``"314"`` — direct DB lookup), a full issue URL
-    (``"https://github.com/owner/repo/issues/466"`` — exact match on
-    ``issue_url``), or a bare issue number when no pk exists (``"466"`` —
-    falls back to ``issue_url`` ending in ``/466``). Lets users paste the
-    GitHub/GitLab issue number without looking up the internal DB pk.
+    Thin wrapper over ``Ticket.objects.resolve`` — the shared resolver so
+    ``pr create`` and ``lifecycle visit-phase`` accept the same identifier
+    set (#694).
     """
-    if ref.isdigit():
-        try:
-            return Ticket.objects.get(pk=int(ref))
-        except Ticket.DoesNotExist:
-            ticket = Ticket.objects.filter(issue_url__endswith=f"/{ref}").first()
-            if ticket is not None:
-                return ticket
-            raise
-    ticket = Ticket.objects.filter(issue_url=ref).first()
-    if ticket is None:
-        msg = f"No ticket matching {ref!r} (looked up by pk and issue_url)"
-        raise Ticket.DoesNotExist(msg)
-    return ticket
+    return Ticket.objects.resolve(ref)
 
 
 class Command(TyperCommand):
@@ -254,14 +293,7 @@ class Command(TyperCommand):
         if dry_run:
             return _ship_dry_run(ticket, worktree)
 
-        with transaction.atomic():
-            if title:
-                extra = cast("TicketExtra", ticket.extra or {})
-                extra["pr_title_override"] = title
-                ticket.extra = extra
-            ticket.ship()
-            ticket.save()
-        return ShipEnqueued(ticket_id=int(ticket.pk), state=str(ticket.state))
+        return _enqueue_ship(ticket, title)
 
     @command(name="ensure-pr")
     def ensure_pr(

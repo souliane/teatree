@@ -257,6 +257,11 @@ class Command(TyperCommand):
     def teardown(
         self,
         path: str = typer.Option("", help="Worktree path (auto-detects from PWD if empty)."),
+        *,
+        force: bool = typer.Option(
+            default=False,
+            help="Tear down even when the branch has commits not on any remote (data loss).",
+        ),
     ) -> str:
         """Stop docker, drop DB, remove git worktree, delete row.
 
@@ -264,7 +269,8 @@ class Command(TyperCommand):
         CREATED and enqueues ``execute_worktree_teardown``; the runner
         also runs synchronously here so the operator sees immediate
         output. Folds the previous ``teardown`` + ``clean`` commands
-        into a single canonical path.
+        into a single canonical path. Refuses to remove a worktree whose
+        branch carries unpushed commits unless ``--force`` is passed.
         """
         worktree = resolve_worktree(path)
         repo_path = worktree.repo_path
@@ -276,6 +282,7 @@ class Command(TyperCommand):
             worktree.save()
         result = WorktreeTeardownRunner(
             worktree,
+            force=force,
             snapshot_db_name=snapshot_db_name,
             snapshot_extra=snapshot_extra,
         ).run()

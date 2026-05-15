@@ -1,0 +1,191 @@
+"""Integration tests for ``scripts/privacy_scan.py`` as a subprocess.
+
+``t3 tool privacy-scan`` runs this script via
+``ToolRunner.run_script`` → ``[sys.executable, script, *args]``. Without
+an ``if __name__ == "__main__"`` guard the typer ``app`` is never
+invoked and the script is a silent no-op (exit 0 on a planted secret),
+which makes the retro/contribute privacy scan worthless. These tests
+invoke the script the same way ``run_script`` does so the entrypoint is
+exercised, not mocked.
+"""
+
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "privacy_scan.py"
+
+
+def _run(stdin: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, str(SCRIPT), "-"],
+        input=stdin,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+class TestPrivacyScanScriptEntrypoint:
+    def test_planted_api_key_exits_nonzero(self) -> None:
+        result = _run("token = glpat-XXXXXXXXXXXXXXXX\n")  # privacy-scan:allow self-fixture
+        assert result.returncode == 1, result.stdout + result.stderr
+
+    def test_internal_home_path_exits_nonzero(self) -> None:
+        result = _run("see /Users/someone/secret/path\n")  # privacy-scan:allow self-fixture
+        assert result.returncode == 1, result.stdout + result.stderr
+
+    def test_clean_text_exits_zero(self) -> None:
+        result = _run("a perfectly ordinary line of prose\n")
+        assert result.returncode == 0, result.stdout + result.stderr
+
+
+class TestPrivacyScanCallerVisibleSummary:
+    """Findings must reach a piped/non-TTY caller without a manual rerun (#696).
+
+    The historical bug: findings were rendered only via a ``rich`` table on
+    ``Console(stderr=True)``, which is invisible to scripted callers (and is
+    captured-and-discarded by ``ToolRunner.run_script``). The scanner now
+    always writes a deterministic plain-text summary to **stdout** so a
+    piped caller reliably sees the offending line, category, and redacted
+    match. ``capture_output=True`` below is exactly how ``run_script`` and
+    the pre-push gate consume it — no TTY, no mocking of the scanner.
+    """
+
+    def test_planted_secret_summary_is_on_stdout_for_piped_caller(self) -> None:
+        result = _run("token = glpat-XXXXXXXXXXXXXXXX\n")  # privacy-scan:allow self-fixture
+        assert result.returncode == 1, result.stdout + result.stderr
+        # The caller (run_script / the gate) reads stdout — the finding
+        # detail must be there, not only in a stderr rich table.
+        assert "api_key" in result.stdout
+        assert "1" in result.stdout  # the offending line number
+        assert "glpat-" in result.stdout  # redacted match prefix
+
+    def test_internal_path_category_and_line_visible_on_stdout(self) -> None:
+        result = _run("ok\nsee /Users/someone/secret/path\n")  # privacy-scan:allow self-fixture
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert "home_path" in result.stdout
+        assert "2" in result.stdout  # finding is on the second line
+
+    def test_clean_input_prints_clear_clean_line_on_stdout(self) -> None:
+        result = _run("a perfectly ordinary line of prose\n")
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "clean" in result.stdout.lower()
+
+    def test_json_output_still_valid(self) -> None:
+        proc = subprocess.run(
+            [sys.executable, str(SCRIPT), "-", "--json"],
+            input="token = glpat-XXXXXXXXXXXXXXXX\n",  # privacy-scan:allow self-fixture
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        import json  # noqa: PLC0415
+
+        parsed = json.loads(proc.stdout)
+        assert isinstance(parsed, list)
+        assert parsed[0]["category"] == "api_key"
+        assert parsed[0]["line"] == 1
+
+    def test_no_strict_warns_but_exits_zero_with_visible_summary(self) -> None:
+        proc = subprocess.run(
+            [sys.executable, str(SCRIPT), "-", "--no-strict"],
+            input="token = glpat-XXXXXXXXXXXXXXXX\n",  # privacy-scan:allow self-fixture
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        assert "api_key" in proc.stdout
+
+
+class TestPrivacyScanAllowAnnotation:
+    """A line carrying the inline ``privacy-scan:allow`` annotation is exempt.
+
+    Same idiom as gitleaks' ``gitleaks:allow``. Used so a repo's own
+    privacy-scanner fixtures and the gate's own documentation examples do
+    not self-block the gate, while a real leak on any line *without* the
+    annotation is still caught.
+    """
+
+    def test_annotated_line_is_exempt(self) -> None:
+        result = _run("token = glpat-XXXXXXXXXXXXXXXX  # privacy-scan:allow planted fixture\n")
+        assert result.returncode == 0, result.stdout + result.stderr
+
+    def test_annotated_line_does_not_exempt_other_lines(self) -> None:
+        text = (
+            "token = glpat-XXXXXXXXXXXXXXXX  # privacy-scan:allow fixture\n"
+            "real = glpat-YYYYYYYYYYYYYYYY\n"  # privacy-scan:allow self-fixture
+        )
+        result = _run(text)
+        assert result.returncode == 1, result.stdout + result.stderr
+
+    def test_annotation_only_exempts_its_own_line_not_a_substring_match(self) -> None:
+        # The annotation must be the literal marker, not any line that
+        # merely mentions the word "allow".
+        result = _run("token = glpat-XXXXXXXXXXXXXXXX  # allow this please\n")  # privacy-scan:allow self-fixture
+        assert result.returncode == 1, result.stdout + result.stderr
+
+
+class TestDecoratorIsNotAnEmail:
+    """Python decorators / attribute access must not be flagged as emails (#701).
+
+    ``_EMAIL_RE`` historically matched ``<chars>@<domain>.<tld>`` loosely,
+    so a diff line ``+@pytest.fixture`` (diff ``+`` as a fake local part)
+    or ``@module.attr`` tripped the public-repo privacy gate. The fix
+    tightens the local part so a real address is required while the
+    decorator class of false positives is dropped — without weakening
+    detection of genuine emails (which the ``privacy-scan:allow``
+    convention still exempts when they are intentional fixtures).
+    """
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            "+@pytest.fixture",
+            "    @pytest.fixture",
+            "@pytest.fixture",
+            "@app.route",
+            "+@app.route('/x')",
+            "@dataclass",
+            "@staticmethod",
+            "@property",
+            "@module.attr",
+            "+    @some.decorator.chain",
+        ],
+    )
+    def test_decorator_token_is_not_flagged(self, line: str) -> None:
+        result = _run(line + "\n")
+        assert result.returncode == 0, result.stdout + result.stderr
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            "+contact me at someone@gmail.com please",  # privacy-scan:allow (dummy example address, test input)
+            "real address: t@e.st in this diff",  # privacy-scan:allow (dummy example address, test input)
+            "+    leak = 'someone@gmail.com'",  # privacy-scan:allow (dummy example address, test input)
+        ],
+    )
+    def test_real_email_still_caught(self, line: str) -> None:
+        result = _run(line + "\n")
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert "email" in result.stdout
+
+    def test_real_secret_on_same_line_as_decorator_still_flagged(self) -> None:
+        # A decorator that is *not* an email must not mask a genuine
+        # secret sharing the line.
+        result = _run("@pytest.fixture  # token = glpat-XXXXXXXXXXXXXXXX\n")  # privacy-scan:allow self-fixture
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert "api_key" in result.stdout
+
+    def test_real_email_on_same_line_as_decorator_still_flagged(self) -> None:
+        line = "@app.route  # owner someone@gmail.com"  # privacy-scan:allow (dummy example address, test input)
+        result = _run(line + "\n")
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert "email" in result.stdout
+
+
+if __name__ == "__main__":
+    raise SystemExit(pytest.main([__file__, "-q"]))

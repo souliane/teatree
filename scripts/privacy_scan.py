@@ -16,12 +16,30 @@ from rich.table import Table
 app = typer.Typer(add_completion=False)
 console = Console(stderr=True)
 
-_EMAIL_RE = re.compile(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z]{2,}", re.ASCII)
+# Require a plausible local part: it may contain ``.+-`` internally but
+# must *end* in an email-local char (alphanumeric/underscore) immediately
+# before ``@``. This drops the decorator/attribute class of false
+# positives — ``+@pytest.fixture`` (diff ``+`` as a fake local part),
+# ``@app.route``, ``@module.attr`` — where the char before ``@`` is a diff
+# marker, whitespace, or absent, while still matching genuine addresses
+# whose local part ends in a real char (including a one-char local part).
+_EMAIL_RE = re.compile(
+    r"[a-zA-Z0-9_]([a-zA-Z0-9_.+-]*[a-zA-Z0-9_])?@[a-zA-Z0-9-]+\.[a-zA-Z]{2,}",
+    re.ASCII,
+)
 _HOME_PATH_RE = re.compile(r"(?:/Users/|/home/)[a-zA-Z0-9_.-]+")
 _IP_RE = re.compile(r"\b(?:10|172\.(?:1[6-9]|2\d|3[01])|192\.168)\.\d{1,3}\.\d{1,3}\b")
 _API_KEY_RE = re.compile(r"\b(?:glpat-|sk-|ghp_|gho_|github_pat_|xoxb-|xoxp-)[a-zA-Z0-9_-]{10,}")
 _HOSTNAME_RE = re.compile(r"\b[a-z0-9-]+\.internal\.[a-z]+\b|\b[a-z0-9-]+\.corp\.[a-z]+\b")
 _FALSE_POSITIVE_RE = re.compile(r"example\.com|user@example|jane|bob|placeholder")
+
+# Inline allow-annotation, mirroring gitleaks' ``gitleaks:allow`` idiom.
+# A line carrying this literal marker is exempt from all findings — used
+# so a repo's own privacy-scanner test fixtures and the gate's own
+# documentation examples do not self-block the public-repo privacy gate.
+# It exempts only the line it appears on; a real leak on any other line
+# is still reported.
+_ALLOW_MARKER = "privacy-scan:allow"
 
 
 def _build_banned_re(banned_terms: str) -> re.Pattern[str] | None:
@@ -34,6 +52,8 @@ def _build_banned_re(banned_terms: str) -> re.Pattern[str] | None:
 
 def _scan_line(line: str, banned_re: re.Pattern[str] | None) -> list[tuple[str, str]]:
     findings: list[tuple[str, str]] = []
+    if _ALLOW_MARKER in line:
+        return findings
     findings.extend(("email", m.group()) for m in _EMAIL_RE.finditer(line) if not _FALSE_POSITIVE_RE.search(m.group()))
     findings.extend(("home_path", m.group()) for m in _HOME_PATH_RE.finditer(line))
     findings.extend(("private_ip", m.group()) for m in _IP_RE.finditer(line))
@@ -46,6 +66,24 @@ def _scan_line(line: str, banned_re: re.Pattern[str] | None) -> list[tuple[str, 
     if banned_re:
         findings.extend(("banned_term", m.group()) for m in banned_re.finditer(line))
     return findings
+
+
+def _plain_summary(findings: list[dict[str, str | int]]) -> str:
+    """Deterministic plain-text findings summary for non-TTY callers.
+
+    Stable, greppable, line-oriented (one finding per line: line number,
+    category, redacted match). Consumed verbatim by the pre-push gate's
+    refusal message and by any scripted caller of ``t3 tool
+    privacy-scan``. The redaction of the match itself is already applied
+    upstream in ``_scan_line`` (api keys are truncated to a 20-char
+    prefix); other categories carry the raw match by design so the user
+    can locate the offending text.
+    """
+    if not findings:
+        return "Privacy scan: clean (0 findings)"
+    header = f"Privacy scan: {len(findings)} finding(s)"
+    rows = [f"  line {f['line']}: {f['category']}: {f['match']}" for f in findings]
+    return "\n".join([header, *rows])
 
 
 @app.command()
@@ -68,16 +106,28 @@ def main(
 
     if json_output:
         print(json.dumps(all_findings, indent=2))
-    elif all_findings:
-        table = Table(title="Privacy Scan Findings")
-        table.add_column("Line", style="dim", justify="right")
-        table.add_column("Category", style="bold")
-        table.add_column("Match")
-        for f in all_findings:
-            table.add_row(str(f["line"]), str(f["category"]), str(f["match"]))
-        console.print(table)
     else:
-        console.print("[green]Privacy scan: clean[/]")
+        # Always emit a deterministic, plain-text summary on **stdout**.
+        # This is the stream a piped/non-TTY caller reliably sees: the
+        # pre-push gate captures it with ``> report 2>&1`` and
+        # ``ToolRunner.run_script`` re-emits it. The rich table is a
+        # TTY-only nicety on stderr; it must never be the *only* output,
+        # or scripted callers get "exit 1, no diagnostics" (#696).
+        print(_plain_summary(all_findings))
+        if all_findings:
+            table = Table(title="Privacy Scan Findings")
+            table.add_column("Line", style="dim", justify="right")
+            table.add_column("Category", style="bold")
+            table.add_column("Match")
+            for f in all_findings:
+                table.add_row(str(f["line"]), str(f["category"]), str(f["match"]))
+            console.print(table)
+        else:
+            console.print("[green]Privacy scan: clean[/]")
 
     if all_findings and strict:
         raise SystemExit(1)
+
+
+if __name__ == "__main__":
+    app()
