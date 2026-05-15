@@ -16,6 +16,7 @@ from teatree.backends.loader import reset_backend_caches as _reset_loader_caches
 from teatree.backends.protocols import CIService, CodeHostBackend, MessagingBackend
 from teatree.core.overlay import OverlayBase
 from teatree.core.overlay_loader import get_all_overlays, get_overlay
+from teatree.paths import find_overlay_db
 
 
 @dataclass(frozen=True, slots=True)
@@ -143,12 +144,10 @@ def _backends_from_toml(already_found: set[str]) -> list[OverlayBackends]:
 
 
 def _find_external_db(name: str, cfg: dict) -> Path | None:
-    from teatree.loop.scanners.external_tickets import _find_overlay_db  # noqa: PLC0415
-
     project_path = cfg.get("path", "")
     if not project_path:
         return None
-    return _find_overlay_db(name, project_path)
+    return find_overlay_db(name, project_path)
 
 
 def _host_from_toml(cfg: dict) -> CodeHostBackend | None:

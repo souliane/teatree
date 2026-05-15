@@ -11,24 +11,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from teatree.loop.scanners.base import ScanSignal
-from teatree.paths import DATA_DIR
 
 logger = logging.getLogger(__name__)
 
 _TERMINAL_STATES = ("delivered", "ignored")
 _PLACEHOLDERS = ", ".join("?" for _ in _TERMINAL_STATES)
 _QUERY = f"SELECT id, state, issue_url, overlay FROM teatree_ticket WHERE state NOT IN ({_PLACEHOLDERS}) ORDER BY id"  # noqa: S608
-
-
-def _find_overlay_db(name: str, project_path: str) -> Path | None:
-    candidates = [
-        Path(project_path).expanduser() / "db.sqlite3",
-        DATA_DIR / name / "db.sqlite3",
-    ]
-    for c in candidates:
-        if c.is_file():
-            return c
-    return None
 
 
 @dataclass(slots=True)

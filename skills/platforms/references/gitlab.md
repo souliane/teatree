@@ -258,6 +258,8 @@ curl -s --request POST \
 
 **Path format (Non-Negotiable):** Use the `.markdown` or `.url` field from the response (format: `/uploads/<hash>/<filename>`). **Never use `.full_path`** (format: `/-/project/<id>/uploads/...`) — it does NOT render in MR notes or comments.
 
+**`glab api` cannot upload** — it has no multipart/`--form` support, so the file body must go through `curl --form` directly as shown above. (Downloading an existing upload is the reverse: a plain GET — use `glab api projects/<id>/uploads/<secret>/<filename>`, documented canonically in `skills/review/SKILL.md`.)
+
 ## Reply to Discussion
 
 Reply to an existing MR discussion thread (e.g., after addressing review feedback).
