@@ -746,6 +746,7 @@ class TestWorkspaceCleanAll(TestCase):
                 mock_overlay.return_value.get_cleanup_steps.return_value = []
                 mock_git.status_porcelain.return_value = ""
                 mock_git.unsynced_commits.return_value = []
+                mock_git.commits_absent_from_all_remotes.return_value = []
                 cleaned = cast("list[str]", call_command("workspace", "clean-all"))
 
             assert any("Cleaned: backend" in c for c in cleaned)
@@ -838,6 +839,7 @@ class TestWorkspaceCleanAll(TestCase):
             ):
                 mock_overlay.return_value.get_cleanup_steps.return_value = []
                 mock_git.status_porcelain.return_value = " M dirty_file.py"
+                mock_git.commits_absent_from_all_remotes.return_value = []
                 call_command("workspace", "clean-all")
 
             assert any("uncommitted changes" in msg for msg in logs.output)
@@ -998,6 +1000,10 @@ class TestWorkspaceCleanAll(TestCase):
                 mock_overlay.return_value.get_cleanup_steps.return_value = []
                 mock_git.status_porcelain.return_value = ""
                 mock_git.unsynced_commits.side_effect = _unsynced
+                # Both branches are pushed to their own remote ref, so the
+                # #706 data-loss guard passes; this test targets the stricter
+                # origin/main hygiene refusal on the frontend branch.
+                mock_git.commits_absent_from_all_remotes.return_value = []
                 cleaned = cast("list[str]", call_command("workspace", "clean-all"))
 
             assert any("Cleaned: backend" in c for c in cleaned)
@@ -1124,7 +1130,11 @@ class TestWorkspaceCleanMerged(TestCase):
 
         assert cleaned == ["Cleaned: repo (ac-repo-70)"]
         assert mock_cleanup.call_count == 1
-        assert mock_cleanup.call_args.kwargs.get("force") is True
+        # #706 — clean-merged must NOT force-bypass the data-loss guard. The
+        # ticket is MERGED so the origin/main hygiene gate is skipped, but
+        # commits absent from every remote still block teardown.
+        assert mock_cleanup.call_args.kwargs.get("force") is not True
+        assert mock_cleanup.call_args.kwargs.get("strict_hygiene") is False
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
