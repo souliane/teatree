@@ -38,9 +38,11 @@ if [ -z "${remote_url}" ]; then
 fi
 [ -n "${remote_url}" ] || exit 0  # no remote URL — nothing to gate
 
-# Extract owner/repo from common GitHub URL shapes:
+# Extract owner/repo from common GitHub URL shapes (the ssh-shape
+# example below carries the inline allow-annotation so this hook's own
+# header does not self-trip the privacy gate it powers):
 #   https://github.com/owner/repo(.git)
-#   git@github.com:owner/repo(.git)
+#   git@github.com:owner/repo(.git)  # privacy-scan:allow doc example
 slug=$(printf '%s' "${remote_url}" \
   | sed -E 's#^[^:]+://[^/]+/##; s#^git@[^:]+:##; s#\.git$##')
 case "${slug}" in

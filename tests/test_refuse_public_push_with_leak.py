@@ -41,7 +41,7 @@ def _git(cwd: Path, *args: str) -> None:
 def _make_repo(path: Path, branch: str = "main") -> None:
     path.mkdir(parents=True)
     _git(path, "init", "-b", branch)
-    _git(path, "config", "user.email", "t@e.st")
+    _git(path, "config", "user.email", "t@e.st")  # privacy-scan:allow test fixture
     _git(path, "config", "user.name", "Tester")
     (path / "README.md").write_text("hello\n", encoding="utf-8")
     _git(path, "add", "README.md")
@@ -78,7 +78,7 @@ def _clone_with_remote(tmp_path: Path, gh_visibility: str) -> tuple[Path, dict[s
     _make_repo(origin)
     work = tmp_path / "work"
     _git(tmp_path, "clone", str(origin), str(work))
-    _git(work, "config", "user.email", "t@e.st")
+    _git(work, "config", "user.email", "t@e.st")  # privacy-scan:allow test fixture
     _git(work, "config", "user.name", "Tester")
     # The origin URL is a local path; rewrite it to a github.com-looking
     # URL so the gate has an owner/repo to ask gh about.
@@ -123,7 +123,7 @@ class TestRefusePublicPushWithLeak:
     def test_blocks_public_push_with_planted_secret(self, tmp_path: Path) -> None:
         work, env = _clone_with_remote(tmp_path, "PUBLIC")
         (work / "leak.txt").write_text(
-            "token = glpat-XXXXXXXXXXXXXXXX\n",
+            "token = glpat-XXXXXXXXXXXXXXXX\n",  # privacy-scan:allow test fixture
             encoding="utf-8",
         )
         _git(work, "add", "leak.txt")
@@ -137,7 +137,8 @@ class TestRefusePublicPushWithLeak:
 
     def test_blocks_public_push_with_internal_path(self, tmp_path: Path) -> None:
         work, env = _clone_with_remote(tmp_path, "PUBLIC")
-        (work / "notes.txt").write_text("see /Users/someone/secret/path\n", encoding="utf-8")
+        planted = "see /Users/someone/secret/path\n"  # privacy-scan:allow test fixture
+        (work / "notes.txt").write_text(planted, encoding="utf-8")
         _git(work, "add", "notes.txt")
         _git(work, "commit", "-m", "add notes")
 
@@ -158,7 +159,7 @@ class TestRefusePublicPushWithLeak:
     def test_allows_private_repo_push_even_with_secret(self, tmp_path: Path) -> None:
         work, env = _clone_with_remote(tmp_path, "PRIVATE")
         (work / "leak.txt").write_text(
-            "token = glpat-XXXXXXXXXXXXXXXX\n",
+            "token = glpat-XXXXXXXXXXXXXXXX\n",  # privacy-scan:allow test fixture
             encoding="utf-8",
         )
         _git(work, "add", "leak.txt")
@@ -179,7 +180,7 @@ class TestRefusePublicPushWithLeak:
         # is genuinely unavailable.
         env["PATH"] = "/usr/bin:/bin"
         (work / "leak.txt").write_text(
-            "token = glpat-XXXXXXXXXXXXXXXX\n",
+            "token = glpat-XXXXXXXXXXXXXXXX\n",  # privacy-scan:allow test fixture
             encoding="utf-8",
         )
         _git(work, "add", "leak.txt")
@@ -187,6 +188,55 @@ class TestRefusePublicPushWithLeak:
 
         result = _run_hook(work, env, _push_stdin(work))
 
+        assert result.returncode == 0, result.stdout + result.stderr
+
+    def test_annotated_fixture_does_not_block_but_real_leak_in_same_diff_does(self, tmp_path: Path) -> None:
+        """The allow-annotation is line-scoped, not a file-level exclusion.
+
+        An inline-allowed fixture line passes the gate, but a real
+        un-annotated secret elsewhere in the same branch still blocks the
+        push — proving the gate stays honest.
+        """
+        work, env = _clone_with_remote(tmp_path, "PUBLIC")
+        # A scanner-fixture-shaped file: the secret carries the marker.
+        fixture = work / "scanner_fixture.py"
+        fixture.write_text(
+            'SECRET = "glpat-ZZZZZZZZZZZZZZZZ"  # privacy-scan:allow fixture\n',
+            encoding="utf-8",
+        )
+        _git(work, "add", "scanner_fixture.py")
+        _git(work, "commit", "-m", "add scanner fixture")
+
+        clean = _run_hook(work, env, _push_stdin(work))
+        assert clean.returncode == 0, "annotated fixture must not block: " + clean.stdout + clean.stderr
+
+        # Now a genuinely leaking, un-annotated file in a later commit.
+        leaking = 'API = "glpat-ZZZZZZZZZZZZZZZZ"\n'  # privacy-scan:allow test fixture
+        (work / "config.py").write_text(leaking, encoding="utf-8")
+        _git(work, "add", "config.py")
+        _git(work, "commit", "-m", "add config")
+
+        blocked = _run_hook(work, env, _push_stdin(work))
+        assert blocked.returncode == 1, "real leak must still block: " + blocked.stdout + blocked.stderr
+
+    def test_gate_passes_a_diff_whose_only_secrets_are_annotated(self, tmp_path: Path) -> None:
+        """A diff whose secret-shaped strings are all inline-allowed is clean.
+
+        This is the end-to-end analogue of "scan this branch's own diff":
+        the scanner's own fixtures and the hook's doc examples carry the
+        marker, so the gate does not self-block.
+        """
+        work, env = _clone_with_remote(tmp_path, "PUBLIC")
+        body = (
+            'def a(): assert scan("glpat-AAAAAAAAAAAAAAAA")  # privacy-scan:allow fixture\n'
+            'def b(): assert scan("see /Users/dev/x")  # privacy-scan:allow fixture\n'
+            "#   git@github.com:owner/repo  # privacy-scan:allow doc example\n"
+        )
+        (work / "test_scanner.py").write_text(body, encoding="utf-8")
+        _git(work, "add", "test_scanner.py")
+        _git(work, "commit", "-m", "add scanner tests")
+
+        result = _run_hook(work, env, _push_stdin(work))
         assert result.returncode == 0, result.stdout + result.stderr
 
     def test_hook_is_executable(self) -> None:
