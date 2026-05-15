@@ -288,6 +288,8 @@ Sub-agents (Agent tool) **lose all loaded skills, MCP access, and shell function
 
 **Exception:** Skills with `subagent_safe: true` in their YAML frontmatter are pure methodology/guidelines that work without shell functions, MCP tools, or cross-skill state.
 
+**Exception (batch mode):** `/teatree-batch` deliberately delegates each ticket's full delivery to a single **singleton** sub-agent, run one at a time. That sub-agent loads the skills it needs via the Skill tool itself, so the "loses all loaded skills" caveat does not apply. This keeps the batch orchestrator's context lean across a long backlog. See `/teatree-batch` § Rules "Singleton delivery sub-agent" — that is the canonical statement; do not generalize it to non-batch sessions.
+
 **Before delegating platform API work:** Read the relevant platform reference (`t3:platforms`) before writing sub-agent prompts that involve API calls (draft notes, discussions, PR operations). Sub-agents can't read skills themselves — copy the exact API recipe into the agent prompt.
 
 **After a sub-agent completes, re-read any files it modified.** Sub-agents get a forked copy of your file state — their edits don't update your cache. Writing to a file without re-reading first will silently overwrite their changes.
@@ -393,6 +395,16 @@ When `contribute = true` in `~/.teatree.toml`, retro findings and cross-cutting 
 4. Is it a user preference (tone, formatting) or environment fact (path, credential)? → personal memory is legitimate.
 
 **Promote means edit an existing skill.** Pick the best-fit existing skill (`/t3:rules`, `/t3:next`, `/t3:ship`, etc.) and insert the rule there. Do not invent a new skill for a single rule — that fragments the skill graph.
+
+## Autonomous Directive Adoption
+
+This is the meta-policy that gives the "promote findings" rule above its trigger. It has no clean code home — it describes how to read the user's intent, which is methodology, not a deterministic gate — so it lives here as prose.
+
+In contribute mode (`contribute = true` in `~/.teatree.toml`), a user statement of the form "it should…" / "you should…" / "the agent shouldn't…" about agent behaviour is read as a request to adopt that behaviour into teatree itself — a skill edit where the behaviour is methodology, a code change (hook deny, FSM condition, CLI rejection) where a deterministic home exists. It is not a one-off instruction to satisfy for the current task and forget. The expected response is to make the teatree change in the same session, the same way change 1 of any retro finding lands: act on it, rather than asking "should I make a ticket or just fix it?".
+
+The session default in contribute mode is full autonomy. The agent carries the work to completion — implement, test, commit — without pausing to ask permission for in-scope work that the "Do Work Now" rule already covers. A clarifying question via `AskUserQuestion` is reserved for the case where the agent is genuinely unsure: a debatable architectural choice with several equally reasonable options, an ambiguous destination, or a directive whose scope the agent cannot infer from context. Uncertainty is the signal to interrupt; the absence of uncertainty is the signal to proceed. Treating every "should" as a question to bounce back is the failure this policy names — it converts a standing behaviour change into conversational acknowledgement that evaporates with the session.
+
+When the directive is genuinely ambiguous about _where_ it belongs (skill prose vs. code, which skill, which overlay), that ambiguity is itself the trigger for one `AskUserQuestion` — not for deferral, and not for a silent guess.
 
 ## Ask About Auth Before External Service Integrations
 
@@ -516,7 +528,7 @@ When a pre-commit hook runs the full test suite and fails on tests **unrelated t
 
 ## Worktree-First Work (Non-Negotiable)
 
-**All development work MUST happen in a worktree**, never on the main clone. Use `t3 <overlay> workspace ticket` or the `using-git-worktrees` skill to create one before writing any code.
+**All development work MUST happen in a worktree**, never on the main clone. Use `t3 <overlay> workspace ticket` or the `using-git-worktrees` skill to create one before writing any code. The worktree exists _before the first file change_ — the failure mode this forecloses is editing the main clone first and "moving it into a worktree later", which loses uncommitted work and pollutes shared state. Enforced deterministically by the `refuse-main-clone-commit` pre-commit hook and the `protect-default-branch` PreToolUse deny.
 
 **Pre-edit check — before editing ANY project file:** If the file path lives directly under `$T3_WORKSPACE_DIR/<repo>/` (not under a ticket subdirectory like `$T3_WORKSPACE_DIR/<ticket>/<repo>/`), **stop** — you are in the main clone. Find or create the correct worktree first via `t3 <overlay> workspace ticket`. The main clone may happen to be on the PR branch (from a previous checkout) — editing there "works" but pollutes the shared clone, risks merge conflicts for other worktrees, and violates isolation.
 
