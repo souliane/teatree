@@ -129,5 +129,63 @@ class TestPrivacyScanAllowAnnotation:
         assert result.returncode == 1, result.stdout + result.stderr
 
 
+class TestDecoratorIsNotAnEmail:
+    """Python decorators / attribute access must not be flagged as emails (#701).
+
+    ``_EMAIL_RE`` historically matched ``<chars>@<domain>.<tld>`` loosely,
+    so a diff line ``+@pytest.fixture`` (diff ``+`` as a fake local part)
+    or ``@module.attr`` tripped the public-repo privacy gate. The fix
+    tightens the local part so a real address is required while the
+    decorator class of false positives is dropped — without weakening
+    detection of genuine emails (which the ``privacy-scan:allow``
+    convention still exempts when they are intentional fixtures).
+    """
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            "+@pytest.fixture",
+            "    @pytest.fixture",
+            "@pytest.fixture",
+            "@app.route",
+            "+@app.route('/x')",
+            "@dataclass",
+            "@staticmethod",
+            "@property",
+            "@module.attr",
+            "+    @some.decorator.chain",
+        ],
+    )
+    def test_decorator_token_is_not_flagged(self, line: str) -> None:
+        result = _run(line + "\n")
+        assert result.returncode == 0, result.stdout + result.stderr
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            "+contact me at someone@gmail.com please",  # privacy-scan:allow (dummy example address, test input)
+            "real address: t@e.st in this diff",  # privacy-scan:allow (dummy example address, test input)
+            "+    leak = 'someone@gmail.com'",  # privacy-scan:allow (dummy example address, test input)
+        ],
+    )
+    def test_real_email_still_caught(self, line: str) -> None:
+        result = _run(line + "\n")
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert "email" in result.stdout
+
+    def test_real_secret_on_same_line_as_decorator_still_flagged(self) -> None:
+        # A decorator that is *not* an email must not mask a genuine
+        # secret sharing the line.
+        result = _run("@pytest.fixture  # token = glpat-XXXXXXXXXXXXXXXX\n")  # privacy-scan:allow self-fixture
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert "api_key" in result.stdout
+
+    def test_real_email_on_same_line_as_decorator_still_flagged(self) -> None:
+        line = "@app.route  # owner someone@gmail.com"  # privacy-scan:allow (dummy example address, test input)
+        result = _run(line + "\n")
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert "email" in result.stdout
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
