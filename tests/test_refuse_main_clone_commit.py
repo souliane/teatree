@@ -5,6 +5,7 @@ directory) on a non-default branch — pushing developers into a worktree
 instead of polluting the shared clone.
 """
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -13,8 +14,28 @@ import pytest
 HOOK = Path(__file__).resolve().parents[1] / "scripts" / "hooks" / "refuse-main-clone-commit.sh"
 
 
+def _hermetic_env() -> dict[str, str]:
+    """Env with all GIT_* vars stripped.
+
+    When the suite runs from the pre-commit ``pytest`` hook, the outer
+    ``git commit`` exports ``GIT_DIR`` / ``GIT_INDEX_FILE`` /
+    ``GIT_WORK_TREE``; inherited, they hijack the tmp-repo git calls
+    here and ``git add`` targets the outer repo. Scrub them so every
+    tmp-repo operation is hermetic regardless of caller context.
+    """
+    return {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+
+
 def _git(cwd: Path, *args: str) -> None:
-    subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True)  # noqa: S607
+    # S603/S607: trusted fixed argv (literal "git" + test-controlled flags),
+    # no untrusted input — same justification as the repo's scripts/** ignore.
+    subprocess.run(
+        ["git", *args],  # noqa: S607
+        cwd=cwd,
+        check=True,
+        capture_output=True,
+        env=_hermetic_env(),
+    )
 
 
 def _make_main_clone(tmp_path: Path) -> Path:
@@ -40,6 +61,7 @@ def _run_hook(cwd: Path) -> subprocess.CompletedProcess[str]:
         capture_output=True,
         text=True,
         check=False,
+        env=_hermetic_env(),
     )
 
 
@@ -122,8 +144,6 @@ class TestRefuseMainCloneCommit:
         assert _run_hook(repo).returncode == 1
 
     def test_hook_is_executable(self) -> None:
-        import os  # noqa: PLC0415
-
         assert os.access(HOOK, os.X_OK), f"{HOOK} must be chmod +x"
 
 
