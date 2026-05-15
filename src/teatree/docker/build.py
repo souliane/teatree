@@ -10,22 +10,10 @@ entrypoint (compare mounted lockfile to the copy baked into the image and
 install on mismatch) — that's out of scope here.
 """
 
-import hashlib
-
 from teatree.types import BaseImageConfig
 from teatree.utils.run import run_allowed_to_fail, run_checked
 
-__all__ = ["ensure_base_image", "image_tag_for_lockfile"]
-
-
-def image_tag_for_lockfile(cfg: BaseImageConfig) -> str:
-    """Return ``{image_name}:deps-{sha256(lockfile)[:12]}`` for ``cfg``.
-
-    Pure: only reads the lockfile bytes.  Safe to call during env-cache
-    rendering and drift checks.
-    """
-    digest = hashlib.sha256((cfg.build_context / cfg.lockfile).read_bytes()).hexdigest()[:12]
-    return f"{cfg.image_name}:deps-{digest}"
+__all__ = ["ensure_base_image"]
 
 
 def ensure_base_image(cfg: BaseImageConfig) -> str:
@@ -35,7 +23,7 @@ def ensure_base_image(cfg: BaseImageConfig) -> str:
     the ``docker image inspect`` probe.  Raises ``CommandFailedError`` if the
     build itself fails.
     """
-    tag = image_tag_for_lockfile(cfg)
+    tag = cfg.image_tag()
     probe = run_allowed_to_fail(
         ["docker", "image", "inspect", tag],
         expected_codes=(0, 1),

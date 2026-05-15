@@ -170,6 +170,13 @@ def get_data_dir(namespace: str) -> Path:
     return data_dir
 
 
+def find_overlay_db(name: str, project_path: str) -> Path | None:
+    for candidate in (Path(project_path).expanduser() / "db.sqlite3", DATA_DIR / name / "db.sqlite3"):
+        if candidate.is_file():
+            return candidate
+    return None
+
+
 def find_stale_dbs(data_dir: Path, *, canonical: Path) -> Iterator[Path]:
     """Yield ``db.sqlite3`` files inside ``data_dir`` that aren't ``canonical``.
 
