@@ -23,6 +23,14 @@ _API_KEY_RE = re.compile(r"\b(?:glpat-|sk-|ghp_|gho_|github_pat_|xoxb-|xoxp-)[a-
 _HOSTNAME_RE = re.compile(r"\b[a-z0-9-]+\.internal\.[a-z]+\b|\b[a-z0-9-]+\.corp\.[a-z]+\b")
 _FALSE_POSITIVE_RE = re.compile(r"example\.com|user@example|jane|bob|placeholder")
 
+# Inline allow-annotation, mirroring gitleaks' ``gitleaks:allow`` idiom.
+# A line carrying this literal marker is exempt from all findings — used
+# so a repo's own privacy-scanner test fixtures and the gate's own
+# documentation examples do not self-block the public-repo privacy gate.
+# It exempts only the line it appears on; a real leak on any other line
+# is still reported.
+_ALLOW_MARKER = "privacy-scan:allow"
+
 
 def _build_banned_re(banned_terms: str) -> re.Pattern[str] | None:
     terms = [t.strip() for t in banned_terms.split(",") if t.strip()]
@@ -34,6 +42,8 @@ def _build_banned_re(banned_terms: str) -> re.Pattern[str] | None:
 
 def _scan_line(line: str, banned_re: re.Pattern[str] | None) -> list[tuple[str, str]]:
     findings: list[tuple[str, str]] = []
+    if _ALLOW_MARKER in line:
+        return findings
     findings.extend(("email", m.group()) for m in _EMAIL_RE.finditer(line) if not _FALSE_POSITIVE_RE.search(m.group()))
     findings.extend(("home_path", m.group()) for m in _HOME_PATH_RE.finditer(line))
     findings.extend(("private_ip", m.group()) for m in _IP_RE.finditer(line))
@@ -81,3 +91,7 @@ def main(
 
     if all_findings and strict:
         raise SystemExit(1)
+
+
+if __name__ == "__main__":
+    app()
