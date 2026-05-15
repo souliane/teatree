@@ -10,6 +10,9 @@ from teatree.types import RawAPIDict
 
 _ISSUE_URL_RE = re.compile(r"^/(?P<path>.+?)/-/issues/(?P<iid>\d+)/?$")
 _MR_URL_RE = re.compile(r"^/(?P<path>.+?)/-/merge_requests/(?P<iid>\d+)/?$")
+# GitLab serves the same iid under both /-/issues/<iid> and /-/work_items/<iid>;
+# the notes API endpoint is identical for either.
+_ISSUE_OR_WORKITEM_URL_RE = re.compile(r"^/(?P<path>.+?)/-/(?:issues|work_items)/(?P<iid>\d+)/?$")
 
 
 class _GitLabUser(TypedDict, total=False):
@@ -180,6 +183,32 @@ class GitLabCodeHost:
 
         issue = self._client.get_issue(project.project_id, int(match["iid"]))
         return issue if isinstance(issue, dict) else {"error": f"Issue not found: {issue_url}"}
+
+    def post_issue_comment(self, *, issue_url: str, body: str) -> RawAPIDict:
+        """Post a comment to a GitLab issue or work item.
+
+        Accepts the canonical web formats
+        ``https://gitlab.example.com/<group>/<repo>/-/issues/<iid>`` and
+        ``…/-/work_items/<iid>`` (GitLab exposes the same iid under both).
+        Returns ``{"error": ...}`` when the URL is not a recognised GitLab
+        issue URL or when the project cannot be resolved.
+        """
+        path = urlparse(issue_url).path
+        match = _ISSUE_OR_WORKITEM_URL_RE.match(path)
+        if match is None:
+            return {"error": f"Not a GitLab issue URL: {issue_url}"}
+
+        project = self._client.resolve_project(match["path"])
+        if project is None:
+            return {"error": f"Could not resolve project: {match['path']}"}
+
+        return (
+            self._client.post_json(
+                f"projects/{project.project_id}/issues/{int(match['iid'])}/notes",
+                {"body": body},
+            )
+            or {}
+        )
 
     def _resolve_project(self, repo: str) -> ProjectInfo | None:
         """Resolve a GitLab project from a local path, ``namespace/repo`` slug, or bare name.

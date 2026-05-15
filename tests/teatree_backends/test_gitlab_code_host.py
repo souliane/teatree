@@ -354,3 +354,84 @@ def test_get_review_state_returns_none_when_reviewer_empty() -> None:
         == ReviewState.NONE
     )
     client.resolve_project.assert_not_called()
+
+
+def test_post_issue_comment_posts_to_issue_notes_endpoint() -> None:
+    """post_issue_comment posts the body to the issue notes endpoint."""
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = _project()
+    client.post_json.return_value = {"id": 555}
+    host = GitLabCodeHost(client=client)
+
+    result = host.post_issue_comment(
+        issue_url="https://gitlab.com/org/repo/-/issues/7",
+        body="A clarifying question",
+    )
+
+    assert result == {"id": 555}
+    client.resolve_project.assert_called_once_with("org/repo")
+    client.post_json.assert_called_once_with(
+        "projects/42/issues/7/notes",
+        {"body": "A clarifying question"},
+    )
+
+
+def test_post_issue_comment_supports_work_items_url() -> None:
+    """GitLab serves the same iid under /-/work_items/<iid>; it must work too."""
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = _project()
+    client.post_json.return_value = {"id": 1}
+    host = GitLabCodeHost(client=client)
+
+    result = host.post_issue_comment(
+        issue_url="https://gitlab.com/group/sub/repo/-/work_items/469",
+        body="note",
+    )
+
+    assert result == {"id": 1}
+    client.resolve_project.assert_called_once_with("group/sub/repo")
+    client.post_json.assert_called_once_with(
+        "projects/42/issues/469/notes",
+        {"body": "note"},
+    )
+
+
+def test_post_issue_comment_rejects_non_issue_url() -> None:
+    client = MagicMock(spec=GitLabAPI)
+    host = GitLabCodeHost(client=client)
+
+    result = host.post_issue_comment(
+        issue_url="https://gitlab.com/org/repo/-/merge_requests/12",
+        body="note",
+    )
+
+    assert result == {"error": "Not a GitLab issue URL: https://gitlab.com/org/repo/-/merge_requests/12"}
+    client.post_json.assert_not_called()
+
+
+def test_post_issue_comment_returns_error_when_project_not_resolved() -> None:
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = None
+    host = GitLabCodeHost(client=client)
+
+    result = host.post_issue_comment(
+        issue_url="https://gitlab.com/org/repo/-/issues/7",
+        body="note",
+    )
+
+    assert result == {"error": "Could not resolve project: org/repo"}
+    client.post_json.assert_not_called()
+
+
+def test_post_issue_comment_returns_empty_dict_when_post_returns_none() -> None:
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = _project()
+    client.post_json.return_value = None
+    host = GitLabCodeHost(client=client)
+
+    result = host.post_issue_comment(
+        issue_url="https://gitlab.com/org/repo/-/issues/7",
+        body="note",
+    )
+
+    assert result == {}

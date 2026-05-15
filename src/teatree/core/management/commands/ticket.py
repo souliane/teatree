@@ -19,6 +19,12 @@ class CompletionResult(TypedDict, total=False):
     action: str
 
 
+class CommentResult(TypedDict, total=False):
+    issue_url: str
+    comment_id: int
+    error: str
+
+
 logger = logging.getLogger(__name__)
 
 _ALLOWED_TRANSITIONS = {
@@ -66,6 +72,48 @@ class Command(TyperCommand):
             }
 
         return {"ticket_id": int(ticket.pk), "state": ticket.state}
+
+    @command()
+    def comment(
+        self,
+        issue_url: str,
+        *,
+        body: Annotated[str, typer.Option(help="Comment body text.")] = "",
+        body_file: Annotated[str, typer.Option(help="Path to a file containing the comment body.")] = "",
+    ) -> CommentResult:
+        """Post a comment to an issue or work item by its URL.
+
+        Resolves the code host per-URL across all registered overlays, so it
+        works for any tracker an overlay is configured for (GitLab issues and
+        work items, GitHub issues). Pass the body inline with ``--body`` or
+        from a file with ``--body-file``.
+        """
+        from pathlib import Path  # noqa: PLC0415
+
+        from teatree.backends.loader import get_code_host_for_url  # noqa: PLC0415
+        from teatree.core.overlay_loader import get_all_overlays  # noqa: PLC0415
+
+        text = Path(body_file).read_text(encoding="utf-8") if body_file else body
+        if not text:
+            return {"error": "No comment body: pass --body or --body-file"}
+
+        for overlay in get_all_overlays().values():
+            host = get_code_host_for_url(overlay, issue_url)
+            if host is None:
+                continue
+            raw = host.post_issue_comment(issue_url=issue_url, body=text)
+            error = raw.get("error") if isinstance(raw, dict) else None
+            if error:
+                self.stdout.write(f"  failed: {error}")
+                return {"error": str(error)}
+            comment_id = raw.get("id") if isinstance(raw, dict) else None
+            self.stdout.write(f"  commented on {issue_url}")
+            return {
+                "issue_url": issue_url,
+                "comment_id": comment_id if isinstance(comment_id, int) else 0,
+            }
+
+        return {"error": f"No code host could be resolved for {issue_url}"}
 
     @command(name="list")
     def list_tickets(self, state: str = "", overlay: str = "") -> list[dict[str, object]]:

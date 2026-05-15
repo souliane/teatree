@@ -100,6 +100,8 @@ class CodeHostBackend(Protocol):
 
     def get_issue(self, issue_url: str) -> RawAPIDict: ...  # pragma: no branch
 
+    def post_issue_comment(self, *, issue_url: str, body: str) -> RawAPIDict: ...  # pragma: no branch
+
     def list_assigned_issues(self, *, assignee: str) -> list[RawAPIDict]: ...  # pragma: no branch
 
 

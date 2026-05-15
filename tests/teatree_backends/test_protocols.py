@@ -78,6 +78,10 @@ class _FakeCodeHost:
         _ = issue_url
         return {}
 
+    def post_issue_comment(self, *, issue_url: str, body: str) -> dict[str, object]:
+        _ = (issue_url, body)
+        return {}
+
     def list_assigned_issues(self, *, assignee: str) -> list[dict[str, object]]:
         _ = assignee
         return []
