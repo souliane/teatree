@@ -462,6 +462,35 @@ class TestAutoRegisterReusesExistingWorktree(TestCase):
         assert not Ticket.objects.filter(issue_url="auto:docgen/other").exists()
         assert Ticket.objects.count() == 1
 
+    def test_reuses_workspace_owner_when_stored_path_is_symlink_unresolved(self) -> None:
+        """Owner is found even when the stored path is the unresolved (symlinked) form.
+
+        Provision records ``worktree_path`` verbatim from
+        ``config.workspace_dir()`` (no ``.resolve()``), while resolution
+        ``.resolve()``-s cwd. On a symlinked workspace root (macOS
+        ``/tmp`` → ``/private/tmp``) the two forms differ; the match must
+        still succeed via ``_candidate_paths``.
+        """
+        owner_ticket = Ticket.objects.create(issue_url="https://gitlab.com/org/repo/-/issues/94")
+        repo_a = self._make_git_worktree("repo-a")
+        # Simulate the unresolved stored form by de-privatising the path
+        # the way an unresolved macOS workspace root would be recorded.
+        stored = str(repo_a).replace("/private/", "/", 1) if str(repo_a).startswith("/private/") else str(repo_a)
+        Worktree.objects.create(
+            ticket=owner_ticket,
+            repo_path="repo-a",
+            branch="ac/real-work",
+            extra={"worktree_path": stored},
+        )
+        repo_b = self._make_git_worktree("repo-b")
+
+        with patch("teatree.core.resolve.git.current_branch", return_value="docgen/other"):
+            result = _auto_register_from_git(str(repo_b))
+
+        assert result is not None
+        assert result.ticket_id == owner_ticket.pk
+        assert not Ticket.objects.filter(issue_url="auto:docgen/other").exists()
+
     def test_no_workspace_owner_still_creates_auto_ticket(self) -> None:
         """When no sibling worktree shares the workspace dir, the auto: path stands."""
         wt_dir = self._make_git_worktree("lonely-repo")

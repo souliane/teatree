@@ -167,11 +167,21 @@ def _workspace_owner_ticket(cwd_path: Path) -> Ticket | None:
     ticket owns the workspace — a different branch/repo resolved from the
     same workspace must attach to that ticket rather than fork a fresh
     ``auto:<branch>`` ticket (#641).
+
+    Stored ``worktree_path`` values are written unresolved (provision uses
+    ``config.workspace_dir()`` verbatim) while ``cwd_path`` here is
+    ``.resolve()``-d, so a symlinked workspace root (macOS ``/tmp`` →
+    ``/private/tmp``) would otherwise miss. Comparison goes through
+    ``_candidate_paths`` — the same symlink-variant set
+    ``_match_worktree_by_path`` uses. Relies on the one-ticket-per-
+    workspace-dir invariant; if violated the first match wins.
     """
-    workspace_dir = str(cwd_path.parent)
+    workspace_candidates = set(_candidate_paths(str(cwd_path.parent)))
     for wt in Worktree.objects.exclude(extra__worktree_path__isnull=True):
         recorded = (wt.extra or {}).get("worktree_path", "")
-        if recorded and str(Path(recorded).parent) == workspace_dir:
+        if not recorded:
+            continue
+        if set(_candidate_paths(str(Path(recorded).parent))) & workspace_candidates:
             return wt.ticket
     return None
 
