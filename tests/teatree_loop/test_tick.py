@@ -605,7 +605,7 @@ def test_render_pr_group_buckets_under_parent_ticket() -> None:
         "https://gitlab.com/x/y/-/merge_requests/370": "855",
         "https://gitlab.com/x/y/-/merge_requests/399": "855",
     }
-    line = _render_pr_group("acme", refs, ticket_index=ticket_index)
+    line = _render_pr_group("acme", refs, ticket_index=ticket_index, colorize=True)
     assert "#855:" in line
     assert "!370" in line
     assert "!399" in line
@@ -615,13 +615,13 @@ def test_render_pr_group_lists_orphans_when_no_match() -> None:
     from teatree.loop.rendering import _PRRef, _render_pr_group  # noqa: PLC0415
 
     refs = [_PRRef(iid=42, url="https://example.com/mr/42", annotation="")]
-    line = _render_pr_group("t3-teatree", refs, ticket_index={})
+    line = _render_pr_group("t3-teatree", refs, ticket_index={}, colorize=True)
     assert "!42" in line
     assert "#" not in line  # no ticket prefix
 
 
 def test_render_action_line_inlines_mrs_after_ready_tickets() -> None:
-    from teatree.loop.rendering import _IssueRef, _PRRef, _render_action_line  # noqa: PLC0415
+    from teatree.loop.rendering import _IssueRef, _OverlayActionRefs, _PRRef, _render_action_line  # noqa: PLC0415
 
     pr_refs = [
         _PRRef(iid=370, url="https://gitlab.com/x/y/-/merge_requests/370", annotation=""),
@@ -638,10 +638,9 @@ def test_render_action_line_inlines_mrs_after_ready_tickets() -> None:
 
     line = _render_action_line(
         "acme",
-        pr_refs=pr_refs,
-        disposition_refs={},
-        ready_refs=ready_refs,
+        _OverlayActionRefs(pr_refs=pr_refs, disposition_refs={}, ready_refs=ready_refs),
         ticket_index=ticket_index,
+        colorize=True,
     )
 
     # !370 should appear inline after #855, !368 should remain in the standalone PR group.

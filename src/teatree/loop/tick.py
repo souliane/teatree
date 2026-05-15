@@ -259,7 +259,7 @@ def run_tick(
     _execute_mechanical(report)
     _persist_agent_dispatches(report)
 
-    zones = zones_for(report.actions)
+    zones = zones_for(report.actions, colorize=colorize)
     _write_tick_meta(started_at, target=statusline_path)
     if report.errors:
         zones.action_needed.append(f"scanner errors: {', '.join(report.errors)}")
