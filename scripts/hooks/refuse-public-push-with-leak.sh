@@ -2,10 +2,13 @@
 # Pre-push hook: public-repo privacy gate (#685).
 #
 # Refuses `git push` when the `origin` remote resolves to a PUBLIC
-# repository and the branch-vs-base diff fails `t3 tool privacy-scan`
-# (a planted secret, an internal `/Users/`-`/home/` path, a private IP,
-# an API token, an internal hostname, or a T3_BANNED_TERM). Pushes to a
-# private remote, and clean pushes to a public remote, pass through.
+# repository and the branch-vs-base diff OR the commit messages in the
+# push range fail `t3 tool privacy-scan` (a planted secret, an internal
+# `/Users/`-`/home/` path, a private IP, an API token, an internal
+# hostname, or a T3_BANNED_TERM). Commit messages and trailers reach
+# public history just like file content, so they are scanned too (#703).
+# Pushes to a private remote, and clean pushes to a public remote, pass
+# through.
 #
 # This is the deterministic enforcement home for the contribute-mode
 # rule "no customer/internal identifier reaches a public repo": the
@@ -78,16 +81,22 @@ while read -r local_ref local_sha remote_ref remote_sha; do
 
   if [ -n "${base}" ]; then
     diff=$(git diff "${base}" "${local_sha}" 2>/dev/null || true)
+    msgs=$(git log --format='%B' "${base}..${local_sha}" 2>/dev/null || true)
   else
     # No comparison point (brand-new repo / unknown base): scan the
     # whole tree at the pushed sha rather than skipping the gate.
     diff=$(git show "${local_sha}" 2>/dev/null || true)
+    msgs=$(git log --format='%B' "${local_sha}" 2>/dev/null || true)
   fi
 
-  [ -n "${diff}" ] || continue
+  # Commit messages and trailers reach public history exactly like file
+  # content does (a `Co-authored-by:` line carrying an internal/customer
+  # address is the canonical case). `git diff` excludes them, so scan the
+  # range's message bodies alongside the diff (#703).
+  [ -n "${diff}${msgs}" ] || continue
 
   report=$(mktemp "${TMPDIR:-/tmp}/t3-privacy-gate.XXXXXX")
-  if ! printf '%s\n' "${diff}" | ${scan_cmd} - >"${report}" 2>&1; then
+  if ! { printf '%s\n' "${diff}"; printf '%s\n' "${msgs}"; } | ${scan_cmd} - >"${report}" 2>&1; then
     echo "✗ refuse: push to PUBLIC repo '${slug}' carries privacy findings on '${local_ref}'."
     echo "  Findings (line / category / redacted match):"
     # The scanner writes a deterministic plain-text summary to stdout
