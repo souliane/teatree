@@ -2,6 +2,7 @@ from teatree.core.models.errors import InvalidTransitionError, QualityGateError
 from teatree.core.models.incoming_event import IncomingEvent
 from teatree.core.models.intent_classification import IntentClassification
 from teatree.core.models.pull_request import PullRequest
+from teatree.core.models.reply_dispatch import ReplyDispatch
 from teatree.core.models.session import Session
 from teatree.core.models.task import Task, TaskAttempt
 from teatree.core.models.ticket import Ticket
@@ -16,6 +17,7 @@ __all__ = [
     "Ports",
     "PullRequest",
     "QualityGateError",
+    "ReplyDispatch",
     "Session",
     "Task",
     "TaskAttempt",
