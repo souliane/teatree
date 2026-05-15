@@ -43,7 +43,14 @@ The loop tick scanner classifies an `IncomingEvent` and the event router routes 
 - `event.body` — the question text
 - `event.id` — the database PK; the basis for the idempotency key
 
-> TODO(#670 task #29): the loop/phase dispatcher routing `answering` tasks to this skill is a separate, deferred change. Do not wire dispatch here — this skill only documents the behaviour the dispatcher will invoke.
+The dispatcher (`teatree.loop.dispatch`) routes the `answering`-phase
+`incoming_event.task_needed` signal to this skill (`t3:answerer`) with a
+statusline mirror, exactly like the reviewer dual-dispatch. It also
+resolves `require_human_approval_to_answer` once (active-overlay →
+global → default, mirrors `require_human_approval_to_merge`) and stamps
+it into the agent payload as an advisory convenience mirror. The
+autonomy gate below is the source of truth: always re-resolve the
+setting at task start (the payload stamp is a hint, not authoritative).
 
 ## Autonomy Gate (read first)
 
@@ -63,9 +70,11 @@ mirroring `require_human_approval_to_merge`.
 
 Resolve the effective value with
 `teatree.config.get_effective_settings().require_human_approval_to_answer`
-(env → active-overlay override → global → default, exactly like every
-other entry in `OVERLAY_OVERRIDABLE_SETTINGS`). Never hard-code the
-behaviour; always read the resolved setting at the start of the task.
+(active-overlay override → global → default, exactly like every other
+entry in `OVERLAY_OVERRIDABLE_SETTINGS` and mirroring
+`require_human_approval_to_merge` — there is no env-var layer for this
+setting). Never hard-code the behaviour; always read the resolved
+setting at the start of the task.
 
 In `interactive` mode every publishing action prompts regardless — the
 setting only changes behaviour for `auto` overlays. See

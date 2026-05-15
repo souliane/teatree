@@ -57,6 +57,7 @@ The repo's `AGENTS.md` § "Test-Writing Doctrine" carries the authoritative rule
 - Flags: `--reuse-db`, `--failed-first`, optional `--parallel`.
 - Always run with `--reuse-db` for speed unless schema changed.
 - Use `--failed-first` to quickly re-verify fixes.
+- **`t3 <overlay> run tests` and a raw `uv run pytest` can report different total counts** (the CLI wrapper may apply a narrower collection scope than a bare pytest invocation). A passed-count delta between the two runners is a collection difference, **not** a regression — confirm by checking the delta exists on the untouched base commit too, and don't burn a cycle hunting "missing" tests when your diff touches no test files. When a brief cites an expected count, match it with the **same runner** that produced it.
 
 ### Frontend Lint
 
