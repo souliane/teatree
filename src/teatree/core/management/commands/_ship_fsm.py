@@ -15,14 +15,20 @@ from django_fsm import TransitionNotAllowed
 
 from teatree.core.models import Ticket
 
-# States at or beyond REVIEWED: nothing to reconcile, and NOT legal
-# ``reconcile_reviewed`` sources — ``reconcile_fsm_for_ship`` no-ops here
-# so a post-ship re-entry cannot raise raw ``TransitionNotAllowed``.
+# States where the ship reconcile is a no-op: already shippable
+# (``REVIEWED``) or genuinely post-ship-success (``SHIPPED``/``MERGED``/
+# ``DELIVERED``). ``IN_REVIEW`` is intentionally NOT here (#798): a ticket
+# stranded at ``IN_REVIEW`` by a failed/incomplete prior ship whose phase
+# chain is split across sessions must reconcile ``IN_REVIEW → REVIEWED``
+# so ``ship()`` can re-fire — otherwise ``pr create`` returns the
+# ``{'allowed': False, 'missing': []}`` deadlock. ``reconcile_reviewed``
+# now lists ``IN_REVIEW`` as a legal source; the ``suppress`` below remains
+# defence-in-depth so any non-source state still degrades to the caller's
+# structured failure rather than a raw raise.
 _SHIP_RECONCILE_NOOP_STATES = frozenset(
     {
         Ticket.State.REVIEWED,
         Ticket.State.SHIPPED,
-        Ticket.State.IN_REVIEW,
         Ticket.State.MERGED,
         Ticket.State.DELIVERED,
     }

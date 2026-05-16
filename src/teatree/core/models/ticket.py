@@ -186,20 +186,37 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
             State.CODED,
             State.TESTED,
             State.REVIEWED,
+            State.IN_REVIEW,
         ],
         target=State.REVIEWED,
     )
     def reconcile_reviewed(self) -> None:
-        """Gate-driven catch-up: any pre-REVIEWED state → REVIEWED (#694).
+        """Gate-driven FSM catch-up to REVIEWED (#694, #798).
+
+        Any pre-REVIEWED state, plus the recoverable ``IN_REVIEW``
+        stuck-state, reconciles to ``REVIEWED``.
 
         The shipping gate is the single source of truth: it verifies the
-        required phases on ``Session.visited_phases`` *before* calling this.
-        Unlike ``review()``, there is no completed-reviewing-task condition —
-        the session record already attests the work was done. This exists so
-        the loop path (which advances ``visited_phases`` without always
-        firing every FSM hop) and the CLI path cannot disagree: a passing
-        gate implies a shippable FSM state, so ``ship()`` never raises a raw
-        ``TransitionNotAllowed`` at ``pr create``.
+        required phases aggregated across **all** of the ticket's sessions
+        (``aggregate_phase_records``/``check_gate_across_ticket``) *before*
+        calling this. Unlike ``review()``, there is no completed-reviewing-
+        task condition — the session record already attests the work was
+        done. This exists so the loop path (which advances ``visited_phases``
+        without always firing every FSM hop) and the CLI path cannot
+        disagree: a passing gate implies a shippable FSM state, so ``ship()``
+        never raises a raw ``TransitionNotAllowed`` at ``pr create``.
+
+        ``IN_REVIEW`` is a legal source (#798): a ticket whose phase chain is
+        split across sessions (the maker≠checker + fresh-session norm) can
+        get stranded at ``IN_REVIEW`` when an earlier ship enqueued but the
+        push/PR never landed (e.g. the #793-class ``ensure-pr`` race). The
+        gate then aggregates ``missing: []`` but ``ship()`` (source
+        ``[REVIEWED, SHIPPED]``) could not fire from ``IN_REVIEW`` — the
+        ``{'allowed': False, 'missing': []}`` deadlock. Reconciling
+        ``IN_REVIEW → REVIEWED`` lets ``ship()`` re-fire; ``execute_ship``
+        is state-guarded/idempotent so the retry is safe. ``SHIPPED`` is
+        deliberately NOT a source: that is genuine post-ship success, not a
+        stuck state.
         """
 
     def aggregate_phase_records(self) -> tuple[list[str], dict[str, dict[str, str]]]:
