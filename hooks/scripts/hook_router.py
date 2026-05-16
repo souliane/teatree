@@ -767,14 +767,15 @@ def handle_read_dedup(data: dict) -> None:
 def _durable_session_snapshot(session_id: str) -> str:
     """Build a recovery snapshot for *session_id* from DURABLE state only.
 
-    Issue #778: a background sub-agent (loop singleton, reviewer, task
-    agent) auto-compacts without ever running ``/t3:retro``, so the
-    behavioral "agent writes its own snapshot" path never fires for it.
-    Reconstruct "who am I / what am I doing / where" purely from state
-    that already outlives the transcript: the loop-registry entries this
-    session owns (agentId + self-contained spawn brief) and the per
-    -session active-repos / loaded-skills tracking files. No reliance on
-    the agent having done anything.
+    Issue #778: a background sub-agent (a per-unit loop sub-agent,
+    reviewer, task agent) auto-compacts without ever running
+    ``/t3:retro``, so the behavioral "agent writes its own snapshot" path
+    never fires for it. Reconstruct "who am I / what am I doing / where"
+    purely from state that already outlives the transcript: whether this
+    session is the loop-tick owner (#786 WS3 — a single Django-free
+    ``_OWNER_LOOP`` record; there is no roster of singletons and no spawn
+    brief) and the per-session active-repos / loaded-skills tracking
+    files. No reliance on the agent having done anything.
     """
     lines = [
         f"# Auto-recovery snapshot — session `{session_id}`",
@@ -791,13 +792,20 @@ def _durable_session_snapshot(session_id: str) -> str:
         if isinstance(entry, dict) and entry.get("session_id") == session_id
     ]
     if owned:
-        lines += ["", "## Loop assignment (this session owns these singletons)"]
-        for name, entry in sorted(owned):
+        lines += [
+            "",
+            "## Loop assignment",
+            (
+                "This session is the loop-tick OWNER. The loop is tick-driven "
+                "(#786 WS3): there is no roster of long-lived sub-agents to "
+                "resume — re-arm by ensuring the `t3 loop tick` cron is "
+                "registered for this session; each tick atomically claims the "
+                "next pending unit via `t3 loop claim-next`."
+            ),
+        ]
+        for _name, entry in sorted(owned):
             agent_id = entry.get("agent_id") or "(agent id not recorded)"
-            lines.append(f"- **{name}** — resume by agentId `{agent_id}`")
-            brief = (entry.get("spawn_brief") or "").strip()
-            if brief:
-                lines.append(f"  - Brief: {brief}")
+            lines.append(f"- tick-owner agentId `{agent_id}` (pid {entry.get('pid', '?')})")
 
     active = _read_lines(_state_file(session_id, "active"))
     if active:
@@ -941,16 +949,12 @@ def handle_post_compact(data: dict) -> None:
 # SessionEnd hook additionally clears the entry on a clean exit, so the
 # registry self-heals on both crash (pid dies) and graceful shutdown.
 
-LOOP_AGENT_NAMES: tuple[str, str, str, str] = (
-    "t3-main-loop",
-    "t3-review-loop",
-    "t3-cross-review-loop",
-    "t3-bug-hunt",
-)
-
-# The ownership anchor: whichever session owns the main loop owns the
-# logical orchestration (and the "TEATREE LOOP" session name).
-_OWNER_LOOP = LOOP_AGENT_NAMES[0]
+# #786 WS3: the immortal-roster name tuple (t3-main/review/cross-review/
+# bug-hunt) is RETIRED — there is no fixed set of long-lived loop
+# sub-agents. ``_OWNER_LOOP`` remains only as the single registry key
+# identifying which *session* is the tick-owner (the Django-free anchor
+# the #758/#810 Stop self-pump gates on).
+_OWNER_LOOP = "t3-loop-tick-owner"
 
 # Overridable for tests; the controlling terminal otherwise.
 _TTY_PATH = "/dev/tty"
@@ -1113,56 +1117,12 @@ def _emit_osc_title() -> None:
         tty.write("\033]0;TEATREE LOOP\007")
 
 
-# ── Self-contained per-loop spawn briefs ──────────────────────────────
-#
-# DURABILITY MODEL (user-locked): the loop is SESSION-BOUND. Zero open
-# Claude sessions ⇒ the loop is DEAD — this is the accepted, designed
-# behavior, NOT a SPOF to patch (no OS daemon / launchd). What survives
-# an owner death is *ownership transfer*: any other open (or newly
-# opened) session reads the registry, claims ownership, and RE-SPAWNS
-# every registered loop FROM ITS PERSISTED BRIEF.
-#
-# Cross-session takeover MUST re-spawn from the brief — agentIds are NOT
-# resumable across different Claude sessions. Resume-by-agentId is valid
-# ONLY same-session (the compaction path). Each brief is therefore
-# self-contained: a successor session that never spawned the loop can
-# re-establish it from the brief text alone.
-
-_LOOP_SPAWN_BRIEFS: dict[str, str] = {
-    "t3-main-loop": (
-        "t3-main-loop — backlog/ticket-implementation loop. Drive the open-ticket "
-        "backlog toward zero, one ticket at a time, smallest-first. Spawns >=1 "
-        "sub-agent PER TICKET; each per-ticket sub-agent spawns sub-sub-agents "
-        "per workflow step (scope/code/review/ship) where it fits. Worktree-first, "
-        "TDD, maker!=checker self-review; the review-loop does the independent merge."
-    ),
-    "t3-review-loop": (
-        "t3-review-loop — reviews EVERY merged PR (in addition to the maker!=checker "
-        "self-review done while implementing a ticket) and performs the independent "
-        "merge on green for auto-merge repos. Serialized against t3-cross-review-loop."
-    ),
-    "t3-cross-review-loop": (
-        "t3-cross-review-loop — architectural & cross-repo review; serialized against "
-        "t3-review-loop (shared private repos). Catches cross-cutting regressions a "
-        "single-PR review misses."
-    ),
-    "t3-bug-hunt": (
-        "t3-bug-hunt — proactively hunts bugs in teatree core + its registered "
-        "overlay; self-QA on loop/statusline/CLI (the /teatree-bughunt skill); files "
-        "issues and fixes worktree-isolated; never touches branches/PRs the other "
-        "loops own."
-    ),
-}
-
-
-def _loop_spawn_briefs() -> dict[str, str]:
-    """Return the self-contained spawn brief for every registered loop.
-
-    The brief is what a *takeover* session re-spawns from — it must be
-    standalone (no reliance on a prior session's in-memory state) and
-    name the loop it re-establishes.
-    """
-    return dict(_LOOP_SPAWN_BRIEFS)
+# #786 WS3: the per-loop spawn-brief machinery (_LOOP_SPAWN_BRIEFS /
+# _loop_spawn_briefs / _brief_block / _DURABILITY_NOTE) is RETIRED — there
+# is no immortal roster to re-spawn from a brief. The loop is the
+# `t3 loop tick` cron + WS1 atomic claim-next + WS2 LoopLease; surviving
+# an owner death is "the next session becomes tick-owner and keeps
+# ticking", not "re-spawn N sub-agents from persisted briefs".
 
 
 def _now_ts() -> int:
@@ -1177,162 +1137,114 @@ _RENAME_REMINDER = (
     "was available."
 )
 
-_DURABILITY_NOTE = (
-    "\n\nDURABILITY: the loop is session-bound. If THIS session closes and another "
-    "is open, that session takes over and re-spawns these loops from their persisted "
-    "briefs. If NO session is open the loop is paused by design (it resumes on the "
-    "next session start) — the recurring CronCreate tick is an in-session convenience "
-    "only, never the durability mechanism."
+
+# ── #786 WS3: tick-dispatch directives (immortal roster retired) ──────
+#
+# The loop is no longer a fixed roster of long-lived sub-agents that a
+# coordinator must keep alive / re-spawn on death/compaction. It is
+# driven by the machine-wide ``t3 loop tick`` cron (#676): each tick the
+# loop-owner session atomically claims pending DB work (WS1
+# ``t3 loop claim-next`` — conditional-UPDATE CAS) and spawns a FRESH,
+# BOUNDED sub-agent for just that unit, which returns. Statelessness
+# across ticks IS the compaction-proofing — a worker dying mid-task
+# leaves its Task reclaimable; the next tick re-dispatches it. The
+# loop-tick *executor* mutex is the WS2 ``LoopLease`` row; this
+# Django-free hook registry only records which *session* is the
+# tick-owner (one record, never a roster) so the #758/#810 Stop-hook
+# self-pump can gate on it without a Django bootstrap in the hot path.
+
+_TICK_DISPATCH_OWNER_DIRECTIVE = (
+    "TEATREE LOOP — tick-driven, no roster to spawn.\n\n"
+    "This session is the teatree loop-tick OWNER. The loop is NOT a set of "
+    "long-lived sub-agents you spawn or keep alive: it is the recurring "
+    "`t3 loop tick` cron. Each tick, claim the next pending unit atomically "
+    "with `t3 loop claim-next` and spawn ONE fresh, bounded sub-agent for "
+    "just that unit (it does the work and returns). No persistent loop "
+    "roster, nothing to re-spawn on compaction — a worker dying mid-task "
+    "leaves its Task reclaimable and the next tick re-dispatches it. Ensure "
+    "the `t3 loop tick` cron is registered for this session." + _RENAME_REMINDER
+)
+
+_TICK_DISPATCH_NON_OWNER_DIRECTIVE = (
+    "TEATREE LOOP — tick-driven; another session owns the tick.\n\n"
+    "Another live session is the teatree loop-tick owner (owner session "
+    "{owner_session}). Do NOT arm a competing `t3 loop tick` cron and do "
+    "NOT spawn loop sub-agents — the owner's tick atomically claims all "
+    "pending work (`t3 loop claim-next`), so a second tick would simply "
+    "find nothing to claim. Stay idle with respect to the loop."
 )
 
 
-def _brief_block(briefs: dict[str, str]) -> str:
-    return "\n".join(f"  {i}. {briefs[name]}" for i, name in enumerate(LOOP_AGENT_NAMES, 1))
+def _tick_owner_record(session_id: str, agent_id: str) -> dict[str, dict]:
+    """Single owner-session record under ``_OWNER_LOOP`` (no roster, #786 WS3).
 
-
-def _spawn_directive(briefs: dict[str, str] | None = None) -> str:
-    """Fresh-spawn directive: no live owner anywhere, this session claims it."""
-    briefs = briefs or _loop_spawn_briefs()
-    return (
-        "TEATREE LOOP ORCHESTRATION — establish the singleton loop sub-agents.\n\n"
-        "This session OWNS the teatree loop orchestration (no other live session "
-        "holds it). Idempotently establish/verify these four machine-wide SINGLETON "
-        "loop sub-agents (all always-started) — spawn each only if not already live, "
-        "otherwise verify it:\n" + _brief_block(briefs) + _RENAME_REMINDER + _DURABILITY_NOTE
-    )
-
-
-# Back-compat alias: existing #718 tests assert against this constant.
-_SPAWN_DIRECTIVE = _spawn_directive()
-
-
-def _takeover_directive(briefs: dict[str, str]) -> str:
-    """Cross-session takeover: prior owner is dead, THIS session re-spawns.
-
-    Re-spawn FROM THE BRIEF — the dead owner's agentIds are NOT resumable
-    in a different session, so they are deliberately not surfaced here.
+    The hook layer only needs *which session* is the tick-owner so the
+    Stop-hook self-pump (#758/#810) can gate on it Django-free. The
+    immortal-roster fields (per-loop ``spawn_brief``) are retired — there
+    is nothing to re-spawn. The owner pid is ``os.getppid()`` (the
+    long-lived session process, not this ephemeral hook subprocess).
     """
-    return (
-        "TEATREE LOOP ORCHESTRATION — OWNERSHIP TRANSFER, re-spawn from brief.\n\n"
-        "The previous loop-owner session has died. THIS session is taking over the "
-        "teatree loop orchestration. The previous owner's agentIds are NOT resumable "
-        "from a different session — do NOT attempt to resume by the recorded agent "
-        "id. RE-SPAWN every loop below FRESH from its self-contained brief, then this "
-        "session owns them:\n" + _brief_block(briefs) + _RENAME_REMINDER + _DURABILITY_NOTE
-    )
-
-
-def _resume_directive(registry: dict[str, dict]) -> str:
-    """Same-session restart (e.g. post-compaction): resume by agentId.
-
-    The ONLY place resume-by-agentId is valid — the session and thus the
-    agentIds are unchanged; re-spawning would orphan the live sub-agents.
-    """
-    lines = []
-    for i, name in enumerate(LOOP_AGENT_NAMES, 1):
-        entry = registry.get(name, {})
-        agent_id = entry.get("agent_id") or "(agent id not recorded — re-spawn this one from brief)"
-        lines.append(f"  {i}. {name} — RESUME by recorded agent id: {agent_id}")
-    return (
-        "TEATREE LOOP ORCHESTRATION — same session, resume in place.\n\n"
-        "This session already owns the loop (same session_id). The loop sub-agents "
-        "are still live under this session — RESUME them by their recorded agent ids "
-        "(do NOT re-spawn; that would orphan the running sub-agents). Re-spawn from "
-        "brief only any loop whose agent id is missing:\n" + "\n".join(lines) + _RENAME_REMINDER + _DURABILITY_NOTE
-    )
-
-
-def _reattach_directive(owner: dict) -> str:
-    agent_id = owner.get("agent_id") or "(agent id not recorded — re-attach by the live loop's agentId)"
-    return (
-        "TEATREE LOOP ORCHESTRATION — re-attach, do NOT spawn.\n\n"
-        "Another live session already owns the teatree loop orchestration "
-        f"(owner session {owner.get('session_id', '?')}). The singleton loop sub-agents "
-        "are already established. RE-ATTACH to the existing logical loop by the recorded "
-        f"agent id: {agent_id}. Do not spawn duplicate t3-main-loop / t3-review-loop / "
-        "t3-cross-review-loop / t3-bug-hunt sub-agents and do not fight the owner "
-        "session — that double-reviews and races on PR creation."
-    )
-
-
-def _claim_all_loops(registry: dict[str, dict], session_id: str, agent_id: str) -> dict[str, dict]:
-    """Record this session as owner of EVERY loop, preserving briefs.
-
-    The brief is the durable contract a future takeover re-spawns from,
-    so it is (re)written from the canonical set rather than trusted from
-    a possibly-stale prior entry. The owner pid is ``os.getppid()`` —
-    the long-lived Claude session process, not this ephemeral hook.
-    """
-    briefs = _loop_spawn_briefs()
-    pid = os.getppid()
-    ts = _now_ts()
-    for name in LOOP_AGENT_NAMES:
-        registry[name] = {
+    return {
+        _OWNER_LOOP: {
             "session_id": session_id,
             "agent_id": agent_id,
-            "pid": pid,
-            "spawn_brief": briefs[name],
-            # heartbeat_ts is written but not yet read — liveness is
-            # pid_alive only. Kept as a forward-looking field for the
-            # deferred DB-backed ownership store (#745), which would
-            # consume it for staleness/age queries the JSON path does
-            # not need. Documented as such in BLUEPRINT so it does not
-            # imply a liveness mechanism that does not exist today.
-            "heartbeat_ts": ts,
+            "pid": os.getppid(),
+            "heartbeat_ts": _now_ts(),
         }
-    return registry
+    }
 
 
 def handle_session_start_bootstrap(data: dict) -> None:
-    """Emit the loop bootstrap directive, transferring ownership if orphaned.
+    """Emit the tick-dispatch bootstrap directive (#786 WS3 — roster retired).
 
-    Four cases, decided from the flock-guarded registry. (1) A different
-    live session owns it: re-attach, do not spawn. (2) This session
-    already owns it (same session_id, e.g. post compaction): resume the
-    still-live sub-agents by agentId. (3) The owner is dead but loops
-    were registered with briefs: this session takes over and re-spawns
-    every loop from its brief (agentIds are not cross-session resumable).
-    (4) No owner registered at all (fresh machine): fresh spawn.
+    The immortal-singleton roster (spawn/takeover/resume/re-attach a fixed
+    set of long-lived loop sub-agents) is GONE. The loop is the
+    ``t3 loop tick`` cron + WS1 atomic ``claim-next`` + WS2 ``LoopLease``
+    tick mutex. This hook only decides which *session* is the tick-owner
+    (one Django-free record, so the #758/#810 Stop self-pump can gate on
+    it without a Django bootstrap) and orients the session accordingly:
+
+    No live owner, or this session already owns it (e.g. post
+    compaction): this session is/stays the tick-owner — claim it and emit
+    the tick-dispatch owner directive. Post-compaction there is nothing
+    to re-spawn (statelessness across ticks is the compaction-proofing);
+    the same session simply continues ticking.
+
+    A *different* live session owns it: stay idle w.r.t. the loop (a
+    non-owner tick would find nothing to claim — #789 subsumed); never
+    arm a competing tick or spawn loop sub-agents.
+
+    The read → decide → write stays one flock-guarded transaction so two
+    fresh sessions in the same window cannot both claim (TOCTOU).
     """
     session_id = data.get("session_id", "")
     if not session_id:
         return
     agent_id = data.get("agent_id", "")
 
-    # The whole read → decide → write is one flock-guarded transaction:
-    # two fresh sessions starting in the same window must not both read
-    # "no owner" and both claim (lost-update / double-claim TOCTOU).
     with _loop_registry_txn() as box:
-        raw = box[0]
-        had_registered_loops = bool(raw)  # before the dead-owner prune
-        registry = _prune_dead_owner(raw)
+        registry = _prune_dead_owner(box[0])
         owner = registry.get(_OWNER_LOOP)
 
         if owner is not None and owner.get("session_id") != session_id:
-            # (1) A different live session owns it — defer, never double-spawn.
-            box[0] = registry  # persist the prune only
-            context = _reattach_directive(owner)
+            # A different live session owns the tick — stay idle, never
+            # arm a competing tick (#789 subsumed: a non-owner tick finds
+            # nothing to claim anyway). Persist the prune only.
+            box[0] = registry
+            context = _TICK_DISPATCH_NON_OWNER_DIRECTIVE.format(
+                owner_session=owner.get("session_id", "?"),
+            )
             emit_osc = False
-        elif owner is not None and owner.get("session_id") == session_id:
-            # (2) Same session restarting (compaction) — resume by agentId.
-            # The recorded agent_id is still valid by definition (same
-            # session ⇒ same live sub-agents), and _resume_directive is
-            # built from it. Preserve it; do NOT overwrite with the new
-            # SessionStart-supplied agent_id, which would make the
-            # registry disagree with the directive (says resume <old>,
-            # stores <new>).
-            context = _resume_directive(registry)
-            box[0] = _claim_all_loops(registry, session_id, owner.get("agent_id", "") or agent_id)
-            emit_osc = True
         else:
-            # No live owner: (3) dead owner left registered loops to
-            # transfer, or (4) a genuinely fresh machine.
-            box[0] = _claim_all_loops(registry, session_id, agent_id)
-            context = _takeover_directive(_loop_spawn_briefs()) if had_registered_loops else _spawn_directive()
+            # No live owner, or this session already owns it (incl. the
+            # post-compaction same-session restart — nothing to re-spawn,
+            # the cron keeps ticking). This session is the tick-owner.
+            box[0] = _tick_owner_record(session_id, owner.get("agent_id", "") if owner else agent_id or "")
+            context = _TICK_DISPATCH_OWNER_DIRECTIVE
             emit_osc = True
 
-    # OSC write is a side effect on the tty, not the registry — keep it
-    # out of the lock's critical section (the flock guards file state).
+    # OSC write is a tty side effect, not registry state — keep it out of
+    # the flock critical section.
     if emit_osc:
         _emit_osc_title()
 
@@ -1340,13 +1252,14 @@ def handle_session_start_bootstrap(data: dict) -> None:
 
 
 def handle_session_end_loop_registry(data: dict) -> None:
-    """Release ALL of the owner's loop slots on a clean session exit.
+    """Release the tick-owner record on a clean session exit (#786 WS3).
 
     The lifecycle counterpart to :func:`handle_session_start_bootstrap`:
-    a clean exit relinquishes ownership of every loop the session owned
-    immediately, so the next session takes over without waiting for
+    a clean exit relinquishes the single tick-owner record immediately,
+    so the next session becomes tick-owner without waiting for
     pid-liveness to expire. Only the recorded owner's own SessionEnd
-    clears slots — a non-owner ending must not evict the live owner.
+    clears it — a non-owner ending must not evict the live owner. (Post
+    #786 WS3 there is one owner record, not a roster of slots.)
     """
     session_id = data.get("session_id", "")
     if not session_id:
@@ -1476,8 +1389,10 @@ def _loop_self_pump(data: dict) -> bool | None:
     reason = (
         "TEATREE LOOP SELF-PUMP — consolidated work remains; continue the loop "
         "without waiting for an external prompt. Run `t3 loop tick`, then "
-        "`t3 loop pending-spawn --json` and dispatch each entry (Agent tool, "
-        "`t3 loop spawn-claim <task_id>` after each). Outstanding now:\n" + _format_pending_summary(pending)
+        "repeatedly `t3 loop claim-next` and spawn ONE fresh, bounded sub-agent "
+        "(Agent tool) for each claimed unit until it returns nothing — the "
+        "claim is atomic (#786 WS1), so no separate post-spawn claim step and "
+        "no double-dispatch. Outstanding now:\n" + _format_pending_summary(pending)
     )
     json.dump({"decision": "block", "reason": reason}, sys.stdout)
     return True
