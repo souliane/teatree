@@ -12,7 +12,6 @@ the test suite at all.
 from operator import itemgetter
 from pathlib import Path
 from subprocess import CompletedProcess
-from typing import ClassVar
 from unittest.mock import patch
 
 import pytest
@@ -46,20 +45,20 @@ class TestRegisterOverlayCommandsAllowlistFilter:
 
 
 class TestInferOverlayFromIssueUrl:
-    """``Ticket._infer_overlay`` walks ``workspace_repos`` to map URL → overlay.
+    """``Ticket._infer_overlay`` maps URL → overlay via ``get_workspace_repos()``.
 
-    The match-and-return branch on line 86 needs an overlay whose
-    ``config.workspace_repos`` contains a substring of ``issue_url``.
+    The match-and-return branch needs an overlay whose
+    ``get_workspace_repos()`` result contains a substring of ``issue_url``.
     """
 
     def test_returns_overlay_name_when_repo_slug_matches_url(self) -> None:
         from teatree.core.models.ticket import Ticket  # noqa: PLC0415
 
-        class _Cfg:
-            workspace_repos: ClassVar[list[str]] = ["example/widgets"]
-
         class _Overlay:
-            config = _Cfg()
+            config = None
+
+            def get_workspace_repos(self) -> list[str]:
+                return ["example/widgets"]
 
         ticket = Ticket(issue_url="https://github.com/example/widgets/issues/3")
         with patch("teatree.core.overlay_loader.get_all_overlays", return_value={"widgets": _Overlay()}):
@@ -68,11 +67,11 @@ class TestInferOverlayFromIssueUrl:
     def test_returns_empty_when_no_repo_slug_matches(self) -> None:
         from teatree.core.models.ticket import Ticket  # noqa: PLC0415
 
-        class _Cfg:
-            workspace_repos: ClassVar[list[str]] = ["acme/other"]
-
         class _Overlay:
-            config = _Cfg()
+            config = None
+
+            def get_workspace_repos(self) -> list[str]:
+                return ["acme/other"]
 
         ticket = Ticket(issue_url="https://github.com/example/widgets/issues/3")
         with patch("teatree.core.overlay_loader.get_all_overlays", return_value={"x": _Overlay()}):

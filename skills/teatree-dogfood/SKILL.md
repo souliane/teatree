@@ -30,16 +30,16 @@ Apply this checklist whenever you modify CLI commands, loop scanners, dispatch l
 2. **Tick the loop and read the file** — for any change touching `loop/`, `scanners/`, `dispatch/`, or `statusline/`:
 
    ```bash
-   t3 teatree loop tick --statusline-file /tmp/sl.txt --json | jq .
+   t3 loop tick --statusline-file /tmp/sl.txt --json | jq .
    cat /tmp/sl.txt          # what the user sees
    od -c /tmp/sl.txt | head # what's actually in the bytes (ANSI / OSC 8)
    ```
 
    The JSON is the structured contract; the file is the rendered contract. Both must match the change you intended.
-3. **Exercise both color paths** — `NO_COLOR=1 t3 teatree loop tick --statusline-file /tmp/sl-nc.txt && grep -c $'\033' /tmp/sl-nc.txt` must return `0`. Without `NO_COLOR`, the file must contain `\033[2;37m` (anchors), `\033[1;31m` (action_needed), or `\033[1;36m` (in_flight) when the matching zone is non-empty.
+3. **Exercise both color paths** — `NO_COLOR=1 t3 loop tick --statusline-file /tmp/sl-nc.txt && grep -c $'\033' /tmp/sl-nc.txt` must return `0`. Without `NO_COLOR`, the file must contain `\033[2;37m` (anchors), `\033[1;31m` (action_needed), or `\033[1;36m` (in_flight) when the matching zone is non-empty.
 4. **Exercise both overlay paths** when you have more than one overlay registered:
-   - `t3 teatree loop tick` (no flag) → multi-overlay; rendered lines prefixed with `[<overlay>]`.
-   - `t3 teatree loop tick --overlay <name>` → single overlay; lines unprefixed.
+   - `t3 loop tick` (no flag) → multi-overlay; rendered lines prefixed with `[<overlay>]`.
+   - `t3 loop tick --overlay <name>` → single overlay; lines unprefixed.
 5. **Exercise the full task lifecycle** when the change touches task execution. Create a task, run a tick, verify the worker picks it up. Don't declare "auto-start works" without observing a task transition from PENDING → CLAIMED → DONE in the DB.
 6. **Verify the OSC 8 hyperlinks render** in your real terminal (iTerm2, Kitty, WezTerm, Ghostty), not just in the byte stream. A click-through that lands on the wrong URL is a render bug; a click-through that opens nothing is a terminal limitation worth noting.
 7. **Confirm the Claude Code statusline hook is wired** — `cat ~/.claude/settings.json | jq .statusLine.command` should point at `hooks/scripts/statusline.sh` (either via plugin or hand-wired). The hook is just a `cat` of `${XDG_DATA_HOME:-$HOME/.local/share}/teatree/statusline.txt` — if the bottom bar is blank, the hook is the first thing to check.
