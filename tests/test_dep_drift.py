@@ -18,6 +18,9 @@ from teatree.utils.dep_drift import (
     editable_source_path,
     find_missing_dependencies,
     normalize,
+    running_env_is_uv_tool,
+    running_prefix,
+    running_python,
 )
 
 
@@ -148,3 +151,48 @@ class _FakeDist:
 
     def read_text(self, name: str) -> str | None:
         return self._files.get(name)
+
+
+class TestRunningEnvDetection:
+    """The dep-drift repair must act on the env that executes ``t3`` (#805)."""
+
+    def test_running_prefix_is_sys_prefix(self) -> None:
+        import sys  # noqa: PLC0415
+
+        assert running_prefix() == Path(sys.prefix)
+
+    def test_running_python_is_sys_executable(self) -> None:
+        import sys  # noqa: PLC0415
+
+        assert running_python() == Path(sys.executable)
+
+    def test_uv_tool_managed_when_prefix_under_uv_tool_dir(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        tool_dir = tmp_path / "uv" / "tools"
+        prefix = tool_dir / "teatree"
+        prefix.mkdir(parents=True)
+        monkeypatch.setenv("UV_TOOL_DIR", str(tool_dir))
+        with patch("teatree.utils.dep_drift.running_prefix", return_value=prefix):
+            assert running_env_is_uv_tool() is True
+
+    def test_not_uv_tool_managed_for_pyenv_prefix(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Regression (#805): a pyenv/venv editable install is not uv-tool managed.
+
+        It must therefore not be routed through ``uv tool install`` — that
+        would repair a foreign env and leave the running ``t3`` broken.
+        """
+        tool_dir = tmp_path / "uv" / "tools"
+        tool_dir.mkdir(parents=True)
+        pyenv_prefix = tmp_path / "pyenv" / "versions" / "3.13.11"
+        pyenv_prefix.mkdir(parents=True)
+        monkeypatch.setenv("UV_TOOL_DIR", str(tool_dir))
+        monkeypatch.setattr(Path, "home", classmethod(lambda _cls: tmp_path))
+        with patch("teatree.utils.dep_drift.running_prefix", return_value=pyenv_prefix):
+            assert running_env_is_uv_tool() is False
