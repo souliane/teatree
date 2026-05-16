@@ -24,7 +24,12 @@ from pathlib import Path
 import pytest
 
 import hooks.scripts.hook_router as router
-from hooks.scripts.hook_router import _write_loop_registry, handle_loop_self_pump, handle_session_end_self_pump
+from hooks.scripts.hook_router import (
+    _OWNER_LOOP,
+    _write_loop_registry,
+    handle_loop_self_pump,
+    handle_session_end_self_pump,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -39,11 +44,10 @@ def _isolation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 def _own_loop(session_id: str) -> None:
     _write_loop_registry(
         {
-            "t3-main-loop": {
+            _OWNER_LOOP: {
                 "session_id": session_id,
                 "agent_id": "a",
                 "pid": os.getpid(),
-                "spawn_brief": "t3-main-loop brief",
                 "heartbeat_ts": int(time.time()),
             }
         }
@@ -216,7 +220,7 @@ class TestStopHookFailsSafeWithoutTeatree:
             assert router._session_owns_loop("owner-y") is False
 
     def test_prune_dead_owner_degrades_when_teatree_unimportable(self) -> None:
-        registry = {"t3-main-loop": {"session_id": "s", "pid": os.getpid()}}
+        registry = {_OWNER_LOOP: {"session_id": "s", "pid": os.getpid()}}
         with self._teatree_unimportable():
             # Ownership unknown => empty registry (no entry can be
             # confirmed live without the pid-liveness primitive).

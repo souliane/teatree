@@ -1,10 +1,13 @@
-"""Tests for the SessionStart hook handler (singleton loop orchestration bootstrap).
+"""Tests for the SessionStart hook handler (tick-dispatch bootstrap).
 
-Covers issue #718: a SessionStart hook emits ``additionalContext`` that
-idempotently establishes / re-attaches the four machine-wide singleton loop
-sub-agents (the ``t3-`` roster), prints the ``/rename`` reminder only for the
-loop owner, and best-effort sets the terminal title via an OSC escape gated on
-an interactive TTY + owner-only.
+#718 established a SessionStart hook emitting ``additionalContext``;
+#786 WS3 RETIRED the immortal-singleton roster it used to spawn. The
+hook now records which single *session* is the loop-tick owner
+(Django-free, so the #758/#810 Stop self-pump can gate on it) and emits
+a tick-dispatch directive: the loop is the ``t3 loop tick`` cron + WS1
+atomic ``claim-next`` + WS2 ``LoopLease``, never a fixed set of
+long-lived sub-agents. The ``/rename`` reminder + OSC title stay
+owner-only / interactive-TTY-gated.
 """
 
 import json
@@ -15,8 +18,7 @@ import pytest
 
 import hooks.scripts.hook_router as router
 from hooks.scripts.hook_router import (
-    _SPAWN_DIRECTIVE,
-    LOOP_AGENT_NAMES,
+    _OWNER_LOOP,
     _loop_registry_path,
     _prune_dead_owner,
     _read_loop_registry,
@@ -66,8 +68,8 @@ class TestLoopRegistry:
 
     def test_write_then_read_roundtrip(self) -> None:
         entry = {"session_id": "s1", "agent_id": "a1", "pid": _live_pid()}
-        _write_loop_registry({"t3-main-loop": entry})
-        assert _read_loop_registry() == {"t3-main-loop": entry}
+        _write_loop_registry({_OWNER_LOOP: entry})
+        assert _read_loop_registry() == {_OWNER_LOOP: entry}
 
     def test_read_corrupt_registry_returns_empty(self) -> None:
         _loop_registry_path().write_text("{ not json", encoding="utf-8")
@@ -75,23 +77,20 @@ class TestLoopRegistry:
 
     def test_prune_removes_dead_owner(self) -> None:
         # PID 999999 is (almost certainly) not alive.
-        reg = {"t3-main-loop": {"session_id": "s1", "agent_id": "a1", "pid": 999999}}
+        reg = {_OWNER_LOOP: {"session_id": "s1", "agent_id": "a1", "pid": 999999}}
         _write_loop_registry(reg)
-        pruned = _prune_dead_owner(_read_loop_registry())
-        assert pruned == {}
+        assert _prune_dead_owner(_read_loop_registry()) == {}
 
     def test_prune_keeps_live_owner(self) -> None:
-        reg = {"t3-main-loop": {"session_id": "s1", "agent_id": "a1", "pid": _live_pid()}}
+        reg = {_OWNER_LOOP: {"session_id": "s1", "agent_id": "a1", "pid": _live_pid()}}
         _write_loop_registry(reg)
         assert _prune_dead_owner(_read_loop_registry()) == reg
 
-    def test_loop_agent_names_are_the_four_t3_singletons(self) -> None:
-        assert LOOP_AGENT_NAMES == (
-            "t3-main-loop",
-            "t3-review-loop",
-            "t3-cross-review-loop",
-            "t3-bug-hunt",
-        )
+    def test_owner_loop_is_a_single_key_not_a_roster(self) -> None:
+        # #786 WS3: the 4-name immortal roster is retired — _OWNER_LOOP is
+        # a single tick-owner-session registry key.
+        assert isinstance(_OWNER_LOOP, str)
+        assert _OWNER_LOOP == "t3-loop-tick-owner"
 
 
 class TestHandleSessionStartBootstrap:
@@ -99,125 +98,129 @@ class TestHandleSessionStartBootstrap:
         handle_session_start_bootstrap({})
         assert capsys.readouterr().out == ""
 
-    def test_fresh_machine_instructs_spawn_and_claims_ownership(self, capsys: pytest.CaptureFixture[str]) -> None:
+    def test_fresh_machine_is_tick_owner_no_roster_spawn(self, capsys: pytest.CaptureFixture[str]) -> None:
         handle_session_start_bootstrap({"session_id": "owner-1"})
 
-        out = json.loads(capsys.readouterr().out)
-        ctx = out["additionalContext"]
-        assert "t3-main-loop" in ctx
-        assert "t3-review-loop" in ctx
-        assert "t3-cross-review-loop" in ctx
-        assert "t3-bug-hunt" in ctx
-        assert "spawn" in ctx.lower()
+        ctx = json.loads(capsys.readouterr().out)["additionalContext"]
+        # Tick-dispatch, NOT the retired roster. Per-unit "spawn one fresh
+        # bounded sub-agent" IS the model; what must be gone is the
+        # immortal-roster vocabulary + names.
+        for name in ("t3-main-loop", "t3-review-loop", "t3-cross-review-loop", "t3-bug-hunt"):
+            assert name not in ctx
+        for retired in ("re-attach", "reattach", "takeover", "resume by", "from its brief"):
+            assert retired not in ctx.lower()
+        assert "t3 loop tick" in ctx
+        assert "t3 loop claim-next" in ctx
         # Owner gets the rename reminder.
         assert "/rename TEATREE LOOP" in ctx
-        # Per-ticket -> per-step model is described.
-        assert "per ticket" in ctx.lower() or "per-ticket" in ctx.lower()
 
-        reg = _read_loop_registry()
-        assert reg["t3-main-loop"]["session_id"] == "owner-1"
-        # The recorded owner pid is the SESSION process (the hook's parent),
-        # never the ephemeral hook subprocess's own pid — otherwise the pid
-        # is dead before a second session starts and the singleton breaks.
-        # (Dedicated regression: TestOwnerPidIsSessionNotHookSubprocess.)
-        assert reg["t3-main-loop"]["pid"] == _owner_pid()
+        owner = _read_loop_registry()[_OWNER_LOOP]
+        assert owner["session_id"] == "owner-1"
+        # Recorded pid is the SESSION process (hook's parent), not the
+        # ephemeral hook subprocess (regression: TestOwnerPidIsSession...).
+        assert owner["pid"] == _owner_pid()
 
     def test_owner_records_agent_id_when_present(self, capsys: pytest.CaptureFixture[str]) -> None:
         handle_session_start_bootstrap({"session_id": "owner-1", "agent_id": "agent-xyz"})
         capsys.readouterr()
-        assert _read_loop_registry()["t3-main-loop"]["agent_id"] == "agent-xyz"
+        assert _read_loop_registry()[_OWNER_LOOP]["agent_id"] == "agent-xyz"
 
-    def test_second_live_session_instructs_reattach_not_spawn(self, capsys: pytest.CaptureFixture[str]) -> None:
-        # First session claims ownership with a LIVE pid.
-        _write_loop_registry(
-            {
-                "t3-main-loop": {
-                    "session_id": "owner-1",
-                    "agent_id": "agent-owner",
-                    "pid": _live_pid(),
-                }
-            }
-        )
+    def test_second_live_session_stays_idle_no_spawn(self, capsys: pytest.CaptureFixture[str]) -> None:
+        _write_loop_registry({_OWNER_LOOP: {"session_id": "owner-1", "agent_id": "agent-owner", "pid": _live_pid()}})
 
         handle_session_start_bootstrap({"session_id": "second-2"})
 
         ctx = json.loads(capsys.readouterr().out)["additionalContext"]
-        assert "re-attach" in ctx.lower() or "reattach" in ctx.lower()
-        assert "agent-owner" in ctx  # re-attach by recorded agent id
-        # The directive must explicitly forbid a duplicate spawn, never instruct one.
-        assert "do not spawn" in ctx.lower()
-        # And it must NOT be the spawn directive.
-        assert ctx != _SPAWN_DIRECTIVE
+        # Non-owner: stay idle, never arm a competing tick, never spawn.
+        for retired_token in (
+            "t3-main-loop",
+            "t3-review-loop",
+            "t3-cross-review-loop",
+            "t3-bug-hunt",
+            "re-attach",
+            "reattach",
+            "takeover",
+            "resume by",
+            "from its brief",
+            "spawn each",
+        ):
+            assert retired_token not in ctx.lower()
+        assert "another" in ctx.lower()
+        assert "owner" in ctx.lower()
+        assert "owner-1" in ctx  # names the live owner session
+        assert "do not arm" in ctx.lower() or "stay idle" in ctx.lower()
         # Non-owner must NOT get the rename reminder.
         assert "/rename TEATREE LOOP" not in ctx
         # Ownership is unchanged.
-        assert _read_loop_registry()["t3-main-loop"]["session_id"] == "owner-1"
+        assert _read_loop_registry()[_OWNER_LOOP]["session_id"] == "owner-1"
 
     def test_same_session_restart_is_idempotent_still_owner(self, capsys: pytest.CaptureFixture[str]) -> None:
-        _write_loop_registry(
-            {
-                "t3-main-loop": {
-                    "session_id": "owner-1",
-                    "agent_id": "agent-owner",
-                    "pid": _live_pid(),
-                }
-            }
-        )
+        _write_loop_registry({_OWNER_LOOP: {"session_id": "owner-1", "agent_id": "agent-owner", "pid": _live_pid()}})
 
         handle_session_start_bootstrap({"session_id": "owner-1"})
 
         ctx = json.loads(capsys.readouterr().out)["additionalContext"]
-        assert "spawn" in ctx.lower()
+        # Post-compaction same-session restart: still owner, tick-driven,
+        # nothing to re-spawn.
+        assert "t3 loop tick" in ctx
+        for retired_token in (
+            "t3-main-loop",
+            "t3-review-loop",
+            "t3-cross-review-loop",
+            "t3-bug-hunt",
+            "re-attach",
+            "reattach",
+            "takeover",
+            "resume by",
+            "from its brief",
+            "spawn each",
+        ):
+            assert retired_token not in ctx.lower()
         assert "/rename TEATREE LOOP" in ctx
-        assert _read_loop_registry()["t3-main-loop"]["session_id"] == "owner-1"
+        assert _read_loop_registry()[_OWNER_LOOP]["session_id"] == "owner-1"
 
     def test_dead_owner_is_reclaimed_by_new_session(self, capsys: pytest.CaptureFixture[str]) -> None:
-        _write_loop_registry(
-            {
-                "t3-main-loop": {
-                    "session_id": "dead-owner",
-                    "agent_id": "ghost",
-                    "pid": 999999,
-                }
-            }
-        )
+        _write_loop_registry({_OWNER_LOOP: {"session_id": "dead-owner", "agent_id": "ghost", "pid": 999999}})
 
         handle_session_start_bootstrap({"session_id": "new-owner"})
 
         ctx = json.loads(capsys.readouterr().out)["additionalContext"]
-        assert "spawn" in ctx.lower()
-        assert _read_loop_registry()["t3-main-loop"]["session_id"] == "new-owner"
+        # Dead owner pruned -> this session becomes tick-owner (no
+        # re-spawn; the cron keeps ticking).
+        assert "t3 loop tick" in ctx
+        for retired_token in (
+            "t3-main-loop",
+            "t3-review-loop",
+            "t3-cross-review-loop",
+            "t3-bug-hunt",
+            "re-attach",
+            "reattach",
+            "takeover",
+            "resume by",
+            "from its brief",
+            "spawn each",
+        ):
+            assert retired_token not in ctx.lower()
+        assert _read_loop_registry()[_OWNER_LOOP]["session_id"] == "new-owner"
 
     def test_owner_with_tty_emits_osc_title(self, registry_paths) -> None:
         _, tty_path = registry_paths
-        # Make the configured tty sink writable (simulates an interactive TTY).
         Path(tty_path).write_text("", encoding="utf-8")
 
         handle_session_start_bootstrap({"session_id": "owner-1"})
 
-        written = Path(tty_path).read_text(encoding="utf-8")
-        assert "\033]0;TEATREE LOOP\007" in written
+        assert "\033]0;TEATREE LOOP\007" in Path(tty_path).read_text(encoding="utf-8")
 
     def test_owner_without_tty_does_not_crash_and_skips_osc(
         self, registry_paths, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        # tty sink path does not exist -> not an interactive TTY -> no OSC, no crash.
         handle_session_start_bootstrap({"session_id": "owner-1"})
-        out = json.loads(capsys.readouterr().out)
-        assert "additionalContext" in out  # still emitted the directive
+        assert "additionalContext" in json.loads(capsys.readouterr().out)
 
     def test_non_owner_with_tty_does_not_emit_osc(self, registry_paths) -> None:
         _, tty_path = registry_paths
         Path(tty_path).write_text("", encoding="utf-8")
-        _write_loop_registry(
-            {
-                "t3-main-loop": {
-                    "session_id": "owner-1",
-                    "agent_id": "agent-owner",
-                    "pid": _live_pid(),
-                }
-            }
-        )
+        _write_loop_registry({_OWNER_LOOP: {"session_id": "owner-1", "agent_id": "agent-owner", "pid": _live_pid()}})
 
         handle_session_start_bootstrap({"session_id": "non-owner"})
 
@@ -227,46 +230,57 @@ class TestHandleSessionStartBootstrap:
 class TestOwnerPidIsSessionNotHookSubprocess:
     """Regression: the hook router is an ephemeral subprocess.
 
-    Recording ``os.getpid()`` would store a pid that is dead before any
-    second session starts, so ``_prune_dead_owner`` would always evict
-    the owner and every session would re-spawn — defeating the
-    singleton. The recorded pid must be the long-lived session process
+    Recording ``os.getpid()`` would store a pid dead before any second
+    session starts, so ``_prune_dead_owner`` would always evict the owner
+    and every session would re-claim — defeating the single-owner
+    invariant. The recorded pid must be the long-lived session process
     (the hook's parent).
     """
 
     def test_recorded_pid_is_parent_not_self(self, capsys: pytest.CaptureFixture[str]) -> None:
         handle_session_start_bootstrap({"session_id": "owner-1"})
         capsys.readouterr()
-        recorded = _read_loop_registry()["t3-main-loop"]["pid"]
-        assert recorded == os.getppid()
+        assert _read_loop_registry()[_OWNER_LOOP]["pid"] == os.getppid()
 
     def test_owner_survives_a_simulated_second_session(self, capsys: pytest.CaptureFixture[str]) -> None:
-        # Session 1 claims ownership; its recorded (parent) pid stays alive.
         handle_session_start_bootstrap({"session_id": "owner-1", "agent_id": "agent-1"})
         capsys.readouterr()
 
-        # Session 2 starts while session 1 is still alive -> must re-attach.
+        # Session 2 starts while session 1 is still alive -> stay idle,
+        # ownership unchanged.
         handle_session_start_bootstrap({"session_id": "owner-2"})
         ctx = json.loads(capsys.readouterr().out)["additionalContext"]
-        assert "re-attach" in ctx.lower()
-        assert "agent-1" in ctx
-        assert _read_loop_registry()["t3-main-loop"]["session_id"] == "owner-1"
+        for retired_token in (
+            "t3-main-loop",
+            "t3-review-loop",
+            "t3-cross-review-loop",
+            "t3-bug-hunt",
+            "re-attach",
+            "reattach",
+            "takeover",
+            "resume by",
+            "from its brief",
+            "spawn each",
+        ):
+            assert retired_token not in ctx.lower()
+        assert "owner-1" in ctx
+        assert _read_loop_registry()[_OWNER_LOOP]["session_id"] == "owner-1"
 
 
 class TestSessionEndReleasesOwnership:
     def test_owner_session_end_clears_slot(self) -> None:
-        _write_loop_registry({"t3-main-loop": {"session_id": "owner-1", "agent_id": "a", "pid": _live_pid()}})
+        _write_loop_registry({_OWNER_LOOP: {"session_id": "owner-1", "agent_id": "a", "pid": _live_pid()}})
         handle_session_end_loop_registry({"session_id": "owner-1"})
         assert _read_loop_registry() == {}
 
     def test_non_owner_session_end_keeps_slot(self) -> None:
-        reg = {"t3-main-loop": {"session_id": "owner-1", "agent_id": "a", "pid": _live_pid()}}
+        reg = {_OWNER_LOOP: {"session_id": "owner-1", "agent_id": "a", "pid": _live_pid()}}
         _write_loop_registry(reg)
         handle_session_end_loop_registry({"session_id": "some-other-session"})
         assert _read_loop_registry() == reg
 
     def test_session_end_no_session_id_is_noop(self) -> None:
-        reg = {"t3-main-loop": {"session_id": "owner-1", "agent_id": "a", "pid": _live_pid()}}
+        reg = {_OWNER_LOOP: {"session_id": "owner-1", "agent_id": "a", "pid": _live_pid()}}
         _write_loop_registry(reg)
         handle_session_end_loop_registry({})
         assert _read_loop_registry() == reg
@@ -283,3 +297,57 @@ class TestSessionStartWiredIntoRouter:
 
     def test_session_end_loop_registry_in_handlers_table(self) -> None:
         assert handle_session_end_loop_registry in router._HANDLERS["SessionEnd"]
+
+
+class TestWs3TickDispatchContract:
+    """#786 WS3: SessionStart retires the immortal-singleton roster.
+
+    The loop is now driven by the ``t3 loop tick`` cron + WS1
+    ``claim-next`` (DB-claimed work) + WS2 ``LoopLease`` (one tick-owner),
+    NOT by SessionStart spawning/re-spawning a fixed roster of long-lived
+    sub-agents. The bootstrap directive must therefore NOT instruct
+    spawning the now-retired four-name loop roster, NOT use the
+    spawn/takeover/resume/re-attach roster vocabulary, point the session
+    at tick-dispatch (the cron drives per-unit fresh bounded sub-agents;
+    statelessness across ticks is the compaction-proofing), and still
+    emit something (a session needs to know the loop is tick-driven and
+    whether it is the tick-owner).
+    """
+
+    def _ctx(self, capsys: pytest.CaptureFixture[str], session_id: str = "s-1") -> str:
+        handle_session_start_bootstrap({"session_id": session_id})
+        return json.loads(capsys.readouterr().out)["additionalContext"]
+
+    def test_bootstrap_does_not_instruct_spawning_the_roster(self, capsys: pytest.CaptureFixture[str]) -> None:
+        ctx = self._ctx(capsys)
+        # The retired immortal-singleton roster must not be spawned.
+        for name in ("t3-main-loop", "t3-review-loop", "t3-cross-review-loop", "t3-bug-hunt"):
+            assert name not in ctx, f"retired roster name {name!r} still in bootstrap directive"
+        for retired_token in (
+            "t3-main-loop",
+            "t3-review-loop",
+            "t3-cross-review-loop",
+            "t3-bug-hunt",
+            "re-attach",
+            "reattach",
+            "takeover",
+            "resume by",
+            "from its brief",
+            "spawn each",
+        ):
+            assert retired_token not in ctx.lower()
+
+    def test_bootstrap_points_at_tick_dispatch(self, capsys: pytest.CaptureFixture[str]) -> None:
+        ctx = self._ctx(capsys).lower()
+        # The directive must orient the session toward the tick-driven model.
+        assert "tick" in ctx
+        assert "t3 loop tick" in ctx or "loop tick" in ctx
+
+    def test_bootstrap_still_emits_a_directive(self, capsys: pytest.CaptureFixture[str]) -> None:
+        # A session must still be told the loop is tick-driven; empty
+        # output would regress observability.
+        assert self._ctx(capsys).strip() != ""
+
+    def test_no_session_id_still_silent(self, capsys: pytest.CaptureFixture[str]) -> None:
+        handle_session_start_bootstrap({})
+        assert capsys.readouterr().out == ""
