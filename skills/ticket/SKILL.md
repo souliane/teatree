@@ -99,6 +99,8 @@ glab mr list --search "#<issue-number>" --state merged
 
 If a merged PR references this issue and its body claims the work is complete, **stop and confirm with the user** before continuing. If the user agrees the work is done, close the issue with a comment pointing to the merged PR — do not start a redundant scoping/implementation pass.
 
+**Run this check even when an upstream brief, coordinator, or mission prompt names the ticket as the "current" or "next" one.** A brief asserting a ticket authoritatively is not evidence the ticket is unresolved — backlogs drift and merged-but-open issues accumulate. Verify against merged PRs *before* creating a worktree, not after. Closing the stale issue with evidence and advancing to the next backlog item is the correct outcome, not a deviation from the brief.
+
 ### 2. State Acceptance Criteria
 
 - Extract and list acceptance criteria before coding.
