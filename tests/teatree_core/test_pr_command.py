@@ -7,14 +7,9 @@ from django.core.management import call_command
 from django.test import TestCase
 
 from teatree import visual_qa
+from teatree.core.management.commands import _ensure_pr as ensure_pr_mod
 from teatree.core.management.commands import pr as pr_command
-from teatree.core.management.commands.pr import (
-    _check_shipping_gate,
-    _resolve_base_url,
-    _run_visual_qa_gate,
-    _ship_preview,
-    _slug_from_remote,
-)
+from teatree.core.management.commands.pr import _check_shipping_gate, _resolve_base_url, _run_visual_qa_gate
 from teatree.core.models import Session, Ticket, Worktree
 from teatree.core.orphan_guard import BranchReport, BranchStatus
 from teatree.core.overlay_loader import reset_overlay_cache
@@ -61,7 +56,7 @@ class TestPrCreateThinWrapper(TestCase):
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             patch.object(pr_command, "_run_visual_qa_gate", return_value=None),
-            patch.object(pr_command, "_validate_pr_metadata", return_value=None),
+            patch.object(pr_command, "validate_pr_metadata", return_value=None),
         ):
             result = cast("dict[str, object]", call_command("pr", "create", str(ticket.id)))
 
@@ -86,7 +81,7 @@ class TestPrCreateThinWrapper(TestCase):
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             patch.object(pr_command, "_run_visual_qa_gate", return_value=None),
-            patch.object(pr_command, "_validate_pr_metadata", return_value=None),
+            patch.object(pr_command, "validate_pr_metadata", return_value=None),
             patch.object(pr_command.git, "last_commit_message", return_value=("feat: x", "body")),
         ):
             result = cast("dict[str, object]", call_command("pr", "create", str(ticket.id), dry_run=True))
@@ -108,7 +103,7 @@ class TestPrCreateThinWrapper(TestCase):
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             patch.object(pr_command, "_run_visual_qa_gate", return_value=None),
-            patch.object(pr_command, "_validate_pr_metadata", return_value=None),
+            patch.object(pr_command, "validate_pr_metadata", return_value=None),
         ):
             result = cast(
                 "dict[str, object]",
@@ -155,7 +150,7 @@ class TestPrCreateSyncShip(TestCase):
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             patch.object(pr_command, "_run_visual_qa_gate", return_value=None),
-            patch.object(pr_command, "_validate_pr_metadata", return_value=None),
+            patch.object(pr_command, "validate_pr_metadata", return_value=None),
             patch("teatree.core.tasks.execute_ship", ship_mock),
         ):
             result = cast(
@@ -177,7 +172,7 @@ class TestPrCreateSyncShip(TestCase):
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             patch.object(pr_command, "_run_visual_qa_gate", return_value=None),
-            patch.object(pr_command, "_validate_pr_metadata", return_value=None),
+            patch.object(pr_command, "validate_pr_metadata", return_value=None),
             patch("teatree.core.tasks.execute_ship", ship_mock),
         ):
             result = cast(
@@ -196,7 +191,7 @@ class TestPrCreateSyncShip(TestCase):
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             patch.object(pr_command, "_run_visual_qa_gate", return_value=None),
-            patch.object(pr_command, "_validate_pr_metadata", return_value=None),
+            patch.object(pr_command, "validate_pr_metadata", return_value=None),
             patch("teatree.core.tasks.execute_ship", ship_mock),
         ):
             result = cast(
@@ -312,100 +307,6 @@ class TestPrCreateSyncShip(TestCase):
         self._assert_skip_validation_post_ship_no_raw_transition(Ticket.State.MERGED)
 
 
-class TestShipPreviewTitleDescriptionInvariant(TestCase):
-    """The description's first line must always equal the title.
-
-    A diverged title vs. description-first-line is what blocks the
-    release-notes pipeline. ``_ship_preview`` must build them so they can
-    never differ by construction, regardless of body presence, the
-    fallback title path, or close-keyword sanitization.
-    """
-
-    def _ticket_with_worktree(self) -> Ticket:
-        ticket = Ticket.objects.create(
-            overlay="test",
-            state=Ticket.State.REVIEWED,
-            issue_url="https://github.com/souliane/teatree/issues/119",
-        )
-        Worktree.objects.create(
-            ticket=ticket,
-            overlay="test",
-            repo_path="/tmp/backend",
-            branch="feature-branch",
-            extra={"worktree_path": "/tmp/backend"},
-        )
-        return ticket
-
-    def _first_line(self, description: str) -> str:
-        return description.split("\n", 1)[0]
-
-    def test_first_line_equals_title_with_body(self) -> None:
-        ticket = self._ticket_with_worktree()
-        with (
-            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
-            patch.object(
-                pr_command.git,
-                "last_commit_message",
-                return_value=("feat: add X [FLAG] (proj#119)", "Body paragraph.\n"),
-            ),
-        ):
-            _, title, description = _ship_preview(ticket, ticket.worktrees.first())
-        assert self._first_line(description) == title
-
-    def test_first_line_equals_title_without_body(self) -> None:
-        ticket = self._ticket_with_worktree()
-        with (
-            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
-            patch.object(pr_command.git, "last_commit_message", return_value=("fix: y (proj#119)", "")),
-        ):
-            _, title, description = _ship_preview(ticket, ticket.worktrees.first())
-        assert self._first_line(description) == title
-        assert title == "fix: y (proj#119)"
-
-    def test_first_line_equals_title_on_fallback_title(self) -> None:
-        ticket = self._ticket_with_worktree()
-        with (
-            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
-            patch.object(pr_command.git, "last_commit_message", return_value=("", "")),
-        ):
-            _, title, description = _ship_preview(ticket, ticket.worktrees.first())
-        # Invariant holds even when the fallback title carries a close
-        # keyword ("Resolve") that close-keyword sanitization rewrites.
-        assert self._first_line(description) == title
-        assert ticket.issue_url in title
-
-    def test_first_line_equals_title_when_subject_has_close_keyword(self) -> None:
-        ticket = self._ticket_with_worktree()
-        with (
-            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
-            patch.object(
-                pr_command.git,
-                "last_commit_message",
-                return_value=("fix: resolves #119 the corridor bug (proj#119)", "Body."),
-            ),
-        ):
-            _, title, description = _ship_preview(ticket, ticket.worktrees.first())
-        # Title and first line are both the *sanitized* string -> still equal.
-        assert self._first_line(description) == title
-
-
-class TestSlugFromRemote(TestCase):
-    def test_github_ssh(self) -> None:
-        assert _slug_from_remote("git@github.com:souliane/teatree.git") == "souliane/teatree"
-
-    def test_github_https(self) -> None:
-        assert _slug_from_remote("https://github.com/souliane/teatree.git") == "souliane/teatree"
-
-    def test_gitlab_nested_namespace(self) -> None:
-        assert _slug_from_remote("git@gitlab.com:acme/team/backend.git") == "acme/team/backend"
-
-    def test_no_dot_git_suffix(self) -> None:
-        assert _slug_from_remote("https://github.com/souliane/teatree") == "souliane/teatree"
-
-    def test_empty_returns_empty(self) -> None:
-        assert _slug_from_remote("") == ""
-
-
 class TestEnsurePr(TestCase):
     @pytest.fixture(autouse=True)
     def _inject_fixtures(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -487,13 +388,13 @@ class TestEnsurePr(TestCase):
         host = MagicMock()
         host.create_pr.return_value = {"url": "https://github.com/souliane/teatree/pull/999"}
         host.current_user.return_value = "souliane"
-        self._monkeypatch.setattr(pr_command, "code_host_from_overlay", lambda: host)
+        self._monkeypatch.setattr(ensure_pr_mod, "code_host_from_overlay", lambda: host)
 
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             patch.object(pr_command.git, "current_branch", return_value="feat-q"),
-            patch.object(pr_command.git, "remote_url", return_value="git@github.com:souliane/teatree.git"),
-            patch.object(pr_command.git, "last_commit_message", return_value=("feat: cool thing", "body")),
+            patch.object(ensure_pr_mod.git, "remote_url", return_value="git@github.com:souliane/teatree.git"),
+            patch.object(ensure_pr_mod.git, "last_commit_message", return_value=("feat: cool thing", "body")),
             patch.object(
                 pr_command,
                 "classify_branch",
@@ -514,6 +415,85 @@ class TestEnsurePr(TestCase):
         assert spec.branch == "feat-q"
         assert spec.repo == "souliane/teatree"
         assert spec.title == "feat: cool thing"
+
+    def test_defers_when_remote_ref_stale_in_pre_push_race(self) -> None:
+        """#792: ensure-pr must defer (not raise) on the pre-push stale-remote race.
+
+        ensure-pr runs in the PRE-push hook. The remote branch ref exists at
+        an older base (classify_branch => PUSHED_ORPHAN), but THIS push has
+        not landed yet, so the forge rejects PR creation with "No commits
+        between main and <branch>". Hard-failing aborts the very push that
+        would make the PR creatable — a permanent deadlock. ensure-pr must
+        DEFER (skip + exit 0) so the push proceeds and the post-push
+        ensure-pr opens the PR.
+        """
+        from teatree.utils.run import CommandFailedError  # noqa: PLC0415
+
+        host = MagicMock()
+        host.current_user.return_value = "souliane"
+        host.create_pr.side_effect = CommandFailedError(
+            cmd=["gh", "pr", "create"],
+            returncode=1,
+            stdout="",
+            stderr="pull request create failed: GraphQL: No commits between main and feat-q (createPullRequest)",
+        )
+        self._monkeypatch.setattr(ensure_pr_mod, "code_host_from_overlay", lambda: host)
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch.object(pr_command.git, "current_branch", return_value="feat-q"),
+            patch.object(ensure_pr_mod.git, "remote_url", return_value="git@github.com:souliane/teatree.git"),
+            patch.object(ensure_pr_mod.git, "last_commit_message", return_value=("feat: cool thing", "body")),
+            patch.object(
+                pr_command,
+                "classify_branch",
+                return_value=BranchReport(
+                    repo=".",
+                    branch="feat-q",
+                    status=BranchStatus.PUSHED_ORPHAN,
+                    ahead_count=3,
+                ),
+            ),
+        ):
+            result = cast("dict[str, object]", call_command("pr", "ensure-pr"))
+
+        # Deferred, not raised: the push must be allowed to proceed.
+        assert "pre-push race" in str(result["skipped"])
+        assert "feat-q" in str(result["hint"])
+        host.create_pr.assert_called_once()
+
+    def test_other_create_pr_failure_still_raises(self) -> None:
+        """A non-race create_pr failure must still surface (no silent swallow)."""
+        from teatree.utils.run import CommandFailedError  # noqa: PLC0415
+
+        host = MagicMock()
+        host.current_user.return_value = "souliane"
+        host.create_pr.side_effect = CommandFailedError(
+            cmd=["gh", "pr", "create"],
+            returncode=1,
+            stdout="",
+            stderr="pull request create failed: GraphQL: API rate limit exceeded",
+        )
+        self._monkeypatch.setattr(ensure_pr_mod, "code_host_from_overlay", lambda: host)
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch.object(pr_command.git, "current_branch", return_value="feat-q"),
+            patch.object(ensure_pr_mod.git, "remote_url", return_value="git@github.com:souliane/teatree.git"),
+            patch.object(ensure_pr_mod.git, "last_commit_message", return_value=("feat: x", "body")),
+            patch.object(
+                pr_command,
+                "classify_branch",
+                return_value=BranchReport(
+                    repo=".",
+                    branch="feat-q",
+                    status=BranchStatus.PUSHED_ORPHAN,
+                    ahead_count=3,
+                ),
+            ),
+            pytest.raises(CommandFailedError, match="rate limit"),
+        ):
+            call_command("pr", "ensure-pr")
 
 
 class TestPostEvidence(TestCase):

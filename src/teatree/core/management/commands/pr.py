@@ -14,15 +14,21 @@ from django_fsm import TransitionNotAllowed
 from django_typer.management import TyperCommand, command
 
 from teatree import visual_qa
-from teatree.backends.protocols import PullRequestSpec
 from teatree.core.backend_factory import code_host_from_overlay
+from teatree.core.db_anchor import assert_lifecycle_db_is_canonical
+from teatree.core.management.commands._ensure_pr import EnsurePrResult, create_or_defer_pr
+from teatree.core.management.commands._pr_preview import (
+    PrValidationError,
+    ShipDryRun,
+    ship_dry_run,
+    validate_pr_metadata,
+)
 from teatree.core.management.commands._ship_fsm import reconcile_fsm_for_ship
 from teatree.core.models import Session, Ticket, Worktree
 from teatree.core.models.types import TicketExtra, VisualQASummary
 from teatree.core.orphan_guard import BranchStatus, classify_branch
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.public_identity import MergeResult
-from teatree.core.runners.ship import overlay_pr_labels, sanitize_close_keywords
 from teatree.types import RawAPIDict
 from teatree.utils import git
 
@@ -35,18 +41,9 @@ class VisualQAGateFailure(TypedDict):
     hint: str
 
 
-class ShipDryRun(TypedDict):
-    dry_run: bool
-    repo: str
-    branch: str
-    title: str
-    description: str
-    labels: list[str]
-
-
-class PrValidationError(TypedDict):
-    error: str
-    details: list[str]
+# ShipDryRun / PrValidationError live in ``_pr_preview`` (re-exported below)
+# so external importers of ``pr.ShipDryRun`` / ``pr.PrValidationError`` keep
+# working after the ship-preview split.
 
 
 class WorktreeMissingError(TypedDict):
@@ -75,70 +72,12 @@ class ShippingGateFailure(TypedDict):
     hint: str
 
 
-class EnsurePrResult(TypedDict, total=False):
-    skipped: str
-    branch: str
-    url: str
-    hint: str
-    error: str
+# EnsurePrResult lives in ``_ensure_pr`` (re-exported above) so external
+# importers of ``pr.EnsurePrResult`` keep working after the ensure-pr split.
 
 
 _IMAGE_URL_RE = re.compile(r"!\[([^\]]*)\]\((/uploads/[^\)]+)\)")
 _EXTERNAL_LINK_RE = re.compile(r"https?://(?:www\.)?(?:notion\.so|linear\.app|jira\.\S+)/\S+")
-_REMOTE_HOST_RE = re.compile(r"^(?:git@[^:]+:|https?://[^/]+/|ssh://[^/]+/|git://[^/]+/)")
-
-
-def _slug_from_remote(remote_url: str) -> str:
-    """Extract the ``org/repo`` (or ``ns/group/repo``) slug from a git remote URL."""
-    if not remote_url:
-        return ""
-    return _REMOTE_HOST_RE.sub("", remote_url.strip()).removesuffix(".git")
-
-
-def _ship_preview(ticket: Ticket, worktree: Worktree) -> tuple[str, str, str]:
-    """Return ``(repo_path, title, description)`` previewed from the last commit.
-
-    Invariant (MR title/description divergence guard): the description's
-    first line is built from the *same* string as the title, so they can
-    never diverge by construction. A diverged title vs. description-first-
-    line is exactly what blocks the release-notes pipeline; building the
-    first line from ``title`` (not a separately-derived ``subject``) makes
-    that regression impossible.
-    """
-    repo_path = (worktree.extra or {}).get("worktree_path", "") or worktree.repo_path
-    subject, body = git.last_commit_message(repo=repo_path)
-    close_ticket = get_overlay().config.mr_close_ticket
-    # Sanitize the TITLE first, then build the description's first line from
-    # that exact sanitized string. Applying close-keyword sanitization only
-    # to the description (the old behaviour) silently diverged it from the
-    # title whenever the title carried a close-keyword (e.g. the "Resolve
-    # <url>" fallback, or a "fix: resolve X" subject) — the title/
-    # description divergence class. Sanitizing the title and reusing it
-    # makes the first line == title by construction.
-    title = sanitize_close_keywords(subject or f"Resolve {ticket.issue_url}", close_ticket=close_ticket)
-    raw_body = sanitize_close_keywords(body, close_ticket=close_ticket) if body else ""
-    description = f"{title}\n\n{raw_body}" if raw_body else title
-    return repo_path, title, description
-
-
-def _ship_dry_run(ticket: Ticket, worktree: Worktree) -> ShipDryRun:
-    repo_path, title, description = _ship_preview(ticket, worktree)
-    return ShipDryRun(
-        dry_run=True,
-        repo=repo_path,
-        branch=worktree.branch,
-        title=title,
-        description=description,
-        labels=overlay_pr_labels(),
-    )
-
-
-def _validate_pr_metadata(ticket: Ticket, worktree: Worktree) -> PrValidationError | None:
-    _, title, description = _ship_preview(ticket, worktree)
-    validation = get_overlay().metadata.validate_pr(title, description)
-    if validation["errors"]:
-        return PrValidationError(error="PR validation failed", details=validation["errors"])
-    return None
 
 
 def _check_shipping_gate(ticket: Ticket) -> ShippingGateFailure | None:
@@ -337,7 +276,7 @@ def _run_ship_gates(
     visual_qa_error = _run_visual_qa_gate(ticket, skip_reason=skip_visual_qa)
     if visual_qa_error is not None:
         return visual_qa_error
-    return _validate_pr_metadata(ticket, worktree)
+    return validate_pr_metadata(ticket, worktree)
 
 
 def _resolve_ticket(ref: str) -> Ticket:
@@ -394,6 +333,13 @@ class Command(TyperCommand):
         Stored on ``ticket.extra['pr_title_override']`` so the ship reads it.
         """
         ticket = _resolve_ticket(ticket_id)
+        # #779: refuse to read the shipping gate from a worktree-isolated DB.
+        # The gate reads phase attestations; if this process resolved to a
+        # per-worktree DB (uv run from a worktree) it sees a partial phase
+        # set and blocks with a verbatim `missing: [...]` even though the
+        # phases were recorded — just in the canonical DB. Fail loudly here
+        # instead, naming the canonical DB and the correct command.
+        assert_lifecycle_db_is_canonical(ticket)
         worktree = ticket.worktrees.first()  # ty: ignore[unresolved-attribute]
         if worktree is None:
             return WorktreeMissingError(error="ticket has no worktree")
@@ -410,7 +356,7 @@ class Command(TyperCommand):
             reconcile_fsm_for_ship(ticket)
 
         if dry_run:
-            return _ship_dry_run(ticket, worktree)
+            return ship_dry_run(ticket, worktree)
         if sync:
             return _ship_sync(ticket, title)
         return _enqueue_ship(ticket, title)
@@ -447,35 +393,7 @@ class Command(TyperCommand):
                 hint=f"t3 <overlay> pr ensure-pr --branch {branch_name}",
             )
 
-        host = code_host_from_overlay()
-        if host is None:
-            return EnsurePrResult(error="no code host configured")
-
-        commit_subject, commit_body = git.last_commit_message(repo=repo_path)
-        title = commit_subject or f"WIP: {branch_name}"
-        raw_description = (
-            f"{commit_subject}\n\n{commit_body}"
-            if commit_subject and commit_body
-            else (commit_subject or commit_body or f"PR auto-created to track branch `{branch_name}`.")
-        )
-        description = sanitize_close_keywords(raw_description, close_ticket=get_overlay().config.mr_close_ticket)
-
-        remote = git.remote_url(repo=repo_path)
-        repo_slug = _slug_from_remote(remote)
-        assignee = host.current_user() or git.config_value(key="user.name")
-
-        raw = host.create_pr(
-            PullRequestSpec(
-                repo=repo_slug,
-                branch=branch_name,
-                title=title,
-                description=description,
-                labels=overlay_pr_labels(),
-                assignee=assignee,
-                draft=False,
-            ),
-        )
-        return EnsurePrResult(branch=branch_name, url=str(raw.get("url", raw.get("web_url", ""))))
+        return create_or_defer_pr(repo_path, branch_name)
 
     @command(name="check-gates")
     def check_gates(self, ticket_id: int, target_phase: str = "shipping") -> dict[str, object]:
