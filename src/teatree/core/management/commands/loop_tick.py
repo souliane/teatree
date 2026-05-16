@@ -48,27 +48,38 @@ class Command(TyperCommand):
             typer.Option("--json", help="Emit the tick report as JSON."),
         ] = False,
     ) -> None:
+        import os  # noqa: PLC0415
+
         from teatree.core.backend_factory import (  # noqa: PLC0415
             code_host_from_overlay,
             iter_overlay_backends,
             messaging_from_overlay,
         )
+        from teatree.core.models import LoopLease  # noqa: PLC0415
         from teatree.loop.tick import TickRequest, run_tick  # noqa: PLC0415
-        from teatree.utils.singleton import AlreadyRunningError, singleton  # noqa: PLC0415
 
-        try:
-            with singleton("loop-tick"):
-                if overlay:
-                    request = TickRequest(host=code_host_from_overlay(), messaging=messaging_from_overlay())
-                else:
-                    request = TickRequest(backends=iter_overlay_backends())
-                report = run_tick(request, statusline_path=statusline_file)
-        except AlreadyRunningError:
+        # #786 WS2: DB lease/heartbeat replaces the flock/pidfile singleton.
+        # The lease row is queryable and reapable by expiry, so loop
+        # ownership survives context compaction (re-acquirable) instead of
+        # silently vanishing with the flock-holding process. Acquisition is
+        # a backend-agnostic atomic CAS (correct on the production SQLite
+        # backend — the #786 B1 lesson), so exactly one of N concurrent
+        # ticks proceeds; the rest SKIP, same contract as the old flock.
+        owner = f"pid-{os.getpid()}"
+        if not LoopLease.objects.acquire("loop-tick", owner=owner):
             if json_output:
                 self.stdout.write(json.dumps({"skipped": "another tick is already running"}))
             else:
-                self.stdout.write("SKIP  another tick is already running — singleton lock held.")
+                self.stdout.write("SKIP  another tick is already running — loop-tick lease held.")
             return
+        try:
+            if overlay:
+                request = TickRequest(host=code_host_from_overlay(), messaging=messaging_from_overlay())
+            else:
+                request = TickRequest(backends=iter_overlay_backends())
+            report = run_tick(request, statusline_path=statusline_file)
+        finally:
+            LoopLease.objects.release("loop-tick", owner=owner)
 
         result = _report_to_dict(report)
         if json_output:
