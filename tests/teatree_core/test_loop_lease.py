@@ -30,7 +30,10 @@ class TestLoopLeaseAcquireRelease(TestCase):
         assert LoopLease.objects.acquire("loop-tick", owner="pid-2") is False
         assert LoopLease.objects.get(name="loop-tick").owner == "pid-1"
 
-    def test_same_owner_reacquire_renews(self) -> None:
+    def test_same_owner_reacquire_extends_via_cas(self) -> None:
+        # acquire()'s Q(owner=owner) CAS branch — re-acquire by the same
+        # owner extends the lease. (Not LoopLease.renew(), which #54
+        # removed as dead — the per-tick acquire IS the renewal.)
         assert LoopLease.objects.acquire("loop-tick", owner="pid-1") is True
         assert LoopLease.objects.acquire("loop-tick", owner="pid-1") is True
         assert LoopLease.objects.get(name="loop-tick").owner == "pid-1"
@@ -50,6 +53,55 @@ class TestLoopLeaseAcquireRelease(TestCase):
         assert LoopLease.objects.get(name="loop-tick").owner == "pid-1"
         assert LoopLease.objects.release("loop-tick", owner="pid-1") is True
         assert LoopLease.objects.get(name="loop-tick").owner == ""
+
+
+class TestLoopLeaseModelSurface(TestCase):
+    """#54 (WS2 follow-up): pin the trimmed model surface + coverage gaps.
+
+    F1/F2: dead ``renew()`` and write-never-read ``heartbeat_at`` are
+    removed. Plus the previously-uncovered ``__str__`` and the
+    ``is_held`` unowned / None-expiry early-return branch.
+    """
+
+    def test_str_owned(self) -> None:
+        LoopLease.objects.acquire("loop-tick", owner="pid-7")
+        lease = LoopLease.objects.get(name="loop-tick")
+        assert str(lease) == "loop-lease<loop-tick owner=pid-7>"
+
+    def test_str_unowned_uses_dash(self) -> None:
+        lease = LoopLease.objects.create(name="dormant")
+        assert str(lease) == "loop-lease<dormant owner=->"
+
+    def test_is_held_false_when_unowned(self) -> None:
+        # Early-return branch: no owner -> not held (even if a stale
+        # future expiry somehow lingers).
+        lease = LoopLease.objects.create(
+            name="x",
+            owner="",
+            lease_expires_at=timezone.now() + timedelta(seconds=999),
+        )
+        assert lease.is_held is False
+
+    def test_is_held_false_when_expiry_is_none(self) -> None:
+        lease = LoopLease.objects.create(name="y", owner="pid-1", lease_expires_at=None)
+        assert lease.is_held is False
+
+    def test_is_held_false_when_expired(self) -> None:
+        lease = LoopLease.objects.create(
+            name="z",
+            owner="pid-1",
+            lease_expires_at=timezone.now() - timedelta(seconds=1),
+        )
+        assert lease.is_held is False
+
+    def test_renew_method_is_removed(self) -> None:
+        # #54 F2: dead method (no production caller) is gone.
+        assert not hasattr(LoopLease, "renew")
+
+    def test_heartbeat_at_field_is_removed(self) -> None:
+        # #54 F1: write-never-read column dropped until a later WS needs it.
+        field_names = {f.name for f in LoopLease._meta.get_fields()}
+        assert "heartbeat_at" not in field_names
 
 
 class TestLoopLeaseConcurrencyOnSqlite(TestCase):
