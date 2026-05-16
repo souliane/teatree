@@ -1078,8 +1078,22 @@ def _prune_dead_owner(registry: dict[str, dict]) -> dict[str, dict]:
     for preferring the existing singleton/pid mechanism. Imported lazily
     to keep this Django-free hook fast on the common path (mirrors the
     lazy ``teatree.skill_deps`` import elsewhere in this module).
+
+    Fail-safe (#810): hooks run under whatever interpreter the agent
+    harness invokes; ``teatree`` importability is NOT guaranteed there.
+    When the import fails we cannot confirm any owner pid is alive, so
+    we treat loop ownership as unknown (empty registry) and let the
+    caller skip the self-pump rather than crash the session. A ``Stop``
+    hook must be crash-proof by contract.
     """
-    from teatree.utils.singleton import pid_alive  # noqa: PLC0415
+    try:
+        from teatree.utils.singleton import pid_alive  # noqa: PLC0415
+    except ImportError as exc:
+        print(  # noqa: T201 — hook stderr is the module's logging channel
+            f"[hook_router] loop self-pump skipped: teatree unavailable ({exc})",
+            file=sys.stderr,
+        )
+        return {}
 
     return {
         name: entry
@@ -1427,7 +1441,24 @@ def handle_loop_self_pump(data: dict) -> bool | None:
     loop-owner session, with consolidated pending work, outside the
     anti-spin interval. Otherwise returns ``None`` (idle / non-owner /
     spin-guarded) so the session may end normally.
+
+    Crash-proof by contract (#810): a ``Stop`` hook must NEVER raise to
+    the session. A broad boundary guard contains any unexpected error
+    in the self-pump path (a missing/unimportable ``teatree``, registry
+    I/O, etc.) to a single stderr line and a clean ``None`` — the
+    session ends normally and the self-pump is simply skipped.
     """
+    try:
+        return _loop_self_pump(data)
+    except Exception as exc:  # noqa: BLE001 — Stop hook must be crash-proof
+        print(  # noqa: T201 — hook stderr is the module's logging channel
+            f"[hook_router] loop self-pump skipped (unexpected error: {exc})",
+            file=sys.stderr,
+        )
+        return None
+
+
+def _loop_self_pump(data: dict) -> bool | None:
     session_id = data.get("session_id", "")
     if not session_id or not _session_owns_loop(session_id):
         return None
