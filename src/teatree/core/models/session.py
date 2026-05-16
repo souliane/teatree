@@ -1,7 +1,7 @@
 import logging
 from typing import ClassVar, cast
 
-from django.db import models
+from django.db import models, transaction
 from django.utils import timezone
 
 from teatree.core.managers import SessionManager
@@ -42,21 +42,52 @@ class Session(models.Model):
     def __str__(self) -> str:
         return str(self.agent_id or f"session-{self.pk}")
 
-    def visit_phase(self, phase: str, *, agent_id: str = "") -> None:
-        visited_phases = self._visited_phases()
-        if phase not in visited_phases:
-            self.visited_phases = [*visited_phases, phase]
+    def recording_identity(self, explicit: str = "") -> str:
+        """A guaranteed-non-empty attribution identity for a phase visit.
 
-        if agent_id:
-            visits = self._phase_visits()
-            if phase not in visits:
+        #755: ``visit_phase`` only stamps ``phase_visits`` when the
+        identity is truthy, so a blank ``Session.agent_id`` (the
+        ``Session.objects.create(ticket=…)`` fallback / coordinator or
+        non-FSM-minted sessions) silently dropped maker attribution and
+        made ``_check_maker_checker`` unverifiable. Resolution order:
+        explicit caller identity → the session's own ``agent_id`` →
+        a deterministic non-empty per-session fallback. Never ``""``.
+        """
+        return explicit.strip() or self.agent_id.strip() or f"session-{self.pk}"
+
+    def visit_phase(self, phase: str, *, agent_id: str = "") -> None:
+        """Record a phase visit atomically (#755).
+
+        The read-modify-write of the ``visited_phases`` / ``phase_visits``
+        JSON columns is wrapped in ``transaction.atomic()`` with the row
+        ``select_for_update``-locked and **re-read from the locked row**
+        (not the possibly-stale in-memory instance). A concurrent writer
+        on the same ``Session`` pk — the live maker ``loop`` session and
+        an independent reviewer both recording on the same row — would
+        otherwise lose-update: each saved its own stale view and the last
+        writer clobbered the other's phase (the #748 / `/t3:review`
+        Safety-6 unlocked read-modify-write class). The lock serialises
+        the two writers so both phases survive.
+        """
+        with transaction.atomic():
+            locked = type(self).objects.select_for_update().get(pk=self.pk)
+            visited = list(locked.visited_phases or [])
+            visits = dict(locked.phase_visits or {})
+
+            if phase not in visited:
+                visited.append(phase)
+            if agent_id and phase not in visits:
                 visits[phase] = {
                     "agent_id": agent_id,
                     "timestamp": timezone.now().isoformat(),
                 }
-                self.phase_visits = visits
 
-        self.save(update_fields=["visited_phases", "phase_visits"])
+            self.visited_phases = visited
+            self.phase_visits = visits
+            type(self).objects.filter(pk=self.pk).update(
+                visited_phases=visited,
+                phase_visits=visits,
+            )
 
     def has_visited(self, phase: str) -> bool:
         return phase in self._visited_phases()
@@ -88,7 +119,7 @@ class Session(models.Model):
             msg = f"{target_phase} requires: {joined}"
             raise QualityGateError(msg)
 
-        self._check_maker_checker(visits)
+        self._check_maker_checker(visited, visits)
 
     def mark_repo_modified(self, repo: str) -> None:
         repos = cast("list[str]", self.repos_modified or [])
@@ -112,12 +143,31 @@ class Session(models.Model):
         self.save(update_fields=["ended_at"])
 
     @staticmethod
-    def _check_maker_checker(visits: dict[str, dict[str, str]]) -> None:
+    def _check_maker_checker(visited: list[str], visits: dict[str, dict[str, str]]) -> None:
+        """Enforce maker≠checker, FAIL-CLOSED on absent attribution (#755).
+
+        Pre-#755 this ``continue``-d past any pair lacking ``phase_visits``
+        entries, so a blank-``agent_id`` recording path (the
+        ``Session.objects.create(ticket=…)`` fallback / coordinator
+        sessions) made the gate vacuously pass — the safety check could
+        not observe the attribution it must enforce. Now: if BOTH
+        conflicting phases are claimed done (in ``visited``) but either
+        lacks a non-empty recorded identity in ``visits``, the gate
+        REFUSES — work asserted complete with unverifiable maker
+        attribution must not pass automated review.
+        """
         for phase_a, phase_b in _CONFLICTING_PHASE_PAIRS:
-            if phase_a not in visits or phase_b not in visits:
-                continue
-            agent_a = visits[phase_a].get("agent_id", "")
-            agent_b = visits[phase_b].get("agent_id", "")
+            both_claimed_done = phase_a in visited and phase_b in visited
+            agent_a = visits.get(phase_a, {}).get("agent_id", "").strip()
+            agent_b = visits.get(phase_b, {}).get("agent_id", "").strip()
+            if both_claimed_done and not (agent_a and agent_b):
+                msg = (
+                    f"Maker≠checker unverifiable: {phase_a} and {phase_b} are both "
+                    f"recorded as visited but lack per-phase agent attribution "
+                    f"(agent_id missing/blank). The gate fails closed — re-record "
+                    f"the phases with an explicit recording identity."
+                )
+                raise QualityGateError(msg)
             if agent_a and agent_b and agent_a == agent_b:
                 msg = (
                     f"Maker≠checker violation: {phase_a} and {phase_b} "
