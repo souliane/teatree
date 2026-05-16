@@ -22,6 +22,7 @@ import shutil
 import subprocess  # noqa: S404
 import sys
 import tempfile
+from collections.abc import Iterator
 from pathlib import Path
 
 STATE_DIR = Path(
@@ -897,12 +898,57 @@ def _read_loop_registry() -> dict[str, dict]:
     return data if isinstance(data, dict) else {}
 
 
+def _registry_lock_path() -> Path:
+    """The flock file serializing every loop-registry write.
+
+    A sibling of the registry JSON. Concurrent SessionStart/SessionEnd
+    hooks across sessions race to claim/release ownership; without
+    serialization a read-modify-write would lose updates and an
+    interleaved ``tmp.replace`` could publish a torn file. The kernel
+    ``flock`` releases on process death (crash-safe, no stale-pid
+    window), mirroring ``teatree.utils.singleton``.
+    """
+    return _loop_registry_path().with_suffix(".lock")
+
+
+@contextlib.contextmanager
+def _registry_write_lock() -> Iterator[None]:
+    """Hold an exclusive ``flock`` for the duration of a registry write.
+
+    Stdlib-only (``fcntl``) so the Django-free hook router keeps no extra
+    import cost on the common path. A blocking ``flock`` (not ``LOCK_NB``)
+    because every writer must eventually win — the critical section is a
+    sub-millisecond JSON dump.
+    """
+    import fcntl  # noqa: PLC0415
+
+    lock_path = _registry_lock_path()
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        with contextlib.suppress(OSError):
+            os.close(fd)
+
+
 def _write_loop_registry(registry: dict[str, dict]) -> None:
+    """Atomically (and flock-serialized) persist the loop registry.
+
+    Serialized against concurrent cross-session writers via
+    :func:`_registry_write_lock`; published via a ``tmp.replace`` rename
+    so a reader never observes a partial file.
+    """
     path = _loop_registry_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(registry, indent=2, sort_keys=True), encoding="utf-8")
-    tmp.replace(path)
+    with _registry_write_lock():
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(registry, indent=2, sort_keys=True), encoding="utf-8")
+        tmp.replace(path)
 
 
 def _prune_dead_owner(registry: dict[str, dict]) -> dict[str, dict]:
@@ -934,25 +980,133 @@ def _emit_osc_title() -> None:
         tty.write("\033]0;TEATREE LOOP\007")
 
 
-_SPAWN_DIRECTIVE = (
-    "TEATREE LOOP ORCHESTRATION — establish the singleton loop sub-agents.\n\n"
-    "This session OWNS the teatree loop orchestration (no other live session holds it). "
-    "Idempotently establish/verify these four machine-wide SINGLETON loop sub-agents "
-    "(all always-started) — spawn each only if not already live, otherwise verify it:\n"
-    "  1. t3-main-loop — backlog/ticket-implementation loop. Spawns >=1 sub-agent "
-    "PER TICKET; each per-ticket sub-agent spawns sub-sub-agents per workflow step "
-    "(scope/code/review/ship) where it fits.\n"
-    "  2. t3-review-loop — reviews EVERY merged PR (in addition to the maker!=checker "
-    "self-review done while implementing a ticket).\n"
-    "  3. t3-cross-review-loop — architectural & cross-repo review; serialized "
-    "against t3-review-loop (shared private repos).\n"
-    "  4. t3-bug-hunt — proactively hunts bugs in teatree core + its registered "
-    "overlay; self-QA on loop/statusline/CLI (the /teatree-bughunt skill); files "
-    "issues and fixes worktree-isolated; never touches branches/PRs the other "
-    "loops own.\n\n"
-    "Reminder (UI-only, cannot be automated): run `/rename TEATREE LOOP` to name this "
-    "owner session. The terminal tab title was set automatically where a TTY was available."
+# ── Self-contained per-loop spawn briefs ──────────────────────────────
+#
+# DURABILITY MODEL (user-locked): the loop is SESSION-BOUND. Zero open
+# Claude sessions ⇒ the loop is DEAD — this is the accepted, designed
+# behavior, NOT a SPOF to patch (no OS daemon / launchd). What survives
+# an owner death is *ownership transfer*: any other open (or newly
+# opened) session reads the registry, claims ownership, and RE-SPAWNS
+# every registered loop FROM ITS PERSISTED BRIEF.
+#
+# Cross-session takeover MUST re-spawn from the brief — agentIds are NOT
+# resumable across different Claude sessions. Resume-by-agentId is valid
+# ONLY same-session (the compaction path). Each brief is therefore
+# self-contained: a successor session that never spawned the loop can
+# re-establish it from the brief text alone.
+
+_LOOP_SPAWN_BRIEFS: dict[str, str] = {
+    "t3-main-loop": (
+        "t3-main-loop — backlog/ticket-implementation loop. Drive the open-ticket "
+        "backlog toward zero, one ticket at a time, smallest-first. Spawns >=1 "
+        "sub-agent PER TICKET; each per-ticket sub-agent spawns sub-sub-agents "
+        "per workflow step (scope/code/review/ship) where it fits. Worktree-first, "
+        "TDD, maker!=checker self-review; the review-loop does the independent merge."
+    ),
+    "t3-review-loop": (
+        "t3-review-loop — reviews EVERY merged PR (in addition to the maker!=checker "
+        "self-review done while implementing a ticket) and performs the independent "
+        "merge on green for auto-merge repos. Serialized against t3-cross-review-loop."
+    ),
+    "t3-cross-review-loop": (
+        "t3-cross-review-loop — architectural & cross-repo review; serialized against "
+        "t3-review-loop (shared private repos). Catches cross-cutting regressions a "
+        "single-PR review misses."
+    ),
+    "t3-bug-hunt": (
+        "t3-bug-hunt — proactively hunts bugs in teatree core + its registered "
+        "overlay; self-QA on loop/statusline/CLI (the /teatree-bughunt skill); files "
+        "issues and fixes worktree-isolated; never touches branches/PRs the other "
+        "loops own."
+    ),
+}
+
+
+def _loop_spawn_briefs() -> dict[str, str]:
+    """Return the self-contained spawn brief for every registered loop.
+
+    The brief is what a *takeover* session re-spawns from — it must be
+    standalone (no reliance on a prior session's in-memory state) and
+    name the loop it re-establishes.
+    """
+    return dict(_LOOP_SPAWN_BRIEFS)
+
+
+def _now_ts() -> int:
+    import time  # noqa: PLC0415
+
+    return int(time.time())
+
+
+_RENAME_REMINDER = (
+    "\n\nReminder (UI-only, cannot be automated): run `/rename TEATREE LOOP` to name "
+    "this owner session. The terminal tab title was set automatically where a TTY "
+    "was available."
 )
+
+_DURABILITY_NOTE = (
+    "\n\nDURABILITY: the loop is session-bound. If THIS session closes and another "
+    "is open, that session takes over and re-spawns these loops from their persisted "
+    "briefs. If NO session is open the loop is paused by design (it resumes on the "
+    "next session start) — the recurring CronCreate tick is an in-session convenience "
+    "only, never the durability mechanism."
+)
+
+
+def _brief_block(briefs: dict[str, str]) -> str:
+    return "\n".join(f"  {i}. {briefs[name]}" for i, name in enumerate(LOOP_AGENT_NAMES, 1))
+
+
+def _spawn_directive(briefs: dict[str, str] | None = None) -> str:
+    """Fresh-spawn directive: no live owner anywhere, this session claims it."""
+    briefs = briefs or _loop_spawn_briefs()
+    return (
+        "TEATREE LOOP ORCHESTRATION — establish the singleton loop sub-agents.\n\n"
+        "This session OWNS the teatree loop orchestration (no other live session "
+        "holds it). Idempotently establish/verify these four machine-wide SINGLETON "
+        "loop sub-agents (all always-started) — spawn each only if not already live, "
+        "otherwise verify it:\n" + _brief_block(briefs) + _RENAME_REMINDER + _DURABILITY_NOTE
+    )
+
+
+# Back-compat alias: existing #718 tests assert against this constant.
+_SPAWN_DIRECTIVE = _spawn_directive()
+
+
+def _takeover_directive(briefs: dict[str, str]) -> str:
+    """Cross-session takeover: prior owner is dead, THIS session re-spawns.
+
+    Re-spawn FROM THE BRIEF — the dead owner's agentIds are NOT resumable
+    in a different session, so they are deliberately not surfaced here.
+    """
+    return (
+        "TEATREE LOOP ORCHESTRATION — OWNERSHIP TRANSFER, re-spawn from brief.\n\n"
+        "The previous loop-owner session has died. THIS session is taking over the "
+        "teatree loop orchestration. The previous owner's agentIds are NOT resumable "
+        "from a different session — do NOT attempt to resume by the recorded agent "
+        "id. RE-SPAWN every loop below FRESH from its self-contained brief, then this "
+        "session owns them:\n" + _brief_block(briefs) + _RENAME_REMINDER + _DURABILITY_NOTE
+    )
+
+
+def _resume_directive(registry: dict[str, dict]) -> str:
+    """Same-session restart (e.g. post-compaction): resume by agentId.
+
+    The ONLY place resume-by-agentId is valid — the session and thus the
+    agentIds are unchanged; re-spawning would orphan the live sub-agents.
+    """
+    lines = []
+    for i, name in enumerate(LOOP_AGENT_NAMES, 1):
+        entry = registry.get(name, {})
+        agent_id = entry.get("agent_id") or "(agent id not recorded — re-spawn this one from brief)"
+        lines.append(f"  {i}. {name} — RESUME by recorded agent id: {agent_id}")
+    return (
+        "TEATREE LOOP ORCHESTRATION — same session, resume in place.\n\n"
+        "This session already owns the loop (same session_id). The loop sub-agents "
+        "are still live under this session — RESUME them by their recorded agent ids "
+        "(do NOT re-spawn; that would orphan the running sub-agents). Re-spawn from "
+        "brief only any loop whose agent id is missing:\n" + "\n".join(lines) + _RENAME_REMINDER + _DURABILITY_NOTE
+    )
 
 
 def _reattach_directive(owner: dict) -> str:
@@ -968,52 +1122,92 @@ def _reattach_directive(owner: dict) -> str:
     )
 
 
+def _claim_all_loops(registry: dict[str, dict], session_id: str, agent_id: str) -> dict[str, dict]:
+    """Record this session as owner of EVERY loop, preserving briefs.
+
+    The brief is the durable contract a future takeover re-spawns from,
+    so it is (re)written from the canonical set rather than trusted from
+    a possibly-stale prior entry. The owner pid is ``os.getppid()`` —
+    the long-lived Claude session process, not this ephemeral hook.
+    """
+    briefs = _loop_spawn_briefs()
+    pid = os.getppid()
+    ts = _now_ts()
+    for name in LOOP_AGENT_NAMES:
+        registry[name] = {
+            "session_id": session_id,
+            "agent_id": agent_id,
+            "pid": pid,
+            "spawn_brief": briefs[name],
+            "heartbeat_ts": ts,
+        }
+    return registry
+
+
 def handle_session_start_bootstrap(data: dict) -> None:
-    """Emit the idempotent singleton-loop bootstrap directive on session start."""
+    """Emit the loop bootstrap directive, transferring ownership if orphaned.
+
+    Four cases, decided from the flock-guarded registry. (1) A different
+    live session owns it: re-attach, do not spawn. (2) This session
+    already owns it (same session_id, e.g. post compaction): resume the
+    still-live sub-agents by agentId. (3) The owner is dead but loops
+    were registered with briefs: this session takes over and re-spawns
+    every loop from its brief (agentIds are not cross-session resumable).
+    (4) No owner registered at all (fresh machine): fresh spawn.
+    """
     session_id = data.get("session_id", "")
     if not session_id:
         return
+    agent_id = data.get("agent_id", "")
 
-    registry = _prune_dead_owner(_read_loop_registry())
+    raw = _read_loop_registry()
+    registry = _prune_dead_owner(raw)
     owner = registry.get(_OWNER_LOOP)
+    had_registered_loops = bool(raw)  # before the dead-owner prune
 
     if owner is not None and owner.get("session_id") != session_id:
-        # A different live session already owns the loop — re-attach.
-        _write_loop_registry(registry)  # persist the prune
+        # (1) A different live session owns it — defer, never double-spawn.
+        _write_loop_registry(registry)  # persist the prune only
         context = _reattach_directive(owner)
-    else:
-        # No live owner, or this very session is the owner — (re)claim it.
-        # Record the parent pid: the long-lived Claude session process,
-        # NOT this ephemeral hook subprocess (which exits immediately).
-        registry[_OWNER_LOOP] = {
-            "session_id": session_id,
-            "agent_id": data.get("agent_id", ""),
-            "pid": os.getppid(),
-        }
+    elif owner is not None and owner.get("session_id") == session_id:
+        # (2) Same session restarting (compaction) — resume by agentId.
+        # Refresh heartbeat/agent_id without disturbing the live agents.
+        context = _resume_directive(registry)
+        _claim_all_loops(registry, session_id, agent_id or owner.get("agent_id", ""))
         _write_loop_registry(registry)
         _emit_osc_title()
-        context = _SPAWN_DIRECTIVE
+    else:
+        # No live owner. Either (3) a dead owner left registered loops to
+        # transfer, or (4) a genuinely fresh machine.
+        _claim_all_loops(registry, session_id, agent_id)
+        _write_loop_registry(registry)
+        _emit_osc_title()
+        context = _takeover_directive(_loop_spawn_briefs()) if had_registered_loops else _spawn_directive()
 
     json.dump({"additionalContext": context}, sys.stdout)
 
 
 def handle_session_end_loop_registry(data: dict) -> None:
-    """Release the loop-registry ownership slot when the owner session ends.
+    """Release ALL of the owner's loop slots on a clean session exit.
 
     The lifecycle counterpart to :func:`handle_session_start_bootstrap`:
-    a clean session exit relinquishes ownership immediately so the next
-    session becomes owner without waiting for pid-liveness to expire.
-    Only the recorded owner's own SessionEnd clears the slot — a
-    non-owner ending must not evict the live owner.
+    a clean exit relinquishes ownership of every loop the session owned
+    immediately, so the next session takes over without waiting for
+    pid-liveness to expire. Only the recorded owner's own SessionEnd
+    clears slots — a non-owner ending must not evict the live owner.
     """
     session_id = data.get("session_id", "")
     if not session_id:
         return
     registry = _read_loop_registry()
     owner = registry.get(_OWNER_LOOP)
-    if owner is not None and owner.get("session_id") == session_id:
-        del registry[_OWNER_LOOP]
-        _write_loop_registry(registry)
+    if owner is None or owner.get("session_id") != session_id:
+        return
+    for name in list(registry):
+        entry = registry.get(name)
+        if isinstance(entry, dict) and entry.get("session_id") == session_id:
+            del registry[name]
+    _write_loop_registry(registry)
 
 
 _SESSION_END_ORPHAN_TIMEOUT = 4

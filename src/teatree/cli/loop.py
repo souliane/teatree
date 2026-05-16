@@ -6,6 +6,17 @@ slot's lifecycle and exposes ``tick`` for out-of-band invocations
 with the loop pre-registered; ``stop`` prints the slot id to unregister
 from inside the session.
 
+Durability model (by design): the loop is SESSION-BOUND. It runs only
+while at least one Claude Code session is open — spawning the
+per-ticket/per-step sub-agents requires the Agent tool, which exists
+only inside a live session. If the owner session dies but another
+session is open (or one opens later), that session reads the loop
+registry, claims ownership, and re-spawns every loop from its persisted
+brief (ownership transfer). With ZERO sessions open the loop is DEAD
+until the next session starts — this is accepted, not a defect; there is
+deliberately no OS daemon/launchd workaround. The recurring tick is an
+in-session convenience only, never the durability mechanism.
+
 The ``tick`` subcommand delegates to the ``loop_tick`` Django management
 command via subprocess — anything that touches the Django ORM must be a
 management command, not a plain typer command with manual ``django.setup()``.
@@ -20,7 +31,17 @@ import typer
 
 from teatree.loop.statusline import default_path
 
-loop_app = typer.Typer(name="loop", help="Manage the long-lived fat loop.", no_args_is_help=True)
+loop_app = typer.Typer(
+    name="loop",
+    help=(
+        "Manage the long-lived fat loop. Session-bound by design: it runs only "
+        "while a Claude Code session is open; if the owner session dies another "
+        "open session takes over and re-spawns the loops from the registry; with "
+        "zero sessions open the loop is paused until the next session start (no "
+        "OS daemon — accepted, not a defect)."
+    ),
+    no_args_is_help=True,
+)
 
 
 @loop_app.command("tick")
@@ -152,6 +173,15 @@ def start_command(
     before the user types anything. When ``claude`` is not available or
     the caller is already inside a Claude Code session, falls back to
     printing the slash command for manual entry.
+
+    Durability (by design): the loop is session-bound. The SessionStart
+    hook records ownership (per-loop spawn brief + heartbeat) in the
+    machine-wide loop registry. If this session dies, ANY other open
+    session — or the next one to open — takes over and re-spawns every
+    loop from its persisted brief (agentIds are not resumable across
+    sessions, so a takeover re-spawns rather than resumes). With no
+    session open the loop is paused until the next session start; there
+    is deliberately no OS-scheduler/launchd fallback.
     """
     cadence = _cadence_for_loop_slot()
     register_command = (
