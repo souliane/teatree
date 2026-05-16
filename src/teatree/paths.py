@@ -24,7 +24,12 @@ from pathlib import Path
 from typing import NamedTuple
 
 _TRUE_CANONICAL_DATA_DIR = Path.home() / ".local" / "share" / "teatree"
-_TRUE_CANONICAL_DB = _TRUE_CANONICAL_DATA_DIR / "db.sqlite3"
+#: The one control DB the installed ``t3`` and the live loop operate on. Every
+#: ``t3 <ov> <cmd>`` proxies through the main clone (a ``.git`` *dir*), which
+#: resolves here. Worktree-resident ``uv run manage.py`` resolves to an
+#: isolated sibling DB instead — the #779 cross-DB mismatch. Public so the
+#: lifecycle/ship guard can name it in the refusal message.
+TRUE_CANONICAL_DB = _TRUE_CANONICAL_DATA_DIR / "db.sqlite3"
 
 
 class ResolvedDataDir(NamedTuple):
@@ -63,6 +68,18 @@ def _code_repo_root() -> Path:
 def _worktree_isolation_root(home: Path) -> Path:
     """Sibling of the canonical data dir — never recursively scanned by it."""
     return home / ".local" / "share" / "teatree-worktrees"
+
+
+def worktree_isolation_root() -> Path:
+    """Public accessor for the per-worktree isolated-DB root (#779).
+
+    The cross-DB guard refuses when the *live Django connection* points at a
+    ``db.sqlite3`` under this root (a real per-worktree isolated DB the
+    shipping gate never reads), so it needs the root to classify the active
+    DB. ``:memory:`` test databases are never under it, so the guard is
+    naturally inert under the test runner without any test-only branch.
+    """
+    return _worktree_isolation_root(Path.home())
 
 
 def resolve_data_dir(*, env: dict[str, str], home: Path, repo_root: Path) -> ResolvedDataDir:
@@ -153,7 +170,7 @@ def seed_isolated_db(data_dir: Path) -> None:
     """Module-level binding of :func:`_seed_isolated_db` to the real canonical DB."""
     _seed_isolated_db(
         data_dir,
-        canonical_db=_TRUE_CANONICAL_DB,
+        canonical_db=TRUE_CANONICAL_DB,
         isolation_root=_worktree_isolation_root(Path.home()),
     )
 
@@ -168,6 +185,22 @@ def get_data_dir(namespace: str) -> Path:
     data_dir = DATA_DIR / namespace
     data_dir.mkdir(parents=True, exist_ok=True)
     return data_dir
+
+
+def expected_db_for_repo(repo_root: Path, *, env: dict[str, str], home: Path) -> Path:
+    """The control-DB path that code resident in *repo_root* resolves to.
+
+    Deterministic from the on-disk location alone — the same function the
+    process uses at import time (:func:`resolve_data_dir`), just parameterised
+    by an explicit ``repo_root`` instead of ``_code_repo_root()``. A primary
+    clone yields the canonical DB; a git worktree yields its sibling
+    auto-isolated DB; an explicit ``XDG_DATA_HOME`` sandbox yields that
+    sandbox's DB. This is the anchor for the cross-DB guard (#779): a
+    ticket's lifecycle/ship state lives in exactly one DB — the one its
+    worktree's resident code would resolve to — regardless of the CWD the
+    ``t3`` command happens to run from.
+    """
+    return resolve_data_dir(env=env, home=home, repo_root=repo_root).path / "db.sqlite3"
 
 
 def find_overlay_db(name: str, project_path: str) -> Path | None:

@@ -248,7 +248,7 @@ class TestPrCreateNeverRaisesTransitionNotAllowed(TestCase):
                 return_value={"test": CommandOverlay()},
             ),
             patch.object(pr_command, "_run_visual_qa_gate", return_value=None),
-            patch.object(pr_command, "_validate_pr_metadata", return_value=None),
+            patch.object(pr_command, "validate_pr_metadata", return_value=None),
         ):
             result = cast("dict[str, object]", call_command("pr", "create", str(ticket.pk)))
 
@@ -282,7 +282,7 @@ class TestPrCreateNeverRaisesTransitionNotAllowed(TestCase):
                 return_value={"test": CommandOverlay()},
             ),
             patch.object(pr_command, "_run_visual_qa_gate", return_value=None),
-            patch.object(pr_command, "_validate_pr_metadata", return_value=None),
+            patch.object(pr_command, "validate_pr_metadata", return_value=None),
         ):
             result = cast(
                 "dict[str, object]",
