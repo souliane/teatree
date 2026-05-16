@@ -58,6 +58,8 @@ Always start dev servers via `t3 <overlay> worktree start` before running tests.
 
 **Test integrity (Non-Negotiable):** Never weaken, simplify, or remove test cases to work around failures. If a test fails, fix the underlying issue (environment, selectors, timing) — don't dilute the test.
 
+**Clean baseline against stateful infra (Non-Negotiable):** When debugging a test against a stateful database (a restored dump, a shared dev DB, anything not freshly provisioned), establish **one clean baseline first**, then change exactly one thing per run. Never interleave fixture re-runs, password/credential resets, or data re-seeding with test runs while diagnosing — re-running a fixture that fires model signals can mutate *other* rows and manufacture failures that look like product bugs. If a fixture must be idempotent to be safe to re-run, make it idempotent before re-running it. One disciplined pass, observe, then diagnose — re-seeding mid-investigation invalidates every observation that follows.
+
 ## Pixel-Stable Visual Snapshots
 
 When using visual snapshot plugins (`pytest-playwright-visual`, `assert_snapshot`), snapshot tests are only reproducible when every source of visual drift is pinned. Eliminate in this order before regenerating baselines:
