@@ -46,6 +46,24 @@ Always start dev servers via `t3 <overlay> worktree start` before running tests.
 
 **E2E for backend/API changes:** When backend or microservice changes affect data visible in the frontend (e.g., webhook payload fields, API serializer fields, new model fields exposed via API), E2E tests are still required even if there is no frontend PR. The frontend form already has the fields — E2E proves the end-to-end data flow. Do NOT skip E2E just because the change is "backend-only."
 
+## Dual-Env Testing (one spec, DEV or local)
+
+A single spec should run against either the deployed **dev** environment or the **local** stack, selected by one CLI argument. Determinism comes from code, never from a parsed file.
+
+**Target selection.** `t3 <overlay> e2e [run|external|project] --target dev|local`:
+
+- `dev` — keep the pre-set `BASE_URL` (deployed env); no local port scan.
+- `local` — always discover the local frontend, even if a stray `BASE_URL` is exported (so `--target local` can never silently hit a deployed env).
+- omitted — back-compat: infer `dev` if `BASE_URL` is set, else `local`.
+
+The resolved value is exported as **`T3_E2E_TARGET`**. The spec branches on it — `const IS_DEV = process.env.T3_E2E_TARGET === 'dev'` — and must not re-derive the target from a `BASE_URL` host regex. Prefer testing a deployed/merged change against `dev`; an unmerged change must still pass on `local`.
+
+**Recording DEV-vs-local discrepancies (typed sidecar, not prose).** When a spec must behave differently per target (different field labels in a regulated vs internal document, a DEV-only cross-check, a feature whose data only exists on one side), encode it in a **typed TypeScript sidecar the spec imports** (e.g. `<spec>.dualenv.ts` exporting a typed `DualEnvSpec`). `tsc` type-checks it; nothing parses Markdown/YAML to drive behavior. The sidecar is the durable, machine-enforced record of every known divergence and of any fixture provenance.
+
+**Replicating a DEV object to local.** To test a not-yet-deployed feature locally, anchor on a real reproducible DEV object (read it read-only — authorized) and ensure it exists in the local DB. The local DB must be a DEV dump (use DSLR; if the object is missing, ask the user for a fresh dump — agents must never set `T3_ALLOW_REMOTE_DUMP`). Provisioning is at most two `t3` CLI invocations (provision/refresh, then run); fold password reset and access seeding into the provision step (`t3 <overlay> db refresh` already resets passwords).
+
+**Documented limitation — some features are DEV-only on local.** DSLR snapshots legitimately lack certain data catalogs (e.g. the Excel-priced bandwidth product catalog). A feature that depends on such a catalog **cannot be reproduced on the local stack from DSLR**, regardless of snapshot age. This is not a bug to fix — record it in the spec's typed sidecar as a DEV-only divergence so the spec runs that feature against `dev` only and the limitation stays visible and enforced. Pin the run to the intended worktree's stack; cross-worktree container/DB drift causes silent mis-targeting.
+
 ## Writing Tests
 
 **Test depth:** Don't just verify "page loads with 200". Read the source code to understand what the feature does, then test specific behaviors: form fields, filters, CRUD operations, access control, edge cases.
