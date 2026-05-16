@@ -162,7 +162,7 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
         field=state,
         source=State.TESTED,
         target=State.REVIEWED,
-        conditions=[lambda t: t.tasks.filter(phase="reviewing", status="completed").exists()],
+        conditions=[lambda t: t.tasks.completed_in_phase("reviewing").exists()],
     )
     def review(self) -> None:
         self._consume_pending_phase_tasks("reviewing")
@@ -356,7 +356,7 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
         ],
         target=State.DELIVERED,
         conditions=[
-            lambda t: t.role == Ticket.Role.REVIEWER and t.tasks.filter(phase="reviewing", status="completed").exists(),
+            lambda t: t.role == Ticket.Role.REVIEWER and t.tasks.completed_in_phase("reviewing").exists(),
         ],
     )
     def mark_reviewed_externally(self) -> None:

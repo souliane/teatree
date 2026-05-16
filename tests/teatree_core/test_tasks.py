@@ -400,3 +400,75 @@ class TestAdvanceTicketNormalizesPhase(TestCase):
 
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.TESTED
+
+
+class TestReviewConditionNormalizesPhase(TestCase):
+    """#757: the review FSM conditions match the canonical phase contract.
+
+    review()/mark_reviewed_externally() must not use raw
+    ``phase="reviewing"``. Distinct from #750's tests (which satisfy the precondition
+    canonically to isolate _advance_ticket): here the ONLY completed
+    reviewing task is the short-verb ``review`` one, so the condition
+    itself must normalize or the transition is refused end-to-end.
+    """
+
+    def test_short_verb_review_task_alone_advances_tested_to_reviewed(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.TESTED)
+        session = Session.objects.create(ticket=ticket, agent_id="t")
+        # The sole reviewing task uses the short verb (unnormalized, as
+        # `tasks create <id> review` stores it). Pre-fix, review()'s
+        # condition `tasks.filter(phase="reviewing")` misses it.
+        task = Task.objects.create(ticket=ticket, session=session, phase="review", status=Task.Status.COMPLETED)
+
+        task._advance_ticket()
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.REVIEWED, (
+            f"short-verb 'review' task did not satisfy review()'s condition "
+            f"(state={ticket.state}); the FSM condition compared raw phase"
+        )
+
+    def test_reviewer_role_short_verb_review_advances(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.TESTED, role=Ticket.Role.REVIEWER)
+        session = Session.objects.create(ticket=ticket, agent_id="t")
+        task = Task.objects.create(ticket=ticket, session=session, phase="review", status=Task.Status.COMPLETED)
+
+        task._advance_ticket()
+
+        ticket.refresh_from_db()
+        # mark_reviewed_externally()'s condition must also normalize.
+        assert ticket.state != Ticket.State.TESTED, (
+            f"reviewer-role short-verb 'review' did not advance (state={ticket.state})"
+        )
+
+    def test_canonical_reviewing_task_still_satisfies_condition(self) -> None:
+        # Regression guard: the canonical spelling must keep working.
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.TESTED)
+        session = Session.objects.create(ticket=ticket, agent_id="t")
+        task = Task.objects.create(ticket=ticket, session=session, phase="reviewing", status=Task.Status.COMPLETED)
+
+        task._advance_ticket()
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.REVIEWED
+
+
+class TestTaskCompletedInPhase(TestCase):
+    """The shared queryset method both FSM conditions use (#757)."""
+
+    def test_matches_both_short_verb_and_canonical(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.TESTED)
+        session = Session.objects.create(ticket=ticket, agent_id="t")
+        Task.objects.create(ticket=ticket, session=session, phase="review", status=Task.Status.COMPLETED)
+
+        assert Task.objects.completed_in_phase("reviewing").filter(ticket=ticket).exists()
+        # Symmetric: querying by the short verb also resolves.
+        assert Task.objects.completed_in_phase("review").filter(ticket=ticket).exists()
+
+    def test_excludes_non_completed_and_other_phases(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.TESTED)
+        session = Session.objects.create(ticket=ticket, agent_id="t")
+        Task.objects.create(ticket=ticket, session=session, phase="review", status=Task.Status.PENDING)
+        Task.objects.create(ticket=ticket, session=session, phase="coding", status=Task.Status.COMPLETED)
+
+        assert not Task.objects.completed_in_phase("reviewing").filter(ticket=ticket).exists()

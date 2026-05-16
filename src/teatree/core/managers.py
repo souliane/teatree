@@ -122,6 +122,20 @@ class ReplyDispatchQuerySet(models.QuerySet):
 
 
 class TaskQuerySet(models.QuerySet):
+    def completed_in_phase(self, phase: str) -> models.QuerySet:
+        """Completed tasks whose phase normalizes to ``phase`` (#757).
+
+        Matches any accepted spelling (short verb or gerund) — the FSM
+        ``review()`` / ``mark_reviewed_externally()`` conditions must see
+        a short-verb ``review`` task the same as a canonical
+        ``reviewing`` one, mirroring the ``normalize_phase`` contract the
+        rest of the system honours.
+        """
+        from teatree.core.models.task import Task  # noqa: PLC0415
+        from teatree.core.phases import phase_spellings  # noqa: PLC0415
+
+        return self.filter(phase__in=phase_spellings(phase), status=Task.Status.COMPLETED)
+
     def claimable_for_headless(self, overlay: str | None = None) -> models.QuerySet:
         from teatree.core.models.task import Task  # noqa: PLC0415
 
