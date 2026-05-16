@@ -1,3 +1,4 @@
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -8,6 +9,7 @@ from typer.testing import CliRunner
 import teatree.cli as teatree_cli
 from teatree.cli import app
 from teatree.cli.tools import ToolRunner
+from teatree.repo_mode import RepoMode
 
 runner = CliRunner()
 
@@ -78,6 +80,31 @@ class TestToolCommands:
             result = runner.invoke(app, ["tool", "bump-deps"])
             assert result.exit_code == 0
             mock.assert_called_once_with("bump-pyproject-deps-from-lock-file")
+
+
+class TestRepoModeCommand:
+    """``t3 tool repo-mode`` wires the resolver to plain/JSON output and flags."""
+
+    def test_plain_output_is_the_bare_mode(self):
+        with patch("teatree.repo_mode.resolve_repo_mode") as mock:
+            mock.return_value = RepoMode.SOLO
+            result = runner.invoke(app, ["tool", "repo-mode", "/some/repo"])
+        assert result.exit_code == 0
+        assert result.stdout.strip() == "solo"
+        mock.assert_called_once_with("/some/repo", refresh=False)
+
+    def test_json_output_is_machine_readable(self):
+        with patch("teatree.repo_mode.resolve_repo_mode") as mock:
+            mock.return_value = RepoMode.COLLABORATIVE
+            result = runner.invoke(app, ["tool", "repo-mode", "/some/repo", "--json"])
+        assert result.exit_code == 0
+        assert json.loads(result.stdout) == {"repo": "/some/repo", "mode": "collaborative"}
+
+    def test_refresh_flag_is_forwarded(self):
+        with patch("teatree.repo_mode.resolve_repo_mode") as mock:
+            mock.return_value = RepoMode.SOLO
+            runner.invoke(app, ["tool", "repo-mode", ".", "--refresh"])
+        mock.assert_called_once_with(".", refresh=True)
 
 
 class TestPrivacyScanWrapperSurfacesFindings:
