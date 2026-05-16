@@ -38,7 +38,9 @@ loop_app = typer.Typer(
         "while a Claude Code session is open; if the owner session dies another "
         "open session takes over and re-spawns the loops from the registry; with "
         "zero sessions open the loop is paused until the next session start (no "
-        "OS daemon — accepted, not a defect)."
+        "OS daemon — accepted, not a defect). Within the owner session a Stop-hook "
+        "self-pump re-continues the loop automatically while consolidated work "
+        "remains (no manual coordinator re-prompt); it idles when there is none."
     ),
     no_args_is_help=True,
 )
