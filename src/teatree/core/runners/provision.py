@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, cast
 from teatree.config import workspace_dir as _workspace_dir
 from teatree.core.clone_paths import find_clone_path
 from teatree.core.models import Ticket, Worktree
+from teatree.core.public_identity import is_public_souliane_remote, set_local_noreply_identity
 from teatree.core.runners.base import RunnerBase, RunnerResult
 from teatree.utils import git
 
@@ -118,5 +119,26 @@ class WorktreeProvisioner(RunnerBase):
         if pv.is_file() and not pv_dest.exists():
             with suppress(OSError):
                 pv_dest.symlink_to(pv)
+
+        # #762: a worktree off a PUBLIC souliane/* clone gets the
+        # configured noreply git identity set clone-local, so every
+        # commit path uses it instead of the inherited identity. Scoped
+        # by remote slug — non-souliane / private clones are left as-is.
+        if is_public_souliane_remote(git.remote_slug(str(repo_path))):
+            try:
+                set_local_noreply_identity(str(wt_path))
+            except Exception:
+                # Do NOT silently swallow — if this fails the worktree
+                # keeps the inherited identity and the condition recurs
+                # invisibly (the #755 fail-open lesson). Surface it
+                # loudly; the worktree is still usable but this needs
+                # action, not a soft warning.
+                logger.exception(
+                    "Failed to set the configured noreply git identity on public "
+                    "souliane worktree %s — commits here may use the inherited "
+                    "identity (#762). Set the clone-local git identity before "
+                    "committing.",
+                    wt_path,
+                )
 
         return str(wt_path), repo_path
