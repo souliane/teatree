@@ -274,7 +274,6 @@ class LoopLeaseQuerySet(models.QuerySet):
             .update(
                 owner=owner,
                 acquired_at=now,
-                heartbeat_at=now,
                 lease_expires_at=expires,
             )
         )
@@ -289,7 +288,6 @@ class LoopLeaseQuerySet(models.QuerySet):
         released = self.filter(name=name, owner=owner).update(
             owner="",
             acquired_at=None,
-            heartbeat_at=None,
             lease_expires_at=None,
         )
         return released == 1
