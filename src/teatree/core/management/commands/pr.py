@@ -183,11 +183,27 @@ def _check_shipping_gate(ticket: Ticket) -> ShippingGateFailure | None:
 
     # Gate passed -> the work is attested. Reconcile the FSM from the single
     # source of truth so ``ship()`` (source [REVIEWED, SHIPPED]) is legal.
+    _reconcile_fsm_for_ship(ticket)
+    return None
+
+
+def _reconcile_fsm_for_ship(ticket: Ticket) -> None:
+    """Walk the FSM to REVIEWED so ``ship()`` is legal (#694, #748).
+
+    The single source of truth — a passing gate's phase attestation, or
+    on the user-authorized ``--skip-validation`` path the explicit
+    authorization itself — implies a shippable FSM state. Idempotent: a
+    no-op when already REVIEWED/SHIPPED. Called both after a passing gate
+    and on the ``--skip-validation`` skip path: ``--skip-validation``
+    substitutes the user's authorization for the phase attestation, so
+    the FSM must follow the authorization rather than leaving ``ship()``
+    structurally impossible from a non-REVIEWED state (the gate-fixer
+    bootstrap exception, /t3:ship §5 #2).
+    """
     if ticket.state not in {Ticket.State.REVIEWED, Ticket.State.SHIPPED}:
         with transaction.atomic():
             ticket.reconcile_reviewed()
             ticket.save()
-    return None
 
 
 def _do_ship_transition(ticket: Ticket, title: str) -> ShippingGateFailure | None:
@@ -400,6 +416,12 @@ class Command(TyperCommand):
             gate_failure = _run_ship_gates(ticket, worktree, skip_visual_qa=skip_visual_qa)
             if gate_failure is not None:
                 return gate_failure
+        else:
+            # --skip-validation is the user-authorized attestation
+            # substitute (the gate-fixer bootstrap, /t3:ship §5 #2). The
+            # FSM must follow the authorization or ship() is structurally
+            # impossible from a non-REVIEWED state (#748).
+            _reconcile_fsm_for_ship(ticket)
 
         if dry_run:
             return _ship_dry_run(ticket, worktree)

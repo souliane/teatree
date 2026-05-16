@@ -208,9 +208,49 @@ class TestPrCreateSyncShip(TestCase):
         assert result["queued"] is True
         assert "QUEUED, not performed" in result["warning"]
 
-    def test_sync_illegal_transition_returns_gate_failure(self) -> None:
-        # Not REVIEWED and validation skipped -> ship() illegal -> structured
-        # failure, never a raw TransitionNotAllowed, even on the sync path (#694).
+    def test_skip_validation_reconciles_fsm_then_ships_a_non_reviewed_ticket(self) -> None:
+        """#748: ``--skip-validation`` reconciles the FSM then ships.
+
+        ``--skip-validation`` is the user-authorized attestation
+        substitute, so the FSM must follow the authorization.
+        Pre-fix, ``--skip-validation`` skipped the phase check AND the FSM
+        reconcile, so ``ship()`` failed from a non-REVIEWED state — the
+        gate-fixer bootstrap exception was structurally broken (it could
+        never actually ship the very tickets it exists for). The skip
+        path now walks the FSM to REVIEWED via ``reconcile_reviewed`` so
+        ``ship()`` is legal. RED on the pre-fix body (returns the
+        "Cannot ship from state" gate failure); GREEN once the skip path
+        reconciles.
+        """
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.STARTED)
+        Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path="/tmp/backend",
+            branch="feature-branch",
+            extra={"worktree_path": "/tmp/backend"},
+        )
+        ship_mock = MagicMock()
+        ship_mock.call.return_value = {"ticket_id": ticket.pk, "ok": True, "detail": "PR opened"}
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.tasks.execute_ship", ship_mock),
+        ):
+            result = cast(
+                "dict[str, object]",
+                call_command("pr", "create", str(ticket.id), sync=True, skip_validation=True),
+            )
+
+        # The authorized bypass now ships: FSM reconciled to REVIEWED,
+        # ship() legal, no "Cannot ship from state" failure.
+        assert result.get("allowed") is not False, result
+        assert result["ok"] is True
+        ticket.refresh_from_db()
+        assert ticket.state in {Ticket.State.SHIPPED, Ticket.State.REVIEWED}
+
+    def test_sync_illegal_transition_without_skip_is_structured_failure(self) -> None:
+        # Validation NOT skipped, no attested session -> the gate blocks
+        # with a structured failure, never a raw TransitionNotAllowed (#694).
         ticket = Ticket.objects.create(overlay="test", state=Ticket.State.STARTED)
         Worktree.objects.create(
             ticket=ticket,
@@ -222,10 +262,10 @@ class TestPrCreateSyncShip(TestCase):
         with patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY):
             result = cast(
                 "dict[str, object]",
-                call_command("pr", "create", str(ticket.id), sync=True, skip_validation=True),
+                call_command("pr", "create", str(ticket.id), sync=True),
             )
         assert result["allowed"] is False
-        assert "Cannot ship from state" in result["error"]
+        assert result["error"]
 
 
 class TestShipPreviewTitleDescriptionInvariant(TestCase):
