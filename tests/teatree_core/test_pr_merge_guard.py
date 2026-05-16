@@ -97,6 +97,23 @@ class TestLocalSquashMergePublic:
             "must not mutate when origin != target slug"
         )
 
+    def test_repo_path_pins_all_git_ops_to_that_clone(self) -> None:
+        # F1-adjacent (bootstrap + unattended sweeps from arbitrary cwd):
+        # --repo-path makes every git op target that clone, and the
+        # origin assertion runs THERE, not the process cwd.
+        rec = _Recorder()
+        p_git, p_gh = _patch(rec)
+        clone = "/clones/souliane/teatree"
+        with p_git, p_gh:
+            squash_merge_public(pr=764, slug="souliane/teatree", repo_path=clone)
+
+        origin_cwd = next(c for a, _, c in rec.git if a[:3] == ["remote", "get-url", "origin"])
+        toplevel_cwd = next(c for a, _, c in rec.git if a[:2] == ["rev-parse", "--show-toplevel"])
+        # The safety checks (origin-assert, toplevel-resolve) run in the
+        # PINNED clone, never the arbitrary process cwd ".".
+        assert origin_cwd == clone, rec.git
+        assert toplevel_cwd == clone, rec.git
+
     def test_switch_main_failure_stops_before_squash(self) -> None:
         # F2: main checked out elsewhere -> switch fails -> STOP, never
         # squash/commit/push on the wrong branch.
@@ -145,5 +162,5 @@ class TestPrMergeCommandWiring:
         with patch("teatree.core.pr_merge.squash_merge_public") as helper:
             result = call_command("pr", "merge", "764", "souliane/teatree")
 
-        helper.assert_called_once_with(pr=764, slug="souliane/teatree", auto=False)
+        helper.assert_called_once_with(pr=764, slug="souliane/teatree", repo_path="", auto=False)
         assert result == {"merged": True, "pr": 764, "slug": "souliane/teatree", "auto": False}

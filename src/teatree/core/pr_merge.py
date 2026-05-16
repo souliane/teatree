@@ -110,7 +110,7 @@ def _server_side_merge(pr: int, slug: str, *, auto: bool) -> None:
         raise RuntimeError(msg)
 
 
-def _local_squash_merge(pr: int, slug: str) -> None:
+def _local_squash_merge(pr: int, slug: str, repo_path: str = "") -> None:
     name, email = canonical_noreply_identity()
     branch = _pr_branch(slug, pr)
     if not branch:
@@ -124,15 +124,18 @@ def _local_squash_merge(pr: int, slug: str) -> None:
         "GIT_AUTHOR_EMAIL": email,
     }
 
-    # F1: every git op is pinned to the resolved clone of `slug` (the
-    # review-loop sweeps from its own dir). Assert origin == slug there
-    # before any mutating op, and resolve the repo toplevel so the squash
-    # /commit/push cannot land on the wrong repository.
-    _assert_origin_is(slug, cwd=".")
-    rc, top, _ = _run_git(["rev-parse", "--show-toplevel"], cwd=".")
+    # F1: every git op is pinned to a single clone of `slug`. The
+    # review-loop sweeps the backlog from an arbitrary cwd, so the target
+    # clone must be explicit — ``repo_path`` (when given) is that clone;
+    # otherwise the process cwd is used. Assert origin == slug there
+    # before any mutating op, then resolve the repo toplevel so the
+    # squash/commit/push cannot land on the wrong repository.
+    base = repo_path or "."
+    _assert_origin_is(slug, cwd=base)
+    rc, top, _ = _run_git(["rev-parse", "--show-toplevel"], cwd=base)
     repo = top.strip()
     if rc != 0 or not repo:
-        msg = f"cannot resolve the repo toplevel for {slug} — refusing the local-squash merge (#764)"
+        msg = f"cannot resolve the repo toplevel for {slug} at {base!r} — refusing the local-squash merge (#764)"
         raise RuntimeError(msg)
 
     rc, _o, err = _run_git(["fetch", "origin"], cwd=repo)
@@ -176,7 +179,7 @@ def _local_squash_merge(pr: int, slug: str) -> None:
     _run_gh(["pr", "close", str(pr), "--repo", slug, "--comment", f"Merged via squashed commit {landed}."])
 
 
-def squash_merge_public(*, pr: int, slug: str, auto: bool = False) -> None:
+def squash_merge_public(*, pr: int, slug: str, repo_path: str = "", auto: bool = False) -> None:
     """Merge a PR with a deterministic author on public souliane/* (#764).
 
     Public ``souliane/*``: a LOCAL ``git merge --squash`` + ``git commit``
@@ -188,10 +191,15 @@ def squash_merge_public(*, pr: int, slug: str, auto: bool = False) -> None:
     via ``gh api`` (fail-closed defense-in-depth). ``auto`` is ignored on
     this path (the local squash is synchronous by construction).
 
+    ``repo_path`` pins all git ops to a specific clone of ``slug`` — the
+    review-loop sweeps the backlog from an arbitrary cwd, so the target
+    clone must be explicit and deterministic (origin-asserted == slug
+    before any mutating op). When empty, the process cwd is used.
+
     Non-souliane / private remotes: the server-side ``gh pr merge
     --squash`` path, unchanged (their configured identity is fine).
     """
     if is_public_souliane_remote(slug):
-        _local_squash_merge(pr, slug)
+        _local_squash_merge(pr, slug, repo_path)
         return
     _server_side_merge(pr, slug, auto=auto)
