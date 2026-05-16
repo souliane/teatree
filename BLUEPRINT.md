@@ -887,9 +887,10 @@ Typer-based, work without Django:
 - `t3 sessions` — list/resume Claude conversation sessions
 - `t3 docs` — serve mkdocs documentation (requires `docs` dependency group)
 - `t3 ci {cancel,divergence,fetch-errors,fetch-failed-tests,trigger-e2e,quality-check}` — CI helpers
-- `t3 <overlay> e2e run [<test-path>]` — run E2E tests; dispatches to the project runner (in-repo pytest-playwright) or the external runner (remote Playwright repo) based on the overlay's `get_e2e_config()` — same command across overlays
-- `t3 <overlay> e2e external [--repo <name>] [<test-path>]` — explicit external runner: Playwright from `T3_PRIVATE_TESTS` or a named `[e2e_repos.<name>]` git repo; skips port discovery when `BASE_URL` is already set (DEV/staging mode)
-- `t3 <overlay> e2e project [<test-path>] [--update-snapshots]` — explicit project runner: pytest-playwright in the overlay's own test dir, executed in the canonical Docker image by default
+- `t3 <overlay> e2e run [<test-path>] [--target dev|local]` — run E2E tests; dispatches to the project runner (in-repo pytest-playwright) or the external runner (remote Playwright repo) based on the overlay's `get_e2e_config()` — same command across overlays
+- `t3 <overlay> e2e external [--repo <name>] [--target dev|local] [<test-path>]` — explicit external runner: Playwright from `T3_PRIVATE_TESTS` or a named `[e2e_repos.<name>]` git repo; skips port discovery when `BASE_URL` is already set (DEV/staging mode)
+- `t3 <overlay> e2e project [<test-path>] [--target dev|local] [--update-snapshots]` — explicit project runner: pytest-playwright in the overlay's own test dir, executed in the canonical Docker image by default
+- `--target dev|local` — dual-env selector (omitted = back-compat inference from `BASE_URL`). Exported as `T3_E2E_TARGET`; a dual-mode spec branches on it rather than a `BASE_URL` host regex. `local` always discovers the local frontend so it can never silently hit a deployed env
 - `t3 review {post-draft-note,delete-draft-note,list-draft-notes,publish-draft-notes,update-note,reply-to-discussion,resolve-discussion}` — code-host draft notes (post/delete/list/publish), in-place edits of draft or published notes, plus immediate replies on existing discussion threads and resolve/unresolve toggle. Routes to GitHub or GitLab via the active overlay's `CodeHostBackend`.
 - `t3 review-request discover` — discover open PRs awaiting review
 - `t3 tool {privacy-scan,analyze-video,bump-deps,label-issues,find-duplicates,triage-issues,audit-memory}` — standalone utilities

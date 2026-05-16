@@ -4658,3 +4658,36 @@ class TestE2eExternalRepo(TestCase):
             pytest.raises(subprocess.CalledProcessError),
         ):
             call_command("e2e", "external", repo="demo-svc")
+
+
+class TestE2EResolveTarget(TestCase):
+    """`--target` resolution is deterministic and drives `T3_E2E_TARGET`."""
+
+    def test_explicit_values_are_normalized(self) -> None:
+        cmd = e2e_mod.Command()
+        for raw, expected in [("dev", "dev"), ("local", "local"), ("DEV", "dev"), (" Local ", "local")]:
+            with self.subTest(raw=raw):
+                assert cmd._resolve_target(raw) == expected
+
+    def test_invalid_value_exits(self) -> None:
+        with pytest.raises(SystemExit):
+            e2e_mod.Command()._resolve_target("staging")
+
+    def test_empty_infers_from_base_url(self) -> None:
+        cmd = e2e_mod.Command()
+        with patch.dict(os.environ, {"BASE_URL": "https://app-development.example.com"}, clear=False):
+            assert cmd._resolve_target("") == "dev"
+        env_no_base = {k: v for k, v in os.environ.items() if k != "BASE_URL"}
+        with patch.dict(os.environ, env_no_base, clear=True):
+            assert cmd._resolve_target("") == "local"
+
+    def test_build_env_exports_t3_e2e_target(self) -> None:
+        with (
+            patch.object(e2e_mod, "get_overlay") as get_overlay,
+            patch.object(e2e_mod, "_find_env_cache", return_value=None),
+        ):
+            get_overlay.return_value.get_e2e_env_extras.return_value = {}
+            env = e2e_mod._build_e2e_env("http://localhost:4200", headed=False, target="local")
+        assert env["T3_E2E_TARGET"] == "local"
+        assert env["BASE_URL"] == "http://localhost:4200"
+        assert env["CI"] == "1"

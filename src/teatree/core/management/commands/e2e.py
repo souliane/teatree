@@ -131,19 +131,30 @@ def _discover_frontend_port(worktree: Worktree) -> int | None:
     return None
 
 
-def _build_e2e_env(frontend_url: str | None = None, *, headed: bool) -> dict[str, str]:
+def _build_e2e_env(
+    frontend_url: str | None = None,
+    *,
+    headed: bool,
+    target: str,
+) -> dict[str, str]:
     """Build environment dict for Playwright: ``BASE_URL``, overlay extras, ``CI``.
 
     When *frontend_url* is given it overrides ``BASE_URL``.
     When it is ``None`` the existing ``BASE_URL`` env var is preserved (DEV / staging mode).
 
+    *target* is the resolved dual-env target (``"dev"`` or ``"local"``); it is
+    exported as ``T3_E2E_TARGET`` so a single dual-mode spec can branch on
+    ``process.env.T3_E2E_TARGET === 'dev'`` instead of re-deriving the target
+    from a ``BASE_URL`` host regex.
+
     Overlay-specific env vars (e.g. ``CUSTOMER``) come from
-    :meth:`OverlayBase.get_e2e_env_extras` — core only knows about ``BASE_URL``
-    and ``CI``.
+    :meth:`OverlayBase.get_e2e_env_extras` — core only knows about ``BASE_URL``,
+    ``T3_E2E_TARGET`` and ``CI``.
     """
     env = {**os.environ}
     if frontend_url is not None:
         env["BASE_URL"] = frontend_url
+    env["T3_E2E_TARGET"] = target
 
     envfile = _find_env_cache(_get_user_cwd())
     env_cache = _parse_env_file(envfile) if envfile is not None else {}
@@ -163,6 +174,7 @@ class Command(TyperCommand):
         self,
         test_path: str = "",
         *,
+        target: str = "",
         headed: bool = False,
         update_snapshots: bool = False,
         docker: bool = True,
@@ -175,6 +187,9 @@ class Command(TyperCommand):
         or ``"runner": "external"``; when absent, ``test_dir`` implies ``project``
         and ``project_path`` implies ``external`` for compatibility.
 
+        ``--target dev|local`` selects the dual-env target and is forwarded to
+        whichever runner handles the overlay (see ``external`` for semantics).
+
         Runner-specific flags (``--repo``, ``--playwright-args``) stay on the
         explicit ``external`` subcommand to keep this entry point overlay-agnostic.
         """
@@ -184,6 +199,7 @@ class Command(TyperCommand):
         if runner == "project":
             return self.project(
                 test_path=test_path,
+                target=target,
                 headed=headed,
                 docker=docker,
                 update_snapshots=update_snapshots,
@@ -191,6 +207,7 @@ class Command(TyperCommand):
         if runner == "external":
             return self.external(
                 test_path=test_path,
+                target=target,
                 headed=headed,
                 update_snapshots=update_snapshots,
             )
@@ -238,12 +255,29 @@ class Command(TyperCommand):
                 self.stderr.write(f"E2E preflight failed: {exc}")
                 raise SystemExit(1) from exc
 
+    def _resolve_target(self, target: str) -> str:
+        """Resolve the dual-env target deterministically.
+
+        ``dev`` / ``local`` are explicit. Empty means back-compat inference:
+        a pre-set ``BASE_URL`` env var means a remote target (``dev``),
+        otherwise ``local``. The result is exported verbatim as
+        ``T3_E2E_TARGET`` so the spec never re-derives it from a host regex.
+        """
+        normalized = target.strip().lower()
+        if normalized in {"dev", "local"}:
+            return normalized
+        if normalized:
+            self.stderr.write(f"--target must be 'dev' or 'local', got {target!r}.")
+            raise SystemExit(2)
+        return "dev" if os.environ.get("BASE_URL") else "local"
+
     @command()
-    def external(
+    def external(  # noqa: PLR0913
         self,
         test_path: str = "",
         *,
         repo: str = "",
+        target: str = "",
         headed: bool = False,
         update_snapshots: bool = False,
         playwright_args: str = "",
@@ -256,6 +290,19 @@ class Command(TyperCommand):
             ``~/.teatree.toml`` and use its ``e2e_dir`` subdirectory.
         - Default: resolve from ``T3_PRIVATE_TESTS`` env var or ``[teatree].private_tests``
             config key.
+
+        ``--target dev|local`` selects the dual-env target deterministically:
+
+        - ``dev``: keep the pre-set ``BASE_URL`` (deployed env), no port scan.
+        - ``local``: always discover the local frontend, even if a stray
+            ``BASE_URL`` is exported (``--target local`` never hits a
+            deployed env silently).
+        - empty: back-compat — infer ``dev`` if ``BASE_URL`` is set,
+            else ``local``.
+
+        The resolved value is exported as ``T3_E2E_TARGET`` so a dual-mode
+        spec branches on ``process.env.T3_E2E_TARGET === 'dev'`` rather than
+        re-deriving the target from a ``BASE_URL`` host regex.
 
         Discovers the frontend port from docker-compose (or local process)
         and reads the tenant variant from the env cache.
@@ -273,8 +320,15 @@ class Command(TyperCommand):
             if not private_tests_path:
                 return "private_tests not configured in ~/.teatree.toml / T3_PRIVATE_TESTS, or directory missing."
 
-        # When BASE_URL is already set (DEV / staging target), skip local port discovery.
-        if os.environ.get("BASE_URL"):
+        resolved_target = self._resolve_target(target)
+
+        # target=dev   → keep the pre-set BASE_URL (deployed env), no port scan.
+        # target=local → always discover the local frontend, even if a stray
+        #                 BASE_URL is exported, so `--target local` can never
+        #                 silently hit a deployed environment.
+        if resolved_target == "dev":
+            if not os.environ.get("BASE_URL"):
+                return "--target dev requires BASE_URL (the deployed environment URL) to be set."
             frontend_url = None  # preserve existing BASE_URL
         else:
             worktree = resolve_worktree()
@@ -294,9 +348,10 @@ class Command(TyperCommand):
             headed=headed,
             extra=extra,
         )
-        env = _build_e2e_env(frontend_url, headed=headed)
+        env = _build_e2e_env(frontend_url, headed=headed, target=resolved_target)
 
         self.stdout.write(f"  Running from: {private_tests_path}")
+        self.stdout.write(f"  Target: {resolved_target}")
         self.stdout.write(f"  BASE_URL: {env['BASE_URL']}")
         if env.get("CUSTOMER"):
             self.stdout.write(f"  CUSTOMER: {env['CUSTOMER']}")
@@ -315,17 +370,23 @@ class Command(TyperCommand):
         self,
         test_path: str = "",
         *,
+        target: str = "",
         headed: bool = False,
         docker: bool = True,
         update_snapshots: bool = False,
     ) -> str:
         """Run E2E tests from the project's own test directory.
 
+        ``--target dev|local`` is exported as ``T3_E2E_TARGET`` for the in-repo
+        suite (same contract as the ``external`` runner); empty falls back to
+        ``BASE_URL``-based inference.
+
         Pass ``--update-snapshots`` to regenerate ``pytest-playwright-visual``
         baselines. Always do this inside the Docker image (the default) — the
         CI runner's Chromium renders fonts at different heights than macOS, so
         locally-generated baselines mismatch in CI.
         """
+        resolved_target = self._resolve_target(target)
         try:
             worktree = resolve_worktree()
             wt_path = (worktree.extra or {}).get("worktree_path", ".") if worktree else "."
@@ -339,7 +400,18 @@ class Command(TyperCommand):
         if docker and not Path("/.dockerenv").exists():
             compose_file = Path(wt_path) / "dev" / "docker-compose.yml"
             if compose_file.is_file():
-                cmd = ["docker", "compose", "-f", str(compose_file), "run", "--rm", "e2e", test_dir]
+                cmd = [
+                    "docker",
+                    "compose",
+                    "-f",
+                    str(compose_file),
+                    "run",
+                    "--rm",
+                    "-e",
+                    f"T3_E2E_TARGET={resolved_target}",
+                    "e2e",
+                    test_dir,
+                ]
                 if update_snapshots:
                     cmd.append("--update-snapshots")
                 rc = run_streamed(cmd, cwd=wt_path, check=False)
@@ -353,7 +425,7 @@ class Command(TyperCommand):
         if update_snapshots:
             cmd.append("--update-snapshots")
 
-        env = {**os.environ, "DJANGO_SETTINGS_MODULE": settings_module}
+        env = {**os.environ, "DJANGO_SETTINGS_MODULE": settings_module, "T3_E2E_TARGET": resolved_target}
         if headed:
             env.pop("CI", None)
         else:

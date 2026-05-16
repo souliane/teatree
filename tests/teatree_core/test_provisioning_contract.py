@@ -367,7 +367,7 @@ class E2eEnvMergeContractTests(TestCase):
             patch("teatree.core.management.commands.e2e.get_overlay", return_value=_FixedExtrasOverlay()),
             patch("teatree.core.management.commands.e2e._find_env_cache", return_value=None),
         ):
-            return _build_e2e_env(None, headed=False)
+            return _build_e2e_env(None, headed=False, target="local")
 
     def test_explicit_env_wins_over_overlay_extra(self) -> None:
         with patch.dict(os.environ, {"E2E_CONTRACT_KEY": "from-env"}, clear=False):
