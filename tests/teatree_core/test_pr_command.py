@@ -69,6 +69,47 @@ class TestPrCreateThinWrapper(TestCase):
         assert "QUEUED, not performed" in result["warning"]
         assert "--sync" in result["warning"]
 
+    def test_retrospected_with_satisfying_phases_reconciles_and_ships(self) -> None:
+        """#808: RETROSPECTED with a satisfying phase ledger must ship, not deny.
+
+        A non-terminal state with satisfying aggregated phase records must
+        NOT return {'allowed': False, 'missing': []}.
+
+        The recurring enumerated-source bug: #799 added IN_REVIEW; a ticket
+        re-provisioned for a new workstream whose FSM lingered at
+        RETROSPECTED was still denied with the contradictory empty-missing
+        gate failure. Phase-driven reconcile makes any non-terminal state
+        with satisfying records ship.
+        """
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.RETROSPECTED)
+        session = Session.objects.create(ticket=ticket, overlay="test")
+        session.visit_phase("testing")
+        session.visit_phase("reviewing")
+        session.visit_phase("retro")
+        Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path="/tmp/backend",
+            branch="feature-branch",
+            extra={"worktree_path": "/tmp/backend"},
+        )
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch.object(pr_command, "_run_visual_qa_gate", return_value=None),
+            patch.object(pr_command, "validate_pr_metadata", return_value=None),
+        ):
+            result = cast("dict[str, object]", call_command("pr", "create", str(ticket.id)))
+
+        ticket.refresh_from_db()
+        # The exact recurring contradiction must NOT occur.
+        assert result.get("missing") != [] or result.get("allowed") is not False, (
+            f"reconcile still enumerated — denied from RETROSPECTED with empty missing: {result}"
+        )
+        assert ticket.state == Ticket.State.SHIPPED
+        assert result["state"] == Ticket.State.SHIPPED
+        assert result["queued"] is True
+
     def test_in_review_with_phases_split_across_three_sessions_reconciles_and_ships(self) -> None:
         """3-session-split + IN_REVIEW must ship, not deadlock (#798).
 
