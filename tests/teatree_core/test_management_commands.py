@@ -236,9 +236,9 @@ class DbOverlay(CommandOverlay):
     """CommandOverlay with a DB import strategy that always fails."""
 
     def get_db_import_strategy(self, worktree: Worktree) -> DbImportStrategy | None:
-        return DbImportStrategy(kind="dslr")
+        return DbImportStrategy(kind="dslr", source_database="development-volksbank")
 
-    def db_import(
+    def db_import(  # noqa: PLR0913 — mirrors the OverlayBase.db_import extension-point contract.
         self,
         worktree: Worktree,
         *,
@@ -246,11 +246,60 @@ class DbOverlay(CommandOverlay):
         slow_import: bool = False,
         dslr_snapshot: str = "",
         dump_path: str = "",
+        approve_remote_dump: bool = False,
     ) -> bool:
+        self.last_approve_remote_dump = approve_remote_dump
         return False
 
 
 _DB_MOCK_OVERLAY = {"test": DbOverlay()}
+
+
+class TestDbRefreshFreshDumpApproval(TestCase):
+    """`db refresh --fresh-dump` is gated by a per-invocation approval (#777).
+
+    Under `call_command` stdin/stdout are not TTYs — exactly the
+    unattended-agent context the gate must refuse. The fresh-dump path
+    therefore aborts before any overlay import runs, with no credentials
+    or connection string in the message.
+    """
+
+    def _make_worktree(self) -> Worktree:
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/777")
+        return Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path="/tmp/backend",
+            branch="feature",
+            extra={"worktree_path": "/tmp/backend"},
+            db_name="wt_777_volksbank",
+        )
+
+    @override_settings(**COMMAND_SETTINGS)
+    def test_fresh_dump_refuses_in_non_interactive_agent_context(self) -> None:
+        worktree = self._make_worktree()
+        overlay = DbOverlay()
+        with (
+            patch.object(overlay_loader_mod, "_discover_overlays", return_value={"test": overlay}),
+            patch("teatree.core.management.commands.db.resolve_worktree", return_value=worktree),
+        ):
+            result = call_command("db", "refresh", "--fresh-dump")
+        assert "aborted" in result
+        assert "human must" in result
+        # The gate fired BEFORE the overlay import — no remote dump attempted.
+        assert not hasattr(overlay, "last_approve_remote_dump")
+
+    @override_settings(**COMMAND_SETTINGS)
+    def test_refusal_message_has_no_credentials(self) -> None:
+        worktree = self._make_worktree()
+        with (
+            patch.object(overlay_loader_mod, "_discover_overlays", return_value=_DB_MOCK_OVERLAY),
+            patch("teatree.core.management.commands.db.resolve_worktree", return_value=worktree),
+        ):
+            result = call_command("db", "refresh", "--fresh-dump")
+        assert "postgres://" not in result
+        assert "PGPASSWORD" not in result
+        assert "password" not in result.lower()
 
 
 class TestDbImportAutoRepair(TestCase):
