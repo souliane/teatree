@@ -2090,6 +2090,10 @@ Usage: t3 teatree db [OPTIONS] COMMAND [ARGS]...
 │ refresh          Re-import the worktree database from dump/DSLR.             │
 │ restore-ci       Restore database from the latest CI dump.                   │
 │ reset-passwords  Reset all user passwords to a known dev value.              │
+│ query            Run a read-only SQL query against the control DB; emit rows │
+│                  as JSON.                                                    │
+│ shell            Drop into a Django shell against the resolved (gate)        │
+│                  control DB.                                                 │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -2104,15 +2108,26 @@ Usage: t3 teatree db refresh [OPTIONS]
  With --force: drops existing DB first, then reimports from scratch.
  Use --dslr-snapshot to force a specific snapshot (skip auto-discovery).
  Use --dump-path to restore from a specific dump file.
+ Use --fresh-dump to pull a fresh dump from the remote DEV env — this
+ is the only sanctioned remote-dump path and it requires an explicit
+ per-invocation interactive approval (#777); an unattended agent
+ cannot self-approve it.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --path                           TEXT  Worktree path (auto-detects from PWD  │
-│                                        if empty).                            │
-│ --dslr-snapshot                  TEXT  Force a specific DSLR snapshot name.  │
-│ --dump-path                      TEXT  Path to a .pgsql dump file to restore │
-│                                        from.                                 │
-│ --force            --no-force          [default: no-force]                   │
-│ --help                                 Show this message and exit.           │
+│ --path                                TEXT  Worktree path (auto-detects from │
+│                                             PWD if empty).                   │
+│ --dslr-snapshot                       TEXT  Force a specific DSLR snapshot   │
+│                                             name.                            │
+│ --dump-path                           TEXT  Path to a .pgsql dump file to    │
+│                                             restore from.                    │
+│ --force            --no-force               [default: no-force]              │
+│ --fresh-dump       --no-fresh-dump          Pull a fresh dump from the       │
+│                                             remote DEV environment for this  │
+│                                             tenant. Requires explicit        │
+│                                             interactive approval on every    │
+│                                             run.                             │
+│                                             [default: no-fresh-dump]         │
+│ --help                                      Show this message and exit.      │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -2139,6 +2154,63 @@ Usage: t3 teatree db reset-passwords [OPTIONS]
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --path        TEXT  Worktree path (auto-detects from PWD if empty).          │
 │ --help              Show this message and exit.                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree db query`
+
+```
+Usage: t3 teatree db query [OPTIONS] SQL
+
+ Run a read-only SQL query against the control DB; emit rows as JSON.
+
+ The query runs through the live Django connection, so it resolves
+ the *same* control DB the shipping gate reads. Canonical vs
+ worktree-isolated is decided once, at settings-load time, by
+ ``teatree.paths.CANONICAL_DB`` — there is no separate resolver to
+ drift from ``pr create`` / ``lifecycle visit-phase``. This removes
+ the ``manage.py shell -c "..."`` detour that forced weaker
+ API-only introspection during handoffs (#774).
+
+ Two-layer read-only enforcement (defense in depth):
+
+ Layer 1 is a best-effort leading-keyword pre-filter: it rejects the
+ obvious write/DDL cases early with a clear message — only a single
+ ``SELECT``/``PRAGMA``/``EXPLAIN`` statement gets past it, and a
+ ``PRAGMA`` setter (``=``) is rejected here too.
+
+ Layer 2 is the binding guarantee: the statement runs inside an
+ enforced read-only transaction (Postgres ``SET TRANSACTION READ
+ ONLY``, SQLite ``PRAGMA query_only=ON``). A data-modifying CTE
+ (``WITH t AS (DELETE … RETURNING …)``) or ``SELECT … INTO`` that
+ slips past layer 1 is still blocked by the database itself —
+ enforcement does not depend on parsing SQL.
+
+ A write path needs a separate, explicitly-guarded command, never
+ this one.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    sql      TEXT  [required]                                               │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree db shell`
+
+```
+Usage: t3 teatree db shell [OPTIONS]
+
+ Drop into a Django shell against the resolved (gate) control DB.
+
+ Delegates to Django's own ``shell`` so the same connection and
+ worktree-isolated-vs-canonical DB the gate reads is reused — never
+ a separately-resolved sqlite file (the #774 asymmetry that caused
+ global ``t3`` and worktree ``manage.py`` to disagree).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

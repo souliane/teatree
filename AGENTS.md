@@ -134,6 +134,7 @@ Why: manual `django.setup()` in CLI modules causes module-level import chains th
 1. Create the management command in `core/management/commands/<name>.py` using `TyperCommand` from `django-typer`. All heavy imports (backends, ORM, scanners) go here — **inline in `handle()`**, not at module level.
 2. The CLI command in `cli/<group>.py` stays thin: it calls `django.setup()` + `call_command("<name>", ...)`. The CLI module imports **nothing** from `core/` or `backends/` at module level.
 3. Tests for the management command use `call_command()` with `django.test.TestCase`. Tests for the CLI wrapper (if any) test only the delegation, not the business logic.
+4. To abort a `TyperCommand` subcommand with a nonzero exit, `raise SystemExit(1)` — **not** `typer.Exit(1)` and not `sys.exit(1)`. Under `call_command`/django-typer the `typer.Exit` return-code path hits `'int' object has no attribute 'endswith'`. `raise SystemExit(1)` is the sibling convention (`tasks.py`, `e2e.py`, `overlay.py`) and is what `pytest.raises(SystemExit)` (the project convention for refusal tests) expects.
 
 **Example — `t3 loop tick`:**
 
