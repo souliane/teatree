@@ -38,6 +38,7 @@ Use `Ctrl+F`/`grep` to jump to a rule. Sections are grouped below by theme; numb
 11. [Classifier Denial Protocol](#classifier-denial-protocol-non-negotiable)
 12. [Ask About Auth Before External Service Integrations](#ask-about-auth-before-external-service-integrations)
 13. [Publishing Actions Are Mode-Conditional](#publishing-actions-are-mode-conditional-non-negotiable)
+13a. [Never Modify a Remote Database Without Explicit User Approval](#never-modify-a-remote-database-without-explicit-user-approval-non-negotiable)
 
 **Communication & references**
 
@@ -259,6 +260,10 @@ Before posting any screenshot, PDF, or "proof it works" artifact on an MR/PR/iss
 - **Prohibited:** golden test PDFs from `build/test-results/` or `src/test/resources/`, `pdftotext` from a local build, screenshots of `localhost`, **and side-by-side comparisons assembled from PDFs extracted at different git commits**.
 
 A passing local test suite is not evidence. The deployed system is the only artifact that proves a user-visible feature works. If the proper evidence requires steps you can't complete this session, say so explicitly in the comment — don't substitute a prohibited source.
+
+## Never Modify a Remote Database Without Explicit User Approval (Non-Negotiable)
+
+Never write to, mutate, seed, or delete data in a remote/shared database (dev, staging, production, or any environment the agent did not provision locally) without explicit user approval in the chat for that specific action. This covers direct SQL/`psql`, ORM shells against a remote `DATABASE_URL`, seed/fixture scripts pointed at a remote DB, and API calls whose side effect is a remote write performed solely to set up the agent's own task. Read-only queries are fine. Generating a document or other persisted record on a remote environment is a remote write — ask first. A request to "finish the task" or "get the evidence" is not approval to mutate a shared DB; surface the blocker and let the user decide.
 
 ## Verify Repo Visibility Before Filing External Issues (Non-Negotiable)
 
