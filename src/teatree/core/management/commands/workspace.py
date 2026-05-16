@@ -23,6 +23,7 @@ from teatree.core.management.commands._workspace_cleanup import (
 from teatree.core.models import Ticket, Worktree
 from teatree.core.orphan_guard import find_orphans_in_workspace
 from teatree.core.overlay_loader import get_overlay
+from teatree.core.public_identity import StampResult, is_public_souliane_remote, set_local_noreply_identity
 from teatree.core.readiness import run_and_report_probes
 from teatree.core.reconcile import Drift, reconcile_all, reconcile_ticket
 from teatree.core.resolve import WorktreeNotFoundError, _get_user_cwd, resolve_worktree
@@ -510,6 +511,21 @@ class Command(TyperCommand):
         if not fix:
             lines.extend(("", "Rerun with --fix to apply fixes."))
         return lines
+
+    @command(name="stamp-identity")
+    def stamp_identity(self, repo: str = ".") -> StampResult:
+        """Stamp the scoped noreply git identity onto an existing souliane clone (#762).
+
+        Fixes public souliane/* clones/worktrees created before the
+        provisioner source-fix (new worktrees are stamped at creation).
+        Idempotent. Refuses non-souliane / private remotes so the private overlay's
+        legitimate real-identity attribution is never touched.
+        """
+        slug = git.remote_slug(repo)
+        if not is_public_souliane_remote(slug):
+            return StampResult(stamped=False, reason=f"not a public souliane/* remote (slug={slug!r}) — refused")
+        set_local_noreply_identity(repo)
+        return StampResult(stamped=True, repo=repo, slug=slug)
 
     @command(name="list-orphans")
     def list_orphans(self) -> list[OrphanEntry]:
