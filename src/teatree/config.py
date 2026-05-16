@@ -181,6 +181,13 @@ class UserSettings:
     # Behalf".
     agent_signature: bool = False
     statusline_chain: list[str] = field(default_factory=list)
+    # Solo vs collaborative working mode (issue #550 item 4). Empty string
+    # = auto-detect from `git shortlog` history (see teatree.repo_mode);
+    # an explicit "solo" / "collaborative" pins the verdict and bypasses
+    # detection. Consumed by skills via `t3 tool repo-mode` so the
+    # ask-first-vs-fix-proactively decision lives in one place, not in
+    # every skill.
+    repo_mode: str = ""
 
 
 @dataclass
@@ -225,6 +232,7 @@ def load_config(path: Path | None = None) -> TeaTreeConfig:
         claude_chrome=bool(teatree.get("claude_chrome", True)),
         agent_signature=bool(teatree.get("agent_signature", False)),
         statusline_chain=[str(s) for s in teatree.get("statusline_chain", [])],
+        repo_mode=str(teatree.get("repo_mode", "")),
     )
 
     return TeaTreeConfig(user=user, raw=raw)
