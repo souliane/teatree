@@ -40,9 +40,10 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │                 dies, the next open session becomes tick-owner and keeps     │
 │                 ticking; with zero sessions open the loop is paused until    │
 │                 the next session start (no OS daemon — accepted, not a       │
-│                 defect). Within the owner session a Stop-hook self-pump      │
-│                 re-continues the loop automatically while consolidated work  │
-│                 remains; it idles when none.                                 │
+│                 defect). A per-agent Stop-hook self-pump re-continues the    │
+│                 loop automatically while consolidated work remains — exactly │
+│                 one consolidation loop per agent identity, deduped across    │
+│                 all sessions (#786 WS4); it idles when none.                 │
 │ slack           Slack integration commands.                                  │
 │ teatree         Commands for the t3-teatree overlay.                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
@@ -1104,9 +1105,10 @@ Usage: t3 loop [OPTIONS] COMMAND [ARGS]...
  There is no roster of long-lived loop sub-agents to re-spawn (#786 WS3): if
  the owner session dies, the next open session becomes tick-owner and keeps
  ticking; with zero sessions open the loop is paused until the next session
- start (no OS daemon — accepted, not a defect). Within the owner session a
- Stop-hook self-pump re-continues the loop automatically while consolidated
- work remains; it idles when none.
+ start (no OS daemon — accepted, not a defect). A per-agent Stop-hook self-pump
+ re-continues the loop automatically while consolidated work remains — exactly
+ one consolidation loop per agent identity, deduped across all sessions (#786
+ WS4); it idles when none.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
