@@ -13,6 +13,7 @@ teatree's declared deps are partially missing from the venv.
 
 import json
 import re
+import sys
 import tomllib
 from importlib.metadata import PackageNotFoundError, distribution, distributions
 from pathlib import Path
@@ -46,6 +47,53 @@ def installed_distribution_names() -> set[str]:
 def find_missing_dependencies(pyproject_path: Path) -> list[str]:
     """Return declared deps not installed in this interpreter, sorted."""
     return sorted(declared_dependency_names(pyproject_path) - installed_distribution_names())
+
+
+def running_prefix() -> Path:
+    """Return ``sys.prefix`` of the interpreter actually executing ``t3``.
+
+    The dep-drift check must detect and repair *this* environment — the one
+    whose ``importlib.metadata`` is read by :func:`find_missing_dependencies`
+    — not whatever environment ``uv tool`` happens to manage.  When the
+    running ``t3`` is a plain editable install (``pip install -e .`` into a
+    pyenv/virtualenv site-packages) it is a *different* env than the
+    ``uv tool``-managed one, so a ``uv tool install`` repair would never
+    touch the running interpreter.
+    """
+    return Path(sys.prefix)
+
+
+def running_python() -> Path:
+    """Return the interpreter executing ``t3`` (``sys.executable``)."""
+    return Path(sys.executable)
+
+
+def running_env_is_uv_tool() -> bool:
+    """``True`` iff the running interpreter lives under ``uv``'s tool dir.
+
+    A ``uv tool install``-managed teatree has its ``sys.prefix`` nested under
+    ``~/.local/share/uv/tools`` (or ``$UV_TOOL_DIR``).  Detection is purely
+    path-based so it stays usable with no non-stdlib deps even when teatree's
+    declared deps are partially missing.  When this returns ``False`` the
+    running env must be repaired in place (install into ``sys.prefix``),
+    never via ``uv tool install`` (which targets a foreign env).
+    """
+    import os  # noqa: PLC0415
+
+    prefix = running_prefix().resolve()
+    candidates: list[Path] = []
+    env_dir = os.environ.get("UV_TOOL_DIR")
+    if env_dir:
+        candidates.append(Path(env_dir).expanduser())
+    candidates.append(Path.home() / ".local" / "share" / "uv" / "tools")
+    for tool_dir in candidates:
+        try:
+            resolved = tool_dir.expanduser().resolve()
+        except OSError:
+            continue
+        if prefix == resolved or resolved in prefix.parents:
+            return True
+    return False
 
 
 def editable_source_path() -> Path | None:
