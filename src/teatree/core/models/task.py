@@ -121,23 +121,30 @@ class Task(models.Model):
         self._record_phase_visit()
         ticket = self.ticket
         ticket.refresh_from_db()
+        # Normalize once, mirroring _record_phase_visit() — a task whose
+        # phase is a short verb ("review"/"code"/...) must advance the
+        # FSM too, not just record the session visit (#750). Raw
+        # comparison silently desynced ticket.state from visited_phases.
+        from teatree.core.phases import normalize_phase  # noqa: PLC0415
+
+        phase = normalize_phase(self.phase)
         with transaction.atomic():
-            if self.phase == "reviewing" and ticket.role == Ticket.Role.REVIEWER:
+            if phase == "reviewing" and ticket.role == Ticket.Role.REVIEWER:
                 ticket.mark_reviewed_externally()
                 ticket.save()
-            elif self.phase == "scoping" and ticket.state == Ticket.State.SCOPED:
+            elif phase == "scoping" and ticket.state == Ticket.State.SCOPED:
                 ticket.start()
                 ticket.save()
-            elif self.phase == "coding" and ticket.state == Ticket.State.STARTED:
+            elif phase == "coding" and ticket.state == Ticket.State.STARTED:
                 ticket.code()
                 ticket.save()
-            elif self.phase == "testing" and ticket.state == Ticket.State.CODED:
+            elif phase == "testing" and ticket.state == Ticket.State.CODED:
                 ticket.test(passed=True)
                 ticket.save()
-            elif self.phase == "reviewing" and ticket.state == Ticket.State.TESTED:
+            elif phase == "reviewing" and ticket.state == Ticket.State.TESTED:
                 ticket.review()
                 ticket.save()
-            elif self.phase == "shipping" and ticket.state == Ticket.State.REVIEWED:
+            elif phase == "shipping" and ticket.state == Ticket.State.REVIEWED:
                 ticket.ship()
                 ticket.save()
 
