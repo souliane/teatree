@@ -1,7 +1,9 @@
 """Lifecycle and session phase operations."""
 
 import logging
+from typing import Annotated
 
+import typer
 from django.db import transaction
 from django_fsm import TransitionNotAllowed
 from django_typer.management import TyperCommand, command, initialize
@@ -18,7 +20,15 @@ class Command(TyperCommand):
         """Group root — forces sub-commands to be addressed by name."""
 
     @command(name="visit-phase")
-    def visit_phase(self, ticket_id: str, phase: str) -> str:
+    def visit_phase(
+        self,
+        ticket_id: str,
+        phase: str,
+        agent_id: Annotated[
+            str,
+            typer.Option(help="Recording agent identity stamped into phase_visits (maker≠checker attribution)."),
+        ] = "",
+    ) -> str:
         """Mark a phase as visited and advance the ticket FSM if applicable.
 
         ``ticket_id`` accepts the same identifier set as ``pr create`` — DB
@@ -28,18 +38,19 @@ class Command(TyperCommand):
         ``scope``) and the older gerunds advance the FSM. The resulting
         ``ticket.state`` is included in the output so a skipped or refused
         transition is visible rather than silently swallowed.
+
+        ``--agent-id`` records the recording agent's identity for
+        maker≠checker (#755). Resolution is delegated to
+        ``Session.recording_identity`` so the attribution is **never
+        empty** even when neither ``--agent-id`` nor ``Session.agent_id``
+        is set — a blank previously made the gate vacuously pass.
         """
         ticket = Ticket.objects.resolve(ticket_id)
         canonical = normalize_phase(phase)
         session = ticket.sessions.order_by("-pk").first()
         if session is None:
             session = Session.objects.create(ticket=ticket)
-        # Thread the session's identity, symmetric with the loop path
-        # (Task._record_phase_visit). Without an ``agent_id`` the phase
-        # never lands in ``phase_visits`` and ``_check_maker_checker``
-        # silently skips it — a CLI ``visit-phase reviewing`` would then
-        # evade the maker≠checker pairing (#694, review nit 2).
-        session.visit_phase(canonical, agent_id=session.agent_id)
+        session.visit_phase(canonical, agent_id=session.recording_identity(agent_id))
 
         transition_name = phase_transition(canonical)
         if transition_name:

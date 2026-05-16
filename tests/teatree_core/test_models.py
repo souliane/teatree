@@ -856,7 +856,11 @@ class TestSession(TestCase):
 
         session.check_gate("shipping")  # should not raise
 
-    def test_maker_checker_skipped_without_phase_visits(self) -> None:
+    def test_maker_checker_fails_closed_without_phase_visits(self) -> None:
+        # #755: pre-fix this vacuously PASSED ("no agent_ids → no
+        # enforcement") — the fail-OPEN that made maker≠checker
+        # unverifiable. Now both conflicting phases (coding, reviewing)
+        # recorded as visited with NO attribution must FAIL CLOSED.
         session = Session.objects.create(ticket=Ticket.objects.create())
 
         session.visit_phase("testing")
@@ -864,7 +868,8 @@ class TestSession(TestCase):
         session.visit_phase("reviewing")
         session.visit_phase("retro")
 
-        session.check_gate("shipping")  # no agent_ids recorded → no enforcement
+        with pytest.raises(QualityGateError, match=r"(?i)unverifiable|attribution"):
+            session.check_gate("shipping")
 
     def test_maker_checker_bypassed_with_force(self) -> None:
         session = Session.objects.create(ticket=Ticket.objects.create())
