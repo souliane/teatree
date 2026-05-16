@@ -480,6 +480,8 @@ This rule does NOT override `User Instructions Are Priority 1` — explicit corr
 
 **Why this matters beyond UX:** when Slack is configured, the `PreToolUse` hook automatically mirrors every `AskUserQuestion` call to the user's Slack DM. The user can see pending questions on their phone even when away from the terminal. Plain-text questions bypass this mirror and are invisible on Slack.
 
+**This is hook-enforced, not a remembered preference (#807).** A non-bypassable `Stop` gate (`handle_enforce_structured_question` in `hook_router.py`) inspects the final assistant turn: if it poses a user-directed decision question inline in prose with no `AskUserQuestion` tool call in that turn, the Stop hook **blocks** and instructs the agent to re-ask through the structured tool. There is no `relax:` escape — it is a gate, like the other Stop-time gates. Detection is a precision-tuned heuristic (`?` + a second-person/decision cue, or a "let me know if/whether …" soft-ask; fenced code stripped first). A bare `?` (rhetorical aside, explanatory sentence, echoing the user) does not trip it. See `BLUEPRINT.md` § "Structured-question Stop gate" for the full heuristic and rationale.
+
 ## Publishing Actions Are Mode-Conditional (Non-Negotiable)
 
 The setting `teatree.mode` in `~/.teatree.toml` (or the `T3_MODE` env var) picks between two doctrines for publishing actions — push, PR create, PR merge, PR approve/unapprove, remote branch deletion, Slack posts, any write that leaves the local machine. The default is `interactive` (security-conservative). `auto` opts into full autonomy.
