@@ -125,6 +125,10 @@ PENDING_REVIEWS_CACHE_KEY = "teatree_pending_reviews"
 
 type RawAPIDict = dict[str, object]
 type PREntryDict = dict[str, object]
+#: One row from an ad-hoc ``db query`` SELECT — column name -> value. Keys
+#: are dynamic (whatever the query SELECTs), so a fixed-key TypedDict cannot
+#: model it; this alias is the typed home for that shape (#774).
+type SqlRow = dict[str, object]
 
 
 @dataclass(slots=True)

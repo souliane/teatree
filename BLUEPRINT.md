@@ -867,7 +867,7 @@ Internal utilities (`utils/`) — port allocation, git helpers, DB ops — are P
 
 **workspace** — Workspace operations (ticket setup, status, finalize, cleanup)
 **worktree** — Per-worktree commands (`provision`, `start`, `verify`, `teardown`, `clean`, `ready`, `status`)
-**db** — Database operations
+**db** — Database operations (`refresh`, `restore-ci`, `reset-passwords`, `query`, `shell`). `query "<sql>"` runs a read-only SQL statement against the live Django connection (the *same* control DB the gate reads — `teatree.paths.CANONICAL_DB` decides canonical-vs-worktree-isolated once at settings-load, so introspection cannot drift from `pr create` / `lifecycle visit-phase`) and emits rows as JSON; read-only is enforced in two layers — a best-effort leading-keyword pre-filter (`select`/`pragma`/`explain` only, PRAGMA setters rejected) plus a binding enforced read-only transaction (Postgres `SET TRANSACTION READ ONLY`, SQLite `PRAGMA query_only=ON`). `shell` delegates to Django's own shell against that same connection (#774)
 **env** — Read/write the env cache (`set`, `show`, `check`, `migrate-secrets`). `migrate-secrets` moves any `POSTGRES_PASSWORD=<literal>` line out of `.t3-env.cache` into the local `pass` store under `teatree/wt/<ticket_id>/postgres` so the on-disk cache only carries the symbolic `POSTGRES_PASSWORD_PASS_KEY` reference.
 **run** — Service runner (uses `lifecycle.compose_project()` shared helper)
 **pr** — PR creation and validation

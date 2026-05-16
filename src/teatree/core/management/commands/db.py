@@ -1,14 +1,107 @@
-"""Database operations: refresh, restore from CI, reset passwords."""
+"""Database operations: refresh, restore from CI, reset passwords, introspect."""
 
+import json
 import os
 import sys
 
 import typer
+from django.core.management import call_command
+from django.db import DatabaseError, connection, transaction
 from django_typer.management import TyperCommand, command
 
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.resolve import resolve_worktree
+from teatree.types import SqlRow
 from teatree.utils.approval import ApprovalRefusedError, require_interactive_approval
+
+#: Leading SQL keywords allowed past the cheap pre-filter of ``db query``.
+#: This is a *best-effort* guard, not a proof of read-only-ness: leading-token
+#: matching cannot see a data-modifying CTE (``WITH t AS (DELETE … RETURNING …)``)
+#: or ``SELECT … INTO newtbl``. ``with`` and ``values`` are deliberately
+#: excluded because a ``WITH``-prefixed statement can carry a writable CTE and
+#: ``VALUES`` is never needed for introspection. The binding safety guarantee
+#: is the enforced read-only transaction in :meth:`Command.query`; this filter
+#: only rejects the obvious cases early with a clearer message (#774).
+_READ_ONLY_LEADING = frozenset({"select", "pragma", "explain"})
+
+
+def _is_read_only(sql: str) -> bool:
+    """True iff *sql* passes the cheap leading-keyword read-only pre-filter.
+
+    Keyed on the leading token (case-insensitive) and a single-statement
+    shape — a trailing ``;`` is tolerated but an embedded ``;`` (statement
+    batching, the classic read-then-write smuggle) is refused so a
+    ``SELECT 1; DROP TABLE x`` can never slip through.
+
+    A ``PRAGMA`` *setter* (``PRAGMA name = value``) is refused while a
+    read-only introspection PRAGMA (``PRAGMA table_info(t)``) is allowed:
+    the read-only transaction does **not** stop ``PRAGMA writable_schema=1``
+    (a connection-level switch, not a row write), so the setter form must
+    be caught here. This is still best-effort only — a data-modifying CTE
+    or ``SELECT … INTO`` starts with an allowed token, so the binding
+    guarantee is the enforced read-only transaction in
+    :meth:`Command.query`, not this function.
+    """
+    stripped = sql.strip().rstrip(";").strip()
+    if not stripped or ";" in stripped:
+        return False
+    leading = stripped.split(None, 1)[0].lower()
+    if leading not in _READ_ONLY_LEADING:
+        return False
+    # A PRAGMA containing '=' is a setter (e.g. ``PRAGMA writable_schema=1``,
+    # ``PRAGMA query_only=OFF``) — a write the read-only transaction cannot
+    # block. Read-only introspection PRAGMAs never assign a value. Caveat:
+    # benign maintenance PRAGMAs without '=' (``PRAGMA optimize``,
+    # ``wal_checkpoint``) still pass both layers — harmless for introspection.
+    return not (leading == "pragma" and "=" in stripped)
+
+
+def _read_only_guard_sql(vendor: str) -> tuple[str | None, str | None]:
+    """Return ``(enter_sql, exit_sql)`` enforcing read-only for *vendor*.
+
+    postgresql: ``SET TRANSACTION READ ONLY`` — any write (a data-modifying
+    CTE, ``SELECT … INTO``) raises ``DatabaseError``. Scoped to the
+    transaction, so no explicit exit statement is needed.
+
+    sqlite: ``PRAGMA query_only = ON`` — writes raise ``DatabaseError``;
+    reset with ``OFF`` afterwards so the connection is not left crippled
+    for later commands sharing it (e.g. the test connection).
+
+    any other vendor: ``(None, None)`` — the enforced read-only transaction
+    is unavailable, so the leading-keyword pre-filter in
+    :func:`_is_read_only` is the only guard.
+
+    A pure ``vendor -> (sql, sql)`` mapping so every branch is testable
+    without a live database of that vendor.
+    """
+    if vendor == "postgresql":
+        return "SET TRANSACTION READ ONLY", None
+    if vendor == "sqlite":
+        return "PRAGMA query_only = ON", "PRAGMA query_only = OFF"
+    return None, None
+
+
+def _run_read_only(sql: str) -> list[SqlRow]:
+    """Execute *sql* inside an enforced read-only transaction; return rows.
+
+    The read-only-ness is enforced by the database (see
+    :func:`_read_only_guard_sql`), not by parsing SQL. Wrapped in
+    ``transaction.atomic`` so the read-only scope is a real transaction
+    boundary and any partial effect is rolled back.
+    """
+    enter_sql, exit_sql = _read_only_guard_sql(connection.vendor)
+    with transaction.atomic():
+        with connection.cursor() as cursor:
+            if enter_sql is not None:
+                cursor.execute(enter_sql)
+            try:
+                cursor.execute(sql)
+                columns = [col[0] for col in cursor.description] if cursor.description else []
+                rows = [dict(zip(columns, record, strict=True)) for record in cursor.fetchall()]
+            finally:
+                if exit_sql is not None:
+                    cursor.execute(exit_sql)
+        return rows
 
 
 class Command(TyperCommand):
@@ -122,3 +215,61 @@ class Command(TyperCommand):
             return "No reset-passwords command configured in the overlay."
         step.callable()
         return f"Passwords reset for worktree {worktree.repo_path}"
+
+    @command()
+    def query(self, sql: str) -> None:
+        """Run a read-only SQL query against the control DB; emit rows as JSON.
+
+        The query runs through the live Django connection, so it resolves
+        the *same* control DB the shipping gate reads. Canonical vs
+        worktree-isolated is decided once, at settings-load time, by
+        ``teatree.paths.CANONICAL_DB`` — there is no separate resolver to
+        drift from ``pr create`` / ``lifecycle visit-phase``. This removes
+        the ``manage.py shell -c "..."`` detour that forced weaker
+        API-only introspection during handoffs (#774).
+
+        Two-layer read-only enforcement (defense in depth):
+
+        Layer 1 is a best-effort leading-keyword pre-filter: it rejects the
+        obvious write/DDL cases early with a clear message — only a single
+        ``SELECT``/``PRAGMA``/``EXPLAIN`` statement gets past it, and a
+        ``PRAGMA`` setter (``=``) is rejected here too.
+
+        Layer 2 is the binding guarantee: the statement runs inside an
+        enforced read-only transaction (Postgres ``SET TRANSACTION READ
+        ONLY``, SQLite ``PRAGMA query_only=ON``). A data-modifying CTE
+        (``WITH t AS (DELETE … RETURNING …)``) or ``SELECT … INTO`` that
+        slips past layer 1 is still blocked by the database itself —
+        enforcement does not depend on parsing SQL.
+
+        A write path needs a separate, explicitly-guarded command, never
+        this one.
+        """
+        if not _is_read_only(sql):
+            self.stderr.write(
+                "Refused: 'db query' is read-only. Only a single "
+                "SELECT/PRAGMA/EXPLAIN statement is allowed. A write/DDL path "
+                "needs a separate, explicitly-guarded command.",
+            )
+            raise SystemExit(1)
+
+        try:
+            rows = _run_read_only(sql)
+        except DatabaseError as exc:
+            # Reached when a write smuggled past the pre-filter (e.g. a
+            # data-modifying CTE) is rejected by the read-only transaction.
+            self.stderr.write(f"Refused: query blocked by read-only transaction: {exc}")
+            raise SystemExit(1) from exc
+
+        self.stdout.write(json.dumps(rows, default=str))
+
+    @command()
+    def shell(self) -> None:
+        """Drop into a Django shell against the resolved (gate) control DB.
+
+        Delegates to Django's own ``shell`` so the same connection and
+        worktree-isolated-vs-canonical DB the gate reads is reused — never
+        a separately-resolved sqlite file (the #774 asymmetry that caused
+        global ``t3`` and worktree ``manage.py`` to disagree).
+        """
+        call_command("shell")
