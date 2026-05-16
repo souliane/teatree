@@ -608,29 +608,25 @@ class TestTryRestoreFromLocalDump:
 
 
 class TestTryFetchRemoteDump:
-    def test_blocks_when_env_gate_not_set(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Regression guard: even with remote_url configured, the env gate must block.
+    """Remote pg_dump is reached only when ``allow_remote_dump=True`` (#777).
 
-        2026-04-20 incident: agent-triggered lifecycle path auto-fetched gigabyte
-        dumps over VPN. The env gate is the final safety net.
-        """
-        monkeypatch.delenv("T3_ALLOW_REMOTE_DUMP", raising=False)
-        importer = _make_importer(tmp_path, dslr_cmd=[], remote_db_url="postgres://u:p@host/db")
-        assert importer._try_fetch_remote_dump() is False
+    The blanket ``T3_ALLOW_REMOTE_DUMP`` env gate is gone — the safety
+    mechanism moved to a per-invocation interactive approval gate at the
+    CLI boundary (``teatree.utils.approval``). An unattended agent cannot
+    reach this method because it cannot satisfy that gate (no TTY). These
+    tests therefore exercise the post-approval behaviour directly.
+    """
 
-    def test_skips_when_no_remote_url(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("T3_ALLOW_REMOTE_DUMP", "1")
+    def test_skips_when_no_remote_url(self, tmp_path: Path) -> None:
         importer = _make_importer(tmp_path)
         assert importer._try_fetch_remote_dump() is False
 
-    def test_skips_when_already_failed(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("T3_ALLOW_REMOTE_DUMP", "1")
+    def test_skips_when_already_failed(self, tmp_path: Path) -> None:
         importer = _make_importer(tmp_path, dslr_cmd=[], remote_db_url="postgres://u:p@host/db")
         importer._remote_dump_failed = True
         assert importer._try_fetch_remote_dump() is False
 
     def test_handles_timeout(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("T3_ALLOW_REMOTE_DUMP", "1")
         (tmp_path / ".data").mkdir()
         importer = _make_importer(tmp_path, dslr_cmd=[], remote_db_url="postgres://u:p@host/db")
         monkeypatch.setattr(
@@ -641,26 +637,47 @@ class TestTryFetchRemoteDump:
         assert importer._try_fetch_remote_dump() is False
 
     def test_handles_pg_dump_failure(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("T3_ALLOW_REMOTE_DUMP", "1")
         (tmp_path / ".data").mkdir()
         importer = _make_importer(tmp_path, dslr_cmd=[], remote_db_url="postgres://u:p@host/db")
         monkeypatch.setattr(run_mod.subprocess, "run", _fail_run)
         assert importer._try_fetch_remote_dump() is False
 
     def test_returns_true_after_successful_fetch(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("T3_ALLOW_REMOTE_DUMP", "1")
         data_dir = tmp_path / ".data"
         data_dir.mkdir()
         importer = _make_importer(tmp_path, dslr_cmd=[], remote_db_url="postgres://u:p@host/db")
 
         def fake_run(args, **kw):
             if isinstance(args, list) and args[0] == "pg_dump":
-                dump_path = args[3]
+                dump_path = args[args.index("-f") + 1]
                 Path(dump_path).write_bytes(b"PGDMP")
             return _ok_run()
 
         monkeypatch.setattr(run_mod.subprocess, "run", fake_run)
         assert importer._try_fetch_remote_dump() is True
+
+    def test_pg_dump_uses_no_owner_no_privileges(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """User script hardening: dump portable across the superuser boundary.
+
+        The user's known-good ``import_db_from_dev_env.sh`` passes
+        ``--no-owner --no-privileges`` so the local ownership-reassignment
+        post-steps can take over cleanly. Preserve that.
+        """
+        (tmp_path / ".data").mkdir()
+        importer = _make_importer(tmp_path, dslr_cmd=[], remote_db_url="postgres://u:p@host/db")
+        captured: list[list[str]] = []
+
+        def fake_run(args, **kw):
+            if isinstance(args, list) and args[0] == "pg_dump":
+                captured.append(args)
+                Path(args[args.index("-f") + 1]).write_bytes(b"PGDMP")
+            return _ok_run()
+
+        monkeypatch.setattr(run_mod.subprocess, "run", fake_run)
+        importer._try_fetch_remote_dump()
+        assert captured, "pg_dump was not invoked"
+        assert "--no-owner" in captured[0]
+        assert "--no-privileges" in captured[0]
 
 
 # ---------------------------------------------------------------------------

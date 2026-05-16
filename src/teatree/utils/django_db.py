@@ -395,18 +395,14 @@ class DjangoDbImporter:
     def _try_fetch_remote_dump(self) -> bool:
         """Fetch a fresh dump from the remote DB into dump_dir.
 
-        Final safety gate: even when the caller passes ``allow_remote_dump=True``,
-        the environment variable ``T3_ALLOW_REMOTE_DUMP=1`` must also be set.
-        Prevents agent-triggered paths from auto-downloading gigabytes over VPN.
+        Reached only when the caller passed ``allow_remote_dump=True``,
+        which is set exclusively after a successful per-invocation
+        interactive approval gate (``teatree.utils.approval``, #777). That
+        gate — not a blanket env var — is the safety mechanism: an
+        unattended agent cannot self-approve, so this path cannot run
+        without a human's explicit per-run confirmation.
         """
         cfg = self.cfg
-        if os.environ.get("T3_ALLOW_REMOTE_DUMP") != "1":
-            logger.warning(
-                "Remote pg_dump blocked for %s: set T3_ALLOW_REMOTE_DUMP=1 to allow "
-                "remote dump fallback. Agents must never set this env var.",
-                cfg.ref_db_name,
-            )
-            return False
         if not cfg.remote_db_url:
             logger.info("Remote dump skipped (no remote_db_url configured)")
             return False
@@ -419,8 +415,21 @@ class DjangoDbImporter:
             dump_path = dump_dir / f"{today}_{cfg.ref_db_name}.pgsql"
             self.stdout.write(f"  Dumping from remote DB ({cfg.ref_db_name})...\n")
             dump_dir.mkdir(parents=True, exist_ok=True)
+            # --no-owner --no-privileges mirrors the user's known-good
+            # import_db_from_dev_env.sh (#777): the dump is portable across
+            # the remote→local-superuser boundary, so the local ownership-
+            # reassignment post-steps take over cleanly. -Fc keeps it the
+            # deterministic custom format db_restore auto-detects.
             result = run_allowed_to_fail(
-                ["pg_dump", "-Fc", "-f", str(dump_path), cfg.remote_db_url],
+                [
+                    "pg_dump",
+                    "-Fc",
+                    "--no-owner",
+                    "--no-privileges",
+                    "-f",
+                    str(dump_path),
+                    cfg.remote_db_url,
+                ],
                 timeout=cfg.dump_timeout,
                 expected_codes=None,
             )
