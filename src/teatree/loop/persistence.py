@@ -102,6 +102,11 @@ def _handle_orchestrator(action: DispatchAction) -> Task | None:
         issue_url=issue_url,
         defaults={"overlay": overlay, "role": Ticket.Role.AUTHOR},
     )
+    # #748: a loop/coordinator-built ticket must have a durable phase-
+    # attestation session even when scheduling below is skipped (role
+    # mismatch / not NOT_STARTED / open task), so the shipping gate can
+    # reconcile real work instead of fail-closing on "no session".
+    ticket.ensure_session()
     if ticket.role != Ticket.Role.AUTHOR:
         logger.debug(
             "Ticket %s for %s has role=%s; not scheduling coding",
