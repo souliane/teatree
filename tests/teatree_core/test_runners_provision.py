@@ -228,3 +228,74 @@ class TestWorktreeProvisioner(TestCase):
 
         assert result.ok is False
         assert "branch" in result.detail.lower()
+
+
+class TestWorktreeProvisionerStampsScopedIdentity(TestCase):
+    """#762 source-fix: public souliane/* worktrees get a local noreply identity.
+
+    A worktree created off a PUBLIC souliane/* clone must get a
+    worktree-local noreply git identity (so no path can author with the
+    inherited identity). Non-souliane / private clones must NOT be stamped
+    — their legitimate real-identity attribution is untouched.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _tmp_workspace(self, tmp_path: Path) -> None:
+        self.workspace = tmp_path / "workspace"
+        self.workspace.mkdir()
+
+    def _scoped_ticket(self, repos: list[str], *, branch: str) -> Ticket:
+        return Ticket.objects.create(
+            overlay="test",
+            issue_url="https://example.com/issues/77",
+            repos=repos,
+            extra={"branch": branch, "description": "x"},
+        )
+
+    def _run(self, repo: str, branch: str, remote_url: str) -> list[tuple[str, str, str]]:
+        repo_dir = self.workspace / repo
+        repo_dir.mkdir()
+        (repo_dir / ".git").mkdir()
+        ticket = self._scoped_ticket(repos=[repo], branch=branch)
+        stamped: list[tuple[str, str, str]] = []
+
+        def fake_worktree_add(r: str, path: str, b: str, *, create_branch: bool = True) -> bool:
+            del r, b, create_branch
+            Path(path).mkdir(parents=True, exist_ok=True)
+            return True
+
+        def fake_set_local_identity(repo_path: str) -> None:
+            from teatree.core.public_identity import canonical_noreply_identity  # noqa: PLC0415
+
+            name, email = canonical_noreply_identity()
+            stamped.append((repo_path, name, email))
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.provision._workspace_dir", return_value=self.workspace),
+            patch("teatree.core.runners.provision.git.worktree_add", side_effect=fake_worktree_add),
+            patch("teatree.core.runners.provision.git.pull_ff_only", return_value=True),
+            patch("teatree.core.runners.provision.git.remote_slug", return_value=remote_url),
+            patch(
+                "teatree.core.runners.provision.set_local_noreply_identity",
+                side_effect=fake_set_local_identity,
+            ),
+        ):
+            WorktreeProvisioner(ticket).run()
+        return stamped
+
+    def test_public_souliane_clone_worktree_is_stamped_noreply(self) -> None:
+        from teatree.core.public_identity import is_noreply_email  # noqa: PLC0415
+
+        stamped = self._run("teatree", "ac-teatree-77-x", "souliane/teatree")
+
+        assert len(stamped) == 1, "public souliane worktree was not identity-stamped (#762 source-fix)"
+        wt_path, name, email = stamped[0]
+        assert "ac-teatree-77-x" in wt_path
+        assert name
+        assert is_noreply_email(email), email
+
+    def test_private_oper_clone_worktree_is_not_stamped(self) -> None:
+        stamped = self._run("internal-svc", "ac-internal-svc-77-x", "acme-private/internal-svc")
+
+        assert stamped == [], "non-souliane / private clone must NOT be identity-stamped — scope error (#762)"
