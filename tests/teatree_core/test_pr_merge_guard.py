@@ -19,16 +19,29 @@ from teatree.core.public_identity import MergeAuthorMismatchError, canonical_nor
 
 
 class _Recorder:
-    def __init__(self) -> None:
-        self.git: list[tuple[list[str], dict[str, str]]] = []
+    def __init__(self, origin: str = "git@github.com:souliane/teatree.git") -> None:
+        self.git: list[tuple[list[str], dict[str, str], str | None]] = []
         self.gh: list[list[str]] = []
         self.landed_author = "21343492+souliane@users.noreply.github.com"
         self.push_rc = 0
+        self.switch_rc = 0
+        self.origin = origin
 
-    def run_git(self, args: list[str], env: dict[str, str] | None = None) -> tuple[int, str, str]:
-        self.git.append((args, dict(env or {})))
+    def run_git(
+        self,
+        args: list[str],
+        env: dict[str, str] | None = None,
+        cwd: str | None = None,
+    ) -> tuple[int, str, str]:
+        self.git.append((args, dict(env or {}), cwd))
+        if args[:3] == ["remote", "get-url", "origin"]:
+            return (0, f"{self.origin}\n", "")
+        if args[:2] == ["rev-parse", "--show-toplevel"]:
+            return (0, "/clones/souliane/teatree\n", "")
         if args[:1] == ["push"]:
             return (self.push_rc, "", "rejected: protected branch" if self.push_rc else "")
+        if args[:2] == ["switch", "main"]:
+            return (self.switch_rc, "", "main is checked out elsewhere" if self.switch_rc else "")
         if args[:2] == ["rev-parse", "HEAD"]:
             return (0, "abc1234deadbeefcafe\n", "")
         return (0, "", "")
@@ -59,15 +72,43 @@ class TestLocalSquashMergePublic:
             squash_merge_public(pr=764, slug="souliane/teatree")
 
         name, email = canonical_noreply_identity()
-        assert any(a[:2] == ["merge", "--squash"] for a, _ in rec.git), rec.git
-        commit_args, commit_env = next((a, e) for a, e in rec.git if a[:1] == ["commit"])
+        assert any(a[:2] == ["merge", "--squash"] for a, _, _ in rec.git), rec.git
+        commit_args, commit_env, commit_cwd = next((a, e, c) for a, e, c in rec.git if a[:1] == ["commit"])
         assert f"--author={name} <{email}>" in commit_args, commit_args
         assert commit_env.get("GIT_COMMITTER_NAME") == name
         assert commit_env.get("GIT_COMMITTER_EMAIL") == email
-        assert any(a[:2] == ["push", "origin"] for a, _ in rec.git)
+        # F1: every mutating git op is pinned to the resolved clone cwd,
+        # never the (arbitrary) invocation dir.
+        assert commit_cwd == "/clones/souliane/teatree"
+        push = next((a, c) for a, _, c in rec.git if a[:2] == ["push", "origin"])
+        assert push[1] == "/clones/souliane/teatree"
         assert not any("merge" in g and "--squash" in g for g in rec.gh), (
             "must NOT use server-side gh pr merge --squash on public souliane/*"
         )
+
+    def test_refuses_when_origin_is_not_the_target_slug(self) -> None:
+        # F1: invoked from a clone whose origin is a DIFFERENT repo —
+        # must refuse before any mutating op (no fetch/merge/commit/push).
+        rec = _Recorder(origin="git@github.com:someoneelse/otherrepo.git")
+        p_git, p_gh = _patch(rec)
+        with p_git, p_gh, pytest.raises(RuntimeError, match=r"(?i)origin|wrong repo|refus"):
+            squash_merge_public(pr=764, slug="souliane/teatree")
+        assert not any(a[:1] in (["merge"], ["commit"], ["push"]) for a, _, _ in rec.git), (
+            "must not mutate when origin != target slug"
+        )
+
+    def test_switch_main_failure_stops_before_squash(self) -> None:
+        # F2: main checked out elsewhere -> switch fails -> STOP, never
+        # squash/commit/push on the wrong branch.
+        rec = _Recorder()
+        rec.switch_rc = 1
+        p_git, p_gh = _patch(rec)
+        with p_git, p_gh, pytest.raises(RuntimeError, match=r"(?i)switch|main|elsewhere"):
+            squash_merge_public(pr=764, slug="souliane/teatree")
+        assert not any(a[:2] == ["merge", "--squash"] for a, _, _ in rec.git), (
+            "must not squash after a failed switch to main"
+        )
+        assert not any(a[:1] == ["commit"] for a, _, _ in rec.git)
 
     def test_fails_closed_when_landed_author_is_non_noreply(self) -> None:
         rec = _Recorder()
@@ -82,7 +123,7 @@ class TestLocalSquashMergePublic:
         p_git, p_gh = _patch(rec)
         with p_git, p_gh, pytest.raises(RuntimeError, match=r"(?i)push|protected|reject"):
             squash_merge_public(pr=764, slug="souliane/teatree")
-        assert not any("--force" in a or "--force-with-lease" in a for a, _ in rec.git), (
+        assert not any("--force" in a or "--force-with-lease" in a for a, _, _ in rec.git), (
             "must not force-push as a workaround"
         )
 
@@ -93,8 +134,8 @@ class TestLocalSquashMergePublic:
             squash_merge_public(pr=1, slug="acme-private/internal-svc")
 
         assert any("merge" in g and "--squash" in g for g in rec.gh), rec.gh
-        assert not any(a[:2] == ["merge", "--squash"] for a, _ in rec.git)
-        assert not any(a[:1] == ["commit"] for a, _ in rec.git)
+        assert not any(a[:2] == ["merge", "--squash"] for a, _, _ in rec.git)
+        assert not any(a[:1] == ["commit"] for a, _, _ in rec.git)
 
 
 class TestPrMergeCommandWiring:

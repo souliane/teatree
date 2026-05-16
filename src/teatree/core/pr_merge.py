@@ -29,10 +29,40 @@ def _run_gh(argv: list[str]) -> tuple[int, str, str]:
     return result.returncode, result.stdout, result.stderr
 
 
-def _run_git(args: list[str], env: dict[str, str] | None = None) -> tuple[int, str, str]:
+def _run_git(
+    args: list[str],
+    env: dict[str, str] | None = None,
+    cwd: str | None = None,
+) -> tuple[int, str, str]:
     full_env = {**os.environ, **(env or {})}
-    result = run_allowed_to_fail(["git", *args], expected_codes=None, env=full_env)
+    result = run_allowed_to_fail(["git", *args], expected_codes=None, env=full_env, cwd=cwd)
     return result.returncode, result.stdout, result.stderr
+
+
+def _assert_origin_is(slug: str, cwd: str) -> None:
+    """Fail closed unless ``cwd``'s ``origin`` remote resolves to ``slug``.
+
+    The merge runs from whatever directory the caller invoked it in (the
+    review-loop sweeps the backlog from its own dir). Before any mutating
+    git op we verify we are operating on a clone of ``slug`` — otherwise
+    ``push origin main`` could land on the wrong repository's main.
+    """
+    rc, out, _ = _run_git(["remote", "get-url", "origin"], cwd=cwd)
+    url = out.strip()
+    if rc != 0 or not url:
+        msg = f"cannot resolve origin in {cwd!r} — refusing to merge {slug} from an unknown repo (#764)"
+        raise RuntimeError(msg)
+    cleaned = url.rstrip("/").removesuffix(".git")
+    if "://" in cleaned:
+        cleaned = cleaned.split("://", 1)[1].split("/", 1)[1] if "/" in cleaned.split("://", 1)[1] else cleaned
+    elif "@" in cleaned and ":" in cleaned:
+        cleaned = cleaned.split(":", 1)[1]
+    if cleaned != slug:
+        msg = (
+            f"origin in {cwd!r} resolves to {cleaned!r}, not {slug!r} — refusing the "
+            f"local-squash merge to avoid pushing to the wrong repository (#764)"
+        )
+        raise RuntimeError(msg)
 
 
 def _pr_branch(slug: str, pr: int) -> str:
@@ -44,19 +74,19 @@ def _pr_branch(slug: str, pr: int) -> str:
 
 def _pr_squash_message(slug: str, pr: int) -> str:
     rc, out, _ = _run_gh(
-        ["pr", "view", str(pr), "--repo", slug, "--json", "title,body", "--jq", '.title + "\\n\\n" + .body'],
+        ["pr", "view", str(pr), "--repo", slug, "--json", "title,body", "--jq", '.title + "\\n\\n" + (.body // "")'],
     )
     title_body = out.strip() if rc == 0 else ""
     return title_body or f"Merge pull request #{pr}"
 
 
-def _landed_head_sha() -> str:
-    rc, out, _ = _run_git(["rev-parse", "HEAD"])
+def _landed_head_sha(cwd: str | None = None) -> str:
+    rc, out, _ = _run_git(["rev-parse", "HEAD"], cwd=cwd)
     return out.strip() if rc == 0 else ""
 
 
-def _verify_landed_author(slug: str) -> None:
-    sha = _landed_head_sha()
+def _verify_landed_author(slug: str, cwd: str) -> None:
+    sha = _landed_head_sha(cwd=cwd)
     if not sha:
         msg = f"could not resolve the landed commit SHA on {slug} main to verify its author"
         raise MergeAuthorMismatchError(msg)
@@ -94,28 +124,46 @@ def _local_squash_merge(pr: int, slug: str) -> None:
         "GIT_AUTHOR_EMAIL": email,
     }
 
-    rc, _o, err = _run_git(["fetch", "origin"])
+    # F1: every git op is pinned to the resolved clone of `slug` (the
+    # review-loop sweeps from its own dir). Assert origin == slug there
+    # before any mutating op, and resolve the repo toplevel so the squash
+    # /commit/push cannot land on the wrong repository.
+    _assert_origin_is(slug, cwd=".")
+    rc, top, _ = _run_git(["rev-parse", "--show-toplevel"], cwd=".")
+    repo = top.strip()
+    if rc != 0 or not repo:
+        msg = f"cannot resolve the repo toplevel for {slug} — refusing the local-squash merge (#764)"
+        raise RuntimeError(msg)
+
+    rc, _o, err = _run_git(["fetch", "origin"], cwd=repo)
     if rc != 0:
         msg = f"git fetch failed for {slug}#{pr}: {err.strip()}"
         raise RuntimeError(msg)
-    _run_git(["switch", "main"])
-    rc, _o, err = _run_git(["pull", "--ff-only", "origin", "main"])
+    # F2: a failed `switch main` (e.g. main checked out in another
+    # worktree) must STOP — continuing would squash/commit/push on the
+    # wrong branch.
+    rc, _o, err = _run_git(["switch", "main"], cwd=repo)
+    if rc != 0:
+        msg = f"git switch main failed for {slug} (is main checked out elsewhere?): {err.strip()}"
+        raise RuntimeError(msg)
+    rc, _o, err = _run_git(["pull", "--ff-only", "origin", "main"], cwd=repo)
     if rc != 0:
         msg = f"git pull --ff-only failed for {slug} main: {err.strip()}"
         raise RuntimeError(msg)
-    rc, _o, err = _run_git(["merge", "--squash", f"origin/{branch}"])
+    rc, _o, err = _run_git(["merge", "--squash", f"origin/{branch}"], cwd=repo)
     if rc != 0:
         msg = f"git merge --squash failed for {slug}#{pr}: {err.strip()}"
         raise RuntimeError(msg)
     rc, _o, err = _run_git(
         ["commit", f"--author={name} <{email}>", "-m", message],
         env=identity_env,
+        cwd=repo,
     )
     if rc != 0:
         msg = f"git commit failed for {slug}#{pr}: {err.strip()}"
         raise RuntimeError(msg)
 
-    rc, _o, err = _run_git(["push", "origin", "main"], env=identity_env)
+    rc, _o, err = _run_git(["push", "origin", "main"], env=identity_env, cwd=repo)
     if rc != 0:
         msg = (
             f"push to {slug} main was rejected ({err.strip() or 'non-zero'}) — "
@@ -123,8 +171,8 @@ def _local_squash_merge(pr: int, slug: str) -> None:
         )
         raise RuntimeError(msg)
 
-    _verify_landed_author(slug)
-    landed = _landed_head_sha()[:8]
+    _verify_landed_author(slug, cwd=repo)
+    landed = _landed_head_sha(cwd=repo)[:8]
     _run_gh(["pr", "close", str(pr), "--repo", slug, "--comment", f"Merged via squashed commit {landed}."])
 
 
