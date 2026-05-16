@@ -197,6 +197,25 @@ def _is_main_clone(path: str) -> bool:
     return git_marker.is_dir()
 
 
+def _reject_main_clone(worktree: Worktree) -> None:
+    """Raise ``WorktreeNotFoundError`` if *worktree* points at a main clone.
+
+    Single source of truth for the main-clone refusal. Every
+    ``resolve_worktree()`` return path that hands back a DB-matched
+    ``Worktree`` must pass through this — a stale or mis-recorded env
+    cache / row whose ``worktree_path`` is a main clone would otherwise
+    route destructive consumers (db reset, teardown, cleanup) at the
+    main clone instead of an isolated worktree (#752).
+    """
+    wt_path = (worktree.extra or {}).get("worktree_path", "")
+    if wt_path and _is_main_clone(wt_path):
+        msg = (
+            f"Refusing to operate on main clone at {wt_path}.\n"
+            "Create a worktree first: t3 <overlay> workspace ticket <issue_url>"
+        )
+        raise WorktreeNotFoundError(msg)
+
+
 def _warn_cwd_mismatch(worktree: Worktree, cwd: str) -> None:
     """Log a warning when the resolved worktree path and user's CWD are unrelated.
 
@@ -237,19 +256,14 @@ def resolve_worktree(path: str = "") -> Worktree:
         if ticket_dir:
             wt = _match_worktree_by_path(ticket_dir)
             if wt is not None:  # pragma: no branch
+                _reject_main_clone(wt)
                 _warn_cwd_mismatch(wt, cwd)
                 return wt
 
     # 2. Match CWD directly against stored worktree paths
     wt = _match_worktree_by_path(cwd)
     if wt is not None:
-        wt_path = (wt.extra or {}).get("worktree_path", "")
-        if wt_path and _is_main_clone(wt_path):
-            msg = (
-                f"Refusing to operate on main clone at {wt_path}.\n"
-                "Create a worktree first: t3 <overlay> workspace ticket <issue_url>"
-            )
-            raise WorktreeNotFoundError(msg)
+        _reject_main_clone(wt)
         _warn_cwd_mismatch(wt, cwd)
         return wt
 

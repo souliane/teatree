@@ -239,6 +239,70 @@ class TestResolveWorktree(TestCase):
             resolve_worktree()
 
 
+class TestResolveWorktreeRejectsMainClone(TestCase):
+    """The main-clone refusal must apply to every return path (#752).
+
+    A stale or mis-recorded env cache whose ``TICKET_DIR`` resolves to a
+    ``Worktree`` row pointing at a *main clone* must be rejected by the
+    same guard step 2 uses — not handed back as a usable worktree, which
+    would route destructive consumers (db reset, teardown, cleanup) at
+    the main clone.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _inject_fixtures(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        self._monkeypatch = monkeypatch
+        self._tmp_path = tmp_path
+
+    def _make_main_clone(self, name: str) -> Path:
+        """A main clone has ``.git`` as a directory (not a file)."""
+        clone = self._tmp_path / name
+        clone.mkdir()
+        (clone / ".git").mkdir()
+        return clone
+
+    def test_step1_env_cache_pointing_at_main_clone_is_rejected(self) -> None:
+        """Step 1 (env-cache TICKET_DIR) must hit the main-clone guard.
+
+        RED before #752: step 1 returns the main-clone Worktree with no
+        ``WorktreeNotFoundError`` (the guard only ran on step 2).
+        """
+        main_clone = self._make_main_clone("teatree")
+        ticket = Ticket.objects.create()
+        Worktree.objects.create(
+            ticket=ticket,
+            repo_path="teatree",
+            branch="main",
+            extra={"worktree_path": str(main_clone)},
+        )
+
+        # CWD is elsewhere; an env cache there points TICKET_DIR at the
+        # main clone (the stale/mis-recorded condition the guard catches).
+        cwd = self._tmp_path / "elsewhere"
+        cwd.mkdir()
+        envfile = cwd / ".t3-env.cache"
+        envfile.write_text(f"TICKET_DIR={main_clone}\n", encoding="utf-8")
+        self._monkeypatch.setenv("T3_ORIG_CWD", str(cwd))
+
+        with pytest.raises(WorktreeNotFoundError, match="Refusing to operate on main clone"):
+            resolve_worktree()
+
+    def test_step2_main_clone_guard_still_fires(self) -> None:
+        """Step 2 keeps refusing a main clone after the guard is shared."""
+        main_clone = self._make_main_clone("teatree")
+        ticket = Ticket.objects.create()
+        Worktree.objects.create(
+            ticket=ticket,
+            repo_path="teatree",
+            branch="main",
+            extra={"worktree_path": str(main_clone)},
+        )
+        self._monkeypatch.setenv("T3_ORIG_CWD", str(main_clone))
+
+        with pytest.raises(WorktreeNotFoundError, match="Refusing to operate on main clone"):
+            resolve_worktree()
+
+
 class TestWarnCwdMismatch(TestCase):
     @pytest.fixture(autouse=True)
     def _inject_fixtures(self, caplog: pytest.LogCaptureFixture) -> None:
