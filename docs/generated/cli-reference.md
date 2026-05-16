@@ -141,6 +141,8 @@ Usage: t3 config [OPTIONS] COMMAND [ARGS]...
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
 │ check-update       Check if a newer version of teatree is available.         │
+│ show               Read-only view of config: text-file intent vs DB          │
+│                    regenerable cache (#628).                                 │
 │ write-skill-cache  Write overlay skill metadata + trigger index to XDG cache │
 │                    for hook consumption.                                     │
 │ autoload           List skill auto-loading rules from context-match.yml      │
@@ -159,6 +161,24 @@ Usage: t3 config check-update [OPTIONS]
  Check if a newer version of teatree is available.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 config show`
+
+```
+Usage: t3 config show [OPTIONS]
+
+ Read-only view of config: text-file intent vs DB regenerable cache (#628).
+
+ The intent section is ``~/.teatree.toml`` resolved — the user-authored
+ source of truth. The derived section is DB / data-dir state that can be
+ deleted and rebuilt from the text files; every entry is flagged
+ regenerable so the cache-vs-intent invariant is visible. Reads only.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --json          Emit machine-readable JSON.                                  │
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -1950,11 +1970,15 @@ Usage: t3 teatree e2e run [OPTIONS]
  or ``"runner": "external"``; when absent, ``test_dir`` implies ``project``
  and ``project_path`` implies ``external`` for compatibility.
 
+ ``--target dev|local`` selects the dual-env target and is forwarded to
+ whichever runner handles the overlay (see ``external`` for semantics).
+
  Runner-specific flags (``--repo``, ``--playwright-args``) stay on the
  explicit ``external`` subcommand to keep this entry point overlay-agnostic.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --test-path                                    TEXT                          │
+│ --target                                       TEXT                          │
 │ --headed              --no-headed                    [default: no-headed]    │
 │ --update-snapshots    --no-update-snapshots          [default:               │
 │                                                      no-update-snapshots]    │
@@ -1991,6 +2015,19 @@ Usage: t3 teatree e2e external [OPTIONS]
  - Default: resolve from ``T3_PRIVATE_TESTS`` env var or ``.private_tests``
      config key.
 
+ ``--target dev|local`` selects the dual-env target deterministically:
+
+ - ``dev``: keep the pre-set ``BASE_URL`` (deployed env), no port scan.
+ - ``local``: always discover the local frontend, even if a stray
+     ``BASE_URL`` is exported (``--target local`` never hits a
+     deployed env silently).
+ - empty: back-compat — infer ``dev`` if ``BASE_URL`` is set,
+     else ``local``.
+
+ The resolved value is exported as ``T3_E2E_TARGET`` so a dual-mode
+ spec branches on ``process.env.T3_E2E_TARGET === 'dev'`` rather than
+ re-deriving the target from a ``BASE_URL`` host regex.
+
  Discovers the frontend port from docker-compose (or local process)
  and reads the tenant variant from the env cache.
 
@@ -2001,6 +2038,7 @@ Usage: t3 teatree e2e external [OPTIONS]
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --test-path                                    TEXT                          │
 │ --repo                                         TEXT                          │
+│ --target                                       TEXT                          │
 │ --headed              --no-headed                    [default: no-headed]    │
 │ --update-snapshots    --no-update-snapshots          [default:               │
 │                                                      no-update-snapshots]    │
@@ -2017,6 +2055,10 @@ Usage: t3 teatree e2e project [OPTIONS]
 
  Run E2E tests from the project's own test directory.
 
+ ``--target dev|local`` is exported as ``T3_E2E_TARGET`` for the in-repo
+ suite (same contract as the ``external`` runner); empty falls back to
+ ``BASE_URL``-based inference.
+
  Pass ``--update-snapshots`` to regenerate ``pytest-playwright-visual``
  baselines. Always do this inside the Docker image (the default) — the
  CI runner's Chromium renders fonts at different heights than macOS, so
@@ -2024,6 +2066,7 @@ Usage: t3 teatree e2e project [OPTIONS]
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --test-path                                    TEXT                          │
+│ --target                                       TEXT                          │
 │ --headed              --no-headed                    [default: no-headed]    │
 │ --docker              --no-docker                    [default: docker]       │
 │ --update-snapshots    --no-update-snapshots          [default:               │
