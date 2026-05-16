@@ -146,6 +146,25 @@ class TestClaimNextAtomicDispatch(_LoopDispatchTest):
         call_command("loop_dispatch", "claim-next", "--json", stdout=stdout)
         assert json.loads(stdout.getvalue()) == []
 
+    def test_claim_next_text_output_when_claimed(self) -> None:
+        """N3: the non-JSON branch — emits a human line for the claimed task."""
+        task = self._reviewer_task()
+        stdout = StringIO()
+        call_command("loop_dispatch", "claim-next", stdout=stdout)
+
+        out = stdout.getvalue()
+        assert f"Claimed task={task.pk}" in out
+        assert "subagent=t3:reviewer" in out
+        assert "phase=reviewing" in out
+        task.refresh_from_db()
+        assert task.status == Task.Status.CLAIMED
+
+    def test_claim_next_text_output_when_empty(self) -> None:
+        """N3: the non-JSON empty branch."""
+        stdout = StringIO()
+        call_command("loop_dispatch", "claim-next", stdout=stdout)
+        assert "No pending spawn requests." in stdout.getvalue()
+
 
 class TestSpawnClaim(_LoopDispatchTest):
     def test_claims_pending_task(self) -> None:

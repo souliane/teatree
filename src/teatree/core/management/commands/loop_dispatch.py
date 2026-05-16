@@ -12,6 +12,7 @@ from typing import Annotated, Any
 
 import typer
 from django.core.exceptions import ObjectDoesNotExist
+from django.db.models import Q
 from django_typer.management import TyperCommand, command
 
 from teatree.core.models import Task, Ticket
@@ -28,6 +29,19 @@ _SUBAGENT_BY_PHASE: dict[tuple[str, str], str] = {
 def _subagent_for(task: Task) -> str:
     ticket = task.ticket
     return _SUBAGENT_BY_PHASE.get((ticket.role, task.phase), "")
+
+
+def _dispatchable_q() -> Q:
+    """DB-side mirror of ``_subagent_for`` for the atomic claim filter.
+
+    ``Q`` matching exactly the (ticket.role, task.phase) pairs that have a
+    registered subagent, so the atomic claim restricts to dispatchable
+    tasks (one source of truth).
+    """
+    q = Q(pk__in=[])  # matches nothing; OR-folded below
+    for role, phase in _SUBAGENT_BY_PHASE:
+        q |= Q(ticket__role=role, phase=phase)
+    return q
 
 
 def _task_to_dict(task: Task) -> dict[str, Any]:
@@ -91,46 +105,21 @@ class Command(TyperCommand):
     ) -> None:
         """Atomically claim the oldest pending dispatchable Task, then emit it.
 
-        #786 (N4): the claim IS the spawn boundary. Two concurrent ticks
-        each ``claim-next`` a *distinct* task (or nothing) via
-        ``select_for_update(skip_locked=True)`` — neither can spawn a task
-        the other already took, so the spawn-then-claim double-dispatch
-        window is gone. The slot calls its ``Agent`` tool for the emitted
-        (already-claimed) entry. A non-dispatchable PENDING task (no
-        registered subagent) is left untouched for operator triage and an
-        empty payload is emitted.
+        #786 (N4): the claim IS the spawn boundary. Delegates to the single
+        audited claim path ``Task.objects.claim_next_pending`` (one
+        critical section, backend-agnostic conditional UPDATE — correct on
+        SQLite, not just Postgres), narrowed to dispatchable (role, phase)
+        pairs so a non-dispatchable PENDING task is left untouched for
+        operator triage. Two concurrent ticks each claim a *distinct* task
+        (or nothing); the slot calls its ``Agent`` tool for the emitted
+        already-claimed entry. The previous inline reimplementation (N2)
+        and the SQLite-ineffective ``skip_locked`` (B1) are gone.
         """
-        from datetime import timedelta  # noqa: PLC0415
-
-        from django.db import transaction  # noqa: PLC0415
-        from django.utils import timezone  # noqa: PLC0415
-
-        payload: list[dict[str, Any]] = []
-        with transaction.atomic():
-            locked = (
-                Task.objects.select_for_update(skip_locked=True)
-                .filter(status=Task.Status.PENDING)
-                .select_related("ticket")
-                .order_by("pk")
-            )
-            task = next((t for t in locked if _subagent_for(t)), None)
-            if task is not None:
-                now = timezone.now()
-                task.status = Task.Status.CLAIMED
-                task.claimed_by = claimed_by
-                task.claimed_at = now
-                task.heartbeat_at = now
-                task.lease_expires_at = now + timedelta(seconds=300)
-                task.save(
-                    update_fields=[
-                        "status",
-                        "claimed_by",
-                        "claimed_at",
-                        "heartbeat_at",
-                        "lease_expires_at",
-                    ],
-                )
-                payload = [_task_to_dict(task)]
+        task = Task.objects.claim_next_pending(
+            claimed_by=claimed_by,
+            extra_filter=_dispatchable_q(),
+        )
+        payload: list[dict[str, Any]] = [_task_to_dict(task)] if task is not None else []
 
         if json_output:
             self.stdout.write(json.dumps(payload, indent=2))

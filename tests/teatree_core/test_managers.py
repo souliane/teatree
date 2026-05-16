@@ -142,6 +142,95 @@ class TestTaskQuerySet(TestCase):
         assert got.pk == fresh.pk  # skipped the already-claimed one
 
 
+class TestClaimNextPendingConcurrencyOnSqlite(TestCase):
+    """#786 B1 keystone — double-CLAIM race closed on the PRODUCTION SQLite backend.
+
+    SQLite (settings.py:88-89, ENGINE = django.db.backends.sqlite3) has
+    ``has_select_for_update_skip_locked = False``, so
+    ``select_for_update(skip_locked=True)`` is a silent no-op here. This
+    test runs under that real SQLite test DB and reproduces a *concurrent
+    interleave* (two ticks both past the candidate SELECT before either
+    writes), NOT a sequential "second call finds it gone" (that stays
+    green with or without real locking — the B1/N1 anti-vacuous trap).
+    RED before the conditional-UPDATE CAS fix (both callers "claim" the
+    same task → double-dispatch); GREEN after (the ``WHERE
+    status='pending'`` guard lets exactly one writer win).
+    """
+
+    def test_backend_is_sqlite(self) -> None:
+        # Pin the premise: if this ever runs on Postgres the race-shape
+        # below no longer reflects the production backend.
+        from django.db import connection  # noqa: PLC0415
+
+        assert connection.vendor == "sqlite"
+        assert connection.features.has_select_for_update_skip_locked is False
+
+    def test_interleaved_ticks_claim_one_task_exactly_once(self) -> None:
+        """The B1 interleave: a stale tick-1 must not double-claim tick-2's row.
+
+        tick-1 has already selected the oldest pending candidate; tick-2
+        then runs to completion and claims that SAME row; tick-1 resumes
+        and attempts its claim write on the now-stale view.
+
+        The seam is the write boundary shared by BOTH code shapes — the
+        conditional ``QuerySet.update`` (fixed) and the row ``Task.save``
+        (pre-fix select-then-save). The rival is fired exactly once, just
+        before the first write executes, so tick-1's write lands on a row
+        tick-2 already moved out of PENDING. Fixed: tick-1's
+        ``WHERE status='pending'`` matches 0 rows ⇒ returns None (exactly
+        one claimer). Pre-fix: tick-1's unconditional ``save`` clobbers ⇒
+        BOTH "claim" the same task ⇒ assertion fails (RED).
+        """
+        from unittest.mock import patch  # noqa: PLC0415
+
+        from django.db.models import QuerySet  # noqa: PLC0415
+
+        from teatree.core.models.task import Task as TaskModel  # noqa: PLC0415
+
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket, agent_id="a")
+        only = Task.objects.create(ticket=ticket, session=session, phase="reviewing")
+
+        fired: list[str] = []
+        rival_result: list[object] = [None]
+        real_update = QuerySet.update
+        real_save = TaskModel.save
+
+        def _fire_rival_once() -> None:
+            if fired:
+                return
+            fired.append("x")
+            # tick-2 runs fully (its own select + claim) inside tick-1's
+            # critical section, before tick-1's first write commits.
+            rival_result[0] = Task.objects.claim_next_pending(claimed_by="tick-2")
+
+        def update_with_rival(self: object, *args: object, **kwargs: object) -> object:
+            _fire_rival_once()
+            return real_update(self, *args, **kwargs)
+
+        def save_with_rival(self: object, *args: object, **kwargs: object) -> object:
+            _fire_rival_once()
+            return real_save(self, *args, **kwargs)
+
+        with (
+            patch.object(QuerySet, "update", update_with_rival),
+            patch.object(TaskModel, "save", save_with_rival),
+        ):
+            caller1 = Task.objects.claim_next_pending(claimed_by="tick-1")
+
+        rival = rival_result[0]
+        only.refresh_from_db()
+        # Exactly ONE of the two interleaved ticks claimed the single task;
+        # the other got None. Never double-dispatched.
+        claimers = [c for c in (caller1, rival) if c is not None]
+        assert len(claimers) == 1, f"double-claim race NOT closed on SQLite: {caller1=} {rival=}"
+        assert only.status == Task.Status.CLAIMED
+        winner = claimers[0]
+        assert winner.pk == only.pk
+        assert only.claimed_by == winner.claimed_by
+        assert only.claimed_by in {"tick-1", "tick-2"}
+
+
 class TestReplyDispatchQuerySet(TestCase):
     def test_due_for_retry_orders_by_oldest_due_first(self) -> None:
         """``due_for_retry`` returns rows oldest-due-first by ``next_retry_at``.
