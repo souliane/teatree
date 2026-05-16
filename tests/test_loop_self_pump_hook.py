@@ -1,12 +1,19 @@
-"""Tests for the per-session loop self-pump Stop hook (#758 / board #50).
+"""Tests for the loop self-pump Stop hook (#758 / board #50 / #786 WS4).
 
-The self-pump replaces the manual coordinator pump: when the loop-owner
-session finishes a turn and consolidated work remains, the Stop hook
-emits ``{"decision": "block", "reason": ...}`` to self-continue the loop
+The self-pump replaces the manual coordinator pump: when an agent
+finishes a turn and consolidated work remains, the Stop hook emits
+``{"decision": "block", "reason": ...}`` to self-continue the loop
 without an external re-prompt. No pending work => no block (idle, by
-design — mirrors #748 "zero sessions = dead, accepted"). Non-owner
-sessions never pump (registry dedup). Anti-spin via a per-session marker
-+ mtime min-interval. ``SessionEnd`` clears the marker.
+design — mirrors #748 "zero sessions = dead, accepted"). Anti-spin via a
+marker + mtime min-interval. ``SessionEnd`` clears the marker.
+
+#786 WS4 (invariant 3) changed the dedup axis: the consolidation loop is
+exactly one *per agent identity across all sessions* — NOT the single
+global tick-owner session. The cross-session/per-agent dedup contract is
+covered in ``test_per_agent_consolidation_loop.py``; this module covers
+the non-dedup mechanics (block emission + pending summary, anti-spin,
+no-work idle, the #810 crash-safe fail-open, router wiring, stale-marker
+cleanup).
 
 Integration-style: real ``hook_router`` handler, real ``STATE_DIR`` +
 ``T3_LOOP_REGISTRY_DIR`` redirected to ``tmp_path``; only the
@@ -91,16 +98,13 @@ class TestLoopSelfPump:
         assert _decision(capsys) == {}
         assert result is not True  # idle: no block, session may end
 
-    def test_non_owner_session_never_pumps(
-        self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        _own_loop("the-owner")
-        _fake_pending(monkeypatch, [{"task_id": 1, "subagent": "x", "phase": "coding", "issue_url": "u"}])
-
-        result = handle_loop_self_pump({"session_id": "a-different-session"})
-
-        assert _decision(capsys) == {}
-        assert result is not True
+    # NOTE: the pre-WS4 ``test_non_owner_session_never_pumps`` was removed.
+    # Its premise — "only the single global tick-owner session ever
+    # pumps" — is exactly the "collapsed to one global" anti-pattern #786
+    # invariant 3 overturns. A non-tick-owner agent with its own identity
+    # and pending work MUST run its own consolidation loop; that contract
+    # is asserted in test_per_agent_consolidation_loop.py
+    # (TestExactlyOnePerAgentIdentity::test_not_collapsed_to_one_global_owner).
 
     def test_anti_spin_suppresses_immediate_repeat(
         self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch

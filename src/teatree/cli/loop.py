@@ -48,8 +48,10 @@ loop_app = typer.Typer(
         "re-spawn (#786 WS3): if the owner session dies, the next open session "
         "becomes tick-owner and keeps ticking; with zero sessions open the loop is "
         "paused until the next session start (no OS daemon — accepted, not a "
-        "defect). Within the owner session a Stop-hook self-pump re-continues the "
-        "loop automatically while consolidated work remains; it idles when none."
+        "defect). A per-agent Stop-hook self-pump re-continues the loop "
+        "automatically while consolidated work remains — exactly one "
+        "consolidation loop per agent identity, deduped across all sessions "
+        "(#786 WS4); it idles when none."
     ),
     no_args_is_help=True,
 )
