@@ -37,3 +37,15 @@ class TestReconcileReviewed(TestCase):
         ticket = Ticket.objects.create(overlay="test", state=Ticket.State.SHIPPED)
         with pytest.raises(TransitionNotAllowed):
             ticket.reconcile_reviewed()
+
+    def test_in_review_reconciles_to_reviewed(self) -> None:
+        """IN_REVIEW reconciles back to REVIEWED so a stranded ticket can re-ship (#798).
+
+        A failed/incomplete prior ship leaves the ticket at IN_REVIEW with
+        no PR; reconciling it lets the gate-passing ticket re-ship. SHIPPED
+        stays terminal (genuine post-ship success).
+        """
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.IN_REVIEW)
+        ticket.reconcile_reviewed()
+        ticket.save()
+        assert ticket.state == Ticket.State.REVIEWED
