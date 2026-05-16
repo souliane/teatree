@@ -27,6 +27,15 @@ _DISPOSITION_LABELS: dict[str, str] = {
     "label_removed": "label-removed",
 }
 
+# Summary prefixes the reviewer-prs scanner stamps on its signals (see
+# ``scanners/reviewer_prs.py``): ``Review needed:`` for
+# ``reviewer_pr.new_sha``/``unreviewed`` and ``Approval dismissed:`` for
+# ``reviewer_pr.approval_dismissed``. ``_pr_ref`` keys the URL-tail iid
+# derivation off these so every reviewer dual-dispatch renders as a
+# clickable ``!N`` ref, while non-reviewer PR-URL signals keep their
+# human-readable generic line.
+_REVIEWER_SUMMARY_PREFIXES: tuple[str, ...] = ("Review needed:", "Approval dismissed:")
+
 
 def _is_url(text: object) -> bool:
     return isinstance(text, str) and text.startswith(("http://", "https://"))
@@ -71,9 +80,12 @@ def _pr_ref(action: DispatchAction) -> _PRRef | None:
     if not isinstance(iid, int) or iid == 0:
         # Reviewer-pr signals don't ship `iid` in the payload but the MR URL
         # ends with the numeric ref — derive it so the row renders as `!N`
-        # under the right overlay. Other signal kinds still fall through
-        # without an iid (rendered as a generic line).
-        if action.detail.startswith("Review needed:") and isinstance(url, str):
+        # under the right overlay. Match every reviewer summary form (the
+        # scanner emits ``Review needed:`` for new_sha/unreviewed and
+        # ``Approval dismissed:`` for approval_dismissed) without hijacking
+        # other PR-URL-bearing signals (e.g. ``my_pr.open``), which keep
+        # their human-readable generic line.
+        if isinstance(url, str) and action.detail.startswith(_REVIEWER_SUMMARY_PREFIXES):
             tail = _ticket_number_from_url(url)
             if tail.isdigit():
                 return _PRRef(iid=int(tail), url=url, annotation="review")
