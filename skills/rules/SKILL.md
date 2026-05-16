@@ -48,7 +48,8 @@ Use `Ctrl+F`/`grep` to jump to a rule. Sections are grouped below by theme; numb
 17a. [Evidence Comes From the Deployed Environment](#evidence-comes-from-the-deployed-environment-non-negotiable)
 17. [Verify Repo Visibility Before Filing External Issues](#verify-repo-visibility-before-filing-external-issues-non-negotiable)
 18. [Leak Remediation — Silent Scrubs](#leak-remediation--silent-scrubs-non-negotiable)
-19. [GitLab Inline Comments](#gitlab-inline-comments)
+19. [Public-Repo Commit Author Identity](#public-repo-commit-author-identity-non-negotiable)
+20. [GitLab Inline Comments](#gitlab-inline-comments)
 
 **API & shell recipes**
 
@@ -284,6 +285,10 @@ If the target is **PUBLIC**, the body must not contain internal identifiers: cus
 ## Leak Remediation — Silent Scrubs (Non-Negotiable)
 
 When remediating a privacy leak on a public repo (force-push to drop PII, delete a comment that exposed a credential, rewrite a branch that leaked internal data), **every public artifact produced during the remediation must be neutral**. Do not name what leaked, do not name that a leak occurred, do not describe the scrub. Announcing the remediation on a public surface amplifies the leak (Streisand effect) — the commit subject, the PR comment, and the branch name are all crawled, cached, and indexed.
+
+## Public-Repo Commit Author Identity (Non-Negotiable)
+
+Commits pushed to a PUBLIC repo (`souliane/*`) must have an author **and** committer email that is a GitHub noreply address — `<id>+<login>@users.noreply.github.com` (e.g. `21343492+souliane@users.noreply.github.com`). A real/deliverable address (any customer/personal domain inherited from local `.git/config` or the XDG global) in public history is a permanent PII leak that GitHub's own "block pushes that expose my email" does **not** catch for third-party domains. The accepted shape is the noreply pattern itself — not one hardcoded login — so any GitHub identity passes and any real email blocks. Private overlay repos are exempt. Enforced deterministically by the pre-push gate `scripts/hooks/refuse-public-push-with-leak.sh` (#730): on a violation it blocks and prints the offending identity plus the `git filter-branch --env-filter` rewrite to the repo's GitHub noreply identity; re-push after the metadata-only rewrite.
 
 **Banned words in any public artifact produced during remediation** (commit subject/body, PR or issue description or comment, release note, changelog, public branch name):
 
