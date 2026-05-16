@@ -81,6 +81,8 @@ DJANGO_GROUPS: dict[str, tuple[str, list[tuple[str, str]]]] = {
             ("refresh", "Re-import the worktree database from dump/DSLR."),
             ("restore-ci", "Restore database from the latest CI dump."),
             ("reset-passwords", "Reset all user passwords to a known dev value."),
+            ("query", "Run a read-only SQL query against the control DB; emit rows as JSON."),
+            ("shell", "Drop into a Django shell against the resolved (gate) control DB."),
         ],
     ),
     "pr": (
