@@ -1074,6 +1074,114 @@ def _loop_registry_txn() -> Iterator[list[dict[str, dict]]]:
         _write_loop_registry_locked(box[0])
 
 
+# ── #786 WS4: per-agent work-consolidation registry (invariant 3) ─────
+#
+# Invariant 3 of the #786 acceptance contract: exactly ONE per-agent
+# work-consolidation loop (the issue's "todo-consolidation loop") per
+# agent/sub-agent — per-actor, deduped by agent identity across ALL
+# sessions (NOT per-session, NOT a global singleton). The consolidation
+# loop IS the Stop self-pump. WS3 gated it
+# on the single global tick-owner session (``_session_owns_loop``), which
+# (a) collapsed it to one global loop and (b) keyed anti-spin by
+# ``session_id`` so one agent spanning two sessions armed two markers.
+#
+# This registry is a SEPARATE JSON file from the tick-owner
+# ``loop-registry.json`` (the tick-owner singleton — invariant 2 — and
+# the per-agent consolidation loop — invariant 3 — are orthogonal
+# concerns and must not share a keyspace). It reuses the WS3 substrate
+# verbatim: the same ``_registry_write_lock`` flock, ``tmp.replace``
+# publish, and ``_prune_dead_owner`` pid-liveness prune — no new locking
+# or liveness primitive is invented. Keyed by ``agent_id``; each entry
+# records the holding ``session_id``/``pid``/``heartbeat_ts``.
+
+
+def _consolidation_registry_path() -> Path:
+    """Per-agent consolidation registry JSON, beside ``loop-registry.json``.
+
+    Same directory and ``T3_LOOP_REGISTRY_DIR`` override as the tick-owner
+    registry (so test isolation redirects both at once) but a DISTINCT
+    file — the tick-owner singleton and the per-agent consolidation loop
+    are independent invariants and must not collide in one keyspace.
+    """
+    return _loop_registry_path().with_name("consolidation-registry.json")
+
+
+def _read_consolidation_registry() -> dict[str, dict]:
+    path = _consolidation_registry_path()
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _write_consolidation_registry_locked(registry: dict[str, dict]) -> None:
+    path = _consolidation_registry_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(registry, indent=2, sort_keys=True), encoding="utf-8")
+    tmp.replace(path)
+
+
+def _claim_agent_consolidation_slot(agent_id: str, session_id: str) -> bool:
+    """Atomically claim the consolidation slot for ``agent_id``.
+
+    Returns ``True`` iff this ``(agent_id, session_id)`` owns the single
+    consolidation loop for that agent identity. ``False`` when a *live,
+    different* session of the SAME agent already holds it (the
+    cross-session dedup that makes the loop exactly-one-per-agent).
+
+    The read → decide → write runs inside one ``_registry_write_lock``
+    critical section (the WS3 flock, shared deliberately — both
+    registries' writes are sub-millisecond and a single lock removes any
+    lock-ordering hazard) so two concurrent ticks racing to claim the
+    same agent cannot both win (the WS3 double-claim TOCTOU, applied
+    per-agent). Dead-holder entries are pruned via ``_prune_dead_owner``
+    (the existing pid-liveness primitive).
+
+    #810 fail-safe: a ``Stop`` hook runs under whatever interpreter the
+    harness invokes — ``teatree`` may be unimportable, so the
+    pid-liveness primitive is unavailable. Without it a stale holder
+    cannot be distinguished from a live one, so we CANNOT safely claim;
+    return ``False`` (skip the pump) rather than claim on an unprunable
+    registry and risk a duplicate consolidation loop. This matches the
+    ``_session_owns_loop`` degradation contract (ownership unknown ⇒ do
+    not pump) the pre-WS4 tests assert.
+    """
+    try:
+        from teatree.utils.singleton import pid_alive  # noqa: F401, PLC0415
+    except ImportError:
+        return False
+    with _registry_write_lock():
+        registry = _prune_dead_owner(_read_consolidation_registry())
+        holder = registry.get(agent_id)
+        if holder is not None and holder.get("session_id") != session_id:
+            return False
+        registry[agent_id] = {
+            "agent_id": agent_id,
+            "session_id": session_id,
+            "pid": os.getppid(),
+            "heartbeat_ts": _now_ts(),
+        }
+        _write_consolidation_registry_locked(registry)
+        return True
+
+
+def _release_agent_consolidation_slot(session_id: str) -> None:
+    """Drop every consolidation entry held by ``session_id`` (clean exit)."""
+    with _registry_write_lock():
+        registry = _read_consolidation_registry()
+        survivors = {
+            agent_id: entry
+            for agent_id, entry in registry.items()
+            if not (isinstance(entry, dict) and entry.get("session_id") == session_id)
+        }
+        if survivors != registry:
+            _write_consolidation_registry_locked(survivors)
+
+
 def _prune_dead_owner(registry: dict[str, dict]) -> dict[str, dict]:
     """Drop registry entries whose recorded owner pid is no longer alive.
 
@@ -1347,13 +1455,27 @@ def _format_pending_summary(pending: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def handle_loop_self_pump(data: dict) -> bool | None:
-    """Self-continue the loop on Stop when the owner has pending work.
+def _actor_key(data: dict) -> str:
+    """The identity the consolidation loop is deduped by (#786 invariant 3).
 
-    Returns ``True`` (emitting a ``block`` decision) only for the
-    loop-owner session, with consolidated pending work, outside the
-    anti-spin interval. Otherwise returns ``None`` (idle / non-owner /
-    spin-guarded) so the session may end normally.
+    The Stop payload's ``agent_id`` when present (the per-actor key —
+    stable for one agent across sessions, distinct across agents);
+    otherwise the ``session_id`` (a session with no separate agent
+    identity is its own actor — the degenerate-but-correct case of "one
+    loop per agent identity").
+    """
+    return data.get("agent_id") or data.get("session_id", "")
+
+
+def handle_loop_self_pump(data: dict) -> bool | None:
+    """Self-continue the per-agent consolidation loop on Stop (#786 WS4).
+
+    Returns ``True`` (emitting a ``block`` decision) for the agent that
+    owns the single consolidation slot for its identity (deduped across
+    ALL sessions — invariant 3, NOT the global tick-owner singleton),
+    with consolidated pending work, outside the anti-spin interval.
+    Otherwise returns ``None`` (idle / deduped / spin-guarded) so the
+    session may end normally.
 
     Crash-proof by contract (#810): a ``Stop`` hook must NEVER raise to
     the session. A broad boundary guard contains any unexpected error
@@ -1373,16 +1495,28 @@ def handle_loop_self_pump(data: dict) -> bool | None:
 
 def _loop_self_pump(data: dict) -> bool | None:
     session_id = data.get("session_id", "")
-    if not session_id or not _session_owns_loop(session_id):
+    if not session_id:
         return None
+    actor = _actor_key(data)
 
     _ensure_state_dir()
-    marker = _state_file(session_id, "pump-armed")
+    # Anti-spin marker keyed by the ACTOR (agent identity), not the
+    # session — one agent spanning two sessions must share one marker
+    # (#786 WS4: pre-WS4 the session-keyed marker let the same agent
+    # re-pump immediately in a fresh session).
+    marker = _state_file(actor, "pump-armed")
     if _self_pump_recently_armed(marker):
         return None
 
     pending = _consolidated_pending_work()
     if not pending:
+        return None
+
+    # Exactly one consolidation loop per agent identity across all
+    # sessions (invariant 3). A live different session of the SAME agent
+    # already holding the slot ⇒ this one stays idle (deduped); the
+    # claim is an atomic flock CAS so two concurrent ticks can't both win.
+    if not _claim_agent_consolidation_slot(actor, session_id):
         return None
 
     marker.write_text("1", encoding="utf-8")
@@ -1399,11 +1533,18 @@ def _loop_self_pump(data: dict) -> bool | None:
 
 
 def handle_session_end_self_pump(data: dict) -> None:
-    """Clear the self-pump marker on session exit (counterpart to the Stop hook)."""
+    """Release the per-agent consolidation slot + marker on session exit.
+
+    Counterpart to the Stop self-pump (#786 WS4): a clean exit drops both
+    the actor-keyed anti-spin marker and this session's consolidation
+    registry entries, so a fresh session of the same agent can re-claim
+    immediately instead of waiting for pid-liveness to expire.
+    """
     session_id = data.get("session_id", "")
     if not session_id:
         return
-    _state_file(session_id, "pump-armed").unlink(missing_ok=True)
+    _state_file(_actor_key(data), "pump-armed").unlink(missing_ok=True)
+    _release_agent_consolidation_slot(session_id)
 
 
 # ── Stop: structured-question gate (#807) ───────────────────────────

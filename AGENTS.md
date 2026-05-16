@@ -301,6 +301,7 @@ New tests — added in this repo or in any overlay repo — must lean **integrat
 ### Quality Gates
 
 - **>90% test coverage** — enforced by pytest-cov, `fail_under = 93`
+  - `[tool.coverage.run] source` is `src/teatree` only — `hooks/scripts/*.py` (e.g. `hook_router.py`) is **outside** the project coverage gate. To verify 100% on changed hook lines, run a one-off measurement with an explicit rcfile (`coverage run --rcfile=<tmp.cfg> -m pytest <hook tests> -o addopts=`, with `[run] source = .` + `include = */hooks/scripts/<file>.py`), then `coverage report --include=…`. The standard `--cov` addopts won't measure it.
 - **Ruff** — ALL rules enabled, specific ignores justified in pyproject.toml
 - **ty** — static type checker with `error-on-warning = true`
 - **tach** — enforces dependency boundaries
