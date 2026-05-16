@@ -66,6 +66,33 @@ def get_all_overlay_names() -> list[str]:
     return sorted(names)
 
 
+def infer_overlay_for_url(url: str) -> str:
+    """Return the overlay whose workspace repos own ``url``, or ``""``.
+
+    Routes through ``overlay.get_workspace_repos()`` rather than the raw
+    ``config.workspace_repos`` attribute: overlays that compute their repo
+    list dynamically leave the attribute empty, so reading it directly
+    mis-attributes every one of their tickets. A registered entry that is
+    not a full overlay, or whose hook raises, is skipped so one broken
+    overlay can't poison inference for the others.
+    """
+    if not url:
+        return ""
+    for name, overlay in get_all_overlays().items():
+        getter = getattr(overlay, "get_workspace_repos", None)
+        if not callable(getter):
+            continue
+        try:
+            repo_slugs = getter()
+        except Exception:
+            logger.warning("Overlay %r get_workspace_repos() failed during inference", name, exc_info=True)
+            continue
+        for repo_slug in repo_slugs or []:
+            if isinstance(repo_slug, str) and repo_slug in url:
+                return name
+    return ""
+
+
 @lru_cache(maxsize=1)
 def _discover_overlays() -> "dict[str, OverlayBase]":
     import importlib.metadata  # noqa: PLC0415

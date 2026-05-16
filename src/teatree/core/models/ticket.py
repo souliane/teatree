@@ -79,18 +79,24 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
         super().save(*args, **kwargs)  # type: ignore[arg-type]
 
     def _infer_overlay(self) -> str:
-        """Derive overlay name from issue_url by matching workspace_repos in config."""
-        from teatree.core.overlay_loader import get_all_overlays  # noqa: PLC0415
+        """Derive overlay name from ``issue_url`` (see ``infer_overlay_for_url``)."""
+        from teatree.core.overlay_loader import infer_overlay_for_url  # noqa: PLC0415
 
-        url = self.issue_url
-        for name, overlay in get_all_overlays().items():
-            config = getattr(overlay, "config", None)
-            if config is None:
-                continue
-            for repo_slug in getattr(config, "workspace_repos", []):
-                if isinstance(repo_slug, str) and repo_slug in url:
-                    return name
-        return ""
+        return infer_overlay_for_url(self.issue_url)
+
+    def reconcile_overlay(self) -> bool:
+        """Re-infer ``overlay`` from ``issue_url`` and persist a correction.
+
+        Returns ``True`` when the row's overlay was changed. An inconclusive
+        (empty) inference leaves the existing value untouched — a blank result
+        must never blank out a manually-set or previously-correct attribution.
+        """
+        inferred = self._infer_overlay()
+        if not inferred or inferred == self.overlay:
+            return False
+        self.overlay = inferred
+        Ticket.objects.filter(pk=self.pk).update(overlay=inferred)
+        return True
 
     @property
     def ticket_number(self) -> str:

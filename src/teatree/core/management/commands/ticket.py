@@ -25,6 +25,14 @@ class CommentResult(TypedDict, total=False):
     error: str
 
 
+class ReattributeResult(TypedDict, total=False):
+    ticket_id: int
+    issue_url: str
+    from_overlay: str
+    to_overlay: str
+    action: str
+
+
 logger = logging.getLogger(__name__)
 
 _ALLOWED_TRANSITIONS = {
@@ -200,6 +208,59 @@ class Command(TyperCommand):
             self.stdout.write("No tickets to advance.")
         else:
             self.stdout.write(f"\n{len(results)} ticket(s) {'would be' if dry_run else ''} advanced.")
+        return results
+
+    @command()
+    def reconcile_overlay(
+        self,
+        *,
+        dry_run: Annotated[bool, typer.Option(help="Show what would change without persisting.")] = False,
+    ) -> list[ReattributeResult]:
+        """Backfill ``overlay`` for rows whose attribution disagrees with inference.
+
+        Walks every ticket with an ``issue_url`` and re-runs overlay
+        inference (now routed through ``get_workspace_repos()``). Rows whose
+        stored overlay differs from a *conclusive* inference are corrected;
+        an inconclusive (empty) inference never blanks an existing value.
+        Use ``--dry-run`` to preview.
+        """
+        results: list[ReattributeResult] = []
+
+        for ticket in Ticket.objects.exclude(issue_url="").order_by("pk"):
+            inferred = ticket._infer_overlay()  # noqa: SLF001 — backfill owns this model concern.
+            if not inferred or inferred == ticket.overlay:
+                continue
+
+            from_overlay = ticket.overlay
+            if dry_run:
+                results.append(
+                    ReattributeResult(
+                        ticket_id=int(ticket.pk),
+                        issue_url=ticket.issue_url,
+                        from_overlay=from_overlay,
+                        to_overlay=inferred,
+                        action="would_reattribute",
+                    )
+                )
+                self.stdout.write(f"  [dry-run] #{ticket.pk}: {from_overlay or '∅'} → {inferred}: {ticket.issue_url}")
+            else:
+                ticket.reconcile_overlay()
+                results.append(
+                    ReattributeResult(
+                        ticket_id=int(ticket.pk),
+                        issue_url=ticket.issue_url,
+                        from_overlay=from_overlay,
+                        to_overlay=ticket.overlay,
+                        action="reattributed",
+                    )
+                )
+                self.stdout.write(f"  #{ticket.pk}: {from_overlay or '∅'} → {ticket.overlay}: {ticket.issue_url}")
+
+        if not results:
+            self.stdout.write("All ticket overlays already consistent with inference.")
+        else:
+            verb = "would be" if dry_run else "were"
+            self.stdout.write(f"\n{len(results)} ticket(s) {verb} re-attributed.")
         return results
 
 
