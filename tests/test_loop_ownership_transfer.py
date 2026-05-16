@@ -19,6 +19,7 @@ handlers under a temp ``T3_LOOP_REGISTRY_DIR``.
 
 import json
 import multiprocessing
+import multiprocessing.synchronize
 import os
 import time
 from pathlib import Path
@@ -301,50 +302,102 @@ class TestRegistryWritesAreFlockSerialized:
             assert f"loop-{n}" in data
 
 
-def _racing_fresh_start(reg_dir: str, session_id: str) -> None:
-    """Child: a brand-new session running the SessionStart bootstrap.
+def _race_round(
+    reg_dir: str,
+    session_id: str,
+    start_evt: "multiprocessing.synchronize.Event",
+    result_path: str,
+) -> None:
+    """Child: one brand-new session running the SessionStart bootstrap.
 
-    Two of these race with an EMPTY registry — without the atomic
-    read→decide→write transaction both would read "no owner" and both
-    would claim, leaving the file owned by whichever wrote last while
-    BOTH believe they own (double-claim).
+    Both children block on a shared start event so they fire their
+    bootstrap as simultaneously as the OS scheduler allows, then write
+    the emitted ``additionalContext`` directive to ``result_path``.
+
+    Pre-fix (#718 write-only-lock): the read is OUTSIDE the flock, so
+    both children can read the empty registry, both decide "fresh
+    spawn", and both emit a spawn directive → double-spawned loops.
+    Post-fix: the read→decide→write is one flock transaction, so the
+    second child blocks until the first commits, re-reads, sees the
+    live owner, and emits the reattach ("do not spawn") directive.
     """
     os.environ["T3_LOOP_REGISTRY_DIR"] = reg_dir
     import importlib  # noqa: PLC0415
+    import io  # noqa: PLC0415
+    from contextlib import redirect_stdout  # noqa: PLC0415
 
     import hooks.scripts.hook_router as r  # noqa: PLC0415
 
     importlib.reload(r)
-    for _ in range(20):
+    start_evt.wait(timeout=10)
+    buf = io.StringIO()
+    with redirect_stdout(buf):
         r.handle_session_start_bootstrap({"session_id": session_id, "agent_id": f"a-{session_id}"})
-        time.sleep(0.001)
+    out = buf.getvalue().strip()
+    context = json.loads(out)["additionalContext"] if out else ""
+    Path(result_path).write_text(context, encoding="utf-8")
+
+
+def _is_spawn_directive(ctx: str) -> bool:
+    low = ctx.lower()
+    return "establish the singleton loop sub-agents" in low or "ownership transfer" in low
+
+
+def _is_reattach_directive(ctx: str) -> bool:
+    low = ctx.lower()
+    return "do not spawn" in low and "re-attach" in low
 
 
 class TestConcurrentFreshClaimIsAtomic:
-    """Finding 1 regression: the read→decide→write must be one flock txn.
+    """Finding 1 regression: read→decide→write must be ONE flock txn.
 
-    Concurrent fresh-start bootstraps must converge on exactly ONE owner
-    session_id (the registry is internally consistent), never a torn or
-    mixed-owner registry.
+    Two fresh sessions starting simultaneously against an empty registry
+    must NEVER both be told to spawn — a double-claim double-spawns the
+    loop sub-agents (duplicate reviews, PR-creation races). The atomic
+    transaction guarantees exactly one spawn/takeover directive and one
+    reattach ("do not spawn"). On the pre-fix write-only-lock (#718) the
+    read sits outside the flock, so both children read "no owner", both
+    emit a spawn directive, and the ``never both spawn`` assertion below
+    fails — i.e. this test demonstrably guards the fix.
+
+    Repeated over many rounds (each with a fresh empty registry) because
+    the bad interleave is timing-dependent: a single round could miss it
+    by luck, but across N independent simultaneous starts the pre-fix
+    race surfaces and trips the assertion.
     """
 
-    def test_two_racing_fresh_sessions_yield_a_single_consistent_owner(self, tmp_path: Path) -> None:
-        reg_dir = str(tmp_path / "data")
-        Path(reg_dir).mkdir(parents=True, exist_ok=True)
+    def test_simultaneous_fresh_starts_never_both_spawn(self, tmp_path: Path) -> None:
+        rounds = 12
+        for rnd in range(rounds):
+            reg_dir = str(tmp_path / f"data-{rnd}")
+            Path(reg_dir).mkdir(parents=True, exist_ok=True)
+            start_evt = multiprocessing.Event()
+            res_a = str(tmp_path / f"ctx-A-{rnd}.txt")
+            res_b = str(tmp_path / f"ctx-B-{rnd}.txt")
 
-        procs = [
-            multiprocessing.Process(target=_racing_fresh_start, args=(reg_dir, sid)) for sid in ("sessionA", "sessionB")
-        ]
-        for p in procs:
-            p.start()
-        for p in procs:
-            p.join(timeout=20)
-            assert p.exitcode == 0
+            procs = [
+                multiprocessing.Process(target=_race_round, args=(reg_dir, "sessionA", start_evt, res_a)),
+                multiprocessing.Process(target=_race_round, args=(reg_dir, "sessionB", start_evt, res_b)),
+            ]
+            for p in procs:
+                p.start()
+            start_evt.set()  # release both as close to simultaneously as possible
+            for p in procs:
+                p.join(timeout=25)
+                assert p.exitcode == 0, f"round {rnd}: child crashed"
 
-        raw = (Path(reg_dir) / "loop-registry.json").read_text(encoding="utf-8")
-        data = json.loads(raw)  # never torn — txn holds the flock across the write
-        owners = {entry["session_id"] for entry in data.values()}
-        # All four loops must be owned by the SAME session (no mixed
-        # ownership from an interleaved partial claim).
-        assert len(owners) == 1, f"registry has mixed ownership: {owners}"
-        assert owners <= {"sessionA", "sessionB"}
+            ctx_a = Path(res_a).read_text(encoding="utf-8")
+            ctx_b = Path(res_b).read_text(encoding="utf-8")
+            spawners = [c for c in (ctx_a, ctx_b) if _is_spawn_directive(c)]
+            reattachers = [c for c in (ctx_a, ctx_b) if _is_reattach_directive(c)]
+
+            # The anti-double-claim invariant — the fix's whole point.
+            assert len(spawners) == 1, (
+                f"round {rnd}: double-claim — {len(spawners)} spawn directives (A={ctx_a[:50]!r} B={ctx_b[:50]!r})"
+            )
+            assert len(reattachers) == 1, f"round {rnd}: loser must reattach, not spawn"
+
+            data = json.loads((Path(reg_dir) / "loop-registry.json").read_text(encoding="utf-8"))
+            owners = {entry["session_id"] for entry in data.values()}
+            assert len(owners) == 1, f"round {rnd}: mixed ownership {owners}"
+            assert owners <= {"sessionA", "sessionB"}

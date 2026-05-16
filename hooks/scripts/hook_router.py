@@ -1172,6 +1172,12 @@ def _claim_all_loops(registry: dict[str, dict], session_id: str, agent_id: str) 
             "agent_id": agent_id,
             "pid": pid,
             "spawn_brief": briefs[name],
+            # heartbeat_ts is written but not yet read — liveness is
+            # pid_alive only. Kept as a forward-looking field for the
+            # deferred DB-backed ownership store (#745), which would
+            # consume it for staleness/age queries the JSON path does
+            # not need. Documented as such in BLUEPRINT so it does not
+            # imply a liveness mechanism that does not exist today.
             "heartbeat_ts": ts,
         }
     return registry
@@ -1209,8 +1215,14 @@ def handle_session_start_bootstrap(data: dict) -> None:
             emit_osc = False
         elif owner is not None and owner.get("session_id") == session_id:
             # (2) Same session restarting (compaction) — resume by agentId.
+            # The recorded agent_id is still valid by definition (same
+            # session ⇒ same live sub-agents), and _resume_directive is
+            # built from it. Preserve it; do NOT overwrite with the new
+            # SessionStart-supplied agent_id, which would make the
+            # registry disagree with the directive (says resume <old>,
+            # stores <new>).
             context = _resume_directive(registry)
-            box[0] = _claim_all_loops(registry, session_id, agent_id or owner.get("agent_id", ""))
+            box[0] = _claim_all_loops(registry, session_id, owner.get("agent_id", "") or agent_id)
             emit_osc = True
         else:
             # No live owner: (3) dead owner left registered loops to
