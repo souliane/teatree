@@ -1,0 +1,92 @@
+"""Orphan-branch PR creation with the #792 pre-push-deadlock deferral.
+
+Split out of ``pr.py`` (same sibling-module pattern as ``_ship_fsm``) so
+``pr.py`` stays within the module-health LOC budget and the "create the PR
+for an orphan branch, or defer when the remote ref is not yet current"
+concern is named by its own file.
+
+#792: ``ensure-pr`` runs inside the git PRE-push hook. When the remote
+branch ref already exists at an older base (``classify_branch`` ⇒
+PUSHED_ORPHAN, not UNPUSHED_ORPHAN), ``gh pr create`` fails "No commits
+between main and <branch>" because THIS push has not updated the remote
+yet. Hard-failing there aborts the very push that would make the PR
+creatable — a permanent deadlock. That specific failure is therefore
+deferred (skip, exit 0) exactly like the documented first-push
+UNPUSHED_ORPHAN case; the post-push ``ensure-pr`` opens the PR against the
+now-current ref. Any other create failure is a real error and surfaces.
+"""
+
+import re
+from typing import TypedDict
+
+from teatree.backends.protocols import PullRequestSpec
+from teatree.core.backend_factory import code_host_from_overlay
+from teatree.core.overlay_loader import get_overlay
+from teatree.core.runners.ship import overlay_pr_labels, sanitize_close_keywords
+from teatree.utils import git
+from teatree.utils.run import CommandFailedError
+
+_REMOTE_HOST_RE = re.compile(r"^(?:git@[^:]+:|https?://[^/]+/|ssh://[^/]+/|git://[^/]+/)")
+
+
+class EnsurePrResult(TypedDict, total=False):
+    skipped: str
+    branch: str
+    url: str
+    hint: str
+    error: str
+
+
+def slug_from_remote(remote_url: str) -> str:
+    """Extract the ``org/repo`` (or ``ns/group/repo``) slug from a git remote URL."""
+    if not remote_url:
+        return ""
+    return _REMOTE_HOST_RE.sub("", remote_url.strip()).removesuffix(".git")
+
+
+def create_or_defer_pr(repo_path: str, branch_name: str) -> EnsurePrResult:
+    """Build the PR spec from the last commit and create it, or defer (#792).
+
+    The "no commits between" create failure is the pre-push stale-remote
+    race (the remote ref still lags this in-flight push); deferring it lets
+    the push proceed so the post-push ``ensure-pr`` opens the PR. Every
+    other create failure is real and re-raised.
+    """
+    host = code_host_from_overlay()
+    if host is None:
+        return EnsurePrResult(error="no code host configured")
+
+    commit_subject, commit_body = git.last_commit_message(repo=repo_path)
+    title = commit_subject or f"WIP: {branch_name}"
+    raw_description = (
+        f"{commit_subject}\n\n{commit_body}"
+        if commit_subject and commit_body
+        else (commit_subject or commit_body or f"PR auto-created to track branch `{branch_name}`.")
+    )
+    description = sanitize_close_keywords(raw_description, close_ticket=get_overlay().config.mr_close_ticket)
+
+    remote = git.remote_url(repo=repo_path)
+    repo_slug = slug_from_remote(remote)
+    assignee = host.current_user() or git.config_value(key="user.name")
+
+    try:
+        raw = host.create_pr(
+            PullRequestSpec(
+                repo=repo_slug,
+                branch=branch_name,
+                title=title,
+                description=description,
+                labels=overlay_pr_labels(),
+                assignee=assignee,
+                draft=False,
+            ),
+        )
+    except CommandFailedError as exc:
+        if "no commits between" in (exc.stderr or str(exc)).lower():
+            return EnsurePrResult(
+                skipped="remote ref not yet current (pre-push race) — re-run after push completes",
+                branch=branch_name,
+                hint=f"t3 <overlay> pr ensure-pr --branch {branch_name}",
+            )
+        raise
+    return EnsurePrResult(branch=branch_name, url=str(raw.get("url", raw.get("web_url", ""))))
