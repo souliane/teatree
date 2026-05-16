@@ -15,7 +15,13 @@ from pathlib import Path
 import pytest
 
 import hooks.scripts.hook_router as router
-from hooks.scripts.hook_router import _T3_TEMP_PREFIX, _write_loop_registry, handle_post_compact, handle_pre_compact
+from hooks.scripts.hook_router import (
+    _OWNER_LOOP,
+    _T3_TEMP_PREFIX,
+    _write_loop_registry,
+    handle_post_compact,
+    handle_pre_compact,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -39,11 +45,11 @@ class TestPreCompactSnapshotFromDurableState:
         session_id = "subagent-loop-sess"
         _write_loop_registry(
             {
-                "t3-main-loop": {
+                _OWNER_LOOP: {
                     "session_id": session_id,
                     "agent_id": "agent-abc-123",
                     "pid": os.getppid(),
-                    "spawn_brief": "t3-main-loop — drive the backlog to zero, smallest-first.",
+                    "heartbeat_ts": 1,
                 }
             }
         )
@@ -54,18 +60,49 @@ class TestPreCompactSnapshotFromDurableState:
         assert snapshot.is_file()
         body = snapshot.read_text(encoding="utf-8")
         assert "agent-abc-123" in body
-        assert "t3-main-loop" in body
-        assert "drive the backlog to zero" in body
+        # #786 WS3: tick-owner snapshot — no roster name, no spawn brief.
+        assert "loop-tick OWNER" in body
+        assert "t3 loop tick" in body
+        assert "t3 loop claim-next" in body
+
+    def test_snapshot_does_not_consume_spawn_brief(self) -> None:
+        """#786 WS3 regression: the snapshot must NOT read/emit spawn_brief.
+
+        The tick-owner record has no brief; the old PreCompact branch
+        emitted ``- Brief: …`` and was permanently-dead post-WS3. Even if
+        a stale brief somehow lingers in a record, the snapshot must
+        ignore it (no roster vocabulary, no ``Brief:`` line). RED before
+        the dead-branch removal (it surfaced the brief); GREEN after.
+        """
+        session_id = "stale-brief-sess"
+        _write_loop_registry(
+            {
+                _OWNER_LOOP: {
+                    "session_id": session_id,
+                    "agent_id": "agent-x",
+                    "pid": os.getppid(),
+                    "heartbeat_ts": 1,
+                    "spawn_brief": "STALE-BRIEF-SENTINEL should never appear",
+                }
+            }
+        )
+
+        handle_pre_compact({"session_id": session_id})
+
+        body = _snapshot_for(session_id).read_text(encoding="utf-8")
+        assert "STALE-BRIEF-SENTINEL" not in body
+        assert "Brief:" not in body
+        assert "singletons" not in body  # retired vocabulary
 
     def test_snapshot_includes_active_repos_and_skills(self) -> None:
         session_id = "subagent-ctx-sess"
         _write_loop_registry(
             {
-                "t3-review-loop": {
+                _OWNER_LOOP: {
                     "session_id": session_id,
                     "agent_id": "rev-1",
                     "pid": os.getppid(),
-                    "spawn_brief": "t3-review-loop — review every merged PR.",
+                    "heartbeat_ts": 1,
                 }
             }
         )
@@ -84,11 +121,11 @@ class TestPreCompactSnapshotFromDurableState:
         session_id = "no-retro-sess"
         _write_loop_registry(
             {
-                "t3-bug-hunt": {
+                _OWNER_LOOP: {
                     "session_id": session_id,
                     "agent_id": "bh-9",
                     "pid": os.getppid(),
-                    "spawn_brief": "t3-bug-hunt — hunt bugs in core + overlay.",
+                    "heartbeat_ts": 1,
                 }
             }
         )
@@ -120,11 +157,11 @@ class TestPreCompactPostCompactRoundTrip:
         session_id = "roundtrip-subagent"
         _write_loop_registry(
             {
-                "t3-cross-review-loop": {
+                _OWNER_LOOP: {
                     "session_id": session_id,
                     "agent_id": "xrev-7",
                     "pid": os.getppid(),
-                    "spawn_brief": "t3-cross-review-loop — architectural cross-repo review.",
+                    "heartbeat_ts": 1,
                 }
             }
         )
@@ -136,7 +173,7 @@ class TestPreCompactPostCompactRoundTrip:
         assert "additionalContext" in output
         ctx = output["additionalContext"]
         assert "xrev-7" in ctx
-        assert "t3-cross-review-loop" in ctx
+        assert "loop-tick OWNER" in ctx
         assert "PRE-COMPACTION SNAPSHOTS RECOVERED" in ctx
 
 

@@ -30,15 +30,19 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │ assess          Codebase health assessment.                                  │
 │ overlay         Dev-mode overlay install/uninstall.                          │
 │ infra           Teatree-wide infrastructure services.                        │
-│ loop            Manage the long-lived fat loop. Session-bound by design: it  │
-│                 runs only while a Claude Code session is open; if the owner  │
-│                 session dies another open session takes over and re-spawns   │
-│                 the loops from the registry; with zero sessions open the     │
-│                 loop is paused until the next session start (no OS daemon —  │
-│                 accepted, not a defect). Within the owner session a          │
-│                 Stop-hook self-pump re-continues the loop automatically      │
-│                 while consolidated work remains (no manual coordinator       │
-│                 re-prompt); it idles when there is none.                     │
+│ loop            Manage the tick-driven fat loop. Session-bound by design: it │
+│                 runs only while a Claude Code session is open. The recurring │
+│                 `t3 loop tick` cron is the driver — each tick the single     │
+│                 tick-owner session atomically claims the next pending unit   │
+│                 (`t3 loop claim-next`) and spawns one fresh bounded          │
+│                 sub-agent for it. There is no roster of long-lived loop      │
+│                 sub-agents to re-spawn (#786 WS3): if the owner session      │
+│                 dies, the next open session becomes tick-owner and keeps     │
+│                 ticking; with zero sessions open the loop is paused until    │
+│                 the next session start (no OS daemon — accepted, not a       │
+│                 defect). Within the owner session a Stop-hook self-pump      │
+│                 re-continues the loop automatically while consolidated work  │
+│                 remains; it idles when none.                                 │
 │ slack           Slack integration commands.                                  │
 │ teatree         Commands for the t3-teatree overlay.                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
@@ -1093,13 +1097,16 @@ Usage: t3 infra redis status [OPTIONS]
 ```
 Usage: t3 loop [OPTIONS] COMMAND [ARGS]...
 
- Manage the long-lived fat loop. Session-bound by design: it runs only while a
- Claude Code session is open; if the owner session dies another open session
- takes over and re-spawns the loops from the registry; with zero sessions open
- the loop is paused until the next session start (no OS daemon — accepted, not
- a defect). Within the owner session a Stop-hook self-pump re-continues the
- loop automatically while consolidated work remains (no manual coordinator
- re-prompt); it idles when there is none.
+ Manage the tick-driven fat loop. Session-bound by design: it runs only while a
+ Claude Code session is open. The recurring `t3 loop tick` cron is the driver —
+ each tick the single tick-owner session atomically claims the next pending
+ unit (`t3 loop claim-next`) and spawns one fresh bounded sub-agent for it.
+ There is no roster of long-lived loop sub-agents to re-spawn (#786 WS3): if
+ the owner session dies, the next open session becomes tick-owner and keeps
+ ticking; with zero sessions open the loop is paused until the next session
+ start (no OS daemon — accepted, not a defect). Within the owner session a
+ Stop-hook self-pump re-continues the loop automatically while consolidated
+ work remains; it idles when none.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
@@ -1107,9 +1114,9 @@ Usage: t3 loop [OPTIONS] COMMAND [ARGS]...
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
 │ tick           Run one tick: scan in parallel, dispatch, render statusline.  │
 │ status         Show the loop's last-rendered statusline.                     │
-│ pending-spawn  List pending Tasks the ``/loop`` slot should spawn            │
-│                in-session.                                                   │
-│ spawn-claim    Claim a Task so the next tick doesn't re-surface it.          │
+│ pending-spawn  List pending Tasks (read-only probe; legacy — prefer          │
+│                ``claim-next``).                                              │
+│ spawn-claim    Claim a Task by id (legacy — prefer atomic ``claim-next``).   │
 │ start          Spawn a Claude Code session with the fat loop pre-registered. │
 │ stop           Print the slot id to stop in the Claude Code session.         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
@@ -1154,12 +1161,16 @@ Usage: t3 loop status [OPTIONS]
 ```
 Usage: t3 loop pending-spawn [OPTIONS]
 
- List pending Tasks the ``/loop`` slot should spawn in-session.
+ List pending Tasks (read-only probe; legacy — prefer ``claim-next``).
 
  Reads the dispatch DB (``Task`` rows in PENDING status) and prints
- each with its ``subagent`` hint. The slot's session iterates and
- calls ``Agent(subagent_type=…)`` once per entry, then calls
- ``t3 loop spawn-claim <task_id>`` to mark the dispatch acknowledged.
+ each with its ``subagent`` hint. This is a pure read with NO claim:
+ the spawn-then-``spawn-claim`` flow it used to drive was the
+ double-dispatch race #786 WS1 replaced with the atomic
+ ``t3 loop claim-next`` (claim-then-spawn). Retained for compatibility
+ and as a non-mutating "is there pending work?" probe (e.g. the
+ Stop-hook self-pump); the ``/loop`` slot should drive dispatch with
+ ``claim-next``, not this + ``spawn-claim``.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --json          Emit pending list as JSON.                                   │
@@ -1172,11 +1183,15 @@ Usage: t3 loop pending-spawn [OPTIONS]
 ```
 Usage: t3 loop spawn-claim [OPTIONS] TASK_ID
 
- Claim a Task so the next tick doesn't re-surface it.
+ Claim a Task by id (legacy — prefer atomic ``claim-next``).
 
- Slot calls this immediately after dispatching ``Agent(...)`` for a
- pending Task. Claim is the boundary; ``complete`` happens when the
- spawned sub-agent reports back via the standard TaskAttempt flow.
+ The retired spawn-then-claim flow called this AFTER dispatching
+ ``Agent(...)``, leaving a window where two concurrent ticks both
+ dispatched the same Task. #786 WS1's ``t3 loop claim-next`` claims
+ atomically BEFORE the spawn (claim == spawn boundary) and is what the
+ ``/loop`` slot should use. Retained for compatibility / explicit
+ by-id claims; ``complete`` still happens when the sub-agent reports
+ back via the standard TaskAttempt flow.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    task_id      INTEGER  Task PK to mark claimed. [required]               │
@@ -1200,14 +1215,17 @@ Usage: t3 loop start [OPTIONS]
  the caller is already inside a Claude Code session, falls back to
  printing the slash command for manual entry.
 
- Durability (by design): the loop is session-bound. The SessionStart
- hook records ownership (per-loop spawn brief + heartbeat) in the
- machine-wide loop registry. If this session dies, ANY other open
- session — or the next one to open — takes over and re-spawns every
- loop from its persisted brief (agentIds are not resumable across
- sessions, so a takeover re-spawns rather than resumes). With no
- session open the loop is paused until the next session start; there
- is deliberately no OS-scheduler/launchd fallback.
+ Durability (by design; #786 WS3): the loop is session-bound and
+ tick-driven. The SessionStart hook records ONE Django-free tick-owner
+ record (``_OWNER_LOOP``: session_id/agent_id/pid/heartbeat — no
+ per-loop briefs) in the machine-wide loop registry. There is no
+ roster to re-spawn: the ``t3 loop tick`` cron drives the loop, each
+ tick atomically claiming the next pending unit (``t3 loop
+ claim-next``) and spawning one fresh bounded sub-agent for it. If
+ this session dies, the next open session prunes the dead owner,
+ becomes tick-owner, and keeps ticking. With no session open the loop
+ is paused until the next session start; there is deliberately no
+ OS-scheduler/launchd fallback.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --print-only          Print the /loop slot definition instead of spawning a  │

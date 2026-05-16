@@ -6,16 +6,22 @@ slot's lifecycle and exposes ``tick`` for out-of-band invocations
 with the loop pre-registered; ``stop`` prints the slot id to unregister
 from inside the session.
 
-Durability model (by design): the loop is SESSION-BOUND. It runs only
-while at least one Claude Code session is open — spawning the
-per-ticket/per-step sub-agents requires the Agent tool, which exists
-only inside a live session. If the owner session dies but another
-session is open (or one opens later), that session reads the loop
-registry, claims ownership, and re-spawns every loop from its persisted
-brief (ownership transfer). With ZERO sessions open the loop is DEAD
-until the next session starts — this is accepted, not a defect; there is
-deliberately no OS daemon/launchd workaround. The recurring tick is an
-in-session convenience only, never the durability mechanism.
+Durability model (by design; #786 WS3 retired the immortal roster): the
+loop is SESSION-BOUND and TICK-DRIVEN. It runs only while at least one
+Claude Code session is open — spawning the per-unit sub-agent requires
+the Agent tool, which exists only inside a live session. There is no
+fixed roster of long-lived loop sub-agents and nothing to re-spawn from
+a brief: the recurring ``t3 loop tick`` cron is the driver. Each tick the
+single tick-owner session atomically claims the next pending DB unit
+(``t3 loop claim-next``) and spawns ONE fresh, bounded sub-agent for just
+that unit, which returns. Statelessness across ticks is the
+compaction-proofing — a worker dying mid-task leaves its Task reclaimable
+and the next tick re-dispatches it. Ownership is one Django-free record
+(``_OWNER_LOOP``) naming which session is the tick-owner; if that session
+dies, the next open session prunes it, becomes tick-owner, and keeps
+ticking (it does NOT re-spawn anything). With ZERO sessions open the loop
+is DEAD until the next session starts — accepted, not a defect;
+deliberately no OS daemon/launchd workaround.
 
 The ``tick`` subcommand delegates to the ``loop_tick`` Django management
 command via subprocess — anything that touches the Django ORM must be a
@@ -34,13 +40,16 @@ from teatree.loop.statusline import default_path
 loop_app = typer.Typer(
     name="loop",
     help=(
-        "Manage the long-lived fat loop. Session-bound by design: it runs only "
-        "while a Claude Code session is open; if the owner session dies another "
-        "open session takes over and re-spawns the loops from the registry; with "
-        "zero sessions open the loop is paused until the next session start (no "
-        "OS daemon — accepted, not a defect). Within the owner session a Stop-hook "
-        "self-pump re-continues the loop automatically while consolidated work "
-        "remains (no manual coordinator re-prompt); it idles when there is none."
+        "Manage the tick-driven fat loop. Session-bound by design: it runs only "
+        "while a Claude Code session is open. The recurring `t3 loop tick` cron is "
+        "the driver — each tick the single tick-owner session atomically claims "
+        "the next pending unit (`t3 loop claim-next`) and spawns one fresh bounded "
+        "sub-agent for it. There is no roster of long-lived loop sub-agents to "
+        "re-spawn (#786 WS3): if the owner session dies, the next open session "
+        "becomes tick-owner and keeps ticking; with zero sessions open the loop is "
+        "paused until the next session start (no OS daemon — accepted, not a "
+        "defect). Within the owner session a Stop-hook self-pump re-continues the "
+        "loop automatically while consolidated work remains; it idles when none."
     ),
     no_args_is_help=True,
 )
@@ -100,12 +109,16 @@ def pending_spawn_command(
     *,
     json_output: bool = typer.Option(False, "--json", help="Emit pending list as JSON."),
 ) -> None:
-    """List pending Tasks the ``/loop`` slot should spawn in-session.
+    """List pending Tasks (read-only probe; legacy — prefer ``claim-next``).
 
     Reads the dispatch DB (``Task`` rows in PENDING status) and prints
-    each with its ``subagent`` hint. The slot's session iterates and
-    calls ``Agent(subagent_type=…)`` once per entry, then calls
-    ``t3 loop spawn-claim <task_id>`` to mark the dispatch acknowledged.
+    each with its ``subagent`` hint. This is a pure read with NO claim:
+    the spawn-then-``spawn-claim`` flow it used to drive was the
+    double-dispatch race #786 WS1 replaced with the atomic
+    ``t3 loop claim-next`` (claim-then-spawn). Retained for compatibility
+    and as a non-mutating "is there pending work?" probe (e.g. the
+    Stop-hook self-pump); the ``/loop`` slot should drive dispatch with
+    ``claim-next``, not this + ``spawn-claim``.
     """
     import django  # noqa: PLC0415
 
@@ -126,11 +139,15 @@ def spawn_claim_command(
     *,
     claimed_by: str = typer.Option("loop-slot", "--claimed-by"),
 ) -> None:
-    """Claim a Task so the next tick doesn't re-surface it.
+    """Claim a Task by id (legacy — prefer atomic ``claim-next``).
 
-    Slot calls this immediately after dispatching ``Agent(...)`` for a
-    pending Task. Claim is the boundary; ``complete`` happens when the
-    spawned sub-agent reports back via the standard TaskAttempt flow.
+    The retired spawn-then-claim flow called this AFTER dispatching
+    ``Agent(...)``, leaving a window where two concurrent ticks both
+    dispatched the same Task. #786 WS1's ``t3 loop claim-next`` claims
+    atomically BEFORE the spawn (claim == spawn boundary) and is what the
+    ``/loop`` slot should use. Retained for compatibility / explicit
+    by-id claims; ``complete`` still happens when the sub-agent reports
+    back via the standard TaskAttempt flow.
     """
     import django  # noqa: PLC0415
 
@@ -176,22 +193,25 @@ def start_command(
     the caller is already inside a Claude Code session, falls back to
     printing the slash command for manual entry.
 
-    Durability (by design): the loop is session-bound. The SessionStart
-    hook records ownership (per-loop spawn brief + heartbeat) in the
-    machine-wide loop registry. If this session dies, ANY other open
-    session — or the next one to open — takes over and re-spawns every
-    loop from its persisted brief (agentIds are not resumable across
-    sessions, so a takeover re-spawns rather than resumes). With no
-    session open the loop is paused until the next session start; there
-    is deliberately no OS-scheduler/launchd fallback.
+    Durability (by design; #786 WS3): the loop is session-bound and
+    tick-driven. The SessionStart hook records ONE Django-free tick-owner
+    record (``_OWNER_LOOP``: session_id/agent_id/pid/heartbeat — no
+    per-loop briefs) in the machine-wide loop registry. There is no
+    roster to re-spawn: the ``t3 loop tick`` cron drives the loop, each
+    tick atomically claiming the next pending unit (``t3 loop
+    claim-next``) and spawning one fresh bounded sub-agent for it. If
+    this session dies, the next open session prunes the dead owner,
+    becomes tick-owner, and keeps ticking. With no session open the loop
+    is paused until the next session start; there is deliberately no
+    OS-scheduler/launchd fallback.
     """
     cadence = _cadence_for_loop_slot()
     register_command = (
-        f"/loop {cadence} Run `t3 loop tick`, then run `t3 loop pending-spawn --json`."
-        " For each entry returned, call the Agent tool with subagent_type=entry.subagent,"
+        f"/loop {cadence} Run `t3 loop tick`, then repeatedly run `t3 loop claim-next"
+        " --json` until it returns nothing. Each call atomically claims ONE pending"
+        " unit (#786 WS1 — no separate post-spawn claim step, no double-dispatch);"
+        " for the returned entry call the Agent tool with subagent_type=entry.subagent,"
         " description=entry.execution_reason, and a prompt that includes entry.issue_url."
-        " Immediately after dispatching each Agent, run `t3 loop spawn-claim <task_id>`"
-        " so the next tick does not re-surface it."
     )
 
     if print_only or os.environ.get("CLAUDECODE") or not _stdin_is_terminal():
@@ -202,9 +222,10 @@ def start_command(
         typer.echo("")
         typer.echo(
             "The tick scans, dispatches, persists agent dispatches as Ticket+Task DB"
-            " rows, and renders the statusline (display only). The slot reads pending"
-            " Tasks via `t3 loop pending-spawn` and spawns sub-agents in-session via"
-            " its Agent tool. No detached `claude -p`, no queue files."
+            " rows, and renders the statusline (display only). The slot atomically"
+            " claims each pending Task via `t3 loop claim-next` and spawns one fresh"
+            " bounded sub-agent in-session via its Agent tool. No detached `claude -p`,"
+            " no queue files."
         )
         return
 
