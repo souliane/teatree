@@ -406,7 +406,7 @@ Represents a unit of work for an agent (headless or interactive).
 
 **Claiming:** `claim(claimed_by, lease_seconds=300)` uses `select_for_update()` for atomic distributed locking. Raises `InvalidTransitionError` if already claimed with a valid lease.
 
-**Completion flow:** `complete()` → clears claim → calls `_advance_ticket()`:
+**Completion flow:** `complete()` → clears claim → calls `_advance_ticket()`. `_advance_ticket()` **normalizes `self.phase` via `normalize_phase()` once** before the FSM dispatch (#750), mirroring `_record_phase_visit()` — a task whose phase is a short verb (`review`/`code`/…, the vocabulary skills emit and `tasks create` stores verbatim) advances the FSM, not just records the session visit; raw comparison previously left `ticket.state` silently desynced from `visited_phases` (one root cause `reconcile_reviewed()` papered over). The phase-keyed branches below match on the **normalized** token:
 
 - If last attempt has `needs_user_input: true`: creates interactive followup task (same phase, parent_task linked, session carries the `agent_session_id` for resume)
 - If phase is "scoping" and ticket is SCOPED: calls `ticket.start()` (→ schedules coding)

@@ -337,3 +337,66 @@ class TestExecuteHeadlessTask(TestCase):
         assert attempt is not None
         assert attempt.exit_code == 1
         assert "headless runtime crashed" in attempt.error
+
+
+class TestAdvanceTicketNormalizesPhase(TestCase):
+    """``Task._advance_ticket`` normalizes phase before the FSM compare (#750).
+
+    Mirrors ``_record_phase_visit``. A task whose phase is a short verb
+    (``review``/``code``/``test``/...)
+    — the vocabulary skills emit and ``tasks create`` stores verbatim —
+    records the phase visit on the session but, pre-fix, never advances
+    the ticket FSM (``"review" == "reviewing"`` is False). Silent
+    persistence/FSM desync.
+    """
+
+    def _ticket_with_session(self, state: Ticket.State) -> tuple[Ticket, Session]:
+        ticket = Ticket.objects.create(overlay="test", state=state)
+        session = Session.objects.create(ticket=ticket, agent_id="t")
+        return ticket, session
+
+    def test_short_verb_review_advances_tested_to_reviewed(self) -> None:
+        ticket, session = self._ticket_with_session(Ticket.State.TESTED)
+        # review()'s FSM condition requires a completed reviewing task to
+        # exist (#694) — the real loop always has one. That condition's
+        # own raw phase= filter (canonical-only) is a *separate* adjacent
+        # bug filed as a follow-up; this test isolates the #750 scope
+        # (_advance_ticket normalization) by satisfying the precondition
+        # canonically, exactly as the loop's schedule_* chain does.
+        Task.objects.create(
+            ticket=ticket,
+            session=session,
+            phase="reviewing",
+            status=Task.Status.COMPLETED,
+        )
+        task = Task.objects.create(ticket=ticket, session=session, phase="review")
+
+        task._advance_ticket()
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.REVIEWED, (
+            f"short-verb 'review' task did not advance FSM (state={ticket.state}); "
+            "_advance_ticket compared raw self.phase instead of normalize_phase()"
+        )
+        # The session record agrees (already normalized by _record_phase_visit).
+        assert "reviewing" in (session.visited_phases or [])
+
+    def test_short_verb_code_advances_started_to_coded(self) -> None:
+        ticket, session = self._ticket_with_session(Ticket.State.STARTED)
+        task = Task.objects.create(ticket=ticket, session=session, phase="code")
+
+        task._advance_ticket()
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.CODED
+
+    def test_canonical_gerund_still_advances(self) -> None:
+        # Regression guard: normalization must not break the already-correct
+        # canonical-token path (the loop's auto-scheduled chain).
+        ticket, session = self._ticket_with_session(Ticket.State.CODED)
+        task = Task.objects.create(ticket=ticket, session=session, phase="testing")
+
+        task._advance_ticket()
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.TESTED
