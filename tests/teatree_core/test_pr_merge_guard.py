@@ -1,11 +1,13 @@
-"""#762 merge-path author guard (defense-in-depth for the server-side squash).
+"""#764 local-squash merge — forced deterministic author for public souliane/*.
 
-`gh pr merge --squash` takes the merging GitHub *account* email when
-`--author-email` is omitted — the server-side squash commit never passes
-through the #730 pre-push author guard. The helper here always passes an
-explicit noreply `--author-email` on public souliane/* and FAILS CLOSED
-if the resulting squash commit author is non-noreply. Only the `gh`
-subprocess boundary is mocked; the helper logic + noreply regex are real.
+Server-side ``gh pr merge --squash`` authors the squash commit with the
+merging account's email regardless of local git identity. The fix
+performs the squash LOCALLY and forces the author + committer to the
+canonical noreply identity, so the result is deterministic independent
+of any account/config. The post-push ``gh api`` author check is retained
+as fail-closed defense-in-depth. Private / non-souliane repos keep the
+server-side ``gh pr merge`` path unchanged. Only the git/gh subprocess
+boundaries are mocked; the helper logic + noreply regex are real.
 """
 
 from unittest.mock import patch
@@ -13,77 +15,86 @@ from unittest.mock import patch
 import pytest
 
 from teatree.core.pr_merge import squash_merge_public
-from teatree.core.public_identity import MergeAuthorMismatchError
+from teatree.core.public_identity import MergeAuthorMismatchError, canonical_noreply_identity
 
 
-def _gh(argv: list[str], returncode: int = 0, stdout: str = "") -> tuple[int, str, str]:
-    return (returncode, stdout, "")
+class _Recorder:
+    def __init__(self) -> None:
+        self.git: list[tuple[list[str], dict[str, str]]] = []
+        self.gh: list[list[str]] = []
+        self.landed_author = "21343492+souliane@users.noreply.github.com"
+        self.push_rc = 0
 
+    def run_git(self, args: list[str], env: dict[str, str] | None = None) -> tuple[int, str, str]:
+        self.git.append((args, dict(env or {})))
+        if args[:1] == ["push"]:
+            return (self.push_rc, "", "rejected: protected branch" if self.push_rc else "")
+        if args[:2] == ["rev-parse", "HEAD"]:
+            return (0, "abc1234deadbeefcafe\n", "")
+        return (0, "", "")
 
-class TestSquashMergePublic:
-    def test_passes_noreply_author_email_on_public_souliane(self) -> None:
-        calls: list[list[str]] = []
-
-        def fake_run(argv: list[str], **_kw: object) -> tuple[int, str, str]:
-            calls.append(argv)
-            if "view" in argv:  # mergeCommit SHA lookup
-                return (0, "abc1234deadbeef\n", "")
-            if "api" in argv:  # the post-merge author verification
-                return (0, "21343492+souliane@users.noreply.github.com\n", "")
+    def run_gh(self, argv: list[str]) -> tuple[int, str, str]:
+        self.gh.append(argv)
+        if "view" in argv and "mergeCommit" in " ".join(argv):
             return (0, "", "")
+        if "view" in argv:
+            return (0, "feat(x): a thing\n\nbody line\n", "")
+        if "api" in argv:
+            return (0, f"{self.landed_author}\n", "")
+        return (0, "", "")
 
-        with patch("teatree.core.pr_merge._run_gh", side_effect=fake_run):
-            squash_merge_public(pr=748, slug="souliane/teatree")
 
-        merge_argv = next(c for c in calls if "merge" in c)
-        assert "--squash" in merge_argv
-        assert "--author-email" in merge_argv
-        idx = merge_argv.index("--author-email")
-        from teatree.core.public_identity import is_noreply_email  # noqa: PLC0415
+def _patch(rec: _Recorder):
+    return (
+        patch("teatree.core.pr_merge._run_git", side_effect=rec.run_git),
+        patch("teatree.core.pr_merge._run_gh", side_effect=rec.run_gh),
+    )
 
-        assert is_noreply_email(merge_argv[idx + 1]), merge_argv[idx + 1]
 
-    def test_fails_closed_when_resulting_author_is_non_noreply(self) -> None:
-        def fake_run(argv: list[str], **_kw: object) -> tuple[int, str, str]:
-            if "view" in argv:
-                return (0, "abc1234deadbeef\n", "")
-            if "api" in argv:
-                # The squash commit landed with a non-noreply author
-                # despite our request — must HALT, never silently proceed.
-                return (0, "real.dev@internal.example\n", "")
-            return (0, "", "")
+class TestLocalSquashMergePublic:
+    def test_authors_commit_locally_with_forced_noreply_identity(self) -> None:
+        rec = _Recorder()
+        p_git, p_gh = _patch(rec)
+        with p_git, p_gh:
+            squash_merge_public(pr=764, slug="souliane/teatree")
 
-        with (
-            patch("teatree.core.pr_merge._run_gh", side_effect=fake_run),
-            pytest.raises(MergeAuthorMismatchError),
-        ):
+        name, email = canonical_noreply_identity()
+        assert any(a[:2] == ["merge", "--squash"] for a, _ in rec.git), rec.git
+        commit_args, commit_env = next((a, e) for a, e in rec.git if a[:1] == ["commit"])
+        assert f"--author={name} <{email}>" in commit_args, commit_args
+        assert commit_env.get("GIT_COMMITTER_NAME") == name
+        assert commit_env.get("GIT_COMMITTER_EMAIL") == email
+        assert any(a[:2] == ["push", "origin"] for a, _ in rec.git)
+        assert not any("merge" in g and "--squash" in g for g in rec.gh), (
+            "must NOT use server-side gh pr merge --squash on public souliane/*"
+        )
+
+    def test_fails_closed_when_landed_author_is_non_noreply(self) -> None:
+        rec = _Recorder()
+        rec.landed_author = "real.dev@internal.example"
+        p_git, p_gh = _patch(rec)
+        with p_git, p_gh, pytest.raises(MergeAuthorMismatchError):
             squash_merge_public(pr=999, slug="souliane/teatree")
 
-    def test_private_repo_is_exempt_no_author_email_no_guard(self) -> None:
-        calls: list[list[str]] = []
+    def test_protected_branch_push_rejection_stops_no_force(self) -> None:
+        rec = _Recorder()
+        rec.push_rc = 1
+        p_git, p_gh = _patch(rec)
+        with p_git, p_gh, pytest.raises(RuntimeError, match=r"(?i)push|protected|reject"):
+            squash_merge_public(pr=764, slug="souliane/teatree")
+        assert not any("--force" in a or "--force-with-lease" in a for a, _ in rec.git), (
+            "must not force-push as a workaround"
+        )
 
-        def fake_run(argv: list[str], **_kw: object) -> tuple[int, str, str]:
-            calls.append(argv)
-            return (0, "", "")
-
-        with patch("teatree.core.pr_merge._run_gh", side_effect=fake_run):
+    def test_private_repo_uses_server_side_merge_unchanged(self) -> None:
+        rec = _Recorder()
+        p_git, p_gh = _patch(rec)
+        with p_git, p_gh:
             squash_merge_public(pr=1, slug="acme-private/internal-svc")
 
-        merge_argv = next(c for c in calls if "merge" in c)
-        assert "--author-email" not in merge_argv  # exempt: real internal email is fine
-        assert not any("api" in c for c in calls)  # no fail-closed guard on private
-
-    def test_merge_failure_propagates_without_claiming_success(self) -> None:
-        def fake_run(argv: list[str], **_kw: object) -> tuple[int, str, str]:
-            if "merge" in argv:
-                return (1, "", "merge conflict")
-            return (0, "", "")
-
-        with (
-            patch("teatree.core.pr_merge._run_gh", side_effect=fake_run),
-            pytest.raises(RuntimeError, match=r"(?i)merge"),
-        ):
-            squash_merge_public(pr=2, slug="souliane/teatree")
+        assert any("merge" in g and "--squash" in g for g in rec.gh), rec.gh
+        assert not any(a[:2] == ["merge", "--squash"] for a, _ in rec.git)
+        assert not any(a[:1] == ["commit"] for a, _ in rec.git)
 
 
 class TestPrMergeCommandWiring:
@@ -91,7 +102,7 @@ class TestPrMergeCommandWiring:
         from django.core.management import call_command  # noqa: PLC0415
 
         with patch("teatree.core.pr_merge.squash_merge_public") as helper:
-            result = call_command("pr", "merge", "748", "souliane/teatree")
+            result = call_command("pr", "merge", "764", "souliane/teatree")
 
-        helper.assert_called_once_with(pr=748, slug="souliane/teatree", auto=False)
-        assert result == {"merged": True, "pr": 748, "slug": "souliane/teatree", "auto": False}
+        helper.assert_called_once_with(pr=764, slug="souliane/teatree", auto=False)
+        assert result == {"merged": True, "pr": 764, "slug": "souliane/teatree", "auto": False}

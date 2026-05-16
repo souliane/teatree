@@ -500,14 +500,18 @@ class Command(TyperCommand):
 
     @command(name="merge")
     def merge(self, pr: int, slug: str, *, auto: bool = False) -> MergeResult:
-        """Squash-merge a PR with a forced noreply author (#762).
+        """Merge a PR with a deterministic author (#764, supersedes #762).
 
         The merge path the review-loop MUST use instead of raw
-        ``gh pr merge --squash``: on public ``souliane/*`` it always
-        passes an explicit noreply ``--author-email`` and (synchronous
-        path) verifies the landed squash author fail-closed; the #730
-        pre-push check only sees branch commits, not the server-side
-        squash. Non-souliane / private remotes are merged unchanged.
+        ``gh pr merge --squash``. On public ``souliane/*`` it performs a
+        LOCAL ``git merge --squash`` + ``git commit`` with the author and
+        committer forced to the canonical noreply identity, then
+        ``git push origin main`` — deterministic regardless of any GitHub
+        account / git config. A push rejection (protected branch /
+        non-fast-forward) stops with an error (no force-push); the landed
+        commit author is then verified via ``gh api`` (fail-closed).
+        Non-souliane / private remotes use the server-side ``gh pr
+        merge`` path, unchanged.
         """
         from teatree.core.pr_merge import squash_merge_public  # noqa: PLC0415
 
