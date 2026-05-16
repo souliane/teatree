@@ -1,17 +1,19 @@
-"""Tests for session-bound loop durability with ownership transfer.
+"""Tests for session-bound loop durability via the single tick-owner record.
 
-Behavior contract (user-locked, supersedes the rejected launchd design):
+Behavior contract (#786 WS3 — the immortal-singleton roster is RETIRED):
 
-Zero open Claude sessions => the loop is DEAD (ACCEPTED, by design; no
-OS-scheduler workaround; the CronCreate tick is an in-session
-convenience only, never the durability mechanism). Owner session dies
-but another session exists/opens => that session becomes the new owner
-and TRANSFERS (re-spawns) every registered loop from its persisted
-self-contained brief, registering new agentIds. Cross-session takeover
-MUST re-spawn-from-brief — agentIds are NOT resumable across different
-Claude sessions; resume-by-agentId is ONLY valid same-session (the
-compaction path). A live concurrent owner => defer (reattach), never
-double-spawn. All registry writes are flock-guarded (serialized).
+Zero open Claude sessions => the loop is DEAD (ACCEPTED, by design; the
+``t3 loop tick`` cron only fires inside a session). The loop is driven by
+that cron + WS1 atomic ``claim-next`` + WS2 ``LoopLease``; SessionStart no
+longer spawns/re-spawns a fixed roster. SessionStart only records which
+single *session* is the loop-tick owner (Django-free, so the #758/#810
+Stop self-pump can gate on it). Owner dies / another session opens => the
+new session becomes tick-owner and keeps ticking (nothing to re-spawn —
+statelessness across ticks is the compaction-proofing). A live concurrent
+owner => the second session stays idle (no competing tick), never evicts
+the live owner. All registry writes are flock-guarded (serialized), and
+the read->decide->write is one flock transaction so two simultaneous
+fresh sessions can NEVER both claim ownership.
 
 These exercise the real ``hook_router`` registry + SessionStart/SessionEnd
 handlers under a temp ``T3_LOOP_REGISTRY_DIR``.
@@ -28,8 +30,7 @@ import pytest
 
 import hooks.scripts.hook_router as router
 from hooks.scripts.hook_router import (
-    LOOP_AGENT_NAMES,
-    _loop_spawn_briefs,
+    _OWNER_LOOP,
     _read_loop_registry,
     _write_loop_registry,
     handle_session_end_loop_registry,
@@ -53,212 +54,100 @@ def _ctx(capsys: pytest.CaptureFixture[str]) -> str:
     return json.loads(capsys.readouterr().out)["additionalContext"]
 
 
-class TestSpawnBriefs:
-    """A takeover session can re-spawn a loop it never spawned itself.
-
-    Every registered loop must have a self-contained spawn brief.
-    """
-
-    def test_brief_for_every_registered_loop(self) -> None:
-        briefs = _loop_spawn_briefs()
-        assert set(briefs) == set(LOOP_AGENT_NAMES)
-
-    def test_each_brief_is_self_contained_nonempty(self) -> None:
-        for name, brief in _loop_spawn_briefs().items():
-            assert isinstance(brief, str)
-            assert len(brief) > 40, f"{name} brief too thin to re-spawn from"
-            # The brief must name the loop it re-spawns.
-            assert name in brief
-
-    def test_main_loop_brief_describes_per_ticket_subagents(self) -> None:
-        brief = _loop_spawn_briefs()["t3-main-loop"]
-        assert "per ticket" in brief.lower() or "per-ticket" in brief.lower()
+def _owner_entry(session_id: str, agent_id: str, pid: int) -> dict:
+    return {_OWNER_LOOP: {"session_id": session_id, "agent_id": agent_id, "pid": pid}}
 
 
-class TestRegistryPersistsBriefAndHeartbeat:
-    def test_owner_claim_persists_brief_and_heartbeat(self, capsys: pytest.CaptureFixture[str]) -> None:
-        before = time.time()
+class TestTickOwnerRecord:
+    """SessionStart records ONE tick-owner session (no roster, #786 WS3)."""
+
+    def test_fresh_claim_records_single_owner(self, capsys: pytest.CaptureFixture[str]) -> None:
         handle_session_start_bootstrap({"session_id": "owner-1", "agent_id": "agent-a"})
         capsys.readouterr()
 
-        entry = _read_loop_registry()["t3-main-loop"]
+        reg = _read_loop_registry()
+        assert list(reg) == [_OWNER_LOOP]  # exactly one record, no roster
+        entry = reg[_OWNER_LOOP]
         assert entry["session_id"] == "owner-1"
         assert entry["agent_id"] == "agent-a"
         assert entry["pid"] == os.getppid()
-        assert entry["spawn_brief"]  # self-contained, persisted
-        assert "t3-main-loop" in entry["spawn_brief"]
-        assert entry["heartbeat_ts"] >= int(before)
+        assert "spawn_brief" not in entry  # briefs retired
 
-    def test_all_four_loops_registered_with_briefs(self, capsys: pytest.CaptureFixture[str]) -> None:
-        handle_session_start_bootstrap({"session_id": "owner-1", "agent_id": "agent-a"})
-        capsys.readouterr()
-        reg = _read_loop_registry()
-        for name in LOOP_AGENT_NAMES:
-            assert name in reg, f"{name} not registered"
-            assert reg[name]["spawn_brief"]
+    def test_no_owner_is_tick_dispatch_not_spawn(self, capsys: pytest.CaptureFixture[str]) -> None:
+        handle_session_start_bootstrap({"session_id": "first", "agent_id": "a1"})
+        ctx = _ctx(capsys).lower()
+        assert "t3 loop tick" in ctx
+        assert "claim-next" in ctx
+        assert "from its brief" not in ctx
+        assert _read_loop_registry()[_OWNER_LOOP]["session_id"] == "first"
 
 
-class TestCrossSessionTakeoverReSpawnsFromBrief:
-    def test_dead_owner_takeover_emits_respawn_from_brief(self, capsys: pytest.CaptureFixture[str]) -> None:
-        # A prior owner registered all loops, then died (dead pid).
-        briefs = _loop_spawn_briefs()
-        dead = {
-            name: {
-                "session_id": "dead-owner",
-                "agent_id": f"ghost-{name}",
-                "pid": 999999,
-                "spawn_brief": briefs[name],
-                "heartbeat_ts": 1,
-            }
-            for name in LOOP_AGENT_NAMES
-        }
-        _write_loop_registry(dead)
+class TestDeadOwnerReclaim:
+    def test_dead_owner_is_reclaimed_no_respawn(self, capsys: pytest.CaptureFixture[str]) -> None:
+        _write_loop_registry(_owner_entry("dead-owner", "ghost", 999999))
 
         handle_session_start_bootstrap({"session_id": "successor", "agent_id": "agent-s"})
 
-        ctx = _ctx(capsys)
-        low = ctx.lower()
-        # Cross-session: MUST re-spawn from brief, NOT resume by agentId.
-        assert "re-spawn" in low or "respawn" in low or "spawn" in low
-        assert "transfer" in low or "take over" in low or "takeover" in low
-        # The dead owner's stale agentIds must NOT be presented for resume.
-        assert "ghost-t3-main-loop" not in ctx
-        # It must explicitly forbid cross-session resume-by-agentId.
-        assert "not resumable" in low
-        assert "do not attempt to resume by the recorded agent id" in low
-        # Every registered loop's brief is carried into the directive.
-        for name in LOOP_AGENT_NAMES:
-            assert name in ctx
-
-    def test_takeover_registers_new_agent_id_and_session(self, capsys: pytest.CaptureFixture[str]) -> None:
-        briefs = _loop_spawn_briefs()
-        _write_loop_registry(
-            {
-                "t3-main-loop": {
-                    "session_id": "dead-owner",
-                    "agent_id": "ghost",
-                    "pid": 999999,
-                    "spawn_brief": briefs["t3-main-loop"],
-                    "heartbeat_ts": 1,
-                }
-            }
-        )
-
-        handle_session_start_bootstrap({"session_id": "successor", "agent_id": "agent-new"})
-        capsys.readouterr()
-
-        entry = _read_loop_registry()["t3-main-loop"]
+        ctx = _ctx(capsys).lower()
+        # Tick-driven: the successor keeps ticking. The directive may say
+        # "nothing to re-spawn" (the negation IS the point) — what must be
+        # absent is the retired roster vocabulary + the stale ghost
+        # agentId being surfaced for resume.
+        assert "t3 loop tick" in ctx
+        for retired in ("from its brief", "takeover", "resume by", "ghost", "t3-main-loop", "t3-bug-hunt"):
+            assert retired not in ctx
+        entry = _read_loop_registry()[_OWNER_LOOP]
         assert entry["session_id"] == "successor"
-        assert entry["agent_id"] == "agent-new"
+        assert entry["agent_id"] == "agent-s"
         assert entry["pid"] == os.getppid()
-        # Brief is preserved across the transfer.
-        assert entry["spawn_brief"] == briefs["t3-main-loop"]
-
-    def test_no_owner_at_all_is_fresh_spawn(self, capsys: pytest.CaptureFixture[str]) -> None:
-        handle_session_start_bootstrap({"session_id": "first", "agent_id": "a1"})
-        ctx = _ctx(capsys)
-        assert "spawn" in ctx.lower()
-        assert _read_loop_registry()["t3-main-loop"]["session_id"] == "first"
 
 
-class TestConcurrentLiveOwnerDefers:
-    def test_second_live_session_defers_no_double_spawn(self, capsys: pytest.CaptureFixture[str]) -> None:
-        briefs = _loop_spawn_briefs()
-        _write_loop_registry(
-            {
-                "t3-main-loop": {
-                    "session_id": "owner-1",
-                    "agent_id": "agent-owner",
-                    "pid": _live_pid(),
-                    "spawn_brief": briefs["t3-main-loop"],
-                    "heartbeat_ts": int(time.time()),
-                }
-            }
-        )
+class TestConcurrentLiveOwnerStaysIdle:
+    def test_second_live_session_stays_idle_no_evict(self, capsys: pytest.CaptureFixture[str]) -> None:
+        _write_loop_registry(_owner_entry("owner-1", "agent-owner", _live_pid()))
 
         handle_session_start_bootstrap({"session_id": "second-2", "agent_id": "agent-2"})
 
-        ctx = _ctx(capsys)
-        assert "do not spawn" in ctx.lower()
-        # Ownership unchanged — the live owner is not evicted.
-        assert _read_loop_registry()["t3-main-loop"]["session_id"] == "owner-1"
-        assert _read_loop_registry()["t3-main-loop"]["agent_id"] == "agent-owner"
+        ctx = _ctx(capsys).lower()
+        assert "stay idle" in ctx or "do not arm" in ctx
+        assert "owner-1" in ctx  # names the live owner
+        owner = _read_loop_registry()[_OWNER_LOOP]
+        assert owner["session_id"] == "owner-1"
+        assert owner["agent_id"] == "agent-owner"
 
 
-class TestSameSessionCompactionResumesByAgentId:
-    """The ONLY place resume-by-agentId is valid is the same session.
+class TestSameSessionRestartStaysOwner:
+    """Post-compaction same-session restart: still owner, keep ticking.
 
-    E.g. after context compaction the coordinator re-reads the registry
-    and resumes its own loops by their still-valid agentIds.
+    Nothing to resume-by-agentId (no roster of sub-agents) — the cron
+    simply keeps ticking under the same owner session.
     """
 
-    def test_same_session_restart_resumes_by_agent_id(self, capsys: pytest.CaptureFixture[str]) -> None:
-        briefs = _loop_spawn_briefs()
-        _write_loop_registry(
-            {
-                "t3-main-loop": {
-                    "session_id": "owner-1",
-                    "agent_id": "agent-owner",
-                    "pid": os.getppid(),
-                    "spawn_brief": briefs["t3-main-loop"],
-                    "heartbeat_ts": 1,
-                }
-            }
-        )
+    def test_same_session_restart_is_idempotent_owner(self, capsys: pytest.CaptureFixture[str]) -> None:
+        _write_loop_registry(_owner_entry("owner-1", "agent-owner", os.getppid()))
 
         handle_session_start_bootstrap({"session_id": "owner-1", "agent_id": "agent-owner"})
 
-        ctx = _ctx(capsys)
-        low = ctx.lower()
-        # Same session => resume by the still-valid agentId is allowed.
-        assert "resume" in low or "spawn" in low
-        assert "agent-owner" in ctx
-        assert _read_loop_registry()["t3-main-loop"]["session_id"] == "owner-1"
+        ctx = _ctx(capsys).lower()
+        assert "t3 loop tick" in ctx
+        assert "resume by" not in ctx
+        assert _read_loop_registry()[_OWNER_LOOP]["session_id"] == "owner-1"
 
 
 class TestSessionEndReleasesForImmediateTakeover:
-    def test_owner_clean_exit_releases_all_slots(self) -> None:
-        briefs = _loop_spawn_briefs()
-        _write_loop_registry(
-            {
-                name: {
-                    "session_id": "owner-1",
-                    "agent_id": f"a-{name}",
-                    "pid": os.getppid(),
-                    "spawn_brief": briefs[name],
-                    "heartbeat_ts": 1,
-                }
-                for name in LOOP_AGENT_NAMES
-            }
-        )
-
+    def test_owner_clean_exit_releases_the_record(self) -> None:
+        _write_loop_registry(_owner_entry("owner-1", "a1", os.getppid()))
         handle_session_end_loop_registry({"session_id": "owner-1"})
-
-        reg = _read_loop_registry()
-        # Owner slot released so the next session can immediately take over.
-        assert "t3-main-loop" not in reg
+        assert _OWNER_LOOP not in _read_loop_registry()
 
     def test_non_owner_exit_keeps_live_owner(self) -> None:
-        briefs = _loop_spawn_briefs()
-        _write_loop_registry(
-            {
-                "t3-main-loop": {
-                    "session_id": "owner-1",
-                    "agent_id": "a1",
-                    "pid": os.getppid(),
-                    "spawn_brief": briefs["t3-main-loop"],
-                    "heartbeat_ts": 1,
-                }
-            }
-        )
-
+        _write_loop_registry(_owner_entry("owner-1", "a1", os.getppid()))
         handle_session_end_loop_registry({"session_id": "some-other-session"})
-
-        assert _read_loop_registry()["t3-main-loop"]["session_id"] == "owner-1"
+        assert _read_loop_registry()[_OWNER_LOOP]["session_id"] == "owner-1"
 
 
 def _concurrent_writer(reg_dir: str, name: str, count: int) -> None:
-    """Child process: hammer flock-guarded registry writes for one loop."""
+    """Child process: hammer flock-guarded registry writes for one key."""
     os.environ["T3_LOOP_REGISTRY_DIR"] = reg_dir
     import importlib  # noqa: PLC0415
 
@@ -275,9 +164,9 @@ def _concurrent_writer(reg_dir: str, name: str, count: int) -> None:
 class TestRegistryWritesAreFlockSerialized:
     """Concurrent registry writers must not corrupt the JSON.
 
-    Salvaged from the rejected launchd worktree's design-agnostic flock
-    invariant: the file must always be parseable because the flock
-    serializes writers (no torn write, no lost read-modify-write update).
+    Design-agnostic flock invariant (retained verbatim across the #786
+    WS3 roster retirement): the file must always be parseable because the
+    flock serializes writers — no torn write, no lost read-modify-write.
     """
 
     def test_concurrent_writers_never_corrupt_registry(self, tmp_path: Path) -> None:
@@ -291,13 +180,9 @@ class TestRegistryWritesAreFlockSerialized:
             p.join(timeout=20)
             assert p.exitcode == 0
 
-        # The registry file must be valid JSON after concurrent hammering
-        # — a torn write (no flock) would leave invalid/truncated JSON.
         raw = (Path(reg_dir) / "loop-registry.json").read_text(encoding="utf-8")
         data = json.loads(raw)  # raises if corrupted
         assert isinstance(data, dict)
-        # Every writer's final entry is present (no lost-update from a
-        # read-modify-write race under the flock).
         for n in range(4):
             assert f"loop-{n}" in data
 
@@ -310,16 +195,14 @@ def _race_round(
 ) -> None:
     """Child: one brand-new session running the SessionStart bootstrap.
 
-    Both children block on a shared start event so they fire their
-    bootstrap as simultaneously as the OS scheduler allows, then write
-    the emitted ``additionalContext`` directive to ``result_path``.
-
-    Pre-fix (#718 write-only-lock): the read is OUTSIDE the flock, so
-    both children can read the empty registry, both decide "fresh
-    spawn", and both emit a spawn directive → double-spawned loops.
-    Post-fix: the read→decide→write is one flock transaction, so the
-    second child blocks until the first commits, re-reads, sees the
-    live owner, and emits the reattach ("do not spawn") directive.
+    Both children block on a shared start event so they fire as
+    simultaneously as the OS scheduler allows. Pre-fix (#718
+    write-only-lock) the read sits OUTSIDE the flock, so both children
+    read the empty registry, both decide "fresh", and BOTH become
+    tick-owner → two competing tick-owners. Post-fix the
+    read->decide->write is one flock transaction: the second child blocks
+    until the first commits, re-reads, sees the live owner, and emits the
+    NON-owner ("stay idle") directive.
     """
     os.environ["T3_LOOP_REGISTRY_DIR"] = reg_dir
     import importlib  # noqa: PLC0415
@@ -338,35 +221,31 @@ def _race_round(
     Path(result_path).write_text(context, encoding="utf-8")
 
 
-def _is_spawn_directive(ctx: str) -> bool:
+def _is_owner_directive(ctx: str) -> bool:
     low = ctx.lower()
-    return "establish the singleton loop sub-agents" in low or "ownership transfer" in low
+    return "loop-tick owner" in low and "stay idle" not in low
 
 
-def _is_reattach_directive(ctx: str) -> bool:
+def _is_non_owner_directive(ctx: str) -> bool:
     low = ctx.lower()
-    return "do not spawn" in low and "re-attach" in low
+    return "stay idle" in low or "do not arm" in low
 
 
 class TestConcurrentFreshClaimIsAtomic:
-    """Finding 1 regression: read→decide→write must be ONE flock txn.
+    """#718 atomic-claim invariant, preserved under #786 WS3.
 
     Two fresh sessions starting simultaneously against an empty registry
-    must NEVER both be told to spawn — a double-claim double-spawns the
-    loop sub-agents (duplicate reviews, PR-creation races). The atomic
-    transaction guarantees exactly one spawn/takeover directive and one
-    reattach ("do not spawn"). On the pre-fix write-only-lock (#718) the
-    read sits outside the flock, so both children read "no owner", both
-    emit a spawn directive, and the ``never both spawn`` assertion below
-    fails — i.e. this test demonstrably guards the fix.
-
-    Repeated over many rounds (each with a fresh empty registry) because
-    the bad interleave is timing-dependent: a single round could miss it
-    by luck, but across N independent simultaneous starts the pre-fix
-    race surfaces and trips the assertion.
+    must NEVER both become tick-owner — a double-claim means two
+    competing ticks (duplicate dispatch / PR-creation races). The atomic
+    read->decide->write flock transaction guarantees exactly ONE owner
+    directive and one non-owner ("stay idle") directive. On the pre-fix
+    write-only-lock the read sits outside the flock so both children
+    claim — the assertions below then trip, demonstrating this test
+    guards the fix. Repeated over many rounds because the bad interleave
+    is timing-dependent.
     """
 
-    def test_simultaneous_fresh_starts_never_both_spawn(self, tmp_path: Path) -> None:
+    def test_simultaneous_fresh_starts_never_both_claim(self, tmp_path: Path) -> None:
         rounds = 12
         for rnd in range(rounds):
             reg_dir = str(tmp_path / f"data-{rnd}")
@@ -381,23 +260,22 @@ class TestConcurrentFreshClaimIsAtomic:
             ]
             for p in procs:
                 p.start()
-            start_evt.set()  # release both as close to simultaneously as possible
+            start_evt.set()
             for p in procs:
                 p.join(timeout=25)
                 assert p.exitcode == 0, f"round {rnd}: child crashed"
 
             ctx_a = Path(res_a).read_text(encoding="utf-8")
             ctx_b = Path(res_b).read_text(encoding="utf-8")
-            spawners = [c for c in (ctx_a, ctx_b) if _is_spawn_directive(c)]
-            reattachers = [c for c in (ctx_a, ctx_b) if _is_reattach_directive(c)]
+            owners = [c for c in (ctx_a, ctx_b) if _is_owner_directive(c)]
+            idlers = [c for c in (ctx_a, ctx_b) if _is_non_owner_directive(c)]
 
-            # The anti-double-claim invariant — the fix's whole point.
-            assert len(spawners) == 1, (
-                f"round {rnd}: double-claim — {len(spawners)} spawn directives (A={ctx_a[:50]!r} B={ctx_b[:50]!r})"
+            assert len(owners) == 1, (
+                f"round {rnd}: double-claim — {len(owners)} owner directives (A={ctx_a[:50]!r} B={ctx_b[:50]!r})"
             )
-            assert len(reattachers) == 1, f"round {rnd}: loser must reattach, not spawn"
+            assert len(idlers) == 1, f"round {rnd}: loser must stay idle, not claim"
 
             data = json.loads((Path(reg_dir) / "loop-registry.json").read_text(encoding="utf-8"))
-            owners = {entry["session_id"] for entry in data.values()}
-            assert len(owners) == 1, f"round {rnd}: mixed ownership {owners}"
-            assert owners <= {"sessionA", "sessionB"}
+            session_ids = {entry["session_id"] for entry in data.values()}
+            assert len(session_ids) == 1, f"round {rnd}: mixed ownership {session_ids}"
+            assert session_ids <= {"sessionA", "sessionB"}
