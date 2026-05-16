@@ -8,6 +8,7 @@ from django.db import transaction
 from django_fsm import TransitionNotAllowed
 from django_typer.management import TyperCommand, command, initialize
 
+from teatree.core.db_anchor import assert_lifecycle_db_is_canonical
 from teatree.core.models import Session, Ticket
 from teatree.core.phases import normalize_phase, phase_transition
 
@@ -46,6 +47,11 @@ class Command(TyperCommand):
         is set — a blank previously made the gate vacuously pass.
         """
         ticket = Ticket.objects.resolve(ticket_id)
+        # #779: refuse to record a phase into a worktree-isolated DB the
+        # shipping gate never reads. Run BEFORE any write so the attestation
+        # is never split from the DB `pr create` consults — symmetric across
+        # maker (testing/retro) and reviewer (reviewing) visits.
+        assert_lifecycle_db_is_canonical(ticket)
         canonical = normalize_phase(phase)
         session = ticket.sessions.order_by("-pk").first()
         if session is None:
