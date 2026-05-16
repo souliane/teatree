@@ -936,19 +936,52 @@ def _registry_write_lock() -> Iterator[None]:
             os.close(fd)
 
 
+def _write_loop_registry_locked(registry: dict[str, dict]) -> None:
+    """Persist the registry assuming the registry flock is ALREADY held.
+
+    The bare write body, callable from inside a ``_loop_registry_txn``
+    critical section without re-acquiring the (non-reentrant, separate-fd)
+    flock — a second blocking ``LOCK_EX`` on a fresh fd of the same file
+    in this process would self-deadlock.
+    """
+    path = _loop_registry_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(registry, indent=2, sort_keys=True), encoding="utf-8")
+    tmp.replace(path)
+
+
 def _write_loop_registry(registry: dict[str, dict]) -> None:
     """Atomically (and flock-serialized) persist the loop registry.
 
     Serialized against concurrent cross-session writers via
     :func:`_registry_write_lock`; published via a ``tmp.replace`` rename
-    so a reader never observes a partial file.
+    so a reader never observes a partial file. Use :func:`_loop_registry_txn`
+    instead when the decision depends on the current registry contents —
+    a bare read-then-write is a TOCTOU across concurrent SessionStart
+    hooks (two fresh sessions could both read "no owner" and both claim).
     """
-    path = _loop_registry_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
     with _registry_write_lock():
-        tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(registry, indent=2, sort_keys=True), encoding="utf-8")
-        tmp.replace(path)
+        _write_loop_registry_locked(registry)
+
+
+@contextlib.contextmanager
+def _loop_registry_txn() -> Iterator[list[dict[str, dict]]]:
+    """Atomic read-modify-write transaction over the loop registry.
+
+    Holds the registry flock across the WHOLE critical section so a
+    concurrent SessionStart/SessionEnd in another session cannot wedge
+    between this transaction's read and write (the lost-update / double
+    -claim TOCTOU). Yields a single-element list whose slot is the
+    just-read registry; the caller mutates ``box[0]`` (or replaces it)
+    and the committed value is written back under the same lock on a
+    clean exit. On an exception nothing is written (the prior file
+    stands).
+    """
+    with _registry_write_lock():
+        box: list[dict[str, dict]] = [_read_loop_registry()]
+        yield box
+        _write_loop_registry_locked(box[0])
 
 
 def _prune_dead_owner(registry: dict[str, dict]) -> dict[str, dict]:
@@ -1160,29 +1193,36 @@ def handle_session_start_bootstrap(data: dict) -> None:
         return
     agent_id = data.get("agent_id", "")
 
-    raw = _read_loop_registry()
-    registry = _prune_dead_owner(raw)
-    owner = registry.get(_OWNER_LOOP)
-    had_registered_loops = bool(raw)  # before the dead-owner prune
+    # The whole read → decide → write is one flock-guarded transaction:
+    # two fresh sessions starting in the same window must not both read
+    # "no owner" and both claim (lost-update / double-claim TOCTOU).
+    with _loop_registry_txn() as box:
+        raw = box[0]
+        had_registered_loops = bool(raw)  # before the dead-owner prune
+        registry = _prune_dead_owner(raw)
+        owner = registry.get(_OWNER_LOOP)
 
-    if owner is not None and owner.get("session_id") != session_id:
-        # (1) A different live session owns it — defer, never double-spawn.
-        _write_loop_registry(registry)  # persist the prune only
-        context = _reattach_directive(owner)
-    elif owner is not None and owner.get("session_id") == session_id:
-        # (2) Same session restarting (compaction) — resume by agentId.
-        # Refresh heartbeat/agent_id without disturbing the live agents.
-        context = _resume_directive(registry)
-        _claim_all_loops(registry, session_id, agent_id or owner.get("agent_id", ""))
-        _write_loop_registry(registry)
+        if owner is not None and owner.get("session_id") != session_id:
+            # (1) A different live session owns it — defer, never double-spawn.
+            box[0] = registry  # persist the prune only
+            context = _reattach_directive(owner)
+            emit_osc = False
+        elif owner is not None and owner.get("session_id") == session_id:
+            # (2) Same session restarting (compaction) — resume by agentId.
+            context = _resume_directive(registry)
+            box[0] = _claim_all_loops(registry, session_id, agent_id or owner.get("agent_id", ""))
+            emit_osc = True
+        else:
+            # No live owner: (3) dead owner left registered loops to
+            # transfer, or (4) a genuinely fresh machine.
+            box[0] = _claim_all_loops(registry, session_id, agent_id)
+            context = _takeover_directive(_loop_spawn_briefs()) if had_registered_loops else _spawn_directive()
+            emit_osc = True
+
+    # OSC write is a side effect on the tty, not the registry — keep it
+    # out of the lock's critical section (the flock guards file state).
+    if emit_osc:
         _emit_osc_title()
-    else:
-        # No live owner. Either (3) a dead owner left registered loops to
-        # transfer, or (4) a genuinely fresh machine.
-        _claim_all_loops(registry, session_id, agent_id)
-        _write_loop_registry(registry)
-        _emit_osc_title()
-        context = _takeover_directive(_loop_spawn_briefs()) if had_registered_loops else _spawn_directive()
 
     json.dump({"additionalContext": context}, sys.stdout)
 
@@ -1199,15 +1239,16 @@ def handle_session_end_loop_registry(data: dict) -> None:
     session_id = data.get("session_id", "")
     if not session_id:
         return
-    registry = _read_loop_registry()
-    owner = registry.get(_OWNER_LOOP)
-    if owner is None or owner.get("session_id") != session_id:
-        return
-    for name in list(registry):
-        entry = registry.get(name)
-        if isinstance(entry, dict) and entry.get("session_id") == session_id:
-            del registry[name]
-    _write_loop_registry(registry)
+    with _loop_registry_txn() as box:
+        registry = box[0]
+        owner = registry.get(_OWNER_LOOP)
+        if owner is not None and owner.get("session_id") == session_id:
+            for name in [n for n, e in registry.items() if isinstance(e, dict) and e.get("session_id") == session_id]:
+                del registry[name]
+        # else: non-owner exit — leave the live owner untouched. box[0]
+        # is the unchanged registry, so the txn rewrites it verbatim
+        # (a harmless idempotent no-op write under the same lock).
+        box[0] = registry
 
 
 _SESSION_END_ORPHAN_TIMEOUT = 4

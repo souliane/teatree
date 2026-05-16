@@ -299,3 +299,52 @@ class TestRegistryWritesAreFlockSerialized:
         # read-modify-write race under the flock).
         for n in range(4):
             assert f"loop-{n}" in data
+
+
+def _racing_fresh_start(reg_dir: str, session_id: str) -> None:
+    """Child: a brand-new session running the SessionStart bootstrap.
+
+    Two of these race with an EMPTY registry — without the atomic
+    read→decide→write transaction both would read "no owner" and both
+    would claim, leaving the file owned by whichever wrote last while
+    BOTH believe they own (double-claim).
+    """
+    os.environ["T3_LOOP_REGISTRY_DIR"] = reg_dir
+    import importlib  # noqa: PLC0415
+
+    import hooks.scripts.hook_router as r  # noqa: PLC0415
+
+    importlib.reload(r)
+    for _ in range(20):
+        r.handle_session_start_bootstrap({"session_id": session_id, "agent_id": f"a-{session_id}"})
+        time.sleep(0.001)
+
+
+class TestConcurrentFreshClaimIsAtomic:
+    """Finding 1 regression: the read→decide→write must be one flock txn.
+
+    Concurrent fresh-start bootstraps must converge on exactly ONE owner
+    session_id (the registry is internally consistent), never a torn or
+    mixed-owner registry.
+    """
+
+    def test_two_racing_fresh_sessions_yield_a_single_consistent_owner(self, tmp_path: Path) -> None:
+        reg_dir = str(tmp_path / "data")
+        Path(reg_dir).mkdir(parents=True, exist_ok=True)
+
+        procs = [
+            multiprocessing.Process(target=_racing_fresh_start, args=(reg_dir, sid)) for sid in ("sessionA", "sessionB")
+        ]
+        for p in procs:
+            p.start()
+        for p in procs:
+            p.join(timeout=20)
+            assert p.exitcode == 0
+
+        raw = (Path(reg_dir) / "loop-registry.json").read_text(encoding="utf-8")
+        data = json.loads(raw)  # never torn — txn holds the flock across the write
+        owners = {entry["session_id"] for entry in data.values()}
+        # All four loops must be owned by the SAME session (no mixed
+        # ownership from an interleaved partial claim).
+        assert len(owners) == 1, f"registry has mixed ownership: {owners}"
+        assert owners <= {"sessionA", "sessionB"}
