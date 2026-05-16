@@ -97,20 +97,19 @@ class TestLoopTickCommand(TestCase):
 
         host_mock.assert_called_once()
 
-    def test_skips_tick_when_singleton_lock_held(self) -> None:
-        """Holding the real `loop-tick` lock makes the command skip the tick.
+    def test_skips_tick_when_lease_held_by_another_owner(self) -> None:
+        """A live DB lease held by another owner makes the command skip (#786 WS2).
 
-        No mock of the lock itself — a genuine concurrent holder is
-        simulated by acquiring `singleton("loop-tick")` in this process
-        first, exercising the exact production refusal path.
+        No mock of the lease — a genuine concurrent holder is simulated by
+        acquiring the real ``loop-tick`` ``LoopLease`` as a rival owner
+        first, exercising the exact production CAS-refusal path that
+        replaced the flock.
         """
-        from teatree.utils.singleton import singleton  # noqa: PLC0415
+        from teatree.core.models import LoopLease  # noqa: PLC0415
 
+        assert LoopLease.objects.acquire("loop-tick", owner="rival-tick") is True
         stdout = StringIO()
-        with (
-            singleton("loop-tick"),
-            patch("teatree.loop.tick.run_tick") as run_tick_mock,
-        ):
+        with patch("teatree.loop.tick.run_tick") as run_tick_mock:
             call_command("loop_tick", stdout=stdout)
 
         run_tick_mock.assert_not_called()
@@ -119,11 +118,11 @@ class TestLoopTickCommand(TestCase):
         assert "another tick is already running" in output
 
     def test_skip_emits_json_when_requested(self) -> None:
-        from teatree.utils.singleton import singleton  # noqa: PLC0415
+        from teatree.core.models import LoopLease  # noqa: PLC0415
 
+        assert LoopLease.objects.acquire("loop-tick", owner="rival-tick") is True
         stdout = StringIO()
-        with singleton("loop-tick"):
-            call_command("loop_tick", "--json", stdout=stdout)
+        call_command("loop_tick", "--json", stdout=stdout)
 
         payload = json.loads(stdout.getvalue())
         assert payload == {"skipped": "another tick is already running"}
