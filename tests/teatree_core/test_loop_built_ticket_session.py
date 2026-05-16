@@ -144,6 +144,14 @@ class TestLoopBuiltTicketGetsDurableSession(TestCase):
         with patch.object(type(Ticket.objects), "select_for_update", lock_then_rival_commits):
             result = ticket.ensure_session()
 
+        # Self-explaining on regression: a non-empty rival_pk proves the
+        # select_for_update lock site was actually exercised (the rival
+        # was injected there). Without this, a pre-fix regression fails
+        # as a bare IndexError instead of a diagnostic message.
+        assert rival_pk, (
+            "the select_for_update lock site was never reached — ensure_session "
+            "read existence before/without the row lock (pre-fix behaviour)"
+        )
         assert ticket.sessions.count() == 1, (
             f"race created {ticket.sessions.count()} sessions — ensure_session "
             "read existence before/without the row lock"
