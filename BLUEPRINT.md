@@ -83,7 +83,7 @@ src/teatree/
   trigger_parser.py     # `triggers:` regex compiler for skill auto-loading
   url_title_fetcher.py  # PR/issue title prefetch for hook trigger matching
   visual_qa.py          # Pre-push browser sanity gate (Playwright)
-  cli_reference.py      # Generates docs/generated/cli-reference.md
+  cli_reference.py      # Generates docs/generated/cli-reference.md; command_paths/command_groups SSOT for the SKILL.md t3-invocation validator (#550)
   claude_sessions.py    # Resume helpers for `claude --resume`
 
   cli/                 # Typer CLI package — bootstrap commands (no Django needed)
