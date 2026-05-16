@@ -62,7 +62,7 @@ This emits JSON listing every open PR authored by the user across the forge:
 
 ```json
 {
-  "author": "adrien.cossa",
+  "author": "<your-handle>",
   "count": 5,
   "prs": [
     {
@@ -143,7 +143,7 @@ After push, watch the pipeline. On red, delegate to the existing fix-push-monito
 
 ### Step 8 — Merge (serial-merge only)
 
-Squash-merge the PR (`gh pr merge <iid> --squash` or the GitLab equivalent). On any merge failure (review required, branch protection block, conflict that snuck in between Step 5 and now) **stop the sweep and surface the failure** — do not silently skip to the next PR, because the next PR's update step would still be racing against the unmerged predecessor.
+Squash-merge the PR. For public `souliane/*` use `t3 <overlay> pr merge <pr> <slug>` (#762) — NOT raw `gh pr merge --squash`, which lets GitHub set the server-side squash commit author from the merging account's configured email (non-deterministic; the #730 pre-push check only covers branch commits). `t3 pr merge` forces a noreply author and (synchronous path) verifies the landed author fail-closed; non-souliane / private remotes use the platform-native merge (`glab mr merge` etc.). On any merge failure (review required, branch protection block, conflict that snuck in between Step 5 and now) **stop the sweep and surface the failure** — do not silently skip to the next PR, because the next PR's update step would still be racing against the unmerged predecessor.
 
 After a successful merge, **re-run the discovery CLI** (`t3 <overlay> pr sweep`) to refresh the "open PRs" list before picking the next entry. The list shrinks by one and any sibling PR may now be conflict-free where it wasn't before.
 

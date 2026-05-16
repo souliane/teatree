@@ -21,6 +21,7 @@ from teatree.core.models import Session, Ticket, Worktree
 from teatree.core.models.types import TicketExtra, VisualQASummary
 from teatree.core.orphan_guard import BranchStatus, classify_branch
 from teatree.core.overlay_loader import get_overlay
+from teatree.core.public_identity import MergeResult
 from teatree.core.runners.ship import overlay_pr_labels, sanitize_close_keywords
 from teatree.types import RawAPIDict
 from teatree.utils import git
@@ -496,6 +497,22 @@ class Command(TyperCommand):
             return {"allowed": False, "reason": str(exc), "missing": []}
         else:
             return {"allowed": True, "target_phase": target_phase}
+
+    @command(name="merge")
+    def merge(self, pr: int, slug: str, *, auto: bool = False) -> MergeResult:
+        """Squash-merge a PR with a forced noreply author (#762).
+
+        The merge path the review-loop MUST use instead of raw
+        ``gh pr merge --squash``: on public ``souliane/*`` it always
+        passes an explicit noreply ``--author-email`` and (synchronous
+        path) verifies the landed squash author fail-closed; the #730
+        pre-push check only sees branch commits, not the server-side
+        squash. Non-souliane / private remotes are merged unchanged.
+        """
+        from teatree.core.pr_merge import squash_merge_public  # noqa: PLC0415
+
+        squash_merge_public(pr=pr, slug=slug, auto=auto)
+        return MergeResult(merged=True, pr=pr, slug=slug, auto=auto)
 
     @command(name="fetch-issue")
     def fetch_issue(self, issue_url: str) -> dict[str, object]:
