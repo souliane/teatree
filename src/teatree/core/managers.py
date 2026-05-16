@@ -1,7 +1,7 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
-from django.db import models
+from django.db import models, transaction
 from django.db.models import Q
 from django.utils import timezone
 
@@ -9,6 +9,7 @@ from teatree.config import load_config
 from teatree.core.models.errors import RedisSlotsExhaustedError
 
 if TYPE_CHECKING:
+    from teatree.core.models.task import Task
     from teatree.core.models.ticket import Ticket
 
 
@@ -163,6 +164,57 @@ class TaskQuerySet(models.QuerySet):
         from teatree.core.models.task import Task  # noqa: PLC0415
 
         return self._claimable_for_target(Task.ExecutionTarget.INTERACTIVE, overlay)
+
+    def claim_next_pending(
+        self,
+        *,
+        claimed_by: str,
+        lease_seconds: int = 300,
+        extra_filter: "Q | None" = None,
+    ) -> "Task | None":
+        """Atomically claim the oldest PENDING task — backend-agnostic (#786, N4).
+
+        The claim is the dispatch boundary: callers spawn a sub-agent only
+        for the returned task, so a second concurrent loop tick cannot
+        double-dispatch a task the first already took (the spawn-then-claim
+        race this replaces).
+
+        Atomicity does NOT rely on ``select_for_update(skip_locked=True)``:
+        teatree's production DB is SQLite, where
+        ``has_select_for_update_skip_locked`` is ``False`` and Django
+        silently drops the clause, so two ticks would both SELECT the same
+        row. Instead this is a single conditional ``UPDATE ... WHERE
+        status='pending' AND pk=<oldest>``: the row's status is the
+        compare-and-swap token. Exactly one writer's UPDATE matches
+        (``rowcount == 1``); the loser's ``WHERE status='pending'`` no
+        longer holds so it updates 0 rows and returns ``None``. Correct on
+        SQLite AND Postgres. ``extra_filter`` (a ``Q``) narrows the
+        candidate set (e.g. dispatchable-only) so the command and the
+        manager share ONE audited claim path.
+        Returns the claimed task, or ``None`` when nothing is claimable.
+        """
+        from teatree.core.models.task import Task  # noqa: PLC0415
+
+        now = timezone.now()
+        candidates = self.filter(status=Task.Status.PENDING)
+        if extra_filter is not None:
+            candidates = candidates.filter(extra_filter)
+        with transaction.atomic():
+            oldest_pk = candidates.order_by("pk").values_list("pk", flat=True).first()
+            if oldest_pk is None:
+                return None
+            # Compare-and-swap on status: only the writer that still sees
+            # the row PENDING wins; a concurrent tick updates 0 rows.
+            claimed_count = self.filter(pk=oldest_pk, status=Task.Status.PENDING).update(
+                status=Task.Status.CLAIMED,
+                claimed_by=claimed_by,
+                claimed_at=now,
+                heartbeat_at=now,
+                lease_expires_at=now + timedelta(seconds=lease_seconds),
+            )
+            if claimed_count != 1:
+                return None
+        return self.get(pk=oldest_pk)
 
     def reap_stale_claims(self) -> int:
         """Fail CLAIMED tasks whose lease has expired. Returns number of reaped tasks."""
