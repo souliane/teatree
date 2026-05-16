@@ -35,7 +35,10 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │                 session dies another open session takes over and re-spawns   │
 │                 the loops from the registry; with zero sessions open the     │
 │                 loop is paused until the next session start (no OS daemon —  │
-│                 accepted, not a defect).                                     │
+│                 accepted, not a defect). Within the owner session a          │
+│                 Stop-hook self-pump re-continues the loop automatically      │
+│                 while consolidated work remains (no manual coordinator       │
+│                 re-prompt); it idles when there is none.                     │
 │ slack           Slack integration commands.                                  │
 │ teatree         Commands for the t3-teatree overlay.                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
@@ -1050,7 +1053,9 @@ Usage: t3 loop [OPTIONS] COMMAND [ARGS]...
  Claude Code session is open; if the owner session dies another open session
  takes over and re-spawns the loops from the registry; with zero sessions open
  the loop is paused until the next session start (no OS daemon — accepted, not
- a defect).
+ a defect). Within the owner session a Stop-hook self-pump re-continues the
+ loop automatically while consolidated work remains (no manual coordinator
+ re-prompt); it idles when there is none.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
