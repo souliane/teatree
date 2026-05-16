@@ -49,6 +49,33 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
         AUTHOR = "author", "Author"
         REVIEWER = "reviewer", "Reviewer"
 
+    # #808: the ship reconcile is PHASE-DRIVEN / state-complete, not an
+    # enumerated source allow-list. The shipping gate already verified the
+    # aggregated cross-session phase ledger (the single source of truth)
+    # before calling ``reconcile_reviewed``; the FSM must follow the
+    # phases, not gate them behind a hand-maintained state list (the
+    # recurring #798/#799/#808 ``{'allowed': False, 'missing': []}``
+    # class — each new unlisted non-terminal state re-broke it). Only
+    # genuinely terminal/abandoned states are non-recoverable; EVERY other
+    # state is a legal reconcile source, derived (not enumerated) so a
+    # future added state cannot silently re-introduce the bug.
+    _TERMINAL_STATES: ClassVar[frozenset[str]] = frozenset(
+        {State.SHIPPED, State.MERGED, State.DELIVERED, State.IGNORED},
+    )
+    # NOTE: a class-body comprehension cannot see the enclosing ``State``
+    # (Python scoping); enumerate explicitly and assert completeness in a
+    # test so a future added state is caught rather than silently dropped.
+    _RECONCILE_SOURCE_STATES: ClassVar[list[str]] = [
+        State.NOT_STARTED,
+        State.SCOPED,
+        State.STARTED,
+        State.CODED,
+        State.TESTED,
+        State.REVIEWED,
+        State.IN_REVIEW,
+        State.RETROSPECTED,
+    ]
+
     overlay = models.CharField(max_length=255)
     issue_url = models.URLField(max_length=500, blank=True)
     variant = models.CharField(max_length=100, blank=True)
@@ -179,44 +206,39 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
 
     @transition(
         field=state,
-        source=[
-            State.NOT_STARTED,
-            State.SCOPED,
-            State.STARTED,
-            State.CODED,
-            State.TESTED,
-            State.REVIEWED,
-            State.IN_REVIEW,
-        ],
+        source=_RECONCILE_SOURCE_STATES,
         target=State.REVIEWED,
     )
     def reconcile_reviewed(self) -> None:
-        """Gate-driven FSM catch-up to REVIEWED (#694, #798).
+        """Phase-driven, state-complete FSM catch-up to REVIEWED (#694, #798, #799, #808).
 
-        Any pre-REVIEWED state, plus the recoverable ``IN_REVIEW``
-        stuck-state, reconciles to ``REVIEWED``.
+        EVERY non-terminal state reconciles to ``REVIEWED`` — the source
+        set is *derived* from ``_RECONCILE_SOURCE_STATES`` (all states
+        except the terminal ``_TERMINAL_STATES``: SHIPPED/MERGED/DELIVERED/
+        IGNORED), never a hand-maintained allow-list.
 
         The shipping gate is the single source of truth: it verifies the
         required phases aggregated across **all** of the ticket's sessions
         (``aggregate_phase_records``/``check_gate_across_ticket``) *before*
         calling this. Unlike ``review()``, there is no completed-reviewing-
         task condition — the session record already attests the work was
-        done. This exists so the loop path (which advances ``visited_phases``
-        without always firing every FSM hop) and the CLI path cannot
-        disagree: a passing gate implies a shippable FSM state, so ``ship()``
-        never raises a raw ``TransitionNotAllowed`` at ``pr create``.
+        done. So a passing gate must imply a shippable FSM state and
+        ``ship()`` never raises a raw ``TransitionNotAllowed`` at
+        ``pr create``.
 
-        ``IN_REVIEW`` is a legal source (#798): a ticket whose phase chain is
-        split across sessions (the maker≠checker + fresh-session norm) can
-        get stranded at ``IN_REVIEW`` when an earlier ship enqueued but the
-        push/PR never landed (e.g. the #793-class ``ensure-pr`` race). The
-        gate then aggregates ``missing: []`` but ``ship()`` (source
-        ``[REVIEWED, SHIPPED]``) could not fire from ``IN_REVIEW`` — the
-        ``{'allowed': False, 'missing': []}`` deadlock. Reconciling
-        ``IN_REVIEW → REVIEWED`` lets ``ship()`` re-fire; ``execute_ship``
-        is state-guarded/idempotent so the retry is safe. ``SHIPPED`` is
-        deliberately NOT a source: that is genuine post-ship success, not a
-        stuck state.
+        #808 made this state-complete: previously the source was an
+        enumerated list (#799 added ``IN_REVIEW`` after #798; ``RETROSPECTED``
+        and any future unlisted non-terminal state was still rejected),
+        which kept re-introducing the ``{'allowed': False, 'missing': []}``
+        denial — the gate aggregated ``missing: []`` but the FSM couldn't
+        reach ``REVIEWED`` from the lingering state (e.g. a ticket
+        re-provisioned for a new workstream whose FSM sat at
+        ``RETROSPECTED``). Deriving the source from the terminal set makes
+        the FSM follow the phase ledger, so a newly added non-terminal
+        state can never silently re-break the gate. Terminal states stay
+        non-recoverable: SHIPPED/MERGED/DELIVERED are genuine post-ship
+        success; IGNORED is abandoned — none should reconcile backward to a
+        shippable state.
         """
 
     def aggregate_phase_records(self) -> tuple[list[str], dict[str, dict[str, str]]]:
