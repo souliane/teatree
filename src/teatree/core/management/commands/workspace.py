@@ -213,6 +213,11 @@ class Command(TyperCommand):
                 ticket.start()
                 ticket.save()
 
+            # #748: every entry point converges on a durable session so
+            # the shipping gate has a phase-attestation home regardless
+            # of which path created the ticket.
+            ticket.ensure_session()
+
         # Run the provisioner synchronously so the CLI gives immediate feedback;
         # the worker that ``start()`` enqueued is idempotent and no-ops when it
         # finds the worktrees already in place. Single source of truth: the runner.
@@ -222,9 +227,19 @@ class Command(TyperCommand):
         ticket_dir = _workspace_dir() / branch
         if not result.ok and not ticket.worktrees.exists():
             self.stderr.write(f"  Provisioning failed: {result.detail}")
-            ticket.delete()
-            with suppress(OSError):
-                ticket_dir.rmdir()
+            # #748: only discard the ticket if it carries NO phase
+            # attestation. ``get_or_create`` may have resolved an
+            # existing loop/coordinator-built ticket whose sessions hold
+            # genuinely-completed-work phase records; ``Session.ticket``
+            # is ``on_delete=CASCADE``, so ``ticket.delete()`` here would
+            # cascade-reap that attestation (the observed session-reaper).
+            # A failed provision must never destroy attested work — leave
+            # the ticket + sessions intact and just report the failure.
+            visited, _ = ticket.aggregate_phase_records()
+            if not visited:
+                ticket.delete()
+                with suppress(OSError):
+                    ticket_dir.rmdir()
             return 0
         if not result.ok:
             self.stderr.write(f"  WARNING: {result.detail}")

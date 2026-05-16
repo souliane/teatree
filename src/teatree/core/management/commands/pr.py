@@ -16,6 +16,7 @@ from django_typer.management import TyperCommand, command
 from teatree import visual_qa
 from teatree.backends.protocols import PullRequestSpec
 from teatree.core.backend_factory import code_host_from_overlay
+from teatree.core.management.commands._ship_fsm import reconcile_fsm_for_ship
 from teatree.core.models import Session, Ticket, Worktree
 from teatree.core.models.types import TicketExtra, VisualQASummary
 from teatree.core.orphan_guard import BranchStatus, classify_branch
@@ -183,10 +184,7 @@ def _check_shipping_gate(ticket: Ticket) -> ShippingGateFailure | None:
 
     # Gate passed -> the work is attested. Reconcile the FSM from the single
     # source of truth so ``ship()`` (source [REVIEWED, SHIPPED]) is legal.
-    if ticket.state not in {Ticket.State.REVIEWED, Ticket.State.SHIPPED}:
-        with transaction.atomic():
-            ticket.reconcile_reviewed()
-            ticket.save()
+    reconcile_fsm_for_ship(ticket)
     return None
 
 
@@ -194,10 +192,13 @@ def _do_ship_transition(ticket: Ticket, title: str) -> ShippingGateFailure | Non
     """Run the ``ship()`` FSM transition; return a gate failure or ``None``.
 
     Invariant (#694): ``pr create`` never raises a raw
-    ``TransitionNotAllowed`` — even on the ``--skip-validation`` path, where
-    the gate reconcile is bypassed and ``ship()`` may be illegal from the
-    current (non-REVIEWED) state. The failure is reported as the same
-    structured shape the gate-fail path returns. ``ship()`` schedules
+    ``TransitionNotAllowed``. Since #748 the ``--skip-validation`` path
+    runs ``reconcile_fsm_for_ship`` too (it is the user-authorized
+    attestation substitute, so the FSM follows the authorization), so
+    ``ship()`` is normally legal here; this ``try`` remains the backstop
+    for any residual illegal hop (e.g. a state the reconcile no-ops past)
+    so the failure is reported as the same structured shape the gate-fail
+    path returns rather than raised. ``ship()`` schedules
     ``execute_ship.enqueue`` via ``transaction.on_commit``.
     """
     try:
@@ -400,6 +401,12 @@ class Command(TyperCommand):
             gate_failure = _run_ship_gates(ticket, worktree, skip_visual_qa=skip_visual_qa)
             if gate_failure is not None:
                 return gate_failure
+        else:
+            # --skip-validation is the user-authorized attestation
+            # substitute (the gate-fixer bootstrap, /t3:ship §5 #2). The
+            # FSM must follow the authorization or ship() is structurally
+            # impossible from a non-REVIEWED state (#748).
+            reconcile_fsm_for_ship(ticket)
 
         if dry_run:
             return _ship_dry_run(ticket, worktree)
