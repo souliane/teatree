@@ -1,7 +1,7 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
-from django.db import models
+from django.db import models, transaction
 from django.db.models import Q
 from django.utils import timezone
 
@@ -9,6 +9,7 @@ from teatree.config import load_config
 from teatree.core.models.errors import RedisSlotsExhaustedError
 
 if TYPE_CHECKING:
+    from teatree.core.models.task import Task
     from teatree.core.models.ticket import Ticket
 
 
@@ -163,6 +164,39 @@ class TaskQuerySet(models.QuerySet):
         from teatree.core.models.task import Task  # noqa: PLC0415
 
         return self._claimable_for_target(Task.ExecutionTarget.INTERACTIVE, overlay)
+
+    def claim_next_pending(self, *, claimed_by: str, lease_seconds: int = 300) -> "Task | None":
+        """Atomically select and claim the oldest PENDING task (#786, N4).
+
+        Selects ``FOR UPDATE SKIP LOCKED`` so two concurrent loop ticks each
+        get a *distinct* task (or ``None``) — never the same one. The claim
+        is the dispatch boundary: callers spawn the sub-agent for the
+        returned task only, so a second tick cannot double-dispatch a task
+        the first already took (the spawn-then-claim race this replaces).
+        Returns the claimed task, or ``None`` when nothing is claimable.
+        """
+        from teatree.core.models.task import Task  # noqa: PLC0415
+
+        now = timezone.now()
+        with transaction.atomic():
+            task = self.select_for_update(skip_locked=True).filter(status=Task.Status.PENDING).order_by("pk").first()
+            if task is None:
+                return None
+            task.status = Task.Status.CLAIMED
+            task.claimed_by = claimed_by
+            task.claimed_at = now
+            task.heartbeat_at = now
+            task.lease_expires_at = now + timedelta(seconds=lease_seconds)
+            task.save(
+                update_fields=[
+                    "status",
+                    "claimed_by",
+                    "claimed_at",
+                    "heartbeat_at",
+                    "lease_expires_at",
+                ],
+            )
+            return task
 
     def reap_stale_claims(self) -> int:
         """Fail CLAIMED tasks whose lease has expired. Returns number of reaped tasks."""

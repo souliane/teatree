@@ -95,6 +95,52 @@ class TestTaskQuerySet(TestCase):
         assert sdk_tasks == [sdk_ready, sdk_reclaimable]
         assert user_tasks == [user_ready]
 
+    def test_claim_next_pending_atomically_claims_oldest(self) -> None:
+        """#786: claim_next_pending atomically selects+claims the oldest PENDING task."""
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket, agent_id="a")
+        first = Task.objects.create(ticket=ticket, session=session, phase="reviewing")
+        Task.objects.create(ticket=ticket, session=session, phase="reviewing")
+
+        claimed = Task.objects.claim_next_pending(claimed_by="loop-slot")
+
+        assert claimed is not None
+        assert claimed.pk == first.pk  # FIFO (oldest first)
+        assert claimed.status == Task.Status.CLAIMED
+        assert claimed.claimed_by == "loop-slot"
+
+    def test_claim_next_pending_never_returns_same_task_twice(self) -> None:
+        """N4 at the manager level: a single PENDING task is never handed out twice.
+
+        Two sequential claims (two ticks): the first claims it, the
+        second gets None.
+        """
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket, agent_id="a")
+        only = Task.objects.create(ticket=ticket, session=session, phase="reviewing")
+
+        a = Task.objects.claim_next_pending(claimed_by="tick-1")
+        b = Task.objects.claim_next_pending(claimed_by="tick-2")
+
+        assert a is not None
+        assert a.pk == only.pk
+        assert b is None  # nothing left to claim — no double-hand-out
+
+    def test_claim_next_pending_none_when_no_pending(self) -> None:
+        assert Task.objects.claim_next_pending(claimed_by="loop-slot") is None
+
+    def test_claim_next_pending_skips_already_claimed(self) -> None:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket, agent_id="a")
+        claimed = Task.objects.create(ticket=ticket, session=session, phase="reviewing")
+        claimed.claim(claimed_by="someone")
+        fresh = Task.objects.create(ticket=ticket, session=session, phase="reviewing")
+
+        got = Task.objects.claim_next_pending(claimed_by="loop-slot")
+
+        assert got is not None
+        assert got.pk == fresh.pk  # skipped the already-claimed one
+
 
 class TestReplyDispatchQuerySet(TestCase):
     def test_due_for_retry_orders_by_oldest_due_first(self) -> None:

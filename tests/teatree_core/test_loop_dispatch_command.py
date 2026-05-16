@@ -75,6 +75,78 @@ class TestPendingSpawn(_LoopDispatchTest):
         assert "No pending spawn requests." in stdout.getvalue()
 
 
+class TestClaimNextAtomicDispatch(_LoopDispatchTest):
+    """#786 N4 keystone: claim-then-spawn so two ticks never double-dispatch one Task.
+
+    The claim boundary IS the spawn boundary. The pre-fix flow
+    (``pending-spawn`` lists ALL unclaimed → Agent → ``spawn-claim``
+    after) let two ticks both see the same Task and both spawn before
+    either claimed. ``claim-next`` claims atomically and only then emits
+    the dispatch payload for the just-claimed Task.
+    """
+
+    def test_claim_next_claims_then_emits_one_task(self) -> None:
+        task = self._reviewer_task()
+        stdout = StringIO()
+        call_command("loop_dispatch", "claim-next", "--json", stdout=stdout)
+
+        payload = json.loads(stdout.getvalue())
+        assert len(payload) == 1
+        assert payload[0]["task_id"] == task.pk
+        assert payload[0]["subagent"] == "t3:reviewer"
+        # Claimed BEFORE the payload was emitted (claim == spawn boundary).
+        task.refresh_from_db()
+        assert task.status == Task.Status.CLAIMED
+        assert task.claimed_by == "loop-slot"
+
+    def test_two_sequential_ticks_never_double_dispatch_same_task(self) -> None:
+        """THE N4 KEYSTONE: one pending Task, two ticks, dispatched exactly once.
+
+        Exactly one tick gets it, the other gets nothing — never the
+        same Task twice.
+        """
+        task = self._reviewer_task()
+
+        out1, out2 = StringIO(), StringIO()
+        call_command("loop_dispatch", "claim-next", "--json", stdout=out1)
+        call_command("loop_dispatch", "claim-next", "--json", stdout=out2)
+
+        first = json.loads(out1.getvalue())
+        second = json.loads(out2.getvalue())
+        dispatched_ids = [e["task_id"] for e in first] + [e["task_id"] for e in second]
+        # The single Task is dispatched exactly once across the two ticks.
+        assert dispatched_ids.count(task.pk) == 1
+        assert second == []  # second tick found nothing claimable
+        task.refresh_from_db()
+        assert task.status == Task.Status.CLAIMED
+
+    def test_two_ticks_two_tasks_each_gets_a_distinct_task(self) -> None:
+        t_a = self._reviewer_task(url="https://example.com/pr/1", head_sha="a")
+        t_b = self._reviewer_task(url="https://example.com/pr/2", head_sha="b")
+
+        out1, out2 = StringIO(), StringIO()
+        call_command("loop_dispatch", "claim-next", "--json", stdout=out1)
+        call_command("loop_dispatch", "claim-next", "--json", stdout=out2)
+
+        got = sorted(
+            [e["task_id"] for e in json.loads(out1.getvalue())] + [e["task_id"] for e in json.loads(out2.getvalue())],
+        )
+        assert got == sorted([t_a.pk, t_b.pk])  # both dispatched, no overlap
+
+    def test_claim_next_empty_when_nothing_pending(self) -> None:
+        stdout = StringIO()
+        call_command("loop_dispatch", "claim-next", "--json", stdout=stdout)
+        assert json.loads(stdout.getvalue()) == []
+
+    def test_claim_next_skips_tasks_with_no_registered_subagent(self) -> None:
+        ticket = Ticket.objects.create(overlay="acme", issue_url="https://example.com/issues/77")
+        session = Session.objects.create(ticket=ticket, agent_id="scoping")
+        Task.objects.create(ticket=ticket, session=session, phase="scoping")
+        stdout = StringIO()
+        call_command("loop_dispatch", "claim-next", "--json", stdout=stdout)
+        assert json.loads(stdout.getvalue()) == []
+
+
 class TestSpawnClaim(_LoopDispatchTest):
     def test_claims_pending_task(self) -> None:
         task = self._reviewer_task()

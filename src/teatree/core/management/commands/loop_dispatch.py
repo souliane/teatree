@@ -76,6 +76,74 @@ class Command(TyperCommand):
                 f"phase={entry['phase']:<10} url={entry['issue_url']}",
             )
 
+    @command(name="claim-next")
+    def claim_next(
+        self,
+        *,
+        claimed_by: Annotated[
+            str,
+            typer.Option("--claimed-by", help="Worker identifier stored on the claim."),
+        ] = "loop-slot",
+        json_output: Annotated[
+            bool,
+            typer.Option("--json", help="Emit the claimed dispatch as JSON instead of a table."),
+        ] = False,
+    ) -> None:
+        """Atomically claim the oldest pending dispatchable Task, then emit it.
+
+        #786 (N4): the claim IS the spawn boundary. Two concurrent ticks
+        each ``claim-next`` a *distinct* task (or nothing) via
+        ``select_for_update(skip_locked=True)`` — neither can spawn a task
+        the other already took, so the spawn-then-claim double-dispatch
+        window is gone. The slot calls its ``Agent`` tool for the emitted
+        (already-claimed) entry. A non-dispatchable PENDING task (no
+        registered subagent) is left untouched for operator triage and an
+        empty payload is emitted.
+        """
+        from datetime import timedelta  # noqa: PLC0415
+
+        from django.db import transaction  # noqa: PLC0415
+        from django.utils import timezone  # noqa: PLC0415
+
+        payload: list[dict[str, Any]] = []
+        with transaction.atomic():
+            locked = (
+                Task.objects.select_for_update(skip_locked=True)
+                .filter(status=Task.Status.PENDING)
+                .select_related("ticket")
+                .order_by("pk")
+            )
+            task = next((t for t in locked if _subagent_for(t)), None)
+            if task is not None:
+                now = timezone.now()
+                task.status = Task.Status.CLAIMED
+                task.claimed_by = claimed_by
+                task.claimed_at = now
+                task.heartbeat_at = now
+                task.lease_expires_at = now + timedelta(seconds=300)
+                task.save(
+                    update_fields=[
+                        "status",
+                        "claimed_by",
+                        "claimed_at",
+                        "heartbeat_at",
+                        "lease_expires_at",
+                    ],
+                )
+                payload = [_task_to_dict(task)]
+
+        if json_output:
+            self.stdout.write(json.dumps(payload, indent=2))
+            return
+        if not payload:
+            self.stdout.write("No pending spawn requests.")
+            return
+        entry = payload[0]
+        self.stdout.write(
+            f"Claimed task={entry['task_id']} subagent={entry['subagent']} "
+            f"phase={entry['phase']} url={entry['issue_url']}",
+        )
+
     @command(name="spawn-claim")
     def spawn_claim(
         self,
