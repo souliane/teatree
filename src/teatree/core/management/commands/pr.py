@@ -344,6 +344,18 @@ class Command(TyperCommand):
         if worktree is None:
             return WorktreeMissingError(error="ticket has no worktree")
 
+        # #776: a ticket can span multiple PRs (one branch per
+        # workstream). Record the INVOKING worktree's current git branch
+        # so ShipExecutor ships THIS branch, not the earliest (often
+        # already-merged) `worktrees.first()` row. Read from the cwd the
+        # CLI was invoked in (the worktree the user ran `pr create` from).
+        invoking_branch = git.current_branch(repo=".")
+        if invoking_branch and invoking_branch not in {"HEAD", "main", "master"}:
+            extra = cast("TicketExtra", ticket.extra or {})
+            extra["ship_invoking_branch"] = invoking_branch
+            ticket.extra = extra
+            ticket.save(update_fields=["extra"])
+
         if not skip_validation:
             gate_failure = _run_ship_gates(ticket, worktree, skip_visual_qa=skip_visual_qa)
             if gate_failure is not None:
