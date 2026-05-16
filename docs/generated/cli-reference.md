@@ -608,6 +608,8 @@ Usage: t3 tool [OPTIONS] COMMAND [ARGS]...
 │                  IPs).                                                       │
 │ validate-mr      Validate MR/PR title+description against the active         │
 │                  overlay's rules.                                            │
+│ repo-mode        Report whether the repo is solo (fix proactively) or        │
+│                  collaborative (flag, don't fix).                            │
 │ analyze-video    Decompose video into frames for AI analysis.                │
 │ bump-deps        Bump pyproject.toml dependencies from uv.lock.              │
 │ sonar-check      Run local SonarQube analysis via Docker.                    │
@@ -655,6 +657,28 @@ Usage: t3 tool validate-mr [OPTIONS]
 │ --title              TEXT  MR/PR title                                       │
 │ --description        TEXT  MR/PR description                                 │
 │ --help                     Show this message and exit.                       │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 tool repo-mode`
+
+```
+Usage: t3 tool repo-mode [OPTIONS] [REPO]
+
+ Report whether the repo is solo (fix proactively) or collaborative (flag,
+ don't fix).
+
+ One heuristic for every skill: ``git shortlog`` over the last 90 days on
+ the default branch. A `` repo_mode`` config value overrides the
+ detection. Result is cached 7 days per repo.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│   repo      [REPO]  Repo path (default: current directory) [default: .]      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --json             Emit machine-readable JSON.                               │
+│ --refresh          Bypass the 7-day cache and re-detect.                     │
+│ --help             Show this message and exit.                               │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -2446,12 +2470,20 @@ Usage: t3 teatree lifecycle visit-phase [OPTIONS] TICKET_ID PHASE
  ``ticket.state`` is included in the output so a skipped or refused
  transition is visible rather than silently swallowed.
 
+ ``--agent-id`` records the recording agent's identity for
+ maker≠checker (#755). Resolution is delegated to
+ ``Session.recording_identity`` so the attribution is **never
+ empty** even when neither ``--agent-id`` nor ``Session.agent_id``
+ is set — a blank previously made the gate vacuously pass.
+
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    ticket_id      TEXT  [required]                                         │
 │ *    phase          TEXT  [required]                                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --help          Show this message and exit.                                  │
+│ --agent-id        TEXT  Recording agent identity stamped into phase_visits   │
+│                         (maker≠checker attribution).                         │
+│ --help                  Show this message and exit.                          │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
