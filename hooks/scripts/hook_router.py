@@ -274,10 +274,17 @@ def _session_has_loop(session_id: str) -> bool:
 
 
 def _cleanup_stale_pending(session_id: str) -> None:
-    """Remove loop-pending files from old sessions."""
-    for f in STATE_DIR.glob("*.loop-pending"):
-        if f.stem != session_id:
-            f.unlink(missing_ok=True)
+    """Remove other sessions' per-session loop markers.
+
+    Sweeps both ``*.loop-pending`` and ``*.pump-armed`` (#758 N1): a
+    crashed session would otherwise leave a stale ``pump-armed`` marker
+    whose mere presence suppresses a *new* owner session's self-pump
+    (the anti-spin check keys on the marker file existing).
+    """
+    for suffix in ("loop-pending", "pump-armed"):
+        for f in STATE_DIR.glob(f"*.{suffix}"):
+            if f.stem != session_id:
+                f.unlink(missing_ok=True)
 
 
 def handle_enforce_loop_on_prompt(data: dict) -> None:
@@ -1263,6 +1270,117 @@ def handle_session_end_loop_registry(data: dict) -> None:
         box[0] = registry
 
 
+# ── Stop: per-session loop self-pump (#758 / board #50) ──────────────
+#
+# Replaces the manual coordinator pump. When the loop-OWNER session
+# finishes a turn and consolidated work remains, the Stop hook returns
+# ``{"decision": "block", "reason": ...}`` to self-continue the loop
+# without an external re-prompt. No work => no block (idle by design,
+# mirroring #748 "zero sessions = dead, accepted"). Non-owner sessions
+# never pump (the loop-registry dedup from #718/#748 is authoritative).
+# Anti-spin: a per-session ``<session>.pump-armed`` marker plus an
+# mtime min-interval (same shape as ``_tick_meta_stale``) so a Stop
+# storm cannot hot-loop. SessionEnd clears the marker.
+
+_SELF_PUMP_MIN_INTERVAL = 60
+_SELF_PUMP_PENDING_TIMEOUT = 5
+_SELF_PUMP_PREVIEW = 5
+
+
+def _consolidated_pending_work() -> list[dict]:
+    """Return the loop's pending-spawn work via ``t3 loop pending-spawn --json``.
+
+    Pure read of the existing dispatch seam — no new state. ``[]`` on any
+    failure (no ``t3``, timeout, non-zero, malformed) so the self-pump
+    fails safe to "idle" rather than spinning on a broken read.
+    """
+    t3_bin = shutil.which("t3")
+    if not t3_bin:
+        return []
+    try:
+        result = subprocess.run(  # noqa: S603
+            [t3_bin, "loop", "pending-spawn", "--json"],
+            capture_output=True,
+            text=True,
+            timeout=_SELF_PUMP_PENDING_TIMEOUT,
+            check=False,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return []
+    if result.returncode != 0 or not result.stdout.strip():
+        return []
+    try:
+        parsed = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return []
+    return parsed if isinstance(parsed, list) else []
+
+
+def _session_owns_loop(session_id: str) -> bool:
+    owner = _prune_dead_owner(_read_loop_registry()).get(_OWNER_LOOP)
+    return owner is not None and owner.get("session_id") == session_id
+
+
+def _self_pump_recently_armed(marker: Path) -> bool:
+    if not marker.is_file():
+        return False
+    import time  # noqa: PLC0415
+
+    return int(time.time()) - int(marker.stat().st_mtime) < _SELF_PUMP_MIN_INTERVAL
+
+
+def _format_pending_summary(pending: list[dict]) -> str:
+    preview = pending[:_SELF_PUMP_PREVIEW]
+    lines = [
+        f"  - task {p.get('task_id', '?')} → {p.get('subagent', '?')} "
+        f"({p.get('phase', '?')}) {p.get('issue_url', '')}".rstrip()
+        for p in preview
+    ]
+    if len(pending) > _SELF_PUMP_PREVIEW:
+        lines.append(f"  - …and {len(pending) - _SELF_PUMP_PREVIEW} more")
+    return "\n".join(lines)
+
+
+def handle_loop_self_pump(data: dict) -> bool | None:
+    """Self-continue the loop on Stop when the owner has pending work.
+
+    Returns ``True`` (emitting a ``block`` decision) only for the
+    loop-owner session, with consolidated pending work, outside the
+    anti-spin interval. Otherwise returns ``None`` (idle / non-owner /
+    spin-guarded) so the session may end normally.
+    """
+    session_id = data.get("session_id", "")
+    if not session_id or not _session_owns_loop(session_id):
+        return None
+
+    _ensure_state_dir()
+    marker = _state_file(session_id, "pump-armed")
+    if _self_pump_recently_armed(marker):
+        return None
+
+    pending = _consolidated_pending_work()
+    if not pending:
+        return None
+
+    marker.write_text("1", encoding="utf-8")
+    reason = (
+        "TEATREE LOOP SELF-PUMP — consolidated work remains; continue the loop "
+        "without waiting for an external prompt. Run `t3 loop tick`, then "
+        "`t3 loop pending-spawn --json` and dispatch each entry (Agent tool, "
+        "`t3 loop spawn-claim <task_id>` after each). Outstanding now:\n" + _format_pending_summary(pending)
+    )
+    json.dump({"decision": "block", "reason": reason}, sys.stdout)
+    return True
+
+
+def handle_session_end_self_pump(data: dict) -> None:
+    """Clear the self-pump marker on session exit (counterpart to the Stop hook)."""
+    session_id = data.get("session_id", "")
+    if not session_id:
+        return
+    _state_file(session_id, "pump-armed").unlink(missing_ok=True)
+
+
 _SESSION_END_ORPHAN_TIMEOUT = 4
 _SESSION_END_ORPHAN_PREVIEW = 5
 
@@ -1694,7 +1812,8 @@ _HANDLERS: dict[str, list] = {
     "SessionStart": [handle_session_start_bootstrap],
     "PreCompact": [handle_pre_compact],
     "PostCompact": [handle_post_compact],
-    "SessionEnd": [handle_session_end, handle_session_end_loop_registry],
+    "SessionEnd": [handle_session_end, handle_session_end_loop_registry, handle_session_end_self_pump],
+    "Stop": [handle_loop_self_pump],
 }
 
 
