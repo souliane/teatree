@@ -1,4 +1,5 @@
 import hashlib
+import hmac
 import json
 import logging
 
@@ -32,7 +33,7 @@ class GitLabWebhookView(View):
             return HttpResponse(status=503)
 
         provided = request.headers.get("X-Gitlab-Token", "")
-        if not provided or provided != secret:
+        if not provided or not hmac.compare_digest(provided, secret):
             return HttpResponse(status=401)
 
         if not webhook_rate_limiter().allow(IncomingEvent.Source.GITLAB):
