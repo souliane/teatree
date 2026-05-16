@@ -246,7 +246,7 @@ class OverlayBase(ABC):  # noqa: PLR0904 — overlay extension API; hook count r
     def get_db_import_strategy(self, worktree: "Worktree") -> DbImportStrategy | None:
         return None
 
-    def db_import(
+    def db_import(  # noqa: PLR0913 — overlay extension-point contract; each kwarg is a documented hook input, not poor design.
         self,
         worktree: "Worktree",
         *,
@@ -254,6 +254,7 @@ class OverlayBase(ABC):  # noqa: PLR0904 — overlay extension API; hook count r
         slow_import: bool = False,
         dslr_snapshot: str = "",
         dump_path: str = "",
+        approve_remote_dump: bool = False,
     ) -> bool:
         return False
 

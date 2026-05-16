@@ -417,7 +417,7 @@ Represents a unit of work for an agent (headless or interactive).
 
 Each guard is `phase + state` so repeat calls (e.g. from parallel child tasks) find the state mismatch and safely no-op after the first advance.
 
-**Phase task consumption:** Each FSM transition body calls `_consume_pending_phase_tasks(phase)` for the phase it closes. On the task-driven path the task was already marked COMPLETED before the transition fires, so the call is a zero-row no-op. On direct-call paths (e.g. `pr.py` invoking `ticket.ship()` from a CLI command) the previously auto-scheduled phase task is still PENDING/CLAIMED — the call marks it COMPLETED so the dispatcher does not later claim it as a zombie session.
+**Phase task consumption:** Each FSM transition body calls `_consume_pending_phase_tasks(phase)` for the phase it closes. On the task-driven path the task was already marked COMPLETED before the transition fires, so the call is a zero-row no-op. On direct-call paths (e.g. `pr.py` invoking `ticket.ship()` from a CLI command) the previously auto-scheduled phase task is still PENDING/CLAIMED — the call marks it COMPLETED so the dispatcher does not later claim it as a zombie session. Both this consume side (`TaskQuerySet.pending_in_phase`, #769) and the FSM read-side conditions (`TaskQuerySet.completed_in_phase`, #757) match the phase via the shared `phase_spellings()` SSOT, so a short-verb task (`tasks create <id> review`, stored unnormalized as `review`) is matched the same as the canonical `reviewing` — a raw `phase=phase` filter previously missed it.
 
 **Session resume:** Both headless and interactive runners walk the `parent_task` chain to find a previous `agent_session_id`. When found, the CLI is invoked with `--resume <session_id>` to preserve full conversation context across execution mode switches.
 
@@ -1187,6 +1187,12 @@ Overlay-specific configuration lives on `overlay.config` (an `OverlayConfig` dat
 
 `~/.local/share/teatree/<namespace>/` — namespaced data directories created by `get_data_dir()`.
 
+### 10.5 State Placement Rule — Cache vs Intent (#628)
+
+**The text files are the source of truth for user *intent*; the DB caches *derived* state.** A datum may live DB-only **iff it can be deleted and deterministically rebuilt** from the text files (`~/.teatree.toml`, overlay config) plus repo state — deleting the DB must lose no user intent. If losing a datum would lose user intent, it stays text-file source-of-truth (the DB may cache a read view, never own it). The DB stays rebuildable from the text files indefinitely — no one-way migration.
+
+Consequences: bootstrap config (DB path, log level, the `mode` resolution chain) and user-authored intent (push mode, contribute, banned terms) stay in text files — they must resolve with the DB absent. Derived/observational state (cached env values, last-seen branch, lifecycle phase history) is DB-as-cache and carries a regeneration path. A DB-only user-*intent* field (e.g. #627 `Ticket.context`) is permitted **only** with a round-trip affordance so the `cat ~/.teatree.toml` affordance is not lost — `t3 config show` is that affordance: a read-only view partitioning text-file intent from DB regenerable cache, working with the DB absent.
+
 ---
 
 ## 11. Skills & Plugin Architecture
@@ -1480,9 +1486,9 @@ django_db_import(cfg, skip_dslr=False, allow_remote_dump=False)
 ```
 
 - `skip_dslr=True` — skip DSLR snapshots (used with `--force` to get a fresh dump)
-- `allow_remote_dump=True` — enable the remote pg_dump strategy (requires explicit user approval)
+- `allow_remote_dump=True` — enable the remote pg_dump strategy. Set **only** after a successful per-invocation interactive approval (#777): `t3 <overlay> db refresh --fresh-dump` calls `teatree.utils.approval.require_interactive_approval`, which states the env + tenant + target DB and refuses unless a human confirms at a TTY. An unattended agent has no TTY and so cannot self-approve — this replaces the old blanket `T3_ALLOW_REMOTE_DUMP` env-var prohibition (a defunct, now-blocked bypass).
 
-**Overlay responsibility:** Provide the config values and decide when to set `allow_remote_dump=True` (typically gated behind `--force` or an interactive prompt).
+**Overlay responsibility:** Provide the config values and forward `approve_remote_dump` (the post-approval flag from core's `db refresh --fresh-dump` gate) into `django_db_import(..., allow_remote_dump=...)`. The overlay must not hardcode the value or invent its own gate — the single sanctioned gate is core's interactive approval.
 
 ### 14.6 DSLR Integration
 

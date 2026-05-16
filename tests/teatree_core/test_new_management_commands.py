@@ -115,7 +115,7 @@ class FullOverlay(OverlayBase):
     def get_db_import_strategy(self, worktree: Worktree) -> DbImportStrategy:
         return {"kind": "test", "source_database": "test_db"}
 
-    def db_import(
+    def db_import(  # noqa: PLR0913 — mirrors the OverlayBase.db_import extension-point contract.
         self,
         worktree: Worktree,
         *,
@@ -123,6 +123,7 @@ class FullOverlay(OverlayBase):
         slow_import: bool = False,
         dslr_snapshot: str = "",
         dump_path: str = "",
+        approve_remote_dump: bool = False,
     ) -> bool:
         return True
 
@@ -207,7 +208,7 @@ class PostDbStepsOverlay(FullOverlay):
 class FailingImportOverlay(FullOverlay):
     """Overlay where db_import always fails — tests error reporting."""
 
-    def db_import(
+    def db_import(  # noqa: PLR0913 — mirrors the OverlayBase.db_import extension-point contract.
         self,
         worktree: Worktree,
         *,
@@ -215,6 +216,7 @@ class FailingImportOverlay(FullOverlay):
         slow_import: bool = False,
         dslr_snapshot: str = "",
         dump_path: str = "",
+        approve_remote_dump: bool = False,
     ) -> bool:
         return False
 

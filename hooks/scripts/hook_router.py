@@ -764,11 +764,90 @@ def handle_read_dedup(data: dict) -> None:
 # ── PreCompact: retro-before-compact ──────────────────────────────
 
 
+def _durable_session_snapshot(session_id: str) -> str:
+    """Build a recovery snapshot for *session_id* from DURABLE state only.
+
+    Issue #778: a background sub-agent (loop singleton, reviewer, task
+    agent) auto-compacts without ever running ``/t3:retro``, so the
+    behavioral "agent writes its own snapshot" path never fires for it.
+    Reconstruct "who am I / what am I doing / where" purely from state
+    that already outlives the transcript: the loop-registry entries this
+    session owns (agentId + self-contained spawn brief) and the per
+    -session active-repos / loaded-skills tracking files. No reliance on
+    the agent having done anything.
+    """
+    lines = [
+        f"# Auto-recovery snapshot — session `{session_id}`",
+        "",
+        (
+            "Written by the PreCompact hook from durable state (no retro required). "
+            "Use this to re-derive your identity and assignment after compaction."
+        ),
+    ]
+
+    owned = [
+        (name, entry)
+        for name, entry in _read_loop_registry().items()
+        if isinstance(entry, dict) and entry.get("session_id") == session_id
+    ]
+    if owned:
+        lines += ["", "## Loop assignment (this session owns these singletons)"]
+        for name, entry in sorted(owned):
+            agent_id = entry.get("agent_id") or "(agent id not recorded)"
+            lines.append(f"- **{name}** — resume by agentId `{agent_id}`")
+            brief = (entry.get("spawn_brief") or "").strip()
+            if brief:
+                lines.append(f"  - Brief: {brief}")
+
+    active = _read_lines(_state_file(session_id, "active"))
+    if active:
+        lines += ["", "## Repos touched this session", *(f"- {repo}" for repo in active)]
+
+    skills = _read_lines(_state_file(session_id, "skills"))
+    if skills:
+        lines += ["", "## Skills loaded this session", f"- {', '.join(skills)}"]
+
+    return "\n".join(lines) + "\n"
+
+
+def _write_precompact_snapshot(session_id: str) -> None:
+    """Persist the durable-state snapshot under the PostCompact-recognized name.
+
+    Reuses the ``t3-snapshot-`` prefix that :func:`_find_temp_files`
+    already scans, keyed by session id with a fixed ``-precompact``
+    suffix so a single deterministic file is overwritten each compaction
+    (not an ever-growing pile). Best-effort: a snapshot write must never
+    block compaction.
+    """
+    if not session_id:
+        return
+    target = STATE_DIR / f"{_T3_TEMP_PREFIX}{session_id}-precompact.md"
+    # ``_ensure_state_dir`` (a ``mkdir``) is the more likely OSError source
+    # than the write itself (read-only fs / parent perms) — both must be
+    # suppressed so the docstring's "must never block compaction" holds.
+    with contextlib.suppress(OSError):
+        _ensure_state_dir()
+        target.write_text(_durable_session_snapshot(session_id), encoding="utf-8")
+
+
 def handle_pre_compact(data: dict) -> None:
-    """Inject retro directive before compaction destroys session knowledge."""
+    """Snapshot durable state, then nudge retro if lifecycle skills are active.
+
+    The snapshot is unconditional and behavior-independent (issue #778):
+    background sub-agents have no lifecycle skill loaded and would hit
+    the retro-directive early return below, so the snapshot must be
+    written BEFORE that return for them to recover post-compaction. The
+    main-session retro directive is preserved unchanged after it.
+
+    Note: *when* auto-compaction fires is governed by the Claude Code
+    harness env var ``CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`` (not a teatree
+    setting); tune it at the harness-settings layer, not in teatree code.
+    """
     session_id = data.get("session_id", "")
     if not session_id:
         return
+
+    _write_precompact_snapshot(session_id)
 
     skills_file = _state_file(session_id, "skills")
     loaded: set[str] = set()
@@ -1586,9 +1665,11 @@ def _cron_cadence_seconds(cron_expr: str) -> int | None:
 
 _REMOTE_DUMP_ENV_RE = re.compile(r"\bT3_ALLOW_REMOTE_DUMP\s*=\s*1\b")
 _REMOTE_DUMP_DENY_REASON = (
-    "BLOCKED: agents must never set `T3_ALLOW_REMOTE_DUMP=1`. "
-    "Remote pg_dump over VPN requires explicit human action in a terminal — "
-    "the agent cannot opt in. Ask the user to run the command themselves."
+    "BLOCKED: `T3_ALLOW_REMOTE_DUMP=1` is a removed, defunct bypass (#777) — "
+    "setting it does nothing and signals an attempt to circumvent the safety gate. "
+    "A fresh remote dump is available only via `t3 <overlay> db refresh --fresh-dump`, "
+    "which requires an explicit interactive per-invocation human approval the agent "
+    "cannot satisfy. Ask the user to run that command themselves."
 )
 
 
