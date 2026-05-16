@@ -44,6 +44,41 @@ def persist_agent_actions(actions: list[DispatchAction]) -> list[Task]:
     return created
 
 
+def _owning_overlay(url: str, scan_tag: str) -> str:
+    """Resolve the overlay that *owns* ``url``, preferring URL inference.
+
+    The dispatch payload carries ``overlay`` = the *scanning* overlay's tag
+    (``loop/tick.py`` injects ``job.overlay``), not necessarily the overlay
+    whose workspace repos own the URL.  When a multi-overlay tick's
+    reviewer/orchestrator scanner surfaces an issue/PR owned by a *different*
+    overlay, persisting the scan tag leaks the ticket into the scanning
+    overlay's statusline zone — and because ``overlay`` is then non-empty,
+    ``Ticket.save()`` never runs ``_infer_overlay()`` to correct it (#806,
+    incomplete #743).
+
+    Inference (``infer_overlay_for_url``) is the single source of truth; the
+    scan tag is only a fallback for the inconclusive case (URL owned by no
+    registered overlay, e.g. a host neither overlay declares).
+    """
+    from teatree.core.overlay_loader import infer_overlay_for_url  # noqa: PLC0415
+
+    return infer_overlay_for_url(url) or scan_tag
+
+
+def _reconcile_existing_overlay(ticket: Ticket, *, created: bool) -> None:
+    """Correct an already-persisted ticket whose overlay no longer matches.
+
+    ``get_or_create`` may resolve a pre-existing row whose ``overlay`` was
+    written from a stale/wrong scan tag.  Re-infer from ``issue_url`` and
+    persist the correction.  ``apply_inferred_overlay`` keeps the #743
+    invariant: an inconclusive (empty) inference never blanks a value that
+    is already set, so a host no overlay declares is left as-is.
+    """
+    if created:
+        return
+    ticket.reconcile_overlay()
+
+
 def _handle_reviewer(action: DispatchAction) -> Task | None:
     """Reviewer-requested PR → Ticket(role=reviewer) + Task(phase=reviewing)."""
     payload = action.payload
@@ -52,15 +87,16 @@ def _handle_reviewer(action: DispatchAction) -> Task | None:
         logger.debug("Skipping t3:reviewer action with no url: %r", action.detail)
         return None
     head_sha = str(payload.get("head_sha") or "")
-    overlay = str(payload.get("overlay") or "")
-    ticket, _ = Ticket.objects.get_or_create(
+    scan_tag = str(payload.get("overlay") or "")
+    ticket, created = Ticket.objects.get_or_create(
         issue_url=pr_url,
         defaults={
-            "overlay": overlay,
+            "overlay": _owning_overlay(pr_url, scan_tag),
             "role": Ticket.Role.REVIEWER,
             "extra": {"reviewed_sha": head_sha} if head_sha else {},
         },
     )
+    _reconcile_existing_overlay(ticket, created=created)
     if ticket.role != Ticket.Role.REVIEWER:
         logger.debug(
             "Ticket %s exists with role=%s, not promoting to reviewer for PR %s",
@@ -97,11 +133,12 @@ def _handle_orchestrator(action: DispatchAction) -> Task | None:
     if not issue_url:
         logger.debug("Skipping t3:orchestrator action with no issue_url: %r", action.detail)
         return None
-    overlay = str(payload.get("overlay") or "")
-    ticket, _ = Ticket.objects.get_or_create(
+    scan_tag = str(payload.get("overlay") or "")
+    ticket, created = Ticket.objects.get_or_create(
         issue_url=issue_url,
-        defaults={"overlay": overlay, "role": Ticket.Role.AUTHOR},
+        defaults={"overlay": _owning_overlay(issue_url, scan_tag), "role": Ticket.Role.AUTHOR},
     )
+    _reconcile_existing_overlay(ticket, created=created)
     # #748: a loop/coordinator-built ticket must have a durable phase-
     # attestation session even when scheduling below is skipped (role
     # mismatch / not NOT_STARTED / open task), so the shipping gate can
