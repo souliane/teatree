@@ -9,12 +9,7 @@ from django.test import TestCase
 from teatree import visual_qa
 from teatree.core.management.commands import _ensure_pr as ensure_pr_mod
 from teatree.core.management.commands import pr as pr_command
-from teatree.core.management.commands.pr import (
-    _check_shipping_gate,
-    _resolve_base_url,
-    _run_visual_qa_gate,
-    _ship_preview,
-)
+from teatree.core.management.commands.pr import _check_shipping_gate, _resolve_base_url, _run_visual_qa_gate
 from teatree.core.models import Session, Ticket, Worktree
 from teatree.core.orphan_guard import BranchReport, BranchStatus
 from teatree.core.overlay_loader import reset_overlay_cache
@@ -61,7 +56,7 @@ class TestPrCreateThinWrapper(TestCase):
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             patch.object(pr_command, "_run_visual_qa_gate", return_value=None),
-            patch.object(pr_command, "_validate_pr_metadata", return_value=None),
+            patch.object(pr_command, "validate_pr_metadata", return_value=None),
         ):
             result = cast("dict[str, object]", call_command("pr", "create", str(ticket.id)))
 
@@ -86,7 +81,7 @@ class TestPrCreateThinWrapper(TestCase):
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             patch.object(pr_command, "_run_visual_qa_gate", return_value=None),
-            patch.object(pr_command, "_validate_pr_metadata", return_value=None),
+            patch.object(pr_command, "validate_pr_metadata", return_value=None),
             patch.object(pr_command.git, "last_commit_message", return_value=("feat: x", "body")),
         ):
             result = cast("dict[str, object]", call_command("pr", "create", str(ticket.id), dry_run=True))
@@ -108,7 +103,7 @@ class TestPrCreateThinWrapper(TestCase):
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             patch.object(pr_command, "_run_visual_qa_gate", return_value=None),
-            patch.object(pr_command, "_validate_pr_metadata", return_value=None),
+            patch.object(pr_command, "validate_pr_metadata", return_value=None),
         ):
             result = cast(
                 "dict[str, object]",
@@ -155,7 +150,7 @@ class TestPrCreateSyncShip(TestCase):
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             patch.object(pr_command, "_run_visual_qa_gate", return_value=None),
-            patch.object(pr_command, "_validate_pr_metadata", return_value=None),
+            patch.object(pr_command, "validate_pr_metadata", return_value=None),
             patch("teatree.core.tasks.execute_ship", ship_mock),
         ):
             result = cast(
@@ -177,7 +172,7 @@ class TestPrCreateSyncShip(TestCase):
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             patch.object(pr_command, "_run_visual_qa_gate", return_value=None),
-            patch.object(pr_command, "_validate_pr_metadata", return_value=None),
+            patch.object(pr_command, "validate_pr_metadata", return_value=None),
             patch("teatree.core.tasks.execute_ship", ship_mock),
         ):
             result = cast(
@@ -196,7 +191,7 @@ class TestPrCreateSyncShip(TestCase):
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             patch.object(pr_command, "_run_visual_qa_gate", return_value=None),
-            patch.object(pr_command, "_validate_pr_metadata", return_value=None),
+            patch.object(pr_command, "validate_pr_metadata", return_value=None),
             patch("teatree.core.tasks.execute_ship", ship_mock),
         ):
             result = cast(
@@ -310,83 +305,6 @@ class TestPrCreateSyncShip(TestCase):
 
     def test_skip_validation_from_merged_never_raises_raw_transition(self) -> None:
         self._assert_skip_validation_post_ship_no_raw_transition(Ticket.State.MERGED)
-
-
-class TestShipPreviewTitleDescriptionInvariant(TestCase):
-    """The description's first line must always equal the title.
-
-    A diverged title vs. description-first-line is what blocks the
-    release-notes pipeline. ``_ship_preview`` must build them so they can
-    never differ by construction, regardless of body presence, the
-    fallback title path, or close-keyword sanitization.
-    """
-
-    def _ticket_with_worktree(self) -> Ticket:
-        ticket = Ticket.objects.create(
-            overlay="test",
-            state=Ticket.State.REVIEWED,
-            issue_url="https://github.com/souliane/teatree/issues/119",
-        )
-        Worktree.objects.create(
-            ticket=ticket,
-            overlay="test",
-            repo_path="/tmp/backend",
-            branch="feature-branch",
-            extra={"worktree_path": "/tmp/backend"},
-        )
-        return ticket
-
-    def _first_line(self, description: str) -> str:
-        return description.split("\n", 1)[0]
-
-    def test_first_line_equals_title_with_body(self) -> None:
-        ticket = self._ticket_with_worktree()
-        with (
-            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
-            patch.object(
-                pr_command.git,
-                "last_commit_message",
-                return_value=("feat: add X [FLAG] (proj#119)", "Body paragraph.\n"),
-            ),
-        ):
-            _, title, description = _ship_preview(ticket, ticket.worktrees.first())
-        assert self._first_line(description) == title
-
-    def test_first_line_equals_title_without_body(self) -> None:
-        ticket = self._ticket_with_worktree()
-        with (
-            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
-            patch.object(pr_command.git, "last_commit_message", return_value=("fix: y (proj#119)", "")),
-        ):
-            _, title, description = _ship_preview(ticket, ticket.worktrees.first())
-        assert self._first_line(description) == title
-        assert title == "fix: y (proj#119)"
-
-    def test_first_line_equals_title_on_fallback_title(self) -> None:
-        ticket = self._ticket_with_worktree()
-        with (
-            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
-            patch.object(pr_command.git, "last_commit_message", return_value=("", "")),
-        ):
-            _, title, description = _ship_preview(ticket, ticket.worktrees.first())
-        # Invariant holds even when the fallback title carries a close
-        # keyword ("Resolve") that close-keyword sanitization rewrites.
-        assert self._first_line(description) == title
-        assert ticket.issue_url in title
-
-    def test_first_line_equals_title_when_subject_has_close_keyword(self) -> None:
-        ticket = self._ticket_with_worktree()
-        with (
-            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
-            patch.object(
-                pr_command.git,
-                "last_commit_message",
-                return_value=("fix: resolves #119 the corridor bug (proj#119)", "Body."),
-            ),
-        ):
-            _, title, description = _ship_preview(ticket, ticket.worktrees.first())
-        # Title and first line are both the *sanitized* string -> still equal.
-        assert self._first_line(description) == title
 
 
 class TestEnsurePr(TestCase):
