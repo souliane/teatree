@@ -51,6 +51,18 @@ def normalize_phase(phase: str) -> str:
     return _ALIAS_TO_CANONICAL.get(cleaned, cleaned)
 
 
+def phase_spellings(phase: str) -> tuple[str, ...]:
+    """Every stored spelling that normalizes to ``phase``'s canonical form.
+
+    Lets a DB query match a phase regardless of which accepted spelling a
+    row was stored with (``phase__in=phase_spellings(...)``) without a
+    per-row ``normalize_phase`` call. For an unknown phase, returns just
+    its own normalized form so callers still get an exact match.
+    """
+    canonical = normalize_phase(phase)
+    return _PHASE_ALIASES.get(canonical, (canonical,))
+
+
 def phase_transition(phase: str) -> str | None:
     """Return the FSM transition method name for ``phase``, or ``None``.
 
