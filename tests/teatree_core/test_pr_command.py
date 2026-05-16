@@ -69,6 +69,49 @@ class TestPrCreateThinWrapper(TestCase):
         assert "QUEUED, not performed" in result["warning"]
         assert "--sync" in result["warning"]
 
+    def test_in_review_with_phases_split_across_three_sessions_reconciles_and_ships(self) -> None:
+        """3-session-split + IN_REVIEW must ship, not deadlock (#798).
+
+        The required chain split across 3 sessions (the maker!=checker +
+        fresh-session norm) with the ticket stuck at IN_REVIEW (a failed /
+        incomplete prior ship) must NOT return {'allowed': False, 'missing':
+        []}. The gate aggregates phases across all sessions (so missing is
+        empty); the FSM reconcile must likewise recover IN_REVIEW -> REVIEWED
+        so ship() is legal and the ticket ships.
+        """
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.IN_REVIEW)
+        # Three distinct sessions, one phase each, distinct agent identities —
+        # exactly how maker!=checker + fresh-session scheduling scatters the
+        # required chain across the ticket lifecycle.
+        s_test = Session.objects.create(ticket=ticket, overlay="test", agent_id="maker:a")
+        s_test.visit_phase("testing", agent_id="maker:a")
+        s_review = Session.objects.create(ticket=ticket, overlay="test", agent_id="reviewer:b")
+        s_review.visit_phase("reviewing", agent_id="reviewer:b")
+        s_retro = Session.objects.create(ticket=ticket, overlay="test", agent_id="maker:a")
+        s_retro.visit_phase("retro", agent_id="maker:a")
+        Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path="/tmp/backend",
+            branch="feature-branch",
+            extra={"worktree_path": "/tmp/backend"},
+        )
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch.object(pr_command, "_run_visual_qa_gate", return_value=None),
+            patch.object(pr_command, "validate_pr_metadata", return_value=None),
+        ):
+            result = cast("dict[str, object]", call_command("pr", "create", str(ticket.id)))
+
+        ticket.refresh_from_db()
+        # Must NOT be the {'allowed': False, 'missing': []} deadlock.
+        assert result.get("missing") != [] or result.get("allowed") is not False
+        assert "error" not in result, result
+        assert ticket.state == Ticket.State.SHIPPED
+        assert result["state"] == Ticket.State.SHIPPED
+        assert result["queued"] is True
+
     def test_returns_error_when_no_worktree(self) -> None:
         ticket = Ticket.objects.create(overlay="test", state=Ticket.State.REVIEWED)
         with patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY):
@@ -262,17 +305,20 @@ class TestPrCreateSyncShip(TestCase):
         assert result["allowed"] is False
         assert result["error"]
 
-    def _assert_skip_validation_post_ship_no_raw_transition(self, post_state: Ticket.State) -> None:
-        """Re-running ``--skip-validation`` post-ship must not raise raw.
+    def _assert_skip_validation_post_ship_no_raw_transition(
+        self, post_state: Ticket.State, expected_state: Ticket.State
+    ) -> None:
+        """``--skip-validation`` from a post-ship state never raises raw (#694/#748).
 
-        ``reconcile_reviewed``'s legal sources are only
-        ``{not_started..reviewed}`` — NOT ``in_review``/``merged``. The
-        pre-fix guard (``not in {REVIEWED, SHIPPED}``) let a post-ship
-        state through to ``reconcile_reviewed()``, which has no try/except
-        wrapper, raising a raw uncaught ``TransitionNotAllowed`` and
-        violating the #694 invariant. A flaky-push retry or a second
-        bootstrap invocation (exactly #748's target scenario) hits this.
-        Must degrade to a structured result, not raise.
+        It must degrade to a structured dict result rather than raising a
+        raw ``TransitionNotAllowed``.
+
+        The resulting FSM state depends on the start state: ``MERGED`` is a
+        genuine terminal (no reconcile source) so it stays unchanged;
+        ``IN_REVIEW`` is now a recoverable source (#798) so a gate/auth-
+        passing ticket reconciles ``IN_REVIEW → REVIEWED`` and re-ships
+        (``execute_ship`` is state-guarded/idempotent). The safety
+        invariant (no raw raise) holds for both.
         """
         ticket = Ticket.objects.create(overlay="test", state=post_state)
         Worktree.objects.create(
@@ -296,15 +342,16 @@ class TestPrCreateSyncShip(TestCase):
 
         assert isinstance(result, dict)
         ticket.refresh_from_db()
-        # Post-ship state is unchanged by the no-op reconcile (nothing to
-        # reconcile — ship/post-ship already happened).
-        assert ticket.state == post_state
+        assert ticket.state == expected_state
 
-    def test_skip_validation_from_in_review_never_raises_raw_transition(self) -> None:
-        self._assert_skip_validation_post_ship_no_raw_transition(Ticket.State.IN_REVIEW)
+    def test_skip_validation_from_in_review_recovers_and_ships(self) -> None:
+        # #798: IN_REVIEW is now a recoverable reconcile source — a stranded
+        # ticket re-ships instead of dead-ending. Still no raw transition.
+        self._assert_skip_validation_post_ship_no_raw_transition(Ticket.State.IN_REVIEW, Ticket.State.SHIPPED)
 
     def test_skip_validation_from_merged_never_raises_raw_transition(self) -> None:
-        self._assert_skip_validation_post_ship_no_raw_transition(Ticket.State.MERGED)
+        # MERGED is a genuine terminal (not a reconcile source) — unchanged.
+        self._assert_skip_validation_post_ship_no_raw_transition(Ticket.State.MERGED, Ticket.State.MERGED)
 
 
 class TestEnsurePr(TestCase):
