@@ -12,15 +12,12 @@ never diverge by construction — a diverged title vs. description-first-line
 is exactly what blocks the release-notes pipeline.
 """
 
-import re
 from typing import TypedDict
 
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.runners.ship import overlay_pr_labels, sanitize_close_keywords
 from teatree.utils import git
-
-_REMOTE_HOST_RE = re.compile(r"^(?:git@[^:]+:|https?://[^/]+/|ssh://[^/]+/|git://[^/]+/)")
 
 
 class ShipDryRun(TypedDict):
@@ -35,13 +32,6 @@ class ShipDryRun(TypedDict):
 class PrValidationError(TypedDict):
     error: str
     details: list[str]
-
-
-def slug_from_remote(remote_url: str) -> str:
-    """Extract the ``org/repo`` (or ``ns/group/repo``) slug from a git remote URL."""
-    if not remote_url:
-        return ""
-    return _REMOTE_HOST_RE.sub("", remote_url.strip()).removesuffix(".git")
 
 
 def ship_preview(ticket: Ticket, worktree: Worktree) -> tuple[str, str, str]:
