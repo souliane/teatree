@@ -175,6 +175,10 @@ When the task is a rename, type-renaming, key-renaming, or any refactor that sho
 
 **This rule complements `verification-before-completion`** (no completion claim without fresh evidence in the same response). The mass-rename case is the variant where a single command's output isn't enough — you need *zero hits across N variant queries* as the receipt.
 
+### 5d. Doc/Prose-Invariant Tests Must Scan All Occurrences, Never the First
+
+When a test asserts something about prose (a BLUEPRINT/skill/docs invariant — "the epic-completion statement exists", "issue X is documented as subsumed near a 'board' qualifier"), **assert that *some* occurrence of the anchor token carries the required nearby context — never key the assertion on the first occurrence**. Issue references, workstream citations, and architecture terms legitimately recur across a doc section (the same `#50`/`#789`/`roster` token appears in unrelated per-workstream paragraphs), so `text.index(token)` / first-match-window assertions produce false REDs against an unrelated mention while the real statement is correct. Use a scan-all-windows helper (`while find(token, start): check ±radius; start = i+1`) that returns true if any window satisfies the predicate. The same recurrence hazard the § 5c mass-rename sweep guards against on the *production* side applies to the *test* side: a single naive lookup is insufficient whenever the token is non-unique. Prove the doc-invariant test is anti-vacuous the same way as any regression test — revert the doc change, confirm RED, restore, confirm GREEN (a prose guard that passes against the pre-change doc guards nothing).
+
 ### 6. Quality Gates During Development
 
 - **When adding a prek hook, check for CI duplication.** After adding a new hook to `.pre-commit-config.yaml`, grep the repo's `.gitlab-ci.yml` (or equivalent) for any job that runs the same script directly. If found, remove the standalone CI job — having the check run twice wastes CI time and creates maintenance confusion. One source of truth: prek.
