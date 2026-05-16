@@ -85,10 +85,44 @@ TEMPLATES = [
     },
 ]
 
+# SQLite write serialization for the production engine.
+#
+# Django's SQLite backend silently ignores ``select_for_update()`` — it is a
+# documented no-op (SQLite has no row-level locks).  The shared-state
+# read-modify-write sites (``Session.visit_phase``, ``Task.claim`` and ~12
+# siblings) wrap their RMW in ``transaction.atomic()`` + ``select_for_update()``
+# expecting mutual exclusion.  Without connection-level serialization two
+# concurrent workers both ``BEGIN DEFERRED``, both read the row, both mutate
+# and both commit — the exact lost-update those locks are written to prevent.
+#
+# ``transaction_mode="IMMEDIATE"`` (Django 5.1+) makes every ``atomic()`` block
+# open with ``BEGIN IMMEDIATE``, so the first writer takes SQLite's reserved
+# write lock at transaction start and concurrent writers block instead of
+# racing — restoring the invariant the ``select_for_update()`` calls assume.
+#
+# ``journal_mode=WAL`` lets readers run concurrently with the single writer
+# (avoids needless reader/writer contention) while still serializing writers.
+#
+# ``timeout`` maps to SQLite's ``busy_timeout``: a blocked writer waits this
+# long for the reserved lock before raising ``database is locked`` instead of
+# failing immediately.  30s comfortably exceeds the longest single locked RMW
+# (the claim / visit_phase ops are sub-second) plus headroom for a backlog of
+# contending workers, while still failing loudly rather than hanging forever.
+#
+# Exposed as a named constant so the concurrency regression test can import
+# the exact production value; reverting this to ``{}`` is the single hunk that
+# flips that test RED.
+SQLITE_WRITE_SERIALIZATION_OPTIONS = {
+    "timeout": 30,
+    "init_command": "PRAGMA journal_mode=WAL;",
+    "transaction_mode": "IMMEDIATE",
+}
+
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.sqlite3",
         "NAME": str(CANONICAL_DB),
+        "OPTIONS": SQLITE_WRITE_SERIALIZATION_OPTIONS,
     },
 }
 
