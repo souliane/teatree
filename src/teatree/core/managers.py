@@ -136,6 +136,24 @@ class TaskQuerySet(models.QuerySet):
 
         return self.filter(phase__in=phase_spellings(phase), status=Task.Status.COMPLETED)
 
+    def pending_in_phase(self, phase: str) -> models.QuerySet:
+        """Non-terminal tasks whose phase normalizes to ``phase`` (#769).
+
+        The consume-side mirror of ``completed_in_phase`` (#757):
+        ``_consume_pending_phase_tasks`` must match a short-verb
+        ``review`` task the same as a canonical ``reviewing`` one, so a
+        direct-CLI path does not orphan a short-verb PENDING/CLAIMED task
+        as a zombie session. Same SSOT (``phase_spellings``), opposite
+        status set.
+        """
+        from teatree.core.models.task import Task  # noqa: PLC0415
+        from teatree.core.phases import phase_spellings  # noqa: PLC0415
+
+        return self.filter(
+            phase__in=phase_spellings(phase),
+            status__in=[Task.Status.PENDING, Task.Status.CLAIMED],
+        )
+
     def claimable_for_headless(self, overlay: str | None = None) -> models.QuerySet:
         from teatree.core.models.task import Task  # noqa: PLC0415
 
