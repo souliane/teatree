@@ -38,11 +38,19 @@ def _git(cwd: Path, *args: str) -> None:
     )
 
 
+# A GitHub-noreply identity so the shared fixtures exercise only the
+# leak-scan dimension of the gate, not the #730 author-identity guard
+# (which has its own dedicated test class). The login form keeps these
+# commits passing the noreply pattern just like a real loop commit.
+_NOREPLY_EMAIL = "21343492+souliane@users.noreply.github.com"
+_NOREPLY_NAME = "souliane"
+
+
 def _make_repo(path: Path, branch: str = "main") -> None:
     path.mkdir(parents=True)
     _git(path, "init", "-b", branch)
-    _git(path, "config", "user.email", "t@e.st")  # privacy-scan:allow test fixture
-    _git(path, "config", "user.name", "Tester")
+    _git(path, "config", "user.email", _NOREPLY_EMAIL)
+    _git(path, "config", "user.name", _NOREPLY_NAME)
     (path / "README.md").write_text("hello\n", encoding="utf-8")
     _git(path, "add", "README.md")
     _git(path, "commit", "-m", "init")
@@ -78,8 +86,8 @@ def _clone_with_remote(tmp_path: Path, gh_visibility: str) -> tuple[Path, dict[s
     _make_repo(origin)
     work = tmp_path / "work"
     _git(tmp_path, "clone", str(origin), str(work))
-    _git(work, "config", "user.email", "t@e.st")  # privacy-scan:allow test fixture
-    _git(work, "config", "user.name", "Tester")
+    _git(work, "config", "user.email", _NOREPLY_EMAIL)
+    _git(work, "config", "user.name", _NOREPLY_NAME)
     # The origin URL is a local path; rewrite it to a github.com-looking
     # URL so the gate has an owner/repo to ask gh about.
     _git(work, "remote", "set-url", "origin", "https://github.com/acme/widget.git")
@@ -123,7 +131,7 @@ class TestRefusePublicPushWithLeak:
     def test_blocks_public_push_with_planted_secret(self, tmp_path: Path) -> None:
         work, env = _clone_with_remote(tmp_path, "PUBLIC")
         (work / "leak.txt").write_text(
-            "token = glpat-XXXXXXXXXXXXXXXX\n",  # privacy-scan:allow test fixture
+            "token = glpat-XXXXXXXXXXXXXXXX\n",
             encoding="utf-8",
         )
         _git(work, "add", "leak.txt")
@@ -145,7 +153,7 @@ class TestRefusePublicPushWithLeak:
         """
         work, env = _clone_with_remote(tmp_path, "PUBLIC")
         (work / "leak.txt").write_text(
-            "token = glpat-XXXXXXXXXXXXXXXX\n",  # privacy-scan:allow test fixture
+            "token = glpat-XXXXXXXXXXXXXXXX\n",
             encoding="utf-8",
         )
         _git(work, "add", "leak.txt")
@@ -160,7 +168,7 @@ class TestRefusePublicPushWithLeak:
 
     def test_blocks_public_push_with_internal_path(self, tmp_path: Path) -> None:
         work, env = _clone_with_remote(tmp_path, "PUBLIC")
-        planted = "see /Users/someone/secret/path\n"  # privacy-scan:allow test fixture
+        planted = "see /Users/someone/secret/path\n"
         (work / "notes.txt").write_text(planted, encoding="utf-8")
         _git(work, "add", "notes.txt")
         _git(work, "commit", "-m", "add notes")
@@ -182,7 +190,7 @@ class TestRefusePublicPushWithLeak:
     def test_allows_private_repo_push_even_with_secret(self, tmp_path: Path) -> None:
         work, env = _clone_with_remote(tmp_path, "PRIVATE")
         (work / "leak.txt").write_text(
-            "token = glpat-XXXXXXXXXXXXXXXX\n",  # privacy-scan:allow test fixture
+            "token = glpat-XXXXXXXXXXXXXXXX\n",
             encoding="utf-8",
         )
         _git(work, "add", "leak.txt")
@@ -203,7 +211,7 @@ class TestRefusePublicPushWithLeak:
         # is genuinely unavailable.
         env["PATH"] = "/usr/bin:/bin"
         (work / "leak.txt").write_text(
-            "token = glpat-XXXXXXXXXXXXXXXX\n",  # privacy-scan:allow test fixture
+            "token = glpat-XXXXXXXXXXXXXXXX\n",
             encoding="utf-8",
         )
         _git(work, "add", "leak.txt")
@@ -234,7 +242,7 @@ class TestRefusePublicPushWithLeak:
         assert clean.returncode == 0, "annotated fixture must not block: " + clean.stdout + clean.stderr
 
         # Now a genuinely leaking, un-annotated file in a later commit.
-        leaking = 'API = "glpat-ZZZZZZZZZZZZZZZZ"\n'  # privacy-scan:allow test fixture
+        leaking = 'API = "glpat-ZZZZZZZZZZZZZZZZ"\n'
         (work / "config.py").write_text(leaking, encoding="utf-8")
         _git(work, "add", "config.py")
         _git(work, "commit", "-m", "add config")
@@ -280,7 +288,7 @@ class TestRefusePublicPushWithLeak:
             "-m",
             "add feature",
             "-m",
-            "token = glpat-XXXXXXXXXXXXXXXX",  # privacy-scan:allow test fixture
+            "token = glpat-XXXXXXXXXXXXXXXX",
         )
 
         result = _run_hook(work, env, _push_stdin(work))
@@ -313,6 +321,105 @@ class TestRefusePublicPushWithLeak:
 
     def test_hook_is_executable(self) -> None:
         assert os.access(HOOK, os.X_OK), f"{HOOK} must be chmod +x"
+
+
+class TestRefusePublicPushWithNonNoreplyAuthor:
+    """#730 — public history must never carry a real author/committer email.
+
+    On a PUBLIC remote every commit in the push range must have an author
+    AND committer email matching the GitHub noreply pattern; anything else
+    (e.g. a customer-domain address) blocks. Private remotes are exempt
+    (real internal emails there are fine).
+    """
+
+    def _commit_as(self, work: Path, name: str, email: str, filename: str) -> None:
+        (work / filename).write_text("clean feature line\n", encoding="utf-8")
+        _git(work, "add", filename)
+        _git(
+            work,
+            "-c",
+            f"user.name={name}",
+            "-c",
+            f"user.email={email}",
+            "commit",
+            "-m",
+            "add clean feature",
+        )
+
+    def test_blocks_public_push_with_customer_domain_author(self, tmp_path: Path) -> None:
+        work, env = _clone_with_remote(tmp_path, "PUBLIC")
+        self._commit_as(
+            work,
+            "Real Dev",
+            "real.dev@internal.example",
+            "feature.txt",
+        )
+
+        result = _run_hook(work, env, _push_stdin(work))
+
+        assert result.returncode != 0, result.stdout + result.stderr
+        assert "noreply" in (result.stdout + result.stderr)
+
+    def test_blocks_public_push_when_only_committer_is_real_email(self, tmp_path: Path) -> None:
+        work, env = _clone_with_remote(tmp_path, "PUBLIC")
+        (work / "feature.txt").write_text("clean feature line\n", encoding="utf-8")
+        _git(work, "add", "feature.txt")
+        # Author is a valid noreply; committer is a real customer email.
+        env_commit = _hermetic_env()
+        env_commit["GIT_AUTHOR_NAME"] = "souliane"
+        env_commit["GIT_AUTHOR_EMAIL"] = "21343492+souliane@users.noreply.github.com"
+        env_commit["GIT_COMMITTER_NAME"] = "Real Dev"
+        env_commit["GIT_COMMITTER_EMAIL"] = "real.dev@internal.example"
+        subprocess.run(
+            ["git", "commit", "-m", "add clean feature"],  # noqa: S607
+            cwd=work,
+            check=True,
+            capture_output=True,
+            env=env_commit,
+        )
+
+        result = _run_hook(work, env, _push_stdin(work))
+
+        assert result.returncode != 0, result.stdout + result.stderr
+
+    def test_allows_public_push_with_souliane_noreply_author(self, tmp_path: Path) -> None:
+        work, env = _clone_with_remote(tmp_path, "PUBLIC")
+        self._commit_as(
+            work,
+            "souliane",
+            "21343492+souliane@users.noreply.github.com",
+            "feature.txt",
+        )
+
+        result = _run_hook(work, env, _push_stdin(work))
+
+        assert result.returncode == 0, result.stdout + result.stderr
+
+    def test_allows_public_push_with_other_github_noreply_author(self, tmp_path: Path) -> None:
+        work, env = _clone_with_remote(tmp_path, "PUBLIC")
+        self._commit_as(
+            work,
+            "Octo Cat",
+            "987654321+octocat@users.noreply.github.com",
+            "feature.txt",
+        )
+
+        result = _run_hook(work, env, _push_stdin(work))
+
+        assert result.returncode == 0, result.stdout + result.stderr
+
+    def test_allows_private_repo_push_with_real_email_author(self, tmp_path: Path) -> None:
+        work, env = _clone_with_remote(tmp_path, "PRIVATE")
+        self._commit_as(
+            work,
+            "Real Dev",
+            "real.dev@internal.example",
+            "feature.txt",
+        )
+
+        result = _run_hook(work, env, _push_stdin(work))
+
+        assert result.returncode == 0, result.stdout + result.stderr
 
 
 if __name__ == "__main__":
