@@ -12,6 +12,7 @@ from typing import Annotated, Any
 
 import typer
 from django.core.exceptions import ObjectDoesNotExist
+from django.db.models import Q
 from django_typer.management import TyperCommand, command
 
 from teatree.core.models import Task, Ticket
@@ -28,6 +29,19 @@ _SUBAGENT_BY_PHASE: dict[tuple[str, str], str] = {
 def _subagent_for(task: Task) -> str:
     ticket = task.ticket
     return _SUBAGENT_BY_PHASE.get((ticket.role, task.phase), "")
+
+
+def _dispatchable_q() -> Q:
+    """DB-side mirror of ``_subagent_for`` for the atomic claim filter.
+
+    ``Q`` matching exactly the (ticket.role, task.phase) pairs that have a
+    registered subagent, so the atomic claim restricts to dispatchable
+    tasks (one source of truth).
+    """
+    q = Q(pk__in=[])  # matches nothing; OR-folded below
+    for role, phase in _SUBAGENT_BY_PHASE:
+        q |= Q(ticket__role=role, phase=phase)
+    return q
 
 
 def _task_to_dict(task: Task) -> dict[str, Any]:
@@ -75,6 +89,49 @@ class Command(TyperCommand):
                 f"task={entry['task_id']:<5} subagent={entry['subagent']:<18} "
                 f"phase={entry['phase']:<10} url={entry['issue_url']}",
             )
+
+    @command(name="claim-next")
+    def claim_next(
+        self,
+        *,
+        claimed_by: Annotated[
+            str,
+            typer.Option("--claimed-by", help="Worker identifier stored on the claim."),
+        ] = "loop-slot",
+        json_output: Annotated[
+            bool,
+            typer.Option("--json", help="Emit the claimed dispatch as JSON instead of a table."),
+        ] = False,
+    ) -> None:
+        """Atomically claim the oldest pending dispatchable Task, then emit it.
+
+        #786 (N4): the claim IS the spawn boundary. Delegates to the single
+        audited claim path ``Task.objects.claim_next_pending`` (one
+        critical section, backend-agnostic conditional UPDATE — correct on
+        SQLite, not just Postgres), narrowed to dispatchable (role, phase)
+        pairs so a non-dispatchable PENDING task is left untouched for
+        operator triage. Two concurrent ticks each claim a *distinct* task
+        (or nothing); the slot calls its ``Agent`` tool for the emitted
+        already-claimed entry. The previous inline reimplementation (N2)
+        and the SQLite-ineffective ``skip_locked`` (B1) are gone.
+        """
+        task = Task.objects.claim_next_pending(
+            claimed_by=claimed_by,
+            extra_filter=_dispatchable_q(),
+        )
+        payload: list[dict[str, Any]] = [_task_to_dict(task)] if task is not None else []
+
+        if json_output:
+            self.stdout.write(json.dumps(payload, indent=2))
+            return
+        if not payload:
+            self.stdout.write("No pending spawn requests.")
+            return
+        entry = payload[0]
+        self.stdout.write(
+            f"Claimed task={entry['task_id']} subagent={entry['subagent']} "
+            f"phase={entry['phase']} url={entry['issue_url']}",
+        )
 
     @command(name="spawn-claim")
     def spawn_claim(
