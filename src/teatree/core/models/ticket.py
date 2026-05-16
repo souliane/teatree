@@ -214,6 +214,29 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
                     visits[phase] = record
         return visited, visits
 
+    def ensure_session(self, *, agent_id: str = "loop") -> "Session":
+        """Return a durable phase-attestation Session for this ticket (#748).
+
+        Idempotent. The shipping gate reconciles required phases from
+        ``aggregate_phase_records()`` over ``self.sessions``; a ticket
+        built by the loop/coordinator path (``get_or_create`` in dispatch
+        / ``tasks create``) never gets a session through
+        ``workspace ticket``, so the gate fail-closes ("no session"). This
+        gives those tickets a session so genuinely-completed work is
+        representable in the FSM without manual rescue or bypass.
+
+        Reuses the **earliest** existing session rather than spawning a
+        new one, so maker≠checker attribution (earliest-session-wins in
+        ``aggregate_phase_records``) and any already-recorded phase
+        ledger are preserved — never split across a fresh empty session.
+        """
+        from teatree.core.models.session import Session  # noqa: PLC0415
+
+        existing = self.sessions.order_by("pk").first()  # ty: ignore[unresolved-attribute]
+        if existing is not None:
+            return existing
+        return Session.objects.create(ticket=self, agent_id=agent_id)
+
     def has_shippable_diff(self) -> bool:
         """Return True iff at least one worktree has commits ahead of its base branch.
 

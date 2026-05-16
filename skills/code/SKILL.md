@@ -46,6 +46,8 @@ The implementation phase. Follow test-driven development and project conventions
 
 Write the **failing test first**, then the implementation that makes it pass. The test proves the feature works; writing it after implementation risks testing the implementation rather than the behavior. When fixing a bug, the test must reproduce the bug (red) before the fix (green).
 
+**A regression test is only valid if it has been observed to FAIL on the pre-fix code.** A test that asserts a structurally-guaranteed outcome (final state that holds even on the buggy code) passes green without guarding anything — it is vacuous. For a concurrency/state fix this is acute: assert on the *observable contract the bug violates* (e.g. the emitted decision, the surviving row), not a post-condition the code path always produces. Before claiming a regression test guards a fix, temporarily revert the fix (or otherwise re-introduce the defect) and confirm the test goes red; if it stays green, the test does not guard the fix.
+
 Misleading names are bugs — rename the symbol instead of explaining it with a comment.
 
 ## Workflow
