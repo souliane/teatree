@@ -110,3 +110,43 @@ class TestLoopBuiltTicketGetsDurableSession(TestCase):
         # existing attested one is reused.
         assert returned.pk == existing.pk
         assert ticket.aggregate_phase_records()[0] == ["testing"]
+
+    def test_ensure_session_reads_after_acquiring_the_row_lock(self) -> None:
+        """The existence read must happen after the ticket row lock.
+
+        Should-fix (#748 review): read+create is one atomic, row-locked
+        section. The orchestrator dispatch path (`persist_agent_actions`) has no
+        surrounding `transaction.atomic()`, so two concurrent loop ticks
+        for the same issue_url could both see ``existing is None`` and
+        both create an empty session (ledger split — contradicting the
+        "never split across a fresh empty session" docstring promise).
+
+        Modelled deterministically: a rival caller commits its session
+        while *this* caller is blocked acquiring the ticket row lock
+        (injected as the ``select_for_update`` side effect — exactly the
+        point the loser unblocks). A correctly ordered ensure_session
+        reads existence *after* the lock, sees the rival's session, and
+        reuses it. The pre-fix code (read before/without the lock) misses
+        the rival and creates a duplicate empty session.
+        """
+        ticket = Ticket.objects.create(issue_url="https://github.com/souliane/teatree/issues/996")
+
+        original_qs = type(Ticket.objects).select_for_update
+        rival_pk: list[int] = []
+
+        def lock_then_rival_commits(self_mgr, *args: object, **kwargs: object):
+            # The competitor won the lock first and committed its
+            # session; we unblock here (post-lock) and must re-read.
+            if not rival_pk:
+                rival_pk.append(Session.objects.create(ticket=ticket, agent_id="rival").pk)
+            return original_qs(self_mgr, *args, **kwargs)
+
+        with patch.object(type(Ticket.objects), "select_for_update", lock_then_rival_commits):
+            result = ticket.ensure_session()
+
+        assert ticket.sessions.count() == 1, (
+            f"race created {ticket.sessions.count()} sessions — ensure_session "
+            "read existence before/without the row lock"
+        )
+        assert result.pk == rival_pk[0]
+        assert ticket.ensure_session().pk == rival_pk[0]

@@ -217,25 +217,25 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
     def ensure_session(self, *, agent_id: str = "loop") -> "Session":
         """Return a durable phase-attestation Session for this ticket (#748).
 
-        Idempotent. The shipping gate reconciles required phases from
-        ``aggregate_phase_records()`` over ``self.sessions``; a ticket
-        built by the loop/coordinator path (``get_or_create`` in dispatch
-        / ``tasks create``) never gets a session through
-        ``workspace ticket``, so the gate fail-closes ("no session"). This
-        gives those tickets a session so genuinely-completed work is
-        representable in the FSM without manual rescue or bypass.
-
-        Reuses the **earliest** existing session rather than spawning a
-        new one, so maker≠checker attribution (earliest-session-wins in
-        ``aggregate_phase_records``) and any already-recorded phase
-        ledger are preserved — never split across a fresh empty session.
+        Idempotent; reuses the *earliest* existing session so maker≠checker
+        attribution and any recorded phase ledger are never split across a
+        fresh empty session. Concurrency-atomic: read+create runs in one
+        ``transaction.atomic()`` with the ticket row ``select_for_update``-
+        locked (the dispatch path calls this outside any transaction, so
+        concurrent loop ticks for the same ``issue_url`` must serialise).
+        Rationale and the gate interaction: BLUEPRINT.md §4.3.
         """
         from teatree.core.models.session import Session  # noqa: PLC0415
+        from teatree.core.models.ticket import Ticket  # noqa: PLC0415
 
-        existing = self.sessions.order_by("pk").first()  # ty: ignore[unresolved-attribute]
-        if existing is not None:
-            return existing
-        return Session.objects.create(ticket=self, agent_id=agent_id)
+        with transaction.atomic():
+            # Lock this ticket row so concurrent ensure_session callers
+            # serialise on it (the read+create critical section).
+            Ticket.objects.select_for_update().filter(pk=self.pk).first()
+            existing = self.sessions.order_by("pk").first()  # ty: ignore[unresolved-attribute]
+            if existing is not None:
+                return existing
+            return Session.objects.create(ticket=self, agent_id=agent_id)
 
     def has_shippable_diff(self) -> bool:
         """Return True iff at least one worktree has commits ahead of its base branch.
