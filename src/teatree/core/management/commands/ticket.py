@@ -232,6 +232,7 @@ class Command(TyperCommand):
                 continue
 
             from_overlay = ticket.overlay
+            from_label = from_overlay or "(none)"
             if dry_run:
                 results.append(
                     ReattributeResult(
@@ -242,9 +243,9 @@ class Command(TyperCommand):
                         action="would_reattribute",
                     )
                 )
-                self.stdout.write(f"  [dry-run] #{ticket.pk}: {from_overlay or '∅'} → {inferred}: {ticket.issue_url}")
+                self.stdout.write(f"  [dry-run] #{ticket.pk}: {from_label} → {inferred}: {ticket.issue_url}")
             else:
-                ticket.reconcile_overlay()
+                ticket.apply_inferred_overlay(inferred)
                 results.append(
                     ReattributeResult(
                         ticket_id=int(ticket.pk),
@@ -254,7 +255,7 @@ class Command(TyperCommand):
                         action="reattributed",
                     )
                 )
-                self.stdout.write(f"  #{ticket.pk}: {from_overlay or '∅'} → {ticket.overlay}: {ticket.issue_url}")
+                self.stdout.write(f"  #{ticket.pk}: {from_label} → {ticket.overlay}: {ticket.issue_url}")
 
         if not results:
             self.stdout.write("All ticket overlays already consistent with inference.")

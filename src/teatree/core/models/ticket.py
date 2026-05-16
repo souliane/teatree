@@ -84,19 +84,24 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
 
         return infer_overlay_for_url(self.issue_url)
 
-    def reconcile_overlay(self) -> bool:
-        """Re-infer ``overlay`` from ``issue_url`` and persist a correction.
+    def apply_inferred_overlay(self, inferred: str) -> bool:
+        """Persist ``inferred`` as the overlay when it is a conclusive change.
 
         Returns ``True`` when the row's overlay was changed. An inconclusive
         (empty) inference leaves the existing value untouched — a blank result
         must never blank out a manually-set or previously-correct attribution.
+        Callers that already computed the inference reuse it here rather than
+        re-walking the overlay registry.
         """
-        inferred = self._infer_overlay()
         if not inferred or inferred == self.overlay:
             return False
         self.overlay = inferred
         Ticket.objects.filter(pk=self.pk).update(overlay=inferred)
         return True
+
+    def reconcile_overlay(self) -> bool:
+        """Re-infer ``overlay`` from ``issue_url`` and persist a correction."""
+        return self.apply_inferred_overlay(self._infer_overlay())
 
     @property
     def ticket_number(self) -> str:
