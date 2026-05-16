@@ -1480,9 +1480,9 @@ django_db_import(cfg, skip_dslr=False, allow_remote_dump=False)
 ```
 
 - `skip_dslr=True` — skip DSLR snapshots (used with `--force` to get a fresh dump)
-- `allow_remote_dump=True` — enable the remote pg_dump strategy (requires explicit user approval)
+- `allow_remote_dump=True` — enable the remote pg_dump strategy. Set **only** after a successful per-invocation interactive approval (#777): `t3 <overlay> db refresh --fresh-dump` calls `teatree.utils.approval.require_interactive_approval`, which states the env + tenant + target DB and refuses unless a human confirms at a TTY. An unattended agent has no TTY and so cannot self-approve — this replaces the old blanket `T3_ALLOW_REMOTE_DUMP` env-var prohibition (a defunct, now-blocked bypass).
 
-**Overlay responsibility:** Provide the config values and decide when to set `allow_remote_dump=True` (typically gated behind `--force` or an interactive prompt).
+**Overlay responsibility:** Provide the config values and forward `approve_remote_dump` (the post-approval flag from core's `db refresh --fresh-dump` gate) into `django_db_import(..., allow_remote_dump=...)`. The overlay must not hardcode the value or invent its own gate — the single sanctioned gate is core's interactive approval.
 
 ### 14.6 DSLR Integration
 

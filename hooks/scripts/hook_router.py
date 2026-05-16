@@ -1665,9 +1665,11 @@ def _cron_cadence_seconds(cron_expr: str) -> int | None:
 
 _REMOTE_DUMP_ENV_RE = re.compile(r"\bT3_ALLOW_REMOTE_DUMP\s*=\s*1\b")
 _REMOTE_DUMP_DENY_REASON = (
-    "BLOCKED: agents must never set `T3_ALLOW_REMOTE_DUMP=1`. "
-    "Remote pg_dump over VPN requires explicit human action in a terminal — "
-    "the agent cannot opt in. Ask the user to run the command themselves."
+    "BLOCKED: `T3_ALLOW_REMOTE_DUMP=1` is a removed, defunct bypass (#777) — "
+    "setting it does nothing and signals an attempt to circumvent the safety gate. "
+    "A fresh remote dump is available only via `t3 <overlay> db refresh --fresh-dump`, "
+    "which requires an explicit interactive per-invocation human approval the agent "
+    "cannot satisfy. Ask the user to run that command themselves."
 )
 
 

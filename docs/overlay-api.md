@@ -105,9 +105,11 @@ Extra environment variables to set for a worktree. Defaults to `{}`.
 
 How to import/restore a database for this worktree. Returns `None` if no DB import is needed.
 
-#### `db_import(worktree, *, force, slow_import, dslr_snapshot, dump_path) -> bool`
+#### `db_import(worktree, *, force, slow_import, dslr_snapshot, dump_path, approve_remote_dump) -> bool`
 
 Run the actual database import logic. Called by `worktree provision` and `db refresh`. Returns `True` on success. Defaults to `False` (no-op).
+
+`approve_remote_dump` is `True` only when the user explicitly approved a fresh remote DEV dump for this single invocation via the `db refresh --fresh-dump` interactive gate (`teatree.utils.approval`). It replaces the old blanket `T3_ALLOW_REMOTE_DUMP` / hardcoded-`False` prohibition: an unattended agent cannot satisfy the interactive gate, so it still cannot self-trigger a network pg_dump, but a human can sanction one per run.
 
 #### `get_post_db_steps(worktree: Worktree) -> list[ProvisionStep]`
 
