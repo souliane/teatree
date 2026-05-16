@@ -41,6 +41,26 @@ def overlay_pr_labels() -> list[str]:
     return [value.strip() for value in values if value.strip()]
 
 
+def resolve_ship_worktree(ticket: "Ticket", extra: "TicketExtra") -> "Worktree | None":
+    """The worktree to act on — the INVOKING branch's row, not the earliest.
+
+    #776: ``worktrees.first()`` returns the earliest (often
+    already-merged) row, so a reused ticket spanning N workstreams acted
+    on a stale branch. ``pr create`` records the invoking worktree's
+    current git branch on ``extra['ship_invoking_branch']``; prefer the
+    matching row. Fall back to ``first()`` only when no invoking branch
+    is recorded (the async-worker path that has no CLI cwd context) —
+    legacy behaviour, single-PR tickets unaffected. Public so the
+    pre-push visual-QA gate resolves the same worktree as the ship.
+    """
+    invoking = str(extra.get("ship_invoking_branch") or "")
+    if invoking:
+        matched = ticket.worktrees.filter(branch=invoking).first()  # ty: ignore[unresolved-attribute]
+        if matched is not None:
+            return matched
+    return ticket.worktrees.first()  # ty: ignore[unresolved-attribute]
+
+
 class ShipExecutor(RunnerBase):
     """Push the worktree branch and open the pull request.
 
@@ -58,7 +78,7 @@ class ShipExecutor(RunnerBase):
         if existing_urls:
             return RunnerResult(ok=True, detail=existing_urls[-1])
 
-        worktree = self._resolve_target_worktree(ticket, extra)
+        worktree = resolve_ship_worktree(ticket, extra)
         if worktree is None:
             return RunnerResult(ok=False, detail="no worktree on ticket")
 
@@ -86,25 +106,6 @@ class ShipExecutor(RunnerBase):
         self._record_pr_url(ticket, extra, url)
         logger.info("Ship executor pushed %s and opened PR %s", branch, url)
         return RunnerResult(ok=True, detail=url)
-
-    @staticmethod
-    def _resolve_target_worktree(ticket: "Ticket", extra: "TicketExtra") -> "Worktree | None":
-        """The worktree to ship — the INVOKING branch's row, not the earliest.
-
-        #776: ``worktrees.first()`` returns the earliest (often
-        already-merged) row, so a reused ticket spanning N workstreams
-        shipped a stale branch. ``pr create`` records the invoking
-        worktree's current git branch on ``extra['ship_invoking_branch']``;
-        prefer the matching row. Fall back to ``first()`` only when no
-        invoking branch is recorded (the async-worker path that has no
-        CLI cwd context) — legacy behaviour, single-PR tickets unaffected.
-        """
-        invoking = str(extra.get("ship_invoking_branch") or "")
-        if invoking:
-            matched = ticket.worktrees.filter(branch=invoking).first()  # ty: ignore[unresolved-attribute]
-            if matched is not None:
-                return matched
-        return ticket.worktrees.first()  # ty: ignore[unresolved-attribute]
 
     @staticmethod
     def _clear_invoking_branch(ticket: "Ticket", extra: "TicketExtra") -> None:

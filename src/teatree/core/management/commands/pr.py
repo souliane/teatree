@@ -29,6 +29,7 @@ from teatree.core.models.types import TicketExtra, VisualQASummary
 from teatree.core.orphan_guard import BranchStatus, classify_branch
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.public_identity import MergeResult
+from teatree.core.runners.ship import resolve_ship_worktree
 from teatree.types import RawAPIDict
 from teatree.utils import git
 
@@ -232,7 +233,14 @@ def _run_visual_qa_gate(ticket: Ticket, *, skip_reason: str = "") -> VisualQAGat
     findings are present so the caller can refuse PR creation, or
     ``None`` when the gate passes / is skipped.
     """
-    worktree = ticket.worktrees.first()  # ty: ignore[unresolved-attribute]
+    # #776 N1: resolve the INVOKING worktree (same root cause as the
+    # ship-branch fix) — a reused multi-workstream ticket must run visual
+    # QA against the current workstream's repo, not the stale earliest
+    # `worktrees.first()` row. The `ship_invoking_branch` hint is recorded
+    # by `create()` before the gates run, so the canonical resolver has
+    # the data here too.
+    extra = cast("TicketExtra", ticket.extra or {})
+    worktree = resolve_ship_worktree(ticket, extra)
     repo_path = worktree.repo_path if worktree else "."
     base_url = _resolve_base_url(worktree)
 
