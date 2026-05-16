@@ -30,7 +30,12 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │ assess          Codebase health assessment.                                  │
 │ overlay         Dev-mode overlay install/uninstall.                          │
 │ infra           Teatree-wide infrastructure services.                        │
-│ loop            Manage the long-lived fat loop.                              │
+│ loop            Manage the long-lived fat loop. Session-bound by design: it  │
+│                 runs only while a Claude Code session is open; if the owner  │
+│                 session dies another open session takes over and re-spawns   │
+│                 the loops from the registry; with zero sessions open the     │
+│                 loop is paused until the next session start (no OS daemon —  │
+│                 accepted, not a defect).                                     │
 │ slack           Slack integration commands.                                  │
 │ teatree         Commands for the t3-teatree overlay.                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
@@ -1041,7 +1046,11 @@ Usage: t3 infra redis status [OPTIONS]
 ```
 Usage: t3 loop [OPTIONS] COMMAND [ARGS]...
 
- Manage the long-lived fat loop.
+ Manage the long-lived fat loop. Session-bound by design: it runs only while a
+ Claude Code session is open; if the owner session dies another open session
+ takes over and re-spawns the loops from the registry; with zero sessions open
+ the loop is paused until the next session start (no OS daemon — accepted, not
+ a defect).
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
@@ -1141,6 +1150,15 @@ Usage: t3 loop start [OPTIONS]
  before the user types anything. When ``claude`` is not available or
  the caller is already inside a Claude Code session, falls back to
  printing the slash command for manual entry.
+
+ Durability (by design): the loop is session-bound. The SessionStart
+ hook records ownership (per-loop spawn brief + heartbeat) in the
+ machine-wide loop registry. If this session dies, ANY other open
+ session — or the next one to open — takes over and re-spawns every
+ loop from its persisted brief (agentIds are not resumable across
+ sessions, so a takeover re-spawns rather than resumes). With no
+ session open the loop is paused until the next session start; there
+ is deliberately no OS-scheduler/launchd fallback.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --print-only          Print the /loop slot definition instead of spawning a  │
@@ -2081,15 +2099,21 @@ Usage: t3 teatree pr create [OPTIONS] TICKET_ID
 
  Validate ship gates and trigger the ship transition.
 
- On success the ``execute_ship`` worker pushes the branch, opens the PR,
- and advances ``SHIPPED → IN_REVIEW``. The return value reports the PR
- URL once the worker completes (synchronous in interactive mode).
+ Default (async): the ship is *queued* — ``execute_ship`` pushes the
+ branch and opens the PR only when a worker drains the django-tasks
+ queue. The result carries an explicit ``warning`` so a no-worker
+ context does not look like a completed ship (#708).
+
+ ``--sync``: run ``execute_ship`` inline in this process so the push
+ and PR happen before the command returns — no worker required. Use
+ this for interactive / ``uv run`` invocations where nothing is
+ draining the queue.
 
  ``ticket_id`` accepts the internal DB pk, the full issue URL, or the
  bare issue number (resolved against ``Ticket.issue_url``).
 
  ``--title`` overrides the PR title (default: last commit subject).
- Stored on ``ticket.extra['pr_title_override']`` so the worker reads it.
+ Stored on ``ticket.extra['pr_title_override']`` so the ship reads it.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    ticket_id      TEXT  [required]                                         │
@@ -2100,6 +2124,7 @@ Usage: t3 teatree pr create [OPTIONS] TICKET_ID
 │ --skip-validation    --no-skip-validation          [default:                 │
 │                                                    no-skip-validation]       │
 │ --skip-visual-qa                             TEXT                            │
+│ --sync               --no-sync                     [default: no-sync]        │
 │ --help                                             Show this message and     │
 │                                                    exit.                     │
 ╰──────────────────────────────────────────────────────────────────────────────╯
