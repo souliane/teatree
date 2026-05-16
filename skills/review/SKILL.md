@@ -298,7 +298,7 @@ When posting on the PR, prefer **inline** (line-anchored) discussions over **gen
 3. **Feature flag** — follow the review checklist in [`references/multi-tenant-development.md`](../code/references/multi-tenant-development.md). **Before raising a "missing feature flag" finding, trace the full gating chain upward** — the component under review may not have a flag itself but could be hidden/disabled at the container or routing level (e.g., `hidden: !featureFlagService.hasFeatureFlag(...)` in the parent that renders it). A finding is only valid if the feature is reachable without the flag.
 4. **Style** — follows project conventions?
 5. **Tests** — adequate coverage of new behavior?
-6. **Safety** — no security issues, no data loss risks?
+6. **Safety** — no security issues, no data loss risks? For shared mutable state (a registry/cache file, a row touched by concurrent processes), the **whole read→decide→write must be inside one lock/transaction** — a flock (or DB lock) that guards only the write still allows a lost-update / double-claim TOCTOU when two processes both read the old value, decide independently, and write in turn. A docstring or BLUEPRINT claim that writes "cannot lose a read-modify-write update" is false unless the read is inside the same critical section as the write; flag the mismatch.
 7. **Migrations** — reversible? data-safe? performance-safe?
 8. **Scope** — are unrelated changes bundled in? Flag only if genuinely unrelated; small related fixes alongside the main change are normal practice.
 9. **PR metadata** — title and description comply with the overlay's commit message format? If the overlay provides `validate_pr()`, run it programmatically rather than checking by eye.
