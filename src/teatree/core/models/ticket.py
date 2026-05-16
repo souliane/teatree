@@ -527,13 +527,16 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
         — the filter is empty and this is a no-op. On the direct path the
         previously-scheduled phase task is orphaned in PENDING/CLAIMED and
         would be picked up later as a zombie session; consume it now.
+
+        Matches any accepted phase spelling via ``pending_in_phase`` (#769,
+        the consume-side mirror of #757's ``completed_in_phase``): a raw
+        ``phase=phase`` filter missed a short-verb ``review`` task stored
+        by the unnormalized ``tasks create <id> review`` path, leaving it
+        as a zombie session.
         """
         from teatree.core.models.task import Task  # noqa: PLC0415
 
-        self.tasks.filter(  # type: ignore[attr-defined]  # Django reverse FK
-            phase=phase,
-            status__in=[Task.Status.PENDING, Task.Status.CLAIMED],
-        ).update(
+        Task.objects.pending_in_phase(phase).filter(ticket=self).update(
             status=Task.Status.COMPLETED,
             claimed_at=None,
             claimed_by="",

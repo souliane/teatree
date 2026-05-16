@@ -472,3 +472,76 @@ class TestTaskCompletedInPhase(TestCase):
         Task.objects.create(ticket=ticket, session=session, phase="coding", status=Task.Status.COMPLETED)
 
         assert not Task.objects.completed_in_phase("reviewing").filter(ticket=ticket).exists()
+
+
+class TestTaskPendingInPhase(TestCase):
+    """The shared consume-side queryset method (#769).
+
+    Mirrors ``completed_in_phase`` (#757) on the opposite status set:
+    non-terminal (PENDING/CLAIMED) tasks whose phase normalizes to the
+    target, so ``_consume_pending_phase_tasks`` matches a short-verb
+    ``review`` task the same as a canonical ``reviewing`` one.
+    """
+
+    def test_matches_both_short_verb_and_canonical(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.TESTED)
+        session = Session.objects.create(ticket=ticket, agent_id="t")
+        Task.objects.create(ticket=ticket, session=session, phase="review", status=Task.Status.PENDING)
+
+        assert Task.objects.pending_in_phase("reviewing").filter(ticket=ticket).exists()
+        assert Task.objects.pending_in_phase("review").filter(ticket=ticket).exists()
+
+    def test_includes_claimed_excludes_terminal_and_other_phases(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.TESTED)
+        session = Session.objects.create(ticket=ticket, agent_id="t")
+        Task.objects.create(ticket=ticket, session=session, phase="review", status=Task.Status.CLAIMED)
+        assert Task.objects.pending_in_phase("reviewing").filter(ticket=ticket).count() == 1
+
+        Task.objects.create(ticket=ticket, session=session, phase="review", status=Task.Status.COMPLETED)
+        Task.objects.create(ticket=ticket, session=session, phase="coding", status=Task.Status.PENDING)
+        # Still only the CLAIMED short-verb reviewing task — terminal and
+        # other-phase rows are excluded.
+        assert Task.objects.pending_in_phase("reviewing").filter(ticket=ticket).count() == 1
+
+
+class TestConsumePendingPhaseTasksNormalizesPhase(TestCase):
+    """#769: the consume side honours the canonical phase contract.
+
+    Same root-cause class as #757 (raw phase compare), distinct code
+    path: ``_consume_pending_phase_tasks`` (the consume side) vs the
+    ``review()`` FSM *condition* (#757). The direct-CLI path leaves a
+    short-verb ``review`` task PENDING; ``review()`` must consume it so
+    it is not later picked up as a zombie session.
+    """
+
+    def test_direct_review_consumes_pending_short_verb_task(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.TESTED)
+        session = Session.objects.create(ticket=ticket, agent_id="t")
+        # Condition-satisfier: a COMPLETED reviewing task so review() is legal.
+        Task.objects.create(ticket=ticket, session=session, phase="reviewing", status=Task.Status.COMPLETED)
+        # The zombie: a short-verb `review` task left PENDING (as the
+        # direct-CLI path leaves it). Pre-fix, the raw `phase="reviewing"`
+        # filter misses it and it survives as a zombie session.
+        zombie = Task.objects.create(ticket=ticket, session=session, phase="review", status=Task.Status.PENDING)
+
+        ticket.review()
+        ticket.save()
+
+        zombie.refresh_from_db()
+        assert zombie.status == Task.Status.COMPLETED, (
+            f"short-verb 'review' PENDING task was not consumed (status={zombie.status}); "
+            f"_consume_pending_phase_tasks compared raw phase"
+        )
+
+    def test_canonical_pending_task_still_consumed(self) -> None:
+        # Regression guard: the canonical spelling must keep being consumed.
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.TESTED)
+        session = Session.objects.create(ticket=ticket, agent_id="t")
+        Task.objects.create(ticket=ticket, session=session, phase="reviewing", status=Task.Status.COMPLETED)
+        zombie = Task.objects.create(ticket=ticket, session=session, phase="reviewing", status=Task.Status.CLAIMED)
+
+        ticket.review()
+        ticket.save()
+
+        zombie.refresh_from_db()
+        assert zombie.status == Task.Status.COMPLETED

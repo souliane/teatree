@@ -121,7 +121,11 @@ def _handle_orchestrator(action: DispatchAction) -> Task | None:
 
 
 def _has_open_task(ticket: Ticket, *, phase: str) -> bool:
-    return ticket.tasks.filter(phase=phase, status__in=_OPEN_TASK_STATUSES).exists()  # ty: ignore[unresolved-attribute]
+    # #769 audit: match any accepted phase spelling (short verb or
+    # gerund) via the shared SSOT helper, not a raw ``phase=phase``
+    # filter that would miss a short-verb ``code`` task and let the
+    # orchestrator create a duplicate.
+    return Task.objects.pending_in_phase(phase).filter(ticket=ticket).exists()
 
 
 _ZONE_HANDLERS = {
