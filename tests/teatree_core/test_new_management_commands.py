@@ -2508,22 +2508,27 @@ class TestDetectLocalPort:
 
 class TestDiscoverFrontendPort:
     def test_returns_docker_port_when_compose_reports_it(self) -> None:
-        with patch.object(e2e_mod, "get_service_port", return_value=4201):
-            assert e2e_mod._discover_frontend_port("project") == 4201
+        with (
+            patch.object(e2e_mod, "_ticket_frontend_projects", return_value=["project"]),
+            patch.object(e2e_mod, "get_service_port", return_value=4201),
+        ):
+            assert e2e_mod._discover_frontend_port(MagicMock()) == 4201
 
     def test_scans_local_ports_as_final_fallback(self) -> None:
         with (
+            patch.object(e2e_mod, "_ticket_frontend_projects", return_value=["project"]),
             patch.object(e2e_mod, "get_service_port", return_value=None),
             patch.object(e2e_mod, "_detect_local_port", side_effect=lambda p: 4203 if p == 4203 else None),
         ):
-            assert e2e_mod._discover_frontend_port("project") == 4203
+            assert e2e_mod._discover_frontend_port(MagicMock()) == 4203
 
     def test_returns_none_when_no_port_found(self) -> None:
         with (
+            patch.object(e2e_mod, "_ticket_frontend_projects", return_value=["project"]),
             patch.object(e2e_mod, "get_service_port", return_value=None),
             patch.object(e2e_mod, "_detect_local_port", return_value=None),
         ):
-            assert e2e_mod._discover_frontend_port("project") is None
+            assert e2e_mod._discover_frontend_port(MagicMock()) is None
 
 
 class TestE2eTriggerCi(TestCase):

@@ -8,6 +8,7 @@ from pathlib import Path
 from django_typer.management import TyperCommand, command
 
 from teatree.config import E2ERepo, load_e2e_repos
+from teatree.core.models import Worktree
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.resolve import _find_env_cache, _get_user_cwd, _parse_env_file, resolve_worktree
 from teatree.core.runners.worktree_start import compose_project
@@ -79,21 +80,48 @@ def _resolve_private_tests_path() -> Path | None:
     return path if path.is_dir() else None
 
 
-def _discover_frontend_port(project: str, default: int = 4200) -> int | None:
-    """Discover frontend port via docker-compose, falling back to a local scan.
-
-    The frontend is served by the compose ``frontend`` service (nginx serving
-    the pre-built dist/). ``docker compose port`` is the authoritative answer
-    when the stack is up; the local scan is a last-ditch fallback for users
-    who started compose outside the teatree runner.
-    """
+def _compose_frontend_port(project: str) -> int | None:
     # The compose `frontend` service is nginx serving the pre-built dist on
     # container port 80; a raw dev-server setup instead listens on 4200.
-    # Query both container ports — `default` is the host-scan fallback, not
-    # the container port, so it must not be passed to `docker compose port`
-    # (that always missed the nginx:80 service).
-    for container_port in (80, default):
+    for container_port in (80, 4200):
         port = get_service_port(project, "frontend", container_port)
+        if port is not None:
+            return port
+    return None
+
+
+def _ticket_frontend_projects(worktree: Worktree) -> list[str]:
+    """Compose projects that may host the frontend for this worktree's ticket.
+
+    The resolved worktree is whatever the cwd matched — for an external test
+    repo that is the *test* worktree, whose compose project has no frontend.
+    The frontend lives in a sibling repo's worktree under the same ticket, so
+    probe the resolved worktree first, then every sibling under the ticket.
+    """
+    ticket = worktree.ticket
+    candidates = [worktree]
+    if ticket is not None:
+        candidates += [wt for wt in Worktree.objects.filter(ticket=ticket) if wt.pk != worktree.pk]
+    seen: set[str] = set()
+    projects: list[str] = []
+    for wt in candidates:
+        project = compose_project(wt)
+        if project not in seen:
+            seen.add(project)
+            projects.append(project)
+    return projects
+
+
+def _discover_frontend_port(worktree: Worktree) -> int | None:
+    """Discover the frontend port for a worktree's stack.
+
+    ``docker compose port`` is authoritative when the stack is up; the local
+    scan is a last-ditch fallback for users who started compose outside the
+    teatree runner. The frontend may be served by a sibling repo's compose
+    project under the same ticket, so every ticket project is probed.
+    """
+    for project in _ticket_frontend_projects(worktree):
+        port = _compose_frontend_port(project)
         if port is not None:
             return port
     # Scan the allocation range — ports start at 4200 and go up
@@ -250,12 +278,12 @@ class Command(TyperCommand):
             frontend_url = None  # preserve existing BASE_URL
         else:
             worktree = resolve_worktree()
-            project = compose_project(worktree)
-            frontend_port = _discover_frontend_port(project)
+            frontend_port = _discover_frontend_port(worktree)
             if frontend_port is None:
+                probed = ", ".join(_ticket_frontend_projects(worktree)) or "none"
                 return (
-                    f"Frontend not running (no docker service in '{project}', no local process on 4200). "
-                    "Run `t3 <overlay> worktree start` first."
+                    f"Frontend not running (no docker `frontend` service in [{probed}], "
+                    "no local process on 4200). Run `t3 <overlay> worktree start` first."
                 )
             frontend_url = f"http://localhost:{frontend_port}"
 
