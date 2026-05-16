@@ -406,6 +406,8 @@ Decision rubric (apply silently — don't narrate to the user):
 
 This rule reinforces "Do Work Now" — the bundling decision is part of doing the work, not a separate question to ask.
 
+**Repo mode governs proactive-fix latitude (one source of truth).** Whether the agent fixes unrelated rough edges proactively or only flags them depends on who owns the repo. Instead of every skill re-deciding, run `t3 tool repo-mode` (cached 7 days; `--json` for machine reads; `[teatree] repo_mode` in `~/.teatree.toml` overrides the `git shortlog` heuristic). `solo` → the bundling rubric above applies as written (fix proactively). `collaborative` → bias toward _flagging_ unrelated findings (PR comment / follow-up issue) rather than touching code another contributor owns; still fix anything inside the current ticket's own scope. The `auto`-mode bundling rubric is the `solo` behavior; `collaborative` is the conservative variant of the same rubric.
+
 **When genuinely unsure, ASK — never silently defer.** If the fix is borderline (small but truly orthogonal, or medium-sized but the current PR is already large), present three explicit options to the user via `AskUserQuestion`:
 
 1. **Fix right now and bundle into the current PR** (default — pick this unless reason not to)

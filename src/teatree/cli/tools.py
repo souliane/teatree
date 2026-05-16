@@ -72,6 +72,28 @@ def validate_mr(
         raise typer.Exit(code=1)
 
 
+@tool_app.command("repo-mode")
+def repo_mode(
+    repo: str = typer.Argument(".", help="Repo path (default: current directory)"),
+    *,
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON."),
+    refresh: bool = typer.Option(False, "--refresh", help="Bypass the 7-day cache and re-detect."),
+) -> None:
+    """Report whether the repo is solo (fix proactively) or collaborative (flag, don't fix).
+
+    One heuristic for every skill: ``git shortlog`` over the last 90 days on
+    the default branch. A ``[teatree] repo_mode`` config value overrides the
+    detection. Result is cached 7 days per repo.
+    """
+    from teatree.repo_mode import resolve_repo_mode  # noqa: PLC0415
+
+    mode = resolve_repo_mode(repo, refresh=refresh)
+    if json_output:
+        typer.echo(json.dumps({"repo": repo, "mode": mode.value}))
+        return
+    typer.echo(mode.value)
+
+
 @tool_app.command("analyze-video")
 def analyze_video(
     video_path: str = typer.Argument(..., help="Path to video file"),

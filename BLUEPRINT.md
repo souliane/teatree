@@ -1681,6 +1681,9 @@ graph TD
     teatree.config --> teatree.utils
     teatree.utils --> teatree.paths
     teatree.timeouts --> teatree.config
+    teatree.repo_mode --> teatree.paths
+    teatree.repo_mode --> teatree.utils
+    teatree.repo_mode --> teatree.config
     teatree.skill_loading --> teatree.types
     teatree.skill_loading --> teatree.utils
     teatree.core --> teatree.types
@@ -1713,6 +1716,7 @@ graph TD
     teatree.cli --> teatree.overlay_init
     teatree.cli --> teatree.loop
     teatree.cli --> teatree.utils
+    teatree.cli --> teatree.repo_mode
     teatree.core.management --> teatree.core
     teatree.core.management --> teatree.agents
     teatree.core.management --> teatree.backends
