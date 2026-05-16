@@ -1,5 +1,7 @@
 """Tick → DB persistence: kind=agent actions become Ticket + Task rows."""
 
+from unittest.mock import patch
+
 from django.test import TestCase
 
 from teatree.core.models import Task, Ticket
@@ -186,3 +188,97 @@ class TestReviewerCacheUpdate(TestCase):
         ticket = Ticket.objects.get(role=Ticket.Role.REVIEWER, issue_url="https://example.com/pr/7")
         assert ticket.extra["reviewed_sha"] == "zzz"
         assert ticket.extra["last_review_state"] == "approved"
+
+
+class TestCrossOverlayLeak(TestCase):
+    """Loop persistence attributes a ticket to its URL owner (#806, #743).
+
+    The loop persistence path must attribute a ticket to the overlay that
+    *owns* its URL, not the scanning overlay's tag — otherwise the ticket
+    leaks into the wrong overlay's statusline zone and ``Ticket.save()``
+    never corrects it (the explicit non-empty overlay disables
+    ``_infer_overlay``). Incomplete-fix follow-up to #743.
+    """
+
+    _URL = "https://gitlab.example.com/team/widgets/-/merge_requests/7"
+
+    def _reviewer_action(self, scan_tag: str) -> DispatchAction:
+        return DispatchAction(
+            kind="agent",
+            zone="t3:reviewer",
+            detail=f"Review needed: {self._URL}",
+            payload={"url": self._URL, "head_sha": "deadbee", "previous_sha": "", "overlay": scan_tag},
+        )
+
+    def _orchestrator_action(self, scan_tag: str) -> DispatchAction:
+        return DispatchAction(
+            kind="agent",
+            zone="t3:orchestrator",
+            detail="Auto-start assigned issue",
+            payload={"issue_url": self._URL, "auto_start": True, "overlay": scan_tag},
+        )
+
+    def test_reviewer_ticket_attributed_to_url_owner_not_scan_tag(self) -> None:
+        # The scanning overlay is "gh"; the URL is owned by "gl".
+        with patch(
+            "teatree.core.overlay_loader.infer_overlay_for_url",
+            return_value="gl",
+        ):
+            persist_agent_actions([self._reviewer_action(scan_tag="gh")])
+        ticket = Ticket.objects.get(issue_url=self._URL)
+        assert ticket.overlay == "gl", (
+            f"reviewer ticket leaked into the scanning overlay's zone: "
+            f"overlay={ticket.overlay!r}, expected 'gl' (the URL owner)"
+        )
+
+    def test_orchestrator_ticket_attributed_to_url_owner_not_scan_tag(self) -> None:
+        with patch(
+            "teatree.core.overlay_loader.infer_overlay_for_url",
+            return_value="gl",
+        ):
+            persist_agent_actions([self._orchestrator_action(scan_tag="gh")])
+        ticket = Ticket.objects.get(issue_url=self._URL)
+        assert ticket.overlay == "gl"
+
+    def test_falls_back_to_scan_tag_when_inference_inconclusive(self) -> None:
+        # No registered overlay owns the URL → inference returns "" →
+        # the scan tag is the only signal we have; keep it.
+        with patch(
+            "teatree.core.overlay_loader.infer_overlay_for_url",
+            return_value="",
+        ):
+            persist_agent_actions([self._reviewer_action(scan_tag="gh")])
+        ticket = Ticket.objects.get(issue_url=self._URL)
+        assert ticket.overlay == "gh"
+
+    def test_existing_misattributed_row_is_reconciled(self) -> None:
+        # A pre-existing row persisted with the wrong (scanning) overlay.
+        Ticket.objects.create(
+            issue_url=self._URL,
+            overlay="gh",
+            role=Ticket.Role.REVIEWER,
+        )
+        with patch(
+            "teatree.core.overlay_loader.infer_overlay_for_url",
+            return_value="gl",
+        ):
+            persist_agent_actions([self._reviewer_action(scan_tag="gh")])
+        ticket = Ticket.objects.get(issue_url=self._URL)
+        assert ticket.overlay == "gl", (
+            "an already-persisted cross-overlay-leaked row was not reconciled to its URL owner"
+        )
+
+    def test_inconclusive_inference_never_blanks_existing_attribution(self) -> None:
+        # #743 invariant: an empty inference must not wipe a set overlay.
+        Ticket.objects.create(
+            issue_url=self._URL,
+            overlay="gl",
+            role=Ticket.Role.REVIEWER,
+        )
+        with patch(
+            "teatree.core.overlay_loader.infer_overlay_for_url",
+            return_value="",
+        ):
+            persist_agent_actions([self._reviewer_action(scan_tag="gh")])
+        ticket = Ticket.objects.get(issue_url=self._URL)
+        assert ticket.overlay == "gl"
