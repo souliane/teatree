@@ -767,14 +767,15 @@ def handle_read_dedup(data: dict) -> None:
 def _durable_session_snapshot(session_id: str) -> str:
     """Build a recovery snapshot for *session_id* from DURABLE state only.
 
-    Issue #778: a background sub-agent (loop singleton, reviewer, task
-    agent) auto-compacts without ever running ``/t3:retro``, so the
-    behavioral "agent writes its own snapshot" path never fires for it.
-    Reconstruct "who am I / what am I doing / where" purely from state
-    that already outlives the transcript: the loop-registry entries this
-    session owns (agentId + self-contained spawn brief) and the per
-    -session active-repos / loaded-skills tracking files. No reliance on
-    the agent having done anything.
+    Issue #778: a background sub-agent (a per-unit loop sub-agent,
+    reviewer, task agent) auto-compacts without ever running
+    ``/t3:retro``, so the behavioral "agent writes its own snapshot" path
+    never fires for it. Reconstruct "who am I / what am I doing / where"
+    purely from state that already outlives the transcript: whether this
+    session is the loop-tick owner (#786 WS3 — a single Django-free
+    ``_OWNER_LOOP`` record; there is no roster of singletons and no spawn
+    brief) and the per-session active-repos / loaded-skills tracking
+    files. No reliance on the agent having done anything.
     """
     lines = [
         f"# Auto-recovery snapshot — session `{session_id}`",
@@ -791,13 +792,20 @@ def _durable_session_snapshot(session_id: str) -> str:
         if isinstance(entry, dict) and entry.get("session_id") == session_id
     ]
     if owned:
-        lines += ["", "## Loop assignment (this session owns these singletons)"]
-        for name, entry in sorted(owned):
+        lines += [
+            "",
+            "## Loop assignment",
+            (
+                "This session is the loop-tick OWNER. The loop is tick-driven "
+                "(#786 WS3): there is no roster of long-lived sub-agents to "
+                "resume — re-arm by ensuring the `t3 loop tick` cron is "
+                "registered for this session; each tick atomically claims the "
+                "next pending unit via `t3 loop claim-next`."
+            ),
+        ]
+        for _name, entry in sorted(owned):
             agent_id = entry.get("agent_id") or "(agent id not recorded)"
-            lines.append(f"- **{name}** — resume by agentId `{agent_id}`")
-            brief = (entry.get("spawn_brief") or "").strip()
-            if brief:
-                lines.append(f"  - Brief: {brief}")
+            lines.append(f"- tick-owner agentId `{agent_id}` (pid {entry.get('pid', '?')})")
 
     active = _read_lines(_state_file(session_id, "active"))
     if active:
