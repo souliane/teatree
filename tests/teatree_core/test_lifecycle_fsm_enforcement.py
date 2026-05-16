@@ -333,20 +333,23 @@ class TestPrCreateNeverRaisesEvenOnNoSessionOrSkipValidation(TestCase):
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.STARTED
 
-    def test_pr_create_skip_validation_from_non_reviewed_returns_structured_failure(self) -> None:
-        # --skip-validation bypasses the gate check; the raw ticket.ship()
-        # from STARTED would raise TransitionNotAllowed. The invariant
-        # "pr create never raises a raw TransitionNotAllowed" must still hold.
+    def test_pr_create_skip_validation_from_non_reviewed_reconciles_then_ships(self) -> None:
+        # #748: --skip-validation is the user-authorized attestation
+        # substitute, so the FSM follows the authorization: it walks
+        # STARTED -> REVIEWED via reconcile_reviewed and ship() becomes
+        # legal (never a raw TransitionNotAllowed; never a structurally
+        # impossible ship). Async default => queued, no structured gate
+        # failure.
         ticket = _ticket(state=Ticket.State.STARTED)
         self._worktree(ticket)
         result = cast(
             "dict[str, object]",
             call_command("pr", "create", str(ticket.pk), "--skip-validation"),
         )
-        assert result["allowed"] is False
-        assert "error" in result
+        assert result.get("allowed") is not False, result
+        assert "error" not in result
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.STARTED
+        assert ticket.state in {Ticket.State.SHIPPED, Ticket.State.REVIEWED}
 
 
 class TestCliVisitPhaseFeedsMakerChecker(TestCase):
