@@ -13,9 +13,12 @@ Integration-style: real ``hook_router`` handler, real ``STATE_DIR`` +
 ``pending-spawn`` subprocess (an external boundary) is faked.
 """
 
+import contextlib
 import json
 import os
+import sys
 import time
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -148,6 +151,97 @@ class TestSessionEndClearsPumpMarker:
 
     def test_session_end_no_session_id_is_noop(self) -> None:
         handle_session_end_self_pump({"session_id": ""})  # must not raise
+
+
+class TestStopHookFailsSafeWithoutTeatree:
+    """#810: a ``Stop`` hook must never raise to the session.
+
+    Hooks run under whatever interpreter the agent harness invokes;
+    ``teatree`` importability is NOT guaranteed there. The lazy
+    ``from teatree.utils.singleton import pid_alive`` in
+    ``_prune_dead_owner`` crashed a live session with
+    ``ModuleNotFoundError: No module named 'teatree'`` and surfaced a
+    full traceback. The Stop path must degrade gracefully (treat loop
+    ownership as unknown / skip the self-pump) on a missing or
+    unimportable ``teatree``.
+    """
+
+    @staticmethod
+    @contextlib.contextmanager
+    def _teatree_unimportable() -> Iterator[None]:
+        """Make ``import teatree*`` raise ``ModuleNotFoundError``.
+
+        Faithfully reproduces the hook-interpreter env where ``teatree``
+        is absent from ``sys.path``: purge any cached ``teatree`` modules
+        and install a ``meta_path`` finder that refuses to resolve them.
+        """
+
+        class _BlockTeatree:
+            def find_spec(self, name: str, path: object = None, target: object = None) -> None:
+                if name == "teatree" or name.startswith("teatree."):
+                    msg = f"No module named {name!r}"
+                    raise ModuleNotFoundError(msg)
+
+        saved = {k: v for k, v in sys.modules.items() if k == "teatree" or k.startswith("teatree.")}
+        for k in saved:
+            del sys.modules[k]
+        finder = _BlockTeatree()
+        sys.meta_path.insert(0, finder)
+        try:
+            yield
+        finally:
+            with contextlib.suppress(ValueError):
+                sys.meta_path.remove(finder)
+            sys.modules.update(saved)
+
+    def test_self_pump_skips_when_teatree_unimportable(
+        self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _own_loop("owner-x")
+        _fake_pending(monkeypatch, [{"task_id": 1, "subagent": "x", "phase": "coding", "issue_url": "u"}])
+
+        with self._teatree_unimportable():
+            # Pre-guard this raises ModuleNotFoundError straight to the
+            # caller (the Stop dispatch loop) — a session-disrupting
+            # traceback. Post-guard it must return cleanly.
+            result = handle_loop_self_pump({"session_id": "owner-x"})
+
+        assert result is None
+        # Self-pump skipped: no block decision emitted.
+        assert _decision(capsys) == {}
+
+    def test_session_owns_loop_false_when_teatree_unimportable(self) -> None:
+        _own_loop("owner-y")
+        with self._teatree_unimportable():
+            assert router._session_owns_loop("owner-y") is False
+
+    def test_prune_dead_owner_degrades_when_teatree_unimportable(self) -> None:
+        registry = {"t3-main-loop": {"session_id": "s", "pid": os.getpid()}}
+        with self._teatree_unimportable():
+            # Ownership unknown => empty registry (no entry can be
+            # confirmed live without the pid-liveness primitive).
+            assert router._prune_dead_owner(registry) == {}
+
+    def test_boundary_guard_contains_any_unexpected_stop_path_error(
+        self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Belt-and-suspenders boundary guard.
+
+        ANY unexpected error in the Stop path (not just a missing
+        ``teatree``) is contained — the broad boundary guard returns
+        ``None`` instead of raising to the session.
+        """
+
+        def _boom(_data: dict) -> bool | None:
+            msg = "unexpected Stop-path failure"
+            raise RuntimeError(msg)
+
+        monkeypatch.setattr(router, "_loop_self_pump", _boom)
+
+        result = handle_loop_self_pump({"session_id": "owner-z"})
+
+        assert result is None
+        assert _decision(capsys) == {}
 
 
 class TestWiredIntoRouter:
