@@ -117,6 +117,31 @@ class TestPersistOrchestrator(TestCase):
         )
         assert persist_agent_actions([action]) == []
 
+    def test_short_verb_code_task_blocks_duplicate_coding_task(self) -> None:
+        """#769 audit: _has_open_task must match any accepted phase spelling.
+
+        A pre-existing short-verb ``code`` task (the unnormalized spelling
+        ``tasks create <id> code`` stores) is an open coding task. Pre-fix,
+        ``_has_open_task`` used a raw ``phase="coding"`` filter and missed
+        it, so the orchestrator would create a *duplicate* coding task.
+        """
+        action = self._action()
+        first = persist_agent_actions([action])
+        assert len(first) == 1
+        ticket = first[0].ticket
+        # Re-stamp the existing task with the short-verb spelling and
+        # reset the ticket so the auto-start path is re-evaluated.
+        Task.objects.filter(ticket=ticket).update(phase="code", status=Task.Status.PENDING)
+        ticket.state = Ticket.State.NOT_STARTED
+        ticket.save()
+
+        again = persist_agent_actions([action])
+
+        assert again == [], (
+            "a short-verb 'code' PENDING task did not block a duplicate coding task; _has_open_task compared raw phase"
+        )
+        assert Task.objects.filter(ticket=ticket).count() == 1
+
 
 class TestPersistIgnoredKinds(TestCase):
     def test_ignores_non_agent_actions(self) -> None:
