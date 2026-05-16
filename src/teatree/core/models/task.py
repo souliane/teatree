@@ -161,7 +161,13 @@ class Task(models.Model):
 
         if not self.phase:
             return
-        self.session.visit_phase(normalize_phase(self.phase), agent_id=self.session.agent_id)
+        # #755: resolve a guaranteed-non-empty attribution identity,
+        # symmetric with the CLI path — a blank Session.agent_id must not
+        # silently drop the maker attribution here either.
+        self.session.visit_phase(
+            normalize_phase(self.phase),
+            agent_id=self.session.recording_identity(),
+        )
 
     def _last_attempt_needs_user_input(self) -> bool:
         last = self.attempts.order_by("-pk").first()  # ty: ignore[unresolved-attribute]
