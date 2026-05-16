@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Pre-push hook: public-repo privacy gate (#685).
+# Pre-push hook: public-repo privacy gate (#685, #730).
 #
 # Refuses `git push` when the `origin` remote resolves to a PUBLIC
 # repository and the branch-vs-base diff OR the commit messages in the
@@ -7,6 +7,17 @@
 # `/Users/`-`/home/` path, a private IP, an API token, an internal
 # hostname, or a T3_BANNED_TERM). Commit messages and trailers reach
 # public history just like file content, so they are scanned too (#703).
+#
+# It ALSO refuses (#730) when any commit in the push range has an author
+# OR committer email that is not a GitHub noreply address. A real /
+# deliverable address (e.g. a customer/personal-domain address
+# inherited from local git config) in PUBLIC history is a permanent PII
+# leak that GitHub's own "block pushes that expose my email" does not
+# catch for third-party domains. The accepted shape is the GitHub
+# noreply pattern `([0-9]+\+)?<login>@users.noreply.github.com`, which
+# covers every GitHub identity (souliane and any other login)
+# without hardcoding one specific login.
+#
 # Pushes to a private remote, and clean pushes to a public remote, pass
 # through.
 #
@@ -87,6 +98,32 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     # whole tree at the pushed sha rather than skipping the gate.
     diff=$(git show "${local_sha}" 2>/dev/null || true)
     msgs=$(git log --format='%B' "${local_sha}" 2>/dev/null || true)
+  fi
+
+  # Author / committer email is metadata `git diff` and `%B` never show,
+  # yet it lands in public history forever. On a PUBLIC remote every
+  # commit's author AND committer email must be a GitHub noreply address
+  # (`([0-9]+\+)?<login>@users.noreply.github.com`); anything else — a
+  # real/deliverable address such as a customer-domain email inherited
+  # from local git config — is blocked (#730).
+  if [ -n "${base}" ]; then
+    author_range="${base}..${local_sha}"
+  else
+    author_range="${local_sha}"
+  fi
+  noreply_re='^([0-9]+\+)?[A-Za-z0-9-]+@users\.noreply\.github\.com$'
+  bad_idents=$(git log --format='%ae%n%ce' "${author_range}" 2>/dev/null \
+    | grep -v -E "${noreply_re}" | sort -u || true)
+  if [ -n "${bad_idents}" ]; then
+    echo "✗ refuse: push to PUBLIC repo '${slug}' has a non-noreply commit identity on '${local_ref}'."
+    echo "  A real/deliverable email in public git history is a permanent PII leak."
+    echo "  Offending author/committer email(s):"
+    printf '%s\n' "${bad_idents}" | sed 's/^/    /'
+    echo "  Allowed shape: <id>+<login>@users.noreply.github.com (GitHub noreply)."
+    echo "  Rewrite the range's author/committer to the repo's GitHub noreply identity, then re-push:"
+    echo "    git filter-branch --env-filter '...' -- ${author_range}"
+    echo "  (public-repo privacy gate #730 — see /t3:rules § public-repo commit author identity)"
+    blocked=1
   fi
 
   # Commit messages and trailers reach public history exactly like file
