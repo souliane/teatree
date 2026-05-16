@@ -25,7 +25,7 @@ Shares the Quick Wins family with `/teatree-batch`.
 
 ## Prerequisites
 
-Same as `/teatree-batch` (`ac-python`, `ac-django`, overlay skill loaded). Plus: at least one overlay registered with credentials that resolve (`t3 teatree loop tick --overlay <name>` must finish without `ImproperlyConfigured`); `~/.local/share/teatree/statusline.txt` writable (the renderer creates the directory if absent).
+Same as `/teatree-batch` (`ac-python`, `ac-django`, overlay skill loaded). Plus: at least one overlay registered with credentials that resolve (`t3 loop tick --overlay <name>` must finish without `ImproperlyConfigured`); `~/.local/share/teatree/statusline.txt` writable (the renderer creates the directory if absent).
 
 ## Step 1 — Ask the scope
 
@@ -46,11 +46,11 @@ cd "$T3_REPO"
 
 # One ad-hoc multi-overlay tick. JSON output is the structured surface; the
 # rendered file is the user-visible surface. Inspect both.
-t3 teatree loop tick --json > /tmp/tick.json
+t3 loop tick --json > /tmp/tick.json
 cat "${XDG_DATA_HOME:-$HOME/.local/share}/teatree/statusline.txt"
 
 # Single-overlay diagnosis when a multi-overlay tick reports errors:
-t3 teatree loop tick --overlay <name>
+t3 loop tick --overlay <name>
 ```
 
 `tick.json` has `signal_count`, `action_count`, `errors`, and `actions[]` — the structured contract. The statusline file is the formatted contract — three zones (anchors / action_needed / in_flight), ANSI-coloured, OSC 8 hyperlinks where signals carry a `url` payload.
@@ -59,7 +59,7 @@ t3 teatree loop tick --overlay <name>
 
 Walk the output of the tick **and** the rendered statusline. The tick must agree with what the user actually sees at the bottom of their session.
 
-**Structured (`tick.json` / `t3 teatree loop status`):**
+**Structured (`tick.json` / `t3 loop status`):**
 
 - `errors` is empty. Any entry like `"my_prs[teatree]": "AuthError: ..."` is bug #1 — surface it before doing anything else.
 - `signal_count` and `action_count` are non-zero when the registered overlays have open work. A clean inbox is plausible; a 0/0 tick on an overlay you know has open PRs is a scanner bug.
@@ -72,7 +72,7 @@ Walk the output of the tick **and** the rendered statusline. The tick must agree
 - Action-needed lines bright red, in-flight bright cyan. If a `my_pr.failed` ends up cyan, the zone map drifted.
 - Lines with a `url` payload render as OSC 8 hyperlinks — the raw bytes are `\033]8;;<url>\033\\<text>\033]8;;\033\\`. A line with a URL in JSON but **no** OSC 8 in the file is a render bug. (Run `od -c ~/.local/share/teatree/statusline.txt | head` if your terminal hides escapes.)
 - Multi-overlay ticks prefix lines with `[<overlay>]`. A signal with `payload.overlay = "teatree"` and no `[teatree]` prefix is a `_zones_for` bug.
-- `NO_COLOR=1 t3 teatree loop tick --statusline-file /tmp/x.txt` — the file must contain no `\033` bytes and URLs must fall back to `text <url>`.
+- `NO_COLOR=1 t3 loop tick --statusline-file /tmp/x.txt` — the file must contain no `\033` bytes and URLs must fall back to `text <url>`.
 
 ### What counts as a bug (file it)
 
@@ -83,7 +83,7 @@ Walk the output of the tick **and** the rendered statusline. The tick must agree
 - **Stale or duplicated entries** — same PR rendered twice, a closed PR still in `in_flight`, a merged PR in `action_needed`.
 - **Multi-overlay leak** — a signal from one overlay rendered without (or with the wrong) `[overlay]` prefix; identical PRs from two overlays collapsed into one line.
 - **Anchor / counter mismatch** — `signal_count` in JSON differs from the number of zone entries; `errors` non-empty but no "scanner errors:" line in `action_needed`.
-- **Crash / non-zero exit** — `t3 teatree loop tick` raising a traceback to stderr is bug #1.
+- **Crash / non-zero exit** — `t3 loop tick` raising a traceback to stderr is bug #1.
 
 ### What does NOT count (don't file)
 
@@ -131,5 +131,5 @@ Verify against the source before quoting in a bug report — these can drift.
 
 - The tick runs from the main clone, but all **fixes** happen in worktrees — don't edit the main clone.
 - Bound the hunt: one pass through the JSON + rendered file. Don't loop the tick more than 2–3 times for the same scope — repeated ticks change `last_reviewed_sha` caches and other state.
-- If `t3 teatree loop tick` won't run, that's bug #1 — file and fix it before continuing.
+- If `t3 loop tick` won't run, that's bug #1 — file and fix it before continuing.
 - Paste the relevant byte sequence in the issue body when the bug is render-shape (OSC 8, ANSI). `od -c` output is more useful than a screenshot here.
