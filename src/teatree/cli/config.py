@@ -18,6 +18,29 @@ def check_update() -> None:
     typer.echo(message or "You are up to date.")
 
 
+@config_app.command()
+def show(
+    *,
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON."),
+) -> None:
+    """Read-only view of config: text-file intent vs DB regenerable cache (#628).
+
+    The intent section is ``~/.teatree.toml`` resolved — the user-authored
+    source of truth. The derived section is DB / data-dir state that can be
+    deleted and rebuilt from the text files; every entry is flagged
+    regenerable so the cache-vs-intent invariant is visible. Reads only.
+    """
+    import json as _json  # noqa: PLC0415
+
+    from teatree.cli.config_view import build_config_view, render_config_view  # noqa: PLC0415
+
+    view = build_config_view()
+    if json_output:
+        typer.echo(_json.dumps(view.to_dict()))
+        return
+    typer.echo(render_config_view(view))
+
+
 @config_app.command(name="write-skill-cache")
 def write_skill_cache() -> None:
     """Write overlay skill metadata + trigger index to XDG cache for hook consumption."""
