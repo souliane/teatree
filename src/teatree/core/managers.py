@@ -250,6 +250,52 @@ class TaskQuerySet(models.QuerySet):
         return qs
 
 
+class LoopLeaseQuerySet(models.QuerySet):
+    def acquire(self, name: str, *, owner: str, lease_seconds: int = 120) -> bool:
+        """Atomically acquire/renew the named loop lease (#786 WS2).
+
+        Backend-agnostic compare-and-swap: a single conditional ``UPDATE``
+        whose ``WHERE`` matches only when the lease is unowned, already
+        held by *this* owner (renew), or expired. Exactly one of N
+        concurrent ticks updates 1 row and wins; the losers update 0 rows
+        and return ``False``. NOT ``select_for_update(skip_locked=True)``
+        — that is a silent no-op on the production SQLite backend
+        (``has_select_for_update_skip_locked`` is ``False``; the #786 B1
+        lesson). The row is created on first contact via ``get_or_create``
+        so a missing lease is indistinguishable from an expired one.
+        Returns ``True`` iff this caller now holds the lease.
+        """
+        now = timezone.now()
+        expires = now + timedelta(seconds=lease_seconds)
+        self.get_or_create(name=name)
+        won = (
+            self.filter(name=name)
+            .filter(Q(owner="") | Q(owner=owner) | Q(lease_expires_at__isnull=True) | Q(lease_expires_at__lte=now))
+            .update(
+                owner=owner,
+                acquired_at=now,
+                heartbeat_at=now,
+                lease_expires_at=expires,
+            )
+        )
+        return won == 1
+
+    def release(self, name: str, *, owner: str) -> bool:
+        """Release the lease iff held by ``owner`` (CAS on owner).
+
+        A non-owner release is a no-op (0 rows) so a losing tick can never
+        evict the live owner. Returns ``True`` iff this owner released it.
+        """
+        released = self.filter(name=name, owner=owner).update(
+            owner="",
+            acquired_at=None,
+            heartbeat_at=None,
+            lease_expires_at=None,
+        )
+        return released == 1
+
+
+LoopLeaseManager = models.Manager.from_queryset(LoopLeaseQuerySet)
 TicketManager = models.Manager.from_queryset(TicketQuerySet)
 WorktreeManager = models.Manager.from_queryset(WorktreeQuerySet)
 SessionManager = models.Manager.from_queryset(SessionQuerySet)
