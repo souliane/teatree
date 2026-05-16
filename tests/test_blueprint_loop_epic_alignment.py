@@ -75,6 +75,32 @@ def _any_window_has(text: str, needle: str, *required: str, radius: int = 320) -
     return False
 
 
+class TestAnyWindowHasHelper:
+    """Direct unit coverage of the scan-all-occurrences predicate.
+
+    Against a well-formed BLUEPRINT an early occurrence satisfies the
+    predicate and returns True, so the loop-continuation and the
+    no-match exit are never exercised by the doc-invariant assertions
+    alone — they need their own focused inputs.
+    """
+
+    def test_later_occurrence_matches_when_first_misses(self) -> None:
+        # First "#X" has no 'ok' within radius; the second one does. The
+        # match is only reachable via the `start = i + 1` continuation
+        # past the non-matching first occurrence.
+        text = "#X here nothing relevant. " + ("filler " * 40) + "#X and ok right next to it"
+        assert _any_window_has(text, "#X", "ok", radius=20) is True
+
+    def test_returns_false_when_no_window_satisfies(self) -> None:
+        # The needle is present but no occurrence has the required token
+        # nearby — exercises the loop falling through to `return False`.
+        text = "#X alpha #X beta #X gamma"
+        assert _any_window_has(text, "#X", "delta", radius=5) is False
+
+    def test_returns_false_when_needle_absent(self) -> None:
+        assert _any_window_has("nothing here", "#X", "ok") is False
+
+
 class TestSubsumedIssuesDocumented:
     def test_789_documented_as_subsumed_not_reopened(self, loop_topology: str) -> None:
         assert "#789" in loop_topology
