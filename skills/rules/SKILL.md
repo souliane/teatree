@@ -145,7 +145,9 @@ When the user gives a direct, explicit instruction (skip tests, push now, use th
 
 When the auto-mode classifier denies a tool call (Bash command rejected, MCP call refused, "permission denied" from the harness, etc.), **stop immediately**. Do not retry, do not work around it with a different command, do not "find another way". A classifier denial is an **immediate session blocker** — handle it before doing anything else.
 
-**Required response, every time:**
+**Step 0 — read the denial reason and check existing allow-rules before escalating.** The denial message states _why_ it was blocked, and that reason frequently names the in-scope form the action must take (e.g. "database outside the authorized `development-<tenant>` scope" → the authorized DB name is `development-<tenant>`, not the one you used). Before treating this as "needs relaxation": (a) parse the stated reason for the corrective scope, and (b) read the user's `~/.claude/settings.json` `autoMode.allow` and `permissions.allow` entries for a rule that already authorizes this action under the correct form. If either resolves it, the action was never out of policy — re-issue it in the **authorized form** (this is not a relaxation and needs no user prompt). Only if neither the reason nor an existing rule resolves it do you run the escalation below. Skipping Step 0 and escalating a mere wrong-form mistake wastes the user's time on a decision they should never have been asked.
+
+**Required response when Step 0 does not resolve it:**
 
 1. **Stop.** Drop whatever you were doing. Do not start an alternative approach in the same response.
 2. **Inform the user** in plain text: which command was denied, what you were trying to accomplish, and the smallest static permission rule that would have allowed it (e.g. `Bash(gh issue create *)`, `Bash(docker buildx prune *)`). The rule must be the smallest rule that covers the use case — never a blanket `Bash` or `Bash(* *)`.
