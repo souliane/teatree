@@ -14,8 +14,8 @@ from django_fsm import TransitionNotAllowed
 from django_typer.management import TyperCommand, command
 
 from teatree import visual_qa
-from teatree.backends.protocols import PullRequestSpec
 from teatree.core.backend_factory import code_host_from_overlay
+from teatree.core.management.commands._ensure_pr import EnsurePrResult, create_or_defer_pr
 from teatree.core.management.commands._ship_fsm import reconcile_fsm_for_ship
 from teatree.core.models import Session, Ticket, Worktree
 from teatree.core.models.types import TicketExtra, VisualQASummary
@@ -75,24 +75,12 @@ class ShippingGateFailure(TypedDict):
     hint: str
 
 
-class EnsurePrResult(TypedDict, total=False):
-    skipped: str
-    branch: str
-    url: str
-    hint: str
-    error: str
+# EnsurePrResult lives in ``_ensure_pr`` (re-exported above) so external
+# importers of ``pr.EnsurePrResult`` keep working after the ensure-pr split.
 
 
 _IMAGE_URL_RE = re.compile(r"!\[([^\]]*)\]\((/uploads/[^\)]+)\)")
 _EXTERNAL_LINK_RE = re.compile(r"https?://(?:www\.)?(?:notion\.so|linear\.app|jira\.\S+)/\S+")
-_REMOTE_HOST_RE = re.compile(r"^(?:git@[^:]+:|https?://[^/]+/|ssh://[^/]+/|git://[^/]+/)")
-
-
-def _slug_from_remote(remote_url: str) -> str:
-    """Extract the ``org/repo`` (or ``ns/group/repo``) slug from a git remote URL."""
-    if not remote_url:
-        return ""
-    return _REMOTE_HOST_RE.sub("", remote_url.strip()).removesuffix(".git")
 
 
 def _ship_preview(ticket: Ticket, worktree: Worktree) -> tuple[str, str, str]:
@@ -447,35 +435,7 @@ class Command(TyperCommand):
                 hint=f"t3 <overlay> pr ensure-pr --branch {branch_name}",
             )
 
-        host = code_host_from_overlay()
-        if host is None:
-            return EnsurePrResult(error="no code host configured")
-
-        commit_subject, commit_body = git.last_commit_message(repo=repo_path)
-        title = commit_subject or f"WIP: {branch_name}"
-        raw_description = (
-            f"{commit_subject}\n\n{commit_body}"
-            if commit_subject and commit_body
-            else (commit_subject or commit_body or f"PR auto-created to track branch `{branch_name}`.")
-        )
-        description = sanitize_close_keywords(raw_description, close_ticket=get_overlay().config.mr_close_ticket)
-
-        remote = git.remote_url(repo=repo_path)
-        repo_slug = _slug_from_remote(remote)
-        assignee = host.current_user() or git.config_value(key="user.name")
-
-        raw = host.create_pr(
-            PullRequestSpec(
-                repo=repo_slug,
-                branch=branch_name,
-                title=title,
-                description=description,
-                labels=overlay_pr_labels(),
-                assignee=assignee,
-                draft=False,
-            ),
-        )
-        return EnsurePrResult(branch=branch_name, url=str(raw.get("url", raw.get("web_url", ""))))
+        return create_or_defer_pr(repo_path, branch_name)
 
     @command(name="check-gates")
     def check_gates(self, ticket_id: int, target_phase: str = "shipping") -> dict[str, object]:
