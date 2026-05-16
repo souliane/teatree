@@ -8,6 +8,14 @@ This is the teatree repo — both the Python package (`src/teatree/`) and the wo
 - This includes files under paths such as `docs/plans/`, ad-hoc notes, repo-local memory artifacts, and new instruction/config files meant only for the agent.
 - If a workflow or skill says to write such a file, stop and ask the user before doing it. Repo policy wins.
 
+### Retiring/renaming a symbol: grep the FULL consumer set (Non-Negotiable)
+
+Amplifies CLAUDE.md "No stale references". When a change retires or renames a function/field/registry-key/directive, the consumer set is **not just the handler/model that defines it**. Before claiming "no stale references / no dead code", grep across at minimum: (1) user-facing CLI help/docstrings and Typer `help=` strings; (2) generated docs (`docs/generated/*` — regenerate via the doc-generator/hook, never hand-edit); (3) PreCompact/snapshot/registry-serialization code that may read a now-unwritten field as a permanently-dead branch; (4) test fixtures that still write the retired shape (a green test guarding retired behavior is a stale consumer). A "retire X" PR/commit body asserting completeness without this grep is a false claim — it will bounce at cold review.
+
+### Reused-ticket attestation: the gate-pass is NOT the guarantee (Non-Negotiable)
+
+`t3 teatree workspace ticket <url>` is idempotent on `issue_url` (one ticket per issue) and does **not** clear the ticket's aggregated phase ledger — `Ticket.aggregate_phase_records()` unions `visited_phases` across ALL the ticket's sessions, so a prior workstream's `reviewing/testing/retro` keep aggregating and will **false-pass `pr create`** for the next workstream off stale attestation. A clean ledger is unobtainable by sanctioned means (no `session` cmd; `ticket` only `transition`; row-edit forbidden; `resetdb` catastrophic). Therefore, for multi-workstream / reused-ticket work: the integrity guarantee is **(a) coordinator-orchestrated independent cold review of THIS workstream's exact diff by a distinct identity (maker≠checker), (b) coordinator verification, (c) explicit per-workstream coordinator CLEAR to the review-loop** — recorded as the durable attestation receipt. The `pr create` gate-pass is acknowledged as mechanically satisfiable by the stale aggregate and is explicitly **not** treated as the workstream's attestation. Never chain attest→pr-create→merge on a pre-review gate-pass; STOP-for-review at pr-create and let the coordinator orchestrate review→CLEAR.
+
 ## Issue Creation (Non-Negotiable)
 
 - **Never create issues without explicit user approval.** Always ask first — present the title and a summary, let the user decide.
