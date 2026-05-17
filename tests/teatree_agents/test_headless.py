@@ -432,3 +432,65 @@ class TestRunWithHeartbeat(TestCase):
         assert returncode == 0
         assert stdout == "ok"
         assert mock_logger.warning.call_count >= 1
+
+
+# --- _build_headless_command model tiering (#880) ---
+
+
+def test_build_command_omits_model_flag_by_default() -> None:
+    """Without a resolved model, no --model flag is appended (inherit default)."""
+    cmd = headless_mod._build_headless_command("/bin/claude", "p", "ctx")
+    assert "--model" not in cmd
+
+
+def test_build_command_appends_model_flag_when_set() -> None:
+    """A resolved model tier is passed to the Claude CLI via --model."""
+    cmd = headless_mod._build_headless_command("/bin/claude", "p", "ctx", model="sonnet")
+    assert "--model" in cmd
+    assert cmd[cmd.index("--model") + 1] == "sonnet"
+
+
+def test_build_command_empty_model_omits_flag() -> None:
+    """An empty model string means inherit the user's default — no flag."""
+    cmd = headless_mod._build_headless_command("/bin/claude", "p", "ctx", model="")
+    assert "--model" not in cmd
+
+
+class TestRunHeadlessModelTiering(TestCase):
+    """Mechanical phases invoke claude with a cheap tier; reasoning phases inherit the default."""
+
+    @classmethod
+    def setUpTestData(cls) -> None:
+        cls.ticket = Ticket.objects.create()
+
+    def _run_capturing_command(self, phase: str) -> list[str]:
+        result_json = json.dumps({"summary": "Done"})
+        captured: dict[str, list[str]] = {}
+
+        def fake_run(command: list[str], **_kwargs: object) -> CompletedProcess[str]:
+            captured["command"] = command
+            return CompletedProcess([], 0, f"{result_json}\n", "")
+
+        with (
+            patch.object(headless_mod.shutil, "which", return_value="/usr/bin/claude"),
+            patch.object(utils_run_mod.subprocess, "run", side_effect=fake_run),
+        ):
+            session = Session.objects.create(ticket=self.ticket)
+            task = Task.objects.create(ticket=self.ticket, session=session)
+            run_headless(task, phase=phase, overlay_skill_metadata={})
+
+        return captured["command"]
+
+    def test_retrospecting_runs_on_haiku(self) -> None:
+        command = self._run_capturing_command("retrospecting")
+        assert "--model" in command
+        assert command[command.index("--model") + 1] == "haiku"
+
+    def test_reviewing_runs_on_sonnet(self) -> None:
+        command = self._run_capturing_command("reviewing")
+        assert "--model" in command
+        assert command[command.index("--model") + 1] == "sonnet"
+
+    def test_coding_inherits_user_default_model(self) -> None:
+        command = self._run_capturing_command("coding")
+        assert "--model" not in command
