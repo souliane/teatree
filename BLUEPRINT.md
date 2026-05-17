@@ -573,6 +573,8 @@ TeaTree drives the day from a single long-lived Claude Code session running a fa
 
 **SessionStart records the single tick-owner session (tick-dispatch, no roster — #786 WS3).** Alongside `bootstrap-cli.sh`, the `SessionStart` event runs `hook_router.py` (`handle_session_start_bootstrap`). #786 WS3 **retired the four-singleton roster** (`t3-main-loop`/`t3-review-loop`/`t3-cross-review-loop`/`t3-bug-hunt`) and the `spawn_brief`/takeover-respawn/resume-by-agentId machinery — there is no fixed set of long-lived loop sub-agents and nothing to re-spawn from a brief. The hook now emits an `additionalContext` *tick-dispatch directive* and records **one** owner record under the `_OWNER_LOOP` key (`t3-loop-tick-owner`) in the machine-wide JSON registry at `${XDG_DATA_HOME:-$HOME/.local/share}/teatree/loop-registry.json` — `session_id`/`agent_id`/`pid`/`heartbeat_ts` only (no per-loop briefs). This record is deliberately a lightweight Django-free marker (the SessionStart/Stop hooks must not bootstrap Django in the hot path) identifying which *session* is the tick-owner so the #758/#810 Stop self-pump can gate on it via `_session_owns_loop`; the actual loop-tick *executor* mutex is the WS2 `LoopLease` DB row. Every registry write is **flock-serialized** (`_registry_write_lock`, kernel `fcntl.flock` released on process death) and the read→decide→write is one flock transaction, so two simultaneous fresh sessions can never both claim ownership (no double tick-owner / double-dispatch). The recorded pid is the **parent** (`os.getppid()`) — the long-lived session process, not the ephemeral hook subprocess — and liveness reuses `teatree.utils.singleton.pid_alive` via `_prune_dead_owner`. The handler decides two cases from the pruned registry: (1) a *different* live session owns it → emit the non-owner "stay idle, do not arm a competing tick" directive (a non-owner tick would find nothing to claim — #789 subsumed), ownership unchanged; (2) no live owner, or *this* session already owns it (incl. the post-compaction same-session restart — nothing to re-spawn, the cron keeps ticking) → this session becomes/stays tick-owner and gets the owner tick-dispatch directive (`t3 loop tick` cron + repeated `t3 loop claim-next` → one fresh bounded sub-agent per claimed unit). A `SessionEnd` handler (`handle_session_end_loop_registry`) releases the single owner record on a clean exit so the next session becomes tick-owner immediately; the registry self-heals on both crash (dead-pid prune) and graceful shutdown. The owner session is told to run `/rename TEATREE LOOP` (UI-only) and gets its terminal tab title set via an OSC escape on the controlling tty (the tty's openability *is* the interactive-TTY guard; non-owner sessions get neither).
 
+**Post-compaction snapshot recovery is bound to this same `SessionStart` handler (#845).** `PreCompact` (`handle_pre_compact` → `_write_precompact_snapshot`) writes a durable-state snapshot (loop assignment, active repos, loaded skills) under `t3-snapshot-<session>-precompact.md` with **zero agent action** — state survival never depends on the agent remembering `/t3:retro` (the retro nudge is advisory only). Recovery does **not** use a `PostCompact` hook: per the Claude Code hook response schema (`docs/claude-code-internals.md` §3, sourced from `claurst/spec/12_constants_types.md` § 24.4), `PostCompact` has no `hookSpecificOutput` entry — the harness discards its output, so a `PostCompact` recovery hook is dead on arrival (the long-standing breakage this issue fixes). The only post-compaction event whose `additionalContext` the harness reads is `SessionStart` with `source == "compact"`. `handle_session_start_bootstrap` therefore, when `data["source"] == "compact"`, prepends the recovered snapshot (`_recover_snapshot_context`) to the same single `additionalContext` stdout write as the tick-dispatch directive — one JSON object on stdout (a second chained handler writing JSON would emit invalid concatenated JSON). `PostCompact` is deliberately absent from `_HANDLERS` and `hooks/hooks.json`, and `handle_post_compact` no longer exists (no dead consumer).
+
 Each tick runs three stages:
 
 1. **Scan** — pure-Python scanners under `teatree.loop.scanners` collect signals from external sources in parallel. Scanners are deterministic, mockable, and fully covered by integration tests against stubbed backends. They never invoke Claude.
@@ -1661,6 +1663,22 @@ missing env caches, and clears stale `worktree_path` values.
 `teatree.core.cleanup.cleanup_worktree` propagates overlay-step exceptions:
 failures are collected into a `[with errors: ...]` suffix on the return label so
 the caller can see exactly which step went wrong.
+
+Before the destructive `git worktree remove`, `_remove_git_worktree` calls
+`teatree.core.worktree_recovery.capture_recovery_artifact` (#835). When the
+worktree has uncommitted changes OR unpushed commits — the `force=True`
+`clean-all` / abandon reaping path that once destroyed a completed-but-uncommitted
+change set — it writes a self-contained, restorable artifact to
+`<system tempdir>/t3-recover-<ticket>-<UTC>-<rand>/`: a `git bundle` of the
+branch (`branch.bundle`) plus a single `git diff` patch covering staged,
+unstaged, and untracked changes (`working-tree.diff`). A clean, fully-pushed
+worktree captures nothing — the hard-delete path is unchanged. A bundle is
+preferred over relocating the worktree dir (a moved worktree leaves git's
+worktree admin pointing at a stale path; a bundle restores via `git clone` /
+`git fetch`). Capture failure is logged and surfaced in the label but never
+blocks the prune — blocking would re-create the stuck-cleanup state #835
+rejects. No TTL/quota/purge: artifacts live in the OS temp dir and are reaped by
+the OS's own lifecycle.
 
 ---
 

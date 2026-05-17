@@ -21,6 +21,7 @@ from teatree.config import load_config
 from teatree.core.clone_paths import resolve_clone_path
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay_loader import get_overlay
+from teatree.core.worktree_recovery import capture_recovery_artifact
 from teatree.utils import git
 from teatree.utils.db import drop_db
 from teatree.utils.postgres_secret import remove_postgres_pass_entry
@@ -318,6 +319,19 @@ def _remove_git_worktree(
         if strict_hygiene:
             _raise_if_genuinely_ahead(str(repo_main), worktree)
     errors: list[str] = []
+    # #835 — capture before the destructive remove. When force=True the guards
+    # above are skipped (the clean-all / abandon reaping path that destroyed a
+    # completed-but-uncommitted change set): a dirty or unpushed worktree gets a
+    # restorable bundle + working-tree diff under the system temp dir first. A
+    # clean, fully-pushed worktree captures nothing — the hard-delete path is
+    # unchanged. A capture failure is surfaced (not raised): blocking the prune
+    # would re-create the stuck-cleanup state #835 explicitly rejects, so we log
+    # loudly, record the error, and still remove the worktree.
+    try:
+        capture_recovery_artifact(repo_main, wt_path, worktree)
+    except Exception as exc:
+        logger.exception("recovery capture failed for %s (%s)", worktree.repo_path, worktree.branch)
+        errors.append(f"recovery capture failed for {worktree.branch}: {exc}")
     if not git.worktree_remove(str(repo_main), wt_path):
         errors.append(f"git worktree remove failed for {wt_path}")
     if not git.branch_delete(str(repo_main), worktree.branch):

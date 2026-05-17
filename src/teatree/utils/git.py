@@ -1,3 +1,5 @@
+import os
+
 from teatree.utils.run import CommandFailedError, run_allowed_to_fail, run_checked
 
 # ── Low-level runners ───────────────────────────────────────────────
@@ -102,6 +104,54 @@ def push(repo: str = ".", remote: str = "origin", branch: str = "") -> None:
     if branch:
         args.append(branch)
     run_strict(repo=repo, args=args)
+
+
+def bundle_create(repo: str, bundle_path: str, branch: str) -> None:
+    """Write a self-contained ``git bundle`` of ``branch`` to ``bundle_path``.
+
+    A bundle carries every commit reachable from the branch tip and is
+    restorable with ``git clone <bundle>`` / ``git fetch <bundle>`` — preferred
+    over relocating a worktree directory, which leaves git's worktree admin
+    pointing at a stale path. Raises ``CommandFailedError`` on failure (the
+    caller must not believe a recovery artifact exists when it does not).
+    """
+    run_strict(repo=repo, args=["bundle", "create", bundle_path, branch])
+
+
+def _git_env_without_overrides() -> dict[str, str]:
+    """Process env with every ``GIT_*`` variable stripped.
+
+    The inline pre-commit ``pytest`` hook runs under an outer ``git commit``
+    that exports ``GIT_DIR``/``GIT_INDEX_FILE``/``GIT_WORK_TREE``. Inherited by
+    a child ``git`` call these hijack it onto the outer repo. Capture must run
+    against the worktree it was pointed at, not whatever the ambient commit is.
+    """
+    return {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+
+
+def full_worktree_diff(repo: str) -> str:
+    """Return a single patch covering staged, unstaged, AND untracked changes.
+
+    ``git diff HEAD`` alone omits untracked files. Marking them intent-to-add
+    (``git add -N``) makes them appear in the diff as new-file hunks (without
+    staging their content), so a single ``git apply`` of the returned patch
+    restores edits and brand-new files alike. The intent-to-add marks are
+    harmless: the worktree is about to be removed.
+
+    The prefixes are forced explicitly with ``--src-prefix=a/
+    --dst-prefix=b/``: ``git diff`` otherwise honours the caller's git config,
+    and a user with ``diff.noprefix=true`` (common) would get a patch with no
+    ``a/``/``b/`` prefixes that a plain ``git apply`` cannot restore — total
+    loss of the captured work, the exact #835 scenario. Forcing the prefixes
+    keeps the patch standard and ``git apply``-able regardless of user config.
+    """
+    env = _git_env_without_overrides()
+    run_checked(["git", "-C", repo, "add", "-A", "-N"], env=env)
+    result = run_checked(
+        ["git", "-C", repo, "diff", "HEAD", "--binary", "--src-prefix=a/", "--dst-prefix=b/"],
+        env=env,
+    )
+    return result.stdout
 
 
 # ── Discovery ────────────────────────────────────────────────────────
