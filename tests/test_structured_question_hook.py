@@ -294,6 +294,160 @@ class TestFailSafeAndEdgeInputs:
         assert result is not True
 
 
+class TestClassifierRelaxExemption:
+    """Stop gate must NOT block classifier-relax Step-2 explanation turns.
+
+    The sanctioned Classifier Denial Protocol (skills/rules/SKILL.md §
+    "Classifier Denial Protocol") requires the agent at Step 2 to explain
+    the denial in plain text — naming the denied command, the goal, and the
+    smallest permission rule — BEFORE calling AskUserQuestion at Step 3.
+    That Step-2 prose contains second-person/decision cues and no
+    AskUserQuestion tool call in the same turn, which is exactly the pattern
+    the gate blocks. Without an exemption the agent is forced into an
+    infinite loop: block → explain again → block.
+
+    The exemption is narrow: only turns whose text contains a recognisable
+    set of classifier-denial protocol markers are let through.
+    """
+
+    def test_step2_explanation_prose_is_not_blocked(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        # Canonical Step-2 explanation: names the denied command, states the
+        # goal, gives the smallest permission rule, poses the two options.
+        # No AskUserQuestion tool call yet — that happens at Step 3.
+        step2 = (
+            "The command `gh issue create *` was denied by the classifier. "
+            "I was trying to file a GitHub issue for the current ticket. "
+            "The smallest static rule that would allow it is `Bash(gh issue create *)`. "
+            "Should I add `Bash(gh issue create *)` to your `~/.claude/settings.json` "
+            "permissions.allow? — Allow it (relax classifier) / Keep the denial (do it differently)."
+        )
+        transcript = _write_transcript(tmp_path, [_user("file the issue"), _assistant(step2)])
+
+        result = handle_enforce_structured_question({"transcript_path": str(transcript)})
+
+        assert _decision(capsys) == {}
+        assert result is not True
+
+    def test_step2_with_settings_json_mention_is_not_blocked(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Minimal: just mentions the settings.json edit target and "relax classifier".
+        step2 = (
+            "Bash(docker buildx prune *) was denied. "
+            "I'll add the rule to ~/.claude/settings.json — relax classifier? "
+            "Allow it (relax classifier) or keep the denial."
+        )
+        transcript = _write_transcript(tmp_path, [_user("clean up docker"), _assistant(step2)])
+
+        result = handle_enforce_structured_question({"transcript_path": str(transcript)})
+
+        assert _decision(capsys) == {}
+        assert result is not True
+
+    def test_step2_with_permissions_allow_mention_is_not_blocked(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Contains "permissions.allow" — the array the protocol names.
+        step2 = (
+            "The MCP call was denied. I was trying to fetch the ticket. "
+            "The smallest rule is `Bash(gh api repos/*/issues*)`. "
+            "I can add it to the permissions.allow array. "
+            "Which would you prefer: Allow it (relax classifier) or Keep the denial?"
+        )
+        transcript = _write_transcript(tmp_path, [_user("get the ticket"), _assistant(step2)])
+
+        result = handle_enforce_structured_question({"transcript_path": str(transcript)})
+
+        assert _decision(capsys) == {}
+        assert result is not True
+
+    def test_unrelated_permissions_allow_prose_is_still_blocked(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A bare "permissions.allow" with no classifier-relax context still blocks.
+
+        Review NB1: the bare ``permissions.allow`` marker alternative widened
+        the #807 Stop-gate exemption surface — unrelated prose explaining
+        allow-list syntax must NOT be exempted. It requires a relax/classifier
+        token to qualify as a Step-2 classifier-denial explanation.
+        """
+        step = (
+            "The settings schema has a permissions.allow array of glob rules. "
+            "Should I document that in the README, or add an example config instead?"
+        )
+        transcript = _write_transcript(tmp_path, [_user("explain settings"), _assistant(step)])
+
+        result = handle_enforce_structured_question({"transcript_path": str(transcript)})
+
+        assert _decision(capsys).get("decision") == "block"
+        assert result is True
+
+    def test_step2_with_denied_by_classifier_signal_is_not_blocked(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Contains "denied by the classifier" — the narrowed, protocol-specific
+        # phrasing (Finding 6): bare "was denied" no longer exempts; the
+        # denial-source phrasing the protocol actually uses does.
+        step2 = (
+            "The command was denied by the classifier. "
+            "Here is the smallest rule that covers it: `Edit(~/.config/*)`. "
+            "Should I proceed with adding it or find another path?"
+        )
+        transcript = _write_transcript(tmp_path, [_user("edit config"), _assistant(step2)])
+
+        result = handle_enforce_structured_question({"transcript_path": str(transcript)})
+
+        assert _decision(capsys) == {}
+        assert result is not True
+
+    def test_ordinary_decision_question_still_blocked(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        # No classifier-denial markers — the gate must still fire normally.
+        transcript = _write_transcript(
+            tmp_path,
+            [_user("implement the feature"), _assistant("Should I push the branch now?")],
+        )
+
+        result = handle_enforce_structured_question({"transcript_path": str(transcript)})
+
+        assert _decision(capsys).get("decision") == "block"
+        assert result is True
+
+    def test_classifier_relax_with_tool_call_still_passes(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Step 3: the tool call IS present — already compliant, no exemption needed.
+        step3 = "The command was denied. Allow it (relax classifier) or keep the denial?"
+        transcript = _write_transcript(
+            tmp_path,
+            [_user("run it"), _assistant(step3, tool_uses=["AskUserQuestion"])],
+        )
+
+        result = handle_enforce_structured_question({"transcript_path": str(transcript)})
+
+        assert _decision(capsys) == {}
+        assert result is not True
+
+    def test_unrelated_was_denied_prose_is_still_blocked(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A bare "was denied" with no classifier-protocol vocabulary still blocks.
+
+        Review Finding 6: a generic ``was denied`` substring (e.g. "access was
+        denied", "the MR was denied") must NOT exempt unrelated Stop-gate
+        prose, otherwise the #807 structured-question gate is broadly weakened.
+        """
+        step = (
+            "The merge request was denied review approval by the bot. "
+            "Should I rebase onto main and re-request, or wait for the human reviewer?"
+        )
+        transcript = _write_transcript(tmp_path, [_user("ship it"), _assistant(step)])
+
+        result = handle_enforce_structured_question({"transcript_path": str(transcript)})
+
+        assert _decision(capsys).get("decision") == "block"
+        assert result is True
+
+
 class TestWiredIntoRouter:
     def test_stop_event_includes_structured_question_gate(self) -> None:
         assert handle_enforce_structured_question in router._HANDLERS["Stop"]
