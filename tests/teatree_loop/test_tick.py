@@ -441,6 +441,37 @@ class TestTickReapsStaleClaims(django.test.TestCase):
         assert stale.claimed_by == ""
 
 
+class TestTickReplaysOrphanedTransitions(django.test.TestCase):
+    def test_run_tick_replays_a_half_advanced_ticket(self) -> None:
+        """#883: a tick recovers a ticket left half-advanced by a crash.
+
+        A coding task COMPLETED but the FSM ``code()`` transition was
+        lost to a mid-transition crash, so the ticket is still STARTED.
+        The task is COMPLETED (not CLAIMED) — the claim sweeps cannot see
+        it. A fresh tick must run ``replay_orphaned_transitions`` from
+        the same boot/tick recovery hook and advance the ticket so the
+        loop continues instead of stalling forever.
+        """
+        import tempfile  # noqa: PLC0415
+
+        from teatree.core.models import Session, Task, Ticket  # noqa: PLC0415
+
+        ticket = Ticket.objects.create(state=Ticket.State.STARTED)
+        session = Session.objects.create(ticket=ticket, agent_id="agent")
+        Task.objects.create(
+            ticket=ticket,
+            session=session,
+            phase="coding",
+            status=Task.Status.COMPLETED,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            run_tick(TickRequest(scanners=[]), statusline_path=Path(tmp) / "statusline.txt")
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.CODED
+
+
 def test_tick_captures_mechanical_handler_exception(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
