@@ -42,6 +42,7 @@ class TicketExtra(TypedDict, total=False):
     pr_urls: list[str]
     prs: dict[str, PREntrySerialized]
     pr_title_override: str
+    ship_invoking_branch: str
     ignored_from: str
     reopened_from: str
     visual_qa: VisualQASummary

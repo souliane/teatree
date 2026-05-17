@@ -153,6 +153,154 @@ class TestShipExecutor(TestCase):
         assert spec.assignee == "dev"
 
 
+class TestShipResolvesBranchFromInvokingWorktree(TestCase):
+    """#776: ship the invoking worktree's branch, not stale first().
+
+    A ticket spanning multiple PRs must ship the invoking worktree's
+    branch, never the stale earliest ``worktrees.first()`` row.
+    Reused-ticket workflows (one ticket, sequential workstreams each on
+    its own branch) created a Worktree row per workstream. ``ShipExecutor``
+    resolved the branch via ``ticket.worktrees.first()`` — the EARLIEST
+    (already-merged) row — so ``pr create --sync`` pushed a stale merged
+    branch and opened a junk duplicate PR while the intended branch was
+    never pushed and ``extra['pr_urls']`` stayed empty.
+    """
+
+    def _multi_worktree_ticket(self) -> Ticket:
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/776")
+        # PR-A: created first → the stale row worktrees.first() returns.
+        Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path="/tmp/repo-pr-a",
+            branch="s-776-pr-a-merged",
+            extra={"worktree_path": "/tmp/repo-pr-a"},
+        )
+        # PR-B: the current/invoking workstream.
+        Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path="/tmp/repo-pr-b",
+            branch="s-776-pr-b-current",
+            extra={"worktree_path": "/tmp/repo-pr-b"},
+        )
+        return ticket
+
+    def test_ships_invoking_branch_not_stale_first_worktree(self) -> None:
+        ticket = self._multi_worktree_ticket()
+        ticket.extra = {"ship_invoking_branch": "s-776-pr-b-current"}
+        ticket.save(update_fields=["extra"])
+        host = MagicMock()
+        host.create_pr.return_value = {"web_url": "https://example.com/mr/b"}
+        host.current_user.return_value = "souliane"
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.ship.code_host_from_overlay", return_value=host),
+            patch("teatree.core.runners.ship.git.push") as push,
+            patch("teatree.core.runners.ship.git.last_commit_message", return_value=("feat: b", "body")),
+            patch("teatree.core.runners.ship.git.branch_merged", return_value=False),
+        ):
+            result = ShipExecutor(ticket).run()
+
+        assert result.ok is True
+        # The intended PR-B branch is pushed — NOT the stale PR-A row.
+        push.assert_called_once_with(repo="/tmp/repo-pr-b", remote="origin", branch="s-776-pr-b-current")
+        (spec,) = host.create_pr.call_args.args
+        assert spec.branch == "s-776-pr-b-current"
+        assert spec.repo == "/tmp/repo-pr-b"
+        ticket.refresh_from_db()
+        assert ticket.extra["pr_urls"] == ["https://example.com/mr/b"]
+        # The transient resolution hint is cleared after use.
+        assert "ship_invoking_branch" not in ticket.extra
+
+    def test_refuses_when_resolved_branch_already_merged(self) -> None:
+        ticket = self._multi_worktree_ticket()
+        ticket.extra = {"ship_invoking_branch": "s-776-pr-a-merged"}
+        ticket.save(update_fields=["extra"])
+        host = MagicMock()
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.ship.code_host_from_overlay", return_value=host),
+            patch("teatree.core.runners.ship.git.push") as push,
+            patch("teatree.core.runners.ship.git.branch_merged", return_value=True),
+        ):
+            result = ShipExecutor(ticket).run()
+
+        assert result.ok is False
+        assert "merged" in result.detail.lower()
+        push.assert_not_called()
+        host.create_pr.assert_not_called()
+
+    def test_falls_back_to_first_when_no_invoking_branch(self) -> None:
+        """Async-worker path (no CLI cwd context): legacy behaviour kept."""
+        ticket = self._multi_worktree_ticket()
+        host = MagicMock()
+        host.create_pr.return_value = {"web_url": "https://example.com/mr/legacy"}
+        host.current_user.return_value = "souliane"
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.ship.code_host_from_overlay", return_value=host),
+            patch("teatree.core.runners.ship.git.push") as push,
+            patch("teatree.core.runners.ship.git.last_commit_message", return_value=("feat", "b")),
+            patch("teatree.core.runners.ship.git.branch_merged", return_value=False),
+        ):
+            result = ShipExecutor(ticket).run()
+
+        assert result.ok is True
+        push.assert_called_once_with(repo="/tmp/repo-pr-a", remote="origin", branch="s-776-pr-a-merged")
+
+    def test_invoking_branch_set_but_no_matching_row_falls_back_to_first(self) -> None:
+        """Recorded invoking branch has no Worktree row → legacy fallback.
+
+        Covers the resolution arc where ``ship_invoking_branch`` is set
+        but no row matches (e.g. the row was pruned); ``first()`` is used.
+        """
+        ticket = self._multi_worktree_ticket()
+        ticket.extra = {"ship_invoking_branch": "s-776-branch-with-no-row"}
+        ticket.save(update_fields=["extra"])
+        host = MagicMock()
+        host.create_pr.return_value = {"web_url": "https://example.com/mr/fb"}
+        host.current_user.return_value = "souliane"
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.ship.code_host_from_overlay", return_value=host),
+            patch("teatree.core.runners.ship.git.push") as push,
+            patch("teatree.core.runners.ship.git.last_commit_message", return_value=("feat", "b")),
+            patch("teatree.core.runners.ship.git.branch_merged", return_value=False),
+        ):
+            result = ShipExecutor(ticket).run()
+
+        assert result.ok is True
+        push.assert_called_once_with(repo="/tmp/repo-pr-a", remote="origin", branch="s-776-pr-a-merged")
+
+    def test_refuses_merged_branch_when_no_invoking_hint_recorded(self) -> None:
+        """Merged-branch refusal with no ``ship_invoking_branch`` key set.
+
+        Covers ``_clear_invoking_branch`` early-exit (key absent) on the
+        async-worker / single-PR path where the resolved first() branch
+        is already merged.
+        """
+        ticket = self._multi_worktree_ticket()  # no ship_invoking_branch in extra
+        host = MagicMock()
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.ship.code_host_from_overlay", return_value=host),
+            patch("teatree.core.runners.ship.git.push") as push,
+            patch("teatree.core.runners.ship.git.branch_merged", return_value=True),
+        ):
+            result = ShipExecutor(ticket).run()
+
+        assert result.ok is False
+        assert "merged" in result.detail.lower()
+        push.assert_not_called()
+        host.create_pr.assert_not_called()
+
+
 class TestSanitizeCloseKeywords:
     @pytest.mark.parametrize(
         ("description", "expected"),

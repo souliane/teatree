@@ -219,6 +219,61 @@ class TestPrCreateThinWrapper(TestCase):
         assert result["allowed"] is False
 
 
+class TestPrCreateRecordsInvokingBranch(TestCase):
+    """#776 B1: ``create()`` must PRODUCE ``extra['ship_invoking_branch']``.
+
+    The producer block (capture ``git.current_branch`` → persist the
+    hint) is the single highest-value line of #776 — ShipExecutor's
+    consumer side is meaningless without it. These tests exercise the
+    producer directly via ``call_command``, patching only ``git`` (an
+    unstoppable external). ``dry_run=True`` isolates the producer: it
+    runs before the dry-run early-return and before the gates, so no
+    ship mocking is needed.
+    """
+
+    def test_persists_invoking_branch_from_git_current_branch(self) -> None:
+        ticket = _shippable_ticket()
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch.object(pr_command.git, "current_branch", return_value="s-776-feature"),
+            patch.object(pr_command.git, "last_commit_message", return_value=("feat: x", "body")),
+        ):
+            call_command("pr", "create", str(ticket.id), dry_run=True)
+
+        ticket.refresh_from_db()
+        assert ticket.extra["ship_invoking_branch"] == "s-776-feature"
+
+    def test_guard_skips_persistence_on_non_feature_branch(self) -> None:
+        # subTest (not @parametrize): this file's classes are
+        # django.test.TestCase, which pytest does not parametrize.
+        for protected in ("HEAD", "main", "master"):
+            with self.subTest(branch=protected):
+                ticket = _shippable_ticket()
+                with (
+                    patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+                    patch.object(pr_command.git, "current_branch", return_value=protected),
+                    patch.object(pr_command.git, "last_commit_message", return_value=("feat: x", "body")),
+                ):
+                    call_command("pr", "create", str(ticket.id), dry_run=True)
+
+                ticket.refresh_from_db()
+                assert "ship_invoking_branch" not in (ticket.extra or {})
+
+    def test_guard_skips_persistence_on_empty_branch(self) -> None:
+        ticket = _shippable_ticket()
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch.object(pr_command.git, "current_branch", return_value=""),
+            patch.object(pr_command.git, "last_commit_message", return_value=("feat: x", "body")),
+        ):
+            call_command("pr", "create", str(ticket.id), dry_run=True)
+
+        ticket.refresh_from_db()
+        assert "ship_invoking_branch" not in (ticket.extra or {})
+
+
 class TestPrCreateSyncShip(TestCase):
     """`pr create --sync` runs the ship inline; async warns it is queued (#708)."""
 
@@ -805,6 +860,37 @@ class TestRunVisualQAGate(TestCase):
 
         ticket.refresh_from_db()
         assert ticket.extra["visual_qa"]["errors"] == 1
+
+    def test_resolves_invoking_worktree_not_stale_first(self) -> None:
+        """#776 N1: visual QA inspects the invoking workstream's repo.
+
+        Same ``worktrees.first()`` root cause as the ship-branch fix,
+        same path, residual on the reused-multi-workstream ticket #776
+        targets. With ``ship_invoking_branch`` recorded, the gate must
+        scan the matching worktree's repo, not the stale earliest row.
+        """
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/776")
+        Worktree.objects.create(ticket=ticket, overlay="test", repo_path="/tmp/repo-pr-a", branch="s-776-pr-a-merged")
+        Worktree.objects.create(ticket=ticket, overlay="test", repo_path="/tmp/repo-pr-b", branch="s-776-pr-b-current")
+        ticket.extra = {"ship_invoking_branch": "s-776-pr-b-current"}
+        ticket.save(update_fields=["extra"])
+        captured: dict[str, str] = {}
+
+        def fake_changed_files(*, repo: str) -> list[str]:
+            captured["repo"] = repo
+            return []
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch.object(visual_qa, "changed_files", side_effect=fake_changed_files),
+            patch.object(
+                visual_qa, "evaluate", return_value=visual_qa.VisualQAReport(targets=[], skipped_reason="none")
+            ),
+        ):
+            assert _run_visual_qa_gate(ticket) is None
+
+        # The invoking PR-B repo is scanned — NOT the stale PR-A first() row.
+        assert captured["repo"] == "/tmp/repo-pr-b"
 
     def test_skip_reason_propagates(self) -> None:
         ticket = self._ticket()
