@@ -1556,7 +1556,24 @@ class TestPruneSquashMergedDataLossGuard(TestCase):
             )
 
     def test_genuinely_squash_merged_branch_is_still_pruned(self) -> None:
-        """No regression: a branch whose work IS on origin/main is still cleaned."""
+        """No regression: a branch whose work IS on origin/main is still cleaned.
+
+        A real merged PR leaves two facts true: the source branch was pushed
+        to its own remote ref (the PR existed), and the squash commit on
+        ``main`` has a SHA distinct from the source-branch commit (different
+        parent/message/timestamp). The original test only passed when both
+        commits happened to land in the same wall-clock second and so collided
+        on a single SHA — under a slow full-directory run they straddled a
+        second boundary, the SHAs diverged, and the genuinely-squash-merged
+        branch was wrongly classified ``unsynced`` (the #915 order-dependence).
+
+        This models the realistic case deterministically: ``feature`` is pushed
+        to ``origin`` so the #706 data-loss guard correctly sees the work IS on
+        a remote, and the PR-merge-SHA probe returns the actual squash commit
+        (whose tree equals the feature tip), so ``_branch_tree_matches_squash``
+        classifies the distinct-SHA branch as squash-merged — independent of
+        commit timestamps.
+        """
         with tempfile.TemporaryDirectory() as tmp_s:
             tmp = Path(tmp_s)
             _remote, work = _init_repo_with_remote(tmp)
@@ -1565,11 +1582,14 @@ class TestPruneSquashMergedDataLossGuard(TestCase):
             (work / "f.py").write_text("work\n", encoding="utf-8")
             _git(work, "add", "f.py")
             _git(work, "commit", "-q", "-m", "feat: real work (#99)")
+            # The PR existed: its source branch was pushed to a remote.
+            _git(work, "push", "-q", "origin", "feature")
 
             # Squash-merge into main and push: the content is now on a remote.
             _git(work, "checkout", "-q", "main")
             _git(work, "merge", "-q", "--squash", "feature")
             _git(work, "commit", "-q", "-m", "feat: real work (#99)")
+            squash_sha = _git(work, "rev-parse", "main")
             _git(work, "push", "-q", "origin", "main")
             _git(work, "fetch", "-q", "origin")
 
@@ -1578,7 +1598,10 @@ class TestPruneSquashMergedDataLossGuard(TestCase):
             repo = str(work)
             wt_map = {"feature": str(wt_path)}
 
-            with patch.object(cleanup_mod, "_pr_merge_commit_sha", return_value=""):
+            # The PR's squash commit tree equals the feature tip tree by
+            # construction, so `_branch_tree_matches_squash` is True and the
+            # branch is correctly classified squash-merged regardless of SHA.
+            with patch.object(cleanup_mod, "_pr_merge_commit_sha", return_value=squash_sha):
                 result = ws_cleanup_mod.prune_squash_merged(repo, "feature", wt_map)
 
             branches = _git(work, "branch", "--format=%(refname:short)").split()
@@ -1595,13 +1618,18 @@ class TestPruneSquashMergedDataLossGuard(TestCase):
             (work / "f.py").write_text("work\n", encoding="utf-8")
             _git(work, "add", "f.py")
             _git(work, "commit", "-q", "-m", "feat: real work (#99)")
+            _git(work, "push", "-q", "origin", "feature")
             _git(work, "checkout", "-q", "main")
             _git(work, "merge", "-q", "--squash", "feature")
             _git(work, "commit", "-q", "-m", "feat: real work (#99)")
+            squash_sha = _git(work, "rev-parse", "main")
             _git(work, "push", "-q", "origin", "main")
             _git(work, "fetch", "-q", "origin")
 
-            with patch.object(cleanup_mod, "_pr_merge_commit_sha", return_value=""):
+            # Mock the PR squash commit (tree == feature tip) so the branch is
+            # classified squash-merged via the tree match, not via an accidental
+            # SHA collision — hermetic regardless of commit timestamps (#915).
+            with patch.object(cleanup_mod, "_pr_merge_commit_sha", return_value=squash_sha):
                 result = ws_cleanup_mod.prune_squash_merged(str(work), "feature", {})
 
             assert "feature" not in _git(work, "branch", "--format=%(refname:short)").split()
