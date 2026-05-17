@@ -200,7 +200,7 @@ class TestVisitPhaseCommand(TestCase):
         ticket = Ticket.objects.create()
         session = Session.objects.create(ticket=ticket, agent_id="agent")
 
-        call_command("lifecycle", "visit-phase", ticket.pk, "reviewing")
+        call_command("lifecycle", "visit-phase", ticket.pk, "reviewing", agent_id="cold-reviewer")
 
         session.refresh_from_db()
         assert session.has_visited("reviewing")

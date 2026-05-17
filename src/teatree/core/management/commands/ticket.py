@@ -8,7 +8,8 @@ from django.db import transaction
 from django_fsm import TransitionNotAllowed
 from django_typer.management import TyperCommand, command
 
-from teatree.core.models import Ticket
+from teatree.core.merge_execution import MergePreconditionError, merge_ticket_pr
+from teatree.core.models import MergeClear, Ticket
 
 
 class CompletionResult(TypedDict, total=False):
@@ -23,6 +24,17 @@ class CommentResult(TypedDict, total=False):
     issue_url: str
     comment_id: int
     error: str
+
+
+class MergeKeystoneResult(TypedDict, total=False):
+    merged: bool
+    pr_id: int
+    slug: str
+    merged_sha: str
+    ticket_id: int
+    ticket_state: str
+    error: str
+    escalated: bool
 
 
 class ReattributeResult(TypedDict, total=False):
@@ -80,6 +92,65 @@ class Command(TyperCommand):
             }
 
         return {"ticket_id": int(ticket.pk), "state": ticket.state}
+
+    @command()
+    def merge(
+        self,
+        clear_id: int,
+        *,
+        loop_identity: Annotated[
+            str,
+            typer.Option(help="Identity of the executing loop (must differ from the CLEAR reviewer — §17.8 clause 3)."),
+        ] = "merge-loop",
+    ) -> MergeKeystoneResult:
+        """Execute the missing IN_REVIEW → MERGED keystone transition (BLUEPRINT §17.4).
+
+        The ONLY sanctioned merge path. Raw ``gh pr merge`` / ``glab mr
+        merge`` is mechanically refused on teatree-managed tickets (the
+        prohibition guard in ``hook_router``); they bypass the ledger
+        update, attestation binding, and ``mark_merged()`` and leave the
+        FSM incoherent.
+
+        Pre-condition (§17.4.3): a valid, actionable ``MergeClear`` (CLI
+        arg ``clear_id``), CI green on the exact PR head, an independent
+        cold-review CLEAR (``reviewer_identity`` != ``--loop-identity``),
+        SHA-match, not-draft, and ``blast_class`` != substrate. The merge
+        is bound to ``expected_head_oid`` and fails closed on head drift.
+        Post hook: atomic CLEAR-consume + ``MergeAudit`` + attestation
+        binding + ``ticket.mark_merged()``.
+
+        On a pre-condition failure the FSM is left untouched and the
+        result is flagged ``escalated`` so the durable backlog re-escalation
+        is visible (the loop never self-issues a replacement CLEAR).
+        """
+        try:
+            clear = MergeClear.objects.get(pk=clear_id)
+        except MergeClear.DoesNotExist:
+            return {"error": f"MergeClear {clear_id} not found", "merged": False}
+
+        try:
+            outcome = merge_ticket_pr(clear=clear, executing_loop_identity=loop_identity)
+        except MergePreconditionError as exc:
+            self.stdout.write(f"  merge refused (re-escalating): {exc}")
+            return {
+                "merged": False,
+                "escalated": True,
+                "pr_id": int(clear.pr_id),
+                "slug": clear.slug,
+                "error": str(exc),
+            }
+
+        result: MergeKeystoneResult = {
+            "merged": True,
+            "pr_id": outcome.pr_id,
+            "slug": outcome.slug,
+            "merged_sha": outcome.merged_sha,
+            "ticket_state": outcome.ticket_state,
+        }
+        if clear.ticket_id is not None:
+            result["ticket_id"] = int(clear.ticket_id)
+        self.stdout.write(f"  merged {outcome.slug}#{outcome.pr_id} → ticket state {outcome.ticket_state}")
+        return result
 
     @command()
     def comment(

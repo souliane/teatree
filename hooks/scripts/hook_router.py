@@ -131,6 +131,26 @@ _BLOCKED_COMMANDS: list[tuple[re.Pattern[str], str]] = [
         "BLOCKED: `--no-gpg-sign` — do not bypass signing without explicit user approval.",
     ),
     (
+        re.compile(r"\bgh\s+pr\s+merge\b"),
+        (
+            "BLOCKED: raw `gh pr merge` — out-of-band merge bypasses the FSM "
+            "coherence mechanism (ledger update, MergeClear validation, "
+            "expected_head_oid SHA-binding, privacy/AI-signature scan, "
+            "mark_merged). Use the sanctioned keystone transition "
+            "`t3 <overlay> ticket merge <clear_id>` (BLUEPRINT §17.1 invariant 8 / §17.4)."
+        ),
+    ),
+    (
+        re.compile(r"\bglab\s+mr\s+merge\b"),
+        (
+            "BLOCKED: raw `glab mr merge` — out-of-band merge bypasses the FSM "
+            "coherence mechanism (ledger update, MergeClear validation, "
+            "SHA-binding, privacy/AI-signature scan, mark_merged). Use the "
+            "sanctioned keystone transition `t3 <overlay> ticket merge "
+            "<clear_id>` (BLUEPRINT §17.1 invariant 8 / §17.4)."
+        ),
+    ),
+    (
         re.compile(r"\bsafety\s+(?:check|scan)\b"),
         "BLOCKED: `safety` — use `pip-audit` (or `uv audit`) instead.",
     ),

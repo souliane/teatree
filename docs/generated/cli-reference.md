@@ -1980,15 +1980,25 @@ Usage: t3 teatree e2e [OPTIONS] COMMAND [ARGS]...
 ##### `t3 teatree e2e run`
 
 ```
-Usage: t3 teatree e2e run [OPTIONS]
+Usage: t3 teatree e2e run [OPTIONS] [WORK_ITEM]
 
  Run E2E tests — the one command that works for every overlay.
 
- Dispatches to the ``project`` runner (in-repo pytest-playwright) or the
- ``external`` runner (remote playwright repo) based on what the overlay's
- ``get_e2e_config()`` returns. The overlay declares ``"runner": "project"``
- or ``"runner": "external"``; when absent, ``test_dir`` implies ``project``
- and ``project_path`` implies ``external`` for compatibility.
+ ``work_item`` (the #794 keystone) is a Ticket reference — a pk, an
+ issue number, or an issue URL. When given, ``e2e run <work-item>``
+ resolves the work item by its Ticket natural key, applies the default
+ environment ladder, auto-provisions at the resolved ref, runs, and
+ records ``{sha, result, timestamp}`` to the DB-durable recipe so a
+ rerun never re-discovers prerequisites serially. ``--at
+ last-green|main`` overrides the ladder. When ``work_item`` is empty
+ the legacy cwd-resolved behaviour is unchanged.
+
+ Otherwise dispatches to the ``project`` runner (in-repo
+ pytest-playwright) or the ``external`` runner (remote playwright repo)
+ based on what the overlay's ``get_e2e_config()`` returns. The overlay
+ declares ``"runner": "project"`` or ``"runner": "external"``; when
+ absent, ``test_dir`` implies ``project`` and ``project_path`` implies
+ ``external`` for compatibility.
 
  ``--target dev|local`` selects the dual-env target and is forwarded to
  whichever runner handles the overlay (see ``external`` for semantics).
@@ -1996,8 +2006,13 @@ Usage: t3 teatree e2e run [OPTIONS]
  Runner-specific flags (``--repo``, ``--playwright-args``) stay on the
  explicit ``external`` subcommand to keep this entry point overlay-agnostic.
 
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│   work_item      [WORK_ITEM]  Ticket reference (pk, issue number, or issue   │
+│                               URL) — the #794 keystone.                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --test-path                                    TEXT                          │
+│ --at                                           TEXT                          │
 │ --target                                       TEXT                          │
 │ --headed              --no-headed                    [default: no-headed]    │
 │ --update-snapshots    --no-update-snapshots          [default:               │
@@ -2586,7 +2601,9 @@ Usage: t3 teatree lifecycle [OPTIONS] COMMAND [ARGS]...
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ visit-phase  Mark a phase as visited on the ticket's latest session.         │
+│ visit-phase   Mark a phase as visited on the ticket's latest session.        │
+│ clear-ledger  Clear a reused ticket's stale phase ledger (sanctioned         │
+│               session-retire).                                               │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -2619,6 +2636,34 @@ Usage: t3 teatree lifecycle visit-phase [OPTIONS] TICKET_ID PHASE
 │ --agent-id        TEXT  Recording agent identity stamped into phase_visits   │
 │                         (audit trail).                                       │
 │ --help                  Show this message and exit.                          │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree lifecycle clear-ledger`
+
+```
+Usage: t3 teatree lifecycle clear-ledger [OPTIONS] TICKET_ID
+
+ Clear a reused ticket's stale phase ledger (sanctioned session-retire).
+
+ §17.6 enforcement candidate (9): reused tickets accumulate a stale
+ phase ledger from a prior workstream — the shipping gate then sees a
+ passing aggregate that no longer reflects the new work (the
+ anti-vacuous attestation gap). Hand-editing ``phase_visits`` /
+ ``visited_phases`` was the only escape, which is exactly the
+ out-of-band state mutation invariant 8 prohibits. This is the
+ sanctioned ``t3`` path: it retires every session's phase ledger for
+ the ticket in one transaction so the next workstream re-earns its
+ attestations from scratch. Requires ``--confirm`` (destructive).
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    ticket_id      TEXT  [required]                                         │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --confirm    --no-confirm      Required: confirm the destructive             │
+│                                phase-ledger clear.                           │
+│                                [default: no-confirm]                         │
+│ --help                         Show this message and exit.                   │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -2758,6 +2803,8 @@ Usage: t3 teatree ticket [OPTIONS] COMMAND [ARGS]...
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
 │ transition        Transition a ticket to a new state.                        │
+│ merge             Execute the IN_REVIEW → MERGED keystone transition         │
+│                   (BLUEPRINT §17.4).                                         │
 │ list              List tickets, optionally filtered by state and/or overlay. │
 │ sync-completions  Check post-ship tickets against upstream issues and        │
 │                   advance completed ones.                                    │
@@ -2781,6 +2828,42 @@ Usage: t3 teatree ticket transition [OPTIONS] TICKET_ID TRANSITION_NAME
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree ticket merge`
+
+```
+Usage: t3 teatree ticket merge [OPTIONS] CLEAR_ID
+
+ Execute the missing IN_REVIEW → MERGED keystone transition (BLUEPRINT §17.4).
+
+ The ONLY sanctioned merge path. Raw ``gh pr merge`` / ``glab mr
+ merge`` is mechanically refused on teatree-managed tickets (the
+ prohibition guard in ``hook_router``); they bypass the ledger
+ update, attestation binding, and ``mark_merged()`` and leave the
+ FSM incoherent.
+
+ Pre-condition (§17.4.3): a valid, actionable ``MergeClear`` (CLI
+ arg ``clear_id``), CI green on the exact PR head, an independent
+ cold-review CLEAR (``reviewer_identity`` != ``--loop-identity``),
+ SHA-match, not-draft, and ``blast_class`` != substrate. The merge
+ is bound to ``expected_head_oid`` and fails closed on head drift.
+ Post hook: atomic CLEAR-consume + ``MergeAudit`` + attestation
+ binding + ``ticket.mark_merged()``.
+
+ On a pre-condition failure the FSM is left untouched and the
+ result is flagged ``escalated`` so the durable backlog re-escalation
+ is visible (the loop never self-issues a replacement CLEAR).
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    clear_id      INTEGER  [required]                                       │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --loop-identity        TEXT  Identity of the executing loop (must differ     │
+│                              from the CLEAR reviewer — §17.8 clause 3).      │
+│                              [default: merge-loop]                           │
+│ --help                       Show this message and exit.                     │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
