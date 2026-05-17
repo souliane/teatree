@@ -540,7 +540,10 @@ class Command(TyperCommand):
         """
         slug = git.remote_slug(repo)
         if not is_public_github_remote(slug):
-            return StampResult(stamped=False, reason=f"not a public souliane/* remote (slug={slug!r}) — refused")
+            return StampResult(
+                stamped=False,
+                reason=f"not a public GitHub remote (slug={slug!r}) — noreply-identity stamping not required",
+            )
         set_local_noreply_identity(repo)
         return StampResult(stamped=True, repo=repo, slug=slug)
 
