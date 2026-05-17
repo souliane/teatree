@@ -142,6 +142,155 @@ class TestTaskQuerySet(TestCase):
         assert got.pk == fresh.pk  # skipped the already-claimed one
 
 
+class TestReclaimOrphanedClaims(TestCase):
+    """#652 — an orphaned in-flight task must be *taken over*, not failed.
+
+    When the Claude session driving the loop exits mid-task, its CLAIMED
+    Task stops heartbeating and the lease expires. The pre-#652 behaviour
+    (``reap_stale_claims``) transitions that row CLAIMED→FAILED, which
+    needs a manual ``reopen()`` before any other open session can resume
+    it — so the loop silently stalls. ``reclaim_orphaned_claims`` instead
+    returns the expired-lease CLAIMED row to PENDING so the next tick's
+    ``PendingTasksScanner`` (in any still-open session) re-surfaces it and
+    the loop continues. Same backend-agnostic conditional-UPDATE CAS as
+    ``claim_next_pending`` — fastest tick wins, losers update 0 rows.
+    """
+
+    def test_backend_is_sqlite(self) -> None:
+        from django.db import connection  # noqa: PLC0415
+
+        assert connection.vendor == "sqlite"
+
+    def test_expired_claimed_task_is_returned_to_pending_not_failed(self) -> None:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket, agent_id="a")
+        expired = timezone.now() - timedelta(seconds=30)
+        orphan = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            status=Task.Status.CLAIMED,
+            claimed_by="pid-99999",
+            claimed_at=expired,
+            lease_expires_at=expired,
+            heartbeat_at=expired,
+        )
+
+        reclaimed = Task.objects.reclaim_orphaned_claims()
+
+        orphan.refresh_from_db()
+        assert reclaimed == 1
+        # Takeover, NOT fail: the row is claimable again so another open
+        # session's loop tick resumes it (issue #652 "fastest wins").
+        assert orphan.status == Task.Status.PENDING, (
+            f"orphaned task was not taken over (got {orphan.status!r}) — the loop stalls until a manual reopen()"
+        )
+        assert orphan.claimed_by == ""
+        assert orphan.claimed_at is None
+        assert orphan.lease_expires_at is None
+        assert orphan.heartbeat_at is None
+
+    def test_a_live_claim_is_left_untouched(self) -> None:
+        # Anti-vacuity: a healthy in-flight task (lease in the future)
+        # must NOT be yanked away from its live owner.
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket, agent_id="a")
+        future = timezone.now() + timedelta(seconds=300)
+        live = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            status=Task.Status.CLAIMED,
+            claimed_by="pid-1",
+            claimed_at=timezone.now(),
+            lease_expires_at=future,
+            heartbeat_at=timezone.now(),
+        )
+
+        reclaimed = Task.objects.reclaim_orphaned_claims()
+
+        live.refresh_from_db()
+        assert reclaimed == 0
+        assert live.status == Task.Status.CLAIMED
+        assert live.claimed_by == "pid-1"
+
+    def test_terminal_tasks_are_not_resurrected(self) -> None:
+        # A COMPLETED/FAILED task must never be dragged back to PENDING by
+        # the orphan sweep even if its (stale) lease columns are in the past.
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket, agent_id="a")
+        expired = timezone.now() - timedelta(seconds=30)
+        done = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            status=Task.Status.COMPLETED,
+            lease_expires_at=expired,
+        )
+        failed = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            status=Task.Status.FAILED,
+            lease_expires_at=expired,
+        )
+
+        reclaimed = Task.objects.reclaim_orphaned_claims()
+
+        done.refresh_from_db()
+        failed.refresh_from_db()
+        assert reclaimed == 0
+        assert done.status == Task.Status.COMPLETED
+        assert failed.status == Task.Status.FAILED
+
+    def test_concurrent_ticks_reclaim_one_orphan_exactly_once(self) -> None:
+        """#652 fastest-wins on the PRODUCTION SQLite backend.
+
+        Two ticks both observe the orphan; the conditional-UPDATE CAS
+        (``WHERE status=CLAIMED AND lease_expires_at < now``) lets exactly
+        one tick's UPDATE match — the other updates 0 rows. Same in-process
+        interleave technique as ``TestClaimNextPendingConcurrencyOnSqlite``
+        so it runs under the real SQLite test DB where
+        ``select_for_update(skip_locked=True)`` is a silent no-op.
+        """
+        from unittest.mock import patch  # noqa: PLC0415
+
+        from django.db.models import QuerySet  # noqa: PLC0415
+
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket, agent_id="a")
+        expired = timezone.now() - timedelta(seconds=30)
+        Task.objects.create(
+            ticket=ticket,
+            session=session,
+            status=Task.Status.CLAIMED,
+            claimed_by="pid-dead",
+            claimed_at=expired,
+            lease_expires_at=expired,
+            heartbeat_at=expired,
+        )
+
+        fired: list[str] = []
+        rival_result: list[int] = [-1]
+        real_update = QuerySet.update
+
+        def _fire_rival_once() -> None:
+            if fired:
+                return
+            fired.append("x")
+            rival_result[0] = Task.objects.reclaim_orphaned_claims()
+
+        def update_with_rival(self: object, *args: object, **kwargs: object) -> object:
+            _fire_rival_once()
+            return real_update(self, *args, **kwargs)
+
+        with patch.object(QuerySet, "update", update_with_rival):
+            caller1 = Task.objects.reclaim_orphaned_claims()
+
+        rival = rival_result[0]
+        # Exactly one tick reclaimed the single orphan (count 1); the other
+        # raced inside the first's write boundary and updated 0 rows.
+        assert sorted([caller1, rival]) == [0, 1], (
+            f"orphan reclaimed by both ticks (not fastest-wins): {caller1=} {rival=}"
+        )
+
+
 class TestReapStaleClaimsCasOnSqlite(TestCase):
     """#800 N5 — the reap must not spurious-fail a just-renewed lease.
 
