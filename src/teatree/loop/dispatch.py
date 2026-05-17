@@ -68,6 +68,15 @@ _STATUSLINE_ZONE_BY_KIND: dict[str, str] = {
 _PR_URL_RE = re.compile(r"https?://[^\s>|]+/(?:merge_requests|pull|pulls)/\d+")
 
 
+def _first_pr_url(*texts: str) -> str:
+    """Return the first PR/MR URL found across *texts*, or ``""``."""
+    for text in texts:
+        match = _PR_URL_RE.search(text)
+        if match:
+            return match.group(0)
+    return ""
+
+
 def _slack_pr_url(signal: ScanSignal) -> str:
     """Extract a PR URL from a slack.mention/dm signal if its text contains one."""
     event = signal.payload.get("event")
@@ -76,8 +85,22 @@ def _slack_pr_url(signal: ScanSignal) -> str:
     text = event.get("text")
     if not isinstance(text, str):
         return ""
-    match = _PR_URL_RE.search(text)
-    return match.group(0) if match else ""
+    return _first_pr_url(text)
+
+
+def _task_pr_url(signal: ScanSignal) -> str:
+    """Extract a PR URL from an ``incoming_event.task_needed`` signal.
+
+    The webhook path (``/hooks/slack/`` → IncomingEvent → classifier →
+    router → scanner) puts the inbound body in ``payload['detail']`` and
+    echoes it into ``summary``. A Slack message like "can you review
+    https://…/merge_requests/42" classifies as ``TASK`` (the imperative
+    "review" keyword) and would otherwise drop to a passive statusline
+    note — the referenced PR never gets an independent review (#219).
+    """
+    detail = signal.payload.get("detail")
+    detail_text = detail if isinstance(detail, str) else ""
+    return _first_pr_url(detail_text, signal.summary)
 
 
 # Reviewer signals dispatch to the agent AND mirror into the statusline so
@@ -134,26 +157,44 @@ def _conditional_dispatch(signal: ScanSignal) -> list[DispatchAction] | None:
     if signal.kind in {"slack.mention", "slack.dm"}:
         pr_url = _slack_pr_url(signal)
         if pr_url:
-            return [
-                DispatchAction(
-                    kind="agent",
-                    zone="t3:reviewer",
-                    detail=f"Review request: {pr_url}",
-                    payload={"url": pr_url, **signal.payload},
-                ),
-                DispatchAction(
-                    kind="statusline",
-                    zone=_STATUSLINE_ZONE_BY_KIND[signal.kind],
-                    detail=signal.summary,
-                    payload=signal.payload,
-                ),
-            ]
+            return _review_request_dispatch(signal, pr_url)
+    if signal.kind == "incoming_event.task_needed":
+        pr_url = _task_pr_url(signal)
+        if pr_url:
+            return _review_request_dispatch(signal, pr_url)
     if signal.kind == "assigned_issue.ready" and signal.payload.get("auto_start") is True:
         return [DispatchAction(kind="agent", zone="t3:orchestrator", detail=signal.summary, payload=signal.payload)]
     phase = normalize_phase(str(signal.payload.get("phase", "")))
     if signal.kind == "incoming_event.task_needed" and phase == "answering":
         return _dispatch_answering(signal)
     return None
+
+
+def _review_request_dispatch(signal: ScanSignal, pr_url: str) -> list[DispatchAction]:
+    """Dual-dispatch a Slack review request to the reviewer agent.
+
+    Shared by the polling path (``slack.mention``/``slack.dm``) and the
+    webhook path (``incoming_event.task_needed`` carrying a PR URL, #219):
+    an independent ``t3:reviewer`` invocation plus a statusline mirror so
+    the user sees the pending review before the agent acts. A review
+    request is a review request regardless of the classifier's phase —
+    this branch precedes the ``answering`` fallback so "can you review
+    MR X" routes to a review, not the answerer.
+    """
+    return [
+        DispatchAction(
+            kind="agent",
+            zone="t3:reviewer",
+            detail=f"Review request: {pr_url}",
+            payload={"url": pr_url, **signal.payload},
+        ),
+        DispatchAction(
+            kind="statusline",
+            zone=_STATUSLINE_ZONE_BY_KIND.get(signal.kind, "action_needed"),
+            detail=signal.summary,
+            payload=signal.payload,
+        ),
+    ]
 
 
 def _dispatch_one(signal: ScanSignal) -> list[DispatchAction]:
