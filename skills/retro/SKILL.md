@@ -462,3 +462,21 @@ If `T3_REVIEW_SKILL` is configured and skill files were modified during this ret
 
 1. Suggest running the review skill (a systematic multi-phase audit for deeper quality assurance) on the changed skills (e.g., `/$T3_REVIEW_SKILL`).
 2. If `T3_REVIEW_SKILL` is NOT configured, include this note in the retro output: "Consider installing a skill review tool for periodic deep quality audits. Set `T3_REVIEW_SKILL` in `~/.teatree` to enable integration."
+
+### 9. Consolidation over Drift
+
+During every retro pass, actively scan for behavior encoded **outside** the teatree framework and consider promoting it in.
+
+The scope includes: personal `~/.claude/settings.json` permissions/hooks, dotfiles hooks, shell rc files, personal memory entries, and overlay-local ad-hoc config that encodes patterns other users would benefit from.
+
+**Classification (apply to every candidate found):**
+
+| Class | Criteria | Action |
+|---|---|---|
+| **(P) Promote to framework** | Framework behavior every teatree installation should get out of the box (e.g., a hook `t3 setup` should wire automatically) | Promote: open a teatree issue or submit the code/docs change |
+| **(C) Model as documented config** | Legitimately instance-specific, but teatree should expose a documented config surface so users don't solve it ad-hoc | Create a teatree issue to add the config knob; document the expected pattern in BLUEPRINT.md or a skill |
+| **(K) Keep personal** | Genuine user preference with no cross-instance value (theme, voice settings, personal path shortcuts) | Leave it; no action |
+
+**Decision rule:** If different instances genuinely need different behavior, that difference **must** be modelled as a documented teatree setting or config option — not left as divergent ad-hoc config. Undocumented divergence silently drifts; documented variation is an explicit choice other users can make too.
+
+This scan complements § 7 "Clean Personal Config". Section 7 covers memory-entry hygiene (promoting guardrails, removing stale entries, deduplicating). This section covers *behavioral* promotion: hooks wired by hand, permission patterns added manually, automation scripts in personal dotfiles that should be first-class teatree features.
