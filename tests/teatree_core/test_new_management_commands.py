@@ -690,6 +690,60 @@ class TestWorkspaceTicket(TestCase):
         assert overlay.get_workspace_repos() == ["org/backend", "org/frontend"]
         assert overlay.get_repos() == ["backend", "frontend"]
 
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS, T3_WORKSPACE_DIR="/tmp/ws-core-issue")
+    def test_core_issue_provisions_only_teatree_core_repo(self) -> None:
+        """#727: a teatree-core issue URL provisions the core repo, not product repos."""
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp) / "workspace"
+            core = workspace / "souliane" / "teatree"
+            (core / ".git").mkdir(parents=True)
+
+            mock_result = MagicMock(returncode=0, stdout="", stderr="")
+            with (
+                patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
+                patch.object(provision_mod, "_workspace_dir", return_value=workspace),
+                patch.object(utils_run_mod.subprocess, "run", return_value=mock_result),
+                patch("teatree.core.dev_repo.find_project_root", return_value=core),
+                patch("teatree.core.dev_repo.discover_active_overlay", return_value=None),
+                patch.object(git_mod, "remote_slug", return_value="souliane/teatree"),
+            ):
+                ticket_id = cast(
+                    "int",
+                    call_command("workspace", "ticket", "https://github.com/souliane/teatree/issues/727"),
+                )
+
+            ticket = Ticket.objects.get(pk=ticket_id)
+            assert ticket.repos == ["souliane/teatree"]
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS, T3_WORKSPACE_DIR="/tmp/ws-prod-issue")
+    def test_product_issue_still_provisions_product_repos(self) -> None:
+        """#727 regression guard: a product-repo issue keeps the product repo set."""
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp) / "workspace"
+            core = workspace / "souliane" / "teatree"
+            (core / ".git").mkdir(parents=True)
+            for repo in ("backend", "frontend"):
+                (workspace / repo / ".git").mkdir(parents=True)
+
+            mock_result = MagicMock(returncode=0, stdout="", stderr="")
+            with (
+                patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
+                patch.object(provision_mod, "_workspace_dir", return_value=workspace),
+                patch.object(utils_run_mod.subprocess, "run", return_value=mock_result),
+                patch("teatree.core.dev_repo.find_project_root", return_value=core),
+                patch("teatree.core.dev_repo.discover_active_overlay", return_value=None),
+                patch.object(git_mod, "remote_slug", return_value="souliane/teatree"),
+            ):
+                ticket_id = cast(
+                    "int",
+                    call_command("workspace", "ticket", "https://github.com/acme/product-backend/issues/3"),
+                )
+
+            ticket = Ticket.objects.get(pk=ticket_id)
+            assert ticket.repos == ["backend", "frontend"]
+
 
 _no_prune = patch.object(workspace_mod, "prune_branches", new=lambda _repo: [])
 _no_stash = patch.object(workspace_mod, "drop_orphaned_stashes", new=lambda _repo: [])
