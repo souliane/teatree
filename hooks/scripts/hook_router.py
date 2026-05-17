@@ -538,6 +538,100 @@ def handle_validate_mr_metadata(data: dict) -> bool:
     return False
 
 
+# ── PreToolUse: block-ai-signature (#836 §17.6 gate 15) ─────────────
+
+_PR_BODY_FLAG_RE = re.compile(r"--(?:body|description|message)(?:[ =])\s*(['\"])(.*?)\1", re.DOTALL)
+_GIT_COMMIT_M_RE = re.compile(r"git\s+commit\b[^\n]*?-m\s+(['\"])(.*?)\1", re.DOTALL)
+_PR_CREATE_TOOLS = {
+    "mcp__glab__glab_mr_create",
+    "mcp__glab__glab_mr_update",
+    "mcp__github__create_pull_request",
+    "mcp__github__update_pull_request",
+}
+
+
+def _extract_ai_sig_payload(data: dict) -> str | None:
+    """Return the PR-body / commit-message text to scan, else ``None``.
+
+    Covers ``gh pr create --body``, ``glab mr create/update --description``,
+    ``git commit -m``, and the MR/PR MCP create/update tools (whose
+    ``body``/``description`` argument is the same trailer-bearing text the
+    PR #831 leak landed in). ``None`` ⇒ not a PR/commit mutation.
+    """
+    tool_name = data.get("tool_name", "")
+    tool_input = data.get("tool_input", {})
+
+    if tool_name == "Bash":
+        command = tool_input.get("command", "")
+        pr_cmds = ("gh pr create", "gh pr edit", "glab mr create", "glab mr update")
+        if any(c in command for c in pr_cmds):
+            match = _PR_BODY_FLAG_RE.search(command)
+            return match.group(2) if match else ""
+        if "git commit" in command:
+            match = _GIT_COMMIT_M_RE.search(command)
+            return match.group(2) if match else None
+        return None
+
+    if tool_name in _PR_CREATE_TOOLS:
+        return tool_input.get("body", "") or tool_input.get("description", "")
+
+    return None
+
+
+def _ai_sig_scan_argv() -> list[str] | None:
+    t3_bin = shutil.which("t3")
+    if t3_bin:
+        return [t3_bin, "tool", "ai-sig-scan", "-"]
+    return None
+
+
+def handle_block_ai_signature(data: dict) -> bool:
+    """Refuse a PR body / commit message carrying an AI-signature trailer.
+
+    Deterministic enforcement of the "No AI Signature on Posts Made on the
+    User's Behalf" rule (BLUEPRINT §17.6 gate 15, #836). The rule was prose
+    only in /t3:rules and unenforced at the PR-body layer — PR #831 leaked
+    the banned trailer, caught only by cold review. This makes it a code
+    gate at the same pre-merge layer as the draft-lock and structured-
+    question gates. Fails open on a broken environment (no ``t3``), matching
+    the other t3-shelling hooks.
+    """
+    payload = _extract_ai_sig_payload(data)
+    if payload is None:
+        return False
+
+    argv = _ai_sig_scan_argv()
+    if argv is None:
+        return False
+
+    try:
+        result = subprocess.run(  # noqa: S603
+            argv,
+            input=payload,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return False
+
+    if result.returncode != 0:
+        json.dump(
+            {
+                "permissionDecision": "deny",
+                "permissionDecisionReason": (
+                    "BLOCKED: AI-signature / banned trailer in the PR body or commit message. "
+                    "Remove it before creating the PR/commit (BLUEPRINT §17.6 gate 15).\n"
+                    + (result.stdout or result.stderr or "").strip()
+                ),
+            },
+            sys.stdout,
+        )
+        return True
+    return False
+
+
 # ── PostToolUse: track-active-repo ──────────────────────────────────
 
 
@@ -2430,6 +2524,7 @@ _HANDLERS: dict[str, list] = {
         handle_enforce_skill_loading,
         handle_block_direct_commands,
         handle_validate_mr_metadata,
+        handle_block_ai_signature,
         handle_mirror_question_to_slack,
     ],
     "PostToolUse": [

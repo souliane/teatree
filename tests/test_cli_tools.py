@@ -69,6 +69,38 @@ class TestToolCommands:
             assert result.exit_code == 0
             mock.assert_called_once_with("privacy_scan", "myfile.txt")
 
+    def test_ai_sig_scan_wires_the_scanner_script(self):
+        with patch.object(ToolRunner, "run_script") as mock:
+            result = runner.invoke(app, ["tool", "ai-sig-scan", "body.txt"])
+            assert result.exit_code == 0
+            mock.assert_called_once_with("ai_signature_scan", "body.txt")
+
+    def test_diff_coverage_passes_exit_zero(self, tmp_path):
+        with (
+            patch("teatree.utils.git.full_worktree_diff", return_value=""),
+            patch("teatree.utils.diff_coverage.measure_diff_coverage") as mock,
+        ):
+            mock.return_value = MagicMock(passes=lambda: True, summary=lambda: "clean")
+            result = runner.invoke(app, ["tool", "diff-coverage", "--repo", str(tmp_path)])
+        assert result.exit_code == 0
+
+    def test_diff_coverage_fails_exit_one_and_reports(self, tmp_path):
+        report = MagicMock(
+            passes=lambda: False,
+            uncovered=[MagicMock(path="src/x.py", lines=[3, 4])],
+            unreferenced_symbols=["widget"],
+        )
+        with (
+            patch("teatree.utils.git.full_worktree_diff", return_value="diff"),
+            patch("teatree.utils.diff_coverage.measure_diff_coverage", return_value=report),
+        ):
+            result = runner.invoke(app, ["tool", "diff-coverage", "--repo", str(tmp_path), "--json"])
+        assert result.exit_code == 1
+        payload = json.loads(result.stdout)
+        assert payload["passes"] is False
+        assert payload["unreferenced_symbols"] == ["widget"]
+        assert payload["uncovered"] == [{"path": "src/x.py", "lines": [3, 4]}]
+
     def test_analyze_video(self):
         with patch.object(ToolRunner, "run_script") as mock:
             result = runner.invoke(app, ["tool", "analyze-video", "/path/to/video.mp4"])

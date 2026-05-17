@@ -643,6 +643,10 @@ Usage: t3 tool [OPTIONS] COMMAND [ARGS]...
 │                  promoted to skills.                                         │
 │ notion-download  Download a Notion file attachment using the Brave browser   │
 │                  session.                                                    │
+│ ai-sig-scan      Refuse a PR body / commit message carrying an AI-signature  │
+│                  trailer.                                                    │
+│ diff-coverage    Per-diff coverage + mutation/revert gate (BLUEPRINT §17.6   │
+│                  gate 12, #836).                                             │
 │ label-issues     Suggest labels for unlabeled open issues by                 │
 │                  keyword-matching title and body.                            │
 │ find-duplicates  Flag pairs of open issues with near-identical titles.       │
@@ -808,6 +812,49 @@ Usage: t3 tool notion-download [OPTIONS] URL
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --dest  -d      PATH  Destination directory. [default: .]                    │
 │ --help                Show this message and exit.                            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 tool ai-sig-scan`
+
+```
+Usage: t3 tool ai-sig-scan [OPTIONS] [PATH]
+
+ Refuse a PR body / commit message carrying an AI-signature trailer.
+
+ Enforces the "No AI Signature on Posts Made on the User's Behalf" rule
+ (BLUEPRINT §17.6 gate 15, #836) as deterministic code — previously prose
+ only in /t3:rules and unenforced at the PR-body layer (PR #831 leak).
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│   path      [PATH]  File or '-' for stdin (PR body / commit message)         │
+│                     [default: -]                                             │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 tool diff-coverage`
+
+```
+Usage: t3 tool diff-coverage [OPTIONS]
+
+ Per-diff coverage + mutation/revert gate (BLUEPRINT §17.6 gate 12, #836).
+
+ Measures coverage on the *diff's* added production lines (not the global
+ ``fail_under``) and requires every new/changed production symbol to be
+ imported by a changed test (the test-a-local-copy anti-vacuity check).
+ Exits non-zero when a new line is uncovered or a symbol is unreferenced.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --repo                 PATH  Repo root (default: cwd)                        │
+│                              [default: <bound method PathBase.cwd of <class  │
+│                              'pathlib._local.Path'>>]                        │
+│ --coverage-file        PATH  Path to .coverage data file                     │
+│                              [default: .coverage]                            │
+│ --json                       Emit machine-readable JSON.                     │
+│ --help                       Show this message and exit.                     │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -1980,15 +2027,25 @@ Usage: t3 teatree e2e [OPTIONS] COMMAND [ARGS]...
 ##### `t3 teatree e2e run`
 
 ```
-Usage: t3 teatree e2e run [OPTIONS]
+Usage: t3 teatree e2e run [OPTIONS] [WORK_ITEM]
 
  Run E2E tests — the one command that works for every overlay.
 
- Dispatches to the ``project`` runner (in-repo pytest-playwright) or the
- ``external`` runner (remote playwright repo) based on what the overlay's
- ``get_e2e_config()`` returns. The overlay declares ``"runner": "project"``
- or ``"runner": "external"``; when absent, ``test_dir`` implies ``project``
- and ``project_path`` implies ``external`` for compatibility.
+ ``work_item`` (the #794 keystone) is a Ticket reference — a pk, an
+ issue number, or an issue URL. When given, ``e2e run <work-item>``
+ resolves the work item by its Ticket natural key, applies the default
+ environment ladder, auto-provisions at the resolved ref, runs, and
+ records ``{sha, result, timestamp}`` to the DB-durable recipe so a
+ rerun never re-discovers prerequisites serially. ``--at
+ last-green|main`` overrides the ladder. When ``work_item`` is empty
+ the legacy cwd-resolved behaviour is unchanged.
+
+ Otherwise dispatches to the ``project`` runner (in-repo
+ pytest-playwright) or the ``external`` runner (remote playwright repo)
+ based on what the overlay's ``get_e2e_config()`` returns. The overlay
+ declares ``"runner": "project"`` or ``"runner": "external"``; when
+ absent, ``test_dir`` implies ``project`` and ``project_path`` implies
+ ``external`` for compatibility.
 
  ``--target dev|local`` selects the dual-env target and is forwarded to
  whichever runner handles the overlay (see ``external`` for semantics).
@@ -1996,8 +2053,13 @@ Usage: t3 teatree e2e run [OPTIONS]
  Runner-specific flags (``--repo``, ``--playwright-args``) stay on the
  explicit ``external`` subcommand to keep this entry point overlay-agnostic.
 
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│   work_item      [WORK_ITEM]  Ticket reference (pk, issue number, or issue   │
+│                               URL) — the #794 keystone.                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --test-path                                    TEXT                          │
+│ --at                                           TEXT                          │
 │ --target                                       TEXT                          │
 │ --headed              --no-headed                    [default: no-headed]    │
 │ --update-snapshots    --no-update-snapshots          [default:               │
