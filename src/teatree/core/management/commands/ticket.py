@@ -10,6 +10,7 @@ from django_typer.management import TyperCommand, command
 
 from teatree.core.merge_execution import MergePreconditionError, merge_ticket_pr
 from teatree.core.models import ClearIssuanceError, ClearRequest, MergeClear, Ticket
+from teatree.core.schema_guard import SelfDbMigrationError, require_current_schema
 
 
 class CompletionResult(TypedDict, total=False):
@@ -164,6 +165,12 @@ class Command(TyperCommand):
         through the SAME sanctioned ``ticket merge`` transition (invariant 8 —
         never raw ``gh``), with the human decision durably on the CLEAR.
         """
+        try:
+            require_current_schema()
+        except SelfDbMigrationError as exc:
+            self.stdout.write(f"  CLEAR refused: {exc}")
+            return {"issued": False, "error": str(exc)}
+
         resolved_ticket = None
         if ticket_id:
             try:
@@ -245,6 +252,12 @@ class Command(TyperCommand):
         result is flagged ``escalated`` so the durable backlog re-escalation
         is visible (the loop never self-issues a replacement CLEAR).
         """
+        try:
+            require_current_schema()
+        except SelfDbMigrationError as exc:
+            self.stdout.write(f"  merge refused: {exc}")
+            return {"error": str(exc), "merged": False}
+
         try:
             clear = MergeClear.objects.get(pk=clear_id)
         except MergeClear.DoesNotExist:
