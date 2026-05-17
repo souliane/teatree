@@ -165,6 +165,10 @@ Extra cleanup steps run before a worktree is removed (Docker containers, cache d
 
 Post-provision health checks to verify the worktree is functional. The default checks verify: worktree path exists, symlinks are valid, DB name is set. Override to add project-specific checks.
 
+#### `can_auto_merge(*, target_ref: str, thread_ref: str) -> MergeGuard`
+
+Verdict on whether an approved merge request may be merged automatically. `target_ref` is the branch/ref that would be merged into; `thread_ref` is the notification thread that carried the approval. The default implementation is permissive (`MergeGuard(allowed=True)`). Override to enforce human-approval gates, freeze windows, or policy checks — return `MergeGuard(allowed=False, reason=...)` to block, adding `escalate=True` to raise an escalation signal instead of a silent block.
+
 #### `get_workspace_repos() -> list[str]`
 
 Repo paths relative to `workspace_dir`. Supports nested paths (e.g., `souliane/teatree`). Reads from `config.workspace_repos` first; falls back to `get_repos()`. Defaults to `get_repos()`.
@@ -185,3 +189,4 @@ These are defined in `teatree/core/overlay.py`:
 | `RunCommand` | dataclass | `args`, `cwd` |
 | `RunCommands` | type alias | `dict[str, list[str] \| RunCommand]` |
 | `HealthCheck` | dataclass | `name`, `check`, `description` |
+| `MergeGuard` | dataclass (frozen) | `allowed`, `reason`, `escalate` |
