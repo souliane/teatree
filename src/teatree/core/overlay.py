@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 
 from teatree.core.health import HealthCheck
 from teatree.core.health import default_health_checks as _default_health_checks
+from teatree.core.merge_guard import MergeGuard
 from teatree.types import (
     BaseImageConfig,
     DbImportStrategy,
@@ -29,6 +30,7 @@ __all__ = [
     "BaseImageConfig",
     "DbImportStrategy",
     "HealthCheck",
+    "MergeGuard",
     "OverlayBase",
     "OverlayConfig",
     "OverlayMetadata",
@@ -336,3 +338,17 @@ class OverlayBase(ABC):  # noqa: PLR0904 — overlay extension API; hook count r
     def is_issue_done(self, issue_data: "RawAPIDict") -> bool:
         state = issue_data.get("state")
         return isinstance(state, str) and state in {"closed", "completed"}
+
+    def can_auto_merge(self, *, target_ref: str, thread_ref: str) -> MergeGuard:
+        """Return a merge-guard verdict for an approved merge request.
+
+        The default implementation is permissive — it always allows the merge.
+        Overlays that need human-approval gates, freeze windows, or policy checks
+        should override this method and return an appropriate ``MergeGuard``.
+
+        Args:
+            target_ref: The branch or ref that would be merged into.
+            thread_ref: The Slack / notification thread that triggered the approval.
+        """
+        _ = target_ref, thread_ref
+        return MergeGuard(allowed=True)
