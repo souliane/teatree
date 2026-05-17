@@ -548,6 +548,49 @@ class TestPrCreateSyncShipAtomic(TestCase):
         assert "non-fast-forward" in detail, detail
         assert detail.strip() not in {"", "command failed (rc=1)"}, detail
 
+    @override_settings(**_SHIP_BACKEND)
+    def test_ship_executor_structured_failure_is_atomic(self) -> None:
+        """#860: a non-raising ``RunnerResult(ok=False)`` must roll back too.
+
+        ``#838`` only treats an *exception* as the rollback trigger.
+        ``ShipExecutor.run()`` also has non-raising precondition exits
+        (``"no code host configured"``, ``"no worktree on ticket"``,
+        ``"branch ... already merged into base"``) that return
+        ``RunnerResult(ok=False)`` instead of raising. ``execute_ship``
+        then returns a normal ``{"ok": False}`` dict, its
+        ``transaction.atomic()`` commits, and pre-fix the outer
+        ``_ship_sync`` transaction committed too — leaving the FSM in a
+        partial ``SHIPPED`` with no push and no PR. This regression drives
+        the structured-failure path through the real (un-mocked)
+        ``execute_ship`` and asserts the FSM is NOT left at ``SHIPPED``.
+        """
+        ticket = _shippable_ticket()
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch.object(pr_command, "_run_visual_qa_gate", return_value=None),
+            patch.object(pr_command, "validate_pr_metadata", return_value=None),
+            # No code host configured -> ShipExecutor.run() returns
+            # RunnerResult(ok=False) WITHOUT raising.
+            patch("teatree.core.runners.ship.code_host_from_overlay", return_value=None),
+        ):
+            result = cast(
+                "dict[str, object]",
+                call_command("pr", "create", str(ticket.id), sync=True),
+            )
+
+        # (a) Atomicity: a structured ship failure must roll the ``ship()``
+        #     advance back — no partial SHIPPED with no push/PR.
+        ticket.refresh_from_db()
+        assert ticket.state != Ticket.State.SHIPPED, (
+            f"FSM left in partial SHIPPED state with no push/PR: {ticket.state}"
+        )
+        assert ticket.state == Ticket.State.REVIEWED, ticket.state
+
+        # (b) Surfacing: the real precondition cause is visible.
+        assert result.get("ok") is False, result
+        assert "no code host configured" in str(result.get("detail", "")), result
+
 
 class TestEnsurePr(TestCase):
     @pytest.fixture(autouse=True)
