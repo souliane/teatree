@@ -1035,3 +1035,72 @@ class TestAssertCommitsAheadOfBase(TestCase):
     def test_missing_repo_or_branch_returns_none(self) -> None:
         assert _assert_commits_ahead_of_base(self._wt("", "feat")) is None
         assert _assert_commits_ahead_of_base(self._wt("/tmp/x", "")) is None
+
+    def test_confirmed_zero_returns_structured_error(self) -> None:
+        """Branch at exact parity with base (0 commits ahead) → block contract.
+
+        Neutering the confirmed-zero arm (e.g. ``ahead > 0`` flipped, or
+        the ``return NoCommitsAheadError`` removed) makes this RED — the
+        guard's whole reason to exist (#788).
+        """
+        import tempfile  # noqa: PLC0415
+
+        with tempfile.TemporaryDirectory() as root:
+            self._git(root, "init", "-q", "-b", "main")
+            self._git(root, "config", "user.email", "t@example.com")
+            self._git(root, "config", "user.name", "t")
+            (Path(root) / "a").write_text("1", encoding="utf-8")
+            self._git(root, "add", "-A")
+            self._git(root, "commit", "-q", "-m", "base")
+            self._git(root, "update-ref", "refs/remotes/origin/main", "HEAD")
+            # Branch points at the SAME commit as origin/main → 0 ahead.
+            self._git(root, "checkout", "-q", "-b", "feat-parity")
+
+            result = _assert_commits_ahead_of_base(self._wt(root, "feat-parity"))
+
+        assert result is not None, "confirmed-zero MUST block (returns NoCommitsAheadError)"
+        assert result["branch"] == "feat-parity"
+        assert result["base"] == "origin/main"
+        assert "0 commits ahead" in result["error"]
+
+    def test_unverifiable_git_error_returns_none_proceeds(self) -> None:
+        """No-block-on-unknown safety contract (#788's make-or-break fail-direction).
+
+        When git introspection cannot be performed — ``default_branch``
+        raising :class:`CommandFailedError`, ``rev_count`` raising, or an
+        ``int()`` ``ValueError`` — the state is *unverifiable*, distinct
+        from the confirmed-zero bug, so the guard MUST return ``None``
+        (ship proceeds, prior behaviour preserved). Neutering this arm
+        (e.g. ``except`` block returning the error, or removed) makes
+        this RED. Real on-disk repo so only the failing primitive is
+        mocked.
+        """
+        import tempfile  # noqa: PLC0415
+
+        from teatree.utils import git as git_mod  # noqa: PLC0415
+        from teatree.utils.run import CommandFailedError  # noqa: PLC0415
+
+        with tempfile.TemporaryDirectory() as root:
+            self._git(root, "init", "-q", "-b", "main")
+            self._git(root, "config", "user.email", "t@example.com")
+            self._git(root, "config", "user.name", "t")
+            (Path(root) / "a").write_text("1", encoding="utf-8")
+            self._git(root, "add", "-A")
+            self._git(root, "commit", "-q", "-m", "base")
+            self._git(root, "update-ref", "refs/remotes/origin/main", "HEAD")
+            wt = self._wt(root, "main")
+
+            with patch.object(git_mod, "default_branch", side_effect=CommandFailedError(["git"], 1, "", "boom")):
+                assert _assert_commits_ahead_of_base(wt) is None, (
+                    "default_branch failure is unverifiable → MUST proceed (None)"
+                )
+
+            with patch.object(git_mod, "rev_count", side_effect=RuntimeError("git exploded")):
+                assert _assert_commits_ahead_of_base(wt) is None, (
+                    "rev_count failure is unverifiable → MUST proceed (None)"
+                )
+
+            with patch.object(git_mod, "rev_count", side_effect=ValueError("not an int")):
+                assert _assert_commits_ahead_of_base(wt) is None, (
+                    "rev_count ValueError is unverifiable → MUST proceed (None)"
+                )
