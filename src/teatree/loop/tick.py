@@ -28,6 +28,7 @@ from teatree.loop.scanners import (
     ReviewerPrsScanner,
     Scanner,
     SlackMentionsScanner,
+    StaleTicketsScanner,
     TicketCompletionScanner,
     TicketDispositionScanner,
 )
@@ -134,6 +135,15 @@ def build_default_jobs(
                 )
             else:
                 jobs.append(_ScannerJob(scanner=ActiveTicketsScanner(overlay_name=tag), overlay=tag))
+            jobs.append(
+                _ScannerJob(
+                    scanner=StaleTicketsScanner(
+                        overlay_name=tag,
+                        threshold_days=backend.stale_threshold_days,
+                    ),
+                    overlay=tag,
+                ),
+            )
             if backend.host is not None:
                 jobs.extend(
                     [

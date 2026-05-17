@@ -49,6 +49,7 @@ _STATUSLINE_ZONE_BY_KIND: dict[str, str] = {
     "assigned_issue.ready": "action_needed",
     "ticket.active": "anchors",
     "ticket.disposition_candidate": "action_needed",
+    "ticket.stale": "action_needed",
     # Reviewer-assigned PRs also dispatch to the t3:reviewer agent below,
     # but we mirror them into the statusline so the user sees what's
     # pending review without waiting on the agent to act.
