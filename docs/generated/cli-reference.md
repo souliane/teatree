@@ -2651,7 +2651,7 @@ Usage: t3 teatree lifecycle clear-ledger [OPTIONS] TICKET_ID
  passing aggregate that no longer reflects the new work (the
  anti-vacuous attestation gap). Hand-editing ``phase_visits`` /
  ``visited_phases`` was the only escape, which is exactly the
- out-of-band state mutation invariant 7 prohibits. This is the
+ out-of-band state mutation invariant 8 prohibits. This is the
  sanctioned ``t3`` path: it retires every session's phase ledger for
  the ticket in one transaction so the next workstream re-earns its
  attestations from scratch. Requires ``--confirm`` (destructive).
