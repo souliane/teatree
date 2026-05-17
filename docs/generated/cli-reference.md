@@ -643,6 +643,10 @@ Usage: t3 tool [OPTIONS] COMMAND [ARGS]...
 │                  promoted to skills.                                         │
 │ notion-download  Download a Notion file attachment using the Brave browser   │
 │                  session.                                                    │
+│ ai-sig-scan      Refuse a PR body / commit message carrying an AI-signature  │
+│                  trailer.                                                    │
+│ diff-coverage    Per-diff coverage + mutation/revert gate (BLUEPRINT §17.6   │
+│                  gate 12, #836).                                             │
 │ label-issues     Suggest labels for unlabeled open issues by                 │
 │                  keyword-matching title and body.                            │
 │ find-duplicates  Flag pairs of open issues with near-identical titles.       │
@@ -808,6 +812,49 @@ Usage: t3 tool notion-download [OPTIONS] URL
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --dest  -d      PATH  Destination directory. [default: .]                    │
 │ --help                Show this message and exit.                            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 tool ai-sig-scan`
+
+```
+Usage: t3 tool ai-sig-scan [OPTIONS] [PATH]
+
+ Refuse a PR body / commit message carrying an AI-signature trailer.
+
+ Enforces the "No AI Signature on Posts Made on the User's Behalf" rule
+ (BLUEPRINT §17.6 gate 15, #836) as deterministic code — previously prose
+ only in /t3:rules and unenforced at the PR-body layer (PR #831 leak).
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│   path      [PATH]  File or '-' for stdin (PR body / commit message)         │
+│                     [default: -]                                             │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 tool diff-coverage`
+
+```
+Usage: t3 tool diff-coverage [OPTIONS]
+
+ Per-diff coverage + mutation/revert gate (BLUEPRINT §17.6 gate 12, #836).
+
+ Measures coverage on the *diff's* added production lines (not the global
+ ``fail_under``) and requires every new/changed production symbol to be
+ imported by a changed test (the test-a-local-copy anti-vacuity check).
+ Exits non-zero when a new line is uncovered or a symbol is unreferenced.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --repo                 PATH  Repo root (default: cwd)                        │
+│                              [default: <bound method PathBase.cwd of <class  │
+│                              'pathlib._local.Path'>>]                        │
+│ --coverage-file        PATH  Path to .coverage data file                     │
+│                              [default: .coverage]                            │
+│ --json                       Emit machine-readable JSON.                     │
+│ --help                       Show this message and exit.                     │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
