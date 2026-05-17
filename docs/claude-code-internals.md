@@ -144,6 +144,14 @@ Hook JSON output supports event-specific fields:
 | `WorktreeCreate` | `worktreePath` |
 | `Elicitation`/`ElicitationResult` | `action` (`accept`/`decline`/`cancel`), `content` |
 
+> **#845 — `PostCompact` has no `hookSpecificOutput` entry.** A `PostCompact`
+> hook cannot inject `additionalContext`; the harness discards its output.
+> Post-compaction state recovery therefore runs on the `SessionStart` hook
+> with `source == "compact"` (the documented sources are `startup`,
+> `resume`, `clear`, `compact`), which **does** support `additionalContext`.
+> Teatree writes the durable snapshot in the `PreCompact` hook and re-injects
+> it from `handle_session_start_bootstrap` when `source == "compact"`.
+
 ### Skills Can Define Their Own Hooks
 
 The `hooks` frontmatter field lets a skill register hooks for ANY event.
@@ -182,7 +190,10 @@ Two paths:
 - Triggers at ~90% of context window (configurable threshold)
 - Calls full `compact()` — LLM summarizes the conversation
 - Posts `CompactBoundaryMessage` as a marker
-- `PreCompact` and `PostCompact` hooks fire before/after
+- `PreCompact` and `PostCompact` hooks fire before/after (but only
+  `PreCompact` can act usefully — `PostCompact` has no `hookSpecificOutput`
+  entry, so post-compaction recovery uses `SessionStart`/`source=compact`
+  instead; see the #845 note in §3)
 
 ### Layer 3: Reactive compact (emergency)
 
@@ -418,7 +429,7 @@ No built-in setting forces use of `AskUserQuestion`. Enforcement options:
 | `hooks` in frontmatter | loadSkillsDir.ts | Skills carry their own hooks — self-contained |
 | `allowed-tools` | loadSkillsDir.ts | Skills declare needed tools |
 | Microcompact awareness | microCompact.ts | Route reference content through Read (compactable) not Skill (not compactable) |
-| `PreCompact`/`PostCompact` hooks | HOOK_EVENTS | Persist state before compaction |
+| `PreCompact` hook + `SessionStart`/`source=compact` | HOOK_EVENTS | `PreCompact` persists state before compaction; recovery runs on the post-compaction `SessionStart` (`source=="compact"`) — **not** `PostCompact`, which has no `hookSpecificOutput` entry (#845) |
 
 ### Medium Priority
 
