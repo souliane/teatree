@@ -74,6 +74,7 @@ class OverlayConfig:
     exclude_labels: list[str]
     auto_start_assigned_issues: bool = False
     max_concurrent_auto_starts: int = 1
+    stale_threshold_days: int = 3
     notion_database_id: str = ""
     mr_close_ticket: bool = False
     teardown_removes_pass_entries: bool = False

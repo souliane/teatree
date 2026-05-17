@@ -1,4 +1,5 @@
 import json
+import re
 from collections.abc import Callable
 from inspect import signature
 from pathlib import Path
@@ -126,6 +127,20 @@ class SkillDocPayload(TypedDict):
     agent_launch_fields: list[str]
 
 
+class SkillCatalogueEntry(TypedDict):
+    name: str
+    summary: str
+
+
+class SkillCataloguePayload(TypedDict):
+    skills_root: str
+    skills: list[SkillCatalogueEntry]
+
+
+_FRONTMATTER_RE = re.compile(r"^---\s*\n(.+?)\n---", re.DOTALL)
+_TRIGGER_SPLIT_RE = re.compile(r"\.\s+Use (?:when|this|in)\b")
+
+
 def build_overlay_doc_payload() -> OverlayDocPayload:
     hooks: list[HookRecord] = []
     for name in _OVERLAY_HOOK_ORDER:
@@ -251,10 +266,52 @@ def render_skill_markdown(payload: SkillDocPayload) -> str:
     return "\n".join(lines) + "\n"
 
 
+def build_skill_catalogue_payload(skills_root: Path) -> SkillCataloguePayload:
+    """Read every ``skills/*/SKILL.md`` and return name + one-line summary.
+
+    The summary is the description up to the first ``. Use when`` trigger
+    clause, mirroring the README catalogue builder so the docs-site page and
+    the README stay aligned with SKILL.md frontmatter (the SSOT).
+    """
+    entries: list[SkillCatalogueEntry] = []
+    for skill_md in sorted(skills_root.glob("*/SKILL.md")):
+        meta = _parse_frontmatter(skill_md)
+        name = meta.get("name", skill_md.parent.name)
+        description = meta.get("description", "")
+        summary = _TRIGGER_SPLIT_RE.split(description, maxsplit=1)[0].rstrip(". ") if description else ""
+        entries.append({"name": name, "summary": summary})
+    return {"skills_root": skills_root.name, "skills": entries}
+
+
+def render_skill_catalogue_markdown(payload: SkillCataloguePayload) -> str:
+    lines = [
+        "# Skills Catalogue",
+        "",
+        f"Source: `{payload['skills_root']}/*/SKILL.md` frontmatter",
+        "",
+        "| Skill | Summary |",
+        "| --- | --- |",
+    ]
+    lines.extend(f"| `{entry['name']}` | {entry['summary'].replace('|', '\\|')} |" for entry in payload["skills"])
+    return "\n".join(lines) + "\n"
+
+
+def _parse_frontmatter(path: Path) -> dict[str, str]:
+    match = _FRONTMATTER_RE.match(path.read_text(encoding="utf-8"))
+    if not match:
+        return {}
+    meta: dict[str, str] = {}
+    for line in match.group(1).splitlines():
+        if ":" in line and not line.startswith((" ", "-", "\t")):
+            key, value = line.split(":", 1)
+            meta[key.strip()] = value.strip().strip('"').strip("'")
+    return meta
+
+
 def write_generated_doc(
     json_path: Path,
     markdown_path: Path,
-    payload: OverlayDocPayload | SkillDocPayload,
+    payload: OverlayDocPayload | SkillDocPayload | SkillCataloguePayload,
     markdown: str,
 ) -> None:
     json_path.parent.mkdir(parents=True, exist_ok=True)

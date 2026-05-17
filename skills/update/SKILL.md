@@ -47,6 +47,17 @@ never stashed, reset, merged, or rebased away. A skip is a normal outcome,
 not a failure; the process exits non-zero only when a fetch or fast-forward
 hard-fails.
 
+## Self-DB Migrations
+
+When teatree core advances, `t3 update` applies pending teatree self-DB
+migrations **non-destructively** (the `uv --directory <clone> run python
+manage.py migrate --no-input` path, no DB drop). This is the sanctioned
+first-class alternative to the destructive `resetdb` (which discards all
+local ticket/session/lease state) and the raw `manage.py migrate` the
+PreToolUse hook router discourages. A migration failure warns and never
+aborts the update — the git fast-forward already did its job. This keeps
+the sanctioned merge path working against a current schema after a pull.
+
 ## Core ↔ Overlay Version Coupling
 
 An overlay can pin (or assume) a particular teatree core version. After core

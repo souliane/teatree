@@ -28,6 +28,7 @@ from teatree.loop.scanners import (
     ReviewerPrsScanner,
     Scanner,
     SlackMentionsScanner,
+    StaleTicketsScanner,
     TicketCompletionScanner,
     TicketDispositionScanner,
 )
@@ -134,6 +135,15 @@ def build_default_jobs(
                 )
             else:
                 jobs.append(_ScannerJob(scanner=ActiveTicketsScanner(overlay_name=tag), overlay=tag))
+            jobs.append(
+                _ScannerJob(
+                    scanner=StaleTicketsScanner(
+                        overlay_name=tag,
+                        threshold_days=backend.stale_threshold_days,
+                    ),
+                    overlay=tag,
+                ),
+            )
             if backend.host is not None:
                 jobs.extend(
                     [
@@ -268,16 +278,33 @@ def run_tick(
 
 
 def _reap_stale_task_claims() -> None:
-    """Sweep CLAIMED tasks whose lease has expired so the statusline reflects fresh state.
+    """Recover orphaned ticket state, take over orphaned claims, reap stale ones.
 
-    Best-effort: if the test harness blocks DB access (pytest-django without
-    a ``db`` marker), the loop tick should still render scanners and signals.
+    Three boot/tick recovery sweeps, ordered so a recoverable row is
+    rescued before a harsher sweep can fail it. First,
+    ``replay_orphaned_transitions`` (#883): a task that COMPLETED but
+    whose FSM transition was lost to a mid-transition crash leaves the
+    ticket half-advanced; the task is COMPLETED (not CLAIMED) so the
+    claim sweeps can't see it and the loop stalls forever — this replays
+    the dropped transition via the shared idempotent path. Then
+    ``reclaim_orphaned_claims`` (#652): a CLAIMED task whose lease
+    expired because its owning session exited mid-task is recoverable —
+    returned to PENDING so another still-open session resumes it
+    ("fastest open session takes over") rather than being failed.
+    Finally ``reap_stale_claims``: any residual stale CLAIMED row is
+    failed.
+
+    Best-effort: if the test harness blocks DB access (pytest-django
+    without a ``db`` marker), the loop tick should still render scanners
+    and signals.
     """
     import contextlib  # noqa: PLC0415
 
     from teatree.core.models import Task  # noqa: PLC0415
 
     with contextlib.suppress(RuntimeError):
+        Task.objects.replay_orphaned_transitions()
+        Task.objects.reclaim_orphaned_claims()
         Task.objects.reap_stale_claims()
 
 

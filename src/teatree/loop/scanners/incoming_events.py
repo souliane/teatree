@@ -93,10 +93,18 @@ class IncomingEventsScanner:
                     payload={"event_id": event.pk, "actor": action.target_ref},
                 )
             case RoutedAction.Kind.SCHEDULE_TASK:
+                # `detail` carries the inbound body so the dispatcher can
+                # spot a Slack review request (a PR/MR URL) and route it
+                # to an independent review instead of a passive note (#219).
                 return ScanSignal(
                     kind="incoming_event.task_needed",
                     summary=f"task request from {event.source} ({action.phase}): {action.detail}",
-                    payload={"event_id": event.pk, "phase": action.phase, "target_ref": action.target_ref},
+                    payload={
+                        "event_id": event.pk,
+                        "phase": action.phase,
+                        "target_ref": action.target_ref,
+                        "detail": action.detail,
+                    },
                 )
             case RoutedAction.Kind.SCHEDULE_MERGE:
                 return self._handle_schedule_merge(event, action)

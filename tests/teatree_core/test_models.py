@@ -973,6 +973,62 @@ class TestSession(TestCase):
 
         session.check_gate("shipping", force=True)  # force bypasses all checks
 
+    def test_visit_phase_normalizes_raw_spelling_at_write_boundary(self) -> None:
+        """#782: ``visit_phase`` owns the canonical-phase invariant.
+
+        A caller that passes a raw short spelling (``review``/``test`` —
+        the verbs skills emit) instead of the canonical gerund must not
+        corrupt the gate. Before #782 the invariant was upheld only by
+        ``lifecycle.py``/``task.py`` normalizing *before* calling; any
+        other caller (a new loop path, an overlay, a fixture) passing a
+        raw ``review`` stored ``"review"`` verbatim, and
+        ``_check_phases`` — keyed by the canonical ``reviewing`` in
+        ``_REQUIRED_PHASES`` — then falsely blocked shipping with a
+        stale ``requires:`` set (the #779 symptom). Enforcing
+        normalization at the write boundary makes the invariant
+        structural, not a caller convention.
+        """
+        session = Session.objects.create(ticket=Ticket.objects.create())
+
+        # Raw short spellings, exactly as a non-normalizing caller would.
+        session.visit_phase("test", agent_id="agent-1")
+        session.visit_phase("review", agent_id="agent-2")
+        session.refresh_from_db()
+
+        # Stored canonical, regardless of the spelling the caller used.
+        assert session.visited_phases == ["testing", "reviewing"]
+        # The shipping gate must pass — not falsely block on a stale set.
+        session.check_gate("shipping")
+
+    def test_check_phases_normalizes_legacy_raw_rows_at_read_boundary(self) -> None:
+        """#782: the read boundary tolerates pre-existing raw-spelling rows.
+
+        Rows written before #782 (or by ``merge_execution`` / any path
+        that bypassed ``visit_phase``) may already hold a raw ``review``.
+        ``_check_phases`` must normalize membership so a legacy row still
+        satisfies the canonical ``reviewing`` requirement instead of
+        falsely blocking shipping forever.
+        """
+        session = Session.objects.create(ticket=Ticket.objects.create())
+
+        # Simulate a legacy row written verbatim, bypassing visit_phase.
+        Session.objects.filter(pk=session.pk).update(visited_phases=["test", "review"])
+        session.refresh_from_db()
+
+        session.check_gate("shipping")  # must not raise on legacy spellings
+
+    def test_required_phases_vocabulary_cannot_drift_from_canonical(self) -> None:
+        """#782: the second hand-maintained phase set stays in lockstep.
+
+        ``Session._REQUIRED_PHASES`` is a vocabulary divorced from
+        ``phases.py``. Every gate key and required phase must be a
+        canonical token; the import-time guard rejects any drift so a
+        typo cannot silently make the gate compare against a stale set.
+        """
+        from teatree.core.phases import CANONICAL_PHASES  # noqa: PLC0415
+
+        assert Session._GATE_PHASES <= CANONICAL_PHASES
+
     def test_repo_tracking(self) -> None:
         session = Session.objects.create(ticket=Ticket.objects.create())
 
