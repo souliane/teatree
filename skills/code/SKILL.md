@@ -226,6 +226,6 @@ When fixing a test you didn't write, apply **minimum viable changes**:
 
 See `review/SKILL.md § Receiving Code Review` for the full policy.
 
-### Post-Implementation Retrospective
+### Emit Retro Signal — Do NOT Self-Retro (#837)
 
-After completing work, run `/t3:retro` to review the session, capture lessons learned, and improve skills/playbooks.
+Retro is **orchestrator-only**. As a sub-agent implementing a ticket, do **not** run `/t3:retro` as a per-ticket synthesis/judgment step at the end of the work. Instead, as a lesson surfaces during implementation (a repeated mistake, a missing guardrail, a stale doc), **emit it as structured signal into durable state** — task metadata or a `/tmp/t3-snapshot-*.md` snapshot — and keep going. The orchestrator later synthesises across the whole session and biases the output to the smallest enforcement artifact (a gate, test, or hook), not a prose rule. The durability discipline (snapshots, durable task state) is load-bearing and unchanged — it is exactly the channel the orchestrator's synthesis reads from.

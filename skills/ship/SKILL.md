@@ -105,15 +105,13 @@ If the changes touch architecture, add new modules, rename commands, or change e
 
 Skipping this step is the #1 cause of wasted push-fix-push cycles. The rules exist in `t3:review` and the project's code-review skill — this step ensures they are applied even when the agent goes directly from code to ship without a formal review phase.
 
-### 3c. Retrospective Before Push (Non-Negotiable, Enforced)
+### 3c. Emit Retro Signal Before Push — Do NOT Self-Retro (#837)
 
-Run `/t3:retro` **before** pushing — not after merge. Retro findings often surface skill fixes, guardrail improvements, or documentation updates that belong in the same PR as the feature. Running retro after push/merge means those improvements ship as a separate follow-up PR (or, worse, get lost to context compaction before they land anywhere).
+Retro is **orchestrator-only**. A sub-agent shipping a single ticket does **not** run `/t3:retro` as a per-ticket synthesis/judgment step, and `pr create` does **not** gate on a per-ticket `retro` visit. Instead, as the work surfaces a lesson, **emit it as structured signal into durable state** (task metadata / a `/tmp/t3-snapshot-*.md` snapshot) so the orchestrator can synthesise across the whole session later and bias the output to the smallest enforcement artifact (a gate, test, or hook), not a prose rule.
 
-Sequence: code → test → review gate → **retro** → push → PR → monitor CI.
+Sequence: code → test → review gate → **local commit** → push → PR → monitor CI. (The orchestrator's periodic synthesis runs out-of-band over the accumulated durable signal — it is not in this per-ticket push path.)
 
-If retro produces file edits (skill fixes, reference updates, docs), commit them on the current branch before § 4 Push so they ride along with the PR.
-
-**Enforcement:** `t3 <overlay> pr create` refuses to create the PR until the `retro` phase is marked visited on the active session. Retro marks its own visit via `t3 <overlay> lifecycle visit-phase <ticket_id> retro` (documented in `/t3:retro`). If the shipping gate complains that `retro` is missing, run retro — do not bypass with `--skip-validation` unless explicitly instructed.
+If you do produce a same-PR-worthy fix while shipping (a stale doc, a broken reference the change touches), commit it on the current branch before § 4 Push — that is ordinary in-scope bundling, not a retro step.
 
 ### 4. Push
 
@@ -124,7 +122,7 @@ If retro produces file edits (skill fixes, reference updates, docs), commit them
 
 Before creating a PR, the `pr create` command automatically checks the session gate:
 
-- **shipping** requires prior `testing`, `reviewing`, and `retro` phases.
+- **shipping** requires prior `testing` and `reviewing` phases. (#837: it no longer requires a per-ticket `retro` visit — retro is orchestrator-only.)
 - If no review session ran for this ticket, `pr create` returns an error with a hint to run `/t3:review`.
 - `--skip-validation` is reserved for bypasses the **user explicitly authorised** in the same session — never the agent's own choice.
 
@@ -169,7 +167,7 @@ The gate verifies the required phases (`testing`, `reviewing`, `retro`) were rec
 
    Do **not** use `t3 <overlay> lifecycle visit-phase <ticket_id> reviewing` to *skip* an independent review. Since #694 the gate reconciles `Ticket.state` from `Session.visited_phases`, so a manual visit *will* let `pr create` proceed — which is exactly why marking `reviewing` visited without an independent reviewer having actually reviewed the diff defeats the quality gate. Earn the phase (step 2), then record it; never record it to dodge step 2.
 
-5. **Verify before pushing.** `t3 <overlay> ticket list --state reviewed` (or `--id <ticket_id>`) should show the ticket in `reviewed` once the reviewing task completed. If the loop path advanced phases but the state still reads `tested`/`started`, that is expected — the shipping gate reconciles it to `reviewed` at `pr create` time. A blocked `pr create` returns the missing-phase list; satisfy those phases (run the reviewer / retro), don't bypass with `--skip-validation`.
+5. **Verify before pushing.** `t3 <overlay> ticket list --state reviewed` (or `--id <ticket_id>`) should show the ticket in `reviewed` once the reviewing task completed. If the loop path advanced phases but the state still reads `tested`/`started`, that is expected — the shipping gate reconciles it to `reviewed` at `pr create` time. A blocked `pr create` returns the missing-phase list (`testing` / `reviewing` — #837: never `retro`); satisfy those phases (run the reviewer), don't bypass with `--skip-validation`.
 
 **Why a sub-agent, not just self-review.** The implementer's context is contaminated by the implementation: every "looks done" judgment carries the same blind spots that produced the gaps. A sub-agent starts cold, reads the diff with fresh eyes, and applies the review skill's checklists without the implementer's "I already checked that" shortcuts. The cost of one extra `Agent` call is ~30s of wall time and a few hundred tokens; the cost of skipping it is multi-round push-fix-push cycles after the PR is already public.
 
@@ -186,7 +184,7 @@ The gate verifies the required phases (`testing`, `reviewing`, `retro`) were rec
 
 ### 5. Create MR/PR
 
-**`t3 <overlay> pr create` is mandatory (Non-Negotiable).** Raw `gh pr create` / `glab mr create` is forbidden whenever the active overlay exposes a `pr create` subcommand. The CLI is not a convenience wrapper — it is the **only** path that runs the shipping gate (§ 4b: testing + reviewing + retro phases visited), the visual-QA gate (§ 4c), the title/description format validator, the ticket URL injection, the assignee defaults, and the fork-vs-upstream remote resolution. Bypassing it ships PRs that look published but have skipped every guard — exactly the failure mode that produced souliane/teatree#545 (PR pushed via `gh pr create`, shipping gate never ran, six rounds of follow-up review fixes).
+**`t3 <overlay> pr create` is mandatory (Non-Negotiable).** Raw `gh pr create` / `glab mr create` is forbidden whenever the active overlay exposes a `pr create` subcommand. The CLI is not a convenience wrapper — it is the **only** path that runs the shipping gate (§ 4b: testing + reviewing phases visited), the visual-QA gate (§ 4c), the title/description format validator, the ticket URL injection, the assignee defaults, and the fork-vs-upstream remote resolution. Bypassing it ships PRs that look published but have skipped every guard — exactly the failure mode that produced souliane/teatree#545 (PR pushed via `gh pr create`, shipping gate never ran, six rounds of follow-up review fixes).
 
 **Allowed exceptions (must hold all):**
 
