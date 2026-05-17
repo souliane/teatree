@@ -182,6 +182,71 @@ class TestStatuslineHook:
         assert "loops:" in plain
         assert "checking build" in plain
 
+    def test_future_wakeup_renders_normally(self, tmp_path: Path) -> None:
+        """A wakeup whose epoch is in the future renders with its countdown."""
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+        crons = {
+            "jobs": {},
+            "wakeup": {"name": "future build", "next_epoch": int(time.time()) + 600},
+        }
+        (state_dir / "s-future.crons").write_text(json.dumps(crons), encoding="utf-8")
+
+        result = _run(
+            {"session_id": "s-future", "model": {"display_name": "Claude Opus"}},
+            state_dir=state_dir,
+        )
+
+        assert result.returncode == 0, result.stderr
+        plain = _strip_ansi(result.stdout)
+        assert "loops:" in plain
+        assert "future build" in plain
+
+    def test_expired_wakeup_beyond_grace_not_rendered_as_live(self, tmp_path: Path) -> None:
+        """A wakeup overdue beyond the grace window is stale — not a live '→now'.
+
+        Anti-vacuous: reverting the staleness guard makes this assertion fail
+        because the unguarded `else` branch would print "stale build→now".
+        """
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+        crons = {
+            "jobs": {},
+            # ~4h overdue — a long-finished wakeup that never got cleared.
+            "wakeup": {"name": "stale build", "next_epoch": int(time.time()) - 14400},
+        }
+        (state_dir / "s-stale.crons").write_text(json.dumps(crons), encoding="utf-8")
+
+        result = _run(
+            {"session_id": "s-stale", "model": {"display_name": "Claude Opus"}},
+            state_dir=state_dir,
+        )
+
+        assert result.returncode == 0, result.stderr
+        plain = _strip_ansi(result.stdout)
+        assert "stale build" not in plain
+        assert "stale build→now" not in plain
+
+    def test_recently_overdue_wakeup_within_grace_still_shows_now(self, tmp_path: Path) -> None:
+        """A wakeup ~30s overdue is a real imminent fire — still shows 'now'."""
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+        crons = {
+            "jobs": {},
+            "wakeup": {"name": "imminent build", "next_epoch": int(time.time()) - 30},
+        }
+        (state_dir / "s-imminent.crons").write_text(json.dumps(crons), encoding="utf-8")
+
+        result = _run(
+            {"session_id": "s-imminent", "model": {"display_name": "Claude Opus"}},
+            state_dir=state_dir,
+        )
+
+        assert result.returncode == 0, result.stderr
+        plain = _strip_ansi(result.stdout)
+        assert "loops:" in plain
+        assert "imminent build→now" in plain
+
     def test_omits_loops_when_no_crons_file(self, tmp_path: Path) -> None:
         state_dir = tmp_path / "state"
         state_dir.mkdir()
