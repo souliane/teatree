@@ -513,6 +513,16 @@ phase_models.testing = ""         # opt out — inherit the user's default
 
 **Auth:** Uses the `claude` binary (Claude Code session auth — no API key required).
 
+**Stuck-loop / cost-spike watchdog (#882).** The agent runs over `Popen` (via `teatree.utils.run.spawn`) so the heartbeat thread can terminate a runaway mid-flight. On every heartbeat tick `LoopWatchdog.breach_reason()` evaluates the task's wall-clock runtime plus the accumulated `TaskAttempt.num_turns` / `cost_usd` deltas (sampled once on the main thread before the subprocess starts — prior-attempt totals are static for the run). On a ceiling breach the subprocess is killed and a `stuck_loop` `TaskAttempt` failure is recorded with the observed deltas (`task.fail()` runs). The conservative default is a 3h runtime ceiling that only trips on a genuinely runaway subprocess; absolute turn/cost budget caps are deferred to #398-4, so those dimensions default off (`0` = disabled). Overridable via Django settings:
+
+```python
+TEATREE_LOOP_WATCHDOG = {
+    "max_runtime_seconds": 10800,  # 0 = disabled
+    "max_turns": 0,                # 0 = disabled
+    "max_cost_usd": 0.0,           # 0 = disabled
+}
+```
+
 ### 5.3 Prompt Building (prompt.py)
 
 **`build_task_prompt(task)`** — Work instructions for the agent:

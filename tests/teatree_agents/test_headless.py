@@ -1,14 +1,16 @@
+import contextlib
 import json
+import shlex
 import time
-from subprocess import CompletedProcess
+from collections.abc import Iterator
 from unittest.mock import patch
 
 import pytest
-from django.test import TestCase
+from django.test import TestCase, override_settings
 
 import teatree.agents.headless as headless_mod
-import teatree.utils.run as utils_run_mod
 from teatree.agents.headless import (
+    LoopWatchdog,
     _get_resume_session_id,
     _parse_cli_envelope,
     _parse_result,
@@ -22,6 +24,23 @@ from teatree.agents.headless import (
 from teatree.core.models import Session, Task, TaskAttempt, Ticket
 
 
+@contextlib.contextmanager
+def _fake_claude(stdout: str = "", stderr: str = "", exit_code: int = 0) -> Iterator[None]:
+    """Run ``run_headless`` against a real ``sh -c`` subprocess.
+
+    The headless runner now drives the agent over ``Popen`` so the
+    heartbeat loop can terminate a runaway. Tests exercise that real
+    transport against a harmless shell command instead of mocking the
+    subprocess layer.
+    """
+    script = f"printf %s {shlex.quote(stdout)}; printf %s {shlex.quote(stderr)} >&2; exit {exit_code}"
+    with (
+        patch.object(headless_mod.shutil, "which", return_value="/usr/bin/claude"),
+        patch.object(headless_mod, "_build_headless_command", return_value=["sh", "-c", script]),
+    ):
+        yield
+
+
 class TestRunHeadless(TestCase):
     @classmethod
     def setUpTestData(cls) -> None:
@@ -29,14 +48,7 @@ class TestRunHeadless(TestCase):
 
     def test_captures_structured_result(self) -> None:
         result_json = json.dumps({"summary": "Done", "tests_passed": 5, "tests_failed": 0})
-        with (
-            patch.object(headless_mod.shutil, "which", return_value="/usr/bin/claude-code"),
-            patch.object(
-                utils_run_mod.subprocess,
-                "run",
-                return_value=CompletedProcess([], 0, f"Progress...\n{result_json}\n", ""),
-            ),
-        ):
+        with _fake_claude(stdout=f"Progress...\n{result_json}\n"):
             session = Session.objects.create(ticket=self.ticket, agent_id="agent-1")
             task = Task.objects.create(ticket=self.ticket, session=session)
 
@@ -49,10 +61,7 @@ class TestRunHeadless(TestCase):
         assert task.status == Task.Status.COMPLETED
 
     def test_records_failure(self) -> None:
-        with (
-            patch.object(headless_mod.shutil, "which", return_value="/usr/bin/claude-code"),
-            patch.object(utils_run_mod.subprocess, "run", return_value=CompletedProcess([], 1, "", "segfault")),
-        ):
+        with _fake_claude(stderr="segfault", exit_code=1):
             session = Session.objects.create(ticket=self.ticket)
             task = Task.objects.create(ticket=self.ticket, session=session)
 
@@ -76,14 +85,7 @@ class TestRunHeadless(TestCase):
         assert task.status == Task.Status.FAILED
 
     def test_fails_when_no_json_in_successful_exit(self) -> None:
-        with (
-            patch.object(headless_mod.shutil, "which", return_value="/usr/bin/claude-code"),
-            patch.object(
-                utils_run_mod.subprocess,
-                "run",
-                return_value=CompletedProcess([], 0, "no structured output\n", ""),
-            ),
-        ):
+        with _fake_claude(stdout="no structured output\n"):
             session = Session.objects.create(ticket=self.ticket)
             task = Task.objects.create(ticket=self.ticket, session=session)
 
@@ -96,10 +98,7 @@ class TestRunHeadless(TestCase):
 
     def test_fails_when_result_violates_schema(self) -> None:
         bad_json = json.dumps({"summary": "OK", "rogue_field": True})
-        with (
-            patch.object(headless_mod.shutil, "which", return_value="/usr/bin/claude-code"),
-            patch.object(utils_run_mod.subprocess, "run", return_value=CompletedProcess([], 0, f"{bad_json}\n", "")),
-        ):
+        with _fake_claude(stdout=f"{bad_json}\n"):
             session = Session.objects.create(ticket=self.ticket)
             task = Task.objects.create(ticket=self.ticket, session=session)
 
@@ -118,10 +117,7 @@ class TestRunHeadless(TestCase):
                 "user_input_reason": "Need design decision",
             },
         )
-        with (
-            patch.object(headless_mod.shutil, "which", return_value="/usr/bin/claude-code"),
-            patch.object(utils_run_mod.subprocess, "run", return_value=CompletedProcess([], 0, f"{result_json}\n", "")),
-        ):
+        with _fake_claude(stdout=f"{result_json}\n"):
             session = Session.objects.create(ticket=self.ticket, agent_id="agent-1")
             task = Task.objects.create(
                 ticket=self.ticket,
@@ -149,10 +145,7 @@ class TestRunHeadless(TestCase):
         result_json = json.dumps({"summary": "Work done"})
         cli_envelope = json.dumps({"session_id": "sess-abc-123", "result": result_json})
 
-        with (
-            patch.object(headless_mod.shutil, "which", return_value="/usr/bin/claude"),
-            patch.object(utils_run_mod.subprocess, "run", return_value=CompletedProcess([], 0, cli_envelope, "")),
-        ):
+        with _fake_claude(stdout=cli_envelope):
             session = Session.objects.create(ticket=self.ticket)
             task = Task.objects.create(ticket=self.ticket, session=session)
 
@@ -254,14 +247,15 @@ class TestRunHeadlessResumesParentSession(TestCase):
         """When a parent task has a session_id, run_headless passes --resume to the CLI."""
         captured_commands: list[list[str]] = []
         result_json = json.dumps({"summary": "Continued work"})
+        real = headless_mod._build_headless_command
 
-        def fake_run(*args: object, **_kwargs: object) -> CompletedProcess[str]:
-            captured_commands.append(list(args[0]))
-            return CompletedProcess([], 0, f"{result_json}\n", "")
+        def spy_build(*args: object, **kwargs: object) -> list[str]:
+            captured_commands.append(real(*args, **kwargs))
+            return ["sh", "-c", f"printf %s {shlex.quote(result_json)}"]
 
         with (
             patch.object(headless_mod.shutil, "which", return_value="/usr/bin/claude"),
-            patch.object(utils_run_mod.subprocess, "run", side_effect=fake_run),
+            patch.object(headless_mod, "_build_headless_command", side_effect=spy_build),
         ):
             ticket = Ticket.objects.create()
             parent_session = Session.objects.create(ticket=ticket, agent_id=FAKE_SESSION_UUID)
@@ -365,15 +359,13 @@ class TestRunWithHeartbeat(TestCase):
 
         task.renew_lease = counting_renew
 
-        def slow_subprocess(*_args: object, **_kwargs: object) -> CompletedProcess[str]:
-            time.sleep(0.4)
-            return CompletedProcess([], 0, "done", "")
-
-        with (
-            patch.object(headless_mod, "_HEARTBEAT_INTERVAL", 0.05),
-            patch.object(utils_run_mod.subprocess, "run", slow_subprocess),
-        ):
-            stdout, _stderr, returncode = _run_with_heartbeat(task, ["echo"])
+        off = LoopWatchdog(max_runtime_seconds=0, max_turns=0, max_cost_usd=0.0)
+        with patch.object(headless_mod, "_HEARTBEAT_INTERVAL", 0.05):
+            stdout, _stderr, returncode = _run_with_heartbeat(
+                task,
+                ["sh", "-c", "sleep 0.4; printf done"],
+                watchdog=off,
+            )
 
         assert returncode == 0
         assert stdout == "done"
@@ -392,15 +384,9 @@ class TestRunWithHeartbeat(TestCase):
 
         task.renew_lease = tracking_renew
 
-        with (
-            patch.object(headless_mod, "_HEARTBEAT_INTERVAL", 0.05),
-            patch.object(
-                utils_run_mod.subprocess,
-                "run",
-                lambda *_a, **_kw: CompletedProcess([], 0, "", ""),
-            ),
-        ):
-            _run_with_heartbeat(task, ["echo"])
+        off = LoopWatchdog(max_runtime_seconds=0, max_turns=0, max_cost_usd=0.0)
+        with patch.object(headless_mod, "_HEARTBEAT_INTERVAL", 0.05):
+            _run_with_heartbeat(task, ["sh", "-c", "exit 0"], watchdog=off)
 
         count_at_exit = len(renew_calls)
         time.sleep(0.15)
@@ -418,20 +404,157 @@ class TestRunWithHeartbeat(TestCase):
 
         task.renew_lease = failing_renew
 
-        def slow_subprocess(*_args: object, **_kwargs: object) -> CompletedProcess[str]:
-            time.sleep(0.15)
-            return CompletedProcess([], 0, "ok", "")
-
+        off = LoopWatchdog(max_runtime_seconds=0, max_turns=0, max_cost_usd=0.0)
         with (
             patch.object(headless_mod, "_HEARTBEAT_INTERVAL", 0.05),
-            patch.object(utils_run_mod.subprocess, "run", slow_subprocess),
             patch.object(headless_mod, "logger") as mock_logger,
         ):
-            stdout, _stderr, returncode = _run_with_heartbeat(task, ["echo"])
+            stdout, _stderr, returncode = _run_with_heartbeat(
+                task,
+                ["sh", "-c", "sleep 0.15; printf ok"],
+                watchdog=off,
+            )
 
         assert returncode == 0
         assert stdout == "ok"
         assert mock_logger.warning.call_count >= 1
+
+
+# --- Stuck-loop / cost-spike watchdog (#882) ---
+
+
+class TestLoopWatchdog(TestCase):
+    """Watchdog evaluation against real Task / TaskAttempt rows."""
+
+    def setUp(self) -> None:
+        self.ticket = Ticket.objects.create()
+        self.session = Session.objects.create(ticket=self.ticket)
+        self.task = Task.objects.create(ticket=self.ticket, session=self.session)
+
+    def test_disabled_watchdog_never_terminates(self) -> None:
+        watchdog = LoopWatchdog(max_runtime_seconds=0, max_turns=0, max_cost_usd=0.0)
+        assert watchdog.breach_reason(self.task, elapsed_seconds=99999) is None
+
+    def test_runtime_ceiling_breach(self) -> None:
+        watchdog = LoopWatchdog(max_runtime_seconds=30, max_turns=0, max_cost_usd=0.0)
+        assert watchdog.breach_reason(self.task, elapsed_seconds=10) is None
+        reason = watchdog.breach_reason(self.task, elapsed_seconds=31)
+        assert reason is not None
+        assert "runtime" in reason
+        assert "31" in reason
+
+    def test_turn_count_breach_from_accumulated_attempts(self) -> None:
+        TaskAttempt.objects.create(task=self.task, num_turns=120)
+        TaskAttempt.objects.create(task=self.task, num_turns=140)
+        watchdog = LoopWatchdog(max_runtime_seconds=0, max_turns=200, max_cost_usd=0.0)
+        reason = watchdog.breach_reason(self.task, elapsed_seconds=5)
+        assert reason is not None
+        assert "turns" in reason
+        assert "260" in reason
+
+    def test_cost_breach_from_accumulated_attempts(self) -> None:
+        TaskAttempt.objects.create(task=self.task, cost_usd=4.0)
+        TaskAttempt.objects.create(task=self.task, cost_usd=3.5)
+        watchdog = LoopWatchdog(max_runtime_seconds=0, max_turns=0, max_cost_usd=5.0)
+        reason = watchdog.breach_reason(self.task, elapsed_seconds=5)
+        assert reason is not None
+        assert "cost" in reason
+        assert "7.5" in reason
+
+    def test_under_all_thresholds_no_breach(self) -> None:
+        TaskAttempt.objects.create(task=self.task, num_turns=10, cost_usd=0.5)
+        watchdog = LoopWatchdog(max_runtime_seconds=600, max_turns=200, max_cost_usd=5.0)
+        assert watchdog.breach_reason(self.task, elapsed_seconds=60) is None
+
+    def test_from_settings_reads_defaults(self) -> None:
+        with override_settings(
+            TEATREE_LOOP_WATCHDOG={"max_runtime_seconds": 42, "max_turns": 7, "max_cost_usd": 1.5},
+        ):
+            watchdog = LoopWatchdog.from_settings()
+        assert watchdog.max_runtime_seconds == 42
+        assert watchdog.max_turns == 7
+        assert watchdog.max_cost_usd == pytest.approx(1.5)
+
+    def test_from_settings_falls_back_to_conservative_default(self) -> None:
+        with override_settings():
+            from django.conf import settings  # noqa: PLC0415
+
+            if hasattr(settings, "TEATREE_LOOP_WATCHDOG"):
+                del settings.TEATREE_LOOP_WATCHDOG
+            watchdog = LoopWatchdog.from_settings()
+        # Conservative documented default: a generous runtime ceiling that
+        # only trips on genuine runaways; turn/cost ceilings off by default
+        # (absolute budget caps are #398-4's job, not the watchdog's).
+        assert watchdog.max_runtime_seconds > 0
+        assert watchdog.max_turns == 0
+        assert watchdog.max_cost_usd == pytest.approx(0.0)
+
+
+class TestRunWithHeartbeatWatchdog(TestCase):
+    """A spinning subprocess is killed and a stuck_loop failure recorded."""
+
+    def setUp(self) -> None:
+        self.ticket = Ticket.objects.create()
+        self.session = Session.objects.create(ticket=self.ticket)
+        self.task = Task.objects.create(ticket=self.ticket, session=self.session)
+        # Sibling heartbeat tests stub renew_lease to keep the heartbeat
+        # thread off the DB — threaded ORM access under TestCase's wrapping
+        # transaction is a test-harness artifact, not production behaviour.
+        self.task.renew_lease = lambda **_kw: None
+
+    def test_kills_runaway_subprocess_on_runtime_breach(self) -> None:
+        watchdog = LoopWatchdog(max_runtime_seconds=0.2, max_turns=0, max_cost_usd=0.0)
+        start = time.monotonic()
+        with patch.object(headless_mod, "_HEARTBEAT_INTERVAL", 0.05):
+            _stdout, stderr, returncode = _run_with_heartbeat(
+                self.task,
+                ["sleep", "30"],
+                watchdog=watchdog,
+            )
+        elapsed = time.monotonic() - start
+
+        assert returncode != 0
+        assert elapsed < 10  # killed early, not after 30s
+        assert "stuck_loop" in stderr
+        assert "runtime" in stderr
+
+    def test_normal_subprocess_not_killed(self) -> None:
+        watchdog = LoopWatchdog(max_runtime_seconds=30, max_turns=0, max_cost_usd=0.0)
+        with patch.object(headless_mod, "_HEARTBEAT_INTERVAL", 0.05):
+            stdout, _stderr, returncode = _run_with_heartbeat(
+                self.task,
+                ["sh", "-c", "printf done"],
+                watchdog=watchdog,
+            )
+        assert returncode == 0
+        assert stdout == "done"
+
+
+class TestRunHeadlessRecordsStuckLoop(TestCase):
+    """run_headless records a stuck_loop TaskAttempt failure when the watchdog fires."""
+
+    def test_records_stuck_loop_failure_with_observed_deltas(self) -> None:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket, agent_id="agent-1")
+        task = Task.objects.create(ticket=ticket, session=session)
+        TaskAttempt.objects.create(task=task, num_turns=500)
+        task.renew_lease = lambda **_kw: None
+
+        watchdog = LoopWatchdog(max_runtime_seconds=0, max_turns=200, max_cost_usd=0.0)
+        with (
+            patch.object(headless_mod.shutil, "which", return_value="/usr/bin/claude"),
+            patch.object(headless_mod.LoopWatchdog, "from_settings", return_value=watchdog),
+            patch.object(headless_mod, "_HEARTBEAT_INTERVAL", 0.05),
+            patch.object(headless_mod, "_build_headless_command", return_value=["sleep", "30"]),
+        ):
+            attempt = run_headless(task, phase="coding", overlay_skill_metadata={})
+
+        task.refresh_from_db()
+        assert attempt.exit_code != 0
+        assert "stuck_loop" in attempt.error
+        assert "turns" in attempt.error
+        assert "500" in attempt.error
+        assert task.status == Task.Status.FAILED
 
 
 # --- _build_headless_command model tiering (#880) ---
@@ -466,14 +589,15 @@ class TestRunHeadlessModelTiering(TestCase):
     def _run_capturing_command(self, phase: str) -> list[str]:
         result_json = json.dumps({"summary": "Done"})
         captured: dict[str, list[str]] = {}
+        real = headless_mod._build_headless_command
 
-        def fake_run(command: list[str], **_kwargs: object) -> CompletedProcess[str]:
-            captured["command"] = command
-            return CompletedProcess([], 0, f"{result_json}\n", "")
+        def spy_build(*args: object, **kwargs: object) -> list[str]:
+            captured["command"] = real(*args, **kwargs)
+            return ["sh", "-c", f"printf %s {shlex.quote(result_json)}"]
 
         with (
             patch.object(headless_mod.shutil, "which", return_value="/usr/bin/claude"),
-            patch.object(utils_run_mod.subprocess, "run", side_effect=fake_run),
+            patch.object(headless_mod, "_build_headless_command", side_effect=spy_build),
         ):
             session = Session.objects.create(ticket=self.ticket)
             task = Task.objects.create(ticket=self.ticket, session=session)
