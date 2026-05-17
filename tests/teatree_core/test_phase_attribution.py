@@ -99,14 +99,17 @@ class TestPhasePresenceStillEnforced(TestCase):
 
 class TestPhaseVisitsRemainsAuditTrail(TestCase):
     def test_cli_visit_phase_records_attribution(self) -> None:
+        # Generic session-derived attribution (a non-`reviewing` phase — the
+        # `reviewing` visit requires an explicit reviewer id per §17.6
+        # candidate 13, covered separately).
         ticket = _ticket(state=Ticket.State.STARTED)
         session = Session.objects.create(ticket=ticket, agent_id="cli-actor")
 
-        call_command("lifecycle", "visit-phase", str(ticket.pk), "review")
+        call_command("lifecycle", "visit-phase", str(ticket.pk), "brainstorm")
 
         session.refresh_from_db()
-        assert "reviewing" in session.visited_phases
-        assert session.phase_visits["reviewing"]["agent_id"] == "cli-actor"
+        assert "brainstorm" in session.visited_phases
+        assert session.phase_visits["brainstorm"]["agent_id"] == "cli-actor"
 
     def test_explicit_agent_id_recorded_verbatim(self) -> None:
         ticket = _ticket(state=Ticket.State.STARTED)
@@ -122,11 +125,11 @@ class TestPhaseVisitsRemainsAuditTrail(TestCase):
         ticket = _ticket(state=Ticket.State.STARTED)
         Session.objects.create(ticket=ticket)  # agent_id=""
 
-        call_command("lifecycle", "visit-phase", str(ticket.pk), "review")
+        call_command("lifecycle", "visit-phase", str(ticket.pk), "brainstorm")
 
         session = ticket.sessions.order_by("-pk").first()
         assert session is not None
-        assert session.phase_visits["reviewing"]["agent_id"]
+        assert session.phase_visits["brainstorm"]["agent_id"]
 
 
 class TestVisitPhaseConcurrentWriteDoesNotLoseUpdate(TestCase):
