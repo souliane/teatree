@@ -2605,11 +2605,11 @@ Usage: t3 teatree lifecycle visit-phase [OPTIONS] TICKET_ID PHASE
  ``ticket.state`` is included in the output so a skipped or refused
  transition is visible rather than silently swallowed.
 
- ``--agent-id`` records the recording agent's identity for
- maker≠checker (#755). Resolution is delegated to
+ ``--agent-id`` records the recording agent's identity into the
+ ``phase_visits`` audit trail. Resolution is delegated to
  ``Session.recording_identity`` so the attribution is **never
  empty** even when neither ``--agent-id`` nor ``Session.agent_id``
- is set — a blank previously made the gate vacuously pass.
+ is set.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    ticket_id      TEXT  [required]                                         │
@@ -2617,7 +2617,7 @@ Usage: t3 teatree lifecycle visit-phase [OPTIONS] TICKET_ID PHASE
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --agent-id        TEXT  Recording agent identity stamped into phase_visits   │
-│                         (maker≠checker attribution).                         │
+│                         (audit trail).                                       │
 │ --help                  Show this message and exit.                          │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```

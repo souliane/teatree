@@ -247,9 +247,10 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
         Returns ``(visited_phases, phase_visits)`` merged across
         ``self.sessions`` in creation order. ``visited_phases`` is a
         de-duplicated list; ``phase_visits`` keeps the first recorded
-        ``agent_id`` per phase (earliest session wins) so maker≠checker
-        attribution stays deterministic. The shipping gate consumes this
-        because FSM-advancing ``visit-phase`` forks fresh sessions by
+        ``agent_id`` per phase (earliest session wins) as a deterministic
+        audit trail of who recorded each phase — it is not consumed for
+        gate enforcement. The shipping gate consumes the ``visited_phases``
+        union because FSM-advancing ``visit-phase`` forks fresh sessions by
         design — the required phases are legitimately scattered, and the
         single source of truth is the ticket's lifecycle, not one session.
         """
@@ -273,10 +274,9 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
         command each ``order_by("-pk")`` *latest* with an unlocked raw
         blank-``agent_id`` create on miss; the ``pr`` gate *latest* as
         its gate object). A CLI visit then wrote the *latest* session
-        while dispatch reused the *earliest*, and the blank-``agent_id``
-        fallback fails ``_check_maker_checker`` **closed** (#755). The
-        three attestation writers now route here; the read-only gate
-        uses :meth:`find_phase_session`.
+        while dispatch reused the *earliest*, splitting attestation
+        across sessions (#801). The three attestation writers now route
+        here; the read-only gate uses :meth:`find_phase_session`.
 
         Policy: the **earliest** session (``order_by("pk")`` — the one
         dispatch's attestation uses, so the ledger never splits),
@@ -285,8 +285,8 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
         no surrounding transaction, so concurrent loop ticks for the
         same ``issue_url`` must serialise). Always returns a Session —
         on miss it creates one with a guaranteed **non-blank**
-        ``agent_id`` (never the raw blank-``agent_id`` create that made
-        ``_check_maker_checker`` unverifiable).
+        ``agent_id`` (never the raw blank-``agent_id`` create that left
+        the ``phase_visits`` audit trail unattributed).
         """
         from teatree.core.models.session import Session  # noqa: PLC0415
         from teatree.core.models.ticket import Ticket  # noqa: PLC0415

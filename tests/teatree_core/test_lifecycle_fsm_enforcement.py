@@ -11,7 +11,6 @@ separate CLI call.
 from typing import cast
 from unittest.mock import patch
 
-import pytest
 from django.core.management import call_command
 from django.test import TestCase
 
@@ -137,10 +136,10 @@ class TestShippingGateReconciliation(TestCase):
 class TestShippingGateCrossSessionUnion(TestCase):
     """The required phases may be scattered across the ticket's sessions.
 
-    FSM-advancing ``visit-phase`` forks a fresh session by design
-    (bias-free maker≠checker). The shipping gate's single source of truth
-    is therefore the UNION of phase data across all of the ticket's
-    sessions — not the latest session alone.
+    FSM-advancing ``visit-phase`` forks a fresh session by design. The
+    shipping gate's single source of truth is therefore the UNION of
+    phase data across all of the ticket's sessions — not the latest
+    session alone.
     """
 
     def test_gate_passes_when_required_phases_scattered_across_sessions(self) -> None:
@@ -172,10 +171,10 @@ class TestShippingGateCrossSessionUnion(TestCase):
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.STARTED
 
-    def test_maker_checker_still_blocks_same_agent_across_sessions(self) -> None:
-        # The conflicting pair (coding, reviewing) recorded by the SAME
-        # agent_id but on DIFFERENT sessions must still trip maker≠checker
-        # once the union is evaluated — integrity preserved, not weakened.
+    def test_same_agent_across_sessions_no_longer_blocks(self) -> None:
+        # #833: the conflicting pair recorded by the SAME agent_id on
+        # DIFFERENT sessions no longer trips a gate failure — there is no
+        # agent_id inference. Phases present ⇒ pass.
         ticket = _ticket(state=Ticket.State.STARTED)
         s1 = Session.objects.create(ticket=ticket, agent_id="same-agent")
         s1.visit_phase("coding", agent_id="same-agent")
@@ -184,14 +183,11 @@ class TestShippingGateCrossSessionUnion(TestCase):
         s2.visit_phase("reviewing", agent_id="same-agent")
         s2.visit_phase("retro", agent_id="same-agent")
 
-        result = _check_shipping_gate(ticket)
-        assert result is not None
-        assert result["allowed"] is False
-        assert "Maker≠checker violation" in result["error"]
+        assert _check_shipping_gate(ticket) is None
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.STARTED
+        assert ticket.state == Ticket.State.REVIEWED
 
-    def test_maker_checker_passes_distinct_agents_across_sessions(self) -> None:
+    def test_gate_passes_distinct_agents_across_sessions(self) -> None:
         ticket = _ticket(state=Ticket.State.STARTED)
         s1 = Session.objects.create(ticket=ticket, agent_id="maker")
         s1.visit_phase("coding", agent_id="maker")
@@ -352,36 +348,24 @@ class TestPrCreateNeverRaisesEvenOnNoSessionOrSkipValidation(TestCase):
         assert ticket.state in {Ticket.State.SHIPPED, Ticket.State.REVIEWED}
 
 
-class TestCliVisitPhaseFeedsMakerChecker(TestCase):
+class TestCliVisitPhaseRecordsAuditTrail(TestCase):
     def test_cli_visit_phase_records_into_phase_visits_keyed_by_session_identity(self) -> None:
-        # The nit: CLI `visit-phase` recorded phases WITHOUT an agent_id, so
-        # they never landed in `phase_visits` and `_check_maker_checker`
-        # silently `continue`d past them. After the fix the CLI must thread
-        # the session identity (symmetric with the loop path) so the phase
-        # IS recorded in phase_visits and the maker≠checker check can see it.
+        # CLI `visit-phase` threads the session identity into the
+        # phase_visits audit trail (symmetric with the loop path).
         ticket = _ticket(state=Ticket.State.STARTED)
         session = Session.objects.create(ticket=ticket, agent_id="cli-actor")
         call_command("lifecycle", "visit-phase", str(ticket.pk), "review")
 
         session.refresh_from_db()
         assert "reviewing" in session.visited_phases
-        # The bug was: reviewing recorded in visited_phases but NOT in
-        # phase_visits, so maker≠checker skipped it. Now it lands here.
         assert "reviewing" in session.phase_visits
         assert session.phase_visits["reviewing"]["agent_id"] == "cli-actor"
 
-    def test_cli_recorded_conflicting_phases_same_session_trip_maker_checker(self) -> None:
-        # When both conflicting phases land on the SAME session via the CLI
-        # (e.g. out-of-order / free-form recording that does not auto-schedule
-        # a fresh review session), the same identity for coding+reviewing
-        # must now trip maker≠checker rather than silently bypassing it.
-        from teatree.core.models.errors import QualityGateError  # noqa: PLC0415
-
+    def test_cli_recorded_same_session_same_agent_does_not_block_gate(self) -> None:
+        # #833: both phases on the SAME session under the SAME identity no
+        # longer trip a gate failure — phases present ⇒ pass.
         ticket = _ticket(state=Ticket.State.REVIEWED)  # no FSM auto-scheduling
         session = Session.objects.create(ticket=ticket, agent_id="same-agent")
-        # Record the prerequisite + both conflicting phases via the CLI on
-        # this single session (REVIEWED state => no schedule_* spawns a new
-        # session, so all three land on `session`).
         call_command("lifecycle", "visit-phase", str(ticket.pk), "code")
         call_command("lifecycle", "visit-phase", str(ticket.pk), "test")
         call_command("lifecycle", "visit-phase", str(ticket.pk), "review")
@@ -389,11 +373,9 @@ class TestCliVisitPhaseFeedsMakerChecker(TestCase):
         session.refresh_from_db()
         assert session.phase_visits["coding"]["agent_id"] == "same-agent"
         assert session.phase_visits["reviewing"]["agent_id"] == "same-agent"
-        with pytest.raises(QualityGateError, match="Maker≠checker violation"):
-            session.check_gate("reviewing")
+        session.check_gate("reviewing")  # no raise
 
-    def test_cli_distinct_agents_pass_maker_checker(self) -> None:
-        # Honest path: a distinct reviewing identity does NOT trip the check.
+    def test_cli_distinct_agents_also_pass(self) -> None:
         ticket = _ticket(state=Ticket.State.REVIEWED)
         session = Session.objects.create(ticket=ticket, agent_id="checker")
         session.visit_phase("coding", agent_id="maker")
@@ -403,7 +385,6 @@ class TestCliVisitPhaseFeedsMakerChecker(TestCase):
         session.refresh_from_db()
         assert session.phase_visits["coding"]["agent_id"] == "maker"
         assert session.phase_visits["reviewing"]["agent_id"] == "checker"
-        # Different agents across the pair — gate passes (no raise).
         session.check_gate("reviewing")
 
 
