@@ -86,6 +86,16 @@ Monitoring and reminders.
 | `sync` | -- | dict | Syncs follow-up data: discovered MRs, created/updated tickets, errors |
 | `remind` | -- | list of IDs | Returns IDs of pending interactive tasks |
 
+## `standup`
+
+Auto-generated daily update (read-only — no state mutation). Derived
+entirely from `TicketTransition` + `TaskAttempt` + per-worktree `git log`.
+
+| Subcommand | Arguments | Returns | Description |
+|------------|-----------|---------|-------------|
+| `generate` | `--days`, `--since` | dict | Cross-references phase changes and agent runs in the window; returns `{since, yesterday, blockers, markdown}` |
+| `stale` | `--days` | list of dicts | Tickets with no `TaskAttempt`/`TicketTransition` activity past the threshold (same query as the `stale_tickets` scanner) |
+
 ## `ticket`
 
 Ticket state management.

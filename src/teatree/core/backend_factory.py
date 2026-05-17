@@ -36,6 +36,7 @@ class OverlayBackends:
     overlay: OverlayBase | None = None
     auto_start_assigned_issues: bool = False
     max_concurrent_auto_starts: int = 1
+    stale_threshold_days: int = 3
     external_db: Path | None = None
 
 
@@ -109,6 +110,7 @@ def iter_overlay_backends() -> list[OverlayBackends]:
                 overlay=overlay,
                 auto_start_assigned_issues=bool(overlay.config.auto_start_assigned_issues),
                 max_concurrent_auto_starts=int(overlay.config.max_concurrent_auto_starts),
+                stale_threshold_days=int(overlay.config.stale_threshold_days),
             ),
         )
 
@@ -137,6 +139,7 @@ def _backends_from_toml(already_found: set[str]) -> list[OverlayBackends]:
                 messaging=messaging,
                 ready_labels=tuple(overlay_cfg.get("ready_labels", ())),
                 exclude_labels=tuple(overlay_cfg.get("exclude_labels", ())),
+                stale_threshold_days=int(overlay_cfg.get("stale_threshold_days", 3)),
                 external_db=db_path,
             ),
         )
