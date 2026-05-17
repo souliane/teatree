@@ -2,7 +2,7 @@
 
 from unittest.mock import MagicMock
 
-from teatree.core.overlay import OverlayBase, ProvisionStep
+from teatree.core.overlay import MergeGuard, OverlayBase, ProvisionStep
 from teatree.core.runners.base import RunnerBase, RunnerResult
 
 
@@ -130,6 +130,16 @@ def test_get_e2e_config_returns_empty_dict():
 def test_detect_variant_returns_empty_string():
     overlay = _MinimalOverlay()
     assert overlay.metadata.detect_variant() == ""
+
+
+def test_can_auto_merge_default_is_permissive():
+    """Default can_auto_merge returns an allowing MergeGuard from the canonical surface."""
+    overlay = _MinimalOverlay()
+    guard = overlay.can_auto_merge(target_ref="main", thread_ref="thread-1")
+    assert isinstance(guard, MergeGuard)
+    assert guard.allowed is True
+    assert guard.reason == ""
+    assert guard.escalate is False
 
 
 def test_get_workspace_repos_delegates_to_get_repos():
