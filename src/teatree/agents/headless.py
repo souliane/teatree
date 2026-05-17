@@ -15,8 +15,13 @@ import logging
 import re
 import shutil
 import threading
+import time
+from dataclasses import dataclass
 from pathlib import Path
 
+from django.conf import settings
+from django.db import close_old_connections
+from django.db.models import Sum
 from django.utils import timezone
 
 from teatree.agents.model_tiering import resolve_phase_model
@@ -26,11 +31,85 @@ from teatree.core.models import Task, TaskAttempt
 from teatree.core.models.worktree import Worktree
 from teatree.skill_loading import SkillLoadingPolicy
 from teatree.types import SkillMetadata
-from teatree.utils.run import run_allowed_to_fail
+from teatree.utils.run import PIPE, spawn
 
 logger = logging.getLogger(__name__)
 
 _HEARTBEAT_INTERVAL = 60  # seconds
+
+# Conservative documented default (#882): a generous wall-clock ceiling that
+# only trips on a genuinely runaway subprocess that never returns — the
+# canonical "Claude session spins on the same error" symptom. Absolute
+# turn/cost budget caps are #398-4's responsibility, so they default off here.
+_DEFAULT_WATCHDOG = {
+    "max_runtime_seconds": 3 * 60 * 60,  # 3h — well past any healthy phase task
+    "max_turns": 0,  # 0 = disabled
+    "max_cost_usd": 0.0,  # 0 = disabled
+}
+
+
+@dataclass(frozen=True)
+class TaskUsage:
+    """Accumulated ``TaskAttempt`` deltas for one task.
+
+    Sampled once on the main thread before the subprocess starts:
+    ``num_turns`` / ``cost_usd`` only land in the DB *after* an attempt
+    completes, so prior-attempt totals are static for the current run.
+    """
+
+    turns: int
+    cost_usd: float
+
+    @classmethod
+    def for_task(cls, task: Task) -> "TaskUsage":
+        attempts = task.attempts  # ty: ignore[unresolved-attribute]
+        totals = attempts.aggregate(turns=Sum("num_turns"), cost=Sum("cost_usd"))
+        return cls(turns=totals["turns"] or 0, cost_usd=totals["cost"] or 0.0)
+
+
+@dataclass(frozen=True)
+class LoopWatchdog:
+    """Detects a stuck loop / cost spike during the heartbeat loop (#882).
+
+    Evaluates the running task's wall-clock runtime plus the accumulated
+    ``TaskAttempt.num_turns`` / ``cost_usd`` deltas. When a ceiling is
+    crossed the heartbeat loop terminates the subprocess and a
+    ``stuck_loop`` ``TaskAttempt`` failure is recorded with the observed
+    deltas. A ceiling of ``0`` disables that dimension.
+    """
+
+    max_runtime_seconds: float
+    max_turns: int
+    max_cost_usd: float
+
+    @classmethod
+    def from_settings(cls) -> "LoopWatchdog":
+        configured = getattr(settings, "TEATREE_LOOP_WATCHDOG", None) or _DEFAULT_WATCHDOG
+        return cls(
+            max_runtime_seconds=float(configured.get("max_runtime_seconds", 0)),
+            max_turns=int(configured.get("max_turns", 0)),
+            max_cost_usd=float(configured.get("max_cost_usd", 0.0)),
+        )
+
+    def breach_reason(self, task: Task, *, elapsed_seconds: float, usage: TaskUsage | None = None) -> str | None:
+        """Return a reason string with observed deltas, or ``None`` if healthy.
+
+        *usage* is the pre-sampled accumulated delta snapshot; when omitted
+        it is read from *task* (convenience for callers outside the loop).
+        """
+        if self.max_runtime_seconds and elapsed_seconds > self.max_runtime_seconds:
+            return (
+                f"runtime ceiling exceeded: ran {elapsed_seconds:.0f}s "
+                f"> {self.max_runtime_seconds:.0f}s without exiting"
+            )
+        if self.max_turns or self.max_cost_usd:
+            if usage is None:
+                usage = TaskUsage.for_task(task)
+            if self.max_turns and usage.turns > self.max_turns:
+                return f"turns ceiling exceeded: {usage.turns} turns > {self.max_turns} without progress"
+            if self.max_cost_usd and usage.cost_usd > self.max_cost_usd:
+                return f"cost ceiling exceeded: ${usage.cost_usd:.2f} > ${self.max_cost_usd:.2f} without progress"
+        return None
 
 
 def _safe_int(value: str | None) -> int | None:
@@ -103,29 +182,74 @@ def _resolve_task_cwd(task: Task) -> str | None:
     return None
 
 
-def _run_with_heartbeat(task: Task, command: list[str], *, cwd: str | None = None) -> tuple[str, str, int]:
+_STUCK_LOOP_EXIT_CODE = -9
+_STUCK_LOOP_PREFIX = "stuck_loop: "
+
+
+def _run_with_heartbeat(
+    task: Task,
+    command: list[str],
+    *,
+    cwd: str | None = None,
+    watchdog: LoopWatchdog | None = None,
+) -> tuple[str, str, int]:
     """Run *command* as a subprocess while sending lease heartbeats.
+
+    The heartbeat loop doubles as a stuck-loop watchdog (#882): on each
+    tick it samples the task's runtime / accumulated turn+cost deltas and,
+    on a ceiling breach, terminates the subprocess. A watchdog kill returns
+    a non-zero exit code with ``stuck_loop: <reason>`` on stderr so the
+    caller records a ``stuck_loop`` ``TaskAttempt`` failure.
 
     Returns ``(stdout, stderr, returncode)``.
     """
+    if watchdog is None:
+        watchdog = LoopWatchdog.from_settings()
+
+    # Sample accumulated deltas once on the main thread: prior-attempt
+    # totals are static for this run and a threaded DB read would not see
+    # the caller's transaction.
+    usage = TaskUsage.for_task(task)
+
     stop_event = threading.Event()
+    started_at = time.monotonic()
+    proc = spawn(command, cwd=cwd, stdout=PIPE, stderr=PIPE)
+    watchdog_reason: list[str] = []
 
     def _heartbeat() -> None:
-        while not stop_event.wait(_HEARTBEAT_INTERVAL):
-            try:
-                task.renew_lease()
-            except Exception:  # noqa: BLE001
-                logger.warning("Heartbeat failed for task %s", task.pk)
+        try:
+            while not stop_event.wait(_HEARTBEAT_INTERVAL):
+                try:
+                    task.renew_lease()
+                except Exception:  # noqa: BLE001
+                    logger.warning("Heartbeat failed for task %s", task.pk)
+                reason = watchdog.breach_reason(
+                    task,
+                    elapsed_seconds=time.monotonic() - started_at,
+                    usage=usage,
+                )
+                if reason and not watchdog_reason:
+                    watchdog_reason.append(reason)
+                    logger.warning("Watchdog terminating stuck task %s: %s", task.pk, reason)
+                    proc.kill()
+        finally:
+            # This thread owns its own DB connection — close it so the
+            # connection is not leaked when the thread exits.
+            close_old_connections()
 
     heartbeat_thread = threading.Thread(target=_heartbeat, daemon=True)
     heartbeat_thread.start()
     try:
-        proc = run_allowed_to_fail(command, cwd=cwd, expected_codes=None)
+        # communicate() blocks until the process exits and reaps it; a
+        # watchdog kill from the heartbeat thread unblocks it here.
+        stdout, stderr = proc.communicate()
     finally:
         stop_event.set()
         heartbeat_thread.join(timeout=5)
 
-    return proc.stdout, proc.stderr, proc.returncode
+    if watchdog_reason:
+        return stdout or "", f"{_STUCK_LOOP_PREFIX}{watchdog_reason[0]}", _STUCK_LOOP_EXIT_CODE
+    return stdout or "", stderr or "", proc.returncode
 
 
 def _record_success(task: Task, envelope: dict[str, str]) -> TaskAttempt:
