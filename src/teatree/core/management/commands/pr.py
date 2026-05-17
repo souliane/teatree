@@ -251,10 +251,9 @@ def _run_visual_qa_gate(ticket: Ticket, *, skip_reason: str = "") -> VisualQAGat
     # Only persist when the gate produced a meaningful signal — skipping a
     # no-op run keeps the FSM history readable.
     if report.pages or report.has_errors:
-        extra = cast("TicketExtra", ticket.extra or {})
-        extra["visual_qa"] = report.summary()
-        ticket.extra = extra
-        ticket.save(update_fields=["extra"])
+        # #800 N3: canonical locked RMW — concurrent pr_urls (ship
+        # worker) writer no longer clobbers visual_qa.
+        ticket.merge_extra(set_keys={"visual_qa": report.summary()})
 
     if not report.has_errors:
         return None

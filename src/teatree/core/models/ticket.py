@@ -410,12 +410,12 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
         """
         from teatree.backends.protocols import ReviewState  # noqa: PLC0415
 
-        extra = self._extra()
-        sha = str(extra.get("reviewed_sha", ""))
+        sha = str(self._extra().get("reviewed_sha", ""))
         if self.issue_url and sha:
-            extra["reviewed_sha"] = sha
-            extra["last_review_state"] = ReviewState.APPROVED.value
-            self.extra = extra
+            # #800 N3: canonical locked RMW — a concurrent pr_urls /
+            # visual_qa writer no longer clobbers reviewed_sha /
+            # last_review_state.
+            self.merge_extra(set_keys={"reviewed_sha": sha, "last_review_state": ReviewState.APPROVED.value})
 
     @transition(field=state, source=[State.REVIEWED, State.SHIPPED], target=State.SHIPPED)
     def ship(self) -> None:
@@ -585,6 +585,35 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
 
     def _extra(self) -> "TicketExtra":
         return validated_ticket_extra(self.extra)
+
+    def merge_extra(self, *, set_keys: "TicketExtra | None" = None, pop_keys: "list[str] | None" = None) -> None:
+        """Canonical locked read-modify-write of ``extra`` (#800 N3).
+
+        Several writers mutate shared ``extra`` JSON — ``pr_urls`` (ship
+        worker), ``visual_qa`` (the pre-push gate), ``reviewed_sha`` /
+        ``last_review_state`` (reviewer path). Done as an unlocked
+        ``self.extra = …; self.save(update_fields=["extra"])`` they
+        last-writer-clobber each other's key (the Haki-Benita
+        lost-update). This is the single primitive every ``extra``
+        mutation routes through, with the same shape as
+        ``Session.visit_phase``: the RMW runs in ``transaction.atomic()``
+        with the row ``select_for_update``-locked and **re-read from the
+        locked row** (not the possibly-stale in-memory instance), so a
+        concurrent writer's key survives the merge instead of being
+        overwritten. The locked re-read is what makes it correct on the
+        production SQLite backend (where ``select_for_update`` is a no-op
+        but the #804 ``BEGIN IMMEDIATE`` serialises the writers, so the
+        re-read sees the other writer's committed key).
+        """
+        with transaction.atomic():
+            locked = type(self).objects.select_for_update().get(pk=self.pk)
+            merged = dict(locked.extra or {})
+            if set_keys:
+                merged.update(set_keys)
+            for key in pop_keys or []:
+                merged.pop(key, None)
+            self.extra = merged
+            type(self).objects.filter(pk=self.pk).update(extra=merged)
 
 
 def schedule_external_review(ticket: Ticket, *, parent_task: "Task | None" = None) -> "Task":
