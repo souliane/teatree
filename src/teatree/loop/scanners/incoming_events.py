@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, cast
 from django.apps import apps
 from django.db import OperationalError, ProgrammingError
 
+import teatree.core.overlay_loader as _overlay_loader
 from teatree.core.event_router import RoutedAction, route_event
 from teatree.core.intent_classifier import classify_event
 from teatree.core.reply_transport import NoopReplier, Replier
@@ -98,11 +99,7 @@ class IncomingEventsScanner:
                     payload={"event_id": event.pk, "phase": action.phase, "target_ref": action.target_ref},
                 )
             case RoutedAction.Kind.SCHEDULE_MERGE:
-                return ScanSignal(
-                    kind="incoming_event.merge_needed",
-                    summary=f"merge approved on {action.target_ref} ({action.detail})",
-                    payload={"event_id": event.pk, "target_ref": action.target_ref, "thread_ref": action.detail},
-                )
+                return self._handle_schedule_merge(event, action)
             case RoutedAction.Kind.RECORD_ONLY:
                 return ScanSignal(
                     kind="incoming_event.recorded",
@@ -111,3 +108,38 @@ class IncomingEventsScanner:
                 )
             case RoutedAction.Kind.DROP:
                 return None
+
+    @staticmethod
+    def _handle_schedule_merge(event: "IncomingEvent", action: RoutedAction) -> ScanSignal:
+        """Apply the overlay merge guard and return the appropriate signal."""
+        guard = _overlay_loader.get_overlay().can_auto_merge(
+            target_ref=action.target_ref,
+            thread_ref=action.detail,
+        )
+        if guard.allowed:
+            return ScanSignal(
+                kind="incoming_event.merge_needed",
+                summary=f"merge approved on {action.target_ref} ({action.detail})",
+                payload={"event_id": event.pk, "target_ref": action.target_ref, "thread_ref": action.detail},
+            )
+        if guard.escalate:
+            return ScanSignal(
+                kind="incoming_event.merge_escalation",
+                summary=f"merge escalation on {action.target_ref}: {guard.reason}",
+                payload={
+                    "event_id": event.pk,
+                    "target_ref": action.target_ref,
+                    "thread_ref": action.detail,
+                    "reason": guard.reason,
+                },
+            )
+        return ScanSignal(
+            kind="incoming_event.merge_blocked",
+            summary=f"merge blocked on {action.target_ref}: {guard.reason}",
+            payload={
+                "event_id": event.pk,
+                "target_ref": action.target_ref,
+                "thread_ref": action.detail,
+                "reason": guard.reason,
+            },
+        )
