@@ -69,6 +69,73 @@ class TestToolCommands:
             assert result.exit_code == 0
             mock.assert_called_once_with("privacy_scan", "myfile.txt")
 
+    def test_ai_sig_scan_wires_the_scanner_script(self):
+        with patch.object(ToolRunner, "run_script") as mock:
+            result = runner.invoke(app, ["tool", "ai-sig-scan", "body.txt"])
+            assert result.exit_code == 0
+            mock.assert_called_once_with("ai_signature_scan", "body.txt")
+
+    def test_diff_coverage_passes_exit_zero(self, tmp_path):
+        with (
+            patch("teatree.utils.git.full_worktree_diff", return_value=""),
+            patch("teatree.utils.diff_coverage.measure_diff_coverage") as mock,
+        ):
+            mock.return_value = MagicMock(passes=lambda: True, summary=lambda: "clean")
+            result = runner.invoke(app, ["tool", "diff-coverage", "--repo", str(tmp_path)])
+        assert result.exit_code == 0
+
+    def test_diff_coverage_fails_exit_one_and_reports(self, tmp_path):
+        report = MagicMock(
+            passes=lambda: False,
+            uncovered=[MagicMock(path="src/x.py", lines=[3, 4])],
+            unreferenced_symbols=["widget"],
+        )
+        with (
+            patch("teatree.utils.git.full_worktree_diff", return_value="diff"),
+            patch("teatree.utils.diff_coverage.measure_diff_coverage", return_value=report),
+        ):
+            result = runner.invoke(app, ["tool", "diff-coverage", "--repo", str(tmp_path), "--json"])
+        assert result.exit_code == 1
+        payload = json.loads(result.stdout)
+        assert payload["passes"] is False
+        assert payload["unreferenced_symbols"] == ["widget"]
+        assert payload["uncovered"] == [{"path": "src/x.py", "lines": [3, 4]}]
+
+    def test_diff_coverage_warns_on_stderr_when_coverage_absent(self, tmp_path):
+        # Cold-review finding 5: an absent .coverage must produce a
+        # visible stderr WARNING (the line-coverage half silently
+        # measured nothing) without changing exit semantics.
+        report = MagicMock(passes=lambda: True, summary=lambda: "clean")
+        with (
+            patch("teatree.utils.git.full_worktree_diff", return_value=""),
+            patch("teatree.utils.diff_coverage.measure_diff_coverage", return_value=report),
+        ):
+            absent = str(tmp_path / "absent.coverage")
+            result = runner.invoke(
+                app,
+                ["tool", "diff-coverage", "--repo", str(tmp_path), "--coverage-file", absent],
+                catch_exceptions=False,
+            )
+        assert result.exit_code == 0  # exit semantics unchanged
+        assert "WARNING" in result.stderr
+        assert "coverage" in result.stderr.lower()
+
+    def test_diff_coverage_no_warning_when_coverage_present(self, tmp_path):
+        cov = tmp_path / ".coverage"
+        cov.write_text("", encoding="utf-8")
+        report = MagicMock(passes=lambda: True, summary=lambda: "clean")
+        with (
+            patch("teatree.utils.git.full_worktree_diff", return_value=""),
+            patch("teatree.utils.diff_coverage.measure_diff_coverage", return_value=report),
+        ):
+            result = runner.invoke(
+                app,
+                ["tool", "diff-coverage", "--repo", str(tmp_path), "--coverage-file", str(cov)],
+                catch_exceptions=False,
+            )
+        assert result.exit_code == 0
+        assert "WARNING" not in result.stderr
+
     def test_analyze_video(self):
         with patch.object(ToolRunner, "run_script") as mock:
             result = runner.invoke(app, ["tool", "analyze-video", "/path/to/video.mp4"])
