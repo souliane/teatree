@@ -10,9 +10,11 @@ from pathlib import Path
 
 import typer
 
+from teatree.cli.recommended_authorizations import authorizations, report_missing_authorizations
 from teatree.utils.run import run_allowed_to_fail
 
 doctor_app = typer.Typer(no_args_is_help=True, help="Smoke-test hooks, imports, services.")
+doctor_app.command()(authorizations)
 _REQUIRED_TOOLS = ("direnv", "git", "jq")
 _CLAUDE_PLUGIN_ID = "t3@souliane"
 
@@ -611,6 +613,7 @@ def check() -> bool:
 
     ok = doctor_check_self_db_migrations() and ok
     _check_singletons()
+    report_missing_authorizations(typer.echo)
     _ensure_plugin_registered()
 
     if ok:
