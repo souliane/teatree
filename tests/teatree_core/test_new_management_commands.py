@@ -1,6 +1,7 @@
 """Tests for workspace, db, pr, and extended run management commands."""
 
 import os
+import shutil
 import subprocess
 import tempfile
 from collections.abc import Callable, Iterator
@@ -48,6 +49,8 @@ from teatree.core.overlay_loader import reset_overlay_cache
 pytestmark = pytest.mark.filterwarnings(
     "ignore:In Typer, only the parameter 'autocompletion' is supported.*:DeprecationWarning",
 )
+
+_GIT = shutil.which("git") or "git"
 
 
 def _patch_overlays(overlay_class_path: str):
@@ -2678,6 +2681,139 @@ class TestE2eProject(TestCase):
             assert "docker" in cmd
             assert "e2e/test_smoke.py::test_smoke" in cmd
             assert "--update-snapshots" in cmd
+
+
+class TestE2eRunWorkItem(TestCase):
+    """``t3 <ov> e2e run <work-item>`` — #794 single-command MVP.
+
+    Resolves the work item by its Ticket natural key, applies the default
+    environment ladder, runs the existing workspace as-is or emits a precise
+    readiness failure naming the exact provisioning gap, and records run
+    provenance on the durable recipe.
+    """
+
+    def _git(self, path: Path, *args: str) -> None:
+        subprocess.run([_GIT, "-C", str(path), *args], check=True, capture_output=True, text=True)
+
+    def _make_repo(self, path: Path) -> str:
+        path.mkdir(parents=True, exist_ok=True)
+        self._git(path, "init", "-q")
+        self._git(path, "config", "user.email", "t@t.test")
+        self._git(path, "config", "user.name", "T")
+        (path / "f").write_text("x")
+        self._git(path, "add", "-A")
+        self._git(path, "commit", "-q", "-m", "c0")
+        return subprocess.run(
+            [_GIT, "-C", str(path), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_existing_workspace_runs_and_records_green_provenance(self) -> None:
+        d = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__("shutil").rmtree(str(d), ignore_errors=True))
+        wt_dir = d / "backend"
+        sha = self._make_repo(wt_dir)
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://github.com/o/r/issues/794")
+        Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path="backend",
+            branch="feat",
+            extra={"worktree_path": str(wt_dir)},
+        )
+
+        with patch.object(e2e_mod.Command, "_dispatch_runner", return_value="E2E passed.") as run_existing:
+            result = cast("str", call_command("e2e", "run", "794"))
+
+        assert "passed" in result.lower()
+        run_existing.assert_called_once()
+        from teatree.core.e2e_workitem import load_recipe  # noqa: PLC0415
+
+        recipe = load_recipe(Ticket.objects.get(pk=ticket.pk))
+        assert recipe.last_run is not None
+        assert recipe.last_run["result"] == "green"
+        assert recipe.last_run["per_repo_shas"] == {"backend": sha}
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_no_workspace_emits_precise_readiness_failure_naming_the_ref(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://github.com/o/r/issues/55")
+        ticket.repos = ["backend"]
+        ticket.save(update_fields=["repos"])
+
+        with pytest.raises(SystemExit) as exc:
+            call_command("e2e", "run", "55")
+
+        assert exc.value.code != 0
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_unknown_work_item_fails_clearly(self) -> None:
+        with pytest.raises(SystemExit) as exc:
+            call_command("e2e", "run", "https://github.com/o/r/issues/99999")
+
+        assert exc.value.code != 0
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_failed_run_records_red_provenance_then_re_raises(self) -> None:
+        d = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__("shutil").rmtree(str(d), ignore_errors=True))
+        wt_dir = d / "backend"
+        sha = self._make_repo(wt_dir)
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://github.com/o/r/issues/77")
+        Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path="backend",
+            branch="feat",
+            extra={"worktree_path": str(wt_dir)},
+        )
+
+        with (
+            patch.object(e2e_mod.Command, "_dispatch_runner", side_effect=SystemExit(3)),
+            pytest.raises(SystemExit) as exc,
+        ):
+            call_command("e2e", "run", "77")
+
+        assert exc.value.code == 3
+        from teatree.core.e2e_workitem import load_recipe  # noqa: PLC0415
+
+        recipe = load_recipe(Ticket.objects.get(pk=ticket.pk))
+        assert recipe.last_run is not None
+        assert recipe.last_run["result"] == "red"
+        assert recipe.last_run["per_repo_shas"] == {"backend": sha}
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_unreadable_repo_sha_is_recorded_empty_not_crash(self) -> None:
+        # The worktree dir exists (reconcile says "existing") but is not a
+        # git repo → head_sha raises; provenance records "" not a crash.
+        d = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__("shutil").rmtree(str(d), ignore_errors=True))
+        wt_dir = d / "backend"
+        wt_dir.mkdir(parents=True)
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://github.com/o/r/issues/88")
+        Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path="backend",
+            branch="feat",
+            extra={"worktree_path": str(wt_dir)},
+        )
+
+        with patch.object(e2e_mod.Command, "_dispatch_runner", return_value="E2E passed."):
+            call_command("e2e", "run", "88")
+
+        from teatree.core.e2e_workitem import load_recipe  # noqa: PLC0415
+
+        recipe = load_recipe(Ticket.objects.get(pk=ticket.pk))
+        assert recipe.last_run is not None
+        assert recipe.last_run["per_repo_shas"] == {"backend": ""}
 
 
 class TestE2eExternal(TestCase):
