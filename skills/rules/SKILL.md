@@ -43,6 +43,7 @@ Use `Ctrl+F`/`grep` to jump to a rule. Sections are grouped below by theme; numb
 **Communication & references**
 
 14. [Clickable References](#clickable-references)
+14a. [Lead a Completion Report With the Assigned-Work Status](#lead-a-completion-report-with-the-assigned-work-status)
 15. [No AI Signature on Posts Made on the User's Behalf](#no-ai-signature-on-posts-made-on-the-users-behalf-non-negotiable)
 16. [Never Post PR Comments from Parallel Agents](#never-post-pr-comments-from-parallel-agents-non-negotiable)
 17a. [Evidence Comes From the Deployed Environment](#evidence-comes-from-the-deployed-environment-non-negotiable)
@@ -189,6 +190,10 @@ When a bug's root cause is "our code disagrees with an external authority" — a
 ## Re-Verify Cross-Agent State Before Reporting a Dependent Request
 
 In a multi-agent / multi-loop environment, another agent may have advanced a shared artifact (a PR merged, an issue closed, a branch rebased, a baseline moved) while your task was running. Before reporting a request or recommendation whose validity depends on that artifact's state ("dispatch a reviewer for PR N", "merge X next", "rebase Y"), **re-fetch the artifact's current state in the same turn you report it**. A request built on the artifact's state at task-start is stale by the time a long task finishes; reporting it makes the agent look out of sync and wastes the coordinator's turn correcting it. The cost of one `gh pr view` / `glab mr view` before the report is trivial; the cost of a stale dependent request is a wasted round-trip.
+
+## Lead a Completion Report With the Assigned-Work Status
+
+When reporting back on assigned work, the reader's first need is an unambiguous answer to **"is the assigned work done, and where is it?"** — deliverable status, branch/PR/HEAD, gate results. Out-of-scope observations, systemic findings, or follow-up recommendations surfaced along the way must be **clearly separated and subordinate**: a labelled trailing section, never positioned so they displace, precede, or read as a substitute for the deliverable status. A correct systemic analysis that buries the "done?" answer reads as "did the analysis instead of the work" — the coordinator concludes nothing shipped and spends a round-trip re-asking for what was already finished. Separate the two concerns physically; lead with the in-scope status every time.
 
 ## Context Transparency
 
@@ -558,6 +563,8 @@ Long sessions lose context to automatic compaction. Proactively manage session l
 ## Commit Before Declaring Done (Non-Negotiable)
 
 When implementation is complete (all files written, tests pass or verified), **commit immediately** in the same response — do not wait for the user to ask. An uncommitted change is not "done"; it is in-progress work at risk of being lost to context compaction, parallel agents, or session timeout.
+
+**Commit before any long mandated pre-push step — retro especially (Non-Negotiable).** `/t3:retro` is mandated _before_ `pr create`, but `pr create` is the first step that commits. Running retro (a multi-tool, multi-minute step) with the entire change set uncommitted leaves it exposed for that whole window: a concurrent `workspace clean-all` / worktree prune that removes the worktree in that window **irrecoverably destroys uncommitted work** — no branch ref, no reflog, no remote, nothing to `git fsck`. The sequence is **implementation complete → verify → local commit → retro → privacy scan → push (`pr create`)**, not implementation → retro → commit. A local commit is cheap and reversible, and makes the work recoverable even if the worktree vanishes. Never start retro (or any other long mandated step) with the deliverable uncommitted.
 
 ## Pre-Commit Hook Failures on Unrelated Tests
 
