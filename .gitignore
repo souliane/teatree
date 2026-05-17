@@ -16,6 +16,8 @@ docs/plan
 docs/design
 tach_module_graph.dot
 htmlcov/
+# mkdocs build output
+site/
 .mypy_cache/
 .tox/
 *.lock

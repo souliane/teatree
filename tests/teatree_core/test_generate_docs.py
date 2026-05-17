@@ -6,8 +6,10 @@ from django.core.management import call_command
 
 from teatree.core.client-term-redacted import (
     build_overlay_doc_payload,
+    build_skill_catalogue_payload,
     build_skill_doc_payload,
     render_overlay_markdown,
+    render_skill_catalogue_markdown,
     render_skill_markdown,
     write_generated_doc,
 )
@@ -137,6 +139,82 @@ class TestGenerateDocCommands:
         payload = json.loads((output_dir / "skill-delegation-matrix.json").read_text(encoding="utf-8"))
 
         assert payload["skill_map_path"] == "teatree.skill_map.DEFAULT_SKILL_DELEGATION"
+
+
+class TestSkillCatalogue:
+    def test_payload_reads_frontmatter(self, tmp_path: Path) -> None:
+        skills_root = tmp_path / "skills"
+        (skills_root / "alpha").mkdir(parents=True)
+        (skills_root / "alpha" / "SKILL.md").write_text(
+            '---\nname: alpha\ndescription: Does alpha things. Use when user says "alpha".\n---\n# Alpha\n',
+            encoding="utf-8",
+        )
+        (skills_root / "beta").mkdir(parents=True)
+        (skills_root / "beta" / "SKILL.md").write_text(
+            "---\nname: beta\ndescription: Does beta things.\n---\n# Beta\n",
+            encoding="utf-8",
+        )
+
+        payload = build_skill_catalogue_payload(skills_root)
+
+        assert payload["skills_root"] == "skills"
+        assert payload["skills"] == [
+            {"name": "alpha", "summary": "Does alpha things"},
+            {"name": "beta", "summary": "Does beta things"},
+        ]
+
+    def test_payload_falls_back_to_dir_name_without_frontmatter(self, tmp_path: Path) -> None:
+        skills_root = tmp_path / "skills"
+        (skills_root / "gamma").mkdir(parents=True)
+        (skills_root / "gamma" / "SKILL.md").write_text("# Gamma\nNo frontmatter here.\n", encoding="utf-8")
+
+        payload = build_skill_catalogue_payload(skills_root)
+
+        assert payload["skills"] == [{"name": "gamma", "summary": ""}]
+
+    def test_markdown_is_a_stable_table(self) -> None:
+        payload = {
+            "skills_root": "skills",
+            "skills": [
+                {"name": "alpha", "summary": "Does alpha things"},
+                {"name": "beta", "summary": "Does beta things"},
+            ],
+        }
+
+        markdown = render_skill_catalogue_markdown(payload)
+
+        assert markdown == (
+            "# Skills Catalogue\n\n"
+            "Source: `skills/*/SKILL.md` frontmatter\n\n"
+            "| Skill | Summary |\n"
+            "| --- | --- |\n"
+            "| `alpha` | Does alpha things |\n"
+            "| `beta` | Does beta things |\n"
+        )
+
+    def test_summary_escapes_table_pipes(self) -> None:
+        markdown = render_skill_catalogue_markdown(
+            {"skills_root": "skills", "skills": [{"name": "x", "summary": "a | b"}]},
+        )
+
+        assert "| `x` | a \\| b |" in markdown
+
+    def test_management_command_writes_catalogue(self, tmp_path: Path) -> None:
+        output_dir = tmp_path / "generated"
+
+        call_command("generate_skill_catalogue", output_dir=str(output_dir))
+
+        markdown = (output_dir / "skills-catalogue.md").read_text(encoding="utf-8")
+        payload = json.loads((output_dir / "skills-catalogue.json").read_text(encoding="utf-8"))
+        assert markdown.startswith("# Skills Catalogue")
+        assert payload["skills_root"] == "skills"
+        names = {entry["name"] for entry in payload["skills"]}
+        assert "code" in names
+
+    def test_generate_all_docs_includes_catalogue(self, tmp_path: Path) -> None:
+        output_dir = tmp_path / "generated"
+        call_command("generate_all_docs", output_dir=str(output_dir))
+        assert (output_dir / "skills-catalogue.md").is_file()
 
 
 class TestWriteGeneratedDoc:

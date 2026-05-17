@@ -37,7 +37,7 @@ Your overlay is a lightweight Python package with an `OverlayBase` subclass and 
 ## Further reading
 
 - [Installation](install.md) -- setup and first project
-- [Architecture](../BLUEPRINT.md) -- the canonical architecture spec
+- [Architecture](https://github.com/souliane/teatree/blob/main/BLUEPRINT.md) -- the canonical architecture spec
 - [CLI Reference](generated/cli-reference.md) -- the `t3` command and its subcommands
 - [Overlay API](overlay-api.md) -- the contract between teatree and your project
 - [Management Commands](management-commands.md) -- Django management commands exposed through `t3`
