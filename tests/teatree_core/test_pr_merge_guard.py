@@ -57,18 +57,26 @@ class _Recorder:
         return (0, "", "")
 
 
-def _patch(rec: _Recorder):
+def _patch(rec: _Recorder, *, visibility: str = "PUBLIC"):
+    # #785: the public/private branch in squash_merge_public now gates
+    # on visibility (`gh repo view --json visibility`), not a hardcoded
+    # owner — mock the only unstoppable external (the gh subprocess).
+    def fake_gh_visibility(cmd: list[str], **_kw: object) -> object:
+        del cmd
+        return type("R", (), {"stdout": visibility + "\n", "returncode": 0})()
+
     return (
         patch("teatree.core.pr_merge._run_git", side_effect=rec.run_git),
         patch("teatree.core.pr_merge._run_gh", side_effect=rec.run_gh),
+        patch("teatree.core.public_identity.run_allowed_to_fail", side_effect=fake_gh_visibility),
     )
 
 
 class TestLocalSquashMergePublic:
     def test_authors_commit_locally_with_forced_noreply_identity(self) -> None:
         rec = _Recorder()
-        p_git, p_gh = _patch(rec)
-        with p_git, p_gh:
+        p_git, p_gh, p_vis = _patch(rec)
+        with p_git, p_gh, p_vis:
             squash_merge_public(pr=764, slug="souliane/teatree")
 
         name, email = canonical_noreply_identity()
@@ -90,8 +98,8 @@ class TestLocalSquashMergePublic:
         # F1: invoked from a clone whose origin is a DIFFERENT repo —
         # must refuse before any mutating op (no fetch/merge/commit/push).
         rec = _Recorder(origin="git@github.com:someoneelse/otherrepo.git")
-        p_git, p_gh = _patch(rec)
-        with p_git, p_gh, pytest.raises(RuntimeError, match=r"(?i)origin|wrong repo|refus"):
+        p_git, p_gh, p_vis = _patch(rec)
+        with p_git, p_gh, p_vis, pytest.raises(RuntimeError, match=r"(?i)origin|wrong repo|refus"):
             squash_merge_public(pr=764, slug="souliane/teatree")
         assert not any(a[:1] in (["merge"], ["commit"], ["push"]) for a, _, _ in rec.git), (
             "must not mutate when origin != target slug"
@@ -102,9 +110,9 @@ class TestLocalSquashMergePublic:
         # --repo-path makes every git op target that clone, and the
         # origin assertion runs THERE, not the process cwd.
         rec = _Recorder()
-        p_git, p_gh = _patch(rec)
+        p_git, p_gh, p_vis = _patch(rec)
         clone = "/clones/souliane/teatree"
-        with p_git, p_gh:
+        with p_git, p_gh, p_vis:
             squash_merge_public(pr=764, slug="souliane/teatree", repo_path=clone)
 
         origin_cwd = next(c for a, _, c in rec.git if a[:3] == ["remote", "get-url", "origin"])
@@ -119,8 +127,8 @@ class TestLocalSquashMergePublic:
         # squash/commit/push on the wrong branch.
         rec = _Recorder()
         rec.switch_rc = 1
-        p_git, p_gh = _patch(rec)
-        with p_git, p_gh, pytest.raises(RuntimeError, match=r"(?i)switch|main|elsewhere"):
+        p_git, p_gh, p_vis = _patch(rec)
+        with p_git, p_gh, p_vis, pytest.raises(RuntimeError, match=r"(?i)switch|main|elsewhere"):
             squash_merge_public(pr=764, slug="souliane/teatree")
         assert not any(a[:2] == ["merge", "--squash"] for a, _, _ in rec.git), (
             "must not squash after a failed switch to main"
@@ -130,15 +138,15 @@ class TestLocalSquashMergePublic:
     def test_fails_closed_when_landed_author_is_non_noreply(self) -> None:
         rec = _Recorder()
         rec.landed_author = "real.dev@internal.example"
-        p_git, p_gh = _patch(rec)
-        with p_git, p_gh, pytest.raises(MergeAuthorMismatchError):
+        p_git, p_gh, p_vis = _patch(rec)
+        with p_git, p_gh, p_vis, pytest.raises(MergeAuthorMismatchError):
             squash_merge_public(pr=999, slug="souliane/teatree")
 
     def test_protected_branch_push_rejection_stops_no_force(self) -> None:
         rec = _Recorder()
         rec.push_rc = 1
-        p_git, p_gh = _patch(rec)
-        with p_git, p_gh, pytest.raises(RuntimeError, match=r"(?i)push|protected|reject"):
+        p_git, p_gh, p_vis = _patch(rec)
+        with p_git, p_gh, p_vis, pytest.raises(RuntimeError, match=r"(?i)push|protected|reject"):
             squash_merge_public(pr=764, slug="souliane/teatree")
         assert not any("--force" in a or "--force-with-lease" in a for a, _, _ in rec.git), (
             "must not force-push as a workaround"
@@ -146,8 +154,8 @@ class TestLocalSquashMergePublic:
 
     def test_private_repo_uses_server_side_merge_unchanged(self) -> None:
         rec = _Recorder()
-        p_git, p_gh = _patch(rec)
-        with p_git, p_gh:
+        p_git, p_gh, p_vis = _patch(rec, visibility="PRIVATE")
+        with p_git, p_gh, p_vis:
             squash_merge_public(pr=1, slug="acme-private/internal-svc")
 
         assert any("merge" in g and "--squash" in g for g in rec.gh), rec.gh

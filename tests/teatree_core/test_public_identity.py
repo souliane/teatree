@@ -9,13 +9,15 @@ private remotes are NOT treated as public-souliane, so their legitimate
 real-identity attribution is untouched.
 """
 
+from unittest.mock import patch
+
 import pytest
 
 from teatree.core.public_identity import (
     NOREPLY_RE,
     canonical_noreply_identity,
     is_noreply_email,
-    is_public_souliane_remote,
+    is_public_github_remote,
 )
 
 
@@ -24,7 +26,7 @@ class TestNoreplyPattern:
         "email",
         [
             "21343492+souliane@users.noreply.github.com",
-            "258769440+adrien-oper@users.noreply.github.com",
+            "258769440+octo-contrib@users.noreply.github.com",
             "octocat@users.noreply.github.com",
         ],
     )
@@ -45,31 +47,63 @@ class TestNoreplyPattern:
         assert not is_noreply_email(email)
 
 
-class TestPublicSoulianeDetection:
-    @pytest.mark.parametrize(
-        "slug",
-        ["souliane/teatree", "souliane/skills"],
-    )
-    def test_public_souliane_slugs(self, slug: str) -> None:
-        assert is_public_souliane_remote(slug)
+class TestPublicGithubVisibility:
+    """#785 — the proactive identity gate is visibility-based, not owner-hardcoded.
 
-    @pytest.mark.parametrize(
-        "slug",
-        [
-            "acme-private/internal-svc",  # private overlay — must NOT be scoped
-            "acme-private/internal-svc-e2e",
-            "acme-eng/internal-product",
-            "someoneelse/teatree",  # not the souliane org
-            "",
-        ],
-    )
-    def test_non_souliane_or_private_excluded(self, slug: str) -> None:
-        assert not is_public_souliane_remote(slug)
+    Mirrors the reactive hook (`gh repo view <slug> --json visibility`)
+    so every PUBLIC GitHub repo is covered — not just `souliane/*`. The
+    `gh` subprocess is the only unstoppable external and is mocked.
+    """
 
-    def test_detects_from_full_remote_urls(self) -> None:
-        assert is_public_souliane_remote("https://github.com/souliane/teatree.git")
-        assert is_public_souliane_remote("git@github.com:souliane/skills.git")
-        assert not is_public_souliane_remote("git@github.com:acme-private/internal-svc.git")
+    @staticmethod
+    def _gh(visibility: str, *, rc: int = 0):
+        from teatree.utils.run import CommandFailedError  # noqa: PLC0415
+
+        def _fake(cmd: list[str], **_kw: object) -> object:
+            if rc != 0:
+                raise CommandFailedError(cmd, rc, "", "not found")
+            return type("R", (), {"stdout": visibility + "\n", "returncode": 0})()
+
+        return _fake
+
+    def test_public_non_souliane_repo_is_public(self) -> None:
+        # The exact bug #785: a PUBLIC repo owned by a non-souliane
+        # account must now be detected (owner-hardcoded gate missed it).
+        with patch("teatree.core.public_identity.run_allowed_to_fail", side_effect=self._gh("PUBLIC")):
+            assert is_public_github_remote("git@github.com:octo-contrib/sample-repo.git") is True
+
+    def test_public_souliane_repo_still_public(self) -> None:
+        with patch("teatree.core.public_identity.run_allowed_to_fail", side_effect=self._gh("PUBLIC")):
+            assert is_public_github_remote("https://github.com/souliane/teatree.git") is True
+
+    def test_private_repo_is_not_public(self) -> None:
+        with patch("teatree.core.public_identity.run_allowed_to_fail", side_effect=self._gh("PRIVATE")):
+            assert is_public_github_remote("git@github.com:acme-private/internal-svc.git") is False
+
+    def test_internal_visibility_is_not_public(self) -> None:
+        with patch("teatree.core.public_identity.run_allowed_to_fail", side_effect=self._gh("INTERNAL")):
+            assert is_public_github_remote("git@github.com:acme-eng/internal-product.git") is False
+
+    def test_gh_unavailable_fails_safe_to_not_public(self) -> None:
+        # Visibility unconfirmable → do NOT proactively set noreply
+        # (leave inherited identity); the reactive hook also passes on
+        # unknown, so no hard-fail asymmetry is introduced.
+        with patch("teatree.core.public_identity.run_allowed_to_fail", side_effect=self._gh("", rc=1)):
+            assert is_public_github_remote("git@github.com:souliane/teatree.git") is False
+
+    def test_empty_remote_is_not_public_without_calling_gh(self) -> None:
+        with patch("teatree.core.public_identity.run_allowed_to_fail") as gh:
+            assert is_public_github_remote("") is False
+            gh.assert_not_called()
+
+    @pytest.mark.parametrize("remote", ["just-a-name", "https://github.com/onlyowner", "/leading-slash-only/"])
+    def test_malformed_slug_is_not_public_without_calling_gh(self, remote: str) -> None:
+        # A non-empty remote that does not yield exactly owner/repo must
+        # short-circuit to False before any gh call (the malformed-slug
+        # guard) — never query visibility for an unparsable remote.
+        with patch("teatree.core.public_identity.run_allowed_to_fail") as gh:
+            assert is_public_github_remote(remote) is False
+            gh.assert_not_called()
 
 
 class TestCanonicalIdentity:
