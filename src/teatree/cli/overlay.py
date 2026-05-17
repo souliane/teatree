@@ -117,6 +117,13 @@ DJANGO_GROUPS: dict[str, tuple[str, list[tuple[str, str]]]] = {
             ("remind", "Return list of pending user input tasks."),
         ],
     ),
+    "standup": (
+        "Auto-generated daily update (read-only).",
+        [
+            ("generate", "Generate a standup from transition + attempt data (read-only)."),
+            ("stale", "List tickets with no activity past the staleness threshold (read-only)."),
+        ],
+    ),
     "lifecycle": (
         "Session lifecycle and phase tracking.",
         [
