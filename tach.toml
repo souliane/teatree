@@ -74,7 +74,8 @@ depends_on = [
   "teatree.types",
   "teatree.core",
   "teatree.skill_loading",
-  "teatree.utils"
+  "teatree.utils",
+  "teatree.config"
 ]
 
 [[modules]]
