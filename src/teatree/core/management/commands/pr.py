@@ -32,6 +32,7 @@ from teatree.core.public_identity import MergeResult
 from teatree.core.runners.ship import resolve_ship_worktree
 from teatree.types import RawAPIDict
 from teatree.utils import git
+from teatree.utils.run import CommandFailedError
 
 
 class VisualQAGateFailure(TypedDict):
@@ -49,6 +50,12 @@ class VisualQAGateFailure(TypedDict):
 
 class WorktreeMissingError(TypedDict):
     error: str
+
+
+class NoCommitsAheadError(TypedDict):
+    error: str
+    branch: str
+    base: str
 
 
 class ShipEnqueued(TypedDict):
@@ -79,6 +86,46 @@ class ShippingGateFailure(TypedDict):
 
 _IMAGE_URL_RE = re.compile(r"!\[([^\]]*)\]\((/uploads/[^\)]+)\)")
 _EXTERNAL_LINK_RE = re.compile(r"https?://(?:www\.)?(?:notion\.so|linear\.app|jira\.\S+)/\S+")
+
+
+def _assert_commits_ahead_of_base(worktree: Worktree) -> NoCommitsAheadError | None:
+    """Block a hollow ship: the branch must have ≥1 commit ahead of base (#788).
+
+    The phase gate answers "is the work attested?"; this answers "is
+    there actually anything to ship?". Without it, a
+    reviewer-approved-but-uncommitted (or committed-elsewhere) branch
+    produced a hollow ``state: shipped`` — the CLI reported success, the
+    FSM advanced, then ``execute_ship`` later failed with "No commits
+    between main and branch", deferring the real failure into the async
+    worker where it is easy to miss.
+
+    Blocks **only on a confirmed zero** (``rev_count(base..branch) ==
+    0``), naming the branch and the base it was compared against. If git
+    introspection cannot be performed (no real repo, base undetectable,
+    git error) the state is *unverifiable* — distinct from the
+    confirmed-zero bug — so the prior behaviour (proceed) is preserved
+    rather than blocking on an unknown.
+    """
+    repo = (worktree.extra or {}).get("worktree_path", "") or worktree.repo_path
+    branch = worktree.branch
+    if not repo or not branch:
+        return None
+    try:
+        base = f"origin/{git.default_branch(repo=repo)}"
+        ahead = git.rev_count(repo=repo, range_spec=f"{base}..{branch}")
+    except (CommandFailedError, RuntimeError, ValueError):
+        return None  # unverifiable ≠ the confirmed-zero bug — do not block
+    if ahead > 0:
+        return None
+    return NoCommitsAheadError(
+        error=(
+            f"Refusing to ship: branch {branch!r} has 0 commits ahead of {base} — "
+            f"nothing to push (work uncommitted or committed elsewhere). "
+            f"Commit the work on {branch!r}, then retry `pr create`."
+        ),
+        branch=branch,
+        base=base,
+    )
 
 
 def _check_shipping_gate(ticket: Ticket) -> ShippingGateFailure | None:
@@ -324,6 +371,7 @@ class Command(TyperCommand):
         | VisualQAGateFailure
         | ShippingGateFailure
         | WorktreeMissingError
+        | NoCommitsAheadError
     ):
         """Validate ship gates and trigger the ship transition.
 
@@ -366,6 +414,20 @@ class Command(TyperCommand):
             # overwrite from a stale read — clobbered the ship worker's
             # pr_urls / visual_qa).
             ticket.merge_extra(set_keys={"ship_invoking_branch": invoking_branch})
+
+        # #788: refuse a hollow ship — the branch ShipExecutor will
+        # actually push (the #776/#800 canonical resolver, so the check
+        # matches what is shipped) must have ≥1 commit ahead of base.
+        # Placed before BOTH the gate and the --skip-validation
+        # reconcile so no path can advance the FSM to a hollow SHIPPED.
+        # `resolve_ship_worktree` cannot be None here — the
+        # WorktreeMissingError check above guarantees a worktree (it
+        # falls back to that same `worktrees.first()`).
+        no_commits = _assert_commits_ahead_of_base(
+            resolve_ship_worktree(ticket, cast("TicketExtra", ticket.extra or {})) or worktree
+        )
+        if no_commits is not None:
+            return no_commits
 
         if not skip_validation:
             gate_failure = _run_ship_gates(ticket, worktree, skip_visual_qa=skip_visual_qa)
