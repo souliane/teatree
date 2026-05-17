@@ -13,6 +13,7 @@ if TYPE_CHECKING:
     from teatree.backends.protocols import CodeHostBackend
     from teatree.core.models.ticket import Ticket
     from teatree.core.models.types import TicketExtra
+    from teatree.core.models.worktree import Worktree
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +41,26 @@ def overlay_pr_labels() -> list[str]:
     return [value.strip() for value in values if value.strip()]
 
 
+def resolve_ship_worktree(ticket: "Ticket", extra: "TicketExtra") -> "Worktree | None":
+    """The worktree to act on — the INVOKING branch's row, not the earliest.
+
+    #776: ``worktrees.first()`` returns the earliest (often
+    already-merged) row, so a reused ticket spanning N workstreams acted
+    on a stale branch. ``pr create`` records the invoking worktree's
+    current git branch on ``extra['ship_invoking_branch']``; prefer the
+    matching row. Fall back to ``first()`` only when no invoking branch
+    is recorded (the async-worker path that has no CLI cwd context) —
+    legacy behaviour, single-PR tickets unaffected. Public so the
+    pre-push visual-QA gate resolves the same worktree as the ship.
+    """
+    invoking = str(extra.get("ship_invoking_branch") or "")
+    if invoking:
+        matched = ticket.worktrees.filter(branch=invoking).first()  # ty: ignore[unresolved-attribute]
+        if matched is not None:
+            return matched
+    return ticket.worktrees.first()  # ty: ignore[unresolved-attribute]
+
+
 class ShipExecutor(RunnerBase):
     """Push the worktree branch and open the pull request.
 
@@ -57,7 +78,7 @@ class ShipExecutor(RunnerBase):
         if existing_urls:
             return RunnerResult(ok=True, detail=existing_urls[-1])
 
-        worktree = ticket.worktrees.first()  # ty: ignore[unresolved-attribute]
+        worktree = resolve_ship_worktree(ticket, extra)
         if worktree is None:
             return RunnerResult(ok=False, detail="no worktree on ticket")
 
@@ -68,6 +89,15 @@ class ShipExecutor(RunnerBase):
         repo_path = (worktree.extra or {}).get("worktree_path", "") or worktree.repo_path
         branch = worktree.branch
 
+        # #776: a ticket can span multiple PRs (one branch per workstream).
+        # Refuse to re-open a PR for a branch already merged into base —
+        # that is the stale-row symptom (a junk duplicate of merged work).
+        if git.branch_merged(repo=repo_path, branch=branch):
+            self._clear_invoking_branch(ticket, extra)
+            return RunnerResult(
+                ok=False, detail=f"branch {branch!r} is already merged into base — refusing duplicate PR"
+            )
+
         git.push(repo=repo_path, remote="origin", branch=branch)
 
         spec = self._build_pr_spec(ticket, host, repo_path, branch, extra)
@@ -76,6 +106,13 @@ class ShipExecutor(RunnerBase):
         self._record_pr_url(ticket, extra, url)
         logger.info("Ship executor pushed %s and opened PR %s", branch, url)
         return RunnerResult(ok=True, detail=url)
+
+    @staticmethod
+    def _clear_invoking_branch(ticket: "Ticket", extra: "TicketExtra") -> None:
+        if "ship_invoking_branch" in extra:
+            extra.pop("ship_invoking_branch", None)
+            ticket.extra = extra
+            ticket.save(update_fields=["extra"])
 
     @staticmethod
     def _build_pr_spec(
@@ -107,5 +144,6 @@ class ShipExecutor(RunnerBase):
             urls.append(url)
         extra["pr_urls"] = urls
         extra.pop("pr_title_override", None)
+        extra.pop("ship_invoking_branch", None)
         ticket.extra = extra
         ticket.save(update_fields=["extra"])
