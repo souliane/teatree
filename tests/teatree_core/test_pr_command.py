@@ -1,4 +1,5 @@
 from collections.abc import Iterator
+from pathlib import Path
 from typing import cast
 from unittest.mock import MagicMock, patch
 
@@ -9,7 +10,12 @@ from django.test import TestCase
 from teatree import visual_qa
 from teatree.core.management.commands import _ensure_pr as ensure_pr_mod
 from teatree.core.management.commands import pr as pr_command
-from teatree.core.management.commands.pr import _check_shipping_gate, _resolve_base_url, _run_visual_qa_gate
+from teatree.core.management.commands.pr import (
+    _assert_commits_ahead_of_base,
+    _check_shipping_gate,
+    _resolve_base_url,
+    _run_visual_qa_gate,
+)
 from teatree.core.models import Session, Ticket, Worktree
 from teatree.core.orphan_guard import BranchReport, BranchStatus
 from teatree.core.overlay_loader import reset_overlay_cache
@@ -928,3 +934,173 @@ class TestRunVisualQAGate(TestCase):
             assert _run_visual_qa_gate(ticket, skip_reason="my reason") is None
 
         assert captured["skip_reason"] == "my reason"
+
+
+class TestPrCreateNoCommitsAheadGuard(TestCase):
+    """#788: pr create must fail loudly on a 0-commits-ahead branch.
+
+    No hollow ``shipped`` — instead of advancing the FSM and deferring
+    an empty-diff failure into the async ship worker, the branch must
+    have ≥1 commit ahead of its base.
+    """
+
+    @staticmethod
+    def _git(repo: str, *args: str) -> None:
+        from teatree.utils import run as run_mod  # noqa: PLC0415
+
+        run_mod.run_checked(["git", "-C", repo, *args])
+
+    def _repo_at_parity_with_base(self, root: str) -> str:
+        # A real git repo where the feature branch has NO commits ahead
+        # of the base it would be compared against.
+        self._git(root, "init", "-q", "-b", "main")
+        self._git(root, "config", "user.email", "t@example.com")
+        self._git(root, "config", "user.name", "t")
+        (Path(root) / "f.txt").write_text("x", encoding="utf-8")
+        self._git(root, "add", "-A")
+        self._git(root, "commit", "-q", "-m", "base")
+        self._git(root, "update-ref", "refs/remotes/origin/main", "HEAD")
+        self._git(root, "checkout", "-q", "-b", "feature-parity")
+        return "feature-parity"
+
+    def test_branch_at_parity_with_base_does_not_reach_shipped(self) -> None:
+        import tempfile  # noqa: PLC0415
+
+        with tempfile.TemporaryDirectory() as root:
+            branch = self._repo_at_parity_with_base(root)
+            ticket = Ticket.objects.create(overlay="test", state=Ticket.State.REVIEWED)
+            session = Session.objects.create(ticket=ticket, overlay="test")
+            session.visit_phase("testing")
+            session.visit_phase("reviewing")
+            session.visit_phase("retro")
+            Worktree.objects.create(
+                ticket=ticket,
+                overlay="test",
+                repo_path=root,
+                branch=branch,
+                extra={"worktree_path": root},
+            )
+
+            with (
+                patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+                patch.object(pr_command, "_run_visual_qa_gate", return_value=None),
+                patch.object(pr_command, "validate_pr_metadata", return_value=None),
+                patch.object(pr_command.git, "current_branch", return_value=branch),
+            ):
+                result = cast("dict[str, object]", call_command("pr", "create", str(ticket.id)))
+
+            ticket.refresh_from_db()
+            # No hollow success, no FSM transition.
+            assert ticket.state == Ticket.State.REVIEWED, f"hollow shipped: state={ticket.state}"
+            assert result.get("state") != Ticket.State.SHIPPED
+            # Structured no-commits error naming branch + base.
+            assert "error" in result
+            assert branch in str(result.get("error", "")) or branch in str(result.get("branch", ""))
+            assert "base" in result or "ahead" in str(result.get("error", "")).lower()
+
+
+class TestAssertCommitsAheadOfBase(TestCase):
+    """#788 helper unit branches (real tmp git repo per the doctrine)."""
+
+    @staticmethod
+    def _git(repo: str, *args: str) -> None:
+        from teatree.utils import run as run_mod  # noqa: PLC0415
+
+        run_mod.run_checked(["git", "-C", repo, *args])
+
+    def _wt(self, repo_path: str, branch: str) -> Worktree:
+        t = Ticket.objects.create(overlay="test")
+        return Worktree.objects.create(
+            ticket=t, overlay="test", repo_path=repo_path, branch=branch, extra={"worktree_path": repo_path}
+        )
+
+    def test_branch_with_a_commit_ahead_returns_none(self) -> None:
+        import tempfile  # noqa: PLC0415
+
+        with tempfile.TemporaryDirectory() as root:
+            self._git(root, "init", "-q", "-b", "main")
+            self._git(root, "config", "user.email", "t@example.com")
+            self._git(root, "config", "user.name", "t")
+            (Path(root) / "a").write_text("1", encoding="utf-8")
+            self._git(root, "add", "-A")
+            self._git(root, "commit", "-q", "-m", "base")
+            self._git(root, "update-ref", "refs/remotes/origin/main", "HEAD")
+            self._git(root, "checkout", "-q", "-b", "feat-ahead")
+            (Path(root) / "b").write_text("2", encoding="utf-8")
+            self._git(root, "add", "-A")
+            self._git(root, "commit", "-q", "-m", "ahead")  # 1 commit ahead of base
+
+            assert _assert_commits_ahead_of_base(self._wt(root, "feat-ahead")) is None
+
+    def test_missing_repo_or_branch_returns_none(self) -> None:
+        assert _assert_commits_ahead_of_base(self._wt("", "feat")) is None
+        assert _assert_commits_ahead_of_base(self._wt("/tmp/x", "")) is None
+
+    def test_confirmed_zero_returns_structured_error(self) -> None:
+        """Branch at exact parity with base (0 commits ahead) → block contract.
+
+        Neutering the confirmed-zero arm (e.g. ``ahead > 0`` flipped, or
+        the ``return NoCommitsAheadError`` removed) makes this RED — the
+        guard's whole reason to exist (#788).
+        """
+        import tempfile  # noqa: PLC0415
+
+        with tempfile.TemporaryDirectory() as root:
+            self._git(root, "init", "-q", "-b", "main")
+            self._git(root, "config", "user.email", "t@example.com")
+            self._git(root, "config", "user.name", "t")
+            (Path(root) / "a").write_text("1", encoding="utf-8")
+            self._git(root, "add", "-A")
+            self._git(root, "commit", "-q", "-m", "base")
+            self._git(root, "update-ref", "refs/remotes/origin/main", "HEAD")
+            # Branch points at the SAME commit as origin/main → 0 ahead.
+            self._git(root, "checkout", "-q", "-b", "feat-parity")
+
+            result = _assert_commits_ahead_of_base(self._wt(root, "feat-parity"))
+
+        assert result is not None, "confirmed-zero MUST block (returns NoCommitsAheadError)"
+        assert result["branch"] == "feat-parity"
+        assert result["base"] == "origin/main"
+        assert "0 commits ahead" in result["error"]
+
+    def test_unverifiable_git_error_returns_none_proceeds(self) -> None:
+        """No-block-on-unknown safety contract (#788's make-or-break fail-direction).
+
+        When git introspection cannot be performed — ``default_branch``
+        raising :class:`CommandFailedError`, ``rev_count`` raising, or an
+        ``int()`` ``ValueError`` — the state is *unverifiable*, distinct
+        from the confirmed-zero bug, so the guard MUST return ``None``
+        (ship proceeds, prior behaviour preserved). Neutering this arm
+        (e.g. ``except`` block returning the error, or removed) makes
+        this RED. Real on-disk repo so only the failing primitive is
+        mocked.
+        """
+        import tempfile  # noqa: PLC0415
+
+        from teatree.utils import git as git_mod  # noqa: PLC0415
+        from teatree.utils.run import CommandFailedError  # noqa: PLC0415
+
+        with tempfile.TemporaryDirectory() as root:
+            self._git(root, "init", "-q", "-b", "main")
+            self._git(root, "config", "user.email", "t@example.com")
+            self._git(root, "config", "user.name", "t")
+            (Path(root) / "a").write_text("1", encoding="utf-8")
+            self._git(root, "add", "-A")
+            self._git(root, "commit", "-q", "-m", "base")
+            self._git(root, "update-ref", "refs/remotes/origin/main", "HEAD")
+            wt = self._wt(root, "main")
+
+            with patch.object(git_mod, "default_branch", side_effect=CommandFailedError(["git"], 1, "", "boom")):
+                assert _assert_commits_ahead_of_base(wt) is None, (
+                    "default_branch failure is unverifiable → MUST proceed (None)"
+                )
+
+            with patch.object(git_mod, "rev_count", side_effect=RuntimeError("git exploded")):
+                assert _assert_commits_ahead_of_base(wt) is None, (
+                    "rev_count failure is unverifiable → MUST proceed (None)"
+                )
+
+            with patch.object(git_mod, "rev_count", side_effect=ValueError("not an int")):
+                assert _assert_commits_ahead_of_base(wt) is None, (
+                    "rev_count ValueError is unverifiable → MUST proceed (None)"
+                )
