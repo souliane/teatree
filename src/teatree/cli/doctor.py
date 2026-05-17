@@ -606,6 +606,10 @@ def check() -> bool:
     ok = _check_editable_sanity() and ok
     ok = _check_skills() and ok
     ok = _check_single_db() and ok
+
+    from teatree.core.schema_guard import doctor_check_self_db_migrations  # noqa: PLC0415
+
+    ok = doctor_check_self_db_migrations() and ok
     _check_singletons()
     _ensure_plugin_registered()
 
