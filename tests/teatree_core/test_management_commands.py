@@ -184,24 +184,20 @@ class TestLifecycleCommands(TestCase):
 class TestTaskCommands(TestCase):
     @override_settings(**COMMAND_SETTINGS)
     def test_claim_and_complete_work(self) -> None:
-        import subprocess as _sp  # noqa: PLC0415
+        import shlex  # noqa: PLC0415
 
         ticket = Ticket.objects.create(overlay="test")
         session = Session.objects.create(ticket=ticket, overlay="test", agent_id="agent-1")
         sdk_task = Task.objects.create(ticket=ticket, session=session)
         sdk_followup_task = Task.objects.create(ticket=ticket, session=session)
 
+        envelope = '{"session_id": "test-session", "result": "```json\\n{\\"summary\\": \\"done\\"}\\n```"}'
         with (
             patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
             patch.object(
-                utils_run_mod.subprocess,
-                "run",
-                return_value=_sp.CompletedProcess(
-                    [],
-                    0,
-                    '{"session_id": "test-session", "result": "```json\\n{\\"summary\\": \\"done\\"}\\n```"}',
-                    "",
-                ),
+                headless_mod,
+                "_build_headless_command",
+                return_value=["sh", "-c", f"printf %s {shlex.quote(envelope)}"],
             ),
             patch.object(headless_mod.shutil, "which", return_value="/usr/bin/claude"),
         ):
