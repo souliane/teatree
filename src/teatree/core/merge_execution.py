@@ -59,6 +59,18 @@ class MergeHeadMovedError(MergePreconditionError):
     """
 
 
+class MergeReplayError(MergePreconditionError):
+    """The CLEAR was already consumed when re-checked UNDER the row lock.
+
+    ``assert_merge_preconditions`` reads ``is_actionable()`` without the row
+    lock; two executors that both pass that unlocked check would otherwise
+    both reach the post hook and double-consume the single-use CLEAR (a
+    double ``MergeAudit`` / double ``mark_merged()``). The post hook re-reads
+    the row ``select_for_update``-locked and re-asserts ``consumed_at is
+    None`` so exactly one executor wins; the loser raises this.
+    """
+
+
 @dataclass(frozen=True, slots=True)
 class MergeOutcome:
     pr_id: int
@@ -302,6 +314,18 @@ def record_merge_and_advance(
     merge_audit_model = apps.get_model("core", "MergeAudit")
     with transaction.atomic():
         locked = MergeClear.objects.select_for_update().get(pk=clear.pk)
+        # Re-assert single-use UNDER the row lock. ``assert_merge_preconditions``
+        # checked ``is_actionable()`` unlocked; two concurrent executors that
+        # both passed it must not both consume — exactly one wins this
+        # serialized re-check, the loser raises ``MergeReplayError`` and
+        # writes no audit / does not advance the FSM.
+        if locked.consumed_at is not None:
+            msg = (
+                f"MergeClear {locked.pk} ({locked.slug}#{locked.pr_id}) was already "
+                f"consumed at {locked.consumed_at.isoformat()} — concurrent double-merge "
+                f"refused under the row lock (§17.4.3 single-use replay defence)"
+            )
+            raise MergeReplayError(msg)
         locked.consumed_at = timezone.now()
         locked.save(update_fields=["consumed_at"])
         merge_audit_model.objects.create(

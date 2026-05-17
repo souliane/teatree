@@ -7,7 +7,7 @@ false-success).
 
 Candidate 9: ``lifecycle clear-ledger`` is the sanctioned session-retire path
 so a reused ticket's stale phase ledger is cleared via ``t3``, not by
-hand-editing state (which invariant 7 prohibits).
+hand-editing state (which invariant 8 prohibits).
 """
 
 from typing import cast

@@ -137,7 +137,7 @@ _BLOCKED_COMMANDS: list[tuple[re.Pattern[str], str]] = [
             "coherence mechanism (ledger update, MergeClear validation, "
             "expected_head_oid SHA-binding, privacy/AI-signature scan, "
             "mark_merged). Use the sanctioned keystone transition "
-            "`t3 <overlay> ticket merge <clear_id>` (BLUEPRINT §17.1 invariant 7 / §17.4)."
+            "`t3 <overlay> ticket merge <clear_id>` (BLUEPRINT §17.1 invariant 8 / §17.4)."
         ),
     ),
     (
@@ -147,7 +147,7 @@ _BLOCKED_COMMANDS: list[tuple[re.Pattern[str], str]] = [
             "coherence mechanism (ledger update, MergeClear validation, "
             "SHA-binding, privacy/AI-signature scan, mark_merged). Use the "
             "sanctioned keystone transition `t3 <overlay> ticket merge "
-            "<clear_id>` (BLUEPRINT §17.1 invariant 7 / §17.4)."
+            "<clear_id>` (BLUEPRINT §17.1 invariant 8 / §17.4)."
         ),
     ),
     (

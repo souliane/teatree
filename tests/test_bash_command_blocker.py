@@ -77,9 +77,9 @@ class TestBlocksForbiddenCommands:
             ("safety check", "pip-audit"),
             ("safety scan --full-report", "pip-audit"),
             ("gh pr merge 859 --repo souliane/teatree --squash", "ticket merge"),
-            ("gh pr merge --auto 836", "invariant 7"),
+            ("gh pr merge --auto 836", "invariant 8"),
             ("glab mr merge 7408 --squash", "ticket merge"),
-            ("glab mr merge !340", "invariant 7"),
+            ("glab mr merge !340", "invariant 8"),
         ],
     )
     def test_denies_with_t3_alternative(

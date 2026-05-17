@@ -18,8 +18,10 @@ from teatree.core.merge_execution import (
     MergeHeadMovedError,
     MergeOutcome,
     MergePreconditionError,
+    MergeReplayError,
     assert_merge_preconditions,
     merge_ticket_pr,
+    record_merge_and_advance,
 )
 from teatree.core.models import MergeAudit, MergeClear, Session, Ticket
 
@@ -349,3 +351,50 @@ class TestMergeExecutionEdgeCases(TestCase):
         assert outcome.ticket_state == ""
         clear.refresh_from_db()
         assert clear.consumed_at is not None
+
+
+class TestConcurrentConsumptionReplayDefence(TestCase):
+    """N1 concurrent-consumption replay defence.
+
+    Two executors that both passed the UNLOCKED preconditions must not both
+    consume the single-use CLEAR. The post hook re-asserts ``consumed_at is
+    None`` under the row lock — exactly one wins.
+    """
+
+    def test_double_post_hook_consumes_once_and_second_raises(self) -> None:
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        clear = _clear(ticket)
+
+        # Executor A reaches the post hook first and wins.
+        state_a = record_merge_and_advance(
+            clear=clear,
+            merged_sha="landeddeadbeef",
+            required_checks_status="green",
+        )
+        assert state_a == Ticket.State.MERGED
+
+        # Executor B passed the same unlocked assert_merge_preconditions
+        # (it held a stale in-memory clear) and now reaches the post hook
+        # with the row already consumed — it must lose under the lock.
+        with pytest.raises(MergeReplayError, match="already consumed"):
+            record_merge_and_advance(
+                clear=clear,
+                merged_sha="landeddeadbeef",
+                required_checks_status="green",
+            )
+
+        # Exactly one audit, one FSM advance — no double-merge.
+        assert MergeAudit.objects.filter(clear=clear).count() == 1
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.MERGED
+
+    def test_full_keystone_twice_same_clear_second_refused(self) -> None:
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        clear = _clear(ticket)
+
+        first = _run(clear, _GhStub())
+        assert first.ticket_state == Ticket.State.MERGED
+
+        with pytest.raises(MergePreconditionError):
+            _run(clear, _GhStub())
+        assert MergeAudit.objects.filter(clear=clear).count() == 1
