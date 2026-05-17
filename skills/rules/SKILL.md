@@ -169,6 +169,8 @@ When the auto-mode classifier denies a tool call (Bash command rejected, MCP cal
 
 **Why this rule exists.** The classifier exists to give the user a final say on standing-permission expansions. Auto-mode aggressiveness combined with classifier strictness is a recurring source of teatree workflow breakage — agents that retry, decompose, or sidestep silently accumulate scope, lose user trust, and ship work the user never authorized. The right escalation is to **ask once, fix permission at the user-scope settings file, retry**.
 
+**Standing recommended set (proactive, not reactive).** This protocol governs _reacting_ to a mid-session denial. The _standing_ generic set of authorizations that prevents most denials in the first place — and the read-only `t3 doctor authorizations` check that suggests (never applies) the absent ones — is documented in `skills/setup/references/recommended-automode-authorizations.md`. That doc and this section do not duplicate: one is the standing recommendation, the other the in-session escalation.
+
 **Boundary: who edits permissions where.**
 
 - Teatree (this skill, BLUEPRINT, plugin `settings.json`) defines the _protocol_. Teatree never relaxes permissions on the user's behalf.
