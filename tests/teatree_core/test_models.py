@@ -869,13 +869,39 @@ class TestSession(TestCase):
         assert session.ended_at is not None
         assert str(session) == "agent-1"
 
-    def test_shipping_gate_blocks_when_retro_not_visited(self) -> None:
+    def test_shipping_gate_allows_without_retro_visit(self) -> None:
+        """#837: retro is orchestrator-only — shipping no longer needs retro.
+
+        The per-ticket shipping gate no longer requires a ``retro`` phase
+        visit. ``testing`` + ``reviewing`` (recorded by distinct agents so
+        maker≠checker passes) is sufficient.
+        """
+        session = Session.objects.create(ticket=Ticket.objects.create())
+
+        session.visit_phase("testing", agent_id="agent-1")
+        session.visit_phase("reviewing", agent_id="agent-2")
+
+        session.check_gate("shipping")  # must not raise — retro no longer gated
+
+    def test_shipping_gate_still_blocks_when_reviewing_missing(self) -> None:
+        """Safety: removing the retro requirement must NOT weaken the gate.
+
+        A ticket missing ``reviewing`` is still blocked.
+        """
         session = Session.objects.create(ticket=Ticket.objects.create())
 
         session.visit_phase("testing")
+
+        with pytest.raises(QualityGateError, match="shipping requires: reviewing"):
+            session.check_gate("shipping")
+
+    def test_shipping_gate_still_blocks_when_testing_missing(self) -> None:
+        """Safety: a ticket missing ``testing`` is still blocked."""
+        session = Session.objects.create(ticket=Ticket.objects.create())
+
         session.visit_phase("reviewing")
 
-        with pytest.raises(QualityGateError, match="shipping requires: retro"):
+        with pytest.raises(QualityGateError, match="shipping requires: testing"):
             session.check_gate("shipping")
 
     def test_ignores_duplicate_phase_visits_and_force_bypasses_gate(self) -> None:
