@@ -110,9 +110,8 @@ class ShipExecutor(RunnerBase):
     @staticmethod
     def _clear_invoking_branch(ticket: "Ticket", extra: "TicketExtra") -> None:
         if "ship_invoking_branch" in extra:
-            extra.pop("ship_invoking_branch", None)
-            ticket.extra = extra
-            ticket.save(update_fields=["extra"])
+            # #800 N3: canonical locked RMW (was an unlocked extra save).
+            ticket.merge_extra(pop_keys=["ship_invoking_branch"])
 
     @staticmethod
     def _build_pr_spec(
@@ -142,8 +141,6 @@ class ShipExecutor(RunnerBase):
         urls = list(extra.get("pr_urls") or [])
         if url and url not in urls:
             urls.append(url)
-        extra["pr_urls"] = urls
-        extra.pop("pr_title_override", None)
-        extra.pop("ship_invoking_branch", None)
-        ticket.extra = extra
-        ticket.save(update_fields=["extra"])
+        # #800 N3: canonical locked RMW — a concurrent visual_qa /
+        # reviewed_sha writer no longer clobbers pr_urls.
+        ticket.merge_extra(set_keys={"pr_urls": urls}, pop_keys=["pr_title_override", "ship_invoking_branch"])

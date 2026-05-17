@@ -105,12 +105,10 @@ def _handle_reviewer(action: DispatchAction) -> Task | None:
             pr_url,
         )
         return None
-    if head_sha:
-        extra = dict(ticket.extra or {})
-        if extra.get("reviewed_sha") != head_sha:
-            extra["reviewed_sha"] = head_sha
-            ticket.extra = extra
-            ticket.save(update_fields=["extra"])
+    if head_sha and (ticket.extra or {}).get("reviewed_sha") != head_sha:
+        # #800 N3: canonical locked RMW — a concurrent pr_urls /
+        # visual_qa writer no longer clobbers reviewed_sha.
+        ticket.merge_extra(set_keys={"reviewed_sha": head_sha})
     if _has_open_task(ticket, phase="reviewing"):
         return None
     from teatree.core.models.ticket import schedule_external_review  # noqa: PLC0415

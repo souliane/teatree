@@ -13,7 +13,7 @@ from teatree.core.models import Ticket
 from teatree.loop.scanners.assigned_issues import AssignedIssuesScanner
 from teatree.loop.scanners.my_prs import MyPrsScanner
 from teatree.loop.scanners.notion_view import NotionViewScanner
-from teatree.loop.scanners.reviewer_prs import ReviewerPrsScanner
+from teatree.loop.scanners.reviewer_prs import CacheEntry, ReviewerPrsScanner, _persist_entry
 from teatree.loop.scanners.reviewer_prs import mark_reviewed as _mark_reviewed_helper
 from teatree.loop.scanners.slack_mentions import SlackMentionsScanner
 from teatree.types import RawAPIDict
@@ -567,3 +567,35 @@ class TestAssignedIssuesScanner:
         scanner = AssignedIssuesScanner(host=host, ready_labels=(), exclude_labels=())
         signals = scanner.scan()
         assert [s.payload["url"] for s in signals] == ["x"]
+
+
+class TestPersistEntryLockedMergeExtra(TestCase):
+    """#800 N3: ``_persist_entry`` routes through locked ``merge_extra``.
+
+    It is the THIRD reviewed_sha/last_review_state co-writer; it now
+    goes through the canonical locked ``Ticket.merge_extra`` and only
+    when there is something to set (the new ``if set_keys:`` guard that
+    replaced the old unconditional ``ticket.save``).
+    """
+
+    def test_persists_sha_and_state_via_merge_extra(self) -> None:
+        _persist_entry(Ticket, "https://example.com/pr/1", CacheEntry(sha="abc", state="approved"))
+
+        ticket = Ticket.objects.get(role="reviewer", issue_url="https://example.com/pr/1")
+        assert ticket.extra == {"reviewed_sha": "abc", "last_review_state": "approved"}
+
+    def test_empty_entry_writes_nothing(self) -> None:
+        # entry with neither sha nor state → set_keys empty → no merge
+        # call, no clobber (the #800-new `if set_keys:` False branch).
+        _persist_entry(Ticket, "https://example.com/pr/2", CacheEntry(sha="", state=""))
+
+        ticket = Ticket.objects.get(role="reviewer", issue_url="https://example.com/pr/2")
+        assert ticket.extra in ({}, None)
+
+    def test_does_not_clobber_concurrent_extra_writer(self) -> None:
+        Ticket.objects.create(role="reviewer", issue_url="https://example.com/pr/3", extra={"pr_urls": ["u"]})
+        _persist_entry(Ticket, "https://example.com/pr/3", CacheEntry(sha="def", state=""))
+
+        ticket = Ticket.objects.get(role="reviewer", issue_url="https://example.com/pr/3")
+        # The locked re-read merged reviewed_sha WITHOUT dropping pr_urls.
+        assert ticket.extra == {"pr_urls": ["u"], "reviewed_sha": "def"}

@@ -20,6 +20,7 @@ from teatree.types import RawAPIDict
 
 if TYPE_CHECKING:
     from teatree.core.models import Ticket as _Ticket
+    from teatree.core.models.types import TicketExtra
 
     TicketModel = type[_Ticket]
 else:
@@ -93,13 +94,17 @@ def _persist_entry(ticket_model: "TicketModel", url: str, entry: CacheEntry) -> 
         issue_url=url,
         defaults={"overlay": ""},
     )
-    extra = dict(ticket.extra or {})
+    # #800 N3: canonical locked RMW — this is the THIRD co-writer of
+    # reviewed_sha / last_review_state (with _handle_reviewer and
+    # Ticket.mark_reviewed_externally); an unlocked save here would still
+    # clobber a concurrent pr_urls / visual_qa writer.
+    set_keys: TicketExtra = {}
     if entry.sha:
-        extra["reviewed_sha"] = entry.sha
+        set_keys["reviewed_sha"] = entry.sha
     if entry.state:
-        extra["last_review_state"] = entry.state
-    ticket.extra = extra
-    ticket.save(update_fields=["extra"])
+        set_keys["last_review_state"] = entry.state
+    if set_keys:
+        ticket.merge_extra(set_keys=set_keys)
 
 
 def _read_cache() -> dict[str, CacheEntry]:

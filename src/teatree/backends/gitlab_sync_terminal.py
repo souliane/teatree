@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from teatree.backends.gitlab_api import GitLabAPI
+    from teatree.core.models.types import TicketExtra, TicketSiblingFields
 
 logger = logging.getLogger(__name__)
 
@@ -69,16 +70,14 @@ def apply_merged_status(ticket: Ticket, merged_urls: set[str], result: SyncResul
     if not changed and not all_merged:
         return
 
-    update_fields: list[str] = []
-    if changed:
-        extra["prs"] = prs
-        ticket.extra = extra
-        update_fields.append("extra")
+    set_keys = cast("TicketExtra", {"prs": prs}) if changed else None
+    also_set: TicketSiblingFields = {}
     if all_merged and _STATE_ORDER.index(Ticket.State.MERGED) > _STATE_ORDER.index(ticket.state):
-        ticket.state = Ticket.State.MERGED
-        update_fields.append("state")
-    if update_fields:
-        ticket.save(update_fields=update_fields)
+        also_set["state"] = Ticket.State.MERGED
+    if set_keys or also_set:
+        # #800 N3: canonical locked RMW; extra (prs) + optional state
+        # one atomic write via also_set (no split, no unlocked clobber).
+        ticket.merge_extra(set_keys=set_keys, also_set=also_set or None)
 
     if all_merged:
         _cleanup_merged_worktrees(ticket, result)
@@ -106,9 +105,8 @@ def apply_closed_status(ticket: Ticket, closed_urls: set[str], result: SyncResul
         result.prs_closed += 1
 
     if changed:
-        extra["prs"] = prs
-        ticket.extra = extra
-        ticket.save(update_fields=["extra"])
+        # #800 N3: canonical locked RMW (was an unlocked extra save).
+        ticket.merge_extra(set_keys=cast("TicketExtra", {"prs": prs}))
 
 
 def _scan_merged_prs(prs: RawAPIDict, merged_urls: set[str], result: SyncResult) -> tuple[bool, bool]:
