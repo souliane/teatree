@@ -602,7 +602,21 @@ Usage: t3 doctor [OPTIONS] COMMAND [ARGS]...
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ check  Verify imports, required tools, and editable-install sanity.          │
+│ authorizations  Suggest absent recommended auto-mode authorizations          │
+│                 (read-only).                                                 │
+│ check           Verify imports, required tools, and editable-install sanity. │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 doctor authorizations`
+
+```
+Usage: t3 doctor authorizations [OPTIONS]
+
+ Suggest absent recommended auto-mode authorizations (read-only).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

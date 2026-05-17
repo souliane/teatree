@@ -520,6 +520,13 @@ def run(
     if not skip_plugin:
         _install_claude_plugin(repo)
 
+    # Suggest (never apply) the recommended per-user auto-mode authorizations.
+    # Teatree ships no classifier whitelist of its own — see
+    # ``skills/setup/references/recommended-automode-authorizations.md``.
+    from teatree.cli.recommended_authorizations import report_missing_authorizations  # noqa: PLC0415
+
+    report_missing_authorizations(typer.echo)
+
     typer.echo("Done.")
 
 
