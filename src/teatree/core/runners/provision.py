@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, cast
 from teatree.config import workspace_dir as _workspace_dir
 from teatree.core.clone_paths import find_clone_path
 from teatree.core.models import Ticket, Worktree
-from teatree.core.public_identity import is_public_souliane_remote, set_local_noreply_identity
+from teatree.core.public_identity import is_public_github_remote, set_local_noreply_identity
 from teatree.core.runners.base import RunnerBase, RunnerResult
 from teatree.utils import git
 
@@ -123,7 +123,7 @@ class WorktreeProvisioner(RunnerBase):
         # configured noreply git identity set clone-local, so every
         # commit path uses it instead of the inherited identity. Scoped
         # by remote slug — non-souliane / private clones are left as-is.
-        if is_public_souliane_remote(git.remote_slug(str(repo_path))):
+        if is_public_github_remote(git.remote_slug(str(repo_path))):
             try:
                 set_local_noreply_identity(str(wt_path))
             except Exception:

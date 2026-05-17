@@ -12,6 +12,7 @@ import re
 from typing import TypedDict
 
 from teatree.utils import git
+from teatree.utils.run import CommandFailedError, run_allowed_to_fail
 
 
 class MergeResult(TypedDict):
@@ -30,11 +31,10 @@ class StampResult(TypedDict, total=False):
 
 NOREPLY_RE = re.compile(r"^([0-9]+\+)?[A-Za-z0-9-]+@users\.noreply\.github\.com$")
 
-_PUBLIC_SOULIANE_OWNER = "souliane"
-
-# The canonical author identity for public souliane/* commits — the
-# ``souliane`` account's GitHub ``users.noreply.github.com`` address
-# (numeric prefix = that account's GitHub user id).
+# The canonical author identity for public commits — this account's
+# GitHub ``users.noreply.github.com`` address (numeric prefix = the
+# GitHub user id). Applied to every PUBLIC GitHub repo (#785); the
+# slug must have exactly owner/repo parts before a visibility check.
 _OWNER_REPO_PARTS = 2
 
 _CANONICAL_NAME = "souliane"
@@ -59,12 +59,39 @@ def _slug_from(remote: str) -> str:
     return cleaned
 
 
-def is_public_souliane_remote(remote: str) -> bool:
+def is_public_github_remote(remote: str) -> bool:
+    """True iff ``remote``'s GitHub repo is PUBLIC (visibility-based, #785).
+
+    The proactive noreply-identity setter used to gate on a hardcoded
+    ``souliane`` owner while the reactive pre-push backstop
+    (``refuse-public-push-with-leak.sh``) resolves visibility via
+    ``gh repo view --json visibility``. The two disagreed: a PUBLIC
+    repo owned by another account (an overlay's own public repo) never
+    got the proactive identity, then hard-failed at push when the
+    visibility-based reactive hook fired. This predicate resolves
+    visibility the SAME way the hook does, so both layers cover every
+    public GitHub repo identically.
+
+    Fail-safe: a missing/malformed slug, an unavailable ``gh``, or any
+    non-``PUBLIC`` / unknown visibility returns ``False`` — the
+    proactive setter then leaves the inherited identity untouched. That
+    matches the reactive hook's "unknown ⇒ pass" stance (it does not
+    block on unknown either), so no hard-fail asymmetry is introduced.
+    """
     if not remote:
         return False
     slug = _slug_from(remote)
     parts = slug.split("/")
-    return len(parts) == _OWNER_REPO_PARTS and parts[0] == _PUBLIC_SOULIANE_OWNER and bool(parts[1])
+    if len(parts) != _OWNER_REPO_PARTS or not parts[0] or not parts[1]:
+        return False
+    try:
+        result = run_allowed_to_fail(
+            ["gh", "repo", "view", slug, "--json", "visibility", "--jq", ".visibility"],
+            expected_codes=(0,),
+        )
+    except CommandFailedError:
+        return False
+    return result.stdout.strip().upper() == "PUBLIC"
 
 
 def canonical_noreply_identity() -> tuple[str, str]:

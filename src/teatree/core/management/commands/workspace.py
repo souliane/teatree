@@ -23,7 +23,7 @@ from teatree.core.management.commands._workspace_cleanup import (
 from teatree.core.models import Ticket, Worktree
 from teatree.core.orphan_guard import find_orphans_in_workspace
 from teatree.core.overlay_loader import get_overlay
-from teatree.core.public_identity import StampResult, is_public_souliane_remote, set_local_noreply_identity
+from teatree.core.public_identity import StampResult, is_public_github_remote, set_local_noreply_identity
 from teatree.core.readiness import run_and_report_probes
 from teatree.core.reconcile import Drift, reconcile_all, reconcile_ticket
 from teatree.core.resolve import WorktreeNotFoundError, _get_user_cwd, resolve_worktree
@@ -539,7 +539,7 @@ class Command(TyperCommand):
         legitimate real-identity attribution is never touched.
         """
         slug = git.remote_slug(repo)
-        if not is_public_souliane_remote(slug):
+        if not is_public_github_remote(slug):
             return StampResult(stamped=False, reason=f"not a public souliane/* remote (slug={slug!r}) — refused")
         set_local_noreply_identity(repo)
         return StampResult(stamped=True, repo=repo, slug=slug)

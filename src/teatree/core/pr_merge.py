@@ -18,7 +18,7 @@ from teatree.core.public_identity import (
     MergeAuthorMismatchError,
     canonical_noreply_identity,
     is_noreply_email,
-    is_public_souliane_remote,
+    is_public_github_remote,
 )
 from teatree.utils.run import run_allowed_to_fail
 
@@ -199,7 +199,7 @@ def squash_merge_public(*, pr: int, slug: str, repo_path: str = "", auto: bool =
     Non-souliane / private remotes: the server-side ``gh pr merge
     --squash`` path, unchanged (their configured identity is fine).
     """
-    if is_public_souliane_remote(slug):
+    if is_public_github_remote(slug):
         _local_squash_merge(pr, slug, repo_path)
         return
     _server_side_merge(pr, slug, auto=auto)
