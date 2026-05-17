@@ -2903,10 +2903,11 @@ Usage: t3 teatree ticket clear [OPTIONS] PR_ID SLUG REVIEWED_SHA
  merge to the exact reviewed tree.
 
  ``--human-authorize`` is valid ONLY with ``--blast-class substrate``:
- it records *who* authorised a substrate merge so the otherwise
- human-merge-only / draft-locked substrate change can be merged
- through the SAME sanctioned ``ticket merge`` transition (invariant 8 —
- never raw ``gh``), with the human decision durably on the CLEAR.
+ it records *who approved* a substrate merge (the gate) so the
+ otherwise approval-gated / draft-locked substrate change can be
+ merged BY THE AGENT through the SAME sanctioned ``ticket merge``
+ transition (invariant 8 — never raw ``gh``, never a human-performed
+ merge), with the human approval durably on the CLEAR.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    pr_id             INTEGER  [required]                                   │
@@ -2959,12 +2960,14 @@ Usage: t3 teatree ticket merge [OPTIONS] CLEAR_ID
  Post hook: atomic CLEAR-consume + ``MergeAudit`` + attestation
  binding + ``ticket.mark_merged()``.
 
- ``--human-authorized`` is the sanctioned substrate human-merge path
- (invariant 8): the loop NEVER auto-merges substrate, but a human/owner
- re-presents the authoriser id recorded on the CLEAR (via ``ticket
- clear … --human-authorize``) to merge a substrate change through THIS
- SAME transition — not raw ``gh``. It cannot unlock a non-substrate
- CLEAR, so it can never bypass independent loop review of logic/docs.
+ ``--human-authorized`` is the sanctioned substrate approval path
+ (invariant 8): the loop NEVER auto-merges substrate, but the recorded
+ human approval id (set on the CLEAR via ``ticket clear …
+ --human-authorize``) is re-presented here and **the agent executes**
+ the substrate merge through THIS SAME transition — not raw ``gh``,
+ never a human-performed merge (approval is the gate, the agent is the
+ executor). It cannot unlock a non-substrate CLEAR, so it can never
+ bypass independent loop review of logic/docs.
 
  On a pre-condition failure the FSM is left untouched and the
  result is flagged ``escalated`` so the durable backlog re-escalation

@@ -411,6 +411,67 @@ class TestSanctionedHumanSubstrateMerge(TestCase):
         assert ticket.state == Ticket.State.IN_REVIEW
 
 
+class TestAgentExecutesApprovedSubstrateMerge(TestCase):
+    """Binding correction (#836): approval is the gate; the AGENT executes the merge.
+
+    The user operates write-only and cannot perform a merge action. The
+    sanctioned substrate path is therefore: a human records an explicit
+    approval (``MergeClear.human_authorizer``) at CLEAR-issue time, and the
+    AGENT then executes the merge via the ``t3 ... ticket merge <clear_id>
+    --human-authorized <id>`` CLI — the same callable the durable loop runs.
+    These tests assert no code path requires a human to *perform* the merge
+    action; ``human_authorizer`` is a recorded approval identity, never an
+    actor gate.
+    """
+
+    def test_agent_cli_invocation_executes_the_approved_substrate_merge(self) -> None:
+        """The merge runs through the ordinary agent CLI path — no human actor step."""
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        clear = MergeClear.objects.create(
+            ticket=ticket,
+            pr_id=877,
+            slug="souliane/teatree",
+            reviewed_sha=_SHA,
+            reviewer_identity="cold-reviewer",
+            gh_verify_result=MergeClear.VerifyResult.GREEN,
+            blast_class=MergeClear.BlastClass.SUBSTRATE,
+            human_authorizer="owner:adrien",
+        )
+        # call_command is exactly what the durable loop / agent invokes for
+        # `t3 <overlay> ticket merge`. No human-actor parameter exists; the
+        # recorded approver is re-presented, the agent performs the merge.
+        with patch("teatree.core.merge_execution._run_gh", side_effect=_gh_stub):
+            result = cast(
+                "dict[str, object]",
+                call_command(
+                    "ticket",
+                    "merge",
+                    str(clear.pk),
+                    loop_identity="merge-loop",
+                    human_authorized="owner:adrien",
+                ),
+            )
+        ticket.refresh_from_db()
+        clear.refresh_from_db()
+        assert result["merged"] is True
+        assert ticket.state == Ticket.State.MERGED
+        assert clear.consumed_at is not None
+        # The approval identity is durably recorded — it is the gate, not the actor.
+        assert clear.human_authorizer == "owner:adrien"
+
+    def test_merge_executor_signature_has_no_human_actor_parameter(self) -> None:
+        """Structural guarantee: the keystone executor takes no 'a human performs it' arg.
+
+        Its only human-related parameter is ``human_authorized`` — the recorded
+        *approval* id re-presented for verification. There is no parameter
+        whose presence means 'a human, not the agent, performs the merge'.
+        """
+        import inspect  # noqa: PLC0415
+
+        params = set(inspect.signature(merge_ticket_pr).parameters)
+        assert params == {"clear", "executing_loop_identity", "human_authorized"}
+
+
 class TestPrMergeRedirectedToKeystone(TestCase):
     """The old ``t3 ... pr merge`` path is FSM-incoherent post-#863 and must refuse."""
 
