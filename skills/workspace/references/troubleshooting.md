@@ -26,10 +26,10 @@
 
 - **Symptom:** `t3 <overlay> worktree provision` completes with state "provisioned" and `db_name` in facts, but `psql` shows the database does not exist. Or DB exists but seed tables are empty (row count is 0).
 - **Cause:** Two known scenarios:
-  1. `.env.worktree` was stale from a previous worktree (different ticket/variant). The setup used the old `DATABASE_URL` for migrations — connecting to an existing DB instead of creating a new one. Fixed in `lifecycle.py` (adds `_force_load_env_worktree` after env generation).
+  1. `.t3-cache/.t3-env.cache` was stale from a previous worktree (different ticket/variant). The setup used the old `DATABASE_URL` for migrations — connecting to an existing DB instead of creating a new one. The cache is now DB-derived and regenerated on every `worktree start`; env-dependent commands run `detect_drift` (`src/teatree/core/worktree_env.py`) and refuse with "env cache stale" rather than silently using stale values.
   2. The active project overlay was not configured in the overlay package, so project-layer DB hooks never ran.
 - **Verification after setup:** Always check: `psql -h localhost -p <port> -U <db_user> -d <db_name> -c "SELECT count(*) FROM <seed_table>"` — must be > 0.
-- **Fix:** Delete `.env.worktree` (both ticket-dir and repo-level) + `.state.json`, drop the DB if it exists, and re-run `t3 <overlay> worktree provision`.
+- **Fix:** Delete `.state.json`, drop the DB if it exists, and re-run `t3 <overlay> worktree provision`. The `.t3-cache/.t3-env.cache` (and its repo-level symlink) is DB-derived and regenerated on the next `worktree start` — no need to delete it by hand.
 
 ## "Worktree Is Already Checked Out"
 

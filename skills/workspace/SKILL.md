@@ -40,7 +40,7 @@ graph TD
         wt_be["acme-backend/<br/>(worktree)"]
         wt_fe["acme-frontend/<br/>(worktree)"]
         wt_tr["acme-translations/<br/>(worktree)"]
-        envfile[".env.worktree<br/>(shared DB, variant)"]
+        envfile[".t3-cache/.t3-env.cache<br/>(shared DB, variant)"]
       end
       subgraph "ac/5678/"
         wt2_be["acme-backend/<br/>(worktree)"]
@@ -56,7 +56,7 @@ graph TD
   main_fe -.->|"git worktree"| wt2_fe
 ```
 
-Each ticket gets its own directory with one git worktree per affected repo and a shared `.env.worktree` for database name and variant configuration. Ports are ephemeral — allocated at `worktree start` time and passed via runtime env only. Worktrees share the `.git` directory with the main clone but have their own branch and working tree.
+Each ticket gets its own directory with one git worktree per affected repo and a shared `.t3-cache/.t3-env.cache` (symlinked into each repo worktree as `.t3-env.cache`) for database name and variant configuration. Ports are ephemeral — allocated at `worktree start` time and passed via runtime env only. Worktrees share the `.git` directory with the main clone but have their own branch and working tree.
 
 ## Dependencies
 
@@ -155,7 +155,7 @@ When a `t3` command fails, **fix the CLI code first** — never manually run the
 
 ### Never Hand-Edit Generated Files
 
-Setup tools (`t3 <overlay> worktree provision`, etc.) generate configuration files (`.env.worktree`, docker overrides, port allocations). **Manual edits create drift** and are overwritten on the next setup run.
+Setup tools (`t3 <overlay> worktree provision`, etc.) generate configuration files (`.t3-cache/.t3-env.cache`, docker overrides, port allocations). The env cache is regenerated on every `t3 <overlay> worktree start`; **manual edits create drift** and the next env-dependent command refuses with "env cache stale". Mutate it only via `t3 <overlay> env set KEY=VALUE`.
 
 When a generated file is wrong or incomplete, **re-run the setup tool** — don't manually patch the file. If setup fails, diagnose the root cause in the setup script (see `/t3:debug`), don't work around it.
 

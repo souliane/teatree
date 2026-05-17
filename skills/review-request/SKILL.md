@@ -93,7 +93,7 @@ After sending each review request, save the message permalink in `$T3_DATA_DIR/t
 
 Create the directory if it doesn't exist. Merge with existing entries (don't overwrite — a ticket may have PRs sent at different times).
 
-Extract the ticket IID from the PR's source branch name or from `TICKET_URL` in `.env.worktree`.
+Extract the ticket IID from the PR's source branch name or from `TICKET_URL` in `.t3-env.cache` (the per-worktree symlink to `.t3-cache/.t3-env.cache`).
 
 ### 9. Check Doing → Technical Review Transition
 
