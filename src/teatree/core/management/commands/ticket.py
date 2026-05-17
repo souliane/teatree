@@ -9,7 +9,7 @@ from django_fsm import TransitionNotAllowed
 from django_typer.management import TyperCommand, command
 
 from teatree.core.merge_execution import MergePreconditionError, merge_ticket_pr
-from teatree.core.models import MergeClear, Ticket
+from teatree.core.models import ClearIssuanceError, ClearRequest, MergeClear, Ticket
 
 
 class CompletionResult(TypedDict, total=False):
@@ -35,6 +35,17 @@ class MergeKeystoneResult(TypedDict, total=False):
     ticket_state: str
     error: str
     escalated: bool
+
+
+class ClearIssueResult(TypedDict, total=False):
+    issued: bool
+    clear_id: int
+    pr_id: int
+    slug: str
+    blast_class: str
+    human_authorizer: str
+    ticket_id: int
+    error: str
 
 
 class ReattributeResult(TypedDict, total=False):
@@ -94,6 +105,104 @@ class Command(TyperCommand):
         return {"ticket_id": int(ticket.pk), "state": ticket.state}
 
     @command()
+    def clear(  # noqa: PLR0913 — django-typer command: every param is a CLI flag mapped 1:1 to a §17.4.2 CLEAR field; the arg list IS the public CLI surface (same rationale as the file-wide PLR6301 ignore), not an internal design smell.
+        self,
+        pr_id: int,
+        slug: str,
+        reviewed_sha: str,
+        *,
+        reviewer_identity: Annotated[
+            str,
+            typer.Option(
+                help="Independent cold reviewer identity (NOT a maker/coding-agent/loop role — §17.8 clause 3)."
+            ),
+        ] = "",
+        gh_verify_result: Annotated[
+            str,
+            typer.Option(help="Audit-only snapshot of gh checks at review time: green / pending / failed."),
+        ] = "green",
+        blast_class: Annotated[
+            str,
+            typer.Option(help="Orchestrator judgment: substrate / logic / docs (§17.4.2)."),
+        ] = "logic",
+        ticket_id: Annotated[
+            int,
+            typer.Option(help="Optional teatree Ticket id this CLEAR authorises the merge for."),
+        ] = 0,
+        human_authorize: Annotated[
+            str,
+            typer.Option(
+                help="ONLY for blast_class=substrate: the human/owner id authorising the substrate merge.",
+            ),
+        ] = "",
+        executing_loop_identity: Annotated[
+            str,
+            typer.Option(
+                help="The loop that will execute the merge; the reviewer must differ (§17.8 clause 3).",
+            ),
+        ] = "merge-loop",
+    ) -> ClearIssueResult:
+        """Issue a per-diff CLEAR — the orchestrator's only merge output (BLUEPRINT §17.4.2).
+
+        Records the orchestrator's reviewed/verified judgment as a durable
+        ``MergeClear`` row the durable loop later acts on by id via
+        ``ticket merge``. This is the missing issuance seam: #863 added the
+        consume side but no command created the row. The CLEAR is the
+        compaction-surviving handoff — the orchestrator may be restarted
+        before the loop picks it up, so it lives in the DB, not a session
+        file.
+
+        §17.8 clause 3 is enforced here: ``--reviewer-identity`` must name an
+        independent cold reviewer — a maker/coding-agent/loop role is refused
+        (the author cannot rubber-stamp their own CLEAR). ``reviewed_sha``
+        must be a hex commit id (not a branch ref) so the loop can bind the
+        merge to the exact reviewed tree.
+
+        ``--human-authorize`` is valid ONLY with ``--blast-class substrate``:
+        it records *who* authorised a substrate merge so the otherwise
+        human-merge-only / draft-locked substrate change can be merged
+        through the SAME sanctioned ``ticket merge`` transition (invariant 8 —
+        never raw ``gh``), with the human decision durably on the CLEAR.
+        """
+        resolved_ticket = None
+        if ticket_id:
+            try:
+                resolved_ticket = Ticket.objects.get(pk=ticket_id)
+            except Ticket.DoesNotExist:
+                return {"issued": False, "error": f"Ticket {ticket_id} not found"}
+
+        try:
+            clear = MergeClear.issue(
+                ClearRequest(
+                    pr_id=pr_id,
+                    slug=slug,
+                    reviewed_sha=reviewed_sha,
+                    reviewer_identity=reviewer_identity,
+                    gh_verify_result=gh_verify_result,
+                    blast_class=blast_class,
+                    ticket=resolved_ticket,
+                    human_authorizer=human_authorize,
+                    executing_loop_identity=executing_loop_identity,
+                )
+            )
+        except ClearIssuanceError as exc:
+            self.stdout.write(f"  CLEAR refused: {exc}")
+            return {"issued": False, "error": str(exc)}
+
+        self.stdout.write(f"  issued CLEAR {clear.pk} for {clear.slug}#{clear.pr_id}@{clear.reviewed_sha[:8]}")
+        result: ClearIssueResult = {
+            "issued": True,
+            "clear_id": int(clear.pk),
+            "pr_id": int(clear.pr_id),
+            "slug": clear.slug,
+            "blast_class": clear.blast_class,
+            "human_authorizer": clear.human_authorizer,
+        }
+        if resolved_ticket is not None:
+            result["ticket_id"] = int(resolved_ticket.pk)
+        return result
+
+    @command()
     def merge(
         self,
         clear_id: int,
@@ -102,6 +211,12 @@ class Command(TyperCommand):
             str,
             typer.Option(help="Identity of the executing loop (must differ from the CLEAR reviewer — §17.8 clause 3)."),
         ] = "merge-loop",
+        human_authorized: Annotated[
+            str,
+            typer.Option(
+                help="Substrate-only: the recorded human authoriser id, re-presented to merge a substrate CLEAR.",
+            ),
+        ] = "",
     ) -> MergeKeystoneResult:
         """Execute the missing IN_REVIEW → MERGED keystone transition (BLUEPRINT §17.4).
 
@@ -119,6 +234,13 @@ class Command(TyperCommand):
         Post hook: atomic CLEAR-consume + ``MergeAudit`` + attestation
         binding + ``ticket.mark_merged()``.
 
+        ``--human-authorized`` is the sanctioned substrate human-merge path
+        (invariant 8): the loop NEVER auto-merges substrate, but a human/owner
+        re-presents the authoriser id recorded on the CLEAR (via ``ticket
+        clear … --human-authorize``) to merge a substrate change through THIS
+        SAME transition — not raw ``gh``. It cannot unlock a non-substrate
+        CLEAR, so it can never bypass independent loop review of logic/docs.
+
         On a pre-condition failure the FSM is left untouched and the
         result is flagged ``escalated`` so the durable backlog re-escalation
         is visible (the loop never self-issues a replacement CLEAR).
@@ -129,7 +251,11 @@ class Command(TyperCommand):
             return {"error": f"MergeClear {clear_id} not found", "merged": False}
 
         try:
-            outcome = merge_ticket_pr(clear=clear, executing_loop_identity=loop_identity)
+            outcome = merge_ticket_pr(
+                clear=clear,
+                executing_loop_identity=loop_identity,
+                human_authorized=human_authorized,
+            )
         except MergePreconditionError as exc:
             self.stdout.write(f"  merge refused (re-escalating): {exc}")
             return {
