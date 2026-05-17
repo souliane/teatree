@@ -215,6 +215,9 @@ def test_build_default_jobs_tags_per_overlay() -> None:
     assert overlays == {"teatree", "acme"}
     pending = [j for j in jobs if j.scanner.name == "pending_tasks"]
     assert len(pending) == 1  # singleton across overlays
+    # The stale-tickets scanner (#563) is wired once per overlay.
+    stale = {j.overlay for j in jobs if j.scanner.name == "stale_tickets"}
+    assert stale == {"teatree", "acme"}
 
 
 def test_zones_groups_disposition_candidates_by_reason(tmp_path: Path) -> None:
