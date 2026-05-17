@@ -27,9 +27,14 @@ class Session(models.Model):
     class Meta:
         db_table = "teatree_session"
 
+    # #837: retro is an orchestrator-level periodic synthesis, NOT a
+    # per-ticket sub-agent step. The shipping gate therefore no longer
+    # requires a per-ticket ``retro`` visit (the bureaucracy that pushed
+    # retro to the least-effective level). ``retro`` remains a recordable
+    # phase for audit; it is simply no longer GATED here.
     _REQUIRED_PHASES: ClassVar[dict[str, list[str]]] = {
         "reviewing": ["testing"],
-        "shipping": ["testing", "reviewing", "retro"],
+        "shipping": ["testing", "reviewing"],
         "requesting_review": ["shipping"],
     }
 

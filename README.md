@@ -154,7 +154,7 @@ Skills use the CLI for infrastructure (worktrees, databases, ports, CI), but the
 
 A few rules in the lifecycle skills are non-negotiable. They exist because each one prevents a specific class of failure that has bitten a real session:
 
-- **PRs go through `t3 <overlay> pr create`.** Raw `gh pr create` / `glab mr create` skips the shipping gate (testing + reviewing + retro phases), the visual-QA gate, and the title/description validator. The CLI is the only path that runs every guard; using it is mandatory whenever the overlay exposes the subcommand.
+- **PRs go through `t3 <overlay> pr create`.** Raw `gh pr create` / `glab mr create` skips the shipping gate (testing + reviewing phases), the visual-QA gate, and the title/description validator. The CLI is the only path that runs every guard; using it is mandatory whenever the overlay exposes the subcommand.
 - **The `reviewing` phase is satisfied by an independent sub-agent, not by self-review.** Before push, the implementing conversation spawns the `t3:reviewer` sub-agent (read-only, no edits) and applies its findings. Self-review against repo rules is a complement, not a substitute — the implementer's context carries the same blind spots that allowed the gap.
 - **State machine changes happen via transitions, never via direct field writes.** This holds for both code and CLI: every command that affects a state machine must call into a transition (`Ticket.code()`, `Ticket.review()`, `Ticket.ship()`, etc.) so the predicates run and the dependent gates stay aligned.
 - **Mass renames and cross-cutting refactors require an exhaustive sweep before "done".** A single `rg` pass is not enough — the agent runs every surface form (plain, quoted, attribute access, subscript, CamelCase variants, sibling repos) and confirms zero hits before claiming the rename is complete.
@@ -220,8 +220,7 @@ graph LR
   code --> test["test<br/>(verify)"]
   test --> review["review<br/>(inspect)"]
   review --> ship["ship<br/>(deliver)"]
-  ship --> retro["retro<br/>(improve)"]
-  retro -.-> ticket
+  retro["retro<br/>(orchestrator-level)"] -.-> ticket
 
   ship --> rr["review-request<br/>(notify)"]
   debug["debug<br/>(troubleshoot)"] -.-> code
