@@ -35,7 +35,7 @@ class TestProvisionRollbackPreservesAttestationSessions(TestCase):
     @override_settings(**SETTINGS)
     def test_failed_provision_rollback_keeps_phase_sessions(self) -> None:
         # A loop-built ticket already carrying attested work: a session
-        # with recorded phases (the maker≠checker ledger the gate reads).
+        # with recorded phases (the phase ledger the gate reads).
         ticket = Ticket.objects.create(issue_url="https://example.com/issues/748")
         session = Session.objects.create(ticket=ticket, agent_id="coding")
         session.visit_phase("testing", agent_id="coding")
@@ -188,7 +188,7 @@ class TestResolvePhaseSession(TestCase):
 
         assert session is not None
         # NEVER a raw blank-agent_id create (the lifecycle path's bug
-        # that fails _check_maker_checker closed, #755/#801).
+        # that split attestation across a fresh empty session, #801).
         assert session.agent_id == "phase-handoff"
         assert session.agent_id.strip() != ""
 
