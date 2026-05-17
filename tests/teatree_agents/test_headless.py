@@ -11,6 +11,7 @@ from django.test import TestCase, override_settings
 import teatree.agents.headless as headless_mod
 from teatree.agents.headless import (
     LoopWatchdog,
+    TicketBudget,
     _get_resume_session_id,
     _parse_cli_envelope,
     _parse_result,
@@ -555,6 +556,120 @@ class TestRunHeadlessRecordsStuckLoop(TestCase):
         assert "turns" in attempt.error
         assert "500" in attempt.error
         assert task.status == Task.Status.FAILED
+
+
+class TestTicketBudget(TestCase):
+    """Per-ticket cumulative cost-cap consumer (#885 / #398-4).
+
+    Sums ``TaskAttempt.cost_usd`` across *every* task under the ticket
+    (not just the task being dispatched, unlike the per-task
+    ``LoopWatchdog``) and refuses further dispatch once the configured
+    per-ticket ceiling is crossed.
+    """
+
+    def setUp(self) -> None:
+        self.ticket = Ticket.objects.create()
+        self.session = Session.objects.create(ticket=self.ticket)
+        self.task = Task.objects.create(ticket=self.ticket, session=self.session)
+
+    def test_disabled_budget_never_refuses(self) -> None:
+        TaskAttempt.objects.create(task=self.task, cost_usd=9999.0)
+        budget = TicketBudget(max_cost_usd=0.0)
+        assert budget.breach_reason(self.ticket) is None
+
+    def test_under_cap_does_not_refuse(self) -> None:
+        TaskAttempt.objects.create(task=self.task, cost_usd=2.0)
+        budget = TicketBudget(max_cost_usd=5.0)
+        assert budget.breach_reason(self.ticket) is None
+
+    def test_over_cap_refuses_with_observed_total(self) -> None:
+        TaskAttempt.objects.create(task=self.task, cost_usd=4.0)
+        TaskAttempt.objects.create(task=self.task, cost_usd=3.5)
+        budget = TicketBudget(max_cost_usd=5.0)
+        reason = budget.breach_reason(self.ticket)
+        assert reason is not None
+        assert "budget" in reason
+        assert "7.50" in reason
+        assert "5.00" in reason
+
+    def test_sums_across_all_tasks_of_the_ticket(self) -> None:
+        other_session = Session.objects.create(ticket=self.ticket)
+        other_task = Task.objects.create(ticket=self.ticket, session=other_session)
+        TaskAttempt.objects.create(task=self.task, cost_usd=3.0)
+        TaskAttempt.objects.create(task=other_task, cost_usd=3.0)
+        budget = TicketBudget(max_cost_usd=5.0)
+        reason = budget.breach_reason(self.ticket)
+        assert reason is not None
+        assert "6.00" in reason
+
+    def test_ignores_other_tickets(self) -> None:
+        other_ticket = Ticket.objects.create()
+        other_session = Session.objects.create(ticket=other_ticket)
+        other_task = Task.objects.create(ticket=other_ticket, session=other_session)
+        TaskAttempt.objects.create(task=other_task, cost_usd=99.0)
+        TaskAttempt.objects.create(task=self.task, cost_usd=1.0)
+        budget = TicketBudget(max_cost_usd=5.0)
+        assert budget.breach_reason(self.ticket) is None
+
+    def test_from_settings_reads_configured_cap(self) -> None:
+        with override_settings(TEATREE_TICKET_BUDGET={"max_cost_usd": 12.5}):
+            budget = TicketBudget.from_settings()
+        assert budget.max_cost_usd == pytest.approx(12.5)
+
+    def test_from_settings_defaults_to_disabled(self) -> None:
+        with override_settings():
+            from django.conf import settings  # noqa: PLC0415
+
+            if hasattr(settings, "TEATREE_TICKET_BUDGET"):
+                del settings.TEATREE_TICKET_BUDGET
+            budget = TicketBudget.from_settings()
+        # Conservative documented default mirrors #882's precedent: the
+        # cap is opt-in (0.0 = disabled) so no behaviour change until the
+        # user configures a ceiling.
+        assert budget.max_cost_usd == pytest.approx(0.0)
+
+
+class TestRunHeadlessRefusesOverBudgetTicket(TestCase):
+    """run_headless refuses dispatch and records a budget_exceeded failure."""
+
+    def setUp(self) -> None:
+        self.ticket = Ticket.objects.create()
+        self.session = Session.objects.create(ticket=self.ticket, agent_id="agent-1")
+
+    def test_over_budget_ticket_is_not_dispatched(self) -> None:
+        spent = Task.objects.create(ticket=self.ticket, session=self.session)
+        TaskAttempt.objects.create(task=spent, cost_usd=8.0)
+        task = Task.objects.create(ticket=self.ticket, session=self.session)
+
+        with (
+            override_settings(TEATREE_TICKET_BUDGET={"max_cost_usd": 5.0}),
+            patch.object(headless_mod.shutil, "which", return_value="/usr/bin/claude"),
+            patch.object(
+                headless_mod,
+                "_build_headless_command",
+                side_effect=AssertionError("subprocess must not be launched over budget"),
+            ),
+        ):
+            attempt = run_headless(task, phase="coding", overlay_skill_metadata={})
+
+        task.refresh_from_db()
+        assert attempt.exit_code != 0
+        assert "budget_exceeded" in attempt.error
+        assert "8.00" in attempt.error
+        assert task.status == Task.Status.FAILED
+
+    def test_under_budget_ticket_proceeds(self) -> None:
+        spent = Task.objects.create(ticket=self.ticket, session=self.session)
+        TaskAttempt.objects.create(task=spent, cost_usd=1.0)
+        task = Task.objects.create(ticket=self.ticket, session=self.session)
+        result_json = json.dumps({"summary": "Done"})
+
+        with override_settings(TEATREE_TICKET_BUDGET={"max_cost_usd": 5.0}), _fake_claude(stdout=f"{result_json}\n"):
+            attempt = run_headless(task, phase="coding", overlay_skill_metadata={})
+
+        task.refresh_from_db()
+        assert attempt.exit_code == 0
+        assert task.status == Task.Status.COMPLETED
 
 
 # --- _build_headless_command model tiering (#880) ---
