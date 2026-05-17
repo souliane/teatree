@@ -415,6 +415,85 @@ class TestReinstallAndResetup:
         assert "`t3 setup` reported a problem" in out
 
 
+class TestSelfDbMigrationOnUpdate:
+    """`t3 update` applies pending teatree self-DB migrations (#871).
+
+    Before #871 updating teatree git-pulled new code (incl. new
+    migrations) but never applied them — the only paths were the
+    destructive ``resetdb`` or the hook-discouraged raw ``manage.py
+    migrate``. The sanctioned update must migrate the self-DB
+    non-destructively via the ``uv --directory <clone> run python
+    manage.py migrate --no-input`` wrapper.
+    """
+
+    def test_migrate_self_db_runs_sanctioned_non_destructive_migrate(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        source = tmp_path / "clone"
+        source.mkdir()
+        calls: list[list[str]] = []
+
+        def _run(cmd: list[str], **_kw: object) -> _Proc:
+            calls.append(cmd)
+            return _Proc(0, "No migrations to apply.", "")
+
+        monkeypatch.setattr(update_mod.shutil, "which", lambda name: f"/usr/bin/{name}")
+        monkeypatch.setattr(update_mod, "run_allowed_to_fail", _run)
+
+        update_mod._migrate_self_db(source)
+
+        assert len(calls) == 1
+        cmd = calls[0]
+        assert cmd[:2] == ["/usr/bin/uv", "--directory"]
+        assert str(source) in cmd
+        assert cmd[-3:] == ["manage.py", "migrate", "--no-input"]
+
+    def test_migrate_self_db_warns_but_does_not_raise_on_failure(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        source = tmp_path / "clone"
+        source.mkdir()
+
+        monkeypatch.setattr(update_mod.shutil, "which", lambda name: f"/usr/bin/{name}")
+        monkeypatch.setattr(update_mod, "run_allowed_to_fail", lambda *a, **k: _Proc(1, "", "locked"))
+
+        update_mod._migrate_self_db(source)  # must not raise
+
+        assert "self-DB migration" in capsys.readouterr().out
+
+    def test_migrate_self_db_skips_when_uv_missing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        source = tmp_path / "clone"
+        source.mkdir()
+        monkeypatch.setattr(update_mod.shutil, "which", lambda _name: None)
+
+        update_mod._migrate_self_db(source)  # must not raise
+
+        assert "skipping self-DB migration" in capsys.readouterr().out
+
+    def test_reinstall_flow_applies_self_db_migrations_when_core_advanced(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        source = tmp_path / "editable-src"
+        source.mkdir()
+        calls: list[list[str]] = []
+
+        def _run(cmd: list[str], **_kw: object) -> _Proc:
+            calls.append(cmd)
+            return _Proc(0, "ok", "")
+
+        monkeypatch.setattr(update_mod.shutil, "which", lambda name: f"/usr/bin/{name}")
+        monkeypatch.setattr(setup_mod, "_current_editable_source", lambda _uv: source)
+        monkeypatch.setattr(update_mod, "run_allowed_to_fail", _run)
+
+        _reinstall_and_resetup([RepoUpdate("teatree", UpdateStatus.UPDATED, old_sha="a", new_sha="b")])
+
+        migrate_calls = [c for c in calls if "migrate" in c and "--no-input" in c]
+        assert len(migrate_calls) == 1
+        assert str(source) in migrate_calls[0]
+
+
 class TestRunCallback:
     def test_callback_returns_early_for_subcommand(self) -> None:
         ctx = typer.Context(click.Command("update"))
