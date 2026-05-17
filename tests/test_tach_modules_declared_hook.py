@@ -20,6 +20,10 @@ def _package(repo: Path, name: str) -> None:
     (pkg / "__init__.py").touch()
 
 
+def _module(repo: Path, name: str) -> None:
+    (repo / "src" / "teatree" / f"{name}.py").write_text("x = 1\n", encoding="utf-8")
+
+
 def _tach(repo: Path, *paths: str) -> None:
     body = "\n".join(f'[[modules]]\npath = "{p}"\ndepends_on = []\n' for p in paths)
     (repo / "tach.toml").write_text(body, encoding="utf-8")
@@ -47,3 +51,35 @@ class TestTachModulesDeclaredHook:
         _package(fake_repo, "core")
         _tach(fake_repo, "teatree.core.management")
         assert guard.main() == 1
+
+    def test_flags_undeclared_single_file_module(self, fake_repo: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        # The #740 blind spot: a single-file module under src/teatree/ with no
+        # [[modules]] entry has unconstrained cross-layer imports while
+        # `tach check` stays green — the guard must flag it like a package.
+        _module(fake_repo, "visual_qa")
+        _tach(fake_repo, "teatree.core")
+        assert guard.main() == 1
+        assert "teatree.visual_qa" in capsys.readouterr().out
+
+    def test_passes_when_single_file_module_declared(self, fake_repo: Path) -> None:
+        _module(fake_repo, "visual_qa")
+        _tach(fake_repo, "teatree.visual_qa")
+        assert guard.main() == 0
+
+    def test_dunder_single_file_modules_are_not_required(self, fake_repo: Path) -> None:
+        # __init__.py / __main__.py are not declarable tach modules.
+        _module(fake_repo, "__init__")
+        _module(fake_repo, "__main__")
+        _tach(fake_repo, "teatree.core")
+        assert guard.main() == 0
+
+    def test_allowlisted_leaf_module_is_not_required(self, fake_repo: Path) -> None:
+        # Genuine leaf modules (no internal imports, no internal importers) may
+        # be explicitly allowlisted instead of carrying an empty [[modules]].
+        _module(fake_repo, "urls")
+        guard_allow = guard.LEAF_MODULE_ALLOWLIST | {"teatree.urls"}
+        import unittest.mock as m  # noqa: PLC0415
+
+        with m.patch.object(guard, "LEAF_MODULE_ALLOWLIST", guard_allow):
+            _tach(fake_repo, "teatree.core")
+            assert guard.main() == 0
