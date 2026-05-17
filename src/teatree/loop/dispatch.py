@@ -60,6 +60,8 @@ _STATUSLINE_ZONE_BY_KIND: dict[str, str] = {
     "incoming_event.alert": "action_needed",
     "incoming_event.task_needed": "action_needed",
     "incoming_event.merge_needed": "action_needed",
+    "incoming_event.merge_blocked": "action_needed",
+    "incoming_event.merge_escalation": "action_needed",
     "incoming_event.recorded": "in_flight",
 }
 

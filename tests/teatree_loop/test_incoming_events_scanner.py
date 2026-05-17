@@ -1,7 +1,11 @@
-"""Behaviour tests for IncomingEventsScanner (#669)."""
+"""Behaviour tests for IncomingEventsScanner (#669, #654)."""
+
+from unittest.mock import patch
 
 from django.test import TestCase
 
+import teatree.core.overlay_loader as overlay_loader_mod
+from teatree.core.merge_guard import MergeGuard
 from teatree.core.models import IncomingEvent, ReplyDispatch
 from teatree.loop.scanners.incoming_events import IncomingEventsScanner
 
@@ -158,3 +162,100 @@ class TestIncomingEventsScanner(TestCase):
         signals = IncomingEventsScanner().scan()
 
         assert signals == []
+
+    # ── can_auto_merge guard (#654) ──────────────────────────────────────────
+
+    def _merge_event(self) -> IncomingEvent:
+        return _event(
+            source=IncomingEvent.Source.GITLAB,
+            body="approved",
+            key="gitlab:guard-test",
+            object_kind="merge_request",
+            object_attributes={"action": "approved", "iid": 99},
+        )
+
+    def test_default_overlay_emits_merge_needed(self) -> None:
+        """Default OverlayBase.can_auto_merge (permissive) → merge_needed signal."""
+        self._merge_event()
+
+        signals = IncomingEventsScanner().scan()
+
+        kinds = {s.kind for s in signals}
+        assert "incoming_event.merge_needed" in kinds
+        assert "incoming_event.merge_blocked" not in kinds
+        assert "incoming_event.merge_escalation" not in kinds
+
+    def test_overlay_blocks_merge_without_escalation(self) -> None:
+        """Overlay returning allowed=False, escalate=False → blocked signal, no merge."""
+        self._merge_event()
+
+        blocking_guard = MergeGuard(allowed=False, reason="not ready", escalate=False)
+        mock_overlay = patch.object(
+            overlay_loader_mod,
+            "get_overlay",
+            return_value=_StubOverlay(blocking_guard),
+        )
+        with mock_overlay:
+            signals = IncomingEventsScanner().scan()
+
+        kinds = {s.kind for s in signals}
+        assert "incoming_event.merge_blocked" in kinds
+        assert "incoming_event.merge_needed" not in kinds
+        assert "incoming_event.merge_escalation" not in kinds
+
+    def test_overlay_blocks_merge_with_escalation(self) -> None:
+        """Overlay returning allowed=False, escalate=True → escalation signal, no merge."""
+        self._merge_event()
+
+        escalating_guard = MergeGuard(allowed=False, reason="human review required", escalate=True)
+        mock_overlay = patch.object(
+            overlay_loader_mod,
+            "get_overlay",
+            return_value=_StubOverlay(escalating_guard),
+        )
+        with mock_overlay:
+            signals = IncomingEventsScanner().scan()
+
+        kinds = {s.kind for s in signals}
+        assert "incoming_event.merge_escalation" in kinds
+        assert "incoming_event.merge_needed" not in kinds
+        assert "incoming_event.merge_blocked" not in kinds
+
+    def test_merge_blocked_signal_carries_refs(self) -> None:
+        """Blocked signal payload carries event_id, target_ref, and thread_ref."""
+        self._merge_event()
+
+        blocking_guard = MergeGuard(allowed=False, reason="hold", escalate=False)
+        with patch.object(overlay_loader_mod, "get_overlay", return_value=_StubOverlay(blocking_guard)):
+            signals = IncomingEventsScanner().scan()
+
+        blocked = next(s for s in signals if s.kind == "incoming_event.merge_blocked")
+        assert "event_id" in blocked.payload
+        assert "target_ref" in blocked.payload
+        assert "thread_ref" in blocked.payload
+        assert blocked.payload["thread_ref"] == "thread-1"
+
+    def test_merge_escalation_signal_carries_refs(self) -> None:
+        """Escalation signal payload contains event_id, target_ref, and reason."""
+        self._merge_event()
+
+        escalating_guard = MergeGuard(allowed=False, reason="policy violation", escalate=True)
+        with patch.object(overlay_loader_mod, "get_overlay", return_value=_StubOverlay(escalating_guard)):
+            signals = IncomingEventsScanner().scan()
+
+        escalation = next(s for s in signals if s.kind == "incoming_event.merge_escalation")
+        assert "event_id" in escalation.payload
+        assert "target_ref" in escalation.payload
+        assert "reason" in escalation.payload
+        assert "thread_ref" in escalation.payload
+        assert escalation.payload["thread_ref"] == "thread-1"
+
+
+class _StubOverlay:
+    """Minimal overlay stub that returns a fixed MergeGuard from can_auto_merge."""
+
+    def __init__(self, guard: MergeGuard) -> None:
+        self._guard = guard
+
+    def can_auto_merge(self, *, target_ref: str, thread_ref: str) -> MergeGuard:
+        return self._guard
