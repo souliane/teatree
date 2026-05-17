@@ -93,7 +93,10 @@ def _check_shipping_gate(ticket: Ticket) -> ShippingGateFailure | None:
     """
     from teatree.core.models.errors import QualityGateError  # noqa: PLC0415
 
-    session = ticket.sessions.order_by("-pk").first()  # ty: ignore[unresolved-attribute]
+    # #801 SSOT: canonical earliest selection (was -pk-latest); the
+    # gate only READS — create=False so a gate check never mints a
+    # session as a side effect.
+    session = ticket.find_phase_session()
     if session is None:
         # No session => no attested work; nothing to reconcile. Returning
         # ``None`` here would let ``ticket.ship()`` raise a raw
@@ -421,7 +424,8 @@ class Command(TyperCommand):
         from teatree.core.models.errors import QualityGateError  # noqa: PLC0415
 
         ticket = Ticket.objects.get(pk=ticket_id)
-        session = ticket.sessions.order_by("-pk").first()
+        # #801 SSOT: canonical earliest selection, read-only (no create).
+        session = ticket.find_phase_session()
         if session is None:
             return {"allowed": False, "reason": "No active session", "missing": []}
         try:

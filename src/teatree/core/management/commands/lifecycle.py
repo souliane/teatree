@@ -9,7 +9,7 @@ from django_fsm import TransitionNotAllowed
 from django_typer.management import TyperCommand, command, initialize
 
 from teatree.core.db_anchor import assert_lifecycle_db_is_canonical
-from teatree.core.models import Session, Ticket
+from teatree.core.models import Ticket
 from teatree.core.phases import normalize_phase, phase_transition
 
 logger = logging.getLogger(__name__)
@@ -53,9 +53,11 @@ class Command(TyperCommand):
         # maker (testing/retro) and reviewer (reviewing) visits.
         assert_lifecycle_db_is_canonical(ticket)
         canonical = normalize_phase(phase)
-        session = ticket.sessions.order_by("-pk").first()
-        if session is None:
-            session = Session.objects.create(ticket=ticket)
+        # #801 SSOT: the canonical earliest+locked policy — never the
+        # old -pk-latest pick nor a raw blank-agent_id create (which
+        # failed _check_maker_checker closed). The explicit --agent-id
+        # seeds a created session's identity.
+        session = ticket.resolve_phase_session(agent_id=agent_id or "loop")
         session.visit_phase(canonical, agent_id=session.recording_identity(agent_id))
 
         transition_name = phase_transition(canonical)
