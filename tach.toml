@@ -46,7 +46,7 @@ depends_on = ["teatree.paths", "teatree.utils", "teatree.config"]
 
 [[modules]]
 path = "teatree.skill_loading"
-depends_on = ["teatree.types", "teatree.utils"]
+depends_on = ["teatree.types", "teatree.utils", "teatree.skill_deps"]
 
 [[modules]]
 path = "teatree.skill_schema"
@@ -61,6 +61,9 @@ depends_on = [
   "teatree.utils",
   "teatree.timeouts",
   "teatree.skill_schema",
+  "teatree.skill_deps",
+  "teatree.skill_map",
+  "teatree.trigger_parser",
   "teatree.agents",
   "teatree.backends"
 ]
@@ -79,12 +82,13 @@ path = "teatree.backends"
 depends_on = [
   "teatree.types",
   "teatree.utils",
-  "teatree.core"
+  "teatree.core",
+  "teatree.identity"
 ]
 
 [[modules]]
 path = "teatree.contrib"
-depends_on = ["teatree.types", "teatree.core", "teatree.config", "teatree.utils"]
+depends_on = ["teatree.types", "teatree.core", "teatree.config", "teatree.utils", "teatree.visual_qa"]
 
 [[modules]]
 path = "teatree.cli"
@@ -100,7 +104,10 @@ depends_on = [
   "teatree.overlay_init",
   "teatree.loop",
   "teatree.utils",
-  "teatree.repo_mode"
+  "teatree.repo_mode",
+  "teatree.triage",
+  "teatree.skill_deps",
+  "teatree.memory_audit"
 ]
 
 [[modules]]
@@ -114,7 +121,8 @@ depends_on = [
   "teatree.loop",
   "teatree.paths",
   "teatree.types",
-  "teatree.utils"
+  "teatree.utils",
+  "teatree.visual_qa"
 ]
 
 [[modules]]
@@ -131,3 +139,43 @@ depends_on = [
 [[modules]]
 path = "teatree.docker"
 depends_on = ["teatree.types", "teatree.utils"]
+
+[[modules]]
+path = "teatree.visual_qa"
+depends_on = ["teatree.core", "teatree.utils"]
+
+[[modules]]
+path = "teatree.identity"
+depends_on = ["teatree.config"]
+
+[[modules]]
+path = "teatree.settings"
+depends_on = ["teatree.config", "teatree.paths"]
+
+[[modules]]
+path = "teatree.cli_reference"
+depends_on = ["teatree.cli"]
+
+[[modules]]
+path = "teatree.triage"
+depends_on = ["teatree.utils"]
+
+[[modules]]
+path = "teatree.url_title_fetcher"
+depends_on = ["teatree.utils"]
+
+[[modules]]
+path = "teatree.skill_deps"
+depends_on = []
+
+[[modules]]
+path = "teatree.skill_map"
+depends_on = []
+
+[[modules]]
+path = "teatree.memory_audit"
+depends_on = []
+
+[[modules]]
+path = "teatree.trigger_parser"
+depends_on = []

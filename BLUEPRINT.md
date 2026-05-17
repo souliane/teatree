@@ -1705,12 +1705,16 @@ graph TD
     teatree.repo_mode --> teatree.config
     teatree.skill_loading --> teatree.types
     teatree.skill_loading --> teatree.utils
+    teatree.skill_loading --> teatree.skill_deps
     teatree.core --> teatree.types
     teatree.core --> teatree.paths
     teatree.core --> teatree.config
     teatree.core --> teatree.utils
     teatree.core --> teatree.timeouts
     teatree.core --> teatree.skill_schema
+    teatree.core --> teatree.skill_deps
+    teatree.core --> teatree.skill_map
+    teatree.core --> teatree.trigger_parser
     teatree.core --> teatree.agents
     teatree.core --> teatree.backends
     teatree.agents --> teatree.types
@@ -1720,10 +1724,12 @@ graph TD
     teatree.backends --> teatree.types
     teatree.backends --> teatree.utils
     teatree.backends --> teatree.core
+    teatree.backends --> teatree.identity
     teatree.contrib --> teatree.types
     teatree.contrib --> teatree.core
     teatree.contrib --> teatree.config
     teatree.contrib --> teatree.utils
+    teatree.contrib --> teatree.visual_qa
     teatree.cli --> teatree.paths
     teatree.cli --> teatree.config
     teatree.cli --> teatree.core
@@ -1736,6 +1742,9 @@ graph TD
     teatree.cli --> teatree.loop
     teatree.cli --> teatree.utils
     teatree.cli --> teatree.repo_mode
+    teatree.cli --> teatree.triage
+    teatree.cli --> teatree.skill_deps
+    teatree.cli --> teatree.memory_audit
     teatree.core.management --> teatree.core
     teatree.core.management --> teatree.agents
     teatree.core.management --> teatree.backends
@@ -1745,6 +1754,7 @@ graph TD
     teatree.core.management --> teatree.paths
     teatree.core.management --> teatree.types
     teatree.core.management --> teatree.utils
+    teatree.core.management --> teatree.visual_qa
     teatree.loop --> teatree.types
     teatree.loop --> teatree.paths
     teatree.loop --> teatree.utils
@@ -1753,12 +1763,24 @@ graph TD
     teatree.loop --> teatree.backends
     teatree.docker --> teatree.types
     teatree.docker --> teatree.utils
+    teatree.visual_qa --> teatree.core
+    teatree.visual_qa --> teatree.utils
+    teatree.identity --> teatree.config
+    teatree.settings --> teatree.config
+    teatree.settings --> teatree.paths
+    teatree.cli_reference --> teatree.cli
+    teatree.triage --> teatree.utils
+    teatree.url_title_fetcher --> teatree.utils
     teatree.paths
     teatree.types
     teatree.templates
     teatree.claude_sessions
     teatree.overlay_init
     teatree.skill_schema
+    teatree.skill_deps
+    teatree.skill_map
+    teatree.memory_audit
+    teatree.trigger_parser
 ```
 
 <!-- tach-dependency-graph:end -->
