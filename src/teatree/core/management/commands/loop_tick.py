@@ -5,6 +5,7 @@ actions, and renders the statusline.  Called from ``t3 loop tick`` which
 delegates here via subprocess.
 """
 
+import datetime as dt
 import json
 from dataclasses import asdict
 from pathlib import Path
@@ -26,6 +27,29 @@ def _report_to_dict(report: TickReport) -> ReportDict:
         "statusline_path": str(report.statusline_path) if report.statusline_path else "",
         "errors": report.errors,
         "actions": [asdict(action) for action in report.actions],
+        "skipped": False,
+        "skipped_reason": "",
+    }
+
+
+def _skipped_report_dict(started_at: dt.datetime, reason: str) -> ReportDict:
+    """The full report contract for a tick that skipped (sibling holds the lease).
+
+    #744 defect 1: a skipped tick must still emit every contract key
+    (zeroed) so a coordinator pumping ``t3 loop tick --json`` can
+    ``json.load(...)["signal_count"]`` / ``["errors"]`` unconditionally
+    — the bare ``{"skipped": ...}`` object ``KeyError``-ed every
+    structured consumer on each contended beat.
+    """
+    return {
+        "started_at": started_at.isoformat(),
+        "signal_count": 0,
+        "action_count": 0,
+        "statusline_path": "",
+        "errors": {},
+        "actions": [],
+        "skipped": True,
+        "skipped_reason": reason,
     }
 
 
@@ -67,10 +91,21 @@ class Command(TyperCommand):
         # ticks proceeds; the rest SKIP, same contract as the old flock.
         owner = f"pid-{os.getpid()}"
         if not LoopLease.objects.acquire("loop-tick", owner=owner):
+            from teatree.loop.tick import _write_tick_meta  # noqa: PLC0415
+
+            reason = "another tick is already running"
+            now = dt.datetime.now(tz=dt.UTC)
+            # #744 defect 2: a sibling tick holds the lease and IS
+            # keeping the loop fresh — advance tick-meta's next_epoch so
+            # sustained multi-session contention never decays into a
+            # false `tick stale` on the statusline.
+            _write_tick_meta(now, target=statusline_file)
             if json_output:
-                self.stdout.write(json.dumps({"skipped": "another tick is already running"}))
+                # #744 defect 1: full contract shape so structured
+                # consumers index unconditionally (no KeyError on skip).
+                self.stdout.write(json.dumps(_skipped_report_dict(now, reason), indent=2))
             else:
-                self.stdout.write("SKIP  another tick is already running — loop-tick lease held.")
+                self.stdout.write(f"SKIP  {reason} — loop-tick lease held.")
             return
         try:
             if overlay:
