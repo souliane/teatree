@@ -65,7 +65,9 @@ class TestVisitPhaseVocabulary(TestCase):
 
     def test_review_short_name_recorded_canonically(self) -> None:
         ticket = _ticket()
-        call_command("lifecycle", "visit-phase", str(ticket.pk), "review")
+        # §17.6 candidate 13: a `reviewing` visit requires an explicit
+        # independent reviewer --agent-id.
+        call_command("lifecycle", "visit-phase", str(ticket.pk), "review", agent_id="cold-reviewer")
         session = ticket.sessions.first()
         assert "reviewing" in session.visited_phases
 
@@ -85,7 +87,10 @@ class TestVisitPhaseLoudFailure(TestCase):
     def test_out_of_order_transition_logs_warning_and_reports_state(self) -> None:
         ticket = _ticket(state=Ticket.State.NOT_STARTED)
         with self.assertLogs("teatree.core.management.commands.lifecycle", level="WARNING") as cm:
-            result = cast("str", call_command("lifecycle", "visit-phase", str(ticket.pk), "review"))
+            result = cast(
+                "str",
+                call_command("lifecycle", "visit-phase", str(ticket.pk), "review", agent_id="cold-reviewer"),
+            )
 
         ticket.refresh_from_db()
         # Phase still recorded (single source of truth), FSM did NOT move.
@@ -352,25 +357,29 @@ class TestCliVisitPhaseRecordsAuditTrail(TestCase):
         # phase_visits audit trail (symmetric with the loop path).
         ticket = _ticket(state=Ticket.State.STARTED)
         session = Session.objects.create(ticket=ticket, agent_id="cli-actor")
-        call_command("lifecycle", "visit-phase", str(ticket.pk), "review")
+        call_command("lifecycle", "visit-phase", str(ticket.pk), "review", agent_id="cold-reviewer")
 
         session.refresh_from_db()
         assert "reviewing" in session.visited_phases
         assert "reviewing" in session.phase_visits
-        assert session.phase_visits["reviewing"]["agent_id"] == "cli-actor"
+        # §17.6 candidate 13: the explicit reviewer id is recorded (not the
+        # maker session identity), so the attestation names who reviewed.
+        assert session.phase_visits["reviewing"]["agent_id"] == "cold-reviewer"
 
-    def test_cli_recorded_same_session_same_agent_does_not_block_gate(self) -> None:
-        # #833: both phases on the SAME session under the SAME identity no
-        # longer trip a gate failure — phases present ⇒ pass.
+    def test_cli_recorded_phases_present_does_not_block_gate(self) -> None:
+        # #833: phases present ⇒ gate passes. §17.6 candidate 13 additionally
+        # requires the `reviewing` visit to name an explicit independent
+        # reviewer — the maker phases keep the session identity, reviewing
+        # carries the distinct reviewer id.
         ticket = _ticket(state=Ticket.State.REVIEWED)  # no FSM auto-scheduling
         session = Session.objects.create(ticket=ticket, agent_id="same-agent")
         call_command("lifecycle", "visit-phase", str(ticket.pk), "code")
         call_command("lifecycle", "visit-phase", str(ticket.pk), "test")
-        call_command("lifecycle", "visit-phase", str(ticket.pk), "review")
+        call_command("lifecycle", "visit-phase", str(ticket.pk), "review", agent_id="cold-reviewer")
 
         session.refresh_from_db()
         assert session.phase_visits["coding"]["agent_id"] == "same-agent"
-        assert session.phase_visits["reviewing"]["agent_id"] == "same-agent"
+        assert session.phase_visits["reviewing"]["agent_id"] == "cold-reviewer"
         session.check_gate("reviewing")  # no raise
 
     def test_cli_distinct_agents_also_pass(self) -> None:
@@ -378,11 +387,11 @@ class TestCliVisitPhaseRecordsAuditTrail(TestCase):
         session = Session.objects.create(ticket=ticket, agent_id="checker")
         session.visit_phase("coding", agent_id="maker")
         session.visit_phase("testing", agent_id="maker")
-        call_command("lifecycle", "visit-phase", str(ticket.pk), "review")
+        call_command("lifecycle", "visit-phase", str(ticket.pk), "review", agent_id="cold-reviewer")
 
         session.refresh_from_db()
         assert session.phase_visits["coding"]["agent_id"] == "maker"
-        assert session.phase_visits["reviewing"]["agent_id"] == "checker"
+        assert session.phase_visits["reviewing"]["agent_id"] == "cold-reviewer"
         session.check_gate("reviewing")
 
 

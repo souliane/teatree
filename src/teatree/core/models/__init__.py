@@ -3,6 +3,7 @@ from teatree.core.models.errors import InvalidTransitionError, QualityGateError
 from teatree.core.models.incoming_event import IncomingEvent
 from teatree.core.models.intent_classification import IntentClassification
 from teatree.core.models.loop_lease import LoopLease
+from teatree.core.models.merge_clear import MergeAudit, MergeClear
 from teatree.core.models.pull_request import PullRequest
 from teatree.core.models.reply_dispatch import ReplyDispatch
 from teatree.core.models.session import Session
@@ -19,6 +20,8 @@ __all__ = [
     "IntentClassification",
     "InvalidTransitionError",
     "LoopLease",
+    "MergeAudit",
+    "MergeClear",
     "Ports",
     "PullRequest",
     "QualityGateError",

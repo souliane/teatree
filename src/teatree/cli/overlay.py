@@ -121,6 +121,7 @@ DJANGO_GROUPS: dict[str, tuple[str, list[tuple[str, str]]]] = {
         "Session lifecycle and phase tracking.",
         [
             ("visit-phase", "Mark a phase as visited on the ticket's latest session."),
+            ("clear-ledger", "Clear a reused ticket's stale phase ledger (sanctioned session-retire)."),
         ],
     ),
     "env": (
@@ -138,6 +139,7 @@ DJANGO_GROUPS: dict[str, tuple[str, list[tuple[str, str]]]] = {
         "Ticket state management.",
         [
             ("transition", "Transition a ticket to a new state."),
+            ("merge", "Execute the IN_REVIEW → MERGED keystone transition (BLUEPRINT §17.4)."),
             ("list", "List tickets, optionally filtered by state and/or overlay."),
             ("sync-completions", "Check post-ship tickets against upstream issues and advance completed ones."),
             ("comment", "Post a comment to an issue or work item by its URL."),
