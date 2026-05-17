@@ -1690,6 +1690,56 @@ Dev dependencies: ruff, pytest, pytest-cov, pytest-django, ty, import-linter, pr
 - Overlay-specific names (customer, tenant, product) **must not appear** in `src/teatree/` or `docs/`. The CI grep gate (`scripts/hooks/check_no_overlay_leak.py`) enforces this — forbidden terms are loaded at runtime from `$TEATREE_OVERLAY_LEAK_TERMS` or `~/.teatree.toml` `[overlay_leak].terms` so the public repo never holds tenant names.
 - E2E tests (when overlays declare them) use file-based SQLite (not `:memory:`) because Playwright spawns a separate server process.
 
+---
+
+## 17. The Self-Improving Factory Architecture
+
+Teatree is a durable self-healing **and** self-improving development factory. This section is the lasting architectural reference for that property; it is the umbrella under [#836](https://github.com/souliane/teatree/issues/836), and each component below is a separately tracked ticket implemented as deterministic teatree code (not skill prose).
+
+The reason this architecture exists, observed repeatedly: durability comes from **enforcement encoded in code/structure**, not prose that decays. A behavioural rule kept in memory/skills and relied on by vigilance recurs anyway; the same rule encoded as a gate/test/hook does not. The invariants below are the structural form of that lesson — they are load-bearing and bind every change to teatree itself.
+
+### 17.1 Invariants
+
+1. **Two layers, never conflated.** *Self-healing* (independent review, draft-locks, recovery, gates) is the substrate. *Self-improvement* runs on top: each caught failure-class is converted into the smallest enforcement artifact that makes the class structurally impossible. Self-improvement is **gated by** self-healing — the system is never changed in a way the healing layer cannot catch or roll back.
+
+2. **The flywheel.** A defect (from diff review, OR the code-health loop on un-changed code, OR an orchestrator-noticed near-miss) → the orchestrator synthesises → the output is the *smallest enforcement* (gate/test/hook), never a prose rule → the failure-class is extinct. A repeat failure whose only output is memory/prose is a flywheel failure.
+
+3. **Topology.** The orchestrator is the synthesis brain (retro synthesis, code-health triage, enforcement escalation, merge/clear decisions). Sub-agents are sensors/hands that emit structured signal into durable state and never self-judge. Skills carry judgment/methodology. Teatree code carries the deterministic loops, gates, and intake. Corollary: mechanics → code, judgment → skill.
+
+4. **Blast-radius rule.** Changes to the healing/gate substrate itself are human-merge-only and draft-locked by default.
+
+5. **Durability discipline is load-bearing.** Durable task/state plus pre-compaction snapshots are what let the orchestrator brain survive compaction/restart; keep them.
+
+### 17.2 The flywheel
+
+```mermaid
+graph LR
+    subgraph sources["Defect sources"]
+        D1["Diff review<br/>(changed code)"]
+        D2["Code-health loop<br/>(un-changed code)"]
+        D3["Orchestrator-noticed<br/>near-miss"]
+    end
+    D1 --> ORCH
+    D2 --> ORCH
+    D3 --> ORCH
+    ORCH["Orchestrator<br/>synthesis brain"] --> ENF["Smallest enforcement<br/>(gate / test / hook)<br/>never a prose rule"]
+    ENF --> EXT["Failure-class<br/>extinct"]
+    ENF -.->|"gated by"| HEAL["Self-healing substrate<br/>(review · draft-locks ·<br/>recovery · gates)"]
+    HEAL -.->|"catches / rolls back"| ENF
+```
+
+Self-improvement (the upper path: defect → synthesis → enforcement) only ever lands through the self-healing substrate (invariant 1). The substrate both feeds the flywheel (review caught the defect) and bounds it (it can catch or roll back the change the flywheel produces).
+
+### 17.3 Components
+
+Each component is its own tracked ticket, implemented as teatree code with TDD plus independent review; substrate-touching components are human-merge-only and draft-locked (invariant 4).
+
+- **C1 — Retro → orchestrator-only, and remove the per-ticket retro phase-gate.** Sub-agents emit raw signal into durable state; the orchestrator does periodic synthesis biased to enforcement output. This removes the per-ticket retro ceremony (the bureaucracy) and catches systemic patterns only the orchestrator can see across tickets. (The per-ticket retro phase-gate and shipping-gate wording elsewhere in this document are owned by a separate ticket — [#837](https://github.com/souliane/teatree/issues/837) — not by the factory-architecture section.)
+
+- **C2 — Code-health loop.** Extract *only* the deterministic *harness* — scoped scan + dedupe-against-open-tickets + severity-gating + ticket intake + pacing — into teatree code; the review *judgment* stays in the existing review skill (invariant 3: mechanics → code, judgment → skill). This is the latent-code sensor feeding the same flywheel on code no diff touched. It must be paced and deduped or it floods the backlog.
+
+- **C3 — Availability (24/7 single-session).** Two question modes (ask-now vs. pile-while-away) plus a work-hours auto-switch and a manual toggle. Away-mode routes a would-be question into the durable backlog; it never bypasses the structured-question gate (§ 5.6, `handle_enforce_structured_question`). This keeps the orchestrator brain available around the clock.
+
 ## Module Dependency Graph
 
 <!-- tach-dependency-graph:start -->
