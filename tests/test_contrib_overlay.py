@@ -375,6 +375,21 @@ class TestEntryPointDiscovery:
         assert ep.value == "teatree.contrib.t3_teatree.overlay:TeatreeOverlay"
 
 
+class TestMaxConcurrentAutoStarts:
+    """The in-repo dogfooding overlay raises loop auto-start concurrency to 3."""
+
+    def test_in_repo_overlay_resolves_to_three(self) -> None:
+        overlay = TeatreeOverlay()
+        assert overlay.config.max_concurrent_auto_starts == 3
+
+    def test_base_default_stays_one(self) -> None:
+        """Guard: external/multi-repo overlays must keep the conservative default of 1."""
+        from teatree.core.overlay import OverlayConfig  # noqa: PLC0415
+
+        assert OverlayConfig.max_concurrent_auto_starts == 1
+        assert OverlayConfig().max_concurrent_auto_starts == 1
+
+
 class TestAppsConfig:
     def test_app_name(self) -> None:
         assert T3TeatreeConfig.name == "teatree.contrib.t3_teatree"
