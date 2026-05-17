@@ -27,7 +27,7 @@ class Command(TyperCommand):
         phase: str,
         agent_id: Annotated[
             str,
-            typer.Option(help="Recording agent identity stamped into phase_visits (maker≠checker attribution)."),
+            typer.Option(help="Recording agent identity stamped into phase_visits (audit trail)."),
         ] = "",
     ) -> str:
         """Mark a phase as visited and advance the ticket FSM if applicable.
@@ -40,11 +40,11 @@ class Command(TyperCommand):
         ``ticket.state`` is included in the output so a skipped or refused
         transition is visible rather than silently swallowed.
 
-        ``--agent-id`` records the recording agent's identity for
-        maker≠checker (#755). Resolution is delegated to
+        ``--agent-id`` records the recording agent's identity into the
+        ``phase_visits`` audit trail. Resolution is delegated to
         ``Session.recording_identity`` so the attribution is **never
         empty** even when neither ``--agent-id`` nor ``Session.agent_id``
-        is set — a blank previously made the gate vacuously pass.
+        is set.
         """
         ticket = Ticket.objects.resolve(ticket_id)
         # #779: refuse to record a phase into a worktree-isolated DB the
@@ -54,9 +54,8 @@ class Command(TyperCommand):
         assert_lifecycle_db_is_canonical(ticket)
         canonical = normalize_phase(phase)
         # #801 SSOT: the canonical earliest+locked policy — never the
-        # old -pk-latest pick nor a raw blank-agent_id create (which
-        # failed _check_maker_checker closed). The explicit --agent-id
-        # seeds a created session's identity.
+        # old -pk-latest pick nor a raw blank-agent_id create. The
+        # explicit --agent-id seeds a created session's identity.
         session = ticket.resolve_phase_session(agent_id=agent_id or "loop")
         session.visit_phase(canonical, agent_id=session.recording_identity(agent_id))
 
