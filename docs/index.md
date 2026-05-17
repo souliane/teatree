@@ -18,7 +18,7 @@ Two surfaces sit on top:
 
 ## How it fits together
 
-- **`teatree/`** -- the Django project. Models, management commands, overlay loader, code-host + messaging backends, the `/loop` and its scanners, and the `t3` CLI.
+- **`src/teatree/`** -- the Django project. Models, management commands, overlay loader, code-host + messaging backends, the `/loop` and its scanners, and the `t3` CLI.
 - **`skills/*/`** -- skill directories. Each teaches the agent one phase of the development lifecycle.
 - **Overlay pattern** -- project-specific behaviour lives in a lightweight overlay package that subclasses `OverlayBase` and registers via a `teatree.overlays` entry point. Teatree stays generic; the overlay wires in your repos, services, code host, and messaging backend.
 
@@ -38,6 +38,6 @@ Your overlay is a lightweight Python package with an `OverlayBase` subclass and 
 
 - [Installation](install.md) -- setup and first project
 - [Architecture](../BLUEPRINT.md) -- the canonical architecture spec
-- [CLI Reference](cli.md) -- the `t3` command and its subcommands
+- [CLI Reference](generated/cli-reference.md) -- the `t3` command and its subcommands
 - [Overlay API](overlay-api.md) -- the contract between teatree and your project
 - [Management Commands](management-commands.md) -- Django management commands exposed through `t3`
