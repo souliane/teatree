@@ -14,6 +14,16 @@ from teatree.core.phases import normalize_phase, phase_transition
 
 logger = logging.getLogger(__name__)
 
+# §17.6 enforcement candidate (13): a `reviewing` visit is the independent
+# cold-review attestation. A maker/coding-agent identity recording it would
+# let the author rubber-stamp their own work (the §17.8 clause-3 violation in
+# attestation form). These role prefixes are the maker side and are refused.
+_NON_REVIEWER_AGENT_PREFIXES = ("maker:", "maker-", "coding-agent", "coding", "loop")
+
+
+class ReviewerAttestationError(RuntimeError):
+    """A ``reviewing`` phase visit was attempted without a valid reviewer identity."""
+
 
 class Command(TyperCommand):
     @initialize()
@@ -53,10 +63,32 @@ class Command(TyperCommand):
         # maker (testing/retro) and reviewer (reviewing) visits.
         assert_lifecycle_db_is_canonical(ticket)
         canonical = normalize_phase(phase)
+        # §17.6 enforcement candidate (13): a `reviewing` visit is the
+        # independent cold-review attestation — it MUST carry an explicit
+        # reviewer `--agent-id`, and that identity must not be a maker /
+        # coding-agent / loop role (the author rubber-stamping their own
+        # work). Never idempotent-silent: an existing `reviewing` key is
+        # overwritten with the new reviewer + a loud log, never a silent
+        # false-success.
+        if canonical == "reviewing":
+            _assert_reviewer_attestation(ticket, agent_id)
         # #801 SSOT: the canonical earliest+locked policy — never the
         # old -pk-latest pick nor a raw blank-agent_id create. The
         # explicit --agent-id seeds a created session's identity.
         session = ticket.resolve_phase_session(agent_id=agent_id or "loop")
+        if canonical == "reviewing" and canonical in (session.phase_visits or {}):
+            logger.warning(
+                "Overwriting existing 'reviewing' attestation on session %s for ticket %s "
+                "(was %s, now %s) — explicit re-review, not idempotent silent success",
+                session.pk,
+                ticket.pk,
+                (session.phase_visits or {}).get("reviewing"),
+                agent_id,
+            )
+            visits = dict(session.phase_visits or {})
+            visits.pop("reviewing", None)
+            session.phase_visits = visits
+            session.save(update_fields=["phase_visits"])
         session.visit_phase(canonical, agent_id=session.recording_identity(agent_id))
 
         transition_name = phase_transition(canonical)
@@ -64,6 +96,79 @@ class Command(TyperCommand):
             _try_advance(ticket, transition_name)
 
         return f"Phase '{canonical}' marked as visited on session {session.pk} (ticket state: {ticket.state})"
+
+    @command(name="clear-ledger")
+    def clear_ledger(
+        self,
+        ticket_id: str,
+        *,
+        confirm: Annotated[
+            bool,
+            typer.Option(help="Required: confirm the destructive phase-ledger clear."),
+        ] = False,
+    ) -> str:
+        """Clear a reused ticket's stale phase ledger (sanctioned session-retire).
+
+        §17.6 enforcement candidate (9): reused tickets accumulate a stale
+        phase ledger from a prior workstream — the shipping gate then sees a
+        passing aggregate that no longer reflects the new work (the
+        anti-vacuous attestation gap). Hand-editing ``phase_visits`` /
+        ``visited_phases`` was the only escape, which is exactly the
+        out-of-band state mutation invariant 7 prohibits. This is the
+        sanctioned ``t3`` path: it retires every session's phase ledger for
+        the ticket in one transaction so the next workstream re-earns its
+        attestations from scratch. Requires ``--confirm`` (destructive).
+        """
+        ticket = Ticket.objects.resolve(ticket_id)
+        assert_lifecycle_db_is_canonical(ticket)
+        if not confirm:
+            return (
+                f"Refusing to clear ticket {ticket.pk}'s phase ledger without --confirm "
+                f"(destructive: every session's visited_phases/phase_visits is wiped)"
+            )
+        with transaction.atomic():
+            cleared = 0
+            for session in ticket.sessions.select_for_update().all():
+                session.visited_phases = []
+                session.phase_visits = {}
+                session.repos_modified = []
+                session.repos_tested = []
+                session.save(
+                    update_fields=["visited_phases", "phase_visits", "repos_modified", "repos_tested"],
+                )
+                cleared += 1
+        logger.warning(
+            "Phase ledger cleared for ticket %s across %d session(s) — sanctioned session-retire",
+            ticket.pk,
+            cleared,
+        )
+        return f"Cleared phase ledger for ticket {ticket.pk} across {cleared} session(s)"
+
+
+def _assert_reviewer_attestation(ticket: Ticket, agent_id: str) -> None:
+    """Refuse a ``reviewing`` visit without an explicit, non-maker reviewer id.
+
+    §17.6 enforcement candidate (13): the reviewing attestation is the
+    independent cold-review signal. An empty ``--agent-id`` (it would fall
+    back to the session's own maker identity) or a maker/coding-agent/loop
+    role recording it is the author attesting their own review — refused.
+    """
+    explicit = agent_id.strip()
+    if not explicit:
+        msg = (
+            f"`lifecycle visit-phase {ticket.pk} reviewing` requires an explicit "
+            f"--agent-id naming the independent reviewer (§17.6 candidate 13); "
+            f"an empty id would fall back to the maker session identity"
+        )
+        raise ReviewerAttestationError(msg)
+    lowered = explicit.lower()
+    if any(lowered == prefix or lowered.startswith(prefix) for prefix in _NON_REVIEWER_AGENT_PREFIXES):
+        msg = (
+            f"--agent-id {explicit!r} is a maker/coding-agent/loop role — a `reviewing` "
+            f"attestation must be recorded by an independent reviewer, not the author "
+            f"(§17.6 candidate 13 / §17.8 clause 3)"
+        )
+        raise ReviewerAttestationError(msg)
 
 
 def _try_advance(ticket: Ticket, transition_name: str) -> None:

@@ -4368,7 +4368,10 @@ class TestLifecycleVisitPhase(TestCase):
         session = Session.objects.create(ticket=ticket)
         session.visit_phase("testing")
 
-        result = cast("str", call_command("lifecycle", "visit-phase", str(ticket.pk), "reviewing"))
+        result = cast(
+            "str",
+            call_command("lifecycle", "visit-phase", str(ticket.pk), "reviewing", agent_id="cold-reviewer"),
+        )
 
         assert ticket.sessions.count() == 1
         session.refresh_from_db()
@@ -4393,7 +4396,10 @@ class TestLifecycleVisitPhase(TestCase):
         ticket = Ticket.objects.create(
             overlay="test", issue_url="https://example.com/issues/vp4", state=Ticket.State.NOT_STARTED
         )
-        cast("str", call_command("lifecycle", "visit-phase", str(ticket.pk), "reviewing"))
+        cast(
+            "str",
+            call_command("lifecycle", "visit-phase", str(ticket.pk), "reviewing", agent_id="cold-reviewer"),
+        )
 
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.NOT_STARTED
