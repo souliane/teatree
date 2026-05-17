@@ -1372,3 +1372,82 @@ class TestCommitsAbsentFromAllRemotes:
 
         with pytest.raises(utils_run_mod.CommandFailedError):
             git.commits_absent_from_all_remotes(str(local), "does-not-exist")
+
+
+def _init_dirty_repo(path: Path, *, marker: str = "tracked") -> None:
+    """A repo with one committed file edited dirty + one untracked file.
+
+    ``marker`` distinguishes two repos by filename so a hijacked ``git`` call
+    produces a visibly-wrong patch (the decoy's filenames, not the target's).
+    """
+    path.mkdir()
+    utils_run_mod.run_checked(["git", "init", "-q", "-b", "main", str(path)])
+    for k, v in {"user.email": "t@x", "user.name": "t", "commit.gpgsign": "false"}.items():
+        utils_run_mod.run_checked(["git", "-C", str(path), "config", k, v])
+    (path / f"{marker}.txt").write_text("base\n", encoding="utf-8")
+    utils_run_mod.run_checked(["git", "-C", str(path), "add", "-A"])
+    utils_run_mod.run_checked(["git", "-C", str(path), "commit", "-q", "-m", "initial"])
+    (path / f"{marker}.txt").write_text("base\nEDITED\n", encoding="utf-8")
+    (path / f"{marker}_new.txt").write_text("new content\n", encoding="utf-8")
+
+
+class TestFullWorktreeDiff:
+    """#835 — the captured patch must be plain-``git apply``-able everywhere."""
+
+    def test_patch_has_standard_prefixes_under_diff_noprefix_config(self, tmp_path: Path) -> None:
+        """Repo-local ``diff.noprefix=true`` must NOT strip ``a/``/``b/`` prefixes.
+
+        ``git diff`` honours the caller's git config; a user with
+        ``diff.noprefix=true`` (common; was set on the review machine) would
+        otherwise get a prefix-less patch that a plain ``git apply`` cannot
+        restore — total loss of the captured work, the exact #835 scenario.
+        The config is set REPO-LOCAL on purpose: the conftest HOME sandbox
+        masks real user git config, so a HOME-scoped setting would not exercise
+        this. RED on ``git diff HEAD --binary`` (no prefix flags); GREEN once
+        ``--src-prefix=a/ --dst-prefix=b/`` is forced.
+        """
+        repo = tmp_path / "repo"
+        _init_dirty_repo(repo)
+        utils_run_mod.run_checked(["git", "-C", str(repo), "config", "diff.noprefix", "true"])
+
+        patch_text = git.full_worktree_diff(str(repo))
+
+        assert "--- a/tracked.txt" in patch_text
+        assert "+++ b/tracked.txt" in patch_text
+
+        restore = tmp_path / "restore"
+        utils_run_mod.run_checked(["git", "init", "-q", "-b", "main", str(restore)])
+        (restore / "tracked.txt").write_text("base\n", encoding="utf-8")
+        env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+        diff_file = tmp_path / "wt.diff"
+        diff_file.write_text(patch_text, encoding="utf-8")
+        # Plain ``git apply`` — the restore contract the docstring/BLUEPRINT promise.
+        utils_run_mod.run_checked(["git", "-C", str(restore), "apply", str(diff_file)], env=env)
+        assert (restore / "tracked.txt").read_text(encoding="utf-8") == "base\nEDITED\n"
+        assert (restore / "tracked_new.txt").read_text(encoding="utf-8") == "new content\n"
+
+    def test_ignores_poisoned_git_env_overrides(self, tmp_path: Path) -> None:
+        """A hijacking ``GIT_*`` env must not redirect the diff to another repo.
+
+        The inline pre-commit ``pytest`` hook runs under an outer ``git commit``
+        exporting ``GIT_DIR``/``GIT_WORK_TREE``. Inherited, they would point the
+        capture's ``git`` at the outer repo instead of the worktree it was
+        asked about. RED if the ``GIT_*`` strip is reverted.
+        """
+        target = tmp_path / "target"
+        _init_dirty_repo(target, marker="target")
+        decoy = tmp_path / "decoy"
+        _init_dirty_repo(decoy, marker="decoy")
+
+        with patch.dict(
+            os.environ,
+            {"GIT_DIR": str(decoy / ".git"), "GIT_WORK_TREE": str(decoy)},
+        ):
+            patch_text = git.full_worktree_diff(str(target))
+
+        # The patch must describe the TARGET's files. A leaked GIT_* would
+        # redirect the diff to the decoy repo — its filenames would appear and
+        # the target's would not.
+        assert "a/target.txt" in patch_text, patch_text
+        assert "target_new.txt" in patch_text, patch_text
+        assert "decoy" not in patch_text, patch_text
