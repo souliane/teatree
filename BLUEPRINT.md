@@ -1657,6 +1657,22 @@ missing env caches, and clears stale `worktree_path` values.
 failures are collected into a `[with errors: ...]` suffix on the return label so
 the caller can see exactly which step went wrong.
 
+Before the destructive `git worktree remove`, `_remove_git_worktree` calls
+`teatree.core.worktree_recovery.capture_recovery_artifact` (#835). When the
+worktree has uncommitted changes OR unpushed commits — the `force=True`
+`clean-all` / abandon reaping path that once destroyed a completed-but-uncommitted
+change set — it writes a self-contained, restorable artifact to
+`<system tempdir>/t3-recover-<ticket>-<UTC>-<rand>/`: a `git bundle` of the
+branch (`branch.bundle`) plus a single `git diff` patch covering staged,
+unstaged, and untracked changes (`working-tree.diff`). A clean, fully-pushed
+worktree captures nothing — the hard-delete path is unchanged. A bundle is
+preferred over relocating the worktree dir (a moved worktree leaves git's
+worktree admin pointing at a stale path; a bundle restores via `git clone` /
+`git fetch`). Capture failure is logged and surfaced in the label but never
+blocks the prune — blocking would re-create the stuck-cleanup state #835
+rejects. No TTL/quota/purge: artifacts live in the OS temp dir and are reaped by
+the OS's own lifecycle.
+
 ---
 
 ## 15. Dependencies
