@@ -252,7 +252,9 @@ class TestWorktreeProvisionerStampsScopedIdentity(TestCase):
             extra={"branch": branch, "description": "x"},
         )
 
-    def _run(self, repo: str, branch: str, remote_url: str) -> list[tuple[str, str, str]]:
+    def _run(
+        self, repo: str, branch: str, remote_url: str, *, visibility: str = "PUBLIC"
+    ) -> list[tuple[str, str, str]]:
         repo_dir = self.workspace / repo
         repo_dir.mkdir()
         (repo_dir / ".git").mkdir()
@@ -270,12 +272,20 @@ class TestWorktreeProvisionerStampsScopedIdentity(TestCase):
             name, email = canonical_noreply_identity()
             stamped.append((repo_path, name, email))
 
+        # #785: the proactive identity gate is now visibility-based
+        # (`gh repo view --json visibility`), not owner-hardcoded — mock
+        # the only unstoppable external (the gh subprocess).
+        def fake_gh_visibility(cmd: list[str], **_kw: object) -> object:
+            del cmd
+            return type("R", (), {"stdout": visibility + "\n", "returncode": 0})()
+
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             patch("teatree.core.runners.provision._workspace_dir", return_value=self.workspace),
             patch("teatree.core.runners.provision.git.worktree_add", side_effect=fake_worktree_add),
             patch("teatree.core.runners.provision.git.pull_ff_only", return_value=True),
             patch("teatree.core.runners.provision.git.remote_slug", return_value=remote_url),
+            patch("teatree.core.public_identity.run_allowed_to_fail", side_effect=fake_gh_visibility),
             patch(
                 "teatree.core.runners.provision.set_local_noreply_identity",
                 side_effect=fake_set_local_identity,
@@ -287,7 +297,7 @@ class TestWorktreeProvisionerStampsScopedIdentity(TestCase):
     def test_public_souliane_clone_worktree_is_stamped_noreply(self) -> None:
         from teatree.core.public_identity import is_noreply_email  # noqa: PLC0415
 
-        stamped = self._run("teatree", "ac-teatree-77-x", "souliane/teatree")
+        stamped = self._run("teatree", "ac-teatree-77-x", "souliane/teatree", visibility="PUBLIC")
 
         assert len(stamped) == 1, "public souliane worktree was not identity-stamped (#762 source-fix)"
         wt_path, name, email = stamped[0]
@@ -295,7 +305,19 @@ class TestWorktreeProvisionerStampsScopedIdentity(TestCase):
         assert name
         assert is_noreply_email(email), email
 
-    def test_private_oper_clone_worktree_is_not_stamped(self) -> None:
-        stamped = self._run("internal-svc", "ac-internal-svc-77-x", "acme-private/internal-svc")
+    def test_public_non_souliane_clone_worktree_is_stamped_noreply(self) -> None:
+        # #785: the exact bug — a PUBLIC repo owned by a non-souliane
+        # account must now be stamped (the owner-hardcoded gate missed
+        # it, then the reactive hook hard-failed at push).
+        from teatree.core.public_identity import is_noreply_email  # noqa: PLC0415
 
-        assert stamped == [], "non-souliane / private clone must NOT be identity-stamped — scope error (#762)"
+        stamped = self._run("sample-repo", "ac-sample-repo-77-x", "octo-contrib/sample-repo", visibility="PUBLIC")
+
+        assert len(stamped) == 1, "public non-souliane worktree was not identity-stamped (#785)"
+        _, _, email = stamped[0]
+        assert is_noreply_email(email), email
+
+    def test_private_clone_worktree_is_not_stamped(self) -> None:
+        stamped = self._run("internal-svc", "ac-internal-svc-77-x", "acme-private/internal-svc", visibility="PRIVATE")
+
+        assert stamped == [], "private clone must NOT be identity-stamped — visibility scope error (#785)"
