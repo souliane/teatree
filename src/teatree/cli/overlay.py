@@ -139,6 +139,7 @@ DJANGO_GROUPS: dict[str, tuple[str, list[tuple[str, str]]]] = {
         "Ticket state management.",
         [
             ("transition", "Transition a ticket to a new state."),
+            ("clear", "Issue a per-diff CLEAR — the orchestrator's only merge output (BLUEPRINT §17.4.2)."),
             ("merge", "Execute the IN_REVIEW → MERGED keystone transition (BLUEPRINT §17.4)."),
             ("list", "List tickets, optionally filtered by state and/or overlay."),
             ("sync-completions", "Check post-ship tickets against upstream issues and advance completed ones."),
