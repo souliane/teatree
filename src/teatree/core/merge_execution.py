@@ -38,6 +38,8 @@ from django.apps import apps
 from django.db import transaction
 from django.utils import timezone
 
+from teatree.project import find_project_root
+from teatree.utils import git
 from teatree.utils.run import run_allowed_to_fail
 
 logger = logging.getLogger(__name__)
@@ -83,6 +85,56 @@ def _run_gh(argv: list[str]) -> tuple[int, str, str]:
     gh = shutil.which("gh") or "gh"
     result = run_allowed_to_fail([gh, *argv], expected_codes=None)
     return result.returncode, result.stdout, result.stderr
+
+
+def _looks_like_owner_repo(slug: str) -> bool:
+    """True when *slug* is already a GitHub ``owner/repo`` identifier.
+
+    A workstream slug (``statusline-stale-wakeup``) has no ``/``; a repo
+    slug (``souliane/teatree``) has exactly one path separator and is not
+    a filesystem path.
+    """
+    return "/" in slug and not slug.startswith("/") and ":" not in slug and slug.count("/") >= 1
+
+
+def _project_repo_slug() -> str:
+    """The GitHub ``owner/repo`` for the running teatree clone, or ``""``.
+
+    Resolved from the project root's ``origin`` git remote — the same
+    canonical :func:`git.remote_slug` path ``_ensure_pr.py`` /
+    ``backends.github`` use to target ``gh`` at the right repo.
+    """
+    root = find_project_root()
+    if root is None:
+        return ""
+    return git.remote_slug(repo=str(root))
+
+
+def resolve_pr_repo_slug(clear: object) -> str:
+    """The GitHub ``owner/repo`` to target ``gh`` at for *clear*'s PR.
+
+    ``MergeClear.slug`` is a *workstream* slug, not a repo. If it already
+    looks like ``owner/repo`` it is used as-is (back-compat with rows /
+    tests that stored a repo there); otherwise the repo is resolved from
+    the running clone's git remote. Fails closed with an actionable
+    :class:`MergePreconditionError` when neither yields a repo — never the
+    opaque "could not resolve the live head" escalation that hid this gap.
+    """
+    slug = str(getattr(clear, "slug", "") or "")
+    pr_id = getattr(clear, "pr_id", "?")
+    if _looks_like_owner_repo(slug):
+        return slug
+    resolved = _project_repo_slug()
+    if resolved:
+        return resolved
+    msg = (
+        f"could not resolve the GitHub repo for {slug}#{pr_id}: the CLEAR slug "
+        f"{slug!r} is a workstream slug (not owner/repo) and the running teatree "
+        f"clone has no resolvable 'origin' remote. The sanctioned merge needs the "
+        f"real repo to bind the merge — re-issue the CLEAR from a checkout whose "
+        f"'origin' points at the GitHub repo, or pass an owner/repo slug."
+    )
+    raise MergePreconditionError(msg)
 
 
 def fetch_live_head_sha(slug: str, pr_id: int) -> str:
@@ -418,7 +470,7 @@ def merge_ticket_pr(
         msg = "merge_ticket_pr requires a MergeClear instance"
         raise MergePreconditionError(msg)
 
-    slug = clear.slug
+    slug = resolve_pr_repo_slug(clear)
     pr_id = clear.pr_id
     verified_sha = assert_merge_preconditions(
         clear=clear,
