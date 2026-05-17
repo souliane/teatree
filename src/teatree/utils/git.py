@@ -130,6 +130,26 @@ def current_branch(repo: str = ".") -> str:
     return run(repo=repo, args=["rev-parse", "--abbrev-ref", "HEAD"])
 
 
+def head_sha(repo: str = ".") -> str:
+    """Return the full 40-char SHA of ``HEAD`` (the code-under-test SHA).
+
+    Used by the e2e work-item provenance recorder (#794) so a run records
+    the *exact* commit it tested, not a branch name that drifts.
+    """
+    return run_strict(repo=repo, args=["rev-parse", "HEAD"])
+
+
+def worktree_add_at_ref(repo: str, path: str, ref: str) -> bool:
+    """Materialise a detached worktree at an explicit ``ref`` (SHA or branch).
+
+    The e2e ladder (#794) provisions each repo at a resolved ref — a recorded
+    last-green SHA or ``origin/main`` — not only at a branch HEAD. ``git
+    worktree add <path> <ref>`` checks out ``ref`` in a detached HEAD, which
+    is exactly what running the e2e against a recorded SHA-set requires.
+    """
+    return check(repo=repo, args=["worktree", "add", "--detach", path, ref])
+
+
 def remote_url(repo: str = ".", remote: str = "origin") -> str:
     return run(repo=repo, args=["remote", "get-url", remote])
 
@@ -237,6 +257,12 @@ class GitRepo:
 
     def current_branch(self) -> str:
         return current_branch(self.path)
+
+    def head_sha(self) -> str:
+        return head_sha(self.path)
+
+    def worktree_add_at_ref(self, path: str, ref: str) -> bool:
+        return worktree_add_at_ref(self.path, path, ref)
 
     def remote_url(self, remote: str = "origin") -> str:
         return remote_url(self.path, remote)

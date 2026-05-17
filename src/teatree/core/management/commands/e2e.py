@@ -4,7 +4,9 @@ import os
 import socket
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Annotated
 
+import typer
 from django_typer.management import TyperCommand, command
 
 from teatree.config import E2ERepo, load_e2e_repos
@@ -170,10 +172,15 @@ def _build_e2e_env(
 
 class Command(TyperCommand):
     @command()
-    def run(
+    def run(  # noqa: PLR0913
         self,
+        work_item: Annotated[
+            str,
+            typer.Argument(help="Ticket reference (pk, issue number, or issue URL) — the #794 keystone."),
+        ] = "",
         test_path: str = "",
         *,
+        at: str = "",
         target: str = "",
         headed: bool = False,
         update_snapshots: bool = False,
@@ -181,11 +188,21 @@ class Command(TyperCommand):
     ) -> str:
         """Run E2E tests — the one command that works for every overlay.
 
-        Dispatches to the ``project`` runner (in-repo pytest-playwright) or the
-        ``external`` runner (remote playwright repo) based on what the overlay's
-        ``get_e2e_config()`` returns. The overlay declares ``"runner": "project"``
-        or ``"runner": "external"``; when absent, ``test_dir`` implies ``project``
-        and ``project_path`` implies ``external`` for compatibility.
+        ``work_item`` (the #794 keystone) is a Ticket reference — a pk, an
+        issue number, or an issue URL. When given, ``e2e run <work-item>``
+        resolves the work item by its Ticket natural key, applies the default
+        environment ladder, auto-provisions at the resolved ref, runs, and
+        records ``{sha, result, timestamp}`` to the DB-durable recipe so a
+        rerun never re-discovers prerequisites serially. ``--at
+        last-green|main`` overrides the ladder. When ``work_item`` is empty
+        the legacy cwd-resolved behaviour is unchanged.
+
+        Otherwise dispatches to the ``project`` runner (in-repo
+        pytest-playwright) or the ``external`` runner (remote playwright repo)
+        based on what the overlay's ``get_e2e_config()`` returns. The overlay
+        declares ``"runner": "project"`` or ``"runner": "external"``; when
+        absent, ``test_dir`` implies ``project`` and ``project_path`` implies
+        ``external`` for compatibility.
 
         ``--target dev|local`` selects the dual-env target and is forwarded to
         whichever runner handles the overlay (see ``external`` for semantics).
@@ -193,6 +210,99 @@ class Command(TyperCommand):
         Runner-specific flags (``--repo``, ``--playwright-args``) stay on the
         explicit ``external`` subcommand to keep this entry point overlay-agnostic.
         """
+        if work_item:
+            return self._run_work_item(
+                work_item,
+                test_path=test_path,
+                at=at,
+                target=target,
+                headed=headed,
+                update_snapshots=update_snapshots,
+                docker=docker,
+            )
+        return self._dispatch_runner(
+            test_path=test_path,
+            target=target,
+            headed=headed,
+            update_snapshots=update_snapshots,
+            docker=docker,
+        )
+
+    def _run_work_item(  # noqa: PLR0913
+        self,
+        work_item: str,
+        *,
+        test_path: str,
+        at: str,
+        target: str,
+        headed: bool,
+        update_snapshots: bool,
+        docker: bool,
+    ) -> str:
+        """#794 keystone: resolve work item → ladder → run → record provenance.
+
+        Deterministic outcome: either the e2e result, or a precise readiness
+        failure naming the exact provisioning gap (which repo at which ref).
+        Auto-provisioning of the missing repo set is the larger follow-up; the
+        MVP runs an already-present workspace as-is and records the run's
+        SHA-set + result to the durable recipe keyed by ``issue_url``.
+        """
+        from teatree.core.e2e_workitem import record_run, resolve_environment  # noqa: PLC0415
+        from teatree.core.models import Ticket  # noqa: PLC0415
+        from teatree.utils import git  # noqa: PLC0415
+
+        try:
+            ticket = Ticket.objects.resolve(work_item)
+        except Ticket.DoesNotExist:
+            self.stderr.write(
+                f"No work item matching {work_item!r} (looked up by pk and issue_url). "
+                "Provision it first: t3 <overlay> workspace ticket <issue_url>",
+            )
+            raise SystemExit(2) from None
+
+        resolution = resolve_environment(ticket, at=at)
+        if resolution.rung != "existing":
+            refs = ", ".join(f"{repo}@{ref}" for repo, ref in sorted(resolution.provision_at.items()))
+            self.stderr.write(
+                f"E2E readiness failed for {ticket}: workspace not present on disk.\n"
+                f"Ladder rung '{resolution.rung}' requires provisioning: {refs or '(no repos in recipe)'}.\n"
+                "Provision the work item first: t3 <overlay> workspace ticket <issue_url>",
+            )
+            raise SystemExit(1)
+
+        per_repo_shas: dict[str, str] = {}
+        for repo, wt_path in resolution.repo_dirs.items():
+            try:
+                per_repo_shas[repo] = git.head_sha(repo=wt_path)
+            except Exception:  # noqa: BLE001
+                per_repo_shas[repo] = ""
+
+        primary_dir = next(iter(resolution.repo_dirs.values()))
+        os.environ["T3_ORIG_CWD"] = primary_dir
+
+        try:
+            result = self._dispatch_runner(
+                test_path=test_path,
+                target=target,
+                headed=headed,
+                update_snapshots=update_snapshots,
+                docker=docker,
+            )
+        except SystemExit as exc:
+            record_run(ticket, result="red", per_repo_shas=per_repo_shas)
+            raise SystemExit(exc.code) from exc
+        record_run(ticket, result="green", per_repo_shas=per_repo_shas)
+        return result
+
+    def _dispatch_runner(
+        self,
+        *,
+        test_path: str,
+        target: str,
+        headed: bool,
+        update_snapshots: bool,
+        docker: bool,
+    ) -> str:
         overlay = get_overlay()
         e2e_config = overlay.metadata.get_e2e_config()
         runner = e2e_config.get("runner") or self._infer_runner(e2e_config)

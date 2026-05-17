@@ -121,6 +121,7 @@ src/teatree/
     readiness.py        # HealthCheck + readiness-probe runner
     reconcile.py        # State reconciler (see §14.11)
     resolve.py          # Worktree-by-branch+repo lookup helper
+    e2e_workitem.py     # #794 durable e2e recipe + env ladder + run provenance
     signals.py          # post_transition signals
     skill_cache.py      # Per-overlay skill metadata cache writer
     step_runner.py      # ProvisionStep / PostDbStep / pre-run executor
@@ -903,7 +904,7 @@ Typer-based, work without Django:
 - `t3 sessions` — list/resume Claude conversation sessions
 - `t3 docs` — serve mkdocs documentation (requires `docs` dependency group)
 - `t3 ci {cancel,divergence,fetch-errors,fetch-failed-tests,trigger-e2e,quality-check}` — CI helpers
-- `t3 <overlay> e2e run [<test-path>] [--target dev|local]` — run E2E tests; dispatches to the project runner (in-repo pytest-playwright) or the external runner (remote Playwright repo) based on the overlay's `get_e2e_config()` — same command across overlays
+- `t3 <overlay> e2e run [<work-item>] [<test-path>] [--at last-green|main] [--target dev|local]` — run E2E tests; dispatches to the project runner (in-repo pytest-playwright) or the external runner (remote Playwright repo) based on the overlay's `get_e2e_config()` — same command across overlays. With a `<work-item>` (a Ticket pk / issue number / issue URL — the #794 keystone) it resolves the work item by its Ticket natural key, applies the **default environment ladder** (existing workspace on disk → recorded last-green SHA-set → `origin/main`; `--at last-green|main` overrides), runs, and records `{result, timestamp, per_repo_shas}` to the DB-durable recipe at `Ticket.extra['e2e_recipe']` so a rerun never re-discovers prerequisites serially. Reconcile-on-read drops a `Worktree` row whose recorded path is gone (never "DB says X, disk says Y, run anyway"). Deterministic outcome: the e2e result, or a precise readiness failure naming the exact provisioning gap (which repo at which ref). On green the run's SHA-set becomes the new last-green baseline; a failed run records provenance but never moves the baseline. See `teatree.core.e2e_workitem`
 - `t3 <overlay> e2e external [--repo <name>] [--target dev|local] [<test-path>]` — explicit external runner: Playwright from `T3_PRIVATE_TESTS` or a named `[e2e_repos.<name>]` git repo; skips port discovery when `BASE_URL` is already set (DEV/staging mode)
 - `t3 <overlay> e2e project [<test-path>] [--target dev|local] [--update-snapshots]` — explicit project runner: pytest-playwright in the overlay's own test dir, executed in the canonical Docker image by default
 - `--target dev|local` — dual-env selector (omitted = back-compat inference from `BASE_URL`). Exported as `T3_E2E_TARGET`; a dual-mode spec branches on it rather than a `BASE_URL` host regex. `local` always discovers the local frontend so it can never silently hit a deployed env
