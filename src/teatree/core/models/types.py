@@ -56,6 +56,20 @@ class TicketExtra(TypedDict, total=False):
     auto_started: bool
     reviewed_sha: str
     last_review_state: str
+    retro_scheduled: bool
+    tracker_404: bool
+
+
+class TicketSiblingFields(TypedDict, total=False):
+    """Non-``extra`` ``Ticket`` fields a locked ``merge_extra`` co-writes.
+
+    The tracker-sync paths set these alongside ``extra`` in one save;
+    ``Ticket.merge_extra(also_set=…)`` keeps that write atomic.
+    """
+
+    state: str
+    repos: list[str]
+    variant: str
 
 
 _TICKET_EXTRA_KEYS = frozenset(TicketExtra.__annotations__)

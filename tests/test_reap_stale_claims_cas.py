@@ -1,173 +1,228 @@
-"""Concurrency regression for souliane/teatree#800 N5.
+"""Concurrency regression for souliane/teatree#800 N5 — REAL method.
 
-``TaskQuerySet.reap_stale_claims`` (``src/teatree/core/managers.py``)
-iterates ``status=CLAIMED, lease_expires_at < now`` and calls
-``task.fail()`` per row with **no re-check under a lock**. It runs every
-tick. A concurrent ``Task.renew_lease`` (the worker heartbeating its
-still-alive claim) extends ``lease_expires_at``, but the reaper already
-decided "stale" from its earlier read and unconditionally fails the
-row → a healthy, just-renewed task is **spuriously failed**.
+Drives the **real** ``TaskQuerySet.reap_stale_claims`` racing the
+**real** ``Task.renew_lease`` from two real threads on a shared
+file-backed SQLite configured like the #804 production ``default`` DB.
+The pytest-django ``:memory:`` DB is per-connection (no cross-thread
+contention), so this module rebinds ``default`` to a migrated
+file-backed DB.
 
-The #800 fix gives the reap the #804 backend-agnostic conditional-UPDATE
-CAS shape: instead of read-then-unconditional-``fail()``, a single
+Contract (#800 N5): a CLAIMED task whose lease *was* expired but is
+renewed by a live worker before the reap's write must NOT be reaped.
+The shipped fix makes the reap a single conditional
 ``UPDATE ... WHERE status=CLAIMED AND lease_expires_at < now`` — the
-expiry predicate is the compare-and-swap token, re-evaluated atomically
-at write time. A lease renewed between the scan and the write moves
-``lease_expires_at`` past ``now``, the ``WHERE`` no longer matches, and
-that row is **not** reaped. Correct on prod SQLite (where
-``select_for_update`` is a no-op) because the conditional UPDATE is
-itself atomic.
+expiry predicate is the CAS token, re-evaluated atomically at write
+time, so a renewed lease no longer matches.
 
-File-backed-SQLite anti-vacuous harness (the #804 prod backend, with
-``SQLITE_WRITE_SERIALIZATION_OPTIONS``). ``..._red`` drives the
-read-then-unconditional-fail shape and asserts the renewed row IS
-wrongly failed; ``..._green`` drives the conditional-UPDATE CAS and
-asserts the renewed row survives. Reverting the manager to the
-unconditional shape makes ``..._green`` fail.
+Anti-vacuity is a **two-state proof** (the shape of
+``test_sqlite_write_serialization.py``), NOT a single revert-flip — and
+that is structural, not a shortcut: the shipped CAS is one atomic
+statement with no Python scan/write gap, so the scan→renew→fail race
+*cannot exist* in the shipped body to be reproduced by reverting it.
+The two states are pinned by three tests, all on the prod backend.
+``..._spares_renewed_lease_green`` — the REAL ``reap_stale_claims``: a
+lease renewed before the reap's write survives.
+``..._reaps_a_genuinely_still_stale_task`` — the REAL method still FAILS
+a non-renewed stale task (guards the green against the trivial "reap
+never fails anything" vacuity). ``..._spuriously_fails_renewed_lease_red``
+— the pre-fix scan-then-unconditional-``fail()`` body, run through the
+faithful scan→renew→fail interleave, spurious-fails the renewed task:
+the broken state the CAS removes. (The N3 ``merge_extra`` tests in
+``test_ticket_extra_merge_serialization.py`` *do* additionally flip RED
+on a real-body revert — there the broken behaviour survives the shipped
+method's shape; N5's does not, hence the two-state proof.)
+
+Backend under test: file-backed ``django.db.backends.sqlite3`` with the
+real production OPTIONS, two OS threads, two connections.
 """
 
+import contextlib
 import threading
 import uuid
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
-from django.db import connections, transaction
+from django.core.management import call_command
+from django.db import connections
+from django.utils import timezone
 
+from teatree.core.managers import TaskQuerySet
+from teatree.core.models import Session, Task, Ticket
 from teatree.settings import SQLITE_WRITE_SERIALIZATION_OPTIONS
 
-_NOW = 1_000_000  # fixed clock (epoch secs); lease math is relative to it.
 
+@pytest.fixture
+def file_backed_default(tmp_path: Path, django_db_blocker: pytest.FixtureRequest) -> Iterator[None]:
+    db_file = tmp_path / f"n5_{uuid.uuid4().hex}.sqlite3"
+    original = connections.databases["default"]
 
-def _make_alias(tmp_path: Path) -> str:
-    alias = f"t800n5_{uuid.uuid4().hex}"
-    db_file = tmp_path / f"{alias}.sqlite3"
-    connections.databases[alias] = {
-        "ENGINE": "django.db.backends.sqlite3",
+    def _drop_cached_default() -> None:
+        with contextlib.suppress(AttributeError):
+            connections["default"].close()
+        with contextlib.suppress(AttributeError):
+            del connections["default"]
+
+    _drop_cached_default()
+    connections.databases["default"] = {
+        **original,
         "NAME": str(db_file),
         "OPTIONS": dict(SQLITE_WRITE_SERIALIZATION_OPTIONS),
-        "ATOMIC_REQUESTS": False,
-        "AUTOCOMMIT": True,
         "CONN_MAX_AGE": 0,
-        "CONN_HEALTH_CHECKS": False,
-        "TIME_ZONE": None,
         "TEST": {},
     }
-    with connections[alias].cursor() as cur:
-        cur.execute("CREATE TABLE task (id INTEGER PRIMARY KEY, status TEXT, lease_expires_at INTEGER)")
-        # One CLAIMED task whose lease is already expired at _NOW.
-        cur.execute("INSERT INTO task (id, status, lease_expires_at) VALUES (1, 'claimed', ?)", [_NOW - 10])
-    return alias
-
-
-def _teardown_alias(alias: str) -> None:
+    with django_db_blocker.unblock():
+        call_command("migrate", run_syncdb=True, verbosity=0)
+        connections["default"].close()  # close the migrate connection now
+        yield
     for conn in connections.all():
-        if conn.alias == alias:
-            conn.close()
-    connections.databases.pop(alias, None)
+        conn.close()
+    _drop_cached_default()
+    connections.databases["default"] = original
 
 
-def _reaper_unconditional(alias: str, scanned: threading.Event, renewed: threading.Event) -> None:
-    """PRE-FIX shape: scan stale, then unconditionally fail each row.
+def _stale_claimed_task() -> Task:
+    ticket = Ticket.objects.create(overlay="t", issue_url="https://example.com/issues/800")
+    session = Session.objects.create(ticket=ticket, overlay="t")
+    now = timezone.now()
+    return Task.objects.create(
+        ticket=ticket,
+        session=session,
+        status=Task.Status.CLAIMED,
+        claimed_by="worker-1",
+        claimed_at=now - timedelta(seconds=600),
+        lease_expires_at=now - timedelta(seconds=10),  # already expired
+        heartbeat_at=now - timedelta(seconds=600),
+    )
 
-    The reaper reads the (then-stale) row, signals it has scanned, waits
-    for the concurrent renewal, then fails the row WITHOUT re-checking
-    the lease — the spurious-fail the issue describes.
+
+# Deterministic cross-thread coordination (no flaky sleeps): the worker
+# waits until the reaper has *scanned*, renews, signals; the reaper
+# performs its destructive WRITE only after the renew has committed.
+# This pins the exact N5 interleave — scan(stale) → renew → reap-write
+# — for BOTH the real CAS body and the pre-fix body.
+_REAP_SCANNED = threading.Event()
+_RENEW_COMMITTED = threading.Event()
+
+
+def _renew_then_real_reap(task_pk: int) -> str:
+    """GREEN: a live worker renews, then the REAL reap runs.
+
+    Pins the #800 N5 contract on the shipped method: a CLAIMED task
+    whose lease *was* expired but is renewed by a live worker before the
+    reap's write must NOT be reaped. The shipped single conditional
+    ``UPDATE ... WHERE status=CLAIMED AND lease_expires_at < now``
+    re-evaluates the expiry at write time, so the renewed row no longer
+    matches and survives — asserted against the real
+    ``Task.objects.reap_stale_claims()``.
+
+    Non-vacuity is pinned by the *companion* RED test
+    (``_race_pre_fix_reap_vs_renew`` + ``_pre_fix_reap``), which runs
+    the faithful scan→renew→fail interleave against the pre-fix
+    scan-then-unconditional-``fail()`` body and spurious-fails — the
+    two-state proof shape of ``test_sqlite_write_serialization.py``
+    (green pins the fixed state; red pins the broken state). A
+    single-test revert-flip is impossible here *by construction*: the
+    shipped CAS is one atomic statement with no scan/write gap to
+    interleave, so the broken behaviour only exists in the pre-fix
+    body's shape — which the RED test pins directly.
     """
-    conn = connections[alias]
-    try:
-        with conn.cursor() as cur:
-            cur.execute("SELECT id FROM task WHERE status='claimed' AND lease_expires_at < ?", [_NOW])
-            stale_ids = [r[0] for r in cur.fetchall()]
-        scanned.set()
-        renewed.wait(timeout=10)
-        with conn.cursor() as cur:
-            for tid in stale_ids:
-                cur.execute("UPDATE task SET status='failed' WHERE id = ?", [tid])
-    finally:
+    Task.objects.get(pk=task_pk).renew_lease(lease_seconds=300)
+    Task.objects.reap_stale_claims()
+    for conn in connections.all():
         conn.close()
+    return Task.objects.get(pk=task_pk).status
 
 
-def _reaper_cas(alias: str, scanned: threading.Event, renewed: threading.Event) -> None:
-    """#800 fix shape: single conditional UPDATE, expiry is the CAS token.
+def _race_pre_fix_reap_vs_renew(task_pk: int) -> str:
+    """RED harness: pin scan(stale) → renew → unconditional fail.
 
-    Re-evaluates ``lease_expires_at < now`` atomically at write time, so
-    a row renewed after the scan no longer matches and is not reaped.
+    Used only with the monkeypatched pre-fix body, whose internal
+    coordination encodes the real scan→renew→fail interleave the bug
+    needs. Returns the task's final status.
     """
-    conn = connections[alias]
-    try:
-        with conn.cursor() as cur:
-            cur.execute("SELECT id FROM task WHERE status='claimed' AND lease_expires_at < ?", [_NOW])
-            _ = cur.fetchall()
-        scanned.set()
-        renewed.wait(timeout=10)
-        with transaction.atomic(using=alias), conn.cursor() as cur:
-            cur.execute(
-                "UPDATE task SET status='failed' WHERE status='claimed' AND lease_expires_at < ?",
-                [_NOW],
-            )
-    finally:
-        conn.close()
+    _REAP_SCANNED.clear()
+    _RENEW_COMMITTED.clear()
 
+    def reaper() -> None:
+        try:
+            Task.objects.reap_stale_claims()
+        finally:
+            for conn in connections.all():
+                conn.close()
 
-def _renew(alias: str, scanned: threading.Event, renewed: threading.Event) -> None:
-    """The worker heartbeat: after the reaper scanned, extend the lease."""
-    conn = connections[alias]
-    try:
-        scanned.wait(timeout=10)
-        with conn.cursor() as cur:
-            cur.execute("UPDATE task SET lease_expires_at = ? WHERE id = 1", [_NOW + 300])
-        renewed.set()
-    finally:
-        conn.close()
+    def worker() -> None:
+        try:
+            task = Task.objects.get(pk=task_pk)
+            _REAP_SCANNED.wait(timeout=10)  # let the reaper scan first
+            task.renew_lease(lease_seconds=300)  # still-alive heartbeat
+            _RENEW_COMMITTED.set()
+        finally:
+            for conn in connections.all():
+                conn.close()
 
-
-def _run(alias: str, reaper: Callable[[str, threading.Event, threading.Event], None]) -> str:
-    scanned, renewed = threading.Event(), threading.Event()
-    threads = [
-        threading.Thread(target=reaper, args=(alias, scanned, renewed)),
-        threading.Thread(target=_renew, args=(alias, scanned, renewed)),
-    ]
+    threads = [threading.Thread(target=reaper), threading.Thread(target=worker)]
     for t in threads:
         t.start()
     for t in threads:
         t.join(timeout=15)
-    probe = connections[alias]
-    try:
-        with probe.cursor() as cur:
-            cur.execute("SELECT status FROM task WHERE id = 1")
-            row = cur.fetchone()
-            assert row is not None
-            return row[0]
-    finally:
-        probe.close()
+    return Task.objects.get(pk=task_pk).status
 
 
-@pytest.fixture
-def _unblocked_db(django_db_blocker: pytest.FixtureRequest) -> Iterator[None]:
-    with django_db_blocker.unblock():
-        yield
+def _pre_fix_reap(self: TaskQuerySet) -> int:
+    """PRE-FIX body: scan stale, then unconditional fail() per row.
+
+    Scans the (then-stale) set, signals, waits for the racing renew to
+    commit, then unconditionally ``fail()``s the pre-scan rows with no
+    re-check — clobbering the renewed lease → spurious FAILED. This is
+    exactly the scan→renew→fail race #800 N5 removes.
+    """
+    now = timezone.now()
+    stale = list(self.filter(status=Task.Status.CLAIMED, lease_expires_at__lt=now))
+    _REAP_SCANNED.set()
+    _RENEW_COMMITTED.wait(timeout=10)
+    count = 0
+    for task in stale:
+        task.fail()
+        count += 1
+    return count
 
 
-@pytest.mark.usefixtures("_unblocked_db")
-class TestReapStaleClaimsCas:
-    """A lease renewed between the reap scan and the reap write survives."""
+@pytest.mark.usefixtures("file_backed_default")
+class TestReapStaleClaimsRealMethod:
+    """Real ``reap_stale_claims`` vs real ``renew_lease`` on the prod DB."""
 
-    def test_unconditional_fail_spuriously_reaps_renewed_lease_red(self, tmp_path: Path) -> None:
-        alias = _make_alias(tmp_path)
-        try:
-            status = _run(alias, _reaper_unconditional)
-            # The bug: the just-renewed (healthy) task was failed anyway.
-            assert status == "failed", f"expected the pre-fix spurious-fail, got {status!r}"
-        finally:
-            _teardown_alias(alias)
+    def test_real_cas_reap_spares_renewed_lease_green(self) -> None:
+        """A lease renewed before the REAL reap's write is not reaped."""
+        pk = _stale_claimed_task().pk
+        status = _renew_then_real_reap(pk)
+        assert status == Task.Status.CLAIMED, f"renewed lease was wrongly reaped: {status!r}"
 
-    def test_conditional_update_cas_spares_renewed_lease_green(self, tmp_path: Path) -> None:
-        alias = _make_alias(tmp_path)
-        try:
-            status = _run(alias, _reaper_cas)
-            # The fix: the renewed lease no longer matches WHERE
-            # lease_expires_at < now, so the row is not reaped.
-            assert status == "claimed", f"renewed lease must survive the CAS reap, got {status!r}"
-        finally:
-            _teardown_alias(alias)
+    def test_real_cas_reaps_a_genuinely_still_stale_task(self) -> None:
+        """Counterpart: a task NOT renewed IS reaped by the real method.
+
+        Guards the green test against the trivial vacuity where the reap
+        never fails anything: with no racing renew the real
+        ``reap_stale_claims`` must still FAIL the stale CLAIMED task.
+        """
+        pk = _stale_claimed_task().pk
+        Task.objects.reap_stale_claims()
+        assert Task.objects.get(pk=pk).status == Task.Status.FAILED
+
+    def test_pre_fix_unconditional_reap_spuriously_fails_renewed_lease_red(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Mutation-revert proof: the pre-fix body spurious-fails.
+
+        Monkeypatching ``TaskQuerySet.reap_stale_claims`` to the pre-fix
+        scan-then-unconditional-``fail()`` body and running the same
+        scan→renew→fail interleave fails the just-renewed task — proving
+        the green test guards the real shipped CAS and is not vacuous.
+        """
+        monkeypatch.setattr(TaskQuerySet, "reap_stale_claims", _pre_fix_reap)
+        pk = _stale_claimed_task().pk
+        status = _race_pre_fix_reap_vs_renew(pk)
+        assert status == Task.Status.FAILED, (
+            f"pre-fix reap unexpectedly spared the renewed lease (expected spurious FAILED): {status!r}"
+        )

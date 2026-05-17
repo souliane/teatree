@@ -177,6 +177,30 @@ class TestTicketMergeExtra(TestCase):
         ticket.refresh_from_db()
         assert ticket.extra == {"a": 1}
 
+    def test_also_set_writes_sibling_fields_in_the_same_locked_update(self) -> None:
+        # The tracker-sync paths co-write extra + state/repos in one
+        # save; also_set keeps that atomic through the locked primitive.
+        ticket = Ticket.objects.create(extra={"keep": 1}, repos=["a"])
+        ticket.merge_extra(
+            set_keys={"prs": {}},
+            also_set={"repos": ["a", "b"], "variant": "x"},
+        )
+        ticket.refresh_from_db()
+        assert ticket.extra == {"keep": 1, "prs": {}}
+        assert ticket.repos == ["a", "b"]
+        assert ticket.variant == "x"
+        # The in-memory instance is updated too (no stale read after).
+        assert ticket.variant == "x"
+
+    def test_also_set_does_not_clobber_concurrent_extra_writer(self) -> None:
+        ticket = Ticket.objects.create(extra={})
+        stale = Ticket.objects.get(pk=ticket.pk)
+        Ticket.objects.filter(pk=ticket.pk).update(extra={"visual_qa": {"x": 1}})
+        stale.merge_extra(set_keys={"prs": {}}, also_set={"variant": "v"})
+        ticket.refresh_from_db()
+        assert ticket.extra == {"visual_qa": {"x": 1}, "prs": {}}
+        assert ticket.variant == "v"
+
 
 class TestTicketTransitions(TestCase):
     @pytest.fixture(autouse=True)

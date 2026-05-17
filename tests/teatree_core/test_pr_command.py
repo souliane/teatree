@@ -69,6 +69,27 @@ class TestPrCreateThinWrapper(TestCase):
         assert "QUEUED, not performed" in result["warning"]
         assert "--sync" in result["warning"]
 
+    def test_title_override_persisted_via_locked_merge_extra(self) -> None:
+        """#800 N3: ``--title`` writes pr_title_override via locked merge.
+
+        ``_do_ship_transition``'s ``if title:`` path now routes through
+        the canonical locked ``merge_extra`` (was an unlocked
+        in-``atomic`` whole-extra overwrite racing the ship worker's
+        ``pr_urls``). Exercises that branch.
+        """
+        ticket = _shippable_ticket()
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch.object(pr_command, "_run_visual_qa_gate", return_value=None),
+            patch.object(pr_command, "validate_pr_metadata", return_value=None),
+        ):
+            call_command("pr", "create", str(ticket.id), title="My Custom PR Title")
+
+        ticket.refresh_from_db()
+        assert ticket.extra["pr_title_override"] == "My Custom PR Title"
+        assert ticket.state == Ticket.State.SHIPPED
+
     def test_retrospected_with_satisfying_phases_reconciles_and_ships(self) -> None:
         """#808: RETROSPECTED with a satisfying phase ledger must ship, not deny.
 

@@ -4,7 +4,7 @@ import json
 import logging
 import os
 import shutil
-from typing import TYPE_CHECKING, override
+from typing import TYPE_CHECKING, cast, override
 
 from django.core.cache import cache
 
@@ -14,6 +14,7 @@ from teatree.utils.run import run_allowed_to_fail
 
 if TYPE_CHECKING:
     from teatree.core.models import Ticket
+    from teatree.core.models.types import TicketExtra
 
 logger = logging.getLogger(__name__)
 
@@ -87,11 +88,9 @@ class GitHubSyncBackend(SyncBackend):
             else:
                 ticket = tickets[0]
                 prior_state = ticket.state
-                existing_extra = ticket.extra if isinstance(ticket.extra, dict) else {}
-                existing_extra.update(extra)
-                ticket.extra = existing_extra
-                ticket.state = state
-                ticket.save(update_fields=["extra", "state"])
+                # #800 N3: canonical locked RMW; extra + state stay one
+                # atomic write via also_set (no split).
+                ticket.merge_extra(set_keys=cast("TicketExtra", dict(extra)), also_set={"state": state})
                 result.tickets_updated += 1
                 if state == Ticket.State.DELIVERED and prior_state != Ticket.State.DELIVERED:
                     self._cleanup_ticket_worktrees(ticket, result)

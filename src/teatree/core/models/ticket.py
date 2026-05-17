@@ -26,7 +26,7 @@ def _auto_ship_enabled() -> bool:
 if TYPE_CHECKING:
     from teatree.core.models.session import Session
     from teatree.core.models.task import Task
-    from teatree.core.models.types import TicketExtra
+    from teatree.core.models.types import TicketExtra, TicketSiblingFields
     from teatree.core.models.worktree import Worktree
 
 
@@ -586,7 +586,13 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
     def _extra(self) -> "TicketExtra":
         return validated_ticket_extra(self.extra)
 
-    def merge_extra(self, *, set_keys: "TicketExtra | None" = None, pop_keys: "list[str] | None" = None) -> None:
+    def merge_extra(
+        self,
+        *,
+        set_keys: "TicketExtra | None" = None,
+        pop_keys: "list[str] | None" = None,
+        also_set: "TicketSiblingFields | None" = None,
+    ) -> None:
         """Canonical locked read-modify-write of ``extra`` (#800 N3).
 
         Several writers mutate shared ``extra`` JSON — ``pr_urls`` (ship
@@ -604,6 +610,15 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
         production SQLite backend (where ``select_for_update`` is a no-op
         but the #804 ``BEGIN IMMEDIATE`` serialises the writers, so the
         re-read sees the other writer's committed key).
+
+        ``also_set`` writes sibling **model fields** (``state``,
+        ``repos``, ``variant``, …) in the SAME locked ``UPDATE`` as
+        ``extra``. The tracker-sync paths legitimately co-write
+        ``extra`` with ``state``/``repos`` in one ``save`` — routing
+        them through here keeps that write atomic (no split into two
+        non-atomic writes) while still going through the single locked
+        primitive, so the SSOT holds with zero unlocked ``extra`` RMW
+        anywhere.
         """
         with transaction.atomic():
             locked = type(self).objects.select_for_update().get(pk=self.pk)
@@ -613,7 +628,9 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
             for key in pop_keys or []:
                 merged.pop(key, None)
             self.extra = merged
-            type(self).objects.filter(pk=self.pk).update(extra=merged)
+            for field, value in (also_set or {}).items():
+                setattr(self, field, value)
+            type(self).objects.filter(pk=self.pk).update(extra=merged, **(also_set or {}))
 
 
 def schedule_external_review(ticket: Ticket, *, parent_task: "Task | None" = None) -> "Task":

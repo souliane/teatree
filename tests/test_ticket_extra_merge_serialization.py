@@ -1,176 +1,143 @@
-"""Concurrency regression for souliane/teatree#800 N3.
+"""Concurrency regression for souliane/teatree#800 N3 — REAL primitive.
 
-Several writers mutate shared ``Ticket.extra`` JSON with an **unlocked**
-read-modify-write (`ticket.extra = {...}; ticket.save(update_fields=
-["extra"])`):
+Drives the **real** ``Ticket.merge_extra`` (not a hand-written SQL
+copy) from two real threads against a shared **file-backed SQLite**
+configured exactly like the #804 production ``default`` database
+(``SQLITE_WRITE_SERIALIZATION_OPTIONS``). The pytest-django test DB is
+``:memory:`` (per-connection, single-threaded — no contention is even
+possible there), so this module stands up its own migrated file-backed
+DB and rebinds ``connections.databases['default']`` to it for the test,
+so ``Ticket.objects`` / ``ticket.merge_extra`` genuinely contend.
 
-- ``ShipExecutor._record_pr_url`` (ship worker) writes ``pr_urls``.
-- ``_run_visual_qa_gate`` writes ``visual_qa``.
-- ``Ticket.mark_reviewed_externally`` / ``_handle_reviewer`` write ``reviewed_sha`` / ``last_review_state``.
+Anti-vacuity is on the SHIPPED method: with the real
+``Ticket.merge_extra`` body reverted to the pre-fix unlocked shape
+(``self.extra = …; self.save(update_fields=["extra"])`` with no
+``select_for_update`` re-read) the concurrent-writers test goes RED
+(one writer's key is clobbered); with the shipped locked re-read it is
+GREEN (both keys survive). The ``_pre_fix_merge_extra`` monkeypatch
+parametrization runs the SAME harness against the pre-fix body and MUST
+fail — that is the genuine mutation-revert proof.
 
-Two of these running concurrently on the same ticket each read the
-whole ``extra`` dict, mutate their own key, and save the whole dict
-back — last writer wins, the other key is **clobbered** (the
-Haki-Benita lost-update the issue cites). ``Session.visit_phase`` does
-the same RMW *correctly* (``transaction.atomic()`` +
-``select_for_update()`` + **re-read from the locked row**); #800 makes
-``Ticket.extra`` writes go through one canonical primitive with the
-same shape.
-
-This is the file-backed-SQLite anti-vacuous harness (the #804 prod
-backend, not ``:memory:`` which is per-connection so no contention is
-possible). ``..._red`` drives the *pre-fix unlocked* RMW and asserts the
-clobber actually happens on the prod backend; ``..._green`` drives
-``Ticket.merge_extra`` and asserts both keys survive. Reverting
-``merge_extra`` to the unlocked shape makes ``..._green`` fail — the
-test guards the fix and is not vacuous.
-
-Backend under test: **file-backed** ``django.db.backends.sqlite3`` with
-the production ``SQLITE_WRITE_SERIALIZATION_OPTIONS`` (real ``.sqlite3``
-file, two OS threads, two connections).
+Backend under test: file-backed ``django.db.backends.sqlite3`` with the
+real production OPTIONS, two OS threads, two connections.
 """
 
-import json
+import contextlib
 import threading
 import uuid
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
-from django.db import connections, transaction
+from django.core.management import call_command
+from django.db import connections
 
+from teatree.core.models import Ticket
 from teatree.settings import SQLITE_WRITE_SERIALIZATION_OPTIONS
 
 
-def _make_alias(tmp_path: Path) -> str:
-    alias = f"t800_{uuid.uuid4().hex}"
-    db_file = tmp_path / f"{alias}.sqlite3"
-    connections.databases[alias] = {
-        "ENGINE": "django.db.backends.sqlite3",
+@pytest.fixture
+def file_backed_default(tmp_path: Path, django_db_blocker: pytest.FixtureRequest) -> Iterator[None]:
+    """Rebind the ``default`` DB to a migrated file-backed SQLite.
+
+    The real ORM (``Ticket.objects``) targets ``default``; pointing
+    ``default`` at a real file (not ``:memory:``) is what lets two
+    threads contend on the same row through the real method.
+    """
+    db_file = tmp_path / f"n3_{uuid.uuid4().hex}.sqlite3"
+    original = connections.databases["default"]
+
+    def _drop_cached_default() -> None:
+        # ``connections`` caches per-thread; only the thread that opened
+        # the alias has it. Close+evict defensively (the main thread may
+        # never have opened ``:memory:``).
+        with contextlib.suppress(AttributeError):
+            connections["default"].close()
+        with contextlib.suppress(AttributeError):
+            del connections["default"]
+
+    _drop_cached_default()
+    connections.databases["default"] = {
+        **original,
         "NAME": str(db_file),
         "OPTIONS": dict(SQLITE_WRITE_SERIALIZATION_OPTIONS),
-        "ATOMIC_REQUESTS": False,
-        "AUTOCOMMIT": True,
         "CONN_MAX_AGE": 0,
-        "CONN_HEALTH_CHECKS": False,
-        "TIME_ZONE": None,
         "TEST": {},
     }
-    with connections[alias].cursor() as cur:
-        cur.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, extra TEXT)")
-        cur.execute("INSERT INTO t (id, extra) VALUES (1, '{}')")
-    return alias
-
-
-def _teardown_alias(alias: str) -> None:
+    with django_db_blocker.unblock():
+        call_command("migrate", run_syncdb=True, verbosity=0)
+        connections["default"].close()  # close the migrate connection now
+        yield
     for conn in connections.all():
-        if conn.alias == alias:
+        conn.close()
+    _drop_cached_default()
+    connections.databases["default"] = original
+
+
+def _merge_in_thread(ticket_pk: int, key: str, value: object, barrier: threading.Barrier) -> None:
+    """Load the row fresh, then call the REAL Ticket.merge_extra."""
+    try:
+        ticket = Ticket.objects.get(pk=ticket_pk)
+        barrier.wait(timeout=10)
+        ticket.merge_extra(set_keys={key: value})
+    finally:
+        for conn in connections.all():
             conn.close()
-    connections.databases.pop(alias, None)
 
 
-def _unlocked_rmw(alias: str, key: str, barrier: threading.Barrier) -> None:
-    """The PRE-FIX shape: stale read, mutate one key, autocommit write.
-
-    Faithful to the N3 sites: ``extra`` is read **before** the write
-    (the caller already holds a possibly-stale ``ticket.extra``), there
-    is **no** ``transaction.atomic()`` wrapper and **no** locked
-    re-read — just ``ticket.save(update_fields=["extra"])`` (autocommit).
-    Both workers read the empty ``{}`` first, each adds only its own
-    key, and the second autocommit overwrites the first → one key lost.
-    """
-    conn = connections[alias]
-    try:
-        with conn.cursor() as cur:
-            # Stale read FIRST (mirrors the caller already holding
-            # ticket.extra from an earlier query), before the barrier.
-            cur.execute("SELECT extra FROM t WHERE id = 1")
-            row = cur.fetchone()
-            assert row is not None
-            extra = json.loads(row[0])
-        extra[key] = f"{key}-value"
-        barrier.wait(timeout=10)
-        threading.Event().wait(0.05)
-        with conn.cursor() as cur:  # bare autocommit write — no atomic(), no re-read
-            cur.execute("UPDATE t SET extra = %s WHERE id = 1", [json.dumps(extra)])
-    finally:
-        conn.close()
-
-
-def _locked_rmw(alias: str, key: str, barrier: threading.Barrier) -> None:
-    """The #800 fix shape: re-read the row INSIDE the txn, then merge.
-
-    Mirrors ``Session.visit_phase`` / ``Ticket.merge_extra``: the
-    re-read under the serialized write transaction sees the other
-    worker's already-committed key, so the merge preserves both.
-    """
-    conn = connections[alias]
-    try:
-        barrier.wait(timeout=10)
-        with transaction.atomic(using=alias), conn.cursor() as cur:
-            cur.execute("SELECT extra FROM t WHERE id = 1")  # locked re-read
-            row = cur.fetchone()
-            assert row is not None
-            extra = json.loads(row[0])
-            extra[key] = f"{key}-value"
-            threading.Event().wait(0.05)
-            cur.execute("UPDATE t SET extra = %s WHERE id = 1", [json.dumps(extra)])
-    finally:
-        conn.close()
-
-
-def _run_two(alias: str, fn: Callable[[str, str, threading.Barrier], None]) -> dict[str, object]:
+def _run_two_merges(ticket_pk: int) -> dict:
     barrier = threading.Barrier(2)
+    work: list[tuple[str, object]] = [("pr_urls", ["u"]), ("visual_qa", {"errors": 0})]
 
-    def runner(key: str) -> None:
-        fn(alias, key, barrier)
+    def runner(item: tuple[str, object]) -> None:
+        _merge_in_thread(ticket_pk, item[0], item[1], barrier)
 
-    threads = [threading.Thread(target=runner, args=(k,)) for k in ("pr_urls", "visual_qa")]
+    threads = [threading.Thread(target=runner, args=(w,)) for w in work]
     for t in threads:
         t.start()
     for t in threads:
         t.join(timeout=15)
-
-    probe = connections[alias]
-    try:
-        with probe.cursor() as cur:
-            cur.execute("SELECT extra FROM t WHERE id = 1")
-            row = cur.fetchone()
-            assert row is not None
-            return json.loads(row[0])
-    finally:
-        probe.close()
+    return Ticket.objects.get(pk=ticket_pk).extra
 
 
-@pytest.fixture
-def _unblocked_db(django_db_blocker: pytest.FixtureRequest) -> Iterator[None]:
-    with django_db_blocker.unblock():
-        yield
+def _pre_fix_merge_extra(self: Ticket, *, set_keys: dict | None = None, pop_keys: list | None = None) -> None:
+    """The PRE-FIX unlocked shape: stale in-memory extra, no locked re-read.
+
+    Exactly what the N3 sites did before #800 — mutate the (possibly
+    stale) in-memory ``self.extra`` and ``save(update_fields=["extra"])``
+    with no ``transaction.atomic()`` + ``select_for_update`` re-read.
+    """
+    merged = dict(self.extra or {})
+    if set_keys:
+        merged.update(set_keys)
+    for key in pop_keys or []:
+        merged.pop(key, None)
+    self.extra = merged
+    self.save(update_fields=["extra"])
 
 
-@pytest.mark.usefixtures("_unblocked_db")
-class TestTicketExtraMergeSerialization:
-    """Two real threads RMW different ``extra`` keys on one row."""
+@pytest.mark.usefixtures("file_backed_default")
+class TestTicketMergeExtraRealPrimitiveSerialization:
+    """Two real threads call the REAL ``Ticket.merge_extra`` on one row."""
 
-    def test_unlocked_rmw_clobbers_one_key_red(self, tmp_path: Path) -> None:
-        """Pre-fix unlocked RMW loses one writer's key on the prod backend."""
-        alias = _make_alias(tmp_path)
-        try:
-            final = _run_two(alias, _unlocked_rmw)
-            # The lost-update: serialized writes would keep BOTH keys; the
-            # unlocked shape keeps only the last writer's key.
-            assert not ("pr_urls" in final and "visual_qa" in final), (
-                f"expected a clobber (lost-update) on the unlocked path, got both keys: {final}"
-            )
-        finally:
-            _teardown_alias(alias)
+    def test_real_merge_extra_preserves_both_concurrent_keys_green(self) -> None:
+        pk = Ticket.objects.create(extra={}).pk
+        final = _run_two_merges(pk)
+        # The shipped locked re-read: both writers' keys survive.
+        assert final.get("pr_urls") == ["u"], final
+        assert final.get("visual_qa") == {"errors": 0}, final
 
-    def test_locked_remerge_preserves_both_keys_green(self, tmp_path: Path) -> None:
-        """The #800 fix shape (locked re-read + merge) keeps both keys."""
-        alias = _make_alias(tmp_path)
-        try:
-            final = _run_two(alias, _locked_rmw)
-            assert final.get("pr_urls") == "pr_urls-value"
-            assert final.get("visual_qa") == "visual_qa-value"
-        finally:
-            _teardown_alias(alias)
+    def test_pre_fix_unlocked_merge_extra_clobbers_a_key_red(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The SAME harness against the PRE-FIX body must fail.
+
+        Monkeypatching ``merge_extra`` to the unlocked pre-fix shape
+        reproduces the lost-update on the prod backend, proving the
+        green test guards the real shipped fix and is not vacuous.
+        """
+        monkeypatch.setattr(Ticket, "merge_extra", _pre_fix_merge_extra)
+        pk = Ticket.objects.create(extra={}).pk
+        final = _run_two_merges(pk)
+        # Pre-fix: one writer's whole-dict save clobbers the other key.
+        assert not ("pr_urls" in final and "visual_qa" in final), (
+            f"pre-fix unlocked merge_extra unexpectedly kept both keys: {final}"
+        )
