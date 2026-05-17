@@ -189,10 +189,13 @@ def assert_merge_preconditions(
     refusal (step 5). It is empty for every loop-driven merge, so the loop
     still never auto-merges substrate. A non-empty value unlocks the merge
     **only** when the CLEAR is substrate-class AND its recorded
-    ``human_authorizer`` matches — the sanctioned-yet-still-``t3`` human-merge
-    path (invariant 8: even an owner merge goes through this transition, never
-    raw ``gh``). It can never unlock a non-substrate CLEAR, so it cannot be
-    used to bypass independent loop review of logic/docs PRs.
+    ``human_authorizer`` matches: the substrate change requires a recorded
+    human authorisation, and on re-presentation **the agent executes** the
+    merge through this same sanctioned ``t3`` transition (invariant 8: even an
+    owner-approved merge goes through this transition, never raw ``gh`` and
+    never a human-performed merge action — approval is the gate, execution is
+    always the agent). It can never unlock a non-substrate CLEAR, so it cannot
+    be used to bypass independent loop review of logic/docs PRs.
     """
     from teatree.core.models import MergeClear  # noqa: PLC0415
 
@@ -227,19 +230,20 @@ def assert_merge_preconditions(
     if presented and not clear.is_substrate():
         msg = (
             f"--human-authorized presented for non-substrate MergeClear "
-            f"({slug}#{pr_id}, blast_class={clear.blast_class}); the human-merge path "
-            f"is substrate-only — a logic/docs CLEAR merges through the loop, not a "
-            f"human escape hatch (invariant 8 / §17.4.1)"
+            f"({slug}#{pr_id}, blast_class={clear.blast_class}); the recorded-human-"
+            f"approval path is substrate-only — a logic/docs CLEAR merges through "
+            f"the loop, not via a human-approval escape hatch (invariant 8 / §17.4.1)"
         )
         raise MergePreconditionError(msg)
 
     # 5. blast_class respected — the loop NEVER auto-merges substrate-class
     #    PRs regardless of CLEAR validity (invariant 4 / §17.4.3 step 5). The
-    #    ONLY exception is the sanctioned human-merge path: a substrate CLEAR
-    #    whose recorded ``human_authorizer`` matches the value re-presented at
-    #    merge time. That still runs through this same SHA-bound, audited
-    #    transition (invariant 8) — it is not raw ``gh``, it is a human
-    #    decision recorded durably on the CLEAR and bound to the merge.
+    #    ONLY exception: a substrate CLEAR whose recorded ``human_authorizer``
+    #    matches the value re-presented at merge time. The recorded human
+    #    approval is the gate; the AGENT then executes through this same
+    #    SHA-bound, audited transition (invariant 8) — not raw ``gh``, not a
+    #    human-performed merge. The approval is recorded durably on the CLEAR
+    #    and bound to the merge.
     if clear.is_substrate() and not clear.human_merge_authorized_by(presented):
         detail = (
             "no human authoriser recorded on the CLEAR"
@@ -250,10 +254,11 @@ def assert_merge_preconditions(
         )
         msg = (
             f"MergeClear for {slug}#{pr_id} is blast_class=substrate — substrate "
-            f"changes are human-merge-only and draft-locked (invariant 4); the loop "
-            f"never auto-merges them (§17.4.3 step 5). {detail.capitalize()}. The "
-            f"sanctioned path: an owner issues `t3 <overlay> ticket clear … "
-            f"--blast-class substrate --human-authorize <id>` then a human runs "
+            f"changes require a recorded human approval and are draft-locked "
+            f"(invariant 4); the loop never auto-merges them (§17.4.3 step 5). "
+            f"{detail.capitalize()}. The sanctioned path: an owner issues `t3 "
+            f"<overlay> ticket clear … --blast-class substrate --human-authorize "
+            f"<id>` (the recorded approval — the gate), then the agent executes "
             f"`t3 <overlay> ticket merge <clear_id> --human-authorized <id>`"
         )
         raise MergePreconditionError(msg)
@@ -402,9 +407,10 @@ def merge_ticket_pr(
     untouched — the transition is all-or-nothing.
 
     ``human_authorized`` is empty for every loop-driven merge (the loop never
-    auto-merges substrate). A human/owner passes their recorded authoriser id
-    here to merge a substrate CLEAR through this same sanctioned transition
-    (invariant 8) — see :func:`assert_merge_preconditions`.
+    auto-merges substrate). For a substrate CLEAR the recorded human approval
+    id is re-presented here and **the agent executes** the merge through this
+    same sanctioned transition (invariant 8 — approval is the gate, the agent
+    is always the executor) — see :func:`assert_merge_preconditions`.
     """
     from teatree.core.models import MergeClear  # noqa: PLC0415
 
