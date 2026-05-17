@@ -105,13 +105,15 @@ class MergeClear(models.Model):
     reviewer_identity = models.CharField(max_length=255)
     gh_verify_result = models.CharField(max_length=32, choices=VerifyResult.choices)
     blast_class = models.CharField(max_length=16, choices=BlastClass.choices)
-    # Set ONLY for a substrate-class CLEAR a human/owner explicitly authorised
-    # to merge (§17.4.3 step 5 / invariant 4). Empty for every non-substrate
-    # CLEAR and for an un-authorised substrate CLEAR — the loop never
-    # auto-merges substrate; the human-merge path is the only way a substrate
-    # CLEAR becomes mergeable, and it MUST still go through the sanctioned
-    # ``t3 ... ticket merge`` transition (invariant 8), never raw ``gh``. This
-    # records *who* authorised it so the FSM/audit stays coherent.
+    # Set ONLY for a substrate-class CLEAR a human/owner explicitly approved
+    # for merge (§17.4.3 step 5 / invariant 4). Empty for every non-substrate
+    # CLEAR and for an un-approved substrate CLEAR — the loop never
+    # auto-merges substrate; a recorded human approval is the only way a
+    # substrate CLEAR becomes mergeable. Approval is the gate — the AGENT
+    # still executes the merge through the sanctioned ``t3 ... ticket merge``
+    # transition (invariant 8), never raw ``gh``, and never a human-performed
+    # merge action. This records *who approved* it so the FSM/audit stays
+    # coherent.
     human_authorizer = models.CharField(max_length=255, blank=True, default="")
     issued_at = models.DateTimeField(default=timezone.now)
     consumed_at = models.DateTimeField(null=True, blank=True)
@@ -220,12 +222,13 @@ class MergeClear(models.Model):
     def human_merge_authorized_by(self, presented_authorizer: str) -> bool:
         """True iff a substrate CLEAR's recorded authoriser matches what the merge call presents.
 
-        The substrate human-merge path (§17.4.3 step 5 / invariant 8) is only
+        The substrate approval path (§17.4.3 step 5 / invariant 8) is only
         unlocked when (a) this CLEAR is substrate-class, (b) it carries a
         non-empty ``human_authorizer`` recorded by the orchestrator at issue
         time, and (c) the ``ticket merge`` invocation re-presents that exact
         authoriser. The presented value must match the recorded one so the
-        human decision is bound to the merge, not merely asserted at the CLI.
+        human *approval* is bound to the merge (the agent then executes it),
+        not merely asserted at the CLI.
         """
         presented = presented_authorizer.strip()
         return bool(self.is_substrate() and self.human_authorizer and presented == self.human_authorizer)

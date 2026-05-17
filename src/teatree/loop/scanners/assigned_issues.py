@@ -18,8 +18,8 @@ if TYPE_CHECKING:
     from teatree.core.models.ticket import Ticket
 
 # A ticket no longer occupies the auto-start budget once it reaches IN_REVIEW
-# (PR is open, the loop is waiting on a human merge). Earlier states still
-# count: NOT_STARTED, SCOPED, STARTED, CODED, TESTED, REVIEWED, SHIPPED.
+# (PR is open, awaiting review/CLEAR before the keystone merge). Earlier states
+# still count: NOT_STARTED, SCOPED, STARTED, CODED, TESTED, REVIEWED, SHIPPED.
 _AUTO_START_BUDGET_STATES: frozenset[str] = frozenset(
     {"not_started", "scoped", "started", "coded", "tested", "reviewed", "shipped"}
 )
