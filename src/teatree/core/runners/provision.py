@@ -74,9 +74,8 @@ class WorktreeProvisioner(RunnerBase):
             worktree.save(update_fields=["branch", "extra"])
             provisioned[repo_name] = wt_path
 
-        extra["provision"] = provisioned
-        ticket.extra = extra
-        ticket.save(update_fields=["extra"])
+        # #800 N3: canonical locked RMW (was an unlocked extra save).
+        ticket.merge_extra(set_keys={"provision": provisioned})
 
         if failed:
             return RunnerResult(ok=False, detail=f"failed to create worktrees for: {', '.join(failed)}")

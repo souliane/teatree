@@ -131,6 +131,77 @@ class TestTicketNumber(TestCase):
         assert ticket.ticket_number == str(ticket.pk)
 
 
+class TestTicketMergeExtra(TestCase):
+    """#800 N3: the canonical locked ``extra`` RMW primitive.
+
+    Behaviour contract (the concurrency proof is the file-backed-SQLite
+    harness in ``tests/test_ticket_extra_merge_serialization.py``); here
+    we pin the API: set/pop semantics and that a re-read from the DB
+    between two calls is merged, not clobbered (the locked primitive
+    re-reads the row, so it never overwrites a key it did not touch).
+    """
+
+    def test_set_keys_persists_and_merges_existing(self) -> None:
+        ticket = Ticket.objects.create(extra={"keep": 1})
+        ticket.merge_extra(set_keys={"pr_urls": ["u"]})
+        ticket.refresh_from_db()
+        assert ticket.extra == {"keep": 1, "pr_urls": ["u"]}
+
+    def test_pop_keys_removes_only_named(self) -> None:
+        ticket = Ticket.objects.create(extra={"a": 1, "ship_invoking_branch": "b"})
+        ticket.merge_extra(pop_keys=["ship_invoking_branch"])
+        ticket.refresh_from_db()
+        assert ticket.extra == {"a": 1}
+
+    def test_does_not_clobber_a_concurrent_writers_key(self) -> None:
+        # Two handles to the same row (the lost-update setup): a stale
+        # in-memory instance and a fresh write by "another worker".
+        ticket = Ticket.objects.create(extra={})
+        stale = Ticket.objects.get(pk=ticket.pk)
+        Ticket.objects.filter(pk=ticket.pk).update(extra={"visual_qa": {"x": 1}})
+        # The stale handle's merge must NOT wipe visual_qa — the locked
+        # re-read inside merge_extra sees the other worker's commit.
+        stale.merge_extra(set_keys={"pr_urls": ["u"]})
+        ticket.refresh_from_db()
+        assert ticket.extra == {"visual_qa": {"x": 1}, "pr_urls": ["u"]}
+
+    def test_set_and_pop_in_one_call(self) -> None:
+        ticket = Ticket.objects.create(extra={"pr_title_override": "t"})
+        ticket.merge_extra(set_keys={"pr_urls": ["u"]}, pop_keys=["pr_title_override"])
+        ticket.refresh_from_db()
+        assert ticket.extra == {"pr_urls": ["u"]}
+
+    def test_noop_call_persists_current_state(self) -> None:
+        ticket = Ticket.objects.create(extra={"a": 1})
+        ticket.merge_extra()
+        ticket.refresh_from_db()
+        assert ticket.extra == {"a": 1}
+
+    def test_also_set_writes_sibling_fields_in_the_same_locked_update(self) -> None:
+        # The tracker-sync paths co-write extra + state/repos in one
+        # save; also_set keeps that atomic through the locked primitive.
+        ticket = Ticket.objects.create(extra={"keep": 1}, repos=["a"])
+        ticket.merge_extra(
+            set_keys={"prs": {}},
+            also_set={"repos": ["a", "b"], "variant": "x"},
+        )
+        ticket.refresh_from_db()
+        assert ticket.extra == {"keep": 1, "prs": {}}
+        assert ticket.repos == ["a", "b"]
+        assert ticket.variant == "x"
+        # The in-memory instance is updated too (no stale read after).
+        assert ticket.variant == "x"
+
+    def test_also_set_does_not_clobber_concurrent_extra_writer(self) -> None:
+        ticket = Ticket.objects.create(extra={})
+        stale = Ticket.objects.get(pk=ticket.pk)
+        Ticket.objects.filter(pk=ticket.pk).update(extra={"visual_qa": {"x": 1}})
+        stale.merge_extra(set_keys={"prs": {}}, also_set={"variant": "v"})
+        ticket.refresh_from_db()
+        assert ticket.extra == {"visual_qa": {"x": 1}, "prs": {}}
+        assert ticket.variant == "v"
+
+
 class TestTicketTransitions(TestCase):
     @pytest.fixture(autouse=True)
     def _inject_tmp_path(self, tmp_path: Path) -> None:

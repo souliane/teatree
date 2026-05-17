@@ -19,9 +19,7 @@ class RetroExecutor(RunnerBase):
 
     def run(self) -> RunnerResult:
         ticket = self.ticket
-        extra = dict(ticket.extra or {})
-        extra["retro_scheduled"] = True
-        ticket.extra = extra
-        ticket.save(update_fields=["extra"])
+        # #800 N3: canonical locked RMW (was an unlocked extra save).
+        ticket.merge_extra(set_keys={"retro_scheduled": True})
         logger.info("Retro scheduled for ticket %s", ticket.pk)
         return RunnerResult(ok=True, detail="retro-scheduled")
