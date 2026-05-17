@@ -1721,6 +1721,55 @@ _STRUCTURED_QUESTION_BLOCK = (
 )
 
 
+_CLASSIFIER_RELAX_MARKERS = re.compile(
+    # Protocol-specific vocabulary only.  Each alternative is a phrase the
+    # sanctioned protocol actually produces and that does NOT appear in
+    # ordinary Stop-gate prose:
+    #   - "relax classifier" / "Allow it (relax classifier)": the shorthand
+    #     label and verbatim option text.
+    #   - "permissions.allow" ONLY when adjacent to a relax/classifier token
+    #     (review NB1): a bare "permissions.allow" is unrelated allow-list
+    #     prose and must still trip the #807 gate, so it is NOT a marker on
+    #     its own — it must co-occur with "relax"/"classifier" within a short
+    #     window.
+    #   - "denied by the classifier/harness/auto mode": the denial-source
+    #     phrasing.  A bare "was denied" is deliberately NOT a marker
+    #     (review Finding 6) — "access was denied" / "the MR was denied" are
+    #     ordinary prose and must still trip the gate.
+    r"relax classifier"
+    r"|Allow it \(relax classifier\)"
+    r"|(?:relax|classifier)[^.]{0,80}?permissions\.allow"
+    r"|permissions\.allow[^.]{0,80}?(?:relax|classifier)"
+    r"|denied by (?:the )?(?:classifier|harness|auto[- ]?mode)",
+    re.IGNORECASE,
+)
+
+
+def _is_classifier_relax_explanation(text: str) -> bool:
+    """True when ``text`` looks like a Step-2 classifier-denial explanation.
+
+    The sanctioned Classifier Denial Protocol (skills/rules/SKILL.md §
+    "Classifier Denial Protocol") requires the agent at Step 2 to explain the
+    denial in prose BEFORE calling AskUserQuestion at Step 3.  That prose
+    contains classifier-specific markers that do not appear in ordinary
+    decision questions, so we can distinguish them from questions that must
+    still go through AskUserQuestion.
+
+    Markers (any one is sufficient): "relax classifier" (the shorthand
+    label), "Allow it (relax classifier)" (the exact option text),
+    "permissions.allow" ONLY when it co-occurs with a relax/classifier
+    token within a short window (review NB1 — a bare "permissions.allow" is
+    unrelated allow-list prose and must still trip the gate), or "denied by
+    the classifier/harness/auto mode" (the denial-source phrasing).  A bare
+    "was denied" is intentionally NOT a marker (review Finding 6) so
+    unrelated denials ("access was denied") still trip the #807 gate.
+
+    This exemption is INTENTIONALLY NARROW.  It must not subsume arbitrary
+    prose — it only applies to the narrow vocabulary of the denial protocol.
+    """
+    return bool(_CLASSIFIER_RELAX_MARKERS.search(_FENCED_CODE_RE.sub(" ", text)))
+
+
 def handle_enforce_structured_question(data: dict) -> bool | None:
     """Block a Stop whose final turn poses an inline user-directed question.
 
@@ -1729,6 +1778,13 @@ def handle_enforce_structured_question(data: dict) -> bool | None:
     above) and no ``AskUserQuestion`` tool call occurred in that turn.
     Otherwise returns ``None`` so the session may end normally. The
     ``stop_hook_active`` re-fire flag short-circuits to avoid a hot loop.
+
+    Exception — classifier-relax Step-2 turns: the sanctioned Classifier
+    Denial Protocol requires the agent to explain the denial in prose (Step 2)
+    BEFORE calling AskUserQuestion (Step 3).  That prose trips this gate
+    because it contains decision cues but no tool call.  We detect it by
+    ``_is_classifier_relax_explanation`` and let it through, avoiding the
+    infinite block → explain → block loop.
     """
     if data.get("stop_hook_active"):
         return None
@@ -1738,7 +1794,217 @@ def handle_enforce_structured_question(data: dict) -> bool | None:
     text, used_question_tool = turn
     if used_question_tool or not _is_user_directed_question(text):
         return None
+    if _is_classifier_relax_explanation(text):
+        return None
     json.dump({"decision": "block", "reason": _STRUCTURED_QUESTION_BLOCK}, sys.stdout)
+    return True
+
+
+# ── Classifier-relax PreToolUse allow (sanctioned denial protocol) ──────────
+#
+# Threat model:
+#
+#   WHAT THIS ALLOWS: Edit/Write to ~/.claude/settings.json ONLY when there is
+#   transcript evidence of the exact Step-3 user approval from the sanctioned
+#   classifier-relax flow.  The evidence requires both a specific AskUserQuestion
+#   option text ("Allow it (relax classifier)") AND an affirmative user response.
+#
+#   PER-WRITE / CONSUME-ONCE CONSENT (review Finding 2): an approval authorises
+#   exactly ONE subsequent settings.json write — the next one — not every later
+#   write in the session.  The scan walks the transcript from the END and binds
+#   to the MOST RECENT approval pair (AskUserQuestion-with-relax-option →
+#   affirmative user turn).  It then verifies that NO settings.json Edit/Write
+#   tool_use has occurred AFTER that approval.  If a settings.json write already
+#   happened since the approval, the consent is spent: the pending write is a
+#   replay of consumed consent and is DENIED.  A genuine second escalation
+#   (a fresh AskUserQuestion-relax + fresh affirmative, with no settings write
+#   since) re-authorises exactly the next write — consume-once is per-approval,
+#   not once-per-session-forever.
+#
+#   WHAT THIS DOES NOT ALLOW:
+#   - Any other target path (not settings.json).
+#   - Edit/Write without transcript evidence of the Step-3 approval.
+#   - Replay of a consumed approval: an approval whose settings.json write has
+#     already completed cannot authorise a second, later, unrelated write.
+#   - Approving "do X without running AskUserQuestion first" — the AskUserQuestion
+#     tool call itself must appear in the same session transcript.
+#
+#   RESIDUAL RISK: A transcript file the agent can write could in theory be
+#   crafted to contain a forged AskUserQuestion block.  This is mitigated by:
+#   (a) the hook path and the transcript are both controlled by the harness, not
+#   the agent, in normal operation; (b) the sanctioned flow is narrow and
+#   well-documented so detection patterns are specific; (c) the allow emitted is
+#   only for settings.json, not arbitrary paths; (d) consume-once binds the
+#   allow to the next write after the most-recent approval, so a single forged
+#   or genuine approval cannot be amortised across many settings writes.
+#
+#   TRACKED RESIDUAL (#857): the hook authorises *that* a settings.json write
+#   occurs (sanctioned by the user's explicit approval) but does NOT
+#   schema-validate the write *payload*.  Optional content-shape validation
+#   (only permit appending a string entry to permissions.allow/autoMode.allow)
+#   is tracked as a follow-up hardening in issue #857; it is intentionally out
+#   of scope here because the user explicitly approved the write.
+
+_CLASSIFIER_RELAX_OPTION = "Allow it (relax classifier)"
+
+# Affirmative selection of the relax option (review Findings 3/4).  Precise,
+# not loosely spoofable: it matches an explicit selection of the option label
+# / "allow it" intent or a clear standalone yes — NOT a bare "relax" substring
+# (which false-matched "please relax the check") and NOT only a start-anchored
+# "yes" (which over-denied "Actually, yes — go ahead").  Deliberately excludes
+# loose verbs like "do it" because the DECLINE option label is "Keep the
+# denial (do it differently)" — a substring match there would invert consent.
+# Word boundaries keep it from matching inside unrelated words.
+_CLASSIFIER_RELAX_AFFIRMATIVE = re.compile(
+    r"allow it(?:\s*\(relax classifier\))?"  # the option label / "allow it"
+    r"|relax classifier"  # explicit protocol shorthand, not bare "relax"
+    r"|\byes\b"  # a clear yes anywhere (word-bounded)
+    r"|\b(?:go ahead|approve|approved|affirmative|confirm|confirmed)\b",
+    re.IGNORECASE,
+)
+
+
+# Module-level constant for the (unexpanded) settings path — single source of
+# truth, no per-call literal.  Expansion stays in _settings_json_target() and
+# is performed at call time (NOT memoised at import) so the HOME env var that
+# conftest._isolate_env monkeypatches per-test is respected.
+_SETTINGS_JSON_PATH = "~/.claude/settings.json"
+
+
+def _settings_json_target() -> str:
+    """Resolved absolute path of ``_SETTINGS_JSON_PATH`` (HOME-sensitive).
+
+    Expanded at call time (not module import) so the HOME env var used during
+    tests (monkeypatched by conftest._isolate_env) is respected.
+    """
+    return str(Path(_SETTINGS_JSON_PATH).expanduser())
+
+
+def _block_is_settings_write(block: dict) -> bool:
+    """True when ``block`` is an Edit/Write tool_use targeting settings.json.
+
+    Callers must pre-filter with ``isinstance(block, dict)`` (mirrors the
+    ``_ask_question_has_relax_option`` contract and the call sites below).
+    """
+    if block.get("type") != "tool_use":
+        return False
+    if block.get("name") != "Edit" and block.get("name") != "Write":
+        return False
+    tool_input = block.get("input")
+    raw_path = tool_input.get("file_path", "") if isinstance(tool_input, dict) else ""
+    try:
+        return str(Path(str(raw_path)).expanduser()) == _settings_json_target()
+    except (OSError, ValueError, RuntimeError):
+        return False
+
+
+def _ask_question_has_relax_option(block: dict) -> bool:
+    """True when an ``AskUserQuestion`` tool_use offers the verbatim relax option.
+
+    Iterates the structured option labels and matches the exact (whitespace-
+    normalised) option text — not a repr substring of the options list
+    (review Finding 5).
+    """
+    if block.get("type") != "tool_use" or block.get("name") != "AskUserQuestion":
+        return False
+    tool_input = block.get("input")
+    questions = tool_input.get("questions", []) if isinstance(tool_input, dict) else []
+    if not isinstance(questions, list):
+        return False
+    target = " ".join(_CLASSIFIER_RELAX_OPTION.split())
+    for question in questions:
+        if not isinstance(question, dict):
+            continue
+        options = question.get("options", [])
+        if not isinstance(options, list):
+            continue
+        for option in options:
+            label = option.get("label", option) if isinstance(option, dict) else option
+            if isinstance(label, str) and " ".join(label.split()) == target:
+                return True
+    return False
+
+
+def _user_entry_affirms_relax(entry: dict) -> bool:
+    """True when a user transcript ``entry`` affirmatively selects the relax option."""
+    texts = [str(b.get("text", "")) for b in _entry_content(entry) if isinstance(b, dict) and b.get("type") == "text"]
+    return bool(_CLASSIFIER_RELAX_AFFIRMATIVE.search(" ".join(texts).strip()))
+
+
+def _has_sanctioned_relax_approval(transcript_path: str) -> bool:
+    """Return True only for an unconsumed, most-recent Step-3 relax approval.
+
+    Algorithm (review Finding 2 — per-write / consume-once consent).
+    Step one: walk the transcript from the END to find the MOST RECENT
+    assistant ``AskUserQuestion`` tool_use that offers the verbatim relax
+    option.  Step two: from that point forward, find the FIRST subsequent
+    user turn; the approval holds only if that turn affirmatively selects
+    the relax option (interleaved non-user entries are skipped).  Step
+    three (consume-once): scan every entry AFTER that approving user turn;
+    if a settings.json Edit/Write tool_use already occurred, the consent is
+    spent — the pending write would be a replay — so return False.
+
+    Returns False on any failure (missing transcript, no matching turn, no
+    affirmative response, no subsequent user turn, consent already consumed)
+    — fail-safe to "no allow".
+    """
+    entries = _read_transcript_entries(transcript_path)
+    for idx in range(len(entries) - 1, -1, -1):
+        entry = entries[idx]
+        if _entry_role(entry) != "assistant":
+            continue
+        if not any(
+            isinstance(block, dict) and _ask_question_has_relax_option(block) for block in _entry_content(entry)
+        ):
+            continue
+        # Most-recent relax AskUserQuestion is at index ``idx``.  Find the
+        # first user turn after it and require an affirmative selection.
+        approval_user_idx: int | None = None
+        for j in range(idx + 1, len(entries)):
+            if _entry_role(entries[j]) != "user":
+                continue
+            if not _user_entry_affirms_relax(entries[j]):
+                return False
+            approval_user_idx = j
+            break
+        if approval_user_idx is None:
+            # AskUserQuestion-relax with no subsequent user turn => not approved.
+            return False
+        # Consume-once: a settings.json write already performed since the
+        # approving turn spends the consent — deny the replay.
+        for k in range(approval_user_idx + 1, len(entries)):
+            if any(isinstance(block, dict) and _block_is_settings_write(block) for block in _entry_content(entries[k])):
+                return False
+        return True
+    return False
+
+
+def handle_allow_classifier_relax_settings_write(data: dict) -> bool | None:
+    """Allow Edit/Write to ~/.claude/settings.json after sanctioned Step-3 approval.
+
+    Emits ``{"permissionDecision": "allow"}`` and returns ``True`` ONLY when:
+    1. The tool being called is ``Edit`` or ``Write``.
+    2. The target file path resolves to ``~/.claude/settings.json``.
+    3. The transcript contains ``AskUserQuestion`` with the relax option
+        AND an affirmative user response (Step-3 approval from the protocol).
+
+    Any condition failing returns ``None`` without emitting anything — all
+    subsequent handlers including any deny handler remain in play.
+
+    This handler must be registered FIRST in the PreToolUse chain so it fires
+    before any deny handler that might block the settings.json write.
+
+    See the threat model in the module-level comment block above.
+    """
+    if data.get("tool_name") not in {"Edit", "Write"}:
+        return None
+    tool_input = data.get("tool_input") or {}
+    raw_path = tool_input.get("file_path", "")
+    if str(Path(str(raw_path)).expanduser()) != _settings_json_target():
+        return None
+    if not _has_sanctioned_relax_approval(data.get("transcript_path", "")):
+        return None
+    json.dump({"permissionDecision": "allow"}, sys.stdout)
     return True
 
 
@@ -2158,6 +2424,7 @@ _HANDLERS: dict[str, list] = {
         handle_user_prompt_submit,
     ],
     "PreToolUse": [
+        handle_allow_classifier_relax_settings_write,
         handle_enforce_loop_registration,
         handle_protect_default_branch,
         handle_enforce_skill_loading,
