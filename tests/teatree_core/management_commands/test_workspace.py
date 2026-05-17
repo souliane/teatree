@@ -1086,6 +1086,8 @@ class TestPruneBranches(TestCase):
             patch.object(git_mod, "run", side_effect=fake_run),
             patch.object(git_mod, "current_branch", return_value="main"),
             patch.object(git_mod, "default_branch", return_value="main"),
+            # Squash-merged: the content is on the remote, nothing absent (#710).
+            patch.object(git_mod, "commits_absent_from_all_remotes", return_value=[]),
             patch.object(git_mod, "worktree_remove", return_value=True) as mock_wt_rm,
             patch.object(git_mod, "branch_delete", return_value=True) as mock_br_del,
             patch("teatree.utils.run.subprocess.run", return_value=gh_merged),
@@ -1154,6 +1156,8 @@ class TestPruneBranches(TestCase):
             patch.object(git_mod, "current_branch", return_value="main"),
             patch.object(git_mod, "default_branch", return_value="main"),
             patch.object(git_mod, "unsynced_commits", return_value=[]),
+            # Fully synced: no commits absent from any remote (#706/#710 guard).
+            patch.object(git_mod, "commits_absent_from_all_remotes", return_value=[]),
             patch.object(git_mod, "worktree_remove", return_value=True) as mock_wt_rm,
             patch.object(git_mod, "branch_delete", return_value=True) as mock_br_del,
             patch("teatree.utils.run.subprocess.run", return_value=gh_merged),
@@ -1461,3 +1465,180 @@ class TestDropOrphanDatabases(TestCase):
         assert not any("wt_known" in c for c in dropdb_cmds)
         # other_db should NOT be dropped (no wt_ prefix)
         assert not any("other_db" in " ".join(c) for c in commands_run if "dropdb" in c)
+
+
+def _git(repo: Path, *args: str) -> str:
+    """Run git in ``repo`` with a deterministic identity, returning stdout."""
+    env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "t",
+        "GIT_AUTHOR_EMAIL": "t@t",
+        "GIT_COMMITTER_NAME": "t",
+        "GIT_COMMITTER_EMAIL": "t@t",
+    }
+    out = subprocess.run(
+        ["git", "-C", str(repo), *args],  # noqa: S607
+        check=True,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    return out.stdout.strip()
+
+
+def _init_repo_with_remote(tmp: Path) -> tuple[Path, Path]:
+    """Create a work repo with a pushed ``main`` and return ``(remote, work)``."""
+    remote = tmp / "remote.git"
+    work = tmp / "work"
+    subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True)  # noqa: S607
+    subprocess.run(["git", "init", "-q", str(work)], check=True)  # noqa: S607
+    _git(work, "commit", "-q", "--allow-empty", "-m", "base")
+    _git(work, "remote", "add", "origin", str(remote))
+    _git(work, "push", "-q", "origin", "HEAD:main")
+    _git(work, "fetch", "-q", "origin")
+    return remote, work
+
+
+class TestPruneSquashMergedDataLossGuard(TestCase):
+    """#710 — ``prune_squash_merged`` must honor the #706 data-loss guard.
+
+    Uses a real on-disk git repo (no git mocks) so the guard is exercised
+    against actual ``git log ... --not --remotes`` behaviour.
+    """
+
+    def _make_repo(self, tmp: Path) -> tuple[Path, Path]:
+        """Build a repo whose feature branch holds genuinely-unique unpushed work.
+
+        The branch tip tree is fed (via a mocked PR merge SHA) to the
+        ``_branch_tree_matches_squash`` heuristic so it is wrongly classified as
+        squash-merged — the exact path that bypasses the existing ``unsynced``
+        SKIP guard in ``prune_squash_merged``. Returns ``(work, worktree_path)``.
+        """
+        _remote, work = _init_repo_with_remote(tmp)
+
+        # A genuinely-unique commit that exists on NO remote.
+        _git(work, "checkout", "-q", "-b", "feature")
+        (work / "unique.py").write_text("real unpushed work\n", encoding="utf-8")
+        _git(work, "add", "unique.py")
+        _git(work, "commit", "-q", "-m", "feat: genuinely unique unpushed work (#100)")
+        _git(work, "checkout", "-q", "main")
+
+        wt_path = tmp / "wt-feature"
+        _git(work, "worktree", "add", "-q", str(wt_path), "feature")
+        return work, wt_path
+
+    def test_branch_with_unique_unpushed_work_is_not_force_deleted(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_s:
+            tmp = Path(tmp_s)
+            work, wt_path = self._make_repo(tmp)
+            repo = str(work)
+            tip = _git(work, "rev-parse", "feature")
+            wt_map = {"feature": str(wt_path)}
+
+            # The PR-merge-SHA probe returns the branch tip itself, so
+            # `_branch_tree_matches_squash` (diff --quiet tip feature) is True
+            # and the existing unsynced SKIP guard is bypassed.
+            with patch.object(cleanup_mod, "_pr_merge_commit_sha", return_value=tip):
+                result = ws_cleanup_mod.prune_squash_merged(repo, "feature", wt_map)
+
+            # DATA-LOSS ASSERTION: the unique commit must still exist.
+            branches = _git(work, "branch", "--format=%(refname:short)")
+            assert "feature" in branches.split(), (
+                f"DATA LOSS: branch 'feature' (unpushed unique work {tip}) was deleted. "
+                f"prune_squash_merged result: {result!r}"
+            )
+            assert wt_path.is_dir(), "DATA LOSS: worktree directory was removed"
+            assert "unique.py" in _git(work, "show", "--stat", "--format=", tip)
+            assert "feature" in result, f"expected the branch named in the refusal, got: {result!r}"
+            lowered = result.lower()
+            assert any(token in lowered for token in ("unpushed", "no remote", "skip")), (
+                f"expected a refusal/warning, got: {result!r}"
+            )
+
+    def test_genuinely_squash_merged_branch_is_still_pruned(self) -> None:
+        """No regression: a branch whose work IS on origin/main is still cleaned."""
+        with tempfile.TemporaryDirectory() as tmp_s:
+            tmp = Path(tmp_s)
+            _remote, work = _init_repo_with_remote(tmp)
+
+            _git(work, "checkout", "-q", "-b", "feature")
+            (work / "f.py").write_text("work\n", encoding="utf-8")
+            _git(work, "add", "f.py")
+            _git(work, "commit", "-q", "-m", "feat: real work (#99)")
+
+            # Squash-merge into main and push: the content is now on a remote.
+            _git(work, "checkout", "-q", "main")
+            _git(work, "merge", "-q", "--squash", "feature")
+            _git(work, "commit", "-q", "-m", "feat: real work (#99)")
+            _git(work, "push", "-q", "origin", "main")
+            _git(work, "fetch", "-q", "origin")
+
+            wt_path = tmp / "wt-feature"
+            _git(work, "worktree", "add", "-q", str(wt_path), "feature")
+            repo = str(work)
+            wt_map = {"feature": str(wt_path)}
+
+            with patch.object(cleanup_mod, "_pr_merge_commit_sha", return_value=""):
+                result = ws_cleanup_mod.prune_squash_merged(repo, "feature", wt_map)
+
+            branches = _git(work, "branch", "--format=%(refname:short)").split()
+            assert "feature" not in branches, f"squash-merged branch should be pruned, got: {result!r}"
+            assert not wt_path.exists(), "worktree should be removed for a squash-merged branch"
+            assert result == "Pruned squash-merged branch: feature"
+
+    def test_unsynced_squash_merged_branch_without_linked_worktree_is_pruned(self) -> None:
+        """A squash-merged branch with no linked worktree (empty wt_map) is still pruned."""
+        with tempfile.TemporaryDirectory() as tmp_s:
+            tmp = Path(tmp_s)
+            _remote, work = _init_repo_with_remote(tmp)
+            _git(work, "checkout", "-q", "-b", "feature")
+            (work / "f.py").write_text("work\n", encoding="utf-8")
+            _git(work, "add", "f.py")
+            _git(work, "commit", "-q", "-m", "feat: real work (#99)")
+            _git(work, "checkout", "-q", "main")
+            _git(work, "merge", "-q", "--squash", "feature")
+            _git(work, "commit", "-q", "-m", "feat: real work (#99)")
+            _git(work, "push", "-q", "origin", "main")
+            _git(work, "fetch", "-q", "origin")
+
+            with patch.object(cleanup_mod, "_pr_merge_commit_sha", return_value=""):
+                result = ws_cleanup_mod.prune_squash_merged(str(work), "feature", {})
+
+            assert "feature" not in _git(work, "branch", "--format=%(refname:short)").split()
+            assert result == "Pruned squash-merged branch: feature"
+
+    def test_fails_closed_when_pushed_state_cannot_be_verified(self) -> None:
+        """An inconclusive git probe must refuse deletion, not proceed (#706 fail-closed)."""
+        with tempfile.TemporaryDirectory() as tmp_s:
+            tmp = Path(tmp_s)
+            _remote, work = _init_repo_with_remote(tmp)
+            _git(work, "checkout", "-q", "-b", "feature")
+            (work / "f.py").write_text("work\n", encoding="utf-8")
+            _git(work, "add", "f.py")
+            _git(work, "commit", "-q", "-m", "feat: real work (#99)")
+            _git(work, "checkout", "-q", "main")
+
+            wt_path = tmp / "wt-feature"
+            _git(work, "worktree", "add", "-q", str(wt_path), "feature")
+            tip = _git(work, "rev-parse", "feature")
+            wt_map = {"feature": str(wt_path)}
+
+            # No unsynced commits vs origin/main (skip the first guard), then
+            # make the data-loss probe fail closed by pointing at a missing ref.
+            with (
+                patch.object(git_mod, "unsynced_commits", return_value=[]),
+                patch.object(
+                    git_mod,
+                    "commits_absent_from_all_remotes",
+                    side_effect=utils_run_mod.CommandFailedError(["git", "log"], 128, "", "fatal: bad revision"),
+                ),
+            ):
+                result = ws_cleanup_mod.prune_squash_merged(str(work), "feature", wt_map)
+
+            assert "feature" in _git(work, "branch", "--format=%(refname:short)").split(), (
+                f"DATA LOSS: branch deleted despite an inconclusive probe: {result!r}"
+            )
+            assert wt_path.is_dir(), "DATA LOSS: worktree removed despite an inconclusive probe"
+            assert "SKIPPED 'feature'" in result
+            assert "could not verify" in result
+            assert tip  # tip captured for clarity; branch must survive

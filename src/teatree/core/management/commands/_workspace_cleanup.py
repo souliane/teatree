@@ -10,7 +10,7 @@ from pathlib import Path
 from teatree.core.cleanup import _branch_tree_matches_squash, cleanup_worktree
 from teatree.core.models import Worktree
 from teatree.utils import git
-from teatree.utils.run import run_allowed_to_fail
+from teatree.utils.run import CommandFailedError, run_allowed_to_fail
 
 
 def worktree_map(repo: str) -> dict[str, str]:
@@ -54,18 +54,62 @@ def is_squash_merged(repo: str, branch: str, default: str) -> bool:
     return not diff
 
 
+def _refuse_if_unpushed(repo: str, name: str) -> str:
+    """Return a refusal message when ``name`` has commits absent from all remotes (#706).
+
+    Defense-in-depth for #710. ``prune_squash_merged`` deletes a branch and its
+    worktree directly via ``git.worktree_remove`` / ``git.branch_delete``,
+    bypassing the guarded teardown seam (``cleanup._raise_if_unpushed``) that
+    every ``Worktree``-row-driven caller funnels through. That seam needs a
+    ``Worktree`` instance this name-only path does not have, so the same data-loss
+    primitive (``git.commits_absent_from_all_remotes``) is applied here directly.
+
+    This intentionally does **not** false-block genuinely squash-merged branches:
+    once a branch's content is squash-merged and that squash is pushed, every
+    branch commit is reachable from ``refs/remotes/origin/<default>`` so
+    ``--not --remotes`` is empty. A non-empty result means the commits exist on
+    NO remote — deleting the worktree would destroy the only copy.
+
+    **Fails closed.** A failing probe (invalid/missing branch, corrupt repo)
+    raises ``CommandFailedError``; we translate that into a refusal rather than
+    proceeding, because an inconclusive probe cannot prove the work is pushed.
+    Returns ``""`` when the branch is safe to delete.
+    """
+    try:
+        unpushed = git.commits_absent_from_all_remotes(repo, name)
+    except CommandFailedError as exc:
+        return (
+            f"SKIPPED '{name}': could not verify the branch is pushed "
+            f"(git probe failed: {exc}) — refusing to delete. Push the branch to keep the work."
+        )
+    if not unpushed:
+        return ""
+    return (
+        f"SKIPPED '{name}': {len(unpushed)} commit(s) on NO remote (data loss) — "
+        f"refusing to delete. Push to a new branch to keep the work:\n  " + "\n  ".join(unpushed)
+    )
+
+
 def prune_squash_merged(repo: str, name: str, wt_map: dict[str, str]) -> str:
     """Remove a confirmed squash-merged branch (and its worktree if linked).
 
     A branch whose tip tree matches the PR's merge commit is cleaned despite
     unsynced commits (typical for post-merge retro/docs work that is already
     captured by the squash).
+
+    Honors the #706 data-loss guard (#710): even when the squash-merge
+    heuristics say "clean", a branch whose commits are absent from every remote
+    is kept and a warning is returned — the safe default is never to destroy the
+    only copy of work.
     """
     unsynced = git.unsynced_commits(repo, name)
     if unsynced and not _branch_tree_matches_squash(repo, name):
         return f"SKIPPED '{name}': {len(unsynced)} unsynced commit(s) — push to a new branch:\n  " + "\n  ".join(
             unsynced
         )
+    refusal = _refuse_if_unpushed(repo, name)
+    if refusal:
+        return refusal
     wt_path = wt_map.get(name, "")
     if wt_path:
         git.worktree_remove(repo, wt_path)
