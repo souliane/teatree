@@ -17,6 +17,7 @@ from teatree.types import SyncResult
 
 if TYPE_CHECKING:
     from teatree.backends.gitlab_api import GitLabAPI
+    from teatree.core.models.types import TicketExtra, TicketSiblingFields
 
 logger = logging.getLogger(__name__)
 
@@ -102,12 +103,10 @@ def resolve_issue(
 
 
 def mark_tracker_404(ticket: Ticket, project_path: str, iid: int) -> None:
-    extra = ticket.extra if isinstance(ticket.extra, dict) else {}
-    if extra.get("tracker_404"):
+    if (ticket.extra or {}).get("tracker_404"):
         return
-    extra["tracker_404"] = True
-    ticket.extra = extra
-    ticket.save(update_fields=["extra"])
+    # #800 N3: canonical locked RMW (was an unlocked extra save).
+    ticket.merge_extra(set_keys={"tracker_404": True})
     logger.info("Issue %s#%d returned 404; marked tracker_404 to skip future sync", project_path, iid)
 
 
@@ -119,26 +118,24 @@ def apply_issue_data(client: "GitLabAPI", ticket: Ticket, issue: dict, project_p
         tracker_status = client.get_work_item_status(project_path, iid) or tracker_status
 
     extra = ticket.extra if isinstance(ticket.extra, dict) else {}
-    update_fields: list[str] = []
+    set_keys: TicketExtra = {}
 
     if tracker_status and extra.get("tracker_status") != tracker_status:
-        extra["tracker_status"] = tracker_status
-        update_fields.append("extra")
+        set_keys["tracker_status"] = tracker_status
 
     issue_title = str(issue.get("title", ""))
     if issue_title and extra.get("issue_title") != issue_title:
-        extra["issue_title"] = issue_title
-        if "extra" not in update_fields:
-            update_fields.append("extra")
+        set_keys["issue_title"] = issue_title
 
+    also_set: TicketSiblingFields = {}
     variant = extract_variant(list(labels)) if isinstance(labels, list) else ""
     if variant and ticket.variant != variant:
-        ticket.variant = variant
-        update_fields.append("variant")
+        also_set["variant"] = variant
 
-    if update_fields:
-        ticket.extra = extra
-        ticket.save(update_fields=update_fields)
+    if set_keys or also_set:
+        # #800 N3: canonical locked RMW; changed extra keys + variant
+        # one atomic write via also_set (no split, no unlocked clobber).
+        ticket.merge_extra(set_keys=set_keys or None, also_set=also_set or None)
         return True
     return False
 

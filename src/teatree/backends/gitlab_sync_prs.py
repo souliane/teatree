@@ -15,6 +15,7 @@ from teatree.types import DiscussionSummary, PREntry, PREntryDict, RawAPIDict, S
 
 if TYPE_CHECKING:
     from teatree.backends.gitlab_api import GitLabAPI, ProjectInfo
+    from teatree.core.models.types import TicketExtra, TicketSiblingFields
 
 logger = logging.getLogger(__name__)
 
@@ -189,20 +190,22 @@ def merge_ticket_extras(target: Ticket, source: Ticket) -> None:
 
     src_prs = src_extra.get("prs", {})
     tgt_prs = tgt_extra.get("prs", {})
-    if isinstance(src_prs, dict) and isinstance(tgt_prs, dict):
+    set_prs = isinstance(src_prs, dict) and isinstance(tgt_prs, dict)
+    if set_prs:
         for url, entry in src_prs.items():
             if url not in tgt_prs:
                 tgt_prs[url] = entry
-        tgt_extra["prs"] = tgt_prs
-        target.extra = tgt_extra
 
     src_repos = source.repos if isinstance(source.repos, list) else []
     tgt_repos = target.repos if isinstance(target.repos, list) else []
     for repo in src_repos:
         if repo not in tgt_repos:
             tgt_repos.append(repo)
-    target.repos = tgt_repos
-    target.save(update_fields=["extra", "repos"])
+
+    # #800 N3: canonical locked RMW; extra (prs) + repos one atomic
+    # write via also_set (no split, no unlocked clobber).
+    set_keys = cast("TicketExtra", {"prs": tgt_prs}) if set_prs else None
+    target.merge_extra(set_keys=set_keys, also_set={"repos": tgt_repos})
 
 
 def update_ticket(
@@ -230,15 +233,13 @@ def update_ticket(
     if repo_short not in repos:
         repos = [*repos, repo_short]
 
-    update_fields = ["extra", "repos"]
-
+    # #800 N3: canonical locked RMW; extra + repos (+ optional state)
+    # stay one atomic write via also_set (no split).
+    also_set: TicketSiblingFields = {"repos": repos}
     if inferred_state and _STATE_ORDER.index(inferred_state) > _STATE_ORDER.index(ticket.state):
-        ticket.state = inferred_state
-        update_fields.append("state")
+        also_set["state"] = inferred_state
 
-    ticket.extra = extra
-    ticket.repos = repos
-    ticket.save(update_fields=update_fields)
+    ticket.merge_extra(set_keys=cast("TicketExtra", dict(extra)), also_set=also_set)
 
 
 def infer_state_from_prs(prs_data: dict[str, PREntryDict]) -> str:

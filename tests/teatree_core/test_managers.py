@@ -142,6 +142,113 @@ class TestTaskQuerySet(TestCase):
         assert got.pk == fresh.pk  # skipped the already-claimed one
 
 
+class TestReapStaleClaimsCasOnSqlite(TestCase):
+    """#800 N5 — the reap must not spurious-fail a just-renewed lease.
+
+    Same leak-free in-process interleave technique as
+    ``TestClaimNextPendingConcurrencyOnSqlite`` (no threads, no
+    file-backed DB — runs on the production SQLite test backend; the
+    cross-thread file-SQLite harness is intractable vs the project-wide
+    ``filterwarnings=error`` and is unnecessary given this).
+
+    A live worker renews its lease *inside* ``reap_stale_claims``'s
+    write boundary (the shared seam: ``QuerySet.update`` for the fixed
+    conditional-UPDATE CAS, ``Task.save`` for the pre-fix
+    select-then-``fail()``). Fixed: the reap's
+    ``UPDATE ... WHERE status=CLAIMED AND lease_expires_at < now``
+    re-evaluates at write time ⇒ the renewed row no longer matches ⇒
+    survives (GREEN). Pre-fix: the row was scanned-as-stale and
+    ``fail()``-ed unconditionally ⇒ the renewed task is spuriously
+    FAILED (RED). Reverting the real ``reap_stale_claims`` body to the
+    pre-fix shape flips this RED — the genuine mutation-revert proof on
+    the real method.
+    """
+
+    def test_backend_is_sqlite(self) -> None:
+        from django.db import connection  # noqa: PLC0415
+
+        assert connection.vendor == "sqlite"
+
+    def test_renew_inside_reap_write_boundary_spares_the_lease(self) -> None:
+        from unittest.mock import patch  # noqa: PLC0415
+
+        from django.db.models import QuerySet  # noqa: PLC0415
+
+        from teatree.core.models.task import Task as TaskModel  # noqa: PLC0415
+
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket, agent_id="a")
+        expired = timezone.now() - timedelta(seconds=30)
+        stale = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            status=Task.Status.CLAIMED,
+            claimed_by="worker-1",
+            claimed_at=expired,
+            lease_expires_at=expired,
+            heartbeat_at=expired,
+        )
+
+        fired: list[str] = []
+        real_update = QuerySet.update
+        real_save = TaskModel.save
+
+        def _renew_once() -> None:
+            if fired:
+                return
+            fired.append("x")
+            # The live worker heartbeats its still-valid claim inside the
+            # reaper's critical section, before the reaper's write lands.
+            Task.objects.filter(pk=stale.pk).update(
+                lease_expires_at=timezone.now() + timedelta(seconds=300),
+                heartbeat_at=timezone.now(),
+            )
+
+        def update_with_rival(self: object, *args: object, **kwargs: object) -> object:
+            _renew_once()
+            return real_update(self, *args, **kwargs)
+
+        def save_with_rival(self: object, *args: object, **kwargs: object) -> object:
+            _renew_once()
+            return real_save(self, *args, **kwargs)
+
+        with (
+            patch.object(QuerySet, "update", update_with_rival),
+            patch.object(TaskModel, "save", save_with_rival),
+        ):
+            Task.objects.reap_stale_claims()
+
+        stale.refresh_from_db()
+        # The lease was renewed before the reap's write committed: the CAS
+        # re-evaluates lease_expires_at < now and skips it. A pre-fix
+        # scan-then-unconditional-fail body would have FAILED it here.
+        assert stale.status == Task.Status.CLAIMED, (
+            f"renewed lease was spuriously reaped (pre-fix scan-then-fail behaviour): {stale.status!r}"
+        )
+
+    def test_reap_still_fails_a_genuinely_stale_lease(self) -> None:
+        # Anti-trivial-vacuity guard: with no racing renew, the real
+        # reap MUST fail the stale CLAIMED task (so the green above is
+        # not passing simply because reap never fails anything).
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket, agent_id="a")
+        expired = timezone.now() - timedelta(seconds=30)
+        stale = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            status=Task.Status.CLAIMED,
+            claimed_by="worker-1",
+            claimed_at=expired,
+            lease_expires_at=expired,
+            heartbeat_at=expired,
+        )
+
+        Task.objects.reap_stale_claims()
+
+        stale.refresh_from_db()
+        assert stale.status == Task.Status.FAILED
+
+
 class TestClaimNextPendingConcurrencyOnSqlite(TestCase):
     """#786 B1 keystone — double-CLAIM race closed on the PRODUCTION SQLite backend.
 

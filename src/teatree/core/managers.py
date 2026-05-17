@@ -217,16 +217,35 @@ class TaskQuerySet(models.QuerySet):
         return self.get(pk=oldest_pk)
 
     def reap_stale_claims(self) -> int:
-        """Fail CLAIMED tasks whose lease has expired. Returns number of reaped tasks."""
+        """Fail CLAIMED tasks whose lease is *still* expired. Returns the count.
+
+        #800 N5: the previous shape scanned ``lease_expires_at < now``
+        then called ``task.fail()`` per row with no re-check under a
+        lock. A concurrent ``Task.renew_lease`` (a live worker
+        heartbeating its still-valid claim) extends ``lease_expires_at``
+        after the scan but before the unconditional ``fail()`` — the
+        healthy task is spuriously failed. This is now the #804
+        backend-agnostic conditional-UPDATE compare-and-swap: a single
+        ``UPDATE ... WHERE status=CLAIMED AND lease_expires_at < now``
+        where the expiry predicate is the CAS token, re-evaluated
+        atomically at write time. A lease renewed between any scan and
+        the write moves ``lease_expires_at`` past ``now``, the ``WHERE``
+        no longer matches that row, and it is not reaped. Correct on the
+        production SQLite backend (where ``select_for_update`` is a
+        no-op) because the conditional UPDATE is itself atomic — the
+        same shape as ``claim_next_pending`` / ``LoopLease.acquire``.
+        """
         from teatree.core.models.task import Task  # noqa: PLC0415
 
         now = timezone.now()
-        stale = self.filter(status=Task.Status.CLAIMED, lease_expires_at__lt=now)
-        count = 0
-        for task in stale:
-            task.fail()
-            count += 1
-        return count
+        with transaction.atomic():
+            return self.filter(status=Task.Status.CLAIMED, lease_expires_at__lt=now).update(
+                status=Task.Status.FAILED,
+                claimed_at=None,
+                claimed_by="",
+                lease_expires_at=None,
+                heartbeat_at=None,
+            )
 
     def _claimable_for_target(self, target: str, overlay: str | None = None) -> models.QuerySet:
         from teatree.core.models.task import Task  # noqa: PLC0415

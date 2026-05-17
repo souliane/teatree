@@ -157,6 +157,26 @@ def _slugify(text: str, max_length: int = 40) -> str:
     return re.sub(r"[^a-z0-9]+", "-", text.strip().lower()).strip("-")[:max_length]
 
 
+def _locked_get_or_create_ticket(issue_url: str, variant: str, repo_names: list[str]) -> Ticket:
+    """Get-or-create the ticket and lock it for the provisioning RMW.
+
+    #800 N3: ``get_or_create`` does not lock the row; the subsequent
+    ``scope()`` + ``repos`` + ``extra`` + full ``save()`` is a
+    read-modify-write that a concurrent provisioner for the same
+    ``issue_url`` would lost-update. On an existing row we re-fetch it
+    ``select_for_update``-locked (the ``ensure_session()`` pattern,
+    ``ticket.py``); a freshly-created row is already exclusive to this
+    transaction. Caller must be inside ``transaction.atomic()``.
+    """
+    ticket, created = Ticket.objects.get_or_create(
+        issue_url=issue_url,
+        defaults={"variant": variant, "repos": repo_names},
+    )
+    if created:
+        return ticket
+    return Ticket.objects.select_for_update().get(pk=ticket.pk)
+
+
 def _build_branch_name(repo_names: list[str], ticket_number: str, description: str) -> str:
     """Build the git branch name from repo list, ticket number, and description."""
     prefix = _branch_prefix()
@@ -189,10 +209,7 @@ class Command(TyperCommand):
         repo_names = [r.strip() for r in repos.split(",") if r.strip()] if repos else overlay.get_workspace_repos()
 
         with transaction.atomic():
-            ticket, _ = Ticket.objects.get_or_create(
-                issue_url=issue_url,
-                defaults={"variant": variant, "repos": repo_names},
-            )
+            ticket = _locked_get_or_create_ticket(issue_url, variant, repo_names)
 
             if ticket.state == Ticket.State.NOT_STARTED:
                 ticket.scope(issue_url=issue_url, variant=variant or None, repos=repo_names)
@@ -226,7 +243,7 @@ class Command(TyperCommand):
 
         branch = extra["branch"]
         ticket_dir = _workspace_dir() / branch
-        if not result.ok and not ticket.worktrees.exists():
+        if not result.ok and not ticket.worktrees.exists():  # ty: ignore[unresolved-attribute]
             self.stderr.write(f"  Provisioning failed: {result.detail}")
             # #748: only discard the ticket if it carries NO phase
             # attestation. ``get_or_create`` may have resolved an
@@ -244,7 +261,7 @@ class Command(TyperCommand):
             return 0
         if not result.ok:
             self.stderr.write(f"  WARNING: {result.detail}")
-        for wt in ticket.worktrees.all():
+        for wt in ticket.worktrees.all():  # ty: ignore[unresolved-attribute]
             self.stdout.write(f"  {wt.repo_path}: worktree #{wt.pk}")
 
         self.stdout.write(f"\nTicket #{ticket.pk} — worktrees in {ticket_dir}")

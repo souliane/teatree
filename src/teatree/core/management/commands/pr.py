@@ -145,9 +145,10 @@ def _do_ship_transition(ticket: Ticket, title: str) -> ShippingGateFailure | Non
     try:
         with transaction.atomic():
             if title:
-                extra = cast("TicketExtra", ticket.extra or {})
-                extra["pr_title_override"] = title
-                ticket.extra = extra
+                # #800 N3: canonical locked RMW (was an unlocked
+                # whole-extra overwrite — no select_for_update/re-read —
+                # racing the ship worker's pr_urls write).
+                ticket.merge_extra(set_keys={"pr_title_override": title})
             ticket.ship()
             ticket.save()
     except TransitionNotAllowed:
@@ -251,10 +252,9 @@ def _run_visual_qa_gate(ticket: Ticket, *, skip_reason: str = "") -> VisualQAGat
     # Only persist when the gate produced a meaningful signal — skipping a
     # no-op run keeps the FSM history readable.
     if report.pages or report.has_errors:
-        extra = cast("TicketExtra", ticket.extra or {})
-        extra["visual_qa"] = report.summary()
-        ticket.extra = extra
-        ticket.save(update_fields=["extra"])
+        # #800 N3: canonical locked RMW — concurrent pr_urls (ship
+        # worker) writer no longer clobbers visual_qa.
+        ticket.merge_extra(set_keys={"visual_qa": report.summary()})
 
     if not report.has_errors:
         return None
@@ -359,10 +359,10 @@ class Command(TyperCommand):
         # CLI was invoked in (the worktree the user ran `pr create` from).
         invoking_branch = git.current_branch(repo=".")
         if invoking_branch and invoking_branch not in {"HEAD", "main", "master"}:
-            extra = cast("TicketExtra", ticket.extra or {})
-            extra["ship_invoking_branch"] = invoking_branch
-            ticket.extra = extra
-            ticket.save(update_fields=["extra"])
+            # #800 N3: canonical locked RMW (was a blind whole-extra
+            # overwrite from a stale read — clobbered the ship worker's
+            # pr_urls / visual_qa).
+            ticket.merge_extra(set_keys={"ship_invoking_branch": invoking_branch})
 
         if not skip_validation:
             gate_failure = _run_ship_gates(ticket, worktree, skip_visual_qa=skip_visual_qa)
