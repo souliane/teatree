@@ -13,7 +13,7 @@ from rich.table import Table
 from teatree.agents.headless import UUID_RE
 from teatree.agents.prompt import build_interactive_context
 from teatree.agents.skill_bundle import resolve_skill_bundle
-from teatree.core.models import InvalidTransitionError, Session, Task, TaskAttempt, Ticket
+from teatree.core.models import InvalidTransitionError, Task, TaskAttempt, Ticket
 from teatree.core.overlay_loader import get_overlay
 
 logger = logging.getLogger(__name__)
@@ -73,10 +73,9 @@ class Command(TyperCommand):
             self.stderr.write(f"Ticket {ticket} not found.")
             raise SystemExit(1) from None
 
-        session = Session.objects.filter(ticket=ticket_obj).order_by("-pk").first() or Session.objects.create(
-            ticket=ticket_obj,
-            agent_id="phase-handoff",
-        )
+        # #801 SSOT: canonical earliest+locked policy (was -pk-latest
+        # else an unlocked raw create); non-blank agent_id on miss.
+        session = ticket_obj.resolve_phase_session(agent_id="phase-handoff")
         target = Task.ExecutionTarget.INTERACTIVE if interactive else Task.ExecutionTarget.HEADLESS
         task = Task.objects.create(
             ticket=ticket_obj,
