@@ -1,16 +1,67 @@
 site_name: TeaTree
 site_description: Personal code factory for multi-repo projects
+site_url: https://souliane.github.io/teatree/
 repo_url: https://github.com/souliane/teatree
+repo_name: souliane/teatree
+edit_uri: edit/main/docs/
 
 theme:
   name: material
+  logo: logo.jpg
+  favicon: logo.jpg
+  features:
+    - content.code.annotate
+    - content.code.copy
+    - content.tabs.link
+    - navigation.instant
+    - navigation.sections
+    - navigation.top
+    - search.highlight
+    - search.suggest
+    - toc.follow
   palette:
-    scheme: slate
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+
+plugins:
+  - search
 
 nav:
-  - Home: index.md
-  - Installation: install.md
-  - Architecture: architecture.md
-  - CLI Reference: generated/cli-reference.md
-  - Overlay API: overlay-api.md
-  - Management Commands: management-commands.md
+  - Getting Started:
+      - Overview: index.md
+      - Installation: install.md
+  - User Guide:
+      - Management Commands: management-commands.md
+      - Skill Triggers: skill-triggers.md
+      - Security: security.md
+      - Claude Code Internals: claude-code-internals.md
+  - Reference:
+      - CLI Reference: generated/cli-reference.md
+      - Overlay API: overlay-api.md
+      - Overlay Extension Points: generated/overlay-extension-points.md
+      - Skill Delegation Matrix: generated/skill-delegation-matrix.md
+      - Skills Catalogue: generated/skills-catalogue.md
+  - Contributing: contributing.md

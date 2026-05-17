@@ -1,0 +1,105 @@
+{
+  "skills": [
+    {
+      "name": "answerer",
+      "summary": "Draft a reply to an inbound question, DM the user for approval, post on confirmation"
+    },
+    {
+      "name": "code",
+      "summary": "Writing code with TDD methodology"
+    },
+    {
+      "name": "contribute",
+      "summary": "Push retro improvements to a branch, open a PR, and optionally create upstream issues"
+    },
+    {
+      "name": "debug",
+      "summary": "Troubleshooting and fixing \u2014 something is broken, find and fix it"
+    },
+    {
+      "name": "e2e",
+      "summary": "End-to-end testing with Playwright \u2014 writing tests, running them, visual snapshots, evidence posting, and the pre-push visual QA gate"
+    },
+    {
+      "name": "followup",
+      "summary": "Daily follow-up \u2014 batch process new tickets, check/advance ticket statuses, remind about PRs waiting for review"
+    },
+    {
+      "name": "handover",
+      "summary": "Use when the user wants to transfer an in-flight TeaTree task from Claude to another runtime, or asks whether it is time to switch because Claude usage is getting high"
+    },
+    {
+      "name": "next",
+      "summary": "Wrap up the current session \u2014 retro, structured result, pipeline handoff"
+    },
+    {
+      "name": "platforms",
+      "summary": "Platform-specific API recipes for GitLab, GitHub, and Slack. Auto-loaded as a dependency by skills that interact with these platforms"
+    },
+    {
+      "name": "retro",
+      "summary": "Conversation retrospective and skill improvement"
+    },
+    {
+      "name": "review",
+      "summary": "Code review \u2014 self-review before finalization, giving review, receiving review feedback"
+    },
+    {
+      "name": "review-request",
+      "summary": "Batch review requests \u2014 discover open PRs, validate metadata, check for duplicates, post to review channels"
+    },
+    {
+      "name": "rules",
+      "summary": "Cross-cutting agent safety rules \u2014 clickable refs, temp files, sub-agent limits, UX preservation. Auto-loaded as a dependency by other skills"
+    },
+    {
+      "name": "setup",
+      "summary": "Bootstrap and validate teatree for local use \u2014 prerequisites, config, skill symlinks, optional agent hooks, and Django project scaffolding"
+    },
+    {
+      "name": "ship",
+      "summary": "Delivery \u2014 committing, pushing, creating MR/PR, pipeline monitoring, review requests"
+    },
+    {
+      "name": "sweeping-prs",
+      "summary": "Maintenance sweep across all your open PRs/PRs \u2014 merge the default branch, fix conflicts, monitor CI, push, and (per-repo policy) optionally squash-merge each PR before moving to the next. Never rebases"
+    },
+    {
+      "name": "teatree",
+      "summary": "TeaTree agent lifecycle platform \u2014 core architecture, lifecycle phases, CLI reference, overlay API, skill loading, and plugin hooks"
+    },
+    {
+      "name": "teatree-batch",
+      "summary": "Unattended batch ticket processing \u2014 work through a prioritized backlog one ticket at a time, sequentially. Create worktree, implement with TDD, self-review, push, merge, clean up. Skip tickets that need design decisions"
+    },
+    {
+      "name": "teatree-bughunt",
+      "summary": "Self-QA variant of batch mode \u2014 dogfood the teatree loop and statusline, find real bugs (missing signals, broken links, stale data, scanner errors), file them, then fix them in worktrees"
+    },
+    {
+      "name": "teatree-dogfood",
+      "summary": "Dogfooding checklist for teatree CLI, loop, and statusline changes \u2014 verify fresh behavior by running the command yourself, exercising the full task lifecycle, and watching the rendered statusline before declaring a change done. Also lists the known worktree/uv/git-stash pitfalls that trip up local validation"
+    },
+    {
+      "name": "teatree-plan",
+      "summary": "Backlog prioritization with the GitHub Projects v2 board as single source of truth. Syncs repo issues to the board, walks the user through prioritization one question at a time, and reorders/updates board columns"
+    },
+    {
+      "name": "test",
+      "summary": "Testing, QA, and CI \u2014 running tests, analyzing failures, quality checks, CI interaction, test plans, and posting testing evidence"
+    },
+    {
+      "name": "ticket",
+      "summary": "Ticket intake and kickoff \u2014 from zero to ready-to-code"
+    },
+    {
+      "name": "update",
+      "summary": "WHEN to bring teatree core and registered overlays up to date with their default branch, and the safety guarantees of doing so"
+    },
+    {
+      "name": "workspace",
+      "summary": "Environment and workspace lifecycle \u2014 worktree creation, setup, DB provisioning, dev servers, cleanup"
+    }
+  ],
+  "skills_root": "skills"
+}

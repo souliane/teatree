@@ -22,6 +22,10 @@ class Command(TyperCommand):
         call_command("generate_skill_docs", output_dir=output_dir, stdout=self.stdout)
         generated.append("skill-delegation-matrix.md")
 
+        self.stdout.write("Generating skills catalogue...")
+        call_command("generate_skill_catalogue", output_dir=output_dir, stdout=self.stdout)
+        generated.append("skills-catalogue.md")
+
         summary = f"Generated {len(generated)} docs in {out}: {', '.join(generated)}"
         self.stdout.write(summary)
         return summary

@@ -17,7 +17,7 @@ Source: `teatree.skill_map.DEFAULT_SKILL_DELEGATION`
 - Worktree lifecycle orchestration
 - Task claiming, leasing, and execution routing
 - Quality-gate state tracking on sessions
-- Generated dashboard and documentation surfaces
+- Generated documentation surfaces
 
 ## Agent Launch Fields
 
