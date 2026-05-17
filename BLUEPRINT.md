@@ -502,6 +502,15 @@ Runs `claude -p <prompt> --append-system-prompt <context> --output-format json`.
 8. Create TaskAttempt with result, exit_code, agent_session_id
 9. Call `task.complete()` which triggers automatic ticket advancement
 
+**Model tiering (#880, #562 §3):** `resolve_phase_model(phase)` (in `agents/model_tiering.py`) maps the task's phase to a Claude model tier. Mechanical phases are downgraded by default (`reviewing`/`testing`/`shipping` → `sonnet`, `retrospecting` → `haiku`); reasoning phases (`coding`, `debugging`) and unmapped phases return `None`, so no `--model` flag is added and the user's default model applies. Overridable per phase via `~/.teatree.toml`:
+
+```toml
+[agent]
+phase_models.reviewing = "opus"   # pin a phase back to the reasoning tier
+phase_models.coding = "sonnet"    # opt a reasoning phase into a cheap tier
+phase_models.testing = ""         # opt out — inherit the user's default
+```
+
 **Auth:** Uses the `claude` binary (Claude Code session auth — no API key required).
 
 ### 5.3 Prompt Building (prompt.py)
@@ -1993,6 +2002,7 @@ graph TD
     teatree.agents --> teatree.core
     teatree.agents --> teatree.skill_loading
     teatree.agents --> teatree.utils
+    teatree.agents --> teatree.config
     teatree.backends --> teatree.types
     teatree.backends --> teatree.utils
     teatree.backends --> teatree.core
