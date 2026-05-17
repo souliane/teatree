@@ -404,7 +404,17 @@ class TestDispositionMechanical(django.test.TestCase):
 
 
 class TestTickReapsStaleClaims(django.test.TestCase):
-    def test_run_tick_reaps_claims_with_expired_lease(self) -> None:
+    def test_run_tick_takes_over_an_orphaned_claim(self) -> None:
+        """#652: a tick returns an orphaned in-flight claim to PENDING.
+
+        The session that claimed the Task exited and its lease expired.
+        A fresh tick (this one, in another open session) must take the
+        orphan over — return it to PENDING so the loop continues — rather
+        than FAIL it (which, pre-#652, stalled the loop until a manual
+        ``reopen()``). ``reclaim_orphaned_claims`` runs before
+        ``reap_stale_claims`` in the tick, so the recoverable orphan is
+        reclaimed, not reaped.
+        """
         import tempfile  # noqa: PLC0415
         from datetime import timedelta  # noqa: PLC0415
 
@@ -427,7 +437,8 @@ class TestTickReapsStaleClaims(django.test.TestCase):
             run_tick(TickRequest(scanners=[]), statusline_path=Path(tmp) / "statusline.txt")
 
         stale.refresh_from_db()
-        assert stale.status == Task.Status.FAILED
+        assert stale.status == Task.Status.PENDING
+        assert stale.claimed_by == ""
 
 
 def test_tick_captures_mechanical_handler_exception(

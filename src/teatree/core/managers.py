@@ -216,6 +216,44 @@ class TaskQuerySet(models.QuerySet):
                 return None
         return self.get(pk=oldest_pk)
 
+    def reclaim_orphaned_claims(self) -> int:
+        """Return expired-lease CLAIMED tasks to PENDING. Returns the count (#652).
+
+        When the Claude session driving the loop exits mid-task — terminal
+        closed, ``/exit``, crash — its CLAIMED ``Task`` stops heartbeating
+        and the lease expires. ``reap_stale_claims`` would transition that
+        row CLAIMED→FAILED, which needs a manual ``reopen()`` before any
+        other open session can resume it, so the loop silently stalls
+        until the user notices. This instead returns the orphan to PENDING
+        so the next ``PendingTasksScanner`` tick — in *any* still-open
+        session — re-surfaces it and the loop continues on its own ("the
+        fastest open session takes over").
+
+        Same backend-agnostic compare-and-swap as ``claim_next_pending`` /
+        ``reap_stale_claims``: a single conditional ``UPDATE ... WHERE
+        status=CLAIMED AND lease_expires_at < now`` where the expiry
+        predicate is the CAS token, re-evaluated atomically at write time.
+        A lease renewed by a still-live owner between any read and the
+        write moves ``lease_expires_at`` past ``now``, the ``WHERE`` no
+        longer matches, and the healthy claim is left with its owner —
+        never yanked away. Correct on the production SQLite backend (where
+        ``select_for_update(skip_locked=True)`` is a silent no-op — the
+        #786 B1 lesson): exactly one of N concurrent ticks updates the row
+        and the losers update 0 rows. Runs *before* ``reap_stale_claims``
+        in the tick so a recoverable orphan is taken over, not failed.
+        """
+        from teatree.core.models.task import Task  # noqa: PLC0415
+
+        now = timezone.now()
+        with transaction.atomic():
+            return self.filter(status=Task.Status.CLAIMED, lease_expires_at__lt=now).update(
+                status=Task.Status.PENDING,
+                claimed_at=None,
+                claimed_by="",
+                lease_expires_at=None,
+                heartbeat_at=None,
+            )
+
     def reap_stale_claims(self) -> int:
         """Fail CLAIMED tasks whose lease is *still* expired. Returns the count.
 
