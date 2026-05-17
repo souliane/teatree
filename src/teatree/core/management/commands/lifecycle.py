@@ -10,15 +10,10 @@ from django_typer.management import TyperCommand, command, initialize
 
 from teatree.core.db_anchor import assert_lifecycle_db_is_canonical
 from teatree.core.models import Ticket
+from teatree.core.models.merge_clear import is_non_reviewer_role
 from teatree.core.phases import normalize_phase, phase_transition
 
 logger = logging.getLogger(__name__)
-
-# §17.6 enforcement candidate (13): a `reviewing` visit is the independent
-# cold-review attestation. A maker/coding-agent identity recording it would
-# let the author rubber-stamp their own work (the §17.8 clause-3 violation in
-# attestation form). These role prefixes are the maker side and are refused.
-_NON_REVIEWER_AGENT_PREFIXES = ("maker:", "maker-", "coding-agent", "coding", "loop")
 
 
 class ReviewerAttestationError(RuntimeError):
@@ -161,8 +156,7 @@ def _assert_reviewer_attestation(ticket: Ticket, agent_id: str) -> None:
             f"an empty id would fall back to the maker session identity"
         )
         raise ReviewerAttestationError(msg)
-    lowered = explicit.lower()
-    if any(lowered == prefix or lowered.startswith(prefix) for prefix in _NON_REVIEWER_AGENT_PREFIXES):
+    if is_non_reviewer_role(explicit):
         msg = (
             f"--agent-id {explicit!r} is a maker/coding-agent/loop role — a `reviewing` "
             f"attestation must be recorded by an independent reviewer, not the author "

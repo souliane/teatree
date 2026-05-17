@@ -24,7 +24,7 @@ Walk every open MR/PR you authored, sequentially, and bring each up to date with
 2. If conflicts are mechanical, resolve and continue. If not, prompt the user.
 3. Push.
 4. Watch CI. On red, hand off to the existing `/t3:debug` + `/t3:ship` fix-push-monitor loop.
-5. Depending on the per-repo policy (see § Per-Repo Policy below), either squash-merge the PR before moving on, or stop at "green and up to date".
+5. Depending on the per-repo policy (see § Per-Repo Policy below), either merge the PR via the §17.4 keystone (`ticket clear` → `ticket merge`, Step 8) before moving on, or stop at "green and up to date".
 
 The goal is to keep stale PRs mergeable without burying review feedback under a force-push, and — for repos the user fully owns — actually drain the queue rather than just refresh it.
 
@@ -41,7 +41,7 @@ Same regex+semicolon shape as the other knobs in that file. Two policies are rec
 | Policy | What it does | When to pick it |
 |---|---|---|
 | **`bulk-update`** (default) | For each open PR: update from `<default>` → push → watch CI → next PR. The PR itself is **not** merged. | Repos where merging requires human approval, or where the user only wants stale branches refreshed. |
-| **`serial-merge`** | For each open PR: update from `<default>` → push → wait for CI **green** → squash-merge the PR → fetch the next PR (next iteration sees the just-landed commit as part of `main`). | Repos the user fully owns and wants drained (e.g. `souliane/teatree`, `souliane/skills`) without piling conflict cascades onto the next PR. |
+| **`serial-merge`** | For each open PR: update from `<default>` → push → wait for CI **green** → merge via the §17.4 keystone (`ticket clear` → `ticket merge`, Step 8) → fetch the next PR (next iteration sees the just-landed commit as part of `main`). | Repos the user fully owns and wants drained (e.g. `souliane/teatree`, `souliane/skills`) without piling conflict cascades onto the next PR. |
 
 Repos absent from `SWEEP_POLICY` default to `bulk-update` so existing behavior is unchanged for unconfigured repos.
 
@@ -143,7 +143,12 @@ After push, watch the pipeline. On red, delegate to the existing fix-push-monito
 
 ### Step 8 — Merge (serial-merge only)
 
-Squash-merge the PR with `gh pr merge <pr> --squash` (#764 resolution: the merging GitHub account has commit-email privacy on, so the server-side squash author is a `users.noreply.github.com` address — identity-safe). After each merge run the mandatory author check: `gh api repos/<slug>/commits/<merge_sha> --jq .commit.author.email` must match the noreply pattern, else stop. Non-souliane / private remotes use the platform-native merge (`glab mr merge` etc.). On any merge failure (review required, branch protection block, conflict that snuck in between Step 5 and now) **stop the sweep and surface the failure** — do not silently skip to the next PR, because the next PR's update step would still be racing against the unmerged predecessor.
+Merge through the §17.4 keystone, not raw `gh` (raw `gh pr merge` / `glab mr merge` and the old `t3 <overlay> pr merge` are mechanically refused — they bypass `MergeClear` validation / `expected_head_oid` / audit / `mark_merged()`). Two `t3` steps, maker != checker:
+
+1. The orchestrator issues the per-diff CLEAR after its independent cold review of this PR's exact head: `t3 <overlay> ticket clear <pr> <slug> <reviewed_sha> --reviewer-identity <independent-reviewer> --blast-class <substrate|logic|docs>` → prints a `clear_id`.
+2. `t3 <overlay> ticket merge <clear_id>` executes it: re-verifies live head SHA == `reviewed_sha`, live checks green, not-draft, binds the merge to `expected_head_oid`. The #764 noreply-author guarantee is preserved by the server-side squash.
+
+Substrate CLEARs are never swept-merged — they need the human path (`--human-authorize` at issue, `--human-authorized` at merge). On any pre-condition failure or `escalated` result (review required, branch protection block, head moved, conflict that snuck in between Step 5 and now) **stop the sweep and surface the failure** — do not silently skip to the next PR, because the next PR's update step would still be racing against the unmerged predecessor.
 
 After a successful merge, **re-run the discovery CLI** (`t3 <overlay> pr sweep`) to refresh the "open PRs" list before picking the next entry. The list shrinks by one and any sibling PR may now be conflict-free where it wasn't before.
 

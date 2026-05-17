@@ -9,7 +9,7 @@ merge author-verification helper.
 """
 
 import re
-from typing import TypedDict
+from typing import NotRequired, TypedDict
 
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError, run_allowed_to_fail
@@ -20,6 +20,9 @@ class MergeResult(TypedDict):
     pr: int
     slug: str
     auto: bool
+    # Populated only when the deprecated direct-merge path refuses and
+    # redirects to the sanctioned keystone transition (BLUEPRINT §17.4).
+    error: NotRequired[str]
 
 
 class StampResult(TypedDict, total=False):

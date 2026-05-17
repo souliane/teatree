@@ -534,29 +534,24 @@ class Command(TyperCommand):
 
     @command(name="merge")
     def merge(self, pr: int, slug: str, *, repo_path: str = "", auto: bool = False) -> MergeResult:
-        """Merge a PR with a deterministic author (#764, supersedes #762).
+        """REMOVED — FSM-incoherent post-#863; refuses with a redirect to the §17.4 keystone.
 
-        The merge path the review-loop MUST use instead of raw
-        ``gh pr merge --squash``. On public ``souliane/*`` it performs a
-        LOCAL ``git merge --squash`` + ``git commit`` with the author and
-        committer forced to the canonical noreply identity, then
-        ``git push origin main`` — deterministic regardless of any GitHub
-        account / git config. A push rejection (protected branch /
-        non-fast-forward) stops with an error (no force-push); the landed
-        commit author is then verified via ``gh api`` (fail-closed).
-        Non-souliane / private remotes use the server-side ``gh pr
-        merge`` path, unchanged.
-
-        ``--repo-path`` pins all git ops to a specific clone of ``slug``
-        (origin-asserted == slug). The review-loop sweeps the backlog
-        from an arbitrary cwd, so it MUST pass the public souliane/* main
-        clone path here for a deterministic target. When omitted, the
-        process cwd is used.
+        The old LOCAL-squash/server-side path bypassed ``MergeClear``
+        validation, the ``expected_head_oid`` SHA-binding, the atomic
+        CLEAR-consume + ``MergeAudit`` + attestation + ``mark_merged()``.
+        It refuses symmetrically with the raw-merge prohibition guard so
+        no out-of-band path survives (BLUEPRINT §17.1 invariant 8 / §17.4).
+        Use ``ticket clear`` then ``ticket merge`` instead.
         """
-        from teatree.core.pr_merge import squash_merge_public  # noqa: PLC0415
-
-        squash_merge_public(pr=pr, slug=slug, repo_path=repo_path, auto=auto)
-        return MergeResult(merged=True, pr=pr, slug=slug, auto=auto)
+        _ = (repo_path, auto)
+        error = (
+            f"`t3 <overlay> pr merge` is removed: FSM-incoherent post-#863 (no MergeClear "
+            f"validation / SHA-binding / audit / mark_merged). Use the sanctioned keystone: "
+            f"`t3 <overlay> ticket clear {pr} {slug} <reviewed_sha> --reviewer-identity "
+            f"<independent-reviewer> --blast-class <substrate|logic|docs>` then `t3 <overlay> "
+            f"ticket merge <clear_id>` (substrate adds `--human-authorized <id>`). §17.1 inv 8 / §17.4."
+        )
+        return MergeResult(merged=False, pr=pr, slug=slug, auto=auto, error=error)
 
     @command(name="fetch-issue")
     def fetch_issue(self, issue_url: str) -> dict[str, object]:
