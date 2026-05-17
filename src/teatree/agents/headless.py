@@ -19,6 +19,7 @@ from pathlib import Path
 
 from django.utils import timezone
 
+from teatree.agents.model_tiering import resolve_phase_model
 from teatree.agents.result_schema import RESULT_JSON_SCHEMA
 from teatree.agents.skill_bundle import resolve_skill_bundle
 from teatree.core.models import Task, TaskAttempt
@@ -72,7 +73,14 @@ def run_headless(
     lifecycle_skill = SkillLoadingPolicy.lifecycle_for_phase(phase)
     system_context = build_system_context(task, skills=skills, lifecycle_skill=lifecycle_skill)
     resume_session_id = _get_resume_session_id(task)
-    command = _build_headless_command(binary, prompt, system_context, resume_session_id=resume_session_id)
+    model = resolve_phase_model(phase)
+    command = _build_headless_command(
+        binary,
+        prompt,
+        system_context,
+        resume_session_id=resume_session_id,
+        model=model,
+    )
 
     cwd = _resolve_task_cwd(task)
     stdout, stderr, returncode = _run_with_heartbeat(task, command, cwd=cwd)
@@ -146,10 +154,19 @@ def _record_success(task: Task, envelope: dict[str, str]) -> TaskAttempt:
     return attempt
 
 
-def _build_headless_command(binary: str, prompt: str, system_context: str, *, resume_session_id: str = "") -> list[str]:
+def _build_headless_command(
+    binary: str,
+    prompt: str,
+    system_context: str,
+    *,
+    resume_session_id: str = "",
+    model: str | None = None,
+) -> list[str]:
     cmd = [binary]
     if resume_session_id:
         cmd.extend(["--resume", resume_session_id])
+    if model:
+        cmd.extend(["--model", model])
     cmd.extend(["-p", prompt, "--append-system-prompt", system_context, "--output-format", "json"])
     return cmd
 
