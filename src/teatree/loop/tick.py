@@ -421,6 +421,11 @@ def _write_tick_meta(started_at: dt.datetime, *, target: Path | None = None) -> 
     from teatree.loop.statusline import default_path  # noqa: PLC0415
 
     meta_path = (target or default_path()).with_name("tick-meta.json")
+    # #744: the skip path writes tick-meta directly without the
+    # render() that side-effect-creates the dir on the normal path —
+    # ensure the parent exists so an observability write never crashes
+    # the tick (or the skipped-tick freshness touch).
+    meta_path.parent.mkdir(parents=True, exist_ok=True)
     cadence = int(os.environ.get("T3_LOOP_CADENCE", "720") or "720")
     next_epoch = int(started_at.timestamp()) + cadence
     freshness = _collect_repo_freshness()

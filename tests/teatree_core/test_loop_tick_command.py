@@ -117,12 +117,56 @@ class TestLoopTickCommand(TestCase):
         assert "SKIP" in output
         assert "another tick is already running" in output
 
-    def test_skip_emits_json_when_requested(self) -> None:
+    def test_skip_json_emits_full_contract_shape(self) -> None:
+        """#744 defect 1: a skipped tick's --json must be contract-shaped.
+
+        A coordinator that pumps ``t3 loop tick --json`` and reads
+        ``["signal_count"]`` / ``["errors"]`` must not ``KeyError`` on a
+        skipped tick (lease held by a sibling). The skip payload carries
+        the full contract keys (zeroed) plus an explicit skipped flag.
+        """
+        import tempfile  # noqa: PLC0415
+
         from teatree.core.models import LoopLease  # noqa: PLC0415
 
         assert LoopLease.objects.acquire("loop-tick", owner="rival-tick") is True
         stdout = StringIO()
-        call_command("loop_tick", "--json", stdout=stdout)
+        with tempfile.TemporaryDirectory() as d:
+            # Isolate the tick-meta freshness-touch off the real
+            # ~/.local/share path during the test.
+            call_command("loop_tick", "--json", "--statusline-file", str(Path(d) / "sl.txt"), stdout=stdout)
 
         payload = json.loads(stdout.getvalue())
-        assert payload == {"skipped": "another tick is already running"}
+        assert payload["signal_count"] == 0
+        assert payload["action_count"] == 0
+        assert payload["errors"] == {}
+        assert payload["actions"] == []
+        assert "started_at" in payload
+        assert "statusline_path" in payload
+        assert payload["skipped"] is True
+        assert "another tick is already running" in payload["skipped_reason"]
+
+    def test_skip_refreshes_tick_meta_so_no_false_stale(self) -> None:
+        """#744 defect 2: a skipped tick must keep tick-meta fresh.
+
+        The lease is held by a *sibling* tick keeping the loop alive,
+        so a skip must advance ``tick-meta.json``'s ``next_epoch`` —
+        otherwise it decays past ``now + 2*cadence`` and the statusline
+        renders a false ``tick stale`` under normal multi-session
+        contention.
+        """
+        import datetime as _dt  # noqa: PLC0415
+        import tempfile  # noqa: PLC0415
+
+        from teatree.core.models import LoopLease  # noqa: PLC0415
+
+        with tempfile.TemporaryDirectory() as d:
+            sl = Path(d) / "statusline.txt"
+            meta = sl.with_name("tick-meta.json")
+            assert LoopLease.objects.acquire("loop-tick", owner="rival-tick") is True
+            before = int(_dt.datetime.now(tz=_dt.UTC).timestamp())
+            call_command("loop_tick", "--statusline-file", str(sl), stdout=StringIO())
+
+            assert meta.exists(), "skipped tick did not write tick-meta.json — false 'tick stale' will follow"
+            payload = json.loads(meta.read_text(encoding="utf-8"))
+            assert payload["next_epoch"] >= before, payload
