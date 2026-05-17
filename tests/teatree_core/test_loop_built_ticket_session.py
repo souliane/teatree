@@ -21,7 +21,7 @@ from django.core.management import call_command
 from django.test import TestCase, override_settings
 
 from teatree.core.models import Session, Ticket
-from tests.teatree_core.test_new_management_commands import FULL_OVERLAY, SETTINGS, _patch_overlays
+from tests.teatree_core.management_commands._overlays import FULL_OVERLAY, SETTINGS, _patch_overlays
 
 
 class TestProvisionRollbackPreservesAttestationSessions(TestCase):
