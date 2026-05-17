@@ -10,7 +10,7 @@ For teatree core (``$T3_REPO``) and every registered overlay repo, this:
 2. Resolves the default branch from ``origin/HEAD``.
 3. Skips (never clobbers) a dirty, non-default-branch, or no-upstream checkout.
 4. Otherwise ``git pull --ff-only`` — fast-forward only, never merge/rebase.
-5. Reinstalls advanced editable installs, then runs the idempotent ``t3 setup``.
+5. Reinstalls advanced editable installs, applies pending self-DB migrations (non-destructive), then runs ``t3 setup``.
 6. Prints a per-repo summary; exits non-zero only on a hard failure (not a skip).
 
 This module is a top-level Typer group reached through the typer runner
@@ -240,6 +240,34 @@ def _git_toplevel(path: Path) -> Path | None:
     return Path(result.stdout.strip()).resolve()
 
 
+def _migrate_self_db(source: Path) -> None:
+    """Apply pending teatree self-DB migrations non-destructively.
+
+    A teatree git-pull can land new migrations; ``t3 update`` must apply
+    them or the sanctioned merge path breaks against the now-stale
+    self-DB. Runs the same ``uv --directory <clone> run python manage.py
+    migrate --no-input`` wrapper ``resetdb`` uses internally — WITHOUT
+    the destructive DB drop, so live ticket/session/lease state is
+    preserved. This is the first-class t3 alternative to the destructive
+    ``resetdb`` and the hook-discouraged raw ``manage.py migrate``. A
+    failure warns (the per-repo git outcome already did its job); it
+    never raises.
+    """
+    uv_bin = shutil.which("uv")
+    if uv_bin is None:
+        typer.echo("WARN  `uv` not on PATH — skipping self-DB migration.")
+        return
+    typer.echo("Applying teatree self-DB migrations (non-destructive) ...")
+    result = run_allowed_to_fail(
+        [uv_bin, "--directory", str(source), "run", "python", "manage.py", "migrate", "--no-input"],
+        expected_codes=None,
+    )
+    if result.returncode != 0:
+        typer.echo(f"WARN  self-DB migration failed: {result.stderr.strip() or result.stdout.strip()}")
+    else:
+        typer.echo("OK    self-DB migrations applied.")
+
+
 def _reinstall_and_resetup(updated: list[RepoUpdate]) -> None:
     """Reinstall editable installs whose source advanced, then re-run setup.
 
@@ -267,6 +295,7 @@ def _reinstall_and_resetup(updated: list[RepoUpdate]) -> None:
                 typer.echo(f"WARN  Reinstall failed: {result.stderr.strip()}")
             else:
                 typer.echo("OK    Reinstalled teatree.")
+            _migrate_self_db(source)
     else:
         typer.echo("WARN  `uv` not on PATH — skipping editable reinstall.")
 
