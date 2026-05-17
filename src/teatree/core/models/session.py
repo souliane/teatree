@@ -7,6 +7,7 @@ from django.utils import timezone
 from teatree.core.managers import SessionManager
 from teatree.core.models.errors import QualityGateError
 from teatree.core.models.ticket import Ticket
+from teatree.core.phases import CANONICAL_PHASES, normalize_phase
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +39,19 @@ class Session(models.Model):
         "requesting_review": ["shipping"],
     }
 
+    # #782: ``_REQUIRED_PHASES`` is a second hand-maintained canonical-phase
+    # vocabulary, divorced from ``phases.py``. Validate every key and required
+    # phase against the canonical set at import so a typo or a future skill
+    # spelling that drifts from ``phases.CANONICAL_PHASES`` fails fast here
+    # instead of silently making the gate compare against a stale token.
+    _GATE_PHASES: ClassVar[frozenset[str]] = frozenset(_REQUIRED_PHASES) | {
+        phase for required in _REQUIRED_PHASES.values() for phase in required
+    }
+    if not _GATE_PHASES <= CANONICAL_PHASES:
+        _drift = ", ".join(sorted(_GATE_PHASES - CANONICAL_PHASES))
+        _msg = f"_REQUIRED_PHASES drifted from phases.CANONICAL_PHASES: {_drift}"
+        raise ImportError(_msg)
+
     def __str__(self) -> str:
         return str(self.agent_id or f"session-{self.pk}")
 
@@ -67,16 +81,30 @@ class Session(models.Model):
         writer clobbered the other's phase (the #748 / `/t3:review`
         Safety-6 unlocked read-modify-write class). The lock serialises
         the two writers so both phases survive.
+
+        ``phase`` is normalized to its canonical token **here, at the
+        write boundary** (#782). The canonical-phase invariant
+        ("``visited_phases`` holds canonical tokens, the spelling
+        ``_REQUIRED_PHASES`` is keyed by") is owned by this method, not
+        by caller convention. Before #782 it held only because
+        ``lifecycle.py``/``task.py`` happened to ``normalize_phase``
+        before calling; any other caller passing a raw ``review``
+        silently corrupted the gate (``_check_phases`` then sees
+        ``"reviewing" not in ["review"]`` and falsely blocks shipping —
+        the #779 symptom, the structural root of the #759/#767/#770
+        whack-a-mole). Enforcing it once at the boundary makes the
+        invariant structural; callers no longer need to remember.
         """
+        canonical = normalize_phase(phase)
         with transaction.atomic():
             locked = type(self).objects.select_for_update().get(pk=self.pk)
             visited = list(locked.visited_phases or [])
             visits = dict(locked.phase_visits or {})
 
-            if phase not in visited:
-                visited.append(phase)
-            if agent_id and phase not in visits:
-                visits[phase] = {
+            if canonical not in visited:
+                visited.append(canonical)
+            if agent_id and canonical not in visits:
+                visits[canonical] = {
                     "agent_id": agent_id,
                     "timestamp": timezone.now().isoformat(),
                 }
@@ -114,7 +142,19 @@ class Session(models.Model):
         self._check_phases(target_phase, visited)
 
     def _check_phases(self, target_phase: str, visited: list[str]) -> None:
-        missing = [phase for phase in self._REQUIRED_PHASES.get(target_phase, []) if phase not in visited]
+        """Gate ``target_phase`` against the required canonical phases.
+
+        Both sides are normalized at this read boundary (#782):
+        ``visited`` may carry legacy raw spellings (rows written before
+        #782, or by a path that bypassed :meth:`visit_phase` such as
+        ``merge_execution``); ``_REQUIRED_PHASES`` is keyed canonically.
+        Normalizing membership here means a legacy ``review`` row still
+        satisfies the canonical ``reviewing`` requirement instead of the
+        gate falsely blocking shipping forever.
+        """
+        canonical_visited = {normalize_phase(phase) for phase in visited}
+        canonical_target = normalize_phase(target_phase)
+        missing = [phase for phase in self._REQUIRED_PHASES.get(canonical_target, []) if phase not in canonical_visited]
         if missing:
             joined = ", ".join(missing)
             msg = f"{target_phase} requires: {joined}"

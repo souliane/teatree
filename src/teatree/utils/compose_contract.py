@@ -14,6 +14,7 @@ or ``t3 overlay contract-check``).
 """
 
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -81,3 +82,29 @@ def check_contract(
         for var, refs in sorted(by_var.items())
         if var not in produced and var not in allowed_set
     ]
+
+
+def unproduced_declared_keys(declared: set[str], produced_renders: Iterable[Iterable[str]]) -> set[str]:
+    """Return declared keys that no generator render actually emits.
+
+    ``check_contract`` guards the *compose → declared* direction: a compose
+    file may not reference a key nobody declared. This guards the other,
+    silent direction — the *declared → produced* one.
+
+    A key declared in ``_declared_core_keys()`` claims "core always (or
+    conditionally) emits me". If the generator stops emitting it (a deleted
+    line in ``_core_env_pairs`` / ``render_env_cache``) but the declaration
+    stays, ``check_contract`` stays green: the compose file still sees a
+    declared producer, yet the value is empty at runtime — exactly the
+    weeks-long ``rd:`` / ``POSTGRES_HOST`` drift #390 describes.
+
+    *produced_renders* is the set of key sets the generator emits across the
+    relevant conditional branches (e.g. with and without shared postgres). A
+    declared key is satisfied if *any* render emits it. Anything declared but
+    absent from every render is returned — that set must be empty, or a
+    producer was lost.
+    """
+    union: set[str] = set()
+    for render in produced_renders:
+        union |= set(render)
+    return declared - union

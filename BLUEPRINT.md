@@ -502,6 +502,15 @@ Runs `claude -p <prompt> --append-system-prompt <context> --output-format json`.
 8. Create TaskAttempt with result, exit_code, agent_session_id
 9. Call `task.complete()` which triggers automatic ticket advancement
 
+**Model tiering (#880, #562 §3):** `resolve_phase_model(phase)` (in `agents/model_tiering.py`) maps the task's phase to a Claude model tier. Mechanical phases are downgraded by default (`reviewing`/`testing`/`shipping` → `sonnet`, `retrospecting` → `haiku`); reasoning phases (`coding`, `debugging`) and unmapped phases return `None`, so no `--model` flag is added and the user's default model applies. Overridable per phase via `~/.teatree.toml`:
+
+```toml
+[agent]
+phase_models.reviewing = "opus"   # pin a phase back to the reasoning tier
+phase_models.coding = "sonnet"    # opt a reasoning phase into a cheap tier
+phase_models.testing = ""         # opt out — inherit the user's default
+```
+
 **Auth:** Uses the `claude` binary (Claude Code session auth — no API key required).
 
 ### 5.3 Prompt Building (prompt.py)
@@ -587,7 +596,7 @@ Each tick runs three stages:
 |---|---|---|
 | `my_prs` | Open PRs I authored: pipeline status, draft comments, dismissed approvals, mergeability. | Mechanical fix (lint/type/format) inline; otherwise surface in statusline. |
 | `reviewer_prs` | Open PRs where I'm a requested reviewer. Cache lives on `Ticket(role="reviewer").extra` (`reviewed_sha`, `last_review_state`) — same DB row that records the review work. A legacy `loop/reviewer_prs.json` file is imported on first run, then deleted. | Dispatch to the `reviewer` phase agent when `head.sha` ≠ `last_reviewed_sha`, OR when the prior `APPROVED` state has been dismissed (transitioned to `DISMISSED` / `PENDING`) by a force-push or re-request. Backed by `CodeHost.get_review_state(pr_url, reviewer)` on both GitHub and GitLab. The agent posts draft notes via `t3 review post-draft-note` and publishes when its review is complete. |
-| `slack_mentions` | New `app_mention` events and DMs from the active overlay's `MessagingBackend`. | The dispatcher folds Slack messages whose text contains a PR URL into a `t3:reviewer` agent action; everything else is surfaced in the statusline (`action_needed` zone) so the user can reply inline or ack. |
+| `slack_mentions` | New `app_mention` events and DMs from the active overlay's `MessagingBackend`. | The dispatcher folds Slack messages whose text contains a PR URL into a `t3:reviewer` agent action; everything else is surfaced in the statusline (`action_needed` zone) so the user can reply inline or ack. The webhook path (`/hooks/slack/` → `IncomingEvent` → classifier → router → `IncomingEventsScanner`) emits the same review-request dispatch: a Slack message like "can you review <MR url>" classifies as `TASK` and its body rides the `incoming_event.task_needed` payload's `detail`; the dispatcher extracts the PR URL and routes to `t3:reviewer` (the same dual-dispatch shape) instead of dropping to a passive note (#219). The review-request branch precedes the `answering` fallback so a review request routes to a review regardless of the classifier's phase. |
 | `notion_view` | Notion items assigned to me with no code-host reference field set. | Trigger the existing n8n webhook so the code-host issue is created with project routing + templating. Read-only with respect to Notion. |
 | `assigned_issues` | Open issues assigned to me on a configured code host that have reached "ready to work" state. | Create the `Ticket` + worktrees; the ticket FSM's `start()` transition then handles the rest (the orchestrator phase agent picks up coding when the worktrees are provisioned). |
 | `pending_tasks` | `Task` rows in `pending` state. | Run via the headless executor (§ 5.2), which dispatches to the appropriate phase agent. The Django `Task` model is resolved lazily through `apps.get_model("core", "Task")` so the scanner module is importable before `django.setup()` runs (the CLI imports the loop subapp at startup). |
@@ -1993,6 +2002,7 @@ graph TD
     teatree.agents --> teatree.core
     teatree.agents --> teatree.skill_loading
     teatree.agents --> teatree.utils
+    teatree.agents --> teatree.config
     teatree.backends --> teatree.types
     teatree.backends --> teatree.utils
     teatree.backends --> teatree.core

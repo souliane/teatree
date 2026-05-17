@@ -200,3 +200,79 @@ def test_answering_task_preserves_original_payload_keys() -> None:
     assert agent.payload["event_id"] == 7
     assert agent.payload["target_ref"] == "slack:C1"
     assert agent.payload["phase"] == "answering"
+
+
+# --- Slack-ping → auto-review bridge (#219) ----------------------------------
+#
+# A Slack review request ("can you review MR X") arriving via the webhook
+# path (`/hooks/slack/` → IncomingEvent → classifier → router → scanner)
+# becomes an ``incoming_event.task_needed`` signal with phase ``coding``.
+# Before the bridge it fell through to a passive statusline note and the
+# referenced PR was never independently reviewed. The bridge mirrors the
+# existing ``slack.mention``/``slack.dm`` → ``t3:reviewer`` path: when the
+# task detail carries a PR/MR URL it dual-dispatches to the reviewer agent.
+
+
+def _review_request_signal(detail: str, *, phase: str = "coding") -> ScanSignal:
+    return ScanSignal(
+        kind="incoming_event.task_needed",
+        summary=f"task request from slack ({phase}): {detail}",
+        payload={"event_id": 9, "phase": phase, "target_ref": "slack:C9", "detail": detail},
+    )
+
+
+@pytest.mark.usefixtures("default_settings")
+def test_incoming_task_with_gitlab_mr_url_dispatches_to_reviewer() -> None:
+    signal = _review_request_signal("can you review https://gitlab.com/g/p/-/merge_requests/42")
+    actions = dispatch([signal])
+    kinds = [(a.kind, a.zone) for a in actions]
+    assert ("agent", "t3:reviewer") in kinds
+    assert ("statusline", "action_needed") in kinds
+    review_action = next(a for a in actions if a.zone == "t3:reviewer")
+    assert review_action.payload["url"] == "https://gitlab.com/g/p/-/merge_requests/42"
+    assert review_action.payload["event_id"] == 9
+
+
+@pytest.mark.usefixtures("default_settings")
+def test_incoming_task_with_github_pr_url_dispatches_to_reviewer() -> None:
+    signal = _review_request_signal("please review https://github.com/o/r/pull/7")
+    actions = dispatch([signal])
+    review_actions = [a for a in actions if a.zone == "t3:reviewer"]
+    assert len(review_actions) == 1
+    assert review_actions[0].kind == "agent"
+    assert review_actions[0].payload["url"] == "https://github.com/o/r/pull/7"
+
+
+@pytest.mark.usefixtures("default_settings")
+def test_incoming_task_url_found_in_summary_when_detail_absent() -> None:
+    """The URL is extracted from the summary if no ``detail`` key is present."""
+    signal = ScanSignal(
+        kind="incoming_event.task_needed",
+        summary="task request from slack (coding): review https://github.com/o/r/pull/3",
+        payload={"event_id": 11, "phase": "coding", "target_ref": "slack:C9"},
+    )
+    actions = dispatch([signal])
+    review_actions = [a for a in actions if a.zone == "t3:reviewer"]
+    assert len(review_actions) == 1
+    assert review_actions[0].payload["url"] == "https://github.com/o/r/pull/3"
+
+
+@pytest.mark.usefixtures("default_settings")
+def test_incoming_task_without_pr_url_keeps_statusline_only() -> None:
+    """A coding task with no PR URL keeps the pre-bridge statusline behaviour."""
+    signal = _review_request_signal("implement the new dashboard widget")
+    actions = dispatch([signal])
+    assert [a.kind for a in actions] == ["statusline"]
+    assert actions[0].zone == "action_needed"
+
+
+@pytest.mark.usefixtures("default_settings")
+def test_incoming_answering_task_with_pr_url_still_routes_to_reviewer() -> None:
+    """A review request is a review request regardless of classified phase."""
+    signal = _review_request_signal(
+        "can you review https://gitlab.com/g/p/-/merge_requests/8",
+        phase="answering",
+    )
+    actions = dispatch([signal])
+    agent_zones = {a.zone for a in actions if a.kind == "agent"}
+    assert agent_zones == {"t3:reviewer"}
