@@ -50,9 +50,9 @@ graph TB
 
 ## Core concepts
 
-Teatree coordinates work through **four state machines** — each transition is a typed code path with tests, not a prompt the model might skip.
+Teatree coordinates work through **four state machines** — each transition is a typed code path with tests, not a prompt the model might skip. The models live in `src/teatree/core/models/` (`ticket.py`, `worktree.py`, `task.py`, `pull_request.py`).
 
-**Ticket** — tracks a unit of work from intake to delivery. The state flow mirrors the [Skills diagram](#skills) below: each phase (ticket → code → test → review → ship) completes a corresponding ticket state (scoped → coded → tested → reviewed → shipped), plus terminal states `merged` and `delivered`.
+**Ticket** — tracks a unit of work from intake to delivery. The lifecycle phases (ticket → code → test → review → ship) drive corresponding ticket states. The full `Ticket.State` set is `not_started → scoped → started → coded → tested → reviewed → shipped → in_review → merged → retrospected → delivered`, plus `ignored` for work that is consciously skipped.
 
 **Worktree** — one repo checkout inside a ticket's workspace.
 
@@ -90,7 +90,7 @@ stateDiagram-v2
   approved --> merged: merge
 ```
 
-Every state change goes through a transition with code behind it — `Ticket.review()` requires a completed reviewing task, `Ticket.ship()` requires `state == REVIEWED`, and so on. Agents do not write to these fields directly; they drive transitions, and the transitions enforce their own preconditions. Direct writes to a state machine field bypass the predicates and produce tickets that look advanced from one angle and stale from another — that's a bug, not a shortcut. The same rule applies to the CLI: any command that affects a state machine must call into a transition, never mutate the field.
+Every state change goes through a method with code behind it. `Ticket`, `Worktree`, and `PullRequest` use `django-fsm`-style `@transition` decorators that declare the legal source and target states; `Ticket.code()` requires `state == STARTED`, `Ticket.ship()` requires `state == REVIEWED`, and so on. `Task` status moves through guarded methods (`claim`, `complete`, `fail`, `reopen`) that take a row lock and a lease, raising `InvalidTransitionError` on an illegal move. Agents do not write to these fields directly; they call the transition, and the transition enforces its own preconditions. Direct writes to a state machine field bypass the predicates and produce records that look advanced from one angle and stale from another — that's a bug, not a shortcut. The same rule applies to the CLI: any command that affects a state machine calls into a transition, never mutates the field.
 
 Agents read skills to do the *creative* work (writing code, reviewing a diff, choosing how to test); the CLI owns the *mechanical* work (branching, ports, DB refresh, pipeline waits, PR validation). Three interfaces sit on top:
 
@@ -307,22 +307,43 @@ Once installed (`pip install -e .`), the overlay is auto-discovered at startup. 
 
 ## Configuration
 
-Teatree reads its config from `~/.teatree.toml`:
+Teatree reads its config from `~/.teatree.toml`. Every key is optional; the
+table below lists the ones most users touch. The full set and their defaults
+live in `UserSettings` in `src/teatree/config.py`.
 
 ```toml
 [teatree]
-workspace_dir = "~/workspace"
-branch_prefix = "dev"        # prefix for worktree branches
-mode = "interactive"          # "interactive" (default) | "auto"
-contribute = false            # enable skill self-improvement
-push = false                  # allow t3:contribute to push
-auto_squash = false           # squash related commits before push
-excluded_skills = ["my-custom-skill"]   # extra skills to exclude (on top of core exclusions)
+workspace_dir = "~/workspace"            # where ticket workspaces are created
+branch_prefix = "dev"                     # prefix for worktree branches
+mode = "interactive"                      # "interactive" (default) | "auto"
+privacy = ""                              # privacy-scan profile name
+contribute = false                        # enable skill self-improvement
+excluded_skills = ["my-custom-skill"]     # extra skills to exclude
+loop_cadence_seconds = 720                # /loop tick interval (default 12 min)
+require_human_approval_to_merge = true    # auto mode: still gate merge on a 👍 / /merge
+require_human_approval_to_answer = true   # gate t3:answerer behind a DM confirmation
+agent_signature = false                   # append an AI signature to posts (default off)
 
 [overlays.my-overlay]
 path = "~/workspace/my-overlay"
-protected_branches = ["development"]
 ```
+
+| Key | Default | Effect |
+|-----|---------|--------|
+| `workspace_dir` | `~/workspace` | Root for per-ticket workspace directories |
+| `branch_prefix` | `""` | Prefix prepended to worktree branch names |
+| `mode` | `interactive` | `interactive` confirms before publishing; `auto` is end-to-end |
+| `privacy` | `""` | Named privacy-scan profile applied before pushes |
+| `contribute` | `false` | Allow `t3:retro` to write fixes into core skills |
+| `excluded_skills` | `[]` | Skills excluded on top of the built-in exclusions |
+| `loop_cadence_seconds` | `720` | Seconds between `t3 loop tick` runs |
+| `require_human_approval_to_merge` | `true` | In `auto` mode, merge still needs a 👍 / `/merge` |
+| `require_human_approval_to_answer` | `true` | `t3:answerer` drafts a reply and DMs for approval |
+| `agent_signature` | `false` | Whether posts made on your behalf carry an AI signature |
+
+The `t3:contribute` skill's push gate is the `T3_PUSH` environment variable
+(default `false`), not a TOML key — it exists as a deliberate stop for
+privacy review before any skill improvement leaves your machine.
 
 Run `t3 setup` after editing `~/.teatree.toml` to apply changes to skill symlinks and caches.
 
@@ -346,9 +367,12 @@ Unknown values raise an error — a typo in `mode` will never silently downgrade
 to a less-safe mode.
 
 A subset of `[teatree]` keys can be **overridden per-overlay** in
-`[overlays.<name>]` — `mode`, `branch_prefix`, `privacy`, `contribute`, and
-`excluded_skills`. For example, run `auto` mode on a personal dogfooding
-overlay while keeping `interactive` on a client project:
+`[overlays.<name>]`. The overridable set lives in
+`OVERLAY_OVERRIDABLE_SETTINGS` in `src/teatree/config.py`: `mode`,
+`branch_prefix`, `privacy`, `contribute`, `excluded_skills`,
+`loop_cadence_seconds`, `require_human_approval_to_merge`, and
+`require_human_approval_to_answer`. For example, run `auto` mode on a personal
+dogfooding overlay while keeping `interactive` on a client project:
 
 ```toml
 [teatree]
@@ -358,7 +382,9 @@ mode = "interactive"
 mode = "auto"
 ```
 
-See `BLUEPRINT.md` § 11.1.1 for the full resolution chain.
+The resolution chain is, first match wins: `T3_*` env var → active overlay's
+`[overlays.<name>]` override → global `[teatree]` value → `UserSettings`
+default. See `BLUEPRINT.md` § 10.1.1 for the full details.
 
 ## Contributing & Self-Improvement
 
