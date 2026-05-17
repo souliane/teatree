@@ -2850,6 +2850,8 @@ Usage: t3 teatree ticket [OPTIONS] COMMAND [ARGS]...
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
 │ transition        Transition a ticket to a new state.                        │
+│ clear             Issue a per-diff CLEAR — the orchestrator's only merge     │
+│                   output (BLUEPRINT §17.4.2).                                │
 │ merge             Execute the IN_REVIEW → MERGED keystone transition         │
 │                   (BLUEPRINT §17.4).                                         │
 │ list              List tickets, optionally filtered by state and/or overlay. │
@@ -2878,6 +2880,64 @@ Usage: t3 teatree ticket transition [OPTIONS] TICKET_ID TRANSITION_NAME
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
+##### `t3 teatree ticket clear`
+
+```
+Usage: t3 teatree ticket clear [OPTIONS] PR_ID SLUG REVIEWED_SHA
+
+ Issue a per-diff CLEAR — the orchestrator's only merge output (BLUEPRINT
+ §17.4.2).
+
+ Records the orchestrator's reviewed/verified judgment as a durable
+ ``MergeClear`` row the durable loop later acts on by id via
+ ``ticket merge``. This is the missing issuance seam: #863 added the
+ consume side but no command created the row. The CLEAR is the
+ compaction-surviving handoff — the orchestrator may be restarted
+ before the loop picks it up, so it lives in the DB, not a session
+ file.
+
+ §17.8 clause 3 is enforced here: ``--reviewer-identity`` must name an
+ independent cold reviewer — a maker/coding-agent/loop role is refused
+ (the author cannot rubber-stamp their own CLEAR). ``reviewed_sha``
+ must be a hex commit id (not a branch ref) so the loop can bind the
+ merge to the exact reviewed tree.
+
+ ``--human-authorize`` is valid ONLY with ``--blast-class substrate``:
+ it records *who* authorised a substrate merge so the otherwise
+ human-merge-only / draft-locked substrate change can be merged
+ through the SAME sanctioned ``ticket merge`` transition (invariant 8 —
+ never raw ``gh``), with the human decision durably on the CLEAR.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    pr_id             INTEGER  [required]                                   │
+│ *    slug              TEXT     [required]                                   │
+│ *    reviewed_sha      TEXT     [required]                                   │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --reviewer-identity              TEXT     Independent cold reviewer identity │
+│                                           (NOT a maker/coding-agent/loop     │
+│                                           role — §17.8 clause 3).            │
+│ --gh-verify-result               TEXT     Audit-only snapshot of gh checks   │
+│                                           at review time: green / pending /  │
+│                                           failed.                            │
+│                                           [default: green]                   │
+│ --blast-class                    TEXT     Orchestrator judgment: substrate / │
+│                                           logic / docs (§17.4.2).            │
+│                                           [default: logic]                   │
+│ --ticket-id                      INTEGER  Optional teatree Ticket id this    │
+│                                           CLEAR authorises the merge for.    │
+│                                           [default: 0]                       │
+│ --human-authorize                TEXT     ONLY for blast_class=substrate:    │
+│                                           the human/owner id authorising the │
+│                                           substrate merge.                   │
+│ --executing-loop-identity        TEXT     The loop that will execute the     │
+│                                           merge; the reviewer must differ    │
+│                                           (§17.8 clause 3).                  │
+│                                           [default: merge-loop]              │
+│ --help                                    Show this message and exit.        │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
 ##### `t3 teatree ticket merge`
 
 ```
@@ -2899,6 +2959,13 @@ Usage: t3 teatree ticket merge [OPTIONS] CLEAR_ID
  Post hook: atomic CLEAR-consume + ``MergeAudit`` + attestation
  binding + ``ticket.mark_merged()``.
 
+ ``--human-authorized`` is the sanctioned substrate human-merge path
+ (invariant 8): the loop NEVER auto-merges substrate, but a human/owner
+ re-presents the authoriser id recorded on the CLEAR (via ``ticket
+ clear … --human-authorize``) to merge a substrate change through THIS
+ SAME transition — not raw ``gh``. It cannot unlock a non-substrate
+ CLEAR, so it can never bypass independent loop review of logic/docs.
+
  On a pre-condition failure the FSM is left untouched and the
  result is flagged ``escalated`` so the durable backlog re-escalation
  is visible (the loop never self-issues a replacement CLEAR).
@@ -2907,10 +2974,13 @@ Usage: t3 teatree ticket merge [OPTIONS] CLEAR_ID
 │ *    clear_id      INTEGER  [required]                                       │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --loop-identity        TEXT  Identity of the executing loop (must differ     │
-│                              from the CLEAR reviewer — §17.8 clause 3).      │
-│                              [default: merge-loop]                           │
-│ --help                       Show this message and exit.                     │
+│ --loop-identity           TEXT  Identity of the executing loop (must differ  │
+│                                 from the CLEAR reviewer — §17.8 clause 3).   │
+│                                 [default: merge-loop]                        │
+│ --human-authorized        TEXT  Substrate-only: the recorded human           │
+│                                 authoriser id, re-presented to merge a       │
+│                                 substrate CLEAR.                             │
+│ --help                          Show this message and exit.                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
