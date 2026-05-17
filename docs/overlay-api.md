@@ -175,13 +175,13 @@ Repo paths relative to `workspace_dir`. Supports nested paths (e.g., `souliane/t
 
 ## Supporting types
 
-These are defined in `teatree/core/overlay.py`:
+Most of these are defined in `teatree/types.py` (the Django-free shared types module). `HealthCheck` lives in `teatree/core/health.py` and `MergeGuard` in `teatree/core/merge_guard.py`:
 
 | Type | Kind | Fields |
 |------|------|--------|
 | `ProvisionStep` | dataclass | `name`, `callable`, `required`, `description` |
 | `SymlinkSpec` | TypedDict | `path`, `source`, `mode`, `description` |
-| `ServiceSpec` | TypedDict | `shared`, `service`, `compose_file`, `start_command`, `readiness_check` |
+| `ServiceSpec` | TypedDict | `shared`, `service`, `compose_file`, `start_command`, `readiness_check`, `base_image` |
 | `DbImportStrategy` | TypedDict | `kind`, `source_database`, `shared_postgres`, `snapshot_tool`, `restore_order`, `notes`, `worktree_repo_path` |
 | `SkillMetadata` | TypedDict | `skill_path`, `remote_patterns`, `trigger_index`, `resolved_requires`, `skill_mtimes`, `teatree_version` |
 | `ToolCommand` | TypedDict | `name`, `help`, `command`, `arguments` |
