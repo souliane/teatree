@@ -158,3 +158,105 @@ class TestLoopBuiltTicketGetsDurableSession(TestCase):
         )
         assert result.pk == rival_pk[0]
         assert ticket.ensure_session().pk == rival_pk[0]
+
+
+class TestResolvePhaseSession(TestCase):
+    """#801 — one canonical phase-visit session-selection policy.
+
+    The four phase-visit writers (``ensure_session``, ``lifecycle
+    visit-phase``, the ``tasks`` phase-handoff command, the ``pr`` gate)
+    must all select the SAME session: the *earliest* one, under the
+    ticket row lock, and never a raw blank-``agent_id`` create. This
+    pins ``Ticket.resolve_phase_session`` — the single source of truth
+    they all route through.
+    """
+
+    def test_selects_earliest_session_not_latest(self) -> None:
+        ticket = Ticket.objects.create(issue_url="https://github.com/souliane/teatree/issues/801001")
+        first = Session.objects.create(ticket=ticket, agent_id="coding")
+        Session.objects.create(ticket=ticket, agent_id="reviewer")
+
+        # The divergence #801 fixes: lifecycle/tasks/gate picked -pk
+        # (latest); the canonical policy is earliest (matches dispatch's
+        # ensure_session so attestation never splits).
+        assert ticket.resolve_phase_session().pk == first.pk
+
+    def test_creates_with_non_blank_agent_id_on_miss(self) -> None:
+        ticket = Ticket.objects.create(issue_url="https://github.com/souliane/teatree/issues/801002")
+
+        session = ticket.resolve_phase_session(agent_id="phase-handoff")
+
+        assert session is not None
+        # NEVER a raw blank-agent_id create (the lifecycle path's bug
+        # that fails _check_maker_checker closed, #755/#801).
+        assert session.agent_id == "phase-handoff"
+        assert session.agent_id.strip() != ""
+
+    def test_default_agent_id_is_non_blank(self) -> None:
+        ticket = Ticket.objects.create(issue_url="https://github.com/souliane/teatree/issues/801003")
+        session = ticket.resolve_phase_session()
+        assert session is not None
+        assert session.agent_id.strip() != ""
+
+    def test_find_phase_session_returns_none_on_miss_without_creating(self) -> None:
+        # The gate path (pr.py) only READS a session; it must not create
+        # one as a side effect of a gate check.
+        ticket = Ticket.objects.create(issue_url="https://github.com/souliane/teatree/issues/801004")
+
+        session = ticket.find_phase_session()
+
+        assert session is None
+        assert ticket.sessions.count() == 0
+
+    def test_find_phase_session_returns_earliest_existing(self) -> None:
+        ticket = Ticket.objects.create(issue_url="https://github.com/souliane/teatree/issues/801005")
+        first = Session.objects.create(ticket=ticket, agent_id="coding")
+        Session.objects.create(ticket=ticket, agent_id="reviewer")
+
+        found = ticket.find_phase_session()
+        assert found is not None
+        assert found.pk == first.pk
+
+    def test_idempotent_reuses_existing_no_ledger_split(self) -> None:
+        ticket = Ticket.objects.create(issue_url="https://github.com/souliane/teatree/issues/801006")
+        existing = Session.objects.create(ticket=ticket, agent_id="coding")
+        existing.visit_phase("testing", agent_id="coding")
+
+        returned = ticket.resolve_phase_session()
+
+        assert returned.pk == existing.pk
+        assert ticket.aggregate_phase_records()[0] == ["testing"]
+        assert ticket.sessions.count() == 1
+
+    def test_ensure_session_delegates_to_resolve_phase_session(self) -> None:
+        # ensure_session keeps its API/callers but is now the same
+        # canonical policy (delegates) — no second selection codepath.
+        ticket = Ticket.objects.create(issue_url="https://github.com/souliane/teatree/issues/801007")
+        first = Session.objects.create(ticket=ticket, agent_id="coding")
+        Session.objects.create(ticket=ticket, agent_id="b")
+        assert ticket.ensure_session().pk == first.pk == ticket.resolve_phase_session().pk
+
+    def test_reads_after_acquiring_the_row_lock(self) -> None:
+        """Concurrency: existence read happens AFTER the ticket row lock.
+
+        Same leak-free in-process interleave as the ensure_session test:
+        a rival commits its session at the ``select_for_update`` site;
+        a correctly-ordered ``resolve_phase_session`` re-reads post-lock
+        and reuses it (no duplicate empty session, no ledger split).
+        Reverting the lock/earliest policy regresses this RED.
+        """
+        ticket = Ticket.objects.create(issue_url="https://github.com/souliane/teatree/issues/801008")
+        original_qs = type(Ticket.objects).select_for_update
+        rival_pk: list[int] = []
+
+        def lock_then_rival_commits(self_mgr, *args: object, **kwargs: object):
+            if not rival_pk:
+                rival_pk.append(Session.objects.create(ticket=ticket, agent_id="rival").pk)
+            return original_qs(self_mgr, *args, **kwargs)
+
+        with patch.object(type(Ticket.objects), "select_for_update", lock_then_rival_commits):
+            result = ticket.resolve_phase_session()
+
+        assert rival_pk, "select_for_update lock site never reached — read happened before/without the row lock"
+        assert ticket.sessions.count() == 1, f"race created {ticket.sessions.count()} sessions"
+        assert result.pk == rival_pk[0]
