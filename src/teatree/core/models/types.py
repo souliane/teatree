@@ -58,6 +58,33 @@ class TicketExtra(TypedDict, total=False):
     last_review_state: str
     retro_scheduled: bool
     tracker_404: bool
+    e2e_recipe: "E2ERecipeSerialized"
+
+
+class E2ERepoEntrySerialized(TypedDict, total=False):
+    repo: str
+    branch: str
+    last_green_sha: str
+
+
+class E2ELastRunSerialized(TypedDict, total=False):
+    result: str
+    timestamp: str
+    per_repo_shas: dict[str, str]
+
+
+class E2ERecipeSerialized(TypedDict, total=False):
+    """Durable e2e work-item recipe stored under ``Ticket.extra['e2e_recipe']``.
+
+    Keyed by the work item (the Ticket's ``issue_url`` natural key), this is
+    the DB-durable provisioning recipe + last-run provenance for #794:
+    ``t3 <overlay> e2e run <work-item>``. The teatree DB is the system of
+    record — if lost, a baseline is re-established by running against
+    current ``origin/main``.
+    """
+
+    repos: list[E2ERepoEntrySerialized]
+    last_run: E2ELastRunSerialized
 
 
 class TicketSiblingFields(TypedDict, total=False):

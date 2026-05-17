@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from django.core.management import call_command
-from django.test import TestCase
+from django.test import TestCase, override_settings
 
 from teatree import visual_qa
 from teatree.core.management.commands import _ensure_pr as ensure_pr_mod
@@ -477,6 +477,78 @@ class TestPrCreateSyncShip(TestCase):
         self._assert_skip_validation_post_ship_no_raw_transition(Ticket.State.MERGED, Ticket.State.MERGED)
 
 
+_SHIP_BACKEND = {"TASKS": {"default": {"BACKEND": "django_tasks.backends.immediate.ImmediateBackend"}}}
+
+
+class TestPrCreateSyncShipAtomic(TestCase):
+    """#838: a ``ShipExecutor.run()`` exception during ``pr create --sync``.
+
+    Reproduces the real-world failure (ticket 195): the ship FSM
+    transition committed, then ``ShipExecutor.run()`` raised inside
+    ``execute_ship`` (a ``git push`` precondition failure surfaces as
+    ``CommandFailedError``). Pre-fix this left ``Ticket.state ==
+    SHIPPED`` with no push and no PR, and the real error was swallowed —
+    the CLI only saw a bare ``rc=1`` from the manage.py-wrapper
+    recursion. The regression asserts both halves:
+
+    Atomicity: the FSM is NOT left in ``SHIPPED`` (no partial state) —
+    reverting the atomicity fix turns that assertion RED.
+
+    Surfacing: the real underlying git error is visible in the
+    structured CLI result, not masked as a bare ``rc=1`` — reverting
+    the surfacing fix turns that assertion RED.
+
+    ``execute_ship`` is deliberately NOT mocked — the real task path is
+    what masks the error and commits the partial state, so a faithful
+    repro must exercise it. Only the unstoppable external (the ``git
+    push`` subprocess inside the ship runner) is stubbed to raise.
+    """
+
+    @override_settings(**_SHIP_BACKEND)
+    def test_ship_executor_exception_is_atomic_and_surfaced(self) -> None:
+        from teatree.utils.run import CommandFailedError  # noqa: PLC0415
+
+        ticket = _shippable_ticket()
+        host = MagicMock()
+        host.current_user.return_value = "tester"
+
+        def _raise_push(*_args: object, **_kwargs: object) -> None:
+            raise CommandFailedError(
+                ["git", "-C", "/tmp/backend", "push", "--set-upstream", "origin", "feature-branch"],
+                1,
+                "",
+                "! [rejected] feature-branch -> feature-branch (non-fast-forward)",
+            )
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch.object(pr_command, "_run_visual_qa_gate", return_value=None),
+            patch.object(pr_command, "validate_pr_metadata", return_value=None),
+            patch("teatree.core.runners.ship.code_host_from_overlay", return_value=host),
+            patch("teatree.core.runners.ship.git.branch_merged", return_value=False),
+            patch("teatree.core.runners.ship.git.push", side_effect=_raise_push),
+        ):
+            result = cast(
+                "dict[str, object]",
+                call_command("pr", "create", str(ticket.id), sync=True),
+            )
+
+        # (a) Atomicity: the ship FSM advance must NOT have been
+        #     committed — no push happened, so no partial SHIPPED state.
+        ticket.refresh_from_db()
+        assert ticket.state != Ticket.State.SHIPPED, (
+            f"FSM left in partial SHIPPED state with no push/PR: {ticket.state}"
+        )
+        assert ticket.state == Ticket.State.REVIEWED, ticket.state
+
+        # (b) Surfacing: the real git error is in the structured result,
+        #     not masked as a bare ``rc=1``.
+        assert result.get("ok") is False, result
+        detail = str(result.get("detail", ""))
+        assert "non-fast-forward" in detail, detail
+        assert detail.strip() not in {"", "command failed (rc=1)"}, detail
+
+
 class TestEnsurePr(TestCase):
     @pytest.fixture(autouse=True)
     def _inject_fixtures(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -782,7 +854,7 @@ class TestCheckShippingGate(TestCase):
         result = _check_shipping_gate(ticket)
         assert result is not None
         assert result["allowed"] is False
-        assert result["missing"] == ["testing", "reviewing", "retro"]
+        assert result["missing"] == ["testing", "reviewing"]
 
     def test_returns_none_when_gate_passes(self) -> None:
         ticket = Ticket.objects.create()

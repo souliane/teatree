@@ -105,15 +105,13 @@ If the changes touch architecture, add new modules, rename commands, or change e
 
 Skipping this step is the #1 cause of wasted push-fix-push cycles. The rules exist in `t3:review` and the project's code-review skill — this step ensures they are applied even when the agent goes directly from code to ship without a formal review phase.
 
-### 3c. Retrospective Before Push (Non-Negotiable, Enforced)
+### 3c. Emit Retro Signal Before Push — Do NOT Self-Retro (#837)
 
-Run `/t3:retro` **before** pushing — not after merge. Retro findings often surface skill fixes, guardrail improvements, or documentation updates that belong in the same PR as the feature. Running retro after push/merge means those improvements ship as a separate follow-up PR (or, worse, get lost to context compaction before they land anywhere).
+Retro is **orchestrator-only**. A sub-agent shipping a single ticket does **not** run `/t3:retro` as a per-ticket synthesis/judgment step, and `pr create` does **not** gate on a per-ticket `retro` visit. Instead, as the work surfaces a lesson, **emit it as structured signal into durable state** (task metadata / a `/tmp/t3-snapshot-*.md` snapshot) so the orchestrator can synthesise across the whole session later and bias the output to the smallest enforcement artifact (a gate, test, or hook), not a prose rule.
 
-Sequence: code → test → review gate → **retro** → push → PR → monitor CI.
+Sequence: code → test → review gate → **local commit** → push → PR → monitor CI. (The orchestrator's periodic synthesis runs out-of-band over the accumulated durable signal — it is not in this per-ticket push path.)
 
-If retro produces file edits (skill fixes, reference updates, docs), commit them on the current branch before § 4 Push so they ride along with the PR.
-
-**Enforcement:** `t3 <overlay> pr create` refuses to create the PR until the `retro` phase is marked visited on the active session. Retro marks its own visit via `t3 <overlay> lifecycle visit-phase <ticket_id> retro` (documented in `/t3:retro`). If the shipping gate complains that `retro` is missing, run retro — do not bypass with `--skip-validation` unless explicitly instructed.
+If you do produce a same-PR-worthy fix while shipping (a stale doc, a broken reference the change touches), commit it on the current branch before § 4 Push — that is ordinary in-scope bundling, not a retro step.
 
 ### 4. Push
 
@@ -124,7 +122,7 @@ If retro produces file edits (skill fixes, reference updates, docs), commit them
 
 Before creating a PR, the `pr create` command automatically checks the session gate:
 
-- **shipping** requires prior `testing`, `reviewing`, and `retro` phases.
+- **shipping** requires prior `testing` and `reviewing` phases. (#837: it no longer requires a per-ticket `retro` visit — retro is orchestrator-only.)
 - If no review session ran for this ticket, `pr create` returns an error with a hint to run `/t3:review`.
 - `--skip-validation` is reserved for bypasses the **user explicitly authorised** in the same session — never the agent's own choice.
 
@@ -137,9 +135,9 @@ Teatree has **two stores**, but they can no longer disagree:
 1. **`Session.visited_phases`** — the **single source of truth**. Both the loop path (`Task.complete()` → `_record_phase_visit()`) and the CLI path (`lifecycle visit-phase`) write canonical phase tokens here. `lifecycle visit-phase` resolves the ticket by pk / issue number / issue URL (same identifier set as `pr create`), normalizes the phase name (short verbs and gerunds both work), and logs a WARNING + reports the resulting state when a transition is not legal — out-of-order calls fail loudly, never silently.
 2. **`Ticket.state` FSM** (`STARTED → CODED → TESTED → REVIEWED → SHIPPED → IN_REVIEW → ...`) — `django_fsm` transitions on `core.models.ticket.Ticket`. At the shipping gate, `_check_shipping_gate` **reconciles `ticket.state` from `visited_phases`**: when the required phases are present it auto-walks the FSM to `REVIEWED` (`reconcile_reviewed()`) so `ticket.ship()` is legal; when phases are missing it blocks with the exact missing-phase list. `pr create` therefore **never raises a raw `TransitionNotAllowed`** — it either ships or returns a structured gate failure. This invariant holds on every path: missing phases, **no session at all** (no attested work ⇒ structured failure, not a silent pass), and **`--skip-validation`** (the un-reconciled `ship()` is wrapped, so an illegal hop becomes the same structured failure).
 
-**Still prefer driving transitions through task completion.** It keeps the task ledger clean: `Task.complete()` → `_record_phase_visit()` records the phase, `_advance_ticket()` fires the matching FSM transition → `_consume_pending_phase_tasks` clears stragglers → next-phase task auto-scheduled. `lifecycle visit-phase` is a valid fallback on the human/CLI path — the gate reconciles either way — but the reviewing phase must still be **earned by an independent reviewer** (see the maker≠checker rule above), not self-attested to skip review.
+**Still prefer driving transitions through task completion.** It keeps the task ledger clean: `Task.complete()` → `_record_phase_visit()` records the phase, `_advance_ticket()` fires the matching FSM transition → `_consume_pending_phase_tasks` clears stragglers → next-phase task auto-scheduled. `lifecycle visit-phase` is a valid fallback on the human/CLI path — the gate reconciles either way — but the reviewing phase must still be **earned by spawning the `t3:reviewer` sub-agent** (see § 4b above), not self-attested to skip review.
 
-`_check_maker_checker` only fires for a conflicting phase pair when **both** phases sit in `phase_visits` keyed by an `agent_id` — a phase with no recorded actor is invisible to the check, not a free pass under examination. The CLI path therefore threads the session's identity (symmetric with `_record_phase_visit`), so a CLI-recorded `coding`/`reviewing` is actually evaluated. An FSM-advancing `visit-phase` (e.g. `code`, `test`) auto-schedules a *fresh* session via `schedule_*` for bias-free evaluation, so successive CLI phases legitimately land on **different** sessions. The shipping gate therefore evaluates the **union of phase records across all of the ticket's sessions** (`Ticket.aggregate_phase_records()` → `Session.check_gate_across_ticket`), not the latest session alone — the single source of truth is the ticket's lifecycle, not one session. Maker≠checker integrity is preserved over that union: the same `agent_id` recording `coding` and `reviewing` on *different* sessions is still caught, so a genuinely independent reviewer must run with its own distinct identity.
+The gate verifies the required phases (`testing`, `reviewing`, `retro`) were recorded for the work — nothing more. Independence in code review is a property of the **execution context**, not of a stored identity: the `reviewing` phase is earned by spawning a fresh `t3:reviewer` sub-agent that has not seen the implementation conversation, and that spawn boundary *is* the independence guarantee, by construction. A same-session spawn is fine and preferred. There is no `agent_id` comparison — the same identity recording `coding` and `reviewing` does not block the gate, because string-identity inference added no real independence over the structural spawn boundary. The shipping gate evaluates the **union of `visited_phases` across all of the ticket's sessions** (`Ticket.aggregate_phase_records()` → `Session.check_gate_across_ticket`), not the latest session alone — the single source of truth is the ticket's lifecycle, not one session. `phase_visits` is retained purely as an audit trail of who recorded each phase; it is not consumed for gate enforcement.
 
 #### How to satisfy the gate (the only sanctioned path)
 
@@ -169,7 +167,7 @@ Teatree has **two stores**, but they can no longer disagree:
 
    Do **not** use `t3 <overlay> lifecycle visit-phase <ticket_id> reviewing` to *skip* an independent review. Since #694 the gate reconciles `Ticket.state` from `Session.visited_phases`, so a manual visit *will* let `pr create` proceed — which is exactly why marking `reviewing` visited without an independent reviewer having actually reviewed the diff defeats the quality gate. Earn the phase (step 2), then record it; never record it to dodge step 2.
 
-5. **Verify before pushing.** `t3 <overlay> ticket list --state reviewed` (or `--id <ticket_id>`) should show the ticket in `reviewed` once the reviewing task completed. If the loop path advanced phases but the state still reads `tested`/`started`, that is expected — the shipping gate reconciles it to `reviewed` at `pr create` time. A blocked `pr create` returns the missing-phase list; satisfy those phases (run the reviewer / retro), don't bypass with `--skip-validation`.
+5. **Verify before pushing.** `t3 <overlay> ticket list --state reviewed` (or `--id <ticket_id>`) should show the ticket in `reviewed` once the reviewing task completed. If the loop path advanced phases but the state still reads `tested`/`started`, that is expected — the shipping gate reconciles it to `reviewed` at `pr create` time. A blocked `pr create` returns the missing-phase list (`testing` / `reviewing` — #837: never `retro`); satisfy those phases (run the reviewer), don't bypass with `--skip-validation`.
 
 **Why a sub-agent, not just self-review.** The implementer's context is contaminated by the implementation: every "looks done" judgment carries the same blind spots that produced the gaps. A sub-agent starts cold, reads the diff with fresh eyes, and applies the review skill's checklists without the implementer's "I already checked that" shortcuts. The cost of one extra `Agent` call is ~30s of wall time and a few hundred tokens; the cost of skipping it is multi-round push-fix-push cycles after the PR is already public.
 
@@ -186,7 +184,7 @@ Teatree has **two stores**, but they can no longer disagree:
 
 ### 5. Create MR/PR
 
-**`t3 <overlay> pr create` is mandatory (Non-Negotiable).** Raw `gh pr create` / `glab mr create` is forbidden whenever the active overlay exposes a `pr create` subcommand. The CLI is not a convenience wrapper — it is the **only** path that runs the shipping gate (§ 4b: testing + reviewing + retro phases visited), the visual-QA gate (§ 4c), the title/description format validator, the ticket URL injection, the assignee defaults, and the fork-vs-upstream remote resolution. Bypassing it ships PRs that look published but have skipped every guard — exactly the failure mode that produced souliane/teatree#545 (PR pushed via `gh pr create`, shipping gate never ran, six rounds of follow-up review fixes).
+**`t3 <overlay> pr create` is mandatory (Non-Negotiable).** Raw `gh pr create` / `glab mr create` is forbidden whenever the active overlay exposes a `pr create` subcommand. The CLI is not a convenience wrapper — it is the **only** path that runs the shipping gate (§ 4b: testing + reviewing phases visited), the visual-QA gate (§ 4c), the title/description format validator, the ticket URL injection, the assignee defaults, and the fork-vs-upstream remote resolution. Bypassing it ships PRs that look published but have skipped every guard — exactly the failure mode that produced souliane/teatree#545 (PR pushed via `gh pr create`, shipping gate never ran, six rounds of follow-up review fixes).
 
 **Allowed exceptions (must hold all):**
 

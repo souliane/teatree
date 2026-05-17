@@ -14,3 +14,7 @@ GITLAB_TOKEN_PASS_KEY: str = "gitlab/pat"  # noqa: S105 — pass key name, not a
 # ── Workflow ────────────────────────────────────────────────────────
 
 REQUIRE_TICKET: bool = True
+
+# Dogfooding overlay raises loop auto-start concurrency above the
+# conservative base default of 1 (external/multi-repo overlays keep 1).
+MAX_CONCURRENT_AUTO_STARTS: int = 3

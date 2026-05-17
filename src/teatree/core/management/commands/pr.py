@@ -240,19 +240,49 @@ def _enqueue_ship(ticket: Ticket, title: str) -> ShipEnqueued | ShippingGateFail
 def _ship_sync(ticket: Ticket, title: str) -> ShipExecuted | ShippingGateFailure:
     """Synchronous ship: run ``execute_ship`` inline in this process (#708).
 
-    After the FSM transition commits, invoke the ship task synchronously
-    via django-tasks' ``.call()`` so the push + PR happen before the
-    command returns — no queue worker required. ``execute_ship`` is
-    idempotent (re-checks state under ``select_for_update``), so the
-    ``on_commit`` enqueue scheduled by ``ship()`` is a safe no-op if a
-    worker later picks it up (state is no longer SHIPPED).
+    Atomicity (#838): the FSM ``ship()`` transition and the inline
+    ``execute_ship`` run inside a **single** ``transaction.atomic()``
+    block. Pre-#838 ``_do_ship_transition`` committed ``SHIPPED`` in its
+    own transaction and ``execute_ship.call()`` ran afterwards in a
+    separate one; a ``ShipExecutor.run()`` exception (a ``git push``
+    precondition failure surfaces as ``CommandFailedError``) then left
+    ``Ticket.state == SHIPPED`` with no push and no PR — a partial state
+    the operator could not safely re-run. Sharing one transaction makes
+    the exception roll the FSM advance back, so the ship is all-or-nothing:
+    either pushed + PR opened + FSM advanced, or the FSM is untouched.
+
+    Error surfacing (#838): a ``ShipExecutor.run()`` exception is caught
+    here and returned as a structured ``ShipExecuted`` (``ok=False`` with
+    the real error in ``detail``). Pre-#838 the exception propagated
+    unhandled, crashing the ``manage.py`` subprocess so the CLI wrapper
+    only surfaced a bare ``rc=1`` with the real cause lost.
+
+    The ``on_commit`` enqueue scheduled by ``ship()`` only fires when the
+    block commits (success); ``execute_ship`` is idempotent (re-checks
+    state under ``select_for_update``) so a worker later picking it up is
+    a safe no-op (state is no longer SHIPPED).
     """
     from teatree.core.tasks import execute_ship  # noqa: PLC0415
 
-    failure = _do_ship_transition(ticket, title)
-    if failure is not None:
-        return failure
-    result = execute_ship.call(int(ticket.pk))
+    try:
+        with transaction.atomic():
+            failure = _do_ship_transition(ticket, title)
+            if failure is not None:
+                return failure
+            result = execute_ship.call(int(ticket.pk))
+    except Exception as exc:  # noqa: BLE001
+        # Atomicity: the surrounding ``transaction.atomic()`` already
+        # rolled the ``ship()`` advance back, so the FSM is NOT left in a
+        # partial SHIPPED state. Surface the real cause instead of letting
+        # it crash the subprocess into an opaque wrapper-only ``rc=1``.
+        ticket.refresh_from_db()
+        return ShipExecuted(
+            ticket_id=int(ticket.pk),
+            state=str(ticket.state),
+            synced=True,
+            ok=False,
+            detail=str(exc),
+        )
     ticket.refresh_from_db()
     return ShipExecuted(
         ticket_id=int(ticket.pk),

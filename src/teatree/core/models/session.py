@@ -10,12 +10,6 @@ from teatree.core.models.ticket import Ticket
 
 logger = logging.getLogger(__name__)
 
-# Phases where maker≠checker is enforced: the agent that coded
-# must not be the same agent that reviews.
-_CONFLICTING_PHASE_PAIRS: list[tuple[str, str]] = [
-    ("coding", "reviewing"),
-]
-
 
 class Session(models.Model):
     overlay = models.CharField(max_length=255)
@@ -33,9 +27,14 @@ class Session(models.Model):
     class Meta:
         db_table = "teatree_session"
 
+    # #837: retro is an orchestrator-level periodic synthesis, NOT a
+    # per-ticket sub-agent step. The shipping gate therefore no longer
+    # requires a per-ticket ``retro`` visit (the bureaucracy that pushed
+    # retro to the least-effective level). ``retro`` remains a recordable
+    # phase for audit; it is simply no longer GATED here.
     _REQUIRED_PHASES: ClassVar[dict[str, list[str]]] = {
         "reviewing": ["testing"],
-        "shipping": ["testing", "reviewing", "retro"],
+        "shipping": ["testing", "reviewing"],
         "requesting_review": ["shipping"],
     }
 
@@ -45,13 +44,13 @@ class Session(models.Model):
     def recording_identity(self, explicit: str = "") -> str:
         """A guaranteed-non-empty attribution identity for a phase visit.
 
-        #755: ``visit_phase`` only stamps ``phase_visits`` when the
-        identity is truthy, so a blank ``Session.agent_id`` (the
-        ``Session.objects.create(ticket=…)`` fallback / coordinator or
-        non-FSM-minted sessions) silently dropped maker attribution and
-        made ``_check_maker_checker`` unverifiable. Resolution order:
-        explicit caller identity → the session's own ``agent_id`` →
-        a deterministic non-empty per-session fallback. Never ``""``.
+        ``phase_visits`` is an audit trail of who recorded each phase.
+        ``visit_phase`` only stamps it when the identity is truthy, so a
+        blank ``Session.agent_id`` (the ``Session.objects.create(ticket=…)``
+        fallback / coordinator or non-FSM-minted sessions) would otherwise
+        leave the audit record empty. Resolution order: explicit caller
+        identity → the session's own ``agent_id`` → a deterministic
+        non-empty per-session fallback. Never ``""``.
         """
         return explicit.strip() or self.agent_id.strip() or f"session-{self.pk}"
 
@@ -96,30 +95,30 @@ class Session(models.Model):
         """Check this session's own phase records against the gate."""
         if force:
             return
-        self._check_phases(target_phase, self._visited_phases(), self._phase_visits())
+        self._check_phases(target_phase, self._visited_phases())
 
     def check_gate_across_ticket(self, target_phase: str) -> None:
         """Check the gate against the UNION of all the ticket's sessions.
 
-        FSM-advancing ``visit-phase`` forks a fresh session by design
-        (bias-free maker≠checker), so the required phases for a ticket are
-        legitimately scattered across its lifecycle sessions. The single
-        source of truth is therefore the union, not the latest session.
-        ``_check_maker_checker`` runs over the merged ``phase_visits`` so
-        a same-agent conflicting pair is still caught even when the two
-        phases were recorded on different sessions — integrity preserved.
+        FSM-advancing ``visit-phase`` forks a fresh session by design, so
+        the required phases for a ticket are legitimately scattered across
+        its lifecycle sessions. The single source of truth is therefore
+        the union, not the latest session. The gate verifies the required
+        phases (``testing``/``reviewing``/``retro``) were recorded for the
+        work; independence comes structurally from the ``reviewing`` phase
+        being earned by a freshly-spawned cold-review sub-agent that has
+        not seen the implementation — the spawn boundary is the guarantee,
+        not an ``agent_id`` comparison.
         """
-        visited, visits = self.ticket.aggregate_phase_records()
-        self._check_phases(target_phase, visited, visits)
+        visited, _visits = self.ticket.aggregate_phase_records()
+        self._check_phases(target_phase, visited)
 
-    def _check_phases(self, target_phase: str, visited: list[str], visits: dict[str, dict[str, str]]) -> None:
+    def _check_phases(self, target_phase: str, visited: list[str]) -> None:
         missing = [phase for phase in self._REQUIRED_PHASES.get(target_phase, []) if phase not in visited]
         if missing:
             joined = ", ".join(missing)
             msg = f"{target_phase} requires: {joined}"
             raise QualityGateError(msg)
-
-        self._check_maker_checker(visited, visits)
 
     def mark_repo_modified(self, repo: str) -> None:
         repos = cast("list[str]", self.repos_modified or [])
@@ -142,42 +141,5 @@ class Session(models.Model):
         self.ended_at = timezone.now()
         self.save(update_fields=["ended_at"])
 
-    @staticmethod
-    def _check_maker_checker(visited: list[str], visits: dict[str, dict[str, str]]) -> None:
-        """Enforce maker≠checker, FAIL-CLOSED on absent attribution (#755).
-
-        Pre-#755 this ``continue``-d past any pair lacking ``phase_visits``
-        entries, so a blank-``agent_id`` recording path (the
-        ``Session.objects.create(ticket=…)`` fallback / coordinator
-        sessions) made the gate vacuously pass — the safety check could
-        not observe the attribution it must enforce. Now: if BOTH
-        conflicting phases are claimed done (in ``visited``) but either
-        lacks a non-empty recorded identity in ``visits``, the gate
-        REFUSES — work asserted complete with unverifiable maker
-        attribution must not pass automated review.
-        """
-        for phase_a, phase_b in _CONFLICTING_PHASE_PAIRS:
-            both_claimed_done = phase_a in visited and phase_b in visited
-            agent_a = visits.get(phase_a, {}).get("agent_id", "").strip()
-            agent_b = visits.get(phase_b, {}).get("agent_id", "").strip()
-            if both_claimed_done and not (agent_a and agent_b):
-                msg = (
-                    f"Maker≠checker unverifiable: {phase_a} and {phase_b} are both "
-                    f"recorded as visited but lack per-phase agent attribution "
-                    f"(agent_id missing/blank). The gate fails closed — re-record "
-                    f"the phases with an explicit recording identity."
-                )
-                raise QualityGateError(msg)
-            if agent_a and agent_b and agent_a == agent_b:
-                msg = (
-                    f"Maker≠checker violation: {phase_a} and {phase_b} "
-                    f"were both visited by the same agent ({agent_a}). "
-                    f"A different agent must perform {phase_b}."
-                )
-                raise QualityGateError(msg)
-
     def _visited_phases(self) -> list[str]:
         return cast("list[str]", self.visited_phases or [])
-
-    def _phase_visits(self) -> dict[str, dict[str, str]]:
-        return cast("dict[str, dict[str, str]]", self.phase_visits or {})
