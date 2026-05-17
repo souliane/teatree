@@ -31,7 +31,7 @@ A personal code factory for multi-repo projects. It turns a ticket URL into a me
 It provides:
 
 - A unified CLI (`t3`) for worktree creation, provisioning, dev servers, CI, and delivery
-- A Django app (`teatree.core`) with 5 models driven by `django-fsm` state machines
+- A Django app (`teatree.core`) whose delivery lifecycle runs on four `django-fsm` state machines (`Ticket`, `Worktree`, `Task`, `PullRequest`), plus supporting models (`Session`, `TaskAttempt`, `TicketTransition`, event/intent/merge-clear records)
 - An overlay system for downstream project customization (`OverlayBase`)
 - Backend protocols for pluggable external integrations
 - Agent workflow skills (`skills/*/`) for the full development lifecycle
@@ -46,69 +46,80 @@ src/teatree/           Python package (the Django app + CLI)
   skill_loading.py     Skill selection policy (phase → skills, companion resolution)
   skill_deps.py        Transitive dependency and companion resolution
   core/                Django app: models, managers, views, selectors, management commands
-    models/            Ticket, Worktree, Session, Task, TaskAttempt (FSM states)
+    models/            Model package — Ticket/Worktree/Task/PullRequest (FSM) + Session, TaskAttempt, TicketTransition, etc.
     selectors/         Selector functions (no domain logic in views)
     overlay.py         OverlayBase ABC — extension point for downstream projects
-    overlay_loader.py  Loads the active overlay class from Django settings
+    overlay_loader.py  Discovers the active overlay class from `teatree.overlays` entry points
     management/commands/  Django-typer commands (lifecycle, workspace, db, run, followup, pr, tasks)
     views/             Admin views
     templates/         Django admin templates
   backends/            Pluggable service integrations
-    protocols.py       Protocol classes (CodeHost, CIService, IssueTracker, ChatNotifier, ErrorTracker)
-    loader.py          Settings-driven backend loader (import_string, lru_cache)
-    github.py          GitHub API client
-    github_sync.py     GitHubSyncBackend — implements SyncBackend ABC from core/sync.py
-    gitlab.py          GitLab API client
+    protocols.py       Protocol classes (CodeHostBackend, CIService, MessagingBackend)
+    loader.py          Overlay-config-driven backend resolution (cached via lru_cache)
+    github.py          GitHub code-host client
+    github_sync.py     GitHubSyncBackend — implements SyncBackend ABC from teatree.types
+    gitlab.py          GitLab code-host client
     gitlab_ci.py       GitLab CI pipeline operations
-    gitlab_sync.py     GitLabSyncBackend — implements SyncBackend ABC from core/sync.py
-    slack.py, notion.py, sentry.py  Other integrations
+    gitlab_sync*.py    GitLabSyncBackend + per-concern sync modules (issues, prs, approvals, terminal)
+    slack*.py, notion.py, sentry.py  Other integrations
   agents/              Agent runtime
-    headless.py        SDK tasks via `claude -p` (capture JSON output)
-    web_terminal.py    Interactive tasks via ttyd (browser-based terminal)
-    sdk.py             SDK runtime adapter (EchoRuntime registry)
-    terminal.py        Interactive runtime adapter
-    services.py        Runtime registry, settings readers
+    headless.py        Headless tasks via `claude -p` (capture structured JSON output)
+    handover.py        Headless ↔ interactive session handover (resume by session id)
+    model_tiering.py   Per-phase model override resolution
     skill_bundle.py    Skill dependency resolver for agent launch
-    prompt.py          System context and task prompt builders
+    prompt.py          System context and task prompt builders (headless + interactive)
     result_schema.py   JSON schema for structured agent output
   utils/               Git helpers, port allocation, subprocess wrappers
   overlay_init/        `t3 startoverlay` templates (overlay package + app)
 skills/*/              Workflow skills (SKILL.md + references/)
-tests/                 Pytest suite (>90% coverage required)
+tests/                 Pytest suite (>=93% coverage required)
 scripts/               Standalone Python CLI scripts
 hooks/                 Agent platform hooks (Claude Code hook_router, statusline, etc.)
 ```
 
-## 5 Models
+## Models
 
-### Ticket — Core delivery entity
+The models live in the `teatree.core.models` package (one module per model
+group). Four carry `django-fsm` state machines; the rest are supporting
+records.
 
-- **States:** not_started → scoped → started → coded → tested → reviewed → shipped → in_review → merged → delivered
-- **Fields:** issue_url, variant, repos (JSONField), state, extra (JSONField)
+### Ticket — Core delivery entity (FSM)
+
+- **States:** not_started → scoped → started → coded → tested → reviewed → shipped → in_review → merged → retrospected → delivered (plus `ignored` for abandoned tickets)
+- **Fields:** overlay, issue_url, variant, repos (JSONField), state (FSMField), role, extra (JSONField), redis_db_index
 - **Key methods:** scope(), start(), code(), test(), review(), ship(), rework()
 
-### Worktree — Per-repo lifecycle (FK → Ticket)
+### Worktree — Per-repo lifecycle (FSM, FK → Ticket)
 
 - **States:** created → provisioned → services_up → ready
-- **Fields:** ticket (FK), repo_path, branch, state, ports (JSONField), db_name
+- **Fields:** overlay, ticket (FK), repo_path, branch, state (FSMField), db_name, extra (JSONField) — the on-disk path and allocated ports live under `extra`, not as dedicated columns
 - **Key methods:** provision(), start_services(), verify(), db_refresh(), teardown()
+
+### Task — Agent work unit (FSM, FK → Ticket, Session)
+
+- **Fields:** ticket (FK), session (FK), parent_task (self FK), phase, execution_target (headless/interactive), execution_reason, status (FSMField: pending/claimed/completed/failed)
+- **Claim/lease:** claimed_at, claimed_by, lease_expires_at, heartbeat_at, result_artifact_path
+- **Key methods:** claim(), route_to_headless(), route_to_interactive(), complete(), fail()
+
+### PullRequest — PR/MR lifecycle (FSM)
+
+- **States:** open → review_requested → approved → merged
+- **Key methods:** request_review(), approve(), mark_merged()
 
 ### Session — Quality gate tracker (FK → Ticket)
 
-- Tracks visited phases across tasks within a conversation
-- **Fields:** ticket (FK), agent_id, started_at, ended_at
+- Tracks visited phases across tasks within a conversation (not FSM-driven)
+- **Fields:** overlay, ticket (FK), visited_phases (JSONField), phase_visits (JSONField), started_at, ended_at, agent_id, repos_modified, repos_tested
 - Quality gates enforce ordering: reviewing requires testing, shipping requires reviewing
-
-### Task — Agent work unit (FK → Ticket, Session)
-
-- **Fields:** ticket (FK), session (FK), execution_target (headless/interactive), execution_reason, status (pending/claimed/completed/failed), phase
-- **Claim/lease:** claimed_at, claimed_by, lease_expires_at, heartbeat_at
-- **Key methods:** claim(), route_to_headless(), route_to_interactive(), complete(), fail()
 
 ### TaskAttempt — Execution history (FK → Task)
 
-- **Fields:** task (FK), execution_target, ended_at, exit_code, error, result (JSONField), launch_url
+- **Fields:** task (FK), started_at, ended_at, execution_target, error, exit_code, artifact_path, result (JSONField), input_tokens, output_tokens, cost_usd, num_turns, launch_url, agent_session_id
 - Enables cross-task failure querying and audit trail
+
+Other supporting models include `TicketTransition` (phase-change log),
+`IncomingEvent` / `IntentClassification` (event routing), and the
+`MergeClear` / `MergeAudit` family.
 
 ### New model queried on the always-run path (Non-Negotiable)
 
@@ -161,7 +172,7 @@ An overlay is a lightweight Python package that customizes teatree. It:
 
 1. Subclasses `OverlayBase` (from `teatree.core.overlay`)
 2. Implements mandatory hooks: `get_repos()`, `get_provision_steps(worktree)`
-3. Optionally implements: `get_env_extra()`, `get_run_commands()`, `get_db_import_strategy()`, `get_post_db_steps()`, `get_symlinks()`, `get_services_config()`, `validate_mr()`, `get_skill_metadata()`, `get_followup_repos()`, `get_ci_project_path()`, `get_e2e_config()`, `detect_variant()`, `get_workspace_repos()`
+3. Optionally implements: `get_env_extra()`, `get_run_commands()`, `get_db_import_strategy()`, `get_post_db_steps()`, `get_symlinks()`, `get_services_config()`, `can_auto_merge()`, `get_workspace_repos()`. Project metadata hooks (`validate_pr()`, `get_skill_metadata()`, `get_followup_repos()`, `get_ci_project_path()`, `get_e2e_config()`, `detect_variant()`) live on the composed `OverlayMetadata` (`overlay.metadata`); credentials/URLs live on `OverlayConfig` (`overlay.config`)
 4. Registers via a `teatree.overlays` entry point in `pyproject.toml` (e.g., `my-overlay = "myapp.overlay:MyOverlay"`)
 5. Gets auto-discovered by the overlay loader from `importlib.metadata.entry_points(group="teatree.overlays")`
 
@@ -179,11 +190,9 @@ Each external API concern is a `@runtime_checkable Protocol` in `teatree.backend
 
 | Protocol | Purpose |
 |---|---|
-| `CodeHost` | PR/MR creation, list open PRs |
+| `CodeHostBackend` | PR/MR creation, list own/review-requested PRs, PR comments, issue fetch + comments, file upload |
 | `CIService` | Pipeline cancel, errors, failed tests, trigger, quality check |
-| `IssueTracker` | Issue fetching |
-| `ChatNotifier` | Team notifications |
-| `ErrorTracker` | Sentry-like error tracking |
+| `MessagingBackend` | Mentions, DMs, posts, replies, reactions, user-id resolution |
 
 Backends are auto-configured from overlay methods. For example, `get_gitlab_token()` and `get_gitlab_url()` on the overlay class drive the GitLab backend; `get_slack_token()` and `get_review_channel()` drive Slack. No individual `TEATREE_*` Django settings are needed — each overlay carries its own configuration.
 
@@ -194,17 +203,19 @@ Overlay extension points are for **project-shaped** values: which repos exist, h
 Concretely:
 
 - **Overlay** answers "which GitLab project is this overlay's CI?" (returns a string) — that's overlay-shaped.
-- **Backend** answers "fetch the title of this issue" or "list my open MRs" (calls the GitLab API) — that's backend-shaped, and a protocol like `IssueTracker.get_issue` or `CodeHost.list_my_open_prs` already exists.
+- **Backend** answers "fetch the title of this issue" or "list my open MRs" (calls the GitLab API) — that's backend-shaped, and a protocol method like `CodeHostBackend.get_issue` or `CodeHostBackend.list_my_prs` already exists.
 
 When adding a new overlay method, ask: would two overlays end up implementing this against the same API? If yes, write it once on the backend protocol and have overlays consume it. The reviewer skill `ac-reviewing-codebase` § Phase 3.5b enforces this rule during audits.
 
-### Sync ABC (`core/sync.py`)
+### Sync ABC (`teatree.types`)
 
-Every file under `backends/` that syncs external data into the Django DB must subclass `SyncBackend` from `teatree.core.sync`:
+Every file under `backends/` that syncs external data into the Django DB must subclass `SyncBackend` from `teatree.types` (the followup driver `sync_followup()` lives in `teatree.core.sync`):
 
 ```python
 class SyncBackend(ABC):
+    @abstractmethod
     def is_configured(self, overlay: object) -> bool: ...  # has credentials?
+    @abstractmethod
     def sync(self, overlay: object) -> SyncResult: ...     # run the sync
 ```
 
@@ -212,41 +223,29 @@ Convention: `sync()` and `is_configured()` are instance methods decorated with `
 
 Current implementations: `GitHubSyncBackend` (`backends/github_sync.py`), `GitLabSyncBackend` (`backends/gitlab_sync.py`).
 
-## Runtime Abstraction
-
-```python
-TEATREE_HEADLESS_RUNTIME = "claude-code"     # Runtime for headless tasks
-TEATREE_INTERACTIVE_RUNTIME = "codex"        # Runtime for interactive tasks
-TEATREE_TERMINAL_MODE = "new-tab"            # Terminal strategy: new-tab | new-window | ttyd
-TEATREE_HEADLESS_USE_CLI = True              # Use `claude -p` instead of Anthropic API
-```
-
 ## Agent Runtime
 
-### Interactive Sessions (web_terminal.py)
+Both task kinds shell out to the local `claude` CLI (no Anthropic API key
+needed). The binary is resolved via `shutil.which("claude")`; per-phase
+model overrides come from `agents/model_tiering.py`.
 
-Interactive tasks launch through one of three strategies, picked by `TEATREE_TERMINAL_MODE` (or the per-task `terminal_mode` parameter):
+### Headless Sessions (`agents/headless.py`)
 
-| Mode | Behavior | Survives server restart? |
-|------|----------|--------------------------|
-| `new-tab` (default) | Opens a tab in the existing terminal app (iTerm via AppleScript; Terminal.app via System Events keystroke). Linux falls back to a new window. | Yes |
-| `new-window` | Spawns a fresh native terminal window via `osascript` / terminal-emulator IPC. | Yes |
-| `ttyd` | Spawns a `ttyd` process and returns a browser URL. Registered with the in-memory process registry, so it is killed on server shutdown. | No |
+Headless tasks run `claude -p <prompt> --append-system-prompt <context> --output-format json`.
 
-- Command: `claude --append-system-prompt <context>` (no `-p`, interactive mode).
-- ttyd-only requirements: must be installed (`brew install ttyd`) and spawned with `--writable`.
-- Terminal.app `new-tab` requires Accessibility permission for the host process (System Events keystroke).
-- **Session resume:** When a parent headless task carried a `session_id` (via `Session.agent_id`), the interactive session resumes it with `claude --resume <session_id>` — preserving full context from the headless run.
+- Parses the JSON result from stdout, validates against `result_schema.py`
+- If the result contains `needs_user_input: true`, reroutes the task to the user-input queue
+- Stores the parsed result in `TaskAttempt.result`
+- **Session resume:** when a `parent_task` chain carries a previous `agent_session_id`, headless prepends `--resume <session_id>` to continue with full context (`headless.py`).
 
-### Headless Sessions (headless.py)
+### Interactive Sessions (`core/management/commands/tasks.py`)
 
-SDK tasks run `claude -p <prompt> --append-system-prompt <context> --output-format json`.
+Interactive tasks (`tasks work-next-user-input`) launch `claude` inline in
+the invoking terminal — no ttyd, no terminal-mode strategies. The argv is
+built by `_build_claude_command`:
 
-- When `TEATREE_SDK_USE_CLI = True`, always uses `claude` binary (no API key needed)
-- Parses JSON result from stdout, validates against `result_schema.py`
-- If result contains `needs_user_input: true`, reroutes task to user_input queue
-- Stores result in `TaskAttempt.result`
-- **Session resume:** When a `parent_task` chain contains a previous `agent_session_id` (from a prior headless or interactive run), headless prepends `--resume <session_id>` to continue with full context.
+- Fresh session: `claude --append-system-prompt <interactive context>` (context from `agents/prompt.py:build_interactive_context`).
+- Resume: when `Session.agent_id` holds a Claude session UUID, `claude --resume <uuid>` — preserving context from the prior headless run.
 
 ### Skill Loading
 
@@ -300,7 +299,7 @@ New tests — added in this repo or in any overlay repo — must lean **integrat
 
 ### Quality Gates
 
-- **>90% test coverage** — enforced by pytest-cov, `fail_under = 93`
+- **>=93% test coverage** — enforced by pytest-cov, `fail_under = 93`
   - `[tool.coverage.run] source` is `src/teatree` only — `hooks/scripts/*.py` (e.g. `hook_router.py`) is **outside** the project coverage gate. To verify 100% on changed hook lines, run a one-off measurement with an explicit rcfile (`coverage run --rcfile=<tmp.cfg> -m pytest <hook tests> -o addopts=`, with `[run] source = .` + `include = */hooks/scripts/<file>.py`), then `coverage report --include=…`. The standard `--cov` addopts won't measure it.
 - **Ruff** — ALL rules enabled, specific ignores justified in pyproject.toml
 - **ty** — static type checker with `error-on-warning = true`
@@ -337,7 +336,6 @@ After modifying skills: `prek run --all-files` then `uv run pytest` then commit.
 - Port allocation uses file-level locking (`teatree.utils.ports`) — never hardcode ports.
 - The `t3 agent` command builds a system prompt from overlay detection + skill resolution, then `os.execvp`s into `claude`.
 - Coverage omits only migrations. Everything else must be covered.
-- ttyd without `--writable` = read-only terminal = claude can't work.
 - `claude -p` is headless (exits immediately). Interactive sessions use `claude` without `-p`.
 - E2E tests use a separate settings module (`e2e.settings`) with file-based SQLite.
 - **Submodule shadowing in `cli/__init__.py`.** When `cli/__init__.py` re-exports a name from a same-named submodule (`from teatree.cli.agent import agent`), the imported function overwrites the `cli.agent` submodule attribute on the parent package. Tests that do `import teatree.cli.agent as cli_agent_mod` then receive the function, not the module — `patch.object(cli_agent_mod, "os", ...)` fails with `does not have the attribute 'os'`. Use `import teatree.cli.agent as _agent` in `__init__.py` and reference attributes (`_agent.agent`) instead. The aliasing form does not bind to the parent package, so the submodule attribute survives intact.
