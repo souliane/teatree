@@ -27,7 +27,7 @@ from django.utils import timezone
 from teatree.agents.model_tiering import resolve_phase_model
 from teatree.agents.result_schema import RESULT_JSON_SCHEMA
 from teatree.agents.skill_bundle import resolve_skill_bundle
-from teatree.core.models import Task, TaskAttempt
+from teatree.core.models import Task, TaskAttempt, Ticket
 from teatree.core.models.worktree import Worktree
 from teatree.skill_loading import SkillLoadingPolicy
 from teatree.types import SkillMetadata
@@ -44,6 +44,15 @@ _HEARTBEAT_INTERVAL = 60  # seconds
 _DEFAULT_WATCHDOG = {
     "max_runtime_seconds": 3 * 60 * 60,  # 3h — well past any healthy phase task
     "max_turns": 0,  # 0 = disabled
+    "max_cost_usd": 0.0,  # 0 = disabled
+}
+
+# Conservative documented default (#885 / #398-4): the per-ticket cumulative
+# cost cap is opt-in. ``0.0`` = disabled, so installing this consumer changes
+# no behaviour until the user configures a ceiling — the same precedent #882
+# set for the watchdog's absolute cost dimension. The user picks a ceiling
+# that matches their budget appetite once they want batch runs bounded.
+_DEFAULT_TICKET_BUDGET = {
     "max_cost_usd": 0.0,  # 0 = disabled
 }
 
@@ -112,6 +121,39 @@ class LoopWatchdog:
         return None
 
 
+@dataclass(frozen=True)
+class TicketBudget:
+    """Per-ticket cumulative cost cap consumer (#885 / #398-4).
+
+    Where ``LoopWatchdog`` bounds a *single in-flight subprocess* (it kills
+    a runaway mid-run from the heartbeat thread), this consumer bounds the
+    *whole ticket's lifetime spend* at dispatch time. Before a task's
+    subprocess is launched it sums ``TaskAttempt.cost_usd`` across every
+    task under the ticket; once the cumulative spend crosses the configured
+    ceiling no further attempt is dispatched and a ``budget_exceeded``
+    ``TaskAttempt`` failure is recorded (``task.fail()`` runs), surfacing
+    the breach on the failure record. A ceiling of ``0.0`` disables the cap.
+    """
+
+    max_cost_usd: float
+
+    @classmethod
+    def from_settings(cls) -> "TicketBudget":
+        configured = getattr(settings, "TEATREE_TICKET_BUDGET", None) or _DEFAULT_TICKET_BUDGET
+        return cls(max_cost_usd=float(configured.get("max_cost_usd", 0.0)))
+
+    def breach_reason(self, ticket: Ticket) -> str | None:
+        """Return a reason string with the observed total, or ``None`` if healthy."""
+        if not self.max_cost_usd:
+            return None
+        total = TaskAttempt.objects.filter(task__ticket=ticket).aggregate(cost=Sum("cost_usd"))["cost"] or 0.0
+        if total > self.max_cost_usd:
+            return (
+                f"budget_exceeded: ticket spent ${total:.2f} > cap ${self.max_cost_usd:.2f} — refusing further dispatch"
+            )
+        return None
+
+
 def _safe_int(value: str | None) -> int | None:
     if value is None:
         return None
@@ -147,6 +189,11 @@ def run_headless(
     binary = shutil.which("claude")
     if binary is None:
         return _record_failure(task, error="claude is not installed")
+
+    budget_breach = TicketBudget.from_settings().breach_reason(task.ticket)
+    if budget_breach is not None:
+        logger.warning("Refusing dispatch for task %s: %s", task.pk, budget_breach)
+        return _record_failure(task, error=budget_breach)
 
     prompt = build_task_prompt(task)
     lifecycle_skill = SkillLoadingPolicy.lifecycle_for_phase(phase)
