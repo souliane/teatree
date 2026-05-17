@@ -1,0 +1,156 @@
+# Agent mode, MCP tooling, and permissions — the config surface
+
+Several categories of agent behaviour are legitimately instance-specific:
+whether the session runs autonomously, which MCP integrations an overlay
+needs, and which standing permissions make a session friction-free. Before
+this reference these were scattered across the codebase, BLUEPRINT.md, and
+each user's personal config, so each user reinvented the same setup. This
+page collects the **actual** config surface in one place and points at the
+module that owns each knob, so nothing here drifts from the code.
+
+Companion reference: the recommended-but-never-shipped auto-mode set is
+documented separately in
+[`recommended-automode-authorizations.md`](recommended-automode-authorizations.md).
+This page is the map; that page is the paste-ready list.
+
+## 1. Operating mode (`[teatree] mode`)
+
+The auto-vs-interactive choice is a single teatree config knob, **not** an
+agent-runtime setting the user hand-edits. It lives in `~/.teatree.toml`:
+
+```toml
+[teatree]
+mode = "interactive"   # or "auto"
+```
+
+| Value | Behaviour |
+|-------|-----------|
+| `interactive` | Default. Conservative on security — every publishing action (push, PR create/merge, external write) stops and asks. |
+| `auto` | Full autonomy end-to-end; falls back to interactive only for the always-gated non-negotiables (force-push to default branches, destructive shared-state ops). |
+
+Resolution (first match wins): the `T3_MODE` env var, then the active
+overlay's `[overlays.<name>] mode` override, then global `[teatree] mode`,
+then the dataclass default `interactive`. Source of truth:
+`teatree.config` — the `Mode` enum, `UserSettings.mode`,
+`OVERLAY_OVERRIDABLE_SETTINGS`, `ENV_SETTING_OVERRIDES`, and
+`get_effective_settings()`. Invalid values raise rather than silently
+downgrading to a less-safe mode (`Mode.parse`).
+
+There is intentionally no `[agent] defaultMode` key: per-installation
+auto-vs-interactive is `[teatree] mode`, and per-overlay (e.g. a headless
+overlay running auto while another stays interactive) is the
+`[overlays.<name>] mode` override. The loop honours the active overlay's
+resolved mode (BLUEPRINT.md § 5.6.2).
+
+### Training wheels for `auto`
+
+`auto` mode has two opt-out gates so a freshly-autonomous installation does
+not publish irreversibly without a human in the loop. Both are
+`[teatree]`-level booleans, per-overlay overridable, defaulting to `true`
+(source: `teatree.config.UserSettings`):
+
+| Key | Effect when `true` |
+|-----|--------------------|
+| `require_human_approval_to_merge` | Loop pushes and opens PRs autonomously but merge waits for a 👍 / `/merge`. |
+| `require_human_approval_to_answer` | The `t3:answerer` capability drafts a reply, DMs the user, posts only on confirmation. |
+
+The user flips either to `false` only once comfortable. No effect in
+`interactive` mode (everything prompts there regardless).
+
+## 2. Overlay-declared MCP tool requirements
+
+Each overlay integration (issue tracker, Slack, Notion, observability
+tooling) reaches the agent through MCP tools whose call patterns must match
+a `permissions.allow` entry in the user's `~/.claude/settings.json` to run
+without a per-call prompt.
+
+What teatree models today, verified against code:
+
+- An overlay declares its messaging integration through `OverlayConfig`
+  (`teatree.core.overlay.OverlayConfig`): `messaging_backend`
+  (`"noop"` default, `"slack"` opt-in), `slack_token_ref`,
+  `slack_user_id`. These are set as `UPPER_CASE` constants in an
+  `overlay_settings` module or as `lower_case` keys under
+  `[overlays.<name>]` in `~/.teatree.toml` (see
+  `OverlayConfig.apply_toml_overrides`). `t3 setup slack-bot --overlay
+  <name>` provisions the Slack app and stores the two tokens in `pass`
+  under `<slack_token_ref>-bot` / `<slack_token_ref>-app`.
+- The plugin's own `settings.json` ships a **broad Bash `permissions.allow`
+  / narrow `deny`** list (BLUEPRINT.md § 11.4) so every command teatree
+  and its overlays legitimately invoke matches a static rule. It ships
+  **no** `mcp__*` allow entries and **no** classifier `autoMode` /
+  `defaultMode` block — by design (§ 11.4: plugin config is not
+  self-modifiable by the agent; classifier rules stay per-user).
+
+The expected pattern for the MCP-tool permission entries an overlay's
+integrations need (e.g. `mcp__<server>__*`) is therefore: the user adds
+them to **their own** `~/.claude/settings.json` `permissions.allow`. The
+overlay documents which MCP servers it depends on in its own `SKILL.md` /
+README; the user provisions the matching allow entries once. Teatree does
+not auto-write the user's settings file for MCP entries any more than it
+does for Bash entries — the same self-modification guardrail applies (§
+11.4).
+
+> There is currently no `OverlayConfig` attribute through which an overlay
+> declares an explicit list of required `mcp__*` permission patterns for
+> `t3 setup` to provision automatically. Adding one is tracked under the
+> umbrella issue #836 / #854; until it lands, the documented pattern above
+> (overlay README + user-owned `permissions.allow`) is the expected setup.
+> This note is deliberately honest about the boundary rather than
+> describing a mechanism that does not exist.
+
+## 3. Standing permission state after `t3 setup`
+
+`t3 setup` does **not** set `skipDangerousModePermissionPrompt` or
+`skipAutoPermissionPrompt`, and teatree ships no `auto-approve-*.sh`
+hooks. Day-to-day friction is removed instead by the broad
+`permissions.allow` list in the plugin's `settings.json` (so the
+classifier is never consulted for routine workflow) plus a **read-only**
+suggestion pass: at the end of every `t3 setup`, and via `t3 doctor
+authorizations`, teatree detects which generic recommended auto-mode
+authorizations are absent from the user's resolved `~/.claude/settings.json`
+`autoMode.allow` and prints the paste-ready sentence for each missing one.
+
+Source of truth: `teatree.cli.recommended_authorizations`
+(`RECOMMENDED_AUTHORIZATIONS`, `find_missing_authorizations`,
+`report_missing_authorizations`), called from `teatree.cli.setup.run`
+and registered as a `t3 doctor` command in `teatree.cli.doctor`.
+Detection never writes the user's settings file. The full set and the
+rationale are in
+[`recommended-automode-authorizations.md`](recommended-automode-authorizations.md).
+
+## 4. Dev-environment lifecycle authorizations
+
+Auto-approving `docker`, `pkill`, `docker compose`, lifecycle, and
+verification commands is **not** something each overlay user builds from
+scratch. It is one of the recommended generic authorizations:
+`local-dev-lifecycle-commands` in
+`teatree.cli.recommended_authorizations.RECOMMENDED_AUTHORIZATIONS`, which
+covers `pkill, docker, docker compose, pipenv, playwright, npm, npx,
+curl, sed` run as part of a t3 lifecycle or verification step. The
+expected setup is to paste that suggested sentence into the user's own
+`autoMode.allow`; `t3 doctor authorizations` reports it as missing until
+present.
+
+## 5. Self-modification of the t3 ecosystem
+
+Standing authorization for the agent to edit teatree and overlay skill
+files (and `~/.claude/settings.json` / `~/.claude/hooks/`, which teatree
+manages) is the recommended `manage-claude-settings-and-hooks` and
+`worktree-file-writes` authorizations (same module, same `t3 doctor
+authorizations` flow). The agent-facing behaviour when the classifier
+denies a call mid-session is the **Classifier Denial Protocol** in
+`skills/rules/SKILL.md` — that section is canonical for *reacting* to a
+denial; this page is about the *standing* config surface. Neither
+duplicates the other.
+
+## Quick map (key → owning module)
+
+| Config surface | Where the user sets it | Code owner |
+|----------------|------------------------|------------|
+| Operating mode | `[teatree] mode` / `[overlays.<name>] mode` / `T3_MODE` | `teatree.config` (`Mode`, `get_effective_settings`) |
+| Auto-mode training wheels | `[teatree] require_human_approval_to_*` | `teatree.config.UserSettings` |
+| Overlay messaging integration | `[overlays.<name>]` keys / `overlay_settings` module | `teatree.core.overlay.OverlayConfig` |
+| Bash standing permissions | plugin `settings.json` (broad allow / narrow deny) | `settings.json` (BLUEPRINT.md § 11.4) |
+| MCP / auto-mode permissions | user's own `~/.claude/settings.json` | not plugin-shipped, by design (§ 11.4) |
+| Recommended auto-mode set | suggested only — user pastes into `autoMode.allow` | `teatree.cli.recommended_authorizations` |
