@@ -14,6 +14,7 @@ from django_typer.management import TyperCommand, command
 
 from teatree.config import load_config
 from teatree.core.cleanup import cleanup_worktree
+from teatree.core.dev_repo import resolve_repo_names
 from teatree.core.management.commands._workspace_cleanup import (
     drop_orphan_databases,
     drop_orphaned_stashes,
@@ -206,7 +207,7 @@ class Command(TyperCommand):
         """
         _warn_orphans(self.stderr.write)
         overlay = get_overlay()
-        repo_names = [r.strip() for r in repos.split(",") if r.strip()] if repos else overlay.get_workspace_repos()
+        repo_names = resolve_repo_names(overlay, issue_url, repos)
 
         with transaction.atomic():
             ticket = _locked_get_or_create_ticket(issue_url, variant, repo_names)
