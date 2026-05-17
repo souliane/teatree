@@ -523,6 +523,14 @@ TEATREE_LOOP_WATCHDOG = {
 }
 ```
 
+**Per-ticket cost cap (#885 / #398-4).** Where the watchdog above bounds a single in-flight subprocess (it kills a runaway mid-run), `TicketBudget` bounds the *whole ticket's lifetime spend* at dispatch time. Before a task's subprocess is launched, `run_headless` sums `TaskAttempt.cost_usd` across every task under the task's ticket; once the cumulative spend crosses the configured ceiling the subprocess is not launched and a `budget_exceeded` `TaskAttempt` failure is recorded (`task.fail()` runs), surfacing the breach on the failure record so a pathological ticket stops draining budget in unattended batch runs. The conservative default mirrors #882's precedent — the cap is opt-in (`0.0` = disabled), so the consumer changes no behaviour until a ceiling is configured. Overridable via Django settings:
+
+```python
+TEATREE_TICKET_BUDGET = {
+    "max_cost_usd": 0.0,  # 0 = disabled
+}
+```
+
 ### 5.3 Prompt Building (prompt.py)
 
 **`build_task_prompt(task)`** — Work instructions for the agent:
