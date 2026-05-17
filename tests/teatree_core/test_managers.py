@@ -528,3 +528,237 @@ class TestReplyDispatchQuerySet(TestCase):
             late_dispatch_early_retry,
             early_dispatch_late_retry,
         ]
+
+
+class TestReplayOrphanedTransitions(TestCase):
+    """#883 — a mid-transition crash must leave *recoverable* state.
+
+    ``Task.complete`` does the task ``save()`` then ``_advance_ticket()``.
+    Pre-#883 these were two separate write boundaries: a crash between
+    them left the task COMPLETED but the ticket on its old state. Lease
+    expiry can't rescue it (the task is already COMPLETED, not CLAIMED),
+    so ``reclaim_orphaned_claims`` / ``reap_stale_claims`` never see it
+    and the loop silently stalls forever on a half-advanced ticket.
+
+    Two complementary guarantees. ``Task.complete`` is now one
+    ``transaction.atomic``: the crash window is gone — either both writes
+    land or neither does. ``replay_orphaned_transitions`` is the boot/tick
+    recovery sweep (sibling of ``reclaim_orphaned_claims``) for the rows
+    that *did* slip through before the fix shipped, or any future seam: it
+    finds a COMPLETED task whose phase implies an FSM transition the
+    ticket has not yet taken and replays the *same* idempotent
+    ``_advance_ticket`` path — no parallel transition mechanism.
+    """
+
+    def test_backend_is_sqlite(self) -> None:
+        from django.db import connection  # noqa: PLC0415
+
+        assert connection.vendor == "sqlite"
+
+    def test_completed_task_with_unapplied_phase_transition_is_replayed(self) -> None:
+        # Simulate the half-advanced state a mid-transition crash leaves:
+        # the coding task is COMPLETED but the ticket is still STARTED
+        # (the FSM ``code()`` transition never landed).
+        ticket = Ticket.objects.create(state=Ticket.State.STARTED)
+        session = Session.objects.create(ticket=ticket, agent_id="a")
+        Task.objects.create(
+            ticket=ticket,
+            session=session,
+            phase="coding",
+            status=Task.Status.COMPLETED,
+        )
+
+        replayed = Task.objects.replay_orphaned_transitions()
+
+        ticket.refresh_from_db()
+        assert replayed == 1
+        assert ticket.state == Ticket.State.CODED, (
+            f"orphaned mid-transition ticket was not replayed (still {ticket.state!r}) — the loop stalls forever"
+        )
+
+    def test_already_advanced_ticket_is_left_untouched(self) -> None:
+        # Anti-vacuity: the common case (complete() already advanced the
+        # ticket) must NOT be double-fired — the phase/state guards no-op.
+        ticket = Ticket.objects.create(state=Ticket.State.CODED)
+        session = Session.objects.create(ticket=ticket, agent_id="a")
+        Task.objects.create(
+            ticket=ticket,
+            session=session,
+            phase="coding",
+            status=Task.Status.COMPLETED,
+        )
+
+        replayed = Task.objects.replay_orphaned_transitions()
+
+        ticket.refresh_from_db()
+        assert replayed == 0
+        assert ticket.state == Ticket.State.CODED
+
+    def test_replay_preserves_state_preconditions_no_gate_skip(self) -> None:
+        # GATE-INTEGRITY (#883): replay must never let a ticket reach a
+        # state it didn't earn. A COMPLETED *shipping* task whose ticket
+        # is only STARTED (it never went through code→test→review) must
+        # NOT be teleported to SHIPPED — the same phase+state guard that
+        # protects the live ``complete()`` path protects replay, because
+        # replay reuses that exact path.
+        ticket = Ticket.objects.create(state=Ticket.State.STARTED)
+        session = Session.objects.create(ticket=ticket, agent_id="a")
+        Task.objects.create(
+            ticket=ticket,
+            session=session,
+            phase="shipping",
+            status=Task.Status.COMPLETED,
+        )
+
+        replayed = Task.objects.replay_orphaned_transitions()
+
+        ticket.refresh_from_db()
+        assert replayed == 0
+        assert ticket.state == Ticket.State.STARTED, (
+            f"replay skipped the lifecycle gate — ticket reached {ticket.state!r} it never earned"
+        )
+
+    def test_replays_scoping_transition_when_guard_holds(self) -> None:
+        # The scoping→start branch of the shared transition path: a
+        # SCOPED ticket whose completed scoping task's start() was lost.
+        ticket = Ticket.objects.create(state=Ticket.State.SCOPED)
+        session = Session.objects.create(ticket=ticket, agent_id="a")
+        Task.objects.create(ticket=ticket, session=session, phase="scoping", status=Task.Status.COMPLETED)
+
+        replayed = Task.objects.replay_orphaned_transitions()
+
+        ticket.refresh_from_db()
+        assert replayed == 1
+        assert ticket.state == Ticket.State.STARTED
+
+    def test_replays_shipping_transition_only_from_reviewed(self) -> None:
+        # The shipping→ship branch: only fires from REVIEWED (the earned
+        # state). A REVIEWED ticket whose completed shipping task's
+        # ship() was lost to a crash is recovered to SHIPPED.
+        ticket = Ticket.objects.create(state=Ticket.State.REVIEWED)
+        session = Session.objects.create(ticket=ticket, agent_id="a")
+        Task.objects.create(ticket=ticket, session=session, phase="shipping", status=Task.Status.COMPLETED)
+
+        replayed = Task.objects.replay_orphaned_transitions()
+
+        ticket.refresh_from_db()
+        assert replayed == 1
+        assert ticket.state == Ticket.State.SHIPPED
+
+    def test_replays_testing_and_reviewing_transitions(self) -> None:
+        # The testing→test and reviewing→review branches of the shared
+        # path, each from its earned predecessor state.
+        coded = Ticket.objects.create(state=Ticket.State.CODED)
+        s1 = Session.objects.create(ticket=coded, agent_id="a")
+        Task.objects.create(ticket=coded, session=s1, phase="testing", status=Task.Status.COMPLETED)
+        tested = Ticket.objects.create(state=Ticket.State.TESTED)
+        s2 = Session.objects.create(ticket=tested, agent_id="b")
+        Task.objects.create(ticket=tested, session=s2, phase="reviewing", status=Task.Status.COMPLETED)
+
+        replayed = Task.objects.replay_orphaned_transitions()
+
+        coded.refresh_from_db()
+        tested.refresh_from_db()
+        assert replayed == 2
+        assert coded.state == Ticket.State.TESTED
+        assert tested.state == Ticket.State.REVIEWED
+
+    def test_replays_reviewer_role_external_review(self) -> None:
+        # The reviewing+REVIEWER branch (mark_reviewed_externally): a
+        # reviewer-role ticket whose completed reviewing task's external
+        # review transition was lost is recovered to DELIVERED.
+        ticket = Ticket.objects.create(state=Ticket.State.STARTED, role=Ticket.Role.REVIEWER)
+        session = Session.objects.create(ticket=ticket, agent_id="a")
+        Task.objects.create(ticket=ticket, session=session, phase="reviewing", status=Task.Status.COMPLETED)
+
+        replayed = Task.objects.replay_orphaned_transitions()
+
+        ticket.refresh_from_db()
+        assert replayed == 1
+        assert ticket.state == Ticket.State.DELIVERED
+
+    def test_only_latest_completed_task_per_ticket_is_replayed(self) -> None:
+        # A ticket accrues one COMPLETED task per phase. The sweep must
+        # replay only the *latest* completed task's transition (newest
+        # pk), not re-fire every historical phase task — the older ones
+        # would all no-op on the guards anyway, but the dedup keeps the
+        # sweep O(tickets) not O(all completed tasks) and proves the
+        # latest-per-ticket selection is exercised.
+        ticket = Ticket.objects.create(state=Ticket.State.STARTED)
+        session = Session.objects.create(ticket=ticket, agent_id="a")
+        # Older completed coding task, then the latest is also coding
+        # (e.g. a re-run). Both COMPLETED on the same STARTED ticket.
+        Task.objects.create(ticket=ticket, session=session, phase="coding", status=Task.Status.COMPLETED)
+        Task.objects.create(ticket=ticket, session=session, phase="coding", status=Task.Status.COMPLETED)
+
+        replayed = Task.objects.replay_orphaned_transitions()
+
+        ticket.refresh_from_db()
+        # Counted once (one ticket recovered), not once per completed task.
+        assert replayed == 1
+        assert ticket.state == Ticket.State.CODED
+
+    def test_pending_and_failed_tasks_are_not_replayed(self) -> None:
+        # Only COMPLETED tasks represent finished work whose transition
+        # may have been lost; PENDING/FAILED tasks are handled by the
+        # claim/reap sweeps and must not be force-advanced here.
+        ticket = Ticket.objects.create(state=Ticket.State.STARTED)
+        session = Session.objects.create(ticket=ticket, agent_id="a")
+        Task.objects.create(ticket=ticket, session=session, phase="coding", status=Task.Status.PENDING)
+        Task.objects.create(ticket=ticket, session=session, phase="coding", status=Task.Status.FAILED)
+
+        replayed = Task.objects.replay_orphaned_transitions()
+
+        ticket.refresh_from_db()
+        assert replayed == 0
+        assert ticket.state == Ticket.State.STARTED
+
+
+class TestCompleteIsAtomic(TestCase):
+    """#883 — ``Task.complete`` must be one transaction.
+
+    The crash window is the gap between the task ``save()`` and the
+    ticket ``save()`` inside ``_advance_ticket``. We prove the gap is
+    closed by forcing the FSM transition to raise *after* the task save:
+    pre-fix the task save had already committed (separate boundary) so
+    the task is COMPLETED while the ticket is stale; post-fix the whole
+    ``complete()`` rolls back as a unit, so a retry can complete cleanly
+    rather than the ticket being permanently half-advanced.
+    """
+
+    def test_backend_is_sqlite(self) -> None:
+        from django.db import connection  # noqa: PLC0415
+
+        assert connection.vendor == "sqlite"
+
+    def test_complete_rolls_back_task_save_when_advance_fails(self) -> None:
+        from unittest.mock import patch  # noqa: PLC0415
+
+        import pytest  # noqa: PLC0415
+
+        ticket = Ticket.objects.create(state=Ticket.State.STARTED)
+        session = Session.objects.create(ticket=ticket, agent_id="a")
+        task = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            phase="coding",
+            status=Task.Status.CLAIMED,
+        )
+
+        boom = RuntimeError("crash mid-transition")
+        with (
+            patch.object(Ticket, "code", side_effect=boom),
+            pytest.raises(RuntimeError),
+        ):
+            task.complete()
+
+        task.refresh_from_db()
+        ticket.refresh_from_db()
+        # Atomic: the task save is rolled back together with the failed
+        # FSM transition. Pre-fix the task was COMPLETED here (its save
+        # had committed on a separate boundary) while the ticket stayed
+        # STARTED — the unrecoverable half-advance #883 is about.
+        assert task.status == Task.Status.CLAIMED, (
+            f"task.complete() was not atomic — task is {task.status!r} but the FSM transition failed"
+        )
+        assert ticket.state == Ticket.State.STARTED

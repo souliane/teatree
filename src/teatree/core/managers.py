@@ -254,6 +254,48 @@ class TaskQuerySet(models.QuerySet):
                 heartbeat_at=None,
             )
 
+    def replay_orphaned_transitions(self) -> int:
+        """Replay FSM transitions a mid-transition crash dropped. Returns the count (#883).
+
+        ``Task.complete`` does the task ``save()`` then the FSM transition
+        in ``_advance_ticket``. ``complete`` is now one
+        ``transaction.atomic`` so that window is closed going forward —
+        but a row that completed *before* the atomic fix shipped (or via
+        any future un-wrapped seam) can be left COMPLETED while its ticket
+        is still on the old state. Lease expiry can't rescue it: the task
+        is COMPLETED, not CLAIMED, so neither ``reclaim_orphaned_claims``
+        nor ``reap_stale_claims`` ever sees it and the loop silently
+        stalls forever on the half-advanced ticket.
+
+        This is the boot/tick recovery sweep — sibling of
+        ``reclaim_orphaned_claims``, run from the same hook. For each
+        ticket it takes that ticket's latest COMPLETED task and replays
+        the *same* idempotent ``Task._apply_phase_transition`` the live
+        ``complete`` path uses — there is no parallel transition
+        mechanism. Idempotency and gate-integrity come for free from that
+        shared path: every transition is guarded by both the phase *and*
+        the required ``ticket.state``, so an already-advanced ticket
+        no-ops and a ticket can never be teleported past a lifecycle gate
+        it did not earn (a COMPLETED ``shipping`` task on a ``started``
+        ticket finds no matching guard). Returns the number of tickets a
+        transition actually fired for.
+        """
+        from teatree.core.models.task import Task  # noqa: PLC0415
+
+        # Latest COMPLETED task per ticket: iterate newest-first and keep
+        # the first one seen for each ticket. ``distinct("ticket_id")`` is
+        # Postgres-only; teatree's production DB is SQLite (the #786 B1
+        # backend-agnostic lesson), so this stays a plain ordered scan.
+        replayed = 0
+        seen: set[int] = set()
+        for task in self.filter(status=Task.Status.COMPLETED).select_related("ticket").order_by("-pk"):
+            if task.ticket_id in seen:
+                continue
+            seen.add(task.ticket_id)
+            if task._apply_phase_transition():  # noqa: SLF001  # the shared single transition path (#883)
+                replayed += 1
+        return replayed
+
     def reap_stale_claims(self) -> int:
         """Fail CLAIMED tasks whose lease is *still* expired. Returns the count.
 
