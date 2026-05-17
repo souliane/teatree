@@ -151,13 +151,13 @@ The hooks cover these events:
 
 | Event | Matcher | Purpose |
 | --- | --- | --- |
-| `SessionStart` | *(none)* | Bootstrap CLI availability |
+| `SessionStart` | *(none)* | Bootstrap CLI availability; on `source=compact` re-inject the pre-compaction snapshot (#845) |
 | `UserPromptSubmit` | *(none)* | Detect intent from prompt keywords and suggest skills to load |
 | `PreToolUse` | `Bash\|Edit\|Write` | Branch protection, skill enforcement |
 | `PostToolUse` | `Bash\|Write\|Edit\|Read\|Grep\|Glob` | Track which repos are touched |
 | `PostToolUse` | `Skill` | Track loaded skills |
 | `InstructionsLoaded` | *(none)* | Track loaded skills (belt-and-suspenders fallback) |
-| `PostCompact` | *(none)* | Restore state after context compaction |
+| `PreCompact` | *(none)* | Write a durable-state snapshot before compaction (agent-action-free) |
 | `SessionEnd` | *(none)* | Session cleanup |
 
 All hook scripts live in `$T3_REPO/hooks/scripts/`. The `hooks.json` at `$T3_REPO/hooks/hooks.json` defines the routing table.
