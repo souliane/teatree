@@ -12,12 +12,18 @@ found.
 
 Design — match trailer *position*, not a bare substring. A banned
 pattern only trips when it appears as a *footer/trailer line*: the
-match must start at the beginning of the (whitespace-stripped) line.
-Prose that *describes* the banned trailer ("a ``Generated with [Claude
+match must start at the beginning of the line after stripping leading
+whitespace AND leading markdown markers (blockquote ``>``/``>>``, list
+``-``/``*``/``+``) — otherwise a quoted-reply or list-item prefix
+smuggles the trailer past the anchor (cold-review finding 1). Prose
+that *describes* the banned trailer ("a ``Generated with [Claude
 Code]`` footer") does not start the line with the pattern (it is
 preceded by prose and/or wrapped in backticks), so the rule's own
 documentation, /t3:rules, and BLUEPRINT do not self-block. A line whose
-stripped form is fully inside an inline-code span is also exempt.
+stripped form is fully inside an inline-code span is also exempt. The
+``via/using/with claude`` footer is anchored at the line start (no
+arbitrary preceding prose) so legitimate body prose such as "Reviewed
+the design with Claude" passes (cold-review finding 3).
 """
 
 import re
@@ -48,8 +54,16 @@ _TRAILER_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
         re.compile(r"^(?:\U0001f916\s*)?generated with \[claude code\]", re.IGNORECASE),
     ),
     (
+        # Footer-position only: the line *is* the attribution footer —
+        # ``via Claude``, optionally led by a single
+        # generated/sent-style verb (``Generated with Claude``). No
+        # arbitrary preceding prose, so legitimate body text like
+        # "Reviewed the design with Claude" passes (finding 3).
         "via-claude",
-        re.compile(r"^.{0,40}\b(?:via|using|with) claude\b\s*$", re.IGNORECASE),
+        re.compile(
+            r"^(?:(?:generated|sent|posted|created|written|drafted)\s+)?(?:via|using|with) claude\b\s*$",
+            re.IGNORECASE,
+        ),
     ),
     (
         "sent-using-claude",
@@ -60,6 +74,26 @@ _TRAILER_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
         re.compile(r"^\U0001f916\s*\S"),
     ),
 ]
+
+
+# Leading markdown markers that must be peeled before anchoring the
+# trailer match: one or more blockquote ``>`` and/or a single list
+# bullet (``-``/``*``/``+``), each optionally followed by whitespace,
+# in any leading combination (``> - ``, ``>> ``, ``- ``). Repeated so
+# ``>> via Claude`` and ``> - Co-Authored-By: …`` are both unwrapped.
+_MD_PREFIX_RE = re.compile(r"^(?:\s*(?:>+|[-*+])\s*)+")
+
+
+def _strip_markdown_prefix(line: str) -> str:
+    """Remove a leading blockquote/list-item markdown prefix.
+
+    A quoted reply (``> Co-Authored-By: …``) or a list item (``-
+    Generated with …``) is the same trailer in footer position; the
+    markdown marker must not let it slip past the line-leading anchor
+    (cold-review finding 1). Only *leading* markers are peeled — a ``-``
+    inside running prose is untouched.
+    """
+    return _MD_PREFIX_RE.sub("", line)
 
 
 def _strip_inline_code(line: str) -> str:
@@ -77,14 +111,15 @@ def _strip_inline_code(line: str) -> str:
 def scan_text(text: str) -> list[tuple[int, str, str]]:
     """Return ``(lineno, category, matched_line)`` for every banned trailer.
 
-    A line is only a finding when, after stripping leading whitespace and
-    blanking inline-code spans, a banned pattern matches at the line start
-    — i.e. the banned text is in trailer/footer position, not described in
-    running prose.
+    A line is only a finding when, after blanking inline-code spans,
+    stripping leading whitespace, and peeling any leading
+    blockquote/list markdown prefix, a banned pattern matches at the
+    line start — i.e. the banned text is in trailer/footer position, not
+    described in running prose.
     """
     findings: list[tuple[int, str, str]] = []
     for lineno, raw in enumerate(text.splitlines(), 1):
-        candidate = _strip_inline_code(raw).strip()
+        candidate = _strip_markdown_prefix(_strip_inline_code(raw).strip()).strip()
         if not candidate:
             continue
         for category, pattern in _TRAILER_PATTERNS:

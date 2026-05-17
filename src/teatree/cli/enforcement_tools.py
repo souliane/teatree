@@ -50,6 +50,17 @@ def diff_coverage(
     from teatree.utils.diff_coverage import measure_diff_coverage  # noqa: PLC0415
     from teatree.utils.git import full_worktree_diff  # noqa: PLC0415
 
+    if not coverage_file.exists():
+        # Finding 5: the line-coverage half measured nothing. The symbol
+        # check still runs, but the absence must be visible — surface a
+        # stderr WARNING without changing exit semantics.
+        typer.echo(
+            f"WARNING: no coverage data at {coverage_file} — the per-diff "
+            "line-coverage check measured nothing (only the symbol check ran). "
+            "Run `uv run pytest` first for full enforcement.",
+            err=True,
+        )
+
     diff = full_worktree_diff(str(repo))
     report = measure_diff_coverage(diff, coverage_data_file=coverage_file, repo_root=repo)
     if output_json:

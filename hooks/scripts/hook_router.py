@@ -542,6 +542,14 @@ def handle_validate_mr_metadata(data: dict) -> bool:
 
 _PR_BODY_FLAG_RE = re.compile(r"--(?:body|description|message)(?:[ =])\s*(['\"])(.*?)\1", re.DOTALL)
 _GIT_COMMIT_M_RE = re.compile(r"git\s+commit\b[^\n]*?-m\s+(['\"])(.*?)\1", re.DOTALL)
+# File-based message args — the standard multi-line path (#831's shape).
+# ``git commit -F/-C/--file FILE``, ``gh pr create --body-file FILE``,
+# ``glab mr create --description FILE``. The captured token is a path
+# (optionally quoted); a missing/binary file fails open (no scan, no
+# crash) — see ``_read_message_file``.
+_MSG_FILE_FLAG_RE = re.compile(
+    r"(?:--body-file|--file|--description|-F|-C)[ =]+['\"]?([^'\"\s]+)['\"]?",
+)
 _PR_CREATE_TOOLS = {
     "mcp__glab__glab_mr_create",
     "mcp__glab__glab_mr_update",
@@ -550,13 +558,34 @@ _PR_CREATE_TOOLS = {
 }
 
 
+def _read_message_file(command: str) -> str | None:
+    """Read a file-based message arg (``-F``/``--body-file``/etc.).
+
+    The standard multi-line path is exactly #831's shape. A
+    missing/unreadable/binary file fails open (returns ``None``: no
+    scan, no crash) — matching the other t3-shelling hooks' posture of
+    never blocking the agent on a broken environment.
+    """
+    match = _MSG_FILE_FLAG_RE.search(command)
+    if match is None:
+        return None
+    path = Path(match.group(1))
+    try:
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
 def _extract_ai_sig_payload(data: dict) -> str | None:
     """Return the PR-body / commit-message text to scan, else ``None``.
 
-    Covers ``gh pr create --body``, ``glab mr create/update --description``,
-    ``git commit -m``, and the MR/PR MCP create/update tools (whose
-    ``body``/``description`` argument is the same trailer-bearing text the
-    PR #831 leak landed in). ``None`` ⇒ not a PR/commit mutation.
+    Covers ``gh pr create --body``, ``glab mr create/update
+    --description``, ``git commit -m`` (inline), the file-based message
+    path (``git commit -F/-C``, ``gh pr create --body-file``, ``glab mr
+    create --description <file>`` — the standard multi-line / #831
+    shape), and the MR/PR MCP create/update tools. ``None`` ⇒ not a
+    PR/commit mutation, or a file-based arg whose file is
+    missing/binary (fail open).
     """
     tool_name = data.get("tool_name", "")
     tool_input = data.get("tool_input", {})
@@ -564,13 +593,22 @@ def _extract_ai_sig_payload(data: dict) -> str | None:
     if tool_name == "Bash":
         command = tool_input.get("command", "")
         pr_cmds = ("gh pr create", "gh pr edit", "glab mr create", "glab mr update")
-        if any(c in command for c in pr_cmds):
-            match = _PR_BODY_FLAG_RE.search(command)
-            return match.group(2) if match else ""
-        if "git commit" in command:
-            match = _GIT_COMMIT_M_RE.search(command)
-            return match.group(2) if match else None
-        return None
+        is_pr = any(c in command for c in pr_cmds)
+        is_commit = "git commit" in command
+        if not (is_pr or is_commit):
+            return None
+        # Inline message wins when present; otherwise fall back to the
+        # file-based arg (the multi-line path #831 actually used).
+        inline = _PR_BODY_FLAG_RE.search(command) if is_pr else _GIT_COMMIT_M_RE.search(command)
+        if inline is not None:
+            return inline.group(2)
+        from_file = _read_message_file(command)
+        if from_file is not None:
+            return from_file
+        # No scannable payload found. A PR command with neither inline
+        # body nor a readable file is treated as nothing-to-scan ('');
+        # a commit with no -m and no file opens an editor (None).
+        return "" if is_pr else None
 
     if tool_name in _PR_CREATE_TOOLS:
         return tool_input.get("body", "") or tool_input.get("description", "")

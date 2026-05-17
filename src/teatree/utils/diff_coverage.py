@@ -216,6 +216,15 @@ def unreferenced_changed_symbols(diff: str, repo_root: Path, scope: CoverageScop
     genuine production reference and the symbol stays in the returned
     (failing) set. A symbol that is both imported and locally shadowed is
     treated as shadowed (the local def wins at call sites).
+
+    This is deliberately only an *import* check. Catching
+    "imported-but-never-called" is the job of the line-coverage half of
+    the gate (an imported-but-uncalled symbol's body lines stay
+    uncovered): the two halves are paired by design, not redundant. The
+    import check defeats the test-a-local-copy vacuity; the
+    line-coverage check defeats the import-without-exercise vacuity.
+    Neither half alone is sufficient, which is why
+    :func:`measure_diff_coverage` always runs both.
     """
     if scope is None:
         scope = load_coverage_scope(repo_root / "pyproject.toml")

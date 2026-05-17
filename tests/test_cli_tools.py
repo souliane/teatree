@@ -101,6 +101,41 @@ class TestToolCommands:
         assert payload["unreferenced_symbols"] == ["widget"]
         assert payload["uncovered"] == [{"path": "src/x.py", "lines": [3, 4]}]
 
+    def test_diff_coverage_warns_on_stderr_when_coverage_absent(self, tmp_path):
+        # Cold-review finding 5: an absent .coverage must produce a
+        # visible stderr WARNING (the line-coverage half silently
+        # measured nothing) without changing exit semantics.
+        report = MagicMock(passes=lambda: True, summary=lambda: "clean")
+        with (
+            patch("teatree.utils.git.full_worktree_diff", return_value=""),
+            patch("teatree.utils.diff_coverage.measure_diff_coverage", return_value=report),
+        ):
+            absent = str(tmp_path / "absent.coverage")
+            result = runner.invoke(
+                app,
+                ["tool", "diff-coverage", "--repo", str(tmp_path), "--coverage-file", absent],
+                catch_exceptions=False,
+            )
+        assert result.exit_code == 0  # exit semantics unchanged
+        assert "WARNING" in result.stderr
+        assert "coverage" in result.stderr.lower()
+
+    def test_diff_coverage_no_warning_when_coverage_present(self, tmp_path):
+        cov = tmp_path / ".coverage"
+        cov.write_text("", encoding="utf-8")
+        report = MagicMock(passes=lambda: True, summary=lambda: "clean")
+        with (
+            patch("teatree.utils.git.full_worktree_diff", return_value=""),
+            patch("teatree.utils.diff_coverage.measure_diff_coverage", return_value=report),
+        ):
+            result = runner.invoke(
+                app,
+                ["tool", "diff-coverage", "--repo", str(tmp_path), "--coverage-file", str(cov)],
+                catch_exceptions=False,
+            )
+        assert result.exit_code == 0
+        assert "WARNING" not in result.stderr
+
     def test_analyze_video(self):
         with patch.object(ToolRunner, "run_script") as mock:
             result = runner.invoke(app, ["tool", "analyze-video", "/path/to/video.mp4"])

@@ -65,6 +65,65 @@ class TestBlocksRealViolations:
         assert result.returncode == 1, result.stdout + result.stderr
 
 
+class TestMarkdownPrefixedTrailersBlock:
+    """Cold-review finding 1 — markdown-prefix bypass.
+
+    A markdown blockquote/list prefix must not smuggle a banned trailer
+    past the line-leading anchor. ``> Co-Authored-By: …`` (quoted reply
+    / AI footer), ``- Generated with …`` / ``* …`` / ``+ …`` (list
+    item, common PR-template shape) are real false-negatives unless the
+    leading markdown marker is stripped before anchoring the match.
+    """
+
+    def test_blockquoted_co_authored_by_blocks(self) -> None:
+        body = "fix: x\n\nbody\n\n> Co-Authored-By: Claude <noreply@anthropic.com>\n"
+        result = _run(body)
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert "Co-Authored-By" in result.stdout
+
+    def test_double_blockquoted_via_claude_blocks(self) -> None:
+        body = "Some description.\n\n>> via Claude\n"
+        result = _run(body)
+        assert result.returncode == 1, result.stdout + result.stderr
+
+    def test_dash_list_generated_with_blocks(self) -> None:
+        body = "title\n\n- Generated with [Claude Code]\n"
+        result = _run(body)
+        assert result.returncode == 1, result.stdout + result.stderr
+
+    def test_star_list_generated_with_blocks(self) -> None:
+        body = "title\n\n* Generated with [Claude Code]\n"
+        result = _run(body)
+        assert result.returncode == 1, result.stdout + result.stderr
+
+    def test_plus_list_emoji_bot_footer_blocks(self) -> None:
+        body = "title\n\n+ \U0001f916 Generated with [Claude Code]\n"
+        result = _run(body)
+        assert result.returncode == 1, result.stdout + result.stderr
+
+
+class TestViaClauseDoesNotBlockBodyProse:
+    """Cold-review finding 3 — over-broad via-claude pattern.
+
+    ``with/via/using claude`` in running body prose is legitimate; only
+    a footer-position occurrence is banned.
+    """
+
+    def test_reviewed_design_with_claude_prose_passes(self) -> None:
+        body = (
+            "fix(core): tighten the merge gate\n\n"
+            "Reviewed the design with Claude before settling on the "
+            "expected_head_oid approach.\n\nRelates-to #836\n"
+        )
+        result = _run(body)
+        assert result.returncode == 0, result.stdout + result.stderr
+
+    def test_real_via_claude_footer_still_blocks(self) -> None:
+        body = "A proper description.\n\nvia Claude\n"
+        result = _run(body)
+        assert result.returncode == 1, result.stdout + result.stderr
+
+
 class TestAllowsCleanCases:
     def test_clean_pr_body_passes(self) -> None:
         body = (
