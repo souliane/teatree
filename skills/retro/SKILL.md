@@ -68,7 +68,7 @@ Systematic review of the current conversation to extract failures, near-misses, 
 
 ### Pre-Compaction Persistence
 
-If retro is in progress when compaction is imminent (long conversation, many tool calls), **write findings to a temporary file immediately** before they are lost. Use the `t3-snapshot-` prefix so the `PostCompact` hook can find and inject the file back into context automatically:
+Pre-compaction state survival does **not** depend on you remembering to do this: the teatree `PreCompact` hook always writes a durable-state snapshot automatically, with zero agent action. This manual step only adds *retro findings* not yet in durable state. Use the `t3-snapshot-` prefix so the recovery path can find and inject the file back into context automatically:
 
 ```bash
 cat > /tmp/t3-snapshot-${CLAUDE_SESSION_ID:-manual}-$(date +%Y%m%d-%H%M).md <<'EOF'
@@ -77,7 +77,7 @@ cat > /tmp/t3-snapshot-${CLAUDE_SESSION_ID:-manual}-$(date +%Y%m%d-%H%M).md <<'E
 EOF
 ```
 
-**Recovery is automatic.** The teatree `PostCompact` hook scans for `t3-snapshot-*.md` files and injects their content as `additionalContext` after compaction. You do not need to remember to read the file — it will appear in your context. Delete the temp file once findings are persisted to durable skill files.
+**Recovery is automatic.** After compaction, Claude Code fires `SessionStart` with `source=="compact"`; the teatree hook scans for `t3-snapshot-*.md` files and injects their content as `additionalContext` then (issue #845 — `PostCompact` output is discarded by the harness, so recovery runs on the `SessionStart`/compact event instead). You do not need to remember to read the file — it will appear in your context. Delete the temp file once findings are persisted to durable skill files.
 
 ## Scope & Editability
 

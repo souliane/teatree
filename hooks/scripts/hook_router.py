@@ -819,10 +819,11 @@ def _durable_session_snapshot(session_id: str) -> str:
 
 
 def _write_precompact_snapshot(session_id: str) -> None:
-    """Persist the durable-state snapshot under the PostCompact-recognized name.
+    """Persist the durable-state snapshot under the recovery-recognized name.
 
     Reuses the ``t3-snapshot-`` prefix that :func:`_find_temp_files`
-    already scans, keyed by session id with a fixed ``-precompact``
+    (called by the SessionStart/compact recovery path, #845) already
+    scans, keyed by session id with a fixed ``-precompact``
     suffix so a single deterministic file is overwritten each compaction
     (not an ever-growing pile). Best-effort: a snapshot write must never
     block compaction.
@@ -879,7 +880,18 @@ def handle_pre_compact(data: dict) -> None:
     )
 
 
-# ── PostCompact: recover-temp-files ───────────────────────────────
+# ── Post-compaction snapshot recovery ─────────────────────────────
+#
+# Issue #845: the harness fires ``PostCompact``, but per the Claude Code
+# hook response schema (``docs/claude-code-internals.md`` §3, sourced
+# from ``claurst/spec/12_constants_types.md`` § 24.4) ``PostCompact``
+# has NO ``hookSpecificOutput`` entry — a ``PostCompact`` hook cannot
+# inject ``additionalContext`` and the harness discards its output. The
+# only post-compaction event whose output the harness reads is
+# ``SessionStart`` with ``source == "compact"``. Recovery therefore runs
+# inside :func:`handle_session_start_bootstrap` (one stdout write,
+# merged into the tick-dispatch directive). ``PreCompact`` still writes
+# the durable snapshot with zero agent action — that side already works.
 
 
 _T3_TEMP_PREFIX = "t3-snapshot-"
@@ -900,12 +912,15 @@ def _find_temp_files(session_id: str) -> list[Path]:
     return results
 
 
-def handle_post_compact(data: dict) -> None:
-    """Inject saved temp files back into context after compaction."""
-    session_id = data.get("session_id", "")
+def _recover_snapshot_context(session_id: str) -> str | None:
+    """Build the recovery directive from saved snapshots, or ``None``.
+
+    Returns ``None`` when there is nothing to recover (no files, or only
+    empty ones) so the caller can decide whether to emit anything.
+    """
     files = _find_temp_files(session_id)
     if not files:
-        return
+        return None
 
     parts: list[str] = []
     for f in files:
@@ -917,14 +932,13 @@ def handle_post_compact(data: dict) -> None:
             parts.append(f"## {f.name}\n\n{content}")
 
     if not parts:
-        return
+        return None
 
-    context = (
+    return (
         "PRE-COMPACTION SNAPSHOTS RECOVERED — the following files were saved before "
         "context compaction. Read them to resume where you left off, then delete the "
         "temp files when done:\n\n" + "\n\n---\n\n".join(parts)
     )
-    json.dump({"additionalContext": context}, sys.stdout)
 
 
 # ── SessionStart: singleton loop orchestration bootstrap ────────────
@@ -1355,6 +1369,15 @@ def handle_session_start_bootstrap(data: dict) -> None:
     # the flock critical section.
     if emit_osc:
         _emit_osc_title()
+
+    # #845: SessionStart with source=="compact" is the ONLY post-compaction
+    # event whose additionalContext the harness reads. Merge the recovered
+    # snapshot into this single stdout write (a second chained handler
+    # writing JSON would emit invalid concatenated JSON on stdout).
+    if data.get("source") == "compact":
+        recovered = _recover_snapshot_context(session_id)
+        if recovered is not None:
+            context = f"{recovered}\n\n---\n\n{context}"
 
     json.dump({"additionalContext": context}, sys.stdout)
 
@@ -2151,7 +2174,9 @@ _HANDLERS: dict[str, list] = {
     "InstructionsLoaded": [handle_track_skill_usage],
     "SessionStart": [handle_session_start_bootstrap],
     "PreCompact": [handle_pre_compact],
-    "PostCompact": [handle_post_compact],
+    # #845: PostCompact deliberately NOT registered — the harness has no
+    # hookSpecificOutput entry for it and discards its output. Recovery
+    # runs in handle_session_start_bootstrap on source=="compact".
     "SessionEnd": [handle_session_end, handle_session_end_loop_registry, handle_session_end_self_pump],
     "Stop": [handle_enforce_structured_question, handle_loop_self_pump],
 }
