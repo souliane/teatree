@@ -123,6 +123,10 @@ After any architectural refactor, before declaring done:
 3. **Cross-repo consumers** must be updated in the same session.
 4. **Documentation drift is invisible to tests** — re-read every doc/skill file that references the changed subsystem. 100% test coverage does not catch stale docs.
 
+#### Consolidation Scan (cross-reference)
+
+During any review that touches architecture, configuration, or tooling setup: scan for behavior encoded outside the framework that belongs inside it — ad-hoc hooks, manually wired permissions, personal-config automation. Classify and promote where warranted. Full decision rule: see `retro/SKILL.md` § "9. Consolidation over Drift".
+
 #### New-Test Shape Check (Non-Negotiable)
 
 When the diff adds or modifies test files, verify the new tests follow the repo's test-writing doctrine (see the repo's `AGENTS.md` § "Test-Writing Doctrine" — teatree and every overlay repo carry the same rule):
