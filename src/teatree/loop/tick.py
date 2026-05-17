@@ -278,16 +278,27 @@ def run_tick(
 
 
 def _reap_stale_task_claims() -> None:
-    """Sweep CLAIMED tasks whose lease has expired so the statusline reflects fresh state.
+    """Take over orphaned claims, then fail any still-stale ones (#652).
 
-    Best-effort: if the test harness blocks DB access (pytest-django without
-    a ``db`` marker), the loop tick should still render scanners and signals.
+    A CLAIMED task whose lease expired because its owning Claude session
+    exited mid-task is *recoverable*: ``reclaim_orphaned_claims`` returns
+    it to PENDING first so this tick — running in another still-open
+    session — re-surfaces and continues it ("fastest open session takes
+    over"), instead of ``reap_stale_claims`` failing it (which would need
+    a manual ``reopen()`` and stall the loop). Reclaim runs *before* the
+    reap so a recoverable orphan is taken over, never failed; the reap
+    still catches any residual stale CLAIMED rows.
+
+    Best-effort: if the test harness blocks DB access (pytest-django
+    without a ``db`` marker), the loop tick should still render scanners
+    and signals.
     """
     import contextlib  # noqa: PLC0415
 
     from teatree.core.models import Task  # noqa: PLC0415
 
     with contextlib.suppress(RuntimeError):
+        Task.objects.reclaim_orphaned_claims()
         Task.objects.reap_stale_claims()
 
 
