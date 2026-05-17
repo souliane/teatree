@@ -138,6 +138,6 @@ When analyzing errors:
 3. Check if the error is environment-specific (worktree, Docker, ports).
 4. Cross-reference with troubleshooting docs before attempting fixes.
 
-## Post-Fix Retrospective
+## Post-Fix Retrospective — Emit Signal, Do NOT Self-Retro (#837)
 
-After resolving a non-obvious issue, run `/t3:retro` to capture the lesson (troubleshooting entry, playbook update, or guardrail) so it doesn't recur.
+Retro is **orchestrator-only**. After resolving a non-obvious issue as a sub-agent, do **not** run `/t3:retro` as a per-fix synthesis step. Instead, **emit the lesson as structured signal into durable state** — task metadata or a `/tmp/t3-snapshot-*.md` snapshot — capturing what would otherwise become a troubleshooting entry, playbook update, or guardrail, then keep going. The orchestrator later synthesises across the whole session and biases the output to the smallest enforcement artifact (a gate, test, or hook), not a prose rule. The durability discipline (snapshots, durable task state) is load-bearing and unchanged — it is exactly the channel the orchestrator's synthesis reads from.

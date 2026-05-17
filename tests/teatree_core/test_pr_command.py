@@ -782,7 +782,7 @@ class TestCheckShippingGate(TestCase):
         result = _check_shipping_gate(ticket)
         assert result is not None
         assert result["allowed"] is False
-        assert result["missing"] == ["testing", "reviewing", "retro"]
+        assert result["missing"] == ["testing", "reviewing"]
 
     def test_returns_none_when_gate_passes(self) -> None:
         ticket = Ticket.objects.create()

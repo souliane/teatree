@@ -115,13 +115,13 @@ class TestShippingGateReconciliation(TestCase):
     def test_gate_blocks_with_missing_list_when_phases_absent(self) -> None:
         ticket = _ticket(state=Ticket.State.STARTED)
         session = Session.objects.create(ticket=ticket)
-        session.visit_phase("testing")  # reviewing + retro missing
+        session.visit_phase("testing")  # reviewing missing (#837: retro not gated)
 
         result = _check_shipping_gate(ticket)
         assert result is not None
         assert result["allowed"] is False
         assert "reviewing" in result["missing"]
-        assert "retro" in result["missing"]
+        assert "retro" not in result["missing"]
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.STARTED  # not advanced
 
@@ -161,14 +161,12 @@ class TestShippingGateCrossSessionUnion(TestCase):
         ticket = _ticket(state=Ticket.State.STARTED)
         s1 = Session.objects.create(ticket=ticket, agent_id="maker")
         s1.visit_phase("testing", agent_id="maker")
-        s2 = Session.objects.create(ticket=ticket, agent_id="checker")
-        s2.visit_phase("reviewing", agent_id="checker")
-        # `retro` never recorded on ANY session.
+        # `reviewing` never recorded on ANY session (#837: retro not gated).
 
         result = _check_shipping_gate(ticket)
         assert result is not None
         assert result["allowed"] is False
-        assert result["missing"] == ["retro"]
+        assert result["missing"] == ["reviewing"]
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.STARTED
 
@@ -309,7 +307,7 @@ class TestShippingGateNoSession(TestCase):
         result = _check_shipping_gate(ticket)
         assert result is not None
         assert result["allowed"] is False
-        assert result["missing"] == ["testing", "reviewing", "retro"]
+        assert result["missing"] == ["testing", "reviewing"]
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.STARTED  # not advanced
 

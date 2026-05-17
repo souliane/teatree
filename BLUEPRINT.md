@@ -374,10 +374,12 @@ Tracks which workflow phases an agent visited within a conversation, to enforce 
 ```python
 _REQUIRED_PHASES = {
     "reviewing": ["testing"],
-    "shipping": ["testing", "reviewing", "retro"],
+    "shipping": ["testing", "reviewing"],
     "requesting_review": ["shipping"],
 }
 ```
+
+**#837 — retro is orchestrator-only.** The shipping gate no longer requires a per-ticket `retro` visit. Retro is an orchestrator-level periodic synthesis over durable signal (task metadata / snapshots), not a per-ticket sub-agent step; gating shipping on it pushed retro to the least-effective level (a box-tick by the sub-agent that just did the work). `retro` remains a recordable phase (`teatree.core.phases`) for audit — it is simply no longer in the `shipping` required set.
 
 `check_gate(phase, force=False)` raises `QualityGateError` if required phases haven't been visited *on this session*; `force=True` bypasses. `check_gate_across_ticket(phase)` runs the same missing-phase + maker≠checker logic over the **union** of the ticket's sessions (`Ticket.aggregate_phase_records()`) — this is what the shipping gate uses. `_check_maker_checker(visited, visits)` is shared by both: it catches a same-`agent_id` conflicting pair even when the two phases were recorded on different sessions, **and FAILS CLOSED (#755)** — if both conflicting phases (`coding`, `reviewing`) are recorded as visited but either lacks a non-empty per-phase `agent_id` in `phase_visits`, the gate **refuses** rather than silently passing. Pre-#755 it `continue`d past unattributed pairs, so a blank-`agent_id` recording path (the `Session.objects.create(ticket=…)` fallback / coordinator sessions) made maker≠checker vacuously pass — the safety check could not observe the attribution it must enforce. **`Session.recording_identity(explicit="")`** resolves a guaranteed-non-empty attribution (`explicit` → `Session.agent_id` → `session-<pk>` fallback); both the CLI path (`lifecycle visit-phase --agent-id`) and the loop path (`Task._record_phase_visit`) route through it so neither can stamp a blank again. **`Session.visit_phase` is atomic (#755):** its read-modify-write of the `visited_phases`/`phase_visits` JSON columns runs in `transaction.atomic()` with the row `select_for_update`-locked and re-read from the locked row, so a live maker session and an independent reviewer writing the same `Session` pk concurrently cannot lose-update (clobber) each other's phase (the #748 / `/t3:review` Safety-6 unlocked-RMW class; tracked as #761, fixed here).
 

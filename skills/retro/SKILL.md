@@ -124,15 +124,14 @@ Retro is not complete until every confirmed finding is written to a durable home
 - any helper scripts created or reused
 - what still requires human follow-up, if anything
 
-## Mark Phase Visited (Ticket-Scoped Sessions)
+## Orchestrator-Only — Sub-Agents Emit Signal, Don't Self-Retro (#837)
 
-When retro runs for a teatree-managed ticket, mark the `retro` phase on the active session so the `t3 <overlay> pr create` shipping gate can enforce retro-before-push:
+Retro is an **orchestrator-level periodic synthesis**, not a per-ticket sub-agent step, and the shipping gate no longer enforces a per-ticket `retro` visit before `pr create`.
 
-```bash
-t3 <overlay> lifecycle visit-phase <ticket_id> retro
-```
+- **Sub-agents** (per-ticket implementers/reviewers/shippers): do **not** run this skill as a per-ticket judgment step. As a lesson surfaces during the work, emit it as structured signal into durable state — task metadata or a `/tmp/t3-snapshot-*.md` snapshot — and keep going. Do not call `lifecycle visit-phase <ticket_id> retro` to satisfy a shipping gate; there is no such gate anymore.
+- **The orchestrator**: runs this skill periodically over the *accumulated durable signal across the whole session* (the snapshots and task metadata the sub-agents emitted), synthesises the cross-cutting pattern, and biases the output to the **smallest enforcement artifact** — a gate, a test, or a hook — rather than another prose rule. Prose that no agent reliably loads is the least-effective level; a deterministic check is the most-effective.
 
-Skip this step when retro runs outside a ticket context (no session exists). The shipping gate fails open when no session is found, so skipping is safe — the marker only matters when a session is already tracking phases.
+`retro` remains a recordable phase for audit (`teatree.core.phases`); recording it is optional and never gates shipping. The durability discipline below (snapshots, durable task state, save-findings-immediately) is load-bearing and unchanged — it is exactly the channel the orchestrator's synthesis reads from.
 
 ## Fastest Reliable Tool
 
