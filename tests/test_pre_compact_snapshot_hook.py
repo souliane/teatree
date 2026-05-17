@@ -4,8 +4,9 @@ A background sub-agent that auto-compacts WITHOUT having run /t3:retro must
 still recover its identity and assignment after compaction. The PreCompact
 hook must therefore write a deterministic snapshot from DURABLE state alone
 (loop registry, per-session active-repos / loaded-skills) — no dependence on
-the agent having behaviorally written a snapshot first. The PostCompact hook
-(already session-agnostic) then re-injects it.
+the agent having behaviorally written a snapshot first. Recovery happens on
+the only post-compaction event the harness reads (issue #845): SessionStart
+with ``source == "compact"``.
 """
 
 import json
@@ -19,8 +20,8 @@ from hooks.scripts.hook_router import (
     _OWNER_LOOP,
     _T3_TEMP_PREFIX,
     _write_loop_registry,
-    handle_post_compact,
     handle_pre_compact,
+    handle_session_start_bootstrap,
 )
 
 
@@ -34,6 +35,7 @@ def _isolation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     reg_dir = tmp_path / "data"
     reg_dir.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("T3_LOOP_REGISTRY_DIR", str(reg_dir))
+    monkeypatch.setattr(router, "_TTY_PATH", str(tmp_path / "fake-tty"))
 
 
 def _snapshot_for(session_id: str) -> Path:
@@ -150,8 +152,8 @@ class TestPreCompactSnapshotFromDurableState:
         assert session_id in snapshot.read_text(encoding="utf-8")
 
 
-class TestPreCompactPostCompactRoundTrip:
-    def test_postcompact_reinjects_the_precompact_snapshot_for_subagent(
+class TestPreCompactSessionStartRoundTrip:
+    def test_sessionstart_compact_reinjects_the_precompact_snapshot_for_subagent(
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:
         session_id = "roundtrip-subagent"
@@ -167,7 +169,8 @@ class TestPreCompactPostCompactRoundTrip:
         )
 
         handle_pre_compact({"session_id": session_id})
-        handle_post_compact({"session_id": session_id})
+        capsys.readouterr()  # discard PreCompact's own stdout
+        handle_session_start_bootstrap({"session_id": session_id, "source": "compact"})
 
         output = json.loads(capsys.readouterr().out)
         assert "additionalContext" in output
