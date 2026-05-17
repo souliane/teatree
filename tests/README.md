@@ -7,7 +7,7 @@
 
 ## Conventions
 
-- Test files mirror `src/` module paths: `src/teatree/core/sync.py` -> `tests/teatree_core/test_sync.py`
+- Test files mirror `src/` module paths: `src/teatree/core/resolve.py` -> `tests/teatree_core/test_resolve.py` (an oversized module splits into a mirror package, e.g. `tests/teatree_core/sync/`)
 - Test classes and methods describe behavior: `test_returns_error_when_token_missing`
 - `@pytest.mark.parametrize` when 3+ tests differ only by input/output
 - Mock only external boundaries: subprocess, network, clock
