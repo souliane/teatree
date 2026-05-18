@@ -105,7 +105,7 @@ class DbApproval(models.Model):
 
         A consumed approval is single-use and no longer matches (reusing it
         would let a replay slip a second unapproved op through). The scope
-        is exact: an approval for ``volksbank``+``fresh-dump`` never
+        is exact: an approval for ``tenant-b``+``fresh-dump`` never
         satisfies any other op or tenant.
         """
         if self.consumed_at is not None:

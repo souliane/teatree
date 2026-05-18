@@ -193,7 +193,7 @@ class TestDbRefreshRecordedChannel(TestCase):
     def test_v_op_or_tenant_scope_mismatch_refused(self) -> None:
         """Case (v): an approval for a different op/tenant does NOT satisfy.
 
-        A recorded approval for ``volksbank``+``fresh-dump`` (wrong tenant)
+        A recorded approval for ``tenant-b``+``fresh-dump`` (wrong tenant)
         must not authorize the requested ``test_db`` fresh-dump — it is
         refused and the wrongly-scoped approval is left unconsumed.
         """
@@ -201,7 +201,7 @@ class TestDbRefreshRecordedChannel(TestCase):
             wt_dir = Path(tmp) / "test"
             wt_dir.mkdir()
             _make_worktree(wt_dir)
-            wrong_tenant = DbApproval.record(_OP, "volksbank", _USER)
+            wrong_tenant = DbApproval.record(_OP, "tenant-b", _USER)
             wrong_op = DbApproval.record("dslr-snapshot", _TENANT, _USER)
 
             with pytest.raises(SystemExit) as exc:
