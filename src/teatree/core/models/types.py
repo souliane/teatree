@@ -58,6 +58,7 @@ class TicketExtra(TypedDict, total=False):
     last_review_state: str
     retro_scheduled: bool
     tracker_404: bool
+    more_prs_coming: bool
     e2e_recipe: "E2ERecipeSerialized"
 
 
