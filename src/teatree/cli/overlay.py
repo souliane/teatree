@@ -151,6 +151,7 @@ DJANGO_GROUPS: dict[str, tuple[str, list[tuple[str, str]]]] = {
             ("list", "List tickets, optionally filtered by state and/or overlay."),
             ("sync-completions", "Check post-ship tickets against upstream issues and advance completed ones."),
             ("comment", "Post a comment to an issue or work item by its URL."),
+            ("context", "Durable per-ticket knowledge store: show / add / edit (#627)."),
         ],
     ),
 }
