@@ -1,3 +1,5 @@
+import subprocess
+from pathlib import Path
 from typing import cast
 from unittest.mock import MagicMock, patch
 
@@ -6,7 +8,7 @@ from django.core.management import call_command
 from django.test import TestCase, override_settings
 
 from teatree.core.management.commands import pr as pr_command
-from teatree.core.models import Ticket, Worktree
+from teatree.core.models import Session, Ticket, Worktree
 
 from ._shared import _MOCK_OVERLAY, _SHIP_BACKEND, _shippable_ticket
 
@@ -297,3 +299,101 @@ class TestPrCreateSyncShipAtomic(TestCase):
         # (b) Surfacing: the real precondition cause is visible.
         assert result.get("ok") is False, result
         assert "no code host configured" in str(result.get("detail", "")), result
+
+
+def _dirty_git_worktree_ticket(tmp_path: Path) -> tuple[Ticket, Path]:
+    """A REVIEWED ticket whose worktree is a real, tracked-dirty git repo.
+
+    ``_shippable_ticket`` points the worktree at a non-git ``/tmp`` path so
+    the #884 preflight fails open (returns None). To exercise the refusal we
+    need a genuine git repo with an uncommitted *tracked* modification.
+    """
+    repo_dir = tmp_path / "backend"
+    repo_dir.mkdir(parents=True, exist_ok=True)
+    env = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+
+    def git(*args: str) -> None:
+        subprocess.run(["git", "-C", str(repo_dir), *args], check=True, env=env, capture_output=True)  # noqa: S607
+
+    git("init", "--initial-branch=main")
+    (repo_dir / "README.md").write_text("seed\n")
+    git("add", "README.md")
+    git("commit", "-m", "seed")
+    git("checkout", "-b", "feature-branch")
+    (repo_dir / "code.py").write_text("v1\n")
+    git("add", "code.py")
+    git("commit", "-m", "add code")
+
+    ticket = Ticket.objects.create(overlay="test", state=Ticket.State.REVIEWED)
+    session = Session.objects.create(ticket=ticket, overlay="test")
+    session.visit_phase("testing")
+    session.visit_phase("reviewing")
+    session.visit_phase("retro")
+    Worktree.objects.create(
+        ticket=ticket,
+        overlay="test",
+        repo_path=str(repo_dir),
+        branch="feature-branch",
+        extra={"worktree_path": str(repo_dir)},
+    )
+    # Uncommitted TRACKED change — the #884 refusal trigger.
+    (repo_dir / "code.py").write_text("v2 uncommitted\n")
+    return ticket, repo_dir
+
+
+class TestPrCreateDirtyWorktreeStructuredFailure(TestCase):
+    """#884 BLOCKER 1b: a dirty worktree at ship returns a structured failure.
+
+    ``DirtyWorktreeError`` subclasses ``InvalidTransitionError`` (a
+    ``ValueError``), NOT django-fsm ``TransitionNotAllowed``. Pre-fix
+    ``_do_ship_transition``'s ``except TransitionNotAllowed`` did not catch
+    it, so the default (async) ``pr create`` path let the exception escape
+    the command instead of returning the structured ``ShippingGateFailure``
+    contract every other gate refusal uses. These tests drive the real
+    ``ship()`` → ``_refuse_if_worktree_dirty`` refusal and assert a
+    structured failure dict, not an exception escaping ``call_command``.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _inject_tmp_path(self, tmp_path: Path) -> None:
+        self._tmp_path = tmp_path
+
+    def test_async_path_returns_structured_failure_not_exception(self) -> None:
+        ticket, _repo = _dirty_git_worktree_ticket(self._tmp_path)
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch.object(pr_command, "_run_visual_qa_gate", return_value=None),
+            patch.object(pr_command, "validate_pr_metadata", return_value=None),
+        ):
+            result = cast("dict[str, object]", call_command("pr", "create", str(ticket.id)))
+
+        # Structured failure (not a crash): the ShippingGateFailure shape.
+        assert result.get("allowed") is False, result
+        assert result.get("error"), result
+        assert "missing" in result, result
+        # The real cause names the dirty worktree / uncommitted changes.
+        assert "uncommitted tracked" in str(result.get("error", "")), result
+        # FSM did NOT advance — the refusal rolled the ship() advance back.
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.REVIEWED, ticket.state
+
+    @override_settings(**_SHIP_BACKEND)
+    def test_sync_path_returns_structured_failure_not_exception(self) -> None:
+        ticket, _repo = _dirty_git_worktree_ticket(self._tmp_path)
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch.object(pr_command, "_run_visual_qa_gate", return_value=None),
+            patch.object(pr_command, "validate_pr_metadata", return_value=None),
+        ):
+            result = cast(
+                "dict[str, object]",
+                call_command("pr", "create", str(ticket.id), sync=True),
+            )
+
+        # Structured failure surfaced (not an exception escaping the command).
+        assert result.get("allowed") is False, result
+        assert "uncommitted tracked" in str(result.get("error", "")), result
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.REVIEWED, ticket.state

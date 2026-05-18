@@ -10,7 +10,7 @@ from django_fsm import FSMField, TransitionNotAllowed, transition
 
 from teatree.config import Mode, get_effective_settings, load_config
 from teatree.core.managers import TicketManager
-from teatree.core.models.errors import InvalidTransitionError
+from teatree.core.models.errors import DirtyWorktreeError, InvalidTransitionError
 from teatree.core.models.types import validated_ticket_extra
 from teatree.utils import git, redis_container
 from teatree.utils.run import CommandFailedError
@@ -176,11 +176,13 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
 
     @transition(field=state, source=State.STARTED, target=State.CODED)
     def code(self) -> None:
+        self._refuse_if_worktree_dirty("coding")
         self._consume_pending_phase_tasks("coding")
         self.schedule_testing()
 
     @transition(field=state, source=State.CODED, target=State.TESTED)
     def test(self, *, passed: bool = True) -> None:
+        self._refuse_if_worktree_dirty("testing")
         extra = self._extra()
         extra["tests_passed"] = passed
         self.extra = extra
@@ -194,6 +196,7 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
         conditions=[lambda t: t.tasks.completed_in_phase("reviewing").exists()],
     )
     def review(self) -> None:
+        self._refuse_if_worktree_dirty("reviewing")
         self._consume_pending_phase_tasks("reviewing")
         if self.has_shippable_diff():
             self.schedule_shipping()
@@ -469,6 +472,7 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
         """
         from teatree.core.tasks import execute_ship  # noqa: PLC0415
 
+        self._refuse_if_worktree_dirty("shipping")
         self._consume_pending_phase_tasks("shipping")
         ticket_pk = int(self.pk)
         transaction.on_commit(lambda: execute_ship.enqueue(ticket_pk))
@@ -589,6 +593,57 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
 
         for task in self.tasks.filter(status__in=[Task.Status.PENDING, Task.Status.CLAIMED]):  # type: ignore[attr-defined]  # Django reverse FK
             task.fail()
+
+    def _refuse_if_worktree_dirty(self, phase: str) -> None:
+        """Preflight gate (#884): refuse the transition if a worktree is tracked-dirty.
+
+        Run at the top of the ``code``/``test``/``review``/``ship``
+        transition bodies, before any scheduling side effect. Owner-resolved
+        policy: a worktree with uncommitted *tracked* changes must not
+        advance the FSM — the agent has to commit or discard first. We do
+        NOT auto-stash: teatree worktrees share one ``.git`` so a stash is
+        repo-global and would clobber an unrelated branch's work (the
+        foreign-stash hazard, near-miss class #806).
+
+        Untracked-only files do not block (the #925 distinction, mirroring
+        ``cli.update._tracked_dirty_paths``): a fast-forward never conflicts
+        with untracked scratch, and the loop legitimately leaves scratch
+        files around. Only a tracked modification — work the agent forgot to
+        commit — is the refusal trigger.
+
+        On dirty: a loud :class:`DirtyWorktreeError` is raised naming the
+        dirty worktree. The transition does **not** advance — every
+        production caller wraps the transition body in an *outer*
+        ``transaction.atomic`` (the loop: ``Task.complete()`` →
+        ``_advance_ticket`` → ``_apply_phase_transition``; ship:
+        ``_ship_exec._do_ship_transition``), so the raise rolls that whole
+        atomic back and the ticket stays put. **The task is not
+        force-reopened here** — there is no cross-transaction durable write
+        that could survive the caller's rollback, so attempting one only
+        adds a false durability claim. Held-task recovery is the existing
+        **lease-reaper safety net**: the worker that called the transition
+        stops heartbeating after the exception, the task's lease expires,
+        and ``TaskManager.reclaim_orphaned_claims`` returns the CLAIMED task
+        to PENDING on the next loop tick so the agent re-runs it and
+        finishes the commit. Mirrors the existing loud-refusal convention
+        (``InvalidTransitionError`` in ``schedule_coding`` / the #694 gate).
+        """
+        worktree_model = apps.get_model("core", "Worktree")
+        dirty = [
+            path
+            for wt in worktree_model.objects.filter(ticket=self)
+            if (path := _worktree_tracked_dirty_path(wt)) is not None
+        ]
+        if not dirty:
+            return
+        joined = ", ".join(dirty)
+        msg = (
+            f"Refusing the '{phase}' transition for ticket {self} — uncommitted tracked "
+            f"changes in worktree(s): {joined}. Commit or discard them, then retry. "
+            f"(No auto-stash: teatree worktrees share one .git, so a stash is repo-global "
+            f"and could clobber another branch — #806.)"
+        )
+        raise DirtyWorktreeError(msg)
 
     def _consume_pending_phase_tasks(self, phase: str) -> None:
         """Mark non-terminal tasks for ``phase`` as COMPLETED.
@@ -772,6 +827,34 @@ def _worktree_has_commits_ahead(worktree: "Worktree") -> bool:
         # Missing path, missing branch, missing git remote — all mean no
         # shippable diff. Fail closed so the auto-FSM stops at REVIEWED.
         return False
+
+
+def _worktree_tracked_dirty_path(worktree: "Worktree") -> str | None:
+    """Return the worktree's on-disk path iff it has uncommitted *tracked* changes.
+
+    Reuses the existing :func:`git.status_porcelain` helper (the same one
+    ``cleanup`` / ``worktree_recovery`` use) and applies the #925
+    tracked-vs-untracked distinction: ``git status --porcelain`` prefixes
+    an untracked entry with ``"?? "``, so lines that do *not* start with
+    ``??`` are the tracked modifications a transition must refuse. Untracked
+    scratch never blocks (the loop legitimately leaves it around, and a
+    fast-forward never conflicts with it).
+
+    Path resolution mirrors :func:`_worktree_has_commits_ahead`
+    (``extra['worktree_path']`` then ``repo_path``). An unresolvable or
+    non-git path returns ``None`` (not dirty): the guard must not block on
+    a state it cannot verify — "couldn't determine" is not "is dirty", and
+    over-blocking a legitimately-clean ticket would stall the loop.
+    """
+    repo_path = (worktree.extra or {}).get("worktree_path") or worktree.repo_path
+    if not repo_path:
+        return None
+    try:
+        porcelain = git.status_porcelain(repo_path)
+    except (CommandFailedError, OSError):
+        return None
+    tracked_dirty = any(line and not line.startswith("??") for line in porcelain.splitlines())
+    return repo_path if tracked_dirty else None
 
 
 def _resolve_base_branch(repo_path: str) -> str:
