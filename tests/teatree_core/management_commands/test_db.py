@@ -3,12 +3,15 @@
 import tempfile
 from pathlib import Path
 from typing import cast
+from unittest.mock import patch
 
 import pytest
 from django.core.management import call_command
 from django.test import TestCase, override_settings
 
+import teatree.core.management.commands.db as db_mod
 from teatree.core.models import Ticket, Worktree
+from teatree.utils.approval import ApprovalRefusedError
 from tests.teatree_core.management_commands._overlays import (
     FAILING_IMPORT_OVERLAY,
     FULL_OVERLAY,
@@ -77,8 +80,12 @@ class TestDbRefresh(TestCase):
 
     @_patch_overlays(FAILING_IMPORT_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_reports_failure_when_import_fails(self) -> None:
-        """Db refresh reports failure when overlay.db_import returns False."""
+    def test_failed_import_raises_system_exit_1(self) -> None:
+        """A failed DB import must raise SystemExit(1), not return a string.
+
+        Regression for #932: `return f"DB import failed..."` exited 0, so the
+        lifecycle/loop proceeded on a broken DB.
+        """
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
 
@@ -95,9 +102,10 @@ class TestDbRefresh(TestCase):
             worktree.provision()
             worktree.save()
 
-            result = cast("str", call_command("db", "refresh", path=str(wt_dir)))
+            with pytest.raises(SystemExit) as exc_info:
+                call_command("db", "refresh", path=str(wt_dir))
 
-            assert "failed" in result.lower()
+            assert exc_info.value.code == 1
 
     @_patch_overlays(POST_DB_OVERLAY)
     @override_settings(**SETTINGS)
@@ -123,9 +131,14 @@ class TestDbRefresh(TestCase):
 
             assert "refreshed" in result.lower()
 
-    @_patch_overlays(MINIMAL_OVERLAY)
+    @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_no_strategy_returns_message(self) -> None:
+    def test_fresh_dump_aborted_raises_system_exit_1(self) -> None:
+        """A refused fresh-remote-dump approval must raise SystemExit(1).
+
+        Regression for #932: `return f"Fresh remote dump aborted: {exc}"`
+        exited 0, so the lifecycle proceeded as if the dump had happened.
+        """
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             wt_dir = tmp_path / "test"
@@ -141,16 +154,55 @@ class TestDbRefresh(TestCase):
             worktree.provision()
             worktree.save()
 
-            result = cast("str", call_command("db", "refresh", path=str(wt_dir)))
+            with (
+                patch.object(
+                    db_mod,
+                    "require_interactive_approval",
+                    side_effect=ApprovalRefusedError("no tty"),
+                ),
+                pytest.raises(SystemExit) as exc_info,
+            ):
+                call_command("db", "refresh", path=str(wt_dir), fresh_dump=True)
 
-            assert "no db import strategy" in result.lower()
+            assert exc_info.value.code == 1
+
+    @_patch_overlays(MINIMAL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_no_strategy_raises_system_exit_1(self) -> None:
+        """`db refresh` with no import strategy is a genuine failure.
+
+        The caller explicitly asked to refresh the DB; an overlay with no
+        import strategy cannot satisfy that, so the caller must stop.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            wt_dir = tmp_path / "test"
+            wt_dir.mkdir()
+            ticket = Ticket.objects.create(overlay="test")
+            worktree = Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="/tmp/test",
+                branch="feature",
+                extra={"worktree_path": str(wt_dir)},
+            )
+            worktree.provision()
+            worktree.save()
+
+            with pytest.raises(SystemExit) as exc_info:
+                call_command("db", "refresh", path=str(wt_dir))
+
+            assert exc_info.value.code == 1
 
 
 class TestDbRestoreCi(TestCase):
     @_patch_overlays(FAILING_IMPORT_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_reports_failure(self) -> None:
-        """restore-ci returns failure message when db_import returns False (line 65)."""
+    def test_failed_restore_raises_system_exit_1(self) -> None:
+        """A failed CI restore must raise SystemExit(1), not return a string.
+
+        Regression for #932.
+        """
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
 
@@ -167,9 +219,10 @@ class TestDbRestoreCi(TestCase):
             worktree.provision()
             worktree.save()
 
-            result = cast("str", call_command("db", "restore-ci", path=str(wt_dir)))
+            with pytest.raises(SystemExit) as exc_info:
+                call_command("db", "restore-ci", path=str(wt_dir))
 
-            assert "failed" in result.lower()
+            assert exc_info.value.code == 1
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
@@ -221,7 +274,8 @@ class TestDbRestoreCi(TestCase):
 
     @_patch_overlays(MINIMAL_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_no_strategy_returns_message(self) -> None:
+    def test_no_strategy_raises_system_exit_1(self) -> None:
+        """`db restore-ci` with no import strategy is a genuine failure."""
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             wt_dir = tmp_path / "test"
@@ -235,9 +289,10 @@ class TestDbRestoreCi(TestCase):
                 extra={"worktree_path": str(wt_dir)},
             )
 
-            result = cast("str", call_command("db", "restore-ci", path=str(wt_dir)))
+            with pytest.raises(SystemExit) as exc_info:
+                call_command("db", "restore-ci", path=str(wt_dir))
 
-            assert "no db import strategy" in result.lower()
+            assert exc_info.value.code == 1
 
 
 class TestDbResetPasswords(TestCase):
@@ -263,7 +318,8 @@ class TestDbResetPasswords(TestCase):
 
     @_patch_overlays(MINIMAL_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_no_command_returns_message(self) -> None:
+    def test_no_command_raises_system_exit_1(self) -> None:
+        """`db reset-passwords` with no configured command is a genuine failure."""
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             wt_dir = tmp_path / "test"
@@ -277,6 +333,7 @@ class TestDbResetPasswords(TestCase):
                 extra={"worktree_path": str(wt_dir)},
             )
 
-            result = cast("str", call_command("db", "reset-passwords", path=str(wt_dir)))
+            with pytest.raises(SystemExit) as exc_info:
+                call_command("db", "reset-passwords", path=str(wt_dir))
 
-            assert "no reset-passwords command" in result.lower()
+            assert exc_info.value.code == 1

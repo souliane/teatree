@@ -157,7 +157,12 @@ class TestRunTests(TestCase):
 
     @_patch_overlays(MINIMAL_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_no_command_returns_message(self) -> None:
+    def test_no_command_raises_system_exit(self) -> None:
+        """`run tests` with no configured test command is a genuine failure.
+
+        The caller explicitly asked to run the suite; an overlay that cannot
+        run tests must stop the caller (CI/loop), not exit 0.
+        """
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             wt_dir = tmp_path / "backend"
@@ -171,9 +176,42 @@ class TestRunTests(TestCase):
                 extra={"worktree_path": str(wt_dir)},
             )
 
-            result = cast("str", call_command("run", "tests", path=str(wt_dir)))
+            with pytest.raises(SystemExit) as exc_info:
+                call_command("run", "tests", path=str(wt_dir))
 
-            assert "no test command" in result.lower()
+            assert exc_info.value.code == 1
+
+
+class TestRunTestsFailureExitCode(TestCase):
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_failing_suite_raises_system_exit_1(self) -> None:
+        """A non-zero test runner exit must surface as SystemExit(1).
+
+        Regression for #932: `return f"Tests failed (exit {rc})."` left the
+        process exiting 0, so CI/loop saw green on a failing suite.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            wt_dir = tmp_path / "backend"
+            wt_dir.mkdir()
+            ticket = Ticket.objects.create(overlay="test")
+            Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="/tmp/backend",
+                branch="feature",
+                extra={"worktree_path": str(wt_dir)},
+            )
+
+            mock_result = subprocess.CompletedProcess([], 1)
+            with (
+                patch.object(utils_run_mod.subprocess, "run", return_value=mock_result),
+                pytest.raises(SystemExit) as exc_info,
+            ):
+                call_command("run", "tests", path=str(wt_dir))
+
+            assert exc_info.value.code == 1
 
 
 class TestRunVerify(TestCase):

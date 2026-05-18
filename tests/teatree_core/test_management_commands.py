@@ -1,3 +1,4 @@
+import io
 import tempfile
 from collections.abc import Iterator
 from contextlib import AbstractContextManager
@@ -275,27 +276,36 @@ class TestDbRefreshFreshDumpApproval(TestCase):
     def test_fresh_dump_refuses_in_non_interactive_agent_context(self) -> None:
         worktree = self._make_worktree()
         overlay = DbOverlay()
+        stderr = io.StringIO()
         with (
             patch.object(overlay_loader_mod, "_discover_overlays", return_value={"test": overlay}),
             patch("teatree.core.management.commands.db.resolve_worktree", return_value=worktree),
+            pytest.raises(SystemExit) as exc_info,
         ):
-            result = call_command("db", "refresh", "--fresh-dump")
-        assert "aborted" in result
-        assert "human must" in result
+            call_command("db", "refresh", "--fresh-dump", stderr=stderr)
+        # Refusal must be a real non-zero exit (#932), not an exit-0 string.
+        assert exc_info.value.code == 1
+        message = stderr.getvalue()
+        assert "aborted" in message
+        assert "human must" in message
         # The gate fired BEFORE the overlay import — no remote dump attempted.
         assert not hasattr(overlay, "last_approve_remote_dump")
 
     @override_settings(**COMMAND_SETTINGS)
     def test_refusal_message_has_no_credentials(self) -> None:
         worktree = self._make_worktree()
+        stderr = io.StringIO()
         with (
             patch.object(overlay_loader_mod, "_discover_overlays", return_value=_DB_MOCK_OVERLAY),
             patch("teatree.core.management.commands.db.resolve_worktree", return_value=worktree),
+            pytest.raises(SystemExit) as exc_info,
         ):
-            result = call_command("db", "refresh", "--fresh-dump")
-        assert "postgres://" not in result
-        assert "PGPASSWORD" not in result
-        assert "password" not in result.lower()
+            call_command("db", "refresh", "--fresh-dump", stderr=stderr)
+        assert exc_info.value.code == 1
+        message = stderr.getvalue()
+        assert "postgres://" not in message
+        assert "PGPASSWORD" not in message
+        assert "password" not in message.lower()
 
 
 class TestDbImportAutoRepair(TestCase):

@@ -321,15 +321,41 @@ class TestE2eRunWorkItem(TestCase):
 class TestE2eExternal(TestCase):
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_no_private_tests_configured(self) -> None:
+    def test_no_private_tests_configured_raises_system_exit_1(self) -> None:
+        """Unconfigured private_tests is a misconfig that must stop the caller.
+
+        Regression for #932: returning the message exited 0, so an
+        unconfigured E2E external run looked green.
+        """
         with (
             patch.dict("os.environ", {}, clear=False),
             patch.object(config_mod, "load_config") as mock_cfg,
         ):
             mock_cfg.return_value.raw = {}
             os.environ.pop("T3_PRIVATE_TESTS", None)
-            result = cast("str", call_command("e2e", "external"))
-        assert "not configured" in result
+            with pytest.raises(SystemExit) as exc_info:
+                call_command("e2e", "external")
+        assert exc_info.value.code == 1
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_target_dev_without_base_url_raises_system_exit_1(self) -> None:
+        """`e2e external --target dev` without BASE_URL is a misconfig — exit 1.
+
+        Regression for #932: the message was written to stderr but the
+        command still returned (exit 0).
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            private_dir = Path(tmp) / "private"
+            private_dir.mkdir()
+            with (
+                patch.dict("os.environ", {"T3_PRIVATE_TESTS": str(private_dir)}, clear=False),
+                patch.object(e2e_mod.Command, "_resolve_target", return_value="dev"),
+            ):
+                os.environ.pop("BASE_URL", None)
+                with pytest.raises(SystemExit) as exc_info:
+                    call_command("e2e", "external", target="dev")
+            assert exc_info.value.code == 1
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
@@ -365,12 +391,14 @@ class TestE2eExternal(TestCase):
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_private_tests_dir_missing(self) -> None:
+    def test_private_tests_dir_missing_raises_system_exit_1(self) -> None:
+        """A missing private_tests directory is a misconfig — exit 1."""
         with (
             patch.dict("os.environ", {"T3_PRIVATE_TESTS": "/nonexistent/path"}),
+            pytest.raises(SystemExit) as exc_info,
         ):
-            result = cast("str", call_command("e2e", "external"))
-        assert "not configured" in result or "directory missing" in result
+            call_command("e2e", "external")
+        assert exc_info.value.code == 1
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
@@ -473,7 +501,8 @@ class TestE2eExternal(TestCase):
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_frontend_not_running_returns_error(self) -> None:
+    def test_frontend_not_running_raises_system_exit_1(self) -> None:
+        """A missing local frontend is an unmet precondition — exit 1 (#932)."""
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             private_dir = tmp_path / "private"
@@ -494,9 +523,10 @@ class TestE2eExternal(TestCase):
                 patch.dict("os.environ", {"T3_PRIVATE_TESTS": str(private_dir), "T3_ORIG_CWD": str(wt_dir)}),
                 patch.object(e2e_mod, "get_service_port", return_value=None),
                 patch.object(e2e_mod, "_detect_local_port", return_value=None),
+                pytest.raises(SystemExit) as exc_info,
             ):
-                result = cast("str", call_command("e2e", "external"))
-            assert "not running" in result
+                call_command("e2e", "external")
+            assert exc_info.value.code == 1
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
@@ -755,11 +785,17 @@ class TestCloneOrUpdateE2eRepo(TestCase):
 class TestE2eExternalRepo(TestCase):
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_external_repo_not_found_in_config(self) -> None:
-        """Returns error message when named repo is not in config."""
-        with patch.object(e2e_mod, "load_e2e_repos", return_value=[]):
-            result = cast("str", call_command("e2e", "external", repo="nonexistent"))
-        assert "not found" in result
+    def test_external_repo_not_found_in_config_raises_system_exit_1(self) -> None:
+        """A named E2E repo not in config is a misconfig — exit 1.
+
+        Regression for #932.
+        """
+        with (
+            patch.object(e2e_mod, "load_e2e_repos", return_value=[]),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            call_command("e2e", "external", repo="nonexistent")
+        assert exc_info.value.code == 1
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
