@@ -226,6 +226,21 @@ For each issue, determine **why** it happened:
 - Playbook outdated after codebase evolution?
 - **Architecture itself is the problem?** When 3+ findings across retros point to the same structural limitation (e.g., untestable logic, fragile state coordination, prose re-interpretation failures), stop fixing symptoms and flag the paradigm. Ask: "Would this project be better served by moving this logic out of skills into deterministic code (CLI, application framework, database-backed state)?" Present the pattern to the user with a concrete alternative.
 
+#### Recurrence → Escalation (classification step)
+
+Before deciding the destination for a behavioral finding, retro classifies it by *recurrence*, because the destination changes once a rule has already failed once:
+
+- **First occurrence** — the rule did not yet exist as durable guidance. Writing the memory/skill entry is the appropriate fix.
+- **Recurrence of an already-persisted rule** — the finding is "the agent didn't do X" and an equivalent rule already lives in a skill, reference, or memory file and recurred anyway. This is not a missing-memory finding; it is an **enforcement-gap** finding. Re-writing the same behavioral entry is the recurrence engine, not the fix — memory-as-vigilance demonstrably loses, while a deterministic gate compounds.
+
+For an enforcement-gap finding, retro routes it differently from a first occurrence:
+
+- Treat the deliverable as the **smallest tooling-enforced gate**, not another prose rule — a non-bypassable hook, a CI/pre-commit check, a test, or a scoped issue dispatched to add one (see § "Orchestrator-Only" on biasing toward the smallest enforcement artifact).
+- Update — do not duplicate — the existing entry so it *points at the enforcement* and is explicitly marked a known-weak stopgap until the gate lands.
+- Record the escalation in the persistence summary: which gate/issue was filed or dispatched, and which existing entry now references it. A recurrence closed only by re-persisting prose is an incomplete retro.
+
+This is the durability-in-tooling-not-vigilance principle applied to retro itself: an already-failed behavioral rule failing again is a signal to escalate the *level* of the fix, not to repeat the *same* level.
+
 ### 3. Fix Skills
 
 **Pre-write editability check:** Before writing to ANY skill, verify it is editable (see § Scope & Editability). For teatree-specific paths:
