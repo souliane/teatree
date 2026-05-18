@@ -54,9 +54,18 @@ class WorktreeTeardownRunner(RunnerBase):
         docker_compose_down(project)
 
         try:
-            label = cleanup_worktree(worktree, force=self.force, strict_hygiene=False)
+            cleanup_result = cleanup_worktree(worktree, force=self.force, strict_hygiene=False)
         except RuntimeError as exc:
             logger.warning("teardown refused for %s: %s", worktree.repo_path, exc)
             return RunnerResult(ok=False, detail=str(exc))
 
-        return RunnerResult(ok=True, detail=label)
+        # The worktree row IS gone (cleanup completed); a non-empty
+        # ``errors`` list means a side resource (DB, pass entry, recovery
+        # bundle, branch delete) failed. #877 — surface it loudly (logs +
+        # ``str(cleanup_result)`` detail) instead of swallowing it into a
+        # label the caller never reads (#932), but do not re-block a
+        # teardown the operator explicitly forced (#706/#710 force-escape).
+        for err in cleanup_result.errors:
+            logger.error("teardown step failed for %s: %s", worktree.repo_path, err)
+
+        return RunnerResult(ok=True, detail=str(cleanup_result))

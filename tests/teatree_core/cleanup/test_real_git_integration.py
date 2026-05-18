@@ -14,7 +14,7 @@ from unittest.mock import patch
 import pytest
 from django.test import TestCase
 
-from teatree.core.cleanup import cleanup_worktree
+from teatree.core.cleanup import CleanupResult, cleanup_worktree
 from teatree.core.models import Ticket, Worktree
 from tests.teatree_core.cleanup._shared import _GIT, _RM, _clean_env, _run_git
 
@@ -56,7 +56,7 @@ class TestCleanupWorktreeRemovesOnDiskWorktree(TestCase):
             extra=extras,
         )
 
-    def _cleanup(self, worktree: Worktree) -> str:
+    def _cleanup(self, worktree: Worktree) -> CleanupResult:
         with (
             patch("teatree.core.cleanup.load_config") as mock_config,
             patch("teatree.core.cleanup.get_overlay") as mock_overlay,
@@ -88,13 +88,17 @@ class TestCleanupWorktreeRemovesOnDiskWorktree(TestCase):
         assert not self.wt_path.exists(), "worktree directory survived cleanup"
         assert str(self.wt_path) not in self._registered_worktrees(), "git worktree registry entry survived"
 
-    def test_surfaces_failure_in_label_when_git_remove_fails(self) -> None:
-        """When the git ops can't complete (e.g., source repo missing), the label must report it."""
+    def test_surfaces_failure_in_errors_when_git_remove_fails(self) -> None:
+        """When the git ops can't complete (source repo missing), the failure surfaces in ``errors`` (#877)."""
         wt = self._make_worktree(with_extras=True)
         # Wipe the source repo so git operations fail
         subprocess.run([_RM, "-rf", str(self.repo_main)], check=True, env=_clean_env())
-        label = self._cleanup(wt)
-        assert "errors" in label.lower() or "Cleaned: myrepo" in label
+        result = self._cleanup(wt)
+        # The missing-source-repo failure is surfaced, not swallowed
+        assert result.clean is False
+        assert result.errors
+        assert any("source repo missing" in e for e in result.errors)
+        assert "with errors" in str(result)
         # Worktree row deleted regardless so the operator can retry without DB cruft
         assert not Worktree.objects.filter(pk=wt.pk).exists()
 
@@ -133,7 +137,7 @@ class TestCleanupWorktreeNamespacedClone(TestCase):
         ):
             mock_config.return_value.user.workspace_dir = self.workspace
             mock_overlay.return_value.get_cleanup_steps.return_value = []
-            label = cleanup_worktree(wt, force=True)
+            result = cleanup_worktree(wt, force=True)
 
         assert not self.wt_path.exists()
         registry = subprocess.run(
@@ -144,4 +148,5 @@ class TestCleanupWorktreeNamespacedClone(TestCase):
             env=_clean_env(),
         ).stdout
         assert str(self.wt_path) not in registry
-        assert "errors" not in label.lower()
+        assert result.clean is True
+        assert result.errors == []
