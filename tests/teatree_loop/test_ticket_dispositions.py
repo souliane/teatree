@@ -95,6 +95,25 @@ class TicketDispositionScannerTests(TestCase):
         signals = self._scanner(host).scan()
         assert [s.payload["reason"] for s in signals] == ["unassigned"]
 
+    def test_unassigned_signal_carries_old_and_new_owners(self) -> None:
+        """The renderer needs both sides to show ``from <old> → to <new>``."""
+        self._ticket()
+        host = _Host(
+            issues_by_url={
+                self.URL: {**self._open_ready_issue(), "assignees": [{"username": "bob"}, {"username": "carol"}]},
+            },
+        )
+        signal = next(s for s in self._scanner(host).scan() if s.payload["reason"] == "unassigned")
+        assert signal.payload["old_owner"] == "alice"  # _Host.current_user()
+        assert signal.payload["new_owners"] == ["bob", "carol"]
+
+    def test_non_unassigned_reasons_carry_no_owner_fields(self) -> None:
+        self._ticket()
+        host = _Host(issues_by_url={self.URL: {**self._open_ready_issue(), "labels": [{"name": "blocked"}]}})
+        signal = next(s for s in self._scanner(host).scan() if s.payload["reason"] == "label_removed")
+        assert "old_owner" not in signal.payload
+        assert "new_owners" not in signal.payload
+
     def test_flags_label_removed(self) -> None:
         self._ticket()
         host = _Host(issues_by_url={self.URL: {**self._open_ready_issue(), "labels": [{"name": "blocked"}]}})

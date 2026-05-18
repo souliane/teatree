@@ -68,7 +68,18 @@ class StaleTicketsScannerTests(TestCase):
         assert signals[0].payload["ticket_id"] == ticket.pk
         assert signals[0].payload["age_days"] == 5
         assert signals[0].payload["ticket_state"] == Ticket.State.STARTED
-        assert "stale in started (5d)" in signals[0].summary
+        # Concise summary (no "stale in <state>" filler) — the statusline
+        # collapses these into one linked line per overlay.
+        assert signals[0].summary == f"#{ticket.ticket_number} stale (5d)"
+
+    def test_stale_signal_carries_overlay_and_url_for_linking(self) -> None:
+        """The statusline needs ``overlay`` to group and ``issue_url`` to link."""
+        ticket = self._ticket()
+        self._backdate_attempt(ticket, days=5)
+        payload = self._scanner().scan()[0].payload
+        assert payload["overlay"] == self.OVERLAY
+        assert payload["issue_url"] == ticket.issue_url
+        assert payload["stale"] is True
 
     def test_fresh_attempt_beats_old_transition(self) -> None:
         ticket = self._ticket()
