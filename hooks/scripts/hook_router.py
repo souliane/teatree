@@ -1904,6 +1904,36 @@ def _tick_owner_record(session_id: str, agent_id: str) -> dict[str, dict]:
     }
 
 
+def _autocompact_kill_switch_advisory() -> str | None:
+    """Return the #980 advisory text when the harness kill-switch trips.
+
+    The Claude Code harness silently disables auto-compaction on
+    1M-capable models (currently claude-opus-4-7) unless an
+    explicit CLAUDE_CODE_AUTO_COMPACT_WINDOW (or settings.json
+    autoCompactWindow) is set — CLAUDE_AUTOCOMPACT_PCT_OVERRIDE
+    alone is silently dropped. The advisory tells the agent the
+    matching env-var fix so it can patch ~/.claude/settings.json
+    itself (see :mod:`teatree.core.autocompact_advisory` for the full
+    decoded harness logic). Best-effort: any import / lookup failure
+    returns None so the SessionStart directive always emits.
+    """
+    src_dir = Path(__file__).resolve().parents[2] / "src"
+    added = False
+    try:
+        if str(src_dir) not in sys.path:
+            sys.path.insert(0, str(src_dir))
+            added = True
+        from teatree.core.autocompact_advisory import AutocompactConfig, advisory_text  # noqa: PLC0415
+
+        return advisory_text(AutocompactConfig.from_env())
+    except Exception:  # noqa: BLE001
+        return None
+    finally:
+        if added:
+            with contextlib.suppress(ValueError):
+                sys.path.remove(str(src_dir))
+
+
 def handle_session_start_bootstrap(data: dict) -> None:
     """Emit the tick-dispatch bootstrap directive (#786 WS3 — roster retired).
 
@@ -1966,6 +1996,13 @@ def handle_session_start_bootstrap(data: dict) -> None:
         recovered = _recover_snapshot_context(session_id)
         if recovered is not None:
             context = f"{recovered}\n\n---\n\n{context}"
+
+    # #980: surface the harness auto-compact kill-switch advisory when the
+    # env-var combo would silently disable auto-compaction on this session.
+    # Same single stdout write — see the #845 note above.
+    advisory = _autocompact_kill_switch_advisory()
+    if advisory:
+        context = f"{context}\n\n---\n\n{advisory}"
 
     json.dump({"additionalContext": context}, sys.stdout)
 

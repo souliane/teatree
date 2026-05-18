@@ -351,3 +351,62 @@ class TestWs3TickDispatchContract:
     def test_no_session_id_still_silent(self, capsys: pytest.CaptureFixture[str]) -> None:
         handle_session_start_bootstrap({})
         assert capsys.readouterr().out == ""
+
+
+# ── Issue #980: auto-compact kill-switch advisory ─────────────────────
+
+
+class TestAutocompactAdvisoryIntegration:
+    """Pin that the SessionStart handler surfaces the #980 advisory.
+
+    The advisory is the teatree-side workaround for the harness's
+    silent auto-compact kill-switch on 1M-capable models (see
+    ``teatree.core.autocompact_advisory``). When the env-var combo
+    matches the trip condition, the SessionStart handler must append
+    the advisory text to ``additionalContext`` so the agent can read
+    it the moment the session starts.
+    """
+
+    def test_advisory_appended_when_kill_switch_trips(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        monkeypatch.setenv("CLAUDE_AUTOCOMPACT_PCT_OVERRIDE", "25")
+        monkeypatch.delenv("CLAUDE_CODE_AUTO_COMPACT_WINDOW", raising=False)
+        monkeypatch.delenv("DISABLE_COMPACT", raising=False)
+        monkeypatch.delenv("DISABLE_AUTO_COMPACT", raising=False)
+        monkeypatch.setenv("CLAUDE_CODE_MODEL", "claude-opus-4-7[1m]")
+
+        handle_session_start_bootstrap({"session_id": "s1", "agent_id": "a1"})
+
+        payload = json.loads(capsys.readouterr().out)
+        context = payload["additionalContext"]
+        assert "AUTO-COMPACT SILENT KILL-SWITCH" in context
+        assert "CLAUDE_CODE_AUTO_COMPACT_WINDOW" in context
+        assert "1000000" in context
+        assert "#980" in context
+
+    def test_no_advisory_when_window_already_set(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        # User already has the fix env var in place — must NOT nag.
+        monkeypatch.setenv("CLAUDE_AUTOCOMPACT_PCT_OVERRIDE", "25")
+        monkeypatch.setenv("CLAUDE_CODE_AUTO_COMPACT_WINDOW", "1000000")
+        monkeypatch.setenv("CLAUDE_CODE_MODEL", "claude-opus-4-7[1m]")
+
+        handle_session_start_bootstrap({"session_id": "s2", "agent_id": "a2"})
+
+        payload = json.loads(capsys.readouterr().out)
+        assert "AUTO-COMPACT SILENT KILL-SWITCH" not in payload["additionalContext"]
+
+    def test_no_advisory_when_pct_override_unset(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        # No user-expressed threshold → kill-switch doesn't matter to user.
+        monkeypatch.delenv("CLAUDE_AUTOCOMPACT_PCT_OVERRIDE", raising=False)
+        monkeypatch.delenv("CLAUDE_CODE_AUTO_COMPACT_WINDOW", raising=False)
+        monkeypatch.setenv("CLAUDE_CODE_MODEL", "claude-opus-4-7[1m]")
+
+        handle_session_start_bootstrap({"session_id": "s3", "agent_id": "a3"})
+
+        payload = json.loads(capsys.readouterr().out)
+        assert "AUTO-COMPACT SILENT KILL-SWITCH" not in payload["additionalContext"]
