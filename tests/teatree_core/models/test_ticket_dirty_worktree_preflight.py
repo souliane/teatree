@@ -2,10 +2,13 @@
 
 Owner-resolved design: a tracked-dirty worktree at a ``code``/``test``/
 ``review``/``ship`` transition REFUSES the transition (the FSM does not
-advance) and reopens the pending phase task with a clear, actionable
-message naming the dirty worktree. No auto-stash — worktrees share
-``.git`` so a stash is repo-global (the foreign-stash hazard, near-miss
-class #806).
+advance) and raises with a clear, actionable message naming the dirty
+worktree. The held phase task is not force-reopened; recovery is the
+existing lease-reaper safety net (per ``_refuse_if_worktree_dirty`` and
+BLUEPRINT §4.1) — the worker stops heartbeating after the exception, the
+lease expires, and ``reclaim_orphaned_claims`` returns the CLAIMED task
+to PENDING on the next tick. No auto-stash — worktrees share ``.git`` so
+a stash is repo-global (the foreign-stash hazard, near-miss class #806).
 
 Untracked-only files do NOT block (the #925 distinction — a tracked
 modification is the trigger, mirroring ``cli.update._tracked_dirty_paths``).
@@ -15,10 +18,12 @@ a clean worktree, a no-worktree ticket, and an untracked-only worktree
 all transition normally.
 """
 
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
 from django.test import TestCase
+from django.utils import timezone
 
 from teatree.core.models import DirtyWorktreeError, Task, Ticket, Worktree
 from tests.teatree_core.models._shared import _advance_ticket_to_tested, _complete_phase_task, _init_repo_with_branch
@@ -79,7 +84,25 @@ class TestDirtyWorktreePreflightRefusesTransition(TestCase):
         assert ticket.state == Ticket.State.REVIEWED  # ship did NOT advance
         assert str(repo_dir) in str(exc.value)
 
-    def test_refused_transition_reopens_pending_phase_task(self) -> None:
+    def test_refusal_through_real_loop_path_rolls_back_and_task_is_reclaimable(self) -> None:
+        """The real loop path: ``Task.complete()`` → … → guarded transition.
+
+        ``Task.complete()`` wraps the task ``save()`` and the FSM transition
+        in a single ``transaction.atomic()`` (#883). When the guarded
+        ``code()`` transition raises ``DirtyWorktreeError`` the WHOLE outer
+        atomic rolls back: the ticket does NOT advance AND the task reverts
+        to its pre-``complete()`` state — CLAIMED, not COMPLETED, not a
+        spuriously "reopened" PENDING. Recovery is the lease-reaper:
+        ``reclaim_orphaned_claims`` returns the held CLAIMED task to PENDING
+        once its lease expires (the worker stopped heartbeating after the
+        exception). This is the actual post-rollback contract — the earlier
+        test asserted a PENDING reopen that the real path never produces.
+
+        Anti-vacuity: if ``_refuse_if_worktree_dirty`` is removed, ``code()``
+        succeeds, the outer atomic commits, the task ends COMPLETED and the
+        ticket advances to CODED — every assertion below flips. The guard is
+        load-bearing for this test.
+        """
         ticket = Ticket.objects.create()
         _wt, repo_dir = self._attach_worktree(ticket)
         ticket.scope()
@@ -93,14 +116,30 @@ class TestDirtyWorktreePreflightRefusesTransition(TestCase):
             execution_target=Task.ExecutionTarget.HEADLESS,
             execution_reason="coding",
         )
-        coding_task.claim(claimed_by="worker")
+        coding_task.claim(claimed_by="worker", lease_seconds=300)
         (repo_dir / "f0.txt").write_text("dirty\n")
 
+        # Drive the REAL loop path, not a bare ticket.code(): Task.complete()
+        # opens the outer atomic, _advance_ticket → _apply_phase_transition
+        # fires the guarded code() transition, which refuses.
         with pytest.raises(DirtyWorktreeError):
-            ticket.code()
+            coding_task.complete()
 
+        ticket.refresh_from_db()
         coding_task.refresh_from_db()
-        assert coding_task.status == Task.Status.PENDING  # reopened for the agent to finish
+        # FSM did NOT advance — the outer atomic rolled the code() advance back.
+        assert ticket.state == Ticket.State.STARTED
+        # The task reverted to its pre-complete() state: CLAIMED (the outer
+        # atomic rolled back the status=COMPLETED + _clear_claim writes too).
+        assert coding_task.status == Task.Status.CLAIMED
+
+        # Recovery contract: the held CLAIMED task is reclaimable by the
+        # lease-reaper once its lease expires (worker stopped heartbeating).
+        Task.objects.filter(pk=coding_task.pk).update(lease_expires_at=timezone.now() - timedelta(seconds=1))
+        reclaimed = Task.objects.reclaim_orphaned_claims()
+        coding_task.refresh_from_db()
+        assert reclaimed == 1
+        assert coding_task.status == Task.Status.PENDING  # back on the queue for the agent to finish
 
     def test_clean_worktree_still_transitions_normally(self) -> None:
         """Guard must not over-block: a clean tracked tree advances as before."""

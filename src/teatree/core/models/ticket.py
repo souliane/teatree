@@ -611,14 +611,21 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
         files around. Only a tracked modification — work the agent forgot to
         commit — is the refusal trigger.
 
-        On dirty: the pending/claimed task for this phase is reopened to
-        PENDING (so the loop re-dispatches it and the agent finishes the
-        commit) and a loud :class:`DirtyWorktreeError` is raised naming the
-        dirty worktree. The transition body runs inside the caller's
-        ``transaction.atomic`` (``Task._apply_phase_transition``), so the
-        raise rolls back the FSM state change — the ticket stays put — while
-        the task reopen is committed first on its own write so the work is
-        not lost. Mirrors the existing loud-refusal convention
+        On dirty: a loud :class:`DirtyWorktreeError` is raised naming the
+        dirty worktree. The transition does **not** advance — every
+        production caller wraps the transition body in an *outer*
+        ``transaction.atomic`` (the loop: ``Task.complete()`` →
+        ``_advance_ticket`` → ``_apply_phase_transition``; ship:
+        ``_ship_exec._do_ship_transition``), so the raise rolls that whole
+        atomic back and the ticket stays put. **The task is not
+        force-reopened here** — there is no cross-transaction durable write
+        that could survive the caller's rollback, so attempting one only
+        adds a false durability claim. Held-task recovery is the existing
+        **lease-reaper safety net**: the worker that called the transition
+        stops heartbeating after the exception, the task's lease expires,
+        and ``TaskManager.reclaim_orphaned_claims`` returns the CLAIMED task
+        to PENDING on the next loop tick so the agent re-runs it and
+        finishes the commit. Mirrors the existing loud-refusal convention
         (``InvalidTransitionError`` in ``schedule_coding`` / the #694 gate).
         """
         worktree_model = apps.get_model("core", "Worktree")
@@ -629,7 +636,6 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
         ]
         if not dirty:
             return
-        self._reopen_phase_task(phase)
         joined = ", ".join(dirty)
         msg = (
             f"Refusing the '{phase}' transition for ticket {self} — uncommitted tracked "
@@ -638,27 +644,6 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
             f"and could clobber another branch — #806.)"
         )
         raise DirtyWorktreeError(msg)
-
-    def _reopen_phase_task(self, phase: str) -> None:
-        """Reopen the pending/claimed task for ``phase`` so the agent finishes it.
-
-        Written on its own transaction (committed before the
-        :class:`DirtyWorktreeError` rolls back the FSM state change in the
-        caller's ``atomic`` block) so the refused work is re-dispatched
-        rather than lost. Matches any accepted phase spelling via
-        ``pending_in_phase`` (#769), the same SSOT
-        ``_consume_pending_phase_tasks`` uses.
-        """
-        from teatree.core.models.task import Task  # noqa: PLC0415
-
-        with transaction.atomic(durable=False):
-            Task.objects.pending_in_phase(phase).filter(ticket=self).update(
-                status=Task.Status.PENDING,
-                claimed_at=None,
-                claimed_by="",
-                lease_expires_at=None,
-                heartbeat_at=None,
-            )
 
     def _consume_pending_phase_tasks(self, phase: str) -> None:
         """Mark non-terminal tasks for ``phase`` as COMPLETED.
