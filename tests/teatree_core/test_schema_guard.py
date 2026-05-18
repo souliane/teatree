@@ -10,7 +10,7 @@ behaviour and the doctor surfacing.
 
 import io
 from contextlib import redirect_stdout
-from typing import cast
+from typing import ClassVar, cast
 from unittest.mock import patch
 
 import pytest
@@ -30,6 +30,32 @@ from teatree.core.schema_guard import (
 _MERGE_MIGRATIONS = ("0011_mergeclear_mergeaudit", "0012_mergeclear_human_authorizer")
 
 
+class _UnapplyState:
+    """Carries the un-recorded migration tail between setup and cleanup."""
+
+    tail: ClassVar[list[str]] = []
+
+
+def _core_migrations_after_merge() -> list[str]:
+    """Ledger names for every applied core migration newer than 0012.
+
+    Django's ``MigrationExecutor`` treats a dependency as satisfied when a
+    *descendant* is recorded as applied. So un-recording only 0011/0012
+    while a later migration (0013+) stays in the ledger masks the gap —
+    the plan to the leaf is empty and the guard sees nothing pending.
+    Reproducing the #869 state faithfully therefore means un-recording
+    the whole contiguous tail from 0011 onward, not just the two merge
+    migrations. Discovered from the ledger so a future migration cannot
+    silently re-mask the gap again.
+    """
+    with connection.cursor() as cursor:
+        cursor.execute(
+            "SELECT name FROM django_migrations WHERE app = 'core' AND name > %s ORDER BY name",
+            [_MERGE_MIGRATIONS[-1]],
+        )
+        return [row[0] for row in cursor.fetchall()]
+
+
 def _unapply_merge_migrations() -> None:
     """Reproduce the real #869 self-DB state exactly.
 
@@ -38,12 +64,13 @@ def _unapply_merge_migrations() -> None:
     ``django_migrations`` ledger has no record of them — precisely what
     ``MigrationExecutor`` inspects.
     """
+    _UnapplyState.tail = _core_migrations_after_merge()
     with connection.schema_editor() as editor:
         editor.delete_model(MergeClear)
     with connection.cursor() as cursor:
         cursor.executemany(
             "DELETE FROM django_migrations WHERE app = 'core' AND name = %s",
-            [(name,) for name in _MERGE_MIGRATIONS],
+            [(name,) for name in (*_MERGE_MIGRATIONS, *_UnapplyState.tail)],
         )
 
 
@@ -54,7 +81,7 @@ def _reapply_merge_migrations() -> None:
     with connection.cursor() as cursor:
         cursor.executemany(
             "INSERT INTO django_migrations (app, name, applied) VALUES ('core', %s, CURRENT_TIMESTAMP)",
-            [(name,) for name in _MERGE_MIGRATIONS],
+            [(name,) for name in (*_MERGE_MIGRATIONS, *_UnapplyState.tail)],
         )
 
 

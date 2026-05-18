@@ -2921,6 +2921,8 @@ Usage: t3 teatree ticket [OPTIONS] COMMAND [ARGS]...
 │ sync-completions  Check post-ship tickets against upstream issues and        │
 │                   advance completed ones.                                    │
 │ comment           Post a comment to an issue or work item by its URL.        │
+│ context           Durable per-ticket knowledge store: show / add / edit      │
+│                   (#627).                                                    │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -3101,5 +3103,75 @@ Usage: t3 teatree ticket comment [OPTIONS] ISSUE_URL
 │ --body             TEXT  Comment body text.                                  │
 │ --body-file        TEXT  Path to a file containing the comment body.         │
 │ --help                   Show this message and exit.                         │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree ticket context`
+
+```
+Usage: t3 teatree ticket context [OPTIONS] COMMAND [ARGS]...
+
+ Durable per-ticket knowledge store (#627).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ show  Print the ticket's durable context store.                              │
+│ add   Append a timestamped ``<key>: <value>`` line to the context store.     │
+│ edit  Open the full context store in ``$EDITOR`` and replace it.             │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+###### `t3 teatree ticket context show`
+
+```
+Usage: t3 teatree ticket context show [OPTIONS] TICKET_ID
+
+ Print the ticket's durable context store.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    ticket_id      INTEGER  [required]                                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+###### `t3 teatree ticket context add`
+
+```
+Usage: t3 teatree ticket context add [OPTIONS] TICKET_ID ENTRY
+
+ Append a timestamped ``<key>: <value>`` line to the context store.
+
+ Append-only: parallel sessions never overwrite each other (open
+ question 2). A blank entry is refused with a nonzero exit.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    ticket_id      INTEGER  [required]                                      │
+│ *    entry          TEXT     [required]                                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+###### `t3 teatree ticket context edit`
+
+```
+Usage: t3 teatree ticket context edit [OPTIONS] TICKET_ID
+
+ Open the full context store in ``$EDITOR`` and replace it.
+
+ Unlike ``add``, ``edit`` is a full-field rewrite — for pruning stale
+ entries or restructuring. An aborted edit (editor exits without
+ saving) leaves the store untouched.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    ticket_id      INTEGER  [required]                                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
