@@ -713,6 +713,64 @@ class TestReplayOrphanedTransitions(TestCase):
         assert replayed == 0
         assert ticket.state == Ticket.State.STARTED
 
+    def test_needs_user_input_held_task_is_not_force_advanced(self) -> None:
+        # #927 BLOCKER — a headless coding task that returned
+        # ``{"needs_user_input": True}`` is correctly *held* by
+        # ``_advance_ticket`` (ticket stays STARTED, an interactive
+        # followup is scheduled, the task ends COMPLETED). The replay
+        # sweep then finds that COMPLETED task as latest-per-ticket and
+        # must NOT force-advance the ticket past the phase the agent
+        # said it could not finish. The needs-user-input suppression
+        # is part of the shared transition path, not only the live
+        # ``complete()`` chain.
+        ticket = Ticket.objects.create(state=Ticket.State.STARTED)
+        session = Session.objects.create(ticket=ticket, agent_id="a")
+        task = Task.objects.create(ticket=ticket, session=session, phase="coding")
+        task.complete_with_attempt(
+            exit_code=0,
+            result={"needs_user_input": True, "user_input_reason": "blocked on a design decision"},
+        )
+        # Precondition: the live path held the ticket and scheduled the
+        # interactive followup — this is the state the sweep then sees.
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.STARTED
+        followup = Task.objects.filter(parent_task=task).first()
+        assert followup is not None
+        assert followup.execution_target == Task.ExecutionTarget.INTERACTIVE
+
+        replayed = Task.objects.replay_orphaned_transitions()
+
+        ticket.refresh_from_db()
+        assert replayed == 0
+        assert ticket.state == Ticket.State.STARTED, (
+            f"replay force-advanced a needs-user-input-held ticket to {ticket.state!r} — "
+            "the agent said it could not finish coding; the interactive followup is orphaned"
+        )
+        # The interactive followup must survive the sweep untouched.
+        followup.refresh_from_db()
+        assert followup.status == Task.Status.PENDING
+
+    def test_completed_task_without_needs_user_input_still_replays(self) -> None:
+        # #927 anti-vacuity: the fix must suppress *only* the
+        # needs-user-input case. A genuinely orphaned COMPLETED coding
+        # task (last attempt did NOT request user input) must still be
+        # replay-advanced, exactly as before — the recovery sweep is
+        # not over-blocked into uselessness.
+        ticket = Ticket.objects.create(state=Ticket.State.STARTED)
+        session = Session.objects.create(ticket=ticket, agent_id="a")
+        task = Task.objects.create(ticket=ticket, session=session, phase="coding")
+        task.complete_with_attempt(exit_code=0, result={"summary": "done"})
+        # Simulate the half-advanced orphan: complete() advanced the
+        # ticket; reset it to STARTED so the sweep has work to replay.
+        ticket.state = Ticket.State.STARTED
+        ticket.save(update_fields=["state"])
+
+        replayed = Task.objects.replay_orphaned_transitions()
+
+        ticket.refresh_from_db()
+        assert replayed == 1
+        assert ticket.state == Ticket.State.CODED
+
 
 class TestCompleteIsAtomic(TestCase):
     """#883 — ``Task.complete`` must be one transaction.
