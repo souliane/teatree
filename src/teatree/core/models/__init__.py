@@ -1,5 +1,5 @@
 from teatree.core.models.daily_digest import DailyDigestMessage, DailyDigestThread
-from teatree.core.models.errors import InvalidTransitionError, QualityGateError
+from teatree.core.models.errors import DirtyWorktreeError, InvalidTransitionError, QualityGateError
 from teatree.core.models.incoming_event import IncomingEvent
 from teatree.core.models.intent_classification import IntentClassification
 from teatree.core.models.loop_lease import LoopLease
@@ -18,6 +18,7 @@ __all__ = [
     "ClearRequest",
     "DailyDigestMessage",
     "DailyDigestThread",
+    "DirtyWorktreeError",
     "IncomingEvent",
     "IntentClassification",
     "InvalidTransitionError",
