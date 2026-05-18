@@ -87,6 +87,18 @@ def test_require_human_approval_to_answer_can_be_disabled(tmp_path: Path) -> Non
     assert load_config(config_path).user.require_human_approval_to_answer is False
 
 
+def test_ask_before_post_on_behalf_defaults_on(tmp_path: Path) -> None:
+    config_path = tmp_path / ".teatree.toml"
+    _write_toml(config_path, "[teatree]\n")
+    assert load_config(config_path).user.ask_before_post_on_behalf is True
+
+
+def test_ask_before_post_on_behalf_can_be_disabled(tmp_path: Path) -> None:
+    config_path = tmp_path / ".teatree.toml"
+    _write_toml(config_path, "[teatree]\nask_before_post_on_behalf = false\n")
+    assert load_config(config_path).user.ask_before_post_on_behalf is False
+
+
 def test_loop_cadence_seconds_defaults_to_720(tmp_path: Path) -> None:
     config_path = tmp_path / ".teatree.toml"
     _write_toml(config_path, "[teatree]\n")

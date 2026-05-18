@@ -410,6 +410,8 @@ Usage: t3 review [OPTIONS] COMMAND [ARGS]...
 │ unapprove            Revoke your approval on a GitLab MR.                    │
 │ resolve-discussion   Mark a GitLab MR discussion thread resolved or          │
 │                      unresolved.                                             │
+│ approve-on-behalf    Record an :class:`OnBehalfApproval` that satisfies the  │
+│                      on-behalf gate.                                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -604,6 +606,47 @@ Usage: t3 review resolve-discussion [OPTIONS] REPO MR DISCUSSION_ID
 │ --resolved    --no-resolved      Mark resolved (default) or re-open.         │
 │                                  [default: resolved]                         │
 │ --help                           Show this message and exit.                 │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 review approve-on-behalf`
+
+```
+Usage: t3 review approve-on-behalf [OPTIONS] TARGET ACTION
+
+ Record an :class:`OnBehalfApproval` that satisfies the on-behalf gate.
+
+ The recorded-approval channel is the no-TTY satisfier for the
+ ``ask_before_post_on_behalf`` pre-gate (#960). It mirrors the
+ #953 ``DbApproval`` / section 17.4 ``MergeClear`` shape:
+ durable, single-use, strictly scoped to one
+ ``(target, action)`` pair, maker!=checker enforced. After this
+ command writes the row, the next on-behalf attempt matching
+ ``(target, action)`` publishes and the row is consumed; an
+ audit row records who/what/when.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    target      TEXT  Scope identifier the recorded approval is bound to —  │
+│                        e.g. the MR ref `org/repo!42`, the PR url, or the     │
+│                        ticket+transition compound the gate emitted in its    │
+│                        `OnBehalfPostBlockedError` message.                   │
+│                        [required]                                            │
+│ *    action      TEXT  Action name the recorded approval authorises —        │
+│                        exactly the string in the gate's blocked-post message │
+│                        (`post_comment`, `reply_to_discussion`,               │
+│                        `approval_reaction`, etc.). Single-use; consumed when │
+│                        the next matching on-behalf attempt publishes.        │
+│                        [required]                                            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ *  --approver        TEXT  Identifier of the human user recording the        │
+│                            approval. Refused if it names a                   │
+│                            maker/coding-agent/loop role — the executing      │
+│                            agent can never self-authorize the post (#960,    │
+│                            mirrors DbApproval #953 / MergeClear section      │
+│                            17.8).                                            │
+│                            [required]                                        │
+│    --help                  Show this message and exit.                       │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -2250,24 +2293,37 @@ Usage: t3 teatree db refresh [OPTIONS]
  Use --dump-path to restore from a specific dump file.
  Use --fresh-dump to pull a fresh dump from the remote DEV env — this
  is the only sanctioned remote-dump path and it requires an explicit
- per-invocation interactive approval (#777); an unattended agent
- cannot self-approve it.
+ per-invocation approval (#777). The approval has two sanctioned
+ channels of the same gate: a human at a TTY typing ``yes``, or a
+ recorded single-use user ``DbApproval`` re-presented via
+ --user-authorized <id> (#953). An unattended agent can never
+ self-approve either channel.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --path                                TEXT  Worktree path (auto-detects from │
-│                                             PWD if empty).                   │
-│ --dslr-snapshot                       TEXT  Force a specific DSLR snapshot   │
-│                                             name.                            │
-│ --dump-path                           TEXT  Path to a .pgsql dump file to    │
-│                                             restore from.                    │
-│ --force            --no-force               [default: no-force]              │
-│ --fresh-dump       --no-fresh-dump          Pull a fresh dump from the       │
-│                                             remote DEV environment for this  │
-│                                             tenant. Requires explicit        │
-│                                             interactive approval on every    │
-│                                             run.                             │
-│                                             [default: no-fresh-dump]         │
-│ --help                                      Show this message and exit.      │
+│ --path                                  TEXT  Worktree path (auto-detects    │
+│                                               from PWD if empty).            │
+│ --dslr-snapshot                         TEXT  Force a specific DSLR snapshot │
+│                                               name.                          │
+│ --dump-path                             TEXT  Path to a .pgsql dump file to  │
+│                                               restore from.                  │
+│ --force              --no-force               [default: no-force]            │
+│ --fresh-dump         --no-fresh-dump          Pull a fresh dump from the     │
+│                                               remote DEV environment for     │
+│                                               this tenant. Requires explicit │
+│                                               per-invocation approval on     │
+│                                               every run.                     │
+│                                               [default: no-fresh-dump]       │
+│ --user-authorized                       TEXT  Id of the user who recorded an │
+│                                               explicit DbApproval for this   │
+│                                               exact op+tenant (#953). Lets a │
+│                                               non-TTY caller satisfy the     │
+│                                               #777 gate via the              │
+│                                               recorded-approval channel;     │
+│                                               consumed single-use and        │
+│                                               audited. Empty ⇒               │
+│                                               interactive-TTY approval is    │
+│                                               required instead.              │
+│ --help                                        Show this message and exit.    │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -2488,6 +2544,12 @@ Usage: t3 teatree pr post-evidence [OPTIONS] MR_IID
  body.
  If an existing note contains ``## Test Plan``, it is updated instead of
  creating a new one.
+
+ Gated by ``ask_before_post_on_behalf`` (#960): the call is refused with no
+ upload or host side effect when the gate is on and no recorded
+ :class:`OnBehalfApproval` matches ``(<repo>!<mr>, "post_evidence")``. The
+ gate is inlined here (not at the ``code_host`` layer) so PR creation —
+ which is not an on-behalf colleague-facing post — remains ungated.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    mr_iid      INTEGER  [required]                                         │

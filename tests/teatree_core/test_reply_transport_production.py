@@ -1,11 +1,25 @@
-"""Behaviour tests for the production Slack/GitLab/GitHub repliers (#668)."""
+"""Behaviour tests for the production Slack/GitLab/GitHub repliers (#668).
+
+The on-behalf gate (#960) is exercised by its own dedicated suite in
+``test_reply_transport_on_behalf_gate.py``; these tests exercise
+production-replier wiring (backend dispatch, error handling, source
+routing) and disable the gate so the assertions on backend behaviour
+still hold.
+"""
 
 from unittest.mock import MagicMock
 
+import pytest
 from django.test import TestCase
 
 from teatree.core.models import IncomingEvent, ReplyDispatch
 from teatree.core.reply_transport import GitHubReplier, GitLabReplier, NoopReplier, ReplySpec, SlackReplier, replier_for
+from tests.teatree_core._on_behalf_gate_helpers import disable_on_behalf_gate
+
+
+@pytest.fixture(autouse=True)
+def _no_on_behalf_gate(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> None:
+    disable_on_behalf_gate(tmp_path_factory, monkeypatch)
 
 
 def _event(source: str, *, key: str, **fields: object) -> IncomingEvent:

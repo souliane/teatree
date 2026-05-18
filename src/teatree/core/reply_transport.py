@@ -20,11 +20,12 @@ real per-overlay backends is tracked separately).
 
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, ClassVar, Protocol
 
 from django.db import IntegrityError, transaction
 
 from teatree.core.models import IncomingEvent, ReplyDispatch
+from teatree.core.on_behalf_gate_recorded import OnBehalfPostBlockedError, require_on_behalf_approval
 
 if TYPE_CHECKING:
     from teatree.backends.github import GitHubCodeHost
@@ -81,6 +82,11 @@ class _BaseReplier:
     Subclasses override only :meth:`_deliver`. It performs the platform
     API call and raises on failure; the base records ``sent``/``failed``.
     """
+
+    #: Actions that post under the user's identity to a colleague/customer
+    #: surface — gated by ``ask_before_post_on_behalf`` (#960). ``post_dm``
+    #: is a bot→user message and is intentionally absent (never gated).
+    _ON_BEHALF_ACTIONS: ClassVar[frozenset[str]] = frozenset({"post_in_thread", "post_comment"})
 
     def post_in_thread(
         self,
@@ -164,6 +170,20 @@ class _BaseReplier:
         if not created:
             logger.debug("Reply %s already recorded — idempotent no-op", spec.idempotency_key)
             return dispatch
+        if spec.action_name in self._ON_BEHALF_ACTIONS:
+            try:
+                require_on_behalf_approval(target=spec.target_ref, action=spec.action_name)
+            except OnBehalfPostBlockedError as blocked:
+                # Surface, never silently drop and never post unattended: the
+                # FAILED row + actionable message is the user-notify path —
+                # the retry sweep re-attempts once a user records the
+                # OnBehalfApproval (no TTY) and the gate then passes.
+                logger.warning("Reply %s gated by ask_before_post_on_behalf", spec.idempotency_key)
+                return self._finalize(
+                    dispatch,
+                    status=ReplyDispatch.Status.FAILED,
+                    error_message=str(blocked),
+                )
         try:
             # Savepoint so a DB-level error raised inside subclass
             # `_deliver` (e.g. a create-vs-create race) does not poison
@@ -195,8 +215,13 @@ class _BaseReplier:
         ``_deliver``. Raises on failure. Does NOT touch the row — the
         sweep owns the status/retry bookkeeping so the idempotency
         short-circuit in ``_send`` (which would just return the existing
-        FAILED row) is bypassed.
+        FAILED row) is bypassed. The on-behalf gate is re-checked here so a
+        retry never bypasses it: if still blocked, :class:`OnBehalfPostBlockedError`
+        propagates and the sweep keeps the row FAILED until the user records
+        an approval.
         """
+        if dispatch.action_name in self._ON_BEHALF_ACTIONS:
+            require_on_behalf_approval(target=dispatch.target_ref, action=dispatch.action_name)
         self._deliver(
             ReplySpec(
                 event=dispatch.event,
