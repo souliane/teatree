@@ -118,12 +118,22 @@ class TicketDispositionScanner:
     set) and calls :meth:`CodeHostBackend.get_issue` once per active ticket
     with a non-empty ``issue_url``. Emits a ``ticket.disposition_candidate``
     signal per detected drift; the operator decides whether to dispose.
+
+    ``user_identity_aliases`` lists usernames/handles that all map to the
+    operating human (e.g. a GitHub login, a GitLab username, an internal
+    handle). When a reassignment moves the issue between two such aliases —
+    both ``old_owner`` and every member of ``new_owners`` fall inside the
+    set — the scanner drops the ``unassigned`` signal entirely: it's
+    plumbing, not an actionable handoff. Reassigns crossing the alias
+    boundary (alias → colleague, colleague → alias, or alias → mixed) still
+    render normally.
     """
 
     host: CodeHostBackend
     overlay: OverlayBase | None = None
     ready_labels: tuple[str, ...] = field(default_factory=tuple)
     overlay_name: str = ""
+    user_identity_aliases: tuple[str, ...] = field(default_factory=tuple)
     name: str = "ticket_dispositions"
 
     def scan(self) -> list[ScanSignal]:
@@ -176,12 +186,33 @@ class TicketDispositionScanner:
         ``unassigned`` keeps the old/new owner identities so the statusline
         can render the transition explicitly instead of a bare
         ``reassigned``. Other reasons need no extra fields.
+
+        The ``unassigned`` branch is suppressed when both sides of the
+        reassignment fall within ``user_identity_aliases`` — a self-handoff
+        between the operator's own identities is plumbing, not an
+        actionable signal.
         """
         reasons: list[_DispositionReason] = []
         if snap.state in {"closed", "completed", "cancelled"}:
             reasons.append(_DispositionReason("issue_closed"))
-        if author and snap.assignees and author not in snap.assignees:
+        if (
+            author
+            and snap.assignees
+            and author not in snap.assignees
+            and not self._is_self_handoff(author, snap.assignees)
+        ):
             reasons.append(_DispositionReason("unassigned", old_owner=author, new_owners=snap.assignees))
         if self.ready_labels and not any(label in snap.labels for label in self.ready_labels):
             reasons.append(_DispositionReason("label_removed"))
         return reasons
+
+    def _is_self_handoff(self, old_owner: str, new_owners: tuple[str, ...]) -> bool:
+        """True when *old_owner* and every *new_owners* entry are aliases of one human.
+
+        The set must be non-empty for the suppression to fire; an empty
+        alias list (the default) keeps the legacy behaviour unchanged.
+        """
+        aliases = frozenset(self.user_identity_aliases)
+        if not aliases:
+            return False
+        return old_owner in aliases and all(owner in aliases for owner in new_owners)

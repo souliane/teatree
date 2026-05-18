@@ -220,6 +220,128 @@ def test_build_default_jobs_tags_per_overlay() -> None:
     assert stale == {"teatree", "acme"}
 
 
+def test_build_default_jobs_propagates_user_identity_aliases(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``user_identity_aliases`` from ~/.teatree.toml lands on TicketDispositionScanner.
+
+    Wiring proof for #975 — the loop reads the global setting and hands
+    it to every overlay's disposition scanner so the reassign-suppression
+    branch fires in production.
+    """
+    from unittest.mock import MagicMock  # noqa: PLC0415
+
+    from teatree.backends.protocols import CodeHostBackend  # noqa: PLC0415
+    from teatree.core.backend_factory import OverlayBackends  # noqa: PLC0415
+    from teatree.loop.tick import build_default_jobs  # noqa: PLC0415
+
+    config_path = tmp_path / ".teatree.toml"
+    config_path.write_text(
+        '[teatree]\nuser_identity_aliases = ["adrien.work", "souliane", "adrien.cossa"]\n',
+        encoding="utf-8",
+    )
+    import teatree.config as _config  # noqa: PLC0415
+
+    monkeypatch.setattr("teatree.loop.tick.load_config", lambda: _config.load_config(config_path))
+    monkeypatch.setattr("teatree.loop.tick.discover_overlays", list)
+
+    backends = [
+        OverlayBackends(
+            name="teatree",
+            host=MagicMock(spec=CodeHostBackend),
+            messaging=None,
+            ready_labels=(),
+        ),
+    ]
+    jobs = build_default_jobs(backends=backends)
+    disp = next(j for j in jobs if j.scanner.name == "ticket_dispositions")
+    assert disp.scanner.user_identity_aliases == ("adrien.work", "souliane", "adrien.cossa")
+
+
+def test_user_identity_aliases_falls_back_to_empty_on_config_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A broken config read never crashes the tick — defaults to empty aliases."""
+    from teatree.loop.tick import _user_identity_aliases_for_overlay  # noqa: PLC0415
+
+    def _boom() -> object:
+        msg = "toml parse failure"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr("teatree.loop.tick.load_config", _boom)
+    assert _user_identity_aliases_for_overlay("acme") == ()
+
+
+def test_user_identity_aliases_no_override_inherits_global(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An overlay registered without a per-overlay override sees the global setting."""
+    from teatree.config import OverlayEntry  # noqa: PLC0415
+    from teatree.loop.tick import _user_identity_aliases_for_overlay  # noqa: PLC0415
+
+    config_path = tmp_path / ".teatree.toml"
+    config_path.write_text('[teatree]\nuser_identity_aliases = ["a", "b"]\n', encoding="utf-8")
+    import teatree.config as _config  # noqa: PLC0415
+
+    monkeypatch.setattr("teatree.loop.tick.load_config", lambda: _config.load_config(config_path))
+    monkeypatch.setattr(
+        "teatree.loop.tick.discover_overlays",
+        lambda: [OverlayEntry(name="acme", overlay_class="x.y:Z", overrides={})],
+    )
+    assert _user_identity_aliases_for_overlay("acme") == ("a", "b")
+
+
+def test_build_default_jobs_per_overlay_alias_override(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Per-overlay override beats the global ``user_identity_aliases`` for that overlay.
+
+    The setting is registered in ``OVERLAY_OVERRIDABLE_SETTINGS`` (#975),
+    so a tracker-scoped overlay can carry tracker-specific handles
+    without flipping the global default.
+    """
+    from unittest.mock import MagicMock  # noqa: PLC0415
+
+    from teatree.backends.protocols import CodeHostBackend  # noqa: PLC0415
+    from teatree.config import OverlayEntry  # noqa: PLC0415
+    from teatree.core.backend_factory import OverlayBackends  # noqa: PLC0415
+    from teatree.loop.tick import build_default_jobs  # noqa: PLC0415
+
+    config_path = tmp_path / ".teatree.toml"
+    config_path.write_text(
+        '[teatree]\nuser_identity_aliases = ["global-only"]\n',
+        encoding="utf-8",
+    )
+    import teatree.config as _config  # noqa: PLC0415
+
+    monkeypatch.setattr("teatree.loop.tick.load_config", lambda: _config.load_config(config_path))
+    monkeypatch.setattr(
+        "teatree.loop.tick.discover_overlays",
+        lambda: [
+            OverlayEntry(
+                name="scoped",
+                overlay_class="x.y:Z",
+                overrides={"user_identity_aliases": ["adrien.work", "souliane"]},
+            ),
+        ],
+    )
+
+    backends = [
+        OverlayBackends(
+            name="scoped",
+            host=MagicMock(spec=CodeHostBackend),
+            messaging=None,
+            ready_labels=(),
+        ),
+    ]
+    jobs = build_default_jobs(backends=backends)
+    disp = next(j for j in jobs if j.scanner.name == "ticket_dispositions")
+    assert disp.scanner.user_identity_aliases == ("adrien.work", "souliane")
+
+
 def test_zones_groups_disposition_candidates_by_reason(tmp_path: Path) -> None:
     from teatree.loop.dispatch import DispatchAction  # noqa: PLC0415
     from teatree.loop.rendering import zones_for as _zones_for  # noqa: PLC0415
