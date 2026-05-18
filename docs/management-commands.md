@@ -2,7 +2,7 @@
 
 Teatree's Django management commands handle all database-touching operations. They use [django-typer](https://github.com/bckohan/django-typer) so each command exposes typed subcommands.
 
-These are also accessible through the `t3` CLI (see [CLI Reference](cli.md)), but you can call them directly with `manage.py` if you prefer.
+These are also accessible through the `t3` CLI (see [CLI Reference](generated/cli-reference.md)), but you can call them directly with `manage.py` if you prefer.
 
 ## `lifecycle`
 
@@ -86,6 +86,16 @@ Monitoring and reminders.
 | `sync` | -- | dict | Syncs follow-up data: discovered MRs, created/updated tickets, errors |
 | `remind` | -- | list of IDs | Returns IDs of pending interactive tasks |
 
+## `standup`
+
+Auto-generated daily update (read-only — no state mutation). Derived
+entirely from `TicketTransition` + `TaskAttempt` + per-worktree `git log`.
+
+| Subcommand | Arguments | Returns | Description |
+|------------|-----------|---------|-------------|
+| `generate` | `--days`, `--since` | dict | Cross-references phase changes and agent runs in the window; returns `{since, yesterday, blockers, markdown}` |
+| `stale` | `--days` | list of dicts | Tickets with no `TaskAttempt`/`TicketTransition` activity past the threshold (same query as the `stale_tickets` scanner) |
+
 ## `ticket`
 
 Ticket state management.
@@ -120,13 +130,7 @@ Documentation generation.
 
 | Subcommand | Arguments | Returns | Description |
 |------------|-----------|---------|-------------|
-| `handle` | `output_dir` | string | Generates all docs: overlay extension-points, skill delegation matrix, CLI reference |
-
-## `generate_cli_docs`
-
-| Subcommand | Arguments | Returns | Description |
-|------------|-----------|---------|-------------|
-| `handle` | `output` | string | Generates CLI reference documentation from `--help` introspection |
+| `handle` | `output_dir` (default `docs/generated`) | string | Generates the overlay extension-points and skill-delegation docs. The CLI reference is generated separately by the `generate-cli-reference` pre-commit hook (`scripts/hooks/generate_cli_reference.py`), not this command. |
 
 ## `generate_overlay_docs`
 

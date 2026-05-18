@@ -4,7 +4,6 @@ from django.test import TestCase, override_settings
 
 import teatree.core.overlay_loader as overlay_loader_mod
 import teatree.core.signals as signals_mod
-import teatree.utils.run as utils_run_mod
 from teatree.core.models import Session, Task, Ticket
 from tests.teatree_core.conftest import CommandOverlay
 
@@ -24,7 +23,7 @@ class TestAutoEnqueueHeadlessSignal(TestCase):
 
     @override_settings(**IMMEDIATE_BACKEND)
     def test_headless_task_auto_executes_on_creation(self) -> None:
-        import subprocess as _sp  # noqa: PLC0415
+        import shlex  # noqa: PLC0415
 
         import teatree.agents.headless as headless_mod  # noqa: PLC0415
 
@@ -34,9 +33,9 @@ class TestAutoEnqueueHeadlessSignal(TestCase):
         with (
             patch.object(headless_mod.shutil, "which", return_value="/usr/bin/claude-code"),
             patch.object(
-                utils_run_mod.subprocess,
-                "run",
-                return_value=_sp.CompletedProcess([], 0, '{"summary": "OK"}', ""),
+                headless_mod,
+                "_build_headless_command",
+                return_value=["sh", "-c", f"printf %s {shlex.quote('{"summary": "OK"}')}"],
             ),
             patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
         ):
@@ -107,7 +106,7 @@ class TestAutoEnqueueHeadlessSignal(TestCase):
     @override_settings(**IMMEDIATE_BACKEND)
     def test_route_to_headless_triggers_enqueue(self) -> None:
         """Re-routing an interactive task to headless triggers auto-enqueue."""
-        import subprocess as _sp  # noqa: PLC0415
+        import shlex  # noqa: PLC0415
 
         import teatree.agents.headless as headless_mod  # noqa: PLC0415
 
@@ -125,9 +124,9 @@ class TestAutoEnqueueHeadlessSignal(TestCase):
         with (
             patch.object(headless_mod.shutil, "which", return_value="/usr/bin/claude-code"),
             patch.object(
-                utils_run_mod.subprocess,
-                "run",
-                return_value=_sp.CompletedProcess([], 0, '{"summary": "OK"}', ""),
+                headless_mod,
+                "_build_headless_command",
+                return_value=["sh", "-c", f"printf %s {shlex.quote('{"summary": "OK"}')}"],
             ),
             patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
         ):

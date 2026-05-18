@@ -602,7 +602,21 @@ Usage: t3 doctor [OPTIONS] COMMAND [ARGS]...
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ check  Verify imports, required tools, and editable-install sanity.          │
+│ authorizations  Suggest absent recommended auto-mode authorizations          │
+│                 (read-only).                                                 │
+│ check           Verify imports, required tools, and editable-install sanity. │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 doctor authorizations`
+
+```
+Usage: t3 doctor authorizations [OPTIONS]
+
+ Suggest absent recommended auto-mode authorizations (read-only).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -1388,6 +1402,7 @@ Usage: t3 teatree [OPTIONS] COMMAND [ARGS]...
 │ pr           Pull request helpers.                                           │
 │ tasks        Async task queue.                                               │
 │ followup     Follow-up snapshots.                                            │
+│ standup      Auto-generated daily update (read-only).                        │
 │ lifecycle    Session lifecycle and phase tracking.                           │
 │ env          Inspect and mutate the worktree env cache.                      │
 │ ticket       Ticket state management.                                        │
@@ -2634,6 +2649,54 @@ Usage: t3 teatree followup remind [OPTIONS]
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 teatree standup`
+
+```
+Usage: t3 teatree standup [OPTIONS] COMMAND [ARGS]...
+
+ Auto-generated daily update (read-only).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ generate  Generate a standup from transition + attempt data (read-only).     │
+│ stale     List tickets with no activity past the staleness threshold         │
+│           (read-only).                                                       │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree standup generate`
+
+```
+Usage: t3 teatree standup generate [OPTIONS]
+
+ Generate the standup from existing transition + attempt data (read-only).
+
+ Returns ``{since, yesterday, blockers, markdown}`` — ``markdown`` is
+ the pre-rendered human view alongside the structured rows.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --days         INTEGER  Window size in days (default: last business day).    │
+│                         [default: 1]                                         │
+│ --since        TEXT     ISO timestamp override for the window start.         │
+│ --help                  Show this message and exit.                          │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree standup stale`
+
+```
+Usage: t3 teatree standup stale [OPTIONS]
+
+ List tickets with no activity past the threshold (read-only).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --days        INTEGER  Inactivity threshold in days. [default: 3]            │
+│ --help                 Show this message and exit.                           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

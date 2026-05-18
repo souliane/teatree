@@ -155,16 +155,27 @@ if [ -n "$session_id" ] && [ -r "$_crons_file" ] && command -v jq >/dev/null 2>&
     if [ -n "$_wakeup_epoch" ] && [ "$_wakeup_epoch" != "null" ]; then
         _wname=$(jq -r '.wakeup.name // "loop"' "$_crons_file" 2>/dev/null)
         _wdiff=$(( _wakeup_epoch - _now ))
+        # The wakeup epoch is written only by ScheduleWakeup and has no clear
+        # path: a long-finished wakeup would otherwise keep rendering as a
+        # live "→now" forever. Treat anything more than the grace window
+        # overdue as stale and omit it. A wakeup within the grace window
+        # (0 to GRACE seconds overdue) still shows "now" — a real imminent
+        # fire, not a stale leftover.
+        _wakeup_stale_grace=120
         if (( _wdiff > 60 )); then
             _wtiming="$(( _wdiff / 60 ))m"
         elif (( _wdiff > 0 )); then
             _wtiming="${_wdiff}s"
-        else
+        elif (( _wdiff >= -_wakeup_stale_grace )); then
             _wtiming="now"
+        else
+            _wtiming=""
         fi
-        _wlabel="${_CYN}${_wname}${_RST}${_LBL}→${_wtiming}${_RST}"
-        [ -n "$_loop_parts" ] && _loop_parts="${_loop_parts}${isep}"
-        _loop_parts="${_loop_parts}${_wlabel}"
+        if [ -n "$_wtiming" ]; then
+            _wlabel="${_CYN}${_wname}${_RST}${_LBL}→${_wtiming}${_RST}"
+            [ -n "$_loop_parts" ] && _loop_parts="${_loop_parts}${isep}"
+            _loop_parts="${_loop_parts}${_wlabel}"
+        fi
     fi
     [ -n "$_loop_parts" ] && _loops_segment="${_LBL}loops:${_RST} ${_loop_parts}"
 fi

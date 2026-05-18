@@ -413,7 +413,7 @@ Represents a unit of work for an agent (headless or interactive).
 
 **Claiming:** `claim(claimed_by, lease_seconds=300)` uses `select_for_update()` for atomic distributed locking. Raises `InvalidTransitionError` if already claimed with a valid lease.
 
-**Completion flow:** `complete()` → clears claim → calls `_advance_ticket()`. `_advance_ticket()` **normalizes `self.phase` via `normalize_phase()` once** before the FSM dispatch (#750), mirroring `_record_phase_visit()` — a task whose phase is a short verb (`review`/`code`/…, the vocabulary skills emit and `tasks create` stores verbatim) advances the FSM, not just records the session visit; raw comparison previously left `ticket.state` silently desynced from `visited_phases` (one root cause `reconcile_reviewed()` papered over). The phase-keyed branches below match on the **normalized** token:
+**Completion flow:** `complete()` → clears claim → calls `_advance_ticket()`, **all inside a single `transaction.atomic()` (#883)**. Pre-#883 the task `save()` and the FSM transition were two separate write boundaries: a process death between them left the task COMPLETED but the ticket on its old state, and because the task was no longer CLAIMED neither `reclaim_orphaned_claims` nor `reap_stale_claims` could rescue it — the loop stalled forever on a half-advanced ticket. One transaction closes that window: either both writes land or neither does. `_advance_ticket()` records the phase visit then delegates the FSM dispatch to `_apply_phase_transition()` — the **single** place that maps a completed phase to an FSM transition, **shared** by the live `complete()` chain and the `TaskQuerySet.replay_orphaned_transitions()` boot/tick recovery sweep (the boot-time safety net for any row that slipped through before the atomic fix shipped, or via a future un-wrapped seam — sibling of `reclaim_orphaned_claims`, run from the same `_reap_stale_task_claims()` hook *before* the claim sweeps). Because replay reuses that exact guarded path it is idempotent and **cannot skip a lifecycle gate**: a COMPLETED `shipping` task on a ticket that never went through code→test→review finds no matching `phase + state` guard and no-ops, so a ticket can never reach a state it did not earn. `_apply_phase_transition()` **normalizes `self.phase` via `normalize_phase()` once** before the FSM dispatch (#750), mirroring `_record_phase_visit()` — a task whose phase is a short verb (`review`/`code`/…, the vocabulary skills emit and `tasks create` stores verbatim) advances the FSM, not just records the session visit; raw comparison previously left `ticket.state` silently desynced from `visited_phases` (one root cause `reconcile_reviewed()` papered over). The phase-keyed branches below match on the **normalized** token:
 
 - If last attempt has `needs_user_input: true`: creates interactive followup task (same phase, parent_task linked, session carries the `agent_session_id` for resume)
 - If phase is "scoping" and ticket is SCOPED: calls `ticket.start()` (→ schedules coding)
@@ -422,7 +422,7 @@ Represents a unit of work for an agent (headless or interactive).
 - If phase is "reviewing" and ticket is TESTED: calls `ticket.review()` (→ schedules shipping)
 - If phase is "shipping" and ticket is REVIEWED: calls `ticket.ship()`
 
-Each guard is `phase + state` so repeat calls (e.g. from parallel child tasks) find the state mismatch and safely no-op after the first advance.
+Each guard is `phase + state` so repeat calls (parallel child tasks, **or `replay_orphaned_transitions()` re-running an already-applied transition**) find the state mismatch and safely no-op after the first advance.
 
 **Phase task consumption:** Each FSM transition body calls `_consume_pending_phase_tasks(phase)` for the phase it closes. On the task-driven path the task was already marked COMPLETED before the transition fires, so the call is a zero-row no-op. On direct-call paths (e.g. `pr.py` invoking `ticket.ship()` from a CLI command) the previously auto-scheduled phase task is still PENDING/CLAIMED — the call marks it COMPLETED so the dispatcher does not later claim it as a zombie session. Both this consume side (`TaskQuerySet.pending_in_phase`, #769) and the FSM read-side conditions (`TaskQuerySet.completed_in_phase`, #757) match the phase via the shared `phase_spellings()` SSOT, so a short-verb task (`tasks create <id> review`, stored unnormalized as `review`) is matched the same as the canonical `reviewing` — a raw `phase=phase` filter previously missed it.
 
@@ -502,7 +502,34 @@ Runs `claude -p <prompt> --append-system-prompt <context> --output-format json`.
 8. Create TaskAttempt with result, exit_code, agent_session_id
 9. Call `task.complete()` which triggers automatic ticket advancement
 
+**Model tiering (#880, #562 §3):** `resolve_phase_model(phase)` (in `agents/model_tiering.py`) maps the task's phase to a Claude model tier. Mechanical phases are downgraded by default (`reviewing`/`testing`/`shipping` → `sonnet`, `retrospecting` → `haiku`); reasoning phases (`coding`, `debugging`) and unmapped phases return `None`, so no `--model` flag is added and the user's default model applies. Overridable per phase via `~/.teatree.toml`:
+
+```toml
+[agent]
+phase_models.reviewing = "opus"   # pin a phase back to the reasoning tier
+phase_models.coding = "sonnet"    # opt a reasoning phase into a cheap tier
+phase_models.testing = ""         # opt out — inherit the user's default
+```
+
 **Auth:** Uses the `claude` binary (Claude Code session auth — no API key required).
+
+**Stuck-loop / cost-spike watchdog (#882).** The agent runs over `Popen` (via `teatree.utils.run.spawn`) so the heartbeat thread can terminate a runaway mid-flight. On every heartbeat tick `LoopWatchdog.breach_reason()` evaluates the task's wall-clock runtime plus the accumulated `TaskAttempt.num_turns` / `cost_usd` deltas (sampled once on the main thread before the subprocess starts — prior-attempt totals are static for the run). On a ceiling breach the subprocess is killed and a `stuck_loop` `TaskAttempt` failure is recorded with the observed deltas (`task.fail()` runs). The conservative default is a 3h runtime ceiling that only trips on a genuinely runaway subprocess; absolute turn/cost budget caps are deferred to #398-4, so those dimensions default off (`0` = disabled). Overridable via Django settings:
+
+```python
+TEATREE_LOOP_WATCHDOG = {
+    "max_runtime_seconds": 10800,  # 0 = disabled
+    "max_turns": 0,                # 0 = disabled
+    "max_cost_usd": 0.0,           # 0 = disabled
+}
+```
+
+**Per-ticket cost cap (#885 / #398-4).** Where the watchdog above bounds a single in-flight subprocess (it kills a runaway mid-run), `TicketBudget` bounds the *whole ticket's lifetime spend* at dispatch time. Before a task's subprocess is launched, `run_headless` sums `TaskAttempt.cost_usd` across every task under the task's ticket; once the cumulative spend crosses the configured ceiling the subprocess is not launched and a `budget_exceeded` `TaskAttempt` failure is recorded (`task.fail()` runs), surfacing the breach on the failure record so a pathological ticket stops draining budget in unattended batch runs. The conservative default mirrors #882's precedent — the cap is opt-in (`0.0` = disabled), so the consumer changes no behaviour until a ceiling is configured. Overridable via Django settings:
+
+```python
+TEATREE_TICKET_BUDGET = {
+    "max_cost_usd": 0.0,  # 0 = disabled
+}
+```
 
 ### 5.3 Prompt Building (prompt.py)
 
@@ -587,11 +614,12 @@ Each tick runs three stages:
 |---|---|---|
 | `my_prs` | Open PRs I authored: pipeline status, draft comments, dismissed approvals, mergeability. | Mechanical fix (lint/type/format) inline; otherwise surface in statusline. |
 | `reviewer_prs` | Open PRs where I'm a requested reviewer. Cache lives on `Ticket(role="reviewer").extra` (`reviewed_sha`, `last_review_state`) — same DB row that records the review work. A legacy `loop/reviewer_prs.json` file is imported on first run, then deleted. | Dispatch to the `reviewer` phase agent when `head.sha` ≠ `last_reviewed_sha`, OR when the prior `APPROVED` state has been dismissed (transitioned to `DISMISSED` / `PENDING`) by a force-push or re-request. Backed by `CodeHost.get_review_state(pr_url, reviewer)` on both GitHub and GitLab. The agent posts draft notes via `t3 review post-draft-note` and publishes when its review is complete. |
-| `slack_mentions` | New `app_mention` events and DMs from the active overlay's `MessagingBackend`. | The dispatcher folds Slack messages whose text contains a PR URL into a `t3:reviewer` agent action; everything else is surfaced in the statusline (`action_needed` zone) so the user can reply inline or ack. |
+| `slack_mentions` | New `app_mention` events and DMs from the active overlay's `MessagingBackend`. | The dispatcher folds Slack messages whose text contains a PR URL into a `t3:reviewer` agent action; everything else is surfaced in the statusline (`action_needed` zone) so the user can reply inline or ack. The webhook path (`/hooks/slack/` → `IncomingEvent` → classifier → router → `IncomingEventsScanner`) emits the same review-request dispatch: a Slack message like "can you review <MR url>" classifies as `TASK` and its body rides the `incoming_event.task_needed` payload's `detail`; the dispatcher extracts the PR URL and routes to `t3:reviewer` (the same dual-dispatch shape) instead of dropping to a passive note (#219). The review-request branch precedes the `answering` fallback so a review request routes to a review regardless of the classifier's phase. |
 | `notion_view` | Notion items assigned to me with no code-host reference field set. | Trigger the existing n8n webhook so the code-host issue is created with project routing + templating. Read-only with respect to Notion. |
 | `assigned_issues` | Open issues assigned to me on a configured code host that have reached "ready to work" state. | Create the `Ticket` + worktrees; the ticket FSM's `start()` transition then handles the rest (the orchestrator phase agent picks up coding when the worktrees are provisioned). |
 | `pending_tasks` | `Task` rows in `pending` state. | Run via the headless executor (§ 5.2), which dispatches to the appropriate phase agent. The Django `Task` model is resolved lazily through `apps.get_model("core", "Task")` so the scanner module is importable before `django.setup()` runs (the CLI imports the loop subapp at startup). |
 | `ticket_dispositions` | Active pre-PR `Ticket` rows whose remote issue has drifted (closed externally, reassigned away, ready-label removed). | Detection-only: emit `ticket.disposition_candidate` signals to the statusline `action_needed` zone — never auto-transition. The user reviews and decides whether to mark the ticket `IGNORED`, run `worktree teardown`, reassign back, etc. Tickets past `REVIEWED` are skipped: once a PR exists, `MyPrsScanner` covers downstream state. |
+| `stale_tickets` | Non-terminal `Ticket` rows (states `scoped..in_review`) with no `TaskAttempt`/`TicketTransition` activity for longer than `OverlayConfig.stale_threshold_days` (default 3). | Detection-only: emit `ticket.stale` signals to the statusline `action_needed` zone — never auto-transition. Staleness is measured on *activity* (last `TaskAttempt.started_at`, falling back to `TicketTransition.created_at`), not phase duration: a ticket worked on daily stays fresh. `not_started` and terminal states are excluded. |
 | `active_tickets` | Non-terminal `Ticket` rows (any state except `delivered`/`ignored`). | Surface FSM state in the statusline anchors zone, grouped by overlay and state: `[acme] started: #123 #456 · coded: #789`. Noise states (not_started, merged, delivered, shipped, in_review, retrospected) are filtered. For TOML overlays with their own project DB, `ExternalTicketsScanner` reads tickets via raw SQLite. |
 | `ticket_completion` | Post-ship `Ticket` rows (shipped/in_review/merged) whose upstream issue is done. | Mechanical inline action: transition the ticket through `request_review → mark_merged → retrospect` toward delivered. "Done" is overlay-configurable via `OverlayBase.is_issue_done()` — default checks GitHub issue state `∈ {closed, completed}`; GitLab overlays check for a process label (e.g. `Process:DEV Review`). This prevents marking multi-repo tickets done when only one MR merges. |
 
@@ -915,6 +943,7 @@ Typer-based, work without Django:
 - `t3 tool {privacy-scan,analyze-video,bump-deps,label-issues,find-duplicates,triage-issues,audit-memory}` — standalone utilities
 - `t3 config write-skill-cache` — write overlay skill metadata to cache
 - `t3 doctor {check,repair}` — health checks and symlink repair
+- `t3 doctor authorizations` — read-only: detect which generic recommended auto-mode authorizations are absent from the user's resolved `~/.claude/settings.json` `autoMode.allow` and print the paste-ready sentence for each missing one. Teatree ships **no** classifier whitelist of its own (§11.4 — classifier rules always remain per-user); this only *suggests*, never writes the user's settings. The recommended set + render logic lives in `teatree.cli.recommended_authorizations`; it is also surfaced by `t3 doctor check` and at the end of `t3 setup`. User-specific items (VPS hosts, dev-DB creds, exact paths) are deliberately not part of the generic set.
 - `t3 update` — fetch + fast-forward (ff-only) teatree core and every registered overlay repo to its default branch, reinstall advanced editable installs, then re-run the idempotent `t3 setup`. A dirty tree, a non-default-branch checkout, or a missing upstream is skipped with a reason (never stashed/reset/clobbered); exit is non-zero only on a hard fetch/pull failure, not a skip. Kept separate from `t3 setup` so routine bootstrap can never silently jump the running code to newer `main`.
 - `t3 setup slack-bot --overlay <name>` — interactive walkthrough to register a Slack bot for an overlay; opens the app-manifest URL, captures bot+app tokens, stores them via `pass`, writes `slack_user_id` into `~/.teatree.toml`, smoke-tests with a round-trip DM (see § 10.1 for the manifest template and scopes). Subcommands of `t3 setup` short-circuit the global skill-install callback so the walkthrough runs without requiring `T3_REPO`.
 - `t3 assess` — codebase health check (ruff, coverage, complexity, dependency staleness)
@@ -1308,7 +1337,9 @@ The design is **broad allow, narrow deny**:
 
 **Why this shape.** The `t3` CLI is the workflow's safety wrapper — it enforces worktree isolation, branch naming, ticket gates, and push gates. Blocking commands inside the CLI is the wrong layer; we allow tool families broadly and let `t3` decide which invocations are legitimate. The classifier stays available for novel patterns that neither list covers, but in the common case a teatree session runs end-to-end without a single classifier prompt.
 
-**Users still get the final say.** A user's own `~/.claude/settings.json` (or equivalent) can expand this further or tighten it — nothing in the plugin prevents an individual from locking down their environment.
+**Users still get the final say.** A user's own `~/.claude/settings.json` (or equivalent) can expand this further or tighten it — nothing in the plugin prevents an individual from locking down their environment. To make a session friction-free without the plugin ever shipping a classifier whitelist, teatree documents a generic, parameterized **recommended** auto-mode set and detects (read-only — never applies) which entries are absent: `t3 doctor authorizations` (also surfaced by `t3 doctor check` and `t3 setup`) prints the paste-ready sentence for each missing rule. The set lives in `teatree.cli.recommended_authorizations` and `skills/setup/references/recommended-automode-authorizations.md`; user-specific items (hosts, creds, paths) are deliberately the user's to add.
+
+The full config surface for instance-specific agent behaviour — operating mode (`[teatree] mode` vs. `[overlays.<name>] mode` vs. `T3_MODE`), the `auto`-mode training wheels, how overlays declare their MCP/messaging integration via `OverlayConfig`, and why no `mcp__*` / `defaultMode` block ships in the plugin — is consolidated, with each knob mapped to its owning module, in `skills/setup/references/agent-mode-and-mcp-config.md`.
 
 **Plugin config is not self-modifiable by the agent.** Claude Code's autonomy guardrail rejects edits to the plugin's `settings.json` allow-list — and to standing pre-authorization clauses in `CLAUDE.md` — as "Self-Modification / classifier bypass". This is by design: an agent that can grant itself standing high-impact permissions (e.g. `Bash(gh pr merge:*)`, "merge auth carries through") would defeat the purpose of the classifier. When per-call confirmation on `gh pr merge` / `gh pr update-branch` is too noisy for a session, the right knob is the **user's own** `~/.claude/settings.json` (user-scoped, not plugin-scoped) — or a single compound bash invocation that bundles the status check and merge into one intent.
 
@@ -1706,7 +1737,7 @@ Dev dependencies: ruff, pytest, pytest-cov, pytest-django, ty, import-linter, pr
 - Management commands use `django-typer`, not `BaseCommand`.
 - Package is `teatree` (double-e), repo/CLI is `teatree`/`t3`.
 - `DJANGO_SETTINGS_MODULE` is stripped from env when running `_managepy()` so the overlay's own settings win.
-- **Port allocation is ephemeral (Non-Negotiable).** Host ports are **auto-mapped by Docker** at `worktree start` — the compose override declares container ports with no host binding (`ports: ["<container_port>"]`). After compose up, `WorktreeStartRunner` queries the running project via `docker compose port` and stores the result on `Worktree.extra["ports"]`. Ports are **never** written to `.env.worktree`, the database, or any other persistent store. Docker services are discoverable via `docker compose port` (single source of truth). Inter-service traffic uses compose service DNS — no host port involved.
+- **Port allocation is ephemeral (Non-Negotiable).** Host ports are **auto-mapped by Docker** at `worktree start` — the compose override declares container ports with no host binding (`ports: ["<container_port>"]`). After compose up, `WorktreeStartRunner` queries the running project via `docker compose port` and stores the result on `Worktree.extra["ports"]`. Ports are **never** written to `.t3-cache/.t3-env.cache`, the database, or any other persistent store. Docker services are discoverable via `docker compose port` (single source of truth). Inter-service traffic uses compose service DNS — no host port involved.
 - Coverage omits only migrations. Everything else must be covered.
 - `claude -p` is headless (exits immediately). The user's interactive session running `/loop` is the only persistent Claude Code session.
 - Statusline state is rendered to a file (`${XDG_DATA_HOME:-$HOME/.local/share}/teatree/statusline.txt`, override via `TEATREE_STATUSLINE_FILE`) by the loop and `cat`-ed by the hook — the hook itself does no DB or network I/O. The file lives under XDG data, not `~/.teatree` (which is the user's shell config file, not a directory).
@@ -1998,6 +2029,7 @@ graph TD
     teatree.agents --> teatree.core
     teatree.agents --> teatree.skill_loading
     teatree.agents --> teatree.utils
+    teatree.agents --> teatree.config
     teatree.backends --> teatree.types
     teatree.backends --> teatree.utils
     teatree.backends --> teatree.core

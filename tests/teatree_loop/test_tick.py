@@ -215,6 +215,9 @@ def test_build_default_jobs_tags_per_overlay() -> None:
     assert overlays == {"teatree", "acme"}
     pending = [j for j in jobs if j.scanner.name == "pending_tasks"]
     assert len(pending) == 1  # singleton across overlays
+    # The stale-tickets scanner (#563) is wired once per overlay.
+    stale = {j.overlay for j in jobs if j.scanner.name == "stale_tickets"}
+    assert stale == {"teatree", "acme"}
 
 
 def test_zones_groups_disposition_candidates_by_reason(tmp_path: Path) -> None:
@@ -401,7 +404,17 @@ class TestDispositionMechanical(django.test.TestCase):
 
 
 class TestTickReapsStaleClaims(django.test.TestCase):
-    def test_run_tick_reaps_claims_with_expired_lease(self) -> None:
+    def test_run_tick_takes_over_an_orphaned_claim(self) -> None:
+        """#652: a tick returns an orphaned in-flight claim to PENDING.
+
+        The session that claimed the Task exited and its lease expired.
+        A fresh tick (this one, in another open session) must take the
+        orphan over — return it to PENDING so the loop continues — rather
+        than FAIL it (which, pre-#652, stalled the loop until a manual
+        ``reopen()``). ``reclaim_orphaned_claims`` runs before
+        ``reap_stale_claims`` in the tick, so the recoverable orphan is
+        reclaimed, not reaped.
+        """
         import tempfile  # noqa: PLC0415
         from datetime import timedelta  # noqa: PLC0415
 
@@ -424,7 +437,39 @@ class TestTickReapsStaleClaims(django.test.TestCase):
             run_tick(TickRequest(scanners=[]), statusline_path=Path(tmp) / "statusline.txt")
 
         stale.refresh_from_db()
-        assert stale.status == Task.Status.FAILED
+        assert stale.status == Task.Status.PENDING
+        assert stale.claimed_by == ""
+
+
+class TestTickReplaysOrphanedTransitions(django.test.TestCase):
+    def test_run_tick_replays_a_half_advanced_ticket(self) -> None:
+        """#883: a tick recovers a ticket left half-advanced by a crash.
+
+        A coding task COMPLETED but the FSM ``code()`` transition was
+        lost to a mid-transition crash, so the ticket is still STARTED.
+        The task is COMPLETED (not CLAIMED) — the claim sweeps cannot see
+        it. A fresh tick must run ``replay_orphaned_transitions`` from
+        the same boot/tick recovery hook and advance the ticket so the
+        loop continues instead of stalling forever.
+        """
+        import tempfile  # noqa: PLC0415
+
+        from teatree.core.models import Session, Task, Ticket  # noqa: PLC0415
+
+        ticket = Ticket.objects.create(state=Ticket.State.STARTED)
+        session = Session.objects.create(ticket=ticket, agent_id="agent")
+        Task.objects.create(
+            ticket=ticket,
+            session=session,
+            phase="coding",
+            status=Task.Status.COMPLETED,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            run_tick(TickRequest(scanners=[]), statusline_path=Path(tmp) / "statusline.txt")
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.CODED
 
 
 def test_tick_captures_mechanical_handler_exception(

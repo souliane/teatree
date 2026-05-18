@@ -183,6 +183,14 @@ When a `t3` CLI command fails (setup, start, run, or any other):
 
 This rule exists in `workspace/SKILL.md` but skills are only loaded on demand. The global agent config is **always loaded**, catching the agent before it has a chance to improvise.
 
+## Step 4c: Recommended Auto-Mode Authorizations
+
+Teatree ships **no** classifier `autoMode`/`permissions` allow-list — classifier rules always remain per-user (BLUEPRINT §11.4). It does document a generic, parameterized recommended set that makes a session friction-free, and detects (read-only, never applies) which entries are absent from your own `~/.claude/settings.json`.
+
+Run `t3 doctor authorizations` (also surfaced by `t3 doctor check` and at the end of `t3 setup`). For each missing rule it prints the exact sentence to paste into your `autoMode.allow` array. The full set, the rationale, and what is deliberately left to the user (VPS hosts, dev-DB creds, exact paths) are documented in [`references/recommended-automode-authorizations.md`](references/recommended-automode-authorizations.md).
+
+For the broader picture — operating mode (`[teatree] mode`), the `auto`-mode training wheels, how overlays declare their MCP/messaging integration, and the post-setup permission state — see [`references/agent-mode-and-mcp-config.md`](references/agent-mode-and-mcp-config.md). It maps each config surface to the module that owns it so the docs cannot drift from the code.
+
 ## Step 5: Generate an Overlay Package
 
 Use the TeaTree bootstrap CLI, not shell overlay scaffolding.

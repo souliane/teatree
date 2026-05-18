@@ -91,20 +91,34 @@ class Task(models.Model):
         self._route(self.ExecutionTarget.INTERACTIVE, reason)
 
     def complete(self, *, result_artifact_path: str = "") -> None:
-        self.status = self.Status.COMPLETED
-        self.result_artifact_path = result_artifact_path
-        self._clear_claim()
-        self.save(
-            update_fields=[
-                "status",
-                "result_artifact_path",
-                "claimed_at",
-                "claimed_by",
-                "lease_expires_at",
-                "heartbeat_at",
-            ],
-        )
-        self._advance_ticket()
+        """Mark the task COMPLETED and auto-advance the ticket — atomically.
+
+        #883: the task ``save()`` and the FSM transition in
+        ``_advance_ticket`` are wrapped in a single ``transaction.atomic``.
+        Pre-#883 these were two separate write boundaries: a crash between
+        them left the task COMPLETED but the ticket on its old state, and
+        because the task is no longer CLAIMED neither ``reap_stale_claims``
+        nor ``reclaim_orphaned_claims`` could rescue it — the loop stalled
+        forever. One transaction closes that window: either both writes
+        land or neither does. ``replay_orphaned_transitions`` is the
+        boot/tick safety net for rows that slipped through before the fix
+        or any future seam.
+        """
+        with transaction.atomic():
+            self.status = self.Status.COMPLETED
+            self.result_artifact_path = result_artifact_path
+            self._clear_claim()
+            self.save(
+                update_fields=[
+                    "status",
+                    "result_artifact_path",
+                    "claimed_at",
+                    "claimed_by",
+                    "lease_expires_at",
+                    "heartbeat_at",
+                ],
+            )
+            self._advance_ticket()
 
     def _advance_ticket(self) -> None:
         """Auto-advance ticket state based on the completed task's phase.
@@ -119,6 +133,27 @@ class Task(models.Model):
             self._schedule_interactive_followup()
             return
         self._record_phase_visit()
+        self._apply_phase_transition()
+
+    def _apply_phase_transition(self) -> bool:
+        """Fire the FSM transition this task's phase implies, if its guard holds.
+
+        The single phase→state advance path, shared by the live
+        ``complete()`` chain and the ``replay_orphaned_transitions``
+        boot/tick recovery sweep (#883) — there is exactly ONE place that
+        maps a completed phase to an FSM transition, so replay can never
+        skip a lifecycle gate the live path enforces. Every branch is
+        guarded by both ``phase`` *and* the required ``ticket.state``
+        (gate-integrity): a ``shipping`` task whose ticket never went
+        through code→test→review finds no matching guard and no-ops, so a
+        ticket can never reach a state it did not earn. The guards also
+        make the call idempotent — once the ticket has advanced, a repeat
+        call (parallel child task, or a replay of an already-applied
+        transition) finds the state mismatch and no-ops.
+
+        Returns ``True`` iff a transition fired (used by the replay sweep
+        to count recovered tickets).
+        """
         ticket = self.ticket
         ticket.refresh_from_db()
         # Normalize once, mirroring _record_phase_visit() — a task whose
@@ -147,6 +182,9 @@ class Task(models.Model):
             elif phase == "shipping" and ticket.state == Ticket.State.REVIEWED:
                 ticket.ship()
                 ticket.save()
+            else:
+                return False
+        return True
 
     def _record_phase_visit(self) -> None:
         """Record this task's phase on its session as completion happens (#694).

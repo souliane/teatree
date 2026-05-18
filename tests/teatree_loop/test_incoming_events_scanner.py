@@ -79,6 +79,26 @@ class TestIncomingEventsScanner(TestCase):
         kinds = {s.kind for s in signals}
         assert "incoming_event.task_needed" in kinds
 
+    def test_task_signal_payload_carries_detail_for_review_bridge(self) -> None:
+        """The task_needed payload exposes the inbound body for the bridge.
+
+        The dispatcher needs it to spot a Slack review request and route
+        it to an independent review (#219). Without ``detail`` the PR URL
+        is invisible downstream.
+        """
+        event = _event(
+            source=IncomingEvent.Source.SLACK,
+            body="<@bot> can you review https://github.com/o/r/pull/5",
+            key="slack:review1",
+            event={"type": "app_mention"},
+        )
+
+        signals = IncomingEventsScanner().scan()
+
+        event.refresh_from_db()
+        task = next(s for s in signals if s.kind == "incoming_event.task_needed")
+        assert "https://github.com/o/r/pull/5" in task.payload["detail"]
+
     def test_schedule_merge_emits_action_signal(self) -> None:
         event = _event(
             source=IncomingEvent.Source.GITLAB,

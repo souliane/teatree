@@ -27,6 +27,11 @@ _ALIAS_TO_CANONICAL: dict[str, str] = {
     alias: canonical for canonical, aliases in _PHASE_ALIASES.items() for alias in aliases
 }
 
+#: The canonical phase vocabulary — the single source of truth a second
+#: hand-maintained set (``Session._REQUIRED_PHASES``) must be validated
+#: against so the two cannot drift silently (#782).
+CANONICAL_PHASES: frozenset[str] = frozenset(_PHASE_ALIASES)
+
 # Canonical phase -> the ``Ticket`` FSM transition method that records it.
 _CANONICAL_TO_TRANSITION: dict[str, str] = {
     "scoping": "scope",

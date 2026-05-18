@@ -1,0 +1,151 @@
+"""Self-DB schema pre-flight on the sanctioned merge path (#869).
+
+Before #869 `t3 teatree ticket clear`/`merge` called the ORM with no
+schema check, so an unmigrated self-DB (missing `teatree_merge_clear`)
+surfaced a raw `django.db.utils.OperationalError: no such table`
+traceback. Since #863 prohibits raw `gh pr merge`, that opaque failure
+blocked the entire merge pipeline. These tests pin the actionable
+behaviour and the doctor surfacing.
+"""
+
+import io
+from contextlib import redirect_stdout
+from typing import cast
+from unittest.mock import patch
+
+import pytest
+from django.core.management import call_command
+from django.db import OperationalError, connection
+from django.test import TransactionTestCase
+
+from teatree.cli.doctor import check as doctor_check
+from teatree.core.models import MergeClear
+from teatree.core.schema_guard import (
+    SelfDbMigrationError,
+    doctor_check_self_db_migrations,
+    pending_migrations,
+    require_current_schema,
+)
+
+_MERGE_MIGRATIONS = ("0011_mergeclear_mergeaudit", "0012_mergeclear_human_authorizer")
+
+
+def _unapply_merge_migrations() -> None:
+    """Reproduce the real #869 self-DB state exactly.
+
+    The dogfood DB ran #863/#864's code but never applied migrations
+    0011/0012, so the ``teatree_merge_clear`` table is absent *and* the
+    ``django_migrations`` ledger has no record of them — precisely what
+    ``MigrationExecutor`` inspects.
+    """
+    with connection.schema_editor() as editor:
+        editor.delete_model(MergeClear)
+    with connection.cursor() as cursor:
+        cursor.executemany(
+            "DELETE FROM django_migrations WHERE app = 'core' AND name = %s",
+            [(name,) for name in _MERGE_MIGRATIONS],
+        )
+
+
+def _reapply_merge_migrations() -> None:
+    """Restore the table + ledger so ``TransactionTestCase`` teardown flushes."""
+    with connection.schema_editor() as editor:
+        editor.create_model(MergeClear)
+    with connection.cursor() as cursor:
+        cursor.executemany(
+            "INSERT INTO django_migrations (app, name, applied) VALUES ('core', %s, CURRENT_TIMESTAMP)",
+            [(name,) for name in _MERGE_MIGRATIONS],
+        )
+
+
+class PendingMigrationsTest(TransactionTestCase):
+    def test_returns_empty_when_schema_current(self) -> None:
+        assert pending_migrations() == []
+
+    def test_require_current_schema_is_noop_when_current(self) -> None:
+        require_current_schema()  # must not raise
+
+
+class UnmigratedSelfDbTest(TransactionTestCase):
+    """The exact #869 reproduction: the MergeClear table is absent."""
+
+    def setUp(self) -> None:
+        _unapply_merge_migrations()
+        self.addCleanup(_reapply_merge_migrations)
+
+    def test_raw_orm_call_would_fail_with_operationalerror(self) -> None:
+        # Anti-vacuous anchor: without the guard the ORM raises the raw,
+        # opaque error this fix exists to replace.
+        with pytest.raises(OperationalError, match="no such table"):
+            MergeClear.objects.count()
+
+    def test_require_current_schema_raises_actionable_error(self) -> None:
+        with pytest.raises(SelfDbMigrationError) as exc:
+            require_current_schema()
+        message = str(exc.value)
+        assert "unapplied migration" in message
+        assert "ticket clear/merge" in message
+        assert "manage.py migrate" in message
+
+    def test_ticket_clear_command_fails_closed_with_remediation(self) -> None:
+        result = cast(
+            "dict[str, object]",
+            call_command(
+                "ticket",
+                "clear",
+                866,
+                "statusline-stale-wakeup",
+                "29f0a77a4fd03bd281b23e53cfc47ea9a928620b",
+                reviewer_identity="coldrev-866",
+                blast_class="logic",
+            ),
+        )
+        assert result["issued"] is False
+        assert "unapplied migration" in str(result["error"])
+        assert "manage.py migrate" in str(result["error"])
+
+    def test_ticket_merge_command_fails_closed_with_remediation(self) -> None:
+        result = cast(
+            "dict[str, object]",
+            call_command("ticket", "merge", 1),
+        )
+        assert result["merged"] is False
+        assert "unapplied migration" in str(result["error"])
+
+    def test_doctor_surface_fails_and_names_pending_migrations(self) -> None:
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            result = doctor_check_self_db_migrations()
+        assert result is False
+        out = buffer.getvalue()
+        assert "unapplied migration" in out
+        assert "0011_mergeclear_mergeaudit" in out
+
+    def test_doctor_check_command_aggregates_pending_migrations(self) -> None:
+        # The `t3 doctor check` aggregation wires the schema-guard surface
+        # into its pass/fail result, so the gap shows at session start.
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            ok = doctor_check()
+        assert ok is False
+        assert "unapplied migration" in buffer.getvalue()
+
+
+class DoctorCheckCurrentSchemaTest(TransactionTestCase):
+    def test_doctor_check_passes_when_schema_current(self) -> None:
+        assert doctor_check_self_db_migrations() is True
+
+    def test_doctor_check_warns_but_does_not_fail_when_db_unreachable(self) -> None:
+        # DB absent/offline at session start is a valid state — the doctor
+        # check must WARN, not crash or block the session with a FAIL.
+        buffer = io.StringIO()
+        with (
+            patch(
+                "teatree.core.schema_guard.pending_migrations",
+                side_effect=OperationalError("unable to open database file"),
+            ),
+            redirect_stdout(buffer),
+        ):
+            result = doctor_check_self_db_migrations()
+        assert result is True
+        assert "Could not inspect self-DB migrations" in buffer.getvalue()
