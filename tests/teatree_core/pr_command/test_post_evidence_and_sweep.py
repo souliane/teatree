@@ -16,6 +16,22 @@ class TestPostEvidence(TestCase):
     def _inject_fixtures(self, monkeypatch: pytest.MonkeyPatch) -> None:
         self._monkeypatch = monkeypatch
 
+    @pytest.fixture(autouse=True)
+    def _no_on_behalf_gate(
+        self,
+        tmp_path_factory: pytest.TempPathFactory,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Disable the on-behalf gate (#960) for transport-mechanics tests.
+
+        ``post-evidence`` is on-behalf-gated; the tests here exercise the
+        code-host delegation, not the gate (its own suite lives in
+        ``tests/teatree_core/test_pr_post_evidence_on_behalf_gate.py``).
+        """
+        from tests.teatree_core._on_behalf_gate_helpers import disable_on_behalf_gate  # noqa: PLC0415
+
+        disable_on_behalf_gate(tmp_path_factory, monkeypatch)
+
     def test_delegates_to_code_host(self) -> None:
         """post-evidence posts a PR comment via the code host."""
         host = MagicMock()

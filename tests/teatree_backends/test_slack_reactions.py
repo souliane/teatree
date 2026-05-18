@@ -9,6 +9,7 @@ import pytest
 from teatree.backends import slack_reactions
 from teatree.backends.slack_reactions import (
     _iter_pr_permalinks,
+    add_approval_reaction,
     add_reaction,
     add_reactions_for_transition,
     parse_permalink,
@@ -249,3 +250,42 @@ class TestOverlayConfigTransitionEmojis:
         # Default keys still present
         assert merged["rework"] == DEFAULT_TRANSITION_EMOJIS["rework"]
         assert merged["test"] == DEFAULT_TRANSITION_EMOJIS["test"]
+
+
+class TestAddApprovalReaction:
+    """add_approval_reaction posts ✅ on the PR's stored review-request message (#961)."""
+
+    _PERMALINK = "https://team.slack.com/archives/C9/p1700000000000100"
+
+    def _pr(self, *, slack_url: str = _PERMALINK, overlay: str = "") -> SimpleNamespace:
+        return SimpleNamespace(slack_url=slack_url, overlay=overlay)
+
+    def test_no_op_when_no_slack_url(self) -> None:
+        assert add_approval_reaction(self._pr(slack_url="")) == 0
+
+    def test_no_op_when_permalink_unparseable(self) -> None:
+        assert add_approval_reaction(self._pr(slack_url="https://team.slack.com/not-an-archive")) == 0
+
+    def test_no_op_when_no_token(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(slack_reactions, "get_overlay", lambda **_kw: _StubOverlay(config=_StubConfig(token="")))
+        assert add_approval_reaction(self._pr()) == 0
+
+    def test_posts_white_check_mark_on_success(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        recorded: list[tuple[str, str, str, str]] = []
+        monkeypatch.setattr(
+            slack_reactions, "get_overlay", lambda **_kw: _StubOverlay(config=_StubConfig(token="xoxb"))
+        )
+        monkeypatch.setattr(
+            slack_reactions,
+            "add_reaction",
+            lambda token, ch, ts, emoji: recorded.append((token, ch, ts, emoji)) or True,
+        )
+        assert add_approval_reaction(self._pr()) == 1
+        assert recorded == [("xoxb", "C9", "1700000000.000100", "white_check_mark")]
+
+    def test_returns_zero_when_reaction_fails(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            slack_reactions, "get_overlay", lambda **_kw: _StubOverlay(config=_StubConfig(token="xoxb"))
+        )
+        monkeypatch.setattr(slack_reactions, "add_reaction", lambda *_a, **_kw: False)
+        assert add_approval_reaction(self._pr()) == 0
