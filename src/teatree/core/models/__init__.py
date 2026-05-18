@@ -5,6 +5,7 @@ from teatree.core.models.incoming_event import IncomingEvent
 from teatree.core.models.intent_classification import IntentClassification
 from teatree.core.models.loop_lease import LoopLease
 from teatree.core.models.merge_clear import ClearIssuanceError, ClearRequest, MergeAudit, MergeClear
+from teatree.core.models.on_behalf_approval import OnBehalfApproval, OnBehalfApprovalError, OnBehalfAudit
 from teatree.core.models.pull_request import PullRequest
 from teatree.core.models.reply_dispatch import ReplyDispatch
 from teatree.core.models.session import Session
@@ -29,6 +30,9 @@ __all__ = [
     "LoopLease",
     "MergeAudit",
     "MergeClear",
+    "OnBehalfApproval",
+    "OnBehalfApprovalError",
+    "OnBehalfAudit",
     "Ports",
     "PullRequest",
     "QualityGateError",

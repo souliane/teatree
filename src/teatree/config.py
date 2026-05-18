@@ -130,6 +130,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "loop_cadence_seconds": int,
     "require_human_approval_to_merge": bool,
     "require_human_approval_to_answer": bool,
+    "ask_before_post_on_behalf": bool,
     "user_identity_aliases": _parse_user_identity_aliases,
 }
 
@@ -177,6 +178,19 @@ class UserSettings:
     # direct posting without flipping the global). Default on, mirroring
     # `require_human_approval_to_merge`.
     require_human_approval_to_answer: bool = True
+    # Pre-gate for posts the agent makes under the user's identity to a
+    # colleague/customer surface (PR/MR comment, issue comment, Slack
+    # channel/thread post, Notion post, PR/MR approve, reaction on
+    # someone else's message). When true the post path must obtain
+    # explicit user approval *before* publishing — the "how/what/to-whom/
+    # when" of a colleague reply is not encodable, so the gate (ask-first)
+    # is the generic mechanism. Default on; the user flips it off
+    # per-overlay once they trust the system posts well. Out of scope:
+    # internal-only orchestration writes and DMs to the user themselves.
+    # Complementary to the notify-*after* path (#949). The companion rule
+    # for ad-hoc agent posting (MCP Slack, raw `gh`/`glab`) lives in
+    # `skills/rules/SKILL.md`. Resolved via `teatree.on_behalf_gate`.
+    ask_before_post_on_behalf: bool = True
     # Pass --chrome to every spawned `claude` session so Claude in Chrome is
     # available wherever it could be useful (browser inspection, UI debugging,
     # E2E selector drafting, bug hunts). Costs ~300 lines of system prompt per
@@ -250,6 +264,7 @@ def load_config(path: Path | None = None) -> TeaTreeConfig:
         loop_cadence_seconds=int(teatree.get("loop_cadence_seconds", 720)),
         require_human_approval_to_merge=bool(teatree.get("require_human_approval_to_merge", True)),
         require_human_approval_to_answer=bool(teatree.get("require_human_approval_to_answer", True)),
+        ask_before_post_on_behalf=bool(teatree.get("ask_before_post_on_behalf", True)),
         claude_chrome=bool(teatree.get("claude_chrome", True)),
         agent_signature=bool(teatree.get("agent_signature", False)),
         statusline_chain=[str(s) for s in teatree.get("statusline_chain", [])],

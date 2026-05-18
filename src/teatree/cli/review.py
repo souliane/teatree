@@ -1,30 +1,39 @@
-"""Review CLI commands — GitLab draft note operations."""
+"""Review CLI commands — GitLab draft note operations.
 
-import re
+Every method that publishes under the user's identity to an MR (a
+``post_*`` / ``reply_*`` / ``resolve_*`` / ``publish_*`` / ``update_*``
+call) routes through the same recorded-approval pre-gate
+(``ask_before_post_on_behalf``, #960) the reply transport uses. Read-
+only methods (``list_draft_notes``, ``delete_draft_note``) bypass the
+gate: ``list`` does not publish; deleting one's own draft *pre*-
+publication is not a colleague-facing post.
+
+The gate is satisfiable without a TTY — the user records an
+:class:`~teatree.core.models.on_behalf_approval.OnBehalfApproval` scoped
+to ``(<repo>!<mr>, <method_name>)`` and the next invocation publishes
+and consumes the row. Gate ON + no approval returns the actionable
+``approve-on-behalf`` invocation as the error message; gate OFF behaves
+exactly as before.
+"""
+
 from http import HTTPStatus
-from typing import TypedDict
 
 import typer
 
+from teatree.cli.review_diff import find_added_line, resolve_inline_position
+from teatree.cli.review_on_behalf import check_on_behalf
+from teatree.cli.review_on_behalf import register as _register_on_behalf
 from teatree.utils.run import run_allowed_to_fail
 
-
-class InlinePosition(TypedDict):
-    """GitLab inline-note position payload (text diff anchoring)."""
-
-    position_type: str
-    base_sha: str
-    head_sha: str
-    start_sha: str
-    old_path: str
-    new_path: str
-    new_line: int
-
+# Re-export so test imports (``from teatree.cli.review import
+# _find_added_line``) and monkeypatch targets keep working after the
+# diff-parsing primitives moved to :mod:`teatree.cli.review_diff` for
+# module-health LOC reasons. The single-underscore alias is the public
+# (within-codebase) handle.
+_find_added_line = find_added_line
 
 review_app = typer.Typer(no_args_is_help=True, help="Code review helpers.")
 _TOKEN_PARTS_COUNT = 2
-_HUNK_HEADER = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
-_NEARBY_LINE_RANGE = 5
 _HTTP_OK_CODES = frozenset({HTTPStatus.OK, HTTPStatus.CREATED, HTTPStatus.NO_CONTENT})
 
 
@@ -43,45 +52,20 @@ def _on_behalf_gate_active() -> bool:
     present, ``ask_before_post_on_behalf_enabled()`` decides.
     """
     try:
-        from teatree.on_behalf_gate import (  # ty: ignore[unresolved-import]  # noqa: PLC0415
-            ask_before_post_on_behalf_enabled,
-        )
+        from teatree.on_behalf_gate import ask_before_post_on_behalf_enabled  # noqa: PLC0415
     except ModuleNotFoundError:
         return False
     return ask_before_post_on_behalf_enabled()
 
 
-def _find_added_line(diff_text: str, target_line: int) -> tuple[bool, list[int]]:
-    """Scan a unified-diff hunk text for ``target_line`` in the new file.
-
-    Returns ``(is_added, nearby_added_lines)`` — ``is_added`` is True when the
-    target line corresponds to an added (``+``) line in any hunk; the second
-    element lists added line numbers within ±5 of the target for error hints.
-    """
-    is_added = False
-    nearby: list[int] = []
-    nl: int | None = None
-    for line in diff_text.splitlines():
-        m = _HUNK_HEADER.match(line)
-        if m:
-            nl = int(m.group(1))
-            continue
-        if nl is None:
-            continue
-        sign = line[:1] if line else " "
-        if sign == "-":
-            continue
-        if sign == "+":
-            if nl == target_line:
-                is_added = True
-            if abs(nl - target_line) <= _NEARBY_LINE_RANGE:
-                nearby.append(nl)
-        nl += 1
-    return is_added, sorted(set(nearby))
-
-
 class ReviewService:
-    """GitLab draft note operations for code review."""
+    """GitLab draft note operations for code review.
+
+    Every method that publishes to an MR (post comment, post draft note,
+    publish drafts, reply, resolve, update note) is wrapped by the
+    recorded-approval on-behalf pre-gate. See module docstring for the
+    full contract.
+    """
 
     def __init__(self, token: str) -> None:
         self.token = token
@@ -119,90 +103,8 @@ class ReviewService:
         except Exception:  # noqa: BLE001
             return os.environ.get("GITLAB_URL", "https://gitlab.com/api/v4")
 
-    def _fetch_diff_refs(self, encoded_repo: str, mr: int) -> tuple[dict[str, str] | None, str]:
-        """Return the MR's diff_refs (base/head/start SHAs) or an error message."""
-        api = self._get_api()
-        mr_data = api.get_json(f"projects/{encoded_repo}/merge_requests/{mr}")
-        if not isinstance(mr_data, dict):
-            return None, f"Could not fetch MR !{mr}"
-        diff_refs_raw = mr_data.get("diff_refs", {})
-        if not isinstance(diff_refs_raw, dict):
-            return None, "MR has no diff_refs"
-        return {str(k): str(v) for k, v in diff_refs_raw.items()}, ""
-
-    def _fetch_file_diff(self, encoded_repo: str, mr: int, file: str) -> tuple[str | None, str]:
-        """Return the raw unified diff for ``file`` in the MR, or an error message.
-
-        Uses ``access_raw_diffs=true`` so large files collapsed by the default
-        ``/diffs`` endpoint still surface their full hunks.
-        """
-        api = self._get_api()
-        changes = api.get_json(f"projects/{encoded_repo}/merge_requests/{mr}/changes?access_raw_diffs=true")
-        if not isinstance(changes, dict):
-            return None, "Could not fetch MR changes to validate inline target"
-        files = changes.get("changes")
-        if not isinstance(files, list):
-            return None, "MR changes response had no `changes` array"
-        match = next(
-            (f for f in files if isinstance(f, dict) and (f.get("new_path") == file or f.get("old_path") == file)),
-            None,
-        )
-        if match is None:
-            paths = [str(f.get("new_path")) for f in files if isinstance(f, dict)]
-            return None, f"File {file!r} is not changed in MR !{mr}. Changed files: {paths}"
-        diff_text = str(match.get("diff") or "")
-        if not diff_text:
-            return None, (
-                f"File {file!r} has no diff content in the MR API response (likely a collapsed large diff). "
-                "draft_notes cannot anchor on collapsed files — use `t3 review post-comment` instead, "
-                "or pick a smaller file."
-            )
-        return diff_text, ""
-
-    def _resolve_inline_position(
-        self,
-        encoded_repo: str,
-        mr: int,
-        file: str,
-        line: int,
-    ) -> tuple[InlinePosition | None, str]:
-        """Build a GitLab inline-note ``position`` dict, or return an error message.
-
-        Validates that ``file:line`` is an added (``+``) line in the MR diff.
-        """
-        diff_refs, refs_error = self._fetch_diff_refs(encoded_repo, mr)
-        if diff_refs is None:
-            return None, refs_error
-        diff_text, diff_error = self._fetch_file_diff(encoded_repo, mr, file)
-        if diff_text is None:
-            return None, diff_error
-        is_added, nearby = _find_added_line(diff_text, line)
-        if not is_added:
-            hint = f" Nearby added lines in this file: {nearby}." if nearby else ""
-            return None, (
-                f"Line {line} in {file} is not an added (`+`) line in the MR diff — "
-                f"inline notes only anchor on added lines.{hint}"
-            )
-        position: InlinePosition = {
-            "position_type": "text",
-            "base_sha": diff_refs["base_sha"],
-            "head_sha": diff_refs["head_sha"],
-            "start_sha": diff_refs["start_sha"],
-            "old_path": file,
-            "new_path": file,
-            "new_line": line,
-        }
-        return position, ""
-
-    def post_draft_note(self, repo: str, mr: int, note: str, *, file: str = "", line: int = 0) -> tuple[str, int]:
-        """Post a draft note. Returns (message, exit_code).
-
-        For inline notes (file+line), validates that the target line is an added
-        (``+``) line in the MR diff, then verifies after posting that GitLab
-        actually anchored the draft (``line_code`` non-null). Broken drafts
-        (anchor refused, usually because the file diff is collapsed) are
-        deleted and surfaced as an error so they cannot be published silently.
-        """
+    def _post_draft_note_impl(self, repo: str, mr: int, note: str, *, file: str, line: int) -> tuple[str, int]:
+        """The pre-gate-passed body of :meth:`post_draft_note` (see docstring)."""
         api = self._get_api()
         encoded = repo.replace("/", "%2F")
         endpoint = f"projects/{encoded}/merge_requests/{mr}/draft_notes"
@@ -213,7 +115,7 @@ class ReviewService:
                 return "Failed to post draft note", 1
             return f"OK draft_note_id={dict(result).get('id')}", 0
 
-        position, error = self._resolve_inline_position(encoded, mr, file, line)
+        position, error = resolve_inline_position(api, encoded, mr, file, line)
         if position is None:
             return error, 1
 
@@ -236,21 +138,34 @@ class ReviewService:
             "(creates an immediate non-draft inline discussion)."
         ), 1
 
-    def post_comment(
+    def post_draft_note(self, repo: str, mr: int, note: str, *, file: str = "", line: int = 0) -> tuple[str, int]:
+        """Post a draft note. Returns (message, exit_code).
+
+        For inline notes (file+line), validates that the target line is an added
+        (``+``) line in the MR diff, then verifies after posting that GitLab
+        actually anchored the draft (``line_code`` non-null). Broken drafts
+        (anchor refused, usually because the file diff is collapsed) are
+        deleted and surfaced as an error so they cannot be published silently.
+
+        Gated by ``ask_before_post_on_behalf`` (#960): the call is refused
+        without any GitLab side effect when the gate is on and no recorded
+        :class:`OnBehalfApproval` matches ``(<repo>!<mr>, "post_draft_note")``.
+        """
+        blocked = check_on_behalf(repo, mr, "post_draft_note")
+        if blocked:
+            return blocked, 1
+        return self._post_draft_note_impl(repo, mr, note, file=file, line=line)
+
+    def _post_comment_impl(
         self,
         repo: str,
         mr: int,
         note: str,
         *,
-        file: str = "",
-        line: int = 0,
+        file: str,
+        line: int,
     ) -> tuple[str, int]:
-        """Post an immediate (non-draft) MR comment via ``/discussions``.
-
-        Use when ``post_draft_note`` fails because the file diff is collapsed
-        — the discussions endpoint anchors inline notes even on large files,
-        but the comment posts immediately instead of batching with a review.
-        """
+        """The pre-gate-passed body of :meth:`post_comment` (see docstring)."""
         api = self._get_api()
         encoded = repo.replace("/", "%2F")
 
@@ -260,7 +175,7 @@ class ReviewService:
                 return "Failed to post comment", 1
             return f"OK note_id={dict(result).get('id')}", 0
 
-        position, error = self._resolve_inline_position(encoded, mr, file, line)
+        position, error = resolve_inline_position(api, encoded, mr, file, line)
         if position is None:
             return error, 1
 
@@ -279,6 +194,30 @@ class ReviewService:
             return f"Comment posted but not anchored inline (type={note_type!r}). discussion_id={discussion_id}", 1
         return f"OK discussion_id={discussion_id} (inline DiffNote)", 0
 
+    def post_comment(
+        self,
+        repo: str,
+        mr: int,
+        note: str,
+        *,
+        file: str = "",
+        line: int = 0,
+    ) -> tuple[str, int]:
+        """Post an immediate (non-draft) MR comment via ``/discussions``.
+
+        Use when ``post_draft_note`` fails because the file diff is collapsed
+        — the discussions endpoint anchors inline notes even on large files,
+        but the comment posts immediately instead of batching with a review.
+
+        Gated by ``ask_before_post_on_behalf`` (#960): the call is refused
+        without any GitLab side effect when the gate is on and no recorded
+        :class:`OnBehalfApproval` matches ``(<repo>!<mr>, "post_comment")``.
+        """
+        blocked = check_on_behalf(repo, mr, "post_comment")
+        if blocked:
+            return blocked, 1
+        return self._post_comment_impl(repo, mr, note, file=file, line=line)
+
     def delete_draft_note(self, repo: str, mr: int, note_id: int) -> tuple[str, int]:
         """Delete a draft note. Returns (message, exit_code)."""
         api = self._get_api()
@@ -289,6 +228,16 @@ class ReviewService:
         return f"Failed: HTTP {status}", 1
 
     def publish_draft_notes(self, repo: str, mr: int) -> tuple[str, int]:
+        """Bulk-publish every draft note on an MR.
+
+        Gated by ``ask_before_post_on_behalf`` (#960): the bulk publish is
+        the moment drafts become visible to colleagues, so it routes
+        through the same recorded-approval gate every other on-behalf
+        post uses.
+        """
+        blocked = check_on_behalf(repo, mr, "publish_draft_notes")
+        if blocked:
+            return blocked, 1
         api = self._get_api()
         encoded = repo.replace("/", "%2F")
         status = api.post_status(f"projects/{encoded}/merge_requests/{mr}/draft_notes/bulk_publish")
@@ -297,7 +246,15 @@ class ReviewService:
         return f"Failed: HTTP {status}", 1
 
     def reply_to_discussion(self, repo: str, mr: int, discussion_id: str, body: str) -> tuple[str, int]:
-        """Reply to an existing discussion thread on an MR. Returns (message, exit_code)."""
+        """Reply to an existing discussion thread on an MR. Returns (message, exit_code).
+
+        Gated by ``ask_before_post_on_behalf`` (#960): the reply is refused
+        without any GitLab side effect when the gate is on and no recorded
+        :class:`OnBehalfApproval` matches ``(<repo>!<mr>, "reply_to_discussion")``.
+        """
+        blocked = check_on_behalf(repo, mr, "reply_to_discussion")
+        if blocked:
+            return blocked, 1
         api = self._get_api()
         encoded = repo.replace("/", "%2F")
         result = api.post_json(
@@ -310,7 +267,15 @@ class ReviewService:
         return f"OK reply_note_id={note_id}", 0
 
     def resolve_discussion(self, repo: str, mr: int, discussion_id: str, *, resolved: bool = True) -> tuple[str, int]:
-        """Mark a discussion thread resolved or unresolved. Returns (message, exit_code)."""
+        """Mark a discussion thread resolved or unresolved. Returns (message, exit_code).
+
+        Gated by ``ask_before_post_on_behalf`` (#960): a resolve flip is
+        visible to colleagues (it closes the discussion under the user's
+        identity), so it routes through the same recorded-approval gate.
+        """
+        blocked = check_on_behalf(repo, mr, "resolve_discussion")
+        if blocked:
+            return blocked, 1
         api = self._get_api()
         encoded = repo.replace("/", "%2F")
         flag = "true" if resolved else "false"
@@ -323,7 +288,15 @@ class ReviewService:
         """Update a note (draft or published) on an MR.
 
         Tries draft-notes first; falls back to published-notes on 404.
+
+        Gated by ``ask_before_post_on_behalf`` (#960): an update to a
+        *published* note is a colleague-visible edit; the gate covers
+        both fallback paths uniformly so a published-note edit cannot
+        slip through while a comment-create would be blocked.
         """
+        blocked = check_on_behalf(repo, mr, "update_note")
+        if blocked:
+            return blocked, 1
         api = self._get_api()
         encoded = repo.replace("/", "%2F")
 
@@ -609,3 +582,9 @@ def resolve_discussion(
     typer.echo(msg)
     if code:
         raise typer.Exit(code=code)
+
+
+# Register the `approve-on-behalf` command (defined in a sibling module
+# to keep this file under the OOP/LOC ceiling — see
+# `teatree.cli.review_on_behalf`).
+_register_on_behalf(review_app)
