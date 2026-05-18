@@ -22,6 +22,7 @@ from teatree.core.management.commands._workspace_cleanup import (
     resolve_unsynced_worktree,
 )
 from teatree.core.models import Ticket, Worktree
+from teatree.core.models.ticket import format_intake_summary
 from teatree.core.orphan_guard import find_orphans_in_workspace
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.public_identity import StampResult, is_public_github_remote, set_local_noreply_identity
@@ -262,11 +263,7 @@ class Command(TyperCommand):
             return 0
         if not result.ok:
             self.stderr.write(f"  WARNING: {result.detail}")
-        for wt in ticket.worktrees.all():  # ty: ignore[unresolved-attribute]
-            self.stdout.write(f"  {wt.repo_path}: worktree #{wt.pk}")
-
-        self.stdout.write(f"\nTicket #{ticket.pk} — worktrees in {ticket_dir}")
-        self.stdout.write(f"  Branch: {branch}")
+        self.stdout.write(format_intake_summary(ticket, str(ticket_dir), branch))
         return int(ticket.pk)
 
     @command()

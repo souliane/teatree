@@ -3,10 +3,11 @@
 import logging
 from typing import Annotated, TypedDict
 
+import click
 import typer
 from django.db import transaction
 from django_fsm import TransitionNotAllowed
-from django_typer.management import TyperCommand, command
+from django_typer.management import TyperCommand, command, group
 
 from teatree.core.merge_execution import MergePreconditionError, merge_ticket_pr
 from teatree.core.models import ClearIssuanceError, ClearRequest, MergeClear, Ticket
@@ -47,6 +48,11 @@ class ClearIssueResult(TypedDict, total=False):
     human_authorizer: str
     ticket_id: int
     error: str
+
+
+class ContextResult(TypedDict, total=False):
+    ticket_id: int
+    context: str
 
 
 class ReattributeResult(TypedDict, total=False):
@@ -104,6 +110,65 @@ class Command(TyperCommand):
             }
 
         return {"ticket_id": int(ticket.pk), "state": ticket.state}
+
+    def _resolve_ticket(self, ticket_id: int) -> Ticket:
+        """Fetch a ticket or abort the subcommand with a nonzero exit (#932).
+
+        A missing ticket is a real failure — returning an ``{"error": …}``
+        dict would print and exit 0, so a scripted ``ticket context`` caller
+        could not tell success from "ticket not found". ``raise SystemExit(1)``
+        is the sibling refusal convention (AGENTS.md § Test-Writing Doctrine).
+        """
+        try:
+            return Ticket.objects.get(pk=ticket_id)
+        except Ticket.DoesNotExist:
+            self.stderr.write(f"  Ticket {ticket_id} not found")
+            raise SystemExit(1) from None
+
+    @group(help="Durable per-ticket knowledge store (#627).")
+    def context(self) -> None:
+        """Group root — forces sub-commands to be addressed by name."""
+
+    @context.command(name="show")
+    def context_show(self, ticket_id: int) -> ContextResult:
+        """Print the ticket's durable context store."""
+        ticket = self._resolve_ticket(ticket_id)
+        self.stdout.write(ticket.context or "(empty)")
+        return {"ticket_id": int(ticket.pk), "context": ticket.context}
+
+    @context.command(name="add")
+    def context_add(self, ticket_id: int, entry: str) -> ContextResult:
+        """Append a timestamped ``<key>: <value>`` line to the context store.
+
+        Append-only: parallel sessions never overwrite each other (open
+        question 2). A blank entry is refused with a nonzero exit.
+        """
+        ticket = self._resolve_ticket(ticket_id)
+        try:
+            updated = ticket.append_context(entry)
+        except ValueError as exc:
+            self.stderr.write(f"  refused: {exc}")
+            raise SystemExit(1) from exc
+        self.stdout.write(f"  appended to ticket {ticket.pk} context")
+        return {"ticket_id": int(ticket.pk), "context": updated}
+
+    @context.command(name="edit")
+    def context_edit(self, ticket_id: int) -> ContextResult:
+        """Open the full context store in ``$EDITOR`` and replace it.
+
+        Unlike ``add``, ``edit`` is a full-field rewrite — for pruning stale
+        entries or restructuring. An aborted edit (editor exits without
+        saving) leaves the store untouched.
+        """
+        ticket = self._resolve_ticket(ticket_id)
+        edited = click.edit(ticket.context)
+        if edited is None:
+            self.stdout.write(f"  edit aborted — ticket {ticket.pk} context unchanged")
+            return {"ticket_id": int(ticket.pk), "context": ticket.context}
+        ticket.context = edited
+        ticket.save(update_fields=["context"])
+        self.stdout.write(f"  ticket {ticket.pk} context replaced")
+        return {"ticket_id": int(ticket.pk), "context": edited}
 
     @command()
     def clear(  # noqa: PLR0913 — django-typer command: every param is a CLI flag mapped 1:1 to a §17.4.2 CLEAR field; the arg list IS the public CLI surface (same rationale as the file-wide PLR6301 ignore), not an internal design smell.
