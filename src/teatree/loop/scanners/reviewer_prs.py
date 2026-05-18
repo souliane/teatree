@@ -155,6 +155,58 @@ def _pr_url(pr: RawAPIDict) -> str:
     return ""
 
 
+def _orphaned_task_signals(
+    ticket_model: "TicketModel | None",
+    scanned_urls: set[str],
+    overlay: str = "",
+) -> list[ScanSignal]:
+    """Emit ``reviewer_pr.task_orphaned`` for stuck PENDING/CLAIMED tasks (#998).
+
+    Scenario the loop hit: scanner sees an open MR on tick #1 → persistence
+    creates ``Ticket(role=reviewer)`` + ``Task(phase=reviewing,
+    status=PENDING)``. The MR is merged externally before the slot processes
+    the task. On tick #2 the ``state=opened`` API no longer returns the MR,
+    so neither the dedup ``_has_open_task`` path nor the
+    ``_already_reviewed_at_head`` cache hit can ever fire — and the PENDING
+    task lingers forever, surfacing on every ``pending-spawn``. This sweep
+    closes that window: any reviewer-role ticket with a non-terminal
+    reviewing task whose URL is absent from the current scan gets a
+    ``task_orphaned`` signal so the mechanical handler can complete the
+    task and unblock the loop.
+
+    The scanner runs once per (overlay, code-host) pair in ``tick.py``, so
+    the orphan sweep must be scoped to the scanner's own overlay — otherwise
+    a GitHub scanner pass would sweep GitLab reviewer-role tickets too (and
+    vice versa), silently completing legitimate cross-host review tasks
+    because their URLs aren't in the GitHub scan's ``scanned_urls``. When
+    *overlay* is non-empty we restrict the candidate query to that overlay;
+    when empty (the fallback single-overlay path with no tag), the legacy
+    unscoped behaviour is preserved.
+    """
+    if ticket_model is None:
+        return []
+    # Local import to keep the Django dependency lazy (mirrors _ticket_model).
+    from teatree.core.models.task import Task  # noqa: PLC0415
+
+    open_statuses = (Task.Status.PENDING, Task.Status.CLAIMED)
+    candidates = ticket_model.objects.filter(
+        role="reviewer",
+        tasks__phase="reviewing",
+        tasks__status__in=open_statuses,
+    )
+    if overlay:
+        candidates = candidates.filter(overlay=overlay)
+    candidates = candidates.exclude(issue_url="").exclude(issue_url__in=scanned_urls).distinct()
+    return [
+        ScanSignal(
+            kind="reviewer_pr.task_orphaned",
+            summary=f"Reviewing task orphaned (MR no longer open): {ticket.issue_url}",
+            payload={"url": ticket.issue_url, "ticket_id": ticket.pk},
+        )
+        for ticket in candidates
+    ]
+
+
 def _is_dismissed_from_approved(previous: str, current: ReviewState) -> bool:
     """Did the reviewer's prior APPROVED status get invalidated?
 
@@ -180,10 +232,16 @@ class ReviewerPrsScanner:
     where any alias is a requested reviewer. Per-alias dedup-by-url keeps
     a PR that hits two queries from being scanned twice. Empty falls back
     to ``host.current_user()`` (#976).
+
+    ``overlay_name`` scopes the orphan-task sweep to reviewer-role tickets
+    belonging to this overlay. Required when running side-by-side scanners
+    for multiple overlays/hosts in one tick — a GitHub scanner must not
+    sweep GitLab reviewer tickets (#998).
     """
 
     host: CodeHostBackend
     identities: tuple[str, ...] = field(default_factory=tuple)
+    overlay_name: str = ""
     name: str = "reviewer_prs"
     _migrated: bool = field(default=False, init=False)
 
@@ -199,10 +257,12 @@ class ReviewerPrsScanner:
         cache = _read_cache()
         ticket_model = _ticket_model()
         signals: list[ScanSignal] = []
+        scanned_urls: set[str] = set()
         for pr in prs:
             url = _pr_url(pr)
             if not url:
                 continue
+            scanned_urls.add(url)
             head = _head_sha(pr)
             previous = cache.get(url, CacheEntry())
             if previous.sha and previous.sha != head:
@@ -245,6 +305,7 @@ class ReviewerPrsScanner:
                 )
             if current.value != previous.state and ticket_model is not None:
                 _persist_entry(ticket_model, url, CacheEntry(sha=previous.sha, state=current.value))
+        signals.extend(_orphaned_task_signals(ticket_model, scanned_urls, self.overlay_name))
         return signals
 
     def _resolve_identities(self) -> tuple[str, ...]:
