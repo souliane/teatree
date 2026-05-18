@@ -158,6 +158,7 @@ def _pr_url(pr: RawAPIDict) -> str:
 def _orphaned_task_signals(
     ticket_model: "TicketModel | None",
     scanned_urls: set[str],
+    overlay: str = "",
 ) -> list[ScanSignal]:
     """Emit ``reviewer_pr.task_orphaned`` for stuck PENDING/CLAIMED tasks (#998).
 
@@ -172,6 +173,15 @@ def _orphaned_task_signals(
     reviewing task whose URL is absent from the current scan gets a
     ``task_orphaned`` signal so the mechanical handler can complete the
     task and unblock the loop.
+
+    The scanner runs once per (overlay, code-host) pair in ``tick.py``, so
+    the orphan sweep must be scoped to the scanner's own overlay — otherwise
+    a GitHub scanner pass would sweep GitLab reviewer-role tickets too (and
+    vice versa), silently completing legitimate cross-host review tasks
+    because their URLs aren't in the GitHub scan's ``scanned_urls``. When
+    *overlay* is non-empty we restrict the candidate query to that overlay;
+    when empty (the fallback single-overlay path with no tag), the legacy
+    unscoped behaviour is preserved.
     """
     if ticket_model is None:
         return []
@@ -179,16 +189,14 @@ def _orphaned_task_signals(
     from teatree.core.models.task import Task  # noqa: PLC0415
 
     open_statuses = (Task.Status.PENDING, Task.Status.CLAIMED)
-    candidates = (
-        ticket_model.objects.filter(
-            role="reviewer",
-            tasks__phase="reviewing",
-            tasks__status__in=open_statuses,
-        )
-        .exclude(issue_url="")
-        .exclude(issue_url__in=scanned_urls)
-        .distinct()
+    candidates = ticket_model.objects.filter(
+        role="reviewer",
+        tasks__phase="reviewing",
+        tasks__status__in=open_statuses,
     )
+    if overlay:
+        candidates = candidates.filter(overlay=overlay)
+    candidates = candidates.exclude(issue_url="").exclude(issue_url__in=scanned_urls).distinct()
     return [
         ScanSignal(
             kind="reviewer_pr.task_orphaned",
@@ -224,10 +232,16 @@ class ReviewerPrsScanner:
     where any alias is a requested reviewer. Per-alias dedup-by-url keeps
     a PR that hits two queries from being scanned twice. Empty falls back
     to ``host.current_user()`` (#976).
+
+    ``overlay_name`` scopes the orphan-task sweep to reviewer-role tickets
+    belonging to this overlay. Required when running side-by-side scanners
+    for multiple overlays/hosts in one tick — a GitHub scanner must not
+    sweep GitLab reviewer tickets (#998).
     """
 
     host: CodeHostBackend
     identities: tuple[str, ...] = field(default_factory=tuple)
+    overlay_name: str = ""
     name: str = "reviewer_prs"
     _migrated: bool = field(default=False, init=False)
 
@@ -291,7 +305,7 @@ class ReviewerPrsScanner:
                 )
             if current.value != previous.state and ticket_model is not None:
                 _persist_entry(ticket_model, url, CacheEntry(sha=previous.sha, state=current.value))
-        signals.extend(_orphaned_task_signals(ticket_model, scanned_urls))
+        signals.extend(_orphaned_task_signals(ticket_model, scanned_urls, self.overlay_name))
         return signals
 
     def _resolve_identities(self) -> tuple[str, ...]:

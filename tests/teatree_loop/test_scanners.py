@@ -509,6 +509,95 @@ class TestReviewerPrsScanner(TestCase):
 
         assert signals == []
 
+    def test_orphan_sweep_scoped_to_scanner_overlay(self) -> None:
+        """Orphan sweep must not cross overlay boundaries (#998 tightening).
+
+        Two reviewer-role tickets on different overlays (e.g. GitHub vs.
+        GitLab scanners) — running the scanner for one overlay must NOT
+        emit an orphan signal for the other overlay's ticket, even though
+        the other URL is absent from this scan's ``scanned_urls``.
+        """
+        from teatree.core.models import Session, Task  # noqa: PLC0415
+
+        own_url = "https://github.com/o/r/pull/501"
+        other_url = "https://gitlab/x/-/merge_requests/502"
+        own_ticket = Ticket.objects.create(
+            role=Ticket.Role.REVIEWER,
+            issue_url=own_url,
+            overlay="github-overlay",
+            extra={"reviewed_sha": "abc"},
+        )
+        other_ticket = Ticket.objects.create(
+            role=Ticket.Role.REVIEWER,
+            issue_url=other_url,
+            overlay="gitlab-overlay",
+            extra={"reviewed_sha": "def"},
+        )
+        for ticket in (own_ticket, other_ticket):
+            session = Session.objects.create(ticket=ticket, agent_id="external-review")
+            Task.objects.create(
+                ticket=ticket,
+                session=session,
+                phase="reviewing",
+                execution_target=Task.ExecutionTarget.HEADLESS,
+                execution_reason="Review needed",
+            )
+
+        # Run the scanner scoped to github-overlay only; API returns nothing.
+        host = FakeCodeHost(user="alice", review_requested_prs=[])
+        scanner = ReviewerPrsScanner(host=host, overlay_name="github-overlay")
+        signals = scanner.scan()
+
+        # Exactly one orphan signal — only the github-overlay ticket. The
+        # gitlab-overlay ticket is invisible to this scanner pass.
+        orphan_urls = [s.payload["url"] for s in signals if s.kind == "reviewer_pr.task_orphaned"]
+        assert orphan_urls == [own_url]
+
+    def test_orphan_sweep_unscoped_when_overlay_empty(self) -> None:
+        """Empty overlay_name preserves the legacy unscoped sweep (#998).
+
+        The single-overlay fallback path in tick.py builds the scanner
+        without an overlay tag — for that path the previous unscoped
+        behaviour is preserved (no overlay filter on the candidate query).
+        """
+        from teatree.core.models import Session, Task  # noqa: PLC0415
+
+        urls = ["https://gitlab/x/-/merge_requests/601", "https://github.com/o/r/pull/602"]
+        for idx, url in enumerate(urls):
+            ticket = Ticket.objects.create(
+                role=Ticket.Role.REVIEWER,
+                issue_url=url,
+                overlay=f"overlay-{idx}",
+                extra={"reviewed_sha": "abc"},
+            )
+            session = Session.objects.create(ticket=ticket, agent_id="external-review")
+            Task.objects.create(
+                ticket=ticket,
+                session=session,
+                phase="reviewing",
+                execution_target=Task.ExecutionTarget.HEADLESS,
+                execution_reason="Review needed",
+            )
+
+        host = FakeCodeHost(user="alice", review_requested_prs=[])
+        scanner = ReviewerPrsScanner(host=host)  # overlay_name defaults to ""
+        signals = scanner.scan()
+
+        orphan_urls = sorted(s.payload["url"] for s in signals if s.kind == "reviewer_pr.task_orphaned")
+        assert orphan_urls == sorted(urls)
+
+    def test_orphan_sweep_no_op_when_ticket_model_unavailable(self) -> None:
+        """``_orphaned_task_signals`` returns [] when Django isn't ready (#998 nit 2).
+
+        Guards the defensive ``ticket_model is None`` branch — when the
+        model registry can't be loaded (no Django setup, fresh subprocess),
+        the sweep must skip silently rather than blow up.
+        """
+        from teatree.loop.scanners.reviewer_prs import _orphaned_task_signals  # noqa: PLC0415
+
+        assert _orphaned_task_signals(None, set()) == []
+        assert _orphaned_task_signals(None, {"https://x"}, "any-overlay") == []
+
     def test_legacy_json_cache_is_imported_then_deleted(self) -> None:
         """First scan migrates the legacy JSON file into reviewer tickets, then unlinks it."""
         import shutil  # noqa: PLC0415
