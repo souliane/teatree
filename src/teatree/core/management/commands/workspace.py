@@ -16,12 +16,15 @@ from teatree.config import load_config
 from teatree.core.cleanup import cleanup_worktree
 from teatree.core.dev_repo import resolve_repo_names
 from teatree.core.management.commands._workspace_cleanup import (
+    _die,
+    _raise_on_cleanup_failures,
     drop_orphan_databases,
     drop_orphaned_stashes,
     prune_branches,
     resolve_unsynced_worktree,
 )
 from teatree.core.models import Ticket, Worktree
+from teatree.core.models.ticket import format_intake_summary
 from teatree.core.orphan_guard import find_orphans_in_workspace
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.public_identity import StampResult, is_public_github_remote, set_local_noreply_identity
@@ -262,11 +265,7 @@ class Command(TyperCommand):
             return 0
         if not result.ok:
             self.stderr.write(f"  WARNING: {result.detail}")
-        for wt in ticket.worktrees.all():  # ty: ignore[unresolved-attribute]
-            self.stdout.write(f"  {wt.repo_path}: worktree #{wt.pk}")
-
-        self.stdout.write(f"\nTicket #{ticket.pk} — worktrees in {ticket_dir}")
-        self.stdout.write(f"  Branch: {branch}")
+        self.stdout.write(format_intake_summary(ticket, str(ticket_dir), branch))
         return int(ticket.pk)
 
     @command()
@@ -296,8 +295,7 @@ class Command(TyperCommand):
             result = WorktreeProvisionRunner(wt, overlay=overlay, slow_import=slow_import).run()
             self.stdout.write(f"    {result.detail}")
             if not result.ok:
-                self.stderr.write(f"  Stopped: {wt.repo_path} failed — fix and re-run.")
-                raise SystemExit(1)
+                _die(self.stderr.write, f"  Stopped: {wt.repo_path} failed — fix and re-run.")
         return len(worktrees)
 
     @command()
@@ -330,8 +328,7 @@ class Command(TyperCommand):
             if not result.ok:
                 failures.append(wt.repo_path)
         if failures:
-            self.stderr.write(f"  Failed: {', '.join(failures)}")
-            return "error"
+            _die(self.stderr.write, f"  Failed: {', '.join(failures)}")
 
         total = 0
         total_failures = 0
@@ -344,8 +341,7 @@ class Command(TyperCommand):
             total += summary.total
             total_failures += summary.failures
         if total_failures:
-            self.stderr.write(f"  {total_failures} of {total} probe(s) failed")
-            raise SystemExit(1)
+            _die(self.stderr.write, f"  {total_failures} of {total} probe(s) failed")
         return f"started {len(worktrees)} worktree(s)"
 
     @command()
@@ -376,8 +372,7 @@ class Command(TyperCommand):
             total += summary.total
             total_failures += summary.failures
         if total_failures:
-            self.stderr.write(f"  {total_failures} of {total} probe(s) failed")
-            raise SystemExit(1)
+            _die(self.stderr.write, f"  {total_failures} of {total} probe(s) failed")
         return "ok"
 
     @command()
@@ -424,8 +419,8 @@ class Command(TyperCommand):
             self.stdout.write(f"  {label}")
         if failures:
             for failure in failures:
-                self.stderr.write(f"  {failure}")
-            return f"completed with {len(failures)} failure(s)"
+                self.stderr.write(f"  Teardown failed — {failure}")
+            raise SystemExit(1)
         return f"tore down {len(worktrees)} worktree(s)"
 
     @command()
@@ -488,7 +483,7 @@ class Command(TyperCommand):
                 continue
             for wt in worktrees:
                 try:
-                    cleaned.append(cleanup_worktree(wt, strict_hygiene=False))
+                    cleaned.append(str(cleanup_worktree(wt, strict_hygiene=False)))
                 except RuntimeError as exc:
                     cleaned.append(f"FAILED {wt.repo_path} ({wt.branch}): {exc}")
         if not cleaned:
@@ -573,7 +568,7 @@ class Command(TyperCommand):
         interactive = sys.stdin.isatty() and sys.stdout.isatty()
         for wt in Worktree.objects.filter(state=Worktree.State.CREATED):
             try:
-                cleaned.append(cleanup_worktree(wt))
+                cleaned.append(str(cleanup_worktree(wt)))
             except RuntimeError as exc:
                 cleaned.append(resolve_unsynced_worktree(wt, exc, interactive=interactive))
 
@@ -596,4 +591,5 @@ class Command(TyperCommand):
         pruned = prune_dslr_snapshots(keep=keep_dslr)
         cleaned.extend(f"Pruned DSLR snapshot: {name}" for name in pruned)
 
+        _raise_on_cleanup_failures(cleaned, self.stdout.write, self.stderr.write)
         return cleaned

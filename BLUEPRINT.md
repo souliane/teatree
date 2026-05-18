@@ -250,6 +250,7 @@ The central entity. One ticket per unit of work (maps to an issue/task in the tr
 | `repos` | JSONField(list) | Repository names involved |
 | `state` | FSMField | Current lifecycle state |
 | `extra` | JSONField(dict) | Extensible metadata (PRs, labels, test results) |
+| `context` | TextField | Append-only durable knowledge store — timestamped notes the agent reuses across sessions (`t3 <overlay> ticket context show\|add\|edit`; rendered collapsed in the `workspace ticket` intake) |
 
 **Transitions:**
 

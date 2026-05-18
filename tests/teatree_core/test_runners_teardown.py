@@ -15,6 +15,7 @@ from unittest.mock import patch
 import pytest
 from django.test import TestCase
 
+from teatree.core.cleanup import CleanupResult
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay_loader import reset_overlay_cache
 from teatree.core.runners import WorktreeTeardown
@@ -60,12 +61,12 @@ class TestWorktreeTeardown(TestCase):
 
         cleaned: list[str] = []
 
-        def fake_cleanup(worktree: Worktree, *, force: bool = False, strict_hygiene: bool = True) -> str:
+        def fake_cleanup(worktree: Worktree, *, force: bool = False, strict_hygiene: bool = True) -> CleanupResult:
             del force, strict_hygiene
             label = f"Cleaned: {worktree.repo_path}"
             cleaned.append(worktree.repo_path)
             worktree.delete()
-            return label
+            return CleanupResult(label=label)
 
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
@@ -80,13 +81,13 @@ class TestWorktreeTeardown(TestCase):
     def test_continues_on_individual_failure_and_reports_errors(self) -> None:
         ticket = self._ticket_with_worktrees(count=2)
 
-        def fake_cleanup(worktree: Worktree, *, force: bool = False, strict_hygiene: bool = True) -> str:
+        def fake_cleanup(worktree: Worktree, *, force: bool = False, strict_hygiene: bool = True) -> CleanupResult:
             del force, strict_hygiene
             if worktree.repo_path == "repo-0":
                 msg = "branch ahead of main"
                 raise RuntimeError(msg)
             worktree.delete()
-            return f"Cleaned: {worktree.repo_path}"
+            return CleanupResult(label=f"Cleaned: {worktree.repo_path}")
 
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),

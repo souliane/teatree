@@ -111,8 +111,9 @@ class GitHubSyncBackend(SyncBackend):
 
         for worktree in Worktree.objects.filter(ticket=ticket):
             try:
-                cleanup_worktree(worktree)
+                cleanup_result = cleanup_worktree(worktree)
                 result.worktrees_cleaned += 1
+                result.errors.extend(cleanup_result.errors)
             except RuntimeError as exc:
                 logger.info("Keeping worktree %s (unpushed work): %s", worktree.repo_path, exc)
             except Exception as exc:

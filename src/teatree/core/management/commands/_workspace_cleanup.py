@@ -6,11 +6,15 @@ prefix) because the only public surface is the ``clean-all`` subcommand.
 """
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from teatree.core.cleanup import _branch_tree_matches_squash, cleanup_worktree
 from teatree.core.models import Worktree
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError, run_allowed_to_fail
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 
 def worktree_map(repo: str) -> dict[str, str]:
@@ -262,6 +266,35 @@ def push_unsynced_branch(worktree: Worktree) -> str:
 
 def abandon_unsynced_branch(worktree: Worktree) -> str:
     try:
-        return cleanup_worktree(worktree, force=True)
+        return str(cleanup_worktree(worktree, force=True))
     except Exception as exc:  # noqa: BLE001
         return f"Abandon failed: {worktree.repo_path} ({worktree.branch}) — {exc}"
+
+
+def _die(write_err: "Callable[[str], object]", message: str) -> None:
+    """Write ``message`` to stderr then exit 1 — the #932 failure contract.
+
+    Lives here (not in ``workspace``) only to keep that module under the
+    module-health LOC cap; it has no cleanup-specific behaviour.
+    """
+    write_err(message)
+    raise SystemExit(1)
+
+
+def _raise_on_cleanup_failures(
+    results: list[str],
+    write_out: "Callable[[str], object]",
+    write_err: "Callable[[str], object]",
+) -> None:
+    """Exit 1 if any genuinely-failed push/abandon line is in ``results``.
+
+    A failed push/abandon must stop the caller (e.g. the followup loop):
+    printing it and exiting 0 let cleanup look successful (#932). A
+    ``Skipped:`` line is a benign no-op, not a failure.
+    """
+    failed = [r for r in results if r.startswith(("Push failed:", "Abandon failed:"))]
+    if failed:
+        for line in results:
+            write_out(line)
+        write_err(f"clean-all: {len(failed)} push/abandon failure(s).")
+        raise SystemExit(1)

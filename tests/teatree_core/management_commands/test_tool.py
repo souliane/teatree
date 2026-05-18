@@ -62,19 +62,25 @@ class TestToolRun(TestCase):
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_unknown_tool(self) -> None:
-        result = cast("str", call_command("tool", "run", "nonexistent"))
+    def test_unknown_tool_raises_system_exit_1(self) -> None:
+        """An unknown tool name is a usage error — exit 1, not 0.
 
-        assert "unknown tool: nonexistent" in result.lower()
-        assert "migrate" in result
+        Regression for #932: `t3 <ov> tool run <typo>` returned a string and
+        exited 0, so a scripted caller never noticed the tool never ran.
+        """
+        with pytest.raises(SystemExit) as exc_info:
+            call_command("tool", "run", "nonexistent")
+
+        assert exc_info.value.code == 1
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_no_command(self) -> None:
-        """Tool 'broken' has no command defined."""
-        result = cast("str", call_command("tool", "run", "broken"))
+    def test_no_command_raises_system_exit_1(self) -> None:
+        """A configured tool with no command is a misconfig — exit 1."""
+        with pytest.raises(SystemExit) as exc_info:
+            call_command("tool", "run", "broken")
 
-        assert "no command defined" in result.lower()
+        assert exc_info.value.code == 1
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
