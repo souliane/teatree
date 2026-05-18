@@ -115,6 +115,13 @@ _DUAL_DISPATCH: frozenset[str] = frozenset(
 _MECHANICAL_BY_KIND: dict[str, tuple[ActionKind, str]] = {
     "ticket.completion_detected": ("mechanical", "ticket_completion"),
     "ticket.reopen_needed": ("mechanical", "ticket_reopen"),
+    # #998: a reviewer-role ticket's PENDING/CLAIMED reviewing task can be
+    # orphaned when the underlying MR is merged externally before the slot
+    # processes it — the ``state=opened`` API no longer returns the MR, so
+    # the dedup paths in persistence cannot fire and the task lingers
+    # forever. The mechanical handler completes the task so
+    # ``pending-spawn`` stops surfacing it every tick.
+    "reviewer_pr.task_orphaned": ("mechanical", "reviewer_task_orphaned"),
     "notion.unrouted": ("webhook", "n8n"),
 }
 
