@@ -848,13 +848,23 @@ _NON_ORCHESTRATION_TOOLS = {
 # sanctioned t3 orchestration verbs (ticket clear/merge, ticket-state
 # reads, gh/glab *view*/*checks*/*list*). Everything else is treated as
 # mutating/investigative for the main agent.
+#
+# File-content tools (``cat``/``head``/``tail``/``less``/``wc``/``file``/
+# ``grep``/``rg``/``awk``/``sed``) are deliberately NOT in the start-of-
+# command allow-list — see #942: a main-agent ``cat /tmp/screenshot.png``
+# or ``rg TODO src/`` is investigative work that belongs in a sub-agent.
+# Pipelines stay allow-listed because the regex anchors on the START of
+# the command: ``gh pr view ... | grep state`` matches ``gh pr view``
+# (the read-only primary), so a sanctioned status check piped to a
+# read-only filter is still allowed; only a bare investigative read at
+# the head of the command line is blocked.
 _ORCHESTRATOR_BASH_RE = re.compile(
     r"^\s*(?:"
     r"t3\s|"
     r"gh\s+\w+\s+(?:view|list|checks|status)\b|"
     r"glab\s+\w+\s+(?:view|list|show)\b|"
     r"git\s+(?:status|log|show|diff|branch|remote)\b|"
-    r"(?:echo|printf|cat|grep|rg|awk|sed|head|tail|less|wc|file|ls|pwd|which|env)\b"
+    r"(?:echo|printf|pwd|which|env|ls|date|whoami)\b"
     r")",
 )
 # Even a read-only-prefixed command is mutating if it edits in place or

@@ -165,3 +165,146 @@ class TestSubAgentAndOrchestrationAreAllowed:
 class TestRegisteredInChain:
     def test_handler_is_in_pretooluse_chain(self):
         assert handle_enforce_orchestrator_boundary in router._HANDLERS["PreToolUse"]
+
+
+class TestInvestigativeBashIsBlocked942:
+    """#942 — main-agent investigative Bash falls through the allow-list.
+
+    Covers ``cat``/``grep``/``rg``/``awk``/``sed`` of source or fetched
+    artifacts. The positive cases below were the recurring failure mode
+    the user surfaced in the issue: artifact download + Read sequence
+    (``cat /tmp/screenshot.png``) and repo-wide analysis grep
+    (``rg TODO src/``, ``grep -r ... src/``). The negative cases must
+    keep working because they are the sanctioned orchestrator surface:
+    single status checks, piped read-only inspection
+    (``gh pr view ... | grep state``), and pure orientation commands
+    (``echo``, ``pwd``, ``ls``).
+    """
+
+    def test_main_agent_cat_of_fetched_artifact_is_flagged(self, tmp_path):
+        data = {
+            "tool_name": "Bash",
+            "tool_input": {"command": "cat /tmp/screenshot.png"},
+            "transcript_path": _transcript(tmp_path, sidechain=False),
+        }
+        assert handle_enforce_orchestrator_boundary(data) is True
+
+    def test_main_agent_cat_of_source_file_is_flagged(self, tmp_path):
+        data = {
+            "tool_name": "Bash",
+            "tool_input": {"command": "cat src/teatree/foo.py"},
+            "transcript_path": _transcript(tmp_path, sidechain=False),
+        }
+        assert handle_enforce_orchestrator_boundary(data) is True
+
+    def test_main_agent_repo_wide_rg_is_flagged(self, tmp_path):
+        data = {
+            "tool_name": "Bash",
+            "tool_input": {"command": "rg TODO src/"},
+            "transcript_path": _transcript(tmp_path, sidechain=False),
+        }
+        assert handle_enforce_orchestrator_boundary(data) is True
+
+    def test_main_agent_recursive_grep_is_flagged(self, tmp_path):
+        data = {
+            "tool_name": "Bash",
+            "tool_input": {"command": "grep -r TODO src/"},
+            "transcript_path": _transcript(tmp_path, sidechain=False),
+        }
+        assert handle_enforce_orchestrator_boundary(data) is True
+
+    def test_main_agent_head_of_source_is_flagged(self, tmp_path):
+        data = {
+            "tool_name": "Bash",
+            "tool_input": {"command": "head -50 src/teatree/cli/overlay.py"},
+            "transcript_path": _transcript(tmp_path, sidechain=False),
+        }
+        assert handle_enforce_orchestrator_boundary(data) is True
+
+    def test_main_agent_awk_of_file_is_flagged(self, tmp_path):
+        data = {
+            "tool_name": "Bash",
+            "tool_input": {"command": "awk '/foo/{print}' src/teatree/foo.py"},
+            "transcript_path": _transcript(tmp_path, sidechain=False),
+        }
+        assert handle_enforce_orchestrator_boundary(data) is True
+
+
+class TestSanctionedReadOnlyBashStillAllowed942:
+    """Negative cases the #942 fix must preserve unbroken."""
+
+    def test_gh_pr_checks_is_allowed(self, tmp_path):
+        data = {
+            "tool_name": "Bash",
+            "tool_input": {"command": "gh pr checks 42"},
+            "transcript_path": _transcript(tmp_path, sidechain=False),
+        }
+        assert handle_enforce_orchestrator_boundary(data) is False
+
+    def test_gh_pr_view_piped_to_grep_is_allowed(self, tmp_path):
+        # The orchestrator regex matches the START of the command. A
+        # primary read-only verb piped to grep/cat/jq is still a
+        # sanctioned status check.
+        data = {
+            "tool_name": "Bash",
+            "tool_input": {"command": "gh pr view 42 --json state | grep state"},
+            "transcript_path": _transcript(tmp_path, sidechain=False),
+        }
+        assert handle_enforce_orchestrator_boundary(data) is False
+
+    def test_glab_mr_view_piped_to_jq_is_allowed(self, tmp_path):
+        data = {
+            "tool_name": "Bash",
+            "tool_input": {"command": "glab mr view 7 | grep '^state'"},
+            "transcript_path": _transcript(tmp_path, sidechain=False),
+        }
+        assert handle_enforce_orchestrator_boundary(data) is False
+
+    def test_t3_ticket_clear_is_allowed(self, tmp_path):
+        data = {
+            "tool_name": "Bash",
+            "tool_input": {"command": "t3 teatree ticket clear 5 slug abc123 --reviewer-identity x"},
+            "transcript_path": _transcript(tmp_path, sidechain=False),
+        }
+        assert handle_enforce_orchestrator_boundary(data) is False
+
+    def test_git_status_is_allowed(self, tmp_path):
+        data = {
+            "tool_name": "Bash",
+            "tool_input": {"command": "git status"},
+            "transcript_path": _transcript(tmp_path, sidechain=False),
+        }
+        assert handle_enforce_orchestrator_boundary(data) is False
+
+    def test_echo_orientation_is_allowed(self, tmp_path):
+        data = {
+            "tool_name": "Bash",
+            "tool_input": {"command": "echo $T3_REPO"},
+            "transcript_path": _transcript(tmp_path, sidechain=False),
+        }
+        assert handle_enforce_orchestrator_boundary(data) is False
+
+    def test_pwd_orientation_is_allowed(self, tmp_path):
+        data = {
+            "tool_name": "Bash",
+            "tool_input": {"command": "pwd"},
+            "transcript_path": _transcript(tmp_path, sidechain=False),
+        }
+        assert handle_enforce_orchestrator_boundary(data) is False
+
+    def test_ls_orientation_is_allowed(self, tmp_path):
+        data = {
+            "tool_name": "Bash",
+            "tool_input": {"command": "ls -la"},
+            "transcript_path": _transcript(tmp_path, sidechain=False),
+        }
+        assert handle_enforce_orchestrator_boundary(data) is False
+
+    def test_subagent_grep_is_still_allowed(self, tmp_path):
+        # Sub-agents implement — they may grep source freely.
+        data = {
+            "tool_name": "Bash",
+            "tool_input": {"command": "grep -r TODO src/"},
+            "transcript_path": _transcript(tmp_path, sidechain=True),
+        }
+        assert handle_enforce_orchestrator_boundary(data) is False
