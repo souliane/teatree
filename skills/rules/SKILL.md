@@ -45,6 +45,7 @@ Use `Ctrl+F`/`grep` to jump to a rule. Sections are grouped below by theme; numb
 14. [Clickable References](#clickable-references)
 14a. [Lead a Completion Report With the Assigned-Work Status](#lead-a-completion-report-with-the-assigned-work-status)
 15. [No AI Signature on Posts Made on the User's Behalf](#no-ai-signature-on-posts-made-on-the-users-behalf-non-negotiable)
+15a. [Ask Before Posting on the User's Behalf](#ask-before-posting-on-the-users-behalf-non-negotiable)
 16. [Never Post PR Comments from Parallel Agents](#never-post-pr-comments-from-parallel-agents-non-negotiable)
 17a. [Evidence Comes From the Deployed Environment](#evidence-comes-from-the-deployed-environment-non-negotiable)
 17. [Verify Repo Visibility Before Filing External Issues](#verify-repo-visibility-before-filing-external-issues-non-negotiable)
@@ -257,6 +258,18 @@ Every artifact you publish under the user's identity — git commits, MR/PR desc
 **When the user is the author and explicitly invokes you:** if the user asks for a draft to review before sending themselves, no signature is needed (they will send it themselves anyway). When **you** post on their behalf (Slack DM, PR discussion, GitHub comment, email), the rule still applies — the message must be indistinguishable in form from one the user wrote.
 
 **Failure mode this rule prevents:** the agent appends "Sent using Claude" to a Slack message it sends to a colleague on the user's behalf. The colleague now sees that the user did not write the message themselves; the user looks lazy or impersonal, and the rapport with the colleague is damaged. Same logic for `Co-Authored-By` in commits, "🤖 Generated" footers in PR descriptions, and "via the assistant" suffixes in issue comments.
+
+## Ask Before Posting on the User's Behalf (Non-Negotiable)
+
+**Canonical setting:** `[teatree] ask_before_post_on_behalf` in `~/.teatree.toml` (default `true`, per-overlay overridable). Resolved by `teatree.on_behalf_gate.ask_before_post_on_behalf_enabled()` and enforced on the teatree post-on-behalf code paths (the `PullRequest.approve()` → ✅ reaction signal is gated by it; see `teatree/core/signals.py`).
+
+When the setting is `true`, before any post/comment/approval/reaction the agent makes **under the user's identity to a colleague or customer surface** — a GitLab/GitHub PR/MR comment, an issue comment, a PR/MR approve or unapprove, a Slack channel or thread message, a Notion page or comment, an emoji reaction on someone else's message — the agent must obtain the user's explicit approval **first**, via `AskUserQuestion`, and publish only after the user confirms. The "how / what / to-whom / when" of a colleague reply is not generic or encodable, so the ask-first gate is the generic mechanism.
+
+- **Out of scope** (no pre-ask needed): DMs _to the user themselves_; internal-only orchestration writes — our own teatree backlog issues, durable memory, task bookkeeping, the sanctioned `t3 <overlay> ticket clear` / `ticket merge` keystone.
+- **Relationship to the notify-_after_ rule:** this is the _pre_-gate; the post-on-behalf notification (memory `notify-user-on-every-post-on-behalf`, tracked setting `notify_on_post_on_behalf`) is the _after_ receipt. Both ship on. The user flips `ask_before_post_on_behalf` off per-overlay first, once confident the system posts well; the notify stays on longer.
+- **When the setting is `false`** (the user has opted the overlay into trusted unattended posting), publish per the resolved `mode` doctrine without the pre-ask — the gate has been deliberately lifted for that overlay.
+
+**Failure mode this prevents:** the agent posts a poorly-worded reply or an approval the user did not intend under the user's name to a colleague, and the user only learns of it after the fact (or via the notify receipt). The pre-gate keeps the user in control of their own voice until they choose to delegate it.
 
 ## Never Post PR Comments from Parallel Agents (Non-Negotiable)
 

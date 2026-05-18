@@ -51,6 +51,7 @@ __all__ = [
 DEFAULT_TRANSITION_EMOJIS: dict[str, str] = {
     "test": "white_check_mark",
     "request_review": "eyes",
+    "approve": "white_check_mark",
     "mark_merged": "tada",
     "retrospect": "memo",
     "mark_delivered": "white_check_mark",

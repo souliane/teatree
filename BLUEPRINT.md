@@ -662,7 +662,7 @@ The render module lives at `src/teatree/loop/statusline.py` (`StatuslineZones` d
 
 #### 5.6.2 Mode + training-wheel
 
-The loop respects the active overlay's `mode` (§ 10.1, canonical default `interactive`). When an overlay opts into `mode = "auto"`, the training wheel `[teatree] require_human_approval_to_merge = true` (default) keeps merge gated even though push and PR creation run autonomously — merge requires a user reaction (👍 or `/merge`) on the statusline entry or the PR thread. The companion training wheel `[teatree] require_human_approval_to_answer = true` (default) gates the `t3:answerer` capability the same way: the agent drafts a reply to an inbound `question` intent, DMs the user for approval, and posts only on confirmation; set it `false` per-overlay to let answers post directly. The user flips either training wheel to `false` only when comfortable. In `interactive` overlays, every publishing action still prompts; the loop surfaces work but never publishes silently.
+The loop respects the active overlay's `mode` (§ 10.1, canonical default `interactive`). When an overlay opts into `mode = "auto"`, the training wheel `[teatree] require_human_approval_to_merge = true` (default) keeps merge gated even though push and PR creation run autonomously — merge requires a user reaction (👍 or `/merge`) on the statusline entry or the PR thread. The companion training wheel `[teatree] require_human_approval_to_answer = true` (default) gates the `t3:answerer` capability the same way: the agent drafts a reply to an inbound `question` intent, DMs the user for approval, and posts only on confirmation; set it `false` per-overlay to let answers post directly. A third companion `[teatree] ask_before_post_on_behalf = true` (default) is the broader *pre*-gate over every post the agent makes under the user's identity to a colleague/customer surface — a PR/MR comment, an issue comment, a Slack channel/thread message, a Notion post, a PR/MR **approval**, or a reaction on someone else's message: when on, the post path must obtain explicit user approval before publishing. The "how / what / to-whom / when" of a colleague reply is not generic or encodable, so the encodable mechanism is the gate itself (ask-first); it is resolved through the standard active-overlay → global → default chain (`teatree.on_behalf_gate.ask_before_post_on_behalf_enabled`, no env layer) and is the *pre*-gate companion to the notify-*after* path (#949) — both ship on, the user flips this one off per-overlay first. DMs *to the user themselves* and internal-only orchestration writes (our own backlog issues, durable memory, task bookkeeping, the sanctioned `t3 ticket clear/merge`) are out of scope. The approval ✅ on the requester's review-request message (the `white_check_mark` reaction posted on `PullRequest.approve()`, on the message whose permalink was stored as the PR's `slack_url` at `request_review` time) is itself an on-behalf post and is therefore suppressed while this pre-gate is on. The user flips any training wheel to `false` only when comfortable. In `interactive` overlays, every publishing action still prompts; the loop surfaces work but never publishes silently.
 
 `UserSettings.require_human_approval_to_merge`, `UserSettings.require_human_approval_to_answer`, `UserSettings.loop_cadence_seconds` (default 720), and `UserSettings.statusline_chain` (default empty) live in `src/teatree/config.py`; the first three are toml-overridable in `[teatree]` and per-overlay via `[overlays.<name>]` once registered in `OVERLAY_OVERRIDABLE_SETTINGS`. `statusline_chain` is global-only (not per-overlay).
 
@@ -1094,6 +1094,7 @@ mode = "interactive"                       # global default — confirm before p
 loop_cadence_seconds = 720                 # /loop tick interval (default 12 min)
 require_human_approval_to_merge = true     # training-wheel for `auto` overlays: push + PR create autonomous, merge stays gated
 require_human_approval_to_answer = true    # training-wheel: t3:answerer drafts + DMs for approval, posts only on confirm
+ask_before_post_on_behalf = true           # pre-gate: ask the user before any on-behalf colleague/customer post (PR/MR comment, approval, reaction, Slack/Notion post)
 
 [user]
 claude_chrome = true   # spawn `claude` with --chrome so sessions can drive the browser
@@ -2032,6 +2033,7 @@ graph TD
     teatree.core --> teatree.trigger_parser
     teatree.core --> teatree.agents
     teatree.core --> teatree.backends
+    teatree.core --> teatree.on_behalf_gate
     teatree.agents --> teatree.types
     teatree.agents --> teatree.core
     teatree.agents --> teatree.skill_loading
@@ -2082,6 +2084,7 @@ graph TD
     teatree.visual_qa --> teatree.core
     teatree.visual_qa --> teatree.utils
     teatree.identity --> teatree.config
+    teatree.on_behalf_gate --> teatree.config
     teatree.settings --> teatree.config
     teatree.settings --> teatree.paths
     teatree.cli_reference --> teatree.cli

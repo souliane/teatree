@@ -16,7 +16,9 @@ import httpx
 from teatree.core.overlay_loader import get_overlay
 
 if TYPE_CHECKING:
-    from teatree.core.models import Ticket
+    from teatree.core.models import PullRequest, Ticket
+
+_APPROVAL_EMOJI = "white_check_mark"
 
 logger = logging.getLogger(__name__)
 
@@ -117,3 +119,29 @@ def add_reactions_for_transition(ticket: "Ticket", transition_name: str) -> int:
         if add_reaction(token, channel_id, timestamp, emoji):
             posted += 1
     return posted
+
+
+def add_approval_reaction(pull_request: "PullRequest") -> int:
+    """Post a ✅ on the requester's review-request Slack message (#961).
+
+    Driven by ``PullRequest.approve()`` (the approve-on-behalf action).
+    The review-request message is the one whose permalink was stored on
+    the PR as ``slack_url`` at ``request_review`` time. Returns 1 on a
+    successful reaction, 0 on any no-op (missing slack_url, unparsable
+    permalink, missing token). Never raises — a Slack outage must not
+    block the FSM transition.
+    """
+    permalink = pull_request.slack_url
+    if not permalink:
+        return 0
+    parsed = parse_permalink(permalink)
+    if not parsed:
+        return 0
+
+    overlay = get_overlay(name=pull_request.overlay or None)
+    token = overlay.config.get_slack_token()
+    if not token:
+        return 0
+
+    channel_id, timestamp = parsed
+    return 1 if add_reaction(token, channel_id, timestamp, _APPROVAL_EMOJI) else 0

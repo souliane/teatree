@@ -181,6 +181,9 @@ if [ -n "$session_id" ] && [ -r "$_crons_file" ] && command -v jq >/dev/null 2>&
 fi
 
 # RAM usage (macOS/Linux)
+# NOTE(#962): this computation is slated to move into `teatree.system.memory`
+# (`t3 tool memory --json`) as the single source consumed by both the statusline
+# and a provision-path RAM auto-throttle. See souliane/teatree#962.
 _ram_segment=""
 if [[ "$OSTYPE" == "darwin"* ]]; then
     _ram_total=$(sysctl -n hw.memsize 2>/dev/null)
