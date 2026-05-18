@@ -47,6 +47,37 @@ _BRANCH_LOG_FIELDS = 3
 _SUBJECT_PREVIEW_LIMIT = 3
 
 
+@dataclass(slots=True)
+class CleanupResult:
+    """Outcome of a single :func:`cleanup_worktree` teardown.
+
+    ``label`` is the human-readable summary (still printed by the
+    interactive ``clean-all`` / ``clean-merged`` callers and surfaced as
+    the runner ``detail``). ``errors`` is the structured, machine-readable
+    channel: every teardown step that failed appends a descriptive string
+    here instead of crashing mid-teardown or being swallowed by a
+    ``suppress(Exception)`` (#877).
+
+    #932's lesson — a swallowed string the caller never inspects is not
+    surfacing. Sync backends push ``errors`` into ``SyncResult.errors`` and
+    runners fold it into their failure detail, so a teardown failure
+    actually reaches the operator/exit path.
+    """
+
+    label: str
+    errors: list[str] = field(default_factory=list)
+
+    @property
+    def clean(self) -> bool:
+        """True when every teardown step succeeded."""
+        return not self.errors
+
+    def __str__(self) -> str:
+        if self.errors:
+            return f"{self.label} [with errors: {'; '.join(self.errors)}]"
+        return self.label
+
+
 @dataclass(frozen=True)
 class BranchCommit:
     """A commit on a branch that is not reachable from any remote by SHA."""
@@ -339,13 +370,17 @@ def _remove_git_worktree(
     return errors
 
 
-def cleanup_worktree(worktree: Worktree, *, force: bool = False, strict_hygiene: bool = True) -> str:
+def cleanup_worktree(worktree: Worktree, *, force: bool = False, strict_hygiene: bool = True) -> CleanupResult:
     """Remove a single worktree: git worktree, branch, DB, overlay cleanup.
 
-    Deletes the Worktree record from the database and returns a summary label.
-    Errors in individual cleanup steps are suppressed so that partial cleanup
-    still succeeds, but they are surfaced in the returned label so the caller
-    can detect partial failures.
+    Deletes the Worktree record from the database and returns a
+    :class:`CleanupResult`. Individual teardown-step failures (overlay
+    hook, git worktree/branch removal, DB drop, pass-entry removal,
+    recovery capture) are captured into ``result.errors`` and the
+    remaining steps still run — collect-and-surface, never crash
+    mid-teardown leaving other resources orphaned (#877). The caller is
+    responsible for routing ``result.errors`` to its visible channel
+    (``SyncResult.errors`` for sync backends, runner detail for runners).
 
     Two guards protect against losing work, both bypassed only by an explicit
     ``force=True``.
@@ -383,18 +418,24 @@ def cleanup_worktree(worktree: Worktree, *, force: bool = False, strict_hygiene:
 
     if worktree.db_name:
         db_user = _read_env_cache_value(Path(wt_path), "POSTGRES_USER")
-        drop_db(worktree.db_name, user=db_user)
+        try:
+            drop_db(worktree.db_name, user=db_user)
+        except Exception as exc:
+            logger.exception("dropdb failed for %s (%s)", worktree.db_name, worktree.repo_path)
+            step_errors.append(f"dropdb failed for {worktree.db_name}: {exc}")
 
     if getattr(overlay.config, "teardown_removes_pass_entries", False) is True:
         ticket = worktree.ticket
         if ticket is not None:
-            remove_postgres_pass_entry(ticket.ticket_number)
+            try:
+                remove_postgres_pass_entry(ticket.ticket_number)
+            except Exception as exc:
+                logger.exception("pass-entry removal failed for %s", worktree.repo_path)
+                step_errors.append(f"pass-entry removal failed for {ticket.ticket_number}: {exc}")
 
     label = f"Cleaned: {worktree.repo_path} ({worktree.branch})"
-    if step_errors:
-        label += f" [with errors: {'; '.join(step_errors)}]"
     ticket_id = worktree.ticket.pk
     worktree.delete()
     if not Worktree.objects.filter(ticket_id=ticket_id).exists():
         Ticket.objects.get(pk=ticket_id).release_redis_slot()
-    return label
+    return CleanupResult(label=label, errors=step_errors)

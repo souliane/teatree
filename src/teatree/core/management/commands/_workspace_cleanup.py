@@ -262,6 +262,6 @@ def push_unsynced_branch(worktree: Worktree) -> str:
 
 def abandon_unsynced_branch(worktree: Worktree) -> str:
     try:
-        return cleanup_worktree(worktree, force=True)
+        return str(cleanup_worktree(worktree, force=True))
     except Exception as exc:  # noqa: BLE001
         return f"Abandon failed: {worktree.repo_path} ({worktree.branch}) — {exc}"

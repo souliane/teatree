@@ -131,8 +131,9 @@ def _scan_merged_prs(prs: RawAPIDict, merged_urls: set[str], result: SyncResult)
 def _cleanup_merged_worktrees(ticket: Ticket, result: SyncResult) -> None:
     for worktree in Worktree.objects.filter(ticket=ticket):
         try:
-            cleanup_worktree(worktree)
+            cleanup_result = cleanup_worktree(worktree)
             result.worktrees_cleaned += 1
+            result.errors.extend(cleanup_result.errors)
         except Exception as exc:
             logger.exception("Failed to clean worktree %s", worktree.repo_path)
             result.errors.append(f"Worktree cleanup failed for {worktree.repo_path} ({worktree.branch}): {exc}")
