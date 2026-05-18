@@ -159,7 +159,7 @@ class TestDbRefresh(TestCase):
             with (
                 patch.object(
                     db_mod,
-                    "require_interactive_approval",
+                    "require_approval",
                     side_effect=ApprovalRefusedError("no tty"),
                 ),
                 pytest.raises(SystemExit) as exc_info,
@@ -199,7 +199,7 @@ class TestDbRefresh(TestCase):
             worktree.provision()
             worktree.save()
 
-            with patch.object(db_mod, "require_interactive_approval", return_value=None):
+            with patch.object(db_mod, "require_approval", return_value=None):
                 result = cast(
                     "str",
                     call_command("db", "refresh", path=str(wt_dir), fresh_dump=True),
