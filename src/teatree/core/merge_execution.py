@@ -125,14 +125,51 @@ def _run_gh(argv: list[str]) -> tuple[int, str, str]:
     return result.returncode, result.stdout, result.stderr
 
 
+_GIT_BRANCH_PREFIXES = frozenset(
+    {
+        "fix",
+        "feat",
+        "feature",
+        "chore",
+        "docs",
+        "bugfix",
+        "hotfix",
+        "release",
+        "refactor",
+        "test",
+        "ci",
+        "build",
+        "perf",
+        "style",
+    }
+)
+
+
 def _looks_like_owner_repo(slug: str) -> bool:
     """True when *slug* is already a GitHub ``owner/repo`` identifier.
 
     A workstream slug (``statusline-stale-wakeup``) has no ``/``; a repo
     slug (``souliane/teatree``) has exactly one path separator and is not
     a filesystem path.
+
+    A *branch-shaped* slug (``fix/review-cli-django-bootstrap``) also has
+    exactly one ``/`` and would otherwise pass the structural check —
+    yet it is a git branch name, not an ``owner/repo`` (#1005). Such a
+    slug must fall through to the ticket-issue-url and clone-origin
+    fallbacks so the real repo is resolved. A real GitHub owner cannot
+    be one of the standard git branch namespaces (``fix``, ``feat``,
+    ``chore``, …), so any slug whose first path segment is in
+    :data:`_GIT_BRANCH_PREFIXES` (case-insensitive) is rejected here.
+    The alternative — re-ordering :func:`resolve_pr_repo_slug` to consult
+    the ticket/clone fallbacks before the structural check — would change
+    the documented resolution order and weaken back-compat with rows that
+    deliberately store an ``owner/repo`` slug; tightening this predicate
+    is a smaller-surface fix.
     """
-    return "/" in slug and not slug.startswith("/") and ":" not in slug and slug.count("/") >= 1
+    if not ("/" in slug and not slug.startswith("/") and ":" not in slug and slug.count("/") >= 1):
+        return False
+    first_segment = slug.split("/", 1)[0]
+    return first_segment.lower() not in _GIT_BRANCH_PREFIXES
 
 
 def _project_repo_slug() -> str:
