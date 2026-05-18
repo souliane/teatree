@@ -154,6 +154,24 @@ DJANGO_GROUPS: dict[str, tuple[str, list[tuple[str, str]]]] = {
             ("context", "Durable per-ticket knowledge store: show / add / edit (#627)."),
         ],
     ),
+    "availability": (
+        "24/7 dual question-mode (#58, BLUEPRINT §17.1 invariant 9).",
+        [
+            ("away", "Set manual away-mode override (questions queue as DeferredQuestion rows)."),
+            ("present", "Set manual present-mode override (questions ask interactively)."),
+            ("auto", "Clear manual override and fall back to schedule/default."),
+            ("show", "Print the currently resolved mode and source (override/schedule/default)."),
+        ],
+    ),
+    "questions": (
+        "Manage the away-mode deferred-question backlog (#58).",
+        [
+            ("record", "Record a deferred question (used by the PreToolUse away-mode hook)."),
+            ("list", "List pending deferred questions, oldest first."),
+            ("answer", "Resolve a pending question with a user answer."),
+            ("dismiss", "Dismiss a pending question without answering it."),
+        ],
+    ),
 }
 
 

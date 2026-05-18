@@ -157,4 +157,19 @@ def render(zones: StatuslineZones, *, target: Path | None = None, colorize: bool
     return target
 
 
-__all__ = ["StatuslineEntry", "StatuslineZones", "default_path", "render"]
+def availability_anchor(mode: str, queued: int) -> str:
+    """Return the anchors-zone segment for the availability mode (#58).
+
+    Renders ``mode=away · N queued`` when ``mode`` is ``away`` AND there
+    is at least one deferred question waiting; ``mode=away`` alone when
+    no queue; an empty string in ``present`` mode (the default mode is
+    not interesting enough to warrant a dedicated anchor line).
+    """
+    if mode != "away":
+        return ""
+    if queued > 0:
+        return f"mode=away · {queued} queued"
+    return "mode=away"
+
+
+__all__ = ["StatuslineEntry", "StatuslineZones", "availability_anchor", "default_path", "render"]

@@ -5,6 +5,7 @@ Source: `skills/*/SKILL.md` frontmatter
 | Skill | Summary |
 | --- | --- |
 | `answerer` | Draft a reply to an inbound question, DM the user for approval, post on confirmation |
+| `availability` | 24/7 dual question-mode — switch between asking the user now (present) and capturing questions as durable `DeferredQuestion` rows (away) |
 | `code` | Writing code with TDD methodology |
 | `contribute` | Push retro improvements to a branch, open a PR, and optionally create upstream issues |
 | `debug` | Troubleshooting and fixing — something is broken, find and fix it |
