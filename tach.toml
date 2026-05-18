@@ -109,7 +109,8 @@ depends_on = [
   "teatree.repo_mode",
   "teatree.triage",
   "teatree.skill_deps",
-  "teatree.memory_audit"
+  "teatree.memory_audit",
+  "teatree.on_behalf_gate"
 ]
 
 [[modules]]

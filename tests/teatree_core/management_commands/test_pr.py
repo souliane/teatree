@@ -238,6 +238,22 @@ class TestPrDetectTenant(TestCase):
 
 
 class TestPrPostEvidence(TestCase):
+    @pytest.fixture(autouse=True)
+    def _no_on_behalf_gate(
+        self,
+        tmp_path_factory: pytest.TempPathFactory,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Disable the on-behalf gate (#960) for transport-mechanics tests.
+
+        ``post-evidence`` is on-behalf-gated; the tests here exercise upload
+        + body building, not the gate (its own suite lives in
+        ``test_pr_post_evidence_on_behalf_gate.py``).
+        """
+        from tests.teatree_core._on_behalf_gate_helpers import disable_on_behalf_gate  # noqa: PLC0415
+
+        disable_on_behalf_gate(tmp_path_factory, monkeypatch)
+
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
     def test_without_code_host_returns_error(self) -> None:

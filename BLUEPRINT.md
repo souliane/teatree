@@ -2068,6 +2068,7 @@ graph TD
     teatree.cli --> teatree.triage
     teatree.cli --> teatree.skill_deps
     teatree.cli --> teatree.memory_audit
+    teatree.cli --> teatree.on_behalf_gate
     teatree.core.management --> teatree.core
     teatree.core.management --> teatree.agents
     teatree.core.management --> teatree.backends

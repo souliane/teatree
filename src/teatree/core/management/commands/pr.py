@@ -31,6 +31,7 @@ from teatree.core.management.commands._ship_exec import (
 from teatree.core.management.commands._ship_fsm import reconcile_fsm_for_ship
 from teatree.core.models import Session, Ticket, Worktree
 from teatree.core.models.types import TicketExtra, VisualQASummary
+from teatree.core.on_behalf_gate_recorded import OnBehalfPostBlockedError, require_on_behalf_approval
 from teatree.core.orphan_guard import BranchStatus, classify_branch
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.public_identity import MergeResult
@@ -499,12 +500,23 @@ class Command(TyperCommand):
 
         Files (screenshots, videos) are uploaded and embedded as ``![name](url)`` in the body.
         If an existing note contains ``## Test Plan``, it is updated instead of creating a new one.
+
+        Gated by ``ask_before_post_on_behalf`` (#960): the call is refused with no
+        upload or host side effect when the gate is on and no recorded
+        :class:`OnBehalfApproval` matches ``(<repo>!<mr>, "post_evidence")``. The
+        gate is inlined here (not at the ``code_host`` layer) so PR creation —
+        which is not an on-behalf colleague-facing post — remains ungated.
         """
         host = code_host_from_overlay()
         if host is None:
             return {"error": "No code host configured (check overlay GitLab token)"}
 
         repo_path = repo or get_overlay().metadata.get_ci_project_path()
+
+        try:
+            require_on_behalf_approval(target=f"{repo_path}!{mr_iid}", action="post_evidence")
+        except OnBehalfPostBlockedError as blocked:
+            return {"error": str(blocked)}
 
         # Upload files and build markdown embeds
         embeds: list[str] = []
