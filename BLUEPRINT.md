@@ -672,6 +672,30 @@ The loop respects the active overlay's `mode` (§ 10.1, canonical default `inter
 
 `UserSettings.require_human_approval_to_merge`, `UserSettings.require_human_approval_to_answer`, `UserSettings.loop_cadence_seconds` (default 720), `UserSettings.user_identity_aliases` (default empty; consumed by `TicketDispositionScanner` for reassign-noise filtering, see §5.6 phase 7), and `UserSettings.statusline_chain` (default empty) live in `src/teatree/config.py`; the first four are toml-overridable in `[teatree]` and per-overlay via `[overlays.<name>]` once registered in `OVERLAY_OVERRIDABLE_SETTINGS`. `statusline_chain` is global-only (not per-overlay).
 
+### 5.7 Self-improving monitor (`/loop` Phase 1)
+
+The self-improve monitor (`teatree.loop.self_improve`) is a **detector swarm** that rides the same tick the regular `/loop` runs. It watches for "smells" the rest of the loop cannot self-report — dispatcher silently skipping a phase, a `MergeClear` issued but never reconciled, a statusline entry whose evidence has gone stale — and converts each into a `SelfImproveFiring` row plus a graduated action. It is the legibility substrate the §§ 17.4–17.8 orchestrator-keystone relies on; without it, a wrong-but-confident loop is unobservable.
+
+**Detector → Firing → Action.** Each detector implements the `SelfImproveDetector` protocol (`src/teatree/loop/self_improve/detectors/base.py`): a `scan() -> list[ScanSignal]` for the rendering layer plus a `detect() -> list[DetectorReport]` that carries the dedup contract. A `DetectorReport` is a frozen dataclass of `(detector, dedup_key, state_hash, severity, max_rung, summary, payload, auto_fix)`. The schedule module (`schedule.py`) takes the reports, looks up the existing `SelfImproveFiring` row for `(detector, dedup_key)`, and decides via `fresh_or_escalated(report, firing)` whether to fire fresh (no row), hold (same `state_hash`), or escalate one rung (`state_hash` changed).
+
+**Action ladder (5 rungs, monotonic).** `log → statusline → slack → ticket → auto_fix`. Each detector declares a `max_rung` ceiling: a Phase 1 dispatcher-gap detector caps at `slack`; a forgotten-`MergeClear` detector caps at `ticket`; only the stale-statusline detector is permitted to climb to `auto_fix`. The ladder advances at most one rung per cycle; rungs never regress. The string constants live on `ActionRung` in `detectors/base.py` with a `_RUNG_CHOICES` drift guard so they cannot diverge from `SelfImproveFiring.Action`.
+
+**Dedup + cool-down.** `dedup_key` is the canonical identity (`teatree.loop.self_improve.dedup.canonical_key`); same key + same `state_hash` is suppressed by cool-down so a chronic smell does not spam every cycle. Re-fire only when the evidence changes (different `state_hash`) — the schedule module then advances one rung, never more. The model carries a `UniqueConstraint(detector, dedup_key)` so the dedup invariant survives a process restart.
+
+**Cost-tiered scheduling.** `run_tier(tier: str)` dispatches the detector registry (`detectors/registry.ALL_PHASE_1_DETECTORS`) filtered by tier — `cheap` (Phase 1: pure DB / file-mtime reads), `medium` (Phase 2: subprocess `git`/`gh`), `expensive` (Phase 3: LLM judgment). Phase 1 ships `cheap` only; the dispatcher contract is stable so Phase 2/3 plug in without a schema change.
+
+**Pre-cycle budget gate (§ 5.7.1).** `precheck_budget()` in `budget.py` runs before any detector and skips the cycle on any failing guardrail, in order: RAM ≥ 85 % used → spawn cap (>3 self-improve firings in the trailing hour) → classifier-denial cool-down (≥3 denials in the trailing hour) → token-budget exhaustion (`T3_SELF_IMPROVE_TOKEN_BUDGET` env). A skip is a dim one-line statusline note (never a Slack DM) carrying the structured reason. The probe is platform-native (`sysctl`/`vm_stat` on macOS, `/proc/meminfo` on Linux) so a missing optional library never crashes the cycle; tests inject the percent directly via `ram_used_percent`.
+
+**Auto-fix whitelist (hard).** A structural test (`test_no_auto_fix_outside_whitelist`) asserts that exactly two detectors carry `auto_fix = True`: `StaleStatuslineEntryDetector` (re-render) and `WorktreeCleanupCandidateDetector` (clean a merged worktree). Phase 1 ships only the first. Any other detector that flips `auto_fix = True` fails the structural test — `auto_fix` cannot leak by accident. This whitelist is the load-bearing safety control on top of the action ladder; auto-merge of substrate work is not on it and never will be.
+
+**Global Slack cap.** The `slack` rung consults a global rate limit of one self-improve DM per 30 minutes across all detectors, so a busy cycle cannot displace the regular review-request notifications. When the cap is hit, the cycle still escalates the firing row (the ladder advances) but the DM is suppressed and recorded as `slack_capped` on the action result.
+
+**Singleton + loop-owner gate.** `loop_self_improve` acquires a dedicated `LoopLease("loop-self-improve")` (separate from the regular `loop-tick` lease) so a long self-improve cycle never blocks a fast regular tick. The mgmt command refuses to run when the current session is not the loop owner (reads the same `loop-registry.json` `t3-loop-tick-owner` record `hook_router` writes at `SessionStart`); manual CLI invocations outside a session bypass the gate.
+
+**Hard non-goals.** The self-improve monitor never auto-merges substrate, never bypasses the § 17.4 `MergeClear` reviewer-attestation requirement (the keystone), and never auto-edits memory / skills / `BLUEPRINT.md`. The auto-fix whitelist is the structural enforcement of these non-goals — anything outside the whitelist surfaces via statusline / Slack / ticket and waits for a human.
+
+**Cross-references.** The keystone the monitor underwrites is §§ 17.4–17.8 (`MergeClear` + reviewer-attestation + orchestrator legibility). The regular tick topology this rides on is § 5.6. The rendering surface is § 5.6.1. The mode + training-wheel gating the action ladder respects is § 5.6.2.
+
 ---
 
 ## 6. Overlay System
