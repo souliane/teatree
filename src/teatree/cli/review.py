@@ -25,6 +25,30 @@ review_app = typer.Typer(no_args_is_help=True, help="Code review helpers.")
 _TOKEN_PARTS_COUNT = 2
 _HUNK_HEADER = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 _NEARBY_LINE_RANGE = 5
+_HTTP_OK_CODES = frozenset({HTTPStatus.OK, HTTPStatus.CREATED, HTTPStatus.NO_CONTENT})
+
+
+def _on_behalf_gate_active() -> bool:
+    """Whether the ask-before-post-on-behalf pre-gate forbids unattended posting.
+
+    An MR approval/unapproval is an outward, state-changing post made under
+    the user's identity, so it must respect the same
+    ``ask_before_post_on_behalf`` pre-gate the posting subcommands use
+    (souliane/teatree#960).
+
+    The gate module (``teatree.on_behalf_gate``) is the single source of
+    truth. It is wired here through a soft import so this command works
+    whether or not the gate PR has merged yet: if the module is absent the
+    gate is treated as inactive (no behaviour change until it lands); once
+    present, ``ask_before_post_on_behalf_enabled()`` decides.
+    """
+    try:
+        from teatree.on_behalf_gate import (  # ty: ignore[unresolved-import]  # noqa: PLC0415
+            ask_before_post_on_behalf_enabled,
+        )
+    except ModuleNotFoundError:
+        return False
+    return ask_before_post_on_behalf_enabled()
 
 
 def _find_added_line(diff_text: str, target_line: int) -> tuple[bool, list[int]]:
@@ -342,6 +366,84 @@ class ReviewService:
             lines.append(f"  {nid}  {fp}:{ln}  {body}...")
         return "\n".join(lines), 0
 
+    def _identity_has_reviewed(self, encoded_repo: str, mr: int) -> tuple[bool, str]:
+        """Whether the approving identity already authored a note on this MR.
+
+        Encodes the review-before-approve doctrine: an approval may only be
+        recorded once the same identity has left a reviewing footprint
+        (any note in any discussion thread). Returns ``(reviewed, error)``;
+        ``error`` is non-empty only when the identity itself cannot be
+        resolved (a hard precondition failure, not "no review yet").
+        """
+        api = self._get_api()
+        username = api.current_username()
+        if not username:
+            return False, "Could not resolve the approving GitLab identity (check token / `glab auth status`)."
+        discussions = api.get_json(f"projects/{encoded_repo}/merge_requests/{mr}/discussions?per_page=100")
+        if not isinstance(discussions, list):
+            return False, ""
+        for discussion in discussions:
+            if not isinstance(discussion, dict):
+                continue
+            notes = discussion.get("notes")
+            if not isinstance(notes, list):
+                continue
+            for note in notes:
+                if not isinstance(note, dict):
+                    continue
+                author = note.get("author")
+                if isinstance(author, dict) and author.get("username") == username:
+                    return True, ""
+        return False, ""
+
+    def approve(self, repo: str, mr: int) -> tuple[str, int]:
+        """Approve an MR — refuses unless the identity has already reviewed it.
+
+        Returns (message, exit_code). The review-first precondition encodes
+        the approve-on-review doctrine: an approval cannot be recorded
+        without a prior reviewing footprint from the same identity.
+        """
+        encoded = repo.replace("/", "%2F")
+        reviewed, error = self._identity_has_reviewed(encoded, mr)
+        if error:
+            return error, 1
+        if not reviewed:
+            msg = (
+                f"Refusing to approve !{mr}: review before approve — no review note authored by your "
+                "identity exists on this MR yet. Post a review (`t3 review post-comment` / "
+                "`post-draft-note`) first, then approve."
+            )
+            return msg, 1
+        api = self._get_api()
+        status = api.post_status(f"projects/{encoded}/merge_requests/{mr}/approve")
+        if status in _HTTP_OK_CODES:
+            return f"OK approved !{mr}", 0
+        return f"Failed: HTTP {status}", 1
+
+    def unapprove(self, repo: str, mr: int) -> tuple[str, int]:
+        """Revoke this identity's approval on an MR. Returns (message, exit_code).
+
+        No review-first precondition — removing an approval is the safe
+        direction and must always be reachable.
+        """
+        api = self._get_api()
+        encoded = repo.replace("/", "%2F")
+        status = api.post_status(f"projects/{encoded}/merge_requests/{mr}/unapprove")
+        if status in _HTTP_OK_CODES:
+            return f"OK unapproved !{mr}", 0
+        return f"Failed: HTTP {status}", 1
+
+
+def _refuse_if_on_behalf_gated() -> None:
+    """Refuse an approval/unapproval when the on-behalf pre-gate is active."""
+    if _on_behalf_gate_active():
+        typer.echo(
+            "Refusing: `ask_before_post_on_behalf` is enabled — an MR approval is an outward "
+            "post on your behalf and must be user-approved first. Disable the gate per-overlay "
+            "in ~/.teatree.toml once you trust the workflow, or record the approval manually.",
+        )
+        raise typer.Exit(code=1)
+
 
 def _require_token() -> ReviewService:
     token = ReviewService.get_gitlab_token()
@@ -451,6 +553,43 @@ def update_note(
     """Update a note on a GitLab MR — auto-detects draft vs published."""
     service = _require_token()
     msg, code = service.update_note(repo, mr, note_id, body)
+    typer.echo(msg)
+    if code:
+        raise typer.Exit(code=code)
+
+
+@review_app.command(name="approve")
+def approve(
+    repo: str = typer.Argument(help="GitLab project path (e.g., my-org/my-repo)"),
+    mr: int = typer.Argument(help="Merge request IID"),
+) -> None:
+    """Approve a GitLab MR — only after you have reviewed it.
+
+    Precondition: a review note/discussion authored by your identity must
+    already exist on the MR (review before approve). Also respects the
+    `ask_before_post_on_behalf` pre-gate (souliane/teatree#960).
+    """
+    _refuse_if_on_behalf_gated()
+    service = _require_token()
+    msg, code = service.approve(repo, mr)
+    typer.echo(msg)
+    if code:
+        raise typer.Exit(code=code)
+
+
+@review_app.command(name="unapprove")
+def unapprove(
+    repo: str = typer.Argument(help="GitLab project path (e.g., my-org/my-repo)"),
+    mr: int = typer.Argument(help="Merge request IID"),
+) -> None:
+    """Revoke your approval on a GitLab MR.
+
+    No review precondition (revoking is the safe direction). Respects the
+    `ask_before_post_on_behalf` pre-gate (souliane/teatree#960).
+    """
+    _refuse_if_on_behalf_gated()
+    service = _require_token()
+    msg, code = service.unapprove(repo, mr)
     typer.echo(msg)
     if code:
         raise typer.Exit(code=code)

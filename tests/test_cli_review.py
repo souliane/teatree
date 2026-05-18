@@ -1,3 +1,6 @@
+import builtins
+import sys
+import types
 from unittest.mock import MagicMock, patch
 
 from typer.testing import CliRunner
@@ -5,6 +8,7 @@ from typer.testing import CliRunner
 import teatree.backends.gitlab_api as gitlab_api_mod
 import teatree.utils.run as utils_run_mod
 from teatree.cli import app
+from teatree.cli import review as review_mod
 from teatree.cli.review import ReviewService, _find_added_line
 
 runner = CliRunner()
@@ -446,6 +450,201 @@ class TestPostComment:
             assert mock_api.put_status.call_count == 1
 
 
+# -- approve / unapprove -------------------------------------------------------
+
+
+def _discussions_with_author(username: str) -> list[dict[str, object]]:
+    """Build a discussions payload containing a note authored by ``username``."""
+    return [
+        {
+            "id": "disc-1",
+            "notes": [
+                {"id": 1, "author": {"username": username}, "body": "reviewed: looks good"},
+            ],
+        },
+    ]
+
+
+class TestApprove:
+    def test_approve_succeeds_when_reviewer_already_commented(self, monkeypatch):
+        """Approve posts when a note authored by the approving identity exists."""
+        monkeypatch.setenv("GITLAB_TOKEN", "test-token")
+        mock_api = MagicMock()
+        mock_api.current_username.return_value = "reviewer-bot"
+        mock_api.get_json.side_effect = lambda endpoint: (
+            _discussions_with_author("reviewer-bot") if "/discussions" in endpoint else {"id": 1}
+        )
+        mock_api.post_status.return_value = 201
+        with patch.object(gitlab_api_mod, "GitLabAPI", return_value=mock_api):
+            result = runner.invoke(app, ["review", "approve", "org/repo", "7"])
+            assert result.exit_code == 0, result.output
+            assert "OK approved" in result.output
+            endpoint = mock_api.post_status.call_args.args[0]
+            assert "merge_requests/7/approve" in endpoint
+
+    def test_approve_refused_without_prior_review_note(self, monkeypatch):
+        """Approve refuses (review-first precondition) when the identity has no note."""
+        monkeypatch.setenv("GITLAB_TOKEN", "test-token")
+        mock_api = MagicMock()
+        mock_api.current_username.return_value = "reviewer-bot"
+        mock_api.get_json.side_effect = lambda endpoint: (
+            _discussions_with_author("someone-else") if "/discussions" in endpoint else {"id": 1}
+        )
+        with patch.object(gitlab_api_mod, "GitLabAPI", return_value=mock_api):
+            result = runner.invoke(app, ["review", "approve", "org/repo", "7"])
+            assert result.exit_code == 1
+            assert "review before approve" in result.output
+            mock_api.post_status.assert_not_called()
+
+    def test_approve_refused_when_no_discussions(self, monkeypatch):
+        """Approve refuses when the MR has no discussions at all."""
+        monkeypatch.setenv("GITLAB_TOKEN", "test-token")
+        mock_api = MagicMock()
+        mock_api.current_username.return_value = "reviewer-bot"
+        mock_api.get_json.side_effect = lambda endpoint: [] if "/discussions" in endpoint else {"id": 1}
+        with patch.object(gitlab_api_mod, "GitLabAPI", return_value=mock_api):
+            result = runner.invoke(app, ["review", "approve", "org/repo", "7"])
+            assert result.exit_code == 1
+            assert "review before approve" in result.output
+            mock_api.post_status.assert_not_called()
+
+    def test_approve_refused_when_discussions_not_a_list(self, monkeypatch):
+        """A non-list discussions payload is treated as 'no review yet'."""
+        monkeypatch.setenv("GITLAB_TOKEN", "test-token")
+        mock_api = MagicMock()
+        mock_api.current_username.return_value = "reviewer-bot"
+        mock_api.get_json.side_effect = lambda endpoint: "unexpected" if "/discussions" in endpoint else {"id": 1}
+        with patch.object(gitlab_api_mod, "GitLabAPI", return_value=mock_api):
+            result = runner.invoke(app, ["review", "approve", "org/repo", "7"])
+            assert result.exit_code == 1
+            assert "review before approve" in result.output
+            mock_api.post_status.assert_not_called()
+
+    def test_approve_skips_malformed_discussion_and_note_shapes(self, monkeypatch):
+        """Non-dict discussions, non-list notes, and non-dict notes are skipped."""
+        monkeypatch.setenv("GITLAB_TOKEN", "test-token")
+        mock_api = MagicMock()
+        mock_api.current_username.return_value = "reviewer-bot"
+        discussions = [
+            "not-a-dict",
+            {"id": "d2", "notes": "not-a-list"},
+            {"id": "d3", "notes": ["not-a-dict-note"]},
+            {"id": "d4", "notes": [{"id": 9, "author": {"username": "reviewer-bot"}}]},
+        ]
+        mock_api.get_json.side_effect = lambda endpoint: discussions if "/discussions" in endpoint else {"id": 1}
+        mock_api.post_status.return_value = 201
+        with patch.object(gitlab_api_mod, "GitLabAPI", return_value=mock_api):
+            result = runner.invoke(app, ["review", "approve", "org/repo", "7"])
+            assert result.exit_code == 0, result.output
+            assert "OK approved" in result.output
+
+    def test_approve_refused_when_identity_unknown(self, monkeypatch):
+        """Approve refuses when the approving identity cannot be resolved."""
+        monkeypatch.setenv("GITLAB_TOKEN", "test-token")
+        mock_api = MagicMock()
+        mock_api.current_username.return_value = ""
+        mock_api.get_json.side_effect = lambda endpoint: (
+            _discussions_with_author("reviewer-bot") if "/discussions" in endpoint else {"id": 1}
+        )
+        with patch.object(gitlab_api_mod, "GitLabAPI", return_value=mock_api):
+            result = runner.invoke(app, ["review", "approve", "org/repo", "7"])
+            assert result.exit_code == 1
+            assert "Could not resolve" in result.output
+            mock_api.post_status.assert_not_called()
+
+    def test_approve_api_failure_surfaced(self, monkeypatch):
+        """A non-2xx from the approve endpoint is surfaced as an error."""
+        monkeypatch.setenv("GITLAB_TOKEN", "test-token")
+        mock_api = MagicMock()
+        mock_api.current_username.return_value = "reviewer-bot"
+        mock_api.get_json.side_effect = lambda endpoint: (
+            _discussions_with_author("reviewer-bot") if "/discussions" in endpoint else {"id": 1}
+        )
+        mock_api.post_status.return_value = 403
+        with patch.object(gitlab_api_mod, "GitLabAPI", return_value=mock_api):
+            result = runner.invoke(app, ["review", "approve", "org/repo", "7"])
+            assert result.exit_code == 1
+            assert "Failed: HTTP 403" in result.output
+
+    def test_approve_blocked_by_on_behalf_gate(self, monkeypatch):
+        """When the ask-before-post-on-behalf gate is active, approve refuses unattended."""
+        monkeypatch.setenv("GITLAB_TOKEN", "test-token")
+        mock_api = MagicMock()
+        mock_api.current_username.return_value = "reviewer-bot"
+        mock_api.get_json.side_effect = lambda endpoint: (
+            _discussions_with_author("reviewer-bot") if "/discussions" in endpoint else {"id": 1}
+        )
+        with (
+            patch.object(gitlab_api_mod, "GitLabAPI", return_value=mock_api),
+            patch("teatree.cli.review._on_behalf_gate_active", return_value=True),
+        ):
+            result = runner.invoke(app, ["review", "approve", "org/repo", "7"])
+            assert result.exit_code == 1
+            assert "ask_before_post_on_behalf" in result.output
+            mock_api.post_status.assert_not_called()
+
+    def test_unapprove_succeeds(self, monkeypatch):
+        """Unapprove posts to the unapprove endpoint with no review precondition."""
+        monkeypatch.setenv("GITLAB_TOKEN", "test-token")
+        mock_api = MagicMock()
+        mock_api.post_status.return_value = 201
+        with patch.object(gitlab_api_mod, "GitLabAPI", return_value=mock_api):
+            result = runner.invoke(app, ["review", "unapprove", "org/repo", "7"])
+            assert result.exit_code == 0, result.output
+            assert "OK unapproved" in result.output
+            endpoint = mock_api.post_status.call_args.args[0]
+            assert "merge_requests/7/unapprove" in endpoint
+            mock_api.current_username.assert_not_called()
+
+    def test_unapprove_api_failure_surfaced(self, monkeypatch):
+        monkeypatch.setenv("GITLAB_TOKEN", "test-token")
+        mock_api = MagicMock()
+        mock_api.post_status.return_value = 404
+        with patch.object(gitlab_api_mod, "GitLabAPI", return_value=mock_api):
+            result = runner.invoke(app, ["review", "unapprove", "org/repo", "7"])
+            assert result.exit_code == 1
+            assert "Failed: HTTP 404" in result.output
+
+    def test_unapprove_blocked_by_on_behalf_gate(self, monkeypatch):
+        monkeypatch.setenv("GITLAB_TOKEN", "test-token")
+        mock_api = MagicMock()
+        with (
+            patch.object(gitlab_api_mod, "GitLabAPI", return_value=mock_api),
+            patch("teatree.cli.review._on_behalf_gate_active", return_value=True),
+        ):
+            result = runner.invoke(app, ["review", "unapprove", "org/repo", "7"])
+            assert result.exit_code == 1
+            assert "ask_before_post_on_behalf" in result.output
+            mock_api.post_status.assert_not_called()
+
+
+class TestOnBehalfGateActive:
+    def test_inactive_when_gate_module_absent(self, monkeypatch):
+        """Absent gate module (not yet merged) -> integration point reports inactive."""
+        real_import = builtins.__import__
+
+        def fake_import(name, *args, **kwargs):
+            if name == "teatree.on_behalf_gate":
+                raise ModuleNotFoundError(name)
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", fake_import)
+        assert review_mod._on_behalf_gate_active() is False
+
+    def test_active_when_gate_module_present_and_enabled(self, monkeypatch):
+        """Present gate module + enabled setting -> integration point reports active."""
+        fake = types.ModuleType("teatree.on_behalf_gate")
+        fake.ask_before_post_on_behalf_enabled = lambda: True
+        monkeypatch.setitem(sys.modules, "teatree.on_behalf_gate", fake)
+        assert review_mod._on_behalf_gate_active() is True
+
+    def test_inactive_when_gate_module_present_but_disabled(self, monkeypatch):
+        fake = types.ModuleType("teatree.on_behalf_gate")
+        fake.ask_before_post_on_behalf_enabled = lambda: False
+        monkeypatch.setitem(sys.modules, "teatree.on_behalf_gate", fake)
+        assert review_mod._on_behalf_gate_active() is False
+
+
 # -- _require_token helper -----------------------------------------------------
 
 
@@ -514,5 +713,21 @@ class TestRequireToken:
         with patch.object(utils_run_mod.subprocess, "run") as mock_run:
             mock_run.return_value = MagicMock(stderr="", returncode=1)
             result = runner.invoke(app, ["review", "post-comment", "org/repo", "1", "body"])
+            assert result.exit_code == 1
+            assert "No GitLab token" in result.output
+
+    def test_approve_rejected(self, monkeypatch):
+        monkeypatch.delenv("GITLAB_TOKEN", raising=False)
+        with patch.object(utils_run_mod.subprocess, "run") as mock_run:
+            mock_run.return_value = MagicMock(stderr="", returncode=1)
+            result = runner.invoke(app, ["review", "approve", "org/repo", "7"])
+            assert result.exit_code == 1
+            assert "No GitLab token" in result.output
+
+    def test_unapprove_rejected(self, monkeypatch):
+        monkeypatch.delenv("GITLAB_TOKEN", raising=False)
+        with patch.object(utils_run_mod.subprocess, "run") as mock_run:
+            mock_run.return_value = MagicMock(stderr="", returncode=1)
+            result = runner.invoke(app, ["review", "unapprove", "org/repo", "7"])
             assert result.exit_code == 1
             assert "No GitLab token" in result.output
