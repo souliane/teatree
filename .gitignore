@@ -44,3 +44,9 @@ e2e/.videos/
 # the DB; the file is regenerated on drift and must never be committed.
 .t3-env.cache
 .t3-cache/
+
+# Autonomous review-loop runtime cursor (#924): written untracked at the
+# clone root by the loop. Ignoring it keeps the clone clean so `t3 update`
+# can always ff-advance the running editable t3 (it never blocked the
+# fast-forward, but staying untracked-clean avoids any confusion).
+.loop-review-state.json
