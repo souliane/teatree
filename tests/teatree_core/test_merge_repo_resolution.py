@@ -131,6 +131,149 @@ class TestMergeUsesResolvedRepo(TestCase):
         assert "could not resolve the live head" not in message
 
 
+class TestOverlayRepoDiffersFromCloneOrigin(TestCase):
+    """#931 — an overlay's GitHub repo differs from the ``t3`` clone origin.
+
+    A sanctioned ``ticket merge`` for a PR in a downstream overlay repo
+    (here ``downstream-org/downstream-overlay#139``) must bind the
+    live-head check to that repo — the repo the ticket's PR belongs to —
+    NOT to ``souliane/teatree`` (the running clone's ``origin``). Before
+    #931 the live-head lookup resolved the clone-origin same-numbered PR
+    (an unrelated ``souliane/teatree#139`` whose head differs), so the
+    SHA-bind precondition saw "head moved" and every downstream-overlay
+    sanctioned merge was blocked.
+
+    The concrete repo name is not load-bearing — any ``owner/repo`` that
+    is not the clone origin reproduces the bug; a neutral placeholder is
+    used so core/tests stay overlay-agnostic (BLUEPRINT § 1).
+
+    Only the ``gh`` subprocess (the network boundary) is stubbed; the
+    repo resolution runs through real teatree code against a real
+    ``Ticket`` row.
+    """
+
+    _OVERLAY_REPO = "downstream-org/downstream-overlay"
+    _OVERLAY_SHA = "5" * 40  # overlay repo PR #139 head == reviewed SHA
+    _ORIGIN_SHA = "6" * 40  # unrelated clone-origin PR #139 head (moved-on)
+
+    def _overlay_clear(self) -> MergeClear:
+        ticket = Ticket.objects.create(
+            overlay="downstream",
+            issue_url=f"https://github.com/{self._OVERLAY_REPO}/issues/139",
+            state=Ticket.State.IN_REVIEW,
+        )
+        return MergeClear.objects.create(
+            ticket=ticket,
+            pr_id=139,
+            slug="overlay-repo-differs-from-clone-origin",
+            reviewed_sha=self._OVERLAY_SHA,
+            reviewer_identity="cold-reviewer",
+            gh_verify_result=MergeClear.VerifyResult.GREEN,
+            blast_class=MergeClear.BlastClass.LOGIC,
+        )
+
+    def _gh_keyed_by_repo(self, calls: list[list[str]]):
+        """A ``gh`` stub whose PR head depends on the ``--repo`` argument.
+
+        The overlay repo's PR #139 head == the reviewed SHA (mergeable);
+        the clone-origin PR #139 head is a different, unrelated SHA.
+        Which head the precondition sees is decided purely by which repo
+        the sanctioned path targets.
+        """
+
+        def _gh(argv: list[str]) -> tuple[int, str, str]:
+            calls.append(argv)
+            joined = " ".join(argv)
+            repo = argv[argv.index("--repo") + 1] if "--repo" in argv else ""
+            head = self._OVERLAY_SHA if repo == self._OVERLAY_REPO else self._ORIGIN_SHA
+            if "headRefOid" in joined:
+                return (0, head, "")
+            if "isDraft" in joined:
+                return (0, "false", "")
+            if "statusCheckRollup" in joined:
+                return (0, _GREEN, "")
+            if "pulls" in joined and "merge" in joined:
+                return (0, '{"sha": "merged0deadbeef"}', "")
+            return (0, "", "")
+
+        return _gh
+
+    def test_sha_bind_precondition_passes_against_overlay_repo(self) -> None:
+        clear = self._overlay_clear()
+        calls: list[list[str]] = []
+
+        with (
+            patch("teatree.core.merge_execution._run_gh", side_effect=self._gh_keyed_by_repo(calls)),
+            patch("teatree.core.merge_execution._project_repo_slug", return_value="souliane/teatree"),
+        ):
+            outcome = merge_ticket_pr(clear=clear, executing_loop_identity="merge-loop")
+
+        assert outcome.merged_sha
+        repo_args = [argv[argv.index("--repo") + 1] for argv in calls if "--repo" in argv]
+        assert repo_args
+        assert all(r == self._OVERLAY_REPO for r in repo_args), (
+            f"sanctioned merge targeted the wrong repo: {sorted(set(repo_args))} "
+            f"(must be the ticket's overlay repo, not the clone origin)"
+        )
+
+    def test_resolve_pr_repo_slug_prefers_ticket_issue_url_over_clone_origin(self) -> None:
+        clear = self._overlay_clear()
+
+        with patch("teatree.core.merge_execution._project_repo_slug", return_value="souliane/teatree"):
+            assert resolve_pr_repo_slug(clear) == self._OVERLAY_REPO
+
+    def test_ticketless_clear_falls_through_to_clone_origin(self) -> None:
+        """A CLEAR with no ticket keeps the #872 clone-origin behaviour."""
+        clear = MergeClear.objects.create(
+            ticket=None,
+            pr_id=139,
+            slug="overlay-repo-differs-from-clone-origin",
+            reviewed_sha=self._OVERLAY_SHA,
+            reviewer_identity="cold-reviewer",
+            gh_verify_result=MergeClear.VerifyResult.GREEN,
+            blast_class=MergeClear.BlastClass.LOGIC,
+        )
+
+        with patch("teatree.core.merge_execution._project_repo_slug", return_value="souliane/teatree"):
+            assert resolve_pr_repo_slug(clear) == "souliane/teatree"
+
+    def test_clear_with_blank_issue_url_falls_through_to_clone_origin(self) -> None:
+        """A ticket with no issue_url keeps the #872 clone-origin behaviour."""
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        clear = MergeClear.objects.create(
+            ticket=ticket,
+            pr_id=139,
+            slug="overlay-repo-differs-from-clone-origin",
+            reviewed_sha=self._OVERLAY_SHA,
+            reviewer_identity="cold-reviewer",
+            gh_verify_result=MergeClear.VerifyResult.GREEN,
+            blast_class=MergeClear.BlastClass.LOGIC,
+        )
+
+        with patch("teatree.core.merge_execution._project_repo_slug", return_value="souliane/teatree"):
+            assert resolve_pr_repo_slug(clear) == "souliane/teatree"
+
+    def test_clear_with_non_github_issue_url_falls_through_to_clone_origin(self) -> None:
+        """A ticket whose issue_url is unparsable falls back, not crash."""
+        ticket = Ticket.objects.create(
+            overlay="t3-teatree",
+            issue_url="https://example.invalid/not-an-issue",
+            state=Ticket.State.IN_REVIEW,
+        )
+        clear = MergeClear.objects.create(
+            ticket=ticket,
+            pr_id=139,
+            slug="overlay-repo-differs-from-clone-origin",
+            reviewed_sha=self._OVERLAY_SHA,
+            reviewer_identity="cold-reviewer",
+            gh_verify_result=MergeClear.VerifyResult.GREEN,
+            blast_class=MergeClear.BlastClass.LOGIC,
+        )
+
+        with patch("teatree.core.merge_execution._project_repo_slug", return_value="souliane/teatree"):
+            assert resolve_pr_repo_slug(clear) == "souliane/teatree"
+
+
 class TestProjectRepoSlugHelper(TestCase):
     def test_project_repo_slug_uses_project_root_git_remote(self) -> None:
         with (

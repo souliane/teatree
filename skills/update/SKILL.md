@@ -49,14 +49,25 @@ hard-fails.
 
 ## Self-DB Migrations
 
-When teatree core advances, `t3 update` applies pending teatree self-DB
-migrations **non-destructively** (the `uv --directory <clone> run python
-manage.py migrate --no-input` path, no DB drop). This is the sanctioned
-first-class alternative to the destructive `resetdb` (which discards all
-local ticket/session/lease state) and the raw `manage.py migrate` the
-PreToolUse hook router discourages. A migration failure warns and never
-aborts the update — the git fast-forward already did its job. This keeps
-the sanctioned merge path working against a current schema after a pull.
+`t3 update` probes the teatree self-DB with `manage.py migrate --check`
+and, when migrations are pending, applies them **non-destructively** (the
+`uv --directory <clone> run python manage.py migrate --no-input` path, no
+DB drop). This is the sanctioned first-class alternative to the
+destructive `resetdb` (which discards all local ticket/session/lease
+state) and the raw `manage.py migrate` the PreToolUse hook router
+discourages.
+
+The migration is gated on **whether migrations are actually pending —
+not on whether a repo advanced this run** (#929). An interrupted prior
+`t3 update` (pulled new migrations, killed before reinstall) or an
+out-of-band `git pull` before `t3 update` runs leaves the SHA already
+current; the next run still probes and migrates the stale self-DB. A
+migration failure is **fail-closed**: `t3 update` exits non-zero rather
+than swallowing a warning, so it can never report success with a
+half-migrated self-DB and silently break the sanctioned merge path's
+fail-closed-on-unmigrated-self-DB guarantee (#870). A missing `uv` or an
+unresolvable clone can't be probed — that warns but doesn't hard-fail
+(unverifiable differs from verified-unmigrated).
 
 ## Core ↔ Overlay Version Coupling
 

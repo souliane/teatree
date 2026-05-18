@@ -7,6 +7,7 @@ Only the unstoppable external — the ``gh`` subprocess — is stubbed; every
 teatree model / FSM / DB write is real.
 """
 
+import json
 from unittest.mock import patch
 
 import pytest
@@ -118,6 +119,25 @@ class TestMergeKeystonePreconditions(TestCase):
         clear = _clear(ticket, reviewer_identity="merge-loop")
         with pytest.raises(MergePreconditionError, match="independent"):
             _run(clear, _GhStub(), identity="merge-loop")
+
+    def test_human_authorized_on_non_substrate_clear_is_refused(self) -> None:
+        # The recorded-human-approval path is substrate-only — presenting
+        # --human-authorized against a logic/docs CLEAR is refused so it
+        # can never bypass independent loop review (invariant 8).
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        clear = _clear(ticket, blast_class=MergeClear.BlastClass.LOGIC)
+        stub = _GhStub()
+        with (
+            patch("teatree.core.merge_execution._run_gh", side_effect=stub),
+            pytest.raises(MergePreconditionError, match="substrate-only"),
+        ):
+            merge_ticket_pr(
+                clear=clear,
+                executing_loop_identity="merge-loop",
+                human_authorized="owner-123",
+            )
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.IN_REVIEW
 
     def test_stale_sha_is_refused(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
@@ -351,6 +371,261 @@ class TestMergeExecutionEdgeCases(TestCase):
         assert outcome.ticket_state == ""
         clear.refresh_from_db()
         assert clear.consumed_at is not None
+
+
+class _LostPostHookGhStub:
+    """Models a real GitHub PR whose squash-merge LANDED but whose post-hook was lost.
+
+    First merge attempt: preconditions pass (head == reviewed_sha, green,
+    not draft, not yet merged), the ``pulls/N/merge`` call SUCCEEDS at
+    GitHub (the irreversible action lands). The harness then simulates the
+    process dying before ``record_merge_and_advance`` consumes the CLEAR.
+
+    Retry tick: GitHub now reports the PR as ``MERGED`` with a merge
+    commit; the PR's recorded ``headRefOid`` is still ``reviewed_sha``
+    (the squashed tip). A correct keystone must RECONCILE this — consume
+    the CLEAR and advance the FSM — not fail forever on the SHA precheck.
+    """
+
+    def __init__(self, *, reviewed_sha: str = _SHA) -> None:
+        self.reviewed_sha = reviewed_sha
+        self.merge_commit = "mergecommit0deadbeef"
+        self.merged = False
+        self.calls: list[list[str]] = []
+
+    def _merge_state_payload(self) -> str:
+        state = "MERGED" if self.merged else "OPEN"
+        commit = self.merge_commit if self.merged else None
+        return json.dumps({"state": state, "mergeCommit": {"oid": commit} if commit else None})
+
+    def _do_merge(self) -> tuple[int, str, str]:
+        if self.merged:
+            # GitHub refuses to merge an already-merged PR.
+            return (1, "", "Pull Request is not mergeable (405)")
+        # The irreversible merge lands at GitHub.
+        self.merged = True
+        return (0, json.dumps({"sha": self.merge_commit}), "")
+
+    def __call__(self, argv: list[str]) -> tuple[int, str, str]:
+        self.calls.append(argv)
+        joined = " ".join(argv)
+        if "headRefOid" in joined:
+            # GitHub keeps reporting the squashed tip as headRefOid.
+            return (0, self.reviewed_sha, "")
+        if "isDraft" in joined:
+            return (0, "false", "")
+        if "statusCheckRollup" in joined:
+            return (0, _GREEN, "")
+        if "state,mergeCommit" in joined:
+            return (0, self._merge_state_payload(), "")
+        if "pulls" in joined and "merge" in joined:
+            return self._do_merge()
+        return (0, "", "")
+
+
+class TestLostPostHookRecoverable(TestCase):
+    """#928: a lost post-merge-hook must be RECOVERABLE, not a permanent brick.
+
+    On current code the retry fails ``live_sha != reviewed_sha`` forever
+    (the live head is now the merge commit / the PR is merged) and the
+    loop never self-issues a replacement — a permanently stranded
+    "merged-on-GitHub, not-in-FSM" ticket. After the fix the retry
+    reconciles: it consumes the single-use CLEAR and advances the FSM.
+    """
+
+    def test_lost_post_hook_then_retry_reconciles_fsm(self) -> None:
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        clear = _clear(ticket)
+        stub = _LostPostHookGhStub()
+
+        # First attempt: the GitHub merge lands, but the post hook dies
+        # before consuming the CLEAR (process kill / DB lock / rollback
+        # between execute_bound_merge and record_merge_and_advance).
+        boom = RuntimeError("post hook lost (process killed between execute and record)")
+        with (
+            patch("teatree.core.merge_execution._run_gh", side_effect=stub),
+            patch("teatree.core.merge_execution.record_merge_and_advance", side_effect=boom),
+            pytest.raises(RuntimeError, match="post hook lost"),
+        ):
+            merge_ticket_pr(clear=clear, executing_loop_identity="merge-loop")
+
+        # The merge IS on GitHub, but the FSM never advanced and the
+        # CLEAR was never consumed.
+        ticket.refresh_from_db()
+        clear.refresh_from_db()
+        assert stub.merged is True
+        assert ticket.state == Ticket.State.IN_REVIEW
+        assert clear.consumed_at is None
+        assert not MergeAudit.objects.filter(clear=clear).exists()
+
+        # Retry tick: a correct keystone reconciles instead of bricking.
+        with patch("teatree.core.merge_execution._run_gh", side_effect=stub):
+            outcome = merge_ticket_pr(clear=clear, executing_loop_identity="merge-loop")
+
+        ticket.refresh_from_db()
+        clear.refresh_from_db()
+        assert ticket.state == Ticket.State.MERGED
+        assert clear.consumed_at is not None
+        audit = MergeAudit.objects.get(clear=clear)
+        assert audit.merged_sha == stub.merge_commit
+        # The reconciling retry must NOT issue a second irreversible
+        # merge call — the PR is already merged.
+        retry_merge_calls = [c for c in stub.calls if "pulls" in " ".join(c) and "merge" in " ".join(c)]
+        assert len(retry_merge_calls) == 1
+        assert outcome.merged_sha == stub.merge_commit
+
+    def test_reconcile_only_when_merged_at_reviewed_sha(self) -> None:
+        # Defence: a PR merged with a DIFFERENT head (force-push then a
+        # third party merged a different tree) must NOT reconcile our
+        # stale CLEAR — the SHA-bind guarantee still holds.
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        clear = _clear(ticket)
+
+        def _merged_other_head(argv: list[str]) -> tuple[int, str, str]:
+            joined = " ".join(argv)
+            if "headRefOid" in joined:
+                return (0, _MOVED, "")  # head moved off reviewed_sha
+            if "isDraft" in joined:
+                return (0, "false", "")
+            if "statusCheckRollup" in joined:
+                return (0, _GREEN, "")
+            if "state,mergeCommit" in joined:
+                return (0, '{"state": "MERGED", "mergeCommit": {"oid": "othermerge0"}}', "")
+            return (0, "", "")
+
+        with (
+            patch("teatree.core.merge_execution._run_gh", side_effect=_merged_other_head),
+            pytest.raises(MergePreconditionError, match="head moved"),
+        ):
+            merge_ticket_pr(clear=clear, executing_loop_identity="merge-loop")
+        ticket.refresh_from_db()
+        clear.refresh_from_db()
+        assert ticket.state == Ticket.State.IN_REVIEW
+        assert clear.consumed_at is None
+
+    def test_reconcile_falls_back_to_reviewed_sha_when_no_merge_commit(self) -> None:
+        # GitHub reports the PR MERGED but exposes no mergeCommit oid
+        # (rare API shape): reconciliation still completes, recording the
+        # bound reviewed_sha as the merged sha.
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        clear = _clear(ticket)
+
+        def _merged_no_commit(argv: list[str]) -> tuple[int, str, str]:
+            joined = " ".join(argv)
+            if "headRefOid" in joined:
+                return (0, _SHA, "")
+            if "isDraft" in joined:
+                return (0, "false", "")
+            if "statusCheckRollup" in joined:
+                return (0, _GREEN, "")
+            if "state,mergeCommit" in joined:
+                return (0, '{"state": "MERGED", "mergeCommit": null}', "")
+            return (0, "", "")
+
+        with patch("teatree.core.merge_execution._run_gh", side_effect=_merged_no_commit):
+            outcome = merge_ticket_pr(clear=clear, executing_loop_identity="merge-loop")
+        ticket.refresh_from_db()
+        clear.refresh_from_db()
+        assert ticket.state == Ticket.State.MERGED
+        assert clear.consumed_at is not None
+        assert outcome.merged_sha == _SHA
+
+    def test_reconcile_consumes_clear_exactly_once(self) -> None:
+        # Guarantee preserved: single-use survives the reconcile path. A
+        # second reconcile tick on the now-consumed CLEAR is refused (the
+        # CLEAR is no longer actionable) — no double audit, no replay.
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        clear = _clear(ticket)
+        stub = _LostPostHookGhStub()
+        stub.merged = True  # PR already merged by us (lost post-hook earlier)
+
+        with patch("teatree.core.merge_execution._run_gh", side_effect=stub):
+            merge_ticket_pr(clear=clear, executing_loop_identity="merge-loop")
+        clear.refresh_from_db()
+        assert clear.consumed_at is not None
+        assert MergeAudit.objects.filter(clear=clear).count() == 1
+
+        # A redundant reconcile tick must not consume / audit again.
+        with (
+            patch("teatree.core.merge_execution._run_gh", side_effect=stub),
+            pytest.raises(MergePreconditionError, match="not actionable"),
+        ):
+            merge_ticket_pr(clear=clear, executing_loop_identity="merge-loop")
+        assert MergeAudit.objects.filter(clear=clear).count() == 1
+
+    def test_substrate_clear_is_not_reconciled_without_human_approval(self) -> None:
+        # Guarantee preserved: the substrate auto-merge refusal runs
+        # BEFORE the §928 reconciliation, so a lost post-hook on a
+        # substrate PR cannot be silently reconciled by the loop — it
+        # still requires the recorded human approval.
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        clear = _clear(ticket, blast_class=MergeClear.BlastClass.SUBSTRATE)
+        stub = _LostPostHookGhStub()
+        stub.merged = True
+
+        with (
+            patch("teatree.core.merge_execution._run_gh", side_effect=stub),
+            pytest.raises(MergePreconditionError, match="substrate"),
+        ):
+            merge_ticket_pr(clear=clear, executing_loop_identity="merge-loop")
+        ticket.refresh_from_db()
+        clear.refresh_from_db()
+        assert ticket.state == Ticket.State.IN_REVIEW
+        assert clear.consumed_at is None
+
+    def test_self_issued_clear_is_not_reconciled(self) -> None:
+        # Guarantee preserved: maker≠checker runs before reconciliation —
+        # a lost post-hook does not let a self-issued CLEAR slip through.
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        clear = _clear(ticket, reviewer_identity="merge-loop")
+        stub = _LostPostHookGhStub()
+        stub.merged = True
+
+        with (
+            patch("teatree.core.merge_execution._run_gh", side_effect=stub),
+            pytest.raises(MergePreconditionError, match="independent"),
+        ):
+            merge_ticket_pr(clear=clear, executing_loop_identity="merge-loop")
+        clear.refresh_from_db()
+        assert clear.consumed_at is None
+
+
+class TestFetchPrMergeState(TestCase):
+    """`fetch_pr_merge_state` fails closed so reconciliation never fires on bad data."""
+
+    def test_gh_error_returns_empty_state(self) -> None:
+        with patch(
+            "teatree.core.merge_execution._run_gh",
+            return_value=(1, "", "api error"),
+        ):
+            state = merge_execution.fetch_pr_merge_state("souliane/teatree", 1)
+        assert state.state == ""
+        assert state.is_merged is False
+
+    def test_malformed_json_returns_empty_state(self) -> None:
+        with patch(
+            "teatree.core.merge_execution._run_gh",
+            return_value=(0, "{not json", ""),
+        ):
+            state = merge_execution.fetch_pr_merge_state("souliane/teatree", 1)
+        assert state.state == ""
+
+    def test_non_dict_json_returns_empty_state(self) -> None:
+        with patch(
+            "teatree.core.merge_execution._run_gh",
+            return_value=(0, "[1, 2, 3]", ""),
+        ):
+            state = merge_execution.fetch_pr_merge_state("souliane/teatree", 1)
+        assert state.state == ""
+
+    def test_merged_without_merge_commit_object(self) -> None:
+        with patch(
+            "teatree.core.merge_execution._run_gh",
+            return_value=(0, '{"state": "MERGED", "mergeCommit": null}', ""),
+        ):
+            state = merge_execution.fetch_pr_merge_state("souliane/teatree", 1)
+        assert state.is_merged is True
+        assert state.merge_commit_oid == ""
 
 
 class TestConcurrentConsumptionReplayDefence(TestCase):
