@@ -25,7 +25,8 @@ class Command(TyperCommand):
 
         if key:
             if key not in fields:
-                return f"Unknown config key: {key}. Available: {', '.join(fields)}"
+                self.stderr.write(f"Unknown config key: {key}. Available: {', '.join(fields)}")
+                raise SystemExit(1)
             return str(getattr(cfg, key))
 
         return "\n".join(f"{field}: {getattr(cfg, field)}" for field in fields)
