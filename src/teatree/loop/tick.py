@@ -84,6 +84,65 @@ class TickRequest:
     ready_labels: tuple[str, ...] = ()
 
 
+def _jobs_for_backend_hosts(backend: OverlayBackends, tag: str) -> list[_ScannerJob]:
+    """Build one scanner-job fan-out per host on *backend* (#976).
+
+    Pre-fix the caller assumed one ``backend.host``; with multi-host the
+    same fan-out must run for each platform that resolved a credential.
+    ``TicketCompletionScanner`` is overlay-scoped (reads local Ticket
+    rows), so it's emitted exactly once even when two hosts are present.
+    """
+    jobs: list[_ScannerJob] = []
+    ticket_completion_emitted = False
+    for code_host in backend.hosts:
+        jobs.extend(
+            [
+                _ScannerJob(
+                    scanner=MyPrsScanner(host=code_host, identities=backend.identities),
+                    overlay=tag,
+                ),
+                _ScannerJob(
+                    scanner=ReviewerPrsScanner(host=code_host, identities=backend.identities),
+                    overlay=tag,
+                ),
+                _ScannerJob(
+                    scanner=AssignedIssuesScanner(
+                        host=code_host,
+                        ready_labels=backend.ready_labels,
+                        exclude_labels=backend.exclude_labels,
+                        auto_start=backend.auto_start_assigned_issues,
+                        max_concurrent=backend.max_concurrent_auto_starts,
+                        overlay_name=tag,
+                        identities=backend.identities,
+                    ),
+                    overlay=tag,
+                ),
+                _ScannerJob(
+                    scanner=TicketDispositionScanner(
+                        host=code_host,
+                        overlay=backend.overlay,
+                        ready_labels=backend.ready_labels,
+                        overlay_name=tag,
+                        user_identity_aliases=_user_identity_aliases_for_overlay(tag),
+                    ),
+                    overlay=tag,
+                ),
+            ],
+        )
+        if backend.overlay is not None and not ticket_completion_emitted:
+            jobs.append(
+                _ScannerJob(
+                    scanner=TicketCompletionScanner(
+                        overlay=backend.overlay,
+                        overlay_name=tag,
+                    ),
+                    overlay=tag,
+                ),
+            )
+            ticket_completion_emitted = True
+    return jobs
+
+
 def _run_job(job: _ScannerJob) -> tuple[str, list[ScanSignal], str]:
     label = f"{job.scanner.name}[{job.overlay}]" if job.overlay else job.scanner.name
     try:
@@ -167,44 +226,11 @@ def build_default_jobs(
                     overlay=tag,
                 ),
             )
-            if backend.host is not None:
-                jobs.extend(
-                    [
-                        _ScannerJob(scanner=MyPrsScanner(host=backend.host), overlay=tag),
-                        _ScannerJob(scanner=ReviewerPrsScanner(host=backend.host), overlay=tag),
-                        _ScannerJob(
-                            scanner=AssignedIssuesScanner(
-                                host=backend.host,
-                                ready_labels=backend.ready_labels,
-                                exclude_labels=backend.exclude_labels,
-                                auto_start=backend.auto_start_assigned_issues,
-                                max_concurrent=backend.max_concurrent_auto_starts,
-                                overlay_name=tag,
-                            ),
-                            overlay=tag,
-                        ),
-                        _ScannerJob(
-                            scanner=TicketDispositionScanner(
-                                host=backend.host,
-                                overlay=backend.overlay,
-                                ready_labels=backend.ready_labels,
-                                overlay_name=tag,
-                                user_identity_aliases=_user_identity_aliases_for_overlay(tag),
-                            ),
-                            overlay=tag,
-                        ),
-                    ],
-                )
-                if backend.overlay is not None:
-                    jobs.append(
-                        _ScannerJob(
-                            scanner=TicketCompletionScanner(
-                                overlay=backend.overlay,
-                                overlay_name=tag,
-                            ),
-                            overlay=tag,
-                        ),
-                    )
+            # Multi-host: an overlay with both GitHub and GitLab PATs scans
+            # both forges, so PRs on one platform don't drown out PRs on the
+            # other (#976). The single-host path is preserved by iterating
+            # ``backend.hosts`` (which is empty when no token resolved).
+            jobs.extend(_jobs_for_backend_hosts(backend, tag))
             if backend.messaging is not None:
                 jobs.append(_ScannerJob(scanner=SlackMentionsScanner(backend=backend.messaging), overlay=tag))
     else:

@@ -78,6 +78,10 @@ class AssignedIssuesScanner:
     dispatcher routes the remaining signals to the orchestrator agent. When
     ``False``, every ready issue surfaces in the statusline ``action_needed``
     zone for the operator to triage manually.
+
+    ``identities`` opts the scanner into a multi-alias union query so a user
+    with more than one identity on the same forge sees issues assigned to
+    any of them. Empty falls back to ``host.current_user()`` (#976).
     """
 
     host: CodeHostBackend
@@ -86,13 +90,14 @@ class AssignedIssuesScanner:
     auto_start: bool = False
     max_concurrent: int = 1
     overlay_name: str = ""
+    identities: tuple[str, ...] = field(default_factory=tuple)
     name: str = "assigned_issues"
 
     def scan(self) -> list[ScanSignal]:
-        author = self.host.current_user()
-        if not author:
+        assignees = self._resolve_identities()
+        if not assignees:
             return []
-        issues = self.host.list_assigned_issues(assignee=author)
+        issues = self._collect_unique_issues(assignees)
 
         try:
             tracked, in_flight = self._tracked_urls_and_in_flight()
@@ -149,3 +154,23 @@ class AssignedIssuesScanner:
             if extra.get("auto_started") is True and ticket.state in _AUTO_START_BUDGET_STATES:
                 in_flight += 1
         return frozenset(tracked), in_flight
+
+    def _resolve_identities(self) -> tuple[str, ...]:
+        if self.identities:
+            return tuple(dict.fromkeys(self.identities))
+        user = self.host.current_user()
+        return (user,) if user else ()
+
+    def _collect_unique_issues(self, assignees: tuple[str, ...]) -> list[RawAPIDict]:
+        """Union assigned issues across *assignees*, deduped by URL."""
+        seen_urls: set[str] = set()
+        issues: list[RawAPIDict] = []
+        for assignee in assignees:
+            for issue in self.host.list_assigned_issues(assignee=assignee):
+                url = _issue_url(issue)
+                if url and url in seen_urls:
+                    continue
+                if url:
+                    seen_urls.add(url)
+                issues.append(issue)
+        return issues
