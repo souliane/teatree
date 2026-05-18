@@ -177,9 +177,15 @@ class Command(TyperCommand):
         os.environ.update(overlay.get_env_extra(worktree))
 
         # Run the overlay's import logic
+        # #955: --fresh-dump must force slow_import. The remote-dump branch
+        # in DjangoDbImporter.run() sits *after* the `if not slow_import:
+        # return False` guard (which itself follows the early DSLR return),
+        # so without this the flag silently degrades to "restore the stale
+        # local DSLR snapshot" instead of fetching a fresh remote dump.
         success = overlay.db_import(
             worktree,
             force=force,
+            slow_import=fresh_dump,
             dslr_snapshot=dslr_snapshot,
             dump_path=dump_path,
             approve_remote_dump=fresh_dump,

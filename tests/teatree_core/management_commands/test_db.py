@@ -11,12 +11,14 @@ from django.test import TestCase, override_settings
 
 import teatree.core.management.commands.db as db_mod
 from teatree.core.models import Ticket, Worktree
+from teatree.core.overlay_loader import get_overlay
 from teatree.utils.approval import ApprovalRefusedError
 from tests.teatree_core.management_commands._overlays import (
     FAILING_IMPORT_OVERLAY,
     FULL_OVERLAY,
     MINIMAL_OVERLAY,
     POST_DB_OVERLAY,
+    REMOTE_PATH_RECORDING_OVERLAY,
     SETTINGS,
     _patch_overlays,
 )
@@ -165,6 +167,81 @@ class TestDbRefresh(TestCase):
                 call_command("db", "refresh", path=str(wt_dir), fresh_dump=True)
 
             assert exc_info.value.code == 1
+
+    @_patch_overlays(REMOTE_PATH_RECORDING_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_fresh_dump_forwards_slow_import_and_reaches_remote_dump(self) -> None:
+        """`db refresh --fresh-dump` must reach the remote-dump branch.
+
+        Regression for #955. `refresh` never passed `slow_import` into
+        `overlay.db_import(...)`, so `DjangoDbImporter.run()` returned at
+        the `not slow_import` guard (after the early DSLR return) BEFORE
+        the `if allow_remote_dump:` remote `pg_dump` block. `--fresh-dump`
+        silently degraded to "restore stale local DSLR snapshot".
+
+        With the fix, `fresh_dump` forces `slow_import=True`, so `run()`
+        flows past the guard and enters the `allow_remote_dump` branch
+        (`_try_fetch_remote_dump`). DSLR is unavailable in this double, so
+        the only way the import can succeed is via the remote branch.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            wt_dir = tmp_path / "test"
+            wt_dir.mkdir()
+            ticket = Ticket.objects.create(overlay="test")
+            worktree = Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="/tmp/test",
+                branch="feature",
+                extra={"worktree_path": str(wt_dir)},
+            )
+            worktree.provision()
+            worktree.save()
+
+            with patch.object(db_mod, "require_interactive_approval", return_value=None):
+                result = cast(
+                    "str",
+                    call_command("db", "refresh", path=str(wt_dir), fresh_dump=True),
+                )
+
+            overlay = get_overlay()
+            assert overlay.calls["slow_import"] is True
+            assert overlay.calls["approve_remote_dump"] is True
+            assert overlay.calls["remote_branch_reached"] is True
+            assert "refreshed" in result.lower()
+
+    @_patch_overlays(REMOTE_PATH_RECORDING_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_non_fresh_refresh_does_not_force_slow_import(self) -> None:
+        """Regression: the non-`--fresh-dump` path is unchanged.
+
+        Without `--fresh-dump`, `db refresh` must NOT force `slow_import`
+        and must NOT reach the remote-dump branch — the DSLR-first fast
+        path stays the only sanctioned path for the default flow (#955).
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            wt_dir = tmp_path / "test"
+            wt_dir.mkdir()
+            ticket = Ticket.objects.create(overlay="test")
+            worktree = Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="/tmp/test",
+                branch="feature",
+                extra={"worktree_path": str(wt_dir)},
+            )
+            worktree.provision()
+            worktree.save()
+
+            with pytest.raises(SystemExit) as exc_info:
+                call_command("db", "refresh", path=str(wt_dir))
+
+            assert exc_info.value.code == 1
+            overlay = get_overlay()
+            assert overlay.calls["slow_import"] is False
+            assert overlay.calls["remote_branch_reached"] is False
 
     @_patch_overlays(MINIMAL_OVERLAY)
     @override_settings(**SETTINGS)

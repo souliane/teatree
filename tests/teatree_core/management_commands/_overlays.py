@@ -22,6 +22,7 @@ from teatree.core.overlay import (
     ToolCommand,
     ValidationResult,
 )
+from teatree.utils.django_db import DjangoDbImportConfig, DjangoDbImporter
 
 pytestmark = pytest.mark.filterwarnings(
     "ignore:In Typer, only the parameter 'autocompletion' is supported.*:DeprecationWarning",
@@ -201,6 +202,74 @@ class FailingImportOverlay(FullOverlay):
         return False
 
 
+class RemotePathRecordingOverlay(FullOverlay):
+    """Overlay whose ``db_import`` runs a real ``DjangoDbImporter``.
+
+    Used to prove end-to-end (issue #955) that ``db refresh --fresh-dump``
+    forwards ``slow_import=True`` so the importer's ``run()`` actually
+    reaches the ``allow_remote_dump`` remote-dump branch instead of
+    returning early on the ``not slow_import`` / DSLR guard.
+
+    Only the unstoppable subprocess boundaries are mocked: DSLR restore
+    (unavailable here so the DSLR fast path is skipped), the remote
+    ``pg_dump`` fetch, and the local-dump restore. Everything the fix
+    touches — the kwarg threading and ``run()``'s control flow — is real.
+
+    Instances expose ``calls``: ``slow_import`` is the value received by
+    ``db_import``; ``remote_branch_reached`` is True iff ``run()`` entered
+    the ``if allow_remote_dump:`` block (``_try_fetch_remote_dump`` ran).
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.calls: dict[str, object] = {}
+
+    def db_import(  # noqa: PLR0913 — mirrors the OverlayBase.db_import extension-point contract.
+        self,
+        worktree: Worktree,
+        *,
+        force: bool = False,
+        slow_import: bool = False,
+        dslr_snapshot: str = "",
+        dump_path: str = "",
+        approve_remote_dump: bool = False,
+    ) -> bool:
+        self.calls["slow_import"] = slow_import
+        self.calls["approve_remote_dump"] = approve_remote_dump
+        self.calls["remote_branch_reached"] = False
+
+        cfg = DjangoDbImportConfig(
+            ref_db_name="ref_db",
+            ticket_db_name="ticket_db",
+            main_repo_path=worktree.repo_path,
+            dump_dir="/tmp/does-not-exist",
+            dump_glob="*.pgsql",
+            ci_dump_glob="*.pgsql",
+            remote_db_url="postgres://example/remote",
+        )
+        importer = DjangoDbImporter(cfg)
+
+        def _fetch_remote() -> bool:
+            self.calls["remote_branch_reached"] = True
+            return True
+
+        # First local-dump attempt (pre-remote, run() line ~499) finds no
+        # local dump → False, so control flows into `if allow_remote_dump:`.
+        # The post-fetch restore (run() line ~504) then succeeds.
+        local_restore_results = iter([False, True])
+
+        with (
+            patch.object(importer, "_try_restore_from_dslr", return_value=False),
+            patch.object(
+                importer,
+                "_try_restore_from_local_dump",
+                side_effect=lambda: next(local_restore_results),
+            ),
+            patch.object(importer, "_try_fetch_remote_dump", side_effect=_fetch_remote),
+        ):
+            return importer.run(slow_import=slow_import, allow_remote_dump=approve_remote_dump)
+
+
 class PreRunOverlay(FullOverlay):
     """Overlay with pre-run steps — tests the pre-run loop in worktree provision."""
 
@@ -235,6 +304,9 @@ FAILING_IMPORT_OVERLAY = "tests.teatree_core.management_commands._overlays.Faili
 
 
 PRE_RUN_OVERLAY = "tests.teatree_core.management_commands._overlays.PreRunOverlay"
+
+
+REMOTE_PATH_RECORDING_OVERLAY = "tests.teatree_core.management_commands._overlays.RemotePathRecordingOverlay"
 
 
 SETTINGS: dict[str, object] = {}
