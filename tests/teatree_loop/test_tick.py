@@ -563,6 +563,80 @@ class TestTickReapsStaleClaims(django.test.TestCase):
         assert stale.claimed_by == ""
 
 
+class TestTickReapsOrphanedReviewingTask(django.test.TransactionTestCase):
+    """#998: a tick reaps a PENDING reviewing task when its MR was merged externally.
+
+    End-to-end coverage of the scanner → dispatch → mechanical pipeline:
+    a reviewer-role ticket with a PENDING reviewing task whose URL is not
+    in the current open-MR scan must have its task completed in the SAME
+    tick so ``pending-spawn`` stops re-emitting it.
+
+    Runs the scanner inline (no ``run_tick`` thread pool) so the SQLite
+    test backend doesn't deadlock — ``TestCase``'s outer transaction
+    locks the table the worker thread tries to read, and the unraisable
+    cleanup warning makes the test flaky. The pipeline this validates is
+    a flat handler chain: scanner emits → dispatch routes → mechanical
+    runs; the unit-level tests for each stage are already in
+    ``test_scanners.py`` and ``test_mechanical.py``. This integration
+    test wires them together.
+    """
+
+    def test_pipeline_completes_pending_reviewing_task_for_missing_mr(self) -> None:
+        from teatree.core.models import Session, Task, Ticket  # noqa: PLC0415
+        from teatree.loop.dispatch import dispatch  # noqa: PLC0415
+        from teatree.loop.mechanical import HANDLERS  # noqa: PLC0415
+        from teatree.loop.scanners.reviewer_prs import ReviewerPrsScanner  # noqa: PLC0415
+
+        # The bug scenario: PENDING task survived the MR's external merge.
+        url = "https://gitlab.example.com/x/-/merge_requests/373"
+        ticket = Ticket.objects.create(
+            role=Ticket.Role.REVIEWER,
+            issue_url=url,
+            overlay="acme",
+            extra={"reviewed_sha": "abc"},
+        )
+        session = Session.objects.create(ticket=ticket, agent_id="external-review")
+        task = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            phase="reviewing",
+            execution_target=Task.ExecutionTarget.HEADLESS,
+            execution_reason="Review needed",
+        )
+
+        @dataclass(slots=True)
+        class _ReviewerHost:
+            user_name: str = "alice"
+
+            def current_user(self) -> str:
+                return self.user_name
+
+            def list_review_requested_prs(self, *, reviewer: str, updated_after: str | None = None):
+                # API no longer returns the merged MR.
+                return []
+
+            def get_review_state(self, *, pr_url: str, reviewer: str):
+                from teatree.backends.protocols import ReviewState  # noqa: PLC0415
+
+                return ReviewState.NONE
+
+        # Step 1: scanner emits the orphan signal.
+        signals = ReviewerPrsScanner(host=_ReviewerHost()).scan()
+        assert any(s.kind == "reviewer_pr.task_orphaned" for s in signals)
+
+        # Step 2: dispatch routes to the mechanical handler.
+        actions = dispatch(signals)
+        orphan_actions = [a for a in actions if a.zone == "reviewer_task_orphaned"]
+        assert len(orphan_actions) == 1
+        assert orphan_actions[0].kind == "mechanical"
+
+        # Step 3: mechanical handler completes the orphaned task.
+        HANDLERS[orphan_actions[0].zone](orphan_actions[0].payload)
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.COMPLETED
+
+
 class TestTickReplaysOrphanedTransitions(django.test.TestCase):
     def test_run_tick_replays_a_half_advanced_ticket(self) -> None:
         """#883: a tick recovers a ticket left half-advanced by a crash.
