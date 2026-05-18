@@ -1,6 +1,7 @@
 from teatree.core.models.bot_ping import BotPing
 from teatree.core.models.daily_digest import DailyDigestMessage, DailyDigestThread
 from teatree.core.models.db_approval import DbApproval, DbApprovalError, DbAudit
+from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit, DeferredQuestionError
 from teatree.core.models.errors import DirtyWorktreeError, InvalidTransitionError, QualityGateError
 from teatree.core.models.incoming_event import IncomingEvent
 from teatree.core.models.intent_classification import IntentClassification
@@ -26,6 +27,9 @@ __all__ = [
     "DbApproval",
     "DbApprovalError",
     "DbAudit",
+    "DeferredQuestion",
+    "DeferredQuestionAudit",
+    "DeferredQuestionError",
     "DirtyWorktreeError",
     "IncomingEvent",
     "IntentClassification",

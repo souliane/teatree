@@ -3081,16 +3081,146 @@ def handle_mirror_question_to_slack(data: dict) -> bool:
     return False
 
 
+# ── PreToolUse: route-away-mode-question (#58, BLUEPRINT §17.1 invariant 9) ────
+
+
+def _bootstrap_teatree_django() -> bool:
+    """Import teatree and run ``django.setup()`` once per hook process.
+
+    Returns ``True`` when the bootstrap succeeded (the away-mode handler
+    can record a ``DeferredQuestion`` row) and ``False`` when ``teatree``
+    is unavailable (the handler then fails open — never intercepts).
+    """
+    src_dir = Path(__file__).resolve().parents[2] / "src"
+    if str(src_dir) not in sys.path:
+        sys.path.insert(0, str(src_dir))
+    try:
+        import django  # noqa: PLC0415
+
+        os.environ.setdefault("DJANGO_SETTINGS_MODULE", "teatree.settings")
+        django.setup()
+    except Exception:  # noqa: BLE001
+        return False
+    return True
+
+
+def _record_deferred_question(question_text: str, options: list[dict], data: dict) -> int | None:
+    """Record one ``DeferredQuestion`` row from the ``AskUserQuestion`` payload."""
+    if not _bootstrap_teatree_django():
+        return None
+    try:
+        from teatree.core.models.deferred_question import DeferredQuestion  # noqa: PLC0415
+    except Exception:  # noqa: BLE001
+        return None
+    try:
+        row = DeferredQuestion.record(
+            question_text,
+            options_json=json.dumps(options) if options else "",
+            session_id=str(data.get("session_id", "")),
+            tool_use_id=str(data.get("tool_use_id", "")),
+        )
+    except Exception:  # noqa: BLE001
+        return None
+    return int(row.pk)
+
+
+def _resolved_away_mode() -> bool:
+    """Resolve the effective availability mode; True when ``away``."""
+    if not _bootstrap_teatree_django():
+        return False
+    try:
+        from teatree.core.availability import MODE_AWAY, resolve_mode  # noqa: PLC0415
+    except Exception:  # noqa: BLE001
+        return False
+    try:
+        return resolve_mode().mode == MODE_AWAY
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def handle_route_away_mode_question(data: dict) -> bool:
+    """Convert an ``AskUserQuestion`` to a ``DeferredQuestion`` when availability=away.
+
+    Runs FIRST in the PreToolUse chain for ``AskUserQuestion`` so the
+    routing decision precedes the Slack mirror (the colleague should
+    not be paged for a question the agent already converted). Returns
+    ``True`` with a ``permissionDecision=deny`` and a friendly reason
+    that names the recorded row so the agent narrates the conversion
+    correctly. The denied tool_use block still appears in the transcript,
+    so the §807 structured-question Stop gate ``_last_assistant_turn``
+    detects ``used_question_tool=True`` and lets the turn complete.
+    """
+    if data.get("tool_name") != "AskUserQuestion":
+        return False
+    if not _resolved_away_mode():
+        return False
+    questions = data.get("tool_input", {}).get("questions", []) or []
+    first = questions[0] if isinstance(questions, list) and questions else {}
+    if not isinstance(first, dict):
+        first = {}
+    question_text = str(first.get("question", "")).strip()
+    if not question_text:
+        # No question text — fail open rather than emit a deny that
+        # blocks an empty payload the user can debug separately.
+        return False
+    options = first.get("options", []) if isinstance(first.get("options"), list) else []
+    queue_id = _record_deferred_question(question_text, options, data)
+    if queue_id is None:
+        # Teatree unavailable — fail open so the user is never blocked
+        # by a hook crash. The standard interactive flow then runs.
+        return False
+    reason = (
+        f"availability=away — your question was captured durably as DeferredQuestion #{queue_id} "
+        f"and the user will answer it via `t3 questions answer {queue_id} <text>`. "
+        "Proceed with any work that does not depend on the answer; the response will surface "
+        "in a future turn's additionalContext when the user resolves it."
+    )
+    json.dump({"permissionDecision": "deny", "permissionDecisionReason": reason}, sys.stdout)
+    return True
+
+
+# ── UserPromptSubmit: inject pending-question backlog into context ────────────
+
+
+def handle_inject_pending_questions(_data: dict) -> None:
+    """Append the pending-question backlog to ``additionalContext``.
+
+    Lets the agent see, on every user turn, which deferred questions
+    are still waiting on a user answer — so it can prioritise work
+    that does NOT depend on those answers and avoid asking the same
+    question again. Fails open: if teatree is unavailable, just skip.
+    """
+    if not _bootstrap_teatree_django():
+        return
+    try:
+        from teatree.core.availability import pending_questions_count  # noqa: PLC0415
+        from teatree.core.models.deferred_question import DeferredQuestion  # noqa: PLC0415
+    except Exception:  # noqa: BLE001
+        return
+    try:
+        count = pending_questions_count()
+        if count == 0:
+            return
+        rows = list(DeferredQuestion.pending()[:5])
+    except Exception:  # noqa: BLE001
+        return
+    lines = [f"You have {count} deferred question(s) awaiting user answer:"]
+    lines.extend(f"  #{row.pk} — {row.question[:120]}" for row in rows)
+    print("\n".join(lines))  # noqa: T201
+
+
 # ── Router ──────────────────────────────────────────────────────────
 
 _HANDLERS: dict[str, list] = {
     "UserPromptSubmit": [
         handle_enforce_loop_on_prompt,
         handle_todo_freshness_nudge,
+        handle_inject_pending_questions,
         handle_user_prompt_submit,
     ],
     "PreToolUse": [
         handle_allow_classifier_relax_settings_write,
+        handle_route_away_mode_question,
         handle_enforce_loop_registration,
         handle_protect_default_branch,
         handle_enforce_skill_loading,
