@@ -15,6 +15,12 @@ GITLAB_TOKEN_PASS_KEY: str = "gitlab/pat"  # noqa: S105 — pass key name, not a
 
 REQUIRE_TICKET: bool = True
 
+# Default = close-on-merge: a merged teatree PR systematically closes its
+# referenced issue. Suppression is the exception, opted into per-PR via
+# ``Ticket.extra['more_prs_coming']`` (a declared partial, or an umbrella
+# with remaining tracked scope). See ``should_close_ticket``.
+MR_CLOSE_TICKET: bool = True
+
 # Dogfooding overlay raises loop auto-start concurrency above the
 # conservative base default of 1 (external/multi-repo overlays keep 1).
 MAX_CONCURRENT_AUTO_STARTS: int = 3

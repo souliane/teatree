@@ -16,7 +16,7 @@ from typing import TypedDict
 
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay_loader import get_overlay
-from teatree.core.runners.ship import overlay_pr_labels, sanitize_close_keywords
+from teatree.core.runners.ship import overlay_pr_labels, sanitize_close_keywords, should_close_ticket
 from teatree.utils import git
 
 
@@ -47,7 +47,10 @@ def ship_preview(ticket: Ticket, worktree: Worktree) -> tuple[str, str, str]:
     """
     repo_path = (worktree.extra or {}).get("worktree_path", "") or worktree.repo_path
     subject, body = git.last_commit_message(repo=repo_path)
-    close_ticket = get_overlay().config.mr_close_ticket
+    close_ticket = should_close_ticket(
+        ticket.extra or {},
+        setting_enabled=get_overlay().config.mr_close_ticket,
+    )
     title = sanitize_close_keywords(subject or f"Resolve {ticket.issue_url}", close_ticket=close_ticket)
     raw_body = sanitize_close_keywords(body, close_ticket=close_ticket) if body else ""
     description = f"{title}\n\n{raw_body}" if raw_body else title

@@ -22,7 +22,7 @@ from typing import TypedDict
 from teatree.backends.protocols import PullRequestSpec
 from teatree.core.backend_factory import code_host_from_overlay
 from teatree.core.overlay_loader import get_overlay
-from teatree.core.runners.ship import overlay_pr_labels, sanitize_close_keywords
+from teatree.core.runners.ship import overlay_pr_labels, sanitize_close_keywords, should_close_ticket
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
 
@@ -44,6 +44,25 @@ def slug_from_remote(remote_url: str) -> str:
     return _REMOTE_HOST_RE.sub("", remote_url.strip()).removesuffix(".git")
 
 
+def _ticket_extra_for_branch(branch_name: str) -> dict | None:
+    """Return the owning ticket's ``extra`` for an orphan-branch PR, if any.
+
+    The orphan path runs inside the git pre-push hook with no ticket
+    handle. Resolving the ``extra`` via the branch's ``Worktree`` row lets
+    ``should_close_ticket`` honor an explicit ``more_prs_coming`` opt-out
+    even on this fallback. A genuinely orphan branch (no row) yields
+    ``None`` — ``should_close_ticket`` then applies the close-on-merge
+    default driven solely by the overlay setting.
+    """
+    from teatree.core.models import Worktree  # noqa: PLC0415 — avoid app-loading import cycle at module import
+
+    worktree = Worktree.objects.filter(branch=branch_name).order_by("-id").first()
+    if worktree is None:
+        return None
+    ticket = worktree.ticket
+    return ticket.extra if isinstance(ticket.extra, dict) else None
+
+
 def create_or_defer_pr(repo_path: str, branch_name: str) -> EnsurePrResult:
     """Build the PR spec from the last commit and create it, or defer (#792).
 
@@ -63,7 +82,11 @@ def create_or_defer_pr(repo_path: str, branch_name: str) -> EnsurePrResult:
         if commit_subject and commit_body
         else (commit_subject or commit_body or f"PR auto-created to track branch `{branch_name}`.")
     )
-    description = sanitize_close_keywords(raw_description, close_ticket=get_overlay().config.mr_close_ticket)
+    close_ticket = should_close_ticket(
+        _ticket_extra_for_branch(branch_name),
+        setting_enabled=get_overlay().config.mr_close_ticket,
+    )
+    description = sanitize_close_keywords(raw_description, close_ticket=close_ticket)
 
     remote = git.remote_url(repo=repo_path)
     repo_slug = slug_from_remote(remote)
