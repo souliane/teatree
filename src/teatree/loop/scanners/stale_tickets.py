@@ -71,12 +71,15 @@ class StaleTicketsScanner:
             signals.append(
                 ScanSignal(
                     kind="ticket.stale",
-                    summary=f"TICKET-{ticket.ticket_number} stale in {ticket.state} ({age_days}d)",
+                    summary=f"#{ticket.ticket_number} stale ({age_days}d)",
                     payload={
                         "ticket_id": ticket.pk,
                         "ticket_number": ticket.ticket_number,
                         "ticket_state": ticket.state,
                         "age_days": age_days,
+                        "overlay": ticket.overlay,
+                        "issue_url": ticket.issue_url,
+                        "stale": True,
                     },
                 ),
             )
