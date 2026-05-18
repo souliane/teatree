@@ -26,13 +26,27 @@ consume the CLEAR, write the ``MergeAudit`` row, bind the phase attestation to
 the merged HEAD, and call ``ticket.mark_merged()``. State-change and the
 durable merge record land atomically (the §4 worker-enqueue / sync-atomicity
 invariant).
+
+Lost-post-hook recovery (#928) — the irreversible GitHub merge necessarily
+runs *before* the post hook can consume the single-use CLEAR. If the process
+dies between the two (kill / DB lock / rollback), the PR is merged on GitHub
+but the CLEAR is unconsumed and the FSM never advanced; re-issuing the merge
+would fail forever (GitHub 405s an already-merged PR). The retry therefore
+*reconciles*: when GitHub reports the PR already MERGED at the exact
+``reviewed_sha`` tree (the head still bound to the reviewed commit), the
+irreversible merge is skipped and only the idempotent post hook runs — the
+same single-use CLEAR is consumed exactly once under the row lock. A lost
+post hook is recoverable, never a permanent "merged-on-GitHub, not-in-FSM"
+brick. This does not weaken the single-use, SHA-bind, or maker≠checker
+guarantees: the authorization guards run *before* reconciliation, and the
+row-locked single-use re-check is unchanged.
 """
 
 import json
 import logging
 import shutil
 from dataclasses import dataclass
-from typing import TypedDict, cast
+from typing import TYPE_CHECKING, TypedDict, cast
 
 from django.apps import apps
 from django.db import transaction
@@ -41,6 +55,9 @@ from django.utils import timezone
 from teatree.project import find_project_root
 from teatree.utils import git
 from teatree.utils.run import run_allowed_to_fail
+
+if TYPE_CHECKING:
+    from teatree.core.models import MergeClear
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +96,25 @@ class MergeOutcome:
     slug: str
     merged_sha: str
     ticket_state: str
+
+
+@dataclass(frozen=True, slots=True)
+class MergePrecheck:
+    """Outcome of :func:`assert_merge_preconditions`.
+
+    ``verified_sha`` is the SHA the merge binds to (``expected_head_oid``).
+    ``already_merged_sha`` is non-empty only when the §928 reconciliation
+    fired: GitHub reports the PR already MERGED at the exact reviewed tree
+    (a lost post-hook), so the irreversible merge must be SKIPPED and the
+    post hook run idempotently against the existing merge commit.
+    """
+
+    verified_sha: str
+    already_merged_sha: str = ""
+
+    @property
+    def needs_reconcile(self) -> bool:
+        return bool(self.already_merged_sha)
 
 
 def _run_gh(argv: list[str]) -> tuple[int, str, str]:
@@ -143,6 +179,53 @@ def fetch_live_head_sha(slug: str, pr_id: int) -> str:
         ["pr", "view", str(pr_id), "--repo", slug, "--json", "headRefOid", "--jq", ".headRefOid"],
     )
     return out.strip() if rc == 0 else ""
+
+
+@dataclass(frozen=True, slots=True)
+class PrMergeState:
+    """The PR's merge state from GitHub — used for the §928 reconciliation.
+
+    ``state`` is GitHub's PR state (``OPEN`` / ``MERGED`` / ``CLOSED``);
+    ``merge_commit_oid`` is the resulting squash/merge commit when the PR
+    is already merged (else ``""``).
+    """
+
+    state: str
+    merge_commit_oid: str
+
+    @property
+    def is_merged(self) -> bool:
+        return self.state.upper() == "MERGED"
+
+
+def fetch_pr_merge_state(slug: str, pr_id: int) -> PrMergeState:
+    """Whether the PR is already merged, and at which commit — §928 reconciliation.
+
+    A lost post-hook (process kill / DB lock / rollback between
+    :func:`execute_bound_merge` and :func:`record_merge_and_advance`)
+    leaves the PR merged on GitHub while the CLEAR is still unconsumed
+    and the FSM has not advanced. The retry must detect "already merged
+    by us" and run the post hook idempotently rather than re-issuing the
+    irreversible merge (which GitHub refuses with 405 — a permanent
+    brick) or failing the SHA precondition forever. Returns an empty
+    state on any ``gh`` error so the caller falls through to the normal
+    (fail-closed) precondition path.
+    """
+    rc, out, _ = _run_gh(
+        ["pr", "view", str(pr_id), "--repo", slug, "--json", "state,mergeCommit"],
+    )
+    if rc != 0 or not out.strip():
+        return PrMergeState(state="", merge_commit_oid="")
+    try:
+        data = json.loads(out)
+    except json.JSONDecodeError:
+        return PrMergeState(state="", merge_commit_oid="")
+    if not isinstance(data, dict):
+        return PrMergeState(state="", merge_commit_oid="")
+    state = str(data.get("state") or "")
+    merge_commit = data.get("mergeCommit")
+    oid = str(merge_commit.get("oid") or "") if isinstance(merge_commit, dict) else ""
+    return PrMergeState(state=state, merge_commit_oid=oid)
 
 
 def fetch_pr_is_draft(slug: str, pr_id: int) -> bool:
@@ -223,31 +306,21 @@ def fetch_required_checks_status(slug: str, pr_id: int) -> str:
     return _rollup_verdict(statuses) if statuses else "green"
 
 
-def assert_merge_preconditions(
+def _assert_clear_authorized(
     *,
     clear: object,
     executing_loop_identity: str,
     slug: str,
     pr_id: int,
-    human_authorized: str = "",
-) -> str:
-    """Run the §17.4.3 loop validation in order; return the verified head SHA.
+    human_authorized: str,
+) -> "MergeClear":
+    """The §17.4.3 identity/substrate authorization guards (steps 1 + 5).
 
-    Raises :class:`MergePreconditionError` on the first failed check. The
-    durable-backlog re-escalation is the caller's responsibility (§17.4.3) —
-    this function never self-issues a replacement CLEAR.
-
-    ``human_authorized`` is the only escape from the substrate auto-merge
-    refusal (step 5). It is empty for every loop-driven merge, so the loop
-    still never auto-merges substrate. A non-empty value unlocks the merge
-    **only** when the CLEAR is substrate-class AND its recorded
-    ``human_authorizer`` matches: the substrate change requires a recorded
-    human authorisation, and on re-presentation **the agent executes** the
-    merge through this same sanctioned ``t3`` transition (invariant 8: even an
-    owner-approved merge goes through this transition, never raw ``gh`` and
-    never a human-performed merge action — approval is the gate, execution is
-    always the agent). It can never unlock a non-substrate CLEAR, so it cannot
-    be used to bypass independent loop review of logic/docs PRs.
+    Split out of :func:`assert_merge_preconditions` so the orchestration
+    there reads as the ordered §17.4.3 sequence (authorize → SHA →
+    reconcile → draft → checks) rather than one deeply-branching block.
+    Raises :class:`MergePreconditionError` on the first failed guard;
+    returns the narrowed :class:`MergeClear` on success.
     """
     from teatree.core.models import MergeClear  # noqa: PLC0415
 
@@ -315,18 +388,94 @@ def assert_merge_preconditions(
         )
         raise MergePreconditionError(msg)
 
+    return clear
+
+
+def _reconcile_if_already_merged(*, slug: str, pr_id: int, live_sha: str) -> "MergePrecheck | None":
+    """§928 reconciliation — the recovery path for a lost post-merge hook.
+
+    Called only after the SHA re-check has passed (the head still equals
+    ``reviewed_sha`` — a squash merge does not move the source-branch
+    tip). If GitHub also reports the PR already MERGED, a prior attempt's
+    irreversible merge LANDED but its post hook was lost (process kill /
+    DB lock / rollback between :func:`execute_bound_merge` and
+    :func:`record_merge_and_advance`). Re-issuing the merge would 405
+    forever and the SHA gate can never self-heal — a permanent
+    "merged-on-GitHub, not-in-FSM" brick. Because the head is still bound
+    to the exact reviewed tree AND every guard in
+    :func:`assert_merge_preconditions` (actionable / reviewer≠loop /
+    substrate refusal) has already passed, completing the post hook
+    idempotently against the existing merge commit is sound and weakens
+    no guarantee. Returns ``None`` when the PR is not (yet) merged so the
+    caller proceeds with the normal fresh-merge path.
+    """
+    merge_state = fetch_pr_merge_state(slug, pr_id)
+    if not merge_state.is_merged:
+        return None
+    return MergePrecheck(
+        verified_sha=live_sha,
+        already_merged_sha=merge_state.merge_commit_oid or live_sha,
+    )
+
+
+def assert_merge_preconditions(
+    *,
+    clear: object,
+    executing_loop_identity: str,
+    slug: str,
+    pr_id: int,
+    human_authorized: str = "",
+) -> MergePrecheck:
+    """Run the §17.4.3 loop validation in order; return the :class:`MergePrecheck`.
+
+    Raises :class:`MergePreconditionError` on the first failed check. The
+    durable-backlog re-escalation is the caller's responsibility (§17.4.3) —
+    this function never self-issues a replacement CLEAR.
+
+    §928 reconciliation: the substrate / reviewer-identity / actionable
+    guards run FIRST (so a stale CLEAR can never be reconciled past
+    maker≠checker or the substrate auto-merge refusal). Only then, if
+    GitHub reports the PR already MERGED at the exact ``reviewed_sha``
+    tree, the returned precheck signals ``needs_reconcile`` so the caller
+    runs the post hook idempotently instead of re-issuing the merge — a
+    lost post-hook becomes recoverable rather than a permanent brick.
+
+    ``human_authorized`` is the only escape from the substrate auto-merge
+    refusal (step 5). It is empty for every loop-driven merge, so the loop
+    still never auto-merges substrate. A non-empty value unlocks the merge
+    **only** when the CLEAR is substrate-class AND its recorded
+    ``human_authorizer`` matches: the substrate change requires a recorded
+    human authorisation, and on re-presentation **the agent executes** the
+    merge through this same sanctioned ``t3`` transition (invariant 8: even an
+    owner-approved merge goes through this transition, never raw ``gh`` and
+    never a human-performed merge action — approval is the gate, execution is
+    always the agent). It can never unlock a non-substrate CLEAR, so it cannot
+    be used to bypass independent loop review of logic/docs PRs.
+    """
+    authorized_clear = _assert_clear_authorized(
+        clear=clear,
+        executing_loop_identity=executing_loop_identity,
+        slug=slug,
+        pr_id=pr_id,
+        human_authorized=human_authorized,
+    )
+
     # 2. SHA still matches — re-fetch the live head; it must equal reviewed_sha.
     live_sha = fetch_live_head_sha(slug, pr_id)
     if not live_sha:
         msg = f"could not resolve the live head SHA for {slug}#{pr_id} (§17.4.3 step 2)"
         raise MergePreconditionError(msg)
-    if live_sha != clear.reviewed_sha:
+    if live_sha != authorized_clear.reviewed_sha:
         msg = (
-            f"PR head moved: live={live_sha[:8]} != reviewed={clear.reviewed_sha[:8]} — "
+            f"PR head moved: live={live_sha[:8]} != reviewed={authorized_clear.reviewed_sha[:8]} — "
             f"the CLEAR is stale (force-push / new commits). Re-escalate; the loop never "
             f"self-issues a replacement (§17.4.3 step 2)"
         )
         raise MergePreconditionError(msg)
+
+    reconcile = _reconcile_if_already_merged(slug=slug, pr_id=pr_id, live_sha=live_sha)
+    if reconcile is not None:
+        return reconcile
 
     # 4. Not draft.
     if fetch_pr_is_draft(slug, pr_id):
@@ -343,7 +492,7 @@ def assert_merge_preconditions(
         )
         raise MergePreconditionError(msg)
 
-    return live_sha
+    return MergePrecheck(verified_sha=live_sha)
 
 
 def execute_bound_merge(*, slug: str, pr_id: int, expected_head_oid: str) -> str:
@@ -398,8 +547,14 @@ def record_merge_and_advance(
 
     All in ONE ``transaction.atomic()`` so the FSM advance and the durable
     merge record land atomically (the §4 worker-enqueue / sync-atomicity
-    invariant — a crash mid-post leaves a re-runnable, not a half-merged,
-    state). Returns the resulting ticket state.
+    invariant): a crash *within* this post hook rolls back the whole
+    transaction, leaving the CLEAR unconsumed and the FSM unmoved — a
+    re-runnable state. A crash *between* the irreversible GitHub merge and
+    this hook also leaves the CLEAR unconsumed, but the PR is now merged on
+    GitHub; that case is recovered by the #928 reconciliation in
+    :func:`assert_merge_preconditions` (the retry detects "already merged
+    at ``reviewed_sha``" and runs this hook idempotently instead of
+    re-issuing the merge). Returns the resulting ticket state.
     """
     from teatree.core.models import MergeClear  # noqa: PLC0415
 
@@ -472,14 +627,29 @@ def merge_ticket_pr(
 
     slug = resolve_pr_repo_slug(clear)
     pr_id = clear.pr_id
-    verified_sha = assert_merge_preconditions(
+    precheck = assert_merge_preconditions(
         clear=clear,
         executing_loop_identity=executing_loop_identity,
         slug=slug,
         pr_id=pr_id,
         human_authorized=human_authorized,
     )
-    merged_sha = execute_bound_merge(slug=slug, pr_id=pr_id, expected_head_oid=verified_sha)
+    if precheck.needs_reconcile:
+        # §928: a prior attempt's irreversible merge already landed; only
+        # its post hook was lost. Do NOT re-issue the merge (GitHub would
+        # 405 forever). Complete the transition idempotently against the
+        # existing merge commit — the single-use CLEAR is still consumed
+        # exactly once under the row lock in record_merge_and_advance, so
+        # this neither double-merges nor weakens the replay defence.
+        merged_sha = precheck.already_merged_sha
+        reconciled = True
+    else:
+        merged_sha = execute_bound_merge(
+            slug=slug,
+            pr_id=pr_id,
+            expected_head_oid=precheck.verified_sha,
+        )
+        reconciled = False
     checks = fetch_required_checks_status(slug, pr_id)
     state = record_merge_and_advance(
         clear=clear,
@@ -487,9 +657,10 @@ def merge_ticket_pr(
         required_checks_status=checks,
     )
     logger.info(
-        "merge keystone: %s#%s merged at %s; ticket state=%s",
+        "merge keystone: %s#%s %s at %s; ticket state=%s",
         slug,
         pr_id,
+        "reconciled (lost post-hook recovered)" if reconciled else "merged",
         merged_sha[:8],
         state or "(no ticket)",
     )
