@@ -11,8 +11,13 @@ For teatree core (``$T3_REPO``) and every registered overlay repo, this:
 3. Skips a non-default-branch / no-upstream checkout, and a
     tracked-dirty tree (loudly). Untracked-only files do not block it.
 4. Otherwise ``git pull --ff-only`` — fast-forward only, never merge/rebase.
-5. Reinstalls advanced editable installs, applies pending self-DB migrations (non-destructive), then runs ``t3 setup``.
-6. Prints a per-repo summary; exits non-zero only on a hard failure (not a skip).
+5. Reinstalls advanced editable installs, then runs ``t3 setup``.
+6. Probes the teatree self-DB (``manage.py migrate --check``) and applies
+    pending migrations non-destructively — gated on *migrations actually
+    pending*, NOT on whether a repo advanced this run, so an interrupted
+    prior run / out-of-band ff-pull can't leave a stale self-DB (#929).
+7. Prints a per-repo summary; exits non-zero on a hard repo failure OR a
+    self-DB left unmigrated (fail-closed, consistent with #870).
 
 This module is a top-level Typer group reached through the typer runner
 directly (sibling of ``t3 setup`` / ``t3 doctor``), so it raises
@@ -272,6 +277,23 @@ def _git_toplevel(path: Path) -> Path | None:
     return Path(result.stdout.strip()).resolve()
 
 
+def _self_db_has_pending_migrations(uv_bin: str, source: Path) -> bool:
+    """Probe whether the teatree self-DB has unapplied migrations.
+
+    Runs ``manage.py migrate --check --no-input``: Django exits 0 when
+    the DB is fully migrated and non-zero when migrations are pending.
+    This decouples "should we migrate?" from "did a repo advance *this
+    run*?" — an interrupted prior ``t3 update`` or an out-of-band ``git
+    pull`` can leave the SHA already current with a stale self-DB
+    (#929), so the per-run ``UPDATED`` flag is the wrong gate.
+    """
+    result = run_allowed_to_fail(
+        [uv_bin, "--directory", str(source), "run", "python", "manage.py", "migrate", "--check", "--no-input"],
+        expected_codes=None,
+    )
+    return result.returncode != 0
+
+
 def _migrate_self_db(source: Path) -> None:
     """Apply pending teatree self-DB migrations non-destructively.
 
@@ -281,9 +303,12 @@ def _migrate_self_db(source: Path) -> None:
     migrate --no-input`` wrapper ``resetdb`` uses internally — WITHOUT
     the destructive DB drop, so live ticket/session/lease state is
     preserved. This is the first-class t3 alternative to the destructive
-    ``resetdb`` and the hook-discouraged raw ``manage.py migrate``. A
-    failure warns (the per-repo git outcome already did its job); it
-    never raises.
+    ``resetdb`` and the hook-discouraged raw ``manage.py migrate``.
+
+    A failure is **fail-closed** (#929): it raises ``typer.Exit(code=1)``
+    rather than swallowing a WARN, so ``t3 update`` can never exit 0 with
+    a half-migrated self-DB and silently break #870's
+    fail-closed-on-unmigrated-self-DB guarantee.
     """
     uv_bin = shutil.which("uv")
     if uv_bin is None:
@@ -295,9 +320,76 @@ def _migrate_self_db(source: Path) -> None:
         expected_codes=None,
     )
     if result.returncode != 0:
-        typer.echo(f"WARN  self-DB migration failed: {result.stderr.strip() or result.stdout.strip()}")
-    else:
-        typer.echo("OK    self-DB migrations applied.")
+        detail = result.stderr.strip() or result.stdout.strip()
+        typer.echo("")
+        typer.echo(f"!! FAIL: self-DB migration failed — {detail}")
+        typer.echo("!! The teatree self-DB is left UNMIGRATED; the sanctioned merge path (#870) will fail closed.")
+        typer.echo("!! Resolve the migration error and re-run `t3 update` before relying on the merge path.")
+        typer.echo("")
+        raise typer.Exit(code=1)
+    typer.echo("OK    self-DB migrations applied.")
+
+
+def _self_db_source() -> Path | None:
+    """Resolve the teatree clone whose self-DB ``t3 update`` must migrate.
+
+    Prefers the editable source recorded in uv's tool receipt (the clone
+    the running ``t3`` is actually anchored on); falls back to the
+    configured main clone.  Returns ``None`` when neither resolves (a
+    non-editable install with no discoverable clone) — nothing to
+    migrate from.
+    """
+    uv_bin = shutil.which("uv")
+    if uv_bin is not None:
+        from teatree.cli.setup import _current_editable_source  # noqa: PLC0415
+
+        source = _current_editable_source(uv_bin)
+        if source is not None and source.is_dir():
+            return source
+    main_clone = _find_main_clone()
+    if main_clone is not None and main_clone.is_dir():
+        return main_clone
+    return None
+
+
+def _find_main_clone() -> Path | None:
+    """Thin indirection over ``setup._find_main_clone`` (test seam)."""
+    from teatree.cli.setup import _find_main_clone as _impl  # noqa: PLC0415
+
+    return _impl()
+
+
+def _ensure_self_db_migrated() -> bool:
+    """Migrate the teatree self-DB iff migrations are actually pending.
+
+    Probe-gated and fully decoupled from whether a repo advanced *this
+    run* (#929): an interrupted prior ``t3 update`` or an out-of-band
+    ``git pull`` leaves the SHA current with a stale self-DB, and the
+    migration must still run.  Returns ``True`` when the self-DB is left
+    unmigrated (caller exits non-zero — fail-closed, #870); ``False``
+    when nothing was pending or the migration succeeded.
+
+    A missing ``uv`` or an unresolvable clone can't be probed or
+    migrated: warn loudly but don't hard-fail the whole run (preserving
+    #925's tolerance), since "unverifiable" differs from "verified
+    unmigrated".
+    """
+    uv_bin = shutil.which("uv")
+    if uv_bin is None:
+        typer.echo("WARN  `uv` not on PATH — skipping self-DB migration check.")
+        return False
+    source = _self_db_source()
+    if source is None:
+        typer.echo("WARN  no editable teatree clone resolved — skipping self-DB migration check.")
+        return False
+    if not _self_db_has_pending_migrations(uv_bin, source):
+        typer.echo("OK    self-DB already migrated.")
+        return False
+    try:
+        _migrate_self_db(source)
+    except typer.Exit:
+        return True
+    return False
 
 
 def _reinstall_and_resetup(updated: list[RepoUpdate]) -> None:
@@ -327,7 +419,6 @@ def _reinstall_and_resetup(updated: list[RepoUpdate]) -> None:
                 typer.echo(f"WARN  Reinstall failed: {result.stderr.strip()}")
             else:
                 typer.echo("OK    Reinstalled teatree.")
-            _migrate_self_db(source)
     else:
         typer.echo("WARN  `uv` not on PATH — skipping editable reinstall.")
 
@@ -365,11 +456,15 @@ def _run_update() -> None:
         results.append(update_repo(name, path))
 
     _reinstall_and_resetup(results)
+    # Probe-gated and decoupled from the per-run UPDATED flag (#929): an
+    # interrupted prior run or an out-of-band ff-pull leaves the SHA
+    # current with a stale self-DB; this still migrates it.
+    self_db_unmigrated = _ensure_self_db_migrated()
 
     typer.echo("")
     typer.echo("Summary:")
     for result in results:
         typer.echo(f"  {result.summary_line}")
 
-    if any(result.is_error for result in results):
+    if self_db_unmigrated or any(result.is_error for result in results):
         raise typer.Exit(code=1)
