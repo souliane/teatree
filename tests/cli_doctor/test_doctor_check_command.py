@@ -10,9 +10,11 @@ this is now its only consumer.
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from typer.testing import CliRunner
 
 import teatree.cli.doctor as teatree_cli_doctor
+import teatree.cli.update as teatree_cli_update
 import teatree.core.overlay_loader as teatree_overlay_loader
 from teatree.cli import app
 from teatree.cli.doctor import IntrospectionHelpers
@@ -20,6 +22,23 @@ from teatree.cli.doctor import IntrospectionHelpers
 from ._shared import _stage_home, _write_teatree_toml
 
 runner = CliRunner()
+
+
+@pytest.fixture(autouse=True)
+def _isolate_clone_currency(monkeypatch):
+    """Pin the pre-investigation clone-currency gate (#948) to "no repos".
+
+    The gate calls ``_collect_repos()`` → real ``git fetch origin`` and
+    ``rev-list HEAD..origin/<default>`` against whatever clone the test
+    runner happens to live in.  In a CI checkout that lags behind
+    ``origin/main`` (e.g. a feature branch cut weeks ago) this surfaces
+    a real ``FAIL`` line and makes the doctor smoke tests non-deterministic.
+    The doctor wiring itself is exercised end-to-end in
+    ``tests/teatree_core/test_clone_guard.py``; here we only assert that
+    ``t3 doctor check`` aggregates check results, so an empty repo list
+    is the right boundary.
+    """
+    monkeypatch.setattr(teatree_cli_update, "_collect_repos", list)
 
 
 class TestDoctorCheckCommand:
