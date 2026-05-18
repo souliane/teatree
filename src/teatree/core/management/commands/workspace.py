@@ -488,7 +488,7 @@ class Command(TyperCommand):
                 continue
             for wt in worktrees:
                 try:
-                    cleaned.append(cleanup_worktree(wt, strict_hygiene=False))
+                    cleaned.append(str(cleanup_worktree(wt, strict_hygiene=False)))
                 except RuntimeError as exc:
                     cleaned.append(f"FAILED {wt.repo_path} ({wt.branch}): {exc}")
         if not cleaned:
@@ -573,7 +573,7 @@ class Command(TyperCommand):
         interactive = sys.stdin.isatty() and sys.stdout.isatty()
         for wt in Worktree.objects.filter(state=Worktree.State.CREATED):
             try:
-                cleaned.append(cleanup_worktree(wt))
+                cleaned.append(str(cleanup_worktree(wt)))
             except RuntimeError as exc:
                 cleaned.append(resolve_unsynced_worktree(wt, exc, interactive=interactive))
 

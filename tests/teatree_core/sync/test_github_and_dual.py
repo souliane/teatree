@@ -326,6 +326,53 @@ class TestSyncGitHub(TestCase):
         assert result.worktrees_cleaned == 0
         assert result.errors == []  # info-level keep, not error
 
+    def test_cleanup_step_errors_propagate_into_sync_result_errors(self) -> None:
+        """#877 — a non-clean ``CleanupResult`` surfaces in ``SyncResult.errors``.
+
+        The cleanup completes (worktree row gone) but a side resource failed.
+        Before #877 that failure was swallowed into a label string the sync
+        backend never inspected (#932); now it reaches the operator via the
+        ``SyncResult.errors`` exit channel.
+        """
+        from teatree.backends.github import ProjectItem  # noqa: PLC0415
+        from teatree.backends.github_sync import GitHubSyncBackend  # noqa: PLC0415
+        from teatree.core.cleanup import CleanupResult  # noqa: PLC0415
+
+        overlay = self._make_overlay()
+        ticket = Ticket.objects.create(
+            issue_url="https://github.com/souliane/teatree/issues/47",
+            state=Ticket.State.IN_REVIEW,
+        )
+        Worktree.objects.create(
+            overlay="test",
+            ticket=ticket,
+            repo_path="souliane/teatree",
+            branch="fix-47",
+        )
+        item = ProjectItem(
+            issue_number=47,
+            title="Cleanup with a failing side resource",
+            url="https://github.com/souliane/teatree/issues/47",
+            status="Done",
+            position=6,
+            labels=[],
+        )
+        dirty_result = CleanupResult(
+            label="Cleaned: souliane/teatree (fix-47)",
+            errors=["dropdb failed for wt_47: connection refused"],
+        )
+
+        with (
+            _patch_overlay(overlay),
+            patch("teatree.backends.github.fetch_project_items", return_value=[item]),
+            patch.object(GitHubSyncBackend, "_sync_reviewer_prs"),
+            patch("teatree.backends.github_sync.cleanup_worktree", return_value=dirty_result),
+        ):
+            result = GitHubSyncBackend().sync(overlay)
+
+        assert result.worktrees_cleaned == 1
+        assert any("dropdb failed for wt_47" in e for e in result.errors)
+
     def test_returns_error_for_non_overlay(self) -> None:
         from teatree.backends.github_sync import GitHubSyncBackend  # noqa: PLC0415
 

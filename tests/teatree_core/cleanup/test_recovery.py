@@ -15,7 +15,7 @@ from unittest.mock import patch
 import pytest
 from django.test import TestCase
 
-from teatree.core.cleanup import cleanup_worktree
+from teatree.core.cleanup import CleanupResult, cleanup_worktree
 from teatree.core.models import Ticket, Worktree
 from teatree.core.worktree_recovery import _has_unpushed_commits, capture_recovery_artifact
 from teatree.utils.run import CommandFailedError
@@ -87,7 +87,7 @@ class TestCleanupWorktreeRecoversDirtyOrUnpushedWork(TestCase):
             extra={"worktree_path": str(self.wt_path)},
         )
 
-    def _prune(self, worktree: Worktree) -> str:
+    def _prune(self, worktree: Worktree) -> CleanupResult:
         with (
             patch("teatree.core.cleanup.load_config") as mock_config,
             patch("teatree.core.cleanup.get_overlay") as mock_overlay,
@@ -237,13 +237,14 @@ class TestCleanupWorktreeRecoversDirtyOrUnpushedWork(TestCase):
         assert (restore / "base.txt").read_text(encoding="utf-8") == "base\nDIRTY EDIT\n"
         assert (restore / "newfile.txt").read_text(encoding="utf-8") == "brand new\n"
 
-    def test_capture_failure_is_swallowed_and_prune_still_proceeds(self) -> None:
-        """#835 — a capture failure must NOT block the prune (stuck-cleanup).
+    def test_capture_failure_surfaced_and_prune_still_proceeds(self) -> None:
+        """#835/#877 — a capture failure must NOT block the prune (stuck-cleanup).
 
         Drives the production seam (``cleanup_worktree`` → ``_remove_git_worktree``)
         with the real on-disk worktree; only the (unstoppable, deliberately
-        failing) capture is patched to raise. The ticket mandates: swallow the
-        exception, still remove the worktree, surface the failure in the label.
+        failing) capture is patched to raise. The ticket mandates: do not raise,
+        still remove the worktree, surface the failure in ``errors`` (#877 —
+        the structured channel, not a swallowed label string).
         """
         (self.wt_path / "base.txt").write_text("base\nDIRTY EDIT\n", encoding="utf-8")
         wt = self._make_worktree()
@@ -256,11 +257,12 @@ class TestCleanupWorktreeRecoversDirtyOrUnpushedWork(TestCase):
         ):
             mock_config.return_value.user.workspace_dir = self.workspace
             mock_overlay.return_value.get_cleanup_steps.return_value = []
-            label = cleanup_worktree(wt, force=True)  # must NOT raise
+            result = cleanup_worktree(wt, force=True)  # must NOT raise
 
         assert not self.wt_path.exists(), "worktree must still be removed despite capture failure"
-        assert f"recovery capture failed for {self.branch}" in label
-        assert "disk full while bundling" in label
+        assert result.clean is False
+        assert any(f"recovery capture failed for {self.branch}" in e for e in result.errors)
+        assert any("disk full while bundling" in e for e in result.errors)
         assert _recovery_dirs(self.temp_root) == [], "no artifact when capture itself failed"
 
     def test_clean_merged_worktree_hard_deletes_with_no_artifact(self) -> None:
