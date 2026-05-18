@@ -88,7 +88,20 @@ class TeatreeOverlay(OverlayBase):
 
     @override
     def get_provision_steps(self, worktree: Worktree) -> list[ProvisionStep]:
-        repo = Path(worktree.repo_path)
+        # ``worktree.repo_path`` is the repo identifier (e.g. ``souliane/teatree``),
+        # NOT a filesystem path — the on-disk worktree path lives in ``extra['worktree_path']``
+        # and is exposed via ``worktree.worktree_path``. Before #941 this method used
+        # ``Path(worktree.repo_path)`` directly, which produced a relative path like
+        # ``souliane/teatree`` and caused every ``workspace provision`` to fail with
+        # ``FileNotFoundError: 'souliane/teatree'`` on the ``sync-dependencies`` step.
+        on_disk = worktree.worktree_path
+        if not on_disk:
+            # Worktree row exists but has not been materialised on disk yet —
+            # ``WorktreeRowProvisionRunner`` populates ``extra['worktree_path']`` after
+            # ``git worktree add`` succeeds. Provisioning steps require a real directory,
+            # so return an empty list (no-op) rather than crash with a misleading path.
+            return []
+        repo = Path(on_disk)
 
         def sync_deps() -> None:
             run_checked(["uv", "sync"], cwd=repo)
