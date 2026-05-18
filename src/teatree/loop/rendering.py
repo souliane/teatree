@@ -549,6 +549,7 @@ def zones_for(actions: list[DispatchAction], *, colorize: bool | None = None) ->
     """
     colorize = colorize_enabled(colorize=colorize)
     zones = StatuslineZones()
+    _populate_availability_anchor(zones)
     c = _classify_actions(actions)
     ticket_index = build_ticket_index(actions)
     _populate_overlay_zones(zones, c, ticket_index=ticket_index, colorize=colorize)
@@ -561,3 +562,22 @@ def zones_for(actions: list[DispatchAction], *, colorize: bool | None = None) ->
     zones.in_flight.extend(_running_tasks_lines())
 
     return zones
+
+
+def _populate_availability_anchor(zones: StatuslineZones) -> None:
+    """Append the ``mode=away · N queued`` anchor when availability=away (#58).
+
+    Fails open: any import or query error degrades to a no-op so a broken
+    availability config can never blank the statusline.
+    """
+    try:
+        from teatree.core.availability import pending_questions_count, resolve_mode  # noqa: PLC0415
+        from teatree.loop.statusline import availability_anchor  # noqa: PLC0415
+
+        resolution = resolve_mode()
+        queued = pending_questions_count() if resolution.mode == "away" else 0
+        line = availability_anchor(resolution.mode, queued)
+    except Exception:  # noqa: BLE001
+        return
+    if line:
+        zones.anchors.append(line)

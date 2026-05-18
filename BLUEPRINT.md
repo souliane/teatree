@@ -676,6 +676,21 @@ The loop respects the active overlay's `mode` (§ 10.1, canonical default `inter
 
 `UserSettings.require_human_approval_to_merge`, `UserSettings.require_human_approval_to_answer`, `UserSettings.loop_cadence_seconds` (default 720), `UserSettings.user_identity_aliases` (default empty; consumed by `TicketDispositionScanner` for reassign-noise filtering, see §5.6 phase 7), and `UserSettings.statusline_chain` (default empty) live in `src/teatree/config.py`; the first four are toml-overridable in `[teatree]` and per-overlay via `[overlays.<name>]` once registered in `OVERLAY_OVERRIDABLE_SETTINGS`. `statusline_chain` is global-only (not per-overlay).
 
+#### 5.6.3 Availability — 24/7 dual question-mode (#58, §17.3 C3)
+
+Single-session 24/7 operation has two question modes (BLUEPRINT §17.1 invariant 9):
+
+- `present` — the user is reachable; `AskUserQuestion` runs interactively the standard way and the §807 Stop gate enforces the structured tool.
+- `away` — the user is unreachable; the `handle_route_away_mode_question` PreToolUse hook converts the `AskUserQuestion` tool call into a durable `DeferredQuestion` row and emits a `permissionDecision=deny` whose reason names the recorded row id. The tool_use block still appears in the transcript — the §807 gate sees it and lets the turn complete; the agent then proceeds with any work that does not depend on the answer. The user resolves the question on their own clock with `t3 questions answer <id> <text>` / `t3 questions dismiss <id>`; a `DeferredQuestionAudit` row records the resolution (mirroring the `MergeAudit` / `OnBehalfAudit` / `DbAudit` family).
+
+**Mode resolution is a single deterministic precedence** (each layer is independently testable; the production resolver is `teatree.core.availability.resolve_mode()`):
+
+1. **Manual override (unexpired)** — recorded on disk at `$T3_DATA_DIR/availability_override.json` by `t3 availability away|present|auto [--until ISO8601]`. The write is atomic (`tmp.replace`) so a torn write never leaves a half-encoded override. `auto` deletes the file so the schedule decides again.
+2. **Cron-window schedule** — `[teatree.availability].windows` is a list of cron expressions (e.g. `["0 9-16 * * 1-5"]`) evaluated against `[teatree.availability].timezone`. Any one tick inside the current minute means `present`; otherwise `away`. Multiple windows OR together — any active = present.
+3. **Default** — `present` (the conservative default: an agent with no configured schedule answers in-band, never silently muted).
+
+The away-mode path **never bypasses the §807 structured-question gate** — it is a *sanctioned destination* for the same `AskUserQuestion` tool call, converted at the `PreToolUse` layer (the recorded `tool_use` block satisfies the gate), never an inline prose fallback. The statusline anchors zone surfaces `mode=away · N queued` when the mode is `away`, so the user sees both the mode and the backlog depth from any terminal consuming the statusline. The agent also sees pending questions in `additionalContext` on every user turn (`handle_inject_pending_questions`), so it can sequence work that does not depend on the deferred answers and never re-ask the same question.
+
 ### 5.7 Self-improving monitor (`/loop` Phase 1)
 
 The self-improve monitor (`teatree.loop.self_improve`) is a **detector swarm** that rides the same tick the regular `/loop` runs. It watches for "smells" the rest of the loop cannot self-report — dispatcher silently skipping a phase, a `MergeClear` issued but never reconciled, a statusline entry whose evidence has gone stale — and converts each into a `SelfImproveFiring` row plus a graduated action. It is the legibility substrate the §§ 17.4–17.8 orchestrator-keystone relies on; without it, a wrong-but-confident loop is unobservable.
@@ -1813,6 +1828,8 @@ The reason this architecture exists, observed repeatedly: durability comes from 
 
 8. **All FSM state transitions go through the `t3` CLI.** The pre-condition and pre/post transition hooks are the coherence mechanism (ledger update, attestation-binding to the HEAD/workstream the phase was earned against, privacy/AI-signature scan, `mark_merged()`). Out-of-band state mutation — raw `gh pr merge` / `glab mr merge`, or hand-editing the phase ledger / FSM state — is prohibited and **mechanically guarded** (the prohibition is encoded in `hook_router._BLOCKED_COMMANDS`, the same hook layer as the draft-lock and structured-question gates — invariant 2: code, not prose). The keystone IN_REVIEW → MERGED transition this protects is specified in §17.4 (orchestrator-decides / loop-executes, the per-diff `MergeClear`, `expected_head_oid` SHA-binding); the enforcement-gate placement that makes it non-bypassable is §17.6.3. The two sanctioned escapes for legitimately stale state — clearing a reused ticket's phase ledger and recording an independent reviewer attestation — are themselves `t3` commands (`lifecycle clear-ledger`, the hardened `lifecycle visit-phase … reviewing --agent-id`), never manual edits, so the prohibition has no "but I had to" exception.
 
+9. **Every user-directed question is captured — sync or durable.** A user-directed question must either (a) call `AskUserQuestion` with the user reachable for an answer this turn, or (b) be recorded as a `DeferredQuestion` row when the resolved availability mode is `away`. Mode resolution is a single deterministic precedence — unexpired manual override → `[teatree.availability]` cron-window match → `present` (default) — exposed by `t3 availability` and observable in the statusline. Manual override has authoritative precedence over schedule. The away-mode path never bypasses the §807 structured-question gate: it is a *sanctioned destination* for the same `AskUserQuestion` tool call, converted at the `PreToolUse` layer, never an inline prose fallback. Component: §17.3 C3.
+
 ### 17.2 The flywheel
 
 ```mermaid
@@ -1841,7 +1858,7 @@ Each component is its own tracked ticket, implemented as teatree code with TDD p
 
 - **C2 — Code-health loop.** Extract *only* the deterministic *harness* — scoped scan + dedupe-against-open-tickets + severity-gating + ticket intake + pacing — into teatree code; the review *judgment* stays in the existing review skill (invariant 3: mechanics → code, judgment → skill). This is the latent-code sensor feeding the same flywheel on code no diff touched. It must be paced and deduped or it floods the backlog.
 
-- **C3 — Availability (24/7 single-session).** Two question modes (ask-now vs. pile-while-away) plus a work-hours auto-switch and a manual toggle. Away-mode routes a would-be question into the durable backlog; it never bypasses the structured-question gate (§ 5.6, `handle_enforce_structured_question`). This keeps the orchestrator brain available around the clock.
+- **C3 — Availability (24/7 single-session).** Two question modes (ask-now vs. pile-while-away) plus a work-hours auto-switch and a manual toggle. Away-mode routes a would-be question into the durable backlog (`DeferredQuestion`); it never bypasses the structured-question gate (§ 5.6, `handle_enforce_structured_question`). This keeps the orchestrator brain available around the clock. **Status: shipped under [#58](https://github.com/souliane/teatree/issues/58)** — implementation owns the §17.1 invariant 9 guarantee, the cron-window schedule + manual-override resolver (`teatree.core.availability.resolve_mode`), and the durable `DeferredQuestion` + `DeferredQuestionAudit` rows. Full spec lives in §5.6.3.
 
 ### 17.4 Orchestrator-decides / loop-executes topology
 
