@@ -13,7 +13,7 @@ from subprocess import CompletedProcess
 from teatree.utils.django_db import DjangoDbImportConfig, DjangoDbImporter
 
 
-def _make_cfg(tmp_path: Path, **overrides: str) -> DjangoDbImportConfig:
+def _make_cfg(tmp_path: Path, **overrides: object) -> DjangoDbImportConfig:
     defaults = {
         "ref_db_name": "development-acme",
         "ticket_db_name": "wt_42_acme",
@@ -26,7 +26,7 @@ def _make_cfg(tmp_path: Path, **overrides: str) -> DjangoDbImportConfig:
     return DjangoDbImportConfig(**defaults)
 
 
-def _make_importer(tmp_path: Path, *, dslr_cmd: list[str] | None = None, **cfg_overrides: str) -> DjangoDbImporter:
+def _make_importer(tmp_path: Path, *, dslr_cmd: list[str] | None = None, **cfg_overrides: object) -> DjangoDbImporter:
     """Build an importer with stubbed stdout/stderr and a controllable dslr command."""
     importer = DjangoDbImporter(_make_cfg(tmp_path, **cfg_overrides), stdout=io.StringIO(), stderr=io.StringIO())
     importer.dslr_cmd = dslr_cmd if dslr_cmd is not None else ["/usr/bin/dslr"]
