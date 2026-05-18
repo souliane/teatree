@@ -612,6 +612,19 @@ def check() -> bool:
     from teatree.core.schema_guard import doctor_check_self_db_migrations  # noqa: PLC0415
 
     ok = doctor_check_self_db_migrations() and ok
+
+    # Pre-investigation stale-clone hard-fail gate (#948). Surfaces at
+    # session start so a bug-investigation sub-agent cannot start root-
+    # causing against a clone many commits behind ``origin/<default>``.
+    # Distinct from #940 (post-implementation branch-currency on PR
+    # branches); this is the *entry-point* gate before any investigation
+    # reads source files. An offline/missing remote is a valid state —
+    # ``doctor_check_clone_currency`` skips affected repos rather than
+    # FAILing (same posture as schema_guard's DB-offline WARN).
+    from teatree.cli.update import _collect_repos  # noqa: PLC0415
+    from teatree.core.clone_guard import doctor_check_clone_currency  # noqa: PLC0415
+
+    ok = doctor_check_clone_currency(_collect_repos()) and ok
     _check_singletons()
     report_missing_authorizations(typer.echo)
     _ensure_plugin_registered()
