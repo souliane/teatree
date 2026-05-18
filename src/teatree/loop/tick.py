@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from teatree.backends.protocols import CodeHostBackend, MessagingBackend
+from teatree.config import discover_overlays, load_config
 from teatree.core.backend_factory import OverlayBackends
 from teatree.loop.dispatch import DispatchAction, dispatch
 from teatree.loop.rendering import zones_for
@@ -102,6 +103,28 @@ def _run_job(job: _ScannerJob) -> tuple[str, list[ScanSignal], str]:
     return label, signals, ""
 
 
+def _user_identity_aliases_for_overlay(overlay_name: str) -> tuple[str, ...]:
+    """Resolve ``user_identity_aliases`` honouring any per-overlay override.
+
+    The active overlay's ``[overlays.<name>]`` table wins over the global
+    ``[teatree]`` value; with no setting anywhere we return the empty
+    tuple so the disposition scanner keeps its legacy behaviour.
+    """
+    try:
+        global_value = tuple(load_config().user.user_identity_aliases)
+        if overlay_name:
+            for entry in discover_overlays():
+                if entry.name == overlay_name:
+                    override = entry.overrides.get("user_identity_aliases")
+                    if override is not None:
+                        return tuple(str(s) for s in override)
+                    break
+    except Exception:  # noqa: BLE001 — never break a tick on a config read.
+        logger.warning("Failed to resolve user_identity_aliases for %r; defaulting to empty", overlay_name)
+        return ()
+    return global_value
+
+
 def build_default_jobs(
     *,
     backends: list[OverlayBackends] | None = None,
@@ -166,6 +189,7 @@ def build_default_jobs(
                                 overlay=backend.overlay,
                                 ready_labels=backend.ready_labels,
                                 overlay_name=tag,
+                                user_identity_aliases=_user_identity_aliases_for_overlay(tag),
                             ),
                             overlay=tag,
                         ),

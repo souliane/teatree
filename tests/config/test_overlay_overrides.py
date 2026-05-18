@@ -164,6 +164,37 @@ mode = "auto"
 
         assert get_effective_settings().mode is Mode.AUTO
 
+    def test_overlay_can_override_user_identity_aliases(
+        self,
+        config_file: Path,
+        elsewhere: Path,
+        no_installed_overlays: None,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A per-overlay alias list wins over the global setting.
+
+        Different platforms may use different handle conventions, so an
+        overlay scoped to one tracker can carry a tracker-specific alias
+        list without flipping the global default.
+        """
+        del elsewhere, no_installed_overlays
+        monkeypatch.delenv("T3_MODE", raising=False)
+        monkeypatch.setenv("T3_OVERLAY_NAME", "scoped")
+
+        _write_toml(
+            config_file,
+            """
+[teatree]
+user_identity_aliases = ["souliane"]
+
+[overlays.scoped]
+class = "x.y:Z"
+user_identity_aliases = ["adrien.work", "souliane", "adrien.cossa"]
+""",
+        )
+
+        assert get_effective_settings().user_identity_aliases == ["adrien.work", "souliane", "adrien.cossa"]
+
     def test_overlay_can_override_require_human_approval_to_answer(
         self,
         config_file: Path,

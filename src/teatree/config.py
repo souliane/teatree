@@ -106,6 +106,16 @@ def _parse_excluded_skills(raw: object) -> list[str]:
     return [str(s) for s in raw] if isinstance(raw, list) else []
 
 
+def _parse_user_identity_aliases(raw: object) -> list[str]:
+    """Coerce a TOML list of usernames/handles to ``list[str]``.
+
+    Non-list inputs (a stray scalar) degrade to an empty list rather than
+    raising — keeps the loader robust to a malformed override while leaving
+    the suppression off by default.
+    """
+    return [str(s) for s in raw] if isinstance(raw, list) else []
+
+
 # Registry of UserSettings fields that can be overridden per-overlay in
 # ``[overlays.<name>]``. To make another setting overridable, add an entry
 # here with a parser that coerces the raw toml value to the UserSettings
@@ -120,6 +130,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "loop_cadence_seconds": int,
     "require_human_approval_to_merge": bool,
     "require_human_approval_to_answer": bool,
+    "user_identity_aliases": _parse_user_identity_aliases,
 }
 
 # ``T3_*`` env vars that win over both the per-overlay override and the
@@ -181,6 +192,16 @@ class UserSettings:
     # Behalf".
     agent_signature: bool = False
     statusline_chain: list[str] = field(default_factory=list)
+    # Usernames / handles that all map to the same human operator across
+    # platforms (a GitHub login, a GitLab username, an internal handle).
+    # Consumed by the loop's ticket-disposition scanner to suppress the
+    # reassign signal when an issue is handed off between two of the
+    # operator's own identities — plumbing noise, not an actionable
+    # transition. Default empty: with no aliases configured, every
+    # reassign still renders (legacy behaviour). Per-overlay overridable
+    # so a tracker-scoped overlay can carry tracker-specific handles
+    # without flipping the global default. See souliane/teatree#975.
+    user_identity_aliases: list[str] = field(default_factory=list)
     # Solo vs collaborative working mode (issue #550 item 4). Empty string
     # = auto-detect from `git shortlog` history (see teatree.repo_mode);
     # an explicit "solo" / "collaborative" pins the verdict and bypasses
@@ -232,6 +253,7 @@ def load_config(path: Path | None = None) -> TeaTreeConfig:
         claude_chrome=bool(teatree.get("claude_chrome", True)),
         agent_signature=bool(teatree.get("agent_signature", False)),
         statusline_chain=[str(s) for s in teatree.get("statusline_chain", [])],
+        user_identity_aliases=_parse_user_identity_aliases(teatree.get("user_identity_aliases", [])),
         repo_mode=str(teatree.get("repo_mode", "")),
     )
 
