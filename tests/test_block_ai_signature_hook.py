@@ -109,6 +109,50 @@ class TestFileBasedMessageIsScanned:
         assert payload is not None
         assert "Co-Authored-By" in payload
 
+    def test_git_commit_glued_minus_f_no_separator_is_blocked(self, monkeypatch, tmp_path):
+        """Glued ``git commit -F<path>`` (no separator) must be scanned.
+
+        #862 cold-review residual: ``-F<path>`` with no space or ``=`` is
+        valid git getopt; the space/``=``-only matcher let a glued short
+        flag carrying a banned trailer slip past — this closes that hole.
+        """
+        msg = tmp_path / "GLUED_MSG"
+        msg.write_text(self._TRAILER, encoding="utf-8")
+        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
+        data = {"tool_name": "Bash", "tool_input": {"command": f"git commit -F{msg}"}}
+        rejected = subprocess.CompletedProcess(args=[], returncode=1, stdout="banned", stderr="")
+        with patch.object(router.subprocess, "run", return_value=rejected) as run:
+            blocked = handle_block_ai_signature(data)
+        assert blocked is True
+        assert "Co-Authored-By" in run.call_args[1]["input"]
+
+    def test_git_commit_glued_minus_c_no_separator_is_read(self, tmp_path):
+        msg = tmp_path / "glued_reuse"
+        msg.write_text(self._TRAILER, encoding="utf-8")
+        data = {"tool_name": "Bash", "tool_input": {"command": f"git commit -C{msg}"}}
+        payload = _extract_ai_sig_payload(data)
+        assert payload is not None
+        assert "Co-Authored-By" in payload
+
+    def test_existing_space_and_equals_short_forms_still_blocked(self, tmp_path):
+        """Glued-form fix must not regress ``-F path`` / ``-F=path``."""
+        msg = tmp_path / "msg"
+        msg.write_text(self._TRAILER, encoding="utf-8")
+        for cmd in (f"git commit -F {msg}", f"git commit -F={msg}"):
+            data = {"tool_name": "Bash", "tool_input": {"command": cmd}}
+            payload = _extract_ai_sig_payload(data)
+            assert payload is not None, cmd
+            assert "Co-Authored-By" in payload, cmd
+
+    def test_clean_glued_minus_f_is_allowed(self, monkeypatch, tmp_path):
+        body = tmp_path / "clean_glued.md"
+        body.write_text("fix: real change\n\nClean.\n\nRelates-to #836\n", encoding="utf-8")
+        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
+        data = {"tool_name": "Bash", "tool_input": {"command": f"git commit -F{body}"}}
+        ok = subprocess.CompletedProcess(args=[], returncode=0, stdout="clean", stderr="")
+        with patch.object(router.subprocess, "run", return_value=ok):
+            assert handle_block_ai_signature(data) is False
+
     def test_clean_body_file_is_allowed(self, monkeypatch, tmp_path):
         body = tmp_path / "clean.md"
         body.write_text("fix: real change\n\nA clean description.\n\nRelates-to #836\n", encoding="utf-8")

@@ -229,6 +229,13 @@ repos:
         entry: uv run python scripts/hooks/check_blueprint_sync.py
         always_run: true
         stages: [commit-msg]
+      - id: blueprint-invariant-numbering
+        name: BLUEPRINT.md §17.1 invariants are a gapless 1..N (#836 §17.6 gate 1)
+        language: system
+        entry: uv run python scripts/hooks/check_blueprint_invariant_numbering.py
+        pass_filenames: false
+        always_run: true
+        stages: [commit-msg]
 
   # Phase 7c - Version sync
   - repo: local
