@@ -131,6 +131,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "require_human_approval_to_merge": bool,
     "require_human_approval_to_answer": bool,
     "ask_before_post_on_behalf": bool,
+    "notify_user_via_bot": bool,
     "user_identity_aliases": _parse_user_identity_aliases,
 }
 
@@ -205,6 +206,14 @@ class UserSettings:
     # `skills/rules/SKILL.md` § "No AI Signature on Posts Made on the User's
     # Behalf".
     agent_signature: bool = False
+    # Bot→user Slack notification channel (#963). When true, the helper
+    # `teatree.notify.notify_user(...)` posts agent answers / questions /
+    # important-info to the user's configured Slack DM via the bot identity,
+    # auditing each send in the `BotPing` ledger. Out of scope of the
+    # on-behalf gates (#960/#949): those govern posts the agent makes *as*
+    # the user to colleagues/customers; this is the bot talking to its own
+    # operator. Default on; turn off to keep notifications CLI-only.
+    notify_user_via_bot: bool = True
     statusline_chain: list[str] = field(default_factory=list)
     # Usernames / handles that all map to the same human operator across
     # platforms (a GitHub login, a GitLab username, an internal handle).
@@ -265,6 +274,7 @@ def load_config(path: Path | None = None) -> TeaTreeConfig:
         require_human_approval_to_merge=bool(teatree.get("require_human_approval_to_merge", True)),
         require_human_approval_to_answer=bool(teatree.get("require_human_approval_to_answer", True)),
         ask_before_post_on_behalf=bool(teatree.get("ask_before_post_on_behalf", True)),
+        notify_user_via_bot=bool(teatree.get("notify_user_via_bot", True)),
         claude_chrome=bool(teatree.get("claude_chrome", True)),
         agent_signature=bool(teatree.get("agent_signature", False)),
         statusline_chain=[str(s) for s in teatree.get("statusline_chain", [])],

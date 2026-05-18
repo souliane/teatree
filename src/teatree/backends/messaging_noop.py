@@ -37,6 +37,11 @@ class NoopMessagingBackend:
         return ""
 
     @staticmethod
+    def get_permalink(*, channel: str, ts: str) -> str:
+        _ = channel, ts
+        return ""
+
+    @staticmethod
     def react(*, channel: str, ts: str, emoji: str) -> RawAPIDict:
         _ = channel, ts, emoji
         return {}

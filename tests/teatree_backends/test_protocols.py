@@ -108,6 +108,10 @@ class _FakeMessaging:
         _ = user_id
         return ""
 
+    def get_permalink(self, *, channel: str, ts: str) -> str:
+        _ = (channel, ts)
+        return ""
+
     def react(self, *, channel: str, ts: str, emoji: str) -> dict[str, object]:
         _ = (channel, ts, emoji)
         return {}

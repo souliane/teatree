@@ -225,3 +225,34 @@ require_human_approval_to_answer = false
         )
 
         assert get_effective_settings().require_human_approval_to_answer is False
+
+    def test_overlay_can_override_notify_user_via_bot(
+        self,
+        config_file: Path,
+        elsewhere: Path,
+        no_installed_overlays: None,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Bot→user notification toggle is per-overlay overridable (#963).
+
+        A noisy overlay can opt out of the bot DM channel while leaving the
+        global default on — runs through the same generic
+        ``OVERLAY_OVERRIDABLE_SETTINGS`` registry.
+        """
+        del elsewhere, no_installed_overlays
+        monkeypatch.delenv("T3_MODE", raising=False)
+        monkeypatch.setenv("T3_OVERLAY_NAME", "quiet")
+
+        _write_toml(
+            config_file,
+            """
+[teatree]
+notify_user_via_bot = true
+
+[overlays.quiet]
+class = "x.y:Z"
+notify_user_via_bot = false
+""",
+        )
+
+        assert get_effective_settings().notify_user_via_bot is False
