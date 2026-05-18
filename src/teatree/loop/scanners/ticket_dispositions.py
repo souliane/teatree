@@ -47,6 +47,26 @@ class _IssueSnapshot:
     labels: tuple[str, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class _DispositionReason:
+    """One detected drift reason plus the fields the statusline needs.
+
+    ``unassigned`` carries ``old_owner`` (the active user the ticket was
+    taken from) and ``new_owners`` (whoever the issue now points at) so the
+    statusline renders the transition explicitly. Other reasons leave both
+    empty and contribute no extra payload keys.
+    """
+
+    reason: str
+    old_owner: str = ""
+    new_owners: tuple[str, ...] = ()
+
+    def payload_extra(self) -> dict[str, str | list[str]]:
+        if self.reason == "unassigned" and self.old_owner and self.new_owners:
+            return {"old_owner": self.old_owner, "new_owners": list(self.new_owners)}
+        return {}
+
+
 def _normalize_username_list(raw: object) -> tuple[str, ...]:
     if not isinstance(raw, list):
         return ()
@@ -124,16 +144,17 @@ class TicketDispositionScanner:
             signals.extend(
                 ScanSignal(
                     kind="ticket.disposition_candidate",
-                    summary=f"Ticket {ticket.ticket_number} — {reason}",
+                    summary=f"Ticket {ticket.ticket_number} — {detected.reason}",
                     payload={
                         "ticket_id": ticket.pk,
                         "ticket_number": ticket.ticket_number,
                         "ticket_state": ticket.state,
                         "issue_url": ticket.issue_url,
-                        "reason": reason,
+                        "reason": detected.reason,
+                        **detected.payload_extra(),
                     },
                 )
-                for reason in self._detect_reasons(snap, author)
+                for detected in self._detect_reasons(snap, author)
             )
         return signals
 
@@ -149,12 +170,18 @@ class TicketDispositionScanner:
             qs = qs.filter(overlay=self.overlay_name)
         return qs.only("id", "issue_url", "state", "overlay")
 
-    def _detect_reasons(self, snap: _IssueSnapshot, author: str) -> list[str]:
-        reasons: list[str] = []
+    def _detect_reasons(self, snap: _IssueSnapshot, author: str) -> list[_DispositionReason]:
+        """Return every detected drift reason for *snap*.
+
+        ``unassigned`` keeps the old/new owner identities so the statusline
+        can render the transition explicitly instead of a bare
+        ``reassigned``. Other reasons need no extra fields.
+        """
+        reasons: list[_DispositionReason] = []
         if snap.state in {"closed", "completed", "cancelled"}:
-            reasons.append("issue_closed")
+            reasons.append(_DispositionReason("issue_closed"))
         if author and snap.assignees and author not in snap.assignees:
-            reasons.append("unassigned")
+            reasons.append(_DispositionReason("unassigned", old_owner=author, new_owners=snap.assignees))
         if self.ready_labels and not any(label in snap.labels for label in self.ready_labels):
-            reasons.append("label_removed")
+            reasons.append(_DispositionReason("label_removed"))
         return reasons
