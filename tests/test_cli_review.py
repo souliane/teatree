@@ -1,13 +1,28 @@
 from unittest.mock import MagicMock, patch
 
+import pytest
 from typer.testing import CliRunner
 
 import teatree.backends.gitlab_api as gitlab_api_mod
 import teatree.utils.run as utils_run_mod
 from teatree.cli import app
 from teatree.cli.review import ReviewService, _find_added_line
+from tests.teatree_core._on_behalf_gate_helpers import disable_on_behalf_gate
 
 runner = CliRunner()
+
+
+@pytest.fixture(autouse=True)
+def _no_on_behalf_gate(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Disable the ``ask_before_post_on_behalf`` gate for these mechanics tests.
+
+    The CLI's on-behalf gate (#960) is exercised by its own dedicated
+    suite in ``tests/teatree_cli/test_review_on_behalf_gate.py``. These
+    tests exercise GitLab API mechanics (post payload shape, line code
+    validation, fallback to discussions) and need the gate OFF so the
+    HTTP call actually happens and the mocked GitLabAPI sees the request.
+    """
+    disable_on_behalf_gate(tmp_path_factory, monkeypatch)
 
 
 def _inline_api(changes_diff: str, post_result: dict[str, object] | None = None) -> MagicMock:

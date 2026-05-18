@@ -7,7 +7,7 @@ from teatree.backends.slack_reactions import add_approval_reaction, add_reaction
 from teatree.core.models.pull_request import PullRequest
 from teatree.core.models.task import Task
 from teatree.core.models.ticket import Ticket
-from teatree.on_behalf_gate import ask_before_post_on_behalf_enabled
+from teatree.core.on_behalf_gate_recorded import OnBehalfPostBlockedError, require_on_behalf_approval
 
 logger = logging.getLogger(__name__)
 
@@ -37,11 +37,36 @@ def _add_slack_reactions_on_transition(
     name: str,
     **_kwargs: object,
 ) -> None:
-    """Post a Slack emoji reaction on the PR review message for this transition."""
+    """Post a Slack emoji reaction on the PR review message for this transition.
+
+    The reaction is on a colleague-facing surface (the review-request
+    message the user posted to reviewers), so it is gated by the
+    recorded-approval on-behalf path. Gate ON + recorded approval scoped
+    to ``(ticket.url, "transition_reaction:<name>")`` → reaction posts;
+    gate ON + no approval → skip without posting; gate OFF → post. The
+    FSM transition itself is never blocked.
+    """
+    target = f"ticket:{instance.pk}"
+    try:
+        require_on_behalf_approval(target=target, action=f"transition_reaction:{name}")
+    except OnBehalfPostBlockedError as blocked:
+        logger.info("Transition reaction for ticket %s (%s) gated: %s", instance.pk, name, blocked)
+        return
     try:
         add_reactions_for_transition(instance, name)
     except Exception:
         logger.exception("Failed to add Slack reactions for ticket %s transition %s", instance.pk, name)
+
+
+def _approval_reaction_target(pull_request: PullRequest) -> str:
+    """Stable on-behalf-gate target identifier for the ``approve`` reaction.
+
+    The recorded :class:`OnBehalfApproval` must scope to *this* specific PR
+    so an approval for PR A never satisfies the reaction on PR B. The PR's
+    ``url`` is the natural unique identifier and is what the user will
+    type when recording the approval.
+    """
+    return pull_request.url or f"{pull_request.repo}#{pull_request.iid}"
 
 
 def _add_approval_reaction_on_transition(
@@ -51,15 +76,22 @@ def _add_approval_reaction_on_transition(
 ) -> None:
     """Post a ✅ on the requester's review message when a PR is approved (#961).
 
-    The approval reaction is itself a post on the user's behalf, so it is
-    suppressed while the ``ask_before_post_on_behalf`` pre-gate (#960) is
-    on (its default) — the agent asks the user before the reaction goes
-    out, exactly as for any other on-behalf post. The user flips the gate
-    off per-overlay once they trust the system posts well.
+    The reaction is itself a post on the user's behalf, so it routes
+    through the same recorded-approval gate every other on-behalf post
+    uses (``require_on_behalf_approval`` — gate ON + recorded approval →
+    proceed + audit; gate ON + no approval → skip without posting; gate
+    OFF → proceed). Satisfiable without a TTY: the user records an
+    :class:`OnBehalfApproval` scoped to (PR url, ``approval_reaction``)
+    and the next approve transition publishes. The FSM transition itself
+    is never blocked — only the on-behalf post is.
     """
     if name != "approve":
         return
-    if ask_before_post_on_behalf_enabled():
+    target = _approval_reaction_target(instance)
+    try:
+        require_on_behalf_approval(target=target, action="approval_reaction")
+    except OnBehalfPostBlockedError as blocked:
+        logger.info("Approval reaction for PR %s gated: %s", instance.pk, blocked)
         return
     try:
         add_approval_reaction(instance)

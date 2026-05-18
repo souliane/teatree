@@ -408,6 +408,8 @@ Usage: t3 review [OPTIONS] COMMAND [ARGS]...
 │                      published.                                              │
 │ resolve-discussion   Mark a GitLab MR discussion thread resolved or          │
 │                      unresolved.                                             │
+│ approve-on-behalf    Record an :class:`OnBehalfApproval` that satisfies the  │
+│                      on-behalf gate.                                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -561,6 +563,47 @@ Usage: t3 review resolve-discussion [OPTIONS] REPO MR DISCUSSION_ID
 │ --resolved    --no-resolved      Mark resolved (default) or re-open.         │
 │                                  [default: resolved]                         │
 │ --help                           Show this message and exit.                 │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 review approve-on-behalf`
+
+```
+Usage: t3 review approve-on-behalf [OPTIONS] TARGET ACTION
+
+ Record an :class:`OnBehalfApproval` that satisfies the on-behalf gate.
+
+ The recorded-approval channel is the no-TTY satisfier for the
+ ``ask_before_post_on_behalf`` pre-gate (#960). It mirrors the
+ #953 ``DbApproval`` / section 17.4 ``MergeClear`` shape:
+ durable, single-use, strictly scoped to one
+ ``(target, action)`` pair, maker!=checker enforced. After this
+ command writes the row, the next on-behalf attempt matching
+ ``(target, action)`` publishes and the row is consumed; an
+ audit row records who/what/when.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    target      TEXT  Scope identifier the recorded approval is bound to —  │
+│                        e.g. the MR ref `org/repo!42`, the PR url, or the     │
+│                        ticket+transition compound the gate emitted in its    │
+│                        `OnBehalfPostBlockedError` message.                   │
+│                        [required]                                            │
+│ *    action      TEXT  Action name the recorded approval authorises —        │
+│                        exactly the string in the gate's blocked-post message │
+│                        (`post_comment`, `reply_to_discussion`,               │
+│                        `approval_reaction`, etc.). Single-use; consumed when │
+│                        the next matching on-behalf attempt publishes.        │
+│                        [required]                                            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ *  --approver        TEXT  Identifier of the human user recording the        │
+│                            approval. Refused if it names a                   │
+│                            maker/coding-agent/loop role — the executing      │
+│                            agent can never self-authorize the post (#960,    │
+│                            mirrors DbApproval #953 / MergeClear section      │
+│                            17.8).                                            │
+│                            [required]                                        │
+│    --help                  Show this message and exit.                       │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

@@ -1,9 +1,22 @@
 """Behaviour tests for ReplyDispatch + Replier protocol (#654 phase 4)."""
 
+import pytest
 from django.test import TestCase
 
 from teatree.core.models import IncomingEvent, ReplyDispatch
 from teatree.core.reply_transport import NoopReplier, Replier
+from tests.teatree_core._on_behalf_gate_helpers import disable_on_behalf_gate
+
+pytestmark = pytest.mark.usefixtures("_gate_off")
+
+
+@pytest.fixture(autouse=True)
+def _gate_off(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> None:
+    # These tests exercise transport mechanics (idempotency, status
+    # recording), not the on-behalf gate, which has its own dedicated
+    # suite. The gate defaults ON globally (#960), so disable it here so
+    # the mechanics assertions still hold.
+    disable_on_behalf_gate(tmp_path_factory, monkeypatch)
 
 
 class TestReplyDispatch(TestCase):

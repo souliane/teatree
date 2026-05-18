@@ -5,6 +5,7 @@ from django.test import TestCase, override_settings
 import teatree.core.overlay_loader as overlay_loader_mod
 import teatree.core.signals as signals_mod
 from teatree.core.models import PullRequest, Session, Task, Ticket
+from tests.teatree_core._on_behalf_gate_helpers import on_behalf_gate_off
 from tests.teatree_core.conftest import CommandOverlay
 
 IMMEDIATE_BACKEND = {
@@ -137,7 +138,12 @@ class TestAutoEnqueueHeadlessSignal(TestCase):
 
 
 class TestSlackReactionsOnTransition(TestCase):
-    """post_transition signal triggers Slack reactions via the overlay config."""
+    """post_transition signal triggers Slack reactions via the overlay config.
+
+    These tests exercise the reaction-mechanics path; the on-behalf gate
+    has its own dedicated suite (:class:`TestTransitionReactionGated`),
+    so the gate is disabled inside each test.
+    """
 
     def _ticket_with_mr(self) -> Ticket:
         return Ticket.objects.create(
@@ -160,7 +166,7 @@ class TestSlackReactionsOnTransition(TestCase):
             called.append((t, name))
             return 1
 
-        with patch.object(signals_mod, "add_reactions_for_transition", _fake):
+        with on_behalf_gate_off(), patch.object(signals_mod, "add_reactions_for_transition", _fake):
             ticket.mark_merged()
             ticket.save()
 
@@ -174,7 +180,7 @@ class TestSlackReactionsOnTransition(TestCase):
             msg = "slack down"
             raise RuntimeError(msg)
 
-        with patch.object(signals_mod, "add_reactions_for_transition", _boom):
+        with on_behalf_gate_off(), patch.object(signals_mod, "add_reactions_for_transition", _boom):
             ticket.mark_merged()
             ticket.save()
 
@@ -189,7 +195,7 @@ class TestSlackReactionsOnTransition(TestCase):
             names.append(name)
             return 0
 
-        with patch.object(signals_mod, "add_reactions_for_transition", _record):
+        with on_behalf_gate_off(), patch.object(signals_mod, "add_reactions_for_transition", _record):
             ticket.rework()
             ticket.save()
 
@@ -199,8 +205,10 @@ class TestSlackReactionsOnTransition(TestCase):
 class TestApprovalReactionOnTransition(TestCase):
     """PullRequest.approve() posts a ✅ on the requester's review message (#961).
 
-    The reaction is itself a post-on-behalf, so it is suppressed when the
-    ``ask_before_post_on_behalf`` pre-gate (#960) is on (its default).
+    The reaction is itself a post-on-behalf and routes through the same
+    recorded-approval gate every other on-behalf post uses — it is
+    satisfiable (the user records an :class:`OnBehalfApproval` scoped to
+    the PR url + ``approval_reaction``), never pure suppression.
     """
 
     def _pr(self, slack_url: str = "https://team.slack.com/archives/C9/p1700000000000100") -> PullRequest:
@@ -225,17 +233,14 @@ class TestApprovalReactionOnTransition(TestCase):
             calls.append((pull_request,))
             return 1
 
-        with (
-            patch.object(signals_mod, "ask_before_post_on_behalf_enabled", return_value=False),
-            patch.object(signals_mod, "add_approval_reaction", _fake),
-        ):
+        with on_behalf_gate_off(), patch.object(signals_mod, "add_approval_reaction", _fake):
             pr.approve()
             pr.save()
 
         assert len(calls) == 1
         assert calls[0][0] == pr
 
-    def test_approve_is_suppressed_when_gate_on(self) -> None:
+    def test_approve_skipped_when_gate_on_no_approval(self) -> None:
         pr = self._pr()
         calls: list[object] = []
 
@@ -243,16 +248,40 @@ class TestApprovalReactionOnTransition(TestCase):
             calls.append(pull_request)
             return 1
 
-        with (
-            patch.object(signals_mod, "ask_before_post_on_behalf_enabled", return_value=True),
-            patch.object(signals_mod, "add_approval_reaction", _fake),
-        ):
+        # Gate ON (default) — no recorded approval → reaction is skipped
+        # (NOT pure suppression: a recorded approval would let it
+        # publish, exercised by the next test).
+        with patch.object(signals_mod, "add_approval_reaction", _fake):
             pr.approve()
             pr.save()
 
         pr.refresh_from_db()
         assert pr.state == PullRequest.State.APPROVED
         assert calls == []
+
+    def test_approve_posts_with_recorded_approval_when_gate_on(self) -> None:
+        """Satisfiable: a recorded :class:`OnBehalfApproval` lets the reaction publish.
+
+        Proves the gate is NOT pure suppression — the same gate-ON state
+        that blocks the unapproved post lets the approved one through.
+        """
+        from teatree.core.models import OnBehalfApproval  # noqa: PLC0415
+
+        pr = self._pr()
+        OnBehalfApproval.record(target=pr.url, action="approval_reaction", approver_id="souliane")
+
+        calls: list[object] = []
+
+        def _fake(pull_request: object) -> int:
+            calls.append(pull_request)
+            return 1
+
+        # Gate ON by default — but the recorded approval satisfies it.
+        with patch.object(signals_mod, "add_approval_reaction", _fake):
+            pr.approve()
+            pr.save()
+
+        assert calls == [pr]
 
     def test_approve_survives_reaction_failure(self) -> None:
         pr = self._pr()
@@ -261,10 +290,7 @@ class TestApprovalReactionOnTransition(TestCase):
             msg = "slack down"
             raise RuntimeError(msg)
 
-        with (
-            patch.object(signals_mod, "ask_before_post_on_behalf_enabled", return_value=False),
-            patch.object(signals_mod, "add_approval_reaction", _boom),
-        ):
+        with on_behalf_gate_off(), patch.object(signals_mod, "add_approval_reaction", _boom):
             pr.approve()
             pr.save()
 
@@ -276,7 +302,7 @@ class TestApprovalReactionOnTransition(TestCase):
         calls: list[object] = []
 
         with (
-            patch.object(signals_mod, "ask_before_post_on_behalf_enabled", return_value=False),
+            on_behalf_gate_off(),
             patch.object(signals_mod, "add_approval_reaction", lambda p: calls.append(p) or 0),
         ):
             pr.mark_merged()
@@ -315,8 +341,71 @@ class TestApprovalReactionOnTransition(TestCase):
     def test_ticket_without_mrs_is_noop(self) -> None:
         """The real handler is a silent no-op when the ticket has no MRs."""
         ticket = Ticket.objects.create(overlay="test", state=Ticket.State.IN_REVIEW, extra={})
-        # No patching — the real code path must not raise.
-        ticket.mark_merged()
-        ticket.save()
+        # No patching — the real code path must not raise (even with the
+        # gate on, the transition itself must always succeed).
+        with on_behalf_gate_off():
+            ticket.mark_merged()
+            ticket.save()
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.MERGED
+
+
+class TestTransitionReactionGated(TestCase):
+    """Ticket-transition Slack reactions are recorded-approval gated (#960).
+
+    The reactions post emoji on the review-request Slack messages the
+    user posted to colleagues earlier — a colleague-facing surface — so
+    they route through the same recorded-approval gate every other
+    on-behalf post uses (NOT pure suppression). The FSM transition
+    itself is never blocked.
+    """
+
+    def _ticket(self) -> Ticket:
+        return Ticket.objects.create(
+            overlay="test",
+            state=Ticket.State.IN_REVIEW,
+            extra={"mrs": {"https://x/1": {"review_permalink": "https://t.slack.com/archives/C1/p1700000000000100"}}},
+        )
+
+    def test_transition_reaction_blocked_when_gate_on_no_approval(self) -> None:
+        ticket = self._ticket()
+        calls: list[tuple[object, str]] = []
+
+        def _fake(t: object, name: str) -> int:
+            calls.append((t, name))
+            return 1
+
+        # Gate ON by default — no recorded approval → reaction is skipped.
+        with patch.object(signals_mod, "add_reactions_for_transition", _fake):
+            ticket.mark_merged()
+            ticket.save()
+
+        ticket.refresh_from_db()
+        # The FSM transition itself must NEVER be blocked.
+        assert ticket.state == Ticket.State.MERGED
+        assert calls == []
+
+    def test_transition_reaction_proceeds_with_recorded_approval(self) -> None:
+        """Satisfiable: a recorded approval lets the reaction publish even with the gate ON."""
+        from teatree.core.models import OnBehalfApproval  # noqa: PLC0415
+
+        ticket = self._ticket()
+        OnBehalfApproval.record(
+            target=f"ticket:{ticket.pk}",
+            action="transition_reaction:mark_merged",
+            approver_id="souliane",
+        )
+
+        calls: list[tuple[object, str]] = []
+
+        def _fake(t: object, name: str) -> int:
+            calls.append((t, name))
+            return 1
+
+        # Gate ON by default — recorded approval satisfies it.
+        with patch.object(signals_mod, "add_reactions_for_transition", _fake):
+            ticket.mark_merged()
+            ticket.save()
+
+        assert len(calls) == 1
+        assert calls[0][1] == "mark_merged"

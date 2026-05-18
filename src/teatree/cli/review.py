@@ -1,4 +1,20 @@
-"""Review CLI commands — GitLab draft note operations."""
+"""Review CLI commands — GitLab draft note operations.
+
+Every method that publishes under the user's identity to an MR (a
+``post_*`` / ``reply_*`` / ``resolve_*`` / ``publish_*`` / ``update_*``
+call) routes through the same recorded-approval pre-gate
+(``ask_before_post_on_behalf``, #960) the reply transport uses. Read-
+only methods (``list_draft_notes``, ``delete_draft_note``) bypass the
+gate: ``list`` does not publish; deleting one's own draft *pre*-
+publication is not a colleague-facing post.
+
+The gate is satisfiable without a TTY — the user records an
+:class:`~teatree.core.models.on_behalf_approval.OnBehalfApproval` scoped
+to ``(<repo>!<mr>, <method_name>)`` and the next invocation publishes
+and consumes the row. Gate ON + no approval returns the actionable
+``approve-on-behalf`` invocation as the error message; gate OFF behaves
+exactly as before.
+"""
 
 import re
 from http import HTTPStatus
@@ -6,6 +22,8 @@ from typing import TypedDict
 
 import typer
 
+from teatree.cli.review_on_behalf import check_on_behalf
+from teatree.cli.review_on_behalf import register as _register_on_behalf
 from teatree.utils.run import run_allowed_to_fail
 
 
@@ -57,7 +75,13 @@ def _find_added_line(diff_text: str, target_line: int) -> tuple[bool, list[int]]
 
 
 class ReviewService:
-    """GitLab draft note operations for code review."""
+    """GitLab draft note operations for code review.
+
+    Every method that publishes to an MR (post comment, post draft note,
+    publish drafts, reply, resolve, update note) is wrapped by the
+    recorded-approval on-behalf pre-gate. See module docstring for the
+    full contract.
+    """
 
     def __init__(self, token: str) -> None:
         self.token = token
@@ -170,15 +194,8 @@ class ReviewService:
         }
         return position, ""
 
-    def post_draft_note(self, repo: str, mr: int, note: str, *, file: str = "", line: int = 0) -> tuple[str, int]:
-        """Post a draft note. Returns (message, exit_code).
-
-        For inline notes (file+line), validates that the target line is an added
-        (``+``) line in the MR diff, then verifies after posting that GitLab
-        actually anchored the draft (``line_code`` non-null). Broken drafts
-        (anchor refused, usually because the file diff is collapsed) are
-        deleted and surfaced as an error so they cannot be published silently.
-        """
+    def _post_draft_note_impl(self, repo: str, mr: int, note: str, *, file: str, line: int) -> tuple[str, int]:
+        """The pre-gate-passed body of :meth:`post_draft_note` (see docstring)."""
         api = self._get_api()
         encoded = repo.replace("/", "%2F")
         endpoint = f"projects/{encoded}/merge_requests/{mr}/draft_notes"
@@ -212,21 +229,34 @@ class ReviewService:
             "(creates an immediate non-draft inline discussion)."
         ), 1
 
-    def post_comment(
+    def post_draft_note(self, repo: str, mr: int, note: str, *, file: str = "", line: int = 0) -> tuple[str, int]:
+        """Post a draft note. Returns (message, exit_code).
+
+        For inline notes (file+line), validates that the target line is an added
+        (``+``) line in the MR diff, then verifies after posting that GitLab
+        actually anchored the draft (``line_code`` non-null). Broken drafts
+        (anchor refused, usually because the file diff is collapsed) are
+        deleted and surfaced as an error so they cannot be published silently.
+
+        Gated by ``ask_before_post_on_behalf`` (#960): the call is refused
+        without any GitLab side effect when the gate is on and no recorded
+        :class:`OnBehalfApproval` matches ``(<repo>!<mr>, "post_draft_note")``.
+        """
+        blocked = check_on_behalf(repo, mr, "post_draft_note")
+        if blocked:
+            return blocked, 1
+        return self._post_draft_note_impl(repo, mr, note, file=file, line=line)
+
+    def _post_comment_impl(
         self,
         repo: str,
         mr: int,
         note: str,
         *,
-        file: str = "",
-        line: int = 0,
+        file: str,
+        line: int,
     ) -> tuple[str, int]:
-        """Post an immediate (non-draft) MR comment via ``/discussions``.
-
-        Use when ``post_draft_note`` fails because the file diff is collapsed
-        — the discussions endpoint anchors inline notes even on large files,
-        but the comment posts immediately instead of batching with a review.
-        """
+        """The pre-gate-passed body of :meth:`post_comment` (see docstring)."""
         api = self._get_api()
         encoded = repo.replace("/", "%2F")
 
@@ -255,6 +285,30 @@ class ReviewService:
             return f"Comment posted but not anchored inline (type={note_type!r}). discussion_id={discussion_id}", 1
         return f"OK discussion_id={discussion_id} (inline DiffNote)", 0
 
+    def post_comment(
+        self,
+        repo: str,
+        mr: int,
+        note: str,
+        *,
+        file: str = "",
+        line: int = 0,
+    ) -> tuple[str, int]:
+        """Post an immediate (non-draft) MR comment via ``/discussions``.
+
+        Use when ``post_draft_note`` fails because the file diff is collapsed
+        — the discussions endpoint anchors inline notes even on large files,
+        but the comment posts immediately instead of batching with a review.
+
+        Gated by ``ask_before_post_on_behalf`` (#960): the call is refused
+        without any GitLab side effect when the gate is on and no recorded
+        :class:`OnBehalfApproval` matches ``(<repo>!<mr>, "post_comment")``.
+        """
+        blocked = check_on_behalf(repo, mr, "post_comment")
+        if blocked:
+            return blocked, 1
+        return self._post_comment_impl(repo, mr, note, file=file, line=line)
+
     def delete_draft_note(self, repo: str, mr: int, note_id: int) -> tuple[str, int]:
         """Delete a draft note. Returns (message, exit_code)."""
         api = self._get_api()
@@ -265,6 +319,16 @@ class ReviewService:
         return f"Failed: HTTP {status}", 1
 
     def publish_draft_notes(self, repo: str, mr: int) -> tuple[str, int]:
+        """Bulk-publish every draft note on an MR.
+
+        Gated by ``ask_before_post_on_behalf`` (#960): the bulk publish is
+        the moment drafts become visible to colleagues, so it routes
+        through the same recorded-approval gate every other on-behalf
+        post uses.
+        """
+        blocked = check_on_behalf(repo, mr, "publish_draft_notes")
+        if blocked:
+            return blocked, 1
         api = self._get_api()
         encoded = repo.replace("/", "%2F")
         status = api.post_status(f"projects/{encoded}/merge_requests/{mr}/draft_notes/bulk_publish")
@@ -273,7 +337,15 @@ class ReviewService:
         return f"Failed: HTTP {status}", 1
 
     def reply_to_discussion(self, repo: str, mr: int, discussion_id: str, body: str) -> tuple[str, int]:
-        """Reply to an existing discussion thread on an MR. Returns (message, exit_code)."""
+        """Reply to an existing discussion thread on an MR. Returns (message, exit_code).
+
+        Gated by ``ask_before_post_on_behalf`` (#960): the reply is refused
+        without any GitLab side effect when the gate is on and no recorded
+        :class:`OnBehalfApproval` matches ``(<repo>!<mr>, "reply_to_discussion")``.
+        """
+        blocked = check_on_behalf(repo, mr, "reply_to_discussion")
+        if blocked:
+            return blocked, 1
         api = self._get_api()
         encoded = repo.replace("/", "%2F")
         result = api.post_json(
@@ -286,7 +358,15 @@ class ReviewService:
         return f"OK reply_note_id={note_id}", 0
 
     def resolve_discussion(self, repo: str, mr: int, discussion_id: str, *, resolved: bool = True) -> tuple[str, int]:
-        """Mark a discussion thread resolved or unresolved. Returns (message, exit_code)."""
+        """Mark a discussion thread resolved or unresolved. Returns (message, exit_code).
+
+        Gated by ``ask_before_post_on_behalf`` (#960): a resolve flip is
+        visible to colleagues (it closes the discussion under the user's
+        identity), so it routes through the same recorded-approval gate.
+        """
+        blocked = check_on_behalf(repo, mr, "resolve_discussion")
+        if blocked:
+            return blocked, 1
         api = self._get_api()
         encoded = repo.replace("/", "%2F")
         flag = "true" if resolved else "false"
@@ -299,7 +379,15 @@ class ReviewService:
         """Update a note (draft or published) on an MR.
 
         Tries draft-notes first; falls back to published-notes on 404.
+
+        Gated by ``ask_before_post_on_behalf`` (#960): an update to a
+        *published* note is a colleague-visible edit; the gate covers
+        both fallback paths uniformly so a published-note edit cannot
+        slip through while a comment-create would be blocked.
         """
+        blocked = check_on_behalf(repo, mr, "update_note")
+        if blocked:
+            return blocked, 1
         api = self._get_api()
         encoded = repo.replace("/", "%2F")
 
@@ -470,3 +558,9 @@ def resolve_discussion(
     typer.echo(msg)
     if code:
         raise typer.Exit(code=code)
+
+
+# Register the `approve-on-behalf` command (defined in a sibling module
+# to keep this file under the OOP/LOC ceiling — see
+# `teatree.cli.review_on_behalf`).
+_register_on_behalf(review_app)
