@@ -14,7 +14,7 @@ from django.test import TestCase
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay_loader import reset_overlay_cache
 from teatree.core.runners import ShipExecutor
-from teatree.core.runners.ship import overlay_pr_labels, sanitize_close_keywords
+from teatree.core.runners.ship import overlay_pr_labels, sanitize_close_keywords, should_close_ticket
 from tests.teatree_core.conftest import CommandOverlay
 
 
@@ -328,6 +328,102 @@ class TestSanitizeCloseKeywords:
 
     def test_leaves_description_unchanged_when_close_ticket_true(self) -> None:
         assert sanitize_close_keywords("Closes #123", close_ticket=True) == "Closes #123"
+
+
+class TestShouldCloseTicket:
+    """The auto-close disposition resolver (#873).
+
+    Default = close-on-merge when the overlay setting is enabled.
+    Suppression is the exception: only an explicit ``more_prs_coming``
+    opt-out (declared partial / umbrella with remaining scope) keeps the
+    issue open.
+    """
+
+    def test_setting_enabled_standalone_full_resolve_closes(self) -> None:
+        # (a) setting True + standalone non-umbrella full-resolve PR ⇒ close.
+        assert should_close_ticket({}, setting_enabled=True) is True
+
+    def test_setting_enabled_none_extra_closes(self) -> None:
+        # Orphan-branch path with no ticket extra still close-on-merge.
+        assert should_close_ticket(None, setting_enabled=True) is True
+
+    def test_setting_enabled_explicit_followup_opt_out_keeps_open(self) -> None:
+        # (b) umbrella / declared-partial PR ⇒ issue stays open.
+        assert should_close_ticket({"more_prs_coming": True}, setting_enabled=True) is False
+
+    def test_setting_disabled_never_closes(self) -> None:
+        # (c) setting False ⇒ no auto-close regardless of opt-out flag.
+        assert should_close_ticket({}, setting_enabled=False) is False
+        assert should_close_ticket({"more_prs_coming": True}, setting_enabled=False) is False
+
+    def test_followup_flag_falsey_value_still_closes(self) -> None:
+        # An explicitly-false / absent opt-out keeps the close-on-merge default.
+        assert should_close_ticket({"more_prs_coming": False}, setting_enabled=True) is True
+
+
+class TestShipExecutorHonorsAutoCloseSetting(TestCase):
+    """End-to-end: the PR description the ship path sends to the code host.
+
+    Proves the setting is wired through ``_build_pr_spec`` — the exact
+    regression: a True setting + standalone PR must keep ``Closes #N`` so
+    the platform auto-closes on merge; an explicit ``more_prs_coming``
+    opt-out (umbrella/partial) must rewrite to ``Relates to``.
+    """
+
+    def _ticket_with_extra(self, extra: dict) -> Ticket:
+        ticket = Ticket.objects.create(
+            overlay="test",
+            issue_url="https://github.com/souliane/teatree/issues/873",
+            extra=extra,
+        )
+        Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path="/tmp/repo873",
+            branch="fix/873",
+            extra={"worktree_path": "/tmp/repo873"},
+        )
+        return ticket
+
+    def _capture_pr_description(self, ticket: Ticket, *, setting_enabled: bool) -> str:
+        host = MagicMock()
+        host.create_pr.return_value = {"html_url": "https://github.com/souliane/teatree/pull/1"}
+        host.current_user.return_value = "souliane"
+        cfg = MagicMock()
+        cfg.config.mr_close_ticket = setting_enabled
+        cfg.config.pr_auto_labels = []
+        with (
+            patch("teatree.core.runners.ship.code_host_from_overlay", return_value=host),
+            patch("teatree.core.runners.ship.get_overlay", return_value=cfg),
+            patch("teatree.core.runners.ship.overlay_pr_labels", return_value=[]),
+            patch("teatree.core.runners.ship.git.branch_merged", return_value=False),
+            patch("teatree.core.runners.ship.git.push"),
+            patch(
+                "teatree.core.runners.ship.git.last_commit_message",
+                return_value=("fix(ship): honor auto-close", "Closes #873"),
+            ),
+            patch("teatree.core.runners.ship.git.config_value", return_value="souliane"),
+        ):
+            ShipExecutor(ticket).run()
+        return host.create_pr.call_args[0][0].description
+
+    def test_setting_true_standalone_keeps_closes_keyword(self) -> None:
+        ticket = self._ticket_with_extra({})
+        description = self._capture_pr_description(ticket, setting_enabled=True)
+        assert "Closes #873" in description
+        assert "Relates to #873" not in description
+
+    def test_setting_true_umbrella_partial_rewrites_to_relates(self) -> None:
+        ticket = self._ticket_with_extra({"more_prs_coming": True})
+        description = self._capture_pr_description(ticket, setting_enabled=True)
+        assert "Relates to #873" in description
+        assert "Closes #873" not in description
+
+    def test_setting_false_rewrites_to_relates(self) -> None:
+        ticket = self._ticket_with_extra({})
+        description = self._capture_pr_description(ticket, setting_enabled=False)
+        assert "Relates to #873" in description
+        assert "Closes #873" not in description
 
 
 class TestOverlayPrLabels:
