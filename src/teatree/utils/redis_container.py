@@ -47,30 +47,71 @@ def status() -> str:
     return result.stdout.strip() or "missing"
 
 
+def _host_port_published() -> bool:
+    """True when ``teatree-redis`` publishes 6379 to the host.
+
+    A container created (by an older teatree, or any non-publishing path)
+    without ``-p 6379:6379`` answers ``docker port`` with no mapping. Such a
+    container is "running" but every worktree's web service reaches Redis via
+    ``host.docker.internal:6379`` — unpublished, that connection is refused
+    and every request that touches the cache/broker 500s (Error 111).
+    """
+    result = _docker_tolerant("port", CONTAINER_NAME, "6379")
+    if result.returncode != 0:
+        return False
+    return bool(result.stdout.strip())
+
+
+def _create(db_count: int) -> None:
+    logger.info("Creating %s container on :%d", CONTAINER_NAME, HOST_PORT)
+    _docker_checked(
+        "run",
+        "-d",
+        "--name",
+        CONTAINER_NAME,
+        "-p",
+        f"{HOST_PORT}:6379",
+        "--restart",
+        "unless-stopped",
+        IMAGE,
+        "redis-server",
+        "--databases",
+        str(db_count),
+    )
+
+
+def _recreate_with_port_publish(db_count: int) -> None:
+    logger.info(
+        "%s lacks the :%d host publish — recreating to reconcile the port mapping",
+        CONTAINER_NAME,
+        HOST_PORT,
+    )
+    _docker_tolerant("stop", CONTAINER_NAME)
+    _docker_tolerant("rm", CONTAINER_NAME)
+    _create(db_count)
+
+
 def ensure_running(db_count: int = DEFAULT_DB_COUNT) -> None:
-    """Start the shared Redis container if not already running."""
+    """Start the shared Redis container, self-healing the host port publish.
+
+    Idempotent: a *running* container that lacks the ``-p 6379:6379`` publish
+    is reconciled (recreated), not left as-is. Without this, a container
+    created by an older code path stays "running" forever while every
+    worktree's ``host.docker.internal:6379`` is unreachable and every
+    cache/broker-touching request 500s.
+    """
     current = status()
     if current == "running":
+        if not _host_port_published():
+            _recreate_with_port_publish(db_count)
         return
     if current == "missing":
-        logger.info("Creating %s container on :%d", CONTAINER_NAME, HOST_PORT)
-        _docker_checked(
-            "run",
-            "-d",
-            "--name",
-            CONTAINER_NAME,
-            "-p",
-            f"{HOST_PORT}:6379",
-            "--restart",
-            "unless-stopped",
-            IMAGE,
-            "redis-server",
-            "--databases",
-            str(db_count),
-        )
+        _create(db_count)
         return
     logger.info("Starting existing %s container (status=%s)", CONTAINER_NAME, current)
     _docker_checked("start", CONTAINER_NAME)
+    if not _host_port_published():
+        _recreate_with_port_publish(db_count)
 
 
 def stop() -> None:
