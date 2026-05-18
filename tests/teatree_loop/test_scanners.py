@@ -377,6 +377,138 @@ class TestReviewerPrsScanner(TestCase):
         assert ticket.extra["reviewed_sha"] == "abc"
         assert ticket.extra["last_review_state"] == ReviewState.APPROVED.value
 
+    def test_orphaned_pending_task_for_merged_mr_emits_orphaned_signal(self) -> None:
+        """A PENDING reviewing task whose MR was merged externally is reaped (#998).
+
+        Scenario: scanner sees MR X (open) on tick #1 → persistence creates
+        Ticket(role=reviewer) + Task(phase=reviewing, status=PENDING). Before
+        the slot processes the task, the MR is merged externally. On tick #2
+        the API (state=opened) no longer returns the MR. Pre-fix, the PENDING
+        task lingers forever and ``pending-spawn`` keeps surfacing it,
+        dispatching a reviewer sub-agent every tick for nothing.
+
+        Post-fix: the scanner emits ``reviewer_pr.task_orphaned`` for every
+        reviewer-role ticket with a non-terminal reviewing Task whose URL is
+        absent from the current open-MR scan. A mechanical handler completes
+        the task so ``pending-spawn`` stops returning it.
+        """
+        from teatree.core.models import Session, Task  # noqa: PLC0415
+
+        url = "https://gitlab/x/-/merge_requests/373"
+        ticket = Ticket.objects.create(
+            role=Ticket.Role.REVIEWER,
+            issue_url=url,
+            overlay="acme",
+            extra={"reviewed_sha": "abc"},
+        )
+        session = Session.objects.create(ticket=ticket, agent_id="external-review")
+        Task.objects.create(
+            ticket=ticket,
+            session=session,
+            phase="reviewing",
+            execution_target=Task.ExecutionTarget.HEADLESS,
+            execution_reason="Review needed",
+        )
+
+        # API no longer returns the MR — it was merged externally.
+        host = FakeCodeHost(user="alice", review_requested_prs=[])
+        scanner = ReviewerPrsScanner(host=host)
+        signals = scanner.scan()
+
+        assert [s.kind for s in signals] == ["reviewer_pr.task_orphaned"]
+        assert signals[0].payload["url"] == url
+        assert signals[0].payload["ticket_id"] == ticket.pk
+
+    def test_orphaned_signal_not_emitted_when_mr_still_in_scan(self) -> None:
+        """If the MR is still in the API response, no orphaning happens (#998)."""
+        from teatree.core.models import Session, Task  # noqa: PLC0415
+
+        url = "https://gitlab/x/-/merge_requests/374"
+        ticket = Ticket.objects.create(
+            role=Ticket.Role.REVIEWER,
+            issue_url=url,
+            overlay="acme",
+            extra={"reviewed_sha": "abc"},
+        )
+        session = Session.objects.create(ticket=ticket, agent_id="external-review")
+        Task.objects.create(
+            ticket=ticket,
+            session=session,
+            phase="reviewing",
+            execution_target=Task.ExecutionTarget.HEADLESS,
+            execution_reason="Review needed",
+        )
+
+        # API still returns the MR with the same SHA → no orphan.
+        host = FakeCodeHost(
+            user="alice",
+            review_requested_prs=[{"web_url": url, "sha": "abc"}],
+        )
+        scanner = ReviewerPrsScanner(host=host)
+        signals = scanner.scan()
+
+        # No orphan signal — the task is for a still-open MR.
+        assert "reviewer_pr.task_orphaned" not in [s.kind for s in signals]
+
+    def test_orphaned_signal_not_emitted_for_completed_task(self) -> None:
+        """A COMPLETED reviewing task is not re-orphaned (#998)."""
+        from teatree.core.models import Session, Task  # noqa: PLC0415
+
+        url = "https://gitlab/x/-/merge_requests/375"
+        ticket = Ticket.objects.create(
+            role=Ticket.Role.REVIEWER,
+            issue_url=url,
+            overlay="acme",
+            extra={"reviewed_sha": "abc", "last_review_state": ReviewState.APPROVED.value},
+        )
+        session = Session.objects.create(ticket=ticket, agent_id="external-review")
+        Task.objects.create(
+            ticket=ticket,
+            session=session,
+            phase="reviewing",
+            execution_target=Task.ExecutionTarget.HEADLESS,
+            execution_reason="Review needed",
+            status=Task.Status.COMPLETED,
+        )
+
+        host = FakeCodeHost(user="alice", review_requested_prs=[])
+        scanner = ReviewerPrsScanner(host=host)
+        signals = scanner.scan()
+
+        # No orphan signal — the task is already terminal.
+        assert "reviewer_pr.task_orphaned" not in [s.kind for s in signals]
+
+    def test_orphaned_signal_skipped_when_no_reviewer_resolvable(self) -> None:
+        """No active reviewer identity → no scan, no orphan detection (#998).
+
+        When ``current_user()`` returns empty and no explicit identities are
+        configured, the scanner cannot tell whether the missing MR is
+        genuinely closed/merged or simply unqueryable. Fail open: don't reap.
+        """
+        from teatree.core.models import Session, Task  # noqa: PLC0415
+
+        url = "https://gitlab/x/-/merge_requests/376"
+        ticket = Ticket.objects.create(
+            role=Ticket.Role.REVIEWER,
+            issue_url=url,
+            overlay="acme",
+            extra={"reviewed_sha": "abc"},
+        )
+        session = Session.objects.create(ticket=ticket, agent_id="external-review")
+        Task.objects.create(
+            ticket=ticket,
+            session=session,
+            phase="reviewing",
+            execution_target=Task.ExecutionTarget.HEADLESS,
+            execution_reason="Review needed",
+        )
+
+        host = FakeCodeHost(user="")  # no resolvable identity
+        scanner = ReviewerPrsScanner(host=host)
+        signals = scanner.scan()
+
+        assert signals == []
+
     def test_legacy_json_cache_is_imported_then_deleted(self) -> None:
         """First scan migrates the legacy JSON file into reviewer tickets, then unlinks it."""
         import shutil  # noqa: PLC0415
