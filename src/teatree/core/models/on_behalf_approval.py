@@ -116,7 +116,7 @@ class OnBehalfApproval(models.Model):
         return self.target == target.strip() and self.action == action.strip()
 
     @classmethod
-    def consume(cls, target: str, action: str) -> "OnBehalfApproval | None":
+    def consume(cls, target: str, action: str, *, using: str | None = None) -> "OnBehalfApproval | None":
         """Atomically claim and consume the matching unconsumed approval, if any.
 
         Returns the consumed row (so the caller can write the audit) or
@@ -125,12 +125,20 @@ class OnBehalfApproval(models.Model):
         user instead of publishing. The ``consumed_at`` stamp +
         ``select_for_update`` make the claim single-use even under a
         concurrent second post on the same target+action.
+
+        ``using`` selects an alternate Django database alias for the read,
+        the locked re-read and the consume write — used by the concurrent
+        regression test (``test_on_behalf_approval_concurrent.py``) to point
+        consume at a file-backed SQLite registered with prod's
+        ``transaction_mode=IMMEDIATE`` ``OPTIONS``. Production callers pass
+        no ``using`` and run against the default connection.
         """
         clean_target = target.strip()
         clean_action = action.strip()
-        with transaction.atomic():
+        manager = cls.objects.using(using) if using else cls.objects
+        with transaction.atomic(using=using):
             row = (
-                cls.objects.select_for_update()
+                manager.select_for_update()
                 .filter(target=clean_target, action=clean_action, consumed_at__isnull=True)
                 .order_by("created_at")
                 .first()
@@ -138,7 +146,7 @@ class OnBehalfApproval(models.Model):
             if row is None:
                 return None
             row.consumed_at = timezone.now()
-            row.save(update_fields=["consumed_at"])
+            row.save(update_fields=["consumed_at"], using=using)
             return row
 
 
