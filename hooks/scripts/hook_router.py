@@ -567,8 +567,16 @@ _GIT_COMMIT_M_RE = re.compile(r"git\s+commit\b[^\n]*?-m\s+(['\"])(.*?)\1", re.DO
 # ``glab mr create --description FILE``. The captured token is a path
 # (optionally quoted); a missing/binary file fails open (no scan, no
 # crash) — see ``_read_message_file``.
+#
+# Long flags require a space or ``=`` separator (``--body-file FILE`` /
+# ``--body-file=FILE``). Short flags additionally accept the GLUED form
+# git's getopt permits — ``git commit -F<path>`` / ``-C<path>`` with no
+# separator at all (the residual #862 cold-review found: a glued short
+# flag carrying a banned trailer slipped past the space/``=``-only
+# matcher). ``[ =]*`` on the short-flag branch covers glued, space, and
+# ``=`` uniformly.
 _MSG_FILE_FLAG_RE = re.compile(
-    r"(?:--body-file|--file|--description|-F|-C)[ =]+['\"]?([^'\"\s]+)['\"]?",
+    r"(?:(?:--body-file|--file|--description)[ =]+|-[FC][ =]*)['\"]?([^'\"\s]+)['\"]?",
 )
 _PR_CREATE_TOOLS = {
     "mcp__glab__glab_mr_create",
@@ -688,6 +696,158 @@ def handle_block_ai_signature(data: dict) -> bool:
         )
         return True
     return False
+
+
+# ── PreToolUse: orchestrator-execution-boundary (#836 §17.6 gate 2) ──
+#
+# The orchestrator (the MAIN agent) is delegate-only: it dispatches
+# sub-agents and makes merge/clear decisions; it must NOT itself perform
+# investigative or implementation work (Edit/Write/NotebookEdit, a
+# mutating Bash command, or an investigative Grep/Glob/Read sweep). That
+# work is what sub-agents are for. The recurring failure this gate
+# extinguishes: the coordinator "just quickly" edits a file or greps the
+# codebase instead of dispatching, which is exactly the conflation §17.4
+# / §17.8 forbid.
+#
+# Main-vs-sub-agent signal. Claude Code logs every sub-agent (Agent
+# tool) turn into the transcript JSONL with ``isSidechain: true``; the
+# main agent's turns carry ``isSidechain: false`` (or omit the key). The
+# entry that issued the tool call being gated is the most recent
+# transcript entry. So: walk the transcript newest→oldest, and the first
+# entry that carries an explicit ``isSidechain`` boolean tells us which
+# agent is acting. ``True`` ⇒ sub-agent ⇒ allow (sub-agents implement).
+# Anything else (no transcript, no entry with the key) ⇒ treat as the
+# main agent. Limitation (documented in the PR): the harness does not put
+# an agent-kind field directly on the PreToolUse payload, so this reads
+# the transcript sidechain marker — the cleanest reliable signal
+# available. If the transcript is unavailable the gate fails OPEN (does
+# not block) to avoid wedging a legitimate main-agent session on a
+# missing/locked transcript; the trade-off is a missed flag, never a
+# false block.
+
+# Pure-orchestration tools — always allowed for the main agent.
+_ORCHESTRATION_TOOLS = {
+    "Task",
+    "TaskCreate",
+    "TaskGet",
+    "TaskList",
+    "TaskUpdate",
+    "Agent",
+    "SendMessage",
+    "AskUserQuestion",
+}
+# Tool names that are investigative/implementation when the MAIN agent
+# runs them directly. Bash is judged separately (read-only vs mutating).
+_NON_ORCHESTRATION_TOOLS = {
+    "Edit",
+    "Write",
+    "NotebookEdit",
+    "MultiEdit",
+    "Read",
+    "Grep",
+    "Glob",
+}
+# A Bash command the orchestrator MAY run: read-only inspection and the
+# sanctioned t3 orchestration verbs (ticket clear/merge, ticket-state
+# reads, gh/glab *view*/*checks*/*list*). Everything else is treated as
+# mutating/investigative for the main agent.
+_ORCHESTRATOR_BASH_RE = re.compile(
+    r"^\s*(?:"
+    r"t3\s|"
+    r"gh\s+\w+\s+(?:view|list|checks|status)\b|"
+    r"glab\s+\w+\s+(?:view|list|show)\b|"
+    r"git\s+(?:status|log|show|diff|branch|remote)\b|"
+    r"(?:echo|printf|cat|grep|rg|awk|sed|head|tail|less|wc|file|ls|pwd|which|env)\b"
+    r")",
+)
+# Even a read-only-prefixed command is mutating if it edits in place or
+# redirects into a file (``sed -i``, ``awk … > out``) or chains a
+# destructive command. These markers disqualify it from the orchestrator
+# read-only allow-list. Pipes/``;``/``&&`` are intentionally NOT markers
+# (``gh pr view … | jq`` is read-only) — only genuine mutation is
+# disqualifying, so a read-only inspection chain is not false-flagged.
+_BASH_MUTATION_MARKERS_RE = re.compile(
+    r"(?:(?<![0-9&])>>?(?!&)|\s-i\b|\s--in-place\b|\b(?:rm|mv|cp|touch|mkdir|tee|install)\s)",
+)
+
+
+def _active_turn_is_sidechain(transcript_path: str) -> bool | None:
+    """Whether the turn issuing this tool call is a sub-agent (sidechain).
+
+    Returns ``True`` for a sub-agent turn, ``False`` for the main agent,
+    and ``None`` when the transcript is missing/empty or carries no
+    entry with an explicit ``isSidechain`` boolean (caller fails open).
+    """
+    for entry in reversed(_read_transcript_entries(transcript_path)):
+        flag = entry.get("isSidechain")
+        if isinstance(flag, bool):
+            return flag
+    return None
+
+
+def _is_orchestration_action(data: dict) -> bool:
+    """True when the tool call is a sanctioned orchestration verb."""
+    tool_name = data.get("tool_name", "")
+    if tool_name in _ORCHESTRATION_TOOLS:
+        return True
+    # MCP orchestration surfaces: Slack/messaging sends, GitHub/GitLab
+    # *view*-class MCP reads. A conservative allow-list keeps the gate
+    # from flagging the orchestrator's own coordination calls.
+    if tool_name.startswith("mcp__") and (
+        "send_message" in tool_name or tool_name.endswith(("_view", "_get", "_list", "_read")) or "_view_" in tool_name
+    ):
+        return True
+    if tool_name == "Bash":
+        command = data.get("tool_input", {}).get("command", "")
+        if _BASH_MUTATION_MARKERS_RE.search(command):
+            return False
+        return bool(_ORCHESTRATOR_BASH_RE.match(command))
+    return False
+
+
+def handle_enforce_orchestrator_boundary(data: dict) -> bool:
+    """Flag the MAIN agent doing investigative/implementation work.
+
+    Deterministic enforcement of the orchestrator-decides /
+    loop-executes topology (BLUEPRINT §17.4 / §17.8 / §17.6 gate 2): the
+    orchestrator is delegate-only. When the main agent (not a sub-agent —
+    see ``_active_turn_is_sidechain``) invokes a mutating/investigative
+    tool that is not a sanctioned orchestration verb, the call is blocked
+    with an actionable message. Sub-agents are unaffected — they are the
+    hands that implement. Fails open when the transcript cannot
+    distinguish the agent (documented limitation), never blocking on an
+    ambiguous signal.
+    """
+    if _is_orchestration_action(data):
+        return False
+
+    tool_name = data.get("tool_name", "")
+    is_non_orch = tool_name in _NON_ORCHESTRATION_TOOLS or tool_name == "Bash"
+    if not is_non_orch:
+        return False
+
+    sidechain = _active_turn_is_sidechain(data.get("transcript_path", ""))
+    # True ⇒ sub-agent (allowed to implement). None ⇒ cannot tell ⇒ fail
+    # open. Only an explicit False (main agent) is blocked.
+    if sidechain is not False:
+        return False
+
+    json.dump(
+        {
+            "permissionDecision": "deny",
+            "permissionDecisionReason": (
+                f"BLOCKED: the orchestrator (main agent) invoked `{tool_name}` — a "
+                "non-orchestration investigative/implementation action. The "
+                "orchestrator is delegate-only (BLUEPRINT §17.4 / §17.8 / §17.6 "
+                "gate 2): it dispatches sub-agents and makes merge/clear "
+                "decisions; it does not itself Edit/Write/Read-sweep/Grep or run "
+                "mutating Bash. Dispatch a sub-agent to do this work (the Task/"
+                "Agent tools), or use a sanctioned orchestration verb."
+            ),
+        },
+        sys.stdout,
+    )
+    return True
 
 
 # ── PostToolUse: track-active-repo ──────────────────────────────────
@@ -2583,6 +2743,7 @@ _HANDLERS: dict[str, list] = {
         handle_block_direct_commands,
         handle_validate_mr_metadata,
         handle_block_ai_signature,
+        handle_enforce_orchestrator_boundary,
         handle_mirror_question_to_slack,
     ],
     "PostToolUse": [
