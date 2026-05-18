@@ -26,14 +26,16 @@ class Command(TyperCommand):
             if tool_cmd.get("name") == name:
                 mgmt_cmd = tool_cmd.get("command", "")
                 if not mgmt_cmd:
-                    return f"Tool '{name}' has no command defined."
+                    self.stderr.write(f"Tool '{name}' has no command defined.")
+                    raise SystemExit(1)
                 argv = [*shlex.split(mgmt_cmd), *extra]
                 env = {**os.environ}
                 env.pop("VIRTUAL_ENV", None)
                 run_streamed(argv, env=env)
                 return f"Tool '{name}' completed."
         available = [t.get("name", "?") for t in overlay.metadata.get_tool_commands()]
-        return f"Unknown tool: {name}. Available: {', '.join(available) or 'none'}"
+        self.stderr.write(f"Unknown tool: {name}. Available: {', '.join(available) or 'none'}")
+        raise SystemExit(1)
 
     @command(name="list")
     def list_tools(self) -> str:
