@@ -102,6 +102,13 @@ def register(review_app: typer.Typer) -> None:
         ``(target, action)`` publishes and the row is consumed; an
         audit row records who/what/when.
         """
+        import os  # noqa: PLC0415
+
+        import django  # noqa: PLC0415
+
+        os.environ.setdefault("DJANGO_SETTINGS_MODULE", "teatree.settings")
+        django.setup()
+
         from teatree.core.models.on_behalf_approval import OnBehalfApproval, OnBehalfApprovalError  # noqa: PLC0415
 
         try:
