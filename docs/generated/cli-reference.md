@@ -1268,6 +1268,10 @@ Usage: t3 loop [OPTIONS] COMMAND [ARGS]...
 │ spawn-claim    Claim a Task by id (legacy — prefer atomic ``claim-next``).   │
 │ start          Spawn a Claude Code session with the fat loop pre-registered. │
 │ stop           Print the slot id to stop in the Claude Code session.         │
+│ self-improve   Self-improving monitor — scheduled smell detection with a     │
+│                tiered action ladder. Runs in the same loop-owner session as  │
+│                `t3 loop tick` on a separate LoopLease so a long self-improve │
+│                cycle never blocks a fast regular tick (BLUEPRINT § 5.7).     │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -1389,6 +1393,73 @@ Usage: t3 loop start [OPTIONS]
 Usage: t3 loop stop [OPTIONS]
 
  Print the slot id to stop in the Claude Code session.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 loop self-improve`
+
+```
+Usage: t3 loop self-improve [OPTIONS] COMMAND [ARGS]...
+
+ Self-improving monitor — scheduled smell detection with a tiered action
+ ladder. Runs in the same loop-owner session as `t3 loop tick` on a separate
+ LoopLease so a long self-improve cycle never blocks a fast regular tick
+ (BLUEPRINT § 5.7).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ run     Run one self-improve schedule cycle for the given tier.              │
+│ status  List the most recent SelfImproveFiring rows.                         │
+│ start   Print the ``/loop <cadence>`` slot definition for the self-improve   │
+│         monitor.                                                             │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 loop self-improve run`
+
+```
+Usage: t3 loop self-improve run [OPTIONS]
+
+ Run one self-improve schedule cycle for the given tier.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --tier        TEXT  Cost tier: cheap|medium|expensive|all (default: cheap;   │
+│                     Phase 1 ships cheap only).                               │
+│                     [default: cheap]                                         │
+│ --json              Emit the cycle report as JSON.                           │
+│ --help              Show this message and exit.                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 loop self-improve status`
+
+```
+Usage: t3 loop self-improve status [OPTIONS]
+
+ List the most recent SelfImproveFiring rows.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --limit        INTEGER  Max firings to show (default 20). [default: 20]      │
+│ --help                  Show this message and exit.                          │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 loop self-improve start`
+
+```
+Usage: t3 loop self-improve start [OPTIONS]
+
+ Print the ``/loop <cadence>`` slot definition for the self-improve monitor.
+
+ Mirrors ``t3 loop start --print-only``: it prints the slash command
+ the user pastes inside the loop-owner Claude Code session to register
+ the second ``/loop`` slot.  The cheap tier runs by default; override
+ via ``T3_SELF_IMPROVE_CHEAP_CADENCE`` (seconds).
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │

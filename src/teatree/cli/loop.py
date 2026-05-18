@@ -245,3 +245,106 @@ def start_command(
 def stop_command() -> None:
     """Print the slot id to stop in the Claude Code session."""
     typer.echo("To stop the loop, run `/loop unregister t3-loop` in the Claude Code session.")
+
+
+# ── self-improve subcommands (BLUEPRINT § 5.7) ───────────────────────
+
+self_improve_app = typer.Typer(
+    name="self-improve",
+    help=(
+        "Self-improving monitor — scheduled smell detection with a tiered "
+        "action ladder. Runs in the same loop-owner session as `t3 loop tick` "
+        "on a separate LoopLease so a long self-improve cycle never blocks a "
+        "fast regular tick (BLUEPRINT § 5.7)."
+    ),
+    no_args_is_help=True,
+)
+
+
+@self_improve_app.command("run")
+def self_improve_run_command(
+    *,
+    tier: str = typer.Option(
+        "cheap",
+        "--tier",
+        help="Cost tier: cheap|medium|expensive|all (default: cheap; Phase 1 ships cheap only).",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Emit the cycle report as JSON."),
+) -> None:
+    """Run one self-improve schedule cycle for the given tier."""
+    import django  # noqa: PLC0415
+
+    os.environ.setdefault("DJANGO_SETTINGS_MODULE", "teatree.settings")
+    django.setup()
+
+    from django.core.management import call_command  # noqa: PLC0415
+
+    kwargs: dict[str, str | bool] = {"tier": tier}
+    if json_output:
+        kwargs["json_output"] = True
+    call_command("loop_self_improve", **kwargs)
+
+
+@self_improve_app.command("status")
+def self_improve_status_command(
+    *,
+    limit: int = typer.Option(20, "--limit", help="Max firings to show (default 20)."),
+) -> None:
+    """List the most recent SelfImproveFiring rows."""
+    import django  # noqa: PLC0415
+
+    os.environ.setdefault("DJANGO_SETTINGS_MODULE", "teatree.settings")
+    django.setup()
+
+    from teatree.core.models import SelfImproveFiring  # noqa: PLC0415
+
+    rows = list(SelfImproveFiring.objects.all()[:limit])
+    if not rows:
+        typer.echo("No self-improve firings recorded.")
+        return
+    for row in rows:
+        typer.echo(
+            f"  [{row.severity}] {row.detector} -> {row.last_action} "
+            f"(x{row.action_count}) {row.last_fired_at.isoformat()} :: {row.dedup_key}"
+        )
+
+
+def _self_improve_cadence_for_loop_slot() -> str:
+    """Read ``T3_SELF_IMPROVE_CHEAP_CADENCE`` (seconds, default 1800)."""
+    raw = os.environ.get("T3_SELF_IMPROVE_CHEAP_CADENCE", "1800").strip() or "1800"
+    try:
+        seconds = max(60, int(raw))
+    except ValueError:
+        seconds = 1800
+    if seconds % 60 == 0:
+        return f"{seconds // 60}m"
+    return f"{seconds}s"
+
+
+@self_improve_app.command("start")
+def self_improve_start_command() -> None:
+    """Print the ``/loop <cadence>`` slot definition for the self-improve monitor.
+
+    Mirrors ``t3 loop start --print-only``: it prints the slash command
+    the user pastes inside the loop-owner Claude Code session to register
+    the second ``/loop`` slot.  The cheap tier runs by default; override
+    via ``T3_SELF_IMPROVE_CHEAP_CADENCE`` (seconds).
+    """
+    cadence = _self_improve_cadence_for_loop_slot()
+    register_command = f"/loop {cadence} Run `t3 loop self-improve run --tier cheap`."
+    typer.echo("Run this in your interactive Claude Code session to register the self-improve loop:")
+    typer.echo(f"    {register_command}")
+    typer.echo("")
+    typer.echo(
+        "Override the cadence with `T3_SELF_IMPROVE_CHEAP_CADENCE=<seconds> t3 loop self-improve start` "
+        "(default 1800 = 30 min)."
+    )
+    typer.echo("")
+    typer.echo(
+        "The cycle scans Phase 1 detectors (dispatch_gap, forgotten_merge, "
+        "stale_statusline_entry), dedups against the SelfImproveFiring DB, and "
+        "advances the action ladder one rung per cool-down window (BLUEPRINT § 5.7)."
+    )
+
+
+loop_app.add_typer(self_improve_app, name="self-improve")
