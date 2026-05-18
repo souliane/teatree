@@ -537,6 +537,65 @@ _no_orphan_dbs = patch.object(workspace_mod, "drop_orphan_databases", new=list)
 _no_dslr_prune = patch("teatree.utils.django_db.prune_dslr_snapshots", new=lambda **kw: [])
 
 
+class TestWorkspaceProvisionPositionalId(TestCase):
+    """#941: ``workspace provision`` accepts an optional positional ticket id.
+
+    Agents repeatedly typed ``t3 teatree workspace provision <id>`` (habit
+    from other overlays) and typer rejected the extra arg with rc=1.
+    The command now treats a positional id as a no-op alias for PWD
+    auto-detect, exiting 0 on a clean code-only worktree.
+    """
+
+    def _make_worktree(self, tmp: str) -> tuple[Ticket, Worktree, Path]:
+        wt_dir = Path(tmp) / "backend"
+        wt_dir.mkdir()
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/941")
+        wt = Worktree.objects.create(
+            overlay="test",
+            ticket=ticket,
+            repo_path="/tmp/backend",
+            branch="feature",
+            extra={"worktree_path": str(wt_dir)},
+            state=Worktree.State.PROVISIONED,
+        )
+        return ticket, wt, wt_dir
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_positional_ticket_id_accepted(self) -> None:
+        """A positional ticket id resolves the ticket directly — no rc=1."""
+        with tempfile.TemporaryDirectory() as tmp:
+            ticket, _, _wt_dir = self._make_worktree(tmp)
+            ok = MagicMock()
+            ok.run.return_value = RunnerResult(ok=True, detail="2 step(s) ok")
+            with patch.object(workspace_mod, "WorktreeProvisionRunner", return_value=ok):
+                # Call WITHOUT path — relies solely on the positional id.
+                # Pre-#941 this would raise SystemExit via typer "unexpected argument".
+                call_command("workspace", "provision", str(ticket.pk))
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_bogus_id_falls_back_to_path_resolution(self) -> None:
+        """A ticket id that doesn't match falls back to PWD/--path resolution."""
+        with tempfile.TemporaryDirectory() as tmp:
+            _, _, wt_dir = self._make_worktree(tmp)
+            ok = MagicMock()
+            ok.run.return_value = RunnerResult(ok=True, detail="ok")
+            with patch.object(workspace_mod, "WorktreeProvisionRunner", return_value=ok):
+                call_command("workspace", "provision", "999999", path=str(wt_dir))
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_no_id_still_works(self) -> None:
+        """Calling without any positional arg still auto-detects (legacy path)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            _, _, wt_dir = self._make_worktree(tmp)
+            ok = MagicMock()
+            ok.run.return_value = RunnerResult(ok=True, detail="ok")
+            with patch.object(workspace_mod, "WorktreeProvisionRunner", return_value=ok):
+                call_command("workspace", "provision", path=str(wt_dir))
+
+
 class TestWorkspaceStartTeardownExitCodes(TestCase):
     """#932: start/teardown must raise SystemExit(1) on real failures."""
 

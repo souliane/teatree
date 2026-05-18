@@ -271,18 +271,21 @@ class Command(TyperCommand):
     @command()
     def provision(
         self,
+        ticket_id: int = typer.Argument(0, help="Optional ticket id (alias for PWD auto-detect; #941)."),
         path: str = typer.Option("", help="Worktree path inside the workspace (auto-detects from PWD)."),
         slow_import: bool = typer.Option(default=False, help="Allow slow DB fallbacks."),  # noqa: FBT001
     ) -> int:
         """Provision every worktree in the current ticket workspace.
 
         Iterates ``ticket.worktrees`` and fires ``Worktree.provision()``
-        for each. Each transition enqueues its worker via on_commit; the
-        runner also runs synchronously so the operator gets streaming
-        feedback. Stops at the first failure so the operator can fix the
-        offending worktree before retrying.
+        for each. Stops at the first failure so the operator can fix
+        the offending worktree before retrying. #941: an optional
+        positional ``ticket_id`` is a no-op alias for PWD auto-detect
+        (agents typed ``provision <id>`` from habit; typer used to reject it with rc=1).
         """
-        ticket = _resolve_workspace_ticket(path)
+        ticket = Ticket.objects.filter(pk=ticket_id).first() if ticket_id else None
+        if ticket is None:
+            ticket = _resolve_workspace_ticket(path)
         overlay = get_overlay()
 
         worktrees = list(Worktree.objects.filter(ticket=ticket))
