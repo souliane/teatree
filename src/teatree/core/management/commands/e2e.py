@@ -138,6 +138,7 @@ def _build_e2e_env(
     *,
     headed: bool,
     target: str,
+    compose_project: str | None = None,
 ) -> dict[str, str]:
     """Build environment dict for Playwright: ``BASE_URL``, overlay extras, ``CI``.
 
@@ -149,14 +150,26 @@ def _build_e2e_env(
     ``process.env.T3_E2E_TARGET === 'dev'`` instead of re-deriving the target
     from a ``BASE_URL`` host regex.
 
+    *compose_project* is the teatree-managed docker-compose project of the
+    resolved worktree (``compose_project(worktree)``) for a local target. It
+    is exported as ``COMPOSE_PROJECT_NAME`` — the variable ``docker compose``
+    natively honours — so a spec that resolves the backend via a bare
+    ``docker compose port web 8000`` / ``docker compose exec -T web`` (run
+    from the backend repo dir, no ``-p``) deterministically targets the
+    teatree stack whose ``web`` container has the restored-Postgres
+    ``DATABASE_URL`` injected, instead of defaulting to the directory
+    basename and missing it. ``None`` (dev target) leaves it unset.
+
     Overlay-specific env vars (e.g. ``CUSTOMER``) come from
     :meth:`OverlayBase.get_e2e_env_extras` — core only knows about ``BASE_URL``,
-    ``T3_E2E_TARGET`` and ``CI``.
+    ``T3_E2E_TARGET``, ``COMPOSE_PROJECT_NAME`` and ``CI``.
     """
     env = {**os.environ}
     if frontend_url is not None:
         env["BASE_URL"] = frontend_url
     env["T3_E2E_TARGET"] = target
+    if compose_project:
+        env["COMPOSE_PROJECT_NAME"] = compose_project
 
     envfile = _find_env_cache(_get_user_cwd())
     env_cache = _parse_env_file(envfile) if envfile is not None else {}
@@ -440,6 +453,7 @@ class Command(TyperCommand):
         # target=local → always discover the local frontend, even if a stray
         #                 BASE_URL is exported, so `--target local` can never
         #                 silently hit a deployed environment.
+        worktree_compose_project: str | None = None
         if resolved_target == "dev":
             if not os.environ.get("BASE_URL"):
                 self.stderr.write("--target dev requires BASE_URL (the deployed environment URL) to be set.")
@@ -456,6 +470,7 @@ class Command(TyperCommand):
                 )
                 raise SystemExit(1)
             frontend_url = f"http://localhost:{frontend_port}"
+            worktree_compose_project = compose_project(worktree)
 
         extra = playwright_args.split() if playwright_args else []
         opts = PlaywrightOptions(
@@ -464,7 +479,12 @@ class Command(TyperCommand):
             headed=headed,
             extra=extra,
         )
-        env = _build_e2e_env(frontend_url, headed=headed, target=resolved_target)
+        env = _build_e2e_env(
+            frontend_url,
+            headed=headed,
+            target=resolved_target,
+            compose_project=worktree_compose_project,
+        )
 
         self.stdout.write(f"  Running from: {private_tests_path}")
         self.stdout.write(f"  Target: {resolved_target}")
