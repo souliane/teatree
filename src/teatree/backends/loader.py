@@ -27,6 +27,10 @@ def get_code_host(overlay: "OverlayBase") -> CodeHostBackend | None:
 
     Selection follows ``overlay.config.code_host``; falls back to inspecting
     the available tokens when the field is unset.
+
+    Pre-#976 single-platform callers — anything that wires a single host
+    into a Django view or CLI command — keep calling this. The multi-host
+    loop scanner stack calls :func:`get_code_hosts` instead.
     """
     choice = overlay.config.code_host
     github_token = overlay.config.get_github_token()
@@ -42,6 +46,47 @@ def get_code_host(overlay: "OverlayBase") -> CodeHostBackend | None:
         return None
     msg = f"Unknown code_host: {choice!r}"
     raise ValueError(msg)
+
+
+def get_code_hosts(overlay: "OverlayBase") -> list[CodeHostBackend]:
+    """Return every CodeHostBackend an overlay opts into (#976).
+
+    A user with both GitHub and GitLab PATs configured on the same overlay
+    expects the loop to scan both forges. The legacy :func:`get_code_host`
+    silently dropped one because it returned the first match — single-host
+    callers keep using it; the loop scanner stack uses this one so both
+    platforms surface PRs/issues/reviews.
+
+    ``code_host`` choice is honoured as a hard constraint when set: a user
+    who explicitly pins one platform gets only that platform, even if the
+    other token resolves. Empty / auto picks both whenever tokens resolve.
+    """
+    choice = overlay.config.code_host
+    hosts: list[CodeHostBackend] = []
+    github_token = overlay.config.get_github_token()
+    gitlab_token = overlay.config.get_gitlab_token()
+
+    if choice == "github":
+        if github_token:
+            hosts.append(GitHubCodeHost(token=github_token))
+        return hosts
+    if choice == "gitlab":
+        if gitlab_token:
+            hosts.append(GitLabCodeHost(token=gitlab_token, base_url=overlay.config.gitlab_url))
+        return hosts
+    if choice not in {"", "github", "gitlab"}:
+        msg = f"Unknown code_host: {choice!r}"
+        raise ValueError(msg)
+
+    # Auto mode: build one host per token that resolves. GitHub first so
+    # ``OverlayBackends.host`` (= ``hosts[0]``) preserves the legacy
+    # GitHub-wins-when-both-set precedence that single-platform callers
+    # downstream depend on.
+    if github_token:
+        hosts.append(GitHubCodeHost(token=github_token))
+    if gitlab_token:
+        hosts.append(GitLabCodeHost(token=gitlab_token, base_url=overlay.config.gitlab_url))
+    return hosts
 
 
 def get_code_host_for_url(overlay: "OverlayBase", issue_url: str) -> CodeHostBackend | None:

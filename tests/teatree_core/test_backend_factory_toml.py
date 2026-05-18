@@ -54,13 +54,14 @@ class TestIterOverlayBackendsEntryPoints:
         overlay = _Overlay("foo", _Cfg(ready_labels=("ready",), exclude_labels=("wip",)))
         with (
             patch.object(backend_factory, "get_all_overlays", return_value={"foo": overlay}),
-            patch.object(backend_factory, "get_code_host", return_value="HOST"),
+            patch.object(backend_factory, "get_code_hosts", return_value=["HOST"]),
             patch.object(backend_factory, "get_messaging", return_value="MSG"),
             patch.object(backend_factory, "_backends_from_toml", return_value=[]),
         ):
             out = backend_factory.iter_overlay_backends()
         assert len(out) == 1
         assert out[0].name == "foo"
+        assert out[0].hosts == ("HOST",)
         assert out[0].host == "HOST"
         assert out[0].messaging == "MSG"
         assert out[0].ready_labels == ("ready",)
@@ -73,25 +74,26 @@ class TestIterOverlayBackendsEntryPoints:
         overlay = _Overlay("foo", _Cfg())
         with (
             patch.object(backend_factory, "get_all_overlays", return_value={"foo": overlay}),
-            patch.object(backend_factory, "get_code_host", side_effect=ImproperlyConfigured),
+            patch.object(backend_factory, "get_code_hosts", side_effect=ImproperlyConfigured),
             patch.object(backend_factory, "get_messaging", side_effect=ValueError),
             patch.object(backend_factory, "_backends_from_toml", return_value=[]),
         ):
             out = backend_factory.iter_overlay_backends()
+        assert out[0].hosts == ()
         assert out[0].host is None
         assert out[0].messaging is None
 
     def test_appends_toml_only_overlays_to_python_overlays(self) -> None:
         py_overlay = _Overlay("py", _Cfg())
-        toml_backend = backend_factory.OverlayBackends(name="toml-only", host=None, messaging=None, ready_labels=())
+        toml_backend = backend_factory.OverlayBackends(name="toml-only", hosts=(), messaging=None, ready_labels=())
         with (
             patch.object(backend_factory, "get_all_overlays", return_value={"py": py_overlay}),
-            patch.object(backend_factory, "get_code_host", return_value=None),
+            patch.object(backend_factory, "get_code_hosts", return_value=[]),
             patch.object(backend_factory, "get_messaging", return_value=None),
             patch.object(backend_factory, "_backends_from_toml", return_value=[toml_backend]) as mock_toml,
         ):
             out = backend_factory.iter_overlay_backends()
-        mock_toml.assert_called_once_with({"py"})
+        mock_toml.assert_called_once_with({"py"}, ())
         assert [b.name for b in out] == ["py", "toml-only"]
 
 

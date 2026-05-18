@@ -174,9 +174,16 @@ class ReviewerPrsScanner:
     first-time observations; ``reviewer_pr.approval_dismissed`` when the
     reviewer's prior approval was dropped (forge invalidated it on
     force-push, or the author re-requested review after a dismissal).
+
+    ``identities`` opts the scanner into a multi-alias union query so a
+    user with more than one identity on the same forge sees every PR
+    where any alias is a requested reviewer. Per-alias dedup-by-url keeps
+    a PR that hits two queries from being scanned twice. Empty falls back
+    to ``host.current_user()`` (#976).
     """
 
     host: CodeHostBackend
+    identities: tuple[str, ...] = field(default_factory=tuple)
     name: str = "reviewer_prs"
     _migrated: bool = field(default=False, init=False)
 
@@ -184,10 +191,11 @@ class ReviewerPrsScanner:
         if not self._migrated:
             _migrate_legacy_json_cache_once()
             self._migrated = True
-        reviewer = self.host.current_user()
-        if not reviewer:
+        reviewers = self._resolve_identities()
+        if not reviewers:
             return []
-        prs = self.host.list_review_requested_prs(reviewer=reviewer)
+        primary_reviewer = reviewers[0]
+        prs = self._collect_unique_prs(reviewers)
         cache = _read_cache()
         ticket_model = _ticket_model()
         signals: list[ScanSignal] = []
@@ -217,7 +225,10 @@ class ReviewerPrsScanner:
                     ),
                 )
                 continue
-            current = self.host.get_review_state(pr_url=url, reviewer=reviewer)
+            # Query review state under one canonical alias — the cache
+            # tracks one entry per URL, so a per-alias query would just
+            # race the persist back to itself.
+            current = self.host.get_review_state(pr_url=url, reviewer=primary_reviewer)
             if _is_dismissed_from_approved(previous.state, current):
                 signals.append(
                     ScanSignal(
@@ -235,6 +246,26 @@ class ReviewerPrsScanner:
             if current.value != previous.state and ticket_model is not None:
                 _persist_entry(ticket_model, url, CacheEntry(sha=previous.sha, state=current.value))
         return signals
+
+    def _resolve_identities(self) -> tuple[str, ...]:
+        if self.identities:
+            return tuple(dict.fromkeys(self.identities))
+        user = self.host.current_user()
+        return (user,) if user else ()
+
+    def _collect_unique_prs(self, reviewers: tuple[str, ...]) -> list[RawAPIDict]:
+        """Union review-requested PRs across *reviewers*, deduped by URL."""
+        seen_urls: set[str] = set()
+        prs: list[RawAPIDict] = []
+        for reviewer in reviewers:
+            for pr in self.host.list_review_requested_prs(reviewer=reviewer):
+                url = _pr_url(pr)
+                if url and url in seen_urls:
+                    continue
+                if url:
+                    seen_urls.add(url)
+                prs.append(pr)
+        return prs
 
 
 def mark_reviewed(*, url: str, sha: str, state: str = "") -> None:
