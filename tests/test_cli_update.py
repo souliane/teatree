@@ -127,8 +127,39 @@ class TestUpdateRepoUpToDate:
         assert result.is_error is False
 
 
+class TestUpdateRepoUntrackedOnlyStillAdvances:
+    """#924: untracked files must not block the ff-pull + reinstall.
+
+    The autonomous review-loop writes an untracked runtime artifact
+    (``.loop-review-state.json``) at the clone root.  ``git pull
+    --ff-only`` and ``pip install -e`` never clobber untracked files, so
+    a tree whose only 'dirt' is untracked must still fast-forward —
+    otherwise the running editable ``t3`` silently rots behind
+    origin/main (29 PRs stale, observed).
+    """
+
+    def test_untracked_only_does_not_block_fast_forward(self, tmp_path: Path) -> None:
+        bare = _make_remote(tmp_path)
+        clone = _clone(tmp_path, bare)
+        old_sha = _git(clone, "rev-parse", "--short", "HEAD")
+        new_sha = _advance_remote(tmp_path, bare)
+        # The loop's own runtime artifact: untracked, never committed.
+        (clone / ".loop-review-state.json").write_text('{"cursor": 1}\n')
+        (clone / "scratch.tmp").write_text("ad-hoc note\n")
+
+        result = update_repo("clone", clone)
+
+        assert result.status is UpdateStatus.UPDATED
+        assert result.old_sha == old_sha
+        assert result.new_sha == new_sha
+        assert _git(clone, "rev-parse", "--short", "HEAD") == new_sha
+        # Untracked files are preserved across the fast-forward.
+        assert (clone / ".loop-review-state.json").read_text() == '{"cursor": 1}\n'
+        assert (clone / "scratch.tmp").read_text() == "ad-hoc note\n"
+
+
 class TestUpdateRepoSkips:
-    def test_dirty_checkout_skips_without_clobbering(self, tmp_path: Path) -> None:
+    def test_tracked_dirty_refuses_but_warns_loudly(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         bare = _make_remote(tmp_path)
         clone = _clone(tmp_path, bare)
         _advance_remote(tmp_path, bare)
@@ -137,10 +168,16 @@ class TestUpdateRepoSkips:
         result = update_repo("clone", clone)
 
         assert result.status is UpdateStatus.SKIPPED
-        assert "dirty" in result.reason.lower()
+        assert "tracked" in result.reason.lower()
         assert result.is_error is False
         # Never clobbered — the local edit survives.
         assert (clone / "f.txt").read_text() == "local uncommitted work\n"
+        # Non-silent: a loud, prominent warning surfaces (a stale running
+        # `t3` must never be invisible — #924).
+        out = capsys.readouterr().out
+        assert "WARNING" in out
+        assert "stale" in out.lower()
+        assert "clone" in out
 
     def test_feature_branch_checkout_skips(self, tmp_path: Path) -> None:
         bare = _make_remote(tmp_path)
