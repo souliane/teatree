@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, TypedDict
 from django.db import transaction
 from django_fsm import TransitionNotAllowed
 
-from teatree.core.models import Ticket
+from teatree.core.models import InvalidTransitionError, Ticket
 
 if TYPE_CHECKING:
     from teatree.core.tasks import TransitionResult
@@ -83,6 +83,15 @@ def _do_ship_transition(ticket: Ticket, title: str) -> ShippingGateFailure | Non
     so the failure is reported as the same structured shape the gate-fail
     path returns rather than raised. ``ship()`` schedules
     ``execute_ship.enqueue`` via ``transaction.on_commit``.
+
+    #884: ``ship()`` also calls ``_refuse_if_worktree_dirty`` which raises
+    :class:`DirtyWorktreeError` — an ``InvalidTransitionError`` (a
+    ``ValueError``), NOT a django-fsm ``TransitionNotAllowed``. Both refusal
+    families mean "the ship transition is not allowed right now"; both must
+    surface as the same structured ``ShippingGateFailure`` contract rather
+    than escape the command as an uncaught exception. The ``except`` catches
+    both, using ``str(exc)`` so the dirty-worktree refusal's actionable
+    message (which worktree, commit-or-discard) reaches the operator.
     """
     try:
         with transaction.atomic():
@@ -93,10 +102,12 @@ def _do_ship_transition(ticket: Ticket, title: str) -> ShippingGateFailure | Non
                 ticket.merge_extra(set_keys={"pr_title_override": title})
             ticket.ship()
             ticket.save()
-    except TransitionNotAllowed:
+    except (TransitionNotAllowed, InvalidTransitionError) as exc:
+        ticket.refresh_from_db()
+        error = str(exc) or f"Cannot ship from state '{ticket.state}': FSM not in REVIEWED."
         return ShippingGateFailure(
             allowed=False,
-            error=f"Cannot ship from state '{ticket.state}': FSM not in REVIEWED.",
+            error=error,
             missing=[],
             hint="Drop --skip-validation so the gate can reconcile the FSM, or record the missing phases.",
         )
