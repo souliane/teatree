@@ -2119,6 +2119,9 @@ graph TD
     teatree.visual_qa --> teatree.utils
     teatree.identity --> teatree.config
     teatree.on_behalf_gate --> teatree.config
+    teatree.notify --> teatree.backends
+    teatree.notify --> teatree.config
+    teatree.notify --> teatree.core
     teatree.settings --> teatree.config
     teatree.settings --> teatree.paths
     teatree.cli_reference --> teatree.cli
