@@ -46,6 +46,19 @@ def test_notion_unrouted_routes_to_webhook() -> None:
     assert actions[0].zone == "n8n"
 
 
+def test_reviewer_pr_task_orphaned_routes_to_mechanical_handler() -> None:
+    """#998: scanner-emitted orphan signal dispatches to the cleanup handler."""
+    payload: dict[str, object] = {
+        "url": "https://gitlab/x/-/merge_requests/373",
+        "ticket_id": 42,
+    }
+    actions = dispatch([ScanSignal(kind="reviewer_pr.task_orphaned", summary="orphan", payload=payload)])
+    assert len(actions) == 1
+    assert actions[0].kind == "mechanical"
+    assert actions[0].zone == "reviewer_task_orphaned"
+    assert actions[0].payload == payload
+
+
 def test_unknown_kind_falls_back_to_in_flight() -> None:
     actions = dispatch([ScanSignal(kind="custom.signal", summary="Custom")])
     assert actions[0].kind == "statusline"

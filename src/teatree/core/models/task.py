@@ -185,8 +185,29 @@ class Task(models.Model):
         from teatree.core.phases import normalize_phase  # noqa: PLC0415
 
         phase = normalize_phase(self.phase)
+        # Mirror the FSM source list of mark_reviewed_externally() — guarding
+        # only on ``role == REVIEWER`` is not enough (#1000): the #998/#999
+        # orphan sweep can complete a second reviewing task on a ticket that
+        # already advanced to DELIVERED (or any other terminal state), and an
+        # unconditional FSM call then raises TransitionNotAllowed and crashes
+        # the loop tick. Sibling branches below all guard on ``ticket.state``;
+        # this branch must too. The states enumerated here are exactly the
+        # ``source=[...]`` argument of ``mark_reviewed_externally`` — keep
+        # them in sync if that list ever changes.
+        mark_reviewed_externally_source_states = {
+            Ticket.State.NOT_STARTED,
+            Ticket.State.SCOPED,
+            Ticket.State.STARTED,
+            Ticket.State.CODED,
+            Ticket.State.TESTED,
+            Ticket.State.REVIEWED,
+        }
         with transaction.atomic():
-            if phase == "reviewing" and ticket.role == Ticket.Role.REVIEWER:
+            if (
+                phase == "reviewing"
+                and ticket.role == Ticket.Role.REVIEWER
+                and ticket.state in mark_reviewed_externally_source_states
+            ):
                 ticket.mark_reviewed_externally()
                 ticket.save()
             elif phase == "scoping" and ticket.state == Ticket.State.SCOPED:

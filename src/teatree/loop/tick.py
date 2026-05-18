@@ -102,7 +102,11 @@ def _jobs_for_backend_hosts(backend: OverlayBackends, tag: str) -> list[_Scanner
                     overlay=tag,
                 ),
                 _ScannerJob(
-                    scanner=ReviewerPrsScanner(host=code_host, identities=backend.identities),
+                    scanner=ReviewerPrsScanner(
+                        host=code_host,
+                        identities=backend.identities,
+                        overlay_name=tag,
+                    ),
                     overlay=tag,
                 ),
                 _ScannerJob(
