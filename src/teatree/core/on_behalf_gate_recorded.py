@@ -27,9 +27,17 @@ Default ON, fail-closed: an unresolved setting defaults to ON, and ON
 with no approval blocks. The user satisfies the gate **without a TTY** via
 ``t3 review approve-on-behalf <target> <action> --approver <id>`` (the
 #777/#953 interactive-TTY-only anti-pattern is deliberately avoided).
+
+The ORM-model imports (``OnBehalfApproval`` / ``OnBehalfAudit``) live
+inside :func:`require_on_behalf_approval` rather than at module top
+because ``teatree.cli.review_on_behalf.check_on_behalf`` imports this
+module lazily so the ``teatree.cli`` package can be loaded before
+``django.setup()`` runs (typer command discovery, ``--help`` rendering,
+the privacy-scan subprocess). An eager ORM import here would defeat
+the lazy chain and crash the CLI with ``ImproperlyConfigured`` (see
+souliane/teatree#1003).
 """
 
-from teatree.core.models.on_behalf_approval import OnBehalfApproval, OnBehalfAudit
 from teatree.on_behalf_gate import ask_before_post_on_behalf_enabled
 
 
@@ -67,6 +75,8 @@ def require_on_behalf_approval(*, target: str, action: str) -> None:
     """
     if not ask_before_post_on_behalf_enabled():
         return
+    from teatree.core.models.on_behalf_approval import OnBehalfApproval, OnBehalfAudit  # noqa: PLC0415
+
     consumed = OnBehalfApproval.consume(target, action)
     if consumed is None:
         raise OnBehalfPostBlockedError(target, action)

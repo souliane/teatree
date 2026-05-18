@@ -419,6 +419,17 @@ def _refuse_if_on_behalf_gated() -> None:
 
 
 def _require_token() -> ReviewService:
+    # Bootstrap Django (idempotent) before the on-behalf pre-gate (#960)
+    # touches the ORM. CLI module stays Django-free at import time so
+    # typer can render --help / discover commands; mirrors cli/loop.py.
+    # See souliane/teatree#1003.
+    import os  # noqa: PLC0415
+
+    import django  # noqa: PLC0415
+
+    os.environ.setdefault("DJANGO_SETTINGS_MODULE", "teatree.settings")
+    django.setup()
+
     token = ReviewService.get_gitlab_token()
     if not token:
         typer.echo("No GitLab token found. Run: glab auth login")
