@@ -403,7 +403,8 @@ class Command(TyperCommand):
         if model == "task":
             return _task_diagram()
         if model not in model_map:
-            return f"Unknown model: {model}. Choose from: worktree, ticket, task"
+            self.stderr.write(f"Unknown model: {model}. Choose from: worktree, ticket, task")
+            raise SystemExit(1)
         return _fsm_diagram(model_map[model])
 
 

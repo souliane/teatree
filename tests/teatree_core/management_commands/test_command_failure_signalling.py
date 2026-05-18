@@ -1,4 +1,4 @@
-"""Enforcement guard for #932.
+"""Enforcement guard for #932 (keyword set broadened in #939).
 
 A django-typer ``@command`` subcommand that signals failure by *returning*
 an error string leaves the process exiting 0 — django-typer serialises the
@@ -9,25 +9,56 @@ SystemExit(1)`` (canonical: ``tasks.py``, ``db.py`` ``query``/``shell``).
 
 This guard walks every ``core/management/commands`` module with AST and
 fails if any ``@command``-decorated method has a ``return`` whose value is
-a string literal / f-string mentioning "fail". It is deliberately narrow:
+a string literal / f-string matching any failure keyword in
+``_FAILURE_KEYWORDS``.
 
 Scope (kept narrow so false positives stay low):
 
 - Only ``@command`` methods are scanned, so module-level helpers like
     ``_workspace_cleanup.push_unsynced_branch`` keep returning "Push
     failed:" for their command (``clean-all``) to inspect and raise on.
-- Only the word "fail" triggers it, so benign no-op returns such as
-    "completed", "No X configured" or "Pushed:" never match.
+- Only string / f-string returns are inspected; dynamic returns are out
+    of AST reach and out of scope here.
 
-If a genuinely-benign command must return a string containing "fail",
-this guard should be made aware of it explicitly rather than relaxed
-wholesale.
+The #939 broadening covers the sites the original "fail"-only set missed
+(messages worded "aborted", "error", "not found", "not configured", "not
+running", "unknown", "requires …"). The guard therefore catches the
+high-blast subset of the anti-pattern that is statically detectable on
+the current command tree — it is not a proof that the anti-pattern can
+never regress (a return whose error wording avoids every keyword, or a
+dynamically-built message, is still out of AST reach). It is a strong,
+low-false-positive backstop, not an absolute one.
+
+If a genuinely-benign command must return a string containing one of
+these keywords, this guard should be made aware of it explicitly rather
+than relaxed wholesale.
 """
 
 import ast
+import textwrap
 from pathlib import Path
 
+import pytest
+
 _COMMANDS_DIR = Path(__file__).resolve().parents[3] / "src" / "teatree" / "core" / "management" / "commands"
+
+# Case-insensitive substrings that mark a returned string as failure
+# signalling. Kept low-false-positive: only words/phrases that, in a
+# command's *return value*, denote an error condition the process should
+# exit non-zero on. Verified against the full command tree (see
+# ``test_broadened_set_flags_only_the_known_sites``).
+_FAILURE_KEYWORDS: frozenset[str] = frozenset(
+    {
+        "fail",
+        "error",
+        "abort",
+        "unknown",
+        "not configured",
+        "not found",
+        "not running",
+        "requires ",
+    },
+)
 
 
 def _is_command_decorator(decorator: ast.expr) -> bool:
@@ -52,6 +83,15 @@ def _returned_string_value(node: ast.Return) -> str | None:
     return None
 
 
+def _matched_keyword(text: str) -> str | None:
+    """First failure keyword found in ``text`` (case-insensitive), else None."""
+    lowered = text.lower()
+    for keyword in _FAILURE_KEYWORDS:
+        if keyword in lowered:
+            return keyword
+    return None
+
+
 def _offending_returns(source: str) -> list[tuple[str, int, str]]:
     tree = ast.parse(source)
     offences: list[tuple[str, int, str]] = []
@@ -64,7 +104,7 @@ def _offending_returns(source: str) -> list[tuple[str, int, str]]:
             if not isinstance(stmt, ast.Return):
                 continue
             text = _returned_string_value(stmt)
-            if text and "fail" in text.lower():
+            if text and _matched_keyword(text) is not None:
                 offences.append((func.name, stmt.lineno, text))
     return offences
 
@@ -77,8 +117,86 @@ class TestCommandFailureSignalling:
                 violations.append(
                     f"{module.name}:{lineno} — @command `{func_name}` returns "
                     f"a failure string {text!r}; use `self.stderr.write(...)` "
-                    f"then `raise SystemExit(1)` (see #932).",
+                    f"then `raise SystemExit(1)` (see #932/#939).",
                 )
         assert not violations, "Commands must raise SystemExit(1) on failure, not return a string:\n" + "\n".join(
             violations,
+        )
+
+
+def _command_source(return_value: str) -> str:
+    """Minimal @command-decorated method whose return is ``return_value``."""
+    return textwrap.dedent(
+        f"""
+        class Command:
+            @command()
+            def sub(self):
+                return {return_value}
+        """,
+    )
+
+
+class TestBroadenedKeywordSet:
+    """#939: every newly-covered keyword trips the guard; benign returns don't."""
+
+    @pytest.mark.parametrize(
+        ("keyword", "message"),
+        [
+            ("fail", '"DB import failed for db."'),
+            ("error", '"error: could not connect"'),
+            ("abort", '"Fresh remote dump aborted"'),
+            ("unknown", '"Unknown config key: x"'),
+            ("not configured", '"reset-passwords not configured"'),
+            ("not found", '"Worktree not found for path"'),
+            ("not running", '"Backend not running on port"'),
+            ("requires ", '"This command requires BASE_URL"'),
+        ],
+    )
+    def test_each_failure_keyword_is_flagged(self, keyword: str, message: str) -> None:
+        assert keyword in _FAILURE_KEYWORDS
+        offences = _offending_returns(_command_source(message))
+        assert offences, f"keyword {keyword!r} in {message} should be flagged"
+        assert offences[0][0] == "sub"
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            '"completed"',
+            '"Pushed: 3 commits"',
+            '"No DB import strategy"',
+            '"refreshed"',
+            '"\\n".join(parts)',  # dynamic, non-string-constant return — out of scope
+        ],
+    )
+    def test_benign_returns_do_not_trip(self, message: str) -> None:
+        assert _offending_returns(_command_source(message)) == []
+
+    def test_match_is_case_insensitive(self) -> None:
+        assert _offending_returns(_command_source('"FATAL ERROR"'))
+        assert _offending_returns(_command_source('"Aborted."'))
+
+    def test_module_level_helper_is_not_scanned(self) -> None:
+        source = textwrap.dedent(
+            """
+            def push_unsynced_branch():
+                return "Push failed: remote rejected"
+            """,
+        )
+        assert _offending_returns(source) == []
+
+    def test_broadened_set_flags_only_the_known_sites(self) -> None:
+        """Full command tree: no command returns a failure string.
+
+        Pins the low-false-positive claim. If a NEW command legitimately
+        returns a keyword string, fix it to raise SystemExit(1) — do not
+        relax the keyword set.
+        """
+        flagged: set[tuple[str, str]] = {
+            (module.name, func_name)
+            for module in sorted(_COMMANDS_DIR.glob("*.py"))
+            for func_name, _lineno, _text in _offending_returns(module.read_text())
+        }
+        assert flagged == set(), (
+            "Unexpected command(s) returning a failure string — fix them to "
+            f"raise SystemExit(1), do not relax the guard: {sorted(flagged)}"
         )

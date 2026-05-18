@@ -34,11 +34,20 @@ class TestOverlayConfig:
 
         assert result == "False"
 
-    def test_returns_error_for_unknown_key(self) -> None:
-        with patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY):
-            result = call_command("overlay", "config", "--key", "nonexistent")
+    def test_unknown_key_raises_system_exit_1(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """#939: an unknown config key is a real error — exit 1, stderr.
 
-        assert "Unknown config key" in result
+        Regression: `return f"Unknown config key..."` exited 0, so a typo
+        in `overlay config --key` looked like success to headless callers.
+        """
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            call_command("overlay", "config", "--key", "nonexistent")
+
+        assert exc_info.value.code == 1
+        assert "Unknown config key" in capsys.readouterr().err
 
 
 class TestOverlayInfo:
