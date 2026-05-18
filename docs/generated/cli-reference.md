@@ -1542,27 +1542,29 @@ Usage: t3 teatree [OPTIONS] COMMAND [ARGS]...
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ resetdb      Drop the SQLite database and re-run all migrations.             │
-│ worker       Start background task workers.                                  │
-│ full-status  Show ticket, worktree, and session state summary.               │
-│ ship         Code to PR — create pull request for the ticket.                │
-│ daily        Daily followup — sync MRs, check gates, remind reviewers.       │
-│ agent        Launch Claude Code with overlay context and auto-detected       │
-│              skills.                                                         │
-│ config       Overlay configuration.                                          │
-│ worktree     Per-worktree FSM operations.                                    │
-│ workspace    Ticket-level workspace operations (every worktree in the        │
-│              ticket).                                                        │
-│ run          Run services.                                                   │
-│ e2e          E2E test commands.                                              │
-│ db           Database operations.                                            │
-│ pr           Pull request helpers.                                           │
-│ tasks        Async task queue.                                               │
-│ followup     Follow-up snapshots.                                            │
-│ standup      Auto-generated daily update (read-only).                        │
-│ lifecycle    Session lifecycle and phase tracking.                           │
-│ env          Inspect and mutate the worktree env cache.                      │
-│ ticket       Ticket state management.                                        │
+│ resetdb       Drop the SQLite database and re-run all migrations.            │
+│ worker        Start background task workers.                                 │
+│ full-status   Show ticket, worktree, and session state summary.              │
+│ ship          Code to PR — create pull request for the ticket.               │
+│ daily         Daily followup — sync MRs, check gates, remind reviewers.      │
+│ agent         Launch Claude Code with overlay context and auto-detected      │
+│               skills.                                                        │
+│ config        Overlay configuration.                                         │
+│ worktree      Per-worktree FSM operations.                                   │
+│ workspace     Ticket-level workspace operations (every worktree in the       │
+│               ticket).                                                       │
+│ run           Run services.                                                  │
+│ e2e           E2E test commands.                                             │
+│ db            Database operations.                                           │
+│ pr            Pull request helpers.                                          │
+│ tasks         Async task queue.                                              │
+│ followup      Follow-up snapshots.                                           │
+│ standup       Auto-generated daily update (read-only).                       │
+│ lifecycle     Session lifecycle and phase tracking.                          │
+│ env           Inspect and mutate the worktree env cache.                     │
+│ ticket        Ticket state management.                                       │
+│ availability  24/7 dual question-mode (#58, BLUEPRINT §17.1 invariant 9).    │
+│ questions     Manage the away-mode deferred-question backlog (#58).          │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -1909,16 +1911,22 @@ Usage: t3 teatree workspace ticket [OPTIONS] ISSUE_URL
 ##### `t3 teatree workspace provision`
 
 ```
-Usage: t3 teatree workspace provision [OPTIONS]
+Usage: t3 teatree workspace provision [OPTIONS] [TICKET_ID]
 
  Provision every worktree in the current ticket workspace.
 
  Iterates ``ticket.worktrees`` and fires ``Worktree.provision()``
- for each. Each transition enqueues its worker via on_commit; the
- runner also runs synchronously so the operator gets streaming
- feedback. Stops at the first failure so the operator can fix the
- offending worktree before retrying.
+ for each. Stops at the first failure so the operator can fix
+ the offending worktree before retrying. #941: an optional
+ positional ``ticket_id`` is a no-op alias for PWD auto-detect
+ (agents typed ``provision <id>`` from habit; typer used to reject it with
+ rc=1).
 
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│   ticket_id      [TICKET_ID]  Optional ticket id (alias for PWD auto-detect; │
+│                               #941).                                         │
+│                               [default: 0]                                   │
+╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --path                               TEXT  Worktree path inside the          │
 │                                            workspace (auto-detects from      │
@@ -3349,5 +3357,161 @@ Usage: t3 teatree ticket context edit [OPTIONS] TICKET_ID
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 teatree availability`
+
+```
+Usage: t3 teatree availability [OPTIONS] COMMAND [ARGS]...
+
+ 24/7 dual question-mode (#58, BLUEPRINT §17.1 invariant 9).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ away     Set manual away-mode override (questions queue as DeferredQuestion  │
+│          rows).                                                              │
+│ present  Set manual present-mode override (questions ask interactively).     │
+│ auto     Clear manual override and fall back to schedule/default.            │
+│ show     Print the currently resolved mode and source                        │
+│          (override/schedule/default).                                        │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree availability away`
+
+```
+Usage: t3 teatree availability away [OPTIONS]
+
+ Force away-mode (deferred questions) until *until* — or forever.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --until        TEXT  ISO8601 timestamp when the override expires (e.g.       │
+│                      2026-05-19T18:00:00+02:00).                             │
+│ --help               Show this message and exit.                             │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree availability present`
+
+```
+Usage: t3 teatree availability present [OPTIONS]
+
+ Force present-mode (interactive questions) until *until* — or forever.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --until        TEXT  ISO8601 timestamp when the override expires.            │
+│ --help               Show this message and exit.                             │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree availability auto`
+
+```
+Usage: t3 teatree availability auto [OPTIONS]
+
+ Clear the manual override; the cron schedule decides again.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree availability show`
+
+```
+Usage: t3 teatree availability show [OPTIONS]
+
+ Print the current resolved mode and which layer decided it.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 teatree questions`
+
+```
+Usage: t3 teatree questions [OPTIONS] COMMAND [ARGS]...
+
+ Manage the away-mode deferred-question backlog (#58).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ record   Record a deferred question (used by the PreToolUse away-mode hook). │
+│ list     List pending deferred questions, oldest first.                      │
+│ answer   Resolve a pending question with a user answer.                      │
+│ dismiss  Dismiss a pending question without answering it.                    │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree questions record`
+
+```
+Usage: t3 teatree questions record [OPTIONS] QUESTION
+
+ Record a deferred question (called by the PreToolUse away-mode hook).
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    question      TEXT  The question text. [required]                       │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --options            TEXT  Verbatim JSON-encoded ``AskUserQuestion``         │
+│                            options.                                          │
+│ --session            TEXT  Originating session id.                           │
+│ --tool-use-id        TEXT  Originating tool_use id.                          │
+│ --help                     Show this message and exit.                       │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree questions list`
+
+```
+Usage: t3 teatree questions list [OPTIONS]
+
+ List pending deferred questions, oldest first.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --all     --pending      Include answered/dismissed rows. [default: pending] │
+│ --help                   Show this message and exit.                         │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree questions answer`
+
+```
+Usage: t3 teatree questions answer [OPTIONS] QUESTION_ID TEXT
+
+ Resolve a pending question with a user answer.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    question_id      INTEGER  [required]                                    │
+│ *    text             TEXT     The user's answer. [required]                 │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --resolver        TEXT  Identity of the resolver (audit trail).              │
+│ --help                  Show this message and exit.                          │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree questions dismiss`
+
+```
+Usage: t3 teatree questions dismiss [OPTIONS] QUESTION_ID
+
+ Dismiss a pending question without answering it.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    question_id      INTEGER  [required]                                    │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --reason          TEXT  Why the question is being dropped (audit trail).     │
+│                         [default: no longer relevant]                        │
+│ --resolver        TEXT  Identity of the resolver (audit trail).              │
+│ --help                  Show this message and exit.                          │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```

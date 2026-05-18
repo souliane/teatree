@@ -14,6 +14,7 @@ classifiers = [
   "Programming Language :: Python :: 3.13",
 ]
 dependencies = [
+  "croniter>=6.2.2",
   "django>=5.2,<6.1",
   "django-fsm-2>=4",
   "django-rich>=2.2",
