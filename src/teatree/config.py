@@ -9,7 +9,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 from teatree.paths import DATA_DIR, get_data_dir
 from teatree.utils.run import TimeoutExpired, run_allowed_to_fail
@@ -244,38 +244,10 @@ class UserSettings:
     repo_mode: str = ""
 
 
-@dataclass(frozen=True, slots=True)
-class AvailabilitySettings:
-    """Parsed ``[teatree.availability]`` section (#58, BLUEPRINT §5.6.3).
-
-    ``timezone`` resolves cron windows against a specific zone (e.g.
-    ``"Europe/Paris"``); empty means the cron is evaluated against the
-    naive local time. ``windows`` is an ORed list of cron expressions:
-    if any one ticks within the current minute the mode is ``present``.
-    """
-
-    timezone: str = ""
-    windows: tuple[str, ...] = field(default_factory=tuple)
-
-
-def _parse_availability(raw: object) -> AvailabilitySettings:
-    """Coerce the ``[teatree.availability]`` toml subtable to a dataclass."""
-    if not isinstance(raw, dict):
-        return AvailabilitySettings()
-    data = cast("dict[str, Any]", raw)
-    tz = str(data.get("timezone", "")).strip()
-    raw_windows = data.get("windows", [])
-    if not isinstance(raw_windows, list):
-        return AvailabilitySettings(timezone=tz)
-    windows = tuple(str(w).strip() for w in raw_windows if isinstance(w, str) and str(w).strip())
-    return AvailabilitySettings(timezone=tz, windows=windows)
-
-
 @dataclass
 class TeaTreeConfig:
     user: UserSettings = field(default_factory=UserSettings)
     raw: dict = field(default_factory=dict)
-    availability: AvailabilitySettings = field(default_factory=AvailabilitySettings)
 
 
 def load_config(path: Path | None = None) -> TeaTreeConfig:
@@ -320,9 +292,7 @@ def load_config(path: Path | None = None) -> TeaTreeConfig:
         repo_mode=str(teatree.get("repo_mode", "")),
     )
 
-    availability = _parse_availability(teatree.get("availability", {}))
-
-    return TeaTreeConfig(user=user, raw=raw, availability=availability)
+    return TeaTreeConfig(user=user, raw=raw)
 
 
 def load_e2e_repos(path: Path | None = None) -> list[E2ERepo]:
