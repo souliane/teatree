@@ -157,6 +157,16 @@ class SlackBotBackend:
         channel_id = channel.get("id")
         return channel_id if isinstance(channel_id, str) else ""
 
+    def get_permalink(self, *, channel: str, ts: str) -> str:
+        """Return the archive permalink for ``(channel, ts)`` or ``""``."""
+        if not channel or not ts:
+            return ""
+        data = self._get("chat.getPermalink", {"channel": channel, "message_ts": ts})
+        if not data.get("ok"):
+            return ""
+        permalink = data.get("permalink", "")
+        return permalink if isinstance(permalink, str) else ""
+
     def get_reactions(self, *, channel: str, ts: str) -> list[str]:
         """Return the emoji names currently set on a message."""
         data = self._get("reactions.get", {"channel": channel, "timestamp": ts})

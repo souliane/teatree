@@ -1,3 +1,4 @@
+from teatree.core.models.bot_ping import BotPing
 from teatree.core.models.daily_digest import DailyDigestMessage, DailyDigestThread
 from teatree.core.models.db_approval import DbApproval, DbApprovalError, DbAudit
 from teatree.core.models.errors import DirtyWorktreeError, InvalidTransitionError, QualityGateError
@@ -17,6 +18,7 @@ from teatree.core.models.types import Ports, TicketExtra, WorktreeExtra, validat
 from teatree.core.models.worktree import Worktree, WorktreeEnvOverride
 
 __all__ = [
+    "BotPing",
     "ClearIssuanceError",
     "ClearRequest",
     "DailyDigestMessage",

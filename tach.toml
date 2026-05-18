@@ -156,6 +156,10 @@ path = "teatree.on_behalf_gate"
 depends_on = ["teatree.config"]
 
 [[modules]]
+path = "teatree.notify"
+depends_on = ["teatree.backends", "teatree.config", "teatree.core"]
+
+[[modules]]
 path = "teatree.settings"
 depends_on = ["teatree.config", "teatree.paths"]
 
