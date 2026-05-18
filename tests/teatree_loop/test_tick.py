@@ -199,13 +199,13 @@ def test_build_default_jobs_tags_per_overlay() -> None:
     backends = [
         OverlayBackends(
             name="teatree",
-            host=MagicMock(spec=CodeHostBackend),
+            hosts=(MagicMock(spec=CodeHostBackend),),
             messaging=None,
             ready_labels=(),
         ),
         OverlayBackends(
             name="acme",
-            host=MagicMock(spec=CodeHostBackend),
+            hosts=(MagicMock(spec=CodeHostBackend),),
             messaging=MagicMock(spec=MessagingBackend),
             ready_labels=("ready",),
         ),
@@ -249,7 +249,7 @@ def test_build_default_jobs_propagates_user_identity_aliases(
     backends = [
         OverlayBackends(
             name="teatree",
-            host=MagicMock(spec=CodeHostBackend),
+            hosts=(MagicMock(spec=CodeHostBackend),),
             messaging=None,
             ready_labels=(),
         ),
@@ -332,7 +332,7 @@ def test_build_default_jobs_per_overlay_alias_override(
     backends = [
         OverlayBackends(
             name="scoped",
-            host=MagicMock(spec=CodeHostBackend),
+            hosts=(MagicMock(spec=CodeHostBackend),),
             messaging=None,
             ready_labels=(),
         ),
@@ -654,7 +654,7 @@ def test_tick_multi_overlay_prefixes_summary(tmp_path: Path) -> None:
     ]
     fake_host.list_review_requested_prs.return_value = []
     fake_host.list_assigned_issues.return_value = []
-    backends = [OverlayBackends(name="teatree", host=fake_host, messaging=None, ready_labels=())]
+    backends = [OverlayBackends(name="teatree", hosts=(fake_host,), messaging=None, ready_labels=())]
 
     statusline = tmp_path / "statusline.txt"
     run_tick(TickRequest(backends=backends), statusline_path=statusline, colorize=False)

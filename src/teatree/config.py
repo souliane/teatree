@@ -109,11 +109,17 @@ def _parse_excluded_skills(raw: object) -> list[str]:
 def _parse_user_identity_aliases(raw: object) -> list[str]:
     """Coerce a TOML list of usernames/handles to ``list[str]``.
 
+    Returns a deduped list of non-empty alias handles, in insertion order.
     Non-list inputs (a stray scalar) degrade to an empty list rather than
     raising — keeps the loader robust to a malformed override while leaving
-    the suppression off by default.
+    the suppression off by default. Consumed by the ticket-disposition
+    scanner (#975) to suppress reassign signals between the operator's own
+    identities, and by the loop's PR/MR scanners (#976) to union-query each
+    alias so cross-forge work surfaces in the statusline.
     """
-    return [str(s) for s in raw] if isinstance(raw, list) else []
+    if not isinstance(raw, list):
+        return []
+    return list(dict.fromkeys(str(s) for s in raw if isinstance(s, str) and s))
 
 
 # Registry of UserSettings fields that can be overridden per-overlay in
@@ -217,13 +223,17 @@ class UserSettings:
     statusline_chain: list[str] = field(default_factory=list)
     # Usernames / handles that all map to the same human operator across
     # platforms (a GitHub login, a GitLab username, an internal handle).
-    # Consumed by the loop's ticket-disposition scanner to suppress the
-    # reassign signal when an issue is handed off between two of the
-    # operator's own identities — plumbing noise, not an actionable
-    # transition. Default empty: with no aliases configured, every
-    # reassign still renders (legacy behaviour). Per-overlay overridable
-    # so a tracker-scoped overlay can carry tracker-specific handles
-    # without flipping the global default. See souliane/teatree#975.
+    # Two consumers:
+    # - The ticket-disposition scanner uses them to suppress the reassign
+    #   signal when an issue is handed off between two of the operator's
+    #   own identities — plumbing noise, not an actionable transition
+    #   (souliane/teatree#975).
+    # - The loop's PR/MR scanners union-query each alias so cross-forge
+    #   work (e.g. multiple GitHub logins under one PAT, GitHub vs GitLab
+    #   handles for the same human) surfaces in the statusline (#976).
+    # Default empty preserves legacy single-identity behaviour. Per-overlay
+    # overridable so a tracker-scoped overlay can carry tracker-specific
+    # handles without flipping the global default.
     user_identity_aliases: list[str] = field(default_factory=list)
     # Solo vs collaborative working mode (issue #550 item 4). Empty string
     # = auto-detect from `git shortlog` history (see teatree.repo_mode);

@@ -5,13 +5,13 @@ This module bridges ``teatree.core`` (overlay registry) and
 need to extract tokens or branch on platform themselves.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 
 from django.core.exceptions import ImproperlyConfigured
 
-from teatree.backends.loader import get_ci_service, get_code_host, get_messaging
+from teatree.backends.loader import get_ci_service, get_code_host, get_code_hosts, get_messaging
 from teatree.backends.loader import reset_backend_caches as _reset_loader_caches
 from teatree.backends.protocols import CIService, CodeHostBackend, MessagingBackend
 from teatree.core.overlay import OverlayBase
@@ -26,18 +26,35 @@ class OverlayBackends:
     The loop tick builds one set of scanners per ``OverlayBackends`` so a
     user with multiple overlays (e.g. one per GitHub identity) sees PRs,
     issues, and Slack mentions from all of them in one statusline.
+
+    ``hosts`` carries one code-host backend per platform whose token resolved.
+    An overlay with both a GitHub and a GitLab PAT exposes both hosts so the
+    loop scans both forges (#976). The legacy ``host`` field is exposed as a
+    property pointing at ``hosts[0]`` so callers that only consume one
+    platform keep working unchanged. ``identities`` carries the user's known
+    aliases on the active host (see ``UserSettings.user_identity_aliases``);
+    scanners union-query across them.
     """
 
     name: str
-    host: CodeHostBackend | None
-    messaging: MessagingBackend | None
-    ready_labels: tuple[str, ...]
+    hosts: tuple[CodeHostBackend, ...] = field(default_factory=tuple)
+    messaging: MessagingBackend | None = None
+    ready_labels: tuple[str, ...] = field(default_factory=tuple)
     exclude_labels: tuple[str, ...] = ()
     overlay: OverlayBase | None = None
     auto_start_assigned_issues: bool = False
     max_concurrent_auto_starts: int = 1
     stale_threshold_days: int = 3
     external_db: Path | None = None
+    identities: tuple[str, ...] = field(default_factory=tuple)
+
+    @property
+    def host(self) -> CodeHostBackend | None:
+        # Back-compat: callers that pre-date the multi-host migration still
+        # consume one host. The first entry is the legacy default — for an
+        # overlay with both GitHub and GitLab configured this is GitHub
+        # (mirrors ``get_code_host`` precedence).
+        return self.hosts[0] if self.hosts else None
 
 
 @lru_cache(maxsize=1)
@@ -89,13 +106,14 @@ def iter_overlay_backends() -> list[OverlayBackends]:
     """
     out: list[OverlayBackends] = []
     found_names: set[str] = set()
+    identities = _resolved_identities()
 
     for name, overlay in get_all_overlays().items():
         found_names.add(name)
         try:
-            host = get_code_host(overlay)
+            hosts = tuple(get_code_hosts(overlay))
         except (ImproperlyConfigured, ValueError):
-            host = None
+            hosts = ()
         try:
             messaging = get_messaging(overlay)
         except (ImproperlyConfigured, ValueError):
@@ -103,7 +121,7 @@ def iter_overlay_backends() -> list[OverlayBackends]:
         out.append(
             OverlayBackends(
                 name=name,
-                host=host,
+                hosts=hosts,
                 messaging=messaging,
                 ready_labels=tuple(overlay.config.ready_labels),
                 exclude_labels=tuple(overlay.config.exclude_labels),
@@ -111,14 +129,36 @@ def iter_overlay_backends() -> list[OverlayBackends]:
                 auto_start_assigned_issues=bool(overlay.config.auto_start_assigned_issues),
                 max_concurrent_auto_starts=int(overlay.config.max_concurrent_auto_starts),
                 stale_threshold_days=int(overlay.config.stale_threshold_days),
+                identities=identities,
             ),
         )
 
-    out.extend(_backends_from_toml(found_names))
+    out.extend(_backends_from_toml(found_names, identities))
     return out
 
 
-def _backends_from_toml(already_found: set[str]) -> list[OverlayBackends]:
+def _resolved_identities() -> tuple[str, ...]:
+    """Return the user's configured identity aliases.
+
+    Each entry is one handle/login the user owns across forges. The loop
+    scanners union-query across them so PRs/MRs authored or reviewer-tagged
+    under any alias surface in the statusline (#976). Empty list keeps the
+    legacy behaviour: scanners scan only ``host.current_user()``.
+
+    Source of truth: ``UserSettings.user_identity_aliases`` parsed from
+    ``[teatree] user_identity_aliases`` in ``~/.teatree.toml``. Reading
+    through ``UserSettings`` (rather than ``raw[...]`` directly) means
+    every consumer in the codebase agrees on the parsed shape.
+    """
+    from teatree.config import load_config  # noqa: PLC0415
+
+    return tuple(load_config().user.user_identity_aliases)
+
+
+def _backends_from_toml(
+    already_found: set[str],
+    identities: tuple[str, ...] = (),
+) -> list[OverlayBackends]:
     """Build backends for TOML overlays not discovered via entry points."""
     from teatree.config import load_config  # noqa: PLC0415
 
@@ -127,20 +167,21 @@ def _backends_from_toml(already_found: set[str]) -> list[OverlayBackends]:
     for name, overlay_cfg in (config.raw.get("overlays") or {}).items():
         if name in already_found or not isinstance(overlay_cfg, dict):
             continue
-        host = _host_from_toml(overlay_cfg)
+        hosts = tuple(_hosts_from_toml(overlay_cfg))
         messaging = _messaging_from_toml(overlay_cfg)
         db_path = _find_external_db(name, overlay_cfg)
-        if host is None and messaging is None and db_path is None:
+        if not hosts and messaging is None and db_path is None:
             continue
         result.append(
             OverlayBackends(
                 name=name,
-                host=host,
+                hosts=hosts,
                 messaging=messaging,
                 ready_labels=tuple(overlay_cfg.get("ready_labels", ())),
                 exclude_labels=tuple(overlay_cfg.get("exclude_labels", ())),
                 stale_threshold_days=int(overlay_cfg.get("stale_threshold_days", 3)),
                 external_db=db_path,
+                identities=identities,
             ),
         )
     return result
@@ -153,26 +194,45 @@ def _find_external_db(name: str, cfg: dict) -> Path | None:
     return find_overlay_db(name, project_path)
 
 
-def _host_from_toml(cfg: dict) -> CodeHostBackend | None:
+def _hosts_from_toml(cfg: dict) -> list[CodeHostBackend]:
+    """Return every code-host backend a TOML overlay opts into.
+
+    Pre-#976 the loop only constructed one host per TOML overlay, so an
+    entry with both ``gitlab_token_ref`` and ``github_token_ref`` silently
+    dropped one platform. Build both when both resolve so the loop can
+    scan each forge independently.
+    """
     from teatree.utils.secrets import read_pass  # noqa: PLC0415
 
-    gitlab_token_ref = cfg.get("gitlab_token_ref", "")
+    hosts: list[CodeHostBackend] = []
     github_token_ref = cfg.get("github_token_ref", "")
-    gitlab_url = cfg.get("gitlab_url", "https://gitlab.com")
-
-    if gitlab_token_ref:
-        token = read_pass(gitlab_token_ref)
-        if token:
-            from teatree.backends.gitlab import GitLabCodeHost  # noqa: PLC0415
-
-            return GitLabCodeHost(token=token, base_url=gitlab_url)
     if github_token_ref:
         token = read_pass(github_token_ref)
         if token:
             from teatree.backends.github import GitHubCodeHost  # noqa: PLC0415
 
-            return GitHubCodeHost(token=token)
-    return None
+            hosts.append(GitHubCodeHost(token=token))
+
+    gitlab_token_ref = cfg.get("gitlab_token_ref", "")
+    gitlab_url = cfg.get("gitlab_url", "https://gitlab.com")
+    if gitlab_token_ref:
+        token = read_pass(gitlab_token_ref)
+        if token:
+            from teatree.backends.gitlab import GitLabCodeHost  # noqa: PLC0415
+
+            hosts.append(GitLabCodeHost(token=token, base_url=gitlab_url))
+    return hosts
+
+
+def _host_from_toml(cfg: dict) -> CodeHostBackend | None:
+    """Single-host shim — first matching host per TOML overlay.
+
+    Pre-#976 callers consumed exactly one host per TOML overlay. Kept so
+    code paths outside the loop scanner stack don't need to learn the
+    multi-host shape just to read out the legacy default.
+    """
+    hosts = _hosts_from_toml(cfg)
+    return hosts[0] if hosts else None
 
 
 def _messaging_from_toml(cfg: dict) -> MessagingBackend | None:

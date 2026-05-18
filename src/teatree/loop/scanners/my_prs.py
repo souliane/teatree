@@ -1,6 +1,6 @@
 """Scan PRs the active user has open across configured code-host repos."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import cast
 
 from teatree.backends.protocols import CodeHostBackend
@@ -84,16 +84,24 @@ class MyPrsScanner:
     failed state, ``my_pr.draft_notes`` when there are pending review
     comments to address, and ``my_pr.open`` for every other open PR so
     the dispatcher can render an "in flight" summary.
+
+    ``identities`` opts the scanner into a multi-alias union query — used
+    when the user has more than one identity on the same forge (a personal
+    login plus an org-account login under one PAT scope). When empty the
+    scanner falls back to ``host.current_user()`` so legacy single-identity
+    setups behave unchanged. PRs surfaced under multiple aliases are
+    deduped by ``url`` (#976).
     """
 
     host: CodeHostBackend
+    identities: tuple[str, ...] = field(default_factory=tuple)
     name: str = "my_prs"
 
     def scan(self) -> list[ScanSignal]:
-        author = self.host.current_user()
-        if not author:
+        authors = self._resolve_identities()
+        if not authors:
             return []
-        prs = self.host.list_my_prs(author=author)
+        prs = self._collect_unique_prs(authors)
         signals: list[ScanSignal] = []
         for pr in prs:
             url = _str_field(pr, "web_url", "html_url")
@@ -134,3 +142,33 @@ class MyPrsScanner:
                 )
             )
         return signals
+
+    def _resolve_identities(self) -> tuple[str, ...]:
+        # Multi-identity wins: caller supplied an explicit alias set, use it
+        # verbatim so a misconfigured ``current_user`` (wrong PAT scope, or a
+        # token whose `/user` differs from the human's preferred handle)
+        # doesn't silently re-collapse the query. Empty falls back to the
+        # legacy single-user contract.
+        if self.identities:
+            return tuple(dict.fromkeys(self.identities))
+        user = self.host.current_user()
+        return (user,) if user else ()
+
+    def _collect_unique_prs(self, authors: tuple[str, ...]) -> list[RawAPIDict]:
+        """Union PRs across *authors*, deduped by URL.
+
+        A PR returned for two aliases (co-author / shared identity) renders
+        once. PRs without a URL keep their legacy "emit once" shape — there
+        is no other stable identity to dedup on.
+        """
+        seen_urls: set[str] = set()
+        prs: list[RawAPIDict] = []
+        for author in authors:
+            for pr in self.host.list_my_prs(author=author):
+                url = _str_field(pr, "web_url", "html_url")
+                if url and url in seen_urls:
+                    continue
+                if url:
+                    seen_urls.add(url)
+                prs.append(pr)
+        return prs
