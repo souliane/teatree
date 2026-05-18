@@ -12,6 +12,7 @@ from teatree.backends.loader import (
     get_ci_service,
     get_code_host,
     get_code_host_for_url,
+    get_code_hosts,
     get_messaging,
     reset_backend_caches,
 )
@@ -72,6 +73,53 @@ def test_get_code_host_raises_on_unknown_choice() -> None:
     _stub_token(overlay)
     with pytest.raises(ValueError, match="Unknown code_host"):
         get_code_host(overlay)
+
+
+def test_get_code_hosts_returns_both_when_both_tokens_set() -> None:
+    """An overlay that opts into auto-pick gets both code hosts (#976)."""
+    overlay = _build_overlay()
+    _stub_token(overlay, github="gh-test", gitlab="gl-test")
+    hosts = get_code_hosts(overlay)
+    types = sorted(type(h).__name__ for h in hosts)
+    assert types == [GitHubCodeHost.__name__, GitLabCodeHost.__name__]
+
+
+def test_get_code_hosts_honours_explicit_github_choice() -> None:
+    """An overlay that pins ``code_host = github`` still gets one host even when both PATs are set."""
+    overlay = _build_overlay(code_host="github")
+    _stub_token(overlay, github="gh-test", gitlab="gl-test")
+    hosts = get_code_hosts(overlay)
+    assert [type(h).__name__ for h in hosts] == [GitHubCodeHost.__name__]
+
+
+def test_get_code_hosts_honours_explicit_gitlab_choice() -> None:
+    overlay = _build_overlay(code_host="gitlab")
+    _stub_token(overlay, github="gh-test", gitlab="gl-test")
+    hosts = get_code_hosts(overlay)
+    assert [type(h).__name__ for h in hosts] == [GitLabCodeHost.__name__]
+
+
+def test_get_code_hosts_returns_empty_when_no_tokens_resolve() -> None:
+    overlay = _build_overlay()
+    _stub_token(overlay)
+    assert get_code_hosts(overlay) == []
+
+
+def test_get_code_hosts_explicit_choice_returns_empty_without_token() -> None:
+    """Pinning a platform but having no token for it surfaces as an empty list."""
+    overlay = _build_overlay(code_host="github")
+    _stub_token(overlay)
+    assert get_code_hosts(overlay) == []
+    overlay = _build_overlay(code_host="gitlab")
+    _stub_token(overlay)
+    assert get_code_hosts(overlay) == []
+
+
+def test_get_code_hosts_raises_on_unknown_choice() -> None:
+    overlay = _build_overlay(code_host="bogus")
+    _stub_token(overlay)
+    with pytest.raises(ValueError, match="Unknown code_host"):
+        get_code_hosts(overlay)
 
 
 def test_get_messaging_default_is_noop() -> None:
