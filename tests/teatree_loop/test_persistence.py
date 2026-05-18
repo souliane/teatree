@@ -110,6 +110,29 @@ class TestPersistReviewer(TestCase):
         assert len(created) == 1
         assert created[0].phase == "reviewing"
 
+    def test_reenqueues_when_head_sha_blank_despite_recorded_approval(self) -> None:
+        """An empty head SHA cannot confirm approval parity — fail open, still review (#965).
+
+        A recorded ``last_review_state=APPROVED`` is only a valid dedup
+        signal when it can be tied to the *current* head SHA. When the
+        scanner yields a blank ``head_sha`` (parity cannot be confirmed),
+        ``_already_reviewed_at_head`` returns False — the review must NOT
+        be silently suppressed. Covers persistence.py:149 (the
+        ``if not head_sha: return False`` fail-open guard).
+        """
+        url = "https://example.com/owner/repo/pull/79"
+        Ticket.objects.create(
+            issue_url=url,
+            overlay="acme",
+            role=Ticket.Role.REVIEWER,
+            extra={"reviewed_sha": "sha-approved", "last_review_state": ReviewState.APPROVED.value},
+        )
+
+        created = persist_agent_actions([self._action(url=url, head_sha="")])
+
+        assert len(created) == 1
+        assert created[0].phase == "reviewing"
+
     def test_skips_action_without_url(self) -> None:
         action = DispatchAction(kind="agent", zone="t3:reviewer", detail="no url", payload={})
         assert persist_agent_actions([action]) == []
