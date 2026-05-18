@@ -14,6 +14,7 @@ from django.test import TestCase
 
 from teatree.core.cleanup import BranchClassification, BranchCommit, cleanup_worktree
 from teatree.core.models import Ticket, Worktree
+from teatree.utils.run import CommandFailedError
 
 _patch_config = patch("teatree.core.cleanup.load_config")
 _patch_git = patch("teatree.core.cleanup.git")
@@ -69,12 +70,13 @@ class TestCleanupWorktree(TestCase):
 
         wt = self._make_worktree(wt_path="/tmp/wt/org/repo")
         wt_id = wt.pk
-        label = cleanup_worktree(wt)
+        result = cleanup_worktree(wt)
 
         mock_git.worktree_remove.assert_called_once()
         mock_git.branch_delete.assert_called_once()
-        assert "org/repo" in label
-        assert "fix-99" in label
+        assert result.clean is True
+        assert "org/repo" in result.label
+        assert "fix-99" in result.label
         assert not Worktree.objects.filter(pk=wt_id).exists()
 
     @_patch_overlay
@@ -534,3 +536,160 @@ class TestCleanupWorktree(TestCase):
 
         mock_git.worktree_remove.assert_called_once()
         mock_git.branch_delete.assert_called_once()
+
+
+class TestCleanupWorktreeLoudTeardown(TestCase):
+    """#877 — teardown failures surface in ``CleanupResult.errors``.
+
+    The loud-teardown half of #877: no ``suppress(Exception)`` / silent
+    swallowing on the teardown path. A failing resource (DB drop, pass
+    entry removal, overlay step) is recorded as a descriptive error string
+    and the *other* resources are still reaped — collect-and-surface, never
+    crash mid-teardown leaving orphans.
+    """
+
+    def _make_worktree(self, *, db_name: str = "wt_99") -> Worktree:
+        ticket = Ticket.objects.create(
+            issue_url="https://gitlab.com/org/repo/-/issues/99",
+            state=Ticket.State.IN_REVIEW,
+        )
+        return Worktree.objects.create(
+            overlay="test",
+            ticket=ticket,
+            repo_path="org/repo",
+            branch="fix-99",
+            db_name=db_name,
+            extra={"worktree_path": "/tmp/wt/org/repo"},
+        )
+
+    @_patch_overlay
+    @_patch_git
+    @_patch_config
+    def test_db_drop_failure_surfaced_other_resources_still_reaped(
+        self,
+        mock_config: MagicMock,
+        mock_git: MagicMock,
+        mock_overlay: MagicMock,
+    ) -> None:
+        """A failed ``dropdb`` is recorded in ``errors``; the row + pass entry still go.
+
+        Before #877 this either crashed mid-teardown (leaving the Worktree
+        row, redis slot and pass entry orphaned) or was swallowed. Now the
+        failure is a descriptive ``errors`` entry, the result is non-clean,
+        and every other resource is still cleaned.
+        """
+        _mock_workspace(mock_config)
+        _no_unpushed(mock_git)
+        mock_overlay.return_value.get_cleanup_steps.return_value = []
+        mock_overlay.return_value.config.teardown_removes_pass_entries = True
+        mock_git.status_porcelain.return_value = ""
+        mock_git.unsynced_commits.return_value = []
+
+        wt = self._make_worktree(db_name="wt_99")
+        wt_id = wt.pk
+        ticket_number = wt.ticket.ticket_number
+
+        with (
+            patch(
+                "teatree.core.cleanup.drop_db",
+                side_effect=CommandFailedError(["dropdb", "wt_99"], 1, "", "connection refused"),
+            ),
+            patch("teatree.core.cleanup.remove_postgres_pass_entry") as mock_remove,
+        ):
+            result = cleanup_worktree(wt)
+
+        # Failure surfaced, not swallowed
+        assert result.clean is False
+        assert any("wt_99" in e for e in result.errors)
+        assert any("connection refused" in e for e in result.errors)
+        # Other resources STILL reaped despite the DB-drop failure
+        mock_remove.assert_called_once_with(ticket_number)
+        mock_git.worktree_remove.assert_called_once()
+        assert not Worktree.objects.filter(pk=wt_id).exists()
+
+    @_patch_overlay
+    @_patch_git
+    @_patch_config
+    def test_pass_entry_removal_failure_surfaced(
+        self,
+        mock_config: MagicMock,
+        mock_git: MagicMock,
+        mock_overlay: MagicMock,
+    ) -> None:
+        """A failing pass-entry removal is surfaced, the worktree row still deleted."""
+        _mock_workspace(mock_config)
+        _no_unpushed(mock_git)
+        mock_overlay.return_value.get_cleanup_steps.return_value = []
+        mock_overlay.return_value.config.teardown_removes_pass_entries = True
+        mock_git.status_porcelain.return_value = ""
+        mock_git.unsynced_commits.return_value = []
+
+        wt = self._make_worktree(db_name="")
+        wt_id = wt.pk
+
+        with (
+            patch("teatree.core.cleanup.drop_db"),
+            patch(
+                "teatree.core.cleanup.remove_postgres_pass_entry",
+                side_effect=RuntimeError("pass: gpg failed"),
+            ),
+        ):
+            result = cleanup_worktree(wt)
+
+        assert result.clean is False
+        assert any("gpg failed" in e for e in result.errors)
+        assert not Worktree.objects.filter(pk=wt_id).exists()
+
+    @_patch_overlay
+    @_patch_git
+    @_patch_config
+    def test_overlay_step_failure_surfaced_in_errors_not_only_label(
+        self,
+        mock_config: MagicMock,
+        mock_git: MagicMock,
+        mock_overlay: MagicMock,
+    ) -> None:
+        """Overlay-step failures reach ``errors`` (the operator channel), not just the label string.
+
+        #932's lesson: a swallowed string the caller never inspects is not
+        surfacing. The structured ``errors`` list is what sync backends push
+        into ``SyncResult.errors``.
+        """
+        _mock_workspace(mock_config)
+        _no_unpushed(mock_git)
+        failing_step = MagicMock(callable=MagicMock(side_effect=RuntimeError("docker compose down failed")))
+        failing_step.description = "stop docker stack"
+        mock_overlay.return_value.get_cleanup_steps.return_value = [failing_step]
+        mock_git.status_porcelain.return_value = ""
+        mock_git.unsynced_commits.return_value = []
+
+        wt = self._make_worktree(db_name="")
+        result = cleanup_worktree(wt)
+
+        assert result.clean is False
+        assert any("docker compose down failed" in e for e in result.errors)
+
+    @_patch_overlay
+    @_patch_git
+    @_patch_config
+    def test_clean_teardown_has_empty_errors_and_is_clean(
+        self,
+        mock_config: MagicMock,
+        mock_git: MagicMock,
+        mock_overlay: MagicMock,
+    ) -> None:
+        """The happy path: no errors, ``clean`` is true, label still contains the worktree."""
+        _mock_workspace(mock_config)
+        _no_unpushed(mock_git)
+        mock_overlay.return_value.get_cleanup_steps.return_value = []
+        mock_git.status_porcelain.return_value = ""
+        mock_git.unsynced_commits.return_value = []
+
+        wt = self._make_worktree(db_name="")
+        with patch("teatree.core.cleanup.drop_db"):
+            result = cleanup_worktree(wt)
+
+        assert result.clean is True
+        assert result.errors == []
+        assert "org/repo" in result.label
+        assert "org/repo" in str(result)
