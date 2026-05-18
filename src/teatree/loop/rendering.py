@@ -261,7 +261,52 @@ def _classify_actions(actions: list[DispatchAction]) -> _ClassifiedActions:
             bucket.setdefault(overlay, []).append(ref)
             continue
         c.other.append((action.zone, StatuslineEntry(text=f"{prefix}{action.detail}", url=url_str)))
+    _dedup_classified(c)
     return c
+
+
+def _dedup_in_order[T](items: list[T]) -> list[T]:
+    """Return *items* with duplicates dropped, first-occurrence wins.
+
+    Statusline rows must be stable across ticks: two scanners surfacing
+    the same observation (same ``ticket.active`` row, same PR seen by both
+    ``MyPrsScanner`` and ``ReviewerPrsScanner``, same ``ticket.stale`` row
+    emitted again on the next sweep) must collapse to one ref. Order is
+    preserved so the user sees a deterministic line.
+    """
+    seen: set[T] = set()
+    out: list[T] = []
+    for item in items:
+        if item in seen:
+            continue
+        seen.add(item)
+        out.append(item)
+    return out
+
+
+def _dedup_classified(c: _ClassifiedActions) -> None:
+    """Collapse duplicate refs in every per-overlay bucket.
+
+    The dispatch layer is fan-out by signal (one signal per scanner that
+    saw it); the renderer is the boundary that must present each observed
+    thing exactly once. Doing the dedup here keeps every downstream
+    renderer simple — they can assume the input list has no duplicates.
+    """
+    for overlay, tickets in list(c.active_tickets.items()):
+        c.active_tickets[overlay] = _dedup_in_order(tickets)
+    for overlay, refs in list(c.stale_refs.items()):
+        c.stale_refs[overlay] = _dedup_in_order(refs)
+    for overlay, refs in list(c.ready_refs.items()):
+        c.ready_refs[overlay] = _dedup_in_order(refs)
+    for overlay, refs in list(c.action_prs.items()):
+        c.action_prs[overlay] = _dedup_in_order(refs)
+    for overlay, refs in list(c.inflight_prs.items()):
+        c.inflight_prs[overlay] = _dedup_in_order(refs)
+    for overlay, reass in list(c.reassign_refs.items()):
+        c.reassign_refs[overlay] = _dedup_in_order(reass)
+    for reason_map in c.disposition_refs.values():
+        for reason, refs in list(reason_map.items()):
+            reason_map[reason] = _dedup_in_order(refs)
 
 
 # States that should not surface as anchors: terminal/post-PR states plus
@@ -390,6 +435,16 @@ def _render_action_line(
 
 
 def _running_tasks_lines() -> list[str]:
+    """Render the ``[ov] agents: <phase> · <phase>`` row from CLAIMED tasks.
+
+    Skips tasks with a blank ``phase`` (the column is ``blank=True`` and
+    the default is ``""``) so the renderer never produces a phantom
+    ``agents:  · coding`` with a double space the operator can't act on.
+    Dedupes phase names per overlay: two parallel implementers both at
+    ``coding`` collapse to one ``agents: coding`` ref — concurrency is
+    implied by the loop, not by visually repeating the same word.
+    Suppresses the whole row when no claimed task contributes a phase.
+    """
     from django.apps import apps  # noqa: PLC0415
 
     try:
@@ -401,14 +456,20 @@ def _running_tasks_lines() -> list[str]:
         )
         by_overlay: dict[str, list[str]] = {}
         for task in claimed:
+            phase = (task.phase or "").strip()
+            if not phase:
+                continue
             overlay = task.ticket.overlay or ""
-            by_overlay.setdefault(overlay, []).append(task.phase)
+            by_overlay.setdefault(overlay, []).append(phase)
     except Exception:  # noqa: BLE001
         return []
     lines: list[str] = []
     for overlay, phases in sorted(by_overlay.items()):
+        unique_phases = _dedup_in_order(phases)
+        if not unique_phases:
+            continue
         prefix = f"[{overlay}] " if overlay else ""
-        lines.append(f"{prefix}agents: {' · '.join(phases)}")
+        lines.append(f"{prefix}agents: {' · '.join(unique_phases)}")
     return lines
 
 
