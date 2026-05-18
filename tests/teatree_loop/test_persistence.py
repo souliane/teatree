@@ -4,6 +4,7 @@ from unittest.mock import patch
 
 from django.test import TestCase
 
+from teatree.backends.protocols import ReviewState
 from teatree.core.models import Task, Ticket
 from teatree.loop.dispatch import DispatchAction
 from teatree.loop.persistence import persist_agent_actions
@@ -64,6 +65,50 @@ class TestPersistReviewer(TestCase):
         assert len(created) == 1
         ticket = Ticket.objects.get(issue_url=first.payload["url"])
         assert ticket.extra["reviewed_sha"] == "def456"
+
+    def test_skips_reenqueue_when_already_approved_at_same_sha(self) -> None:
+        """Skip re-enqueue when an MR was already reviewed+approved out-of-band (#959 defect 2).
+
+        The 3 SSO-mock MRs were independently reviewed AND approved
+        earlier the same day (out-of-band, NOT via a loop reviewing
+        Task). The forge approval is recorded on the reviewer ticket as
+        ``last_review_state=APPROVED`` + ``reviewed_sha=<head>``. With no
+        *open* reviewing Task, the old dedup (open-task-only) re-created a
+        review Task every tick (the live tasks 49/50/51). When the
+        recorded approval matches the current head SHA, the scan is a
+        no-op.
+        """
+        url = "https://example.com/owner/repo/pull/77"
+        Ticket.objects.create(
+            issue_url=url,
+            overlay="acme",
+            role=Ticket.Role.REVIEWER,
+            extra={"reviewed_sha": "sha-approved", "last_review_state": ReviewState.APPROVED.value},
+        )
+
+        result = persist_agent_actions([self._action(url=url, head_sha="sha-approved")])
+
+        assert result == []
+        assert Task.objects.filter(ticket__issue_url=url, phase="reviewing").count() == 0
+
+    def test_reenqueues_when_approved_but_head_sha_moved(self) -> None:
+        """A recorded approval is stale once the author pushes new commits — review the new SHA.
+
+        No false-negative dedup: the recorded APPROVED belonged to the
+        old SHA, so the new revision must still be reviewed.
+        """
+        url = "https://example.com/owner/repo/pull/78"
+        Ticket.objects.create(
+            issue_url=url,
+            overlay="acme",
+            role=Ticket.Role.REVIEWER,
+            extra={"reviewed_sha": "old-sha", "last_review_state": ReviewState.APPROVED.value},
+        )
+
+        created = persist_agent_actions([self._action(url=url, head_sha="new-sha")])
+
+        assert len(created) == 1
+        assert created[0].phase == "reviewing"
 
     def test_skips_action_without_url(self) -> None:
         action = DispatchAction(kind="agent", zone="t3:reviewer", detail="no url", payload={})
