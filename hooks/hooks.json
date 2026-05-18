@@ -50,7 +50,7 @@
     ],
     "PostToolUse": [
       {
-        "matcher": "Bash|Write|Edit|Read|Grep|Glob",
+        "matcher": "Bash|Write|Edit|Read|Grep|Glob|TodoWrite",
         "hooks": [
           {
             "type": "command",
