@@ -98,13 +98,75 @@ class TestLoopSelfPump:
         assert _decision(capsys) == {}
         assert result is not True  # idle: no block, session may end
 
-    # NOTE: the pre-WS4 ``test_non_owner_session_never_pumps`` was removed.
-    # Its premise — "only the single global tick-owner session ever
-    # pumps" — is exactly the "collapsed to one global" anti-pattern #786
-    # invariant 3 overturns. A non-tick-owner agent with its own identity
-    # and pending work MUST run its own consolidation loop; that contract
-    # is asserted in test_per_agent_consolidation_loop.py
-    # (TestExactlyOnePerAgentIdentity::test_not_collapsed_to_one_global_owner).
+    # #959: the self-pump is a SINGLETON bound to the one designated
+    # loop-owner session (the ``_OWNER_LOOP`` record set at SessionStart).
+    # The WS4 "per-agent, decoupled from the tick-owner" decoupling leaked
+    # the loop into every fresh/unrelated session: a brand-new blog-writing
+    # session immediately started pumping ``t3 loop tick`` / ``claim-next``.
+    # A non-owner session's Stop hook MUST be a clean no-op (no pump, no
+    # subprocess, no error noise) — the per-agent consolidation slot is a
+    # secondary dedup, NOT a substitute for the owner gate.
+
+    def test_non_owner_session_never_pumps(
+        self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A DIFFERENT live session owns the loop; this fresh, unrelated
+        # session has pending work but must NOT pump.
+        _own_loop("owner-1")
+        _fake_pending(monkeypatch, [{"task_id": 9, "subagent": "x", "phase": "coding", "issue_url": "u"}])
+
+        result = handle_loop_self_pump({"session_id": "blog-session", "agent_id": "blog-agent"})
+
+        assert _decision(capsys) == {}  # clean no-op: no block decision
+        assert result is not True
+
+    def test_non_owner_session_does_not_probe_pending_work(
+        self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The owner gate is checked BEFORE any pending-spawn subprocess —
+        # a non-owner session must not even shell out to ``t3``.
+        _own_loop("owner-1")
+        probed = {"called": False}
+
+        def _spy() -> list[dict]:
+            probed["called"] = True
+            return [{"task_id": 1, "subagent": "x", "phase": "c", "issue_url": "u"}]
+
+        monkeypatch.setattr(router, "_consolidated_pending_work", _spy)
+
+        result = handle_loop_self_pump({"session_id": "other-session"})
+
+        assert probed["called"] is False
+        assert _decision(capsys) == {}
+        assert result is not True
+
+    def test_no_owner_recorded_is_a_clean_noop(
+        self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # No ``_OWNER_LOOP`` record at all (registry empty) ⇒ no session is
+        # the designated owner ⇒ nobody pumps. (SessionStart designates an
+        # owner; absent that, the loop is idle by design.)
+        _fake_pending(monkeypatch, [{"task_id": 5, "subagent": "x", "phase": "c", "issue_url": "u"}])
+
+        result = handle_loop_self_pump({"session_id": "any-session"})
+
+        assert _decision(capsys) == {}
+        assert result is not True
+
+    def test_disown_env_var_makes_owner_stop_hook_a_noop(
+        self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Immediate mitigation: even the owner session can release the
+        # loop in-process by exporting ``T3_LOOP_DISOWN=1`` — the Stop
+        # hook becomes a clean no-op without touching the registry.
+        _own_loop("owner-1")
+        _fake_pending(monkeypatch, [{"task_id": 2, "subagent": "x", "phase": "c", "issue_url": "u"}])
+        monkeypatch.setenv("T3_LOOP_DISOWN", "1")
+
+        result = handle_loop_self_pump({"session_id": "owner-1"})
+
+        assert _decision(capsys) == {}
+        assert result is not True
 
     def test_anti_spin_suppresses_immediate_repeat(
         self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch

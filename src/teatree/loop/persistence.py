@@ -108,12 +108,49 @@ def _handle_reviewer(action: DispatchAction) -> Task | None:
     if head_sha and (ticket.extra or {}).get("reviewed_sha") != head_sha:
         # #800 N3: canonical locked RMW — a concurrent pr_urls /
         # visual_qa writer no longer clobbers reviewed_sha.
-        ticket.merge_extra(set_keys={"reviewed_sha": head_sha})
+        #
+        # #959 defect 2: a SHA move invalidates any prior approval — drop
+        # ``last_review_state`` in the same RMW so the
+        # ``_already_reviewed_at_head`` dedup below does NOT suppress
+        # review of the genuinely new revision (the recorded APPROVED
+        # belonged to the old SHA).
+        ticket.merge_extra(set_keys={"reviewed_sha": head_sha}, pop_keys=["last_review_state"])
     if _has_open_task(ticket, phase="reviewing"):
+        return None
+    if _already_reviewed_at_head(ticket, head_sha):
+        # #959 defect 2: the MR was already independently reviewed AND
+        # approved (e.g. an out-of-band review pass) at the CURRENT head
+        # SHA. There is no *open* reviewing Task — the prior dedup
+        # (open-task-only) re-enqueued review every tick (the live tasks
+        # 49/50/51 for the already-approved SSO-mock MRs). A recorded
+        # forge approval matching the current head is authoritative
+        # "already reviewed"; a SHA move resets it via the mismatch path
+        # above, so a genuinely new revision is still reviewed.
+        logger.debug("PR %s already approved at head %s — not re-enqueuing review", pr_url, head_sha)
         return None
     from teatree.core.models.ticket import schedule_external_review  # noqa: PLC0415
 
     return schedule_external_review(ticket)
+
+
+def _already_reviewed_at_head(ticket: Ticket, head_sha: str) -> bool:
+    """Has this PR a recorded forge approval at the current head SHA?
+
+    The dedup signal for an *out-of-band* review (one not driven by a
+    loop reviewing Task, so there is no open/completed Task to key on) is
+    the reviewer ticket's ``last_review_state``/``reviewed_sha`` pair —
+    written by ``Ticket.mark_reviewed_externally`` and the
+    ``ReviewerPrsScanner`` cache. APPROVED at the current head ⇒ the
+    review already happened; re-enqueueing would duplicate it every tick.
+    A blank ``head_sha`` is treated as "cannot confirm parity" so review
+    is NOT suppressed (fail-open — never silently skip a real review).
+    """
+    if not head_sha:
+        return False
+    from teatree.backends.protocols import ReviewState  # noqa: PLC0415
+
+    extra = ticket.extra or {}
+    return extra.get("last_review_state") == ReviewState.APPROVED.value and extra.get("reviewed_sha") == head_sha
 
 
 def _handle_orchestrator(action: DispatchAction) -> Task | None:

@@ -1925,10 +1925,41 @@ def handle_loop_self_pump(data: dict) -> bool | None:
         return None
 
 
+_DISOWN_FALSEY: frozenset[str] = frozenset({"", "0", "false", "False"})
+
+
+def _self_pump_suppressed(session_id: str) -> bool:
+    """Is the Stop self-pump gated off for this session (#959)?
+
+    The self-pump is a SINGLETON bound to the ONE designated loop-owner
+    session (the ``_OWNER_LOOP`` record — set at SessionStart, released
+    at SessionEnd, transferable across sessions). WS4's "per-agent,
+    decoupled from the tick-owner" model leaked the loop into EVERY
+    fresh/unrelated session — a brand-new blog-writing session
+    immediately started pumping ``t3 loop tick``/``claim-next`` and
+    spawning review sub-agents. This gate is checked FIRST so a
+    non-owner session's Stop hook is a clean no-op: no ``pending-spawn``
+    subprocess, no registry write, no error noise in the transcript. The
+    per-agent consolidation slot stays as a secondary cross-session
+    dedup, NOT a substitute for this gate.
+
+    Immediate mitigation knob: ``T3_LOOP_DISOWN`` truthy in the
+    session's env makes even the owner's Stop hook a clean no-op, so a
+    session can stop driving the loop in-process without touching the
+    registry or ending the session.
+    """
+    if os.environ.get("T3_LOOP_DISOWN", "").strip() not in _DISOWN_FALSEY:
+        return True
+    return not _session_owns_loop(session_id)
+
+
 def _loop_self_pump(data: dict) -> bool | None:
     session_id = data.get("session_id", "")
     if not session_id:
         return None
+    if _self_pump_suppressed(session_id):
+        return None
+
     actor = _actor_key(data)
 
     _ensure_state_dir()
