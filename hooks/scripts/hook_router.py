@@ -698,6 +698,103 @@ def handle_block_ai_signature(data: dict) -> bool:
     return False
 
 
+# ── PreToolUse: block-uncovered-diff (#937 §17.6 gate 12) ───────────
+#
+# Gate 12's detection (``teatree.utils.diff_coverage`` / ``t3 tool
+# diff-coverage``) shipped correct in #862 but was wired into ZERO
+# automatic enforcement points (absent from CI, pre-commit and this
+# ``PreToolUse`` chain). §17.6.3 requires it to run as a pre-merge gate
+# and "return the PR to draft automatically". This handler is that
+# wiring — it mirrors the sibling Gate-15 (``handle_block_ai_signature``)
+# shape exactly: intercept the merge-class mutations that move a PR
+# toward review/merge and ``deny`` when ``t3 tool diff-coverage`` fails.
+#
+# Trigger surface (the moment a PR moves toward review/merge — the
+# "return to draft automatically" reverse is ``gh pr ready --undo``):
+#   - ``gh pr ready`` un-drafting a PR (NOT ``gh pr ready --undo``,
+#     which IS the gate's remediation)
+#   - a NON-draft ``gh pr create`` / ``glab mr create``
+# A draft PR is not yet under review, so draft creation does not fire;
+# ``git commit`` is deliberately NOT a trigger — Gate 12 is pre-MERGE,
+# not pre-commit (the commit-stage gates are §17.1-numbering / sync).
+# Fails open on a broken environment (no ``t3``, timeout), matching the
+# other t3-shelling hooks.
+
+_GH_PR_READY_RE = re.compile(r"\bgh\s+pr\s+ready\b")
+_PR_MR_CREATE_RE = re.compile(r"\b(?:gh\s+pr\s+create|glab\s+mr\s+create)\b")
+_DRAFT_FLAG_RE = re.compile(r"(?:^|\s)(?:--draft|--undo)\b")
+
+
+def _is_merge_class_mutation(data: dict) -> bool:
+    """Whether this tool call moves a PR toward review/merge.
+
+    ``gh pr ready`` (un-drafting) or a non-draft ``gh pr create`` /
+    ``glab mr create``. ``gh pr ready --undo`` (return-to-draft, the
+    gate's own remediation) and ``--draft`` creation are excluded.
+    """
+    if data.get("tool_name") != "Bash":
+        return False
+    command = data.get("tool_input", {}).get("command", "")
+    if _GH_PR_READY_RE.search(command) or _PR_MR_CREATE_RE.search(command):
+        return not _DRAFT_FLAG_RE.search(command)
+    return False
+
+
+def _diff_coverage_argv() -> list[str] | None:
+    t3_bin = shutil.which("t3")
+    if t3_bin:
+        return [t3_bin, "tool", "diff-coverage"]
+    return None
+
+
+def handle_block_uncovered_diff(data: dict) -> bool:
+    """Refuse a PR un-draft / non-draft create whose diff fails Gate 12.
+
+    Deterministic pre-merge enforcement of the per-diff coverage +
+    mutation/revert gate (BLUEPRINT §17.6 gate 12, #937). The detection
+    shipped correct in #862 but ran in zero automatic enforcement points
+    — a vacuity gate that never fires is itself a false-completion
+    surface. This makes it a code gate at the same pre-merge layer as
+    the sibling Gate-15 AI-signature scan, reusing ``t3 tool
+    diff-coverage`` as-is. Fails open on a broken environment (no
+    ``t3``, timeout), matching the other t3-shelling hooks.
+    """
+    if not _is_merge_class_mutation(data):
+        return False
+
+    argv = _diff_coverage_argv()
+    if argv is None:
+        return False
+
+    try:
+        result = subprocess.run(  # noqa: S603
+            argv,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return False
+
+    if result.returncode != 0:
+        json.dump(
+            {
+                "permissionDecision": "deny",
+                "permissionDecisionReason": (
+                    "BLOCKED: per-diff coverage gate 12 failed (BLUEPRINT §17.6.3). "
+                    "An added production line is uncovered or a changed symbol is not "
+                    "referenced by a changed test. Cover/reference it, then re-mark the "
+                    "PR ready (resolve the finding before re-requesting review).\n"
+                    + (result.stdout or result.stderr or "").strip()
+                ),
+            },
+            sys.stdout,
+        )
+        return True
+    return False
+
+
 # ── PreToolUse: orchestrator-execution-boundary (#836 §17.6 gate 2) ──
 #
 # The orchestrator (the MAIN agent) is delegate-only: it dispatches
@@ -2743,6 +2840,7 @@ _HANDLERS: dict[str, list] = {
         handle_block_direct_commands,
         handle_validate_mr_metadata,
         handle_block_ai_signature,
+        handle_block_uncovered_diff,
         handle_enforce_orchestrator_boundary,
         handle_mirror_question_to_slack,
     ],
