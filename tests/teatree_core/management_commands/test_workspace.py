@@ -23,6 +23,7 @@ import teatree.utils.run as utils_run_mod
 from teatree.core.management.commands.workspace import _branch_prefix, _workspace_dir
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay import OverlayBase, ProvisionStep
+from teatree.core.runners import RunnerResult
 from tests.teatree_core.management_commands._overlays import (
     FULL_OVERLAY,
     NESTED_OVERLAY,
@@ -536,6 +537,62 @@ _no_orphan_dbs = patch.object(workspace_mod, "drop_orphan_databases", new=list)
 _no_dslr_prune = patch("teatree.utils.django_db.prune_dslr_snapshots", new=lambda **kw: [])
 
 
+class TestWorkspaceStartTeardownExitCodes(TestCase):
+    """#932: start/teardown must raise SystemExit(1) on real failures."""
+
+    def _make_worktree(self, tmp: str) -> tuple[Ticket, Worktree, Path]:
+        wt_dir = Path(tmp) / "backend"
+        wt_dir.mkdir()
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/932")
+        wt = Worktree.objects.create(
+            overlay="test",
+            ticket=ticket,
+            repo_path="/tmp/backend",
+            branch="feature",
+            extra={"worktree_path": str(wt_dir)},
+            state=Worktree.State.PROVISIONED,
+        )
+        return ticket, wt, wt_dir
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_start_failure_raises_system_exit_1(self) -> None:
+        """A worktree whose start runner fails must exit 1, not return "error".
+
+        Regression for #932: `return "error"` exited 0, so the lifecycle
+        advanced as if every service was up.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            _, _, wt_dir = self._make_worktree(tmp)
+            failing = MagicMock()
+            failing.run.return_value = RunnerResult(ok=False, detail="docker compose up failed")
+            with (
+                patch.object(workspace_mod, "WorktreeStartRunner", return_value=failing),
+                pytest.raises(SystemExit) as exc_info,
+            ):
+                call_command("workspace", "start", path=str(wt_dir))
+            assert exc_info.value.code == 1
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_teardown_with_failures_raises_system_exit_1(self) -> None:
+        """Teardown that has per-worktree failures must exit 1.
+
+        Regression for #932: `return f"completed with N failure(s)"` exited 0
+        and the wording falsely said "completed".
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            _, _, wt_dir = self._make_worktree(tmp)
+            failing = MagicMock()
+            failing.run.return_value = RunnerResult(ok=False, detail="git worktree remove failed")
+            with (
+                patch.object(workspace_mod, "WorktreeTeardownRunner", return_value=failing),
+                pytest.raises(SystemExit) as exc_info,
+            ):
+                call_command("workspace", "teardown", path=str(wt_dir))
+            assert exc_info.value.code == 1
+
+
 class TestWorkspaceCleanAll(TestCase):
     @_no_prune
     @_no_stash
@@ -854,6 +911,45 @@ class TestWorkspaceCleanAll(TestCase):
             assert any("ac-frontend-360-ticket" in c and "unsynced" in c.lower() for c in cleaned)
             assert Worktree.objects.filter(branch="ac-backend-360-ticket").count() == 0
             assert Worktree.objects.filter(branch="ac-frontend-360-ticket").count() == 1
+
+    @_no_prune
+    @_no_stash
+    @_no_orphan_dbs
+    @_no_dslr_prune
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_push_or_abandon_failure_raises_system_exit_1(self) -> None:
+        """clean-all must exit 1 when a push/abandon attempt genuinely failed.
+
+        Regression for #932: `_workspace_cleanup` returned "Push failed:" /
+        "Abandon failed:" strings that clean-all printed and then exited 0,
+        so the followup loop saw the cleanup as successful.
+        """
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/932")
+        Worktree.objects.create(
+            overlay="test",
+            ticket=ticket,
+            repo_path="backend",
+            branch="ac-backend-932-ticket",
+            extra={"worktree_path": "/tmp/wt932"},
+        )
+
+        with (
+            patch.object(
+                workspace_mod,
+                "cleanup_worktree",
+                side_effect=RuntimeError("2 unsynced commit(s) not on origin/main"),
+            ),
+            patch.object(
+                workspace_mod,
+                "resolve_unsynced_worktree",
+                return_value="Push failed: backend (ac-backend-932-ticket) — remote rejected",
+            ),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            call_command("workspace", "clean-all")
+
+        assert exc_info.value.code == 1
 
 
 class TestResolveUnsyncedWorktree(TestCase):

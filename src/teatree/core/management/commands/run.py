@@ -119,7 +119,8 @@ class Command(TyperCommand):
         overlay = get_overlay()
         test_cmd = overlay.get_test_command(worktree)
         if not test_cmd:
-            return "No test command configured in the overlay."
+            self.stderr.write("No test command configured in the overlay.")
+            raise SystemExit(1)
 
         if isinstance(test_cmd, RunCommand):
             args = list(test_cmd.args)
@@ -134,5 +135,6 @@ class Command(TyperCommand):
 
         rc = run_streamed(args, cwd=cwd, env=env, check=False)
         if rc != 0:
-            return f"Tests failed (exit {rc})."
+            self.stderr.write(f"Tests failed (exit {rc}).")
+            raise SystemExit(1)
         return "Tests completed."

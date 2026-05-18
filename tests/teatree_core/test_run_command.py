@@ -4,6 +4,7 @@ from subprocess import CompletedProcess
 from typing import cast
 from unittest.mock import MagicMock, patch
 
+import pytest
 from django.core.management import call_command
 from django.test import TestCase, override_settings
 
@@ -241,8 +242,8 @@ class TestE2eExternalCommand(TestCase):
             assert captured_envs[-1]["CUSTOMER"] == "acme"
 
     @override_settings(**COMMAND_SETTINGS)
-    def test_returns_error_when_frontend_not_running(self) -> None:
-        """e2e external returns error when frontend service is not running."""
+    def test_raises_system_exit_when_frontend_not_running(self) -> None:
+        """e2e external must exit 1 when the frontend service is not running (#932)."""
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             private_tests_dir = tmp_path / "private-tests"
@@ -272,10 +273,11 @@ class TestE2eExternalCommand(TestCase):
                 ),
                 patch.object(e2e_mod, "get_service_port", return_value=None),
                 patch.object(e2e_mod, "_detect_local_port", return_value=None),
+                pytest.raises(SystemExit) as exc_info,
             ):
-                result = cast("str", call_command("e2e", "external"))
+                call_command("e2e", "external")
 
-            assert "not running" in result
+            assert exc_info.value.code == 1
 
 
 class TestCliOverlay:

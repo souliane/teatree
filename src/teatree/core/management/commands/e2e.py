@@ -423,12 +423,16 @@ class Command(TyperCommand):
         if repo:
             repos_by_name = {r.name: r for r in load_e2e_repos()}
             if repo not in repos_by_name:
-                return f"E2E repo '{repo}' not found in ~/.teatree.toml [e2e_repos]."
+                self.stderr.write(f"E2E repo '{repo}' not found in ~/.teatree.toml [e2e_repos].")
+                raise SystemExit(1)
             private_tests_path = _clone_or_update_e2e_repo(repos_by_name[repo])
         else:
             private_tests_path = _resolve_private_tests_path()
             if not private_tests_path:
-                return "private_tests not configured in ~/.teatree.toml / T3_PRIVATE_TESTS, or directory missing."
+                self.stderr.write(
+                    "private_tests not configured in ~/.teatree.toml / T3_PRIVATE_TESTS, or directory missing.",
+                )
+                raise SystemExit(1)
 
         resolved_target = self._resolve_target(target)
 
@@ -438,17 +442,19 @@ class Command(TyperCommand):
         #                 silently hit a deployed environment.
         if resolved_target == "dev":
             if not os.environ.get("BASE_URL"):
-                return "--target dev requires BASE_URL (the deployed environment URL) to be set."
+                self.stderr.write("--target dev requires BASE_URL (the deployed environment URL) to be set.")
+                raise SystemExit(1)
             frontend_url = None  # preserve existing BASE_URL
         else:
             worktree = resolve_worktree()
             frontend_port = _discover_frontend_port(worktree)
             if frontend_port is None:
                 probed = ", ".join(_ticket_frontend_projects(worktree)) or "none"
-                return (
+                self.stderr.write(
                     f"Frontend not running (no docker `frontend` service in [{probed}], "
-                    "no local process on 4200). Run `t3 <overlay> worktree start` first."
+                    "no local process on 4200). Run `t3 <overlay> worktree start` first.",
                 )
+                raise SystemExit(1)
             frontend_url = f"http://localhost:{frontend_port}"
 
         extra = playwright_args.split() if playwright_args else []

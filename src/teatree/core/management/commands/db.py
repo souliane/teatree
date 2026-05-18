@@ -134,7 +134,8 @@ class Command(TyperCommand):
         overlay = get_overlay()
         strategy = overlay.get_db_import_strategy(worktree)
         if strategy is None:
-            return "No DB import strategy configured in the overlay."
+            self.stderr.write("No DB import strategy configured in the overlay.")
+            raise SystemExit(1)
 
         if fresh_dump:
             tenant = str(strategy.get("source_database", "")) or "<tenant>"
@@ -149,7 +150,8 @@ class Command(TyperCommand):
             try:
                 require_interactive_approval(prompt, stdin=sys.stdin, stdout=sys.stdout)
             except ApprovalRefusedError as exc:
-                return f"Fresh remote dump aborted: {exc}"
+                self.stderr.write(f"Fresh remote dump aborted: {exc}")
+                raise SystemExit(1) from exc
 
         self.stdout.write(f"Refreshing DB '{worktree.db_name}' (force={force})...")
 
@@ -167,7 +169,8 @@ class Command(TyperCommand):
             approve_remote_dump=fresh_dump,
         )
         if not success:
-            return f"DB import failed for {worktree.db_name}. Check output above for details."
+            self.stderr.write(f"DB import failed for {worktree.db_name}. Check output above for details.")
+            raise SystemExit(1)
 
         # Run post-DB steps (migrations, collectstatic, etc.)
         for step in overlay.get_post_db_steps(worktree):
@@ -192,12 +195,14 @@ class Command(TyperCommand):
         overlay = get_overlay()
         strategy = overlay.get_db_import_strategy(worktree)
         if strategy is None:
-            return "No DB import strategy configured in the overlay."
+            self.stderr.write("No DB import strategy configured in the overlay.")
+            raise SystemExit(1)
 
         # Use db_import with a hint to skip DSLR/local and go straight to CI
         success = overlay.db_import(worktree, force=True)
         if not success:
-            return f"CI restore failed for {worktree.db_name}."
+            self.stderr.write(f"CI restore failed for {worktree.db_name}.")
+            raise SystemExit(1)
         worktree.db_refresh()
         worktree.save()
         return f"DB restored from CI for {worktree.db_name}"
@@ -212,7 +217,8 @@ class Command(TyperCommand):
         overlay = get_overlay()
         step = overlay.get_reset_passwords_command(worktree)
         if not step:
-            return "No reset-passwords command configured in the overlay."
+            self.stderr.write("No reset-passwords command configured in the overlay.")
+            raise SystemExit(1)
         step.callable()
         return f"Passwords reset for worktree {worktree.repo_path}"
 
