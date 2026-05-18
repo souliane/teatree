@@ -406,6 +406,8 @@ Usage: t3 review [OPTIONS] COMMAND [ARGS]...
 │                      draft).                                                 │
 │ update-note          Update a note on a GitLab MR — auto-detects draft vs    │
 │                      published.                                              │
+│ approve              Approve a GitLab MR — only after you have reviewed it.  │
+│ unapprove            Revoke your approval on a GitLab MR.                    │
 │ resolve-discussion   Mark a GitLab MR discussion thread resolved or          │
 │                      unresolved.                                             │
 │ approve-on-behalf    Record an :class:`OnBehalfApproval` that satisfies the  │
@@ -541,6 +543,47 @@ Usage: t3 review update-note [OPTIONS] REPO MR NOTE_ID BODY
 │ *    mr           INTEGER  Merge request IID [required]                      │
 │ *    note_id      INTEGER  Note ID (draft or published) [required]           │
 │ *    body         TEXT     New comment body (markdown) [required]            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 review approve`
+
+```
+Usage: t3 review approve [OPTIONS] REPO MR
+
+ Approve a GitLab MR — only after you have reviewed it.
+
+ Precondition: a review note/discussion authored by your identity must
+ already exist on the MR (review before approve). Also respects the
+ `ask_before_post_on_behalf` pre-gate (souliane/teatree#960).
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    repo      TEXT     GitLab project path (e.g., my-org/my-repo)           │
+│                         [required]                                           │
+│ *    mr        INTEGER  Merge request IID [required]                         │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 review unapprove`
+
+```
+Usage: t3 review unapprove [OPTIONS] REPO MR
+
+ Revoke your approval on a GitLab MR.
+
+ No review precondition (revoking is the safe direction). Respects the
+ `ask_before_post_on_behalf` pre-gate (souliane/teatree#960).
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    repo      TEXT     GitLab project path (e.g., my-org/my-repo)           │
+│                         [required]                                           │
+│ *    mr        INTEGER  Merge request IID [required]                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │

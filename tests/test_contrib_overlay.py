@@ -148,11 +148,14 @@ class TestGetProvisionSteps(TestCase):
     @classmethod
     def setUpTestData(cls) -> None:
         cls.ticket = Ticket.objects.create(overlay="t3-teatree")
+        # Mirror production: ``repo_path`` is the repo identifier (e.g. ``souliane/teatree``),
+        # NOT a filesystem path. The on-disk path lives in ``extra['worktree_path']``.
         cls.worktree = Worktree.objects.create(
             ticket=cls.ticket,
             overlay="t3-teatree",
-            repo_path="/tmp/teatree",
+            repo_path="souliane/teatree",
             branch="main",
+            extra={"worktree_path": "/tmp/teatree-941-wt"},
         )
 
     def test_returns_sync_and_install_overlays_steps(self) -> None:
@@ -161,7 +164,8 @@ class TestGetProvisionSteps(TestCase):
 
         assert [step.name for step in steps] == ["sync-dependencies", "install-overlays-editable"]
 
-    def test_sync_step_runs_uv_sync(self) -> None:
+    def test_sync_step_runs_uv_sync_in_on_disk_worktree(self) -> None:
+        """`uv sync` must run in the on-disk worktree path, not in the repo identifier."""
         overlay = TeatreeOverlay()
         steps = overlay.get_provision_steps(self.worktree)
 
@@ -169,7 +173,20 @@ class TestGetProvisionSteps(TestCase):
             steps[0].callable()
             mock_run.assert_called_once()
             assert mock_run.call_args.args[0] == ["uv", "sync"]
-            assert mock_run.call_args.kwargs["cwd"] == str(Path("/tmp/teatree"))
+            assert mock_run.call_args.kwargs["cwd"] == str(Path("/tmp/teatree-941-wt"))
+
+    def test_returns_no_steps_when_worktree_not_materialised(self) -> None:
+        """Row without ``extra['worktree_path']`` → no steps (cannot ``uv sync`` an unknown path)."""
+        ticket = Ticket.objects.create(overlay="t3-teatree")
+        bare_worktree = Worktree.objects.create(
+            ticket=ticket,
+            overlay="t3-teatree",
+            repo_path="souliane/teatree",
+            branch="main",
+            # No ``extra`` → ``worktree_path`` returns ''.
+        )
+        overlay = TeatreeOverlay()
+        assert overlay.get_provision_steps(bare_worktree) == []
 
 
 @pytest.mark.django_db
@@ -203,8 +220,9 @@ class TestInstallOverlaysEditableStep:
         worktree = Worktree.objects.create(
             ticket=ticket,
             overlay="t3-teatree",
-            repo_path=str(teatree_wt),
+            repo_path="souliane/teatree",
             branch="main",
+            extra={"worktree_path": str(teatree_wt)},
         )
 
         overlay = TeatreeOverlay()
@@ -240,8 +258,9 @@ class TestInstallOverlaysEditableStep:
         worktree = Worktree.objects.create(
             ticket=ticket,
             overlay="t3-teatree",
-            repo_path=str(teatree_wt),
+            repo_path="souliane/teatree",
             branch="main",
+            extra={"worktree_path": str(teatree_wt)},
         )
 
         overlay = TeatreeOverlay()
@@ -277,8 +296,9 @@ class TestInstallOverlaysEditableStep:
         worktree = Worktree.objects.create(
             ticket=ticket,
             overlay="t3-teatree",
-            repo_path=str(teatree_wt),
+            repo_path="souliane/teatree",
             branch="main",
+            extra={"worktree_path": str(teatree_wt)},
         )
 
         overlay = TeatreeOverlay()
@@ -311,8 +331,9 @@ class TestInstallOverlaysEditableStep:
         worktree = Worktree.objects.create(
             ticket=ticket,
             overlay="t3-teatree",
-            repo_path=str(teatree_wt),
+            repo_path="souliane/teatree",
             branch="main",
+            extra={"worktree_path": str(teatree_wt)},
         )
 
         overlay = TeatreeOverlay()

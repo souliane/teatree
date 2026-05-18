@@ -203,7 +203,20 @@ class DjangoDbImporter:
             return _MigrateResult.ALREADY_MIGRATED
 
         ref_db_url = _local_db_url(cfg.ref_db_name)
-        run_env = {**os.environ, "DATABASE_URL": ref_db_url, "DISABLE_DATABASE_SSL": "True", **cfg.migrate_env_extra}
+        # souliane/teatree#959: strip DJANGO_SETTINGS_MODULE from the inherited
+        # environment. The reference-DB migrate runs `manage.py` from the MAIN
+        # CLONE, but `db refresh` is typically invoked from a provisioned
+        # worktree whose env-cache exports a worktree-specific settings module
+        # (e.g. `<proj>.settings_local`). That module exists only inside the
+        # worktree, so inheriting it crashes the migrate subprocess with
+        # `ModuleNotFoundError`, the restore pipeline aborts, and the ticket
+        # DB is never cloned. The main clone's `manage.py` already applies its
+        # own default settings module via `os.environ.setdefault(...)`; let it
+        # win. An overlay that genuinely needs a non-default module passes it
+        # explicitly through ``cfg.migrate_env_extra`` (merged last, so it
+        # always wins over the strip).
+        inherited_env = {k: v for k, v in os.environ.items() if k != "DJANGO_SETTINGS_MODULE"}
+        run_env = {**inherited_env, "DATABASE_URL": ref_db_url, "DISABLE_DATABASE_SSL": "True", **cfg.migrate_env_extra}
 
         self.stdout.write(f"  Migrating reference DB ({cfg.ref_db_name}) using main repo...\n")
         migrate_cmd = ["uv", "--directory", cfg.main_repo_path, "run", "python", "manage.py", "migrate", "--no-input"]
@@ -219,7 +232,15 @@ class DjangoDbImporter:
             combined = f"{result.stdout}\n{result.stderr}"
             failure_reason = self._try_fake_failing_migration(combined, result.stdout, run_env)
             if failure_reason:
+                # souliane/teatree#959: surface the real subprocess output on
+                # FAILED so the operator can see the actual error
+                # (ModuleNotFoundError, schema mismatch, etc.) — the generic
+                # one-liner alone was unactionable.
                 self.stdout.write(f"  WARNING: {failure_reason}\n")
+                if result.stdout:
+                    self.stdout.write(f"    migrate stdout:\n{result.stdout}\n")
+                if result.stderr:
+                    self.stderr.write(f"    migrate stderr:\n{result.stderr}\n")
                 return _MigrateResult.FAILED
 
         self.stdout.write("  WARNING: Reference DB migration exhausted retries, skipping.\n")

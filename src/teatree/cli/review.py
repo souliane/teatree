@@ -16,62 +16,46 @@ and consumes the row. Gate ON + no approval returns the actionable
 exactly as before.
 """
 
-import re
 from http import HTTPStatus
-from typing import TypedDict
 
 import typer
 
+from teatree.cli.review_diff import find_added_line, resolve_inline_position
 from teatree.cli.review_on_behalf import check_on_behalf
 from teatree.cli.review_on_behalf import register as _register_on_behalf
 from teatree.utils.run import run_allowed_to_fail
 
-
-class InlinePosition(TypedDict):
-    """GitLab inline-note position payload (text diff anchoring)."""
-
-    position_type: str
-    base_sha: str
-    head_sha: str
-    start_sha: str
-    old_path: str
-    new_path: str
-    new_line: int
-
+# Re-export so test imports (``from teatree.cli.review import
+# _find_added_line``) and monkeypatch targets keep working after the
+# diff-parsing primitives moved to :mod:`teatree.cli.review_diff` for
+# module-health LOC reasons. The single-underscore alias is the public
+# (within-codebase) handle.
+_find_added_line = find_added_line
 
 review_app = typer.Typer(no_args_is_help=True, help="Code review helpers.")
 _TOKEN_PARTS_COUNT = 2
-_HUNK_HEADER = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
-_NEARBY_LINE_RANGE = 5
+_HTTP_OK_CODES = frozenset({HTTPStatus.OK, HTTPStatus.CREATED, HTTPStatus.NO_CONTENT})
 
 
-def _find_added_line(diff_text: str, target_line: int) -> tuple[bool, list[int]]:
-    """Scan a unified-diff hunk text for ``target_line`` in the new file.
+def _on_behalf_gate_active() -> bool:
+    """Whether the ask-before-post-on-behalf pre-gate forbids unattended posting.
 
-    Returns ``(is_added, nearby_added_lines)`` — ``is_added`` is True when the
-    target line corresponds to an added (``+``) line in any hunk; the second
-    element lists added line numbers within ±5 of the target for error hints.
+    An MR approval/unapproval is an outward, state-changing post made under
+    the user's identity, so it must respect the same
+    ``ask_before_post_on_behalf`` pre-gate the posting subcommands use
+    (souliane/teatree#960).
+
+    The gate module (``teatree.on_behalf_gate``) is the single source of
+    truth. It is wired here through a soft import so this command works
+    whether or not the gate PR has merged yet: if the module is absent the
+    gate is treated as inactive (no behaviour change until it lands); once
+    present, ``ask_before_post_on_behalf_enabled()`` decides.
     """
-    is_added = False
-    nearby: list[int] = []
-    nl: int | None = None
-    for line in diff_text.splitlines():
-        m = _HUNK_HEADER.match(line)
-        if m:
-            nl = int(m.group(1))
-            continue
-        if nl is None:
-            continue
-        sign = line[:1] if line else " "
-        if sign == "-":
-            continue
-        if sign == "+":
-            if nl == target_line:
-                is_added = True
-            if abs(nl - target_line) <= _NEARBY_LINE_RANGE:
-                nearby.append(nl)
-        nl += 1
-    return is_added, sorted(set(nearby))
+    try:
+        from teatree.on_behalf_gate import ask_before_post_on_behalf_enabled  # noqa: PLC0415
+    except ModuleNotFoundError:
+        return False
+    return ask_before_post_on_behalf_enabled()
 
 
 class ReviewService:
@@ -119,81 +103,6 @@ class ReviewService:
         except Exception:  # noqa: BLE001
             return os.environ.get("GITLAB_URL", "https://gitlab.com/api/v4")
 
-    def _fetch_diff_refs(self, encoded_repo: str, mr: int) -> tuple[dict[str, str] | None, str]:
-        """Return the MR's diff_refs (base/head/start SHAs) or an error message."""
-        api = self._get_api()
-        mr_data = api.get_json(f"projects/{encoded_repo}/merge_requests/{mr}")
-        if not isinstance(mr_data, dict):
-            return None, f"Could not fetch MR !{mr}"
-        diff_refs_raw = mr_data.get("diff_refs", {})
-        if not isinstance(diff_refs_raw, dict):
-            return None, "MR has no diff_refs"
-        return {str(k): str(v) for k, v in diff_refs_raw.items()}, ""
-
-    def _fetch_file_diff(self, encoded_repo: str, mr: int, file: str) -> tuple[str | None, str]:
-        """Return the raw unified diff for ``file`` in the MR, or an error message.
-
-        Uses ``access_raw_diffs=true`` so large files collapsed by the default
-        ``/diffs`` endpoint still surface their full hunks.
-        """
-        api = self._get_api()
-        changes = api.get_json(f"projects/{encoded_repo}/merge_requests/{mr}/changes?access_raw_diffs=true")
-        if not isinstance(changes, dict):
-            return None, "Could not fetch MR changes to validate inline target"
-        files = changes.get("changes")
-        if not isinstance(files, list):
-            return None, "MR changes response had no `changes` array"
-        match = next(
-            (f for f in files if isinstance(f, dict) and (f.get("new_path") == file or f.get("old_path") == file)),
-            None,
-        )
-        if match is None:
-            paths = [str(f.get("new_path")) for f in files if isinstance(f, dict)]
-            return None, f"File {file!r} is not changed in MR !{mr}. Changed files: {paths}"
-        diff_text = str(match.get("diff") or "")
-        if not diff_text:
-            return None, (
-                f"File {file!r} has no diff content in the MR API response (likely a collapsed large diff). "
-                "draft_notes cannot anchor on collapsed files — use `t3 review post-comment` instead, "
-                "or pick a smaller file."
-            )
-        return diff_text, ""
-
-    def _resolve_inline_position(
-        self,
-        encoded_repo: str,
-        mr: int,
-        file: str,
-        line: int,
-    ) -> tuple[InlinePosition | None, str]:
-        """Build a GitLab inline-note ``position`` dict, or return an error message.
-
-        Validates that ``file:line`` is an added (``+``) line in the MR diff.
-        """
-        diff_refs, refs_error = self._fetch_diff_refs(encoded_repo, mr)
-        if diff_refs is None:
-            return None, refs_error
-        diff_text, diff_error = self._fetch_file_diff(encoded_repo, mr, file)
-        if diff_text is None:
-            return None, diff_error
-        is_added, nearby = _find_added_line(diff_text, line)
-        if not is_added:
-            hint = f" Nearby added lines in this file: {nearby}." if nearby else ""
-            return None, (
-                f"Line {line} in {file} is not an added (`+`) line in the MR diff — "
-                f"inline notes only anchor on added lines.{hint}"
-            )
-        position: InlinePosition = {
-            "position_type": "text",
-            "base_sha": diff_refs["base_sha"],
-            "head_sha": diff_refs["head_sha"],
-            "start_sha": diff_refs["start_sha"],
-            "old_path": file,
-            "new_path": file,
-            "new_line": line,
-        }
-        return position, ""
-
     def _post_draft_note_impl(self, repo: str, mr: int, note: str, *, file: str, line: int) -> tuple[str, int]:
         """The pre-gate-passed body of :meth:`post_draft_note` (see docstring)."""
         api = self._get_api()
@@ -206,7 +115,7 @@ class ReviewService:
                 return "Failed to post draft note", 1
             return f"OK draft_note_id={dict(result).get('id')}", 0
 
-        position, error = self._resolve_inline_position(encoded, mr, file, line)
+        position, error = resolve_inline_position(api, encoded, mr, file, line)
         if position is None:
             return error, 1
 
@@ -266,7 +175,7 @@ class ReviewService:
                 return "Failed to post comment", 1
             return f"OK note_id={dict(result).get('id')}", 0
 
-        position, error = self._resolve_inline_position(encoded, mr, file, line)
+        position, error = resolve_inline_position(api, encoded, mr, file, line)
         if position is None:
             return error, 1
 
@@ -430,6 +339,84 @@ class ReviewService:
             lines.append(f"  {nid}  {fp}:{ln}  {body}...")
         return "\n".join(lines), 0
 
+    def _identity_has_reviewed(self, encoded_repo: str, mr: int) -> tuple[bool, str]:
+        """Whether the approving identity already authored a note on this MR.
+
+        Encodes the review-before-approve doctrine: an approval may only be
+        recorded once the same identity has left a reviewing footprint
+        (any note in any discussion thread). Returns ``(reviewed, error)``;
+        ``error`` is non-empty only when the identity itself cannot be
+        resolved (a hard precondition failure, not "no review yet").
+        """
+        api = self._get_api()
+        username = api.current_username()
+        if not username:
+            return False, "Could not resolve the approving GitLab identity (check token / `glab auth status`)."
+        discussions = api.get_json(f"projects/{encoded_repo}/merge_requests/{mr}/discussions?per_page=100")
+        if not isinstance(discussions, list):
+            return False, ""
+        for discussion in discussions:
+            if not isinstance(discussion, dict):
+                continue
+            notes = discussion.get("notes")
+            if not isinstance(notes, list):
+                continue
+            for note in notes:
+                if not isinstance(note, dict):
+                    continue
+                author = note.get("author")
+                if isinstance(author, dict) and author.get("username") == username:
+                    return True, ""
+        return False, ""
+
+    def approve(self, repo: str, mr: int) -> tuple[str, int]:
+        """Approve an MR — refuses unless the identity has already reviewed it.
+
+        Returns (message, exit_code). The review-first precondition encodes
+        the approve-on-review doctrine: an approval cannot be recorded
+        without a prior reviewing footprint from the same identity.
+        """
+        encoded = repo.replace("/", "%2F")
+        reviewed, error = self._identity_has_reviewed(encoded, mr)
+        if error:
+            return error, 1
+        if not reviewed:
+            msg = (
+                f"Refusing to approve !{mr}: review before approve — no review note authored by your "
+                "identity exists on this MR yet. Post a review (`t3 review post-comment` / "
+                "`post-draft-note`) first, then approve."
+            )
+            return msg, 1
+        api = self._get_api()
+        status = api.post_status(f"projects/{encoded}/merge_requests/{mr}/approve")
+        if status in _HTTP_OK_CODES:
+            return f"OK approved !{mr}", 0
+        return f"Failed: HTTP {status}", 1
+
+    def unapprove(self, repo: str, mr: int) -> tuple[str, int]:
+        """Revoke this identity's approval on an MR. Returns (message, exit_code).
+
+        No review-first precondition — removing an approval is the safe
+        direction and must always be reachable.
+        """
+        api = self._get_api()
+        encoded = repo.replace("/", "%2F")
+        status = api.post_status(f"projects/{encoded}/merge_requests/{mr}/unapprove")
+        if status in _HTTP_OK_CODES:
+            return f"OK unapproved !{mr}", 0
+        return f"Failed: HTTP {status}", 1
+
+
+def _refuse_if_on_behalf_gated() -> None:
+    """Refuse an approval/unapproval when the on-behalf pre-gate is active."""
+    if _on_behalf_gate_active():
+        typer.echo(
+            "Refusing: `ask_before_post_on_behalf` is enabled — an MR approval is an outward "
+            "post on your behalf and must be user-approved first. Disable the gate per-overlay "
+            "in ~/.teatree.toml once you trust the workflow, or record the approval manually.",
+        )
+        raise typer.Exit(code=1)
+
 
 def _require_token() -> ReviewService:
     token = ReviewService.get_gitlab_token()
@@ -539,6 +526,43 @@ def update_note(
     """Update a note on a GitLab MR — auto-detects draft vs published."""
     service = _require_token()
     msg, code = service.update_note(repo, mr, note_id, body)
+    typer.echo(msg)
+    if code:
+        raise typer.Exit(code=code)
+
+
+@review_app.command(name="approve")
+def approve(
+    repo: str = typer.Argument(help="GitLab project path (e.g., my-org/my-repo)"),
+    mr: int = typer.Argument(help="Merge request IID"),
+) -> None:
+    """Approve a GitLab MR — only after you have reviewed it.
+
+    Precondition: a review note/discussion authored by your identity must
+    already exist on the MR (review before approve). Also respects the
+    `ask_before_post_on_behalf` pre-gate (souliane/teatree#960).
+    """
+    _refuse_if_on_behalf_gated()
+    service = _require_token()
+    msg, code = service.approve(repo, mr)
+    typer.echo(msg)
+    if code:
+        raise typer.Exit(code=code)
+
+
+@review_app.command(name="unapprove")
+def unapprove(
+    repo: str = typer.Argument(help="GitLab project path (e.g., my-org/my-repo)"),
+    mr: int = typer.Argument(help="Merge request IID"),
+) -> None:
+    """Revoke your approval on a GitLab MR.
+
+    No review precondition (revoking is the safe direction). Respects the
+    `ask_before_post_on_behalf` pre-gate (souliane/teatree#960).
+    """
+    _refuse_if_on_behalf_gated()
+    service = _require_token()
+    msg, code = service.unapprove(repo, mr)
     typer.echo(msg)
     if code:
         raise typer.Exit(code=code)

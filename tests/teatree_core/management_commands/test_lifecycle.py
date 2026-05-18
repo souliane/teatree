@@ -1081,10 +1081,19 @@ class TestLifecycleDiagram(TestCase):
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_unknown_model(self) -> None:
-        result = cast("str", call_command("worktree", "diagram", model="unknown"))
+    def test_unknown_model_raises_system_exit_1(self) -> None:
+        """#939: an unknown model is a real error — exit 1, message on stderr.
 
-        assert "Unknown model: unknown" in result
+        Regression: `return f"Unknown model..."` exited 0, so a typo in
+        `worktree diagram --model` looked like success to headless callers.
+        """
+        stderr = StringIO()
+
+        with pytest.raises(SystemExit) as exc_info:
+            call_command("worktree", "diagram", model="unknown", stderr=stderr)
+
+        assert exc_info.value.code == 1
+        assert "Unknown model: unknown" in stderr.getvalue()
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)

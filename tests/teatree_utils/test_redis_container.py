@@ -36,14 +36,56 @@ class TestStatus:
             assert redis_container.status() == "missing"
 
 
+class TestHostPortPublished:
+    def test_true_when_6379_mapped_to_host(self) -> None:
+        with patch.object(
+            redis_container,
+            "_docker_tolerant",
+            return_value=_completed(stdout="0.0.0.0:6379\n"),
+        ):
+            assert redis_container._host_port_published() is True
+
+    def test_false_when_no_port_mapping(self) -> None:
+        # `docker port teatree-redis 6379` prints nothing when the container
+        # was created without `-p 6379:6379` (the "Up 2 days, 6379/tcp:[]"
+        # case that silently broke every worktree's web → redis traffic).
+        with patch.object(redis_container, "_docker_tolerant", return_value=_completed(stdout="\n")):
+            assert redis_container._host_port_published() is False
+
+    def test_false_when_docker_port_fails(self) -> None:
+        with patch.object(redis_container, "_docker_tolerant", return_value=_completed(returncode=1)):
+            assert redis_container._host_port_published() is False
+
+
 class TestEnsureRunning:
-    def test_no_op_when_already_running(self) -> None:
+    def test_no_op_when_already_running_and_port_published(self) -> None:
         with (
             patch.object(redis_container, "status", return_value="running"),
+            patch.object(redis_container, "_host_port_published", return_value=True),
             patch.object(redis_container, "_docker_checked") as mock,
         ):
             redis_container.ensure_running()
         mock.assert_not_called()
+
+    def test_recreates_running_container_when_port_not_published(self) -> None:
+        # Regression: a running teatree-redis created without the host port
+        # publish must be reconciled (recreated), not left as-is — otherwise
+        # the web container's host.docker.internal:6379 is unreachable and
+        # every /api/jwt/ returns HTTP 500 (Error 111). The old code
+        # early-returned on status=="running" and never noticed.
+        calls: list[tuple[str, ...]] = []
+        with (
+            patch.object(redis_container, "status", return_value="running"),
+            patch.object(redis_container, "_host_port_published", return_value=False),
+            patch.object(redis_container, "_docker_tolerant", side_effect=lambda *a: calls.append(a) or _completed()),
+            patch.object(redis_container, "_docker_checked", side_effect=lambda *a: calls.append(a) or _completed()),
+        ):
+            redis_container.ensure_running(db_count=16)
+        assert ("stop", "teatree-redis") in calls
+        assert ("rm", "teatree-redis") in calls
+        run_call = next(c for c in calls if c and c[0] == "run")
+        assert "-p" in run_call
+        assert "6379:6379" in run_call
 
     def test_creates_container_when_missing(self) -> None:
         with (
@@ -60,10 +102,28 @@ class TestEnsureRunning:
     def test_starts_existing_stopped_container(self) -> None:
         with (
             patch.object(redis_container, "status", return_value="exited"),
+            patch.object(redis_container, "_host_port_published", return_value=True),
             patch.object(redis_container, "_docker_checked") as mock,
         ):
             redis_container.ensure_running()
         mock.assert_called_once_with("start", "teatree-redis")
+
+    def test_recreates_after_start_when_port_not_published(self) -> None:
+        # A previously-`docker stop`ped container that was originally created
+        # without the publish: `docker start` brings it back still
+        # unpublished, so it must also be reconciled.
+        calls: list[tuple[str, ...]] = []
+        with (
+            patch.object(redis_container, "status", return_value="exited"),
+            patch.object(redis_container, "_host_port_published", return_value=False),
+            patch.object(redis_container, "_docker_tolerant", side_effect=lambda *a: calls.append(a) or _completed()),
+            patch.object(redis_container, "_docker_checked", side_effect=lambda *a: calls.append(a) or _completed()),
+        ):
+            redis_container.ensure_running(db_count=16)
+        assert ("start", "teatree-redis") in calls
+        assert ("rm", "teatree-redis") in calls
+        run_call = next(c for c in calls if c and c[0] == "run")
+        assert "6379:6379" in run_call
 
 
 class TestStop:

@@ -1170,10 +1170,169 @@ def handle_read_dedup(data: dict) -> None:
     )
 
 
+# ── PostToolUse: capture TodoWrite into durable per-session state ──
+#
+# Issue #970: the recovery snapshot was missing the active TODO list.
+# When ``TodoWrite`` fires, persist the latest todos to
+# ``<session>.todos`` so the PreCompact snapshot can quote them back.
+# Anthropic's newer ``TaskCreate``/``TaskUpdate`` tools currently bypass
+# PostToolUse (documented regression in ``docs/claude-code-internals.md``);
+# whenever they start firing hooks again, register them here too.
+
+
+def handle_track_todos(data: dict) -> None:
+    """Persist the current ``TodoWrite`` todo list to ``<session>.todos``.
+
+    Stores one ``- [status] content`` line per todo so the snapshot
+    renderer can include it verbatim. Overwrites on each TodoWrite so
+    completed/removed items don't linger — TodoWrite is the source of
+    truth for the active list. No-op for any other tool name.
+    """
+    if data.get("tool_name") != "TodoWrite":
+        return
+    session_id = data.get("session_id", "")
+    if not session_id:
+        return
+    todos = data.get("tool_input", {}).get("todos", [])
+    if not isinstance(todos, list):
+        return
+
+    _ensure_state_dir()
+    todos_file = _state_file(session_id, "todos")
+    lines: list[str] = []
+    for todo in todos:
+        if not isinstance(todo, dict):
+            continue
+        content = str(todo.get("content", "")).strip()
+        if not content:
+            continue
+        status = str(todo.get("status", "pending")).strip() or "pending"
+        lines.append(f"- [{status}] {content}")
+    todos_file.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+
+
 # ── PreCompact: retro-before-compact ──────────────────────────────
 
 
-def _durable_session_snapshot(session_id: str) -> str:
+def _git_state_for_repo(repo_path: Path) -> dict[str, str] | None:
+    """Best-effort current branch / HEAD / dirty / unpushed for *repo_path*.
+
+    Returns ``None`` if *repo_path* is not a git working tree. All subprocess
+    calls are short-timeout and exceptions are swallowed — the snapshot must
+    never block compaction (#970 / #845 invariant).
+    """
+    if not (repo_path / ".git").exists():
+        return None
+
+    def _git(*args: str) -> str:
+        try:
+            return subprocess.check_output(  # noqa: S603
+                ["git", "-C", str(repo_path), "--no-optional-locks", *args],  # noqa: S607
+                text=True,
+                timeout=3,
+                stderr=subprocess.DEVNULL,
+            ).strip()
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError, OSError):
+            return ""
+
+    branch = _git("rev-parse", "--abbrev-ref", "HEAD")
+    head = _git("rev-parse", "--short", "HEAD")
+    porcelain = _git("status", "--porcelain")
+    # ``@{u}`` resolves to the configured upstream; absent ⇒ empty output ⇒ 0.
+    unpushed_log = _git("log", "@{u}..HEAD", "--oneline")
+
+    uncommitted_count = len([line for line in porcelain.splitlines() if line.strip()])
+    unpushed_count = len([line for line in unpushed_log.splitlines() if line.strip()])
+    return {
+        "branch": branch or "(detached)",
+        "head": head or "(unknown)",
+        "uncommitted": str(uncommitted_count),
+        "unpushed": str(unpushed_count),
+    }
+
+
+def _open_prs_for_repo(repo_path: Path) -> list[dict]:
+    """Return open PRs authored by the current user for *repo_path*.
+
+    Best-effort: a missing ``gh``, no auth, no network, or a non-GitHub
+    remote returns ``[]``. Never raises. Tests monkeypatch this symbol
+    directly to avoid hitting the network — see
+    ``tests/test_pre_compact_snapshot_enriched.py``.
+    """
+    if not (repo_path / ".git").exists():
+        return []
+    try:
+        out = subprocess.check_output(
+            [  # noqa: S607
+                "gh",
+                "pr",
+                "list",
+                "--author",
+                "@me",
+                "--state",
+                "open",
+                "--limit",
+                "20",
+                "--json",
+                "number,title,headRefName,isDraft",
+            ],
+            cwd=str(repo_path),
+            text=True,
+            timeout=3,
+            stderr=subprocess.DEVNULL,
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return []
+    try:
+        data = json.loads(out)
+    except json.JSONDecodeError:
+        return []
+    return data if isinstance(data, list) else []
+
+
+def _resolve_cwd_repo(data: dict) -> Path | None:
+    """Resolve the harness-provided ``cwd`` to a directory, if any."""
+    cwd = data.get("cwd", "")
+    if not cwd:
+        return None
+    path = Path(cwd)
+    return path if path.is_dir() else None
+
+
+def _render_git_state_section(repo: Path) -> list[str]:
+    state = _git_state_for_repo(repo)
+    if state is None:
+        return []
+    return [
+        "",
+        "## Current git state",
+        f"- worktree: `{repo}`",
+        f"- branch: `{state['branch']}`",
+        f"- HEAD: `{state['head']}`",
+        f"- {state['uncommitted']} uncommitted file(s)",
+        f"- {state['unpushed']} unpushed commit(s)",
+    ]
+
+
+def _render_open_prs_section(repo: Path) -> list[str]:
+    try:
+        prs = _open_prs_for_repo(repo)
+    except Exception:  # noqa: BLE001 — never block compaction on a lookup
+        return []
+    if not prs:
+        return []
+    lines = ["", "## Open PRs (this repo, @me, open)"]
+    for pr in prs:
+        number = pr.get("number", "?")
+        title = pr.get("title", "(no title)")
+        head = pr.get("headRefName", "")
+        draft = " [draft]" if pr.get("isDraft") else ""
+        suffix = f" — `{head}`" if head else ""
+        lines.append(f"- #{number}{draft}: {title}{suffix}")
+    return lines
+
+
+def _durable_session_snapshot(session_id: str, data: dict | None = None) -> str:
     """Build a recovery snapshot for *session_id* from DURABLE state only.
 
     Issue #778: a background sub-agent (a per-unit loop sub-agent,
@@ -1185,7 +1344,17 @@ def _durable_session_snapshot(session_id: str) -> str:
     ``_OWNER_LOOP`` record; there is no roster of singletons and no spawn
     brief) and the per-session active-repos / loaded-skills tracking
     files. No reliance on the agent having done anything.
+
+    Issue #970: the original capture was too thin to actually resume —
+    just the ever-touched ``.active`` ledger and the loaded skills. This
+    additionally pins, when ``data`` carries the harness ``cwd``: the
+    current worktree, branch, HEAD short SHA, uncommitted/unpushed
+    counts, and the live open PRs for that repo (best-effort, never
+    blocking). Captured TODOs (via :func:`handle_track_todos`) round out
+    "what was I about to do next" from the durable side, since the Tasks
+    API doesn't fire ``PostToolUse``.
     """
+    data = data or {}
     lines = [
         f"# Auto-recovery snapshot — session `{session_id}`",
         "",
@@ -1194,6 +1363,12 @@ def _durable_session_snapshot(session_id: str) -> str:
             "Use this to re-derive your identity and assignment after compaction."
         ),
     ]
+
+    cwd_repo = _resolve_cwd_repo(data)
+    if cwd_repo is not None:
+        lines += ["", "## Current working directory", f"- `{cwd_repo}`"]
+        lines += _render_git_state_section(cwd_repo)
+        lines += _render_open_prs_section(cwd_repo)
 
     owned = [
         (name, entry)
@@ -1216,6 +1391,10 @@ def _durable_session_snapshot(session_id: str) -> str:
             agent_id = entry.get("agent_id") or "(agent id not recorded)"
             lines.append(f"- tick-owner agentId `{agent_id}` (pid {entry.get('pid', '?')})")
 
+    todos = _read_lines(_state_file(session_id, "todos"))
+    if todos:
+        lines += ["", "## Pending TODOs", *todos]
+
     active = _read_lines(_state_file(session_id, "active"))
     if active:
         lines += ["", "## Repos touched this session", *(f"- {repo}" for repo in active)]
@@ -1227,7 +1406,7 @@ def _durable_session_snapshot(session_id: str) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _write_precompact_snapshot(session_id: str) -> None:
+def _write_precompact_snapshot(session_id: str, data: dict | None = None) -> None:
     """Persist the durable-state snapshot under the recovery-recognized name.
 
     Reuses the ``t3-snapshot-`` prefix that :func:`_find_temp_files`
@@ -1245,7 +1424,7 @@ def _write_precompact_snapshot(session_id: str) -> None:
     # suppressed so the docstring's "must never block compaction" holds.
     with contextlib.suppress(OSError):
         _ensure_state_dir()
-        target.write_text(_durable_session_snapshot(session_id), encoding="utf-8")
+        target.write_text(_durable_session_snapshot(session_id, data), encoding="utf-8")
 
 
 def handle_pre_compact(data: dict) -> None:
@@ -1265,7 +1444,7 @@ def handle_pre_compact(data: dict) -> None:
     if not session_id:
         return
 
-    _write_precompact_snapshot(session_id)
+    _write_precompact_snapshot(session_id, data)
 
     skills_file = _state_file(session_id, "skills")
     loaded: set[str] = set()
@@ -2880,6 +3059,7 @@ _HANDLERS: dict[str, list] = {
         handle_track_skill_usage,
         handle_track_cron_jobs,
         handle_read_dedup,
+        handle_track_todos,
     ],
     "InstructionsLoaded": [handle_track_skill_usage],
     "SessionStart": [handle_session_start_bootstrap],

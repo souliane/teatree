@@ -105,6 +105,28 @@ def test_loop_cadence_seconds_defaults_to_720(tmp_path: Path) -> None:
     assert load_config(config_path).user.loop_cadence_seconds == 720
 
 
+def test_user_identity_aliases_defaults_empty(tmp_path: Path) -> None:
+    config_path = tmp_path / ".teatree.toml"
+    _write_toml(config_path, "[teatree]\n")
+    assert load_config(config_path).user.user_identity_aliases == []
+
+
+def test_user_identity_aliases_reads_toml(tmp_path: Path) -> None:
+    config_path = tmp_path / ".teatree.toml"
+    _write_toml(
+        config_path,
+        '[teatree]\nuser_identity_aliases = ["adrien.work", "souliane", "adrien.cossa"]\n',
+    )
+    assert load_config(config_path).user.user_identity_aliases == ["adrien.work", "souliane", "adrien.cossa"]
+
+
+def test_user_identity_aliases_ignores_non_list(tmp_path: Path) -> None:
+    """A malformed scalar (string) is coerced to an empty list, not a crash."""
+    config_path = tmp_path / ".teatree.toml"
+    _write_toml(config_path, '[teatree]\nuser_identity_aliases = "souliane"\n')
+    assert load_config(config_path).user.user_identity_aliases == []
+
+
 def test_loop_cadence_seconds_override(tmp_path: Path) -> None:
     config_path = tmp_path / ".teatree.toml"
     _write_toml(config_path, "[teatree]\nloop_cadence_seconds = 300\n")
