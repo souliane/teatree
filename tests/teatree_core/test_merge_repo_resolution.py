@@ -292,3 +292,125 @@ class TestProjectRepoSlugHelper(TestCase):
     def test_project_repo_slug_empty_when_no_project_root(self) -> None:
         with patch("teatree.core.merge_execution.find_project_root", return_value=None):
             assert merge_execution._project_repo_slug() == ""
+
+
+class TestGitBranchPrefixSlugNotMistakenAsOwnerRepo(TestCase):
+    """Git-branch-shaped slugs must not short-circuit repo resolution (#1005).
+
+    Before this fix ``_looks_like_owner_repo`` returned True for any string
+    containing a single ``/``, so a CLEAR carrying a branch name like
+    ``fix/review-cli-django-bootstrap`` was treated as
+    ``owner=fix / repo=review-cli-django-bootstrap`` — bypassing the
+    ticket-issue-url and clone-origin fallbacks that would have returned
+    the real repo ``souliane/teatree``. The result was the opaque
+    "could not resolve the live head SHA" escalation on every §17.4 merge
+    whose CLEAR slug happened to be the git branch name.
+
+    A real GitHub owner cannot be one of the standard git-branch
+    namespaces (``fix``, ``feat``, ``feature``, ``chore``, ``docs``,
+    ``bugfix``, ``hotfix``, ``release``, ``refactor``, ``test``, ``ci``,
+    ``build``, ``perf``, ``style``), so any slug whose first path segment
+    matches that set (case-insensitive) is a branch name, not an
+    ``owner/repo``.
+    """
+
+    _BRANCH_SLUG = "fix/review-cli-django-bootstrap"
+
+    def _branch_slug_clear(self, slug: str, pr_id: int = 1004) -> MergeClear:
+        """A CLEAR whose ``slug`` is the git branch name (the #1005 bug shape).
+
+        ``pr_id`` is used both as the PR number and to derive a unique
+        ``issue_url`` so callers iterating over many slugs in subTests don't
+        hit the ``issue_url`` UNIQUE constraint between iterations.
+        """
+        ticket = Ticket.objects.create(
+            overlay="t3-teatree",
+            issue_url=f"https://github.com/souliane/teatree/issues/{pr_id}",
+            state=Ticket.State.IN_REVIEW,
+        )
+        return MergeClear.objects.create(
+            ticket=ticket,
+            pr_id=pr_id,
+            slug=slug,
+            reviewed_sha=_SHA,
+            reviewer_identity="cold-reviewer",
+            gh_verify_result=MergeClear.VerifyResult.GREEN,
+            blast_class=MergeClear.BlastClass.LOGIC,
+        )
+
+    def test_fix_prefixed_branch_slug_resolves_real_repo_not_itself(self) -> None:
+        clear = self._branch_slug_clear(self._BRANCH_SLUG)
+
+        with patch(
+            "teatree.core.merge_execution._project_repo_slug",
+            return_value="souliane/teatree",
+        ):
+            resolved = resolve_pr_repo_slug(clear)
+
+        assert resolved == "souliane/teatree", (
+            f"branch-shaped slug {self._BRANCH_SLUG!r} must not be parsed as owner/repo; got {resolved!r}"
+        )
+
+    def test_every_common_git_branch_prefix_falls_through_to_real_repo(self) -> None:
+        """All standard git-branch namespaces must fall through to the real repo.
+
+        Parameterised in one test (rather than ``pytest.mark.parametrize``)
+        because ``django.test.TestCase`` doesn't compose with pytest
+        parametrize cleanly — but each case carries its own subTest label
+        so failures point at the offending prefix.
+        """
+        branch_prefixes = (
+            "fix",
+            "feat",
+            "feature",
+            "chore",
+            "docs",
+            "bugfix",
+            "hotfix",
+            "release",
+            "refactor",
+            "test",
+            "ci",
+            "build",
+            "perf",
+            "style",
+        )
+        for index, prefix in enumerate(branch_prefixes):
+            with self.subTest(prefix=prefix):
+                slug = f"{prefix}/some-workstream-name"
+                # Each subTest needs a fresh ticket+CLEAR; offset pr_id to keep
+                # the per-ticket UNIQUE issue_url constraint satisfied.
+                clear = self._branch_slug_clear(slug, pr_id=2000 + index)
+                with patch(
+                    "teatree.core.merge_execution._project_repo_slug",
+                    return_value="souliane/teatree",
+                ):
+                    assert resolve_pr_repo_slug(clear) == "souliane/teatree"
+
+    def test_uppercase_branch_prefix_also_rejected(self) -> None:
+        """Branch-prefix detection is case-insensitive — ``Fix/X`` is still a branch."""
+        clear = self._branch_slug_clear("Fix/Some-Branch")
+
+        with patch(
+            "teatree.core.merge_execution._project_repo_slug",
+            return_value="souliane/teatree",
+        ):
+            assert resolve_pr_repo_slug(clear) == "souliane/teatree"
+
+    def test_non_branch_owner_repo_still_passes_through(self) -> None:
+        """Regression guard: tightening must not break legitimate ``owner/repo`` slugs.
+
+        ``souliane/teatree`` is a real GitHub owner, not a branch prefix,
+        so it must still short-circuit straight through ``_looks_like_owner_repo``.
+        """
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        clear = MergeClear.objects.create(
+            ticket=ticket,
+            pr_id=1,
+            slug="downstream-org/downstream-overlay",
+            reviewed_sha=_SHA,
+            reviewer_identity="cold-reviewer",
+            gh_verify_result=MergeClear.VerifyResult.GREEN,
+            blast_class=MergeClear.BlastClass.DOCS,
+        )
+        assert resolve_pr_repo_slug(clear) == "downstream-org/downstream-overlay"
