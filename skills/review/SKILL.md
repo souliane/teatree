@@ -356,7 +356,7 @@ This prevents noise from multiple review passes or multiple reviewers covering t
 
 When reviewing an external MR/PR, **always post comments inline on the correct file and line** in the diff view. For comments that aren't tied to a specific line (e.g., description feedback), post a general note without position data.
 
-**Extend the CLI, never inline API recipes.** If a `t3 review` operation is missing, implement it in `src/teatree/cli/review.py` — do NOT document a raw API snippet or inline script here. Skills describe what command to run, not how to replicate missing CLI functionality. Current subcommands: `post-draft-note`, `post-comment`, `delete-draft-note`, `publish-draft-notes`, `list-draft-notes`, `update-note`, `reply-to-discussion`, `resolve-discussion`.
+**Extend the CLI, never inline API recipes.** If a `t3 review` operation is missing, implement it in `src/teatree/cli/review.py` — do NOT document a raw API snippet or inline script here. Skills describe what command to run, not how to replicate missing CLI functionality. Current subcommands: `post-draft-note`, `post-comment`, `delete-draft-note`, `publish-draft-notes`, `list-draft-notes`, `update-note`, `reply-to-discussion`, `resolve-discussion`, `approve`, `unapprove`.
 
 **Use `t3 review post-draft-note` (Mandatory).** It handles token extraction, diff refs, position validation, and post-flight anchor verification. Never use raw API calls.
 
@@ -420,6 +420,19 @@ When posting replies to reviewer discussions (e.g., "Done in `<commit>`"):
 4. **Present the mapping to the user before posting.** Show a table: `| Discussion | Topic | Reply |` and get confirmation. Never batch-post replies without review.
 
 Post each reply via `t3 review reply-to-discussion <REPO> <MR_IID> <DISCUSSION_ID> "body"`. To mark a thread resolved after the reply, use `t3 review resolve-discussion <REPO> <MR_IID> <DISCUSSION_ID>` (pass `--no-resolved` to re-open).
+
+### Recording a GIVE-review approval — `t3 review approve` (Mandatory)
+
+When giving review on a colleague's MR and the verdict is approve, record it through the sanctioned CLI — never raw `glab mr approve` / `gh pr review --approve` (prohibited for state-changing review actions):
+
+```bash
+t3 review approve <REPO> <MR_IID>      # approve
+t3 review unapprove <REPO> <MR_IID>    # revoke your approval
+```
+
+**Review-first precondition (enforced, not advisory).** `approve` refuses unless a review note/discussion authored by *your* identity already exists on that MR. This encodes the approve-on-review doctrine in the tool itself: you cannot record an approval without having left a reviewing footprint first. If it refuses, post your review (`t3 review post-comment` / `post-draft-note`) and then approve. `unapprove` has no precondition — revoking is the safe direction and is always reachable.
+
+**On-behalf gate.** An approval is an outward, state-changing post under your identity, so `approve`/`unapprove` also respect the `ask_before_post_on_behalf` pre-gate (souliane/teatree#960): when that gate is enabled the command refuses unattended and tells you to get explicit user approval first or disable the gate per-overlay.
 
 ## Commands
 
