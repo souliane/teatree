@@ -8,7 +8,8 @@ For teatree core (``$T3_REPO``) and every registered overlay repo, this:
 
 1. ``git fetch`` the origin.
 2. Resolves the default branch from ``origin/HEAD``.
-3. Skips (never clobbers) a dirty, non-default-branch, or no-upstream checkout.
+3. Skips a non-default-branch / no-upstream checkout, and a
+    tracked-dirty tree (loudly). Untracked-only files do not block it.
 4. Otherwise ``git pull --ff-only`` — fast-forward only, never merge/rebase.
 5. Reinstalls advanced editable installs, applies pending self-DB migrations (non-destructive), then runs ``t3 setup``.
 6. Prints a per-repo summary; exits non-zero only on a hard failure (not a skip).
@@ -109,8 +110,17 @@ def _has_origin_remote(repo: Path) -> bool:
     return "origin" in result.stdout.split()
 
 
-def _is_dirty(repo: Path) -> bool:
-    return bool(_git(repo, "status", "--porcelain").stdout.strip())
+def _tracked_dirty_paths(repo: Path) -> list[str]:
+    """Return paths with uncommitted *tracked* changes (untracked excluded).
+
+    ``git status --porcelain`` prefixes each entry with a two-char status
+    code; an untracked path is ``"?? "``.  A fast-forward ``git pull
+    --ff-only`` and ``pip install -e`` never clobber untracked files, so
+    they must NOT block the update (#924) — only tracked modifications a
+    fast-forward could actually conflict with do.
+    """
+    lines = _git(repo, "status", "--porcelain").stdout.splitlines()
+    return [line[3:] for line in lines if line and not line.startswith("??")]
 
 
 def _has_upstream(repo: Path) -> bool:
@@ -155,15 +165,35 @@ def _check_default_branch(name: str, repo: Path) -> RepoUpdate | None:
 
 
 def _check_clean(name: str, repo: Path) -> RepoUpdate | None:
-    if not _is_dirty(repo):
+    """Refuse a ff-pull only on uncommitted *tracked* changes — loudly.
+
+    Untracked files (e.g. the loop's ``.loop-review-state.json`` runtime
+    artifact) are tolerated: a fast-forward never touches them, so the
+    update must proceed (#924).  When tracked changes do block the pull,
+    this is NOT a silent ``SKIP`` line — it emits a prominent, multi-line
+    WARNING so a stale running editable ``t3`` can never be invisible.
+    """
+    tracked = _tracked_dirty_paths(repo)
+    if not tracked:
         return None
-    return RepoUpdate(name, UpdateStatus.SKIPPED, reason="dirty working tree (uncommitted changes)")
+    listed = ", ".join(tracked)
+    typer.echo("")
+    typer.echo(f"!! WARNING: {name} has uncommitted TRACKED changes — refusing the fast-forward pull.")
+    typer.echo(f"!! Changed tracked path(s): {listed}")
+    typer.echo(f"!! The running editable t3 from {repo} will stay STALE behind origin until this is resolved.")
+    typer.echo("!! Commit, stash, or revert the tracked change, then re-run `t3 update`.")
+    typer.echo("")
+    return RepoUpdate(
+        name,
+        UpdateStatus.SKIPPED,
+        reason=f"uncommitted tracked changes ({listed}) — running t3 may be STALE; resolve and re-run `t3 update`",
+    )
 
 
 # Ordered safety gate: origin must exist before fetch, fetch before branch
-# resolution (which needs origin/HEAD), branch before the dirty check.  Each
-# guard *skips* (never clobbers) with a reason; only a failed fetch is a hard
-# failure.  The order is load-bearing — do not reorder.
+# resolution (which needs origin/HEAD), branch before the tracked-dirty
+# check.  Each guard *skips* (never clobbers) with a reason; only a failed
+# fetch is a hard failure.  The order is load-bearing — do not reorder.
 _PRECONDITIONS = (_check_origin, _check_fetch, _check_default_branch, _check_clean)
 
 
@@ -179,9 +209,11 @@ def _precondition_block(name: str, repo: Path) -> RepoUpdate | None:
 def update_repo(name: str, repo: Path) -> RepoUpdate:
     """Fetch and fast-forward *repo* to its default branch, or skip safely.
 
-    Never stashes, resets, or clobbers: a dirty tree, a non-default branch, or
-    a missing upstream each yield :class:`UpdateStatus.SKIPPED` with a reason.
-    A failed ``git fetch`` / ``git pull`` yields :class:`UpdateStatus.FAILED`.
+    Never stashes, resets, or clobbers: a tracked-dirty tree (warned
+    loudly), a non-default branch, or a missing upstream each yield
+    :class:`UpdateStatus.SKIPPED` with a reason.  An untracked-only tree
+    is NOT dirt — the ff-pull proceeds.  A failed ``git fetch`` / ``git
+    pull`` yields :class:`UpdateStatus.FAILED`.
     """
     blocked = _precondition_block(name, repo)
     if blocked is not None:
