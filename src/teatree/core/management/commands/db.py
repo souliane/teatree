@@ -9,10 +9,11 @@ from django.core.management import call_command
 from django.db import DatabaseError, connection, transaction
 from django_typer.management import TyperCommand, command
 
+from teatree.core.db_approval_gate import ApprovalScope, require_approval
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.resolve import resolve_worktree
 from teatree.types import SqlRow
-from teatree.utils.approval import ApprovalRefusedError, require_interactive_approval
+from teatree.utils.approval import ApprovalRefusedError
 
 #: Leading SQL keywords allowed past the cheap pre-filter of ``db query``.
 #: This is a *best-effort* guard, not a proof of read-only-ness: leading-token
@@ -106,7 +107,7 @@ def _run_read_only(sql: str) -> list[SqlRow]:
 
 class Command(TyperCommand):
     @command()
-    def refresh(
+    def refresh(  # noqa: PLR0913 — django-typer command: every param is a CLI flag mapped 1:1 to the public `db refresh` surface (path/dslr/dump/force/fresh-dump/user-authorized); the arg list IS the CLI contract, not an internal design smell (same rationale as ticket.py:clear).
         self,
         path: str = typer.Option("", help="Worktree path (auto-detects from PWD if empty)."),
         dslr_snapshot: str = typer.Option("", help="Force a specific DSLR snapshot name."),
@@ -116,7 +117,14 @@ class Command(TyperCommand):
         fresh_dump: bool = typer.Option(
             default=False,
             help="Pull a fresh dump from the remote DEV environment for this tenant. "
-            "Requires explicit interactive approval on every run.",
+            "Requires explicit per-invocation approval on every run.",
+        ),
+        user_authorized: str = typer.Option(
+            "",
+            help="Id of the user who recorded an explicit DbApproval for this "
+            "exact op+tenant (#953). Lets a non-TTY caller satisfy the #777 "
+            "gate via the recorded-approval channel; consumed single-use and "
+            "audited. Empty ⇒ interactive-TTY approval is required instead.",
         ),
     ) -> str:
         """Re-import the worktree database from DSLR snapshot or dump.
@@ -127,8 +135,11 @@ class Command(TyperCommand):
         Use --dump-path to restore from a specific dump file.
         Use --fresh-dump to pull a fresh dump from the remote DEV env — this
         is the only sanctioned remote-dump path and it requires an explicit
-        per-invocation interactive approval (#777); an unattended agent
-        cannot self-approve it.
+        per-invocation approval (#777). The approval has two sanctioned
+        channels of the same gate: a human at a TTY typing ``yes``, or a
+        recorded single-use user ``DbApproval`` re-presented via
+        --user-authorized <id> (#953). An unattended agent can never
+        self-approve either channel.
         """
         worktree = resolve_worktree(path)
         overlay = get_overlay()
@@ -148,7 +159,12 @@ class Command(TyperCommand):
                 "and overwrites the target DB. It must be explicitly approved every run."
             )
             try:
-                require_interactive_approval(prompt, stdin=sys.stdin, stdout=sys.stdout)
+                require_approval(
+                    prompt,
+                    ApprovalScope(op="fresh-dump", tenant=tenant, user_authorized=user_authorized),
+                    stdin=sys.stdin,
+                    stdout=sys.stdout,
+                )
             except ApprovalRefusedError as exc:
                 self.stderr.write(f"Fresh remote dump aborted: {exc}")
                 raise SystemExit(1) from exc
