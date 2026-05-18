@@ -121,3 +121,126 @@ class TestReviewerPrRefRendering:
         # Before the fix this collapsed into a generic "Approval dismissed:
         # <url>" line with no per-overlay `!N` grouping.
         assert "[teatree] !123" in action_blob, repr(action_blob)
+
+
+def _disposition_action(*, reason: str, payload_extra: dict[str, object]) -> DispatchAction:
+    """Mirror what ``dispatch._dispatch_one`` builds for ``unassigned``/etc.
+
+    The disposition scanner ships ``reason`` plus the ticket coordinates;
+    ``payload_extra`` adds the reason-specific fields (``old_owner`` /
+    ``new_owners`` for ``unassigned``).
+    """
+    return DispatchAction(
+        kind="statusline",
+        zone="action_needed",
+        detail=f"Ticket 77 — {reason}",
+        payload={
+            "reason": reason,
+            "overlay": "teatree",
+            "ticket_number": "77",
+            "issue_url": "https://example.com/issues/77",
+            **payload_extra,
+        },
+    )
+
+
+class TestReassignedShowsFromTo:
+    """Ask 1 — ``reassigned`` must spell out the ownership transition.
+
+    A bare ``reassigned: #77`` told the user nothing. The line now reads
+    ``reassigned (from <old> → to <new>): #77`` using the owner identities
+    the disposition scanner already had at detection time.
+    """
+
+    def test_reassigned_renders_from_and_to_owners(self) -> None:
+        action = _disposition_action(
+            reason="unassigned",
+            payload_extra={"old_owner": "alice", "new_owners": ["bob"]},
+        )
+        zones = zones_for([action], colorize=False)
+        blob = "".join(item if isinstance(item, str) else item.text for item in zones.action_needed)
+        assert "reassigned (from alice → to bob):" in blob, repr(blob)
+        assert "#77" in blob
+
+    def test_reassigned_joins_multiple_new_owners(self) -> None:
+        action = _disposition_action(
+            reason="unassigned",
+            payload_extra={"old_owner": "alice", "new_owners": ["bob", "carol"]},
+        )
+        zones = zones_for([action], colorize=False)
+        blob = "".join(item if isinstance(item, str) else item.text for item in zones.action_needed)
+        assert "reassigned (from alice → to bob, carol):" in blob, repr(blob)
+
+    def test_reassigned_without_owner_data_is_still_labelled(self) -> None:
+        """Old signals (no owner fields) must not regress to a bare token."""
+        action = _disposition_action(reason="unassigned", payload_extra={})
+        zones = zones_for([action], colorize=False)
+        blob = "".join(item if isinstance(item, str) else item.text for item in zones.action_needed)
+        assert "reassigned:" in blob, repr(blob)
+        assert "from " not in blob
+
+
+def _stale_action(*, number: str, state: str, age: int, overlay: str = "teatree") -> DispatchAction:
+    """Mirror dispatch output for a ``ticket.stale`` signal."""
+    return DispatchAction(
+        kind="statusline",
+        zone="action_needed",
+        detail=f"#{number} stale ({age}d)",
+        payload={
+            "stale": True,
+            "overlay": overlay,
+            "ticket_number": number,
+            "ticket_state": state,
+            "age_days": age,
+            "issue_url": f"https://example.com/issues/{number}",
+        },
+    )
+
+
+class TestStaleTicketsConciseAndLinked:
+    """Asks 2 & 3 — stale tickets collapse to one concise, linked line.
+
+    Before: one verbose unlinked ``TICKET-N stale in STATE (3d)`` line per
+    ticket (the red sprawl). After: a single ``N stale: #a #b #c`` row per
+    overlay with every ref a clickable link.
+    """
+
+    def test_multiple_stale_tickets_collapse_to_one_line(self) -> None:
+        actions = [
+            _stale_action(number="58", state="coded", age=4),
+            _stale_action(number="724", state="started", age=6),
+            _stale_action(number="878", state="tested", age=9),
+        ]
+        zones = zones_for(actions, colorize=False)
+        # One line for the overlay, not three.
+        assert len(zones.action_needed) == 1, repr(zones.action_needed)
+        line = zones.action_needed[0]
+        text = line if isinstance(line, str) else line.text
+        assert "[teatree] 3 stale:" in text, repr(text)
+        for ref in ("#58", "#724", "#878"):
+            assert ref in text, repr(text)
+        # Concise: the verbose per-ticket phrasing must be gone.
+        assert "stale in" not in text
+
+    def test_stale_refs_are_clickable_links(self) -> None:
+        zones = zones_for([_stale_action(number="58", state="coded", age=4)], colorize=False)
+        line = zones.action_needed[0]
+        text = line if isinstance(line, str) else line.text
+        # NO_COLOR fallback form proves the URL is attached to the ref.
+        assert "#58 <https://example.com/issues/58>" in text, repr(text)
+
+    def test_stale_lines_split_per_overlay(self) -> None:
+        actions = [
+            _stale_action(number="58", state="coded", age=4, overlay="teatree"),
+            _stale_action(number="9", state="coded", age=5, overlay="acme"),
+        ]
+        zones = zones_for(actions, colorize=False)
+        texts = sorted(item if isinstance(item, str) else item.text for item in zones.action_needed)
+        assert any(t.startswith("[acme] 1 stale:") for t in texts), repr(texts)
+        assert any(t.startswith("[teatree] 1 stale:") for t in texts), repr(texts)
+
+    def test_stale_osc8_hyperlink_when_colorized(self) -> None:
+        zones = zones_for([_stale_action(number="58", state="coded", age=4)], colorize=True)
+        line = zones.action_needed[0]
+        text = line if isinstance(line, str) else line.text
+        assert "\033]8;;https://example.com/issues/58" in text, repr(text)

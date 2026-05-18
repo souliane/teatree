@@ -61,6 +61,19 @@ class _IssueRef:
 
 
 @dataclass(frozen=True, slots=True)
+class _ReassignRef:
+    """An ``unassigned`` disposition that carries who it moved from/to.
+
+    Lets the statusline render ``reassigned (from <old> → to <new>): #N``
+    instead of a bare ``reassigned`` the user can't interpret.
+    """
+
+    ref: _IssueRef
+    old_owner: str
+    new_owners: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class _OverlayActionRefs:
     """One overlay's slice of classified refs for the action-needed row.
 
@@ -71,6 +84,8 @@ class _OverlayActionRefs:
     pr_refs: list[_PRRef]
     disposition_refs: dict[str, list[_IssueRef]]
     ready_refs: list[_IssueRef]
+    reassign_refs: list[_ReassignRef] = field(default_factory=list)
+    stale_refs: list[_IssueRef] = field(default_factory=list)
 
 
 def _pr_ref(action: DispatchAction) -> _PRRef | None:
@@ -142,6 +157,8 @@ def _render_pr_group(
 @dataclass(slots=True)
 class _ClassifiedActions:
     disposition_refs: dict[str, dict[str, list[_IssueRef]]] = field(default_factory=dict)
+    reassign_refs: dict[str, list[_ReassignRef]] = field(default_factory=dict)
+    stale_refs: dict[str, list[_IssueRef]] = field(default_factory=dict)
     ready_refs: dict[str, list[_IssueRef]] = field(default_factory=dict)
     action_prs: dict[str, list[_PRRef]] = field(default_factory=dict)
     inflight_prs: dict[str, list[_PRRef]] = field(default_factory=dict)
@@ -180,6 +197,13 @@ def _str_field(payload: Payload, key: str) -> str:
     return value if isinstance(value, str) else ""
 
 
+def _str_list_field(payload: Payload, key: str) -> tuple[str, ...]:
+    value = payload.get(key)
+    if not isinstance(value, list):
+        return ()
+    return tuple(item for item in value if isinstance(item, str))
+
+
 def _classify_actions(actions: list[DispatchAction]) -> _ClassifiedActions:
     c = _ClassifiedActions()
     for action in actions:
@@ -196,6 +220,14 @@ def _classify_actions(actions: list[DispatchAction]) -> _ClassifiedActions:
             issue_url = _str_field(payload, "issue_url")
             c.active_tickets.setdefault(overlay, []).append((ticket_number, state, issue_url))
             continue
+        if payload.get("stale") is True:
+            c.stale_refs.setdefault(overlay, []).append(
+                _issue_ref_from(
+                    issue_url=_str_field(payload, "issue_url"),
+                    ticket_number=_str_field(payload, "ticket_number"),
+                ),
+            )
+            continue
         reason = payload.get("reason")
         if isinstance(reason, str):
             ref = _issue_ref_from(
@@ -204,6 +236,13 @@ def _classify_actions(actions: list[DispatchAction]) -> _ClassifiedActions:
                 ticket_number=_str_field(payload, "ticket_number"),
                 title=_str_field(payload, "title"),
             )
+            old_owner = _str_field(payload, "old_owner")
+            new_owners = _str_list_field(payload, "new_owners")
+            if reason == "unassigned" and old_owner and new_owners:
+                c.reassign_refs.setdefault(overlay, []).append(
+                    _ReassignRef(ref=ref, old_owner=old_owner, new_owners=new_owners),
+                )
+                continue
             c.disposition_refs.setdefault(overlay, {}).setdefault(reason, []).append(ref)
             continue
         if action.zone == "action_needed" and action.detail.startswith("Ready to start:"):
@@ -286,6 +325,30 @@ def _render_ticket_line(
     return f"{prefix}{' · '.join(groups)}"
 
 
+def _disposition_parts(action_refs: _OverlayActionRefs, *, colorize: bool) -> list[str]:
+    """Render the issue-disposition rows for one overlay.
+
+    Covers generic dispositions, the explicit ``reassigned (from → to)``
+    transition, and the collapsed ``N stale`` row. Each is one concise part
+    with linked refs — the stale row in particular folds every stale ticket
+    for the overlay into a single line.
+    """
+    parts: list[str] = []
+    for reason, refs in action_refs.disposition_refs.items():
+        label = _DISPOSITION_LABELS.get(reason, reason)
+        items = " ".join(_link(r.label, r.url, colorize=colorize) for r in refs)
+        parts.append(f"{label}: {items}")
+    for rr in action_refs.reassign_refs:
+        to = ", ".join(rr.new_owners)
+        ref_link = _link(rr.ref.label, rr.ref.url, colorize=colorize)
+        parts.append(f"reassigned (from {rr.old_owner} → to {to}): {ref_link}")
+    if action_refs.stale_refs:
+        stale = action_refs.stale_refs
+        items = " ".join(_link(r.label, r.url, colorize=colorize) for r in stale)
+        parts.append(f"{len(stale)} stale: {items}")
+    return parts
+
+
 def _render_action_line(
     overlay: str,
     action_refs: _OverlayActionRefs,
@@ -301,11 +364,7 @@ def _render_action_line(
             prs_by_ticket.setdefault(parent, []).append(ref)
     consumed_pr_urls: set[str] = set()
 
-    parts: list[str] = []
-    for reason, refs in action_refs.disposition_refs.items():
-        label = _DISPOSITION_LABELS.get(reason, reason)
-        items = " ".join(_link(r.label, r.url, colorize=colorize) for r in refs)
-        parts.append(f"{label}: {items}")
+    parts: list[str] = _disposition_parts(action_refs, colorize=colorize)
     if action_refs.ready_refs:
         items: list[str] = []
         for ref in action_refs.ready_refs:
@@ -360,7 +419,17 @@ def _populate_overlay_zones(
     ticket_index: dict[str, str],
     colorize: bool,
 ) -> None:
-    all_overlays = sorted({*c.active_tickets, *c.action_prs, *c.disposition_refs, *c.ready_refs, *c.inflight_prs})
+    all_overlays = sorted(
+        {
+            *c.active_tickets,
+            *c.action_prs,
+            *c.disposition_refs,
+            *c.reassign_refs,
+            *c.stale_refs,
+            *c.ready_refs,
+            *c.inflight_prs,
+        },
+    )
 
     all_pr_refs: dict[str, dict[str, list[_PRRef]]] = {}
     for overlay_key in all_overlays:
@@ -392,6 +461,8 @@ def _populate_overlay_zones(
                 pr_refs=c.action_prs.get(overlay_key, []),
                 disposition_refs=c.disposition_refs.get(overlay_key, {}),
                 ready_refs=c.ready_refs.get(overlay_key, []),
+                reassign_refs=c.reassign_refs.get(overlay_key, []),
+                stale_refs=c.stale_refs.get(overlay_key, []),
             ),
             ticket_index=ticket_index,
             colorize=colorize,
