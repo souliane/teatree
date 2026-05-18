@@ -157,7 +157,7 @@ class TestDbRefresh(TestCase):
             with (
                 patch.object(
                     db_mod,
-                    "require_interactive_approval",
+                    "require_approval",
                     side_effect=ApprovalRefusedError("no tty"),
                 ),
                 pytest.raises(SystemExit) as exc_info,
