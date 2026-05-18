@@ -135,6 +135,20 @@ class Task(models.Model):
         self._record_phase_visit()
         self._apply_phase_transition()
 
+    def _needs_user_input_followup_pending(self) -> bool:
+        """True iff this task was *held* for human input (#927).
+
+        The agent returned ``needs_user_input`` so ``_advance_ticket``
+        deliberately did NOT fire the FSM transition and scheduled an
+        interactive followup instead. The replay sweep
+        (``replay_orphaned_transitions``) takes this task as
+        latest-per-ticket and would otherwise force-advance the ticket
+        past a phase the agent said it could not finish, orphaning the
+        followup. The suppression therefore belongs on the *shared*
+        transition path, not only the live ``complete()`` chain.
+        """
+        return self._last_attempt_needs_user_input()
+
     def _apply_phase_transition(self) -> bool:
         """Fire the FSM transition this task's phase implies, if its guard holds.
 
@@ -151,9 +165,17 @@ class Task(models.Model):
         call (parallel child task, or a replay of an already-applied
         transition) finds the state mismatch and no-ops.
 
+        A task held for human input (#927) never fires its transition
+        here — the agent said it could not finish this phase, so neither
+        the live ``complete()`` chain nor the replay sweep may advance
+        the ticket past it. Enforced on this shared path so the gate is
+        not bypassable by any caller of ``_apply_phase_transition``.
+
         Returns ``True`` iff a transition fired (used by the replay sweep
         to count recovered tickets).
         """
+        if self._needs_user_input_followup_pending():
+            return False
         ticket = self.ticket
         ticket.refresh_from_db()
         # Normalize once, mirroring _record_phase_visit() — a task whose

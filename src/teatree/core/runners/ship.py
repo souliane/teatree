@@ -1,6 +1,6 @@
 import logging
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from typing import TYPE_CHECKING, cast
 
 from teatree.backends.protocols import PullRequestSpec
@@ -28,6 +28,29 @@ def sanitize_close_keywords(description: str, *, close_ticket: bool) -> str:
     if close_ticket:
         return description
     return _CLOSE_KEYWORD_RE.sub(r"Relates to \2", description)
+
+
+def should_close_ticket(extra: Mapping[str, object] | None, *, setting_enabled: bool) -> bool:
+    """Resolve the effective close-on-merge disposition for a PR.
+
+    The default is **close-on-merge**: a merged PR should systematically
+    close its referenced issue when the overlay's auto-close setting is
+    enabled. Suppression is the exception, applied only on an explicit
+    "more PRs are coming for this ticket/issue" signal — a declared
+    partial PR or an umbrella issue with remaining tracked scope, recorded
+    as ``extra['more_prs_coming']``. This preserves the umbrella/partial
+    protection (``feedback_partial_pr_never_closes_umbrella_issue``)
+    without defeating the setting for standalone single-target bug PRs.
+
+    Returns ``True`` when ``Closes/Fixes #N`` keywords must be kept so the
+    platform auto-closes the issue on merge; ``False`` when they must be
+    rewritten to ``Relates to`` (setting disabled, or an explicit
+    follow-up opt-out is set).
+    """
+    if not setting_enabled:
+        return False
+    more_prs_coming = bool(extra and extra.get("more_prs_coming"))
+    return not more_prs_coming
 
 
 def overlay_pr_labels() -> list[str]:
@@ -125,7 +148,11 @@ class ShipExecutor(RunnerBase):
         subject, body = git.last_commit_message(repo=repo_path)
         title = title_override or subject or f"Resolve {ticket.issue_url}"
         raw_description = f"{subject}\n\n{body}" if subject and body else (subject or body)
-        description = sanitize_close_keywords(raw_description, close_ticket=get_overlay().config.mr_close_ticket)
+        close_ticket = should_close_ticket(
+            extra,
+            setting_enabled=get_overlay().config.mr_close_ticket,
+        )
+        description = sanitize_close_keywords(raw_description, close_ticket=close_ticket)
         assignee = host.current_user() or git.config_value(key="user.name")
         return PullRequestSpec(
             repo=repo_path,

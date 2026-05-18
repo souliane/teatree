@@ -277,8 +277,13 @@ class TaskQuerySet(models.QuerySet):
         the required ``ticket.state``, so an already-advanced ticket
         no-ops and a ticket can never be teleported past a lifecycle gate
         it did not earn (a COMPLETED ``shipping`` task on a ``started``
-        ticket finds no matching guard). Returns the number of tickets a
-        transition actually fired for.
+        ticket finds no matching guard). The shared path also enforces
+        the needs-user-input hold (#927): a task the agent could not
+        finish (its last attempt returned ``needs_user_input``) was held
+        by ``_advance_ticket`` with an interactive followup scheduled —
+        the sweep must not force-advance it past that phase, and does not,
+        because ``_apply_phase_transition`` itself no-ops for a held task.
+        Returns the number of tickets a transition actually fired for.
         """
         from teatree.core.models.task import Task  # noqa: PLC0415
 

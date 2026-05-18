@@ -9,7 +9,8 @@ stay in ``test_pr_command`` because they drive ``call_command("pr",
 
 from django.test import TestCase
 
-from teatree.core.management.commands._ensure_pr import slug_from_remote
+from teatree.core.management.commands._ensure_pr import _ticket_extra_for_branch, slug_from_remote
+from teatree.core.models import Ticket, Worktree
 
 
 class TestSlugFromRemote(TestCase):
@@ -27,3 +28,36 @@ class TestSlugFromRemote(TestCase):
 
     def test_empty_returns_empty(self) -> None:
         assert slug_from_remote("") == ""
+
+
+class TestTicketExtraForBranch(TestCase):
+    """Resolve the owning ticket's ``extra`` from the orphan-branch name (#873).
+
+    Lets the pre-push ``ensure-pr`` fallback honor the explicit
+    ``more_prs_coming`` opt-out even though it has no ticket handle.
+    """
+
+    def test_returns_none_when_no_worktree_for_branch(self) -> None:
+        assert _ticket_extra_for_branch("no-such-branch") is None
+
+    def test_returns_ticket_extra_for_known_branch(self) -> None:
+        ticket = Ticket.objects.create(
+            overlay="test",
+            issue_url="https://github.com/souliane/teatree/issues/873",
+            extra={"more_prs_coming": True},
+        )
+        Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path="/tmp/repo873",
+            branch="fix/873-x",
+            extra={"worktree_path": "/tmp/repo873"},
+        )
+        assert _ticket_extra_for_branch("fix/873-x") == {"more_prs_coming": True}
+
+    def test_returns_latest_worktree_when_branch_reused(self) -> None:
+        old = Ticket.objects.create(overlay="test", issue_url="https://x/1", extra={"more_prs_coming": True})
+        new = Ticket.objects.create(overlay="test", issue_url="https://x/2", extra={})
+        Worktree.objects.create(ticket=old, overlay="test", repo_path="/tmp/a", branch="shared")
+        Worktree.objects.create(ticket=new, overlay="test", repo_path="/tmp/b", branch="shared")
+        assert _ticket_extra_for_branch("shared") == {}

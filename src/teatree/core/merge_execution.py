@@ -47,6 +47,7 @@ import logging
 import shutil
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, TypedDict, cast
+from urllib.parse import urlparse
 
 from django.apps import apps
 from django.db import transaction
@@ -55,6 +56,7 @@ from django.utils import timezone
 from teatree.project import find_project_root
 from teatree.utils import git
 from teatree.utils.run import run_allowed_to_fail
+from teatree.utils.url_slug import slug_from_issue_or_pr_url
 
 if TYPE_CHECKING:
     from teatree.core.models import MergeClear
@@ -146,29 +148,61 @@ def _project_repo_slug() -> str:
     return git.remote_slug(repo=str(root))
 
 
+def _ticket_repo_slug(clear: object) -> str:
+    """The GitHub ``owner/repo`` for *clear*'s ticket, or ``""`` (#931).
+
+    Resolved from the CLEAR's ``ticket.issue_url`` via the canonical
+    :func:`slug_from_issue_or_pr_url` parser — the repo the PR genuinely
+    belongs to, independent of which clone is running. This is the
+    authoritative source when an overlay's GitHub repo differs from the
+    editable ``t3`` clone's ``origin``: such a CLEAR must bind its
+    live-head check to the overlay repo's PR, never to a same-numbered
+    PR in the clone-origin repo (#931).
+    """
+    ticket = getattr(clear, "ticket", None)
+    if ticket is None:
+        return ""
+    issue_url = str(getattr(ticket, "issue_url", "") or "")
+    if not issue_url:
+        return ""
+    return slug_from_issue_or_pr_url(urlparse(issue_url).path)
+
+
 def resolve_pr_repo_slug(clear: object) -> str:
     """The GitHub ``owner/repo`` to target ``gh`` at for *clear*'s PR.
 
-    ``MergeClear.slug`` is a *workstream* slug, not a repo. If it already
-    looks like ``owner/repo`` it is used as-is (back-compat with rows /
-    tests that stored a repo there); otherwise the repo is resolved from
-    the running clone's git remote. Fails closed with an actionable
-    :class:`MergePreconditionError` when neither yields a repo — never the
-    opaque "could not resolve the live head" escalation that hid this gap.
+    ``MergeClear.slug`` is a *workstream* slug, not a repo. Resolution
+    order, first non-empty wins:
+
+    (1) an ``owner/repo``-shaped slug is used as-is (back-compat with
+    rows / tests that stored a repo there).
+    (2) the CLEAR's ``ticket.issue_url`` repo (#931 — authoritative: the
+    repo the PR belongs to, correct even when the overlay's repo differs
+    from the running clone's ``origin``).
+    (3) the running clone's ``origin`` git remote (the teatree-self
+    overlay, whose repo *is* the clone origin).
+
+    Fails closed with an actionable :class:`MergePreconditionError` when
+    none yields a repo — never the opaque "could not resolve the live
+    head" escalation that hid this gap.
     """
     slug = str(getattr(clear, "slug", "") or "")
     pr_id = getattr(clear, "pr_id", "?")
     if _looks_like_owner_repo(slug):
         return slug
+    from_ticket = _ticket_repo_slug(clear)
+    if from_ticket:
+        return from_ticket
     resolved = _project_repo_slug()
     if resolved:
         return resolved
     msg = (
         f"could not resolve the GitHub repo for {slug}#{pr_id}: the CLEAR slug "
-        f"{slug!r} is a workstream slug (not owner/repo) and the running teatree "
-        f"clone has no resolvable 'origin' remote. The sanctioned merge needs the "
-        f"real repo to bind the merge — re-issue the CLEAR from a checkout whose "
-        f"'origin' points at the GitHub repo, or pass an owner/repo slug."
+        f"{slug!r} is a workstream slug (not owner/repo), the CLEAR's ticket has "
+        f"no recognisable GitHub issue_url, and the running teatree clone has no "
+        f"resolvable 'origin' remote. The sanctioned merge needs the real repo to "
+        f"bind the merge — re-issue the CLEAR from a checkout whose 'origin' points "
+        f"at the GitHub repo, or pass an owner/repo slug."
     )
     raise MergePreconditionError(msg)
 
