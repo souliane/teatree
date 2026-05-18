@@ -439,6 +439,80 @@ class TestE2eExternal(TestCase):
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
+    def test_local_target_exports_compose_project_name(self) -> None:
+        """The local target hands the teatree compose project to the spec.
+
+        A spec that resolves the backend via a bare ``docker compose port
+        web 8000`` / ``docker compose exec -T web`` (run from the backend
+        repo dir, no ``-p``) would otherwise default the project name to
+        the directory basename and miss the teatree-managed stack — the one
+        whose ``web`` container has the restored-Postgres ``DATABASE_URL``
+        injected. Exporting ``COMPOSE_PROJECT_NAME`` (the value
+        ``compose_project(worktree)`` returns) makes those bare
+        ``docker compose`` calls deterministically target the provisioned
+        stack with no spec change.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            wt_dir = tmp_path / "worktree"
+            wt_dir.mkdir()
+            private_dir = tmp_path / "private"
+            private_dir.mkdir()
+
+            ticket = Ticket.objects.create(
+                overlay="test",
+                issue_url="https://example.com/issues/1151",
+            )
+            Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="backend",
+                branch="feature",
+                extra={"worktree_path": str(wt_dir)},
+                state=Worktree.State.SERVICES_UP,
+            )
+            mock_result = MagicMock(returncode=0)
+            with (
+                patch.dict("os.environ", {"T3_PRIVATE_TESTS": str(private_dir), "T3_ORIG_CWD": str(wt_dir)}),
+                patch.object(e2e_mod, "get_service_port", return_value=5555),
+                patch.object(utils_run_mod.subprocess, "run", return_value=mock_result) as mock_run,
+            ):
+                result = cast("str", call_command("e2e", "external", target="local"))
+            assert "passed" in result
+            env = mock_run.call_args[1]["env"]
+            assert env["COMPOSE_PROJECT_NAME"] == f"backend-wt{ticket.ticket_number}"
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_dev_target_does_not_export_compose_project_name(self) -> None:
+        """The dev target hits a deployed env — no local stack to point at.
+
+        ``COMPOSE_PROJECT_NAME`` must not leak into a dev run (no local
+        docker stack exists; a stray value would mis-scope any incidental
+        ``docker compose`` call the spec makes on dev).
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            private_dir = Path(tmp) / "private"
+            private_dir.mkdir()
+
+            mock_result = MagicMock(returncode=0)
+            with (
+                patch.dict(
+                    "os.environ",
+                    {"T3_PRIVATE_TESTS": str(private_dir), "BASE_URL": "https://dev.example.com"},
+                    clear=False,
+                ),
+                patch.object(utils_run_mod.subprocess, "run", return_value=mock_result) as mock_run,
+            ):
+                os.environ.pop("COMPOSE_PROJECT_NAME", None)
+                result = cast("str", call_command("e2e", "external", target="dev"))
+
+        assert "passed" in result
+        env = mock_run.call_args[1]["env"]
+        assert "COMPOSE_PROJECT_NAME" not in env
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
     def test_headed_mode(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
