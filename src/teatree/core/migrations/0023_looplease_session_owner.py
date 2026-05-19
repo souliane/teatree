@@ -11,7 +11,7 @@ from django.db import migrations, models
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("core", "0021_outbound_claim"),
+        ("core", "0022_pendingchatinjection_answered_at"),
     ]
 
     operations = [
