@@ -1776,6 +1776,7 @@ Usage: t3 teatree [OPTIONS] COMMAND [ARGS]...
 │ availability  24/7 dual question-mode (#58, BLUEPRINT §17.1 invariant 9).    │
 │ questions     Manage the away-mode deferred-question backlog (#58).          │
 │ pending_chat  Manage the inbound Slack-DM queue (#1063).                     │
+│ notify        Bot→user Slack DM from the shell (#1030).                      │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -3350,7 +3351,8 @@ Usage: t3 teatree ticket transition [OPTIONS] TICKET_ID TRANSITION_NAME
  Transition a ticket to a new state.
 
  Accepts any of the allowed transition names: scope, start, code, test,
- review, ship, request_review, mark_merged, retrospect, mark_delivered, rework.
+ review, ship, request_review, mark_merged, retrospect, mark_delivered,
+ rework, mark_review_no_action.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    ticket_id            INTEGER  [required]                                │
@@ -3797,5 +3799,48 @@ Usage: t3 teatree pending_chat mark-answered [OPTIONS] SLACK_TS
 │ --overlay        TEXT  Scope the stamp to one overlay (default: empty / v1   │
 │                        single-overlay).                                      │
 │ --help                 Show this message and exit.                           │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 teatree notify`
+
+```
+Usage: t3 teatree notify [OPTIONS] COMMAND [ARGS]...
+
+ Bot→user Slack DM from the shell (#1030).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ send  DM the user; exit 0 on delivery, 1 otherwise (sub-agent direct         │
+│       notify).                                                               │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree notify send`
+
+```
+Usage: t3 teatree notify send [OPTIONS] BODY
+
+ Send a bot→user Slack DM (exit 0 on delivery, 1 otherwise).
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    body      TEXT  Slack mrkdwn body. Use ``-`` to read the body from      │
+│                      stdin.                                                  │
+│                      [required]                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ *  --idempotency-key        TEXT  Required dedupe key (the helper enforces   │
+│                                   it).                                       │
+│                                   [required]                                 │
+│    --user-id                TEXT  Slack user id to DM (defaults to the       │
+│                                   configured user).                          │
+│    --kind                   TEXT  Notification kind: info | answer |         │
+│                                   question.                                  │
+│                                   [default: info]                            │
+│    --overlay                TEXT  Set T3_OVERLAY_NAME for the call           │
+│                                   (per-overlay bot routing).                 │
+│    --help                         Show this message and exit.                │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
