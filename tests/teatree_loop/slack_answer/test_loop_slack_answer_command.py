@@ -113,7 +113,7 @@ class TestLoopSlackAnswerCommand:
             call_command("loop_slack_answer", stdout=out)
 
         assert "SKIP" in out.getvalue()
-        assert PendingChatInjection.unanswered().count() == 1
+        assert PendingChatInjection.loop_unreplied().count() == 1
 
     def test_non_owner_session_json_skip_payload(self) -> None:
         out = io.StringIO()
@@ -157,13 +157,13 @@ class TestSlackAnswerCliStatus:
         assert result.exit_code == 0
         assert "queue empty" in result.stdout
 
-    def test_status_with_unanswered_messages(self) -> None:
+    def test_status_with_loop_unreplied_messages(self) -> None:
         PendingChatInjection.record(channel="C1", slack_ts="1.0", text="hi")
         PendingChatInjection.record(channel="C1", slack_ts="2.0", text="there")
         result = runner.invoke(loop_app, ["slack-answer", "status"])
 
         assert result.exit_code == 0
-        assert "2 un-answered" in result.stdout
+        assert "2 loop-unreplied" in result.stdout
 
 
 class TestSessionOwnsLoopRegistry:

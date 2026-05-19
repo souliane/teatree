@@ -1,5 +1,5 @@
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 from django.db import models, transaction
 from django.db.models import Q
@@ -354,7 +354,122 @@ class TaskQuerySet(models.QuerySet):
         return qs
 
 
+class OwnershipStatus(NamedTuple):
+    """Read-only snapshot of a session-scoped loop-owner claim (#1073).
+
+    ``is_live`` is the only predicate callers should branch on — it is
+    ``True`` iff a non-empty session holds an unexpired claim, mirroring
+    ``LoopLease.is_held`` but keyed on ``session_id`` rather than
+    ``owner``.
+    """
+
+    owner_session: str
+    expires_at: datetime | None
+    is_live: bool
+
+
 class LoopLeaseQuerySet(models.QuerySet):
+    def claim_ownership(
+        self,
+        name: str,
+        *,
+        session_id: str,
+        ttl_seconds: int = 1800,
+        take_over: bool = False,
+    ) -> tuple[bool, str]:
+        """Claim/refresh the persistent session-scoped loop-owner row (#1073).
+
+        Returns ``(won, current_owner_session)``. The same backend-agnostic
+        conditional-UPDATE CAS as :meth:`acquire` (correct on the
+        production SQLite backend where ``select_for_update`` is a silent
+        no-op — the #786 B1 lesson), keyed on ``session_id`` instead of
+        ``owner``. ``get_or_create`` first so a missing row is
+        indistinguishable from an expired claim.
+
+        ``take_over=False`` (the per-tick path / the heartbeat): the
+        ``WHERE`` matches only when the claim is unclaimed
+        (``session_id=""``), already this session's (refresh — the
+        per-tick re-claim that IS the heartbeat), or stale (expired /
+        never set). A different live session blocks the claim.
+
+        ``take_over=True`` (the user hand-off — ``t3 loop claim
+        --take-over``): an unconditional UPDATE on ``name`` that evicts
+        even a live claimant, so the chat-only user can wrest the loop
+        back from a hijacking session within one tick.
+
+        On a win the row's ``session_id``/``acquired_at``/
+        ``lease_expires_at`` are set. The returned ``current_owner_session``
+        is read back *after* the write so a loser reports WHO actually
+        holds it.
+        """
+        now = timezone.now()
+        expires = now + timedelta(seconds=ttl_seconds)
+        self.get_or_create(name=name)
+        candidates = self.filter(name=name)
+        if not take_over:
+            candidates = candidates.filter(
+                Q(session_id="")
+                | Q(session_id=session_id)
+                | Q(lease_expires_at__isnull=True)
+                | Q(lease_expires_at__lte=now)
+            )
+        won = candidates.update(
+            session_id=session_id,
+            acquired_at=now,
+            lease_expires_at=expires,
+        )
+        current = self.filter(name=name).values_list("session_id", flat=True).first() or ""
+        return won == 1, current
+
+    def heartbeat_ownership(self, name: str, *, session_id: str, ttl_seconds: int = 1800) -> bool:
+        """Extend the loop-owner lease IFF this session still holds it (#1073).
+
+        CAS on ``session_id``: a row another session took over (or that
+        expired and was reclaimed) no longer matches, so this returns
+        ``False`` and the caller learns it is no longer the owner. The
+        per-tick :meth:`claim_ownership` already subsumes this for the
+        loop-tick path; ``heartbeat_ownership`` is the explicit-refresh
+        primitive for callers that want to extend without re-evaluating
+        the take-over policy.
+        """
+        now = timezone.now()
+        refreshed = self.filter(name=name, session_id=session_id).update(
+            lease_expires_at=now + timedelta(seconds=ttl_seconds),
+        )
+        return refreshed == 1
+
+    def ownership_status(self, name: str) -> OwnershipStatus:
+        """Read-only snapshot of the named loop-owner claim (#1073).
+
+        ``is_live`` is ``True`` iff a non-empty session holds an unexpired
+        claim. A missing row reports ``("", None, False)`` — unclaimed.
+        """
+        row = self.filter(name=name).values("session_id", "lease_expires_at").first()
+        if row is None:
+            return OwnershipStatus(owner_session="", expires_at=None, is_live=False)
+        session = row["session_id"] or ""
+        expires_at = row["lease_expires_at"]
+        is_live = bool(session) and expires_at is not None and expires_at > timezone.now()
+        return OwnershipStatus(owner_session=session, expires_at=expires_at, is_live=is_live)
+
+    def release_ownership(self, name: str, *, session_id: str) -> bool:
+        """Release the loop-owner claim iff held by ``session_id`` (CAS).
+
+        A non-owner release is a no-op (0 rows) so it can never evict a
+        live owner — the chat-only user's ``t3 loop release`` only ever
+        clears its *own* session's claim.
+        """
+        released = (
+            self.filter(name=name, session_id=session_id)
+            .exclude(session_id="")
+            .update(
+                session_id="",
+                acquired_at=None,
+                lease_expires_at=None,
+            )
+        )
+        return released == 1
+
     def acquire(self, name: str, *, owner: str, lease_seconds: int = 120) -> bool:
         """Atomically acquire/renew the named loop lease (#786 WS2).
 

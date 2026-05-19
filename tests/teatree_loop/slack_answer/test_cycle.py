@@ -104,7 +104,7 @@ class TestAckOnly:
         assert backend.replies == []  # NO thread post for an ack
         row.refresh_from_db()
         assert row.answer_kind == "ack"
-        assert row.answered_at is not None
+        assert row.loop_replied_at is not None
         assert report.acked == 1
 
 
@@ -142,7 +142,7 @@ class TestSimple:
             run_slack_answer_cycle(messaging_resolver=_resolver(backend))
 
         row.refresh_from_db()
-        assert row.answered_at is None  # retry next cycle (fail-safe)
+        assert row.loop_replied_at is None  # retry next cycle (fail-safe)
 
     def test_simple_not_stamped_when_post_raises(self) -> None:
         row = _row("what's the status?")
@@ -155,7 +155,7 @@ class TestSimple:
             run_slack_answer_cycle(messaging_resolver=_resolver(backend))
 
         row.refresh_from_db()
-        assert row.answered_at is None
+        assert row.loop_replied_at is None
 
 
 class TestNeedsWorkDelegation:

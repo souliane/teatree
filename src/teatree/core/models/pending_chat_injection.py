@@ -12,12 +12,60 @@ direction (user → agent). The Slack ``ts`` is the canonical idempotency
 key: the scanner can over-poll safely because ``unique(overlay, ts)``
 deduplicates, and the injection handler is safe to re-fire because
 ``consumed_at`` is stamped once.
+
+Issue #1063 adds the ``answered_at`` gate. ``consumed_at`` only proves the
+agent *read* the row into context; it does not prove the agent *replied*
+to the user's question. Empirically (2026-05-19), drain worked perfectly
+while the agent silently ignored ~22 of 25 user questions in a single
+day. ``answered_at`` is the structural answer: a Stop hook soft-blocks
+the turn while any heuristic-classified question from the last hour has
+``answered_at IS NULL``. The heuristic lives here as :attr:`is_question`
+so the model is the single source of truth for "this row needs a reply".
 """
 
+import re
+from datetime import timedelta
 from typing import ClassVar
 
 from django.db import models
 from django.utils import timezone
+
+_QUESTION_WORDS: frozenset[str] = frozenset(
+    {
+        "why",
+        "what",
+        "when",
+        "where",
+        "who",
+        "which",
+        "how",
+        "is",
+        "are",
+        "do",
+        "does",
+        "did",
+        "can",
+        "could",
+        "should",
+        "would",
+        "will",
+        "was",
+        "were",
+    }
+)
+
+_QUESTION_PHRASES: tuple[str, ...] = (
+    "please answer",
+    "please explain",
+    "please tell me",
+)
+
+# Strip leading whitespace, punctuation, and markdown decoration
+# (``*``, ``_``, ``>``, ``-``, backticks, list-bullet digits + ``.``/``)``)
+# before applying the heuristic. ``re.UNICODE`` is implicit in py3.
+_LEADING_NOISE = re.compile(r"^[\s*_\->`#0-9.()]+")
+
+_FIRST_WORD = re.compile(r"^([A-Za-z]+)")
 
 
 class PendingChatInjection(models.Model):
@@ -26,7 +74,10 @@ class PendingChatInjection(models.Model):
     The scanner inserts a row per new message; the ``UserPromptSubmit``
     drain reads unconsumed rows for the loop-owner session, emits them
     into ``additionalContext``, and stamps ``consumed_at`` so a re-fire
-    of the hook is a clean no-op.
+    of the hook is a clean no-op. ``answered_at`` is the orthogonal gate:
+    set when the agent actually replies to the user (via
+    :meth:`agent_answered_question` or the ``notify_user`` integration in
+    :mod:`teatree.core.notify`).
     """
 
     class AnswerKind(models.TextChoices):
@@ -42,13 +93,25 @@ class PendingChatInjection(models.Model):
     text = models.TextField()
     received_at = models.DateTimeField(default=timezone.now)
     consumed_at = models.DateTimeField(null=True, blank=True)
+    # #1069's strict turn-end gate column: set ONLY when the agent
+    # personally replied to the user (via ``agent_answered_question`` or
+    # the ``notify_user`` integration in :mod:`teatree.core.notify`).
+    # ``db_index=True`` because ``unanswered_questions_since`` filters on
+    # it on the Stop-hook hot path. The reactive Slack-answer loop must
+    # NOT write this column — see ``loop_replied_at`` below (#1075).
+    answered_at = models.DateTimeField(null=True, blank=True, db_index=True)
     # The reactive Slack-answer loop (#1014) stamps these; they are
-    # orthogonal to ``consumed_at`` (the prompt-drain column). A row may be
-    # consumed-but-unanswered (drained into a prompt, no reply posted yet)
-    # or answered-but-unconsumed (the loop replied before any interactive
-    # session drained it). Each is a single-use compare-and-swap, never
-    # written for the same column twice.
-    answered_at = models.DateTimeField(null=True, blank=True)
+    # orthogonal to BOTH ``consumed_at`` (the prompt-drain column) and
+    # ``answered_at`` (#1069's agent-personally-replied gate). Option B
+    # (#1075): the loop owns ``loop_replied_at``, a column distinct from
+    # ``answered_at``, so the loop posting a token-cheap reply does NOT
+    # satisfy the #1063 turn-end gate — that gate stays a strict "the
+    # agent personally answered" guarantee, fully decoupled from the loop
+    # work-queue. A row may be consumed-but-loop-unreplied (drained into a
+    # prompt, no loop reply yet) or loop-replied-but-unconsumed (the loop
+    # replied before any interactive session drained it). Each is a
+    # single-use compare-and-swap, never written for the same column twice.
+    loop_replied_at = models.DateTimeField(null=True, blank=True)
     answer_kind = models.CharField(
         max_length=16,
         blank=True,
@@ -66,6 +129,8 @@ class PendingChatInjection(models.Model):
 
     def __str__(self) -> str:
         status = "consumed" if self.consumed_at else "pending"
+        if self.answered_at is not None:
+            status = "answered"
         return f"pending-chat-injection<{self.pk}:{status} overlay={self.overlay!r} ts={self.slack_ts}>"
 
     @property
@@ -73,8 +138,30 @@ class PendingChatInjection(models.Model):
         return self.consumed_at is None
 
     @property
-    def is_answered(self) -> bool:
-        return self.answered_at is not None
+    def is_loop_replied(self) -> bool:
+        """True once the reactive Slack-answer loop has replied (#1075).
+
+        Distinct from ``answered_at`` (#1069's "the agent personally
+        replied" gate): the loop stamps ``loop_replied_at``, never
+        ``answered_at``, so this property never reflects the turn-end
+        gate's state.
+        """
+        return self.loop_replied_at is not None
+
+    @property
+    def is_question(self) -> bool:
+        """Heuristic: does ``text`` look like a user question requiring a reply?
+
+        True when, after stripping leading whitespace / punctuation /
+        markdown decoration, ANY of the following holds: the stripped
+        text ends with ``?``; the first word (case-insensitive) is in
+        :data:`_QUESTION_WORDS`; or the stripped text contains one of
+        ``please answer`` / ``please explain`` / ``please tell me``.
+
+        Tuned against the 25 real user-question texts in production
+        (#1063). The empty string returns ``False``.
+        """
+        return _classify_is_question(self.text)
 
     @classmethod
     def record(
@@ -119,19 +206,25 @@ class PendingChatInjection(models.Model):
         return qs.order_by("received_at")
 
     @classmethod
-    def unanswered(cls, *, overlay: str = "") -> models.QuerySet["PendingChatInjection"]:
-        """Return the un-answered queue for *overlay*, oldest first.
+    def loop_unreplied(cls, *, overlay: str = "") -> models.QuerySet["PendingChatInjection"]:
+        """Return the reactive Slack-answer loop's work-queue, oldest first.
 
-        Orthogonal to :meth:`pending`: gates on ``answered_at`` (the
-        reactive Slack-answer loop's column), not ``consumed_at`` (the
-        prompt-drain column). A row drained into a prompt is still
-        *unanswered* until the loop posts a reply, so the answer loop and
-        the prompt-drain never double-process the same column.
+        Orthogonal to BOTH :meth:`pending` (the ``consumed_at`` prompt-
+        drain queue) and the #1069 turn-end gate: this gates on
+        ``loop_replied_at`` (the loop's own column, #1075 / Option B),
+        NOT ``answered_at``. Decoupling the loop work-queue from
+        ``answered_at`` is the whole point — the loop posting a reply
+        stamps only ``loop_replied_at``, so it never silently satisfies
+        the #1063 Stop-hook turn-end gate (which still requires the agent
+        to *personally* answer via ``agent_answered_question``). A row
+        drained into a prompt is still loop-unreplied until the loop posts,
+        so the answer loop and the prompt-drain never double-process the
+        same column.
 
         Pass ``overlay=""`` to scan every overlay's queue (the v1 single-
         overlay path uses ``overlay=""`` consistently).
         """
-        qs = cls.objects.filter(answered_at__isnull=True)
+        qs = cls.objects.filter(loop_replied_at__isnull=True)
         if overlay:
             qs = qs.filter(overlay=overlay)
         return qs.order_by("received_at")
@@ -148,22 +241,25 @@ class PendingChatInjection(models.Model):
             self.refresh_from_db(fields=["consumed_at"])
         return bool(updated)
 
-    def mark_answered(self, kind: str) -> bool:
-        """Stamp ``answered_at`` + ``answer_kind``; ``True`` on the transition.
+    def mark_loop_replied(self, kind: str) -> bool:
+        """Stamp ``loop_replied_at`` + ``answer_kind``; ``True`` on the transition.
 
-        Single-use compare-and-swap (``UPDATE … WHERE answered_at IS
+        Single-use compare-and-swap (``UPDATE … WHERE loop_replied_at IS
         NULL``) mirroring :meth:`consume`: a concurrent second caller sees
         0 rows updated and returns ``False`` without overwriting the first
-        ``answer_kind``. Orthogonal to ``consumed_at`` — this never writes
-        the prompt-drain column.
+        ``answer_kind``. Writes ONLY the reactive Slack-answer loop's
+        column (#1075 / Option B) — never ``consumed_at`` (the prompt-
+        drain column) and never ``answered_at`` (#1069's strict "the
+        agent personally replied" turn-end gate). The loop replying must
+        not satisfy that gate.
         """
         updated = (
             type(self)
-            .objects.filter(pk=self.pk, answered_at__isnull=True)
-            .update(answered_at=timezone.now(), answer_kind=kind)
+            .objects.filter(pk=self.pk, loop_replied_at__isnull=True)
+            .update(loop_replied_at=timezone.now(), answer_kind=kind)
         )
         if updated:
-            self.refresh_from_db(fields=["answered_at", "answer_kind"])
+            self.refresh_from_db(fields=["loop_replied_at", "answer_kind"])
         return bool(updated)
 
     def mark_eyes_reacted(self) -> bool:
@@ -172,7 +268,7 @@ class PendingChatInjection(models.Model):
         Single-use CAS so the no-LLM :eyes: receipt-acknowledgement
         reaction fires at most once even when the answer cycle re-runs the
         same row across ticks (post/readback failures leave the row
-        un-answered for retry, but the :eyes: must not re-post).
+        loop-unreplied for retry, but the :eyes: must not re-post).
         """
         updated = (
             type(self).objects.filter(pk=self.pk, eyes_reacted_at__isnull=True).update(eyes_reacted_at=timezone.now())
@@ -180,3 +276,78 @@ class PendingChatInjection(models.Model):
         if updated:
             self.refresh_from_db(fields=["eyes_reacted_at"])
         return bool(updated)
+
+    @classmethod
+    def agent_answered_question(cls, slack_ts: str, *, overlay: str = "") -> int:
+        """Stamp ``answered_at = now`` on rows matching ``(overlay, slack_ts)``.
+
+        Returns the number of rows actually transitioned from
+        ``answered_at IS NULL`` to ``answered_at = now``. Idempotent: a
+        second call on an already-answered row is a no-op and returns
+        ``0``. The empty ``slack_ts`` is rejected — there is no row that
+        the empty string could legitimately identify.
+
+        The ``(overlay, slack_ts)`` pair is the natural idempotency key
+        (the same one ``UniqueConstraint`` enforces on ingest), so the
+        agent reply doesn't need the row's primary key — just the Slack
+        ts of the question it is answering, which is already in the
+        ``additionalContext`` payload the agent saw.
+        """
+        if not slack_ts:
+            return 0
+        return int(
+            cls.objects.filter(
+                overlay=overlay,
+                slack_ts=slack_ts,
+                answered_at__isnull=True,
+            ).update(answered_at=timezone.now())
+        )
+
+    @classmethod
+    def unanswered_questions_since(cls, window: timedelta) -> list["PendingChatInjection"]:
+        """Return question rows received within *window* that are unanswered.
+
+        Used by the Stop hook (#1063): the hook fires at every turn end
+        and queries this method to decide whether to emit a blocking
+        reminder. The heuristic filter runs in Python because
+        :attr:`is_question` is a property, not a stored column — the row
+        count for a single hour is small (45 in the worst observed day)
+        so the in-Python filter is fine.
+
+        Rows where ``answered_at`` is already set are skipped; rows
+        outside the window are skipped (older questions are stale —
+        nudging on them produces noise without changing behaviour).
+        """
+        cutoff = timezone.now() - window
+        rows = cls.objects.filter(
+            received_at__gte=cutoff,
+            answered_at__isnull=True,
+        ).order_by("received_at")
+        return [row for row in rows if row.is_question]
+
+
+def _classify_is_question(text: str) -> bool:
+    """Pure-function heuristic backing :attr:`PendingChatInjection.is_question`.
+
+    Split out so the heuristic can be tested directly without round-
+    tripping through the ORM. See :attr:`PendingChatInjection.is_question`
+    for the spec.
+    """
+    if not text:
+        return False
+    stripped = _LEADING_NOISE.sub("", text).strip()
+    if not stripped:
+        return False
+    if stripped.endswith("?"):
+        return True
+    lowered = stripped.lower()
+    for phrase in _QUESTION_PHRASES:
+        if phrase in lowered:
+            return True
+    match = _FIRST_WORD.match(stripped)
+    if match is None:
+        return False
+    return match.group(1).lower() in _QUESTION_WORDS
+
+
+__all__ = ["PendingChatInjection"]

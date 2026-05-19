@@ -73,7 +73,7 @@ class TestCoalesceGrouping:
         _seed("1.0", "will you bump my review requests", user="U1", channel="C1", secs_after_base=0)
         _seed("2.0", "I have a lot", user="U1", channel="C1", secs_after_base=3)
 
-        units = _coalesce(list(PendingChatInjection.unanswered()))
+        units = _coalesce(list(PendingChatInjection.loop_unreplied()))
 
         assert len(units) == 1
         assert units[0].slack_ts == "1.0"  # threads on the FIRST message
@@ -84,7 +84,7 @@ class TestCoalesceGrouping:
         _seed("1.0", "first", user="U1", channel="C1", secs_after_base=0)
         _seed("2.0", "much later", user="U1", channel="C1", secs_after_base=_COALESCE_WINDOW_SECONDS + 5)
 
-        units = _coalesce(list(PendingChatInjection.unanswered()))
+        units = _coalesce(list(PendingChatInjection.loop_unreplied()))
 
         assert len(units) == 2
 
@@ -92,7 +92,7 @@ class TestCoalesceGrouping:
         _seed("1.0", "mine", user="U1", channel="C1", secs_after_base=0)
         _seed("2.0", "theirs", user="U2", channel="C1", secs_after_base=2)
 
-        units = _coalesce(list(PendingChatInjection.unanswered()))
+        units = _coalesce(list(PendingChatInjection.loop_unreplied()))
 
         assert len(units) == 2
 
@@ -100,7 +100,7 @@ class TestCoalesceGrouping:
         _seed("1.0", "here", user="U1", channel="C1", secs_after_base=0)
         _seed("2.0", "there", user="U1", channel="C2", secs_after_base=2)
 
-        units = _coalesce(list(PendingChatInjection.unanswered()))
+        units = _coalesce(list(PendingChatInjection.loop_unreplied()))
 
         assert len(units) == 2
 
@@ -109,7 +109,7 @@ class TestCoalesceGrouping:
         PendingChatInjection.record(channel="C1", slack_ts="1.0", text="a")
         PendingChatInjection.record(channel="C1", slack_ts="2.0", text="b")
 
-        units = _coalesce(list(PendingChatInjection.unanswered()))
+        units = _coalesce(list(PendingChatInjection.loop_unreplied()))
 
         assert len(units) == 2
 
@@ -117,12 +117,12 @@ class TestCoalesceGrouping:
         # The first message is answered (a bot reply posted) BEFORE the
         # follow-up arrives; the follow-up is then its own logical turn.
         first = _seed("1.0", "status?", user="U1", channel="C1", secs_after_base=0)
-        first.mark_answered("simple")  # bot replied → group boundary
+        first.mark_loop_replied("simple")  # bot replied → group boundary
         _seed("2.0", "and the PRs?", user="U1", channel="C1", secs_after_base=3)
 
         # unanswered() now only returns the follow-up — the answered lead
         # is no longer a candidate, so the follow-up stands alone.
-        units = _coalesce(list(PendingChatInjection.unanswered()))
+        units = _coalesce(list(PendingChatInjection.loop_unreplied()))
 
         assert len(units) == 1
         assert units[0].slack_ts == "2.0"
@@ -143,8 +143,8 @@ class TestCoalescedAnswerBehaviour:
         # Both rows stamped answered together; processed counts rows.
         r1.refresh_from_db()
         r2.refresh_from_db()
-        assert r1.answered_at is not None
-        assert r2.answered_at is not None
+        assert r1.loop_replied_at is not None
+        assert r2.loop_replied_at is not None
         assert report.processed == 2
         assert report.acked == 1  # ONE logical turn
 

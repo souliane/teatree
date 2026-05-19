@@ -102,7 +102,7 @@ class TestHandleAckCasLost:
     def test_cas_lost_skips_reaction(self) -> None:
         row = _row("thanks")
         backend = RecordingBackend()
-        with patch.object(type(row), "mark_answered", return_value=False):
+        with patch.object(type(row), "mark_loop_replied", return_value=False):
             assert _handle_ack(backend, _Unit([row])) is False
         assert backend.reactions == []
 
@@ -111,7 +111,7 @@ class TestDelegateCasLost:
     def test_cas_lost_creates_no_task(self) -> None:
         row = _row("fix the build")
         backend = RecordingBackend()
-        with patch.object(type(row), "mark_answered", return_value=False):
+        with patch.object(type(row), "mark_loop_replied", return_value=False):
             assert _delegate_needs_work(backend, _Unit([row])) is False
         assert Task.objects.filter(phase="answering").count() == 0
 
@@ -169,7 +169,7 @@ class TestProcessUnitDegenerateBranches:
         backend = RecordingBackend()
         report = SlackAnswerReport()
 
-        with patch.object(type(row), "mark_answered", return_value=False):
+        with patch.object(type(row), "mark_loop_replied", return_value=False):
             _process_unit(backend, _Unit([row]), report)
 
         assert report.acked == 0
@@ -182,7 +182,7 @@ class TestProcessUnitDegenerateBranches:
         backend = RecordingBackend()
         report = SlackAnswerReport()
 
-        with patch.object(type(row), "mark_answered", return_value=False):
+        with patch.object(type(row), "mark_loop_replied", return_value=False):
             _process_unit(backend, _Unit([row]), report)
 
         assert report.delegated == 0

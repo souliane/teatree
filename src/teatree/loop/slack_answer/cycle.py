@@ -7,23 +7,27 @@ a quick ack / status question gets a reply in seconds, not at the next
 720s fat tick — and at near-zero token cost.
 
 It is **complementary to the drain, not a double-answer**: ``consume()``
-stamps ``consumed_at`` (prompt-drain), this cycle stamps ``answered_at``
-(reply posted). The two columns are orthogonal single-use CAS
-transitions, so a row can be drained and answered independently with no
-race and no double reply.
+stamps ``consumed_at`` (prompt-drain), this cycle stamps
+``loop_replied_at`` (loop reply posted, #1075 / Option B). It
+deliberately does NOT touch ``answered_at`` — that column is #1069's
+strict "the agent personally replied" turn-end gate, kept fully
+decoupled from this loop's work-queue so a token-cheap loop reply never
+silently satisfies the #1063 Stop-hook gate. The columns are orthogonal
+single-use CAS transitions, so a row can be drained, loop-replied, and
+agent-answered independently with no race and no double reply.
 
 Per unit, oldest-first, bounded to :data:`_BATCH` per cycle. First a
 no-LLM :eyes: receipt reaction, exactly once (``mark_eyes_reacted`` CAS)
 even across cycle re-runs. Then a route via the zero-token classifier:
 
-- ``ACK_ONLY`` → react ✅ / 🙏, ``mark_answered("ack")``, NO thread post.
+- ``ACK_ONLY`` → react ✅ / 🙏, ``mark_loop_replied("ack")``, NO thread post.
 - ``SIMPLE`` → :func:`build_simple_answer`; post the threaded reply,
-    readback-verify, only THEN ``mark_answered("simple")``. A post or
-    readback failure leaves the row unanswered for retry.
+    readback-verify, only THEN ``mark_loop_replied("simple")``. A post or
+    readback failure leaves the row loop-unreplied for retry.
 - ``NEEDS_WORK`` (or Stage B sentinel / budget-closed) → create ONE
     PENDING ``t3:answerer`` Task (the fat loop's ``claim-next`` spawns
     the bounded sub-agent — no new spawn path), post an instant ack,
-    ``mark_answered("delegated")``.
+    ``mark_loop_replied("delegated")``.
 
 Per-unit ``try/except`` so one bad unit never blocks the rest. This is a
 management-command body — it never loads the fat skill stack.
@@ -58,9 +62,9 @@ class _Unit:
     """One logical turn — one or more coalesced ``PendingChatInjection`` rows.
 
     The answer threads on the FIRST row's ``slack_ts``; every row in the
-    unit gets the :eyes: receipt and is stamped ``answered_at`` together
-    when the unit is answered. ``text`` is the newline-joined message
-    bodies in original (received) order — a single unit for the
+    unit gets the :eyes: receipt and is stamped ``loop_replied_at``
+    together when the unit is replied to. ``text`` is the newline-joined
+    message bodies in original (received) order — a single unit for the
     classifier and the answer builder.
     """
 
@@ -93,9 +97,9 @@ def _coalesce(rows: list[PendingChatInjection]) -> list[_Unit]:
     A new unit starts when the next row is from a different
     ``(overlay, channel, user_id)`` OR its ``received_at`` is more than
     :data:`_COALESCE_WINDOW_SECONDS` after the previous row's. Rows arrive
-    oldest-first (``unanswered()`` ordering). The loop is the only bot
-    that replies and it stamps ``answered_at`` on a whole unit at once, so
-    every row reaching this function is pre-reply — "no bot message
+    oldest-first (``loop_unreplied()`` ordering). The loop is the only bot
+    that replies and it stamps ``loop_replied_at`` on a whole unit at
+    once, so every row reaching this function is pre-reply — "no bot message
     between" reduces to the same-user/within-window adjacency test.
     """
     units: list[_Unit] = []
@@ -142,7 +146,7 @@ def verify_reply_visible(backend: MessagingBackend, *, channel: str, ts: str) ->
 
     Mirrors the outbound-audit Slack verifier's doctrine: an empty
     permalink is the backend's "not found" shape, so we treat it as "did
-    not land" and the caller does NOT stamp ``answered_at`` (the row
+    not land" and the caller does NOT stamp ``loop_replied_at`` (the row
     retries next cycle). A transport exception is treated the same way
     (conservative — never stamp on an unconfirmed post).
     """
@@ -153,18 +157,20 @@ def verify_reply_visible(backend: MessagingBackend, *, channel: str, ts: str) ->
         return False
 
 
-def _mark_unit_answered(unit: _Unit, kind: str) -> bool:
-    """CAS ``mark_answered`` on the lead; stamp every coalesced row to match.
+def _mark_unit_loop_replied(unit: _Unit, kind: str) -> bool:
+    """CAS ``mark_loop_replied`` on the lead; stamp every coalesced row to match.
 
     The lead's CAS is the single idempotency boundary (the row that wins
     creates the side effect). The follow-up rows are stamped best-effort
-    so they drop out of ``unanswered()`` together with the lead — one
-    logical turn, one answer, no orphaned follow-up re-processed alone.
+    so they drop out of ``loop_unreplied()`` together with the lead — one
+    logical turn, one loop reply, no orphaned follow-up re-processed alone.
+    Stamps only ``loop_replied_at`` (#1075); never ``answered_at`` so the
+    #1063 turn-end gate stays decoupled from this loop.
     """
-    if not unit.lead.mark_answered(kind):
+    if not unit.lead.mark_loop_replied(kind):
         return False
     for follow in unit.rows[1:]:
-        follow.mark_answered(kind)
+        follow.mark_loop_replied(kind)
     return True
 
 
@@ -181,7 +187,7 @@ def _react_eyes_once(backend: MessagingBackend, unit: _Unit) -> bool:
 
 def _handle_ack(backend: MessagingBackend, unit: _Unit) -> bool:
     """React ✅ on the lead, mark the whole unit answered, NO thread reply."""
-    if not _mark_unit_answered(unit, PendingChatInjection.AnswerKind.ACK):
+    if not _mark_unit_loop_replied(unit, PendingChatInjection.AnswerKind.ACK):
         return False
     backend.react(channel=unit.channel, ts=unit.slack_ts, emoji=_ACK_EMOJI)
     return True
@@ -200,14 +206,14 @@ def _handle_simple(backend: MessagingBackend, unit: _Unit) -> str:
     backend.post_reply(channel=unit.channel, ts=unit.slack_ts, text=answer)
     if not verify_reply_visible(backend, channel=unit.channel, ts=unit.slack_ts):
         return "retry"
-    _mark_unit_answered(unit, PendingChatInjection.AnswerKind.SIMPLE)
+    _mark_unit_loop_replied(unit, PendingChatInjection.AnswerKind.SIMPLE)
     return "simple"
 
 
 def _delegate_needs_work(backend: MessagingBackend, unit: _Unit) -> bool:
     """Create ONE PENDING t3:answerer Task + instant ack for the whole unit.
 
-    The lead's CAS ``mark_answered("delegated")`` is the idempotency
+    The lead's CAS ``mark_loop_replied("delegated")`` is the idempotency
     boundary: the Task is created only by the cycle whose CAS wins, so a
     re-run (or a concurrent cycle) never enqueues a second answerer Task
     for the same logical turn. The loop has no Agent tool — the fat loop's
@@ -215,7 +221,7 @@ def _delegate_needs_work(backend: MessagingBackend, unit: _Unit) -> bool:
     ``t3:answerer``) spawns the bounded sub-agent; no new spawn path. The
     sub-agent receives the FULL coalesced question, not a fragment.
     """
-    if not _mark_unit_answered(unit, PendingChatInjection.AnswerKind.DELEGATED):
+    if not _mark_unit_loop_replied(unit, PendingChatInjection.AnswerKind.DELEGATED):
         return False
     ticket = Ticket.objects.create(
         overlay=unit.overlay,
@@ -283,7 +289,7 @@ def run_slack_answer_cycle(
     resolver = messaging_resolver or _default_resolver
     report = SlackAnswerReport()
 
-    rows = list(PendingChatInjection.unanswered()[:_BATCH])
+    rows = list(PendingChatInjection.loop_unreplied()[:_BATCH])
     units = _coalesce(rows)
     for unit in units:
         report.processed += len(unit.rows)

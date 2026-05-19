@@ -1077,8 +1077,8 @@ Usage: t3 setup [OPTIONS] COMMAND [ARGS]...
 │ --help                 Show this message and exit.                           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ slack-bot  Register a per-overlay Slack bot and store its tokens via         │
-│            ``pass``.                                                         │
+│ slack-bot  Register or update a per-overlay Slack bot and store its tokens   │
+│            via ``pass``.                                                     │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -1087,7 +1087,7 @@ Usage: t3 setup [OPTIONS] COMMAND [ARGS]...
 ```
 Usage: t3 setup slack-bot [OPTIONS]
 
- Register a per-overlay Slack bot and store its tokens via ``pass``.
+ Register or update a per-overlay Slack bot and store its tokens via ``pass``.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ *  --overlay                TEXT  Overlay name as registered in              │
@@ -1095,6 +1095,8 @@ Usage: t3 setup slack-bot [OPTIONS]
 │                                   [required]                                 │
 │    --reset                        Rotate the existing bot + app tokens; skip │
 │                                   the manifest URL.                          │
+│    --update                       Force the in-place manifest update path    │
+│                                   (prompts for the app id if none recorded). │
 │    --skip-smoke-test              Skip the round-trip DM verification.       │
 │    --config                 PATH  Path to teatree config (default:           │
 │                                   ~/.teatree.toml).                          │
@@ -1320,6 +1322,11 @@ Usage: t3 loop [OPTIONS] COMMAND [ARGS]...
 │ spawn-claim    Claim a Task by id (legacy — prefer atomic ``claim-next``).   │
 │ start          Spawn a Claude Code session with the fat loop pre-registered. │
 │ stop           Print the slot id to stop in the Claude Code session.         │
+│ claim          Claim the session-scoped loop-owner slot for this Claude      │
+│                session (#1073).                                              │
+│ owner          Show which session currently owns the loop-owner slot         │
+│                (#1073).                                                      │
+│ release        Release this session's loop-owner claim (#1073).              │
 │ self-improve   Self-improving monitor — scheduled smell detection with a     │
 │                tiered action ladder. Runs in the same loop-owner session as  │
 │                `t3 loop tick` on a separate LoopLease so a long self-improve │
@@ -1483,6 +1490,61 @@ Usage: t3 loop stop [OPTIONS]
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
+#### `t3 loop claim`
+
+```
+Usage: t3 loop claim [OPTIONS]
+
+ Claim the session-scoped loop-owner slot for this Claude session (#1073).
+
+ Without ``--take-over`` a live claimant blocks the claim. With it,
+ the claim is unconditional — the hijacking session's next ``t3 loop
+ tick`` SKIPs within one tick, no restart needed. Exits 2 when not
+ running inside a Claude Code session (no session id to claim with).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --take-over              Evict a live claimant — the chat-only user's loop   │
+│                          hand-off (#1073).                                   │
+│ --slot             TEXT  Loop-owner slot name (default: loop-owner).         │
+│                          [default: loop-owner]                               │
+│ --json                   Emit JSON.                                          │
+│ --help                   Show this message and exit.                         │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 loop owner`
+
+```
+Usage: t3 loop owner [OPTIONS]
+
+ Show which session currently owns the loop-owner slot (#1073).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --slot        TEXT  Loop-owner slot name (default: loop-owner).              │
+│                     [default: loop-owner]                                    │
+│ --json              Emit JSON.                                               │
+│ --help              Show this message and exit.                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 loop release`
+
+```
+Usage: t3 loop release [OPTIONS]
+
+ Release this session's loop-owner claim (#1073).
+
+ CAS on session id — a non-owner release is a no-op and never evicts
+ a live owner.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --slot        TEXT  Loop-owner slot name (default: loop-owner).              │
+│                     [default: loop-owner]                                    │
+│ --json              Emit JSON.                                               │
+│ --help              Show this message and exit.                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
 #### `t3 loop self-improve`
 
 ```
@@ -1566,7 +1628,7 @@ Usage: t3 loop slack-answer [OPTIONS] COMMAND [ARGS]...
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
 │ run     Run one reactive Slack-answer cycle.                                 │
-│ status  Show the un-answered Slack queue depth.                              │
+│ status  Show the reactive Slack-answer loop's unreplied queue depth.         │
 │ start   Print the ``/loop <cadence>`` slot definition for the Slack-answer   │
 │         loop.                                                                │
 ╰──────────────────────────────────────────────────────────────────────────────╯
@@ -1590,7 +1652,7 @@ Usage: t3 loop slack-answer run [OPTIONS]
 ```
 Usage: t3 loop slack-answer status [OPTIONS]
 
- Show the un-answered Slack queue depth.
+ Show the reactive Slack-answer loop's unreplied queue depth.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
@@ -1713,6 +1775,7 @@ Usage: t3 teatree [OPTIONS] COMMAND [ARGS]...
 │ ticket        Ticket state management.                                       │
 │ availability  24/7 dual question-mode (#58, BLUEPRINT §17.1 invariant 9).    │
 │ questions     Manage the away-mode deferred-question backlog (#58).          │
+│ pending_chat  Manage the inbound Slack-DM queue (#1063).                     │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -3662,5 +3725,57 @@ Usage: t3 teatree questions dismiss [OPTIONS] QUESTION_ID
 │                         [default: no longer relevant]                        │
 │ --resolver        TEXT  Identity of the resolver (audit trail).              │
 │ --help                  Show this message and exit.                          │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 teatree pending_chat`
+
+```
+Usage: t3 teatree pending_chat [OPTIONS] COMMAND [ARGS]...
+
+ Manage the inbound Slack-DM queue (#1063).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ list           List inbound rows from the last hour (or --all).              │
+│ mark-answered  Stamp ``answered_at`` on rows matching a Slack ts.            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree pending_chat list`
+
+```
+Usage: t3 teatree pending_chat list [OPTIONS]
+
+ List inbound Slack-DM rows; the last hour by default.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --all     --recent      Include rows older than 1h; default is last hour     │
+│                         only.                                                │
+│                         [default: recent]                                    │
+│ --help                  Show this message and exit.                          │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree pending_chat mark-answered`
+
+```
+Usage: t3 teatree pending_chat mark-answered [OPTIONS] SLACK_TS
+
+ Stamp ``answered_at = now`` on rows matching ``(overlay, slack_ts)``.
+
+ Idempotent: zero rows is a successful no-op (the second call
+ sees the row already stamped). Empty ``slack_ts`` is rejected.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    slack_ts      TEXT  The Slack ts of the question being answered.        │
+│                          [required]                                          │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --overlay        TEXT  Scope the stamp to one overlay (default: empty / v1   │
+│                        single-overlay).                                      │
+│ --help                 Show this message and exit.                           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```

@@ -1,11 +1,12 @@
-"""The reactive answer cycle is complementary to the prompt-drain (#1014).
+"""The reactive answer cycle is complementary to the prompt-drain (#1014/#1075).
 
 ``consume()`` (the ``UserPromptSubmit`` prompt-drain) stamps
-``consumed_at``; the reactive cycle stamps ``answered_at`` /
-``eyes_reacted_at``. These are orthogonal single-use CAS transitions on
-different columns, so draining and answering the SAME row — even
-interleaved — sets both independently with no exception and no
-double-reply / double-drain.
+``consumed_at``; the reactive cycle stamps ``loop_replied_at`` /
+``eyes_reacted_at`` (its own columns, deliberately distinct from
+#1069's ``answered_at`` turn-end gate — Option B). These are orthogonal
+single-use CAS transitions on different columns, so draining and
+loop-replying the SAME row — even interleaved — sets both independently
+with no exception and no double-reply / double-drain.
 """
 
 from dataclasses import dataclass, field
@@ -67,13 +68,13 @@ class TestDrainAnswerOrthogonality:
         assert row.consume() is True
         backend = RecordingBackend()
 
-        # The reactive cycle still picks the row up (unanswered() gates on
-        # answered_at, not consumed_at) and answers independently.
+        # The reactive cycle still picks the row up (loop_unreplied() gates
+        # on loop_replied_at, not consumed_at) and replies independently.
         report = run_slack_answer_cycle(messaging_resolver=lambda _o: backend)
 
         row.refresh_from_db()
         assert row.consumed_at is not None
-        assert row.answered_at is not None
+        assert row.loop_replied_at is not None
         assert row.answer_kind == "ack"
         assert report.acked == 1
 
@@ -88,7 +89,7 @@ class TestDrainAnswerOrthogonality:
         assert fresh.consume() is True
 
         fresh.refresh_from_db()
-        assert fresh.answered_at is not None
+        assert fresh.loop_replied_at is not None
         assert fresh.consumed_at is not None
 
     def test_no_double_reply_across_drain_and_answer_reruns(self) -> None:

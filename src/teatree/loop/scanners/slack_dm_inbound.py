@@ -21,10 +21,13 @@ job. The reactive replies (the :eyes: receipt, an ack reaction, a
 threaded status answer, or a delegated ``t3:answerer`` task) are owned by
 the dedicated reactive Slack-answer loop — the third ``/loop`` slot
 (``teatree.loop.slack_answer``, ``manage.py loop_slack_answer``). That
-loop reads the rows this scanner records and stamps the orthogonal
-``answered_at`` / ``eyes_reacted_at`` columns; ``consumed_at`` (the
-prompt-drain) stays independent, so a row can be drained and answered
-without a double reply (#1014).
+loop reads the rows this scanner records and stamps its own orthogonal
+``loop_replied_at`` / ``eyes_reacted_at`` columns — deliberately
+distinct from #1069's ``answered_at`` turn-end gate (#1075 / Option B),
+so a token-cheap loop reply never satisfies the "agent personally
+replied" Stop-hook gate. ``consumed_at`` (the prompt-drain) stays
+independent of both, so a row can be drained, loop-replied, and
+agent-answered without a double reply (#1014).
 """
 
 from dataclasses import dataclass

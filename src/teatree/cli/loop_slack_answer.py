@@ -46,7 +46,7 @@ def slack_answer_run_command(
 
 @slack_answer_app.command("status")
 def slack_answer_status_command() -> None:
-    """Show the un-answered Slack queue depth."""
+    """Show the reactive Slack-answer loop's unreplied queue depth."""
     import django  # noqa: PLC0415
 
     os.environ.setdefault("DJANGO_SETTINGS_MODULE", "teatree.settings")
@@ -54,11 +54,11 @@ def slack_answer_status_command() -> None:
 
     from teatree.core.models import PendingChatInjection  # noqa: PLC0415
 
-    count = PendingChatInjection.unanswered().count()
+    count = PendingChatInjection.loop_unreplied().count()
     if not count:
-        typer.echo("Slack-answer queue empty — nothing un-answered.")
+        typer.echo("Slack-answer queue empty — nothing loop-unreplied.")
         return
-    typer.echo(f"{count} un-answered Slack message(s) awaiting the next reactive cycle.")
+    typer.echo(f"{count} loop-unreplied Slack message(s) awaiting the next reactive cycle.")
 
 
 def _slack_answer_cadence_for_loop_slot() -> str:
