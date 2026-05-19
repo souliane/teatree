@@ -2144,6 +2144,7 @@ graph TD
     teatree.notify --> teatree.backends
     teatree.notify --> teatree.config
     teatree.notify --> teatree.core
+    teatree.notify --> teatree.slack_mrkdwn
     teatree.settings --> teatree.config
     teatree.settings --> teatree.paths
     teatree.cli_reference --> teatree.cli
@@ -2155,6 +2156,7 @@ graph TD
     teatree.claude_sessions
     teatree.overlay_init
     teatree.skill_schema
+    teatree.slack_mrkdwn
     teatree.skill_deps
     teatree.skill_map
     teatree.memory_audit

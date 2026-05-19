@@ -38,6 +38,7 @@ from teatree.backends.protocols import MessagingBackend
 from teatree.config import get_effective_settings, load_config
 from teatree.core.backend_factory import messaging_from_overlay
 from teatree.core.models import BotPing
+from teatree.slack_mrkdwn import slack_linkify
 
 logger = logging.getLogger(__name__)
 
@@ -50,13 +51,14 @@ class NotifyKind(enum.StrEnum):
     INFO = "info"
 
 
-def notify_user(
+def notify_user(  # noqa: PLR0913 — single notification egress; each kwarg is a documented opt-in / test override.
     text: str,
     *,
     kind: NotifyKind | str,
     idempotency_key: str,
     backend: MessagingBackend | None = None,
     user_id: str | None = None,
+    linkify: bool = True,
 ) -> bool:
     """Send a bot→user Slack DM and record an audit row.
 
@@ -80,6 +82,15 @@ def notify_user(
     stores it on the ``BotPing`` row so subsequent CLI surfaces can echo
     a clickable link back to the user (the audited DM is the canonical
     source of the answer; the CLI only points at it).
+
+    *linkify* (default ``True``) rewrites GitHub-flavored ``[label](url)``
+    and bare ``!N`` / ``#N`` tokens into Slack mrkdwn ``<url|label>`` form
+    so dashboard messages render with clickable links rather than inert
+    text. Token resolution consults the active overlay's
+    :meth:`OverlayBase.resolve_mr_token` /
+    :meth:`OverlayBase.resolve_issue_token` hooks; tokens the overlay
+    can't resolve are left bare. The transform is applied to the Slack
+    payload only — the ``BotPing.text`` audit column keeps the original.
 
     Returns ``True`` when a Slack message was published (or detected as
     an idempotent repeat); ``False`` when the helper degraded to a no-op
@@ -110,11 +121,13 @@ def notify_user(
         )
         return False
 
+    payload_text = _maybe_linkify(text) if linkify else text
+
     try:
         channel = resolved_backend.open_dm(resolved_user_id)
         response = resolved_backend.post_message(
             channel=channel,
-            text=_format(text, kind_value),
+            text=_format(payload_text, kind_value),
             thread_ts="",
         )
     except Exception as exc:  # noqa: BLE001 — notify must never bubble up
@@ -176,6 +189,28 @@ def _resolve_user_id() -> str:
             return str(user_id)
     teatree_cfg = cfg.get("teatree") or {}
     return str(teatree_cfg.get("slack_user_id", ""))
+
+
+def _maybe_linkify(text: str) -> str:
+    """Apply :func:`slack_linkify` using the active overlay's resolvers, if any.
+
+    Failure to resolve the overlay or to query a resolver is non-fatal —
+    notification routing must never crash a CLI turn. In that case the
+    text is rewritten with no resolvers, which still converts
+    ``[label](url)`` to ``<url|label>`` but leaves bare ``!N`` / ``#N``
+    tokens as-is.
+    """
+    from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
+
+    try:
+        overlay = get_overlay()
+    except Exception:  # noqa: BLE001 — overlay resolution is best-effort; never crash a CLI turn
+        return slack_linkify(text)
+    return slack_linkify(
+        text,
+        mr_resolver=overlay.resolve_mr_token,
+        issue_resolver=overlay.resolve_issue_token,
+    )
 
 
 def _format(text: str, kind: NotifyKind) -> str:
