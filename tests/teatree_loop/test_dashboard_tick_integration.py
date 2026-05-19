@@ -92,7 +92,7 @@ def test_tick_uses_user_identity_aliases_for_dedup(tmp_path: Path) -> None:
 
     with (
         patch("teatree.loop.dashboard.default_actions_path", return_value=sidecar),
-        patch("teatree.loop.tick.load_config", return_value=_FakeCfg()),
+        patch("teatree.loop.tick_recovery.load_config", return_value=_FakeCfg()),
     ):
         run_tick(
             TickRequest(scanners=[scanner]),
