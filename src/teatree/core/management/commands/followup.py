@@ -1,6 +1,47 @@
+from typing import cast
+
 from django_typer.management import TyperCommand, command
 
+from teatree.core.backend_factory import code_host_from_overlay
 from teatree.core.models import Task, Ticket
+from teatree.core.overlay_loader import get_overlay
+from teatree.types import RawAPIDict
+
+
+def _str_field(data: RawAPIDict, *names: str) -> str:
+    for name in names:
+        value = data.get(name)
+        if isinstance(value, str):
+            return value
+    return ""
+
+
+def _int_field(data: RawAPIDict, *names: str) -> int:
+    for name in names:
+        value = data.get(name)
+        if isinstance(value, int):
+            return value
+    return 0
+
+
+def _is_draft(pr: RawAPIDict) -> bool:
+    return bool(pr.get("draft") or pr.get("work_in_progress"))
+
+
+def _repo_slug(pr: RawAPIDict) -> str:
+    """Best-effort ``owner/name`` for a PR/MR across GitLab and GitHub shapes."""
+    references = pr.get("references")
+    if isinstance(references, dict):
+        full = cast("RawAPIDict", references).get("full")
+        if isinstance(full, str) and full:
+            return full.split("!", 1)[0].split("#", 1)[0]
+    repository_url = _str_field(pr, "repository_url")
+    if "/repos/" in repository_url:
+        return repository_url.split("/repos/", 1)[-1]
+    url = _str_field(pr, "web_url", "html_url")
+    if "/-/merge_requests/" in url:
+        return url.split("://", 1)[-1].split("/", 1)[-1].split("/-/merge_requests/", 1)[0]
+    return ""
 
 
 class Command(TyperCommand):
@@ -24,6 +65,36 @@ class Command(TyperCommand):
             "worktrees_cleaned": result.worktrees_cleaned,
             "errors": result.errors,
         }
+
+    @command(name="discover-mrs")
+    def discover_mrs(self) -> RawAPIDict:
+        """List the user's open, non-draft PRs/MRs awaiting a review request.
+
+        Backs ``t3 review-request discover`` (BLUEPRINT.md §10.1). Mirrors
+        ``glab api /merge_requests?scope=created_by_me&state=opened``
+        filtered to non-draft MRs; each entry carries ``repo``, ``iid``,
+        ``title`` and ``url`` so the result is suitable for the
+        review-request batch ping or a human paste into Slack.
+        """
+        host = code_host_from_overlay()
+        if host is None:
+            return {"error": "No code host configured (check overlay tokens)"}
+
+        author = get_overlay().config.get_gitlab_username() or host.current_user()
+        if not author:
+            return {"error": "Could not resolve author username — set <host>_username in ~/.teatree.toml"}
+
+        mrs = [
+            {
+                "repo": _repo_slug(pr),
+                "iid": _int_field(pr, "iid", "number"),
+                "title": _str_field(pr, "title"),
+                "url": _str_field(pr, "web_url", "html_url"),
+            }
+            for pr in host.list_my_prs(author=author)
+            if not _is_draft(pr)
+        ]
+        return {"author": author, "count": len(mrs), "mrs": mrs}
 
     @command()
     def remind(self) -> list[int]:
