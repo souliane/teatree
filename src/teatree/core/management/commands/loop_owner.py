@@ -10,6 +10,14 @@ is a management command" rule.
 Non-zero exits use ``raise SystemExit(N)`` — this runs under Django's
 ``call_command``; ``typer.Exit`` is the wrong primitive on that path
 (it stays correct in ``cli.loop`` itself).
+
+#1107 — the ``claim`` no-session refusal below is now reachable far less
+often: ``current_session_id()`` gained a loop-registry fallback (read the
+``t3-loop-tick-owner`` record when both session-id env vars are absent),
+so an agent-driven ``t3 loop claim`` (a Bash-tool subprocess that never
+sees ``CLAUDE_SESSION_ID`` as an env var) resolves the owner from the
+durable registry instead of hard-refusing. The refusal still fires only
+when there is genuinely no resolvable session id anywhere.
 """
 
 import json
