@@ -36,6 +36,7 @@ from pathlib import Path
 
 import typer
 
+from teatree.cli.loop_owner import register as register_loop_owner
 from teatree.loop.statusline import default_path
 
 loop_app = typer.Typer(
@@ -409,3 +410,8 @@ def self_improve_start_command() -> None:
 
 
 loop_app.add_typer(self_improve_app, name="self-improve")
+
+# #1073 — the session-scoped loop-owner hand-off CLI lives in its own
+# module (split by concern; keeps this file under the module-health
+# function budget). It registers flat `t3 loop claim/owner/release`.
+register_loop_owner(loop_app)

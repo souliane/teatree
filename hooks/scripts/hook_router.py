@@ -1889,9 +1889,12 @@ _TICK_DISPATCH_NON_OWNER_DIRECTIVE = (
     "TEATREE LOOP — tick-driven; another session owns the tick.\n\n"
     "Another live session is the teatree loop-tick owner (owner session "
     "{owner_session}). Do NOT arm a competing `t3 loop tick` cron and do "
-    "NOT spawn loop sub-agents — the owner's tick atomically claims all "
-    "pending work (`t3 loop claim-next`), so a second tick would simply "
-    "find nothing to claim. Stay idle with respect to the loop."
+    "NOT spawn loop sub-agents. The loop-owner gate (#1073) is now a HARD "
+    "gate: a non-owner `t3 loop tick` will SKIP before any scanner / Slack "
+    "DM-drain / dispatch runs at all — it does NOT execute the tick. "
+    "Stay idle with respect to the loop. (If you ARE the user's main "
+    "session and a foreign session has hijacked the loop, run `t3 loop "
+    "claim --take-over` and the hijacker's next tick SKIPs within one tick.)"
 )
 
 

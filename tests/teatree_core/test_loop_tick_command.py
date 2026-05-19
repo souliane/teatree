@@ -192,3 +192,173 @@ class TestLoopTickCommand(TestCase):
             assert meta.exists(), "skipped tick did not write tick-meta.json — false 'tick stale' will follow"
             payload = json.loads(meta.read_text(encoding="utf-8"))
             assert payload["next_epoch"] >= before, payload
+
+
+class TestLoopOwnerGate(TestCase):
+    """#1073 — the session-scoped loop-owner gate is a hard SKIP.
+
+    The pre-#1073 behaviour was: a non-owner ``t3 loop tick`` would still
+    run every scanner and merely *find nothing to claim*. That let a
+    foreign session (a blog-post session) drain the user's Slack DMs and
+    dispatch reviewers before the claim-next no-op. The gate now SKIPs
+    BEFORE any scanner/DM-drain/dispatch.
+    """
+
+    def test_non_owner_session_skips_full_tick(self) -> None:
+        from teatree.core.models import LoopLease  # noqa: PLC0415
+
+        # A live owner already holds the persistent loop-owner claim.
+        LoopLease.objects.claim_ownership("loop-owner", session_id="owner-session")
+        stdout = StringIO()
+        with (
+            patch.dict("os.environ", {"CLAUDE_SESSION_ID": "intruder-session"}),
+            patch("teatree.loop.tick.run_tick") as run_tick_mock,
+            patch("teatree.loop.tick.build_default_jobs") as build_jobs_mock,
+        ):
+            call_command("loop_tick", stdout=stdout)
+
+        run_tick_mock.assert_not_called()
+        build_jobs_mock.assert_not_called()
+        output = stdout.getvalue()
+        assert "SKIP  loop not owned by this session" in output
+        assert "owner is session owner-session" in output
+        assert "t3 loop claim --take-over" in output
+
+    def test_non_owner_skip_json_is_contract_shaped(self) -> None:
+        from teatree.core.models import LoopLease  # noqa: PLC0415
+
+        LoopLease.objects.claim_ownership("loop-owner", session_id="owner-session")
+        stdout = StringIO()
+        with (
+            patch.dict("os.environ", {"CLAUDE_SESSION_ID": "intruder-session"}),
+            patch("teatree.loop.tick.run_tick"),
+        ):
+            call_command("loop_tick", "--json", stdout=stdout)
+
+        payload = json.loads(stdout.getvalue())
+        assert payload["signal_count"] == 0
+        assert payload["action_count"] == 0
+        assert payload["errors"] == {}
+        assert payload["actions"] == []
+        assert payload["skipped"] is True
+        assert "loop not owned by this session" in payload["skipped_reason"]
+
+    def test_non_owner_skip_refreshes_tick_meta(self) -> None:
+        import tempfile  # noqa: PLC0415
+
+        from teatree.core.models import LoopLease  # noqa: PLC0415
+
+        LoopLease.objects.claim_ownership("loop-owner", session_id="owner-session")
+        with tempfile.TemporaryDirectory() as d:
+            sl = Path(d) / "statusline.txt"
+            meta = sl.with_name("tick-meta.json")
+            before = int(dt.datetime.now(tz=dt.UTC).timestamp())
+            with patch.dict("os.environ", {"CLAUDE_SESSION_ID": "intruder-session"}):
+                call_command("loop_tick", "--statusline-file", str(sl), stdout=StringIO())
+            assert meta.exists(), "non-owner skip must keep tick-meta fresh (no false 'tick stale')"
+            assert json.loads(meta.read_text(encoding="utf-8"))["next_epoch"] >= before
+
+    def test_owner_session_runs_tick_and_persists_claim(self) -> None:
+        from teatree.core.models import LoopLease  # noqa: PLC0415
+
+        report = _build_report(statusline_path=Path("/tmp/sl.txt"))
+        stdout = StringIO()
+        with (
+            patch.dict("os.environ", {"CLAUDE_SESSION_ID": "owner-session"}),
+            patch("teatree.core.backend_factory.iter_overlay_backends", return_value=[]),
+            patch("teatree.loop.tick.run_tick", return_value=report) as run_tick_mock,
+        ):
+            call_command("loop_tick", stdout=stdout)
+
+        run_tick_mock.assert_called_once()
+        row = LoopLease.objects.get(name="loop-owner")
+        assert row.session_id == "owner-session"
+        assert row.lease_expires_at is not None
+        # `loop-tick` (the per-tick mutex) is released in the finally;
+        # `loop-owner` is NEVER released — its TTL is its sole lifecycle.
+        assert LoopLease.objects.get(name="loop-tick").owner == ""
+
+    def test_owner_reclaim_bumps_lease_expiry_each_tick(self) -> None:
+        from teatree.core.models import LoopLease  # noqa: PLC0415
+
+        report = _build_report()
+        with (
+            patch.dict("os.environ", {"CLAUDE_SESSION_ID": "owner-session"}),
+            patch("teatree.core.backend_factory.iter_overlay_backends", return_value=[]),
+            patch("teatree.loop.tick.run_tick", return_value=report),
+        ):
+            call_command("loop_tick", stdout=StringIO())
+            first = LoopLease.objects.get(name="loop-owner").lease_expires_at
+            call_command("loop_tick", stdout=StringIO())
+            second = LoopLease.objects.get(name="loop-owner").lease_expires_at
+        assert second >= first
+
+    def test_first_tick_auto_claims_when_unowned(self) -> None:
+        from teatree.core.models import LoopLease  # noqa: PLC0415
+
+        report = _build_report()
+        with (
+            patch.dict("os.environ", {"CLAUDE_SESSION_ID": "fresh-session"}),
+            patch("teatree.core.backend_factory.iter_overlay_backends", return_value=[]),
+            patch("teatree.loop.tick.run_tick", return_value=report) as run_tick_mock,
+        ):
+            call_command("loop_tick", stdout=StringIO())
+
+        run_tick_mock.assert_called_once()
+        assert LoopLease.objects.get(name="loop-owner").session_id == "fresh-session"
+
+    def test_take_over_ends_hijack_within_one_tick(self) -> None:
+        from teatree.core.models import LoopLease  # noqa: PLC0415
+
+        report = _build_report()
+        # Hijacker owns the loop and ticks happily.
+        LoopLease.objects.claim_ownership("loop-owner", session_id="hijacker")
+        with (
+            patch.dict("os.environ", {"CLAUDE_SESSION_ID": "hijacker"}),
+            patch("teatree.core.backend_factory.iter_overlay_backends", return_value=[]),
+            patch("teatree.loop.tick.run_tick", return_value=report) as rt1,
+        ):
+            call_command("loop_tick", stdout=StringIO())
+            rt1.assert_called_once()
+
+        # The chat-only user runs `t3 loop claim --take-over` from main.
+        won, _ = LoopLease.objects.claim_ownership("loop-owner", session_id="main", take_over=True)
+        assert won is True
+
+        # The hijacker's very next tick SKIPs — no restart needed.
+        stdout = StringIO()
+        with (
+            patch.dict("os.environ", {"CLAUDE_SESSION_ID": "hijacker"}),
+            patch("teatree.loop.tick.run_tick") as rt2,
+        ):
+            call_command("loop_tick", stdout=stdout)
+        rt2.assert_not_called()
+        assert "loop not owned by this session" in stdout.getvalue()
+
+    def test_anonymous_session_skips_when_live_owner(self) -> None:
+        from teatree.core.models import LoopLease  # noqa: PLC0415
+
+        LoopLease.objects.claim_ownership("loop-owner", session_id="owner-session")
+        stdout = StringIO()
+        with (
+            patch.dict("os.environ", {}, clear=True),
+            patch("teatree.loop.tick.run_tick") as run_tick_mock,
+        ):
+            call_command("loop_tick", stdout=stdout)
+
+        run_tick_mock.assert_not_called()
+        assert "loop not owned by this session" in stdout.getvalue()
+
+    def test_owner_ttl_env_override_is_parsed_defensively(self) -> None:
+        from teatree.core.management.commands.loop_tick import _loop_owner_ttl_seconds  # noqa: PLC0415
+
+        with patch.dict("os.environ", {"T3_LOOP_OWNER_TTL": "3600"}):
+            assert _loop_owner_ttl_seconds() == 3600
+        with patch.dict("os.environ", {"T3_LOOP_OWNER_TTL": "not-a-number"}):
+            assert _loop_owner_ttl_seconds() == 1800
+        with patch.dict("os.environ", {"T3_LOOP_OWNER_TTL": "  "}):
+            assert _loop_owner_ttl_seconds() == 1800
+        with patch.dict("os.environ", {"T3_LOOP_OWNER_TTL": "5"}):
+            assert _loop_owner_ttl_seconds() == 60
+        with patch.dict("os.environ", {}, clear=True):
+            assert _loop_owner_ttl_seconds() == 1800
