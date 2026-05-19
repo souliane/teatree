@@ -37,6 +37,7 @@ from pathlib import Path
 import typer
 
 from teatree.cli.loop_owner import register as register_loop_owner
+from teatree.cli.loop_slack_answer import slack_answer_app
 from teatree.loop.statusline import default_path
 
 loop_app = typer.Typer(
@@ -415,3 +416,8 @@ loop_app.add_typer(self_improve_app, name="self-improve")
 # module (split by concern; keeps this file under the module-health
 # function budget). It registers flat `t3 loop claim/owner/release`.
 register_loop_owner(loop_app)
+
+# The reactive Slack-answer subapp (#1014, the third /loop slot) is
+# assembled in ``teatree.cli.loop_slack_answer`` (imported at module top)
+# so this file stays under the module-health public-function cap.
+loop_app.add_typer(slack_answer_app, name="slack-answer")
