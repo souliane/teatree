@@ -114,6 +114,55 @@ class TestDiscoverMrs(TestCase):
         assert "error" in result
         host.list_my_prs.assert_not_called()
 
+    def test_annotates_live_review_status(self) -> None:
+        """discover-mrs adds live-verified review_already_requested (#1084)."""
+        host = MagicMock()
+        host.current_user.return_value = "souliane"
+        host.list_my_prs.return_value = [
+            {"number": 9, "title": "feat: q", "html_url": "https://github.com/o/r/pull/9"},
+        ]
+        self._monkeypatch.setattr(followup_command, "code_host_from_overlay", lambda: host)
+
+        from teatree.core.review_request_guard import GuardTarget  # noqa: PLC0415
+
+        target = GuardTarget(channel_id="C1", channel_name="rev", token="xoxb")
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch(
+                "teatree.core.review_request_guard.resolve_guard_target",
+                return_value=target,
+            ),
+            patch(
+                "teatree.core.review_request_guard.reconcile_out_of_band",
+                return_value="https://team.slack.com/archives/C1/p1",
+            ),
+        ):
+            result = cast("dict[str, object]", call_command("followup", "discover-mrs"))
+
+        mr = cast("list[dict[str, object]]", result["mrs"])[0]
+        assert mr["review_already_requested"] is True
+        assert mr["review_permalink"] == "https://team.slack.com/archives/C1/p1"
+
+    def test_review_status_skipped_when_no_guard_target(self) -> None:
+        host = MagicMock()
+        host.current_user.return_value = "souliane"
+        host.list_my_prs.return_value = [
+            {"number": 9, "title": "feat: q", "html_url": "https://github.com/o/r/pull/9"},
+        ]
+        self._monkeypatch.setattr(followup_command, "code_host_from_overlay", lambda: host)
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch(
+                "teatree.core.review_request_guard.resolve_guard_target",
+                return_value=None,
+            ),
+        ):
+            result = cast("dict[str, object]", call_command("followup", "discover-mrs"))
+
+        mr = cast("list[dict[str, object]]", result["mrs"])[0]
+        assert "review_already_requested" not in mr
+
 
 class TestRepoSlug:
     """Pure parsing of ``owner/name`` from heterogeneous PR/MR shapes."""

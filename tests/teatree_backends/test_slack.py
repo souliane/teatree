@@ -9,6 +9,7 @@ from teatree.backends.slack import (
     SlackReviewMatch,
     SlackReviewSearchRequest,
     _resolve_workspace_domain,
+    read_recent_review_matches,
     search_review_permalinks,
 )
 
@@ -137,6 +138,8 @@ def test_search_review_permalinks_finds_matching_mr(monkeypatch: pytest.MonkeyPa
         pr_url=pr_url,
         permalink="https://team.slack.com/archives/C123/p1700000000000100",
         channel="review-crew",
+        ts="1700000000.000100",
+        author="",
     )
 
 
@@ -319,4 +322,126 @@ def test_search_review_permalinks_stops_when_no_cursor(monkeypatch: pytest.Monke
     )
 
     assert result == []
+
+
+class _ParamCapturingClient(FakeClient):
+    """FakeClient that records conversations.history query params."""
+
+    def __init__(self, **kw: object) -> None:
+        super().__init__(**kw)
+        self.history_params: list[dict] = []
+
+    def get(self, url: str, **kwargs: object) -> httpx.Response:
+        if "conversations.history" in url:
+            params = kwargs.get("params")
+            if isinstance(params, dict):
+                self.history_params.append(params)
+        return super().get(url, **kwargs)
+
+
+def test_oldest_ts_is_passed_as_oldest_param(monkeypatch: pytest.MonkeyPatch) -> None:
+    """SlackReviewSearchRequest.oldest_ts bounds conversations.history (#1084)."""
+    page = {"ok": True, "messages": [], "has_more": False}
+    fake_client = _ParamCapturingClient(pages=[page])
+    monkeypatch.setattr("teatree.backends.slack.httpx.Client", lambda **kw: fake_client)
+
+    search_review_permalinks(
+        SlackReviewSearchRequest(
+            token="xoxb-token",
+            channel_id="C1",
+            channel_name="review",
+            pr_urls=["https://gitlab.com/org/repo/-/merge_requests/1"],
+            oldest_ts="1700000000.000000",
+        )
+    )
+
+    assert fake_client.history_params
+    assert fake_client.history_params[0]["oldest"] == "1700000000.000000"
+
+
+def test_read_recent_review_matches_returns_empty_ok_when_no_token() -> None:
+    """A short-circuit (no token/channel/urls) is a clean ok=True empty read."""
+    read = read_recent_review_matches(
+        SlackReviewSearchRequest(token="", channel_id="C1", channel_name="r", pr_urls=["x"])
+    )
+    assert read.ok is True
+    assert read.matches == []
+
+
+def test_read_recent_review_matches_clean_empty_is_ok(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A clean read that finds nothing is ok=True, matches=[] (safe to post)."""
+    fake_client = FakeClient(pages=[{"ok": True, "messages": [], "has_more": False}])
+    monkeypatch.setattr("teatree.backends.slack.httpx.Client", lambda **kw: fake_client)
+
+    read = read_recent_review_matches(
+        SlackReviewSearchRequest(token="xoxb", channel_id="C1", channel_name="r", pr_urls=["https://x/pull/1"])
+    )
+    assert read.ok is True
+    assert read.matches == []
+
+
+def test_read_recent_review_matches_not_ok_when_api_not_ok(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An API ok=false page means ok=False (fail safe to NOT posting)."""
+    fake_client = FakeClient(pages=[{"ok": False, "error": "channel_not_found"}])
+    monkeypatch.setattr("teatree.backends.slack.httpx.Client", lambda **kw: fake_client)
+
+    read = read_recent_review_matches(
+        SlackReviewSearchRequest(token="xoxb", channel_id="C1", channel_name="r", pr_urls=["https://x/pull/1"])
+    )
+    assert read.ok is False
+    assert read.matches == []
+
+
+def test_read_recent_review_matches_finds_and_paginates(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Matches are returned across pages with ts/author populated."""
+    pr_url = "https://gitlab.com/org/repo/-/merge_requests/7"
+    page1 = {
+        "ok": True,
+        "messages": [{"text": "nothing here", "ts": "1700000000.000100"}],
+        "has_more": True,
+        "response_metadata": {"next_cursor": "c2"},
+    }
+    page2 = {
+        "ok": True,
+        "messages": [{"text": f"review {pr_url}", "ts": "1700000001.000200", "user": "U9"}],
+        "has_more": False,
+    }
+    fake_client = FakeClient(auth_url="https://w.slack.com/", pages=[page1, page2])
+    monkeypatch.setattr("teatree.backends.slack.httpx.Client", lambda **kw: fake_client)
+
+    read = read_recent_review_matches(
+        SlackReviewSearchRequest(token="xoxb", channel_id="C1", channel_name="r", pr_urls=[pr_url])
+    )
+    assert read.ok is True
+    assert len(read.matches) == 1
+    assert read.matches[0].ts == "1700000001.000200"
+    assert read.matches[0].author == "U9"
+
+
+def test_read_recent_review_matches_stops_when_no_cursor(monkeypatch: pytest.MonkeyPatch) -> None:
+    """has_more but no cursor terminates the loop with a clean ok read."""
+    fake_client = FakeClient(pages=[{"ok": True, "messages": [], "has_more": True, "response_metadata": {}}])
+    monkeypatch.setattr("teatree.backends.slack.httpx.Client", lambda **kw: fake_client)
+
+    read = read_recent_review_matches(
+        SlackReviewSearchRequest(token="xoxb", channel_id="C1", channel_name="r", pr_urls=["https://x/pull/1"])
+    )
+    assert read.ok is True
+
+
+def test_iter_review_matches_uses_bot_id_author(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A bot-authored message records bot_id as the match author."""
+    pr_url = "https://gitlab.com/org/repo/-/merge_requests/3"
+    page = {
+        "ok": True,
+        "messages": [{"text": f"review {pr_url}", "ts": "1700000002.000100", "bot_id": "B42"}],
+        "has_more": False,
+    }
+    fake_client = FakeClient(auth_url="https://w.slack.com/", pages=[page])
+    monkeypatch.setattr("teatree.backends.slack.httpx.Client", lambda **kw: fake_client)
+
+    read = read_recent_review_matches(
+        SlackReviewSearchRequest(token="xoxb", channel_id="C1", channel_name="r", pr_urls=[pr_url])
+    )
+    assert read.matches[0].author == "B42"
     assert fake_client._page_idx == 1

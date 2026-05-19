@@ -151,11 +151,39 @@ class ReviewNagScanner:
         )
 
 
+def _consult_guard_before_nag(post: ReviewRequestPost) -> ScanSignal | None:
+    """Live-read dedup before nagging (#1084).
+
+    If the review was already requested again / picked up out-of-band
+    (the user or another actor posted in-window), reconcile the row
+    (``done_at`` set, PR transitioned) and skip the nag so the train
+    stops. Fails open: a missing channel/token or a slow/failed read
+    returns ``None`` and the nag proceeds as before — the guard must
+    never wedge the loop on a Slack read.
+    """
+    from teatree.core.review_request_guard import reconcile_out_of_band, resolve_guard_target  # noqa: PLC0415
+
+    target = resolve_guard_target(channel_id=post.slack_channel_id)
+    if target is None:
+        return None
+    permalink = reconcile_out_of_band(mr_url=post.mr_url, target=target)
+    if not permalink:
+        return None
+    return ScanSignal(
+        kind="review_nag.reconciled",
+        summary=f"Review for {post.mr_url} already requested out-of-band — nag train stopped",
+        payload={"mr_url": post.mr_url, "permalink": permalink, "post_id": post.pk},
+    )
+
+
 def _post_thread_nag(
     post: ReviewRequestPost,
     messaging: MessagingBackend,
     target_step: int,
 ) -> ScanSignal:
+    reconciled = _consult_guard_before_nag(post)
+    if reconciled is not None:
+        return reconciled
     day_number = _FIBONACCI_DAYS[target_step - 1]
     text = _nag_text(messaging, post.mr_url, day_number)
     try:
