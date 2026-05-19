@@ -323,6 +323,42 @@ class TestNormalizeSlackMessageProseSplitting:
     def test_short_two_sentence_line_not_split(self) -> None:
         assert normalize_slack_message("Hi. Thanks.") == "Hi. Thanks."
 
+    def test_terse_two_sentence_dashboard_lines_not_split(self) -> None:
+        # Realistic terse two-sentence status lines (~31-34 chars). These
+        # are normal terse prose, not walls of text — a bare length floor
+        # set low enough to split them would over-split routine messages.
+        for line in (
+            "Done. Pushed to main now today.",
+            "All good here. Ready to ship now.",
+            "PR #12 merged. Branch deleted now.",
+        ):
+            assert normalize_slack_message(line) == line, f"terse line wrongly split: {line!r}"
+
+    def test_honorific_name_does_not_split(self) -> None:
+        # "Dr." immediately followed by a capitalised name must NOT be
+        # treated as a sentence end — the split happens only at the real
+        # sentence boundary ("today.").
+        text = "Reviewed by Dr. Smith today. Then it merged and we moved on."
+        out = normalize_slack_message(text)
+        first, sep, rest = out.partition("\n\n")
+        assert sep == "\n\n"
+        assert first.strip() == "Reviewed by Dr. Smith today."
+        assert rest.strip() == "Then it merged and we moved on."
+
+    def test_merge_request_token_still_splits(self) -> None:
+        # "MRs." / "MR." are merge-request tokens (caps), NOT honorifics.
+        # The case-sensitive honorific guard must not suppress the split
+        # for these — the wall still breaks at the real sentence end.
+        text = (
+            "I reviewed all the open MRs. The first one is approved and ready "
+            "to merge whenever you like. The second one still needs a nit fix."
+        )
+        out = normalize_slack_message(text)
+        assert "\n\n" in out
+        assert not any("open MRs. The" in line for line in out.splitlines()), (
+            "expected the wall to split at the MRs. sentence boundary"
+        )
+
     def test_abbreviation_does_not_trigger_split(self) -> None:
         text = "Use e.g. the staging env. Then deploy the release candidate to production."
         out = normalize_slack_message(text)

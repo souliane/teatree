@@ -32,15 +32,18 @@ _BARE_ISSUE_RE = re.compile(r"(?<![A-Za-z0-9_/])#(\d+)(?![A-Za-z0-9_])")
 _BULLET_SPLIT_RE = re.compile(r"\s*•\s*")
 _EXCESS_BLANK_RE = re.compile(r"\n{3,}")
 
-_PROSE_SPLIT_MIN_LEN = 30
+_PROSE_SPLIT_MIN_LEN = 50
 _PROSE_SPLIT_MIN_SENTENCES = 2
+_PROSE_SPLIT_MANY_SENTENCES = 3
 _INITIAL_TOKEN_LEN = 2
 _BARE_URL_RE = re.compile(r"https?://[^\s<>|]+")
 _SENTENCE_BREAK_RE = re.compile(r"(?<=[.!?])\s+(?=[A-Z0-9*])")
-# Honorifics (Mr./Ms./Mrs./Dr.) are deliberately excluded: they collide
-# with domain tokens that legitimately end a sentence in agent messages
-# (e.g. "MRs." = merge requests, "Dr." rarely appears) and would suppress
-# the wall-of-text split this transform exists to perform.
+# Lowercased abbreviation guard. Honorifics (Dr./Mr./Mrs./Ms./Prof./St.)
+# are deliberately NOT in this set: it is matched case-insensitively, so
+# "Mrs." would collide with the merge-request token "MRs." (= merge
+# requests) and wrongly suppress the wall-of-text split this transform
+# exists to perform. Honorific names are handled separately by a
+# case-SENSITIVE guard (see ``_HONORIFICS``).
 _ABBREVIATIONS = frozenset(
     {
         "e.g.",
@@ -54,6 +57,13 @@ _ABBREVIATIONS = frozenset(
         "al.",
     }
 )
+# Case-SENSITIVE honorific guard. Real honorifics carry their natural
+# capitalisation ("Dr. Smith"); the merge-request token is written in
+# caps ("MR" / "MRs" / "MRs."). A case-sensitive membership test guards
+# "Dr. Smith" without re-introducing the "MRs." collision, because
+# "MRs." is not == "Mrs.". The split is only suppressed when the
+# honorific is immediately followed by a capitalised word (a name).
+_HONORIFICS = frozenset({"Dr.", "Mr.", "Mrs.", "Ms.", "Prof.", "St."})
 
 
 def slack_linkify(
@@ -197,16 +207,24 @@ def _surround_bullet_groups(text: str) -> str:
     return "\n".join(result)
 
 
-def _is_guarded_abbreviation(preceding: str) -> bool:
+def _is_guarded_abbreviation(preceding: str, following: str) -> bool:
     """True if the token before a sentence-break candidate must not split.
 
-    Guards a fixed set of common abbreviations (``e.g.``, ``etc.`` …) and
-    single uppercase initials (``A.``) so they don't trigger a false break.
+    Guards three cases. First, a fixed set of common abbreviations
+    (``e.g.``, ``etc.`` …) matched case-insensitively. Second, single
+    uppercase initials (``A.``). Third, a case-SENSITIVE honorific
+    (``Dr.``, ``Mr.`` …) immediately followed by a capitalised word (a
+    name like ``Smith``); the case-sensitive test keeps the all-caps
+    merge-request token ``MRs.`` splitting normally because ``"MRs."``
+    is not equal to ``"Mrs."``.
     """
     last = preceding.rsplit(None, 1)[-1] if preceding.strip() else ""
     if last.lower() in _ABBREVIATIONS:
         return True
-    return len(last) == _INITIAL_TOKEN_LEN and last[0].isupper() and last[1] == "."
+    if len(last) == _INITIAL_TOKEN_LEN and last[0].isupper() and last[1] == ".":
+        return True
+    next_word = following.split(None, 1)[0] if following.strip() else ""
+    return last in _HONORIFICS and bool(next_word) and next_word[0].isupper()
 
 
 def _split_sentences(line: str) -> list[str]:
@@ -214,7 +232,7 @@ def _split_sentences(line: str) -> list[str]:
     sentences: list[str] = []
     start = 0
     for match in _SENTENCE_BREAK_RE.finditer(line):
-        if _is_guarded_abbreviation(line[start : match.start()]):
+        if _is_guarded_abbreviation(line[start : match.start()], line[match.end() :]):
             continue
         sentences.append(line[start : match.start()].strip())
         start = match.end()
@@ -223,18 +241,32 @@ def _split_sentences(line: str) -> list[str]:
 
 
 def _split_glued_prose(text: str) -> str:
-    """Break long single-line prose walls into blank-line-separated blocks.
+    """Break single-line prose walls into blank-line-separated blocks.
 
-    Only plain prose lines (≥2 sentences and longer than
-    ``_PROSE_SPLIT_MIN_LEN`` chars) are split. Headings, bullets, block
-    quotes and table rows pass through unchanged. Protected spans
-    (code fences, inline code, mrkdwn links, bare URLs) are already
-    NUL-delimited placeholders that contain no sentence terminator, so
-    they are opaque to the sentence splitter and survive verbatim. The
-    length
-    floor exists purely to leave short two-sentence pleasantries
-    ("Hi. Thanks.") intact — anything long enough to read as a "wall of
-    text" is split.
+    A line is split only when it is plain prose (not a heading, bullet,
+    block quote or table row) **and** the gate below holds:
+
+        sentence_count >= ``_PROSE_SPLIT_MIN_SENTENCES`` (2)
+        AND (
+            len(line) > ``_PROSE_SPLIT_MIN_LEN`` (50 chars)
+            OR sentence_count >= ``_PROSE_SPLIT_MANY_SENTENCES`` (3)
+        )
+
+    Rationale: a true "wall of text" is either *long* (a multi-clause
+    run that reads as one unbroken paragraph) **or** *many-sentenced*
+    (three or more sentences welded onto one line). A terse two-short-
+    sentence status line ("Done. Pushed to main now today." — ~31
+    chars) is normal dashboard prose, not a wall, so the AND-gate leaves
+    it intact while still splitting the genuine multi-sentence walls
+    this transform exists to fix. A bare length floor alone would either
+    over-split terse lines (floor too low) or leave realistic
+    two-sentence walls unsplit (floor too high); pairing the floor with
+    the >=3-sentence escape hatch resolves that tension.
+
+    Protected spans (code fences, inline code, mrkdwn links, bare URLs)
+    are already NUL-delimited placeholders that contain no sentence
+    terminator, so they are opaque to the sentence splitter and survive
+    verbatim.
     """
     out: list[str] = []
     for line in text.splitlines(keepends=False):
@@ -242,11 +274,12 @@ def _split_glued_prose(text: str) -> str:
         if not stripped or stripped.startswith(("- ", "* ", "> ", "|", "#")):
             out.append(line)
             continue
-        if len(line) <= _PROSE_SPLIT_MIN_LEN:
-            out.append(line)
-            continue
         sentences = _split_sentences(line)
         if len(sentences) < _PROSE_SPLIT_MIN_SENTENCES:
+            out.append(line)
+            continue
+        is_wall = len(line) > _PROSE_SPLIT_MIN_LEN or len(sentences) >= _PROSE_SPLIT_MANY_SENTENCES
+        if not is_wall:
             out.append(line)
             continue
         out.append("\n\n".join(sentences))
