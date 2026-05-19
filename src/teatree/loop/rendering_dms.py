@@ -55,6 +55,21 @@ def is_dm_action(action: DispatchAction, payload: Payload) -> bool:
     return isinstance(payload.get("ts"), str)
 
 
+def dm_ref_from(payload: Payload) -> DmRef:
+    """Build a :class:`DmRef` from a ``slack.dm`` action payload.
+
+    Keeps the ``ts``/``permalink`` extraction inside the DM concern so the
+    shared :func:`teatree.loop.rendering._classify_actions` switchboard
+    stays a thin dispatcher (no per-kind field plucking).
+    """
+
+    def _str(key: str) -> str:
+        value = payload.get(key)
+        return value if isinstance(value, str) else ""
+
+    return DmRef(ts=_str("ts"), permalink=_str("permalink"))
+
+
 def render_dm_line(
     overlay: str,
     dms: list[DmRef],

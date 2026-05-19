@@ -29,16 +29,25 @@ class ActiveTicketsScanner:
         qs = ticket_model.objects.exclude(state__in=_TERMINAL_STATES).order_by("id")
         if self.overlay_name:
             qs = qs.filter(overlay=self.overlay_name)
-        return [
-            ScanSignal(
-                kind="ticket.active",
-                summary=f"#{ticket.ticket_number} {ticket.state}",
-                payload={
-                    "ticket_id": ticket.pk,
-                    "ticket_number": ticket.ticket_number,
-                    "state": ticket.state,
-                    "issue_url": ticket.issue_url,
-                },
+        signals: list[ScanSignal] = []
+        # ``extra["issue_title"]`` is the cached human title from the tracker
+        # (see ``TicketExtra``). Surfacing it on the active signal lets the
+        # statusline render the canonical ``#N (short desc)`` item shape
+        # without re-fetching from the tracker on every tick (#1015).
+        for ticket in qs.only("id", "state", "overlay", "issue_url", "extra"):
+            extra = ticket.extra if isinstance(ticket.extra, dict) else {}
+            title = extra.get("issue_title", "") if isinstance(extra, dict) else ""
+            signals.append(
+                ScanSignal(
+                    kind="ticket.active",
+                    summary=f"#{ticket.ticket_number} {ticket.state}",
+                    payload={
+                        "ticket_id": ticket.pk,
+                        "ticket_number": ticket.ticket_number,
+                        "state": ticket.state,
+                        "issue_url": ticket.issue_url,
+                        "title": title if isinstance(title, str) else "",
+                    },
+                ),
             )
-            for ticket in qs.only("id", "state", "overlay", "issue_url")
-        ]
+        return signals

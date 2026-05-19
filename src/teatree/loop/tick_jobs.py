@@ -36,6 +36,7 @@ from teatree.loop.scanners import (
 )
 from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.scanners.notion_view import NotionLike
+from teatree.loop.tick_resolvers import _allowed_url_prefixes_for_host, _identity_alias_groups_for_overlay
 
 logger = logging.getLogger(__name__)
 
@@ -59,11 +60,17 @@ def _jobs_for_backend_hosts(backend: OverlayBackends, tag: str) -> list[_Scanner
     jobs: list[_ScannerJob] = []
     ticket_completion_emitted = False
     gitlab_approvals_enabled = _gitlab_approvals_enabled()
+    identity_groups = _identity_alias_groups_for_overlay(tag, backend)
     for code_host in backend.hosts:
+        url_prefixes = _allowed_url_prefixes_for_host(backend, code_host)
         jobs.extend(
             [
                 _ScannerJob(
-                    scanner=MyPrsScanner(host=code_host, identities=backend.identities),
+                    scanner=MyPrsScanner(
+                        host=code_host,
+                        identities=backend.identities,
+                        allowed_url_prefixes=url_prefixes,
+                    ),
                     overlay=tag,
                 ),
                 _ScannerJob(
@@ -71,6 +78,7 @@ def _jobs_for_backend_hosts(backend: OverlayBackends, tag: str) -> list[_Scanner
                         host=code_host,
                         identities=backend.identities,
                         overlay_name=tag,
+                        allowed_url_prefixes=url_prefixes,
                     ),
                     overlay=tag,
                 ),
@@ -93,6 +101,7 @@ def _jobs_for_backend_hosts(backend: OverlayBackends, tag: str) -> list[_Scanner
                         ready_labels=backend.ready_labels,
                         overlay_name=tag,
                         user_identity_aliases=_user_identity_aliases_for_overlay(tag),
+                        identity_alias_groups=identity_groups,
                     ),
                     overlay=tag,
                 ),

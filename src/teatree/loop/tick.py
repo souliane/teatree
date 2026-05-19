@@ -58,6 +58,7 @@ from teatree.loop.tick_recovery import (
     _reap_stale_task_claims,
     _record_dashboard_actions,
 )
+from teatree.loop.tick_resolvers import _allowed_url_prefixes_for_host, _identity_alias_groups_for_overlay
 
 logger = logging.getLogger(__name__)
 
@@ -67,10 +68,12 @@ __all__ = [
     "TickReport",
     "TickRequest",
     "_ScannerJob",
+    "_allowed_url_prefixes_for_host",
     "_canonical_overlay_names",
     "_collect_repo_freshness",
     "_execute_mechanical",
     "_gitlab_approvals_enabled",
+    "_identity_alias_groups_for_overlay",
     "_jobs_for_backend_hosts",
     "_persist_agent_dispatches",
     "_reap_stale_task_claims",
