@@ -65,12 +65,11 @@ def reopen_ticket(payload: ActionPayload) -> None:
 def reviewer_task_orphaned(payload: ActionPayload) -> None:
     """Complete every open reviewing task on the orphaned reviewer ticket (#998).
 
-    The scanner emits this signal when a reviewer-role ticket has a
-    non-terminal reviewing task whose URL is no longer in the ``state=opened``
-    API response — the underlying MR was merged or closed externally before
-    the slot processed the task. Without this sweep the PENDING task lingers
-    forever, surfacing on every ``pending-spawn`` and dispatching a reviewer
-    sub-agent for nothing.
+    The scanner emits this signal ONLY after ``host.get_pr_open_state``
+    confirmed the PR is genuinely MERGED or CLOSED (#1074) — never on mere
+    absence from the reviewer-assignment scan. Without this sweep the
+    PENDING task for a truly-merged PR lingers forever, surfacing on every
+    ``pending-spawn`` and dispatching a reviewer sub-agent for nothing.
 
     The handler is intentionally narrow: it operates by ticket id and only
     completes tasks in ``phase=reviewing`` with non-terminal status. Other
@@ -96,7 +95,7 @@ def reviewer_task_orphaned(payload: ActionPayload) -> None:
         completed += 1
     if completed:
         logger.info(
-            "Auto-completed %d orphaned reviewing task(s) on ticket %s (MR %s no longer open)",
+            "Auto-completed %d orphaned reviewing task(s) on ticket %s (PR %s confirmed merged/closed)",
             completed,
             ticket_id,
             payload.get("url", "?"),

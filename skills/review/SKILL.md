@@ -434,6 +434,18 @@ t3 review unapprove <REPO> <MR_IID>    # revoke your approval
 
 **On-behalf gate.** An approval is an outward, state-changing post under your identity, so `approve`/`unapprove` also respect the `on_behalf_post_mode` pre-gate (souliane/teatree#960): under `"ask"` or `"draft_or_ask"` (the default) the command refuses unattended with an actionable message — record an `OnBehalfApproval` via `t3 review approve-on-behalf <target> approve --approver <user-id>` and re-run, or widen the mode to `"immediate"` per-overlay.
 
+### Concluding a no-postable-action external review — `mark_review_no_action` (Mandatory, #1077)
+
+When the external PR under review is one where the correct outcome is **post nothing and approve nothing** — a bot MR (Aikido / Dependabot / Renovate), an auto-generated bump there is no diff worth commenting on, an MR you are not the right reviewer for and have no finding on — the reviewing Task still has to reach a terminal state. An FSM-owned review drives `review()` by completing its reviewing task; an external review that **approves** drives `t3 review approve`. The no-action outcome has its own terminal transition — without it the reviewing Task re-dispatches every Stop-hook pump forever (the PR never gets a forge reviewer assignment, so neither the dedup nor the orphan sweep can ever fire):
+
+```bash
+t3 <overlay> ticket transition <ticket_id> mark_review_no_action
+```
+
+This records `last_review_state = reviewed_no_action` (deliberately **not** `approved`, so a later genuine review is never suppressed) at the current head SHA and consumes the PENDING reviewing task. If a new revision is pushed (head SHA moves) the recorded state is dropped and the PR is reviewed again — concluding "no action" now never costs a future obligation. Maker≠checker is preserved: the reviewer sub-agent runs its own dispatch and invokes this itself; it is not a self-approval.
+
+Use this **only** when there is genuinely nothing to post or approve. If you have a finding, post it (`t3 review post-comment` / `post-draft-note`); if the verdict is approve, use `t3 review approve`. `mark_review_no_action` is the third, distinct outcome — not a shortcut to skip a review you should have done.
+
 ## Commands
 
 | Command | When to use |

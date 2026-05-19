@@ -81,3 +81,66 @@ class TestMarkReviewedExternally(TestCase):
         ticket.refresh_from_db()
         # Author flow: state stays NOT_STARTED until ticket.start() is called by the orchestrator.
         assert ticket.state != Ticket.State.DELIVERED
+
+
+class TestMarkReviewNoAction(TestCase):
+    """#1077: terminal disposition for a no-postable-action external review."""
+
+    def test_consumes_pending_task_and_records_no_action_state(self) -> None:
+        """The PENDING reviewing task is terminated and the real outcome stamped.
+
+        Anti-vacuity anchor: pre-#1077 there is no ``mark_review_no_action``
+        transition, so this test cannot even resolve the attribute — RED by
+        ``AttributeError``. With the fix: ticket → DELIVERED, the reviewing
+        Task is COMPLETED (no longer PENDING — the infinite re-queue stops),
+        and ``last_review_state`` is ``reviewed_no_action`` (NEVER
+        ``approved``, so a later genuine review is not suppressed).
+        """
+        ticket = Ticket.objects.create(
+            overlay="acme",
+            issue_url="https://gitlab/x/-/merge_requests/1077",
+            role=Ticket.Role.REVIEWER,
+            extra={"reviewed_sha": "sha1"},
+        )
+        task = schedule_external_review(ticket)
+        assert task.status == Task.Status.PENDING
+
+        ticket.mark_review_no_action()
+        ticket.save()
+
+        ticket.refresh_from_db()
+        task.refresh_from_db()
+        assert ticket.state == Ticket.State.DELIVERED
+        assert task.status == Task.Status.COMPLETED
+        assert ticket.extra["last_review_state"] == "reviewed_no_action"
+        assert ticket.extra["last_review_state"] != "approved"
+        assert ticket.extra["reviewed_sha"] == "sha1"
+
+    def test_refuses_author_role_ticket(self) -> None:
+        from django_fsm import TransitionNotAllowed  # noqa: PLC0415
+
+        ticket = Ticket.objects.create(
+            overlay="acme",
+            issue_url="https://example.com/issues/7",
+            extra={"reviewed_sha": "sha1"},
+        )
+        with pytest.raises(TransitionNotAllowed):
+            ticket.mark_review_no_action()
+
+    def test_no_extra_write_when_url_or_sha_missing(self) -> None:
+        """Body's ``if self.issue_url and sha`` guard — still terminal, no stamp."""
+        ticket = Ticket.objects.create(
+            overlay="acme",
+            issue_url="https://gitlab/x/-/merge_requests/1078",
+            role=Ticket.Role.REVIEWER,
+        )
+        task = schedule_external_review(ticket)
+
+        ticket.mark_review_no_action()
+        ticket.save()
+
+        ticket.refresh_from_db()
+        task.refresh_from_db()
+        assert ticket.state == Ticket.State.DELIVERED
+        assert task.status == Task.Status.COMPLETED
+        assert "last_review_state" not in (ticket.extra or {})

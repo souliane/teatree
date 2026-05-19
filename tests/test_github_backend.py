@@ -517,3 +517,54 @@ class TestGitHubCodeHost:
 
         host = GitHubCodeHost()
         assert host.get_review_state(pr_url="https://github.com/o/r/pull/7", reviewer="") == ReviewState.NONE
+
+    def test_get_pr_open_state_maps_open_to_open(self) -> None:
+        from teatree.backends.protocols import PrOpenState  # noqa: PLC0415
+
+        with patch.object(github_mod, "_gh_api_get", return_value={"state": "open"}) as mock_get:
+            host = GitHubCodeHost(token="tok")
+            assert host.get_pr_open_state(pr_url="https://github.com/o/r/pull/7") == PrOpenState.OPEN
+        mock_get.assert_called_once_with("repos/o/r/pulls/7", token="tok")
+
+    def test_get_pr_open_state_maps_merged_true_to_merged(self) -> None:
+        from teatree.backends.protocols import PrOpenState  # noqa: PLC0415
+
+        with patch.object(github_mod, "_gh_api_get", return_value={"state": "closed", "merged": True}):
+            host = GitHubCodeHost()
+            assert host.get_pr_open_state(pr_url="https://github.com/o/r/pull/7") == PrOpenState.MERGED
+
+    def test_get_pr_open_state_maps_closed_unmerged_to_closed(self) -> None:
+        from teatree.backends.protocols import PrOpenState  # noqa: PLC0415
+
+        with patch.object(github_mod, "_gh_api_get", return_value={"state": "closed", "merged": False}):
+            host = GitHubCodeHost()
+            assert host.get_pr_open_state(pr_url="https://github.com/o/r/pull/7") == PrOpenState.CLOSED
+
+    def test_get_pr_open_state_unrecognised_payload_is_unknown(self) -> None:
+        from teatree.backends.protocols import PrOpenState  # noqa: PLC0415
+
+        with patch.object(github_mod, "_gh_api_get", return_value={"state": "draft"}):
+            host = GitHubCodeHost()
+            assert host.get_pr_open_state(pr_url="https://github.com/o/r/pull/7") == PrOpenState.UNKNOWN
+
+    def test_get_pr_open_state_non_dict_payload_is_unknown(self) -> None:
+        from teatree.backends.protocols import PrOpenState  # noqa: PLC0415
+
+        with patch.object(github_mod, "_gh_api_get", return_value=["not", "a", "dict"]):
+            host = GitHubCodeHost()
+            assert host.get_pr_open_state(pr_url="https://github.com/o/r/pull/7") == PrOpenState.UNKNOWN
+
+    def test_get_pr_open_state_unparsable_url_is_unknown(self) -> None:
+        from teatree.backends.protocols import PrOpenState  # noqa: PLC0415
+
+        with patch.object(github_mod, "_gh_api_get") as mock_get:
+            host = GitHubCodeHost()
+            assert host.get_pr_open_state(pr_url="https://gitlab.com/o/r/-/merge_requests/7") == PrOpenState.UNKNOWN
+        mock_get.assert_not_called()
+
+    def test_get_pr_open_state_any_exception_fails_open_to_unknown(self) -> None:
+        from teatree.backends.protocols import PrOpenState  # noqa: PLC0415
+
+        with patch.object(github_mod, "_gh_api_get", side_effect=RuntimeError("gh api auth failure")):
+            host = GitHubCodeHost()
+            assert host.get_pr_open_state(pr_url="https://github.com/o/r/pull/7") == PrOpenState.UNKNOWN

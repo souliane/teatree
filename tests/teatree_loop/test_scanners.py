@@ -8,7 +8,7 @@ from unittest.mock import MagicMock
 import pytest
 from django.test import TestCase
 
-from teatree.backends.protocols import ReviewState
+from teatree.backends.protocols import PrOpenState, ReviewState
 from teatree.core.models import Ticket
 from teatree.loop.scanners.assigned_issues import AssignedIssuesScanner
 from teatree.loop.scanners.my_prs import MyPrsScanner
@@ -30,6 +30,9 @@ class FakeCodeHost:
     list_assigned_issues_calls: list[str] = field(default_factory=list)
     review_state_by_url: dict[str, ReviewState] = field(default_factory=dict)
     get_review_state_calls: list[tuple[str, str]] = field(default_factory=list)
+    pr_open_state_by_url: dict[str, PrOpenState] = field(default_factory=dict)
+    pr_open_state_default: PrOpenState = PrOpenState.UNKNOWN
+    get_pr_open_state_calls: list[str] = field(default_factory=list)
 
     def current_user(self) -> str:
         return self.user
@@ -49,6 +52,10 @@ class FakeCodeHost:
     def get_review_state(self, *, pr_url: str, reviewer: str) -> ReviewState:
         self.get_review_state_calls.append((pr_url, reviewer))
         return self.review_state_by_url.get(pr_url, ReviewState.NONE)
+
+    def get_pr_open_state(self, *, pr_url: str) -> PrOpenState:
+        self.get_pr_open_state_calls.append(pr_url)
+        return self.pr_open_state_by_url.get(pr_url, self.pr_open_state_default)
 
     def create_pr(self, spec: Any) -> RawAPIDict:
         _ = spec
@@ -387,10 +394,11 @@ class TestReviewerPrsScanner(TestCase):
         task lingers forever and ``pending-spawn`` keeps surfacing it,
         dispatching a reviewer sub-agent every tick for nothing.
 
-        Post-fix: the scanner emits ``reviewer_pr.task_orphaned`` for every
-        reviewer-role ticket with a non-terminal reviewing Task whose URL is
-        absent from the current open-MR scan. A mechanical handler completes
-        the task so ``pending-spawn`` stops returning it.
+        Post-fix (#1074): absence from the scan is no longer sufficient —
+        the scanner emits ``reviewer_pr.task_orphaned`` only after
+        ``get_pr_open_state`` confirms the PR is genuinely MERGED/CLOSED.
+        A mechanical handler then completes the task so ``pending-spawn``
+        stops returning it.
         """
         from teatree.core.models import Session, Task  # noqa: PLC0415
 
@@ -410,14 +418,104 @@ class TestReviewerPrsScanner(TestCase):
             execution_reason="Review needed",
         )
 
-        # API no longer returns the MR — it was merged externally.
-        host = FakeCodeHost(user="alice", review_requested_prs=[])
+        # API no longer returns the MR AND the forge confirms it merged.
+        host = FakeCodeHost(
+            user="alice",
+            review_requested_prs=[],
+            pr_open_state_by_url={url: PrOpenState.MERGED},
+        )
         scanner = ReviewerPrsScanner(host=host)
         signals = scanner.scan()
 
         assert [s.kind for s in signals] == ["reviewer_pr.task_orphaned"]
         assert signals[0].payload["url"] == url
         assert signals[0].payload["ticket_id"] == ticket.pk
+
+    def test_open_mr_absent_from_reviewer_scan_is_never_reaped(self) -> None:
+        """#1074 regression: a live OPEN MR absent from the scan is NOT reaped.
+
+        Slack-review-request MRs (slack.review_intent → schedule_external_review)
+        never get a forge reviewer assignment, so ``list_review_requested_prs``
+        never returns them — the URL is *permanently* absent from
+        ``scanned_urls``. Pre-fix the orphan sweep reaped on absence alone:
+        it emitted ``reviewer_pr.task_orphaned`` and the mechanical handler
+        completed the reviewing Task, silently dropping a fully-OPEN review
+        obligation and logging "MR no longer open" for an open MR.
+
+        The surviving review obligation is the contract the bug violates:
+        with the fix, NO orphan signal is emitted AND the PENDING reviewing
+        Task is still PENDING (the obligation is preserved). Asserting the
+        Task is still PENDING — not merely that no signal fired — is the
+        anti-vacuity anchor: on the buggy code the signal fires, the
+        mechanical handler runs, and the Task goes COMPLETED.
+        """
+        from teatree.core.models import Session, Task  # noqa: PLC0415
+
+        url = "https://gitlab/x/-/merge_requests/1074"
+        ticket = Ticket.objects.create(
+            role=Ticket.Role.REVIEWER,
+            issue_url=url,
+            overlay="acme",
+            extra={"reviewed_sha": "abc"},
+        )
+        session = Session.objects.create(ticket=ticket, agent_id="external-review")
+        task = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            phase="reviewing",
+            execution_target=Task.ExecutionTarget.HEADLESS,
+            execution_reason="Review needed",
+        )
+
+        # No forge reviewer assignment (Slack-review-request MR) → absent
+        # from the scan — but the MR is genuinely OPEN.
+        host = FakeCodeHost(
+            user="alice",
+            review_requested_prs=[],
+            pr_open_state_by_url={url: PrOpenState.OPEN},
+        )
+        scanner = ReviewerPrsScanner(host=host)
+        signals = scanner.scan()
+
+        assert "reviewer_pr.task_orphaned" not in [s.kind for s in signals]
+        task.refresh_from_db()
+        assert task.status == Task.Status.PENDING
+
+    def test_unknown_pr_state_fails_open_and_is_not_reaped(self) -> None:
+        """#1074: an UNKNOWN open-state (auth error, network, draft) fails open.
+
+        ``get_pr_open_state`` returns UNKNOWN on any ambiguity. The sweep
+        must NOT reap on UNKNOWN — fail open, never drop a review on doubt.
+        """
+        from teatree.core.models import Session, Task  # noqa: PLC0415
+
+        url = "https://gitlab/x/-/merge_requests/1077"
+        ticket = Ticket.objects.create(
+            role=Ticket.Role.REVIEWER,
+            issue_url=url,
+            overlay="acme",
+            extra={"reviewed_sha": "abc"},
+        )
+        session = Session.objects.create(ticket=ticket, agent_id="external-review")
+        task = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            phase="reviewing",
+            execution_target=Task.ExecutionTarget.HEADLESS,
+            execution_reason="Review needed",
+        )
+
+        host = FakeCodeHost(
+            user="alice",
+            review_requested_prs=[],
+            pr_open_state_by_url={url: PrOpenState.UNKNOWN},
+        )
+        scanner = ReviewerPrsScanner(host=host)
+        signals = scanner.scan()
+
+        assert "reviewer_pr.task_orphaned" not in [s.kind for s in signals]
+        task.refresh_from_db()
+        assert task.status == Task.Status.PENDING
 
     def test_orphaned_signal_not_emitted_when_mr_still_in_scan(self) -> None:
         """If the MR is still in the API response, no orphaning happens (#998)."""
@@ -543,8 +641,13 @@ class TestReviewerPrsScanner(TestCase):
                 execution_reason="Review needed",
             )
 
-        # Run the scanner scoped to github-overlay only; API returns nothing.
-        host = FakeCodeHost(user="alice", review_requested_prs=[])
+        # Run the scanner scoped to github-overlay only; API returns
+        # nothing AND both PRs are confirmed merged on the forge.
+        host = FakeCodeHost(
+            user="alice",
+            review_requested_prs=[],
+            pr_open_state_by_url={own_url: PrOpenState.MERGED, other_url: PrOpenState.MERGED},
+        )
         scanner = ReviewerPrsScanner(host=host, overlay_name="github-overlay")
         signals = scanner.scan()
 
@@ -579,7 +682,11 @@ class TestReviewerPrsScanner(TestCase):
                 execution_reason="Review needed",
             )
 
-        host = FakeCodeHost(user="alice", review_requested_prs=[])
+        host = FakeCodeHost(
+            user="alice",
+            review_requested_prs=[],
+            pr_open_state_by_url=dict.fromkeys(urls, PrOpenState.CLOSED),
+        )
         scanner = ReviewerPrsScanner(host=host)  # overlay_name defaults to ""
         signals = scanner.scan()
 
@@ -595,8 +702,9 @@ class TestReviewerPrsScanner(TestCase):
         """
         from teatree.loop.scanners.reviewer_prs import _orphaned_task_signals  # noqa: PLC0415
 
-        assert _orphaned_task_signals(None, set()) == []
-        assert _orphaned_task_signals(None, {"https://x"}, "any-overlay") == []
+        host = FakeCodeHost(user="alice")
+        assert _orphaned_task_signals(None, set(), host) == []
+        assert _orphaned_task_signals(None, {"https://x"}, host, "any-overlay") == []
 
     def test_legacy_json_cache_is_imported_then_deleted(self) -> None:
         """First scan migrates the legacy JSON file into reviewer tickets, then unlinks it."""
