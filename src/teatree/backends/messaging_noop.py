@@ -22,6 +22,16 @@ class NoopMessagingBackend:
         return []
 
     @staticmethod
+    def fetch_reactions(*, since: str = "") -> list[RawAPIDict]:
+        _ = since
+        return []
+
+    @staticmethod
+    def fetch_message(*, channel: str, ts: str) -> RawAPIDict:
+        _ = channel, ts
+        return {}
+
+    @staticmethod
     def post_message(*, channel: str, text: str, thread_ts: str = "") -> RawAPIDict:
         _ = channel, text, thread_ts
         return {}
