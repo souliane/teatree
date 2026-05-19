@@ -37,6 +37,7 @@ class TestGitRepoDelegation:
             ("remote_slug", "remote_slug", (), ("/some/repo", "origin")),
             ("config_value", "config_value", ("user.name",), ("/some/repo", "user.name")),
             ("last_commit_message", "last_commit_message", (), ("/some/repo",)),
+            ("commit_messages", "commit_messages", ("a..b",), ("/some/repo", "a..b")),
         ],
     )
     def test_simple_methods_pass_repo_path(
