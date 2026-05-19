@@ -66,3 +66,46 @@ class NotifyUserRecordsOutboundClaimTests(TestCase):
                 user_id="U_ME",
             )
         assert not OutboundClaim.objects.filter(idempotency_key="slack_dm:disabled-key").exists()
+
+    def test_slack_dm_claim_records_agent_session_id(self) -> None:
+        # Mirrors the GitLab/Notion path's
+        # ``test_resolves_agent_session_id_from_env`` (#1065 Nit 1): the
+        # inline Slack-DM writer must populate ``agent_session_id`` so the
+        # audit ledger's cross-reference stays symmetric with the rows
+        # ``record_claim`` writes.
+        from unittest.mock import patch  # noqa: PLC0415
+
+        with patch.dict("os.environ", {"CLAUDE_SESSION_ID": "sess-123"}, clear=False):
+            sent = notify_user(
+                "tests passing",
+                kind=NotifyKind.INFO,
+                idempotency_key="sess=z;turn=1",
+                backend=_backend(),
+                user_id="U_ME",
+            )
+        assert sent is True
+        claim = OutboundClaim.objects.get(idempotency_key="slack_dm:sess=z;turn=1")
+        assert claim.agent_session_id == "sess-123"
+
+    def test_database_error_is_swallowed_publish_path_unbroken(self) -> None:
+        # #1065 Nit 2.2: a DB outage of the audit ledger must degrade the
+        # claim record to a no-op (warning log) without turning the
+        # already-succeeded Slack post into a user-visible failure.
+        from unittest.mock import patch  # noqa: PLC0415
+
+        from django.db import DatabaseError  # noqa: PLC0415
+
+        with patch.object(
+            OutboundClaim.objects,
+            "get_or_create",
+            side_effect=DatabaseError("ledger unavailable"),
+        ):
+            sent = notify_user(
+                "tests passing",
+                kind=NotifyKind.INFO,
+                idempotency_key="db-error-key",
+                backend=_backend(),
+                user_id="U_ME",
+            )
+        assert sent is True
+        assert not OutboundClaim.objects.filter(idempotency_key="slack_dm:db-error-key").exists()
