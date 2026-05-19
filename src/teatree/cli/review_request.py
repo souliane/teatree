@@ -36,3 +36,30 @@ def check(mr_url: str = typer.Option(..., "--mr-url", help="Canonical MR/PR URL 
     """
     project, overlay_name = _active_project()
     managepy(project, "review_request_check", "--mr-url", mr_url, overlay_name=overlay_name)
+
+
+@review_request_app.command()
+def post(
+    mr_url: str = typer.Option(..., "--mr-url", help="Canonical MR/PR URL to post."),
+    approver: str = typer.Option(..., "--approver", help="User id that recorded the #960 approval."),
+    title: str = typer.Option("", "--title", help="Review-request subject (recommended)."),
+) -> None:
+    """Sanctioned authorized review-request post: #1094 dedup + #960 approval + post (#1098).
+
+    One classifier-legible transaction: the #1084 live-channel dedup, the
+    #960 recorded-approval chokepoint (``t3 review approve-on-behalf`` is
+    the only way to satisfy it), then the post. Refuses with the exact
+    ``approve-on-behalf`` remediation when no recorded approval matches.
+    """
+    project, overlay_name = _active_project()
+    extra = ("--title", title) if title else ()
+    managepy(
+        project,
+        "review_request_post",
+        "--mr-url",
+        mr_url,
+        "--approver",
+        approver,
+        *extra,
+        overlay_name=overlay_name,
+    )
