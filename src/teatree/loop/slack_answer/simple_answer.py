@@ -1,16 +1,17 @@
 """Two-stage cheap answer builder for ``SIMPLE`` Slack questions (#1014).
 
-Stage A (0 tokens): map a status / PRs / pending / digest question to
-teatree's own already-rendered state (the ``loop/dashboard.py`` renderer)
-and return a string built directly — no LLM.
+Stage A (0 tokens): return teatree's already-rendered statusline content
+(the same lines the user sees on disk under :func:`statusline.default_path`),
+transformed for Slack mrkdwn. No LLM, no dashboard table — the user
+expects to see only the entries that appear in the statusline (#1121).
 
 Stage B (only if A yields nothing): exactly ONE ``claude -p --model
 haiku`` call with a tiny ``--append-system-prompt`` and a <1 KB compact
-state digest, NO skills / tools / loop context. It is hard-gated by
-``T3_SLACK_ANSWER_TOKEN_BUDGET`` (reusing the self-improve
-:func:`precheck_budget`). If the model decides it must read code /
-investigate, it replies with the exact :data:`NEEDS_WORK_SENTINEL` token
-and the caller delegates to a sub-agent instead.
+state digest (the same statusline content), NO skills / tools / loop
+context. It is hard-gated by ``T3_SLACK_ANSWER_TOKEN_BUDGET`` (reusing the
+self-improve :func:`precheck_budget`). If the model decides it must read
+code / investigate, it replies with the exact :data:`NEEDS_WORK_SENTINEL`
+token and the caller delegates to a sub-agent instead.
 
 Returning ``None`` means "could not cheaply answer, and did not even try
 the model" (budget gate closed) — the cycle then falls through to the
@@ -20,8 +21,8 @@ NEEDS_WORK delegation path.
 import os
 from typing import TYPE_CHECKING
 
-from teatree.loop.dashboard import DashboardFormat, render_dashboard
 from teatree.loop.self_improve.budget import precheck_budget
+from teatree.loop.statusline import statusline_for_slack
 from teatree.utils.run import CommandFailedError, run_checked
 
 if TYPE_CHECKING:
@@ -47,6 +48,8 @@ _DASHBOARD_TOKENS: tuple[str, ...] = (
     "digest",
     "progress",
     "today",
+    "dashboard",
+    "statusline",
 )
 
 _HAIKU_SYSTEM_PROMPT = (
@@ -69,19 +72,24 @@ def _token_budget_remaining() -> int | None:
 
 
 def _stage_a(text: str) -> str | None:
-    """Zero-token answer from teatree's own rendered state, or ``None``."""
+    """Zero-token answer from teatree's on-disk statusline, or ``None``.
+
+    The user only ever wants to see what is in the statusline — not the
+    dashboard table (#1121). When the statusline file is empty/missing,
+    return ``None`` so the cycle falls through to Stage B or delegation.
+    """
     lowered = text.lower()
     if not any(tok in lowered for tok in _DASHBOARD_TOKENS):
         return None
-    rendered = render_dashboard(fmt=DashboardFormat.SLACK).strip()
-    if not rendered or "No tick actions recorded" in rendered:
+    rendered = statusline_for_slack().strip()
+    if not rendered:
         return None
     return rendered
 
 
 def _compact_state_digest() -> str:
     """<1 KB plain-text state digest for the Stage B prompt (no secrets)."""
-    digest = render_dashboard(fmt=DashboardFormat.MARKDOWN).strip()
+    digest = statusline_for_slack().strip()
     return digest[:1024]
 
 

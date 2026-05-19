@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from teatree.loop.statusline import StatuslineEntry, StatuslineZones, default_path, render
+from teatree.loop.statusline import StatuslineEntry, StatuslineZones, default_path, render, statusline_for_slack
 
 
 class TestStatuslineRender:
@@ -168,6 +168,64 @@ class TestDefaultPath:
         monkeypatch.delenv("XDG_DATA_HOME", raising=False)
         monkeypatch.setenv("HOME", str(tmp_path))
         assert default_path() == tmp_path / ".local" / "share" / "teatree" / "statusline.txt"
+
+
+class TestStatuslineForSlack:
+    """``statusline_for_slack`` transforms on-disk statusline → Slack mrkdwn (#1121)."""
+
+    def test_statusline_for_slack_strips_ansi_and_converts_osc8(self, tmp_path: Path) -> None:
+        target = tmp_path / "statusline.txt"
+        entry = StatuslineEntry(
+            text="PR !123",
+            url="https://gitlab.com/x/y/-/merge_requests/123",
+        )
+        zones = StatuslineZones(action_needed=[entry])
+        render(zones, target=target, colorize=True)
+
+        out = statusline_for_slack(path=target)
+
+        # ANSI CSI escapes (color/reset) removed.
+        assert "\033[" not in out
+        # OSC 8 hyperlink wrappers gone, replaced by Slack mrkdwn link.
+        assert "\033]8" not in out
+        assert "<https://gitlab.com/x/y/-/merge_requests/123|PR !123>" in out
+
+    def test_statusline_for_slack_returns_empty_when_file_missing(self, tmp_path: Path) -> None:
+        missing = tmp_path / "does-not-exist.txt"
+        assert statusline_for_slack(path=missing) == ""
+
+    def test_statusline_for_slack_returns_empty_when_file_empty(self, tmp_path: Path) -> None:
+        empty = tmp_path / "empty.txt"
+        empty.write_text("")
+        assert statusline_for_slack(path=empty) == ""
+
+    def test_statusline_for_slack_preserves_plain_text_lines(self, tmp_path: Path) -> None:
+        target = tmp_path / "statusline.txt"
+        zones = StatuslineZones(
+            anchors=["overlay=teatree", "ticket=#1121"],
+            in_flight=["sweep_my_prs (3 prs)"],
+        )
+        render(zones, target=target, colorize=True)
+
+        out = statusline_for_slack(path=target)
+
+        assert "overlay=teatree" in out
+        assert "ticket=#1121" in out
+        assert "sweep_my_prs (3 prs)" in out
+        # No ANSI noise from coloured lines.
+        assert "\033" not in out
+
+    def test_statusline_for_slack_default_path_when_unspecified(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+        zones = StatuslineZones(anchors=["overlay=teatree"])
+        render(zones, colorize=True)
+
+        out = statusline_for_slack()
+
+        assert "overlay=teatree" in out
+        assert "\033" not in out
 
 
 class TestLoopOwnerAnchor:
