@@ -319,8 +319,31 @@ class TestSanitizeCloseKeywords:
                 "Resolves https://github.com/owner/repo/issues/10",
                 "Relates to https://github.com/owner/repo/issues/10",
             ),
+            # #1090: the colon separator GitLab's default issue_closing_pattern
+            # accepts ("Closes: #N" auto-closes on merge) must be rewritten too.
+            ("Closes: #1", "Relates to #1"),
+            ("closes:#1", "Relates to #1"),
+            ("Fixes:  #1", "Relates to #1"),
+            ("Closes: group/project#99", "Relates to group/project#99"),
+            (
+                "Resolves: https://gitlab.com/org/project/-/issues/729",
+                "Relates to https://gitlab.com/org/project/-/issues/729",
+            ),
+            # #1090: past-tense verbs (the gate already rejected these; the
+            # sanitizer must match the unified superset so the two stay in lockstep).
+            ("Closed #5", "Relates to #5"),
+            ("Fixed: #6", "Relates to #6"),
             ("No ticket ref here", "No ticket ref here"),
             ("", ""),
+            # Negatives — must stay unchanged (no new false positives).
+            ("Relates to #1", "Relates to #1"),
+            ("Refs #1", "Refs #1"),
+            ("See #1", "See #1"),
+            # The \b word boundary keeps "discloses" from matching "closes".
+            ("This discloses #1 in a sentence", "This discloses #1 in a sentence"),
+            # Space BEFORE the colon is intentionally NOT matched: GitLab's real
+            # issue_closing_pattern is `(:?) +`, so `Closes : #1` does not auto-close.
+            ("Closes : #1", "Closes : #1"),
         ],
     )
     def test_replaces_close_keywords_when_close_ticket_false(self, description: str, expected: str) -> None:
