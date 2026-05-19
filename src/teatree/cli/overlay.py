@@ -114,6 +114,7 @@ DJANGO_GROUPS: dict[str, tuple[str, list[tuple[str, str]]]] = {
         [
             ("refresh", "Return counts of tickets and tasks."),
             ("sync", "Synchronize followup data from MRs."),
+            ("discover-mrs", "List the user's open non-draft PRs/MRs awaiting a review request."),
             ("remind", "Return list of pending user input tasks."),
         ],
     ),

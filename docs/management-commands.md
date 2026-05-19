@@ -84,6 +84,7 @@ Monitoring and reminders.
 |------------|-----------|---------|-------------|
 | `refresh` | -- | dict | Returns counts of tickets, tasks, and open tasks |
 | `sync` | -- | dict | Syncs follow-up data: discovered MRs, created/updated tickets, errors |
+| `discover-mrs` | -- | dict | Lists the user's open, non-draft PRs/MRs (`repo`, `iid`, `title`, `url`) awaiting a review request |
 | `remind` | -- | list of IDs | Returns IDs of pending interactive tasks |
 
 ## `standup`
