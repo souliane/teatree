@@ -97,8 +97,8 @@ class TestDrainAnswerOrthogonality:
         assert row is not None
         backend = RecordingBackend()
         with patch(
-            "teatree.loop.slack_answer.simple_answer.render_dashboard",
-            return_value="# Loop dashboard\n\n## [acme]\n| x |\n",
+            "teatree.loop.slack_answer.simple_answer.statusline_for_slack",
+            return_value="overlay=acme\nticket=#1\n",
         ):
             run_slack_answer_cycle(messaging_resolver=lambda _o: backend)
             row.refresh_from_db()
