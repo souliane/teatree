@@ -432,7 +432,7 @@ t3 review unapprove <REPO> <MR_IID>    # revoke your approval
 
 **Review-first precondition (enforced, not advisory).** `approve` refuses unless a review note/discussion authored by *your* identity already exists on that MR. This encodes the approve-on-review doctrine in the tool itself: you cannot record an approval without having left a reviewing footprint first. If it refuses, post your review (`t3 review post-comment` / `post-draft-note`) and then approve. `unapprove` has no precondition — revoking is the safe direction and is always reachable.
 
-**On-behalf gate.** An approval is an outward, state-changing post under your identity, so `approve`/`unapprove` also respect the `ask_before_post_on_behalf` pre-gate (souliane/teatree#960): when that gate is enabled the command refuses unattended and tells you to get explicit user approval first or disable the gate per-overlay.
+**On-behalf gate.** An approval is an outward, state-changing post under your identity, so `approve`/`unapprove` also respect the `on_behalf_post_mode` pre-gate (souliane/teatree#960): under `"ask"` or `"draft_or_ask"` (the default) the command refuses unattended with an actionable message — record an `OnBehalfApproval` via `t3 review approve-on-behalf <target> approve --approver <user-id>` and re-run, or widen the mode to `"immediate"` per-overlay.
 
 ## Commands
 

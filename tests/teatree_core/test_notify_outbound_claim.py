@@ -54,7 +54,10 @@ class NotifyUserRecordsOutboundClaimTests(TestCase):
         backend = _backend()
         fake_settings = MagicMock()
         fake_settings.notify_user_via_bot = False
-        with patch("teatree.notify.get_effective_settings", return_value=fake_settings):
+        # `notify_user` lives in `teatree.core.notify` since #1009 — the
+        # top-level `teatree.notify` is a thin re-export. Patch where the
+        # real `get_effective_settings` is bound.
+        with patch("teatree.core.notify.get_effective_settings", return_value=fake_settings):
             notify_user(
                 "shh",
                 kind=NotifyKind.INFO,
