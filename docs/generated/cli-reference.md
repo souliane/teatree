@@ -739,8 +739,10 @@ Usage: t3 review-request check [OPTIONS]
 
  Run this in the SAME turn as a review-request post and abort on
  ``"action": "suppress"`` — it reads the live review channel with the
- post-token and takes the atomic DB claim, so a duplicate (agent
- re-post or a user's manual out-of-band post) is impossible.
+ post-token to detect a duplicate (agent re-post or a user's manual
+ out-of-band post). It is strictly decision-only: it takes NO durable
+ ``ReviewRequestPost`` claim (``peek_should_post_review_request``), so
+ it can never leave an orphan that wedges a later real post (#1103).
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ *  --mr-url        TEXT  Canonical MR/PR URL to dedup. [required]            │

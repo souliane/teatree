@@ -509,7 +509,7 @@ class TestReviewRequestDiscover:
 
         active = OverlayEntry(name="t3-test", overlay_class="test.Overlay", project_path=tmp_path)
         with (
-            patch.object(config_mod, "discover_active_overlay", return_value=active),
+            patch.object(config_mod, "_active_overlay_entry", return_value=active),
             patch.object(cli_review_request_mod, "managepy") as mock_manage,
         ):
             result = runner.invoke(app, ["review-request", "discover"])
@@ -525,7 +525,7 @@ class TestReviewRequestDiscover:
         active = OverlayEntry(name="t3-test", overlay_class="test.Overlay", project_path=tmp_path)
         mr = "https://gitlab.com/org/repo/-/merge_requests/385"
         with (
-            patch.object(config_mod, "discover_active_overlay", return_value=active),
+            patch.object(config_mod, "_active_overlay_entry", return_value=active),
             patch.object(cli_review_request_mod, "managepy") as mock_manage,
         ):
             result = runner.invoke(app, ["review-request", "check", "--mr-url", mr])
