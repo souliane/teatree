@@ -13,12 +13,12 @@ so an outage of the audit ledger does not cascade into the CLI turn.
 """
 
 import logging
-import os
 from typing import Any
 
 from django.db import DatabaseError, IntegrityError, transaction
 
 from teatree.core.models import OutboundClaim
+from teatree.core.session_identity import current_session_id as _resolve_agent_session_id
 
 logger = logging.getLogger(__name__)
 
@@ -68,9 +68,4 @@ def record_claim(
     return claim
 
 
-def _resolve_agent_session_id() -> str:
-    """The active Claude session id, or empty when not running under one."""
-    return os.environ.get("CLAUDE_SESSION_ID") or os.environ.get("T3_LOOP_SESSION_ID") or ""
-
-
-__all__ = ["record_claim"]
+__all__ = ["_resolve_agent_session_id", "record_claim"]

@@ -1,14 +1,18 @@
-"""Tests for ``teatree.slack_mrkdwn.slack_linkify``.
+"""Tests for ``teatree.slack_mrkdwn.slack_linkify`` and ``normalize_slack_message``.
 
 The dashboard markdown sent through ``notify_user`` to the user's Slack DM
 must render with clickable PR/MR/issue refs. Slack mrkdwn uses
 ``<url|label>`` — GitHub-flavored ``[label](url)`` and bare ``!N`` / ``#N``
 tokens render as inert text. This module rewrites those tokens.
+
+``normalize_slack_message`` enforces structural readability: one idea per
+line, blank-line-separated blocks, and ``•``-in-paragraph bullets converted
+to real newline-prefixed ``- `` list items.
 """
 
 import re
 
-from teatree.slack_mrkdwn import slack_linkify
+from teatree.slack_mrkdwn import normalize_slack_message, slack_linkify
 
 
 def _pipes_outside_mrkdwn(line: str) -> int:
@@ -160,3 +164,268 @@ class TestSlackLinkifyEdgeCases:
         assert "| MR | repo | verdict |" in out
         # Separator row untouched
         assert "|---|---|---|" in out
+
+
+class TestNormalizeSlackMessageBullets:
+    def test_bullet_in_paragraph_becomes_own_line(self) -> None:
+        text = "Here is the summary. • First item • Second item • Third item"
+        out = normalize_slack_message(text)
+        lines = out.splitlines()
+        assert any("- First item" in line for line in lines)
+        assert any("- Second item" in line for line in lines)
+        assert any("- Third item" in line for line in lines)
+
+    def test_bullet_items_each_on_own_line(self) -> None:
+        text = "Summary text • Alpha • Beta • Gamma"
+        out = normalize_slack_message(text)
+        assert out.count("\n") >= 2  # at least 2 newlines for 3 bullets
+
+    def test_existing_dash_bullets_not_duplicated(self) -> None:
+        text = "Summary:\n- Alpha\n- Beta"
+        out = normalize_slack_message(text)
+        assert out.count("- Alpha") == 1
+        assert out.count("- Beta") == 1
+
+    def test_leading_bullet_becomes_dash(self) -> None:
+        text = "• Only item"
+        out = normalize_slack_message(text)
+        assert out.strip().startswith("- ")
+
+
+class TestNormalizeSlackMessageBlankLines:
+    def test_blocks_separated_by_blank_line(self) -> None:
+        text = "The build finished and all checks passed. You can merge whenever you are ready."
+        out = normalize_slack_message(text)
+        assert "\n\n" in out, f"expected paragraph break, got: {out!r}"
+        first, _, rest = out.partition("\n\n")
+        assert first.strip() == "The build finished and all checks passed."
+        assert rest.strip() == "You can merge whenever you are ready."
+
+    def test_wall_of_text_gets_blank_line_between_blocks(self) -> None:
+        # Long wall of text: heading line, bullet group, trailing action — no blank lines
+        text = (
+            "*Dashboard update*\n"
+            "Here is the current status. Everything looks fine. Please review the items below.\n"
+            "• PR !281 approved • PR !381 needs nit fixes • PR !999 blocked\n"
+            "Let me know if you need anything."
+        )
+        out = normalize_slack_message(text)
+        # Blank lines should separate the heading from body and trailing action
+        assert "\n\n" in out
+        # The glued prose sentences must each become their own paragraph,
+        # not stay on one line — this is the wall-of-text fix.
+        assert "Here is the current status." in out
+        assert "\nEverything looks fine." in out or "\n\nEverything looks fine." in out
+        assert not any("Here is the current status. Everything looks fine." in line for line in out.splitlines())
+
+    def test_no_triple_blank_lines(self) -> None:
+        text = "Line one\n\n\nLine two"
+        out = normalize_slack_message(text)
+        assert "\n\n\n" not in out
+
+
+class TestNormalizeSlackMessageCodePreservation:
+    def test_fenced_code_block_untouched(self) -> None:
+        text = "Before\n```\n• not a bullet\nsome code here\n```\nAfter • bullet"
+        out = normalize_slack_message(text)
+        # Bullet inside fence must stay as-is
+        assert "• not a bullet" in out
+        # Bullet outside fence must be converted
+        assert "- bullet" in out
+
+    def test_inline_code_untouched(self) -> None:
+        text = "Use `• symbol` in your code. • Real bullet"
+        out = normalize_slack_message(text)
+        assert "`• symbol`" in out
+        assert "- Real bullet" in out
+
+    def test_url_not_broken(self) -> None:
+        text = "See https://example.com/path?a=1&b=2 for details"
+        out = normalize_slack_message(text)
+        assert "https://example.com/path?a=1&b=2" in out
+
+    def test_mrkdwn_link_preserved(self) -> None:
+        text = "See <https://example.com/pr/1|the PR> for details"
+        out = normalize_slack_message(text)
+        assert "<https://example.com/pr/1|the PR>" in out
+
+
+class TestNormalizeSlackMessageIdempotent:
+    def test_already_normalized_text_unchanged(self) -> None:
+        text = "*Heading*\n\n- Item one\n- Item two\n\nTrailing line."
+        out = normalize_slack_message(text)
+        assert normalize_slack_message(out) == out
+
+    def test_plain_text_double_application_noop(self) -> None:
+        text = "Hello world. This is a simple message."
+        once = normalize_slack_message(text)
+        twice = normalize_slack_message(once)
+        assert once == twice
+
+    def test_bullet_chain_double_application_noop(self) -> None:
+        text = "Summary • Alpha • Beta • Gamma"
+        once = normalize_slack_message(text)
+        twice = normalize_slack_message(once)
+        assert once == twice
+
+
+class TestNormalizeSlackMessageEdgeCases:
+    def test_empty_string(self) -> None:
+        assert normalize_slack_message("") == ""
+
+    def test_only_whitespace(self) -> None:
+        out = normalize_slack_message("   \n  \n  ")
+        # Should not explode; leading/trailing stripped or preserved reasonably
+        assert isinstance(out, str)
+
+    def test_no_mutation_when_already_structured(self) -> None:
+        text = "*Status*\n\n- Done\n- Pending\n\nLet me know."
+        out = normalize_slack_message(text)
+        assert "- Done" in out
+        assert "- Pending" in out
+
+    def test_real_world_wall_of_text(self) -> None:
+        # Realistic agent output that triggered the user complaint
+        text = (
+            ":information_source: *info*\n"
+            "Here is the current review status for your open MRs. "
+            "MR !281 (repo-a) is approved and ready to merge. "
+            "MR !381 (repo-b) has one nit comment that needs addressing. "
+            "• !281 APPROVE • !381 APPROVE-WITH-NIT • !7439 WAIT"
+            " Please check the dashboard for the full details and let me know if you have questions."
+        )
+        out = normalize_slack_message(text)
+        # Each bullet item must be on its own line
+        lines = out.splitlines()
+        bullet_lines = [line for line in lines if line.strip().startswith("- ")]
+        assert len(bullet_lines) >= 3
+        # The glued multi-sentence prose run must be broken apart: no
+        # single line keeps two prose sentences welded together.
+        for line in lines:
+            mid_sentences = len(re.findall(r"\. [A-Z]", line))
+            assert mid_sentences <= 1, f"glued sentences survived on line: {line!r}"
+        assert not any("open MRs. MR" in line for line in lines), (
+            "expected the wall of text to be split at the sentence boundary"
+        )
+
+
+class TestNormalizeSlackMessageProseSplitting:
+    def test_glued_prose_split_into_blocks(self) -> None:
+        text = (
+            "The pipeline finished successfully. All unit tests passed. "
+            "The deployment to staging is now complete and stable."
+        )
+        out = normalize_slack_message(text)
+        assert out.count("\n\n") >= 2
+        for block in out.split("\n\n"):
+            assert len(re.findall(r"\. [A-Z]", block)) == 0
+
+    def test_short_two_sentence_line_not_split(self) -> None:
+        assert normalize_slack_message("Hi. Thanks.") == "Hi. Thanks."
+
+    def test_terse_two_sentence_dashboard_lines_not_split(self) -> None:
+        # Realistic terse two-sentence status lines (~31-34 chars). These
+        # are normal terse prose, not walls of text — a bare length floor
+        # set low enough to split them would over-split routine messages.
+        for line in (
+            "Done. Pushed to main now today.",
+            "All good here. Ready to ship now.",
+            "PR #12 merged. Branch deleted now.",
+        ):
+            assert normalize_slack_message(line) == line, f"terse line wrongly split: {line!r}"
+
+    def test_honorific_name_does_not_split(self) -> None:
+        # "Dr." immediately followed by a capitalised name must NOT be
+        # treated as a sentence end — the split happens only at the real
+        # sentence boundary ("today.").
+        text = "Reviewed by Dr. Smith today. Then it merged and we moved on."
+        out = normalize_slack_message(text)
+        first, sep, rest = out.partition("\n\n")
+        assert sep == "\n\n"
+        assert first.strip() == "Reviewed by Dr. Smith today."
+        assert rest.strip() == "Then it merged and we moved on."
+
+    def test_merge_request_token_still_splits(self) -> None:
+        # "MRs." / "MR." are merge-request tokens (caps), NOT honorifics.
+        # The case-sensitive honorific guard must not suppress the split
+        # for these — the wall still breaks at the real sentence end.
+        text = (
+            "I reviewed all the open MRs. The first one is approved and ready "
+            "to merge whenever you like. The second one still needs a nit fix."
+        )
+        out = normalize_slack_message(text)
+        assert "\n\n" in out
+        assert not any("open MRs. The" in line for line in out.splitlines()), (
+            "expected the wall to split at the MRs. sentence boundary"
+        )
+
+    def test_abbreviation_does_not_trigger_split(self) -> None:
+        text = "Use e.g. the staging env. Then deploy the release candidate to production."
+        out = normalize_slack_message(text)
+        first, sep, rest = out.partition("\n\n")
+        assert sep == "\n\n"
+        assert first.strip() == "Use e.g. the staging env."
+        assert rest.strip() == "Then deploy the release candidate to production."
+
+    def test_abbreviation_before_capital_word_does_not_split(self) -> None:
+        # The abbreviation is followed by a capitalised word, so the
+        # sentence-break regex DOES produce a candidate here — the
+        # abbreviation guard must suppress it and only split at "env.".
+        text = "Deploy via e.g. Helm in the staging env. Then verify the rollout completed."
+        out = normalize_slack_message(text)
+        first, sep, rest = out.partition("\n\n")
+        assert sep == "\n\n"
+        assert first.strip() == "Deploy via e.g. Helm in the staging env."
+        assert rest.strip() == "Then verify the rollout completed."
+
+    def test_single_capital_initial_does_not_split(self) -> None:
+        text = "The change was reviewed by A. Smith earlier today. Then it was merged."
+        out = normalize_slack_message(text)
+        first, sep, rest = out.partition("\n\n")
+        assert sep == "\n\n"
+        assert first.strip() == "The change was reviewed by A. Smith earlier today."
+        assert rest.strip() == "Then it was merged."
+
+    def test_url_period_not_a_sentence_boundary(self) -> None:
+        text = "See https://example.com/a.b.c for the full details on this. Then proceed with the next deployment step."
+        out = normalize_slack_message(text)
+        assert "https://example.com/a.b.c" in out
+        first, sep, rest = out.partition("\n\n")
+        assert sep == "\n\n"
+        assert "https://example.com/a.b.c" in first
+        assert rest.strip() == "Then proceed with the next deployment step."
+
+    def test_fenced_code_with_sentences_untouched(self) -> None:
+        text = "```\nfirst line. Second line. Third line of code here.\n```"
+        out = normalize_slack_message(text)
+        assert "first line. Second line. Third line of code here." in out
+        assert "\n\n" not in out.replace("```", "")
+
+    def test_inline_code_period_preserved(self) -> None:
+        text = "Run `make. test` to verify the change. Then check the dashboard output."
+        out = normalize_slack_message(text)
+        assert "`make. test`" in out
+        first, sep, rest = out.partition("\n\n")
+        assert sep == "\n\n"
+        assert "`make. test`" in first
+        assert rest.strip() == "Then check the dashboard output."
+
+    def test_existing_bullets_not_prose_split(self) -> None:
+        text = "- First item with two. Sentences here.\n- Second item also has. Two sentences."
+        out = normalize_slack_message(text)
+        assert "- First item with two. Sentences here." in out
+        assert "- Second item also has. Two sentences." in out
+
+    def test_heading_line_not_split(self) -> None:
+        text = "*Dashboard update*"
+        out = normalize_slack_message(text)
+        assert out == "*Dashboard update*"
+
+    def test_prose_split_idempotent(self) -> None:
+        text = (
+            "The release branch was cut this morning. The QA team signed "
+            "off on the candidate. Production rollout starts at noon today."
+        )
+        once = normalize_slack_message(text)
+        twice = normalize_slack_message(once)
+        assert once == twice

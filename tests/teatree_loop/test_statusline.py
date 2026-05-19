@@ -168,3 +168,40 @@ class TestDefaultPath:
         monkeypatch.delenv("XDG_DATA_HOME", raising=False)
         monkeypatch.setenv("HOME", str(tmp_path))
         assert default_path() == tmp_path / ".local" / "share" / "teatree" / "statusline.txt"
+
+
+class TestLoopOwnerAnchor:
+    """``loop_owner_anchor`` zone+text mapping (#1073)."""
+
+    def _status(self, *, owner: str, is_live: bool):
+        from teatree.core.managers import OwnershipStatus  # noqa: PLC0415
+
+        return OwnershipStatus(owner_session=owner, expires_at=None, is_live=is_live)
+
+    def test_this_session_owns_is_dim_anchor(self) -> None:
+        from teatree.loop.statusline import loop_owner_anchor  # noqa: PLC0415
+
+        zone, line = loop_owner_anchor(self._status(owner="sess-A", is_live=True), "sess-A")
+        assert zone == "anchors"
+        assert line == "loop-owner=THIS session ✓"
+
+    def test_different_live_owner_is_red_action_needed(self) -> None:
+        from teatree.loop.statusline import loop_owner_anchor  # noqa: PLC0415
+
+        zone, line = loop_owner_anchor(self._status(owner="abcdef0123456789", is_live=True), "sess-A")
+        assert zone == "action_needed"
+        assert line == "loop-owner=session abcdef01 (NOT this session)"
+
+    def test_no_live_owner_is_unclaimed_anchor(self) -> None:
+        from teatree.loop.statusline import loop_owner_anchor  # noqa: PLC0415
+
+        zone, line = loop_owner_anchor(self._status(owner="", is_live=False), "sess-A")
+        assert zone == "anchors"
+        assert line == "loop-owner=unclaimed"
+
+    def test_anonymous_session_with_live_owner_is_red(self) -> None:
+        from teatree.loop.statusline import loop_owner_anchor  # noqa: PLC0415
+
+        zone, line = loop_owner_anchor(self._status(owner="ownersess", is_live=True), "")
+        assert zone == "action_needed"
+        assert line == "loop-owner=session ownerses (NOT this session)"

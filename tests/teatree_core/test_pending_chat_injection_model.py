@@ -1,4 +1,10 @@
-"""Tests for :class:`PendingChatInjection` — the Slack-inbound queue (#1014)."""
+"""Tests for :class:`PendingChatInjection` — the Slack-inbound queue (#1014).
+
+Issue #1063 adds the ``answered_at`` gate; tests for the ``is_question``
+heuristic live in a separate file (``test_pending_chat_injection_is_question.py``).
+"""
+
+from datetime import timedelta
 
 import pytest
 from django.utils import timezone
@@ -122,3 +128,118 @@ class TestStrRepr:
         assert row is not None
         row.consume()
         assert "consumed" in str(row)
+
+    def test_repr_for_answered_row(self) -> None:
+        row = PendingChatInjection.record(channel="C", slack_ts="1.0", text="x")
+        assert row is not None
+        PendingChatInjection.agent_answered_question("1.0")
+        row.refresh_from_db()
+        assert "answered" in str(row)
+
+
+class TestAgentAnsweredQuestion:
+    """``agent_answered_question`` stamps ``answered_at`` once."""
+
+    def test_first_call_stamps(self) -> None:
+        row = PendingChatInjection.record(channel="D", slack_ts="ts-1", text="why?")
+        assert row is not None
+        assert row.answered_at is None
+
+        stamped = PendingChatInjection.agent_answered_question("ts-1")
+
+        assert stamped == 1
+        row.refresh_from_db()
+        assert row.answered_at is not None
+
+    def test_second_call_is_no_op(self) -> None:
+        row = PendingChatInjection.record(channel="D", slack_ts="ts-1", text="why?")
+        assert row is not None
+        PendingChatInjection.agent_answered_question("ts-1")
+        first_stamp = PendingChatInjection.objects.get(pk=row.pk).answered_at
+
+        stamped = PendingChatInjection.agent_answered_question("ts-1")
+
+        assert stamped == 0
+        row.refresh_from_db()
+        assert row.answered_at == first_stamp
+
+    def test_empty_slack_ts_rejected(self) -> None:
+        PendingChatInjection.record(channel="D", slack_ts="ts-1", text="why?")
+
+        stamped = PendingChatInjection.agent_answered_question("")
+
+        assert stamped == 0
+        assert PendingChatInjection.objects.get().answered_at is None
+
+    def test_unknown_ts_is_zero_stamped(self) -> None:
+        PendingChatInjection.record(channel="D", slack_ts="ts-1", text="why?")
+
+        stamped = PendingChatInjection.agent_answered_question("ts-not-here")
+
+        assert stamped == 0
+
+    def test_overlay_scoping(self) -> None:
+        PendingChatInjection.record(channel="D", slack_ts="ts-x", text="why?", overlay="ovA")
+        PendingChatInjection.record(channel="D", slack_ts="ts-x", text="why?", overlay="ovB")
+
+        stamped = PendingChatInjection.agent_answered_question("ts-x", overlay="ovA")
+
+        assert stamped == 1
+        assert PendingChatInjection.objects.get(overlay="ovA").answered_at is not None
+        assert PendingChatInjection.objects.get(overlay="ovB").answered_at is None
+
+
+class TestUnansweredQuestionsSince:
+    """Stop hook's main query — windowed + heuristic-filtered + unanswered."""
+
+    def test_returns_question_rows_within_window(self) -> None:
+        q1 = PendingChatInjection.record(channel="D", slack_ts="1", text="why is this red?")
+        q2 = PendingChatInjection.record(channel="D", slack_ts="2", text="what about merging")
+        PendingChatInjection.record(channel="D", slack_ts="3", text="t3 should merge its own PRs")
+
+        rows = PendingChatInjection.unanswered_questions_since(timedelta(hours=1))
+
+        slack_tss = [r.slack_ts for r in rows]
+        assert "1" in slack_tss
+        assert "2" in slack_tss
+        assert "3" not in slack_tss
+        assert q1 is not None
+        assert q2 is not None
+
+    def test_excludes_answered_rows(self) -> None:
+        PendingChatInjection.record(channel="D", slack_ts="1", text="why?")
+        PendingChatInjection.record(channel="D", slack_ts="2", text="what?")
+        PendingChatInjection.agent_answered_question("1")
+
+        rows = PendingChatInjection.unanswered_questions_since(timedelta(hours=1))
+
+        assert [r.slack_ts for r in rows] == ["2"]
+
+    def test_excludes_rows_outside_window(self) -> None:
+        old = PendingChatInjection.record(channel="D", slack_ts="1", text="why is this red?")
+        recent = PendingChatInjection.record(channel="D", slack_ts="2", text="what about now")
+        assert old is not None
+        assert recent is not None
+        old.received_at = timezone.now() - timedelta(hours=3)
+        old.save(update_fields=["received_at"])
+
+        rows = PendingChatInjection.unanswered_questions_since(timedelta(hours=1))
+
+        assert [r.slack_ts for r in rows] == ["2"]
+
+    def test_empty_when_nothing_pending(self) -> None:
+        assert PendingChatInjection.unanswered_questions_since(timedelta(hours=1)) == []
+
+    def test_returns_oldest_first(self) -> None:
+        first = PendingChatInjection.record(channel="D", slack_ts="2", text="why?")
+        second = PendingChatInjection.record(channel="D", slack_ts="1", text="what?")
+        assert first is not None
+        assert second is not None
+        first.received_at = timezone.now() - timedelta(minutes=30)
+        second.received_at = timezone.now() - timedelta(minutes=10)
+        first.save(update_fields=["received_at"])
+        second.save(update_fields=["received_at"])
+
+        rows = PendingChatInjection.unanswered_questions_since(timedelta(hours=1))
+
+        assert [r.slack_ts for r in rows] == ["2", "1"]
