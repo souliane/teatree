@@ -713,6 +713,8 @@ Usage: t3 review-request [OPTIONS] COMMAND [ARGS]...
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
 │ discover  Discover open merge requests awaiting review.                      │
 │ check     Race-safe pre-post dedup gate against LIVE Slack messages (#1084). │
+│ post      Sanctioned authorized review-request post: #1094 dedup + #960      │
+│           approval + post (#1098).                                           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -743,6 +745,28 @@ Usage: t3 review-request check [OPTIONS]
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ *  --mr-url        TEXT  Canonical MR/PR URL to dedup. [required]            │
 │    --help                Show this message and exit.                         │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 review-request post`
+
+```
+Usage: t3 review-request post [OPTIONS]
+
+ Sanctioned authorized review-request post: #1094 dedup + #960 approval + post
+ (#1098).
+
+ One classifier-legible transaction: the #1084 live-channel dedup, the
+ #960 recorded-approval chokepoint (``t3 review approve-on-behalf`` is
+ the only way to satisfy it), then the post. Refuses with the exact
+ ``approve-on-behalf`` remediation when no recorded approval matches.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ *  --mr-url          TEXT  Canonical MR/PR URL to post. [required]           │
+│ *  --approver        TEXT  User id that recorded the #960 approval.          │
+│                            [required]                                        │
+│    --title           TEXT  Review-request subject (recommended).             │
+│    --help                  Show this message and exit.                       │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
