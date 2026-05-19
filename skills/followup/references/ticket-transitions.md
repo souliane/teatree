@@ -8,8 +8,9 @@ Automated status transitions move tickets through the delivery pipeline based on
 
 | File | Content | Written by |
 |---|---|---|
-| `mr_review_messages.json` | `{"<mr_url>": {"permalink": "...", "channel": "...", "ts": "..."}}` | t3:review-request (after sending) + transition check (after chat search) |
 | `status.json` | `{"label": "...", "last_transition": "...", "last_checked": "..."}` | Transition logic after each status change |
+
+"Review requested?" is **not** a cached JSON file — it is resolved live via `t3 review-request check`/`discover` against the channel + the `ReviewRequestPost` DB row (#1084). A deleted/stale cache can never cause a duplicate post or a wrong transition.
 
 ## Transition Table
 
@@ -28,12 +29,10 @@ Each transition also calls `ticket_update_external_tracker` (extension point) fo
 ### Doing → Technical Review
 
 1. List all open PRs for the ticket's branch across all repos.
-2. For each PR, check `$T3_DATA_DIR/tickets/<iid>/mr_review_messages.json` for a cached review request permalink.
-3. For any PR without a cached entry, search the team chat for the PR URL. See your [chat platform reference](../../platforms/references/) § "Search for Messages".
-4. If found, cache the permalink in `mr_review_messages.json`.
-5. If ALL PRs have a review request message → transition is ready.
+2. For each PR, run `t3 review-request check --mr-url <url>` (or read `review_permalink` from `t3 review-request discover`). A `suppress` with a `permalink` means a request exists in the live channel.
+3. If ALL PRs have a review request message → transition is ready.
 
-This works regardless of whether the review was requested via t3:review-request or manually.
+This is a **live** read (#1084), so it works regardless of whether the review was requested via t3:review-request, the loop, or a manual user post, and never falses on a stale cache.
 
 ### Technical Review → DEV Review
 
